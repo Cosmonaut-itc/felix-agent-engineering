@@ -7,8 +7,8 @@ Política común para seleccionar trabajadores y revisores.
 Elige siempre dentro de esta tabla; los entrypoints globales llevan una
 copia, así que al cambiarla replícala en ambos. Las puntuaciones son preferencias
 operativas (10 = mejor; en costo, más económico) y se ajustan con resultados
-observados. Inteligencia y gusto de los modelos Go, y de gpt-6.1-sol y
-gpt-6-luna, son hipótesis iniciales,
+observados. Inteligencia y gusto de los modelos Go, de gpt-6.1-sol,
+gpt-6-luna y haiku-5.5, son hipótesis iniciales,
 pendientes de calibrar con encargos propios. Gusto valora criterio de
 producto, claridad y coherencia visual; admitir imágenes no demuestra buen
 gusto.
@@ -19,7 +19,8 @@ gusto.
 | gpt-6.1-sol   | 9     | 9            | 6     | Opción habitual para ejecución técnica. |
 | gpt-6-luna    | 10    | 7            | 4     | Primera opción Codex para encargos claros y fáciles de verificar; cuesta la mitad que gpt-5.6-luna. |
 | opus-5.5      | 8     | 9            | 9     | Gusto visual y decisiones de producto. |
-| sonnet-5      | 6     | 5            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |
+| sonnet-5.5    | 6     | 7            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |
+| haiku-5.5     | 10    | 6            | 4     | Exploración, lectura y extracción de alto volumen, y encargos mecánicos fáciles de verificar en el entorno Claude. |
 | DeepSeek V4.1 Flash · Go | 10* | 8 | 6 | Primera opción económica para encargos técnicos acotados y verificables. |
 | MiniMax M3 · Go | 9 | 8 | 7 | Implementación frontend/backend y trabajo visual contra un diseño aprobado. |
 | Kimi K3 · Go | 6 | 9 | 8 | Escalón de mayor capacidad en Go para encargos complejos y contexto amplio; reservar cuota para trabajo que lo justifique. |

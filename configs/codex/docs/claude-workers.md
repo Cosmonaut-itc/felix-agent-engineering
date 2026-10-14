@@ -5,8 +5,8 @@ Ruta **Codex → Claude** mediante un proceso externo `claude -p`.
 ## Preparar y lanzar
 
 Antes de la primera invocación, comprueba `claude --version` y `claude --help`.
-Los nombres de routing `opus-5.5` y `sonnet-5` se pasan con los alias `opus` y
-`sonnet`.
+Los nombres de routing `opus-5.5`, `sonnet-5.5` y `haiku-5.5` se pasan con los
+alias `opus`, `sonnet` y `haiku`.
 
 El modo `-p` **omite el diálogo de confianza del workspace**: ejecuta sólo
 desde directorios confiables y entrega por stdin sólo material confiable.

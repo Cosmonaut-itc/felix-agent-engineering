@@ -16,7 +16,8 @@ fuente: al cambiar una, cambia la otra.
 | gpt-6.1-sol   | 9     | 9            | 6     | Opción habitual para ejecución técnica. |
 | gpt-6-luna    | 10    | 7            | 4     | Primera opción Codex para encargos claros y fáciles de verificar; cuesta la mitad que gpt-5.6-luna. |
 | opus-5.5      | 8     | 9            | 9     | Gusto visual y decisiones de producto. |
-| sonnet-5      | 6     | 5            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |
+| sonnet-5.5    | 6     | 7            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |
+| haiku-5.5     | 10    | 6            | 4     | Exploración, lectura y extracción de alto volumen, y encargos mecánicos fáciles de verificar en el entorno Claude. |
 | DeepSeek V4.1 Flash · Go | 10* | 8 | 6 | Primera opción económica para encargos técnicos acotados y verificables. |
 | MiniMax M3 · Go | 9 | 8 | 7 | Implementación frontend/backend y trabajo visual contra un diseño aprobado. |
 | Kimi K3 · Go | 6 | 9 | 8 | Escalón de mayor capacidad en Go para encargos complejos y contexto amplio; reservar cuota para trabajo que lo justifique. |
