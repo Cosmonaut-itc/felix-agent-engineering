@@ -1,0 +1,199 @@
+--- a/README.md
++++ b/README.md
+@@ -14,7 +14,7 @@
+ | [`docs/opencode-workers.md`](docs/opencode-workers.md) | Despacho programático de cheap coders Go: CLI/HTTP, modelo, controles y cierre. |
+ | [`configs/codex/`](configs/codex/AGENTS.md) | Entry point global de Codex, con el contrato inlineado, y guía Codex → Claude. |
+ | [`configs/claude/`](configs/claude/CLAUDE.md) | Entry point global de Claude Code, con el contrato inlineado, y guía Claude Code → GPT. |
+-| [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K2.7 Code, con instrucciones compartidas. |
++| [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K3, con instrucciones compartidas. |
+ 
+ ## Contrato común
+ 
+@@ -88,7 +88,8 @@
+ ### Perfiles OpenCode Go
+ 
+ Los perfiles requieren OpenCode y el proveedor Go conectado. Conserva el
+-archivo de configuración existente: combina la clave `agent` de
++archivo de configuración existente: combina la clave `agent` y las variantes
++de `provider.opencode-go.models.kimi-k3` de
+ [`configs/opencode/opencode.json`](configs/opencode/opencode.json) con la
+ configuración global o del proyecto, y copia `worker-prompt.md` junto al JSON
+ para resolver su referencia relativa. Revisa colisiones de nombres antes de
+@@ -96,7 +97,7 @@
+ 
+ Los perfiles parten de lectura y búsqueda; los permisos de implementación
+ se fijan por encargo mediante overrides de ejecución. Kimi permanece
+-deshabilitado hasta validar que Go aplica el modo solicitado. Sigue la
++deshabilitado hasta validar que Go aplica el esfuerzo solicitado. Sigue la
+ [guía de transporte](docs/opencode-workers.md) para controlar modelo, modo,
+ directorio y plazo. La documentación y los perfiles tienen validación estática;
+ la aceptación de cada ruta requiere comprobar un despacho real, su modelo,
+--- a/docs/agent-routing.md
++++ b/docs/agent-routing.md
+@@ -20,7 +20,7 @@
+ | sonnet-5      | 5     | 5            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |
+ | DeepSeek V4.1 Flash · Go | 10* | 8 | 6 | Primera opción económica para encargos técnicos acotados y verificables. |
+ | MiniMax M3 · Go | 9 | 8 | 7 | Implementación frontend/backend y trabajo visual contra un diseño aprobado. |
+-| Kimi K2.7 Code · Go | 8 | 8 | 7 | Cambios de varios archivos, contexto amplio y ejecución de planes de programación. |
++| Kimi K3 · Go | 6 | 9 | 8 | Escalón de mayor capacidad en Go para encargos complejos y contexto amplio; reservar cuota para trabajo que lo justifique. |
+ 
+ *DeepSeek recibe costo 10 mientras esté vigente la promoción 4×; fuera de
+ ella, costo 8 sujeto a tarifas y cuota actuales. Verifica la promoción antes
+@@ -75,13 +75,16 @@
+ comprueba el valor efectivo. Si la ruta no permite fijarlo, usa otra ruta o
+ resuelve directamente, salvo la excepción Go siguiente.
+ 
+-**Excepción Go con control nativo:** DeepSeek usa low/high; MiniMax usa
+-none/thinking; Kimi por el transporte Go examinado no ofrece variantes
+-numéricas. Configura y registra el modo nativo soportado y el presupuesto de
+-pasos/duración indicado en su guía. No etiquetes un modo fijo o adaptativo como
+-high ni confundas pasos con tokens. Si el modo efectivo no puede verificarse,
+-la ruta sigue pendiente de validación. Esta excepción no amplía el tope de
+-los modelos que sí admiten una escala comparable.
++**Go:** DeepSeek y Kimi K3 parten de low y escalan a high; ambos conservan el
++tope high. La guía fija variantes explícitas para K3 y exige comprobar su
++aplicación por Go. K3 sustituye al perfil K2.7 de modo fijo.
++
++**Excepción Go para MiniMax M3:** usa none/thinking. Configura y registra el
++modo nativo soportado y el presupuesto de pasos/duración indicado en su guía.
++No etiquetes un modo adaptativo como high ni confundas pasos con tokens. Si
++el control efectivo no puede verificarse, la ruta sigue pendiente de
++validación. Esta excepción no amplía el tope de los modelos que sí admiten
++una escala comparable.
+ 
+ ## Escalado
+ 
+--- a/docs/opencode-workers.md
++++ b/docs/opencode-workers.md
+@@ -40,7 +40,7 @@
+ |---|---|
+ | `cheap-coder-deepseek` | `opencode-go/deepseek-v4.1-flash` |
+ | `cheap-coder-minimax` | `opencode-go/minimax-m3` |
+-| `cheap-coder-kimi` | `opencode-go/kimi-k2.7-code` |
++| `cheap-coder-kimi` | `opencode-go/kimi-k3` |
+ 
+ El [catálogo público](https://opencode.ai/zen/go/v1/models) consultado publica
+ los tres IDs y también `deepseek-flash`. Preferir el ID versionado de DeepSeek;
+@@ -51,7 +51,7 @@
+ 
+ Los perfiles y `worker-prompt.md` están en `configs/opencode/` del repositorio.
+ Conserva el prompt junto al JSON al instalar. El perfil Kimi tiene
+-`disable: true` hasta comprobar que Go aplica su modo de razonamiento; no
++`disable: true` hasta comprobar que Go aplica el esfuerzo solicitado a K3; no
+ confundir la presencia de un modelo en el catálogo con esa validación.
+ 
+ Los perfiles usan `mode: all`: pueden actuar como agentes directos del
+@@ -112,22 +112,39 @@
+ |---|---|
+ | DeepSeek V4.1 Flash | `--variant low` de inicio; `high` si hace falta. Verificar que se transmite `reasoning_effort`; DeepSeek mapea medium a high. |
+ | MiniMax M3 | `--variant thinking` para coding; `none` sólo para encargos apropiados. OpenCode traduce thinking a modo adaptativo, no a un nivel high. |
+-| Kimi K2.7 Code | Perfil candidato con `thinking: {type: "enabled"}`, sin variante numérica; deshabilitado hasta validar su aplicación en Go. |
++| Kimi K3 | `reasoningEffort: "low"` en el perfil; variantes explícitas low/high. Usar `--variant low` de inicio y high al escalar; max/xhigh deshabilitados. Pendiente de validar en Go. |
+ 
+ Fuentes: [DeepSeek](https://api-docs.deepseek.com/guides/thinking_mode/),
+-[transformaciones de OpenCode](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/provider/transform.ts).
+-La excepción de modos nativos se define en `agent-routing.md`. El mapeo de
+-Kimi a través de Go debe verificarse en la aceptación de la ruta; la API
+-directa de Kimi no acredita el comportamiento del proxy Go.
+-
+-Para Kimi, el código normaliza `thinking` como opción del agente, el SDK
+-compatible conserva ese campo y el proxy Go preserva el cuerpo. Eso acredita
+-el transporte estático del parámetro, no su semántica en el backend.
++[transformaciones de OpenCode](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/provider/transform.ts),
++[controles Kimi K3](https://www.kimi.com/code/docs/en/kimi-code/models.html).
++K3 documenta low/high/max en su API; este contrato limita su uso a low/high.
++El transporte Go debe verificarse en la aceptación de la ruta. La excepción
++de modo adaptativo corresponde a MiniMax, no a K3.
++
++El código examinado no crea variantes automáticas para Kimi sobre el SDK
++compatible con OpenAI. Por ello la configuración incluye variantes propias
++low/high en `provider.opencode-go.models.kimi-k3.variants`: instálalas junto
++al perfil. El modelo del catálogo sigue siendo `opencode-go/kimi-k3`.
++[Variantes personalizadas](https://opencode.ai/docs/models/#custom-variants).
++
++El SDK compatible convierte `reasoningEffort` a `reasoning_effort` y el proxy
++Go preserva el cuerpo. El perfil conserva `thinking: {type: "enabled"}`.
++Esa inspección acredita el transporte estático de opciones, no su semántica
++en el backend.
+ [Normalización](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/v1/config/agent.ts),
+ [SDK compatible 2.0.41](https://unpkg.com/@ai-sdk/openai-compatible@2.0.41/dist/index.mjs),
+ [cuerpo de petición Go](https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/util/requestBody.ts).
+ La prueba de activación puede habilitar una copia aislada del perfil; conservar
+ el perfil habitual deshabilitado hasta aceptar la evidencia.
++
++Entre los tres trabajadores seleccionados, K3 ocupa el puesto de mayor
++capacidad. Moonshot lo presenta como su modelo de programación más capaz,
++con contexto de hasta 1M en su servicio;
++verifica el límite expuesto por Go antes de asignar contexto. Su mayor tarifa
++y menor cuota justifican reservarlo para encargos que superen la capacidad
++adecuada de los trabajadores económicos. Inteligencia/gusto en el selector
++siguen siendo estimaciones operativas, no una comparación local medida.
++[Modelo K3](https://www.kimi.com/code/docs/en/kimi-code/models.html).
+ 
+ ## Despachar por CLI
+ 
+@@ -145,6 +162,12 @@
+   > /ruta/absoluta/evidencia/eventos.jsonl \
+   2> /ruta/absoluta/evidencia/stderr.log
+ ```
++
++Para un encargo K3, conserva el mismo procedimiento y usa
++`--agent cheap-coder-kimi --model opencode-go/kimi-k3 --variant low`; requiere
++perfil habilitado tras validación y variantes instaladas. Al reanudar, conserva
++el ID de sesión y fija nuevamente modelo y esfuerzo; no cambies una sesión
++K2.7 a K3 para empezar el encargo nuevo.
+ 
+ El lanzador programático debe ejecutar el binario con un **array de argumentos**,
+ `cwd` explícito y el archivo de encargo por stdin. Conservar PID o ID del
+@@ -231,7 +254,7 @@
+ |---|---:|---:|---:|---:|
+ | DeepSeek V4.1 Flash, valle / pico | 0.15 / 0.30 | 0.60 / 1.20 | 0.003 / 0.006 | 15 base; 60 durante promoción |
+ | MiniMax M3 | 0.30 | 1.20 | 0.06 | 60 |
+-| Kimi K2.7 Code | 0.95 | 4.00 | 0.19 | 60 |
++| Kimi K3 | 3.00 | 15.00 | 0.30 | 15 |
+ 
+ Las ventanas son 20% cada cinco horas, 50% semanal y 100% mensual. DeepSeek
+ aplica pico lunes–viernes 01:00–04:00 y 06:00–10:00 UTC; el resto es valle.
+--- a/configs/opencode/opencode.json
++++ b/configs/opencode/opencode.json
+@@ -49,8 +49,8 @@
+       }
+     },
+     "cheap-coder-kimi": {
+-      "description": "Planes de programación de varios archivos; habilitar tras validar el modo en Go.",
+-      "model": "opencode-go/kimi-k2.7-code",
++      "description": "Encargos complejos y contexto amplio; habilitar tras validar razonamiento low/high en Go.",
++      "model": "opencode-go/kimi-k3",
+       "mode": "all",
+       "steps": 20,
+       "prompt": "{file:./worker-prompt.md}",
+@@ -70,6 +70,29 @@
+       "disable": true,
+       "thinking": {
+         "type": "enabled"
++      },
++      "reasoningEffort": "low"
++    }
++  },
++  "provider": {
++    "opencode-go": {
++      "models": {
++        "kimi-k3": {
++          "variants": {
++            "low": {
++              "reasoningEffort": "low"
++            },
++            "high": {
++              "reasoningEffort": "high"
++            },
++            "max": {
++              "disabled": true
++            },
++            "xhigh": {
++              "disabled": true
++            }
++          }
++        }
+       }
+     }
+   }

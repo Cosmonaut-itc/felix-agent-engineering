@@ -1,0 +1,563 @@
+diff --git a/README.md b/README.md
+index 03fc644..e128ec9 100644
+--- a/README.md
++++ b/README.md
+@@ -11,8 +11,10 @@ harness use un transporte distinto.
+ | [`docs/orchestration.md`](docs/orchestration.md) | Fuente canónica del contrato común: roles, descendientes y cierre. |
+ | [`docs/agent-routing.md`](docs/agent-routing.md) | Tabla de modelos, esfuerzo, escalado, review y UI/UX. |
+ | [`docs/native-subagents.md`](docs/native-subagents.md) | Contexto, configuración y seguimiento de subagentes nativos en Codex y Claude Code. |
++| [`docs/opencode-workers.md`](docs/opencode-workers.md) | Despacho programático de cheap coders Go: CLI/HTTP, modelo, controles y cierre. |
+ | [`configs/codex/`](configs/codex/AGENTS.md) | Entry point global de Codex, con el contrato inlineado, y guía Codex → Claude. |
+ | [`configs/claude/`](configs/claude/CLAUDE.md) | Entry point global de Claude Code, con el contrato inlineado, y guía Claude Code → GPT. |
++| [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K3, con instrucciones compartidas. |
+ 
+ ## Contrato común
+ 
+@@ -37,12 +39,13 @@ describen cómo ejecutarla en cada entorno.
+ | Claude Code → Claude | Subagentes nativos de Claude Code. | [`native-subagents.md`](docs/native-subagents.md), rama Claude Code |
+ | Codex → Claude | Proceso externo `claude -p`, seguido hasta su terminación. | [`claude-workers.md`](configs/codex/docs/claude-workers.md) |
+ | Claude Code → GPT | Runtime del plugin openai/codex-plugin-cc, adaptador opcional o CLI de Codex. | [`codex-delegation.md`](configs/claude/docs/codex-delegation.md) |
++| Codex o Claude Code → OpenCode Go | `opencode run` con perfil/modelo explícitos; servidor HTTP para despacho asíncrono. | [`opencode-workers.md`](docs/opencode-workers.md) |
+ 
+ Un trabajador externo por CLI tiene un ciclo de vida distinto del subagente
+ nativo. Cada guía explica qué contexto y controles ofrece.
+ 
+-El MCP `cheap-coder` (`stealth/ox-alpha`) está **deprecado por ahora**: el
+-routing prohíbe despachar por sus tools. Para retirarlo del equipo:
++El MCP antiguo `cheap-coder` (`stealth/ox-alpha`) sigue **deprecado**. Los
++perfiles Go usan OpenCode y no reactivan ese MCP. Para retirar el antiguo:
+ 
+ ```bash
+ claude mcp remove cheap-coder -s user
+@@ -67,6 +70,7 @@ mkdir -p ~/.agents/docs ~/.codex/docs ~/.claude/docs
+ cp -i docs/orchestration.md ~/.agents/docs/orchestration.md
+ cp -i docs/agent-routing.md ~/.agents/docs/agent-routing.md
+ cp -i docs/native-subagents.md ~/.agents/docs/native-subagents.md
++cp -i docs/opencode-workers.md ~/.agents/docs/opencode-workers.md
+ rm -f ~/.agents/docs/cheap-coder-workers.md
+ 
+ cp -i configs/codex/AGENTS.md ~/.codex/AGENTS.md
+@@ -80,3 +84,21 @@ Instala también las guías referenciadas: cambiar sólo los entrypoints dejarí
+ apuntadores incompletos. Acepta cada reemplazo cuando el diff corresponda a la
+ configuración que quieres activar. Editar este repositorio no cambia los
+ archivos ya instalados en tu equipo.
++
++### Perfiles OpenCode Go
++
++Los perfiles requieren OpenCode y el proveedor Go conectado. Conserva el
++archivo de configuración existente: combina la clave `agent` y las variantes
++de `provider.opencode-go.models.kimi-k3` de
++[`configs/opencode/opencode.json`](configs/opencode/opencode.json) con la
++configuración global o del proyecto, y copia `worker-prompt.md` junto al JSON
++para resolver su referencia relativa. Revisa colisiones de nombres antes de
++combinar. No reemplaces proveedores, MCP ni otras preferencias existentes.
++
++Los perfiles parten de lectura y búsqueda; los permisos de implementación
++se fijan por encargo mediante overrides de ejecución. Kimi permanece
++deshabilitado hasta validar que Go aplica el esfuerzo solicitado. Sigue la
++[guía de transporte](docs/opencode-workers.md) para controlar modelo, modo,
++directorio y plazo. La documentación y los perfiles tienen validación estática;
++la aceptación de cada ruta requiere comprobar un despacho real, su modelo,
++reanudación y cancelación en el equipo de destino.
+diff --git a/docs/agent-routing.md b/docs/agent-routing.md
+index ad13888..7dcc7b2 100644
+--- a/docs/agent-routing.md
++++ b/docs/agent-routing.md
+@@ -5,7 +5,10 @@ Política común para seleccionar trabajadores y revisores.
+ ## Modelos
+ 
+ Elige siempre dentro de esta tabla. Las puntuaciones son preferencias
+-operativas (10 = mejor) y se ajustan con resultados observados.
++operativas (10 = mejor; en costo, más económico) y se ajustan con resultados
++observados. Inteligencia y gusto de los modelos Go son hipótesis iniciales,
++pendientes de calibrar con encargos propios. Gusto valora criterio de producto,
++claridad y coherencia visual; admitir imágenes no demuestra buen gusto.
+ 
+ | Modelo        | costo | inteligencia | gusto | Cuándo |
+ |---------------|-------|--------------|-------|--------|
+@@ -15,16 +18,26 @@ operativas (10 = mejor) y se ajustan con resultados observados.
+ | gpt-5.6-luna  | 10    | 7            | 4     | Encargos claros y fáciles de verificar. |
+ | opus-5        | 4     | 8            | 8     | Gusto visual, decisiones de producto y contraste independiente de alto riesgo. |
+ | sonnet-5      | 5     | 5            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |
++| DeepSeek V4.1 Flash · Go | 10* | 8 | 6 | Primera opción económica para encargos técnicos acotados y verificables. |
++| MiniMax M3 · Go | 9 | 8 | 7 | Implementación frontend/backend y trabajo visual contra un diseño aprobado. |
++| Kimi K3 · Go | 6 | 9 | 8 | Escalón de mayor capacidad en Go para encargos complejos y contexto amplio; reservar cuota para trabajo que lo justifique. |
+ 
+-Ninguna ruta es gratis. Los tokens Claude siguen siendo el recurso más caro,
+-pero astra y sol consumen una cuota propia que se agota: más baratos que Opus,
+-no ilimitados. El **presupuesto** son dos monedas limitadas, no una gratis y
+-una cara.
++*DeepSeek recibe costo 10 mientras esté vigente la promoción 4×; fuera de
++ella, costo 8 sujeto a tarifas y cuota actuales. Verifica la promoción antes
++de usar esa ventaja para elegirlo; si no puedes confirmarla, usa costo 8.
++Consulta [tarifas y cuota Go](opencode-workers.md#tarifas-y-cuota).
++
++Ninguna ruta es gratis. Administra **tres presupuestos limitados: Codex,
++Claude y Go**. Los modelos de una misma suscripción Go comparten cuota:
++cambiar de perfil no recupera presupuesto agotado. Considera cuota disponible,
++tarifa, caché y reintentos al estimar el coste del encargo completo.
+ 
+ Para ejecución, parte del modelo más barato que plausiblemente dé la talla y
+ sube por escalado en vez de abrir con el más capaz; los pases obligatorios de
+ revisión siguen su propia sección. Gasta Claude donde el gusto, el entorno o
+-una perspectiva independiente pagan.
++una perspectiva independiente pagan. Con capacidad adecuada y cuota
++disponible, prefiere Go para ejecución acotada. Elige entre sus tres modelos
++por el encargo; no recorras los tres como una cadena obligatoria de reintentos.
+ 
+ Compara el costo del despacho completo, no el precio nominal del modelo: astra
+ en `low` puede salir más barato que sol en `high` para el mismo resultado, y un
+@@ -32,8 +45,9 @@ despacho barato que hay que repetir cuesta más que el caro que cierra. En
+ conflicto sobre algo que se embarca: **inteligencia > gusto > costo**. La
+ elección explícita del usuario prevalece.
+ 
+-El MCP `cheap-coder` (`stealth/ox-alpha`) está **deprecado por ahora**: sus
+-tools pueden aparecer en la sesión, pero no están en la tabla.
++El MCP antiguo `cheap-coder` (`stealth/ox-alpha`) sigue **deprecado**. Los
++nuevos cheap coders de esta tabla usan OpenCode Go por la ruta documentada
++abajo; incluirlos no reactiva aquel MCP.
+ 
+ ## Esfuerzo
+ 
+@@ -52,13 +66,25 @@ Con Astra, `low` es el punto de partida habitual y `medium` cubre lo que con
+ Sol pedía `high`; reserva `high` para incertidumbres que medium no resolvió.
+ Un encargo que migra de Sol a Astra baja uno o dos niveles, no los conserva.
+ 
+-El tope de cualquier despacho, sea quien sea el trabajador y aunque reanude,
+-es **high**.
++El tope de cualquier despacho con escala de esfuerzo comparable, aunque
++reanude, es **high**. Esto incluye trabajadores, revisores, adaptadores y
++descendientes GPT/Claude.
+ 
+ Configura el esfuerzo explícitamente en el runtime; un default de
+ configuración no es un tope y pedirlo en el prompt no lo fija. Si se hereda,
+ comprueba el valor efectivo. Si la ruta no permite fijarlo, usa otra ruta o
+-resuelve directamente.
++resuelve directamente, salvo la excepción Go siguiente.
++
++**Go:** DeepSeek y Kimi K3 parten de low y escalan a high; ambos conservan el
++tope high. La guía fija variantes explícitas para K3 y exige comprobar su
++aplicación por Go. K3 sustituye al perfil K2.7 de modo fijo.
++
++**Excepción Go para MiniMax M3:** usa none/thinking. Configura y registra el
++modo nativo soportado y el presupuesto de pasos/duración indicado en su guía.
++No etiquetes un modo adaptativo como high ni confundas pasos con tokens. Si
++el control efectivo no puede verificarse, la ruta sigue pendiente de
++validación. Esta excepción no amplía el tope de los modelos que sí admiten
++una escala comparable.
+ 
+ ## Escalado
+ 
+@@ -93,6 +119,7 @@ Antes del primer despacho por una ruta en la sesión, lee su guía:
+ | Claude Code → Claude (subagentes nativos) | `~/.agents/docs/native-subagents.md`, rama Claude Code |
+ | Codex → Claude (CLI externo) | `~/.codex/docs/claude-workers.md` |
+ | Claude Code → GPT (plugin o CLI) | `~/.claude/docs/codex-delegation.md` |
++| Codex o Claude Code → OpenCode Go (CLI externo o HTTP) | `~/.agents/docs/opencode-workers.md` |
+ 
+ Las guías determinan mecanismos y parámetros; este documento determina la
+ selección. Comunica cualquier sustitución de modelo o esfuerzo.
+diff --git a/docs/opencode-workers.md b/docs/opencode-workers.md
+new file mode 100644
+index 0000000..3a0a1ac
+--- /dev/null
++++ b/docs/opencode-workers.md
+@@ -0,0 +1,271 @@
++# Despachar trabajadores mediante OpenCode Go
++
++Referencia técnica consultada: 2026-09-10. Instalación: `~/.agents/docs/opencode-workers.md`.
++Validación estática; cada equipo debe completar la aceptación de la ruta.
++
++Lee esta guía antes de despachar desde Codex o Claude Code a un cheap coder
++de Go. La selección pertenece a `agent-routing.md`; esta guía define el
++transporte. El orquestador conserva la aceptación del resultado.
++
++## Ruta elegida
++
++Usar **OpenCode CLI como trabajador externo**. OpenCode proporciona el bucle
++de herramientas, archivos y sesiones. Una petición directa al endpoint del
++modelo sólo genera una respuesta; integrar ese endpoint exigiría construir
++también ese bucle. Para muchos encargos, la alternativa es el servidor HTTP
++de OpenCode. El SDK oficial envuelve esa API.
++
++La ruta CLI evita un servicio persistente para despachos individuales; HTTP
++facilita identificar una sesión antes de enviar el encargo y cancelarla por
++ID. Comenzar con CLI y conservar la alternativa HTTP documentada.
++
++## Preparar
++
++1. Comprobar ejecutable y versión con `command -v opencode` y
++   `opencode --version`. Verificar las opciones de la versión instalada con
++   `opencode run --help`. Instalar/configurar sólo dentro del alcance aprobado.
++2. Conectar el proveedor Go por su flujo de autenticación y comprobar
++   `opencode models opencode-go --verbose`. Registrar IDs y variantes; nunca
++   incluir credenciales en prompts, repositorio o evidencia.
++3. Validar los perfiles con `opencode agent list`, la configuración efectiva
++   y el catálogo. El modelo y perfil solicitados deben existir antes de lanzar.
++4. Asignar directorio real, archivos permitidos y presupuesto. Dar al
++   trabajador un encargo autocontenido con contexto, criterios de aceptación,
++   comprobaciones y formato de resultado. No hereda el chat de origen.
++
++Comandos de catálogo, ejecución, reanudación y exportación se documentan en
++la [referencia CLI](https://opencode.ai/docs/cli/).
++
++| Perfil | Modelo explícito |
++|---|---|
++| `cheap-coder-deepseek` | `opencode-go/deepseek-v4.1-flash` |
++| `cheap-coder-minimax` | `opencode-go/minimax-m3` |
++| `cheap-coder-kimi` | `opencode-go/kimi-k3` |
++
++El [catálogo público](https://opencode.ai/zen/go/v1/models) consultado publica
++los tres IDs y también `deepseek-flash`. Preferir el ID versionado de DeepSeek;
++confirmar su resolución efectiva antes de usarlo. Publicado no significa
++autenticado ni probado en esta cuenta.
++
++## Perfil y controles efectivos
++
++Los perfiles y `worker-prompt.md` están en `configs/opencode/` del repositorio.
++Conserva el prompt junto al JSON al instalar. El perfil Kimi tiene
++`disable: true` hasta comprobar que Go aplica el esfuerzo solicitado a K3; no
++confundir la presencia de un modelo en el catálogo con esa validación.
++
++Los perfiles usan `mode: all`: pueden actuar como agentes directos del
++runtime OpenCode y como subagentes cuando corresponda. Son trabajadores
++delegados desde el punto de vista de Codex/Claude Code. **`mode: subagent`
++no sirve para el lanzamiento directo con `opencode run --agent`**: el código
++examinado avisa y recurre al agente por defecto. También lo hace si el nombre
++no existe. Verificar antes del despacho y tratar cualquier sustitución como
++fallo de transporte. [Código CLI](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/cli/cmd/run.ts).
++
++Configurar permisos concretos para el encargo y denegar `task` si no se
++autorizaron descendientes. En un encargo de lectura, denegar edición y shell
++de escritura; en uno de implementación, autorizar sólo superficie y comandos
++necesarios. El directorio de trabajo y un worktree no constituyen un sandbox.
++El alcance también debe cubrir procesos lanzados desde shell y MCP heredados.
++
++Los perfiles base permiten lectura y búsqueda; deniegan otras herramientas.
++Para autorizar una implementación, combina en `OPENCODE_CONFIG_CONTENT` las
++reglas del perfil seleccionado con rutas y comandos concretos. Ejemplo para
++un encargo que autoriza sólo editar `src/formatter.ts` y ejecutar su prueba:
++
++```json
++{
++  "agent": {
++    "cheap-coder-deepseek": {
++      "permission": {
++        "edit": {
++          "*": "deny",
++          "/ruta/absoluta/worktree/src/formatter.ts": "allow"
++        },
++        "bash": {
++          "*": "deny",
++          "npm test -- formatter.test.ts": "allow"
++        }
++      }
++    }
++  }
++}
++```
++
++Sustituye el ejemplo por el alcance y la comprobación reales del repositorio.
++El programa de pruebas y sus dependencias pueden escribir archivos: permitir
++el comando exige considerar esos efectos. Inspecciona las reglas combinadas
++antes de enviar el encargo; no uses este ejemplo como permiso universal.
++
++Presupuesto inicial: `steps: 20` y plazo externo de 10 minutos por despacho,
++ajustables al preparar el encargo. `steps` limita iteraciones, no tokens ni
++dólares. Un agotamiento devuelve trabajo parcial para veto, no éxito.
++[Agentes y permisos](https://opencode.ai/docs/agents/).
++
++La configuración se combina con otras capas. Los overrides de ejecución
++`OPENCODE_CONFIG_CONTENT` tienen precedencia; `OPENCODE_CONFIG` por sí solo
++puede ser sobrescrito por configuración del proyecto. Inspeccionar el
++resultado efectivo y mantener los cambios del despacho fuera de la
++configuración global. [Precedencia](https://opencode.ai/docs/config/).
++
++| Modelo | Control y evidencia |
++|---|---|
++| DeepSeek V4.1 Flash | `--variant low` de inicio; `high` si hace falta. Verificar que se transmite `reasoning_effort`; DeepSeek mapea medium a high. |
++| MiniMax M3 | `--variant thinking` para coding; `none` sólo para encargos apropiados. OpenCode traduce thinking a modo adaptativo, no a un nivel high. |
++| Kimi K3 | `reasoningEffort: "low"` en el perfil; variantes explícitas low/high. Usar `--variant low` de inicio y high al escalar; max/xhigh deshabilitados. Pendiente de validar en Go. |
++
++Fuentes: [DeepSeek](https://api-docs.deepseek.com/guides/thinking_mode/),
++[transformaciones de OpenCode](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/provider/transform.ts),
++[controles Kimi K3](https://www.kimi.com/code/docs/en/kimi-code/models.html).
++K3 documenta low/high/max en su API; este contrato limita su uso a low/high.
++El transporte Go debe verificarse en la aceptación de la ruta. La excepción
++de modo adaptativo corresponde a MiniMax, no a K3.
++
++El código examinado no crea variantes automáticas para Kimi sobre el SDK
++compatible con OpenAI. Por ello la configuración incluye variantes propias
++low/high en `provider.opencode-go.models.kimi-k3.variants`: instálalas junto
++al perfil. El modelo del catálogo sigue siendo `opencode-go/kimi-k3`.
++[Variantes personalizadas](https://opencode.ai/docs/models/#custom-variants).
++
++El SDK compatible convierte `reasoningEffort` a `reasoning_effort` y el proxy
++Go preserva el cuerpo. El perfil conserva `thinking: {type: "enabled"}`.
++Esa inspección acredita el transporte estático de opciones, no su semántica
++en el backend.
++[Normalización](https://github.com/anomalyco/opencode/blob/dev/packages/core/src/v1/config/agent.ts),
++[SDK compatible 2.0.41](https://unpkg.com/@ai-sdk/openai-compatible@2.0.41/dist/index.mjs),
++[cuerpo de petición Go](https://github.com/anomalyco/opencode/blob/dev/packages/console/app/src/routes/zen/util/requestBody.ts).
++La prueba de activación puede habilitar una copia aislada del perfil; conservar
++el perfil habitual deshabilitado hasta aceptar la evidencia.
++
++Entre los tres trabajadores seleccionados, K3 ocupa el puesto de mayor
++capacidad. Moonshot lo presenta como su modelo de programación más capaz,
++con contexto de hasta 1M en su servicio;
++verifica el límite expuesto por Go antes de asignar contexto. Su mayor tarifa
++y menor cuota justifican reservarlo para encargos que superen la capacidad
++adecuada de los trabajadores económicos. Inteligencia/gusto en el selector
++siguen siendo estimaciones operativas, no una comparación local medida.
++[Modelo K3](https://www.kimi.com/code/docs/en/kimi-code/models.html).
++
++## Despachar por CLI
++
++Ejemplo con perfil ya validado, rutas sustituidas por las reales
++y directorio de evidencia existente:
++
++```sh
++opencode run \
++  --dir /ruta/absoluta/worktree \
++  --agent cheap-coder-deepseek \
++  --model opencode-go/deepseek-v4.1-flash \
++  --variant low \
++  --format json \
++  < /ruta/absoluta/evidencia/encargo.md \
++  > /ruta/absoluta/evidencia/eventos.jsonl \
++  2> /ruta/absoluta/evidencia/stderr.log
++```
++
++Para un encargo K3, conserva el mismo procedimiento y usa
++`--agent cheap-coder-kimi --model opencode-go/kimi-k3 --variant low`; requiere
++perfil habilitado tras validación y variantes instaladas. Al reanudar, conserva
++el ID de sesión y fija nuevamente modelo y esfuerzo; no cambies una sesión
++K2.7 a K3 para empezar el encargo nuevo.
++
++El lanzador programático debe ejecutar el binario con un **array de argumentos**,
++`cwd` explícito y el archivo de encargo por stdin. Conservar PID o ID del
++proceso del harness y su código de salida. No interpolar el prompt como código
++de shell. OpenCode acepta stdin; JSON emite registros con `sessionID`.
++Los eventos observados en el código incluyen `text`, `tool_use`, `step_finish`
++y `error`; no asumir un evento ficticio de tarea aceptada.
++[Implementación de run](https://github.com/anomalyco/opencode/blob/dev/packages/opencode/src/cli/cmd/run.ts).
++
++En ejecución no interactiva, los permisos pendientes pueden ser rechazados.
++Preparar los permisos autorizados antes de lanzar; un rechazo se conserva
++como evidencia. No resolverlo habilitando aprobación indiscriminada.
++
++## Recoger, continuar y detener
++
++- Seguir el proceso hasta terminación. Conservar stdout, stderr, código de
++  salida y `sessionID`, incluyendo errores y comprobaciones fallidas.
++- Exportar con `opencode export <sessionID>` y verificar en los mensajes el
++  proveedor/modelo/agente usado. Conservar la configuración efectiva redactada
++  para acreditar controles solicitados; si no hay lectura del modo realmente
++  aplicado, reportar esa limitación.
++- Reanudar el mismo encargo con `opencode run --session <sessionID>`, repitiendo
++  directorio, perfil, modelo, controles y `--format json`; enviar la corrección
++  por stdin y guardar nueva evidencia. Evitar `--continue`, que selecciona una
++  sesión por recencia.
++- Para ejecución CLI independiente, el lanzador debe disponer de un grupo de
++  procesos propio: al cancelar, detenerlo y verificar la salida y los procesos
++  hijos. Si se usa servidor, cancelar la sesión por la API antes de cerrar el
++  cliente; matar un cliente conectado no demuestra que el servidor se detuvo.
++- Revisar diff completo y criterios. Exit code 0, texto final o fin de un paso
++  no acreditan aceptación. El orquestador decide aceptar, corregir o rechazar;
++  conserva evidencia antes de retirar recursos.
++
++## Alternativa HTTP para despacho asíncrono
++
++Ejecutar `opencode serve --hostname 127.0.0.1 --port <puerto>` desde el
++directorio asignado; identificar el proceso y protegerlo con autenticación.
++Consultar `/doc` de esa versión para validar el esquema, incluida la variante.
++
++| Operación | Petición |
++|---|---|
++| Crear e identificar encargo | `POST /session` con título; guardar `id`. |
++| Despachar | `POST /session/:id/prompt_async` con agente, modelo y partes. |
++| Recoger | `GET /session/status`, `GET /session/:id/message` y eventos SSE. |
++| Continuar | Otro prompt a la misma sesión, con selección explícita. |
++| Cancelar | `POST /session/:id/abort`; comprobar estado y procesos iniciados. |
++
++El cuerpo del mensaje identifica el modelo así:
++
++```json
++{
++  "agent": "cheap-coder-deepseek",
++  "model": {
++    "providerID": "opencode-go",
++    "modelID": "deepseek-v4.1-flash"
++  },
++  "variant": "low",
++  "parts": [{ "type": "text", "text": "Encargo autocontenido aprobado" }]
++}
++```
++
++Un HTTP 204 sólo acredita envío. La recogida debe distinguir respuesta final,
++estado idle, errores y aceptación. Usar un servidor por directorio cuando se
++busque separación sencilla; no mutar `/config` de un servidor compartido para
++cambiar el modelo entre encargos. [API](https://opencode.ai/docs/server/),
++[SDK](https://opencode.ai/docs/sdk/).
++
++## Estado de validación
++
++Contrato, documentación pública, catálogo público y código fuente examinados.
++No se ha ejecutado un trabajador OpenCode. Antes de habilitar esta ruta:
++validar versión/perfiles/opciones, un encargo por modelo, read-back del modelo,
++reanudación, cancelación y fallo ante perfil inválido. Los perfiles están en
++`configs/opencode/` del repositorio. Esta guía no implementa un lanzador: el
++runtime que despacha debe aplicar los controles de proceso y plazo descritos
++antes de habilitar la ruta.
++
++## Tarifas y cuota
++
++Referencia del 2026-09-10: Go cuesta **10 USD/mes por suscripción**. Tarifas
++publicadas en USD por millón de tokens; son valores de consumo incluido.
++
++| Modelo | Entrada | Salida | Lectura de caché | Cuota mensual equivalente usando ese modelo |
++|---|---:|---:|---:|---:|
++| DeepSeek V4.1 Flash, valle / pico | 0.15 / 0.30 | 0.60 / 1.20 | 0.003 / 0.006 | 15 base; 60 durante promoción |
++| MiniMax M3 | 0.30 | 1.20 | 0.06 | 60 |
++| Kimi K3 | 3.00 | 15.00 | 0.30 | 15 |
++
++Las ventanas son 20% cada cinco horas, 50% semanal y 100% mensual. DeepSeek
++aplica pico lunes–viernes 01:00–04:00 y 06:00–10:00 UTC; el resto es valle.
++Revisa las [tarifas vigentes](https://opencode.ai/docs/go/) antes de estimar.
++
++La [portada](https://opencode.ai/go) anunció 4× temporal para V4.1 Flash sin
++vencimiento exacto publicado. Confirma su vigencia antes de contabilizarla.
++Los modelos comparten los contadores de Go, con multiplicadores por modelo;
++las cuotas de la tabla no se suman. [Contabilización](https://github.com/anomalyco/opencode/blob/43e89ea1673937c325edb922eaa1a768aa0e5bf4/packages/console/app/src/routes/zen/util/handler.ts#L1184).
++
++El coste aceptado incluye reintentos y revisión. Las solicitudes estimadas no
++equivalen a tareas terminadas. Al agotar Go, informa el límite y aplica el
++escalado del routing con el presupuesto disponible; activar saldo Zen adicional
++debe estar dentro de la autorización vigente.
+diff --git a/configs/opencode/opencode.json b/configs/opencode/opencode.json
+new file mode 100644
+index 0000000..ab0e843
+--- /dev/null
++++ b/configs/opencode/opencode.json
+@@ -0,0 +1,99 @@
++{
++  "$schema": "https://opencode.ai/config.json",
++  "agent": {
++    "cheap-coder-deepseek": {
++      "description": "Encargos técnicos acotados; verificar promoción y cuota Go.",
++      "model": "opencode-go/deepseek-v4.1-flash",
++      "mode": "all",
++      "steps": 20,
++      "prompt": "{file:./worker-prompt.md}",
++      "permission": {
++        "*": "deny",
++        "read": {
++          "*": "allow",
++          "*.env": "deny",
++          "*.env.*": "deny",
++          "*.pem": "deny"
++        },
++        "glob": "allow",
++        "grep": "allow",
++        "task": "deny",
++        "external_directory": "deny"
++      },
++      "reasoningEffort": "low",
++      "thinking": {
++        "type": "enabled"
++      }
++    },
++    "cheap-coder-minimax": {
++      "description": "Implementación frontend/backend contra diseño aprobado.",
++      "model": "opencode-go/minimax-m3",
++      "mode": "all",
++      "steps": 20,
++      "prompt": "{file:./worker-prompt.md}",
++      "permission": {
++        "*": "deny",
++        "read": {
++          "*": "allow",
++          "*.env": "deny",
++          "*.env.*": "deny",
++          "*.pem": "deny"
++        },
++        "glob": "allow",
++        "grep": "allow",
++        "task": "deny",
++        "external_directory": "deny"
++      },
++      "thinking": {
++        "type": "adaptive"
++      }
++    },
++    "cheap-coder-kimi": {
++      "description": "Encargos complejos y contexto amplio; habilitar tras validar razonamiento low/high en Go.",
++      "model": "opencode-go/kimi-k3",
++      "mode": "all",
++      "steps": 20,
++      "prompt": "{file:./worker-prompt.md}",
++      "permission": {
++        "*": "deny",
++        "read": {
++          "*": "allow",
++          "*.env": "deny",
++          "*.env.*": "deny",
++          "*.pem": "deny"
++        },
++        "glob": "allow",
++        "grep": "allow",
++        "task": "deny",
++        "external_directory": "deny"
++      },
++      "disable": true,
++      "thinking": {
++        "type": "enabled"
++      },
++      "reasoningEffort": "low"
++    }
++  },
++  "provider": {
++    "opencode-go": {
++      "models": {
++        "kimi-k3": {
++          "variants": {
++            "low": {
++              "reasoningEffort": "low"
++            },
++            "high": {
++              "reasoningEffort": "high"
++            },
++            "max": {
++              "disabled": true
++            },
++            "xhigh": {
++              "disabled": true
++            }
++          }
++        }
++      }
++    }
++  }
++}
+diff --git a/configs/opencode/worker-prompt.md b/configs/opencode/worker-prompt.md
+new file mode 100644
+index 0000000..d70a296
+--- /dev/null
++++ b/configs/opencode/worker-prompt.md
+@@ -0,0 +1,17 @@
++Resuelve el encargo autocontenido recibido del orquestador. Respeta el
++directorio, archivos, permisos y presupuesto asignados. Si falta contexto o
++acceso, devuelve el límite concreto y la evidencia disponible.
++
++El orquestador conserva la aceptación e integración del resultado. Entrega:
++estado (completo, parcial o bloqueado), cambios y archivos, comprobaciones con
++resultados reales, errores y pendientes. Un intento o un proceso terminado no
++demuestran que se cumplieron los criterios de aceptación.
++
++Conserva los cambios preexistentes y trabaja sólo en la superficie asignada.
++No crees descendientes ni invoques otro harness salvo autorización explícita
++del orquestador y configuración de transporte correspondiente. Commit, push,
++instalación global y publicación requieren estar incluidos en el encargo.
++
++Si alcanzas el presupuesto de pasos o duración, devuelve el estado parcial y
++la evidencia útil para continuar. Reanuda sobre los criterios incumplidos que
++te entregue el orquestador.

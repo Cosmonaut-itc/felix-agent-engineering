@@ -1,0 +1,885 @@
+{
+  "name": "cheap-coder-kimi",
+  "mode": "all",
+  "permission": [
+    {
+      "permission": "*",
+      "action": "allow",
+      "pattern": "*"
+    },
+    {
+      "permission": "doom_loop",
+      "action": "ask",
+      "pattern": "*"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "*",
+      "action": "ask"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.local/share/opencode/tool-output/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/var/folders/69/0365fqdd0bn2ydckdlk2mg9c0000gn/T/opencode/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/grilling/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/verification-before-completion/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/ai-sdk/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/grill-me/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/browser-use/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/tdd/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/nextjs-app-router-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk-setup/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/resolving-merge-conflicts/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/avoid-feature-creep/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/brainstorming/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk-orgs/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/use-railway/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/teach/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/finishing-a-development-branch/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/implement/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk-custom-ui/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/receiving-code-review/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/prototype/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk-testing/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/writing-skills/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/ai-elements/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/grill-with-docs/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/triage/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/handoff-chat/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/codebase-design/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/to-spec/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk-nextjs-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk-webhooks/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/code-review/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/diagnosing-bugs/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/to-tickets/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/research/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/ask-matt/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/domain-modeling/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/using-git-worktrees/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk-cli/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/wizard/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/polishing-claude-md/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/clerk-backend-api/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/heroui-native/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/improve-codebase-architecture/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/wayfinder/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/to-questionnaire/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/shadcn-ui/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/setup-matt-pocock-skills/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/wait-what/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/handoff/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/dispatching-parallel-agents/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.claude/skills/writing-for-agents/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/subagent-driven-development/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/ai-sdk/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/browser-use/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/imagegen/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/verification-before-completion/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/receiving-code-review/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/tdd/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-testing/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-setup/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-migrations/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-security-check/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-react-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/nextjs-app-router-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-realtime/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/writing-skills/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/grilling/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/vercel-react-best-practices/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-schema-validator/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/avoid-feature-creep/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/to-spec/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/codebase-design/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/supabase-postgres-best-practices/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-security-audit/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/executing-plans/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-file-storage/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-orgs/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-react-router-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/brainstorming/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/triage/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/prototype/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/resolving-merge-conflicts/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-tanstack-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/heroui-react/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/finishing-a-development-branch/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/ai-elements/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-component-authoring/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/writing-plans/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/frontend-design/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-chrome-extension-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/requesting-code-review/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/use-railway/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-best-practices/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/grill-with-docs/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-custom-ui/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-functions/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/teach/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-billing/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-vue-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/grill-me/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/implement/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/accumulating-ticket-prs/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-nextjs-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-cron-jobs/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/find-skills/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/wizard/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/to-questionnaire/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/improve-codebase-architecture/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/ask-matt/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/wait-what/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/writing-for-agents/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/wayfinder/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/setup-matt-pocock-skills/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/convex-http-actions/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/ui-ux-pro-max/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/systematic-debugging/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-nuxt-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/research/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/using-git-worktrees/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/heroui-native/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/domain-modeling/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/agent-browser/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-astro-patterns/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/shadcn-ui/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/heroui-migration/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/hatch-pet/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-cli/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/handoff/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-backend-api/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/web-design-guidelines/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/test-driven-development/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/using-superpowers/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/dispatching-parallel-agents/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/diagnosing-bugs/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/clerk-webhooks/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/code-review/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.agents/skills/to-tickets/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/browser-use/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/frontend-design/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/web-design-guidelines/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/use-railway/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/ui-ux-pro-max/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/find-skills/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/supabase-postgres-best-practices/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/vercel-react-best-practices/*",
+      "action": "allow"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.config/opencode/skills/agent-browser/*",
+      "action": "allow"
+    },
+    {
+      "permission": "question",
+      "action": "deny",
+      "pattern": "*"
+    },
+    {
+      "permission": "plan_enter",
+      "action": "deny",
+      "pattern": "*"
+    },
+    {
+      "permission": "plan_exit",
+      "action": "deny",
+      "pattern": "*"
+    },
+    {
+      "permission": "read",
+      "pattern": "*",
+      "action": "allow"
+    },
+    {
+      "permission": "read",
+      "pattern": "*.env",
+      "action": "ask"
+    },
+    {
+      "permission": "read",
+      "pattern": "*.env.*",
+      "action": "ask"
+    },
+    {
+      "permission": "read",
+      "pattern": "*.env.example",
+      "action": "allow"
+    },
+    {
+      "permission": "*",
+      "action": "deny",
+      "pattern": "*"
+    },
+    {
+      "permission": "read",
+      "pattern": "*",
+      "action": "allow"
+    },
+    {
+      "permission": "read",
+      "pattern": "*.env",
+      "action": "deny"
+    },
+    {
+      "permission": "read",
+      "pattern": "*.env.*",
+      "action": "deny"
+    },
+    {
+      "permission": "read",
+      "pattern": "*.pem",
+      "action": "deny"
+    },
+    {
+      "permission": "glob",
+      "action": "allow",
+      "pattern": "*"
+    },
+    {
+      "permission": "grep",
+      "action": "allow",
+      "pattern": "*"
+    },
+    {
+      "permission": "task",
+      "action": "deny",
+      "pattern": "*"
+    },
+    {
+      "permission": "external_directory",
+      "action": "deny",
+      "pattern": "*"
+    },
+    {
+      "permission": "external_directory",
+      "pattern": "/Users/felixddhs/.local/share/opencode/tool-output/*",
+      "action": "allow"
+    }
+  ],
+  "options": {
+    "thinking": {
+      "type": "enabled"
+    },
+    "reasoningEffort": "low"
+  },
+  "native": false,
+  "model": {
+    "providerID": "opencode-go",
+    "modelID": "kimi-k3"
+  },
+  "prompt": "Resuelve el encargo autocontenido recibido del orquestador. Respeta el\ndirectorio, archivos, permisos y presupuesto asignados. Si falta contexto o\nacceso, devuelve el límite concreto y la evidencia disponible.\n\nEl orquestador conserva la aceptación e integración del resultado. Entrega:\nestado (completo, parcial o bloqueado), cambios y archivos, comprobaciones con\nresultados reales, errores y pendientes. Un intento o un proceso terminado no\ndemuestran que se cumplieron los criterios de aceptación.\n\nConserva los cambios preexistentes y trabaja sólo en la superficie asignada.\nNo crees descendientes ni invoques otro harness salvo autorización explícita\ndel orquestador y configuración de transporte correspondiente. Commit, push,\ninstalación global y publicación requieren estar incluidos en el encargo.\n\nSi alcanzas el presupuesto de pasos o duración, devuelve el estado parcial y\nla evidencia útil para continuar. Reanuda sobre los criterios incumplidos que\nte entregue el orquestador.",
+  "description": "Encargos complejos y contexto amplio; low de inicio y high al escalar.",
+  "steps": 20,
+  "tools": {
+    "invalid": false,
+    "question": false,
+    "bash": false,
+    "read": true,
+    "glob": true,
+    "grep": true,
+    "edit": false,
+    "write": false,
+    "task": false,
+    "webfetch": false,
+    "todowrite": false,
+    "websearch": false,
+    "skill": false
+  }
+}

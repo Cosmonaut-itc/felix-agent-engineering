@@ -1,0 +1,162 @@
+{
+  "info": {
+    "id": "ses_f72caccc7ffejuCJtuJu0Q9lc3",
+    "slug": "crisp-circuit",
+    "projectID": "global",
+    "directory": "/private/var/folders/69/0365fqdd0bn2ydckdlk2mg9c0000gn/T/kimi-enabled-smoke-7fq7zedk",
+    "path": "private/var/folders/69/0365fqdd0bn2ydckdlk2mg9c0000gn/T/kimi-enabled-smoke-7fq7zedk",
+    "title": "Kimi enabled profile smoke",
+    "agent": "cheap-coder-kimi",
+    "model": {
+      "id": "kimi-k3",
+      "providerID": "opencode-go",
+      "variant": "default"
+    },
+    "version": "1.18.30",
+    "summary": {
+      "additions": 0,
+      "deletions": 0,
+      "files": 0
+    },
+    "cost": 0.009396,
+    "tokens": {
+      "input": 2792,
+      "output": 18,
+      "reasoning": 50,
+      "cache": {
+        "read": 0,
+        "write": 0
+      }
+    },
+    "permission": [
+      {
+        "permission": "question",
+        "pattern": "*",
+        "action": "deny"
+      },
+      {
+        "permission": "plan_enter",
+        "pattern": "*",
+        "action": "deny"
+      },
+      {
+        "permission": "plan_exit",
+        "pattern": "*",
+        "action": "deny"
+      }
+    ],
+    "time": {
+      "created": 1789075469112,
+      "updated": 1789075475997
+    }
+  },
+  "messages": [
+    {
+      "info": {
+        "role": "user",
+        "time": {
+          "created": 1789075469147
+        },
+        "agent": "cheap-coder-kimi",
+        "model": {
+          "providerID": "opencode-go",
+          "modelID": "kimi-k3"
+        },
+        "summary": {
+          "diffs": []
+        },
+        "id": "msg_08d35335b001Wngse8iBtgP7qv",
+        "sessionID": "ses_f72caccc7ffejuCJtuJu0Q9lc3"
+      },
+      "parts": [
+        {
+          "type": "text",
+          "text": "Prueba breve sin herramientas ni descendientes: responde únicamente KIMI_LISTO.",
+          "id": "prt_08d35335f0012SkvPbjGRBCQ8I",
+          "sessionID": "ses_f72caccc7ffejuCJtuJu0Q9lc3",
+          "messageID": "msg_08d35335b001Wngse8iBtgP7qv"
+        }
+      ]
+    },
+    {
+      "info": {
+        "parentID": "msg_08d35335b001Wngse8iBtgP7qv",
+        "role": "assistant",
+        "mode": "cheap-coder-kimi",
+        "agent": "cheap-coder-kimi",
+        "path": {
+          "cwd": "/private/var/folders/69/0365fqdd0bn2ydckdlk2mg9c0000gn/T/kimi-enabled-smoke-7fq7zedk",
+          "root": "/"
+        },
+        "cost": 0.009396,
+        "tokens": {
+          "total": 2860,
+          "input": 2792,
+          "output": 18,
+          "reasoning": 50,
+          "cache": {
+            "write": 0,
+            "read": 0
+          }
+        },
+        "modelID": "kimi-k3",
+        "providerID": "opencode-go",
+        "time": {
+          "created": 1789075469355,
+          "completed": 1789075475984
+        },
+        "finish": "stop",
+        "id": "msg_08d35342b001FkK5jTTnK1SL2M",
+        "sessionID": "ses_f72caccc7ffejuCJtuJu0Q9lc3"
+      },
+      "parts": [
+        {
+          "type": "step-start",
+          "id": "prt_08d353ddc001D0crI9ktttukFo",
+          "sessionID": "ses_f72caccc7ffejuCJtuJu0Q9lc3",
+          "messageID": "msg_08d35342b001FkK5jTTnK1SL2M"
+        },
+        {
+          "type": "reasoning",
+          "text": "User asks respond only KIMI_LISTO. Must use it. Keep minimal. We should then final exact. Ensure no extra text. Since user requests no tools; but system insists immediate use. Done. Final only KIMI_LISTO.",
+          "time": {
+            "start": 1789075471839,
+            "end": 1789075474594
+          },
+          "id": "prt_08d353ddf001KS4q4mo3gRmrsN",
+          "sessionID": "ses_f72caccc7ffejuCJtuJu0Q9lc3",
+          "messageID": "msg_08d35342b001FkK5jTTnK1SL2M"
+        },
+        {
+          "type": "text",
+          "text": "KIMI_LISTO",
+          "time": {
+            "start": 1789075474597,
+            "end": 1789075475975
+          },
+          "id": "prt_08d3548a5001eRFvfjKYdns4l4",
+          "sessionID": "ses_f72caccc7ffejuCJtuJu0Q9lc3",
+          "messageID": "msg_08d35342b001FkK5jTTnK1SL2M"
+        },
+        {
+          "reason": "stop",
+          "type": "step-finish",
+          "tokens": {
+            "total": 2860,
+            "input": 2792,
+            "output": 18,
+            "reasoning": 50,
+            "cache": {
+              "write": 0,
+              "read": 0
+            }
+          },
+          "cost": 0.009396,
+          "id": "prt_08d354e0c001Ny2uQ5ZUq7SfOl",
+          "sessionID": "ses_f72caccc7ffejuCJtuJu0Q9lc3",
+          "messageID": "msg_08d35342b001FkK5jTTnK1SL2M"
+        }
+      ]
+    }
+  ]
+}

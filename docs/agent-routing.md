@@ -8,7 +8,7 @@ Elige siempre dentro de esta tabla; los entrypoints globales llevan una
 copia, así que al cambiarla replícala en ambos. Las puntuaciones son preferencias
 operativas (10 = mejor; en costo, más económico) y se ajustan con resultados
 observados. Inteligencia y gusto de los modelos Go, de gpt-6.1-sol,
-gpt-6-luna y haiku-5.5, son hipótesis iniciales,
+gpt-6-luna, sonnet-5.5 y haiku-5.5, son hipótesis iniciales,
 pendientes de calibrar con encargos propios. Gusto valora criterio de
 producto, claridad y coherencia visual; admitir imágenes no demuestra buen
 gusto.

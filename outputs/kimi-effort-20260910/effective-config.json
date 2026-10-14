@@ -1,0 +1,41 @@
+{
+  "cli_version": "1.18.30",
+  "agent": {
+    "model": "opencode-go/kimi-k3",
+    "disable": true,
+    "reasoningEffort": "low",
+    "thinking": {
+      "type": "enabled"
+    }
+  },
+  "configured_variants": {
+    "low": {
+      "reasoningEffort": "low"
+    },
+    "high": {
+      "reasoningEffort": "high"
+    },
+    "max": {
+      "disabled": true
+    },
+    "xhigh": {
+      "disabled": true
+    }
+  },
+  "resolved_model": {
+    "id": "kimi-k3",
+    "api": {
+      "id": "kimi-k3",
+      "npm": "@ai-sdk/openai-compatible",
+      "url": "https://opencode.ai/zen/go/v1"
+    },
+    "variants": {
+      "low": {
+        "reasoningEffort": "low"
+      },
+      "high": {
+        "reasoningEffort": "high"
+      }
+    }
+  }
+}

@@ -1,0 +1,120 @@
+[
+  {
+    "requested_at": "2026-09-10T21:11:49.444399+00:00",
+    "upstream": "https://opencode.ai/zen/go/v1/chat/completions",
+    "body_sha256": "a7e713b78114b1e9a3330ec6962aa48bba5c997e287e02efd29868d3c35a023d",
+    "request": {
+      "model": "kimi-k3",
+      "reasoning_effort": "low",
+      "stream": true,
+      "max_tokens": 32000
+    },
+    "status": 403,
+    "seconds": 0.152,
+    "response_bytes": 7138,
+    "response_sha256": "df0441f9f622348669428eb82714beda4b61815e583ae0aa0035aa2ad5ac7012",
+    "response_headers": {
+      "Content-Type": "text/html; charset=UTF-8"
+    },
+    "response": {
+      "models": [],
+      "ids": [],
+      "usage": [],
+      "effort_fields": [],
+      "reasoning_chars": 0,
+      "finish_reasons": [],
+      "top_level_fields": []
+    },
+    "error_body": "<!doctype html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if gt IE 8]><!-->\n<html class=\"no-js\" lang=\"en-US\">\n    <!--<![endif]-->\n    <head>\n        <title>Access denied | opencode.ai used Cloudflare to restrict access | opencode.ai | Cloudflare</title>\n        <meta charset=\"UTF-8\" />\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\n<meta http-equiv=\"X-UA-Compatible\" content=\"IE=Edge\" />\n<meta name=\"robots\" content=\"noindex, nofollow\" />\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />\n<link rel=\"stylesheet\" id=\"cf_styles-css\" href=\"/cdn-cgi/styles/main.css\" /> <script>\n  (function(){if(document.addEventListener&&window.XMLHttpRequest&&JSON&&JSON.stringify){var e=function(a){var c=document.getElementById(\"error-feedback-survey\"),d=document.getElementById(\"er"
+  },
+  {
+    "requested_at": "2026-09-10T21:11:50.268168+00:00",
+    "upstream": "https://opencode.ai/zen/go/v1/chat/completions",
+    "body_sha256": "3dc35f153251e1a476fe0653720050c87b2bfb0bd33ce9a46cdf1456d505e4d5",
+    "request": {
+      "model": "kimi-k3",
+      "reasoning_effort": "low",
+      "thinking": {
+        "type": "enabled"
+      },
+      "stream": true,
+      "max_tokens": 32000
+    },
+    "status": 403,
+    "seconds": 0.129,
+    "response_bytes": 7138,
+    "response_sha256": "095a22e2e44ed0373c2a7c58e0af075fec79613880054e77a3a2e30778f4d4e7",
+    "response_headers": {
+      "Content-Type": "text/html; charset=UTF-8"
+    },
+    "response": {
+      "models": [],
+      "ids": [],
+      "usage": [],
+      "effort_fields": [],
+      "reasoning_chars": 0,
+      "finish_reasons": [],
+      "top_level_fields": []
+    },
+    "error_body": "<!doctype html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if gt IE 8]><!-->\n<html class=\"no-js\" lang=\"en-US\">\n    <!--<![endif]-->\n    <head>\n        <title>Access denied | opencode.ai used Cloudflare to restrict access | opencode.ai | Cloudflare</title>\n        <meta charset=\"UTF-8\" />\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\n<meta http-equiv=\"X-UA-Compatible\" content=\"IE=Edge\" />\n<meta name=\"robots\" content=\"noindex, nofollow\" />\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />\n<link rel=\"stylesheet\" id=\"cf_styles-css\" href=\"/cdn-cgi/styles/main.css\" /> <script>\n  (function(){if(document.addEventListener&&window.XMLHttpRequest&&JSON&&JSON.stringify){var e=function(a){var c=document.getElementById(\"error-feedback-survey\"),d=document.getElementById(\"er"
+  },
+  {
+    "requested_at": "2026-09-10T21:11:51.785560+00:00",
+    "upstream": "https://opencode.ai/zen/go/v1/chat/completions",
+    "body_sha256": "a7e713b78114b1e9a3330ec6962aa48bba5c997e287e02efd29868d3c35a023d",
+    "request": {
+      "model": "kimi-k3",
+      "reasoning_effort": "low",
+      "stream": true,
+      "max_tokens": 32000
+    },
+    "status": 403,
+    "seconds": 0.18,
+    "response_bytes": 7138,
+    "response_sha256": "62b87223c5ca9c62205ca62e7ff338725bc196aeaeedd0d073f99fa488ce0a3e",
+    "response_headers": {
+      "Content-Type": "text/html; charset=UTF-8"
+    },
+    "response": {
+      "models": [],
+      "ids": [],
+      "usage": [],
+      "effort_fields": [],
+      "reasoning_chars": 0,
+      "finish_reasons": [],
+      "top_level_fields": []
+    },
+    "error_body": "<!doctype html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if gt IE 8]><!-->\n<html class=\"no-js\" lang=\"en-US\">\n    <!--<![endif]-->\n    <head>\n        <title>Access denied | opencode.ai used Cloudflare to restrict access | opencode.ai | Cloudflare</title>\n        <meta charset=\"UTF-8\" />\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\n<meta http-equiv=\"X-UA-Compatible\" content=\"IE=Edge\" />\n<meta name=\"robots\" content=\"noindex, nofollow\" />\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />\n<link rel=\"stylesheet\" id=\"cf_styles-css\" href=\"/cdn-cgi/styles/main.css\" /> <script>\n  (function(){if(document.addEventListener&&window.XMLHttpRequest&&JSON&&JSON.stringify){var e=function(a){var c=document.getElementById(\"error-feedback-survey\"),d=document.getElementById(\"er"
+  },
+  {
+    "requested_at": "2026-09-10T21:11:52.435374+00:00",
+    "upstream": "https://opencode.ai/zen/go/v1/chat/completions",
+    "body_sha256": "086a6a299d7af5a4bbe5ea062702476da43824d32f58eb0e9577181801ba5142",
+    "request": {
+      "model": "kimi-k3",
+      "reasoning_effort": "high",
+      "thinking": {
+        "type": "enabled"
+      },
+      "stream": true,
+      "max_tokens": 32000
+    },
+    "status": 403,
+    "seconds": 0.189,
+    "response_bytes": 7138,
+    "response_sha256": "b4bfd15e65bc6ad5d5a1fa977cad5b40d1a1ed2a67a65822a2b053db4bfb5054",
+    "response_headers": {
+      "Content-Type": "text/html; charset=UTF-8"
+    },
+    "response": {
+      "models": [],
+      "ids": [],
+      "usage": [],
+      "effort_fields": [],
+      "reasoning_chars": 0,
+      "finish_reasons": [],
+      "top_level_fields": []
+    },
+    "error_body": "<!doctype html>\n<!--[if lt IE 7]> <html class=\"no-js ie6 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 7]>    <html class=\"no-js ie7 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if IE 8]>    <html class=\"no-js ie8 oldie\" lang=\"en-US\"> <![endif]-->\n<!--[if gt IE 8]><!-->\n<html class=\"no-js\" lang=\"en-US\">\n    <!--<![endif]-->\n    <head>\n        <title>Access denied | opencode.ai used Cloudflare to restrict access | opencode.ai | Cloudflare</title>\n        <meta charset=\"UTF-8\" />\n<meta http-equiv=\"Content-Type\" content=\"text/html; charset=UTF-8\" />\n<meta http-equiv=\"X-UA-Compatible\" content=\"IE=Edge\" />\n<meta name=\"robots\" content=\"noindex, nofollow\" />\n<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\" />\n<link rel=\"stylesheet\" id=\"cf_styles-css\" href=\"/cdn-cgi/styles/main.css\" /> <script>\n  (function(){if(document.addEventListener&&window.XMLHttpRequest&&JSON&&JSON.stringify){var e=function(a){var c=document.getElementById(\"error-feedback-survey\"),d=document.getElementById(\"er"
+  }
+]

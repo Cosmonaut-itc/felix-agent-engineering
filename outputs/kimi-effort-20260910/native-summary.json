@@ -1,0 +1,26 @@
+[
+  {
+    "variant": "low",
+    "exit_code": 0,
+    "seconds": 12.47,
+    "session_ids": [
+      "ses_f72d5123fffe0YTry6MPnfdUTB"
+    ],
+    "text": [
+      "157 — comprobación: 157 deja restos 2, 3 y 4 al dividir entre 5, 7 y 9, y por CRT es único módulo 315, así que es el menor positivo."
+    ],
+    "errors": []
+  },
+  {
+    "variant": "high",
+    "exit_code": 0,
+    "seconds": 14.93,
+    "session_ids": [
+      "ses_f72d4f776ffemKKv09JPRm065G"
+    ],
+    "text": [
+      "n = 157. Comprobación: 157 = 5·31+2 = 7·22+3 = 9·17+4, y por CRT es único módulo 315, así que es el menor positivo."
+    ],
+    "errors": []
+  }
+]
