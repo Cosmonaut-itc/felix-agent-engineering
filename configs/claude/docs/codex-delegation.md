@@ -4,36 +4,26 @@ Ruta **Claude Code → GPT**. Patrón común de esta ruta: **el exit code
 miente**. Veta un despacho por `git status`, por el entregable y por las
 llamadas de herramienta que completó, nunca por el exit.
 
-## Cuentas de Codex
+## CLI de Codex con proxy
 
-Hay dos cuentas, separadas por `CODEX_HOME`:
+Los trabajadores usan sólo el `CODEX_HOME` conectado al proxy:
+`/Users/felixddhs/.config/codex-cli` (alias interactivo `codex`). Su
+`config.toml` fija `model_provider = "cpa"` hacia `felix-desktop:8317/v1`, y el
+proxy reparte las cuentas y gestiona sus límites; no cambies de cuenta a mano.
 
-| Prioridad | Cuenta | `CODEX_HOME` | Alias interactivo |
-|-----------|--------|--------------|-------------------|
-| 1 | Outlook | `/Users/felixddhs/.config/codex-cli` | `codex` |
-| 2 | Gmail | `/Users/felixddhs/.codex` | `codex-original` |
-
-Despacha siempre primero con Outlook. `~/.claude/settings.json` fija
-`env.CODEX_HOME` en Outlook para las sesiones nuevas; aun así, pasa
-`CODEX_HOME` explícito en cada invocación (runtime del plugin o CLI), porque
-una sesión abierta antes del cambio conserva el entorno anterior y los alias
-de `~/.zshrc` no existen en un shell no interactivo:
+`~/.claude/settings.json` fija `env.CODEX_HOME` en esa ruta para las sesiones
+nuevas; aun así, pásalo explícito en cada invocación (runtime del plugin o
+CLI), porque una sesión abierta antes conserva su entorno y los alias de
+`~/.zshrc` no existen en un shell no interactivo:
 
 ```bash
 CODEX_HOME=/Users/felixddhs/.config/codex-cli codex exec ...
 CODEX_HOME=/Users/felixddhs/.config/codex-cli node "$companion_path" task ...
 ```
 
-Cambia a Gmail (`CODEX_HOME=/Users/felixddhs/.codex`) sólo cuando Outlook
-falle por límite de uso o cuota agotada, con el mensaje de límite como
-evidencia; no por otros errores. Registra en el cierre qué cuenta ejecutó cada
-encargo y vuelve a Outlook en el siguiente despacho: el límite se restablece.
-Si ambas cuentas están agotadas, el fallback es Claude según routing.
-
-Cada `CODEX_HOME` tiene su propio `config.toml`, credenciales, sesiones y
-lista de directorios confiables. Un `-C` confiado en una cuenta puede no
-estarlo en la otra, y `resume` sólo encuentra hilos de la cuenta que los
-creó. Los procesos ya lanzados no cambian de cuenta.
+No uses `CODEX_HOME=/Users/felixddhs/.codex` (alias `codex-original`): es la
+configuración de la app de ChatGPT, en modo directo con la cuenta Gmail, sin
+proxy. El banner de `codex exec` debe mostrar `provider: cpa`.
 
 ## Runtime del plugin
 
@@ -170,8 +160,7 @@ Observados en Codex CLI 0.145 a 0.153.
   que esperar.
 - **Cuota.** No asumas el estado de la cuota en ninguna dirección. Antes de
   despachar en volumen, un ping real con esfuerzo low; si falla por límite,
-  repite con la cuenta Gmail según [Cuentas de Codex](#cuentas-de-codex) y,
-  si también está agotada, el fallback es Claude según routing.
+  el fallback es Claude según routing.
 - **Procesos.** La app de ChatGPT trae su propio binario `codex`: para contar
   o matar workers usa `pgrep -f "codex exec"` y la edad del output, no
   `pgrep -x codex`.
