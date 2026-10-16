@@ -51,7 +51,7 @@ prepare_template() {
 }
 
 fixture() {
-    local dir=$TEST_TMP/case-$CASE
+    local dir=${1:-$TEST_TMP/case-$CASE}
     mkdir -p "$dir/home space"
     export HOME=$dir/home\ space XDG_STATE_HOME=$dir/home\ space/state
     export PAO_ROOT=$dir/clone\ space
@@ -455,9 +455,67 @@ status_and_duplicate_warning() {
     assert grep -q '^job absent$' "$HOME/status-output"
 }
 
+uninstall_rm_failure() {
+    fixture
+    printf '\nfile README.md ~/.custom/pao-readme\n' >> "$PAO_MANIFEST"
+    install_pao
+    touch "$HOME/fail-rm"
+    if pao uninstall > "$HOME/out" 2> "$HOME/err"; then return 1; fi
+    rm "$HOME/fail-rm"
+    assert grep -q 'pendiente: .*pao-readme' "$HOME/err"
+    assert test ! -s "$HOME/out"
+    assert test -L "$HOME/.custom/pao-readme"
+    assert test ! -L "$HOME/.agents/skills/felix-mode"
+    pao uninstall
+    assert test ! -L "$HOME/.custom/pao-readme"
+}
+
+windows_job_backup() {
+    # schtasks caps /TR at 261 characters, so this case needs a short root.
+    # short stays global: the EXIT trap runs after the function returns.
+    local saved
+    short=$(mktemp -d /tmp/pao.XXXXXX)
+    trap 'rm -rf "$short"' EXIT
+    fixture "$short"
+    install_pao
+    mkdir "$short/stubs"
+    cat > "$short/stubs/uname" <<'STUB'
+#!/bin/bash
+printf 'MINGW64_NT-10.0\n'
+STUB
+    cat > "$short/stubs/cygpath" <<'STUB'
+#!/bin/bash
+printf '%s\n' "$2"
+STUB
+    cat > "$short/stubs/schtasks" <<'STUB'
+#!/bin/bash
+case "$*" in
+    *Create*) printf '%s\n' "$*" > "$HOME/task" ;;
+    *XML*) [ ! -e "$HOME/xml-fail" ] || exit 1; [ -e "$HOME/xml-empty" ] || printf '<Task>%s</Task>\n' "$(cat "$HOME/task")" ;;
+    *) [ -e "$HOME/task" ] ;;
+esac
+STUB
+    chmod +x "$short/stubs/uname" "$short/stubs/cygpath" "$short/stubs/schtasks"
+    export PATH=$short/stubs:$PATH
+    printf 'foreign\n' > "$HOME/task"
+    touch "$HOME/xml-fail"
+    if pao install --no-plugins; then return 1; fi
+    assert grep -q 'no se pudo respaldar la tarea' "$STATE/status"
+    assert grep -qx foreign "$HOME/task"
+    rm "$HOME/xml-fail"
+    touch "$HOME/xml-empty"
+    if pao install --no-plugins; then return 1; fi
+    assert grep -qx foreign "$HOME/task"
+    rm "$HOME/xml-empty"
+    pao install --no-plugins
+    assert grep -q Create "$HOME/task"
+    saved=$(find "$STATE/backups" -name pao-update.xml)
+    assert grep -qx '<Task>foreign</Task>' "$saved"
+}
+
 if ! prepare_template > "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
 FAILURES=0 CASE=0
-for test_case in clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning; do
+for test_case in clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning uninstall_rm_failure windows_job_backup; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
     result=$?

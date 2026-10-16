@@ -381,8 +381,12 @@ PLIST
             command_line="\"$bash_exe\" -c \"$bash_command\""
             if [ "${#command_line}" -gt 261 ]; then record error job "schtasks admite 261 caracteres en /TR y el comando tiene ${#command_line}"; return; fi
             if [ "$(cat "$STATE/job" 2>/dev/null)" = "$command_line" ] && schtasks //Query //TN pao-update >/dev/null 2>&1; then record ok job pao-update; return; fi
-            if schtasks //Query //TN pao-update >/dev/null 2>&1 && ! schtasks //Query //TN pao-update //XML | backup_text pao-update.xml; then
-                record error job 'no se pudo respaldar la tarea'; return
+            if schtasks //Query //TN pao-update >/dev/null 2>&1; then
+                tmp=$(mktemp "$STATE/job.XXXXXX") || return 1
+                if ! { schtasks //Query //TN pao-update //XML > "$tmp" && [ -s "$tmp" ] && backup_text pao-update.xml < "$tmp"; }; then
+                    rm -f "$tmp"; record error job 'no se pudo respaldar la tarea'; return
+                fi
+                rm -f "$tmp"
             fi
             if schtasks //Create //F //SC HOURLY //MO 4 //TN pao-update //TR "$command_line"; then
                 printf '%s\n' "$command_line" > "$STATE/job"
@@ -512,19 +516,24 @@ show_status() {
     esac
 }
 
+unlink_clone() {
+    if points_to_clone "$1" && ! rm "$1"; then printf 'pendiente: %s\n' "$1" >&2; return 1; fi
+}
+
 uninstall() {
-    local dest dir
+    local dest dir failed=0
     load_manifest || return 1
     acquire_lock > /dev/null
     case $? in 0) ;; 2) fail 'otra corrida de pao está en curso'; return 1 ;; *) return 1 ;; esac
     remove_job || return 1
-    for dest in "${DESTS[@]}"; do points_to_clone "$dest" && rm "$dest"; done
+    for dest in "${DESTS[@]}"; do unlink_clone "$dest" || failed=1; done
     for dir in "$HOME/.agents/skills" "$HOME/.claude/skills"; do
-        for dest in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do points_to_clone "$dest" && rm "$dest"; done
+        for dest in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do unlink_clone "$dest" || failed=1; done
     done
     if [ -f "$STATE/files" ]; then
-        while IFS= read -r dest; do points_to_clone "$dest" && rm "$dest"; done < "$STATE/files"
+        while IFS= read -r dest; do unlink_clone "$dest" || failed=1; done < "$STATE/files"
     fi
+    if [ "$failed" = 1 ]; then fail 'quedaron enlaces sin borrar; corrige el problema y repite pao uninstall'; return 1; fi
     printf 'Desinstalado. Respaldos conservados en %s/backups/\n' "$STATE"
 }
 
