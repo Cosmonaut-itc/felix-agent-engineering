@@ -236,14 +236,19 @@ prune_links() {
     for dir in "$HOME/.agents/skills" "$HOME/.claude/skills"; do
         for dest in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do prune_one "$dest"; done
     done
+    local i tmp
+    tmp=$(mktemp "$STATE/files.XXXXXX") || return 1
     if [ -f "$STATE/files" ]; then
-        while IFS= read -r dest; do prune_one "$dest"; done < "$STATE/files"
+        while IFS= read -r dest; do
+            prune_one "$dest"
+            # A link that could not be pruned stays listed for the next run.
+            if ! contains "$dest" "${DESTS[@]}" && points_to_clone "$dest"; then printf '%s\n' "$dest" >> "$tmp"; fi
+        done < "$STATE/files"
     fi
-    : > "$STATE/files"
-    local i
     for ((i=0; i<${#TYPES[@]}; i++)); do
-        [ "${TYPES[$i]}" != file ] || printf '%s/%s\n' "$HOME" "${TARGETS[$i]#\~/}" >> "$STATE/files"
+        [ "${TYPES[$i]}" != file ] || printf '%s/%s\n' "$HOME" "${TARGETS[$i]#\~/}" >> "$tmp"
     done
+    mv "$tmp" "$STATE/files"
 }
 
 plugin_command() {
@@ -344,7 +349,9 @@ install_job() {
 <key>StartInterval</key><integer>14400</integer><key>RunAtLoad</key><true/>
 </dict></plist>
 PLIST
-            if [ -f "$job" ] && cmp -s "$tmp" "$job"; then rm "$tmp"; record ok job "$job"; return; fi
+            if [ -f "$job" ] && cmp -s "$tmp" "$job" && launchctl print "gui/$(id -u)/com.github.cosmonaut-itc.pao" >/dev/null 2>&1; then
+                rm "$tmp"; record ok job "$job"; return
+            fi
             if ! mv "$tmp" "$job"; then record error job 'no se pudo escribir plist'; return; fi
             launchctl bootout "gui/$(id -u)" "$job" >/dev/null 2>&1 || true
             if launchctl bootstrap "gui/$(id -u)" "$job"; then CHANGED=1; record configured job "$job"; else record error job 'launchctl bootstrap falló'; fi
@@ -419,18 +426,20 @@ apply() {
 }
 
 acquire_lock() {
-    local now stamp
+    local now owner stamp
     mkdir -p "$STATE" || return 1
     now=$(date +%s)
     if ! mkdir "$STATE/lock" 2>/dev/null; then
-        stamp=$(cat "$STATE/lock/time" 2>/dev/null)
-        if ! [[ $stamp =~ ^[0-9]+$ ]]; then
+        owner=$(cat "$STATE/lock/pid" 2>/dev/null)
+        if [[ $owner =~ ^[0-9]+$ ]]; then
+            if kill -0 "$owner" 2>/dev/null; then printf 'locked\n'; return 2; fi
+        else
+            # No pid yet: another run is between mkdir and its write, unless that was over a minute ago.
             case "$PLATFORM" in Darwin) stamp=$(stat -f %m "$STATE/lock" 2>/dev/null) ;; *) stamp=$(stat -c %Y "$STATE/lock" 2>/dev/null) ;; esac
+            if ! [[ $stamp =~ ^[0-9]+$ ]] || [ "$((now - stamp))" -lt 60 ]; then printf 'locked\n'; return 2; fi
         fi
-        if [[ $stamp =~ ^[0-9]+$ ]] && [ "$((now - stamp))" -gt 7200 ]; then
-            rm -rf "$STATE/lock" || return 1
-            mkdir "$STATE/lock" 2>/dev/null || { printf 'locked\n'; return 2; }
-        else printf 'locked\n'; return 2; fi
+        rm -rf "$STATE/lock" || return 1
+        mkdir "$STATE/lock" 2>/dev/null || { printf 'locked\n'; return 2; }
     fi
     printf '%s\n' "$$" > "$STATE/lock/pid"
     printf '%s\n' "$now" > "$STATE/lock/time"
@@ -452,7 +461,7 @@ update() {
     if output=$("$GIT_BIN" -C "$PAO_ROOT" fetch origin 2>&1); then
         date +%s > "$STATE/last-fetch"
         if [ "$branch" = main ]; then
-            if ! output=$("$GIT_BIN" -C "$PAO_ROOT" merge --ff-only origin/main 2>&1); then
+            if ! output=$("$GIT_BIN" -C "$PAO_ROOT" merge --ff-only --no-overwrite-ignore origin/main 2>&1); then
                 PAO_UPDATE_ERROR="$output $("$GIT_BIN" -C "$PAO_ROOT" status --short) $("$GIT_BIN" -C "$PAO_ROOT" diff --name-only HEAD origin/main)"
             fi
         else PAO_UPDATE_WARN="rama $branch: no se hace merge"; fi
@@ -493,6 +502,8 @@ show_status() {
 uninstall() {
     local dest dir
     load_manifest || return 1
+    acquire_lock > /dev/null
+    case $? in 0) ;; 2) fail 'otra corrida de pao está en curso'; return 1 ;; *) return 1 ;; esac
     remove_job || return 1
     for dest in "${DESTS[@]}"; do points_to_clone "$dest" && rm "$dest"; done
     for dir in "$HOME/.agents/skills" "$HOME/.claude/skills"; do
@@ -522,6 +533,10 @@ vendor_cleanup() {
 vendor_sync() (
     local repo=https://github.com/mattpocock/skills tag commit tmp i name src count old stage=''
     load_manifest vendor || return 1
+    if [ -n "$(git -C "$PAO_ROOT" status --porcelain --untracked-files=all -- vendor/mattpocock 2>/dev/null)" ]; then
+        fail 'vendor/mattpocock tiene cambios locales; vendor-sync no los pisa'
+        return 1
+    fi
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/pao-vendor.XXXXXX") || return 1
     trap 'vendor_cleanup "$tmp" "$stage"' EXIT
     trap 'exit 130' INT

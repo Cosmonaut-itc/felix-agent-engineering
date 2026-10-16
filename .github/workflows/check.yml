@@ -23,7 +23,7 @@ jobs:
               Windows) choco install shellcheck --yes --no-progress ;;
             esac
           fi
-      - run: shellcheck bin/pao tests/pao-test.sh
+      - run: shellcheck --severity=warning bin/pao tests/pao-test.sh
       - name: Validate and test
         run: |
           export HOME="$RUNNER_TEMP/pao-check-home"

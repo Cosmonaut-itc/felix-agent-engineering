@@ -38,7 +38,7 @@ prepare_template() {
     done
     git -C "$TEST_TMP/template" add -A || return 1
     git -C "$TEST_TMP/template" -c core.hooksPath=/dev/null commit --quiet --allow-empty -m 'test fixture' || return 1
-    git -C "$TEST_TMP/template" branch -M main || return 1
+    git -C "$TEST_TMP/template" checkout --quiet -B main || return 1
 }
 
 fixture() {
@@ -242,12 +242,14 @@ install_branch_guard() {
 lock_behavior() {
     fixture
     install_pao
+    sleep 300 &
+    local owner=$!
     mkdir "$STATE/lock"
-    date +%s > "$STATE/lock/time"
-    printf '12345\n' > "$STATE/lock/pid"
+    printf '%s\n' "$owner" > "$STATE/lock/pid"
     pao update > "$HOME/locked"
     assert grep -qx locked "$HOME/locked"
-    printf '1\n' > "$STATE/lock/time"
+    kill "$owner"
+    wait "$owner" 2>/dev/null || true
     pao update
     assert test ! -d "$STATE/lock"
 }
@@ -330,13 +332,71 @@ update_fetch_failure_recent() {
 
 install_locked() {
     fixture
+    sleep 300 &
+    local owner=$! result=0
     mkdir -p "$STATE/lock"
-    date +%s > "$STATE/lock/time"
-    printf '12345\n' > "$STATE/lock/pid"
-    if install_pao 2> "$HOME/err"; then return 1; fi
+    printf '%s\n' "$owner" > "$STATE/lock/pid"
+    if install_pao 2> "$HOME/err"; then result=1; fi
+    kill "$owner"
+    wait "$owner" 2>/dev/null || true
+    [ "$result" = 0 ] || return 1
     assert grep -q 'en curso' "$HOME/err"
     assert test ! -e "$HOME/.codex/AGENTS.md"
     assert test -d "$STATE/lock"
+}
+
+uninstall_locked() {
+    fixture
+    install_pao
+    sleep 300 &
+    local owner=$! result=0
+    mkdir "$STATE/lock"
+    printf '%s\n' "$owner" > "$STATE/lock/pid"
+    if pao uninstall 2> "$HOME/err"; then result=1; fi
+    kill "$owner"
+    wait "$owner" 2>/dev/null || true
+    [ "$result" = 0 ] || return 1
+    assert grep -q 'en curso' "$HOME/err"
+    assert test -L "$HOME/.codex/AGENTS.md"
+}
+
+vendor_sync_dirty() {
+    fixture
+    printf 'local edit\n' >> "$PAO_ROOT/vendor/mattpocock/grilling/SKILL.md"
+    if pao vendor-sync 2> "$HOME/err"; then return 1; fi
+    assert grep -q 'cambios locales' "$HOME/err"
+    assert grep -q 'local edit' "$PAO_ROOT/vendor/mattpocock/grilling/SKILL.md"
+}
+
+update_ignored_file() {
+    fixture
+    install_pao
+    local dir=$TEST_TMP/case-$CASE
+    git clone --quiet "$dir/origin.git" "$dir/producer"
+    mkdir -p "$dir/producer/node_modules"
+    printf 'upstream\n' > "$dir/producer/node_modules/pao-ignored"
+    git -C "$dir/producer" add -f node_modules/pao-ignored
+    git -C "$dir/producer" -c core.hooksPath=/dev/null commit --quiet -m ignored
+    git -C "$dir/producer" push --quiet origin main
+    mkdir -p "$PAO_ROOT/node_modules"
+    printf 'local\n' > "$PAO_ROOT/node_modules/pao-ignored"
+    if pao update; then return 1; fi
+    assert grep -qx local "$PAO_ROOT/node_modules/pao-ignored"
+    assert grep -q '^overall error$' "$STATE/status"
+}
+
+prune_retry() {
+    fixture
+    printf '\nfile README.md ~/.custom/pao-readme\n' >> "$PAO_MANIFEST"
+    install_pao
+    sed '/file README.md /d' "$PAO_MANIFEST" > "$HOME/manifest-altered"
+    export PAO_MANIFEST=$HOME/manifest-altered
+    chmod 555 "$HOME/.custom"
+    pao sync || true
+    chmod 755 "$HOME/.custom"
+    assert test -L "$HOME/.custom/pao-readme"
+    pao sync
+    assert test ! -L "$HOME/.custom/pao-readme"
 }
 
 minimal_path() {
@@ -379,7 +439,7 @@ status_and_duplicate_warning() {
 
 if ! prepare_template > "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
 FAILURES=0 CASE=0
-for test_case in clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked minimal_path held_directory_and_foreign_link status_and_duplicate_warning; do
+for test_case in clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
     result=$?
