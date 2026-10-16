@@ -1,6 +1,12 @@
 ---
 name: felix-mode
 description: "Modo de trabajo de Felix sobre pstack. Úsalo antes de actuar en toda tarea de ingeniería que toque más de un archivo, cambie una firma que otros llaman, implique una decisión de diseño o sea un bug de causa desconocida o un problema de rendimiento, y cuando pidan /felix-mode. No lo uses al resolver un encargo que te delegó otro agente, salvo que el encargo lo pida. Corre el playbook de poteto-mode con la precedencia, los modelos por rol, la revisión y la autonomía de Felix."
+hooks:
+  PreToolUse:
+    - matcher: "Bash"
+      hooks:
+        - type: command
+          command: 'bash "$HOME/.claude/skills/felix-mode/scripts/laptop-guard"'
 ---
 
 # felix-mode
@@ -14,10 +20,11 @@ devuelve evidencia, como dice el contrato.
 
 ## Arranque
 
-1. Invoca `pstack:poteto-mode` y léelo completo. Elige su playbook y copia
-   sus pasos a la lista de tareas, como indica.
-2. Aplica este archivo sobre esos pasos. Un paso de pstack que este archivo
-   sustituye queda en la lista con `felix-mode: <qué cambia>`.
+1. Invoca `pstack:poteto-mode` y léelo completo. Elige su playbook y sigue
+   sus pasos en orden desde el propio playbook, sin copiarlos a una lista de
+   tareas. Nombra el playbook en tu primera respuesta.
+2. Aplica este archivo sobre esos pasos. Donde sustituye un paso de pstack,
+   manda este archivo.
 3. Si el repositorio tiene `.agents/playbooks/`, aplica sus project playbooks
    como indica `poteto-mode`.
 
@@ -39,6 +46,16 @@ respuesta.
   Si falta la condición de terminado, derívala, decláralo y sigue.
 - Antes de nombrar un concepto de dominio, lee `GLOSSARY.md` (o
   `CONTEXT.md`) y los ADR del área, como pida el repositorio.
+
+## Unidades
+
+Entrega el trabajo en **unidades**: cada una es un PR desde `main` que se
+prueba solo y puede llegar a producción sin esperar a otra.
+
+- Un bug que afecta producción es la primera unidad. Abre su PR en cuanto
+  pasan su prueba y su review, antes de empezar cualquier mejora.
+- Lo que se pide «de paso», o lo que descubres al trabajar, es otra unidad,
+  en otra rama desde `main`.
 
 ## Qué skill usar
 
@@ -75,9 +92,16 @@ siendo obligatorios.
   Recoger → Vetar → Cerrar rige cada despacho.
 - El esfuerzo tiene tope `high`. Donde pstack diga `xhigh` o `max`, usa
   `high`. Su ajuste por tarea sólo baja desde el punto de partida del routing.
+- Quién implementa lo fija la sección «Delegación» del routing. Por encima de
+  su umbral, diseñas, despachas y vetas, y el código lo escribe un trabajador.
 
 ## Revisión
 
+- **Riesgo.** Antes de cada ronda, clasifica el diff completo como normal o
+  alto con las señales de **Alto riesgo** y las rutas de alto riesgo del
+  repositorio, que su `AGENTS.md` dice dónde encontrar. Un diff que crece
+  puede subir de nivel. El brief de cada ronda abre con `Nivel: <normal o
+  alto> por <señal o ruta>`, y tu respuesta repite el nivel y su motivo.
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6-astra en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
@@ -85,12 +109,18 @@ siendo obligatorios.
 - **Alto riesgo.** Corre `interrogate` con dos revisores independientes:
   gpt-6-astra en `high` por Transporte, siempre como Reviewer A, y opus-5.5
   en `high`, el asiento Claude que trae la hoja. Ese asiento corre sólo en
-  alto riesgo. Tú eres el lead reviewer y vetas los hallazgos. El riesgo lo
-  decides tú. Cuentan como señales: escrituras a producción o a un sistema de
-  cliente (ICG, ERP, pagos, CFDI, nómina), migraciones o borrado de datos,
-  autenticación y permisos, cálculos de dinero o impuestos, contratos entre
-  paquetes o servicios, y lo que el `AGENTS.md` marque como alto riesgo. Di
-  en la respuesta qué nivel aplicaste y por qué.
+  alto riesgo. Tú eres el lead reviewer y vetas los hallazgos. Cuentan como
+  señales: escrituras a producción o a un sistema de cliente (ICG, ERP,
+  pagos, CFDI, nómina), migraciones o borrado de datos, autenticación y
+  permisos, cálculos de dinero o impuestos, contratos entre paquetes o
+  servicios, y las rutas de alto riesgo del repositorio.
+- **Rondas.** Una review converge cuando cada ronda trae menos hallazgos y
+  ninguno abre un caso nuevo en reglas que una ronda anterior ya corrigió.
+  Si una ronda abre ese caso, ataca la premisa
+  (`principle-attack-the-premise`): quita código o cambia el enfoque antes de
+  la siguiente ronda. Si la ronda 3 de un mismo cambio no da APTO, pausa:
+  entrega al usuario lo que sigue abierto y una propuesta para recortar
+  alcance, y espera su respuesta antes de la ronda 4.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
   que entrega dos candidatos estructuralmente distintos. Tú eliges y no hay
@@ -120,7 +150,8 @@ pause» de pstack, pausa antes de:
 - instalar dependencias, cambiar CI o tocar la configuración global de
   agentes;
 - implementar UI/UX sin un prototipo aprobado por el dueño, como pide el
-  routing.
+  routing;
+- la ronda 4 de review de un mismo cambio, como dice **Rondas**.
 
 El resto del trabajo local y reversible avanza sin preguntar.
 

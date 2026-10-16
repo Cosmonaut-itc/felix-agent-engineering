@@ -156,11 +156,11 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
   <div class="flow">
     <div class="step"><b>1</b><span>Pides la tarea.</span></div>
     <div class="step"><b>2</b><span>Se activa <code>felix-mode</code>.</span></div>
-    <div class="step"><b>3</b><span>Elige un playbook y copia sus pasos a la lista.</span></div>
-    <div class="step"><b>4</b><span>Delega según el routing.</span></div>
+    <div class="step"><b>3</b><span>Elige un playbook y sigue sus pasos.</span></div>
+    <div class="step"><b>4</b><span>Delega según el routing. Por encima del umbral de «Delegación», un trabajador escribe el código.</span></div>
     <div class="step"><b>5</b><span>Prueba en la app real con <code>verify</code>.</span></div>
     <div class="step"><b>6</b><span>Revisión de astra en high, y de Opus si es alto riesgo.</span></div>
-    <div class="step"><b>7</b><span>Abre el PR y te da un informe con evidencia.</span></div>
+    <div class="step"><b>7</b><span>Abre un PR por unidad y te da un informe con evidencia. Un bug de producción sale primero, en su propio PR.</span></div>
   </div>
   <h3>Quién manda si chocan</h3>
   <div class="prec"><span>Tú</span><i>›</i><span><code>AGENTS.md</code> del repo</span><i>›</i><span>Contrato y routing</span><i>›</i><span><code>felix-mode</code></span><i>›</i><span>pstack</span></div>
@@ -185,7 +185,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <section id="playbooks">
   <h2>Playbooks</h2>
-  <p class="lead">El agente elige uno y copia sus pasos a la lista de tareas. Un paso que se salta queda anotado con su motivo.</p>
+  <p class="lead">El agente elige uno y sigue sus pasos. Si salta uno, lo dice en su respuesta con el motivo.</p>
   <table>
     <thead><tr><th>Playbook</th><th>Cuándo</th><th>Ejemplo</th></tr></thead>
     <tbody>
@@ -208,14 +208,14 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <section id="revision">
   <h2>Revisión</h2>
-  <p class="lead">Ningún otro modelo revisa cambios. El orquestador decide el nivel de riesgo, veta los hallazgos y dice qué nivel aplicó y por qué.</p>
+  <p class="lead">Ningún otro modelo revisa cambios. Antes de cada ronda, el orquestador clasifica el diff completo como normal o alto riesgo, veta los hallazgos y dice qué nivel aplicó y por qué. Si la ronda 3 no da APTO, se detiene y te propone recortar alcance.</p>
   <div class="grid g2">
     <div class="card"><span class="tag">Normal</span><h3>Un revisor astra en high</h3><p>gpt-6-astra en <code>high</code>, con contexto nuevo y evidencia primaria. Cumple los pasos donde pstack pide <code>interrogate</code> o <code>thermos</code>.</p></div>
     <div class="card"><span class="tag">Alto riesgo</span><h3>astra y Opus por separado</h3><p><code>interrogate</code> con gpt-6-astra en high como Reviewer A y opus-5.5 en high. Ejemplos: permisos, nómina o impuestos.</p></div>
     <div class="card"><span class="tag">Diseño</span><h3>Dos candidatos de Opus</h3><p><code>architect</code> corre <code>arena</code> con un solo runner opus-5.5 que entrega dos diseños distintos. El orquestador elige y no hay juez cruzado.</p></div>
     <div class="card"><span class="tag">Diseño disputado</span><h3>Opus contra Sol, juez astra</h3><p>Alto riesgo o empate entre los candidatos de Opus. Compiten opus-5.5 y gpt-6.1-sol, gpt-6-astra juzga, y salen dos implementaciones completas.</p></div>
   </div>
-  <div class="callout"><b>Señales de alto riesgo.</b> Escrituras a producción o a un sistema de cliente (ICG, ERP, pagos, CFDI, nómina). Migraciones o borrado de datos. Autenticación y permisos. Dinero o impuestos. Contratos entre paquetes o servicios. Lo que el <code>AGENTS.md</code> del repo marque. Si no puede correr ningún revisor independiente, la puerta sigue cerrada.</div>
+  <div class="callout"><b>Señales de alto riesgo.</b> Escrituras a producción o a un sistema de cliente (ICG, ERP, pagos, CFDI, nómina). Migraciones o borrado de datos. Autenticación y permisos. Dinero o impuestos. Contratos entre paquetes o servicios. Las rutas de alto riesgo que el <code>AGENTS.md</code> del repo indique. Si no puede correr ningún revisor independiente, la puerta sigue cerrada.</div>
 </section>
 
 <section id="skills">
@@ -347,6 +347,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <li>Actualizar el tracker más allá de lo que pide el flujo del repo.</li>
       <li>Instalar dependencias, cambiar CI o tocar la configuración global de agentes.</li>
       <li>Implementar UI sin un prototipo que aprobaste.</li>
+      <li>La ronda 4 de review de un mismo cambio.</li>
       <li>Lo irreversible de pstack: force push a ramas compartidas, borrar datos y mensajes a clientes.</li>
     </ul>
   </div>

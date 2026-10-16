@@ -56,6 +56,13 @@ Roles de pstack con modelo Claude, generados desde el routing:
 
 @~/.claude/pstack-models.md
 
+## Máquinas
+
+La MacBook de Felix sólo edita código y sirve Metro. Gates, pruebas, builds,
+contenedores, bases de datos y servidores corren en la Mac Mini o en Felix
+DESKTOP, como diga el `AGENTS.md` del repositorio. Si no lo dice, en la Mac
+Mini.
+
 ## Roles
 
 - **Orquestador:** recibe la tarea del usuario, decide el reparto, conserva
