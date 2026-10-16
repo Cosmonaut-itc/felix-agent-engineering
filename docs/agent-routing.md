@@ -52,6 +52,14 @@ el mismo resultado, y un despacho barato que hay que repetir cuesta más que
 el caro que cierra. En conflicto sobre algo que se embarca: **inteligencia >
 gusto > costo**. La elección explícita del usuario prevalece.
 
+## Delegación
+
+El orquestador escribe él mismo sólo cambios pequeños: hasta unas 150 líneas
+de código de producción en hasta 2 archivos, sin contar las pruebas. Por
+encima de ese umbral, un trabajador de la tabla de Modelos implementa, y el
+orquestador diseña, despacha y veta. El umbral cuenta el cambio completo de la
+tarea, no cada edición.
+
 ## Esfuerzo
 
 Selecciona modelo y esfuerzo por separado, usando sólo niveles admitidos por

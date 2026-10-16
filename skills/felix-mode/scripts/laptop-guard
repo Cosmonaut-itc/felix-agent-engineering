@@ -1,0 +1,78 @@
+#!/bin/bash
+# El hook siempre permite continuar, incluso sin sus dependencias.
+set -uo pipefail
+
+case "${LAPTOP_GUARD_LAPTOP:-}" in
+    1) ;;
+    0) exit 0 ;;
+    *)
+        [ "$(uname 2>/dev/null)" = Darwin ] || exit 0
+        battery=$(pmset -g batt 2>/dev/null) || exit 0
+        [[ "$battery" = *InternalBattery* ]] || exit 0
+        ;;
+esac
+command -v python3 >/dev/null 2>&1 || exit 0
+
+python3 -c '
+import json
+import re
+import shlex
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+    command = payload["tool_input"]["command"]
+    if not isinstance(command, str) or re.search(r"ssh\s|remote-run|scp\s", command):
+        sys.exit(0)
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace_split = True
+    tokens = list(lexer)
+    boundaries = {";", "&", "&&", "|", "||", "(", ")", "\n"}
+    heavy = False
+
+    def arguments(index):
+        result = []
+        for token in tokens[index + 1:]:
+            if token in boundaries:
+                break
+            result.append(token)
+        return result
+
+    def action(args):
+        valued = {"--filter", "-F", "--dir", "-C", "--cwd", "--workspace", "-w", "--prefix"}
+        while args and args[0].startswith("-"):
+            args = args[2:] if args[0] in valued else args[1:]
+        if args and args[0] == "run":
+            args = args[1:]
+            while args and args[0].startswith("-"):
+                args = args[1:]
+        return args[0].split(":", 1)[0] if args else ""
+
+    for index, token in enumerate(tokens):
+        name = token.rsplit("/", 1)[-1]
+        args = arguments(index)
+        if name in {"orb", "orbctl", "vite", "vitest", "jest", "xcodebuild", "gradlew", "postgres"}:
+            heavy = True
+        elif name == "docker" and any(arg in {"run", "compose", "start", "up", "build"} for arg in args):
+            heavy = True
+        elif name == "open" and "-a" in args and "OrbStack" in args:
+            heavy = True
+        elif name in {"colima", "pg_ctl"} and "start" in args:
+            heavy = True
+        elif name in {"bun", "pnpm", "npm", "yarn"} and action(args) in {"dev", "test", "build", "e2e", "gate"}:
+            heavy = True
+        elif name == "next" and args and args[0] == "dev":
+            heavy = True
+        elif name == "playwright" and args and args[0] == "test":
+            heavy = True
+        elif name == "turbo" and args and args[0] == "run":
+            heavy = True
+        elif name == "expo" and args and args[0].startswith("run:"):
+            heavy = True
+    if heavy:
+        context = "Estás en la MacBook de Felix, que sólo edita y sirve Metro. Corre gates, pruebas, builds, contenedores, bases de datos y servidores en la Mac Mini o en Felix DESKTOP, como diga el AGENTS.md del repositorio. Si este comando es ligero y debe correr aquí, dilo en tu respuesta."
+        print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context}, "systemMessage": "laptop-guard: trabajo pesado en la MacBook"}, ensure_ascii=False))
+except Exception:
+    pass
+' 2>/dev/null || true
+exit 0

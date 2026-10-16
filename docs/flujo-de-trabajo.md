@@ -48,14 +48,14 @@ que el encargo lo pida.
 | 1. Planificar | Opcional. Convierte una idea en un brief: spec, issues o mapa de decisiones. | `grilling`, `grill-me`, `grill-with-docs`, `domain-modeling`, `to-spec`, `to-tickets`, `triage`, `wayfinder`, `research`, `to-questionnaire` | Tú |
 | 2. Afinar el pedido | Opcional. El agente reformula o afina la tarea antes de empezar. | `pstack:sharpen`, `pstack:in-your-own-words` | Tú |
 | 3. Activar | Los criterios de arriba deciden si corre `felix-mode`. | `felix-mode`, `poteto-mode` | Agente |
-| 4. Elegir playbook | Copia los pasos del playbook a la lista de tareas y aplica los project playbooks del repositorio. | `poteto-mode`, `figure-it-out` si ninguno encaja | Agente |
+| 4. Elegir playbook | Sigue los pasos del playbook y aplica los project playbooks del repositorio. | `poteto-mode`, `figure-it-out` si ninguno encaja | Agente |
 | 5. Entender | Explica el subsistema o la historia antes de cambiarlo. | `how`, `why` | Agente |
 | 6. Diseñar | Tipos y firmas antes del código. Un runner opus-5.5 entrega dos candidatos y el orquestador elige. | `architect`, `arena` | Agente |
-| 7. Implementar | Delega el código según el routing. En bugs, el test que falla va antes del arreglo. | `tdd`, `swarm` | Agente |
+| 7. Implementar | Por encima del umbral de «Delegación» del routing, un trabajador escribe el código. En bugs, el test que falla va antes del arreglo. | `tdd`, `swarm` | Agente |
 | 8. Medir | Antes de creer o reportar un número de rendimiento. | `benchmark-checklist` | Agente |
 | 9. Verificar | Prueba sobre el artefacto real con la skill del repositorio. Si falta, sigue sus docs y propone crearla. | `verify` del repositorio, `create-verification-skill` | Agente |
-| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. | `interrogate` | Agente |
-| 11. Abrir el PR | Limpia código y prosa y escribe título y descripción. | `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
+| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda, y la ronda 4 espera al dueño. | `interrogate` | Agente |
+| 11. Abrir el PR | Un PR por unidad. Un bug de producción sale en el suyo antes que cualquier mejora. Limpia código y prosa y escribe título y descripción. | `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
 | 12. Llevar a merge | CI, comentarios y conflictos. Aterrizar un stack verde. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Tú lo pides |
 | 13. Cerrar | Informe con evidencia y etiquetas: medido, inferido o suposición. Bitácora en trabajo largo. | `show-me-your-work` | Agente |
 
@@ -84,6 +84,7 @@ El agente avanza sin preguntar en trabajo local y reversible. Pausa antes de:
 - actualizar el tracker más allá de lo que prescribe el repositorio;
 - instalar dependencias, cambiar CI o tocar la configuración global de agentes;
 - implementar UI/UX sin un prototipo aprobado;
+- la ronda 4 de review de un mismo cambio;
 - un force push, un deploy, un borrado de datos o un mensaje a un cliente.
 
 ## Lo que hace el dueño
