@@ -1,0 +1,42 @@
+# tipo fuente destino (o nombre)
+file docs/orchestration.md ~/.agents/docs/orchestration.md
+file docs/agent-routing.md ~/.agents/docs/agent-routing.md
+file docs/native-subagents.md ~/.agents/docs/native-subagents.md
+file docs/opencode-workers.md ~/.agents/docs/opencode-workers.md
+file configs/codex/AGENTS.md ~/.codex/AGENTS.md
+file configs/codex/docs/claude-workers.md ~/.codex/docs/claude-workers.md
+file configs/codex/pstack-models.md ~/.codex/pstack-models.md
+file configs/claude/CLAUDE.md ~/.claude/CLAUDE.md
+file configs/claude/docs/codex-delegation.md ~/.claude/docs/codex-delegation.md
+file configs/claude/pstack-models.md ~/.claude/pstack-models.md
+skill skills/felix-mode felix-mode
+skill vendor/mattpocock/ask-matt ask-matt
+skill vendor/mattpocock/codebase-design codebase-design
+skill vendor/mattpocock/domain-modeling domain-modeling
+skill vendor/mattpocock/grill-with-docs grill-with-docs
+skill vendor/mattpocock/implement-spec implement-spec
+skill vendor/mattpocock/improve-codebase-architecture improve-codebase-architecture
+skill vendor/mattpocock/research research
+skill vendor/mattpocock/retro retro
+skill vendor/mattpocock/setup-matt-pocock-skills setup-matt-pocock-skills
+skill vendor/mattpocock/to-spec to-spec
+skill vendor/mattpocock/to-tickets to-tickets
+skill vendor/mattpocock/triage triage
+skill vendor/mattpocock/wayfinder wayfinder
+skill vendor/mattpocock/wizard wizard
+skill vendor/mattpocock/grill-me grill-me
+skill vendor/mattpocock/grilling grilling
+skill vendor/mattpocock/teach teach
+skill vendor/mattpocock/to-questionnaire to-questionnaire
+skill vendor/mattpocock/wait-what wait-what
+retire tdd
+retire diagnosing-bugs
+retire prototype
+retire code-review
+retire pr
+retire implement
+retire handoff
+retire writing-for-agents
+retire resolving-merge-conflicts
+plugin claude pstack@pstack-claude michael-denyer/pstack-claude
+plugin codex pstack@pstack-claude https://github.com/michael-denyer/pstack-claude.git
