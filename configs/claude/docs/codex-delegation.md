@@ -25,9 +25,20 @@ No uses `CODEX_HOME=/Users/felixddhs/.codex` (alias `codex-original`): es la
 configuración de la app de ChatGPT, en modo directo con la cuenta Gmail, sin
 proxy. El banner de `codex exec` debe mostrar `provider: cpa`.
 
+## Script de despacho
+
+Despacha con `~/.claude/skills/felix-mode/scripts/codex-run`. El script
+aplica esta guía: usa la CLI con proxy, pasa el prompt por stdin, exige el
+nombre completo del modelo y el tope `high`, abre en sólo lectura salvo con
+`--write`, envuelve en `timeout` y deja el proceso fuera de la sesión con una
+marca de terminado. `codex-run --help` da el uso. Prefiérelo al runtime del
+plugin y al CLI a mano. Las secciones siguientes explican lo que el script
+ya resuelve y lo que sigue en tus manos: el brief, el veto y los commits.
+
 ## Runtime del plugin
 
-Antes del primer despacho de la sesión ejecuta `/codex:setup` para comprobar
+Esta sección y la siguiente aplican sólo si despachas por el plugin. Antes de
+su primer despacho en la sesión, ejecuta `/codex:setup` para comprobar
 instalación y autenticación del plugin
 [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc).
 
@@ -78,7 +89,7 @@ usa `task` read-only con un brief de revisión.
 
 ## CLI alternativo
 
-Si el runtime del plugin no cubre el encargo, usa el CLI. Comprueba
+`codex-run` usa este CLI. Para invocarlo a mano, comprueba
 `codex exec --help`; patrón verificado en codex-cli 0.153.3:
 
 ```bash
