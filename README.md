@@ -133,7 +133,8 @@ bin/pao uninstall
 `status` muestra el último resultado, la rama, los cambios locales, la
 distancia respecto a `origin/main` y si el job está instalado. `uninstall`
 quita el job y los enlaces al clon. Conserva los respaldos y las skills
-retiradas. No desinstala plugins.
+retiradas. No desinstala plugins. Si no puede borrar un enlace, lo lista como
+pendiente y termina con error. Repetir `uninstall` completa lo que faltó.
 
 Para instalar sin job usa `bin/pao install --no-schedule`. Para omitir los
 plugins añade `--no-plugins`. Esa preferencia se guarda para las siguientes
