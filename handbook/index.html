@@ -265,6 +265,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr data-k="plan"><td><code>to-spec</code>, <code>to-tickets</code></td><td>Convierten la conversación en spec y en issues del tracker.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
       <tr data-k="plan"><td><code>triage</code>, <code>wayfinder</code></td><td>Clasifican issues y orientan qué hacer después.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
       <tr data-k="plan"><td><code>domain-modeling</code>, <code>research</code>, <code>codebase-design</code></td><td>Modelo de dominio, investigación con fuentes primarias y diseño de módulos.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="auto"><td><code>writing-for-agents</code></td><td>Guía para escribir lo que lee un agente: skills, <code>AGENTS.md</code>, <code>CLAUDE.md</code> y los docs a los que apuntan.</td><td><span class="badge b-auto">Automática</span></td></tr>
       <tr data-k="plan"><td><code>to-questionnaire</code></td><td>Convierte una decisión que no puedes cerrar en un cuestionario para otra persona.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
       <tr data-k="plan"><td><code>improve-codebase-architecture</code></td><td>Busca módulos que profundizar, los presenta en un informe HTML y te entrevista sobre el que elijas.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
       <tr data-k="plan"><td><code>setup-matt-pocock-skills</code></td><td>Configura un repo para estas skills: tracker, etiquetas de triage y docs de dominio. Una vez por repo.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
@@ -275,7 +276,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr data-k="avoid"><td><code>setup-pstack</code></td><td>Reescribe completa la hoja <code>pstack-models.md</code>. La tuya sale del routing.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td><code>babysit</code> de pstack</td><td>Para un PR, pide el playbook Babysit: <q>cuida el PR N</q>.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td><code>thermos</code>, <code>thermo-nuclear-review</code></td><td>No para revisar cambios. Tu routing reserva eso a astra, y a Opus en alto riesgo.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
-      <tr data-k="avoid"><td>Matt Pocock: <code>tdd</code>, <code>diagnosing-bugs</code>, <code>prototype</code>, <code>code-review</code>, <code>pr</code>, <code>implement</code>, <code>handoff</code>, <code>writing-for-agents</code>, <code>resolving-merge-conflicts</code></td><td>No se instalan: pstack las cubre. <code>pao</code> las retira de <code>~/.agents/skills</code> y <code>~/.claude/skills</code>. Superpowers está apagado.</td><td><span class="badge b-avoid">Retirada</span></td></tr>
+      <tr data-k="avoid"><td>Matt Pocock: <code>tdd</code>, <code>diagnosing-bugs</code>, <code>prototype</code>, <code>code-review</code>, <code>pr</code>, <code>implement</code>, <code>handoff</code>, <code>resolving-merge-conflicts</code></td><td>No se instalan: pstack las cubre. <code>pao</code> las retira de <code>~/.agents/skills</code> y <code>~/.claude/skills</code>. Superpowers está apagado.</td><td><span class="badge b-avoid">Retirada</span></td></tr>
     </tbody>
   </table>
 </section>
@@ -358,7 +359,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
     <thead><tr><th>Archivo</th><th>Qué contiene</th></tr></thead>
     <tbody>
       <tr><td><code>~/.agents/skills/felix-mode</code></td><td>El modo. Enlaza a <code>skills/felix-mode</code> del clon, igual que su par en <code>~/.claude/skills</code>.</td></tr>
-      <tr><td><code>~/.agents/skills/&lt;matt&gt;</code></td><td>Las 19 skills de Matt Pocock en uso. Enlazan a <code>vendor/mattpocock</code>, la copia del último release.</td></tr>
+      <tr><td><code>~/.agents/skills/&lt;matt&gt;</code></td><td>Las 20 skills de Matt Pocock en uso. Enlazan a <code>vendor/mattpocock</code>, la copia del último release.</td></tr>
       <tr><td><code>~/.agents/docs/agent-routing.md</code></td><td>Modelos, esfuerzo, revisión, roles de pstack y transporte. Es la fuente.</td></tr>
       <tr><td><code>~/.agents/docs/orchestration.md</code></td><td>El contrato Despachar, Recoger, Vetar y Cerrar. Es la fuente.</td></tr>
       <tr><td><code>~/.claude/CLAUDE.md</code></td><td>Copia del contrato, tabla de modelos y la sección «Flujo de ingeniería» que activa <code>felix-mode</code>.</td></tr>
