@@ -40,6 +40,11 @@ macOS y Linux. `codex-run --help` da el uso. Prefiérelo al runtime del plugin
 y al CLI a mano. Las secciones siguientes explican lo que el script
 ya resuelve y lo que sigue en tus manos: el brief, el veto y los commits.
 
+Escribe el brief como texto literal, con Write o con un heredoc entre
+comillas (`<<'EOF'`), y lánzalo sólo si el archivo quedó escrito. Un heredoc
+sin comillas ejecuta los backticks y los `$()` del Markdown, y el trabajador
+arranca con un brief roto.
+
 ## Runtime del plugin
 
 Esta sección y la siguiente aplican sólo si despachas por el plugin. Antes de
