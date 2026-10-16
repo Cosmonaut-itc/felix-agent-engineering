@@ -362,6 +362,7 @@ PLIST
             bash_exe=$(cygpath -w "$(command -v bash)")
             printf -v bash_command 'export HOME=%q XDG_STATE_HOME=%q; exec /bin/bash %q update' "$HOME" "$(dirname "$STATE")" "$PAO_ROOT/bin/pao"
             command_line="\"$bash_exe\" -c \"$bash_command\""
+            if [ "${#command_line}" -gt 261 ]; then record error job "schtasks admite 261 caracteres en /TR y el comando tiene ${#command_line}"; return; fi
             if [ "$(cat "$STATE/job" 2>/dev/null)" = "$command_line" ] && schtasks //Query //TN pao-update >/dev/null 2>&1; then record ok job pao-update; return; fi
             if schtasks //Create //F //SC HOURLY //MO 4 //TN pao-update //TR "$command_line"; then
                 printf '%s\n' "$command_line" > "$STATE/job"
@@ -557,6 +558,8 @@ vendor_sync() (
 )
 
 main() {
+    # Task Scheduler starts Git Bash without /usr/bin in PATH; env restores the full PATH later.
+    PATH=/usr/bin:/bin:${PATH:-}
     init || return 1
     if [ "${PAO_LOCK_PID:-}" = "$$" ] && [ "$(cat "$STATE/lock/pid" 2>/dev/null)" = "$$" ]; then LOCKED=1; trap cleanup EXIT; fi
     local command=${1:-help}

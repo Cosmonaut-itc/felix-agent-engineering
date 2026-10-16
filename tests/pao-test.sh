@@ -339,6 +339,13 @@ install_locked() {
     assert test -d "$STATE/lock"
 }
 
+minimal_path() {
+    fixture
+    install_pao
+    env PATH=/nonexistent "$TEST_BASH" "$PAO_ROOT/bin/pao" sync > "$HOME/out"
+    assert grep -q '^overall ok$' "$STATE/status"
+}
+
 held_directory_and_foreign_link() {
     fixture
     install_pao
@@ -372,7 +379,7 @@ status_and_duplicate_warning() {
 
 if ! prepare_template > "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
 FAILURES=0 CASE=0
-for test_case in clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked held_directory_and_foreign_link status_and_duplicate_warning; do
+for test_case in clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked minimal_path held_directory_and_foreign_link status_and_duplicate_warning; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
     result=$?
