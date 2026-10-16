@@ -64,6 +64,15 @@ if os.environ.get('FAKE_CHILD') == '1' or os.environ.get('FAKE_TOOL') == '1':
     child = subprocess.Popen([sys.executable, '-c', child_code, str(log / 'heartbeat')],
                              start_new_session=os.environ.get('FAKE_TOOL') == '1')
     (log / 'child.pid').write_text(str(child.pid), encoding='utf-8')
+    if '-o' in args:
+        # Esperar a que el supervisor registre al hijo: el muestreo es el límite
+        # declarado, no lo que estas pruebas comprueban.
+        pids = Path(args[args.index('-o') + 1]).parent / 'pids'
+        for _ in range(100):
+            if pids.exists() and any(line.split(' ', 1)[0] == str(child.pid)
+                                     for line in pids.read_text().splitlines()):
+                break
+            time.sleep(0.05)
 time.sleep(float(os.environ.get('FAKE_SLEEP', '0.3')))
 emit({'type': 'item.started', 'item': {'id': 'item_0', 'type': 'command_execution', 'status': 'in_progress'}})
 for index, kind in enumerate(('command_execution', 'mcp_tool_call')):
@@ -92,6 +101,11 @@ fixture() {
     unset FAKE_SLEEP FAKE_CHILD FAKE_TOOL FAKE_NO_SESSION FAKE_EXIT
 }
 start() { run start --model gpt-6.1-sol --effort medium --out "$OUT" "$@" "$TEST_TMP/brief.md"; }
+wait_for_absent() {
+    local count=0
+    while [ -e "$1" ] && [ "$count" -lt 100 ]; do sleep 0.1; count=$((count + 1)); done
+    assert test ! -e "$1"
+}
 wait_for_file() {
     local count=0
     while [ ! -s "$1" ] && [ "$count" -lt 100 ]; do sleep 0.1; count=$((count + 1)); done
@@ -127,7 +141,7 @@ lifecycle() {
     assert grep -Fx 'timeout=3600' "$OUT/meta"
     assert grep -Fx 'ephemeral=0' "$OUT/meta"
     assert test -s "$OUT/pid-start"
-    assert test ! -e "$OUT/launching"
+    wait_for_absent "$OUT/launching"
     run status "$OUT" > "$TEST_TMP/status"
     assert grep -Fx 'state=running' "$TEST_TMP/status"
     run wait "$OUT" --timeout 15 > "$TEST_TMP/status"
@@ -357,7 +371,8 @@ started = subprocess.check_output(['ps', '-o', 'lstart=', '-p', str(os.getpid())
                                   text=True, env=dict(os.environ, LC_ALL='C')).strip()
 (out / 'pid-start').write_text(started + '\n')
 (out / 'run.json').write_text(json.dumps(dict(
-    command=[os.environ['CODEX_RUN_BIN']], cwd=os.getcwd(),
+    command=['/nonexistent/codex-run-test'] if mode == 'enoent' else [os.environ['CODEX_RUN_BIN']],
+    cwd=os.getcwd(),
     home=os.environ['CODEX_RUN_HOME'], timeout=30, resume=False, ephemeral=False)))
 spec = importlib.util.spec_from_file_location('codex_run_support', module_path)
 m = importlib.util.module_from_spec(spec)
@@ -407,6 +422,10 @@ with (out / 'stderr.log').open('w') as log:
         m.worker(out)
     finally:
         sys.stderr = original_stderr
+if mode == 'enoent':
+    assert (out / 'done').read_text() == 'exit=127\n', 'falta done tras un Popen fallido'
+    assert not (out / 'launching').exists() and not (out / 'stuck').exists()
+    sys.exit(0)
 if mode == 'stuck':
     assert (out / 'stuck').exists(), 'falta stuck'
     assert not (out / 'done').exists(), 'done sin confirmar terminación'
@@ -432,6 +451,58 @@ impossible_confirmation() {
     assert grep -Fx 'state=stuck' "$TEST_TMP/status"
     reject resume "$OUT" "$TEST_TMP/brief.md"
     assert grep -q 'detén o espera' "$TEST_TMP/rejected"
+}
+
+popen_failure() {
+    fixture
+    injected_worker enoent
+}
+
+# Una consulta que coincide con el lanzamiento no puede concluir lost.
+state_during_launch() {
+    fixture
+    mkdir -p "$OUT"
+    printf 'timeout=30\n' > "$OUT/meta"
+    printf '%s\n' "$$" > "$OUT/pid"
+    python3 - "$SCRIPTS/codex-run-support.py" "$OUT" <<'PY_RACE'
+import importlib.util, pathlib, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('codex_run_support', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+out = pathlib.Path(sys.argv[2])
+def launching_then_dead(directory):
+    # El supervisor escribe launching y muere justo mientras state consulta.
+    (directory / 'launching').write_text('launching\n')
+    return False
+m.supervisor_alive = launching_then_dead
+assert m.state(out) == 'stuck', 'state concluyó sin ver launching'
+assert (out / 'stuck').read_text() == 'survivors=unknown\n'
+PY_RACE
+}
+
+# Un grupo cuyo número coincide con child-pid no se atribuye al run.
+foreign_group() {
+    fixture
+    mkdir -p "$OUT"
+    python3 -c 'import os,time; os.setsid(); time.sleep(30)' &
+    local foreign=$!
+    # shellcheck disable=SC2064
+    trap "kill -KILL $foreign 2>/dev/null" EXIT
+    printf 'timeout=30\n' > "$OUT/meta"
+    sleep 30 & local dead=$!; kill -KILL "$dead"; wait "$dead" 2>/dev/null || true
+    printf '%s\n' "$dead" > "$OUT/pid"
+    printf 'no-es-el-supervisor\n' > "$OUT/pid-start"
+    printf '%s\n' "$foreign" > "$OUT/child-pid"
+    printf '%s Thu Jan  1 00:00:00 1970\n' "$dead" > "$OUT/pids"
+    sleep 0.3
+    run status "$OUT" > "$TEST_TMP/status"
+    assert grep -Fx 'state=lost' "$TEST_TMP/status"
+    run stop "$OUT" > /dev/null
+    local result=0
+    kill -0 "$foreign" 2>/dev/null || result=1
+    kill -KILL "$foreign" 2>/dev/null
+    assert test "$result" = 0
 }
 
 post_launch_exception() {
@@ -664,7 +735,7 @@ case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
         printf 'SKIP daemonización y grupos POSIX en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool impossible_confirmation post_launch_exception launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool impossible_confirmation post_launch_exception popen_failure state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home) ;;
 esac
 TEST_CASES+=(laptop_warnings laptop_silent laptop_detection)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.

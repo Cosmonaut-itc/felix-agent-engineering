@@ -97,45 +97,6 @@ def alive(pid):
     return result.returncode != 0 or not result.stdout.strip().startswith("Z")
 
 
-def group_alive(pgid):
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        pass
-    # Los zombies ya terminaron; killpg(0) también los cuenta en Linux.
-    result = subprocess.run(["ps", "-A", "-o", "pgid=,stat="],
-                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    if result.returncode:
-        raise OSError("ps no pudo comprobar el grupo {}".format(pgid))
-    for line in result.stdout.splitlines():
-        fields = line.split()
-        if len(fields) != 2:
-            raise OSError("ps devolvió un grupo de proceso inválido")
-        if int(fields[0]) == pgid and not fields[1].startswith("Z"):
-            return True
-    return False
-
-
-def kill_group(pgid, sig):
-    try:
-        os.killpg(pgid, sig)
-    except ProcessLookupError:
-        pass
-
-
-def child_group(out):
-    # Codex corre en su propia sesión: su pid también es el pgid.
-    try:
-        pid = int((out / "child-pid").read_text().strip())
-    except FileNotFoundError:
-        return None
-    if pid <= 1:
-        fail("grupo inválido en OUT")
-    return pid
-
-
 def atomic_text(path, content):
     fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=str(path.parent))
     try:
@@ -170,7 +131,8 @@ def process_alive(pid, started, snapshot):
 class ProcessTree:
     def __init__(self, out, root=None):
         self.out = out
-        self.root = root if root is not None else child_group(out)
+        # Sólo el supervisor conoce la raíz con certeza; los demás usan OUT/pids.
+        self.root = root
         self.seen = set()
         self.error = False
         try:
@@ -204,21 +166,10 @@ class ProcessTree:
         atomic_text(self.out / "pids", "".join(
             "{} {}\n".format(pid, started) for pid, started in sorted(self.seen)))
 
-    def group(self, snapshot):
-        # Un líder reutilizado ya no identifica el grupo de este run.
-        if self.root in snapshot and any(pid == self.root for pid, _ in self.seen):
-            if (self.root, snapshot[self.root][1]) not in self.seen:
-                return None
-        return self.root
-
     def survivors(self):
         snapshot = process_snapshot()
-        remaining = {pid for pid, started in self.seen
-                     if process_alive(pid, started, snapshot)}
-        group = self.group(snapshot)
-        if group and group_alive(group):
-            remaining.add(group)
-        return sorted(remaining)
+        return sorted(pid for pid, started in self.seen
+                      if process_alive(pid, started, snapshot))
 
 
 def log_error(error):
@@ -240,11 +191,10 @@ def terminate_tree(tree, child=None):
             tree.error = True
             log_error(error)
             snapshot = None
-        # Aunque ps falle, todavía podemos limpiar el grupo que lanzamos.
-        group = tree.group(snapshot) if snapshot is not None else tree.root
-        if group:
+        # Aunque ps falle, Popen todavía identifica a Codex sin riesgo de reutilización.
+        if child is not None and child.poll() is None:
             try:
-                kill_group(group, sig)
+                child.send_signal(sig)
             except OSError as error:
                 tree.error = True
                 log_error(error)
@@ -336,14 +286,20 @@ def unknown_launch(out):
 
 
 def state(out):
-    if (out / "launching").exists() and not supervisor_alive(out):
-        unknown_launch(out)
-        return "stuck"
+    # done es definitivo. El resto de marcas sólo se lee con el supervisor ya
+    # muerto, porque es el único que las escribe.
+    if (out / "done").exists():
+        return "done"
+    if supervisor_alive(out):
+        return "running"
     if (out / "done").exists():
         return "done"
     if (out / "stuck").exists():
         return "stuck"
-    if supervisor_alive(out) or ProcessTree(out).survivors():
+    if (out / "launching").exists():
+        unknown_launch(out)
+        return "stuck"
+    if ProcessTree(out).survivors():
         return "running"
     return "lost"
 
@@ -450,8 +406,13 @@ def worker(out):
                 env = dict(os.environ, CODEX_HOME=spec["home"])
                 atomic_text(out / "launching", "launching\n")
                 launched = time.monotonic()
-                child = subprocess.Popen(spec["command"], cwd=spec["cwd"], env=env,
-                                         stdin=brief, stdout=output, start_new_session=True)
+                try:
+                    child = subprocess.Popen(spec["command"], cwd=spec["cwd"], env=env,
+                                             stdin=brief, stdout=output, start_new_session=True)
+                except OSError:
+                    # Popen confirma que Codex no arrancó: no hay nada que quedó suelto.
+                    (out / "launching").unlink()
+                    raise
                 tree.root = child.pid
                 # Guardar primero la identidad, también si falla child-pid.
                 tree.capture()
