@@ -1,0 +1,33 @@
+name: Check
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  check:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install ShellCheck
+        run: |
+          if ! command -v shellcheck >/dev/null; then
+            case "$RUNNER_OS" in
+              Linux) sudo apt-get update && sudo apt-get install -y shellcheck ;;
+              macOS) brew install shellcheck ;;
+              Windows) choco install shellcheck --yes --no-progress ;;
+            esac
+          fi
+      - run: shellcheck bin/pao tests/pao-test.sh
+      - name: Validate and test
+        run: |
+          export HOME="$RUNNER_TEMP/pao-check-home"
+          export XDG_STATE_HOME="$HOME/state"
+          mkdir -p "$HOME"
+          bin/pao check
+          tests/pao-test.sh
