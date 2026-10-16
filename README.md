@@ -145,14 +145,6 @@ describen cómo ejecutarla en cada entorno.
 Un trabajador externo por CLI tiene un ciclo de vida distinto del subagente
 nativo. Cada guía explica qué contexto y controles ofrece.
 
-El MCP antiguo `cheap-coder` (`stealth/ox-alpha`) sigue **deprecado**. Los
-perfiles Go usan OpenCode y no reactivan ese MCP. Para retirar el antiguo:
-
-```bash
-claude mcp remove cheap-coder -s user
-# y elimina el bloque [mcp_servers.cheap-coder] de ~/.codex/config.toml
-```
-
 ## Flujo de ingeniería con pstack
 
 [pstack](https://github.com/cursor/plugins/tree/main/pstack) aporta los
