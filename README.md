@@ -1,8 +1,101 @@
-# Personal Agent Orchestration
+# Felix Agent Engineering
+
+Este repositorio describe cómo trabajo con agentes de código y guarda la
+configuración que lo aplica en Claude Code y en Codex.
 
 Configuración documental para que Codex y Claude Code compartan contrato de
 orquestación, selección de trabajadores y cierre de encargos, aunque cada
 harness use un transporte distinto.
+
+## Filosofía de trabajo
+
+Mi forma de trabajar mezcla dos fuentes con lo que añado yo. Las skills de
+[Matt Pocock](https://github.com/mattpocock/skills) cubren la planeación.
+[pstack](https://github.com/cursor/plugins/tree/main/pstack), de Lauren Tan
+(poteto), cubre la ejecución. Lo mío es cómo delego, reviso y autorizo, igual
+en los dos runtimes.
+
+### Una tarea pasa por tres fases
+
+```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 320
+---
+flowchart LR
+  P["<b>Planeación</b><br/>Matt Pocock<br/><br/>grilling<br/>to-spec y to-tickets<br/>triage hasta ready-for-agent"]
+  I["<b>Implementación</b><br/>pstack y mi contrato<br/><br/>felix-mode y su playbook<br/>delegación según el routing<br/>tdd y verify<br/>review de gpt-6-astra"]
+  D["<b>Despliegue</b><br/>el repositorio y yo<br/><br/>PR<br/>deploy con mi OK<br/>y el merge que lo dispara<br/>verificación posterior<br/>retro si el repo la pide"]
+  P --> I --> D
+  D -.->|candidatas de la retro| P
+```
+
+Las partes y las skills de cada fase están en el
+[recorrido de una tarea](docs/flujo-de-trabajo.md#recorrido-de-una-tarea).
+
+- **Planeación.** Partes 1 y 2 del recorrido, que uso cuando el trabajo lo
+  pide. El agente me entrevista con `grilling` hasta que entendemos lo mismo.
+  Con eso, `to-spec` escribe una spec o `to-tickets` la parte en tickets, y
+  ambos los publican como `ready-for-agent`. `triage` lleva hasta ese estado
+  los issues que llegan sueltos. El agente toma el issue `ready-for-agent` como
+  brief. Un trabajo grande cuyo camino aún no está claro pasa antes por
+  `wayfinder`.
+- **Implementación.** Partes 3 a 10. `felix-mode` elige el playbook de pstack
+  y delega el código según el routing. La fase termina cuando el cambio pasa
+  la prueba sobre el artefacto real, con `verify` o con los docs de
+  verificación del repositorio, y un revisor gpt-6-astra en `high` lo aprueba.
+- **Despliegue.** Partes 11 a 13, más lo que pide el `AGENTS.md` de cada
+  repositorio. El agente abre el PR. El merge espera mi OK cuando dispara un
+  deploy, y el deploy siempre lo espera. Después, el agente verifica el cambio
+  como indica el repositorio. Donde el `AGENTS.md` lo pide, un trabajador corre
+  `retro` sobre la sesión y sus candidatas vuelven a Planeación como issues
+  `needs-triage`.
+
+### De dónde viene cada idea
+
+| [De Matt Pocock](https://github.com/mattpocock/skills) | [De poteto (pstack)](https://github.com/cursor/plugins/tree/main/pstack) | Mío |
+|---|---|---|
+| **Grilling.** El agente me entrevista en rondas hasta que entendemos lo mismo. Yo decido y él busca los hechos. | **Probar en lo real.** Nada está hecho hasta probarlo sobre el artefacto real, con la skill `verify` del proyecto o, si falta, con sus docs de verificación. Que compile no basta. | **[Contrato de delegación](docs/orchestration.md).** Despachar → Recoger → Vetar → Cerrar, igual en Claude Code y en Codex. |
+| **Tickets en rebanadas.** Salvo en un refactor amplio, cada ticket cruza todas las capas, se puede probar por sí solo y cabe en una sesión. | **Restar antes de sumar.** El cambio más pequeño que resuelve el problema. Primero quito lo que sobra y después construyo sobre la base más simple. | **[Modelo por rol y costo](docs/agent-routing.md).** Para ejecutar, parto del modelo más barato que puede hacerlo y escalo si no basta. La review y el diseño usan el modelo que el routing fija por rol. |
+| **Retro.** Al cerrar una sesión, la retro propone mejoras al entorno del agente, no sólo al código. | **Evidencia etiquetada.** Cada afirmación dice si está medida, inferida o supuesta. | **Review independiente.** gpt-6-astra en `high` revisa con contexto nuevo, sin el razonamiento del autor. En alto riesgo se suma Opus. |
+| | **Lección en estructura.** Una instrucción que se repite se vuelve lint, script o check. | **[Pausas explícitas](docs/flujo-de-trabajo.md#pausas).** El agente recomienda y espera mi OK antes de un push a `main`, un deploy o una escritura en el sistema de un cliente. |
+
+## Agentic engineering
+
+Estos cinco principios deciden cómo trabajo con agentes. Cada uno dice por qué
+y qué parte de este repositorio lo aplica.
+
+1. **El humano decide.** El agente busca los hechos, recomienda y espera. Las
+   decisiones de producto y todo lo irreversible son mías, porque yo tengo el
+   contexto del negocio y respondo por el resultado. Lo aplican `grilling`, las
+   [pausas](docs/flujo-de-trabajo.md#pausas) de `felix-mode` y la autorización
+   vigente del contrato.
+2. **Delegar no es soltar.** Quien orquesta responde por el resultado aunque
+   no haya escrito el código. Lee el diff completo, contrasta cada criterio con
+   la evidencia y sólo integra lo que acepta, porque un recibo de lanzamiento
+   no prueba que el trabajo se hizo. Cuando orquesta a otros orquestadores,
+   cada padre veta su propio subárbol. Lo aplica el
+   [contrato](docs/orchestration.md).
+3. **Planear antes de codificar.** Un agente empieza con un brief: un issue
+   `ready-for-agent`, una spec o un PRD con su condición de terminado. Sin esa
+   condición, el agente no sabe cuándo parar ni qué prueba mostrar. Si falta,
+   la deriva y la declara antes de empezar. Lo aplican las skills de
+   [`vendor/mattpocock/`](vendor/mattpocock/) y la sección «Entrada desde la
+   planificación» de [`felix-mode`](skills/felix-mode/SKILL.md).
+4. **Cada modelo a su rol y a su costo.** Para ejecutar, cada encargo empieza
+   en el modelo más barato que puede hacerlo y sube sólo cuando la evidencia
+   muestra que no basta. La review y el diseño usan el modelo que el routing
+   fija para cada rol. El esfuerzo tiene tope `high`. Así el presupuesto rinde
+   más sin abaratar la review. Lo aplica el
+   [routing](docs/agent-routing.md), con su tabla de modelos y la sección
+   «Roles de pstack».
+5. **La lección queda escrita.** Un error que se repite no se corrige con otra
+   advertencia en el chat. Se vuelve un issue, una línea en el `AGENTS.md` del
+   repositorio o, mejor aún, un script o un check. La siguiente sesión no
+   recuerda esta conversación. Sólo lee el repositorio. Lo aplican `retro`,
+   `pstack:reflect` y `pstack:correct`, y `pao` lleva cada cambio de este
+   repositorio a todas mis máquinas.
 
 ## Estructura
 
@@ -10,6 +103,7 @@ harness use un transporte distinto.
 |------|-----------|
 | [`docs/orchestration.md`](docs/orchestration.md) | Fuente canónica del contrato común: roles, descendientes y cierre. |
 | [`docs/agent-routing.md`](docs/agent-routing.md) | Tabla de modelos, esfuerzo, escalado, review y UI/UX. |
+| [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md) | Fuente de verdad del flujo: capas, recorrido de una tarea, revisión, pausas y skills. |
 | [`docs/native-subagents.md`](docs/native-subagents.md) | Contexto, configuración y seguimiento de subagentes nativos en Codex y Claude Code. |
 | [`docs/opencode-workers.md`](docs/opencode-workers.md) | Despacho programático de cheap coders Go: CLI/HTTP, modelo, controles y cierre. |
 | [`configs/codex/`](configs/codex/AGENTS.md) | Entry point global de Codex, con el contrato inlineado, y guía Codex → Claude. |
@@ -95,13 +189,15 @@ Revisa el código del port de pstack antes de instalarlo: sus hooks ejecutan
 scripts al abrir cada sesión.
 
 ```bash
-git clone https://github.com/cosmonaut-itc/personal-agent-orchestration.git \
+git clone https://github.com/Cosmonaut-itc/felix-agent-engineering.git \
   ~/.local/share/personal-agent-orchestration
 cd ~/.local/share/personal-agent-orchestration
 bin/pao install
 ```
 
-El clon debe estar en `main`. `manifest` declara todo lo que se instala.
+La carpeta conserva el nombre anterior del repositorio, que es el que usan las
+instalaciones existentes. `bin/pao` localiza el clon desde su propia ruta,
+así que otra carpeta también sirve. El clon debe estar en `main`. `manifest` declara todo lo que se instala.
 `pao` retira las skills duplicadas y crea enlaces absolutos desde los dos
 runtimes al clon. Respalda los archivos y directorios reales antes de
 reemplazarlos, aunque su contenido sea idéntico. Informa la ruta de cada
