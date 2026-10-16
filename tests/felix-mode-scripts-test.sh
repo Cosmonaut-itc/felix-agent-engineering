@@ -63,7 +63,8 @@ if os.environ.get('FAKE_NO_SESSION') != '1':
     emit({'type': 'thread.started', 'thread_id': 'test-thread-123'})
 emit({'type': 'turn.started'})
 if os.environ.get('FAKE_CHILD') == '1' or os.environ.get('FAKE_TOOL') == '1':
-    child_code = "import pathlib,sys,time\np=pathlib.Path(sys.argv[1])\nwhile True:\n p.write_text(str(time.time()))\n time.sleep(.1)"
+    # El latido se reemplaza de forma atómica: matar al hijo nunca lo deja vacío.
+    child_code = "import os,pathlib,sys,time\np=pathlib.Path(sys.argv[1])\nt=p.with_name(p.name+'.tmp')\nwhile True:\n t.write_text(str(time.time()))\n os.replace(t,p)\n time.sleep(.1)"
     child = subprocess.Popen([sys.executable, '-c', child_code, str(log / 'heartbeat')],
                              start_new_session=os.environ.get('FAKE_TOOL') == '1')
     (log / 'child.pid').write_text(str(child.pid), encoding='utf-8')
@@ -240,7 +241,6 @@ stop_and_wait_timeout() {
     assert grep -Fx 'exit=143' "$OUT/done"
     run stop "$OUT"
     run wait "$OUT" --timeout 5
-    # stop puede matar al hijo entre el truncado y la escritura del latido.
     assert_tool_dead
 }
 
