@@ -26,7 +26,7 @@ config:
 flowchart LR
   P["<b>Planeación</b><br/>Matt Pocock<br/><br/>grilling<br/>to-spec y to-tickets<br/>triage hasta ready-for-agent"]
   I["<b>Implementación</b><br/>pstack y mi contrato<br/><br/>felix-mode y su playbook<br/>delegación según el routing<br/>tdd y verify<br/>review de gpt-6-astra"]
-  D["<b>Despliegue</b><br/>el repositorio y yo<br/><br/>PR<br/>merge y deploy con mi OK<br/>verificación posterior<br/>retro si el repo la pide"]
+  D["<b>Despliegue</b><br/>el repositorio y yo<br/><br/>PR<br/>deploy con mi OK<br/>y el merge que lo dispara<br/>verificación posterior<br/>retro si el repo la pide"]
   P --> I --> D
   D -.->|candidatas de la retro| P
 ```
@@ -34,10 +34,13 @@ flowchart LR
 Las partes y las skills de cada fase están en el
 [recorrido de una tarea](docs/flujo-de-trabajo.md#recorrido-de-una-tarea).
 
-- **Planeación.** Partes 1 y 2 del recorrido. El agente me entrevista con
-  `grilling` hasta que entendemos lo mismo. Después, `to-spec`, `to-tickets` y
-  `triage` dejan issues `ready-for-agent`, que el agente toma como brief. Un
-  trabajo que no cabe en una sesión pasa antes por `wayfinder`.
+- **Planeación.** Partes 1 y 2 del recorrido, que uso cuando el trabajo lo
+  pide. El agente me entrevista con `grilling` hasta que entendemos lo mismo.
+  Con eso, `to-spec` escribe una spec o `to-tickets` la parte en tickets, y
+  ambos los publican como `ready-for-agent`. `triage` lleva hasta ese estado
+  los issues que llegan sueltos. El agente toma el issue `ready-for-agent` como
+  brief. Un trabajo grande cuyo camino aún no está claro pasa antes por
+  `wayfinder`.
 - **Implementación.** Partes 3 a 10. `felix-mode` elige el playbook de pstack
   y delega el código según el routing. La fase termina cuando el cambio pasa
   la prueba sobre el artefacto real, con `verify` o con los docs de
@@ -55,7 +58,7 @@ Las partes y las skills de cada fase están en el
 |---|---|---|
 | **Grilling.** El agente me entrevista en rondas hasta que entendemos lo mismo. Yo decido y él busca los hechos. | **Probar en lo real.** Nada está hecho hasta probarlo sobre el artefacto real, con la skill `verify` del proyecto o, si falta, con sus docs de verificación. Que compile no basta. | **[Contrato de delegación](docs/orchestration.md).** Despachar → Recoger → Vetar → Cerrar, igual en Claude Code y en Codex. |
 | **Tickets en rebanadas.** Salvo en un refactor amplio, cada ticket cruza todas las capas, se puede probar por sí solo y cabe en una sesión. | **Restar antes de sumar.** El cambio más pequeño que resuelve el problema. Primero quito lo que sobra y después construyo sobre la base más simple. | **[Modelo por rol y costo](docs/agent-routing.md).** Para ejecutar, parto del modelo más barato que puede hacerlo y escalo si no basta. La review y el diseño usan el modelo que el routing fija por rol. |
-| **Retro.** Cada sesión deja mejoras al entorno del agente, no sólo al código. | **Evidencia etiquetada.** Cada afirmación dice si está medida, inferida o supuesta. | **Review independiente.** gpt-6-astra en `high` revisa con contexto nuevo, sin el razonamiento del autor. En alto riesgo se suma Opus. |
+| **Retro.** Al cerrar una sesión, la retro propone mejoras al entorno del agente, no sólo al código. | **Evidencia etiquetada.** Cada afirmación dice si está medida, inferida o supuesta. | **Review independiente.** gpt-6-astra en `high` revisa con contexto nuevo, sin el razonamiento del autor. En alto riesgo se suma Opus. |
 | | **Lección en estructura.** Una instrucción que se repite se vuelve lint, script o check. | **[Pausas explícitas](docs/flujo-de-trabajo.md#pausas).** El agente recomienda y espera mi OK antes de un push a `main`, un deploy o una escritura en el sistema de un cliente. |
 
 ## Agentic engineering
