@@ -35,6 +35,17 @@ cambios: su low rinde más que el high de gpt-5.6-sol. Sube a `medium` sólo
 con incertidumbre real y a `high` cuando medium no baste. Las reviews de
 cambios requieren gpt-6-astra en `high`.
 
+## Flujo de ingeniería
+
+Antes de actuar en una tarea de ingeniería que toque más de un archivo,
+cambie una firma que otros llaman, implique una decisión de diseño o sea un
+bug de causa desconocida o un problema de rendimiento, usa la skill
+`felix-mode` y sigue su playbook. Sólo una tarea que no cumple ninguno de
+esos criterios, como una pregunta trivial o un cambio contenido en un archivo
+con su test obvio, se hace directo y se verifica sobre el artefacto real.
+Un encargo que te delegó otro agente sigue el contrato como trabajador y no
+activa `felix-mode`, salvo que el encargo lo pida.
+
 ## Roles
 
 - **Orquestador:** recibe la tarea del usuario, decide el reparto, conserva

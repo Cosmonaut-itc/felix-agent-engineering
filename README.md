@@ -15,6 +15,8 @@ harness use un transporte distinto.
 | [`configs/codex/`](configs/codex/AGENTS.md) | Entry point global de Codex, con el contrato inlineado, y guía Codex → Claude. |
 | [`configs/claude/`](configs/claude/CLAUDE.md) | Entry point global de Claude Code, con el contrato inlineado, y guía Claude Code → GPT. |
 | [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K3, con instrucciones compartidas. |
+| [`skills/felix-mode/`](skills/felix-mode/SKILL.md) | Router de ingeniería sobre pstack: precedencia, modelos por rol, revisión y autonomía. |
+| [`configs/*/pstack-models.md`](configs/claude/pstack-models.md) | Hojas de modelos de pstack para Claude Code y Codex, derivadas del routing. |
 
 ## Contrato común
 
@@ -53,12 +55,31 @@ claude mcp remove cheap-coder -s user
 # y elimina el bloque [mcp_servers.cheap-coder] de ~/.codex/config.toml
 ```
 
+## Flujo de ingeniería con pstack
+
+[pstack](https://github.com/cursor/plugins/tree/main/pstack) aporta los
+playbooks de ejecución (investigación, bug fix, feature, refactor, prototipo,
+PR), sus principios y la verificación sobre el artefacto real. Se instala el
+port [pstack-claude](https://github.com/michael-denyer/pstack-claude) para
+Claude Code y Codex con su hook apagado, y
+[`felix-mode`](skills/felix-mode/SKILL.md) lo adapta:
+
+- La sección «Flujo de ingeniería» de los entrypoints globales invoca
+  `felix-mode` en toda tarea no trivial.
+- `felix-mode` corre `poteto-mode` con la precedencia usuario > `AGENTS.md`
+  del repositorio > contrato y routing > `felix-mode` > pstack.
+- Los modelos por rol salen de la sección «Roles de pstack» del
+  [routing](docs/agent-routing.md#roles-de-pstack). Cada hoja
+  `pstack-models.md` copia sólo lo que su runtime acepta.
+- La planificación sigue en las skills de Matt Pocock. Superpowers y las
+  skills de Matt Pocock que pstack duplica se retiran.
+
 ## Alcance
 
-Este repositorio define el contrato de orquestación y el routing comunes a
-los proyectos. Las secuencias de implementación, revisión y tracker pertenecen
-a cada repositorio y se declaran en su propio `AGENTS.md`, `CLAUDE.md` o docs
-locales.
+Este repositorio define el contrato de orquestación, el routing y el flujo de
+ingeniería comunes a los proyectos. Cada repositorio declara en su propio
+`AGENTS.md`, `CLAUDE.md` o docs locales sus gates, su tracker, su skill
+`verify` y, si los necesita, project playbooks en `.agents/playbooks/`.
 
 ## Instalación manual
 
@@ -103,3 +124,61 @@ pruebas reales; el dueño autorizó su uso aceptando que el nivel interno
 aplicado no tiene confirmación observable. Sigue la
 [guía de transporte](docs/opencode-workers.md) para consultar la evidencia,
 las comprobaciones pendientes y los controles de cada despacho.
+
+### pstack y felix-mode
+
+Revisa el código del port antes de instalarlo: sus hooks ejecutan scripts al
+abrir cada sesión. La skill `verify` de proyecto requiere Claude Code 2.1.200
+o posterior. Desde la raíz de este repositorio:
+
+```bash
+# Claude Code
+claude plugin marketplace add michael-denyer/pstack-claude
+claude plugin install pstack@pstack-claude
+cp -i configs/claude/pstack-models.md ~/.claude/pstack-models.md
+
+# Codex: la app (~/.codex), no la CLI del proxy del alias `codex`
+CODEX_HOME="$HOME/.codex" command codex plugin marketplace add michael-denyer/pstack-claude
+CODEX_HOME="$HOME/.codex" command codex plugin add pstack@pstack-claude
+cp -i configs/codex/pstack-models.md ~/.codex/pstack-models.md
+
+# felix-mode para ambos runtimes
+mkdir -p ~/.agents/skills/felix-mode
+cp -i skills/felix-mode/SKILL.md ~/.agents/skills/felix-mode/SKILL.md
+ln -s ../../.agents/skills/felix-mode ~/.claude/skills/felix-mode
+```
+
+Instala también los entrypoints y el routing de la sección anterior: la
+sección «Flujo de ingeniería» y la tabla «Roles de pstack» viajan con ellos.
+Codex pide confiar en el hook del plugin desde `/hooks`; con
+`session hook: off` en la hoja, el hook no inyecta nada aunque lo confíes.
+
+Retira después lo que pstack duplica:
+
+- **Superpowers en Codex.** En `~/.codex/config.toml`, pon `enabled = false`
+  en `[plugins."superpowers@openai-curated"]`.
+- **Matt Pocock en Claude Code.** El plugin sigue activo para planificar.
+  Bloquea sus skills duplicadas con reglas de permiso en
+  `~/.claude/settings.json`:
+
+  ```json
+  "permissions": {
+    "deny": [
+      "Skill(skill:mattpocock-skills:tdd)",
+      "Skill(skill:mattpocock-skills:diagnosing-bugs)",
+      "Skill(skill:mattpocock-skills:prototype)",
+      "Skill(skill:mattpocock-skills:code-review)",
+      "Skill(skill:mattpocock-skills:pr)",
+      "Skill(skill:mattpocock-skills:implement)",
+      "Skill(skill:mattpocock-skills:handoff)",
+      "Skill(skill:mattpocock-skills:writing-for-agents)"
+    ]
+  }
+  ```
+
+- **Matt Pocock en Codex.** Mueve fuera de `~/.agents/skills/` las copias de
+  `tdd`, `diagnosing-bugs`, `prototype`, `code-review`, `handoff`,
+  `implement` y `writing-for-agents`.
+
+Las skills de un repositorio que su `AGENTS.md` exige, como `implement-spec`
+o `retro` en Comprador, se revisan repo por repo.

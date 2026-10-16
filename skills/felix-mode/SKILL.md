@@ -1,0 +1,132 @@
+---
+name: felix-mode
+description: "Modo de trabajo de Felix sobre pstack. Úsalo antes de actuar en toda tarea de ingeniería que toque más de un archivo, cambie una firma que otros llaman, implique una decisión de diseño o sea un bug de causa desconocida o un problema de rendimiento, y cuando pidan /felix-mode. No lo uses al resolver un encargo que te delegó otro agente, salvo que el encargo lo pida. Corre el playbook de poteto-mode con la precedencia, los modelos por rol, la revisión y la autonomía de Felix."
+---
+
+# felix-mode
+
+pstack ejecuta, el contrato global delega y Matt Pocock planifica. Este
+archivo fija cómo encajan. Lo que no cambia aquí lo decide `poteto-mode`.
+
+Si trabajas un encargo que te delegó otro agente, eres trabajador: no
+apliques este modo salvo que el encargo lo pida. Resuelve el encargo y
+devuelve evidencia, como dice el contrato.
+
+## Arranque
+
+1. Invoca `pstack:poteto-mode` y léelo completo. Elige su playbook y copia
+   sus pasos a la lista de tareas, como indica.
+2. Aplica este archivo sobre esos pasos. Un paso de pstack que este archivo
+   sustituye queda en la lista con `felix-mode: <qué cambia>`.
+3. Si el repositorio tiene `.agents/playbooks/`, aplica sus project playbooks
+   como indica `poteto-mode`.
+
+## Precedencia
+
+De mayor a menor: el usuario, el `AGENTS.md` del repositorio y los docs que
+cita, el contrato y el routing globales, este archivo y pstack. Si pstack
+choca con una capa superior, sigue la superior y dilo en una línea de la
+respuesta.
+
+## Entrada desde la planificación
+
+- Producto y planificación siguen en Matt Pocock: `grilling`,
+  `domain-modeling`, `to-spec`, `to-tickets`, `triage`, `wayfinder` y
+  `research`. Usa el playbook Multi-phase plan de pstack sólo cuando el
+  usuario pida un plan.
+- Un issue `ready-for-agent`, una spec o un PRD es el brief. Saca de él el
+  objetivo, la condición de terminado y la prueba que el usuario querrá ver.
+  Si falta la condición de terminado, derívala, decláralo y sigue.
+- Antes de nombrar un concepto de dominio, lee `GLOSSARY.md` (o
+  `CONTEXT.md`) y los ADR del área, como pida el repositorio.
+
+## Qué skill usar
+
+| Necesidad | Usa | En lugar de |
+|---|---|---|
+| Test primero | `tdd` de pstack | `tdd` de Matt Pocock, `test-driven-development` |
+| Bug | playbook Bug fix | `diagnosing-bugs`, `systematic-debugging` |
+| Prototipo | playbook Prototype | `prototype` de Matt Pocock |
+| Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
+| Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |
+| Pausar o retomar | playbooks Pause safely y Session pickup | `handoff` |
+| Escribir skills o `AGENTS.md` | playbook Authoring a skill y `unslop` | `writing-for-agents`, `writing-skills` |
+
+Superpowers no se usa: este modo lo sustituye. Una skill local que el
+`AGENTS.md` del repositorio exige, como `implement-spec` o `retro`, sigue
+vigente.
+
+## Verificación
+
+Prueba sobre el artefacto real con la skill `verify` del proyecto:
+`.claude/skills/verify/` en Claude Code y `.agents/skills/verify/` en Codex,
+o la del paquete que tocas en un monorepo. Si no existe, sigue los docs de
+verificación del repositorio (gates, `remote-run`, QA) y propón una vez
+generarla con `create-verification-skill`. Los gates del `AGENTS.md` siguen
+siendo obligatorios.
+
+## Modelos y transporte
+
+- El modelo de cada rol de pstack sale de `~/.agents/docs/agent-routing.md`,
+  sección «Roles de pstack». Si un default de pstack o la hoja
+  `pstack-models.md` difieren de esa tabla, manda la tabla.
+- Un rol que cae en GPT o en Go se despacha por la guía de la sección
+  Transporte del routing, no con el `Agent` de pstack. El contrato Despachar →
+  Recoger → Vetar → Cerrar rige cada despacho.
+- El esfuerzo tiene tope `high`. Donde pstack diga `xhigh` o `max`, usa
+  `high`. Su ajuste por tarea sólo baja desde el punto de partida del routing.
+
+## Revisión
+
+- **Normal.** Toda review de cambios la hace un revisor independiente
+  gpt-6-astra en `high`, con contexto nuevo y evidencia primaria. Donde pstack
+  pida `interrogate`, `thermos` o un veredicto independiente para un cambio
+  normal, ese revisor cumple el paso.
+- **Alto riesgo.** Corre `interrogate` con dos revisores independientes:
+  gpt-6-astra en `high` por Transporte, siempre como Reviewer A, y opus-5.5
+  en `high`, el asiento Claude que trae la hoja. Ese asiento corre sólo en
+  alto riesgo. Tú eres el lead reviewer y vetas los hallazgos. El riesgo lo
+  decides tú. Cuentan como señales: escrituras a producción o a un sistema de
+  cliente (ICG, ERP, pagos, CFDI, nómina), migraciones o borrado de datos,
+  autenticación y permisos, cálculos de dinero o impuestos, contratos entre
+  paquetes o servicios, y lo que el `AGENTS.md` marque como alto riesgo. Di
+  en la respuesta qué nivel aplicaste y por qué.
+- **Diseño.** `architect` y `arena` no son review de cambios. En diseño
+  normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
+  que entrega dos candidatos estructuralmente distintos. Tú eliges y no hay
+  juez cruzado.
+- **Diseño disputado.** Lo es un cambio de alto riesgo, con las señales de
+  **Alto riesgo**, o un diseño cuyos dos candidatos de opus-5.5 empatan en la
+  rúbrica sin un ganador claro. En alto riesgo, `arena` corre desde el inicio
+  con opus-5.5 y gpt-6.1-sol. En un empate, conserva los dos candidatos de
+  opus-5.5 y suma uno de gpt-6.1-sol. En ambos casos, gpt-6-astra es el juez
+  único de todos los candidatos. En todo diseño disputado corre además el
+  `arena` de implementación del paso 4 del playbook Feature, con opus-5.5 y
+  gpt-6.1-sol, y produce dos implementaciones completas aunque no veas
+  varias formas válidas. Fuera de ese caso, un solo delegado implementa
+  contra el sketch elegido.
+- Si no puede correr ningún revisor independiente, la puerta sigue cerrada,
+  como dice `poteto-mode`. Tu propia lectura no cuenta como review.
+
+## Autonomía
+
+Manda la autorización vigente del contrato. Además de la lista «Always
+pause» de pstack, pausa antes de:
+
+- hacer push a `main` o mergear cuando eso dispare un deploy;
+- escribir en ICG u otro sistema de un cliente en producción;
+- actualizar el tracker más allá de lo que prescribe el flujo del
+  repositorio;
+- instalar dependencias, cambiar CI o tocar la configuración global de
+  agentes;
+- implementar UI/UX sin un prototipo aprobado por el dueño, como pide el
+  routing.
+
+El resto del trabajo local y reversible avanza sin preguntar.
+
+## Respuesta
+
+Responde en español con las reglas de «Writing the reply» de `poteto-mode`:
+frases cortas, sin raya larga y cada afirmación con su evidencia o su
+etiqueta (medido, inferido, suposición). Nombra los principios que cambiaron
+una decisión.
