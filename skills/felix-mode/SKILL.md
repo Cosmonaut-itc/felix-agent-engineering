@@ -94,10 +94,6 @@ siendo obligatorios.
   `high`. Su ajuste por tarea sólo baja desde el punto de partida del routing.
 - Quién implementa lo fija la sección «Delegación» del routing. Por encima de
   su umbral, diseñas, despachas y vetas, y el código lo escribe un trabajador.
-- En Claude Code, despacha a la CLI de Codex con `scripts/codex-run` de esta
-  skill (`~/.claude/skills/felix-mode/scripts/codex-run --help`). Lanza,
-  sigue, reanuda y detiene trabajadores y revisores con los flags que pide
-  `codex-delegation.md`.
 
 ## Revisión
 
