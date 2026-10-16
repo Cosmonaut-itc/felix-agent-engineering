@@ -247,6 +247,12 @@ def worker(out):
                 code = child.wait()
                 if code < 0:
                     code = 128 - code
+                # done promete que el grupo terminó, incluidos los procesos que Codex dejó.
+                kill_group(child.pid, signal.SIGKILL)
+                for _ in range(50):
+                    if not group_alive(child.pid):
+                        break
+                    time.sleep(0.1)
     except OSError as error:
         print("codex-run: {}".format(error), file=sys.stderr)
     finally:
@@ -342,6 +348,8 @@ def main():
             status(out)
         elif args.action == "resume":
             config = json.loads((out / "run.json").read_text(encoding="utf-8"))
+            if config["resume"]:
+                fail("reanuda desde el run original, no desde {}".format(out.name))
             if config["ephemeral"]:
                 fail("un run --ephemeral no tiene rollout para resume")
             session, _, _ = summary(out)

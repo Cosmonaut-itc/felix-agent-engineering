@@ -14,6 +14,7 @@ Uso: codex-run start --model M --effort E [--cwd DIR] [--out DIR]
      codex-run stop OUT
 
 BRIEF es un archivo de texto. El esfuerzo admite low, medium o high.
+resume recibe el OUT original y escribe en OUT/resume-N.
 El timeout de start es 3600 s; wait no tiene límite por defecto.
 Sin --write, el sandbox es read-only. --root y --network exigen --write.
 Requiere python3 y timeout (o gtimeout). Conserva OUT para auditar el run.

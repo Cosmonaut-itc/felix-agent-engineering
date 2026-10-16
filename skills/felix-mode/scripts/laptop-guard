@@ -24,10 +24,15 @@ try:
     command = payload["tool_input"]["command"]
     if not isinstance(command, str):
         sys.exit(0)
-    # shlex trata el salto de línea como espacio; aquí separa comandos.
-    lexer = shlex.shlex(command.replace("\n", ";"), posix=True, punctuation_chars=";&|()")
-    lexer.whitespace_split = True
-    tokens = list(lexer)
+    # Cada línea es un comando; una que no se puede tokenizar se salta sola.
+    tokens = []
+    for line in command.replace("\\\n", " ").splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        try:
+            tokens += list(lexer) + [";"]
+        except ValueError:
+            tokens.append(";")
     boundaries = {";", ";;", "&", "&&", "|", "||", "|&", "(", ")"}
     heavy = False
 

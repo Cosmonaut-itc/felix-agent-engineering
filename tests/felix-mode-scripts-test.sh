@@ -175,6 +175,8 @@ assert args[-1] == '-'
 PY
     run resume "$OUT" "$TEST_TMP/brief.md"
     run wait "$OUT/resume-2" --timeout 15
+    reject resume "$OUT/resume-1" "$TEST_TMP/brief.md"
+    assert grep -q 'run original' "$TEST_TMP/rejected"
 }
 
 resume_rejections() {
@@ -229,6 +231,15 @@ stop_without_supervisor() {
     assert cmp -s "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before"
 }
 
+done_after_leftover_child() {
+    fixture
+    export FAKE_SLEEP=0.3 FAKE_CHILD=1
+    start
+    run wait "$OUT" --timeout 15 > "$TEST_TMP/status"
+    assert grep -Fx 'state=done exit=0' "$TEST_TMP/status"
+    assert test -z "$(ps -o pid= -p "$(cat "$FAKE_LOG/child.pid")")"
+}
+
 resume_while_resuming() {
     fixture
     start
@@ -278,7 +289,7 @@ hook() {
 
 laptop_warnings() {
     local command payload output
-    for command in 'docker run alpine' 'docker compose up' 'docker start app' 'docker build .' orb orbctl 'open -a OrbStack' 'colima start' 'bun dev' 'pnpm run dev' 'npm run dev' 'yarn dev' 'next dev' vite 'bun test' 'pnpm test' 'npm run build' 'yarn e2e' 'pnpm gate' vitest jest 'playwright test' 'turbo run build' xcodebuild ./gradlew 'expo run:ios' postgres 'pg_ctl start' 'pnpm --filter web dev' 'scp file host:/tmp; npm test' 'ssh mini true; bun test' 'scp a mini:/tmp && npm run build' 'printf "ssh x"; docker compose up' $'ssh mini true\nbun test'; do
+    for command in 'docker run alpine' 'docker compose up' 'docker start app' 'docker build .' orb orbctl 'open -a OrbStack' 'colima start' 'bun dev' 'pnpm run dev' 'npm run dev' 'yarn dev' 'next dev' vite 'bun test' 'pnpm test' 'npm run build' 'yarn e2e' 'pnpm gate' vitest jest 'playwright test' 'turbo run build' xcodebuild ./gradlew 'expo run:ios' postgres 'pg_ctl start' 'pnpm --filter web dev' 'scp file host:/tmp; npm test' 'ssh mini true; bun test' 'scp a mini:/tmp && npm run build' 'printf "ssh x"; docker compose up' $'ssh mini true\nbun test' $'ssh mini true &&\nbun test' $'ssh mini true;\n\nbun test' $'# Comprobar cambios\nbun test' $'echo "a\nb"\nbun test' $'npm run \\\nbuild'; do
         payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input":{"command":sys.argv[1]}}))' "$command")
         output=$(hook "$payload")
         printf '%s' "$output" | python3 -c '
@@ -293,7 +304,7 @@ assert value["systemMessage"] == "laptop-guard: trabajo pesado en la MacBook"
 
 laptop_silent() {
     local command payload
-    for command in 'ssh desktop npm run build' 'remote-run npm test' 'cd repo && ssh mini "bun test"' 'FOO=1 ssh mini bun test' 'expo start' 'npx expo start' 'npm install' 'docker ps' 'echo hola'; do
+    for command in 'ssh desktop npm run build' 'remote-run npm test' 'cd repo && ssh mini "bun test"' 'FOO=1 ssh mini bun test' $'ssh mini \\\nbun test' 'expo start' 'npx expo start' 'npm install' 'docker ps' 'echo hola'; do
         payload=$(python3 -c 'import json,sys; print(json.dumps({"tool_input":{"command":sys.argv[1]}}))' "$command")
         assert test -z "$(hook "$payload")"
     done
@@ -330,7 +341,7 @@ case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
         printf 'SKIP daemonización y grupos POSIX en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor resume_while_resuming execution_timeout lost_and_nonzero default_out_and_home) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout lost_and_nonzero default_out_and_home) ;;
 esac
 TEST_CASES+=(laptop_warnings laptop_silent laptop_detection)
 for test_case in "${TEST_CASES[@]}"; do
