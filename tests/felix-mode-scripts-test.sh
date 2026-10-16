@@ -4,7 +4,7 @@
 # shellcheck disable=SC2329
 set -uo pipefail
 REPO=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) || exit 1
-SCRIPTS=$REPO/skills/felix-mode/scripts
+SCRIPTS=${CODEX_RUN_TEST_SCRIPTS:-$REPO/skills/felix-mode/scripts}
 TEST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/felix-mode-test.XXXXXX") || exit 1
 TEST_TMP=$(cd "$TEST_TMP" && pwd -P) || exit 1
 export HOME=$TEST_TMP/home XDG_STATE_HOME=$TEST_TMP/state
@@ -18,6 +18,19 @@ cleanup() {
         [ -f "$pid_file" ] || continue
         "$SCRIPTS/codex-run" stop "$(dirname "$pid_file")" >/dev/null 2>&1 || true
     done
+    # También limpiar herramientas separadas cuando se prueba una versión rota.
+    python3 - "$TEST_TMP" <<'PY_CLEAN'
+import os, pathlib, signal, subprocess, sys
+for path in list(pathlib.Path(sys.argv[1]).glob('log-*/child.pid')) + list(pathlib.Path(sys.argv[1]).glob('log-*/codex.pid')):
+    try:
+        pid = int(path.read_text())
+        command = subprocess.run(['ps', '-o', 'command=', '-p', str(pid)],
+                                 stdout=subprocess.PIPE, text=True).stdout
+        if sys.argv[1] in command:
+            os.kill(pid, signal.SIGKILL)
+    except (OSError, ValueError):
+        pass
+PY_CLEAN
     rm -rf "$TEST_TMP"
 }
 trap cleanup EXIT
@@ -36,6 +49,7 @@ import time
 args = sys.argv[1:]
 log = Path(os.environ['FAKE_LOG'])
 log.mkdir(parents=True, exist_ok=True)
+(log / 'codex.pid').write_text(str(os.getpid()), encoding='utf-8')
 (log / 'stdin').write_text(sys.stdin.read(), encoding='utf-8')
 (log / 'args.json').write_text(json.dumps(args), encoding='utf-8')
 (log / 'cwd').write_text(os.getcwd(), encoding='utf-8')
@@ -45,9 +59,10 @@ def emit(event):
 if os.environ.get('FAKE_NO_SESSION') != '1':
     emit({'type': 'thread.started', 'thread_id': 'test-thread-123'})
 emit({'type': 'turn.started'})
-if os.environ.get('FAKE_CHILD') == '1':
+if os.environ.get('FAKE_CHILD') == '1' or os.environ.get('FAKE_TOOL') == '1':
     child_code = "import pathlib,sys,time\np=pathlib.Path(sys.argv[1])\nwhile True:\n p.write_text(str(time.time()))\n time.sleep(.1)"
-    child = subprocess.Popen([sys.executable, '-c', child_code, str(log / 'heartbeat')])
+    child = subprocess.Popen([sys.executable, '-c', child_code, str(log / 'heartbeat')],
+                             start_new_session=os.environ.get('FAKE_TOOL') == '1')
     (log / 'child.pid').write_text(str(child.pid), encoding='utf-8')
 time.sleep(float(os.environ.get('FAKE_SLEEP', '0.3')))
 emit({'type': 'item.started', 'item': {'id': 'item_0', 'type': 'command_execution', 'status': 'in_progress'}})
@@ -74,7 +89,7 @@ reject() {
 fixture() {
     OUT=$TEST_TMP/run-$CASE
     export FAKE_LOG=$TEST_TMP/log-$CASE
-    unset FAKE_SLEEP FAKE_CHILD FAKE_NO_SESSION FAKE_EXIT
+    unset FAKE_SLEEP FAKE_CHILD FAKE_TOOL FAKE_NO_SESSION FAKE_EXIT
 }
 start() { run start --model gpt-6.1-sol --effort medium --out "$OUT" "$@" "$TEST_TMP/brief.md"; }
 wait_for_file() {
@@ -108,7 +123,6 @@ lifecycle() {
     assert cmp -s "$TEST_TMP/brief.md" "$OUT/brief.md"
     assert grep -q -- '-s read-only' "$OUT/cmd"
     assert grep -q -- '--skip-git-repo-check --json' "$OUT/cmd"
-    assert grep -q -- '--signal=KILL 3600' "$OUT/cmd"
     assert grep -Fx 'sandbox=read-only' "$OUT/meta"
     assert grep -Fx 'timeout=3600' "$OUT/meta"
     assert grep -Fx 'ephemeral=0' "$OUT/meta"
@@ -260,6 +274,157 @@ execution_timeout() {
     assert grep -Fx 'state=done exit=137' "$TEST_TMP/status"
 }
 
+# Cada prueba de herramienta separada comprueba la ausencia antes de stop/cleanup.
+assert_tool_dead() {
+    python3 - "$FAKE_LOG/child.pid" <<'PY_DEAD'
+import os, pathlib, subprocess, sys
+pid = int(pathlib.Path(sys.argv[1]).read_text())
+result = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                        stdout=subprocess.PIPE, text=True)
+assert not result.stdout.strip() or result.stdout.strip().startswith('Z'), result.stdout
+PY_DEAD
+    cp "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before-$CASE"
+    sleep 0.4
+    assert cmp -s "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before-$CASE"
+}
+
+start_tool() {
+    fixture
+    export FAKE_SLEEP=120 FAKE_TOOL=1
+    start "$@"
+    wait_for_file "$FAKE_LOG/child.pid"
+    wait_for_file "$FAKE_LOG/heartbeat"
+}
+
+stop_tool() {
+    start_tool
+    run stop "$OUT" > "$TEST_TMP/stopped"
+    assert grep -Fx 'state=done exit=143' "$TEST_TMP/stopped"
+    assert grep -Fx 'exit=143' "$OUT/done"
+    assert_tool_dead
+}
+
+timeout_tool() {
+    start_tool --timeout 1
+    run wait "$OUT" --timeout 15 > "$TEST_TMP/status"
+    assert grep -Fx 'state=done exit=137' "$TEST_TMP/status"
+    assert_tool_dead
+}
+
+normal_exit_tool() {
+    fixture
+    export FAKE_SLEEP=0.3 FAKE_TOOL=1
+    start
+    wait_for_file "$OUT/done"
+    assert grep -Fx 'exit=0' "$OUT/done"
+    assert_tool_dead
+}
+
+killed_supervisor_tool() {
+    start_tool
+    # Esperar a que la identidad de la herramienta quede en el registro atómico.
+    wait_for_file "$OUT/pids"
+    local count=0 tool_pid
+    tool_pid=$(cat "$FAKE_LOG/child.pid")
+    while ! grep -q "^$tool_pid " "$OUT/pids" && [ "$count" -lt 100 ]; do
+        sleep 0.1
+        count=$((count + 1))
+    done
+    assert grep -q "^$tool_pid " "$OUT/pids"
+    kill -KILL "$(cat "$OUT/pid")"
+    sleep 0.3
+    run status "$OUT" > "$TEST_TMP/status"
+    assert grep -Fx 'state=running' "$TEST_TMP/status"
+    run stop "$OUT" > "$TEST_TMP/stopped"
+    assert grep -Fx 'state=done exit=143' "$TEST_TMP/stopped"
+    assert_tool_dead
+}
+
+# Ejecutar el supervisor real con fallos inyectados, sin modificar el módulo.
+injected_worker() {
+    python3 - "$SCRIPTS/codex-run-support.py" "$OUT" "$TEST_TMP/brief.md" "$1" <<'PY_INJECT'
+import importlib.util, json, os, pathlib, subprocess, sys, time
+sys.dont_write_bytecode = True
+module_path, directory, brief, mode = sys.argv[1:]
+out = pathlib.Path(directory)
+out.mkdir()
+(out / 'brief.md').write_bytes(pathlib.Path(brief).read_bytes())
+(out / 'meta').write_text('timeout=30\n')
+(out / 'pid').write_text(str(os.getpid()))
+(out / 'run.json').write_text(json.dumps(dict(
+    command=[os.environ['CODEX_RUN_BIN']], cwd=os.getcwd(),
+    home=os.environ['CODEX_RUN_HOME'], timeout=30, resume=False, ephemeral=False)))
+spec = importlib.util.spec_from_file_location('codex_run_support', module_path)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+if mode == 'stuck':
+    # El proceso registrado permanece vivo según la comprobación inyectada.
+    m.process_alive = lambda pid, started, snapshot: True
+elif mode == 'exception':
+    original = pathlib.Path.write_text
+    def broken_write(self, *args, **kwargs):
+        if self == out / 'child-pid':
+            # Dejar que Codex y su herramienta arranquen antes del fallo.
+            deadline = time.monotonic() + 5
+            while not (pathlib.Path(os.environ['FAKE_LOG']) / 'heartbeat').exists():
+                assert time.monotonic() < deadline
+                time.sleep(.02)
+            raise OSError('fallo inyectado child-pid')
+        return original(self, *args, **kwargs)
+    pathlib.Path.write_text = broken_write
+    original_finish = m.finish
+    def checked_finish(directory, code):
+        # Comprobar la promesa justo antes de publicar done, sin esperar al return.
+        for name in ('codex.pid', 'child.pid'):
+            pid = int((pathlib.Path(os.environ['FAKE_LOG']) / name).read_text())
+            result = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                                    stdout=subprocess.PIPE, text=True)
+            assert not result.stdout.strip() or result.stdout.strip().startswith('Z'), (
+                'done antes de terminar ' + name + ': ' + result.stdout)
+        original_finish(directory, code)
+    m.finish = checked_finish
+with (out / 'stderr.log').open('w') as log:
+    original_stderr = sys.stderr
+    sys.stderr = log
+    try:
+        m.worker(out)
+    finally:
+        sys.stderr = original_stderr
+if mode == 'stuck':
+    assert (out / 'stuck').exists(), 'falta stuck'
+    assert not (out / 'done').exists(), 'done sin confirmar terminación'
+else:
+    assert (out / 'done').read_text() == 'exit=127\n'
+    assert 'fallo inyectado child-pid' in (out / 'stderr.log').read_text()
+# La comprobación es posterior a worker, pero anterior a cualquier limpieza.
+child_pid = int((pathlib.Path(os.environ['FAKE_LOG']) / 'child.pid').read_text())
+result = subprocess.run(['ps', '-o', 'stat=', '-p', str(child_pid)],
+                        stdout=subprocess.PIPE, text=True)
+assert not result.stdout.strip() or result.stdout.strip().startswith('Z'), result.stdout
+PY_INJECT
+}
+
+impossible_confirmation() {
+    fixture
+    export FAKE_TOOL=1 FAKE_SLEEP=0.3
+    injected_worker stuck
+    run status "$OUT" > "$TEST_TMP/status"
+    assert grep -Fx 'state=stuck' "$TEST_TMP/status"
+    assert grep -Eq '^survivors=[0-9]+' "$TEST_TMP/status"
+    run wait "$OUT" --timeout 1 > "$TEST_TMP/status"
+    assert grep -Fx 'state=stuck' "$TEST_TMP/status"
+    reject resume "$OUT" "$TEST_TMP/brief.md"
+    assert grep -q 'detén o espera' "$TEST_TMP/rejected"
+}
+
+post_launch_exception() {
+    fixture
+    export FAKE_TOOL=1 FAKE_SLEEP=120
+    injected_worker exception
+    assert grep -Fx 'exit=127' "$OUT/done"
+    assert_tool_dead
+}
+
 lost_and_nonzero() {
     fixture
     export FAKE_EXIT=7
@@ -341,9 +506,13 @@ case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
         printf 'SKIP daemonización y grupos POSIX en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout lost_and_nonzero default_out_and_home) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool impossible_confirmation post_launch_exception lost_and_nonzero default_out_and_home) ;;
 esac
 TEST_CASES+=(laptop_warnings laptop_silent laptop_detection)
+# Permite repetir sólo las regresiones contra una copia temporal de otra versión.
+if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
+    read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
+fi
 for test_case in "${TEST_CASES[@]}"; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1

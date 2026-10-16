@@ -17,7 +17,15 @@ BRIEF es un archivo de texto. El esfuerzo admite low, medium o high.
 resume recibe el OUT original y escribe en OUT/resume-N.
 El timeout de start es 3600 s; wait no tiene límite por defecto.
 Sin --write, el sandbox es read-only. --root y --network exigen --write.
-Requiere python3 y timeout (o gtimeout). Conserva OUT para auditar el run.
+Requiere python3 y ps en macOS o Linux. Conserva OUT para auditar el run.
+El supervisor aplica --timeout y registra el árbol de procesos en OUT/pids.
+done confirma que Codex y los procesos registrados terminaron. Si no puede
+confirmarlo, status muestra state=stuck y survivors; wait también termina
+en done, lost o stuck. wait --timeout sale con 124 si agota su espera.
+stop limpia el árbol y devuelve error si queda stuck.
+OUT/done registra exit: timeout 137, stop 143, error del supervisor 127,
+o el código de Codex al terminar normalmente.
+resume se rechaza si el original o algún resume-N sigue running o stuck.
 El exit code puede mentir: comprueba tools, el mensaje y el entregable.
 
 Review:

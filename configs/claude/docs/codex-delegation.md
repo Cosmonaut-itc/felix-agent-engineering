@@ -30,9 +30,11 @@ proxy. El banner de `codex exec` debe mostrar `provider: cpa`.
 Despacha con `~/.claude/skills/felix-mode/scripts/codex-run`. El script
 aplica esta guía: usa la CLI con proxy, pasa el prompt por stdin, exige el
 nombre completo del modelo y el tope `high`, abre en sólo lectura salvo con
-`--write`, envuelve en `timeout` y deja el proceso fuera de la sesión con una
-marca de terminado. `codex-run --help` da el uso. Prefiérelo al runtime del
-plugin y al CLI a mano. Las secciones siguientes explican lo que el script
+`--write`, aplica el tope de tiempo y deja el run fuera de la sesión. Marca
+`done` sólo cuando Codex y todos los procesos que abrió terminaron; si no lo
+puede confirmar, el run queda `stuck` con los pids que sobreviven. Corre en
+macOS y Linux. `codex-run --help` da el uso. Prefiérelo al runtime del plugin
+y al CLI a mano. Las secciones siguientes explican lo que el script
 ya resuelve y lo que sigue en tus manos: el brief, el veto y los commits.
 
 ## Runtime del plugin
@@ -162,7 +164,8 @@ Observados en Codex CLI 0.145 a 0.153.
   exit 0 y ≤1 llamada de herramienta, aunque un ping responda. Cuenta las
   llamadas de herramienta en el output; al segundo intento así, escala según
   routing en vez de reintentar.
-- **Timeouts.** Envuelve siempre en `timeout --signal=KILL`. El `timeout` del
+- **Timeouts.** Con `codex-run`, usa `--timeout`. A mano, envuelve siempre en
+  `timeout --signal=KILL`. El `timeout` del
   Bash de Claude Code se limita a 600 s, y `run_in_background` muere a los
   ~20 min con su hijo. Para runs largos, daemoniza con `python3` +
   `subprocess.Popen(..., start_new_session=True)` (macOS no tiene `setsid`),
@@ -174,7 +177,9 @@ Observados en Codex CLI 0.145 a 0.153.
   el fallback es Claude según routing.
 - **Procesos.** La app de ChatGPT trae su propio binario `codex`: para contar
   o matar workers usa `pgrep -f "codex exec"` y la edad del output, no
-  `pgrep -x codex`.
+  `pgrep -x codex`. Codex 0.162 abre una sesión nueva para cada comando de
+  herramienta, así que matar el grupo de `codex exec` no las detiene. Para
+  un run de `codex-run`, usa `codex-run stop`, que termina el árbol completo.
 
 Referencias primarias:
 
