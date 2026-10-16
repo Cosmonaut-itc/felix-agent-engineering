@@ -18,6 +18,11 @@ en los dos runtimes.
 ### Una tarea pasa por tres fases
 
 ```mermaid
+---
+config:
+  flowchart:
+    wrappingWidth: 320
+---
 flowchart LR
   P["<b>Planeación</b><br/>Matt Pocock<br/><br/>grilling<br/>to-spec y to-tickets<br/>triage hasta ready-for-agent"]
   I["<b>Implementación</b><br/>pstack y mi contrato<br/><br/>felix-mode y su playbook<br/>delegación según el routing<br/>tdd y verify<br/>review de gpt-6-astra"]
