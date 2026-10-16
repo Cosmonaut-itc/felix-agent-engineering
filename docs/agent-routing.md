@@ -52,10 +52,6 @@ el mismo resultado, y un despacho barato que hay que repetir cuesta más que
 el caro que cierra. En conflicto sobre algo que se embarca: **inteligencia >
 gusto > costo**. La elección explícita del usuario prevalece.
 
-El MCP antiguo `cheap-coder` (`stealth/ox-alpha`) sigue **deprecado**. Los
-nuevos cheap coders de esta tabla usan OpenCode Go por la ruta documentada
-abajo; incluirlos no reactiva aquel MCP.
-
 ## Esfuerzo
 
 Selecciona modelo y esfuerzo por separado, usando sólo niveles admitidos por
