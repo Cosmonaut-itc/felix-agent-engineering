@@ -31,8 +31,11 @@ Despacha con `~/.claude/skills/felix-mode/scripts/codex-run`. El script
 aplica esta guía: usa la CLI con proxy, pasa el prompt por stdin, exige el
 nombre completo del modelo y el tope `high`, abre en sólo lectura salvo con
 `--write`, aplica el tope de tiempo y deja el run fuera de la sesión. Marca
-`done` sólo cuando Codex y todos los procesos que abrió terminaron; si no lo
-puede confirmar, el run queda `stuck` con los pids que sobreviven. Corre en
+`done` sólo cuando Codex salió y no queda vivo ningún proceso que registró:
+los descendientes que vio por ppid cada segundo y en la foto final. Si no lo
+puede confirmar, el run queda `stuck` con los pids que sobreviven. Un proceso
+que se separa de su padre entre dos fotos puede escapar: pide en el brief que
+todo proceso que lance el trabajador termine antes de su respuesta. Corre en
 macOS y Linux. `codex-run --help` da el uso. Prefiérelo al runtime del plugin
 y al CLI a mano. Las secciones siguientes explican lo que el script
 ya resuelve y lo que sigue en tus manos: el brief, el veto y los commits.
@@ -117,9 +120,10 @@ timeout --signal=KILL "$max_secs" codex exec \
   falla con «Not inside a trusted directory».
 - **Salida.** Usa `-o <file>` o `--output-schema <file>` cuando el consumidor
   necesite salida estructurada.
-- **Reanudar.** `codex exec resume <session-id>` rechaza `-s`, `-m`, `-o` y
-  `-C`: hereda el modelo, toma sandbox y esfuerzo por `-c`, y escribe sólo en
-  el cwd desde el que se lanza, así que entra al worktree antes. Evita
+- **Reanudar.** `codex exec resume <session-id>` rechaza `-s` y `-C` (en
+  0.153 rechazaba también `-m` y `-o`; 0.162.1 los acepta). Toma sandbox y
+  esfuerzo por `-c` y escribe sólo en el cwd desde el que se lanza, así que
+  entra al worktree antes. Evita
   `resume --last` si corrieron varios hilos en la sesión. El session id está
   en el banner del output. Añade `--ephemeral` sólo a reviews y consultas:
   sin rollout no hay `resume`.

@@ -279,6 +279,9 @@ def terminate_tree(tree, child=None):
 
 
 def publish_result(out, remaining, code, tree):
+    if (out / "launching").exists():
+        unknown_launch(out)
+        return
     if remaining == []:
         finish(out, code)
         try:
@@ -307,12 +310,40 @@ def run_pid(out):
     return pid
 
 
+def process_start(pid):
+    result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            env=dict(os.environ, LC_ALL="C"))
+    started = result.stdout.strip()
+    if result.returncode or not started:
+        if alive(pid):
+            raise OSError("ps no pudo identificar el supervisor {}".format(pid))
+        return None
+    return started
+
+
+def supervisor_alive(out):
+    try:
+        started = (out / "pid-start").read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return False  # Sin identidad persistida no señalizar un pid posiblemente ajeno.
+    pid = run_pid(out)
+    return bool(started) and process_start(pid) == started and alive(pid)
+
+
+def unknown_launch(out):
+    atomic_text(out / "stuck", "survivors=unknown\n")
+
+
 def state(out):
+    if (out / "launching").exists() and not supervisor_alive(out):
+        unknown_launch(out)
+        return "stuck"
     if (out / "done").exists():
         return "done"
     if (out / "stuck").exists():
         return "stuck"
-    if alive(run_pid(out)) or ProcessTree(out).survivors():
+    if supervisor_alive(out) or ProcessTree(out).survivors():
         return "running"
     return "lost"
 
@@ -383,9 +414,19 @@ def launch(out, brief, config, session=None):
     (out / "events.jsonl").touch()
     with (out / "stderr.log").open("ab") as log:
         worker = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_worker", str(out)],
-                                  start_new_session=True, stdin=subprocess.DEVNULL,
+                                  start_new_session=True, stdin=subprocess.PIPE,
                                   stdout=subprocess.DEVNULL, stderr=log, close_fds=True)
-    (out / "pid").write_text(str(worker.pid) + "\n", encoding="utf-8")
+    try:
+        started = process_start(worker.pid)
+        if started is None:
+            raise OSError("el supervisor terminó antes de registrar su identidad")
+        atomic_text(out / "pid-start", started + "\n")
+        atomic_text(out / "pid", str(worker.pid) + "\n")
+        # El daemon no puede abrir Codex hasta que su identidad sea auditable.
+        worker.stdin.write(b"1")
+        worker.stdin.flush()
+    finally:
+        worker.stdin.close()
     print("out={}".format(out))
     print("pid={}".format(worker.pid))
 
@@ -407,6 +448,7 @@ def worker(out):
         with (out / "brief.md").open("rb") as brief, (out / "events.jsonl").open("ab") as output:
             if not stopped:
                 env = dict(os.environ, CODEX_HOME=spec["home"])
+                atomic_text(out / "launching", "launching\n")
                 launched = time.monotonic()
                 child = subprocess.Popen(spec["command"], cwd=spec["cwd"], env=env,
                                          stdin=brief, stdout=output, start_new_session=True)
@@ -414,6 +456,7 @@ def worker(out):
                 # Guardar primero la identidad, también si falla child-pid.
                 tree.capture()
                 (out / "child-pid").write_text(str(child.pid) + "\n", encoding="utf-8")
+                (out / "launching").unlink()
                 deadline = launched + spec["timeout"]
                 next_snapshot = launched + 0.1
                 while True:
@@ -440,6 +483,16 @@ def worker(out):
         remaining = terminate_tree(tree, child) if child is not None else []
         if tree.error:
             code = 127
+        if child is not None and (out / "launching").exists():
+            # Un fallo manejado conserva el pid en memoria. Reparar la evidencia
+            # antes de cerrar launching; si también falla, sólo publicar stuck.
+            try:
+                tree.persist()
+                atomic_text(out / "child-pid", str(child.pid) + "\n")
+                (out / "launching").unlink()
+            except Exception as error:
+                code = 127
+                log_error(error)
         try:
             if spec["resume"]:
                 _, _, message = summary(out)
@@ -451,22 +504,22 @@ def worker(out):
 
 
 def stop(out):
-    if not (out / "done").exists():
+    if not (out / "done").exists() or (out / "launching").exists():
         pid = run_pid(out)
-        if alive(pid):
+        if supervisor_alive(out):
             try:
                 os.kill(pid, signal.SIGTERM)
             except ProcessLookupError:
                 pass
             deadline = time.monotonic() + 15
-            while alive(pid) and time.monotonic() < deadline:
+            while supervisor_alive(out) and time.monotonic() < deadline:
                 if (out / "done").exists() or (out / "stuck").exists():
                     break
                 time.sleep(0.1)
-        if not (out / "done").exists():
+        if not (out / "done").exists() or (out / "launching").exists():
             # Si el supervisor no respondió, impedir que siga lanzando procesos
             # o publique un resultado mientras hacemos su limpieza.
-            if alive(pid):
+            if supervisor_alive(out):
                 try:
                     os.kill(pid, signal.SIGKILL)
                 except ProcessLookupError:
@@ -526,6 +579,8 @@ def main():
                       roots=roots, network=args.network, ephemeral=args.ephemeral, timeout=args.timeout)
         launch(out, args.brief, config)
     elif args.action == "_worker":
+        if sys.stdin.buffer.read(1) != b"1":
+            return 127
         worker(Path(args.out))
     else:
         out = run_dir(args.out)
@@ -542,26 +597,30 @@ def main():
                 time.sleep(min(2, max(0, deadline - time.monotonic())) if deadline else 2)
             status(out)
         elif args.action == "resume":
-            config = json.loads((out / "run.json").read_text(encoding="utf-8"))
-            if config["resume"]:
-                fail("reanuda desde el run original, no desde {}".format(out.name))
-            if config["ephemeral"]:
-                fail("un run --ephemeral no tiene rollout para resume")
-            session, _, _ = summary(out)
-            if not session:
-                fail("no hay session id para reanudar")
-            for previous in [out] + sorted(out.glob("resume-*")):
-                if (previous / "pid").is_file() and state(previous) in ("running", "stuck"):
-                    fail("detén o espera a {} antes de reanudar".format(previous))
-            number = 1
-            while True:
-                target = out / "resume-{}".format(number)
-                try:
-                    target.mkdir()
-                    break
-                except FileExistsError:
-                    number += 1
-            launch(target, args.brief, config, session=session)
+            import fcntl
+
+            with (out / "run.json").open(encoding="utf-8") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                config = json.load(lock)
+                if config["resume"]:
+                    fail("reanuda desde el run original, no desde {}".format(out.name))
+                if config["ephemeral"]:
+                    fail("un run --ephemeral no tiene rollout para resume")
+                session, _, _ = summary(out)
+                if not session:
+                    fail("no hay session id para reanudar")
+                for previous in [out] + sorted(out.glob("resume-*")):
+                    if (previous / "pid").is_file() and state(previous) in ("running", "stuck"):
+                        fail("detén o espera a {} antes de reanudar".format(previous))
+                number = 1
+                while True:
+                    target = out / "resume-{}".format(number)
+                    try:
+                        target.mkdir()
+                        break
+                    except FileExistsError:
+                        number += 1
+                launch(target, args.brief, config, session=session)
     return 0
 
 

@@ -126,6 +126,8 @@ lifecycle() {
     assert grep -Fx 'sandbox=read-only' "$OUT/meta"
     assert grep -Fx 'timeout=3600' "$OUT/meta"
     assert grep -Fx 'ephemeral=0' "$OUT/meta"
+    assert test -s "$OUT/pid-start"
+    assert test ! -e "$OUT/launching"
     run status "$OUT" > "$TEST_TMP/status"
     assert grep -Fx 'state=running' "$TEST_TMP/status"
     run wait "$OUT" --timeout 15 > "$TEST_TMP/status"
@@ -343,7 +345,7 @@ killed_supervisor_tool() {
 # Ejecutar el supervisor real con fallos inyectados, sin modificar el módulo.
 injected_worker() {
     python3 - "$SCRIPTS/codex-run-support.py" "$OUT" "$TEST_TMP/brief.md" "$1" <<'PY_INJECT'
-import importlib.util, json, os, pathlib, subprocess, sys, time
+import importlib.util, json, os, pathlib, signal, subprocess, sys, time
 sys.dont_write_bytecode = True
 module_path, directory, brief, mode = sys.argv[1:]
 out = pathlib.Path(directory)
@@ -351,13 +353,28 @@ out.mkdir()
 (out / 'brief.md').write_bytes(pathlib.Path(brief).read_bytes())
 (out / 'meta').write_text('timeout=30\n')
 (out / 'pid').write_text(str(os.getpid()))
+started = subprocess.check_output(['ps', '-o', 'lstart=', '-p', str(os.getpid())],
+                                  text=True, env=dict(os.environ, LC_ALL='C')).strip()
+(out / 'pid-start').write_text(started + '\n')
 (out / 'run.json').write_text(json.dumps(dict(
     command=[os.environ['CODEX_RUN_BIN']], cwd=os.getcwd(),
     home=os.environ['CODEX_RUN_HOME'], timeout=30, resume=False, ephemeral=False)))
 spec = importlib.util.spec_from_file_location('codex_run_support', module_path)
 m = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(m)
-if mode == 'stuck':
+if mode == 'launch-window':
+    original_popen = subprocess.Popen
+    def die_after_launch(*args, **kwargs):
+        child = original_popen(*args, **kwargs)
+        if args[0][0] == os.environ['CODEX_RUN_BIN']:
+            deadline = time.monotonic() + 5
+            while not (pathlib.Path(os.environ['FAKE_LOG']) / 'heartbeat').exists():
+                assert time.monotonic() < deadline
+                time.sleep(.02)
+            os.kill(os.getpid(), signal.SIGKILL)
+        return child
+    subprocess.Popen = die_after_launch
+elif mode == 'stuck':
     # El proceso registrado permanece vivo según la comprobación inyectada.
     m.process_alive = lambda pid, started, snapshot: True
 elif mode == 'exception':
@@ -423,6 +440,147 @@ post_launch_exception() {
     injected_worker exception
     assert grep -Fx 'exit=127' "$OUT/done"
     assert_tool_dead
+}
+
+launch_window() {
+    fixture
+    export FAKE_TOOL=1 FAKE_SLEEP=120
+    local result=0
+    injected_worker launch-window || result=$?
+    assert test "$result" = 137
+    assert test ! -e "$OUT/child-pid"
+    assert test ! -e "$OUT/pids"
+    run status "$OUT" > "$TEST_TMP/status"
+    assert grep -Fx 'state=stuck' "$TEST_TMP/status"
+    assert grep -Fx 'survivors=unknown' "$TEST_TMP/status"
+    result=0
+    run stop "$OUT" > "$TEST_TMP/stopped" 2>&1 || result=$?
+    assert test "$result" != 0
+    assert grep -Fx 'state=stuck' "$TEST_TMP/stopped"
+    assert grep -Fx 'survivors=unknown' "$TEST_TMP/stopped"
+    assert test ! -e "$OUT/done"
+    run wait "$OUT" --timeout 1 > "$TEST_TMP/status"
+    assert grep -Fx 'state=stuck' "$TEST_TMP/status"
+}
+
+foreign_supervisor_pid() {
+    fixture
+    python3 - "$SCRIPTS/codex-run-support.py" "$OUT" <<'PY_FOREIGN'
+import importlib.util, os, pathlib, signal, subprocess, sys
+sys.dont_write_bytecode = True
+spec = importlib.util.spec_from_file_location('supervisor', sys.argv[1])
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+out = pathlib.Path(sys.argv[2])
+out.mkdir()
+(out / 'meta').write_text('timeout=30\n')
+(out / 'pids').touch()
+foreign = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)', str(out)])
+original_kill = os.kill
+signals = []
+def shield(pid, sig):
+    if pid == foreign.pid and sig != 0:
+        signals.append(sig)  # Proteger el proceso ajeno y registrar cualquier intento.
+        return
+    return original_kill(pid, sig)
+try:
+    (out / 'pid').write_text(str(foreign.pid))
+    (out / 'pid-start').write_text('Thu Jan  1 00:00:00 1970\n')
+    os.kill = shield
+    observed = m.state(out)
+    m.stop(out)
+    assert observed == 'lost', observed
+    assert not signals, signals
+    assert foreign.poll() is None, 'señalizó el proceso ajeno'
+finally:
+    os.kill = original_kill
+    foreign.kill()
+    foreign.wait()
+PY_FOREIGN
+}
+
+concurrent_resume() {
+    fixture
+    start
+    run wait "$OUT" --timeout 15
+    export FAKE_SLEEP=120
+    python3 - "$SCRIPTS/codex-run-support.py" "$OUT" "$TEST_TMP/brief.md" "$TEST_TMP" <<'PY_CONCURRENT'
+import os, pathlib, subprocess, sys, time
+module, directory, brief, temporary = sys.argv[1:]
+out = pathlib.Path(directory)
+tmp = pathlib.Path(temporary)
+# Pausar launch después de la comprobación. En la versión sin flock, los dos
+# contendientes llegan aquí; con flock, el segundo espera antes de comprobar.
+code = r"""
+import fcntl, importlib.util, os, pathlib, sys, time
+sys.dont_write_bytecode = True
+module, directory, brief, temporary, label = sys.argv[1:]
+tmp = pathlib.Path(temporary)
+spec = importlib.util.spec_from_file_location('supervisor', module)
+m = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(m)
+original_flock = fcntl.flock
+def observed_flock(fd, operation):
+    (tmp / (label + '-lock')).touch()
+    return original_flock(fd, operation)
+fcntl.flock = observed_flock
+original_launch = m.launch
+def paused_launch(*args, **kwargs):
+    (tmp / (label + '-launch')).touch()
+    deadline = time.monotonic() + 15
+    while not (tmp / 'release-resumes').exists():
+        assert time.monotonic() < deadline, 'no se liberó launch'
+        time.sleep(.02)
+    return original_launch(*args, **kwargs)
+m.launch = paused_launch
+sys.argv = ['codex-run', 'resume', directory, brief]
+try:
+    sys.exit(m.main())
+except (OSError, ValueError, KeyError) as error:
+    print('codex-run: ' + str(error), file=sys.stderr)
+    sys.exit(1)
+"""
+def wait_for_any(*paths):
+    deadline = time.monotonic() + 15
+    while not any(path.exists() for path in paths):
+        assert time.monotonic() < deadline, paths
+        time.sleep(.02)
+processes = []
+logs = []
+try:
+    for label in ('first', 'second'):
+        log = (tmp / (label + '-resume.log')).open('w')
+        logs.append(log)
+        env = dict(os.environ, FAKE_LOG=str(tmp / ('resume-log-' + label)))
+        processes.append(subprocess.Popen(
+            [sys.executable, '-c', code, module, directory, brief, temporary, label],
+            env=env, stdout=log, stderr=log))
+        if label == 'first':
+            wait_for_any(tmp / 'first-launch')
+        else:
+            wait_for_any(tmp / 'second-lock', tmp / 'second-launch')
+    (tmp / 'release-resumes').touch()
+    results = [process.wait(timeout=25) for process in processes]
+    for log in logs:
+        log.flush()
+    details = '\n'.join((tmp / (label + '-resume.log')).read_text()
+                        for label in ('first', 'second'))
+    assert sorted(results) == [0, 1], (results, details)
+    assert len(list(out.glob('resume-*/pid'))) == 1, details
+    assert 'detén o espera' in details, details
+finally:
+    (tmp / 'release-resumes').touch()
+    for process in processes:
+        if process.poll() is None:
+            process.kill()
+        process.wait()
+    for log in logs:
+        log.close()
+PY_CONCURRENT
+    run status "$OUT/resume-1" > "$TEST_TMP/status"
+    assert grep -Fx 'state=running' "$TEST_TMP/status"
+    assert test ! -e "$OUT/resume-2"
+    run stop "$OUT/resume-1"
 }
 
 lost_and_nonzero() {
@@ -506,7 +664,7 @@ case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
         printf 'SKIP daemonización y grupos POSIX en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool impossible_confirmation post_launch_exception lost_and_nonzero default_out_and_home) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool impossible_confirmation post_launch_exception launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home) ;;
 esac
 TEST_CASES+=(laptop_warnings laptop_silent laptop_detection)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.

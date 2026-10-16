@@ -19,9 +19,12 @@ El timeout de start es 3600 s; wait no tiene límite por defecto.
 Sin --write, el sandbox es read-only. --root y --network exigen --write.
 Requiere python3 y ps en macOS o Linux. Conserva OUT para auditar el run.
 El supervisor aplica --timeout y registra el árbol de procesos en OUT/pids.
-done confirma que Codex y los procesos registrados terminaron. Si no puede
-confirmarlo, status muestra state=stuck y survivors; wait también termina
-en done, lost o stuck. wait --timeout sale con 124 si agota su espera.
+done significa que Codex salió y no queda vivo ningún proceso registrado:
+los que el supervisor vio por ppid en sus fotos y en la foto final de limpieza.
+Límite: un proceso que se separa de su padre entre dos fotos puede escapar.
+Si no puede confirmar la terminación, status muestra state=stuck y survivors;
+si el supervisor murió durante launching, muestra survivors=unknown.
+wait termina en done, lost o stuck; --timeout sale con 124 si agota su espera.
 stop limpia el árbol y devuelve error si queda stuck.
 OUT/done registra exit: timeout 137, stop 143, error del supervisor 127,
 o el código de Codex al terminar normalmente.
