@@ -240,10 +240,8 @@ stop_and_wait_timeout() {
     assert grep -Fx 'exit=143' "$OUT/done"
     run stop "$OUT"
     run wait "$OUT" --timeout 5
-    wait_for_file "$FAKE_LOG/heartbeat"
-    cp "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before"
-    sleep 0.5
-    assert cmp -s "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before"
+    # stop puede matar al hijo entre el truncado y la escritura del latido.
+    assert_tool_dead
 }
 
 stop_without_supervisor() {
