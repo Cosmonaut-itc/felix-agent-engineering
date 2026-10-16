@@ -117,7 +117,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 <main>
 <header>
   <h1>Cómo trabajan tus agentes</h1>
-  <p>Referencia rápida de tu configuración con <code>felix-mode</code> sobre pstack, en Claude Code y en Codex.</p>
+  <p>Referencia rápida de tu configuración con <code>felix-mode</code> sobre pstack, en Claude Code y en Codex. La fuente es <a href="https://github.com/Cosmonaut-itc/personal-agent-orchestration/blob/main/docs/flujo-de-trabajo.md"><code>docs/flujo-de-trabajo.md</code></a>.</p>
 </header>
 
 <section id="esencial">
@@ -135,7 +135,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
   <div class="card">
     <ol class="todo">
       <li><b>No corres nada para activarlo.</b> <code>felix-mode</code> ya está instalado y se activa solo. Para forzarlo escribe <code>/felix-mode</code> en Claude Code o <code>$felix-mode</code> en Codex.</li>
-      <li><b>Reinicias las sesiones viejas.</b> Una sesión abierta antes de instalar pstack no lo ve.</li>
+      <li><b>Reinicias las sesiones viejas.</b> Una sesión no ve las skills ni la versión de pstack que llegaron después de abrirla.</li>
       <li><b>Das objetivo y prueba.</b> Qué quieres, cuándo está terminado y qué evidencia quieres ver.</li>
       <li><b>Apruebas lo que pausa.</b> Prototipos de UI, merges y deploys, escrituras en ICG o producción, dependencias, CI y configuración global.</li>
       <li><b>Lees el informe.</b> Cada afirmación trae su evidencia o una etiqueta: medido, inferido o suposición.</li>
@@ -220,7 +220,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <section id="skills">
   <h2>Skills</h2>
-  <p class="lead">Algunas las llama el orquestador solo, porque un playbook o un disparador de <code>poteto-mode</code> las pide. Otras sólo corren si las invocas. En Claude Code se invocan con <code>/pstack:&lt;nombre&gt;</code>. En Codex, escribe <code>$</code> y elígela, o nómbrala en el mensaje.</p>
+  <p class="lead">Algunas las llama el orquestador solo, porque un playbook o un disparador de <code>poteto-mode</code> las pide. Otras sólo corren si las invocas. En Claude Code se invocan con <code>/pstack:&lt;nombre&gt;</code> las de pstack y con <code>/&lt;nombre&gt;</code> las de Matt Pocock. En Codex, escribe <code>$</code> y elígela, o nómbrala en el mensaje.</p>
   <input class="filter" id="q" type="search" placeholder="Buscar por nombre, por ejemplo «pr» o «verify»" aria-label="Buscar skills por nombre">
   <div class="chips" role="group" aria-label="Filtrar por tipo">
     <button type="button" data-k="all" aria-pressed="true">Todas</button>
@@ -261,14 +261,21 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr data-k="you"><td><code>make-pr-easy-to-review</code></td><td>Ordena commits y descripción de un PR sin cambiar el comportamiento.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="you"><td><code>fix-ci</code>, <code>fix-merge-conflicts</code>, <code>get-pr-comments</code></td><td>Tareas sueltas de un PR. Para llevarlo a mergeable entero, pide el playbook Babysit.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="you"><td><code>poteto-help</code></td><td>Pregúntale qué skill o playbook usar.</td><td><span class="badge b-you">Tú</span></td></tr>
-      <tr data-k="plan"><td><code>grilling</code>, <code>grill-me</code></td><td>Te entrevista sin piedad para afinar un plan o un diseño.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="plan"><td><code>grilling</code>, <code>grill-me</code>, <code>grill-with-docs</code></td><td>Te entrevistan sin piedad para afinar un plan o un diseño. <code>grill-with-docs</code> además escribe ADR y glosario.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
       <tr data-k="plan"><td><code>to-spec</code>, <code>to-tickets</code></td><td>Convierten la conversación en spec y en issues del tracker.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
       <tr data-k="plan"><td><code>triage</code>, <code>wayfinder</code></td><td>Clasifican issues y orientan qué hacer después.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
       <tr data-k="plan"><td><code>domain-modeling</code>, <code>research</code>, <code>codebase-design</code></td><td>Modelo de dominio, investigación con fuentes primarias y diseño de módulos.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="plan"><td><code>to-questionnaire</code></td><td>Convierte una decisión que no puedes cerrar en un cuestionario para otra persona.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="plan"><td><code>improve-codebase-architecture</code></td><td>Busca módulos que profundizar, los presenta en un informe HTML y te entrevista sobre el que elijas.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="plan"><td><code>setup-matt-pocock-skills</code></td><td>Configura un repo para estas skills: tracker, etiquetas de triage y docs de dominio. Una vez por repo.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="you"><td><code>ask-matt</code></td><td>Te dice qué skill de Matt Pocock encaja.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>wait-what</code>, <code>teach</code></td><td>Repite en llano un mensaje que no se entendió, o te enseña un concepto dentro del workspace.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>implement-spec</code>, <code>retro</code></td><td>Implementan una spec y hacen la retro de una sesión, cuando el <code>AGENTS.md</code> del repo las pide.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>wizard</code></td><td>Genera un asistente en bash para pasos que sólo puede hacer una persona.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="avoid"><td><code>setup-pstack</code></td><td>Reescribe completa la hoja <code>pstack-models.md</code>. La tuya sale del routing.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td><code>babysit</code> de pstack</td><td>Para un PR, pide el playbook Babysit: <q>cuida el PR N</q>.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td><code>thermos</code>, <code>thermo-nuclear-review</code></td><td>No para revisar cambios. Tu routing reserva eso a astra, y a Opus en alto riesgo.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
-      <tr data-k="avoid"><td>Matt Pocock: <code>tdd</code>, <code>diagnosing-bugs</code>, <code>prototype</code>, <code>code-review</code>, <code>pr</code>, <code>implement</code>, <code>handoff</code>, <code>writing-for-agents</code></td><td>Bloqueadas en Claude Code por un deny global. Retiradas en Codex a <code>~/.agents/skills-retired/</code>. Superpowers está apagado.</td><td><span class="badge b-avoid">Bloqueada</span></td></tr>
+      <tr data-k="avoid"><td>Matt Pocock: <code>tdd</code>, <code>diagnosing-bugs</code>, <code>prototype</code>, <code>code-review</code>, <code>pr</code>, <code>implement</code>, <code>handoff</code>, <code>writing-for-agents</code>, <code>resolving-merge-conflicts</code></td><td>No se instalan: pstack las cubre. <code>pao</code> las retira de <code>~/.agents/skills</code> y <code>~/.claude/skills</code>. Superpowers está apagado.</td><td><span class="badge b-avoid">Retirada</span></td></tr>
     </tbody>
   </table>
   <p class="note">Matt Pocock en Claude Code se invoca como <code>/mattpocock-skills:&lt;nombre&gt;</code>.</p>
@@ -347,20 +354,22 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <section id="archivos">
   <h2>Archivos</h2>
+  <p class="lead">Todo sale del repo <a href="https://github.com/Cosmonaut-itc/personal-agent-orchestration">personal-agent-orchestration</a>. <code>pao install</code> enlaza cada archivo con un symlink al clon <code>~/.local/share/personal-agent-orchestration</code>, y el registro <code>manifest</code> dice qué va a dónde.</p>
   <table>
     <thead><tr><th>Archivo</th><th>Qué contiene</th></tr></thead>
     <tbody>
-      <tr><td><code>~/.agents/skills/felix-mode/SKILL.md</code></td><td>El modo. Enlazado en <code>~/.claude/skills/felix-mode</code>. Su versión en git está en <code>skills/felix-mode/</code> de personal-agent-orchestration.</td></tr>
+      <tr><td><code>~/.agents/skills/felix-mode</code></td><td>El modo. Enlaza a <code>skills/felix-mode</code> del clon, igual que su par en <code>~/.claude/skills</code>.</td></tr>
+      <tr><td><code>~/.agents/skills/&lt;matt&gt;</code></td><td>Las 19 skills de Matt Pocock en uso. Enlazan a <code>vendor/mattpocock</code>, la copia del último release.</td></tr>
       <tr><td><code>~/.agents/docs/agent-routing.md</code></td><td>Modelos, esfuerzo, revisión, roles de pstack y transporte. Es la fuente.</td></tr>
       <tr><td><code>~/.agents/docs/orchestration.md</code></td><td>El contrato Despachar, Recoger, Vetar y Cerrar. Es la fuente.</td></tr>
       <tr><td><code>~/.claude/CLAUDE.md</code></td><td>Copia del contrato, tabla de modelos y la sección «Flujo de ingeniería» que activa <code>felix-mode</code>.</td></tr>
       <tr><td><code>~/.codex/AGENTS.md</code></td><td>Lo mismo para Codex.</td></tr>
       <tr><td><code>~/.claude/pstack-models.md</code></td><td>El asiento Claude de cada rol de pstack. <code>session hook: off</code>.</td></tr>
       <tr><td><code>~/.codex/pstack-models.md</code></td><td>Sólo apaga el hook del plugin.</td></tr>
-      <tr><td><code>~/.claude/settings.json</code></td><td>Deny de las ocho skills de Matt Pocock y <code>CODEX_HOME</code> del proxy.</td></tr>
-      <tr><td><code>~/.codex/config.toml</code></td><td>pstack encendido, Superpowers apagado.</td></tr>
       <tr><td><code>~/.claude/docs/codex-delegation.md</code></td><td>Cómo Claude despacha a GPT por la CLI con proxy.</td></tr>
       <tr><td><code>~/.agents/docs/opencode-workers.md</code></td><td>Cómo despachar a OpenCode Go.</td></tr>
+      <tr><td><code>~/.local/state/pao/status</code></td><td>Resultado de la última actualización. <code>pao status</code> lo muestra.</td></tr>
+      <tr><td><code>~/.claude/settings.json</code>, <code>~/.codex/config.toml</code></td><td>No los gestiona <code>pao</code>. Tienen <code>CODEX_HOME</code> del proxy, pstack encendido y Superpowers apagado.</td></tr>
     </tbody>
   </table>
   <div class="callout"><b>Copias que van juntas.</b> <code>CLAUDE.md</code> y <code>orchestration.md</code>. La tabla de modelos del routing, <code>CLAUDE.md</code> y <code>AGENTS.md</code>. Los roles del routing y <code>pstack-models.md</code>. Al cambiar una, cambia la otra.</div>
@@ -369,13 +378,19 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 <section id="mantenimiento">
   <h2>Mantenimiento</h2>
   <ul class="plain">
+    <li><b>Se actualiza solo.</b> Cada 4 horas el job trae <code>main</code>, rehace los enlaces y actualiza pstack en Claude Code y Codex. Un CI diario copia el último release de Matt Pocock a <code>vendor/</code>.</li>
+    <li><b>Algo falla.</b> En la Mac llega una notificación. Corre <code>pao status</code>: un archivo local editado queda retenido y nunca se pisa.</li>
+    <li><b>Cambias la configuración.</b> Edita el repo y abre un PR. Al mergearlo llega a cada máquina en menos de 4 horas.</li>
     <li><b>Cambias un modelo.</b> Edita el routing y replica la tabla y la hoja <code>pstack-models.md</code>.</li>
     <li><b>Cada pocas semanas.</b> <code>/pstack:automate-me</code> para refrescar <code>felix-mode</code>. Pide que conserve el <code>description</code> que lo activa solo.</li>
     <li><b>Un error que se repite.</b> <code>/pstack:reflect</code> o <code>/pstack:correct</code>.</li>
   </ul>
 </section>
 
-<footer>Generado el 15 oct 2026 desde la configuración local. Las fuentes son los archivos de la sección Archivos.</footer>
+<footer>
+  <p>Fuente: <a href="https://github.com/Cosmonaut-itc/personal-agent-orchestration/blob/main/docs/flujo-de-trabajo.md"><code>docs/flujo-de-trabajo.md</code></a> de personal-agent-orchestration.</p>
+  <p>Créditos. <a href="https://github.com/cursor/plugins/tree/main/pstack">pstack</a> es obra de Lauren Tan (poteto). Se usa por el port <a href="https://github.com/michael-denyer/pstack-claude">pstack-claude</a> de Michael Denyer, con licencia MIT. Las <a href="https://github.com/mattpocock/skills">skills de Matt Pocock</a> son © 2026 Matt Pocock, con licencia MIT. <code>vendor/mattpocock</code> conserva su licencia.</p>
+</footer>
 </main>
 </div>
 <script>

@@ -144,3 +144,30 @@ Cada repositorio de trabajo aporta lo que el flujo no puede saber:
   `.claude/skills/verify`, que maneja la app real y devuelve evidencia;
 - project playbooks opcionales en `.agents/playbooks/`, que extienden los de
   pstack.
+
+## Instalación y actualización
+
+El registro [`manifest`](../manifest) dice qué archivo o skill del repositorio
+se instala en qué ruta de la máquina, qué skills se retiran y qué plugins se
+mantienen. `bin/pao` lo aplica:
+
+- `pao install` enlaza cada destino con un symlink al clon dedicado, retira
+  los duplicados, instala pstack en Claude Code y en la app de Codex, y
+  programa la actualización.
+- Cada 4 horas el job trae `main` sólo si avanza en línea recta, rehace los
+  enlaces y actualiza pstack. Un archivo editado en la máquina queda retenido
+  y se reporta en `pao status`.
+- Un workflow diario copia el último release de Matt Pocock a
+  `vendor/mattpocock/` y lo commitea si pasa las comprobaciones.
+
+El [README](../README.md#instalación-con-pao) explica la instalación paso a paso.
+
+## Créditos
+
+- [pstack](https://github.com/cursor/plugins/tree/main/pstack) es obra de
+  Lauren Tan (poteto). Se instala por el port
+  [pstack-claude](https://github.com/michael-denyer/pstack-claude) de Michael
+  Denyer, con licencia MIT.
+- Las [skills de Matt Pocock](https://github.com/mattpocock/skills) son
+  © 2026 Matt Pocock, con licencia MIT. La copia de `vendor/mattpocock/`
+  conserva su licencia y no se modifica.
