@@ -1,0 +1,573 @@
+#!/bin/bash
+
+init() {
+    PAO_ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd -P) || return 1
+    PAO_MANIFEST=${PAO_MANIFEST:-$PAO_ROOT/manifest}
+    STATE=${XDG_STATE_HOME:-$HOME/.local/state}/pao
+    PLATFORM=$(uname -s)
+    case "$PLATFORM" in MINGW*|MSYS*) export MSYS=winsymlinks:nativestrict ;; esac
+    # A stalled GitHub transfer once left a plugin clone hanging for minutes;
+    # git and the plugin CLIs it runs under abort below 1 KB/s for 60 s.
+    export GIT_HTTP_LOW_SPEED_LIMIT=${GIT_HTTP_LOW_SPEED_LIMIT:-1000}
+    export GIT_HTTP_LOW_SPEED_TIME=${GIT_HTTP_LOW_SPEED_TIME:-60}
+    TYPES=() SOURCES=() TARGETS=() MARKETS=()
+    DESTS=() LINK_SOURCES=() RETIRED=()
+    CHANGED=0 OVERALL=ok LOCKED=0
+    NO_PLUGINS=${PAO_NO_PLUGINS:-0} NO_SCHEDULE=0
+}
+
+fail() { printf 'error: %s\n' "$*" >&2; return 1; }
+
+safe_relative() {
+    case "$1" in ''|/*|..|../*|*/../*|*/..|.|./*|*/./*|*/.|*//*|*/) return 1 ;; esac
+}
+
+valid_name() { [[ $1 =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]]; }
+
+skill_name() {
+    awk 'NR == 1 && $0 != "---" {exit} NR > 1 && $0 == "---" {exit} /^name:[[:space:]]*/ {sub(/^name:[[:space:]]*/, ""); gsub(/["\047]/, ""); sub(/[[:space:]]*$/, ""); print}' "$1"
+}
+
+contains() {
+    local needle=$1 value
+    shift
+    for value in "$@"; do [ "$needle" != "$value" ] || return 0; done
+    return 1
+}
+
+load_manifest() {
+    local mode=${1:-full} line kind src target market extra n=0 key dest
+    local keys=() names=() retired_names=()
+    [ -f "$PAO_MANIFEST" ] || { fail "manifest ausente: $PAO_MANIFEST"; return 1; }
+    while IFS= read -r line || [ -n "$line" ]; do
+        n=$((n + 1))
+        line=${line%%#*}
+        read -r kind src target market extra <<< "$line"
+        [ -n "$kind" ] || continue
+        key='' dest=''
+        case "$kind" in
+            file)
+                if ! { [ -n "$target" ] && [ -z "$market$extra" ] && safe_relative "$src"; }; then fail "manifest:$n: fila file inválida"; return 1; fi
+                # The manifest uses a literal tilde, expanded explicitly below.
+                # shellcheck disable=SC2088
+                case "$target" in '~/'*) safe_relative "${target#\~/}" || return 1 ;; *) fail "manifest:$n: destino fuera de HOME"; return 1 ;; esac
+                [ -f "$PAO_ROOT/$src" ] || { fail "manifest:$n: fuente ausente $src"; return 1; }
+                dest=$HOME/${target#\~/}
+                key=dest:$dest
+                ;;
+            skill)
+                safe_relative "$src" && valid_name "$target" && [ -z "$market$extra" ] || { fail "manifest:$n: skill inválida"; return 1; }
+                if [ "$mode" = full ] || [[ $src != vendor/mattpocock/* ]]; then
+                    [ -f "$PAO_ROOT/$src/SKILL.md" ] && [ "$(skill_name "$PAO_ROOT/$src/SKILL.md")" = "$target" ] || { fail "manifest:$n: SKILL.md/name inválido: $src"; return 1; }
+                fi
+                key=skill:$target
+                names[${#names[@]}]=$target
+                ;;
+            retire)
+                valid_name "$src" && [ -z "$target$market$extra" ] || { fail "manifest:$n: retire inválido"; return 1; }
+                key=retire:$src
+                retired_names[${#retired_names[@]}]=$src
+                ;;
+            plugin)
+                [[ $src = claude || $src = codex ]] && [[ $target =~ ^[a-zA-Z0-9_-]+@[a-zA-Z0-9_-]+$ ]] && [ -n "$market" ] && [ -z "$extra" ] || { fail "manifest:$n: plugin inválido"; return 1; }
+                key=plugin:$src:$target
+                ;;
+            *) fail "manifest:$n: tipo desconocido $kind"; return 1 ;;
+        esac
+        contains "$key" "${keys[@]}" && { fail "manifest:$n: duplicado $key"; return 1; }
+        keys[${#keys[@]}]=$key
+        TYPES[${#TYPES[@]}]=$kind
+        SOURCES[${#SOURCES[@]}]=$src
+        TARGETS[${#TARGETS[@]}]=$target
+        MARKETS[${#MARKETS[@]}]=$market
+        case "$kind" in
+            file) DESTS[${#DESTS[@]}]=$dest; LINK_SOURCES[${#LINK_SOURCES[@]}]=$PAO_ROOT/$src ;;
+            skill)
+                for dest in "$HOME/.agents/skills/$target" "$HOME/.claude/skills/$target"; do
+                    contains "dest:$dest" "${keys[@]}" && { fail "manifest:$n: destino duplicado $dest"; return 1; }
+                    keys[${#keys[@]}]=dest:$dest
+                    DESTS[${#DESTS[@]}]=$dest
+                    LINK_SOURCES[${#LINK_SOURCES[@]}]=$PAO_ROOT/$src
+                done ;;
+            retire) RETIRED[${#RETIRED[@]}]=$src ;;
+        esac
+    done < "$PAO_MANIFEST"
+    for src in "${retired_names[@]}"; do
+        contains "$src" "${names[@]}" && { fail "skill declarada y retirada: $src"; return 1; }
+    done
+    return 0
+}
+
+check() {
+    load_manifest || return 1
+    printf 'ok: manifest válido (%s files, %s skills, %s retire, %s plugins)\n' \
+        "$(count_type file)" "$(count_type skill)" "$(count_type retire)" "$(count_type plugin)"
+}
+
+count_type() {
+    local type count=0
+    for type in "${TYPES[@]}"; do [ "$type" != "$1" ] || count=$((count + 1)); done
+    printf '%s' "$count"
+}
+
+record() {
+    local state=$1 item=$2 detail
+    detail=$(printf '%s' "${3:-}" | tr '\t\r\n' '   ')
+    case "$state" in error) OVERALL=error ;; held|warn) [ "$OVERALL" != ok ] || OVERALL=warn ;; esac
+    printf '%s\t%s\t%s\n' "$state" "$item" "$detail" | tee -a "$ITEMS" "$STATE/update.log"
+}
+
+# Invoked by EXIT and signal traps.
+# shellcheck disable=SC2329
+cleanup() {
+    [ -z "${ITEMS:-}" ] || rm -f "$ITEMS"
+    if [ "$LOCKED" = 1 ] && [ "$(cat "$STATE/lock/pid" 2>/dev/null)" = "$$" ]; then rm -rf "$STATE/lock"; fi
+}
+
+start_run() {
+    mkdir -p "$STATE" || return 1
+    ITEMS=$(mktemp "$STATE/items.XXXXXX") || return 1
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    if [ -n "${PAO_UPDATE_ERROR:-}" ]; then record error git "$PAO_UPDATE_ERROR"; fi
+    if [ -n "${PAO_UPDATE_WARN:-}" ]; then record warn git "$PAO_UPDATE_WARN"; fi
+}
+
+finish_run() {
+    local tmp
+    tmp=$(mktemp "$STATE/status.XXXXXX") || return 1
+    { printf 'overall %s\n' "$OVERALL"; cat "$ITEMS"; } > "$tmp"
+    mv "$tmp" "$STATE/status" || return 1
+    printf 'overall %s\n' "$OVERALL" | tee -a "$STATE/update.log"
+    tmp=$(mktemp "$STATE/log.XXXXXX") || return 1
+    if ! { tail -n 2000 "$STATE/update.log" > "$tmp" && mv "$tmp" "$STATE/update.log"; }; then rm -f "$tmp"; return 1; fi
+    if [ "$CHANGED" = 0 ] && [ "$OVERALL" = ok ]; then printf 'unchanged\n'; fi
+    if [ "$PLATFORM" = Darwin ] && grep -Eq '^(error|held)'$'\t' "$ITEMS" && command -v osascript >/dev/null 2>&1; then
+        osascript -e 'display notification "Revisa pao status" with title "pao"' >/dev/null 2>&1 || true
+    fi
+    [ "$OVERALL" != error ]
+}
+
+backup_path() {
+    local root
+    root=$STATE/backups/$(date -u +%Y%m%dT%H%M%SZ)-$$
+    BACKUP=$root/${1#"$HOME/"}
+    while [ -e "$BACKUP" ] || [ -L "$BACKUP" ]; do BACKUP=$BACKUP.1; done
+    mkdir -p "$(dirname "$BACKUP")" && mv "$1" "$BACKUP"
+}
+
+retire_skills() {
+    local name dest target
+    for name in "${RETIRED[@]}"; do
+        for dest in "$HOME/.agents/skills/$name" "$HOME/.claude/skills/$name"; do
+            if [ -L "$dest" ]; then
+                if rm "$dest"; then record retired "$dest" 'symlink eliminado'; CHANGED=1; else record error "$dest" 'no se pudo retirar'; fi
+            elif [ -e "$dest" ]; then
+                target=$HOME/.agents/skills-retired/$name
+                if [ -e "$target" ] || [ -L "$target" ]; then target=$target.$(date -u +%Y%m%dT%H%M%SZ)-$$; fi
+                while [ -e "$target" ] || [ -L "$target" ]; do target=$target.1; done
+                if mkdir -p "$(dirname "$target")" && mv "$dest" "$target"; then
+                    record retired "$dest" "$target"; CHANGED=1
+                else record error "$dest" 'no se pudo retirar'; fi
+            else record ok "$dest" ausente
+            fi
+        done
+    done
+}
+
+link_items() {
+    local mode=$1 i dest src
+    for ((i=0; i<${#DESTS[@]}; i++)); do
+        dest=${DESTS[$i]} src=${LINK_SOURCES[$i]}
+        if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
+            record ok "$dest" "$src"; continue
+        fi
+        if [ ! -L "$dest" ] && [ -e "$dest" ]; then
+            if [ "$mode" = sync ]; then record held "$dest" 'archivo o directorio real'; continue; fi
+            if backup_path "$dest"; then record backup "$dest" "$BACKUP"; else record error "$dest" 'no se pudo respaldar'; continue; fi
+        fi
+        if mkdir -p "$(dirname "$dest")" && { [ ! -L "$dest" ] || rm "$dest"; } && ln -s "$src" "$dest"; then
+            record linked "$dest" "$src"; CHANGED=1
+        else record error "$dest" 'no se pudo enlazar'; fi
+    done
+}
+
+normalize_path() {
+    local part path='' IFS=/
+    local parts=() normalized=()
+    read -r -a parts <<< "$1"
+    for part in "${parts[@]}"; do
+        case "$part" in
+            ''|.) ;;
+            ..) if [ "${#normalized[@]}" -gt 0 ]; then unset 'normalized[${#normalized[@]}-1]'; fi ;;
+            *) normalized[${#normalized[@]}]=$part ;;
+        esac
+    done
+    for part in "${normalized[@]}"; do path=$path/$part; done
+    printf '%s' "${path:-/}"
+}
+
+points_to_clone() {
+    local target parent
+    [ -L "$1" ] || return 1
+    target=$(readlink "$1") || return 1
+    case "$target" in
+        /*) ;;
+        *) parent=$(cd "$(dirname "$1")" && pwd -P) || return 1; target=$parent/$target ;;
+    esac
+    if parent=$(cd "$(dirname "$target")" 2>/dev/null && pwd -P); then
+        target=$parent/$(basename "$target")
+    else
+        target=$(normalize_path "$target")
+    fi
+    case "$target" in "$PAO_ROOT"|"$PAO_ROOT"/*) return 0 ;; esac
+    return 1
+}
+
+prune_one() {
+    if ! contains "$1" "${DESTS[@]}" && points_to_clone "$1"; then
+        if rm "$1"; then record pruned "$1" 'enlace fuera del manifest'; CHANGED=1; else record error "$1" 'no se pudo podar'; fi
+    fi
+}
+
+prune_links() {
+    local dir dest
+    for dir in "$HOME/.agents/skills" "$HOME/.claude/skills"; do
+        for dest in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do prune_one "$dest"; done
+    done
+    if [ -f "$STATE/files" ]; then
+        while IFS= read -r dest; do prune_one "$dest"; done < "$STATE/files"
+    fi
+    : > "$STATE/files"
+    local i
+    for ((i=0; i<${#TYPES[@]}; i++)); do
+        [ "${TYPES[$i]}" != file ] || printf '%s/%s\n' "$HOME" "${TARGETS[$i]#\~/}" >> "$STATE/files"
+    done
+}
+
+plugin_command() {
+    local cli=$1 output
+    shift
+    if [ "$cli" = codex ]; then
+        output=$(CODEX_HOME="$HOME/.codex" "$CODEX_BIN" plugin "$@" 2>&1)
+    else output=$("$CLAUDE_BIN" plugin "$@" 2>&1); fi
+    local result=$?
+    if [ "$result" != 0 ]; then record error "$cli plugin $*" "$output"; return 1; fi
+    printf '%s\n' "$output" >> "$STATE/update.log"
+}
+
+plugins() {
+    local i cli id market source
+    for ((i=0; i<${#TYPES[@]}; i++)); do
+        [ "${TYPES[$i]}" = plugin ] || continue
+        cli=${SOURCES[$i]} id=${TARGETS[$i]} source=${MARKETS[$i]} market=${TARGETS[$i]#*@}
+        if [ "$NO_PLUGINS" = 1 ]; then record skipped "$cli:$id" '--no-plugins'; continue; fi
+        if [ "${PAO_OFFLINE:-0}" = 1 ]; then record skipped "$cli:$id" 'sin red'; continue; fi
+        if { [ "$cli" = claude ] && [ -z "$CLAUDE_BIN" ]; } || { [ "$cli" = codex ] && [ -z "$CODEX_BIN" ]; }; then
+            record skipped "$cli:$id" 'CLI ausente'; continue
+        fi
+        # Both CLIs converge on the existing installation on repeated add/install.
+        if ! plugin_command "$cli" marketplace add "$source"; then continue; fi
+        if [ "$cli" = claude ]; then
+            plugin_command "$cli" install "$id" && plugin_command "$cli" marketplace update "$market" && plugin_command "$cli" update "$id" && record ok "$cli:$id" actualizado
+        else
+            plugin_command "$cli" marketplace upgrade "$market" && plugin_command "$cli" add "$id" && record ok "$cli:$id" actualizado
+        fi
+    done
+    return 0
+}
+
+warn_duplicates() {
+    local ids id
+    [ -f "$HOME/.claude/settings.json" ] || return 0
+    ids=$(tr -d '\r\n' < "$HOME/.claude/settings.json" | grep -Eo '"mattpocock-skills@[^"]+"[[:space:]]*:[[:space:]]*true' | sed 's/^"//; s/".*//')
+    while IFS= read -r id; do
+        [ -z "$id" ] || record warn "$id" "Nombres duplicados. Ejecuta: claude plugin uninstall $id"
+    done <<< "$ids"
+}
+
+absolute_tool() {
+    local path
+    path=$(command -v "$1") || return 0
+    case "$path" in
+        /*) printf '%s' "$path" ;;
+        *) printf '%s/%s' "$(cd "$(dirname "$path")" && pwd -P)" "$(basename "$path")" ;;
+    esac
+}
+
+find_tools() {
+    GIT_BIN=$(absolute_tool git)
+    CLAUDE_BIN=$(absolute_tool claude)
+    CODEX_BIN=$(absolute_tool codex)
+}
+
+write_env() {
+    local tmp
+    tmp=$(mktemp "$STATE/env.XXXXXX") || return 1
+    {
+        printf 'export PATH=%q\n' "$PATH"
+        printf 'GIT_BIN=%q\nCLAUDE_BIN=%q\nCODEX_BIN=%q\n' "$GIT_BIN" "$CLAUDE_BIN" "$CODEX_BIN"
+        printf 'PAO_NO_PLUGINS=%q\n' "$NO_PLUGINS"
+    } > "$tmp"
+    if [ -f "$STATE/env" ] && cmp -s "$tmp" "$STATE/env"; then rm "$tmp";
+    elif mv "$tmp" "$STATE/env"; then CHANGED=1; record configured env "$STATE/env"
+    else rm -f "$tmp"; return 1; fi
+}
+
+load_env() {
+    if [ -f "$STATE/env" ]; then
+        # shellcheck disable=SC1091
+        . "$STATE/env"
+    fi
+    NO_PLUGINS=${PAO_NO_PLUGINS:-$NO_PLUGINS}
+}
+
+xml_escape() { printf '%s' "$1" | sed 's/\&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'; }
+
+job_path() { printf '%s/Library/LaunchAgents/com.github.cosmonaut-itc.pao.plist' "$HOME"; }
+
+install_job() {
+    local job tmp existing desired command_line bash_exe bash_command
+    case "$PLATFORM" in
+        Darwin)
+            job=$(job_path)
+            mkdir -p "$(dirname "$job")" || { record error job 'no se pudo crear LaunchAgents'; return; }
+            tmp=$(mktemp "$STATE/job.XXXXXX") || return 1
+            cat > "$tmp" <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.github.cosmonaut-itc.pao</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>$(xml_escape "$PAO_ROOT/bin/pao")</string><string>update</string></array>
+<key>EnvironmentVariables</key><dict><key>HOME</key><string>$(xml_escape "$HOME")</string><key>XDG_STATE_HOME</key><string>$(xml_escape "$(dirname "$STATE")")</string></dict>
+<key>StartInterval</key><integer>14400</integer><key>RunAtLoad</key><true/>
+</dict></plist>
+PLIST
+            if [ -f "$job" ] && cmp -s "$tmp" "$job"; then rm "$tmp"; record ok job "$job"; return; fi
+            if ! mv "$tmp" "$job"; then record error job 'no se pudo escribir plist'; return; fi
+            launchctl bootout "gui/$(id -u)" "$job" >/dev/null 2>&1 || true
+            if launchctl bootstrap "gui/$(id -u)" "$job"; then CHANGED=1; record configured job "$job"; else record error job 'launchctl bootstrap falló'; fi
+            ;;
+        Linux)
+            existing=$(crontab -l 2>/dev/null)
+            printf -v command_line 'XDG_STATE_HOME=%q %q %q update' "$(dirname "$STATE")" /bin/bash "$PAO_ROOT/bin/pao"
+            command_line=${command_line//%/\\%}
+            command_line="0 */4 * * * $command_line # pao"
+            desired=$({ [ -z "$existing" ] || printf '%s\n' "$existing"; } | sed '/# pao$/d'; printf '%s\n' "$command_line")
+            if [ "$existing" = "$desired" ]; then record ok job crontab; return; fi
+            if printf '%s\n' "$desired" | crontab -; then CHANGED=1; record configured job crontab; else record error job 'crontab falló'; fi
+            ;;
+        MINGW*|MSYS*)
+            bash_exe=$(cygpath -w "$(command -v bash)")
+            printf -v bash_command 'export HOME=%q XDG_STATE_HOME=%q; exec /bin/bash %q update' "$HOME" "$(dirname "$STATE")" "$PAO_ROOT/bin/pao"
+            command_line="\"$bash_exe\" -c \"$bash_command\""
+            if [ "$(cat "$STATE/job" 2>/dev/null)" = "$command_line" ] && schtasks //Query //TN pao-update >/dev/null 2>&1; then record ok job pao-update; return; fi
+            if schtasks //Create //F //SC HOURLY //MO 4 //TN pao-update //TR "$command_line"; then
+                printf '%s\n' "$command_line" > "$STATE/job"
+                CHANGED=1; record configured job pao-update
+            else record error job 'schtasks falló'; fi
+            ;;
+        *) record warn job "plataforma no soportada: $PLATFORM" ;;
+    esac
+}
+
+remove_job() {
+    local job
+    case "$PLATFORM" in
+        Darwin)
+            job=$(job_path)
+            if [ -f "$job" ]; then launchctl bootout "gui/$(id -u)" "$job" >/dev/null 2>&1 || true; rm "$job"; fi ;;
+        Linux) if crontab -l >/dev/null 2>&1; then crontab -l | sed '/# pao$/d' | crontab -; fi ;;
+        MINGW*|MSYS*) if schtasks //Query //TN pao-update >/dev/null 2>&1; then schtasks //Delete //F //TN pao-update; fi ;;
+    esac
+}
+
+apply() {
+    local mode=$1
+    shift
+    if [ "$mode" = install ]; then NO_PLUGINS=0; else load_env; fi
+    while [ "$#" -gt 0 ]; do
+        case "$1" in --no-schedule) NO_SCHEDULE=1 ;; --no-plugins) NO_PLUGINS=1 ;; *) fail "opción desconocida: $1"; return 1 ;; esac
+        shift
+    done
+    if [ "$mode" = install ] && [ "$(git -C "$PAO_ROOT" symbolic-ref --short HEAD 2>/dev/null)" != main ]; then fail 'install exige la rama main'; return 1; fi
+    if [ "$LOCKED" != 1 ]; then
+        acquire_lock > /dev/null
+        case $? in 0) ;; 2) fail 'otra corrida de pao está en curso'; return 1 ;; *) return 1 ;; esac
+    fi
+    start_run || return 1
+    if ! load_manifest 2> "$ITEMS.validation"; then
+        record error manifest "$(cat "$ITEMS.validation")"
+        rm -f "$ITEMS.validation"
+        finish_run
+        return 1
+    fi
+    rm -f "$ITEMS.validation"
+    find_tools
+    retire_skills
+    link_items "$mode"
+    prune_links
+    plugins
+    warn_duplicates
+    write_env || record error env 'no se pudo escribir'
+    if [ "$mode" = install ]; then
+        [ "$NO_SCHEDULE" = 1 ] || install_job
+    fi
+    finish_run
+}
+
+acquire_lock() {
+    local now stamp
+    mkdir -p "$STATE" || return 1
+    now=$(date +%s)
+    if ! mkdir "$STATE/lock" 2>/dev/null; then
+        stamp=$(cat "$STATE/lock/time" 2>/dev/null)
+        if ! [[ $stamp =~ ^[0-9]+$ ]]; then
+            case "$PLATFORM" in Darwin) stamp=$(stat -f %m "$STATE/lock" 2>/dev/null) ;; *) stamp=$(stat -c %Y "$STATE/lock" 2>/dev/null) ;; esac
+        fi
+        if [[ $stamp =~ ^[0-9]+$ ]] && [ "$((now - stamp))" -gt 7200 ]; then
+            rm -rf "$STATE/lock" || return 1
+            mkdir "$STATE/lock" 2>/dev/null || { printf 'locked\n'; return 2; }
+        else printf 'locked\n'; return 2; fi
+    fi
+    printf '%s\n' "$$" > "$STATE/lock/pid"
+    printf '%s\n' "$now" > "$STATE/lock/time"
+    LOCKED=1
+    trap cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+}
+
+update() {
+    local result before after output branch last
+    acquire_lock
+    result=$?
+    [ "$result" = 0 ] || { [ "$result" = 2 ]; return; }
+    load_env
+    GIT_BIN=${GIT_BIN:-$(command -v git)}
+    before=$("$GIT_BIN" -C "$PAO_ROOT" rev-parse HEAD)
+    branch=$("$GIT_BIN" -C "$PAO_ROOT" symbolic-ref --short HEAD 2>/dev/null)
+    if output=$("$GIT_BIN" -C "$PAO_ROOT" fetch origin 2>&1); then
+        date +%s > "$STATE/last-fetch"
+        if [ "$branch" = main ]; then
+            if ! output=$("$GIT_BIN" -C "$PAO_ROOT" merge --ff-only origin/main 2>&1); then
+                PAO_UPDATE_ERROR="$output $("$GIT_BIN" -C "$PAO_ROOT" status --short) $("$GIT_BIN" -C "$PAO_ROOT" diff --name-only HEAD origin/main)"
+            fi
+        else PAO_UPDATE_WARN="rama $branch: no se hace merge"; fi
+    else
+        # A laptop offline at login is routine; a day without a fetch is not.
+        last=$(cat "$STATE/last-fetch" 2>/dev/null)
+        if [[ $last =~ ^[0-9]+$ ]] && [ "$(($(date +%s) - last))" -le 86400 ]; then
+            PAO_UPDATE_WARN="fetch: $output"
+        else PAO_UPDATE_ERROR="fetch: $output"; fi
+        PAO_OFFLINE=1
+    fi
+    printf '%s\n' "$output" >> "$STATE/update.log"
+    export PAO_UPDATE_ERROR PAO_UPDATE_WARN PAO_OFFLINE
+    after=$("$GIT_BIN" -C "$PAO_ROOT" rev-parse HEAD)
+    if [ "$before" != "$after" ]; then
+        export PAO_LOCK_PID=$$
+        exec /bin/bash "$PAO_ROOT/bin/pao" sync
+    fi
+    apply sync
+}
+
+show_status() {
+    local branch counts modified ahead behind
+    if [ -f "$STATE/status" ]; then cat "$STATE/status"; else printf 'overall warn\nsin ejecuciones registradas\n'; fi
+    branch=$(git -C "$PAO_ROOT" symbolic-ref --short HEAD 2>/dev/null || printf detached)
+    printf 'branch %s\n' "$branch"
+    counts=$(git -C "$PAO_ROOT" rev-list --left-right --count HEAD...origin/main 2>/dev/null)
+    if [ -n "$counts" ]; then read -r ahead behind <<< "$counts"; printf 'ahead %s behind %s\n' "$ahead" "$behind"; else printf 'origin/main desconocido\n'; fi
+    modified=$(git -C "$PAO_ROOT" status --short)
+    printf 'local %s\n' "${modified:-clean}"
+    case "$PLATFORM" in
+        Darwin) if [ -f "$(job_path)" ]; then printf 'job installed\n'; else printf 'job absent\n'; fi ;;
+        Linux) if crontab -l 2>/dev/null | grep -q '# pao$'; then printf 'job installed\n'; else printf 'job absent\n'; fi ;;
+        MINGW*|MSYS*) if schtasks //Query //TN pao-update >/dev/null 2>&1; then printf 'job installed\n'; else printf 'job absent\n'; fi ;;
+    esac
+}
+
+uninstall() {
+    local dest dir
+    load_manifest || return 1
+    remove_job || return 1
+    for dest in "${DESTS[@]}"; do points_to_clone "$dest" && rm "$dest"; done
+    for dir in "$HOME/.agents/skills" "$HOME/.claude/skills"; do
+        for dest in "$dir"/* "$dir"/.[!.]* "$dir"/..?*; do points_to_clone "$dest" && rm "$dest"; done
+    done
+    if [ -f "$STATE/files" ]; then
+        while IFS= read -r dest; do points_to_clone "$dest" && rm "$dest"; done < "$STATE/files"
+    fi
+    printf 'Desinstalado. Respaldos conservados en %s/backups/\n' "$STATE"
+}
+
+# Invoked by vendor_sync's EXIT trap.
+# shellcheck disable=SC2329
+vendor_cleanup() {
+    local tmp=$1 stage=$2
+    if [ -n "$stage" ] && [ -d "$stage/previous" ] && [ ! -e "$PAO_ROOT/vendor/mattpocock" ]; then
+        if ! mv "$stage/previous" "$PAO_ROOT/vendor/mattpocock"; then
+            fail "respaldo vendor conservado en $stage/previous"
+            rm -rf "$tmp"
+            return 1
+        fi
+    fi
+    rm -rf "$tmp"
+    [ -z "$stage" ] || rm -rf "$stage"
+}
+
+vendor_sync() (
+    local repo=https://github.com/mattpocock/skills tag commit tmp i name src count old stage=''
+    load_manifest vendor || return 1
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/pao-vendor.XXXXXX") || return 1
+    trap 'vendor_cleanup "$tmp" "$stage"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    git ls-remote --tags --refs "$repo" > "$tmp/tags" || return 1
+    tag=$(awk '{sub(/^refs\/tags\//, "", $2); if ($2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) print $2}' "$tmp/tags" | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)
+    [ -n "$tag" ] || { fail 'no hay tags semver'; return 1; }
+    if ! git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" "$repo" "$tmp/repo" > "$tmp/clone.log" 2>&1; then cat "$tmp/clone.log" >&2; return 1; fi
+    commit=$(git -C "$tmp/repo" rev-parse HEAD) || return 1
+    mkdir "$tmp/vendor" || return 1
+    for ((i=0; i<${#TYPES[@]}; i++)); do
+        [ "${TYPES[$i]}" = skill ] && [[ ${SOURCES[$i]} = vendor/mattpocock/* ]] || continue
+        name=${TARGETS[$i]}
+        [ "${SOURCES[$i]}" = "vendor/mattpocock/$name" ] || { fail "fuente vendor inválida: ${SOURCES[$i]}"; return 1; }
+        count=0 src=
+        for src in "$tmp/repo/skills"/*/"$name"; do
+            [ -d "$src" ] || continue
+            count=$((count + 1))
+            [ -f "$src/SKILL.md" ] && [ "$(skill_name "$src/SKILL.md")" = "$name" ] || { fail "SKILL.md/name upstream inválido: $name"; return 1; }
+            cp -R "$src" "$tmp/vendor/$name" || return 1
+        done
+        [ "$count" = 1 ] || { fail "$name: se esperaba una coincidencia, hay $count"; return 1; }
+    done
+    cp "$tmp/repo/LICENSE" "$tmp/vendor/LICENSE" || return 1
+    printf 'repo=%s\ntag=%s\ncommit=%s\n' "$repo" "$tag" "$commit" > "$tmp/vendor/UPSTREAM"
+    if [ -d "$PAO_ROOT/vendor/mattpocock" ] && diff -qr "$PAO_ROOT/vendor/mattpocock" "$tmp/vendor" >/dev/null; then printf 'unchanged\n'; return; fi
+    old=$(sed -n 's/^tag=//p' "$PAO_ROOT/vendor/mattpocock/UPSTREAM" 2>/dev/null)
+    mkdir -p "$PAO_ROOT/vendor" || return 1
+    stage=$(mktemp -d "$PAO_ROOT/vendor/.mattpocock.XXXXXX") || return 1
+    cp -R "$tmp/vendor" "$stage/new" || return 1
+    if [ -e "$PAO_ROOT/vendor/mattpocock" ]; then mv "$PAO_ROOT/vendor/mattpocock" "$stage/previous" || return 1; fi
+    mv "$stage/new" "$PAO_ROOT/vendor/mattpocock" || return 1
+    printf 'changed %s -> %s\n' "${old:-none}" "$tag"
+)
+
+main() {
+    init || return 1
+    if [ "${PAO_LOCK_PID:-}" = "$$" ] && [ "$(cat "$STATE/lock/pid" 2>/dev/null)" = "$$" ]; then LOCKED=1; trap cleanup EXIT; fi
+    local command=${1:-help}
+    [ "$#" = 0 ] || shift
+    case "$command" in
+        install|sync) apply "$command" "$@" ;;
+        update|status|uninstall|vendor-sync|check)
+            [ "$#" = 0 ] || { fail 'argumentos inesperados'; return 1; }
+            case "$command" in update) update ;; status) show_status ;; uninstall) uninstall ;; vendor-sync) vendor_sync ;; check) check ;; esac ;;
+        help|--help|-h) printf 'pao install [--no-schedule] [--no-plugins] | update | sync | status | uninstall | vendor-sync | check\n' ;;
+        *) fail "subcomando desconocido: $command" ;;
+    esac
+}
+main "$@"; exit $?
