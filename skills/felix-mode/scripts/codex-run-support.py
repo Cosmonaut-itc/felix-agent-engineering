@@ -177,20 +177,23 @@ def log_error(error):
 
 
 def terminate_tree(tree, child=None):
-    """Una sola vía de limpieza. None significa confirmación imposible."""
+    """Una sola vía de limpieza. None significa confirmación imposible.
+
+    Sólo el supervisor pasa child, y sólo él escribe OUT/pids."""
     remaining = None
     for sig, budget in ((signal.SIGTERM, 3), (signal.SIGKILL, 5)):
         try:
             snapshot = tree.capture(persist=False)
-            try:
-                tree.persist()
-            except OSError as error:
-                tree.error = True
-                log_error(error)
         except Exception as error:
             tree.error = True
             log_error(error)
             snapshot = None
+        if snapshot is not None and child is not None:
+            try:
+                tree.persist()
+            except Exception as error:
+                tree.error = True
+                log_error(error)
         # Aunque ps falle, Popen todavía identifica a Codex sin riesgo de reutilización.
         if child is not None and child.poll() is None:
             try:
@@ -211,9 +214,10 @@ def terminate_tree(tree, child=None):
         deadline = time.monotonic() + budget
         while True:
             try:
-                if child is not None:
-                    child.poll()  # Recolectar Codex antes de comprobar su grupo.
                 remaining = tree.survivors()
+                # Popen sabe si Codex vive aunque ninguna foto lo haya registrado.
+                if child is not None and child.poll() is None and child.pid not in remaining:
+                    remaining = sorted(remaining + [child.pid])
                 if not remaining:
                     return []
             except Exception as error:
@@ -230,14 +234,10 @@ def terminate_tree(tree, child=None):
 
 def publish_result(out, remaining, code, tree):
     if (out / "launching").exists():
-        unknown_launch(out)
+        atomic_text(out / "stuck", "survivors=unknown\n")
         return
     if remaining == []:
         finish(out, code)
-        try:
-            (out / "stuck").unlink()
-        except FileNotFoundError:
-            pass
     else:
         # Ante un error de inspección, conservar todos los candidatos.
         pids = remaining if remaining is not None else sorted(
@@ -281,36 +281,34 @@ def supervisor_alive(out):
     return bool(started) and process_start(pid) == started and alive(pid)
 
 
-def unknown_launch(out):
-    atomic_text(out / "stuck", "survivors=unknown\n")
+def state_detail(out):
+    # El supervisor es el único que escribe marcas; state y stop sólo leen.
+    # done es definitivo. El resto se lee con el supervisor ya muerto.
+    if (out / "done").exists():
+        return "done", (out / "done").read_text().strip()
+    if supervisor_alive(out):
+        return "running", ""
+    if (out / "done").exists():
+        return "done", (out / "done").read_text().strip()
+    if (out / "stuck").exists():
+        return "stuck", (out / "stuck").read_text().strip()
+    if (out / "launching").exists():
+        return "stuck", "survivors=unknown"
+    if ProcessTree(out).survivors():
+        return "running", ""
+    return "lost", ""
 
 
 def state(out):
-    # done es definitivo. El resto de marcas sólo se lee con el supervisor ya
-    # muerto, porque es el único que las escribe.
-    if (out / "done").exists():
-        return "done"
-    if supervisor_alive(out):
-        return "running"
-    if (out / "done").exists():
-        return "done"
-    if (out / "stuck").exists():
-        return "stuck"
-    if (out / "launching").exists():
-        unknown_launch(out)
-        return "stuck"
-    if ProcessTree(out).survivors():
-        return "running"
-    return "lost"
+    return state_detail(out)[0]
 
 
 def status(out):
-    current = state(out)
-    detail = " " + (out / "done").read_text().strip() if current == "done" else ""
+    current, detail = state_detail(out)
     session, tools, _ = summary(out)
-    print("state={}{}".format(current, detail))
+    print("state={}{}".format(current, " " + detail if current == "done" else ""))
     if current == "stuck":
-        print((out / "stuck").read_text().strip())
+        print(detail)
     print("session={}".format(session))
     print("tools={}".format(tools))
     message = out / "last-message.md"
@@ -465,32 +463,33 @@ def worker(out):
 
 
 def stop(out):
-    if not (out / "done").exists() or (out / "launching").exists():
+    if not (out / "done").exists() and supervisor_alive(out):
         pid = run_pid(out)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 15
+        while supervisor_alive(out) and time.monotonic() < deadline:
+            time.sleep(0.1)
         if supervisor_alive(out):
+            # Sin respuesta: matarlo para que no lance ni escriba nada más.
             try:
-                os.kill(pid, signal.SIGTERM)
+                os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
-            deadline = time.monotonic() + 15
-            while supervisor_alive(out) and time.monotonic() < deadline:
-                if (out / "done").exists() or (out / "stuck").exists():
-                    break
-                time.sleep(0.1)
-        if not (out / "done").exists() or (out / "launching").exists():
-            # Si el supervisor no respondió, impedir que siga lanzando procesos
-            # o publique un resultado mientras hacemos su limpieza.
-            if supervisor_alive(out):
-                try:
-                    os.kill(pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            tree = ProcessTree(out)
-            remaining = terminate_tree(tree)
-            publish_result(out, remaining, 143, tree)
+    remaining = []
+    if not (out / "done").exists():
+        # El supervisor murió sin publicar. stop señaliza lo registrado y lo
+        # informa, pero no escribe en OUT: dos stop no pueden pisarse.
+        remaining = terminate_tree(ProcessTree(out))
     status(out)
+    if remaining is None:
+        fail("ps falló; no se pudo confirmar que el run terminó")
+    if remaining:
+        fail("siguen vivos: {}".format(",".join(map(str, remaining))))
     if state(out) == "stuck":
-        fail("no se pudo confirmar que el run terminó; revisa OUT/stuck")
+        fail("no se pudo confirmar que el run terminó; revisa survivors en status")
     print("Detenido: {}".format(out))
 
 
@@ -571,8 +570,12 @@ def main():
                 if not session:
                     fail("no hay session id para reanudar")
                 for previous in [out] + sorted(out.glob("resume-*")):
-                    if (previous / "pid").is_file() and state(previous) in ("running", "stuck"):
+                    current = state(previous) if (previous / "pid").is_file() else None
+                    if current == "running":
                         fail("detén o espera a {} antes de reanudar".format(previous))
+                    if current == "stuck":
+                        fail("{} quedó stuck: revisa a mano sus survivors; "
+                             "resume no reanuda esta sesión".format(previous))
                 number = 1
                 while True:
                     target = out / "resume-{}".format(number)

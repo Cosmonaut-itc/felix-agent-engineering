@@ -24,8 +24,11 @@ los que el supervisor vio por ppid en sus fotos y en la foto final de limpieza.
 Límite: un proceso que se separa de su padre entre dos fotos puede escapar.
 Si no puede confirmar la terminación, status muestra state=stuck y survivors;
 si el supervisor murió durante launching, muestra survivors=unknown.
+stuck es definitivo: revisa a mano los survivors.
 wait termina en done, lost o stuck; --timeout sale con 124 si agota su espera.
-stop limpia el árbol y devuelve error si queda stuck.
+Sólo el supervisor escribe en OUT. stop le pide que limpie y publique done.
+Si el supervisor ya murió, stop señaliza los procesos registrados sin escribir:
+el run queda lost, y stop devuelve error si algo sobrevive o queda stuck.
 OUT/done registra exit: timeout 137, stop 143, error del supervisor 127,
 o el código de Codex al terminar normalmente.
 resume se rechaza si el original o algún resume-N sigue running o stuck.

@@ -42,10 +42,13 @@ cat > "$TEST_TMP/bin/codex" <<'FAKE'
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import sys
 import time
 
+if os.environ.get('FAKE_IGNORE_TERM') == '1':
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
 args = sys.argv[1:]
 log = Path(os.environ['FAKE_LOG'])
 log.mkdir(parents=True, exist_ok=True)
@@ -98,7 +101,7 @@ reject() {
 fixture() {
     OUT=$TEST_TMP/run-$CASE
     export FAKE_LOG=$TEST_TMP/log-$CASE
-    unset FAKE_SLEEP FAKE_CHILD FAKE_TOOL FAKE_NO_SESSION FAKE_EXIT
+    unset FAKE_SLEEP FAKE_CHILD FAKE_TOOL FAKE_NO_SESSION FAKE_EXIT FAKE_IGNORE_TERM
 }
 start() { run start --model gpt-6.1-sol --effort medium --out "$OUT" "$@" "$TEST_TMP/brief.md"; }
 wait_for_absent() {
@@ -254,11 +257,9 @@ stop_without_supervisor() {
     run status "$OUT" > "$TEST_TMP/status"
     assert grep -Fx 'state=running' "$TEST_TMP/status"
     run stop "$OUT" > "$TEST_TMP/stopped"
-    assert grep -Fx 'state=done exit=143' "$TEST_TMP/stopped"
-    assert test -z "$(ps -o pid= -p "$(cat "$FAKE_LOG/child.pid")")"
-    cp "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before"
-    sleep 0.5
-    assert cmp -s "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before"
+    assert grep -Fx 'state=lost' "$TEST_TMP/stopped"
+    assert test ! -e "$OUT/done"
+    assert_tool_dead
 }
 
 done_after_leftover_child() {
@@ -267,7 +268,7 @@ done_after_leftover_child() {
     start
     run wait "$OUT" --timeout 15 > "$TEST_TMP/status"
     assert grep -Fx 'state=done exit=0' "$TEST_TMP/status"
-    assert test -z "$(ps -o pid= -p "$(cat "$FAKE_LOG/child.pid")")"
+    assert_tool_dead
 }
 
 resume_while_resuming() {
@@ -299,6 +300,8 @@ result = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
                         stdout=subprocess.PIPE, text=True)
 assert not result.stdout.strip() or result.stdout.strip().startswith('Z'), result.stdout
 PY_DEAD
+    # Un hijo que murió antes de su primer latido no deja archivo que comparar.
+    [ -e "$FAKE_LOG/heartbeat" ] || return 0
     cp "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before-$CASE"
     sleep 0.4
     assert cmp -s "$FAKE_LOG/heartbeat" "$TEST_TMP/heartbeat-before-$CASE"
@@ -352,7 +355,32 @@ killed_supervisor_tool() {
     run status "$OUT" > "$TEST_TMP/status"
     assert grep -Fx 'state=running' "$TEST_TMP/status"
     run stop "$OUT" > "$TEST_TMP/stopped"
-    assert grep -Fx 'state=done exit=143' "$TEST_TMP/stopped"
+    assert grep -Fx 'state=lost' "$TEST_TMP/stopped"
+    assert_tool_dead
+}
+
+# Sin supervisor, dos stop a la vez terminan lo registrado sin escribir en OUT.
+concurrent_stop() {
+    start_tool
+    local count=0 tool_pid first=0 second=0
+    tool_pid=$(cat "$FAKE_LOG/child.pid")
+    while ! grep -q "^$tool_pid " "$OUT/pids" 2>/dev/null && [ "$count" -lt 100 ]; do
+        sleep 0.1
+        count=$((count + 1))
+    done
+    kill -KILL "$(cat "$OUT/pid")"
+    sleep 0.3
+    ls -A "$OUT" > "$TEST_TMP/files-before"
+    cp "$OUT/pids" "$TEST_TMP/pids-before"
+    run stop "$OUT" > "$TEST_TMP/stop-first" 2>&1 & first=$!
+    run stop "$OUT" > "$TEST_TMP/stop-second" 2>&1 & second=$!
+    wait "$first"
+    wait "$second"
+    ls -A "$OUT" > "$TEST_TMP/files-after"
+    assert cmp -s "$TEST_TMP/files-before" "$TEST_TMP/files-after"
+    assert cmp -s "$TEST_TMP/pids-before" "$OUT/pids"
+    assert grep -Fx 'state=lost' "$TEST_TMP/stop-first"
+    assert grep -Fx 'state=lost' "$TEST_TMP/stop-second"
     assert_tool_dead
 }
 
@@ -392,7 +420,37 @@ if mode == 'launch-window':
 elif mode == 'stuck':
     # El proceso registrado permanece vivo según la comprobación inyectada.
     m.process_alive = lambda pid, started, snapshot: True
-elif mode == 'exception':
+elif mode == 'blind':
+    # Fallan la foto inicial y la primera de limpieza; Codex ignora SIGTERM.
+    original_snapshot = m.process_snapshot
+    failures = [2]
+    def failing_snapshot():
+        if failures[0]:
+            # Dejar que Codex ignore SIGTERM y lance su herramienta antes del fallo.
+            deadline = time.monotonic() + 5
+            while not (pathlib.Path(os.environ['FAKE_LOG']) / 'heartbeat').exists():
+                assert time.monotonic() < deadline
+                time.sleep(.02)
+            failures[0] -= 1
+            raise OSError('fallo inyectado ps')
+        return original_snapshot()
+    m.process_snapshot = failing_snapshot
+if mode in ('exception', 'blind'):
+    original_finish = m.finish
+    def checked_finish(directory, code):
+        # Comprobar la promesa justo antes de publicar done, sin esperar al return.
+        for name in ('codex.pid', 'child.pid'):
+            path = pathlib.Path(os.environ['FAKE_LOG']) / name
+            if not path.exists():
+                continue
+            pid = int(path.read_text())
+            result = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
+                                    stdout=subprocess.PIPE, text=True)
+            assert not result.stdout.strip() or result.stdout.strip().startswith('Z'), (
+                'done antes de terminar ' + name + ': ' + result.stdout)
+        original_finish(directory, code)
+    m.finish = checked_finish
+if mode == 'exception':
     original = pathlib.Path.write_text
     def broken_write(self, *args, **kwargs):
         if self == out / 'child-pid':
@@ -404,17 +462,6 @@ elif mode == 'exception':
             raise OSError('fallo inyectado child-pid')
         return original(self, *args, **kwargs)
     pathlib.Path.write_text = broken_write
-    original_finish = m.finish
-    def checked_finish(directory, code):
-        # Comprobar la promesa justo antes de publicar done, sin esperar al return.
-        for name in ('codex.pid', 'child.pid'):
-            pid = int((pathlib.Path(os.environ['FAKE_LOG']) / name).read_text())
-            result = subprocess.run(['ps', '-o', 'stat=', '-p', str(pid)],
-                                    stdout=subprocess.PIPE, text=True)
-            assert not result.stdout.strip() or result.stdout.strip().startswith('Z'), (
-                'done antes de terminar ' + name + ': ' + result.stdout)
-        original_finish(directory, code)
-    m.finish = checked_finish
 with (out / 'stderr.log').open('w') as log:
     original_stderr = sys.stderr
     sys.stderr = log
@@ -431,12 +478,14 @@ if mode == 'stuck':
     assert not (out / 'done').exists(), 'done sin confirmar terminación'
 else:
     assert (out / 'done').read_text() == 'exit=127\n'
-    assert 'fallo inyectado child-pid' in (out / 'stderr.log').read_text()
+    assert 'fallo inyectado ' + ('ps' if mode == 'blind' else 'child-pid') in (out / 'stderr.log').read_text()
 # La comprobación es posterior a worker, pero anterior a cualquier limpieza.
-child_pid = int((pathlib.Path(os.environ['FAKE_LOG']) / 'child.pid').read_text())
-result = subprocess.run(['ps', '-o', 'stat=', '-p', str(child_pid)],
-                        stdout=subprocess.PIPE, text=True)
-assert not result.stdout.strip() or result.stdout.strip().startswith('Z'), result.stdout
+for name in ('codex.pid', 'child.pid'):
+    path = pathlib.Path(os.environ['FAKE_LOG']) / name
+    if path.exists():
+        result = subprocess.run(['ps', '-o', 'stat=', '-p', path.read_text()],
+                                stdout=subprocess.PIPE, text=True)
+        assert not result.stdout.strip() or result.stdout.strip().startswith('Z'), result.stdout
 PY_INJECT
 }
 
@@ -450,12 +499,25 @@ impossible_confirmation() {
     run wait "$OUT" --timeout 1 > "$TEST_TMP/status"
     assert grep -Fx 'state=stuck' "$TEST_TMP/status"
     reject resume "$OUT" "$TEST_TMP/brief.md"
-    assert grep -q 'detén o espera' "$TEST_TMP/rejected"
+    assert grep -q 'quedó stuck' "$TEST_TMP/rejected"
+    # stuck es definitivo: stop no lo convierte en done.
+    reject stop "$OUT"
+    assert grep -Fx 'state=stuck' "$TEST_TMP/rejected"
+    assert test ! -e "$OUT/done"
 }
 
 popen_failure() {
     fixture
     injected_worker enoent
+}
+
+# Popen cuenta como superviviente aunque ninguna foto haya registrado a Codex.
+codex_without_snapshot() {
+    fixture
+    export FAKE_TOOL=1 FAKE_SLEEP=120 FAKE_IGNORE_TERM=1
+    injected_worker blind
+    assert grep -Fx 'exit=127' "$OUT/done"
+    assert_tool_dead
 }
 
 # Una consulta que coincide con el lanzamiento no puede concluir lost.
@@ -476,8 +538,8 @@ def launching_then_dead(directory):
     (directory / 'launching').write_text('launching\n')
     return False
 m.supervisor_alive = launching_then_dead
-assert m.state(out) == 'stuck', 'state concluyó sin ver launching'
-assert (out / 'stuck').read_text() == 'survivors=unknown\n'
+assert m.state_detail(out) == ('stuck', 'survivors=unknown'), 'state concluyó sin ver launching'
+assert not (out / 'stuck').exists(), 'state escribió en OUT'
 PY_RACE
 }
 
@@ -735,7 +797,7 @@ case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
         printf 'SKIP daemonización y grupos POSIX en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool impossible_confirmation post_launch_exception popen_failure state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home) ;;
 esac
 TEST_CASES+=(laptop_warnings laptop_silent laptop_detection)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
