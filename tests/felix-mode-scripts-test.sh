@@ -550,7 +550,7 @@ foreign_group() {
     python3 -c 'import os,time; os.setsid(); time.sleep(30)' &
     local foreign=$!
     # shellcheck disable=SC2064
-    trap "kill -KILL $foreign 2>/dev/null" EXIT
+    trap "kill -KILL $foreign 2>/dev/null || true" EXIT
     printf 'timeout=30\n' > "$OUT/meta"
     sleep 30 & local dead=$!; kill -KILL "$dead"; wait "$dead" 2>/dev/null || true
     printf '%s\n' "$dead" > "$OUT/pid"
