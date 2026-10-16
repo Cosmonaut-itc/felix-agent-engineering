@@ -119,8 +119,9 @@ Hace `git fetch` y sólo avanza `main` con un fast-forward de `origin/main`.
 Un conflicto local o una rama divergente queda registrado como error.
 Después sincroniza enlaces y plugins. Si encuentra un archivo real durante
 la actualización, lo conserva y lo marca `held`. En macOS notifica los
-errores y los archivos `held`. Sin red, el job sólo avisa; pasa a error si
-lleva más de un día sin poder hacer `fetch`.
+errores y los archivos `held`. Sin red, el job sólo avisa si hubo un
+`fetch` correcto en las últimas 24 horas. Si no lo hubo, o si nunca lo hubo,
+lo marca como error.
 
 ```bash
 # Desde el clon, o con su ruta absoluta.

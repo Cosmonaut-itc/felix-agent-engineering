@@ -28,6 +28,15 @@ GUARD
 done
 printf '#!/bin/bash\nexit 0\n' > "$TEST_TMP/guards/osascript"
 chmod +x "$TEST_TMP/guards/osascript"
+REAL_RM=$(command -v rm)
+cat > "$TEST_TMP/guards/rm" <<GUARD
+#!/bin/bash
+if [ -e "\$HOME/fail-rm" ]; then
+    for arg in "\$@"; do case "\$arg" in *pao-readme) exit 1 ;; esac; done
+fi
+exec "$REAL_RM" "\$@"
+GUARD
+chmod +x "$TEST_TMP/guards/rm"
 export PATH=$TEST_TMP/guards:$PATH
 
 prepare_template() {
@@ -391,12 +400,21 @@ prune_retry() {
     install_pao
     sed '/file README.md /d' "$PAO_MANIFEST" > "$HOME/manifest-altered"
     export PAO_MANIFEST=$HOME/manifest-altered
-    chmod 555 "$HOME/.custom"
+    touch "$HOME/fail-rm"
     pao sync || true
-    chmod 755 "$HOME/.custom"
+    rm "$HOME/fail-rm"
     assert test -L "$HOME/.custom/pao-readme"
     pao sync
     assert test ! -L "$HOME/.custom/pao-readme"
+}
+
+vendor_sync_ignored() {
+    fixture
+    mkdir -p "$PAO_ROOT/vendor/mattpocock/grilling/node_modules"
+    printf 'local\n' > "$PAO_ROOT/vendor/mattpocock/grilling/node_modules/pao-local"
+    if pao vendor-sync 2> "$HOME/err"; then return 1; fi
+    assert grep -q 'cambios locales' "$HOME/err"
+    assert test -f "$PAO_ROOT/vendor/mattpocock/grilling/node_modules/pao-local"
 }
 
 minimal_path() {
@@ -439,7 +457,7 @@ status_and_duplicate_warning() {
 
 if ! prepare_template > "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
 FAILURES=0 CASE=0
-for test_case in clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning; do
+for test_case in clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
     result=$?
