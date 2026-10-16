@@ -113,12 +113,37 @@ pendiente.
 
 ## Revisión y UI/UX
 
-Las reviews de cambios las hace únicamente un revisor independiente con
-gpt-6-astra en esfuerzo `high`. El orquestador veta el cambio y los hallazgos.
+Las reviews de cambios las hace un revisor independiente con gpt-6-astra en
+esfuerzo `high`. En un cambio de alto riesgo, según lo juzgue el orquestador,
+se suma opus-5.5 en `high` como segundo revisor independiente. Ningún otro
+modelo revisa cambios. El orquestador veta el cambio y los hallazgos.
 
 UI/UX: primero un prototipo de fidelidad baja o media aprobado por el dueño.
 Si faltan prototipo y guía, diseña opus-5.5. Implementa con los criterios
 generales y verifica contra el diseño y sus estados de interacción.
+
+## Roles de pstack
+
+pstack asigna un modelo a cada rol. Esta tabla fija el punto de partida de
+cada rol con los nombres de la hoja `pstack-models.md`, y sustituye los
+defaults de pstack. A partir de ahí rigen Esfuerzo y Escalado.
+
+| Rol de pstack | Punto de partida |
+|---------------|------------------|
+| `feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb` | Selección normal de ejecución según Modelos. En el entorno Claude, sonnet-5.5. |
+| `strongest judgment` | gpt-6-astra en `low`; opus-5.5 si la decisión es de producto. |
+| `judgment and prose` | El orquestador (`inherit-parent`). |
+| `how explorer`, `why investigators`, `swarm workers`, `reflect tooling` | haiku-5.5 en `low`, o DeepSeek en Go. |
+| `how explainer`, `why synthesizer`, `reflect judgment, divergent, synthesizer` | sonnet-5.5 en `medium`. |
+| `architect runners`, `arena runners` | opus-5.5; en diseño disputado (alto riesgo o empate entre los candidatos de opus-5.5, según `felix-mode`), también gpt-6.1-sol. |
+| `arena cross-judge pool` | Familia distinta del autor: gpt-6-astra si el autor es Claude, opus-5.5 si es GPT. Un panel mixto opus-5.5 y gpt-6.1-sol tiene un juez único, gpt-6-astra. |
+| `interrogate reviewers` | Según Revisión: gpt-6-astra en `high`; en alto riesgo, también opus-5.5 en `high`. |
+| Revisor del rastro de `show-me-your-work` | gpt-6-astra. |
+
+El `Agent` de pstack en Claude Code sólo acepta modelos Claude, así que la
+hoja `~/.claude/pstack-models.md` lleva el asiento Claude de cada rol. Un rol
+en GPT o en Go se despacha por Transporte, y su fila de la hoja sólo corre
+cuando esta tabla pide Claude.
 
 ## Transporte
 
