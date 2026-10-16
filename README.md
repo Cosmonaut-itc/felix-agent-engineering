@@ -17,6 +17,9 @@ harness use un transporte distinto.
 | [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K3, con instrucciones compartidas. |
 | [`skills/felix-mode/`](skills/felix-mode/SKILL.md) | Router de ingeniería sobre pstack: precedencia, modelos por rol, revisión y autonomía. |
 | [`configs/*/pstack-models.md`](configs/claude/pstack-models.md) | Hojas de modelos de pstack para Claude Code y Codex, derivadas del routing. |
+| [`manifest`](manifest) | Registro único de archivos, skills, retiradas y plugins. |
+| [`bin/pao`](bin/pao) | Instalador, actualizador y diagnóstico para macOS, Linux y Git Bash. |
+| [`vendor/`](vendor/mattpocock/UPSTREAM) | Skills de Matt Pocock, licencia y versión de origen. |
 | [`handbook/index.html`](handbook/index.html) | Handbook de consulta rápida del flujo: qué hace el usuario, playbooks, revisión, skills y modelos. |
 
 ## Contrato común
@@ -82,31 +85,88 @@ ingeniería comunes a los proyectos. Cada repositorio declara en su propio
 `AGENTS.md`, `CLAUDE.md` o docs locales sus gates, su tracker, su skill
 `verify` y, si los necesita, project playbooks en `.agents/playbooks/`.
 
-## Instalación manual
+## Instalación con pao
 
-Revisa el diff y respalda cualquier archivo de destino existente. Después,
-desde la raíz de este repositorio, copia de forma interactiva:
+Requiere Bash 3.2 o posterior, Git y las utilidades del sistema. En Windows,
+usa Git Bash con permiso para crear symlinks NTFS, por ejemplo con el modo de
+desarrollador activo. Si no puede crear un enlace nativo, la instalación falla.
+
+Revisa el código del port de pstack antes de instalarlo: sus hooks ejecutan
+scripts al abrir cada sesión.
 
 ```bash
-mkdir -p ~/.agents/docs ~/.codex/docs ~/.claude/docs
-
-cp -i docs/orchestration.md ~/.agents/docs/orchestration.md
-cp -i docs/agent-routing.md ~/.agents/docs/agent-routing.md
-cp -i docs/native-subagents.md ~/.agents/docs/native-subagents.md
-cp -i docs/opencode-workers.md ~/.agents/docs/opencode-workers.md
-rm -f ~/.agents/docs/cheap-coder-workers.md
-
-cp -i configs/codex/AGENTS.md ~/.codex/AGENTS.md
-cp -i configs/codex/docs/claude-workers.md ~/.codex/docs/claude-workers.md
-
-cp -i configs/claude/CLAUDE.md ~/.claude/CLAUDE.md
-cp -i configs/claude/docs/codex-delegation.md ~/.claude/docs/codex-delegation.md
+git clone https://github.com/cosmonaut-itc/personal-agent-orchestration.git \
+  ~/.local/share/personal-agent-orchestration
+cd ~/.local/share/personal-agent-orchestration
+bin/pao install
 ```
 
-Instala también las guías referenciadas: cambiar sólo los entrypoints dejaría
-apuntadores incompletos. Acepta cada reemplazo cuando el diff corresponda a la
-configuración que quieres activar. Editar este repositorio no cambia los
-archivos ya instalados en tu equipo.
+El clon debe estar en `main`. `manifest` declara todo lo que se instala.
+`pao` retira las skills duplicadas y crea enlaces absolutos desde los dos
+runtimes al clon. Respalda los archivos y directorios reales antes de
+reemplazarlos, aunque su contenido sea idéntico. Informa la ruta de cada
+respaldo. Una segunda instalación conserva los enlaces que ya están bien.
+No instala `configs/opencode/` ni `outputs/`.
+
+El estado vive en `${XDG_STATE_HOME:-$HOME/.local/state}/pao/`. Allí están
+`env`, `status`, las últimas 2000 líneas de `update.log` y `backups/`.
+Las skills retiradas que eran directorios reales pasan a
+`~/.agents/skills-retired/`.
+
+El job corre cada cuatro horas y al cargar el LaunchAgent en macOS. Usa
+LaunchAgent en macOS, cron en Linux y el Programador de tareas en Windows.
+Hace `git fetch` y sólo avanza `main` con un fast-forward de `origin/main`.
+Un conflicto local o una rama divergente queda registrado como error.
+Después sincroniza enlaces y plugins. Si encuentra un archivo real durante
+la actualización, lo conserva y lo marca `held`. En macOS notifica los
+avisos y errores.
+
+```bash
+# Desde el clon, o con su ruta absoluta.
+bin/pao status
+bin/pao sync
+bin/pao uninstall
+```
+
+`status` muestra el último resultado, la rama, los cambios locales, la
+distancia respecto a `origin/main` y si el job está instalado. `uninstall`
+quita el job y los enlaces al clon. Conserva los respaldos y las skills
+retiradas. No desinstala plugins.
+
+Para instalar sin job usa `bin/pao install --no-schedule`. Para omitir los
+plugins añade `--no-plugins`. Esa preferencia se guarda para las siguientes
+sincronizaciones. Una instalación posterior sin esa opción vuelve a activar
+su gestión.
+
+### Actualizaciones de skills y plugins
+
+Las 19 skills de Matt Pocock se distribuyen en `vendor/mattpocock/`, con su
+licencia MIT y el tag y commit de origen en `UPSTREAM`. No se editan a mano.
+El workflow diario ejecuta `bin/pao vendor-sync`, valida el resultado y
+corre las pruebas antes de hacer un commit a `main`. También se puede lanzar
+con `workflow_dispatch`. El job local recoge ese commit en la siguiente
+actualización.
+
+pstack se instala y actualiza con el CLI de cada runtime si está disponible.
+Si falta un CLI, queda `skipped`. Codex siempre gestiona el plugin de la app
+con `CODEX_HOME="$HOME/.codex"`. No usa la configuración de la CLI del proxy.
+Reinicia las sesiones abiertas después de actualizar pstack. La skill
+`verify` de proyecto requiere Claude Code 2.1.200 o posterior.
+
+### Pasos manuales
+
+Confía en el hook de pstack desde `/hooks` en Codex. Con `session hook: off`
+en la hoja de modelos, el hook no inyecta contenido aunque lo confíes.
+
+Desinstala el plugin anterior de Matt Pocock para evitar nombres duplicados.
+`pao` avisa si lo encuentra habilitado en `~/.claude/settings.json` e imprime
+el comando `claude plugin uninstall mattpocock-skills@<marketplace>` con su
+identificador. Quita también sus reglas `Skill(skill:mattpocock-skills:...)`
+de `permissions.deny`. `pao` no cambia ese JSON.
+
+Si aún tienes Superpowers en Codex, pon `enabled = false` en
+`[plugins."superpowers@openai-curated"]` de `~/.codex/config.toml`.
+Las skills exigidas por el `AGENTS.md` de cada proyecto se revisan allí.
 
 ### Perfiles OpenCode Go
 
@@ -126,60 +186,13 @@ aplicado no tiene confirmación observable. Sigue la
 [guía de transporte](docs/opencode-workers.md) para consultar la evidencia,
 las comprobaciones pendientes y los controles de cada despacho.
 
-### pstack y felix-mode
+## Créditos
 
-Revisa el código del port antes de instalarlo: sus hooks ejecutan scripts al
-abrir cada sesión. La skill `verify` de proyecto requiere Claude Code 2.1.200
-o posterior. Desde la raíz de este repositorio:
-
-```bash
-# Claude Code
-claude plugin marketplace add michael-denyer/pstack-claude
-claude plugin install pstack@pstack-claude
-cp -i configs/claude/pstack-models.md ~/.claude/pstack-models.md
-
-# Codex: la app (~/.codex), no la CLI del proxy del alias `codex`
-CODEX_HOME="$HOME/.codex" command codex plugin marketplace add michael-denyer/pstack-claude
-CODEX_HOME="$HOME/.codex" command codex plugin add pstack@pstack-claude
-cp -i configs/codex/pstack-models.md ~/.codex/pstack-models.md
-
-# felix-mode para ambos runtimes
-mkdir -p ~/.agents/skills/felix-mode
-cp -i skills/felix-mode/SKILL.md ~/.agents/skills/felix-mode/SKILL.md
-ln -s ../../.agents/skills/felix-mode ~/.claude/skills/felix-mode
-```
-
-Instala también los entrypoints y el routing de la sección anterior: la
-sección «Flujo de ingeniería» y la tabla «Roles de pstack» viajan con ellos.
-Codex pide confiar en el hook del plugin desde `/hooks`; con
-`session hook: off` en la hoja, el hook no inyecta nada aunque lo confíes.
-
-Retira después lo que pstack duplica:
-
-- **Superpowers en Codex.** En `~/.codex/config.toml`, pon `enabled = false`
-  en `[plugins."superpowers@openai-curated"]`.
-- **Matt Pocock en Claude Code.** El plugin sigue activo para planificar.
-  Bloquea sus skills duplicadas con reglas de permiso en
-  `~/.claude/settings.json`:
-
-  ```json
-  "permissions": {
-    "deny": [
-      "Skill(skill:mattpocock-skills:tdd)",
-      "Skill(skill:mattpocock-skills:diagnosing-bugs)",
-      "Skill(skill:mattpocock-skills:prototype)",
-      "Skill(skill:mattpocock-skills:code-review)",
-      "Skill(skill:mattpocock-skills:pr)",
-      "Skill(skill:mattpocock-skills:implement)",
-      "Skill(skill:mattpocock-skills:handoff)",
-      "Skill(skill:mattpocock-skills:writing-for-agents)"
-    ]
-  }
-  ```
-
-- **Matt Pocock en Codex.** Mueve fuera de `~/.agents/skills/` las copias de
-  `tdd`, `diagnosing-bugs`, `prototype`, `code-review`, `handoff`,
-  `implement` y `writing-for-agents`.
-
-Las skills de un repositorio que su `AGENTS.md` exige, como `implement-spec`
-o `retro` en Comprador, se revisan repo por repo.
+- [pstack](https://github.com/cursor/plugins/tree/main/pstack) es obra de
+  Lauren Tan (poteto). Se instala como plugin por el port
+  [pstack-claude](https://github.com/michael-denyer/pstack-claude) de Michael
+  Denyer, con licencia MIT. Este repositorio no copia su código.
+- Las [skills de Matt Pocock](https://github.com/mattpocock/skills) son
+  © 2026 Matt Pocock, con licencia MIT. `vendor/mattpocock/` las copia sin
+  modificar junto con su [`LICENSE`](vendor/mattpocock/LICENSE). Ver
+  [`vendor/README.md`](vendor/README.md).
