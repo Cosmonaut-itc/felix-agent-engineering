@@ -129,7 +129,7 @@ pstack cubre estas necesidades, así que sus equivalentes no se instalan.
 | Implementar un issue o una spec | Playbook Feature | `implement`, `subagent-driven-development`, `executing-plans` |
 | Review de cambios | Sección Revisión | `code-review`, `pr`, `requesting-code-review` |
 | Pausar o retomar | Playbooks Pause safely y Session pickup | `handoff` |
-| Escribir skills o `AGENTS.md` | Playbook Authoring a skill y `unslop` | `writing-for-agents`, `writing-skills` |
+| Escribir skills o `AGENTS.md` | Playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
 | Conflictos de merge | `fix-merge-conflicts` | `resolving-merge-conflicts` |
 
 Superpowers no se usa. Tampoco `setup-pstack`, que reescribe la hoja

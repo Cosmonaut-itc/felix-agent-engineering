@@ -50,7 +50,7 @@ respuesta.
 | Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
 | Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |
 | Pausar o retomar | playbooks Pause safely y Session pickup | `handoff` |
-| Escribir skills o `AGENTS.md` | playbook Authoring a skill y `unslop` | `writing-for-agents`, `writing-skills` |
+| Escribir skills o `AGENTS.md` | playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
 
 Superpowers no se usa: este modo lo sustituye. Una skill local que el
 `AGENTS.md` del repositorio exige, como `implement-spec` o `retro`, sigue
