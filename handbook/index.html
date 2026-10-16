@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Handbook de agentes · Felix</title>
+<link rel="icon" href="data:,">
+<style>
+:root {
+  --bg: #f7f7f5; --panel: #ffffff; --ink: #1d1d1f; --muted: #6b6b70; --line: #e4e4e0;
+  --accent: #2f5fd0; --accent-soft: #e8eefc;
+  --auto: #1f7a4d; --auto-soft: #e3f4ea;
+  --you: #2f5fd0; --you-soft: #e8eefc;
+  --avoid: #b3261e; --avoid-soft: #fbe7e5;
+  --plan: #8a5a00; --plan-soft: #fbf0d9;
+  --code: #f0f0ec;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #141416; --panel: #1c1c1f; --ink: #ececef; --muted: #9a9aa2; --line: #2c2c31;
+    --accent: #8fb0ff; --accent-soft: #1f2a44;
+    --auto: #6fd3a0; --auto-soft: #16322a;
+    --you: #8fb0ff; --you-soft: #1f2a44;
+    --avoid: #ff8f86; --avoid-soft: #3a1d1b;
+    --plan: #f0c46c; --plan-soft: #362a12;
+    --code: #26262b;
+  }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .86em; background: var(--code); padding: .1em .35em; border-radius: 4px; white-space: nowrap; }
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.layout { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 32px; max-width: 1180px; margin: 0 auto; padding: 28px 24px 80px; }
+nav { position: sticky; top: 24px; align-self: start; font-size: 14px; }
+nav .brand { font-weight: 700; font-size: 15px; margin-bottom: 4px; }
+nav .meta { color: var(--muted); font-size: 12px; margin-bottom: 18px; }
+nav a { display: block; padding: 5px 10px; border-radius: 6px; color: var(--ink); }
+nav a:hover { background: var(--accent-soft); text-decoration: none; }
+header h1 { font-size: 30px; line-height: 1.2; margin: 0 0 6px; letter-spacing: -.01em; }
+header p { color: var(--muted); margin: 0 0 8px; max-width: 70ch; }
+section { margin-top: 44px; scroll-margin-top: 20px; }
+h2 { font-size: 21px; margin: 0 0 6px; letter-spacing: -.01em; }
+h3 { font-size: 15px; margin: 22px 0 8px; }
+.lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+.grid { display: grid; gap: 14px; }
+.g3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.g2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.g4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px 18px; }
+.card h3 { margin: 0 0 6px; }
+.card p { margin: 0; }
+.card p + p { margin-top: 8px; }
+.card .tag { display: inline-block; font-size: 11px; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+.flow { display: flex; flex-wrap: wrap; gap: 8px; align-items: stretch; margin: 6px 0 4px; }
+.step { flex: 1 1 130px; background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; position: relative; }
+.step b { display: block; font-size: 12px; color: var(--accent); }
+.step span { font-size: 13.5px; }
+ol.todo, ul.plain { margin: 0; padding-left: 20px; }
+ol.todo li, ul.plain li { margin: 6px 0; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; overflow: hidden; font-size: 14px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--line); }
+th { font-size: 12px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); background: var(--bg); font-weight: 600; }
+tr:last-child td { border-bottom: 0; }
+td.num { text-align: center; font-variant-numeric: tabular-nums; }
+.badge { display: inline-block; font-size: 11.5px; font-weight: 600; padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+.b-auto { color: var(--auto); background: var(--auto-soft); }
+.b-you { color: var(--you); background: var(--you-soft); }
+.b-avoid { color: var(--avoid); background: var(--avoid-soft); }
+.b-plan { color: var(--plan); background: var(--plan-soft); }
+.prompt { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: 8px; padding: 10px 14px; margin: 8px 0; }
+.prompt .k { font-size: 12px; font-weight: 700; color: var(--accent); display: block; margin-bottom: 2px; }
+.prompt q { quotes: "«" "»"; }
+.prec { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 0; font-size: 14px; }
+.prec span { background: var(--panel); border: 1px solid var(--line); padding: 4px 10px; border-radius: 999px; }
+.prec i { color: var(--muted); font-style: normal; }
+.filter { width: 100%; max-width: 420px; padding: 9px 12px; border-radius: 8px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); font-size: 14px; margin: 4px 0 12px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.chips button { font: inherit; font-size: 13px; padding: 4px 11px; border-radius: 999px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer; }
+.chips button[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.note { font-size: 13.5px; color: var(--muted); margin-top: 10px; }
+.callout { background: var(--accent-soft); border-radius: 10px; padding: 12px 16px; margin-top: 14px; font-size: 14px; }
+footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px solid var(--line); padding-top: 16px; }
+@media (max-width: 900px) {
+  .layout { grid-template-columns: minmax(0, 1fr); padding: 18px 16px 60px; }
+  nav { position: static; display: flex; flex-wrap: wrap; gap: 2px; }
+  nav .brand, nav .meta { width: 100%; }
+  .g3, .g4, .g2 { grid-template-columns: 1fr; }
+  table { display: block; overflow-x: auto; }
+}
+</style>
+</head>
+<body>
+<div class="layout">
+<nav aria-label="Secciones">
+  <div class="brand">Handbook de agentes</div>
+  <div class="meta">15 oct 2026 · pstack 0.9.86</div>
+  <a href="#esencial">Lo esencial</a>
+  <a href="#tu-parte">Lo que haces tú</a>
+  <a href="#activacion">Cuándo se activa</a>
+  <a href="#pedir">Cómo pedir una tarea</a>
+  <a href="#playbooks">Playbooks</a>
+  <a href="#revision">Revisión</a>
+  <a href="#skills">Skills</a>
+  <a href="#modelos">Modelos</a>
+  <a href="#runtimes">Dónde corre cada cosa</a>
+  <a href="#verificacion">Verificación</a>
+  <a href="#pausas">Pausas</a>
+  <a href="#archivos">Archivos</a>
+  <a href="#estado">Estado</a>
+</nav>
+
+<main>
+<header>
+  <h1>Cómo trabajan tus agentes</h1>
+  <p>Referencia rápida de tu configuración con <code>felix-mode</code> sobre pstack, en Claude Code y en Codex.</p>
+</header>
+
+<section id="esencial">
+  <h2>Lo esencial</h2>
+  <p class="lead"><code>felix-mode</code> une tres piezas. Cada una tiene su terreno.</p>
+  <div class="grid g3">
+    <div class="card"><span class="tag">Ejecuta</span><h3>pstack</h3><p>Los playbooks de <code>poteto-mode</code> dicen los pasos de cada tipo de tarea. Sus skills hacen el trabajo especializado.</p></div>
+    <div class="card"><span class="tag">Delega</span><h3>Tu contrato</h3><p>El routing elige modelo y esfuerzo. Cada encargo pasa por Despachar, Recoger, Vetar y Cerrar. astra revisa los cambios.</p></div>
+    <div class="card"><span class="tag">Planifica</span><h3>Matt Pocock</h3><p><code>grilling</code>, <code>to-spec</code>, <code>to-tickets</code>, <code>triage</code> y <code>wayfinder</code>. Un issue listo es el brief que recibe <code>felix-mode</code>.</p></div>
+  </div>
+</section>
+
+<section id="tu-parte">
+  <h2>Lo que haces tú</h2>
+  <div class="card">
+    <ol class="todo">
+      <li><b>No corres nada para activarlo.</b> <code>felix-mode</code> ya está instalado y se activa solo. Para forzarlo escribe <code>/felix-mode</code> en Claude Code o <code>$felix-mode</code> en Codex.</li>
+      <li><b>Reinicias las sesiones viejas.</b> Una sesión abierta antes de instalar pstack no lo ve.</li>
+      <li><b>Das objetivo y prueba.</b> Qué quieres, cuándo está terminado y qué evidencia quieres ver.</li>
+      <li><b>Apruebas lo que pausa.</b> Prototipos de UI, merges y deploys, escrituras en ICG o producción, dependencias, CI y configuración global.</li>
+      <li><b>Lees el informe.</b> Cada afirmación trae su evidencia o una etiqueta: medido, inferido o suposición.</li>
+    </ol>
+  </div>
+</section>
+
+<section id="activacion">
+  <h2>Cuándo se activa</h2>
+  <p class="lead">El agente invoca <code>felix-mode</code> antes de actuar si la tarea cumple uno de estos criterios. Si no cumple ninguno, la hace directo y la verifica sobre el artefacto real. Un trabajador al que otro agente le delegó un encargo no lo activa.</p>
+  <div class="grid g4" style="margin-bottom:16px">
+    <div class="card"><p>Toca más de un archivo.</p></div>
+    <div class="card"><p>Cambia una firma que otros llaman.</p></div>
+    <div class="card"><p>Implica una decisión de diseño.</p></div>
+    <div class="card"><p>Es un bug de causa desconocida o un problema de rendimiento.</p></div>
+  </div>
+  <h3>El recorrido</h3>
+  <div class="flow">
+    <div class="step"><b>1</b><span>Pides la tarea.</span></div>
+    <div class="step"><b>2</b><span>Se activa <code>felix-mode</code>.</span></div>
+    <div class="step"><b>3</b><span>Elige un playbook y copia sus pasos a la lista.</span></div>
+    <div class="step"><b>4</b><span>Delega según el routing.</span></div>
+    <div class="step"><b>5</b><span>Prueba en la app real con <code>verify</code>.</span></div>
+    <div class="step"><b>6</b><span>Revisión de astra en high, y de Opus si es alto riesgo.</span></div>
+    <div class="step"><b>7</b><span>Abre el PR y te da un informe con evidencia.</span></div>
+  </div>
+  <h3>Quién manda si chocan</h3>
+  <div class="prec"><span>Tú</span><i>›</i><span><code>AGENTS.md</code> del repo</span><i>›</i><span>Contrato y routing</span><i>›</i><span><code>felix-mode</code></span><i>›</i><span>pstack</span></div>
+  <p class="note">Si pstack choca con una capa superior, el agente sigue la superior y lo dice en una línea. Por eso en Comprador siguen vigentes <code>implement-spec</code> y <code>retro</code>.</p>
+</section>
+
+<section id="pedir">
+  <h2>Cómo pedir una tarea</h2>
+  <p class="lead">El agente necesita tres cosas: el objetivo, la condición de terminado y la prueba que quieres ver. Si falta la condición, la deriva y lo dice.</p>
+  <div class="grid g2">
+    <div class="prompt"><span class="k">Bug</span><q>&lt;Síntoma&gt; en &lt;superficie&gt;. Terminado cuando &lt;comportamiento correcto&gt;. Quiero ver &lt;log, captura o test&gt; antes y después.</q></div>
+    <div class="prompt"><span class="k">Rendimiento</span><q>&lt;Operación&gt; tarda &lt;medida actual&gt;. La meta es &lt;número&gt;. Mide antes y después en &lt;dónde&gt;.</q></div>
+    <div class="prompt"><span class="k">Desde un issue</span><q>Implementa SEN-XXXX.</q> El issue <code>ready-for-agent</code> ya es el brief.</div>
+    <div class="prompt"><span class="k">UI</span><q>Rediseña &lt;página&gt;. Primero un prototipo para que lo apruebe.</q></div>
+    <div class="prompt"><span class="k">Métrica</span><q>Sube &lt;métrica&gt; de &lt;actual&gt; a &lt;meta&gt; sin bajar &lt;otras&gt;. Un commit por mejora.</q></div>
+    <div class="prompt"><span class="k">PR abierto</span><q>Cuida el PR 434.</q> Activa el playbook Babysit.</div>
+  </div>
+  <div class="callout">
+    <b>Si la tarea está difusa.</b> Antepón <code>/pstack:sharpen</code> y el agente la afina solo antes de empezar. Con <code>/pstack:in-your-own-words</code> te dice qué entendió y lo corriges. Para algo grande, primero <code>grilling</code> y después <code>to-spec</code>. Ninguna te devuelve un prompt reescrito para pegar.
+  </div>
+</section>
+
+<section id="playbooks">
+  <h2>Playbooks</h2>
+  <p class="lead">El agente elige uno y copia sus pasos a la lista de tareas. Un paso que se salta queda anotado con su motivo.</p>
+  <table>
+    <thead><tr><th>Playbook</th><th>Cuándo</th><th>Tu trabajo reciente</th></tr></thead>
+    <tbody>
+      <tr><td><b>Bug fix</b></td><td>Reproducir en la misma superficie, encontrar la causa con evidencia y commitear el test que falla antes del arreglo.</td><td>SEN-CheckIn #430 y #431, OTA del kiosco. Apotheca #214, QA 53, con <code>swarm</code> para reproducir los seis issues.</td></tr>
+      <tr><td><b>Perf issue</b></td><td>Una lentitud medida, contra una línea base.</td><td>SEN-CheckIn #423, checada casi instantánea.</td></tr>
+      <tr><td><b>Hillclimb</b></td><td>Subir una métrica con hipótesis, antes y después, y un commit por mejora aceptada.</td><td>Comprador #894 a #899, evals SEN-2231.</td></tr>
+      <tr><td><b>Feature</b></td><td>Comportamiento nuevo a partir de un modelo de datos. <code>how</code>, <code>architect</code>, delegar, verificar.</td><td>SEN-CheckIn #427, auditoría SUA. #428, Forwarded Approval. Comprador #932.</td></tr>
+      <tr><td><b>Refactoring</b></td><td>Cambiar estructura sin cambiar comportamiento.</td><td>Comprador #931, retirar el reconciliador legado y migrar a quien lo llama.</td></tr>
+      <tr><td><b>Prototype</b></td><td>Un boceto desechable para decidir, o para observar en vez de preguntar.</td><td>SEN-CheckIn #425 y #420 antes de implementar.</td></tr>
+      <tr><td><b>Investigation</b></td><td>Una pregunta de sólo lectura con respuesta citada.</td><td><q>¿Cómo funciona X?</q>, <q>¿por qué se hizo Y así?</q></td></tr>
+      <tr><td><b>Babysit</b></td><td>Llevar un PR a mergeable: CI, comentarios y conflictos.</td><td><q>Cuida el PR 434.</q></td></tr>
+      <tr><td><b>Shipping</b></td><td>Verificar un stack verde y aterrizarlo de abajo arriba.</td><td><q>Aterriza el stack.</q> Pausa antes de un merge que despliega.</td></tr>
+      <tr><td><b>Pause safely</b> y <b>Session pickup</b></td><td>Pausar trabajo para retomarlo, o tomar el de otro agente.</td><td>Sustituyen a <code>handoff</code>.</td></tr>
+      <tr><td><b>Multi-phase plan</b></td><td>Sólo cuando pides un plan.</td><td>La planificación normal sigue en Matt Pocock.</td></tr>
+      <tr><td><b>figure-it-out</b> (skill)</td><td>Una migración grande o trabajo que revisas al volver.</td><td>Diseña un playbook propio y deja bitácora.</td></tr>
+      <tr><td><b>Opening a PR</b></td><td>Al final de todos.</td><td>Título Conventional Commits y cuerpo corto: por qué, qué cambia, alcance, riesgo, verificación.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="revision">
+  <h2>Revisión</h2>
+  <p class="lead">Ningún otro modelo revisa cambios. El orquestador decide el nivel de riesgo, veta los hallazgos y dice qué nivel aplicó y por qué.</p>
+  <div class="grid g2">
+    <div class="card"><span class="tag">Normal</span><h3>Un revisor astra en high</h3><p>gpt-6-astra en <code>high</code>, con contexto nuevo y evidencia primaria. Cumple los pasos donde pstack pide <code>interrogate</code> o <code>thermos</code>.</p></div>
+    <div class="card"><span class="tag">Alto riesgo</span><h3>astra y Opus por separado</h3><p><code>interrogate</code> con gpt-6-astra en high como Reviewer A y opus-5.5 en high. Ejemplos: #426 <code>payroll:read</code>, #427 SUA, #428.</p></div>
+    <div class="card"><span class="tag">Diseño</span><h3>Dos candidatos de Opus</h3><p><code>architect</code> corre <code>arena</code> con un solo runner opus-5.5 que entrega dos diseños distintos. El orquestador elige y no hay juez cruzado.</p></div>
+    <div class="card"><span class="tag">Diseño disputado</span><h3>Opus contra Sol, juez astra</h3><p>Alto riesgo o empate entre los candidatos de Opus. Compiten opus-5.5 y gpt-6.1-sol, gpt-6-astra juzga, y salen dos implementaciones completas.</p></div>
+  </div>
+  <div class="callout"><b>Señales de alto riesgo.</b> Escrituras a producción o a un sistema de cliente (ICG, ERP, pagos, CFDI, nómina). Migraciones o borrado de datos. Autenticación y permisos. Dinero o impuestos. Contratos entre paquetes o servicios. Lo que el <code>AGENTS.md</code> del repo marque. Si no puede correr ningún revisor independiente, la puerta sigue cerrada.</div>
+</section>
+
+<section id="skills">
+  <h2>Skills</h2>
+  <p class="lead">Algunas las llama el orquestador solo, porque un playbook o un disparador de <code>poteto-mode</code> las pide. Otras sólo corren si las invocas. En Claude Code se invocan con <code>/pstack:&lt;nombre&gt;</code>. En Codex, escribe <code>$</code> y elígela, o nómbrala en el mensaje.</p>
+  <input class="filter" id="q" type="search" placeholder="Buscar por nombre, por ejemplo «pr» o «verify»" aria-label="Buscar skills por nombre">
+  <div class="chips" role="group" aria-label="Filtrar por tipo">
+    <button type="button" data-k="all" aria-pressed="true">Todas</button>
+    <button type="button" data-k="auto" aria-pressed="false">Automáticas</button>
+    <button type="button" data-k="you" aria-pressed="false">Las invocas tú</button>
+    <button type="button" data-k="plan" aria-pressed="false">Planificación</button>
+    <button type="button" data-k="avoid" aria-pressed="false">Evitar</button>
+  </div>
+  <table id="skills-table">
+    <thead><tr><th>Skill</th><th>Qué hace</th><th>Quién</th></tr></thead>
+    <tbody>
+      <tr data-k="auto"><td><code>how</code></td><td>Explica un subsistema antes de un cambio no trivial o una decisión de arquitectura. Primer paso de Feature.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>why</code></td><td>Busca por qué algo es así en git, Linear y los docs. Siembra hipótesis en Bug fix e Investigation.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>architect</code></td><td>Tipos y firmas antes de escribir código que cruza funciones.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>arena</code></td><td>Varias versiones en paralelo. Elige una base e injerta lo mejor de las demás.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>swarm</code></td><td>Reparte trabajo en paralelo y junta un informe. Por ejemplo, reproducir los bugs de una QA.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>interrogate</code></td><td>Revisión adversarial con varios modelos. En tu config, sólo en alto riesgo.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>tdd</code></td><td>Test que falla primero. Bug fix la usa cuando hay un test local barato.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>benchmark-checklist</code></td><td>Revisa un número de rendimiento antes de creerlo. En Perf issue y Hillclimb.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>show-me-your-work</code></td><td>Bitácora de decisiones para trabajo largo o desatendido.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>figure-it-out</code></td><td>Diseña un playbook propio cuando ninguno encaja.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>unslop</code>, <code>technical-writing</code></td><td>Limpian la prosa, las descripciones de PR y los commits.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>deslop</code>, <code>no-comments</code></td><td>Quitan código sobrante antes del commit y comentarios innecesarios antes de la revisión.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="auto"><td><code>verify</code> del repo</td><td>Maneja la app real y trae capturas, trazas y lecturas de la base como prueba.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="you"><td><code>sharpen</code></td><td>Afina la tarea antes de empezar: cómo la haría un experto, qué buscas de verdad y si sobran o faltan detalles. Después hace el trabajo.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>in-your-own-words</code></td><td>Reformula tu objetivo para que confirmes que entendió.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>bro</code></td><td>Repite el último mensaje en lenguaje llano.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>teach</code></td><td>Junta <code>how</code> y <code>why</code> en una explicación para entender algo a fondo.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>recall</code></td><td>Reconstruye tu contexto reciente desde tu historial y el estado actual.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>ketchup</code></td><td>Te pone al día de lo que pasó en el chat desde tu último mensaje.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>what-did-i-get-done</code></td><td>Resume tus commits de un periodo.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>blast-radius</code></td><td>Qué más puede romper un cambio, comprobado corriendo código.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>reflect</code></td><td>Saca aprendizajes de la sesión y los convierte en ediciones de skills.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>correct</code></td><td>Vuelve imposibles los errores que se repiten en un repo: tipos, lint o test antes que docs.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>automate-me</code></td><td>Actualiza <code>felix-mode</code> con lo que encuentre en tus transcripts. Úsala cada pocas semanas, no para instalar.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>create-verification-skill</code></td><td>Crea la skill <code>verify</code> de un repo. Pendiente en Apotheca y Comprador.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>maintain-verification-skill</code></td><td>Audita que <code>verify</code> siga diciendo la verdad.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>make-pr-easy-to-review</code></td><td>Ordena commits y descripción de un PR sin cambiar el comportamiento.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>fix-ci</code>, <code>fix-merge-conflicts</code>, <code>get-pr-comments</code></td><td>Tareas sueltas de un PR. Para llevarlo a mergeable entero, pide el playbook Babysit.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>poteto-help</code></td><td>Pregúntale qué skill o playbook usar.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="plan"><td><code>grilling</code>, <code>grill-me</code></td><td>Te entrevista sin piedad para afinar un plan o un diseño.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="plan"><td><code>to-spec</code>, <code>to-tickets</code></td><td>Convierten la conversación en spec y en issues del tracker.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="plan"><td><code>triage</code>, <code>wayfinder</code></td><td>Clasifican issues y orientan qué hacer después.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="plan"><td><code>domain-modeling</code>, <code>research</code>, <code>codebase-design</code></td><td>Modelo de dominio, investigación con fuentes primarias y diseño de módulos.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
+      <tr data-k="avoid"><td><code>setup-pstack</code></td><td>Reescribe completa la hoja <code>pstack-models.md</code>. La tuya sale del routing.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
+      <tr data-k="avoid"><td><code>babysit</code> de pstack</td><td>Para un PR, pide el playbook Babysit: <q>cuida el PR N</q>.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
+      <tr data-k="avoid"><td><code>thermos</code>, <code>thermo-nuclear-review</code></td><td>No para revisar cambios. Tu routing reserva eso a astra, y a Opus en alto riesgo.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
+      <tr data-k="avoid"><td>Matt Pocock: <code>tdd</code>, <code>diagnosing-bugs</code>, <code>prototype</code>, <code>code-review</code>, <code>pr</code>, <code>implement</code>, <code>handoff</code>, <code>writing-for-agents</code></td><td>Bloqueadas en Claude Code por un deny global. Retiradas en Codex a <code>~/.agents/skills-retired/</code>. Superpowers está apagado.</td><td><span class="badge b-avoid">Bloqueada</span></td></tr>
+    </tbody>
+  </table>
+  <p class="note">Matt Pocock en Claude Code se invoca como <code>/mattpocock-skills:&lt;nombre&gt;</code>.</p>
+</section>
+
+<section id="modelos">
+  <h2>Modelos</h2>
+  <p class="lead">10 es mejor. En costo, 10 es más barato. Para ejecución se parte del más barato que dé la talla y se escala sin preguntar. El esfuerzo tiene tope <code>high</code>.</p>
+  <table>
+    <thead><tr><th>Modelo</th><th>Costo</th><th>Intel.</th><th>Gusto</th><th>Cuándo</th></tr></thead>
+    <tbody>
+      <tr><td><b>gpt-6-astra</b></td><td class="num">5</td><td class="num">10</td><td class="num">7</td><td>Lo que Sol no resolvió. Reviews de cambios en high. Fuera de reviews parte de low.</td></tr>
+      <tr><td><b>gpt-6.1-sol</b></td><td class="num">9</td><td class="num">9</td><td class="num">6</td><td>Opción habitual para ejecución técnica.</td></tr>
+      <tr><td><b>gpt-6-luna</b></td><td class="num">10</td><td class="num">7</td><td class="num">4</td><td>Encargos claros y fáciles de verificar.</td></tr>
+      <tr><td><b>opus-5.5</b></td><td class="num">8</td><td class="num">9</td><td class="num">9</td><td>Gusto visual y decisiones de producto.</td></tr>
+      <tr><td><b>sonnet-5.5</b></td><td class="num">6</td><td class="num">7</td><td class="num">7</td><td>Trabajo en Claude que no pide el juicio de Opus.</td></tr>
+      <tr><td><b>haiku-5.5</b></td><td class="num">10</td><td class="num">6</td><td class="num">4</td><td>Exploración y extracción de alto volumen.</td></tr>
+      <tr><td><b>DeepSeek V4.1 Flash</b> · Go</td><td class="num">10*</td><td class="num">8</td><td class="num">6</td><td>Primera opción económica para encargos acotados.</td></tr>
+      <tr><td><b>MiniMax M3</b> · Go</td><td class="num">9</td><td class="num">8</td><td class="num">7</td><td>Frontend y backend contra un diseño aprobado.</td></tr>
+      <tr><td><b>Kimi K3</b> · Go</td><td class="num">6</td><td class="num">9</td><td class="num">8</td><td>Encargos complejos y contexto amplio en Go.</td></tr>
+    </tbody>
+  </table>
+  <p class="note">*Costo 10 sólo con la promoción 4× vigente y verificada. Si no, 8.</p>
+  <h3>Roles de pstack</h3>
+  <table>
+    <thead><tr><th>Rol</th><th>Modelo</th></tr></thead>
+    <tbody>
+      <tr><td>Ejecución de Feature, Refactoring, Bug fix, Perf issue y Hillclimb</td><td>Selección normal del routing. En Claude, sonnet-5.5.</td></tr>
+      <tr><td><code>strongest judgment</code></td><td>gpt-6-astra en low. opus-5.5 si la decisión es de producto.</td></tr>
+      <tr><td><code>judgment and prose</code></td><td>El orquestador.</td></tr>
+      <tr><td>Exploradores de <code>how</code> y <code>why</code>, <code>swarm</code>, herramientas de <code>reflect</code></td><td>haiku-5.5 en low, o DeepSeek en Go.</td></tr>
+      <tr><td>Síntesis de <code>how</code>, <code>why</code> y <code>reflect</code></td><td>sonnet-5.5 en medium.</td></tr>
+      <tr><td>Runners de <code>architect</code> y <code>arena</code></td><td>opus-5.5. En diseño disputado, también gpt-6.1-sol.</td></tr>
+      <tr><td>Juez de <code>arena</code></td><td>De otra familia que el autor. Panel mixto: gpt-6-astra.</td></tr>
+      <tr><td>Revisores de <code>interrogate</code></td><td>gpt-6-astra en high. En alto riesgo, también opus-5.5 en high.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="runtimes">
+  <h2>Dónde corre cada cosa</h2>
+  <table>
+    <thead><tr><th>Runtime</th><th>Configuración</th><th>pstack</th><th><code>felix-mode</code> solo</th><th>Para qué</th></tr></thead>
+    <tbody>
+      <tr><td><b>Claude Code</b></td><td><code>~/.claude</code></td><td>Sí</td><td>Sí, por <code>CLAUDE.md</code></td><td>Orquestar.</td></tr>
+      <tr><td><b>App de Codex</b></td><td><code>~/.codex</code>, ChatGPT directo</td><td>Sí</td><td>Sí, por <code>AGENTS.md</code></td><td>Orquestar.</td></tr>
+      <tr><td><b>CLI de Codex con proxy</b></td><td><code>~/.config/codex-cli</code>, pasa por el proxy de DESKTOP en el puerto 8317</td><td>No</td><td>No, no tiene <code>AGENTS.md</code> global</td><td>Trabajadores GPT y reviews de astra que despacha Claude. Comando <code>codex</code> con <code>CODEX_HOME</code>.</td></tr>
+      <tr><td><b>OpenCode Go</b></td><td>Perfiles de <code>opencode-workers.md</code></td><td>No aplica</td><td>No</td><td>DeepSeek, MiniMax y Kimi para encargos acotados.</td></tr>
+    </tbody>
+  </table>
+  <p class="note">Los trabajadores no activan <code>felix-mode</code>, así que a la CLI con proxy no le falta nada para su papel. Sólo importaría si la usas como orquestador.</p>
+</section>
+
+<section id="verificacion">
+  <h2>Verificación</h2>
+  <div class="grid g2">
+    <div class="card"><span class="tag">Skill del repo</span><h3><code>verify</code></h3><p>Vive en <code>.agents/skills/verify/</code>, con un enlace en <code>.claude/skills/verify</code>. En SEN-CheckIn maneja la web contra la API y un Postgres desechable con Playwright, y trae capturas, snapshots ARIA, trazas y lecturas de la base.</p><p>Si un repo no la tiene, <code>felix-mode</code> sigue sus docs de verificación y propone crearla una vez.</p></div>
+    <div class="card"><span class="tag">Equipos de prueba</span><h3>Mac mini y Felix DESKTOP</h3><p>Cada corrida toma un slot con checkout, base y puertos propios. Por defecto hay dos slots por equipo. DESKTOP corre en WSL.</p><p>Los gates del <code>AGENTS.md</code> siguen siendo obligatorios.</p></div>
+  </div>
+</section>
+
+<section id="pausas">
+  <h2>Pausas</h2>
+  <p class="lead">El trabajo local y reversible avanza sin preguntar. El agente se detiene antes de esto:</p>
+  <div class="card">
+    <ul class="plain">
+      <li>Push a <code>main</code>, o un merge que dispare un deploy.</li>
+      <li>Escribir en ICG u otro sistema de un cliente en producción.</li>
+      <li>Actualizar el tracker más allá de lo que pide el flujo del repo.</li>
+      <li>Instalar dependencias, cambiar CI o tocar la configuración global de agentes.</li>
+      <li>Implementar UI sin un prototipo que aprobaste.</li>
+      <li>Lo irreversible de pstack: force push a ramas compartidas, borrar datos y mensajes a clientes.</li>
+    </ul>
+  </div>
+</section>
+
+<section id="archivos">
+  <h2>Archivos</h2>
+  <table>
+    <thead><tr><th>Archivo</th><th>Qué contiene</th></tr></thead>
+    <tbody>
+      <tr><td><code>~/.agents/skills/felix-mode/SKILL.md</code></td><td>El modo. Enlazado en <code>~/.claude/skills/felix-mode</code>. Su versión en git está en <code>skills/felix-mode/</code> de personal-agent-orchestration.</td></tr>
+      <tr><td><code>~/.agents/docs/agent-routing.md</code></td><td>Modelos, esfuerzo, revisión, roles de pstack y transporte. Es la fuente.</td></tr>
+      <tr><td><code>~/.agents/docs/orchestration.md</code></td><td>El contrato Despachar, Recoger, Vetar y Cerrar. Es la fuente.</td></tr>
+      <tr><td><code>~/.claude/CLAUDE.md</code></td><td>Copia del contrato, tabla de modelos y la sección «Flujo de ingeniería» que activa <code>felix-mode</code>.</td></tr>
+      <tr><td><code>~/.codex/AGENTS.md</code></td><td>Lo mismo para Codex.</td></tr>
+      <tr><td><code>~/.claude/pstack-models.md</code></td><td>El asiento Claude de cada rol de pstack. <code>session hook: off</code>.</td></tr>
+      <tr><td><code>~/.codex/pstack-models.md</code></td><td>Sólo apaga el hook del plugin.</td></tr>
+      <tr><td><code>~/.claude/settings.json</code></td><td>Deny de las ocho skills de Matt Pocock y <code>CODEX_HOME</code> del proxy.</td></tr>
+      <tr><td><code>~/.codex/config.toml</code></td><td>pstack encendido, Superpowers apagado.</td></tr>
+      <tr><td><code>~/.claude/docs/codex-delegation.md</code></td><td>Cómo Claude despacha a GPT por la CLI con proxy.</td></tr>
+      <tr><td><code>~/.agents/docs/opencode-workers.md</code></td><td>Cómo despachar a OpenCode Go.</td></tr>
+    </tbody>
+  </table>
+  <div class="callout"><b>Copias que van juntas.</b> <code>CLAUDE.md</code> y <code>orchestration.md</code>. La tabla de modelos del routing, <code>CLAUDE.md</code> y <code>AGENTS.md</code>. Los roles del routing y <code>pstack-models.md</code>. Al cambiar una, cambia la otra.</div>
+</section>
+
+<section id="estado">
+  <h2>Estado</h2>
+  <table>
+    <thead><tr><th>Qué</th><th>Estado al 15 oct 2026</th></tr></thead>
+    <tbody>
+      <tr><td><a href="https://github.com/Cosmonaut-itc/personal-agent-orchestration/pull/1">personal-agent-orchestration #1</a></td><td>Mergeado. <code>felix-mode</code>, routing y este handbook versionados en <code>main</code>.</td></tr>
+      <tr><td><a href="https://github.com/Cosmonaut-itc/SEN-CheckIn/pull/433">SEN-CheckIn #433</a></td><td>Abierto. Piloto: skill <code>verify</code> y limpieza de docs.</td></tr>
+      <tr><td><a href="https://github.com/Cosmonaut-itc/SEN-CheckIn/pull/434">SEN-CheckIn #434</a></td><td>Abierto. Arregla la carrera de slots. Al mergearlo, rebasar #433 y quitar la línea de Limits.</td></tr>
+      <tr><td>Apotheca y Comprador</td><td>Pendientes. Les falta <code>verify</code>.</td></tr>
+      <tr><td>pstack en la CLI con proxy</td><td>No instalado. Toca configuración global, así que espera tu visto bueno.</td></tr>
+    </tbody>
+  </table>
+  <h3>Mantenimiento</h3>
+  <ul class="plain">
+    <li><b>Cambias un modelo.</b> Edita el routing y replica la tabla y la hoja <code>pstack-models.md</code>.</li>
+    <li><b>Cada pocas semanas.</b> <code>/pstack:automate-me</code> para refrescar <code>felix-mode</code>. Pide que conserve el <code>description</code> que lo activa solo.</li>
+    <li><b>Un error que se repite.</b> <code>/pstack:reflect</code> o <code>/pstack:correct</code>.</li>
+  </ul>
+</section>
+
+<footer>Generado el 15 oct 2026 desde la configuración local. Las fuentes son los archivos de la sección Archivos.</footer>
+</main>
+</div>
+<script>
+(() => {
+  const q = document.getElementById('q');
+  const rows = [...document.querySelectorAll('#skills-table tbody tr')];
+  const chips = [...document.querySelectorAll('.chips button')];
+  let kind = 'all';
+  const apply = () => {
+    const t = q.value.trim().toLowerCase();
+    for (const r of rows) {
+      const okKind = kind === 'all' || r.dataset.k === kind;
+      const okText = !t || r.cells[0].textContent.toLowerCase().includes(t);
+      r.hidden = !(okKind && okText);
+    }
+  };
+  q.addEventListener('input', apply);
+  for (const c of chips) c.addEventListener('click', () => {
+    kind = c.dataset.k;
+    for (const o of chips) o.setAttribute('aria-pressed', String(o === c));
+    apply();
+  });
+})();
+</script>
+</body>
+</html>
