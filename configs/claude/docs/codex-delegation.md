@@ -37,7 +37,8 @@ ya resuelve y lo que sigue en tus manos: el brief, el veto y los commits.
 
 ## Runtime del plugin
 
-Antes del primer despacho de la sesión ejecuta `/codex:setup` para comprobar
+Esta sección y la siguiente aplican sólo si despachas por el plugin. Antes de
+su primer despacho en la sesión, ejecuta `/codex:setup` para comprobar
 instalación y autenticación del plugin
 [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc).
 

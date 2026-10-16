@@ -22,12 +22,13 @@ import sys
 try:
     payload = json.load(sys.stdin)
     command = payload["tool_input"]["command"]
-    if not isinstance(command, str) or re.search(r"ssh\s|remote-run|scp\s", command):
+    if not isinstance(command, str):
         sys.exit(0)
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+    # shlex trata el salto de línea como espacio; aquí separa comandos.
+    lexer = shlex.shlex(command.replace("\n", ";"), posix=True, punctuation_chars=";&|()")
     lexer.whitespace_split = True
     tokens = list(lexer)
-    boundaries = {";", "&", "&&", "|", "||", "(", ")", "\n"}
+    boundaries = {";", ";;", "&", "&&", "|", "||", "|&", "(", ")"}
     heavy = False
 
     def arguments(index):
@@ -48,8 +49,20 @@ try:
                 args = args[1:]
         return args[0].split(":", 1)[0] if args else ""
 
+    # Un segmento que corre en otra máquina se salta entero; el resto se revisa.
+    segment_start, remote = True, False
     for index, token in enumerate(tokens):
+        if token in boundaries:
+            segment_start, remote = True, False
+            continue
         name = token.rsplit("/", 1)[-1]
+        if segment_start:
+            if re.match(r"[A-Za-z_][A-Za-z0-9_]*=", token):
+                continue
+            segment_start = False
+            remote = name in {"ssh", "scp", "remote-run"}
+        if remote:
+            continue
         args = arguments(index)
         if name in {"orb", "orbctl", "vite", "vitest", "jest", "xcodebuild", "gradlew", "postgres"}:
             heavy = True

@@ -97,6 +97,31 @@ def alive(pid):
     return result.returncode == 0 and not result.stdout.strip().startswith("Z")
 
 
+def group_alive(pgid):
+    try:
+        os.killpg(pgid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass
+    return True
+
+
+def kill_group(pgid, sig):
+    try:
+        os.killpg(pgid, sig)
+    except ProcessLookupError:
+        pass
+
+
+def child_group(out):
+    # timeout corre en su propia sesión, así que su pid es el grupo de Codex.
+    try:
+        return int((out / "child-pid").read_text().strip())
+    except (FileNotFoundError, ValueError):
+        return None
+
+
 def run_dir(value):
     out = Path(value).resolve()
     if not (out / "meta").is_file() or not (out / "pid").is_file():
@@ -114,7 +139,10 @@ def run_pid(out):
 def state(out):
     if (out / "done").exists():
         return "done"
-    return "running" if alive(run_pid(out)) else "lost"
+    child = child_group(out)
+    if alive(run_pid(out)) or (child and group_alive(child)):
+        return "running"
+    return "lost"
 
 
 def status(out):
@@ -213,6 +241,7 @@ def worker(out):
                 # timeout tiene su propio grupo; el supervisor sobrevive a su SIGKILL.
                 child = subprocess.Popen(spec["command"], cwd=spec["cwd"], env=env,
                                          stdin=brief, stdout=output, start_new_session=True)
+                (out / "child-pid").write_text(str(child.pid) + "\n", encoding="utf-8")
                 if stopped:
                     terminate(signal.SIGTERM, None)
                 code = child.wait()
@@ -231,16 +260,20 @@ def stop(out):
     if not (out / "done").exists():
         pid = run_pid(out)
         if alive(pid):
-            try:
-                os.killpg(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+            kill_group(pid, signal.SIGTERM)
             for _ in range(50):
                 if (out / "done").exists() or not alive(pid):
                     break
                 time.sleep(0.1)
-            else:
-                os.killpg(pid, signal.SIGKILL)
+        groups = [group for group in (child_group(out), pid) if group]
+        for group in groups:
+            kill_group(group, signal.SIGKILL)
+        for _ in range(50):
+            if not any(group_alive(group) for group in groups):
+                break
+            time.sleep(0.1)
+        else:
+            fail("no se pudo confirmar que el run terminó; revisa los grupos {}".format(groups))
         finish(out, 143)
     status(out)
     print("Detenido: {}".format(out))
@@ -314,8 +347,9 @@ def main():
             session, _, _ = summary(out)
             if not session:
                 fail("no hay session id para reanudar")
-            if state(out) == "running":
-                fail("detén o espera al run antes de reanudarlo")
+            for previous in [out] + sorted(out.glob("resume-*")):
+                if (previous / "pid").is_file() and state(previous) == "running":
+                    fail("detén o espera a {} antes de reanudar".format(previous))
             number = 1
             while True:
                 target = out / "resume-{}".format(number)
