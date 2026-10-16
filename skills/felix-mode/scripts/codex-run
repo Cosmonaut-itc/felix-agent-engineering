@@ -1,0 +1,56 @@
+#!/bin/bash
+set -euo pipefail
+
+SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+
+if [ "${1:-}" = --help ] || [ "${1:-}" = -h ]; then
+    cat <<'HELP'
+Uso: codex-run start --model M --effort E [--cwd DIR] [--out DIR]
+                      [--write] [--root DIR]... [--network]
+                      [--timeout SECS] [--ephemeral] BRIEF
+     codex-run status OUT
+     codex-run wait OUT [--timeout SECS]
+     codex-run resume OUT BRIEF
+     codex-run stop OUT
+
+BRIEF es un archivo de texto. El esfuerzo admite low, medium o high.
+resume recibe el OUT original y escribe en OUT/resume-N.
+El timeout de start es 3600 s; wait no tiene límite por defecto.
+Sin --write, el sandbox es read-only. --root y --network exigen --write.
+Requiere python3 y ps en macOS o Linux. Conserva OUT para auditar el run.
+El supervisor aplica --timeout y registra el árbol de procesos en OUT/pids.
+done significa que Codex salió y no queda vivo ningún proceso registrado:
+los que el supervisor vio por ppid en sus fotos y en la foto final de limpieza.
+Límite: un proceso que se separa de su padre entre dos fotos puede escapar.
+Si no puede confirmar la terminación, status muestra state=stuck y survivors;
+si el supervisor murió durante launching, muestra survivors=unknown.
+stuck es definitivo: revisa a mano los survivors.
+wait termina en done, lost o stuck; --timeout sale con 124 si agota su espera.
+Sólo el supervisor escribe en OUT. stop le pide que limpie y publique done.
+Si el supervisor ya murió, stop señaliza los procesos registrados sin escribir:
+el run queda lost, y stop devuelve error si algo sobrevive o queda stuck.
+OUT/done registra exit: timeout 137, stop 143, error del supervisor 127,
+o el código de Codex al terminar normalmente.
+resume se rechaza si el original o algún resume-N sigue running o stuck.
+El exit code puede mentir: comprueba tools, el mensaje y el entregable.
+
+Review:
+  codex-run start --model gpt-6-astra --effort high --ephemeral review.md
+Implementación:
+  codex-run start --model gpt-6.1-sol --effort medium --write brief.md
+
+Un despacho de escritura no commitea: el orquestador commitea y veta.
+HELP
+    exit 0
+fi
+
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'codex-run: se requiere python3.\n' >&2
+    exit 1
+fi
+if [ "$#" = 0 ]; then
+    printf 'codex-run: falta un subcomando. Consulta codex-run --help.\n' >&2
+    exit 1
+fi
+args=("$@")
+exec python3 "$SCRIPT_DIR/codex-run-support.py" "${args[@]}"

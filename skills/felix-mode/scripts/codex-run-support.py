@@ -1,0 +1,596 @@
+#!/usr/bin/env python3
+"""Persistencia y supervisión del lanzador Bash codex-run."""
+
+import argparse
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import signal
+import subprocess
+import sys
+import tempfile
+import time
+
+
+def fail(message):
+    raise ValueError(message)
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message):
+        for original, translated in (
+            ("the following arguments are required", "faltan argumentos obligatorios"),
+            ("unrecognized arguments", "argumentos desconocidos"),
+            ("expected one argument", "falta un valor"),
+            ("invalid choice", "valor no permitido"),
+            ("choose from", "opciones"),
+            ("argument ", "argumento "),
+        ):
+            message = message.replace(original, translated)
+        fail(message + ". Consulta codex-run --help.")
+
+
+def seconds(value):
+    if not value.isascii() or not value.isdigit() or int(value) <= 0:
+        raise argparse.ArgumentTypeError("SECS debe ser un entero positivo")
+    return int(value)
+
+
+def events(out):
+    try:
+        with (out / "events.jsonl").open(encoding="utf-8", errors="replace") as stream:
+            for line in stream:
+                try:
+                    event = json.loads(line)
+                    if isinstance(event, dict):
+                        yield event
+                except ValueError:
+                    pass  # Una línea parcial es normal mientras Codex escribe.
+    except FileNotFoundError:
+        pass
+
+
+def summary(out):
+    session, tools, message = "", 0, ""
+    for event in events(out):
+        if event.get("type") == "thread.started":
+            session = event.get("thread_id", "")
+        item = event.get("item", {})
+        if event.get("type") != "item.completed" or not isinstance(item, dict):
+            continue
+        kind = item.get("type", "")
+        if kind in ("command_execution", "mcp_tool_call", "web_search", "file_change", "tool_call"):
+            tools += 1
+        if kind == "agent_message":
+            message = item.get("text", "")
+    return session, tools, message
+
+
+def finish(out, code):
+    # El enlace publica el resultado completo y conserva el primer escritor.
+    fd, temporary = tempfile.mkstemp(prefix=".done-", dir=str(out))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write("exit={}\n".format(code))
+        try:
+            os.link(temporary, str(out / "done"))
+        except FileExistsError:
+            pass
+    finally:
+        os.unlink(temporary)
+
+
+def alive(pid):
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    try:
+        result = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)],
+                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    except OSError:
+        return True  # Algunos sandboxes permiten kill(0), pero impiden ejecutar ps.
+    return result.returncode != 0 or not result.stdout.strip().startswith("Z")
+
+
+def atomic_text(path, content):
+    fd, temporary = tempfile.mkstemp(prefix="." + path.name + "-", dir=str(path.parent))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as stream:
+            stream.write(content)
+        os.replace(temporary, str(path))
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def process_snapshot():
+    result = subprocess.run(["ps", "-A", "-o", "pid=,ppid=,lstart="],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            env=dict(os.environ, LC_ALL="C"))
+    if result.returncode:
+        raise OSError("ps no pudo tomar la foto de procesos: " + result.stderr.strip())
+    processes = {}
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3 or not fields[0].isdigit() or not fields[1].isdigit():
+            raise OSError("ps devolvió una identidad de proceso inválida")
+        processes[int(fields[0])] = (int(fields[1]), fields[2])
+    return processes
+
+
+def process_alive(pid, started, snapshot):
+    entry = snapshot.get(pid)
+    return entry is not None and entry[1] == started and alive(pid)
+
+
+class ProcessTree:
+    def __init__(self, out, root=None):
+        self.out = out
+        # Sólo el supervisor conoce la raíz con certeza; los demás usan OUT/pids.
+        self.root = root
+        self.seen = set()
+        self.error = False
+        try:
+            for line in (out / "pids").read_text(encoding="utf-8").splitlines():
+                pid, started = line.split(None, 1)
+                if int(pid) <= 1:
+                    raise ValueError("pid inválido en OUT/pids")
+                self.seen.add((int(pid), started))
+        except FileNotFoundError:
+            pass
+
+    def capture(self, persist=True):
+        snapshot = process_snapshot()
+        # Un pid conocido con otra fecha ya no es nuestro proceso.
+        roots = {pid for pid, started in self.seen
+                 if pid in snapshot and snapshot[pid][1] == started}
+        if self.root and not any(pid == self.root for pid, _ in self.seen):
+            if self.root in snapshot:
+                roots.add(self.root)
+        pending = set(roots)
+        while pending:
+            self.seen.update((pid, snapshot[pid][1]) for pid in pending)
+            pending = {pid for pid, (parent, _) in snapshot.items()
+                       if parent in pending and pid not in roots}
+            roots.update(pending)
+        if persist:
+            self.persist()
+        return snapshot
+
+    def persist(self):
+        atomic_text(self.out / "pids", "".join(
+            "{} {}\n".format(pid, started) for pid, started in sorted(self.seen)))
+
+    def survivors(self):
+        snapshot = process_snapshot()
+        return sorted(pid for pid, started in self.seen
+                      if process_alive(pid, started, snapshot))
+
+
+def log_error(error):
+    print("codex-run: {}".format(error), file=sys.stderr, flush=True)
+
+
+def terminate_tree(tree, child=None):
+    """Una sola vía de limpieza. None significa confirmación imposible.
+
+    Sólo el supervisor pasa child, y sólo él escribe OUT/pids."""
+    remaining = None
+    for sig, budget in ((signal.SIGTERM, 3), (signal.SIGKILL, 5)):
+        try:
+            snapshot = tree.capture(persist=False)
+        except Exception as error:
+            tree.error = True
+            log_error(error)
+            snapshot = None
+        if snapshot is not None and child is not None:
+            try:
+                tree.persist()
+            except Exception as error:
+                tree.error = True
+                log_error(error)
+        # Aunque ps falle, Popen todavía identifica a Codex sin riesgo de reutilización.
+        if child is not None and child.poll() is None:
+            try:
+                child.send_signal(sig)
+            except OSError as error:
+                tree.error = True
+                log_error(error)
+        if snapshot is not None:
+            for pid, started in tree.seen:
+                try:
+                    if process_alive(pid, started, snapshot):
+                        os.kill(pid, sig)
+                except ProcessLookupError:
+                    pass
+                except OSError as error:
+                    tree.error = True
+                    log_error(error)
+        deadline = time.monotonic() + budget
+        while True:
+            try:
+                remaining = tree.survivors()
+                # Popen sabe si Codex vive aunque ninguna foto lo haya registrado.
+                if child is not None and child.poll() is None and child.pid not in remaining:
+                    remaining = sorted(remaining + [child.pid])
+                if not remaining:
+                    return []
+            except Exception as error:
+                tree.error = True
+                log_error(error)
+                remaining = None
+                # Sin inspección no podemos confirmar; pasar al siguiente signal.
+                break
+            if time.monotonic() >= deadline:
+                break
+            time.sleep(0.1)
+    return remaining
+
+
+def publish_result(out, remaining, code, tree):
+    if (out / "launching").exists():
+        atomic_text(out / "stuck", "survivors=unknown\n")
+        return
+    if remaining == []:
+        finish(out, code)
+    else:
+        # Ante un error de inspección, conservar todos los candidatos.
+        pids = remaining if remaining is not None else sorted(
+            {pid for pid, _ in tree.seen} | ({tree.root} if tree.root else set()))
+        atomic_text(out / "stuck", "survivors={}\n".format(
+            ",".join(map(str, pids)) if pids else "unknown"))
+
+
+def run_dir(value):
+    out = Path(value).resolve()
+    if not (out / "meta").is_file() or not (out / "pid").is_file():
+        fail("OUT no contiene un run válido")
+    return out
+
+
+def run_pid(out):
+    pid = int((out / "pid").read_text().strip())
+    if pid <= 1:
+        fail("pid inválido en OUT")
+    return pid
+
+
+def process_start(pid):
+    result = subprocess.run(["ps", "-o", "lstart=", "-p", str(pid)],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                            env=dict(os.environ, LC_ALL="C"))
+    started = result.stdout.strip()
+    if result.returncode or not started:
+        if alive(pid):
+            raise OSError("ps no pudo identificar el supervisor {}".format(pid))
+        return None
+    return started
+
+
+def supervisor_alive(out):
+    try:
+        started = (out / "pid-start").read_text(encoding="utf-8").strip()
+    except FileNotFoundError:
+        return False  # Sin identidad persistida no señalizar un pid posiblemente ajeno.
+    pid = run_pid(out)
+    return bool(started) and process_start(pid) == started and alive(pid)
+
+
+def state_detail(out):
+    # El supervisor es el único que escribe marcas; state y stop sólo leen.
+    # done es definitivo. El resto se lee con el supervisor ya muerto.
+    if (out / "done").exists():
+        return "done", (out / "done").read_text().strip()
+    if supervisor_alive(out):
+        return "running", ""
+    if (out / "done").exists():
+        return "done", (out / "done").read_text().strip()
+    if (out / "stuck").exists():
+        return "stuck", (out / "stuck").read_text().strip()
+    if (out / "launching").exists():
+        return "stuck", "survivors=unknown"
+    if ProcessTree(out).survivors():
+        return "running", ""
+    return "lost", ""
+
+
+def state(out):
+    return state_detail(out)[0]
+
+
+def status(out):
+    current, detail = state_detail(out)
+    session, tools, _ = summary(out)
+    print("state={}{}".format(current, " " + detail if current == "done" else ""))
+    if current == "stuck":
+        print(detail)
+    print("session={}".format(session))
+    print("tools={}".format(tools))
+    message = out / "last-message.md"
+    if message.is_file() and message.stat().st_size:
+        print("last_message={}".format(message))
+
+
+def executable(value):
+    path = shutil.which(value)
+    if not path:
+        fail("no se encontró el ejecutable {}".format(value))
+    return str(Path(path).resolve())
+
+
+def launch(out, brief, config, session=None):
+    brief = Path(brief).resolve()
+    if not brief.is_file():
+        fail("BRIEF debe ser un archivo legible")
+    content = brief.read_bytes()
+    if sys.platform not in ("darwin", "linux"):
+        fail("codex-run requiere macOS o Linux")
+    executable("ps")
+    codex = executable(os.environ.get("CODEX_RUN_BIN", "codex"))
+    home = str(Path(os.environ.get("CODEX_RUN_HOME", str(Path.home() / ".config/codex-cli"))).resolve())
+    out.mkdir(parents=True, exist_ok=True)
+    if any(out.iterdir()):
+        fail("OUT debe estar vacío para conservar la evidencia anterior")
+    (out / "brief.md").write_bytes(content)
+    command = [codex, "exec"]
+    if session:
+        command += ["resume", session, "-c", "sandbox_mode=" + json.dumps(config["sandbox"])]
+    else:
+        command += ["-C", config["cwd"], "-s", config["sandbox"], "-m", config["model"]]
+    command += ["-c", "model_reasoning_effort=" + json.dumps(config["effort"]),
+                "--skip-git-repo-check", "--json"]
+    if not session:
+        command += ["-o", str(out / "last-message.md")]
+    if config["ephemeral"]:
+        command.append("--ephemeral")
+    if config["roots"]:
+        command += ["-c", "sandbox_workspace_write.writable_roots=" + json.dumps(config["roots"], ensure_ascii=False)]
+    if config["network"]:
+        command += ["-c", "sandbox_workspace_write.network_access=true"]
+    command.append("-")
+    spec = dict(config, command=command, home=home, resume=bool(session))
+    (out / "run.json").write_text(json.dumps(spec, ensure_ascii=False), encoding="utf-8")
+    with (out / "meta").open("w", encoding="utf-8") as stream:
+        for key in ("cwd", "model", "effort", "sandbox", "ephemeral", "timeout"):
+            value = config[key]
+            if isinstance(value, bool):
+                value = int(value)
+            stream.write("{}={}\n".format(key, value))
+    audit = "cd {} && CODEX_HOME={} {} < {}\n".format(
+        shlex.quote(config["cwd"]), shlex.quote(home),
+        " ".join(shlex.quote(arg) for arg in command), shlex.quote(str(out / "brief.md")))
+    (out / "cmd").write_text(audit, encoding="utf-8")
+    (out / "events.jsonl").touch()
+    with (out / "stderr.log").open("ab") as log:
+        worker = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_worker", str(out)],
+                                  start_new_session=True, stdin=subprocess.PIPE,
+                                  stdout=subprocess.DEVNULL, stderr=log, close_fds=True)
+    try:
+        started = process_start(worker.pid)
+        if started is None:
+            raise OSError("el supervisor terminó antes de registrar su identidad")
+        atomic_text(out / "pid-start", started + "\n")
+        atomic_text(out / "pid", str(worker.pid) + "\n")
+        # El daemon no puede abrir Codex hasta que su identidad sea auditable.
+        worker.stdin.write(b"1")
+        worker.stdin.flush()
+    finally:
+        worker.stdin.close()
+    print("out={}".format(out))
+    print("pid={}".format(worker.pid))
+
+
+def worker(out):
+    spec = json.loads((out / "run.json").read_text(encoding="utf-8"))
+    child = None
+    tree = ProcessTree(out)
+    stopped = False
+
+    def terminate(_signum, _frame):
+        nonlocal stopped
+        stopped = True
+
+    signal.signal(signal.SIGTERM, terminate)
+    signal.signal(signal.SIGINT, terminate)
+    code = 127
+    try:
+        with (out / "brief.md").open("rb") as brief, (out / "events.jsonl").open("ab") as output:
+            if not stopped:
+                env = dict(os.environ, CODEX_HOME=spec["home"])
+                atomic_text(out / "launching", "launching\n")
+                launched = time.monotonic()
+                try:
+                    child = subprocess.Popen(spec["command"], cwd=spec["cwd"], env=env,
+                                             stdin=brief, stdout=output, start_new_session=True)
+                except OSError:
+                    # Popen confirma que Codex no arrancó: no hay nada que quedó suelto.
+                    (out / "launching").unlink()
+                    raise
+                tree.root = child.pid
+                # Guardar primero la identidad, también si falla child-pid.
+                tree.capture()
+                (out / "child-pid").write_text(str(child.pid) + "\n", encoding="utf-8")
+                (out / "launching").unlink()
+                deadline = launched + spec["timeout"]
+                next_snapshot = launched + 0.1
+                while True:
+                    now = time.monotonic()
+                    if now >= next_snapshot:
+                        tree.capture()
+                        next_snapshot = now + (0.1 if now - launched < 1 else 1)
+                    result = child.poll()
+                    if stopped:
+                        code = 143
+                        break
+                    if result is not None:
+                        code = result if result >= 0 else 128 - result
+                        break
+                    if time.monotonic() >= deadline:
+                        code = 137
+                        break
+                    # Durante el primer segundo observar también runs de 0.3 s.
+                    time.sleep(0.05)
+    except Exception as error:
+        code = 127
+        log_error(error)
+    finally:
+        remaining = terminate_tree(tree, child) if child is not None else []
+        if tree.error:
+            code = 127
+        if child is not None and (out / "launching").exists():
+            # Un fallo manejado conserva el pid en memoria. Reparar la evidencia
+            # antes de cerrar launching; si también falla, sólo publicar stuck.
+            try:
+                tree.persist()
+                atomic_text(out / "child-pid", str(child.pid) + "\n")
+                (out / "launching").unlink()
+            except Exception as error:
+                code = 127
+                log_error(error)
+        try:
+            if spec["resume"]:
+                _, _, message = summary(out)
+                (out / "last-message.md").write_text(message, encoding="utf-8")
+        except Exception as error:
+            code = 127
+            log_error(error)
+        publish_result(out, remaining, 143 if stopped else code, tree)
+
+
+def stop(out):
+    if not (out / "done").exists() and supervisor_alive(out):
+        pid = run_pid(out)
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        deadline = time.monotonic() + 15
+        while supervisor_alive(out) and time.monotonic() < deadline:
+            time.sleep(0.1)
+        if supervisor_alive(out):
+            # Sin respuesta: matarlo para que no lance ni escriba nada más.
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+    remaining = []
+    if not (out / "done").exists():
+        # El supervisor murió sin publicar. stop señaliza lo registrado y lo
+        # informa, pero no escribe en OUT: dos stop no pueden pisarse.
+        remaining = terminate_tree(ProcessTree(out))
+    status(out)
+    if remaining is None:
+        fail("ps falló; no se pudo confirmar que el run terminó")
+    if remaining:
+        fail("siguen vivos: {}".format(",".join(map(str, remaining))))
+    if state(out) == "stuck":
+        fail("no se pudo confirmar que el run terminó; revisa survivors en status")
+    print("Detenido: {}".format(out))
+
+
+def main():
+    parser = Parser(prog="codex-run", add_help=False, description="codex-run --help muestra el uso")
+    commands = parser.add_subparsers(dest="action", required=True)
+    start = commands.add_parser("start", add_help=False)
+    start.add_argument("--model", required=True)
+    start.add_argument("--effort", required=True, choices=("low", "medium", "high"))
+    start.add_argument("--cwd", default=os.getcwd())
+    start.add_argument("--out")
+    start.add_argument("--write", action="store_true")
+    start.add_argument("--root", action="append", default=[])
+    start.add_argument("--network", action="store_true")
+    start.add_argument("--timeout", type=seconds, default=3600)
+    start.add_argument("--ephemeral", action="store_true")
+    start.add_argument("brief")
+    for name in ("status", "wait", "resume", "stop", "_worker"):
+        command = commands.add_parser(name, add_help=False)
+        command.add_argument("out")
+        if name == "wait":
+            command.add_argument("--timeout", type=seconds)
+        if name == "resume":
+            command.add_argument("brief")
+    args = parser.parse_args()
+    if args.action == "start":
+        if not args.model.startswith("gpt-"):
+            fail("--model exige el nombre completo, que debe empezar por gpt-")
+        if (args.root or args.network) and not args.write:
+            fail("--root y --network requieren --write")
+        cwd = Path(args.cwd).resolve(strict=True)
+        if not cwd.is_dir():
+            fail("--cwd debe ser un directorio")
+        roots = [str(Path(root).resolve(strict=True)) for root in args.root]
+        if any(not Path(root).is_dir() for root in roots):
+            fail("--root debe ser un directorio")
+        if any("\n" in value or "\r" in value for value in [str(cwd), args.model]):
+            fail("cwd y model deben ocupar una sola línea en meta")
+        if args.out:
+            out = Path(args.out).resolve()
+        else:
+            base = Path(os.environ.get("TMPDIR") or "/tmp") / "codex-run"
+            base.mkdir(parents=True, exist_ok=True)
+            out = Path(tempfile.mkdtemp(prefix=time.strftime("%Y%m%d-%H%M%S-"), dir=str(base))).resolve()
+        config = dict(cwd=str(cwd), model=args.model, effort=args.effort,
+                      sandbox="workspace-write" if args.write else "read-only",
+                      roots=roots, network=args.network, ephemeral=args.ephemeral, timeout=args.timeout)
+        launch(out, args.brief, config)
+    elif args.action == "_worker":
+        if sys.stdin.buffer.read(1) != b"1":
+            return 127
+        worker(Path(args.out))
+    else:
+        out = run_dir(args.out)
+        if args.action == "status":
+            status(out)
+        elif args.action == "stop":
+            stop(out)
+        elif args.action == "wait":
+            deadline = time.monotonic() + args.timeout if args.timeout else None
+            while state(out) == "running":
+                if deadline is not None and time.monotonic() >= deadline:
+                    status(out)
+                    return 124
+                time.sleep(min(2, max(0, deadline - time.monotonic())) if deadline else 2)
+            status(out)
+        elif args.action == "resume":
+            import fcntl
+
+            with (out / "run.json").open(encoding="utf-8") as lock:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+                config = json.load(lock)
+                if config["resume"]:
+                    fail("reanuda desde el run original, no desde {}".format(out.name))
+                if config["ephemeral"]:
+                    fail("un run --ephemeral no tiene rollout para resume")
+                session, _, _ = summary(out)
+                if not session:
+                    fail("no hay session id para reanudar")
+                for previous in [out] + sorted(out.glob("resume-*")):
+                    current = state(previous) if (previous / "pid").is_file() else None
+                    if current == "running":
+                        fail("detén o espera a {} antes de reanudar".format(previous))
+                    if current == "stuck":
+                        fail("{} quedó stuck: revisa a mano sus survivors; "
+                             "resume no reanuda esta sesión".format(previous))
+                number = 1
+                while True:
+                    target = out / "resume-{}".format(number)
+                    try:
+                        target.mkdir()
+                        break
+                    except FileExistsError:
+                        number += 1
+                launch(target, args.brief, config, session=session)
+    return 0
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError, KeyError) as exc:
+        print("codex-run: {}".format(exc), file=sys.stderr)
+        sys.exit(1)

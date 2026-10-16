@@ -25,9 +25,25 @@ No uses `CODEX_HOME=/Users/felixddhs/.codex` (alias `codex-original`): es la
 configuración de la app de ChatGPT, en modo directo con la cuenta Gmail, sin
 proxy. El banner de `codex exec` debe mostrar `provider: cpa`.
 
+## Script de despacho
+
+Despacha con `~/.claude/skills/felix-mode/scripts/codex-run`. El script
+aplica esta guía: usa la CLI con proxy, pasa el prompt por stdin, exige el
+nombre completo del modelo y el tope `high`, abre en sólo lectura salvo con
+`--write`, aplica el tope de tiempo y deja el run fuera de la sesión. Marca
+`done` sólo cuando Codex salió y no queda vivo ningún proceso que registró:
+los descendientes que vio por ppid cada segundo y en la foto final. Si no lo
+puede confirmar, el run queda `stuck` con los pids que sobreviven. Un proceso
+que se separa de su padre entre dos fotos puede escapar: pide en el brief que
+todo proceso que lance el trabajador termine antes de su respuesta. Corre en
+macOS y Linux. `codex-run --help` da el uso. Prefiérelo al runtime del plugin
+y al CLI a mano. Las secciones siguientes explican lo que el script
+ya resuelve y lo que sigue en tus manos: el brief, el veto y los commits.
+
 ## Runtime del plugin
 
-Antes del primer despacho de la sesión ejecuta `/codex:setup` para comprobar
+Esta sección y la siguiente aplican sólo si despachas por el plugin. Antes de
+su primer despacho en la sesión, ejecuta `/codex:setup` para comprobar
 instalación y autenticación del plugin
 [openai/codex-plugin-cc](https://github.com/openai/codex-plugin-cc).
 
@@ -78,7 +94,7 @@ usa `task` read-only con un brief de revisión.
 
 ## CLI alternativo
 
-Si el runtime del plugin no cubre el encargo, usa el CLI. Comprueba
+`codex-run` usa este CLI. Para invocarlo a mano, comprueba
 `codex exec --help`; patrón verificado en codex-cli 0.153.3:
 
 ```bash
@@ -104,9 +120,10 @@ timeout --signal=KILL "$max_secs" codex exec \
   falla con «Not inside a trusted directory».
 - **Salida.** Usa `-o <file>` o `--output-schema <file>` cuando el consumidor
   necesite salida estructurada.
-- **Reanudar.** `codex exec resume <session-id>` rechaza `-s`, `-m`, `-o` y
-  `-C`: hereda el modelo, toma sandbox y esfuerzo por `-c`, y escribe sólo en
-  el cwd desde el que se lanza, así que entra al worktree antes. Evita
+- **Reanudar.** `codex exec resume <session-id>` rechaza `-s` y `-C` (en
+  0.153 rechazaba también `-m` y `-o`; 0.162.1 los acepta). Toma sandbox y
+  esfuerzo por `-c` y escribe sólo en el cwd desde el que se lanza, así que
+  entra al worktree antes. Evita
   `resume --last` si corrieron varios hilos en la sesión. El session id está
   en el banner del output. Añade `--ephemeral` sólo a reviews y consultas:
   sin rollout no hay `resume`.
@@ -151,7 +168,8 @@ Observados en Codex CLI 0.145 a 0.153.
   exit 0 y ≤1 llamada de herramienta, aunque un ping responda. Cuenta las
   llamadas de herramienta en el output; al segundo intento así, escala según
   routing en vez de reintentar.
-- **Timeouts.** Envuelve siempre en `timeout --signal=KILL`. El `timeout` del
+- **Timeouts.** Con `codex-run`, usa `--timeout`. A mano, envuelve siempre en
+  `timeout --signal=KILL`. El `timeout` del
   Bash de Claude Code se limita a 600 s, y `run_in_background` muere a los
   ~20 min con su hijo. Para runs largos, daemoniza con `python3` +
   `subprocess.Popen(..., start_new_session=True)` (macOS no tiene `setsid`),
@@ -163,7 +181,9 @@ Observados en Codex CLI 0.145 a 0.153.
   el fallback es Claude según routing.
 - **Procesos.** La app de ChatGPT trae su propio binario `codex`: para contar
   o matar workers usa `pgrep -f "codex exec"` y la edad del output, no
-  `pgrep -x codex`.
+  `pgrep -x codex`. Codex 0.162 abre una sesión nueva para cada comando de
+  herramienta, así que matar el grupo de `codex exec` no las detiene. Para
+  un run de `codex-run`, usa `codex-run stop`, que termina el árbol completo.
 
 Referencias primarias:
 
