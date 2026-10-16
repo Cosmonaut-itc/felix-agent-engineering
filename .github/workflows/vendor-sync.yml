@@ -1,0 +1,50 @@
+name: Vendor sync
+on:
+  schedule:
+    - cron: '23 7 * * *'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: vendor-sync
+  cancel-in-progress: false
+jobs:
+  vendor-sync:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Sync upstream
+        id: sync
+        run: |
+          export HOME="$RUNNER_TEMP/pao-vendor-home"
+          mkdir -p "$HOME"
+          old=$(sed -n 's/^tag=//p' vendor/mattpocock/UPSTREAM)
+          result=$(bin/pao vendor-sync)
+          printf '%s\n' "$result"
+          new=$(sed -n 's/^tag=//p' vendor/mattpocock/UPSTREAM)
+          if [[ $result = changed\ * ]]; then
+            printf 'changed=true\nold=%s\nnew=%s\n' "$old" "$new" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Validate and test
+        if: steps.sync.outputs.changed == 'true'
+        run: |
+          export HOME="$RUNNER_TEMP/pao-vendor-home"
+          export XDG_STATE_HOME="$HOME/state"
+          bin/pao check
+          tests/pao-test.sh
+      - name: Commit vendor update
+        if: steps.sync.outputs.changed == 'true'
+        env:
+          OLD_TAG: ${{ steps.sync.outputs.old }}
+          NEW_TAG: ${{ steps.sync.outputs.new }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add vendor/mattpocock
+          git commit -m "chore(vendor): mattpocock/skills $OLD_TAG -> $NEW_TAG"
+          git push origin HEAD:main
