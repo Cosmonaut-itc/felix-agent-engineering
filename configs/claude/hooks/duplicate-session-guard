@@ -7,9 +7,7 @@
 set -uo pipefail
 
 command -v python3 >/dev/null 2>&1 || exit 0
-table=$(ps -axo pid=,ppid=,lstart=,command= 2>/dev/null) || exit 0
 
-DUPLICATE_SESSION_GUARD_TABLE=$table \
 DUPLICATE_SESSION_GUARD_SELF=${DUPLICATE_SESSION_GUARD_SELF_PID:-$$} \
 python3 -c '
 import json
@@ -27,8 +25,16 @@ try:
 except Exception:
     sys.exit(0)
 
+try:
+    table = subprocess.run(
+        ["ps", "-axo", "pid=,ppid=,lstart=,command="],
+        capture_output=True, text=True, errors="replace", timeout=10, check=True,
+    ).stdout
+except Exception:
+    sys.exit(0)
+
 procs = {}
-for line in os.environ["DUPLICATE_SESSION_GUARD_TABLE"].splitlines():
+for line in table.splitlines():
     fields = line.split(None, 7)
     if len(fields) < 8 or not fields[0].isdigit() or not fields[1].isdigit():
         continue
@@ -40,10 +46,32 @@ while pid in procs and pid not in ancestors:
     ancestors.add(pid)
     pid = procs[pid][0]
 
-flag = re.compile(r"(?:^|\s)(?:--session-id|--resume|-r)(?:=|\s+)" + re.escape(session) + r"(?:\s|$)")
+def session_of(command):
+    # ps une el argv con espacios, así que sólo cuenta la primera opción de
+    # sesión: lo que venga después puede ser texto de un prompt.
+    tokens = command.split()
+    if not tokens:
+        return None
+    program = os.path.basename(tokens[0])
+    if program == "claude":
+        options = tokens[1:]
+    elif program == "node" and len(tokens) > 1 and tokens[1].endswith("@anthropic-ai/claude-code/cli.js"):
+        options = tokens[2:]
+    else:
+        return None
+    if "--fork-session" in options:
+        return None
+    for index, token in enumerate(options):
+        name, equals, value = token.partition("=")
+        if name in ("--session-id", "--resume", "-r"):
+            if not equals:
+                value = options[index + 1] if index + 1 < len(options) else ""
+            return value
+    return None
+
 duplicates = sorted(
     pid for pid, (_, _, command) in procs.items()
-    if pid not in ancestors and "claude" in command.split(None, 1)[0] and flag.search(command)
+    if pid not in ancestors and session_of(command) == session
 )
 if not duplicates:
     sys.exit(0)

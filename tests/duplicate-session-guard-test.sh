@@ -28,6 +28,16 @@ assert() { "$@" || { printf 'Falló la comprobación: %s\n' "$*" >&2; return 1; 
 
 hook() { printf '%s' "$1" | PATH="$TEST_TMP/stubs:$PATH" "$HOOK"; }
 
+# Sin duplicado, el hook sale 0 sin escribir nada en stdout ni en stderr.
+quiet() {
+    local status
+    hook "$1" > "$TEST_TMP/out" 2> "$TEST_TMP/err"
+    status=$?
+    assert test "$status" = 0
+    assert test ! -s "$TEST_TMP/out"
+    assert test ! -s "$TEST_TMP/err"
+}
+
 table() {
     cat > "$FAKE_PS" <<EOF
     1     0 $STARTED /sbin/launchd
@@ -39,6 +49,11 @@ table() {
   602   601 $STARTED bash /Users/x/.local/bin/remote-run wait -q 20261018-224625-266b36
   700     1 $STARTED /Users/x/.local/bin/claude --resume=93da02d0-3826-41c8-9320-d28f5ac538c4
   800   400 $STARTED /Users/x/.local/bin/claude --resume $SESSION
+  900     1 $STARTED /usr/local/bin/claude-backup --resume=$SESSION
+  901     1 $STARTED /Users/claude/bin/worker --resume=$SESSION
+  902     1 $STARTED node /x/node_modules/@anthropic-ai/claude-code/cli.js -r $SESSION
+  903     1 $STARTED /Users/x/.local/bin/claude --session-id=otra -p Explica --resume=$SESSION por favor
+  904     1 $STARTED /Users/x/.local/bin/claude --resume=$SESSION --fork-session
 EOF
 }
 
@@ -51,15 +66,17 @@ import json, sys
 value = json.load(sys.stdin)
 context = value["hookSpecificOutput"]["additionalContext"]
 assert value["hookSpecificOutput"]["hookEventName"] == "SessionStart"
-assert value["systemMessage"] == "duplicate-session-guard: otro proceso (PID 600 800) corre esta conversación"
+assert value["systemMessage"] == "duplicate-session-guard: otro proceso (PID 600 800 902) corre esta conversación"
 assert "- PID 600 (huérfano, su padre es el PID 1), arrancó el Sat Oct 17 16:33:19 2026." in context
 assert "- PID 800 (padre 400)" in context
 assert "   - PID 601: remote-run wait -q 20261018-224625-266b36\n" in context
 assert "   - PID 602: bash /Users/x/.local/bin/remote-run wait -q 20261018-224625-266b36" in context
-assert "PID 450" not in context and "PID 700" not in context
-assert "/tmp/t.jsonl" in context and "`kill 600 800`" in context
+assert "- PID 902 (huérfano" in context
+for absent in ("450", "700", "900", "901", "903", "904"):
+    assert f"PID {absent}" not in context, absent
+assert "/tmp/t.jsonl" in context and "`kill 600 800 902`" in context
 '
-    assert grep -q 'PID 600 800 sigue corriendo' "$FAKE_NOTIFY"
+    assert grep -q 'PID 600 800 902 sigue corriendo' "$FAKE_NOTIFY"
 }
 
 silent_without_duplicate() {
@@ -69,15 +86,18 @@ silent_without_duplicate() {
   700     1 $STARTED /Users/x/.local/bin/claude --resume=93da02d0-3826-41c8-9320-d28f5ac538c4
   710     1 $STARTED /usr/bin/grep --resume=$SESSION
 EOF
-    assert test -z "$(hook "$PAYLOAD")"
+    quiet "$PAYLOAD"
     assert test ! -e "$FAKE_NOTIFY"
 }
 
 silent_on_bad_input() {
     table
-    assert test -z "$(hook 'invalid json')"
-    assert test -z "$(hook '{}')"
-    assert test -z "$(hook '{"session_id":"a b|c"}')"
+    quiet 'invalid json'
+    quiet '{}'
+    quiet '{"session_id":"a b|c"}'
+    printf '#!/bin/bash\nexit 1\n' > "$TEST_TMP/stubs/ps"
+    quiet "$PAYLOAD"
+    printf '#!/bin/bash\ncat "$FAKE_PS"\n' > "$TEST_TMP/stubs/ps"
     assert test ! -e "$FAKE_NOTIFY"
 }
 
