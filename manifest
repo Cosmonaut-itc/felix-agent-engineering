@@ -9,6 +9,7 @@ file configs/codex/pstack-models.md ~/.codex/pstack-models.md
 file configs/claude/CLAUDE.md ~/.claude/CLAUDE.md
 file configs/claude/docs/codex-delegation.md ~/.claude/docs/codex-delegation.md
 file configs/claude/pstack-models.md ~/.claude/pstack-models.md
+file configs/claude/hooks/duplicate-session-guard ~/.claude/hooks/duplicate-session-guard
 skill skills/felix-mode felix-mode
 skill vendor/mattpocock/ask-matt ask-matt
 skill vendor/mattpocock/codebase-design codebase-design
