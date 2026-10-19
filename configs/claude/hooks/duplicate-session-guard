@@ -26,9 +26,10 @@ except Exception:
     sys.exit(0)
 
 try:
+    # lstart sigue el locale; en C siempre son cinco campos.
     table = subprocess.run(
         ["ps", "-axo", "pid=,ppid=,lstart=,command="],
-        capture_output=True, text=True, errors="replace", timeout=10, check=True,
+        env={**os.environ, "LC_ALL": "C"}, capture_output=True, text=True, errors="replace", timeout=10, check=True,
     ).stdout
 except Exception:
     sys.exit(0)
@@ -47,19 +48,27 @@ while pid in procs and pid not in ancestors:
     pid = procs[pid][0]
 
 def session_of(command):
-    # ps une el argv con espacios, así que sólo cuenta la primera opción de
-    # sesión: lo que venga después puede ser texto de un prompt.
+    # Sólo cuentan las sesiones lanzadas por un SDK, como las de T3: corren sin
+    # que nadie las vea y nunca llevan el prompt en argv. Una sesión interactiva
+    # en la terminal no puede quedar oculta.
     tokens = command.split()
     if not tokens:
         return None
-    program = os.path.basename(tokens[0])
-    if program == "claude":
+    if os.path.basename(tokens[0]) == "claude":
         options = tokens[1:]
-    elif program == "node" and len(tokens) > 1 and tokens[1].endswith("@anthropic-ai/claude-code/cli.js"):
+    elif (os.path.basename(tokens[0]) == "node" and len(tokens) > 1
+          and os.path.realpath(tokens[1]).endswith("/@anthropic-ai/claude-code/cli.js")):
         options = tokens[2:]
     else:
         return None
-    if "--fork-session" in options:
+    if "--" in options:
+        options = options[:options.index("--")]
+    stream = any(
+        token == "--input-format=stream-json"
+        or (token == "--input-format" and options[index + 1:index + 2] == ["stream-json"])
+        for index, token in enumerate(options)
+    )
+    if not stream or "--fork-session" in options:
         return None
     for index, token in enumerate(options):
         name, equals, value = token.partition("=")
