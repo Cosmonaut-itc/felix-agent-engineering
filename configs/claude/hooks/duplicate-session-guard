@@ -1,0 +1,107 @@
+#!/bin/bash
+# Hook SessionStart: avisa si otro proceso de Claude Code corre esta misma
+# conversación. T3 Code, al reiniciarse para actualizarse, retoma cada hilo con
+# `claude --resume=<id>` sin cerrar el proceso anterior, que sigue trabajando
+# fuera de la vista del usuario (pingdotgg/t3code#15357).
+# El hook siempre permite continuar, incluso sin sus dependencias.
+set -uo pipefail
+
+command -v python3 >/dev/null 2>&1 || exit 0
+table=$(ps -axo pid=,ppid=,lstart=,command= 2>/dev/null) || exit 0
+
+DUPLICATE_SESSION_GUARD_TABLE=$table \
+DUPLICATE_SESSION_GUARD_SELF=${DUPLICATE_SESSION_GUARD_SELF_PID:-$$} \
+python3 -c '
+import json
+import os
+import re
+import subprocess
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+    session = payload["session_id"]
+    transcript = payload.get("transcript_path") or "(desconocido)"
+    if not isinstance(session, str) or not re.fullmatch(r"[0-9A-Za-z-]+", session):
+        sys.exit(0)
+except Exception:
+    sys.exit(0)
+
+procs = {}
+for line in os.environ["DUPLICATE_SESSION_GUARD_TABLE"].splitlines():
+    fields = line.split(None, 7)
+    if len(fields) < 8 or not fields[0].isdigit() or not fields[1].isdigit():
+        continue
+    procs[int(fields[0])] = (int(fields[1]), " ".join(fields[2:7]), fields[7])
+
+ancestors = set()
+pid = int(os.environ["DUPLICATE_SESSION_GUARD_SELF"])
+while pid in procs and pid not in ancestors:
+    ancestors.add(pid)
+    pid = procs[pid][0]
+
+flag = re.compile(r"(?:^|\s)(?:--session-id|--resume|-r)(?:=|\s+)" + re.escape(session) + r"(?:\s|$)")
+duplicates = sorted(
+    pid for pid, (_, _, command) in procs.items()
+    if pid not in ancestors and "claude" in command.split(None, 1)[0] and flag.search(command)
+)
+if not duplicates:
+    sys.exit(0)
+
+def descendants(root):
+    found, frontier = [], [root]
+    while frontier:
+        parent = frontier.pop()
+        for pid, (ppid, _, _) in sorted(procs.items()):
+            if ppid == parent:
+                found.append(pid)
+                frontier.append(pid)
+    return found
+
+def describe(command):
+    # Los comandos del tool Bash llegan envueltos en zsh -c con el snapshot
+    # del shell; lo útil es lo que va dentro del último eval.
+    command = command.replace("\\012", " ")
+    if " eval " in command:
+        command = command.rsplit(" eval ", 1)[1].strip("\x27 ")
+        command = command.split("\x27 < /dev/null", 1)[0]
+    return command[:240]
+
+blocks = []
+for pid in duplicates:
+    ppid, started, _ = procs[pid]
+    origin = "huérfano, su padre es el PID 1" if ppid == 1 else f"padre {ppid}"
+    work = [f"   - PID {child}: {describe(procs[child][2])}" for child in descendants(pid)[:15]]
+    blocks.append(
+        f"- PID {pid} ({origin}), arrancó el {started}. Tiene en marcha:\n"
+        + ("\n".join(work) if work else "   - ningún proceso hijo; puede estar a mitad de una llamada al modelo")
+    )
+pids = " ".join(str(pid) for pid in duplicates)
+
+context = (
+    f"Otro proceso de Claude Code está corriendo esta misma conversación (sesión {session}). "
+    "Pasa cuando T3 Code se reinicia, por ejemplo para actualizarse, y retoma el hilo sin cerrar el proceso "
+    "anterior. Ese proceso sigue trabajando sin que el usuario lo vea y escribe en el mismo transcript: "
+    f"{transcript}\n\n" + "\n".join(blocks) + "\n\n"
+    "Antes de seguir con cualquier otra cosa:\n"
+    "1. Revisa en el transcript lo que ese proceso hizo y tú no sabes (corridas, despachos, commits, pushes, "
+    "comentarios) y compáralo con tu estado, para no duplicar trabajo.\n"
+    "2. Asume su trabajo pendiente: engánchate a sus corridas o decide si sobran.\n"
+    f"3. Cuando lo tengas, ciérralo con `kill {pids}` y después mata los hijos que ya no necesites. No mates "
+    "corridas que vayas a usar ni tu propio proceso.\n"
+    "4. Dile al usuario qué heredaste y qué cerraste."
+)
+print(json.dumps({
+    "hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": context},
+    "systemMessage": f"duplicate-session-guard: otro proceso (PID {pids}) corre esta conversación",
+}, ensure_ascii=False))
+
+try:
+    subprocess.run(
+        ["osascript", "-e", f"display notification \"PID {pids} sigue corriendo esta conversación fuera de T3\" with title \"Claude Code: sesión duplicada\""],
+        timeout=5, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+except Exception:
+    pass
+'
+exit 0

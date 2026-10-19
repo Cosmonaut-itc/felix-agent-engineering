@@ -108,6 +108,7 @@ y qué parte de este repositorio lo aplica.
 | [`docs/opencode-workers.md`](docs/opencode-workers.md) | Despacho programático de cheap coders Go: CLI/HTTP, modelo, controles y cierre. |
 | [`configs/codex/`](configs/codex/AGENTS.md) | Entry point global de Codex, con el contrato inlineado, y guía Codex → Claude. |
 | [`configs/claude/`](configs/claude/CLAUDE.md) | Entry point global de Claude Code, con el contrato inlineado, y guía Claude Code → GPT. |
+| [`configs/claude/hooks/duplicate-session-guard`](configs/claude/hooks/duplicate-session-guard) | Hook `SessionStart` que avisa a la sesión, y por notificación de macOS, si otro proceso de Claude Code corre la misma conversación, como cuando T3 Code se actualiza y deja vivo el proceso anterior. Se registra a mano en `~/.claude/settings.json`. |
 | [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K3, con instrucciones compartidas. |
 | [`skills/felix-mode/`](skills/felix-mode/SKILL.md) | Router de ingeniería sobre pstack: precedencia, modelos por rol, revisión y autonomía. |
 | [`configs/*/pstack-models.md`](configs/claude/pstack-models.md) | Hojas de modelos de pstack para Claude Code y Codex, derivadas del routing. |
