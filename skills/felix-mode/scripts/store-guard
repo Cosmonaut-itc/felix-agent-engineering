@@ -39,8 +39,7 @@ elif isinstance(command, str):
     store_path = re.compile(r"(?:~|\$HOME|\$\{HOME\}|" + re.escape(home) + r")(/\.claude/orchestrate/.*)")
     for token in tokens:
         match = store_path.search(token)
-        if match:
-            paths.append(home + match.group(1))
+        paths.append(home + match.group(1) if match else token)
     if cwd:
         paths.append(cwd)
 

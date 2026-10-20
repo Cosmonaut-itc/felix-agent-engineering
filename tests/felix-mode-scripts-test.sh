@@ -817,6 +817,8 @@ assert value["systemMessage"] == "store-guard: store de programa sin units.tsv o
     assert grep -q 'mev-1018 no tiene decisions.tsv. ' <<< "$output"
     assert test -z "$(grep 'orch.ts' <<< "$output")"
     assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'printf x > state.md' "$store/runs")"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'touch mev-1018/state.md' "$base")"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'touch .claude/orchestrate/mev-1018/state.md' "$HOME")"
     assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'bun orch.ts --store ~/.claude/orchestrate/mev-1018 unit set')"
     # shellcheck disable=SC2016
     assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'bun orch.ts --store="${HOME}/.claude/orchestrate/mev-1018" status')"
@@ -841,6 +843,8 @@ store_silent() {
     assert test -z "$(store_hook Bash command 'printf x > "$HOME/.claude/orchestrate/sesión-nuevo/state.md"')"
     assert test -z "$(store_hook Bash command 'cat ~/.claude/orchestrate/completo/units.tsv 2>/dev/null')"
     assert test -z "$(store_hook Bash command 'ls ~/.claude/orchestrate/')"
+    assert test -z "$(store_hook Bash command 'mkdir -p nuevo && touch completo/state.md' "$base")"
+    assert test -z "$(store_hook Bash command 'touch viejo/state.md' "$HOME")"
     assert test -z "$(store_hook Bash command 'echo "sin cerrar')"
     assert test -z "$(printf 'invalid json' | "$SCRIPTS/store-guard")"
     assert test -z "$(printf '{}' | "$SCRIPTS/store-guard")"
