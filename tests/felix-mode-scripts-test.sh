@@ -817,22 +817,31 @@ assert value["systemMessage"] == "store-guard: store de programa sin units.tsv o
     assert grep -q 'mev-1018 no tiene decisions.tsv. ' <<< "$output"
     assert test -z "$(grep 'orch.ts' <<< "$output")"
     assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'printf x > state.md' "$store/runs")"
-    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'mkdir -p ~/.claude/orchestrate/mev-1018/runs')"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'bun orch.ts --store ~/.claude/orchestrate/mev-1018 unit set')"
+    # shellcheck disable=SC2016
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'bun orch.ts --store="${HOME}/.claude/orchestrate/mev-1018" status')"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'cat ~/.claude/orchestrate/mev-1018/units.tsv > /dev/null')"
+    # shellcheck disable=SC2016
+    output=$(store_hook Bash command 'printf x > "$HOME/.claude/orchestrate/sesión ñ/state.md"')
+    assert grep -q 'sesión ñ no tiene' <<< "$output"
+    assert grep -q "'$base/sesión ñ'" <<< "$output"
     assert grep -q 'sesión ñ no tiene' <<< "$(store_hook Write file_path "$base/sesión ñ/state.md")"
-    assert grep -q "'$base/sesión ñ'" <<< "$(store_hook Write file_path "$base/sesión ñ/state.md")"
 }
 
 store_silent() {
     local base=$HOME/.claude/orchestrate
-    mkdir -p "$base/completo" "$base/viejo"
+    mkdir -p "$base/completo" "$base/viejo" "$base/sesión"
     touch "$base/completo/units.tsv" "$base/completo/decisions.tsv"
     assert test -z "$(store_hook Edit file_path "$base/completo/status.md")"
     assert test -z "$(store_hook Write file_path "$base/no-existe/state.md")"
     assert test -z "$(store_hook Write file_path "$base/viejo/../fuera.md")"
     assert test -z "$(store_hook Write file_path "$HOME/repo/.claude/orchestrate.md")"
-    assert test -z "$(store_hook Bash command 'cat ~/.claude/orchestrate/viejo/units.tsv 2>/dev/null')"
-    assert test -z "$(store_hook Bash command 'ls ~/.claude/orchestrate/ > /dev/null')"
-    assert test -z "$(store_hook Bash command 'cat state.md' "$base/viejo")"
+    assert test -z "$(store_hook Bash command 'printf x > ~/.claude/orchestrate/viejo/../completo/state.md')"
+    # shellcheck disable=SC2016
+    assert test -z "$(store_hook Bash command 'printf x > "$HOME/.claude/orchestrate/sesión-nuevo/state.md"')"
+    assert test -z "$(store_hook Bash command 'cat ~/.claude/orchestrate/completo/units.tsv 2>/dev/null')"
+    assert test -z "$(store_hook Bash command 'ls ~/.claude/orchestrate/')"
+    assert test -z "$(store_hook Bash command 'echo "sin cerrar')"
     assert test -z "$(printf 'invalid json' | "$SCRIPTS/store-guard")"
     assert test -z "$(printf '{}' | "$SCRIPTS/store-guard")"
     assert test -z "$(printf '{"tool_input":{"command":null}}' | "$SCRIPTS/store-guard")"

@@ -79,8 +79,8 @@ Orchestrate aunque el playbook elegido sea otro:
 
 El estado de las unidades va sólo en esas tablas. Un `todo.md` lleva sólo los
 pasos del playbook; no uses `state.md`, tablas propias ni el `progress.md` de
-Superpowers. El hook `scripts/store-guard` avisa cuando escribes en un store
-sin `units.tsv` o sin `decisions.tsv`.
+Superpowers. El hook `scripts/store-guard` avisa cuando una herramienta toca
+un store sin `units.tsv` o sin `decisions.tsv`.
 
 ## Tickets de Linear
 

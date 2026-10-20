@@ -1,5 +1,5 @@
 #!/bin/bash
-# Hook PostToolUse: avisa cuando la sesión escribe en un store de programa
+# Hook PostToolUse: avisa cuando una herramienta toca un store de programa
 # (~/.claude/orchestrate/<slug>/) que no tiene units.tsv o decisions.tsv.
 # El hook siempre permite continuar, incluso sin sus dependencias.
 set -uo pipefail
@@ -29,10 +29,18 @@ root = os.path.join(home, ".claude", "orchestrate")
 paths = []
 if isinstance(file_path, str):
     paths.append(file_path)
-# En Bash sólo cuentan los comandos que escriben; leer un store viejo no avisa.
-elif isinstance(command, str) and re.search(r">>?\s*(?!&|/dev/)|\btee\b|\bmkdir\b|\btouch\b|\bcp\b|\bmv\b|\bsed\s+-i", command):
-    prefix = r"(?:~|\$HOME|\$\{HOME\}|" + re.escape(home) + r")[\"\x27]?/\.claude/orchestrate/"
-    paths += [os.path.join(root, slug) for slug in re.findall(prefix + r"([^/\s\"\x27`;|&<>()]+)", command)]
+elif isinstance(command, str):
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=True)
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        tokens = command.split()
+    store_path = re.compile(r"(?:~|\$HOME|\$\{HOME\}|" + re.escape(home) + r")(/\.claude/orchestrate/.*)")
+    for token in tokens:
+        match = store_path.search(token)
+        if match:
+            paths.append(home + match.group(1))
     if cwd:
         paths.append(cwd)
 
