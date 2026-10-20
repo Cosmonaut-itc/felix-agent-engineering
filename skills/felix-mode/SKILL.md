@@ -93,14 +93,17 @@ T3 que lo toma; en un programa, el hilo del orquestador.
    selección única. Tu sesión usa una etiqueta de ese grupo con el slug de su
    store, o un slug corto del hilo si no tiene store. Si no existe, créala con
    `save_issue_label` y `parent: sesión`.
-2. **Título.** Pon los IDs de tus tickets al inicio del título del hilo con
-   `t3_thread_update` (`action: rename`), como
-   `SEN-3253 SEN-3255 · historial sin comprobantes`.
+2. **Título.** Renombra el hilo con el tema general de lo que implementa,
+   en palabras que Felix entienda sin abrir Linear, con `t3_thread_update`
+   (`action: rename`), como `Precios nuevos y correo de acceso de Jale`. No
+   pongas IDs de tickets: la etiqueta ya liga los tickets con la sesión.
+   Cámbialo sólo si cambia el tema.
 3. **Tomar.** Lee el ticket con `get_issue`. Está libre si no lleva etiqueta
    `sesión` o si la que lleva está retirada. Si lleva otra etiqueta activa,
    no lo tomes y avisa al usuario, que decide si la sesión anterior murió.
    Si está libre, en un solo `save_issue` añade tu etiqueta con `addLabels`
-   y pasa el estado a In Progress. Comenta:
+   y pasa el estado a In Progress. Un ticket ya terminado (In Review, Done o
+   Canceled) conserva su estado: sólo recibe la etiqueta. Comenta:
    `Tomado por la sesión <slug>: hilo «<título>», rama <rama>, worktree <ruta>, store <ruta o «sin store»>.`
 4. **Comprobar.** Linear no tiene escritura condicional: si dos sesiones
    toman el mismo ticket, gana la última etiqueta. Vuelve a leer el ticket
@@ -112,9 +115,9 @@ T3 que lo toma; en un programa, el hilo del orquestador.
    Un ticket terminado conserva la etiqueta, porque tu sesión atiende su
    review.
 6. **Traspasar.** Si otro hilo retoma el programa, como en Session pickup,
-   la etiqueta sigue siendo la del store. El hilo nuevo comenta
-   `Retomado por el hilo «<título>»` en cada ticket abierto del programa y
-   renombra su título como en el paso 2.
+   la etiqueta sigue siendo la del store. El hilo nuevo primero pone su
+   título como en el paso 2 y después comenta
+   `Retomado por el hilo «<título>»` en cada ticket abierto del programa.
 7. **Cerrar.** Al cerrar la sesión o el programa, retira su etiqueta con
    `retire_issue_label`. Sigue visible en los tickets, nadie la reusa y sus
    tickets quedan libres si se reabren.
