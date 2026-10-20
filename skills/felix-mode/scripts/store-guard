@@ -1,0 +1,62 @@
+#!/bin/bash
+# Hook PostToolUse: avisa cuando la sesión escribe en un store de programa
+# (~/.claude/orchestrate/<slug>/) que no tiene units.tsv o decisions.tsv.
+# El hook siempre permite continuar, incluso sin sus dependencias.
+set -uo pipefail
+
+command -v python3 >/dev/null 2>&1 || exit 0
+
+python3 -c '
+import json
+import os
+import re
+import sys
+
+try:
+    payload = json.load(sys.stdin)
+    tool_input = payload.get("tool_input") or {}
+    target = tool_input.get("command") or tool_input.get("file_path") or ""
+    if not isinstance(target, str):
+        sys.exit(0)
+except Exception:
+    sys.exit(0)
+
+home = os.path.expanduser("~")
+prefix = r"(?:~|\$HOME|\$\{HOME\}|" + re.escape(home) + r")/\.claude/orchestrate/"
+stores = []
+for slug in re.findall(prefix + r"([A-Za-z0-9._-]+)", target):
+    store = os.path.join(home, ".claude", "orchestrate", slug)
+    if slug not in (".", "..") and os.path.isdir(store) and store not in stores:
+        stores.append(store)
+
+pstack = "<pstack>"
+try:
+    with open(os.path.join(home, ".claude", "plugins", "installed_plugins.json")) as handle:
+        pstack = json.load(handle)["plugins"]["pstack@pstack-claude"][0]["installPath"]
+except Exception:
+    pass
+
+notes = []
+for store in stores:
+    missing = [name for name in ("units.tsv", "decisions.tsv") if not os.path.isfile(os.path.join(store, name))]
+    if not missing:
+        continue
+    steps = []
+    if "units.tsv" in missing:
+        steps.append(f"bun {pstack}/skills/poteto-mode/scripts/orch/orch.ts --store {store} init")
+    if "decisions.tsv" in missing:
+        steps.append(f"{pstack}/skills/show-me-your-work/scripts/log.sh {store}/decisions.tsv start <decisión> <por qué> <evidencia> <resultado>")
+    absent = " ni ".join(missing)
+    notes.append(
+        f"El store {store} no tiene {absent}. felix-mode, sección «Programas», exige "
+        "units.tsv con una fila por ticket y el trail decisions.tsv de show-me-your-work; no lleves "
+        "el estado en un todo.md o un state.md. Corre ahora:\n" + "\n".join(f"- `{step}`" for step in steps)
+    )
+
+if notes:
+    print(json.dumps({
+        "hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": "\n\n".join(notes)},
+        "systemMessage": "store-guard: store de programa sin units.tsv o decisions.tsv",
+    }, ensure_ascii=False))
+'
+exit 0

@@ -63,6 +63,13 @@ Los playbooks de pstack que más se usan son Bug fix, Perf issue, Hillclimb,
 Feature, Refactoring, Prototype, Investigation, Babysit y Shipping. Cada uno
 termina en «Opening a PR».
 
+Un programa de varias unidades (Autopilot-full, Autopilot-stack, Orchestrate
+o Autonomous run) lleva su estado en `~/.claude/orchestrate/<slug>/`: una
+fila por ticket en `units.tsv` y el trail `decisions.tsv`. Cada ticket que una
+sesión toma lleva en Linear la etiqueta de esa sesión, del grupo `sesión`, y
+el título del hilo empieza con sus IDs. Lo detallan las secciones «Programas»
+y «Tickets de Linear» de [`felix-mode`](../skills/felix-mode/SKILL.md).
+
 ## Revisión
 
 | Nivel | Cuándo | Cómo |

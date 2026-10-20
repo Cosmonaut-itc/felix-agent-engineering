@@ -789,6 +789,49 @@ STUB
     assert test -n "$(printf '%s' '{"tool_input":{"command":"bun test"}}' | env -u LAPTOP_GUARD_LAPTOP PATH="$stubs:$PATH" /bin/bash "$SCRIPTS/laptop-guard")"
 }
 
+store_hook() {
+    python3 -c 'import json,sys; print(json.dumps({"tool_name":sys.argv[1],"tool_input":{sys.argv[2]:sys.argv[3]}}))' "$1" "$2" "$3" \
+        | "$SCRIPTS/store-guard"
+}
+
+store_warnings() {
+    local store=$HOME/.claude/orchestrate/mev-1018 output
+    mkdir -p "$store" "$HOME/.claude/plugins"
+    printf '{"plugins":{"pstack@pstack-claude":[{"installPath":"/p/0.9.95"}]}}' > "$HOME/.claude/plugins/installed_plugins.json"
+    output=$(store_hook Write file_path "$store/state.md")
+    printf '%s' "$output" | STORE="$store" python3 -c '
+import json, os, sys
+value = json.load(sys.stdin)
+context = value["hookSpecificOutput"]["additionalContext"]
+store = os.environ["STORE"]
+assert value["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+assert f"El store {store} no tiene units.tsv ni decisions.tsv." in context
+assert f"`bun /p/0.9.95/skills/poteto-mode/scripts/orch/orch.ts --store {store} init`" in context
+assert f"/p/0.9.95/skills/show-me-your-work/scripts/log.sh {store}/decisions.tsv start" in context
+assert value["systemMessage"] == "store-guard: store de programa sin units.tsv o decisions.tsv"
+'
+    touch "$store/units.tsv"
+    # shellcheck disable=SC2016
+    output=$(store_hook Bash command 'printf x >> "$HOME/.claude/orchestrate/mev-1018/todo.md"')
+    assert grep -q 'no tiene decisions.tsv. ' <<< "$output"
+    assert test -z "$(grep 'orch.ts' <<< "$output")"
+    output=$(store_hook Bash command 'cat ~/.claude/orchestrate/mev-1018/units.tsv')
+    assert grep -q 'mev-1018 no tiene decisions.tsv' <<< "$output"
+}
+
+store_silent() {
+    local store=$HOME/.claude/orchestrate/completo
+    mkdir -p "$store"
+    touch "$store/units.tsv" "$store/decisions.tsv"
+    assert test -z "$(store_hook Edit file_path "$store/status.md")"
+    assert test -z "$(store_hook Write file_path "$HOME/.claude/orchestrate/no-existe/state.md")"
+    assert test -z "$(store_hook Write file_path "$HOME/repo/.claude/orchestrate.md")"
+    assert test -z "$(store_hook Bash command 'ls ~/.claude/orchestrate/')"
+    assert test -z "$(printf 'invalid json' | "$SCRIPTS/store-guard")"
+    assert test -z "$(printf '{}' | "$SCRIPTS/store-guard")"
+    assert test -z "$(printf '{"tool_input":{"command":null}}' | "$SCRIPTS/store-guard")"
+}
+
 FAILURES=0 CASE=0
 TEST_CASES=(validation)
 case "$(uname)" in
@@ -797,7 +840,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home) ;;
 esac
-TEST_CASES+=(laptop_warnings laptop_silent laptop_detection)
+TEST_CASES+=(laptop_warnings laptop_silent laptop_detection store_warnings store_silent)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
