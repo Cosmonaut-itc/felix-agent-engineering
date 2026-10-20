@@ -115,9 +115,9 @@ T3 que lo toma; en un programa, el hilo del orquestador.
    Un ticket terminado conserva la etiqueta, porque tu sesión atiende su
    review.
 6. **Traspasar.** Si otro hilo retoma el programa, como en Session pickup,
-   la etiqueta sigue siendo la del store. El hilo nuevo comenta
-   `Retomado por el hilo «<título>»` en cada ticket abierto del programa y
-   pone su título como en el paso 2.
+   la etiqueta sigue siendo la del store. El hilo nuevo primero pone su
+   título como en el paso 2 y después comenta
+   `Retomado por el hilo «<título>»` en cada ticket abierto del programa.
 7. **Cerrar.** Al cerrar la sesión o el programa, retira su etiqueta con
    `retire_issue_label`. Sigue visible en los tickets, nadie la reusa y sus
    tickets quedan libres si se reabren.
