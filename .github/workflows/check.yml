@@ -23,7 +23,7 @@ jobs:
               Windows) choco install shellcheck --yes --no-progress ;;
             esac
           fi
-      - run: shellcheck --severity=warning bin/pao tests/pao-test.sh skills/felix-mode/scripts/codex-run skills/felix-mode/scripts/laptop-guard tests/felix-mode-scripts-test.sh configs/claude/hooks/duplicate-session-guard tests/duplicate-session-guard-test.sh
+      - run: shellcheck --severity=warning bin/pao tests/pao-test.sh skills/felix-mode/scripts/codex-run skills/felix-mode/scripts/laptop-guard skills/felix-mode/scripts/store-guard tests/felix-mode-scripts-test.sh configs/claude/hooks/duplicate-session-guard tests/duplicate-session-guard-test.sh
       - name: Validate and test
         run: |
           export HOME="$RUNNER_TEMP/pao-check-home"

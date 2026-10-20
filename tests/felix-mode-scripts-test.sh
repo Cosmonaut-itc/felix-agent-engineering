@@ -789,13 +789,75 @@ STUB
     assert test -n "$(printf '%s' '{"tool_input":{"command":"bun test"}}' | env -u LAPTOP_GUARD_LAPTOP PATH="$stubs:$PATH" /bin/bash "$SCRIPTS/laptop-guard")"
 }
 
+store_hook() {
+    python3 -c 'import json,sys; print(json.dumps({"tool_name":sys.argv[1],"tool_input":{sys.argv[2]:sys.argv[3]},"cwd":sys.argv[4]}))' "$1" "$2" "$3" "${4:-$TEST_TMP}" \
+        | "$SCRIPTS/store-guard"
+}
+
+store_warnings() {
+    local base=$HOME/.claude/orchestrate store output
+    store=$base/mev-1018
+    mkdir -p "$store" "$base/sesión ñ" "$HOME/.claude/plugins"
+    printf '{"plugins":{"pstack@pstack-claude":[{"installPath":"/p/0.9.95"}]}}' > "$HOME/.claude/plugins/installed_plugins.json"
+    output=$(store_hook Write file_path "$store/state.md")
+    printf '%s' "$output" | STORE="$store" python3 -c '
+import json, os, shlex, sys
+value = json.load(sys.stdin)
+context = value["hookSpecificOutput"]["additionalContext"]
+store = shlex.quote(os.environ["STORE"])
+assert value["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
+assert "no tiene units.tsv ni decisions.tsv." in context
+assert f"`bun /p/0.9.95/skills/poteto-mode/scripts/orch/orch.ts --store {store} init`" in context
+assert "`/p/0.9.95/skills/show-me-your-work/scripts/log.sh " in context and "/decisions.tsv start" in context
+assert value["systemMessage"] == "store-guard: store de programa sin units.tsv o decisions.tsv"
+'
+    touch "$store/units.tsv"
+    # shellcheck disable=SC2016
+    output=$(store_hook Bash command 'printf x >> "$HOME"/.claude/orchestrate/mev-1018/todo.md')
+    assert grep -q 'mev-1018 no tiene decisions.tsv. ' <<< "$output"
+    assert test -z "$(grep 'orch.ts' <<< "$output")"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'printf x > state.md' "$store/runs")"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'touch mev-1018/state.md' "$base")"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'touch .claude/orchestrate/mev-1018/state.md' "$HOME")"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'bun orch.ts --store ~/.claude/orchestrate/mev-1018 unit set')"
+    # shellcheck disable=SC2016
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'bun orch.ts --store="${HOME}/.claude/orchestrate/mev-1018" status')"
+    assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'cat ~/.claude/orchestrate/mev-1018/units.tsv > /dev/null')"
+    # shellcheck disable=SC2016
+    output=$(store_hook Bash command 'printf x > "$HOME/.claude/orchestrate/sesión ñ/state.md"')
+    assert grep -q 'sesión ñ no tiene' <<< "$output"
+    assert grep -q "'$base/sesión ñ'" <<< "$output"
+    assert grep -q 'sesión ñ no tiene' <<< "$(store_hook Write file_path "$base/sesión ñ/state.md")"
+}
+
+store_silent() {
+    local base=$HOME/.claude/orchestrate
+    mkdir -p "$base/completo" "$base/viejo" "$base/sesión"
+    touch "$base/completo/units.tsv" "$base/completo/decisions.tsv"
+    assert test -z "$(store_hook Edit file_path "$base/completo/status.md")"
+    assert test -z "$(store_hook Write file_path "$base/no-existe/state.md")"
+    assert test -z "$(store_hook Write file_path "$base/viejo/../fuera.md")"
+    assert test -z "$(store_hook Write file_path "$HOME/repo/.claude/orchestrate.md")"
+    assert test -z "$(store_hook Bash command 'printf x > ~/.claude/orchestrate/viejo/../completo/state.md')"
+    # shellcheck disable=SC2016
+    assert test -z "$(store_hook Bash command 'printf x > "$HOME/.claude/orchestrate/sesión-nuevo/state.md"')"
+    assert test -z "$(store_hook Bash command 'cat ~/.claude/orchestrate/completo/units.tsv 2>/dev/null')"
+    assert test -z "$(store_hook Bash command 'ls ~/.claude/orchestrate/')"
+    assert test -z "$(store_hook Bash command 'mkdir -p nuevo && touch completo/state.md' "$base")"
+    assert test -z "$(store_hook Bash command 'touch viejo/state.md' "$HOME")"
+    assert test -z "$(store_hook Bash command 'echo "sin cerrar')"
+    assert test -z "$(printf 'invalid json' | "$SCRIPTS/store-guard")"
+    assert test -z "$(printf '{}' | "$SCRIPTS/store-guard")"
+    assert test -z "$(printf '{"tool_input":{"command":null}}' | "$SCRIPTS/store-guard")"
+}
+
 FAILURES=0 CASE=0
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
-        printf 'SKIP daemonización y grupos POSIX en Windows (Git Bash).\n'
+        printf 'SKIP daemonización, grupos POSIX y store-guard en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
 TEST_CASES+=(laptop_warnings laptop_silent laptop_detection)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.

@@ -7,6 +7,11 @@ hooks:
       hooks:
         - type: command
           command: 'bash "$HOME/.claude/skills/felix-mode/scripts/laptop-guard"'
+  PostToolUse:
+    - matcher: "Bash|Write|Edit|MultiEdit"
+      hooks:
+        - type: command
+          command: 'bash "$HOME/.claude/skills/felix-mode/scripts/store-guard"'
 ---
 
 # felix-mode
@@ -56,6 +61,63 @@ prueba solo y puede llegar a producción sin esperar a otra.
   pasan su prueba y su review, antes de empezar cualquier mejora.
 - Lo que se pide «de paso», o lo que descubres al trabajar, es otra unidad,
   en otra rama desde `main`.
+
+## Programas
+
+Un programa es trabajo de varias unidades que corre en los playbooks
+Autopilot-full, Autopilot-stack, Orchestrate o Autonomous run. Su estado vive
+en el store `~/.claude/orchestrate/<slug>/`, con el formato del playbook
+Orchestrate aunque el playbook elegido sea otro:
+
+1. Antes del primer despacho, crea el store con `orch init` (playbook
+   Orchestrate, paso 2) y abre el trail `decisions.tsv` con `scripts/log.sh`
+   de `show-me-your-work`.
+2. `units.tsv` lleva una fila por unidad, actualizada con `orch`. Si la unidad
+   tiene ticket, su `id` es el del ticket, como `SEN-3480`.
+3. Escribe en `decisions.tsv` cada decisión, lanzamiento, ronda, veredicto y
+   pausa, como fila nueva.
+
+El estado de las unidades va sólo en esas tablas. Un `todo.md` lleva sólo los
+pasos del playbook; no uses `state.md`, tablas propias ni el `progress.md` de
+Superpowers. El hook `scripts/store-guard` avisa cuando una herramienta toca
+un store sin `units.tsv` o sin `decisions.tsv`. En Write y Edit es exacto; en
+Bash deduce las rutas del comando sin ejecutarlo y puede fallar en los dos
+sentidos, así que su silencio no prueba que el store esté completo.
+
+## Tickets de Linear
+
+En Linear, cada ticket muestra qué sesión lo trabaja. La sesión es el hilo de
+T3 que lo toma; en un programa, el hilo del orquestador.
+
+1. **Etiqueta.** El equipo SEN tiene el grupo de etiquetas `sesión`, de
+   selección única. Tu sesión usa una etiqueta de ese grupo con el slug de su
+   store, o un slug corto del hilo si no tiene store. Si no existe, créala con
+   `save_issue_label` y `parent: sesión`.
+2. **Título.** Pon los IDs de tus tickets al inicio del título del hilo con
+   `t3_thread_update` (`action: rename`), como
+   `SEN-3253 SEN-3255 · historial sin comprobantes`.
+3. **Tomar.** Lee el ticket con `get_issue`. Está libre si no lleva etiqueta
+   `sesión` o si la que lleva está retirada. Si lleva otra etiqueta activa,
+   no lo tomes y avisa al usuario, que decide si la sesión anterior murió.
+   Si está libre, en un solo `save_issue` añade tu etiqueta con `addLabels`
+   y pasa el estado a In Progress. Comenta:
+   `Tomado por la sesión <slug>: hilo «<título>», rama <rama>, worktree <ruta>, store <ruta o «sin store»>.`
+4. **Comprobar.** Linear no tiene escritura condicional: si dos sesiones
+   toman el mismo ticket, gana la última etiqueta. Vuelve a leer el ticket
+   después de tomarlo y antes de cada lanzamiento, ronda, commit o push
+   sobre él. Si la etiqueta ya no es la tuya, detén ese trabajo, comenta lo
+   que dejaste y avisa al usuario.
+5. **Soltar.** Si dejas un ticket sin terminar, quita tu etiqueta con
+   `removeLabels` y comenta `Soltado por la sesión <slug>: <motivo y estado>.`
+   Un ticket terminado conserva la etiqueta, porque tu sesión atiende su
+   review.
+6. **Traspasar.** Si otro hilo retoma el programa, como en Session pickup,
+   la etiqueta sigue siendo la del store. El hilo nuevo comenta
+   `Retomado por el hilo «<título>»` en cada ticket abierto del programa y
+   renombra su título como en el paso 2.
+7. **Cerrar.** Al cerrar la sesión o el programa, retira su etiqueta con
+   `retire_issue_label`. Sigue visible en los tickets, nadie la reusa y sus
+   tickets quedan libres si se reabren.
 
 ## Qué skill usar
 
@@ -149,8 +211,8 @@ pause» de pstack, pausa antes de:
 
 - hacer push a `main` o mergear cuando eso dispare un deploy;
 - escribir en ICG u otro sistema de un cliente en producción;
-- actualizar el tracker más allá de lo que prescribe el flujo del
-  repositorio;
+- actualizar el tracker más allá de lo que prescriben el flujo del
+  repositorio y **Tickets de Linear**;
 - instalar dependencias, cambiar CI o tocar la configuración global de
   agentes;
 - implementar UI/UX sin un prototipo aprobado por el dueño, como pide el
