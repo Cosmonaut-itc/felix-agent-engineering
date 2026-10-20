@@ -66,10 +66,11 @@ termina en «Opening a PR».
 Un programa de varias unidades (Autopilot-full, Autopilot-stack, Orchestrate
 o Autonomous run) lleva su estado en `~/.claude/orchestrate/<slug>/`: una
 fila por unidad en `units.tsv`, con el ID del ticket cuando lo hay, y el
-trail `decisions.tsv`. Cada ticket que una
-sesión toma lleva en Linear la etiqueta de esa sesión, del grupo `sesión`, y
-el título del hilo empieza con sus IDs. Lo detallan las secciones «Programas»
-y «Tickets de Linear» de [`felix-mode`](../skills/felix-mode/SKILL.md).
+trail `decisions.tsv`. Cada ticket que una sesión toma lleva en Linear la
+etiqueta de esa sesión, del grupo `sesión`, y el título del hilo dice en
+palabras simples el tema que implementa. Lo detallan las secciones
+«Programas» y «Tickets de Linear» de
+[`felix-mode`](../skills/felix-mode/SKILL.md).
 
 ## Revisión
 
