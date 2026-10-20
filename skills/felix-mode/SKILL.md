@@ -97,8 +97,8 @@ T3 que lo toma; en un programa, el hilo del orquestador.
    tickets con tu etiqueta, el padre primero, con `t3_thread_update`
    (`action: rename`), como `SEN-3253 SEN-3255 · historial sin comprobantes`.
    Si pasan de cuatro, pon el padre y los que no están terminados.
-   Recalcúlalo al tomar o soltar un ticket y en cada lectura del paso 4 que
-   muestre un cambio de estado.
+   Recalcúlalo al tomar o soltar un ticket y cada vez que una lectura
+   muestre que cambió la etiqueta o el estado de uno de ellos.
 3. **Tomar.** Lee el ticket con `get_issue`. Está libre si no lleva etiqueta
    `sesión` o si la que lleva está retirada. Si lleva otra etiqueta activa,
    no lo tomes y avisa al usuario, que decide si la sesión anterior murió.
