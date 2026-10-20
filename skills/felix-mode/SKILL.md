@@ -94,19 +94,28 @@ T3 que lo toma; en un programa, el hilo del orquestador.
 2. **Título.** Pon los IDs de tus tickets al inicio del título del hilo con
    `t3_thread_update` (`action: rename`), como
    `SEN-3253 SEN-3255 · historial sin comprobantes`.
-3. **Tomar.** Lee el ticket con `get_issue`. Si ya lleva otra etiqueta
-   `sesión`, no lo tomes y avisa al usuario. Si está libre, en un solo
-   `save_issue` añade tu etiqueta con `addLabels` y pasa el estado a
-   In Progress. Comenta:
+3. **Tomar.** Lee el ticket con `get_issue`. Está libre si no lleva etiqueta
+   `sesión` o si la que lleva está retirada. Si lleva otra etiqueta activa,
+   no lo tomes y avisa al usuario, que decide si la sesión anterior murió.
+   Si está libre, en un solo `save_issue` añade tu etiqueta con `addLabels`
+   y pasa el estado a In Progress. Comenta:
    `Tomado por la sesión <slug>: hilo «<título>», rama <rama>, worktree <ruta>, store <ruta o «sin store»>.`
-   Vuelve a leer el ticket. Si la etiqueta ya no es la tuya, otra sesión lo
-   tomó: sigue sin él.
-4. **Soltar.** Si dejas un ticket sin terminar, quita tu etiqueta con
+4. **Comprobar.** Linear no tiene escritura condicional: si dos sesiones
+   toman el mismo ticket, gana la última etiqueta. Vuelve a leer el ticket
+   después de tomarlo y antes de cada lanzamiento, ronda, commit o push
+   sobre él. Si la etiqueta ya no es la tuya, detén ese trabajo, comenta lo
+   que dejaste y avisa al usuario.
+5. **Soltar.** Si dejas un ticket sin terminar, quita tu etiqueta con
    `removeLabels` y comenta `Soltado por la sesión <slug>: <motivo y estado>.`
    Un ticket terminado conserva la etiqueta, porque tu sesión atiende su
    review.
-5. **Cerrar.** Al cerrar la sesión o el programa, retira su etiqueta con
-   `retire_issue_label`. Sigue visible en los tickets y nadie la reusa.
+6. **Traspasar.** Si otro hilo retoma el programa, como en Session pickup,
+   la etiqueta sigue siendo la del store. El hilo nuevo comenta
+   `Retomado por el hilo «<título>»` en cada ticket abierto del programa y
+   renombra su título como en el paso 2.
+7. **Cerrar.** Al cerrar la sesión o el programa, retira su etiqueta con
+   `retire_issue_label`. Sigue visible en los tickets, nadie la reusa y sus
+   tickets quedan libres si se reabren.
 
 ## Qué skill usar
 

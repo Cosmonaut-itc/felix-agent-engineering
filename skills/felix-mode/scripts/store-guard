@@ -10,22 +10,40 @@ python3 -c '
 import json
 import os
 import re
+import shlex
 import sys
 
 try:
     payload = json.load(sys.stdin)
     tool_input = payload.get("tool_input") or {}
-    target = tool_input.get("command") or tool_input.get("file_path") or ""
-    if not isinstance(target, str):
-        sys.exit(0)
+    file_path = tool_input.get("file_path")
+    command = tool_input.get("command")
+    cwd = payload.get("cwd")
+    cwd = cwd if isinstance(cwd, str) else ""
 except Exception:
     sys.exit(0)
 
-home = os.path.expanduser("~")
-prefix = r"(?:~|\$HOME|\$\{HOME\}|" + re.escape(home) + r")/\.claude/orchestrate/"
+home = os.environ.get("HOME") or os.path.expanduser("~")
+root = os.path.join(home, ".claude", "orchestrate")
+
+paths = []
+if isinstance(file_path, str):
+    paths.append(file_path)
+# En Bash sólo cuentan los comandos que escriben; leer un store viejo no avisa.
+elif isinstance(command, str) and re.search(r">>?\s*(?!&|/dev/)|\btee\b|\bmkdir\b|\btouch\b|\bcp\b|\bmv\b|\bsed\s+-i", command):
+    prefix = r"(?:~|\$HOME|\$\{HOME\}|" + re.escape(home) + r")[\"\x27]?/\.claude/orchestrate/"
+    paths += [os.path.join(root, slug) for slug in re.findall(prefix + r"([^/\s\"\x27`;|&<>()]+)", command)]
+    if cwd:
+        paths.append(cwd)
+
 stores = []
-for slug in re.findall(prefix + r"([A-Za-z0-9._-]+)", target):
-    store = os.path.join(home, ".claude", "orchestrate", slug)
+for path in paths:
+    try:
+        relative = os.path.relpath(os.path.normpath(os.path.join(cwd, os.path.expanduser(path))), root)
+    except ValueError:
+        continue
+    slug = relative.split(os.sep)[0]
+    store = os.path.join(root, slug)
     if slug not in (".", "..") and os.path.isdir(store) and store not in stores:
         stores.append(store)
 
@@ -41,15 +59,18 @@ for store in stores:
     missing = [name for name in ("units.tsv", "decisions.tsv") if not os.path.isfile(os.path.join(store, name))]
     if not missing:
         continue
+    orch = shlex.quote(os.path.join(pstack, "skills", "poteto-mode", "scripts", "orch", "orch.ts"))
+    log = shlex.quote(os.path.join(pstack, "skills", "show-me-your-work", "scripts", "log.sh"))
+    trail = shlex.quote(os.path.join(store, "decisions.tsv"))
     steps = []
     if "units.tsv" in missing:
-        steps.append(f"bun {pstack}/skills/poteto-mode/scripts/orch/orch.ts --store {store} init")
+        steps.append(f"bun {orch} --store {shlex.quote(store)} init")
     if "decisions.tsv" in missing:
-        steps.append(f"{pstack}/skills/show-me-your-work/scripts/log.sh {store}/decisions.tsv start <decisión> <por qué> <evidencia> <resultado>")
+        steps.append(f"{log} {trail} start <decisión> <por qué> <evidencia> <resultado>")
     absent = " ni ".join(missing)
     notes.append(
         f"El store {store} no tiene {absent}. felix-mode, sección «Programas», exige "
-        "units.tsv con una fila por ticket y el trail decisions.tsv de show-me-your-work; no lleves "
+        "units.tsv con una fila por unidad y el trail decisions.tsv de show-me-your-work; no lleves "
         "el estado en un todo.md o un state.md. Corre ahora:\n" + "\n".join(f"- `{step}`" for step in steps)
     )
 

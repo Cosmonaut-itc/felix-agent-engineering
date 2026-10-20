@@ -65,7 +65,8 @@ termina en «Opening a PR».
 
 Un programa de varias unidades (Autopilot-full, Autopilot-stack, Orchestrate
 o Autonomous run) lleva su estado en `~/.claude/orchestrate/<slug>/`: una
-fila por ticket en `units.tsv` y el trail `decisions.tsv`. Cada ticket que una
+fila por unidad en `units.tsv`, con el ID del ticket cuando lo hay, y el
+trail `decisions.tsv`. Cada ticket que una
 sesión toma lleva en Linear la etiqueta de esa sesión, del grupo `sesión`, y
 el título del hilo empieza con sus IDs. Lo detallan las secciones «Programas»
 y «Tickets de Linear» de [`felix-mode`](../skills/felix-mode/SKILL.md).
@@ -88,7 +89,8 @@ El agente avanza sin preguntar en trabajo local y reversible. Pausa antes de:
 
 - hacer push a `main` o mergear cuando eso dispare un deploy;
 - escribir en ICG u otro sistema de un cliente en producción;
-- actualizar el tracker más allá de lo que prescribe el repositorio;
+- actualizar el tracker más allá de lo que prescriben el repositorio y la
+  sección «Tickets de Linear» de `felix-mode`;
 - instalar dependencias, cambiar CI o tocar la configuración global de agentes;
 - implementar UI/UX sin un prototipo aprobado;
 - la ronda 4 de review de un mismo cambio;
