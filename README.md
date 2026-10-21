@@ -109,6 +109,7 @@ y qué parte de este repositorio lo aplica.
 | [`configs/codex/`](configs/codex/AGENTS.md) | Entry point global de Codex, con el contrato inlineado, y guía Codex → Claude. |
 | [`configs/claude/`](configs/claude/CLAUDE.md) | Entry point global de Claude Code, con el contrato inlineado, y guía Claude Code → GPT. |
 | [`configs/claude/hooks/duplicate-session-guard`](configs/claude/hooks/duplicate-session-guard) | Hook `SessionStart` que avisa a la sesión, y por notificación de macOS, si otro proceso de Claude Code lanzado por un SDK corre la misma conversación, como cuando T3 Code se actualiza y deja vivo el proceso anterior. Se registra a mano en `~/.claude/settings.json`. |
+| [`skills/felix-mode/scripts/`](skills/felix-mode/scripts) | `codex-run` despacha trabajadores GPT. Los hooks `laptop-guard` (`PreToolUse`) y `store-guard` (`PostToolUse`) avisan de trabajo pesado en la MacBook y de stores de programa incompletos. Se registran a mano en `~/.claude/settings.json`, como dice «Pasos manuales». |
 | [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K3, con instrucciones compartidas. |
 | [`skills/felix-mode/`](skills/felix-mode/SKILL.md) | Router de ingeniería sobre pstack: precedencia, modelos por rol, revisión y autonomía. |
 | [`configs/*/pstack-models.md`](configs/claude/pstack-models.md) | Hojas de modelos de pstack para Claude Code y Codex, derivadas del routing. |
@@ -167,7 +168,8 @@ Claude Code y Codex con su hook apagado, y
 - Cada sesión marca en Linear los tickets que toma con una etiqueta del
   grupo `sesión`. Cada programa lleva su estado en el store de pstack, con
   `units.tsv` y el trail `decisions.tsv`; el hook `store-guard` avisa si
-  falta alguno.
+  falta alguno. Una unidad suelta guarda sus encargos en
+  `~/.claude/encargos/<slug>/`.
 
 ## Alcance
 
@@ -259,6 +261,20 @@ Desinstala el plugin anterior de Matt Pocock para evitar nombres duplicados.
 el comando `claude plugin uninstall mattpocock-skills@<marketplace>` con su
 identificador. Quita también sus reglas `Skill(skill:mattpocock-skills:...)`
 de `permissions.deny`. `pao` no cambia ese JSON.
+
+Registra los hooks de Claude Code en la clave `hooks` de
+`~/.claude/settings.json`. T3 Code no ejecuta los hooks del frontmatter de una
+skill, así que van en la configuración global. Cada comando sale sin efecto si
+`pao` aún no instaló el script:
+
+```json
+"SessionStart": [{"hooks": [{"type": "command", "timeout": 15,
+  "command": "f=\"$HOME/.claude/hooks/duplicate-session-guard\"; [ ! -f \"$f\" ] || bash \"$f\""}]}],
+"PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "timeout": 15,
+  "command": "f=\"$HOME/.claude/skills/felix-mode/scripts/laptop-guard\"; [ ! -f \"$f\" ] || bash \"$f\""}]}],
+"PostToolUse": [{"matcher": "Bash|Write|Edit|MultiEdit", "hooks": [{"type": "command", "timeout": 15,
+  "command": "f=\"$HOME/.claude/skills/felix-mode/scripts/store-guard\"; [ ! -f \"$f\" ] || bash \"$f\""}]}]
+```
 
 Si aún tienes Superpowers en Codex, pon `enabled = false` en
 `[plugins."superpowers@openai-curated"]` de `~/.codex/config.toml`.
