@@ -75,10 +75,13 @@ for store in stores:
     if "decisions.tsv" in missing:
         steps.append(f"{log} {trail} start <decisión> <por qué> <evidencia> <resultado>")
     absent = " ni ".join(missing)
+    encargos = os.path.join(home, ".claude", "encargos", os.path.basename(store))
     notes.append(
         f"El store {store} no tiene {absent}. felix-mode, sección «Programas», exige "
         "units.tsv con una fila por unidad y el trail decisions.tsv de show-me-your-work; no lleves "
-        "el estado en un todo.md o un state.md. Corre ahora:\n" + "\n".join(f"- `{step}`" for step in steps)
+        "el estado en un todo.md o un state.md. Si es un programa, corre ahora:\n"
+        + "\n".join(f"- `{step}`" for step in steps)
+        + f"\nSi es una unidad suelta, sus encargos y salidas van en {encargos}, no en el store."
     )
 
 if notes:

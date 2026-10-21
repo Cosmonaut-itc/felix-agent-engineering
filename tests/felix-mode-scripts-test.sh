@@ -809,6 +809,7 @@ assert value["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
 assert "no tiene units.tsv ni decisions.tsv." in context
 assert f"`bun /p/0.9.95/skills/poteto-mode/scripts/orch/orch.ts --store {store} init`" in context
 assert "`/p/0.9.95/skills/show-me-your-work/scripts/log.sh " in context and "/decisions.tsv start" in context
+assert "/.claude/encargos/mev-1018, no en el store." in context
 assert value["systemMessage"] == "store-guard: store de programa sin units.tsv o decisions.tsv"
 '
     touch "$store/units.tsv"

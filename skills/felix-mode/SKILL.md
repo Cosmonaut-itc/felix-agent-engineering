@@ -1,17 +1,6 @@
 ---
 name: felix-mode
 description: "Modo de trabajo de Felix sobre pstack. Úsalo antes de actuar en toda tarea de ingeniería que toque más de un archivo, cambie una firma que otros llaman, implique una decisión de diseño o sea un bug de causa desconocida o un problema de rendimiento, y cuando pidan /felix-mode. No lo uses al resolver un encargo que te delegó otro agente, salvo que el encargo lo pida. Corre el playbook de poteto-mode con la precedencia, los modelos por rol, la revisión y la autonomía de Felix."
-hooks:
-  PreToolUse:
-    - matcher: "Bash"
-      hooks:
-        - type: command
-          command: 'bash "$HOME/.claude/skills/felix-mode/scripts/laptop-guard"'
-  PostToolUse:
-    - matcher: "Bash|Write|Edit|MultiEdit"
-      hooks:
-        - type: command
-          command: 'bash "$HOME/.claude/skills/felix-mode/scripts/store-guard"'
 ---
 
 # felix-mode
@@ -79,10 +68,16 @@ Orchestrate aunque el playbook elegido sea otro:
 
 El estado de las unidades va sólo en esas tablas. Un `todo.md` lleva sólo los
 pasos del playbook; no uses `state.md`, tablas propias ni el `progress.md` de
-Superpowers. El hook `scripts/store-guard` avisa cuando una herramienta toca
-un store sin `units.tsv` o sin `decisions.tsv`. En Write y Edit es exacto; en
-Bash deduce las rutas del comando sin ejecutarlo y puede fallar en los dos
-sentidos, así que su silencio no prueba que el store esté completo.
+Superpowers. El store es sólo de programas: una unidad suelta guarda sus
+encargos, salidas de trabajadores y parches en `~/.claude/encargos/<slug>/`,
+sin `orch init`.
+
+El hook `scripts/store-guard` avisa cuando una herramienta toca un store sin
+`units.tsv` o sin `decisions.tsv`. En Write y Edit es exacto; en Bash deduce
+las rutas del comando sin ejecutarlo y puede fallar en los dos sentidos, así
+que su silencio no prueba que el store esté completo. Él y
+`scripts/laptop-guard` se registran en `~/.claude/settings.json`, como dice
+el README, porque T3 Code no ejecuta los hooks del frontmatter de una skill.
 
 ## Tickets de Linear
 
