@@ -1,8 +1,24 @@
 # Trabajadores Claude desde Codex
 
-Ruta **Codex → Claude** mediante un proceso externo `claude -p`.
+Ruta **Codex → Claude**.
 
-## Preparar y lanzar
+## T3 Code
+
+Primera opción. Sigue `~/.agents/docs/t3-delegation.md` con lo propio de
+esta ruta:
+
+- Instancia `claudeAgent`, con ids completos como `claude-opus-5-5` en vez
+  de los alias del CLI. `options` lleva sólo `{ "effort": "<nivel>" }`.
+- A diferencia de `--safe-mode`, el hijo carga el `CLAUDE.md` global, skills,
+  plugins, hooks y MCP. El brief abre diciendo que es un encargo delegado,
+  para que siga el contrato como trabajador, y declara si permite
+  descendientes, porque el hijo tiene `Agent`.
+- El respaldo es el proceso externo `claude -p` de las secciones siguientes.
+  Para un tope duro de tiempo, el controlador de ese proceso lo impone.
+
+## Proceso externo `claude -p`
+
+### Preparar y lanzar
 
 Antes de la primera invocación, comprueba `claude --version` y `claude --help`.
 Los nombres de routing `opus-5.5`, `sonnet-5.5` y `haiku-5.5` se pasan con los
@@ -40,7 +56,7 @@ Para escritura autorizada usa un worktree, `--permission-mode acceptEdits` y
 reglas `--allowedTools` precisas para shell. La alternativa `--bare` no usa
 OAuth ni keychain: requiere `ANTHROPIC_API_KEY` o `apiKeyHelper`.
 
-## Recoger
+### Recoger
 
 Conserva PID, salida y código de terminación. Exige salida cero y JSON
 parseable; valida `result` contra los criterios de aceptación e inspecciona
