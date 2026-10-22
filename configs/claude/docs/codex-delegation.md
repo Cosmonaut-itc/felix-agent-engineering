@@ -8,9 +8,13 @@ llamadas de herramienta que completó, nunca por el exit.
 
 1. **T3 Code.** Primera opción cuando está disponible, como dice la sección
    siguiente.
-2. **`codex-run`.** Si T3 no está disponible o su lanzamiento falla. Las
+2. **`codex-run`.** Si T3 no está disponible o rechaza el lanzamiento. Las
    secciones desde «CLI de Codex con proxy» describen esta ruta y sus
    alternativas.
+
+Si la llamada a `delegate_task` falla sin respuesta clara, T3 pudo aceptar el
+encargo. Repítela con el mismo `clientRequestId`. Si el encargo existe,
+síguelo, o cancélalo y confirma que se detuvo antes de lanzar `codex-run`.
 
 Al despachar, di en una línea qué ruta usaste y, si caíste a `codex-run`, por
 qué.
@@ -71,9 +75,14 @@ Está disponible cuando se cumplen las tres condiciones:
 **Recoger.** Cuando el hijo termina, una notificación despierta al hilo:
 termina tu turno en vez de sondear. Usa `task_status` sólo si necesitas el
 resultado a mitad de turno; `workState: result_available` y `summary` traen
-el resultado. Con `hasPendingQuestion` o `pendingApproval`, el hijo espera:
-lee la petición con `t3_pending_request_read` en `childThreadId` y respóndela,
-o pregunta al usuario.
+el resultado. El hijo puede quedar esperando de dos formas:
+
+- `hasPendingQuestion`: lista la pregunta con `t3_pending_request_list` y
+  `threadId: childThreadId`, léela con `t3_pending_request_read` y su
+  `requestId`, y contéstala con `t3_pending_request_respond` o pregunta al
+  usuario.
+- `pendingApproval`: esas herramientas no aprueban. Pide al usuario que
+  decida en el hilo del hijo.
 
 **Corregir y revisar.** Cada ronda de corrección o de review es un
 `delegate_task` nuevo con el brief original, los hallazgos previos, las
@@ -81,8 +90,12 @@ respuestas y las objeciones abiertas. No uses `t3_thread_send` sobre
 `childThreadId`.
 
 **Detener.** `task_cancel` con el `taskId` detiene al hijo y a sus
-descendientes. No hay tope de tiempo automático: el brief fija los minutos y
-cancelas si se pasan.
+descendientes. T3 no impone tope de tiempo, y un hijo colgado no despierta
+al hilo. Los minutos del brief orientan al trabajador, pero no lo detienen.
+Si el encargo necesita tope, arma un temporizador al despachar: un Bash con
+`run_in_background` que duerme el presupuesto. Si el temporizador despierta
+al hilo antes que el hijo, consulta `task_status` y, si sigue en `working`,
+cancélalo.
 
 El trabajador es el mismo Codex. Aplican igual los guardarraíles de
 «Escritura» y los gotchas de pedir aprobación, delegación interna, filtro de
