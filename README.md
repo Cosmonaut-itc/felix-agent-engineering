@@ -106,6 +106,7 @@ y qué parte de este repositorio lo aplica.
 | [`docs/flujo-de-trabajo.md`](docs/flujo-de-trabajo.md) | Fuente de verdad del flujo: capas, recorrido de una tarea, revisión, pausas y skills. |
 | [`docs/native-subagents.md`](docs/native-subagents.md) | Contexto, configuración y seguimiento de subagentes nativos en Codex y Claude Code. |
 | [`docs/opencode-workers.md`](docs/opencode-workers.md) | Despacho programático de cheap coders Go: CLI/HTTP, modelo, controles y cierre. |
+| [`docs/t3-delegation.md`](docs/t3-delegation.md) | Mecanismo común de `delegate_task` de T3 Code, primera opción en las rutas Claude Code → GPT y Codex → Claude. |
 | [`configs/codex/`](configs/codex/AGENTS.md) | Entry point global de Codex, con el contrato inlineado, y guía Codex → Claude. |
 | [`configs/claude/`](configs/claude/CLAUDE.md) | Entry point global de Claude Code, con el contrato inlineado, y guía Claude Code → GPT. |
 | [`configs/claude/hooks/duplicate-session-guard`](configs/claude/hooks/duplicate-session-guard) | Hook `SessionStart` que avisa a la sesión, y por notificación de macOS, si otro proceso de Claude Code lanzado por un SDK corre la misma conversación, como cuando T3 Code se actualiza y deja vivo el proceso anterior. Se registra a mano en `~/.claude/settings.json`. |
@@ -140,7 +141,7 @@ describen cómo ejecutarla en cada entorno.
 |------|-----------|------|
 | Codex → GPT | Subagentes nativos de Codex. | [`native-subagents.md`](docs/native-subagents.md), rama Codex |
 | Claude Code → Claude | Subagentes nativos de Claude Code. | [`native-subagents.md`](docs/native-subagents.md), rama Claude Code |
-| Codex → Claude | Proceso externo `claude -p`, seguido hasta su terminación. | [`claude-workers.md`](configs/codex/docs/claude-workers.md) |
+| Codex → Claude | `delegate_task` de T3 Code cuando está disponible; si no, proceso externo `claude -p`, seguido hasta su terminación. | [`claude-workers.md`](configs/codex/docs/claude-workers.md) |
 | Claude Code → GPT | `delegate_task` de T3 Code cuando está disponible; si no, `codex-run` con la CLI de Codex, el runtime del plugin openai/codex-plugin-cc o su adaptador opcional. | [`codex-delegation.md`](configs/claude/docs/codex-delegation.md) |
 | Codex o Claude Code → OpenCode Go | `opencode run` con perfil/modelo explícitos; servidor HTTP para despacho asíncrono. | [`opencode-workers.md`](docs/opencode-workers.md) |
 

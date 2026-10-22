@@ -3,6 +3,7 @@ file docs/orchestration.md ~/.agents/docs/orchestration.md
 file docs/agent-routing.md ~/.agents/docs/agent-routing.md
 file docs/native-subagents.md ~/.agents/docs/native-subagents.md
 file docs/opencode-workers.md ~/.agents/docs/opencode-workers.md
+file docs/t3-delegation.md ~/.agents/docs/t3-delegation.md
 file configs/codex/AGENTS.md ~/.codex/AGENTS.md
 file configs/codex/docs/claude-workers.md ~/.codex/docs/claude-workers.md
 file configs/codex/pstack-models.md ~/.codex/pstack-models.md

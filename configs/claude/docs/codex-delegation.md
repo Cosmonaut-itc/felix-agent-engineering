@@ -4,100 +4,23 @@ Ruta **Claude Code → GPT**. Patrón común de esta ruta: **el exit code
 miente**. Veta un despacho por `git status`, por el entregable y por las
 llamadas de herramienta que completó, nunca por el exit.
 
-## Elegir la ruta
-
-1. **T3 Code.** Primera opción cuando está disponible, como dice la sección
-   siguiente.
-2. **`codex-run`.** Si T3 no está disponible, rechaza el lanzamiento o el
-   encargo necesita tope duro de tiempo. Las secciones desde «CLI de Codex
-   con proxy» describen esta ruta y sus alternativas.
-
-Si la llamada a `delegate_task` falla sin respuesta clara, T3 pudo aceptar el
-encargo. Repítela con el mismo `clientRequestId`. Si el encargo existe,
-síguelo, o cancélalo y confirma que se detuvo antes de lanzar `codex-run`.
-
-Al despachar, di en una línea qué ruta usaste y, si caíste a `codex-run`, por
-qué.
-
 ## T3 Code
 
-`delegate_task`, del MCP `t3-code`, lanza un hijo Codex que pertenece al hilo
-de T3. T3 lo sigue, despierta al hilo cuando termina y lo detiene; no queda
-proceso que vigilar.
+Primera opción. Sigue `~/.agents/docs/t3-delegation.md` con lo propio de
+esta ruta:
 
-Está disponible cuando se cumplen las tres condiciones:
-
-- Existe la herramienta `mcp__t3-code__delegate_task`. El servidor puede
-  conectarse tarde: si el catálogo inicial no la muestra, búscala una vez con
-  ToolSearch antes de darla por ausente.
-- `orchestrator_capabilities` lista la instancia `codex` con
-  `canRunChildTask: true` y el modelo que pide el routing.
+- Instancia `codex`, con ids completos como `gpt-6.1-sol` y opciones
+  `{ "reasoningEffort": "<nivel>" }`.
 - La instancia pasa por el proxy: en `~/.t3/userdata/settings.json`,
   `providerInstances.codex.config.homePath` es
-  `/Users/felixddhs/.config/codex-cli`. Con otra ruta, como `~/.codex`, usa
-  `codex-run`.
-
-**Despachar.**
-
-```json
-{
-  "task": "<brief completo>",
-  "title": "<encargo corto>",
-  "role": "implementation",
-  "target": {
-    "providerInstanceId": "codex",
-    "model": "gpt-6.1-sol",
-    "options": { "reasoningEffort": "low" }
-  },
-  "mode": "async",
-  "isolation": "worktree",
-  "clientRequestId": "<slug>-<ronda>"
-}
-```
-
-- `model` lleva el nombre completo. `reasoningEffort` sale del routing, con
-  tope `high` aunque T3 ofrezca `xhigh`, `max` o `ultra`. Pasa `options`
-  siempre: sin ellas el hijo toma el default del modelo. Comprueba
-  `providerInstanceId`, `model` y `options` en la respuesta.
-- Deja `runtimeMode` sin fijar. Un modo más estrecho no da sólo lectura: el
-  hijo espera una aprobación que nadie da.
-- T3 no tiene sandbox de sólo lectura. Un encargo read-only lo dice en el
-  brief, con `isolation: "shared"`, y compruebas `git status` del checkout
-  antes y después.
-- Para escribir, usa `isolation: "worktree"`. El worktree parte del último
-  commit local y no copia cambios sin commitear: commitea antes. Localiza el
-  worktree del hijo con `t3_worktree_list` e integra tú sus cambios.
-- `clientRequestId` cambia en cada ronda y se repite en los reintentos de la
-  misma ronda.
-- Conserva el `taskId`: es el identificador del encargo. `childThreadId` es el
-  almacenamiento del hijo, no un canal para mandarle trabajo.
-
-**Recoger.** Cuando el hijo termina, una notificación despierta al hilo:
-termina tu turno en vez de sondear. Usa `task_status` sólo si necesitas el
-resultado a mitad de turno; `workState: result_available` y `summary` traen
-el resultado. El hijo puede quedar esperando de dos formas:
-
-- `hasPendingQuestion`: lista la pregunta con `t3_pending_request_list` y
-  `threadId: childThreadId`, léela con `t3_pending_request_read` y su
-  `requestId`, y contéstala con `t3_pending_request_respond` o pregunta al
-  usuario.
-- `pendingApproval`: esas herramientas no aprueban. Pide al usuario que
-  decida en el hilo del hijo.
-
-**Corregir y revisar.** Cada ronda de corrección o de review es un
-`delegate_task` nuevo con el brief original, los hallazgos previos, las
-respuestas y las objeciones abiertas. No uses `t3_thread_send` sobre
-`childThreadId`.
-
-**Detener.** `task_cancel` con el `taskId` detiene al hijo y a sus
-descendientes. T3 no impone tope de tiempo, y un hijo colgado no despierta
-al hilo. Los minutos del brief orientan al trabajador, pero no lo detienen.
-Un encargo que necesita tope duro va por `codex-run` con `--timeout`.
-
-El trabajador es el mismo Codex. Aplican igual los guardarraíles de
-«Escritura» y los gotchas de pedir aprobación, delegación interna, filtro de
-contenido, muerte tras una herramienta y cuota. Los de stdin, flags, procesos
-y timeouts son del CLI.
+  `/Users/felixddhs/.config/codex-cli`. Con otra ruta, como `~/.codex`, T3
+  no está disponible para esta ruta.
+- El respaldo es `codex-run`, descrito desde «CLI de Codex con proxy». Para
+  un tope duro de tiempo, `codex-run --timeout`.
+- El trabajador es el mismo Codex. Aplican igual los guardarraíles de
+  «Escritura» y los gotchas de pedir aprobación, delegación interna, filtro
+  de contenido, muerte tras una herramienta y cuota. Los de stdin, flags,
+  procesos y timeouts son del CLI.
 
 ## CLI de Codex con proxy
 

@@ -21,7 +21,7 @@ repositorio declara. Ante un conflicto manda la capa de más arriba.
 | `felix-mode` | Cómo encajan pstack, el contrato y Matt Pocock: precedencia, sustituciones, revisión y pausas. | [`skills/felix-mode`](../skills/felix-mode/SKILL.md). |
 | pstack | Playbooks de ejecución, principios y verificación sobre el artefacto real. | Plugin `pstack@pstack-claude`, del upstream [michael-denyer/pstack-claude](https://github.com/michael-denyer/pstack-claude). |
 | Matt Pocock | Producto y planificación: entrevistas, specs, tickets y triage. | [`vendor/mattpocock`](../vendor/mattpocock/), copia del último release de [mattpocock/skills](https://github.com/mattpocock/skills). |
-| Transporte | Cómo llega un encargo a otro runtime y cómo se recoge. | [`native-subagents.md`](native-subagents.md), [`codex-delegation.md`](../configs/claude/docs/codex-delegation.md), [`claude-workers.md`](../configs/codex/docs/claude-workers.md) y [`opencode-workers.md`](opencode-workers.md). |
+| Transporte | Cómo llega un encargo a otro runtime y cómo se recoge. | [`native-subagents.md`](native-subagents.md), [`t3-delegation.md`](t3-delegation.md), [`codex-delegation.md`](../configs/claude/docs/codex-delegation.md), [`claude-workers.md`](../configs/codex/docs/claude-workers.md) y [`opencode-workers.md`](opencode-workers.md). |
 
 La precedencia de `felix-mode` es la misma: usuario, `AGENTS.md` del
 repositorio, contrato y routing, `felix-mode` y pstack.
