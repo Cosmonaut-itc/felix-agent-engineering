@@ -158,7 +158,7 @@ Antes del primer despacho por una ruta en la sesión, lee su guía:
 | Codex → GPT (subagentes nativos) | `~/.agents/docs/native-subagents.md`, rama Codex |
 | Claude Code → Claude (subagentes nativos) | `~/.agents/docs/native-subagents.md`, rama Claude Code |
 | Codex → Claude (CLI externo) | `~/.codex/docs/claude-workers.md` |
-| Claude Code → GPT (plugin o CLI) | `~/.claude/docs/codex-delegation.md` |
+| Claude Code → GPT (T3 Code; si no, plugin o CLI) | `~/.claude/docs/codex-delegation.md` |
 | Codex o Claude Code → OpenCode Go (CLI externo o HTTP) | `~/.agents/docs/opencode-workers.md` |
 
 Las guías determinan mecanismos y parámetros; este documento determina la

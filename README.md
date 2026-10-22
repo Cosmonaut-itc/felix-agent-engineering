@@ -141,7 +141,7 @@ describen cómo ejecutarla en cada entorno.
 | Codex → GPT | Subagentes nativos de Codex. | [`native-subagents.md`](docs/native-subagents.md), rama Codex |
 | Claude Code → Claude | Subagentes nativos de Claude Code. | [`native-subagents.md`](docs/native-subagents.md), rama Claude Code |
 | Codex → Claude | Proceso externo `claude -p`, seguido hasta su terminación. | [`claude-workers.md`](configs/codex/docs/claude-workers.md) |
-| Claude Code → GPT | Runtime del plugin openai/codex-plugin-cc, adaptador opcional o CLI de Codex. | [`codex-delegation.md`](configs/claude/docs/codex-delegation.md) |
+| Claude Code → GPT | `delegate_task` de T3 Code cuando está disponible; si no, `codex-run` con la CLI de Codex, el runtime del plugin openai/codex-plugin-cc o su adaptador opcional. | [`codex-delegation.md`](configs/claude/docs/codex-delegation.md) |
 | Codex o Claude Code → OpenCode Go | `opencode run` con perfil/modelo explícitos; servidor HTTP para despacho asíncrono. | [`opencode-workers.md`](docs/opencode-workers.md) |
 
 Un trabajador externo por CLI tiene un ciclo de vida distinto del subagente
