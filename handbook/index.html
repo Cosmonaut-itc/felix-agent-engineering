@@ -367,7 +367,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr><td><code>~/.codex/AGENTS.md</code></td><td>Lo mismo para Codex.</td></tr>
       <tr><td><code>~/.claude/pstack-models.md</code></td><td>El asiento Claude de cada rol de pstack. <code>session hook: off</code>.</td></tr>
       <tr><td><code>~/.codex/pstack-models.md</code></td><td>Sólo apaga el hook del plugin.</td></tr>
-      <tr><td><code>~/.claude/docs/codex-delegation.md</code></td><td>Cómo Claude despacha a GPT por la CLI con proxy.</td></tr>
+      <tr><td><code>~/.claude/docs/codex-delegation.md</code></td><td>Cómo Claude despacha a GPT, primero por T3 Code y si no por la CLI con proxy.</td></tr>
       <tr><td><code>~/.agents/docs/opencode-workers.md</code></td><td>Cómo despachar a OpenCode Go.</td></tr>
       <tr><td><code>~/.local/state/pao/status</code></td><td>Resultado de la última actualización. <code>pao status</code> lo muestra.</td></tr>
       <tr><td><code>~/.claude/settings.json</code>, <code>~/.codex/config.toml</code></td><td>No los gestiona <code>pao</code>. Tienen <code>CODEX_HOME</code> del proxy, pstack encendido, Superpowers apagado y, en Claude Code, los hooks <code>duplicate-session-guard</code>, <code>laptop-guard</code> y <code>store-guard</code>.</td></tr>

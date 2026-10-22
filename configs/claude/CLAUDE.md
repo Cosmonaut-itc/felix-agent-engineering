@@ -35,8 +35,9 @@ cambios: su low rinde más que el high de gpt-5.6-sol. Sube a `medium` sólo
 con incertidumbre real y a `high` cuando medium no baste. Las reviews de
 cambios requieren gpt-6-astra en `high`.
 
-Para delegar en Codex, lee `~/.claude/docs/codex-delegation.md`. Usa sólo la
-CLI conectada al proxy, pasando en cada invocación
+Para delegar en Codex, lee `~/.claude/docs/codex-delegation.md`. Si corres en
+un hilo de T3 Code con su `delegate_task` disponible, despacha por ahí
+primero. Si no, usa sólo la CLI conectada al proxy, pasando en cada invocación
 `CODEX_HOME=/Users/felixddhs/.config/codex-cli` (alias `codex`); el proxy
 gestiona cuentas y límites. No uses `~/.codex` (alias `codex-original`): es
 la app de ChatGPT, en directo y sin proxy.
