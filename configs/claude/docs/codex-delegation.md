@@ -8,9 +8,9 @@ llamadas de herramienta que completó, nunca por el exit.
 
 1. **T3 Code.** Primera opción cuando está disponible, como dice la sección
    siguiente.
-2. **`codex-run`.** Si T3 no está disponible o rechaza el lanzamiento. Las
-   secciones desde «CLI de Codex con proxy» describen esta ruta y sus
-   alternativas.
+2. **`codex-run`.** Si T3 no está disponible, rechaza el lanzamiento o el
+   encargo necesita tope duro de tiempo. Las secciones desde «CLI de Codex
+   con proxy» describen esta ruta y sus alternativas.
 
 Si la llamada a `delegate_task` falla sin respuesta clara, T3 pudo aceptar el
 encargo. Repítela con el mismo `clientRequestId`. Si el encargo existe,
@@ -92,10 +92,7 @@ respuestas y las objeciones abiertas. No uses `t3_thread_send` sobre
 **Detener.** `task_cancel` con el `taskId` detiene al hijo y a sus
 descendientes. T3 no impone tope de tiempo, y un hijo colgado no despierta
 al hilo. Los minutos del brief orientan al trabajador, pero no lo detienen.
-Si el encargo necesita tope, arma un temporizador al despachar: un Bash con
-`run_in_background` que duerme el presupuesto. Si el temporizador despierta
-al hilo antes que el hijo, consulta `task_status` y, si sigue en `working`,
-cancélalo.
+Un encargo que necesita tope duro va por `codex-run` con `--timeout`.
 
 El trabajador es el mismo Codex. Aplican igual los guardarraíles de
 «Escritura» y los gotchas de pedir aprobación, delegación interna, filtro de
