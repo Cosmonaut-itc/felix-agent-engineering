@@ -5,6 +5,7 @@ from pathlib import Path
 from hostgate.identity import Identity, Observation
 from hostgate.model import AuthContext, NodeConfig
 from hostgate.scope import ClosureEvidence
+from hostgate.salud.lector_desk import _ts
 
 FIXTURES = Path(__file__).parents[2] / 'fixtures'
 
@@ -24,6 +25,7 @@ class World:
         self.hook = None
         self.sample = json.loads((FIXTURES / 'health/mini.json').read_text())
         self.sample_boot = self.sample['boot']['bootId']
+        self.utc = _ts(self.sample['ts']) + 30
         self.health_kind = 'mini'
         self.default_shell = False
         self.witness = False
@@ -83,7 +85,7 @@ def config(path):
                       {'cpuMilli': 2000, 'memoryBytes': 2000,
                        'diskBytes': {'data': 2000}, 'slots': 2},
                       ('postgres:5434', 'postgres:5435', 'sen-slot:1', 'sen-slot:2',
-                       'sen-test-db-1', 'sen-test-db-2'), Path(path),
+                       'sen-test-db-1', 'sen-test-db-2'), Path(path).resolve(),
                       20.0, 10.0, 'r1', {'fixture': ('supervisor', 'query', 'operator')},
                       {'fixture': {'cpuMilli': 1000, 'memoryBytes': 1000,
                                    'diskBytes': {'data': 1000}, 'slots': 1}}, 'Mini-Fixture', 10)

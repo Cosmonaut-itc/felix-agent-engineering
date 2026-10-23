@@ -1,13 +1,13 @@
 import concurrent.futures
 import hashlib
 import sqlite3
-from hostgate.tests.test_contract import Contract
+from hostgate.tests.test_contract import Harness
 from hostgate.tests.support.world import request
 from hostgate.admission import Hostgate
 from hostgate.store import ShadowStore, StoreError
 
 
-class Storage(Contract):
+class Storage(Harness):
     def test_concurrent_budget_and_parallel_replay(self):
         def reserve(i):
             return Hostgate(self.config, self.world).reservar(request('parallel-' + str(i), str(i)), self.auth)
@@ -71,3 +71,30 @@ class Storage(Contract):
         with self.assertRaises((ValueError, StoreError)):
             ShadowStore.initialize(replace(self.config, state_dir=bad))
         with self.assertRaises(ValueError): replace(self.config, mode='enforcing')
+
+    def test_separate_cli_processes_shared_budget_and_replay(self):
+        import json
+        import subprocess
+        import sys
+        processes = [subprocess.Popen([sys.executable, '-B', '-m', 'hostgate.tests.support.client',
+                                       str(self.config.state_dir), 'process-' + str(i)],
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                     for i in range(8)]
+        replies = []
+        try:
+            for process in processes:
+                out, err = process.communicate(timeout=15)
+                self.assertIn(process.returncode, (0, 1, 4), err)
+                replies.append(json.loads(out))
+        finally:
+            for process in processes:
+                if process.poll() is None: process.wait(timeout=15)
+        self.assertEqual(sum(r['wouldGrant'] for r in replies), 2)
+        self.assertEqual(self.view()['budget']['retained']['slots'], 2)
+        successful = next(r for r in replies if r['wouldGrant'])
+        retry = subprocess.run([sys.executable, '-B', '-m', 'hostgate.tests.support.client',
+                                str(self.config.state_dir), successful['operationId']],
+                               capture_output=True, text=True, timeout=15)
+        self.assertEqual(retry.returncode, 0, retry.stderr)
+        self.assertTrue(json.loads(retry.stdout)['replayed'])
+        self.assertFalse(json.loads(retry.stdout)['wouldGrant'])

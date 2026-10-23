@@ -4,11 +4,11 @@ import os
 import subprocess
 import sys
 from hostgate.cli import main
-from hostgate.tests.test_contract import Contract
+from hostgate.tests.test_contract import Harness
 from hostgate.tests.support.world import request
 
 
-class CLI(Contract):
+class CLI(Harness):
     def call(self, payload, command='reservar'):
         out, err = io.StringIO(), io.StringIO()
         code = main([command], gate=self.gate, auth=self.auth,

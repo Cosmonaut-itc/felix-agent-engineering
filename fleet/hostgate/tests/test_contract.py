@@ -10,7 +10,7 @@ from hostgate.scope import ClosureEvidence, authorize_creation, record_started
 from hostgate.tests.support.world import World, config, request, FIXTURES
 
 
-class Contract(unittest.TestCase):
+class Harness(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -36,6 +36,8 @@ class Contract(unittest.TestCase):
     def codes(self, reply):
         return {x['code'] for x in reply['reasons']}
 
+
+class Contract(Harness):
     def test_shadow_only_and_future_interfaces_closed(self):
         r = self.reserve()
         self.assertEqual((r['result'], r['wouldGrant']), ('shadow', True))

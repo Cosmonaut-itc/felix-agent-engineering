@@ -1,0 +1,20 @@
+{
+  "schema": "hostgate/jale-reproduction@1",
+  "description": "Reproduccion modelada del incidente 22:54Z, no captura original",
+  "turns": [
+    36,
+    39,
+    41
+  ],
+  "linked": false,
+  "initial": "three-validating-without-reservation",
+  "after": "parents-absent",
+  "adapter": "modeled-run-boundary",
+  "conditions": [
+    "helper-linked-exits-or-legacy-survives",
+    "pid-start-heartbeat-revalidated",
+    "three-pending-expire-with-reasons",
+    "no-replay-acquires-follower-passes",
+    "possible-creation-retains"
+  ]
+}
