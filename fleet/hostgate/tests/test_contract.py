@@ -1,0 +1,227 @@
+import copy
+import json
+import tempfile
+import unittest
+from pathlib import Path
+from hostgate.store import ShadowStore, StoreError
+from hostgate.admission import Hostgate
+from hostgate.model import AuthContext
+from hostgate.scope import ClosureEvidence, authorize_creation, record_started
+from hostgate.tests.support.world import World, config, request, FIXTURES
+
+
+class Contract(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.world = World()
+        self.config = config(Path(self.tmp.name) / 'shadow')
+        ShadowStore.initialize(self.config)
+        self.gate = Hostgate(self.config, self.world)
+        self.auth = self.world.auth()
+
+    def reserve(self, op='op', job='job', auth=None, **changes):
+        return self.gate.reservar(request(op, job, **changes), auth or self.auth)
+
+    def view(self):
+        return self.gate.estado({}, self.auth)
+
+    def key(self, reply):
+        return reply['simulationKey']
+
+    def release(self, key, op='release'):
+        self.world.closures[('proof',)] = ClosureEvidence.fixture(key, self.world.boot)
+        return self.gate.soltar(op, key, ['proof'], self.auth)
+
+    def codes(self, reply):
+        return {x['code'] for x in reply['reasons']}
+
+    def test_shadow_only_and_future_interfaces_closed(self):
+        r = self.reserve()
+        self.assertEqual((r['result'], r['wouldGrant']), ('shadow', True))
+        self.assertNotIn('reservationId', r)
+        for fn in (authorize_creation, record_started):
+            with self.assertRaises(NotImplementedError):
+                fn(None, None)
+
+    def test_budget_dimensions_and_exclusives(self):
+        self.reserve(exclusiveResources=['postgres:5434'])
+        r = self.reserve('two', 'two', exclusiveResources=['postgres:5434'])
+        self.assertIn('resource-busy', self.codes(r))
+        self.reserve('three', 'three')
+        r = self.reserve('four', 'four')
+        details = str(r['reasons'])
+        for dimension in ('cpuMilli', 'memoryBytes', 'diskBytes:data', 'slots'):
+            self.assertIn(dimension, details)
+        self.assertIn('waiting-capacity', self.codes(r))
+
+    def test_minimum_and_unknown_resource(self):
+        r = self.reserve(demand=dict(cpuMilli=0, memoryBytes=0, diskBytes={'data': 0}, slots=1))
+        self.assertEqual(self.view()['budget']['retained']['cpuMilli'], 1000)
+        self.assertFalse(self.reserve('x', 'x', exclusiveResources=['unknown'])['wouldGrant'])
+
+    def test_replay_authentication_conflict_and_historical_state(self):
+        r = self.reserve()
+        self.assertEqual(self.key(r), self.key(self.reserve()))
+        changed = request(); changed['attemptId'] = 'different'
+        self.assertIn('operation-conflict', self.codes(self.gate.reservar(changed, self.auth)))
+        bad = AuthContext('intruder', 'supervisor', self.auth.peer, self.auth.anchor, 'fixture-channel')
+        self.assertEqual(self.gate.reservar(request(), bad)['exitCode'], 5)
+        self.release(self.key(r))
+        replay = self.reserve()
+        self.assertEqual(replay['originalResult']['wouldGrant'], True)
+        self.assertEqual(replay['currentState']['state'], 'released')
+        self.assertFalse(replay['wouldGrant'])
+
+    def test_rejection_stable_after_health_recovers(self):
+        self.world.profiles.clear()
+        self.assertFalse(self.reserve()['wouldGrant'])
+        self.world.profiles.add('fixture')
+        self.assertFalse(self.reserve()['wouldGrant'])
+        self.assertTrue(self.reserve('new')['wouldGrant'])
+
+    def test_old_generation_never_alters_new(self):
+        one = self.reserve(); old = self.key(one)
+        self.release(old)
+        two = self.reserve('two'); new = self.key(two)
+        self.assertEqual(new['generation'], old['generation'] + 1)
+        forged = dict(new, generation=old['generation'])
+        self.assertIn('stale-generation', self.codes(self.gate.latido('late', forged, 4, self.auth)))
+        self.gate.dudosa('old-doubt', old, 'late', [], self.auth)
+        self.assertEqual(self.view()['reservations'][-1]['effectiveState'], 'reserved')
+
+    def test_ttl_owner_lost_boot_and_heartbeat_cannot_release(self):
+        key = self.key(self.reserve())
+        self.world.now += 16
+        v = self.view()
+        self.assertEqual(v['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertEqual(v['budget']['retained']['slots'], 1)
+        self.gate.latido('fresh', key, 1, self.auth)
+        self.assertEqual(self.view()['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertFalse(self.reserve('next', 'next')['wouldGrant'])
+        self.world.boot = 'new-physical'
+        self.assertTrue(self.view()['drained'])
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+
+    def test_identity_reused_unverifiable_zombie(self):
+        for value in ('absent', 'EPERM', copy.copy(self.auth.peer)):
+            with self.subTest(value=value):
+                self.world.processes[self.auth.peer.pid] = value
+                if value == self.auth.peer:
+                    from dataclasses import replace
+                    self.world.processes[self.auth.peer.pid] = replace(value, start_token=(1, 3))
+                self.assertFalse(self.reserve('identity-' + str(value))['wouldGrant'])
+
+    def test_commit_revalidation_pid_anchor_channel_heartbeat(self):
+        for fault in ('pid', 'anchor', 'channel', 'heartbeat'):
+            with self.subTest(fault=fault):
+                self.world.channel = True
+                self.auth = self.world.auth()
+                self.world.now = 100
+                def hook(name):
+                    if name == 'before_revalidate':
+                        if fault == 'pid': self.world.processes[self.auth.peer.pid] = 'absent'
+                        if fault == 'anchor': self.world.processes[self.auth.anchor.pid] = 'absent'
+                        if fault == 'channel': self.world.channel = False
+                        if fault == 'heartbeat': self.world.now += 30
+                self.world.hook = hook
+                self.assertFalse(self.reserve(fault, fault)['wouldGrant'])
+        self.world.hook = None
+
+    def test_death_after_revalidation_retains_commit(self):
+        def hook(name):
+            if name == 'before_commit':
+                self.world.processes[self.auth.peer.pid] = 'absent'
+        self.world.hook = hook
+        r = self.reserve()
+        self.assertTrue(r['wouldGrant'])
+        self.assertEqual(self.view()['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+
+    def test_scope_and_cleanup_all_or_nothing(self):
+        key = self.key(self.reserve(exclusiveResources=['sen-slot:1', 'postgres:5434']))
+        for scenario in ('root-exit-child', 'escape-seen', 'escape-unseen', 'no-profile', 'partial-cleanup',
+                         'paused', 'slot-disappeared', 'windows-unconfirmed'):
+            self.world.closures[(scenario,)] = ClosureEvidence(kind=scenario)
+            r = self.gate.soltar(scenario, key, [scenario], self.auth)
+            self.assertFalse(r['wouldGrant'])
+            self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+        self.release(key)
+        self.assertEqual(self.view()['budget']['retained']['slots'], 0)
+        self.gate.soltar('repeat-release', key, [], self.auth)
+        self.assertEqual(self.view()['budget']['retained']['slots'], 0)
+
+    def test_windows_fixture_only_positive_evidence_fenced(self):
+        for kind in ('windows-tree-empty', 'never-created'):
+            key = self.key(self.reserve(kind, kind))
+            proof = ClosureEvidence.fixture(key, self.world.boot, kind=kind)
+            self.world.closures[(kind,)] = proof
+            r = self.gate.soltar('close-' + kind, key, [kind], self.auth)
+            self.assertEqual(r['simulationState'], 'released')
+        key = self.key(self.reserve('third', 'third'))
+        self.world.closures[('old',)] = proof
+        self.gate.soltar('bad-proof', key, ['old'], self.auth)
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+
+    def test_desk_no_transport_even_degraded(self):
+        self.world.health_kind = 'desk'
+        self.world.sample = json.loads((FIXTURES / 'health/desk.json').read_text())
+        self.world.sample_boot = None
+        for state in (False, True):
+            self.world.default_shell = state
+            r = self.reserve('desk-' + str(state))
+            self.assertFalse(r['wouldGrant'])
+            self.assertIn('boot-unverified', self.codes(r))
+        self.assertEqual(self.world.transport_calls, [])
+
+    def test_unknown_health_reason_is_barrier(self):
+        self.world.sample['guestRuntime'] = None
+        self.world.health_kind = 'desk'
+        self.world.sample = json.loads((FIXTURES / 'health/desk.json').read_text())
+        self.world.sample['guestRuntime'] = None
+        self.assertIn('health-invalid', self.codes(self.reserve()))
+
+    def test_jale_two_fixtures_five_conditions(self):
+        for filename in ('jale-2254z.json', 'jale-2254z-linked.json'):
+            with self.subTest(fixture=filename):
+                fixture = json.loads((FIXTURES / filename).read_text())
+                helpers = []
+                for turn in fixture['turns']:
+                    auth = self.world.auth(pid=turn)
+                    p = self.gate.prepare(request('jale-%s-%s' % (filename, turn), str(turn)), auth)
+                    helpers.append((auth, p))
+                for auth, _ in helpers:
+                    self.world.processes[auth.anchor.pid] = 'absent'
+                    if fixture['linked']:
+                        self.world.processes[auth.peer.pid] = 'absent'
+                self.world.now += 30
+                v = self.view()
+                for auth, pending in helpers:
+                    observed = next(x for x in v['pending'] if x['id'] == pending)
+                    self.assertEqual(observed['effectiveState'], 'expired')
+                    self.assertTrue(observed['reasons'])
+                    self.assertEqual(self.world.processes[auth.peer.pid] == 'absent', fixture['linked'])
+                    r = self.gate.reservar(request('jale-%s-%s' % (filename, auth.peer.pid), str(auth.peer.pid)), auth)
+                    self.assertFalse(r['wouldGrant'])
+                    self.assertFalse(self.gate.reservar(request('retry-%s-%s' % (filename, auth.peer.pid), str(auth.peer.pid)), auth)['wouldGrant'])
+                self.assertTrue(self.reserve('follower-' + filename, 'follower-' + filename)['wouldGrant'])
+                key = self.view()['reservations'][-1]['key']
+                self.release(key, 'release-' + filename)
+        key = self.key(self.reserve('could-create', 'could-create'))
+        self.gate.dudosa('creation-gap', key, 'spawn-ambiguous', [], self.auth)
+        self.world.now += 30
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+        self.assertFalse(self.reserve('blocked', 'blocked')['wouldGrant'])
+
+    def test_channel_eof_withdraws_without_reservation(self):
+        self.gate.prepare(request(), self.auth)
+        self.world.channel = False
+        self.assertEqual(self.view()['pending'][0]['effectiveState'], 'withdrawn')
+        self.assertFalse(self.reserve()['wouldGrant'])
+
+    def test_executor_restart_and_clock_regression(self):
+        self.reserve()
+        self.world.executor_boots['unix'] = 'restarted'
+        self.assertEqual(self.view()['reservations'][0]['effectiveState'], 'uncertain')
+        self.world.now = 0
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
