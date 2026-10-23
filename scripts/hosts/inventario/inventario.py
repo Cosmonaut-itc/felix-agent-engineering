@@ -82,6 +82,7 @@ def elemento(ruta, clase, motivo, ultimo=None, asociados=None):
 def corrida(ruta, ahora):
     item = elemento(ruta, 'dudosa', 'sin evidencia suficiente')
     mirror = None
+    inicio_registrado = None
     try:
         entradas = listar(ruta)
         item['ultimoUso'] = ruta.lstat().st_mtime
@@ -91,7 +92,8 @@ def corrida(ruta, ahora):
                 raise ValueError('symlink en registro: ' + p.name)
         started = leer(ruta / 'started')
         if started is not None:
-            item['ultimoUso'] = numero(started)
+            inicio_registrado = numero(started)
+            item['ultimoUso'] = inicio_registrado
         pid = leer(ruta / 'pid')
         fin = leer(ruta / 'exit')
         if fin is not None:
@@ -120,7 +122,7 @@ def corrida(ruta, ahora):
             item['motivo'] += '; más de 30 días' if item['borrable'] else '; no supera 30 días'
     except (OSError, ValueError, UnicodeError, OverflowError, subprocess.SubprocessError) as exc:
         item.update(clase='dudosa', borrable=False, motivo=str(exc))
-    return item, mirror
+    return item, mirror, inicio_registrado
 
 
 def tamano(ruta):
@@ -148,6 +150,7 @@ def inventariar(raiz, ahora=None, tamanos=False):
     corridas = []
     por_id = {}
     por_copia = {}
+    inicios = {}
     sin_dueno = []
     try:
         # Evita atravesar una raíz que ya sea un enlace antes de listar sus hijos.
@@ -158,7 +161,8 @@ def inventariar(raiz, ahora=None, tamanos=False):
         corridas.append(elemento(raiz / 'runs', 'dudosa', str(exc)))
         sin_dueno.append('no se pudieron listar todas las corridas')
     for ruta in rutas:
-        item, mirror = corrida(ruta, ahora)
+        item, mirror, inicio_registrado = corrida(ruta, ahora)
+        inicios[ruta.name] = inicio_registrado
         corridas.append(item)
         por_id[ruta.name] = item
         if mirror is not None:
@@ -180,7 +184,8 @@ def inventariar(raiz, ahora=None, tamanos=False):
         try:
             listar(ruta)
             usos = [ruta.lstat().st_mtime]
-            usos.extend(x['ultimoUso'] for x in asociadas if x['ultimoUso'] is not None)
+            usos.extend(inicios[Path(x['ruta']).name] for x in asociadas
+                        if inicios[Path(x['ruta']).name] is not None)
             lock = leer(ruta / '.remote-run.lock')
             bloqueada = None
             if lock is not None:
