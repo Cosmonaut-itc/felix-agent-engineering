@@ -133,5 +133,5 @@ MacBook edita/inspecciona; runtime y gates en Mini bajo run.sh con turno.
 No instalación, restart WSL, config de host o cargas ajenas por este contrato.
 
 Aceptación semántica Fleet: sí, con estas correcciones al v0.
-Aceptación semántica Mini: pendiente.
+Aceptación semántica Mini: sí, como base de diseño, con cierre Unix acreditado mediante sesión o pgid propio más linaje (escapes por setsid o doble fork conservan duda) y sin conexiones de hostgate ni del adaptador de salud al desk hasta que Desktop acredite el gate de DefaultShell, incluidos valores y cadena real de procesos, sin powershell.exe ni cmd.exe propios al cerrar.
 Serialización, diseño y evidencia runtime: pendientes.
