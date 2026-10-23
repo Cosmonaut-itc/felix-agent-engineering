@@ -64,8 +64,12 @@ Fleet consume el adaptador stdlib con fixtures entregado por Mini:
 `evaluar(muestra, ahora, boot_actual) -> motivos` para desk y Mini.
 No duplica las reglas de sano. Incluye memoria y disco además de CPU.
 Snapshot viejo, desconocido, fallido u otro boot es no sano, nunca cero.
-Boot actual Windows debe obtenerse por una fuente acordada sin PowerShell;
-hasta que exista queda no sano. No basta comparar el snapshot consigo mismo.
+Boot actual Windows exige un testigo independiente del snapshot, sin PowerShell,
+CIM ni WMI. Dos campos del mismo archivo sólo prueban coherencia interna.
+Un snapshot de otro arranque puede parecer fresco tras reiniciar. Hoy no existe
+ese testigo: el desk es NO SANO para admisión automática hasta disponer de él.
+La unidad Desktop `desk-boot-witness` está pending y bloquea SEN-3835; su aceptación
+y evidencia son prerrequisitos de la integración nativa. No se presume disponible.
 
 Nunca se lanza PowerShell/CIM/WMI para medir. Toda lectura, sonda o ejecución
 hacia FELIX-DESKTOP usa OpenSSH nativo Windows, ProxyCommand=none.
