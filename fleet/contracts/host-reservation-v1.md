@@ -1,10 +1,14 @@
 # Reserva host-side de Fleet, v1
 
-Estado: propuesta aceptada para diseño, no interfaz runtime disponible ni autorización de instalación.
+Estado: propuesta aceptada por Fleet para diseño, no interfaz runtime disponible ni autorización de instalación.
 Schema del contrato: `fleet/host-reservation@1`.
 Propietario: Fleet (165dccf7). Implementador delegado: mini-carga (mcp:73237748).
 Ruta de implementación exclusiva: `fleet/hostgate/`.
 Tickets: SEN-3822, SEN-3825 y SEN-3830. Spec: SEN-3817.
+
+Ante diferencias con los documentos de outputs del 2026-10-23, prevalecen este
+contrato y los criterios adicionales de los tickets. Esos documentos son
+antecedentes. Contención no prueba terminalidad; no existe una U3 separada.
 
 El borrador v0 de Mini se acepta como base con las precisiones siguientes.
 El diseño disputado fija la serialización y el mecanismo de IPC; cualquier cambio
@@ -46,7 +50,8 @@ La cadencia/TTL son parámetros del host; su vencimiento produce duda, no termin
 
 Un intento pendiente de admisión guarda PID+inicio+boot y latido del solicitante
 host-side. Si muere de forma confirmada, o vence antes de existir carga/reserva
-activa, se retira automáticamente sin bloquear seguidores. Nunca se borra a mano.
+activa, se retira automáticamente sin bloquear a la cola Fleet o al turno legado
+compartido durante la migración. Hostgate no añade otra cola. Nunca se borra a mano.
 Un hueco entre reservar y crear la carga conserva duda salvo prueba de never-created.
 La aceptación durable del trabajo y el turno de admisión son identidades distintas.
 
@@ -67,7 +72,8 @@ Snapshot viejo, desconocido, fallido u otro boot es no sano, nunca cero.
 Boot actual Windows exige un testigo independiente del snapshot, sin PowerShell,
 CIM ni WMI. Dos campos del mismo archivo sólo prueban coherencia interna.
 Un snapshot de otro arranque puede parecer fresco tras reiniciar. Hoy no existe
-ese testigo: el desk es NO SANO para admisión automática hasta disponer de él.
+ese testigo: el desk es NO SANO y no elegible para admisión automática, tampoco
+como opción degradada, hasta disponer de él.
 La unidad Desktop `desk-boot-witness` está pending y bloquea SEN-3835; su aceptación
 y evidencia son prerrequisitos de la integración nativa. No se presume disponible.
 
@@ -81,7 +87,8 @@ Selección: descartar riesgo y elegir por carga Unix/cores entre elegibles;
 cpuRootPct puede descalificar según el lector, no sustituye carga Unix.
 Sin sanos se avisa y se marca la opción menos mala como degradada.
 Esa clasificación no sobrepasa drenado, incompatibilidad, identidad inválida,
-reservas dudosas o presupuesto. Si faltan datos para ordenar, se explica.
+boot no acreditado, salud ilegible, reservas dudosas o presupuesto.
+Si faltan datos para ordenar, se explica.
 Sólo Felix levanta el veto auto. Disponibilidad y heads fusionados SEN-3822/3825
 se comunican a PAO, quien avisa a proyectos.
 
@@ -106,6 +113,7 @@ sen-test-db-$slot, puertos y BD por corrida sin segundo presupuesto.
 Postgres compartidos 5434/5435 son recursos explícitos cuando correspondan.
 Reiniciar WSL puede borrar estado efímero de varios proyectos: mantenimiento
 drena el equipo y reconcilia reservas y recursos antes de reapertura explícita.
+La desaparición de slots o BD no prueba cierre ni reutilización segura.
 Las 12 vCPU WSL no son 12 cores físicos adicionales. No se presupone Jale migrado.
 
 ## Pruebas y aceptación
