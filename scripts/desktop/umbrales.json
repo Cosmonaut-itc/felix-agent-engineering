@@ -1,0 +1,11 @@
+{
+  "cpuRootPct": { "warn": 90, "crit": 98 },
+  "commitRatio": { "warn": 0.85, "crit": 0.95 },
+  "freeBytes.C:": { "warn": 21474836480, "crit": 10737418240 },
+  "freeRatio.E:": { "warn": 0.10, "crit": 0.05 },
+  "eLatencyMs": { "warn": 50, "crit": 200 },
+  "CooldownMin": 30,
+  "CooldownUnknownMin": 180,
+  "MaxFileBytes": 8388608,
+  "MaxDirBytes": 536870912
+}
