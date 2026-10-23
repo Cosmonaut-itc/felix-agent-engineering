@@ -74,7 +74,7 @@ CIM ni WMI. Dos campos del mismo archivo sólo prueban coherencia interna.
 Un snapshot de otro arranque puede parecer fresco tras reiniciar. Hoy no existe
 ese testigo: el desk es NO SANO y no elegible para admisión automática, tampoco
 como opción degradada, hasta disponer de él.
-La unidad Desktop `desk-boot-witness` está pending y bloquea SEN-3835; su aceptación
+La unidad Desktop `desk-boot-witness` (SEN-3853) está pending y bloquea SEN-3835; su aceptación
 y evidencia son prerrequisitos de la integración nativa. No se presume disponible.
 
 Nunca se lanza PowerShell/CIM/WMI para medir. Toda lectura, sonda o ejecución
@@ -121,6 +121,11 @@ Las 12 vCPU WSL no son 12 cores físicos adicionales. No se presupone Jale migra
 CLI público real con varios clientes y ejecutores aislados: presupuesto conjunto,
 operaciones repetidas, generaciones antiguas, cliente muerto en start, reconexión,
 turno huérfano, PID reutilizado, heartbeat vencido, tree=unconfirmed y boot nuevo.
+Fixture Jale 22:54Z: al matar al padre queda un hijo tipo `estado.py tomar`.
+El cliente que espera admisión muere con su padre; antes de conceder se valida
+PID, inicio y latido del solicitante. Tres turnos o reservas pendientes sin carga
+de esos huérfanos caducan solos y `estado` muestra caducidad y motivo. Ninguno
+adquiere después ni bloquea seguidores. Si pudo arrancar carga, conserva duda.
 Lectores con snapshots inválidos/viejos, null, presión RAM/disco, drenado y
 degradación visible; consultar jamás reabre. Sin sondas PowerShell ni ssh desk.
 Smokes reales sólo acotados y coordinados por plataforma después de prerrequisitos.
