@@ -1,4 +1,5 @@
 import ctypes
+import enum
 import getpass
 import json
 import os
@@ -13,6 +14,7 @@ import time
 import uuid
 
 APP_ID = 0x464C5431
+GROUP_DRAINING = "waiting for process group to empty"
 StateError = sqlite3.Error
 LEGAL = {(None, "queued"), ("queued", "starting"),
          ("starting", "running"), ("starting", "finished"),
@@ -123,7 +125,7 @@ def _finish_and_next(conn, attempt, actor, outcome, code, sig, detail, superviso
     return None
 
 
-def _identity(pid):
+def _observe_identity(pid):
     result = {"pid": pid, "host": socket.gethostname(), "boot_id": None, "started_at": None}
     try:
         if sys.platform.startswith("linux"):
@@ -157,10 +159,10 @@ def _identity(pid):
     return result
 
 
-def _alive(identity):
+def _identity_confirmed(identity):
     if not identity or not identity.get("boot_id") or not identity.get("started_at"):
         return False
-    return identity == _identity(identity["pid"])
+    return identity == _observe_identity(identity["pid"])
 
 
 def _logs(state, attempt):
@@ -168,82 +170,102 @@ def _logs(state, attempt):
     return directory / "stdout", directory / "stderr"
 
 
+class Launch(enum.Enum):
+    READY = "ready"
+    NOT_CREATED = "not created"
+    UNCONFIRMED = "unconfirmed"
+
+
+def _reserve(conn, state, argv, cwd, client):
+    job, attempt = "j_" + uuid.uuid4().hex, "a_" + uuid.uuid4().hex
+    actor = "client:" + client
+    conn.execute("BEGIN IMMEDIATE")
+    conn.execute("INSERT INTO jobs (id,argv,cwd,client,submitted_by,submitted_at) "
+                 "VALUES (?,?,?,?,?,?)", (job, json.dumps(argv), str(cwd), client,
+                 json.dumps({"user": getpass.getuser(), "uid": os.getuid(),
+                             "host": socket.gethostname(), "pid": os.getpid()}), time.time()))
+    conn.execute("INSERT INTO attempts (id,job_id) VALUES (?,?)", (attempt, job))
+    _transition(conn, attempt, "queued", actor)
+    out, err = _logs(state, attempt)
+    out.parent.mkdir(mode=0o700, parents=True)
+    out.touch(mode=0o600)
+    err.touch(mode=0o600)
+    claimed = _claim(conn, attempt, actor)
+    conn.commit()
+    return job, attempt, claimed
+
+
+def _launch_supervisor(state, attempt):
+    read_fd = write_fd = None
+    created = False
+    launch, error = Launch.NOT_CREATED, None
+    try:
+        read_fd, write_fd = os.pipe()
+        # Popen's exec-error pipe proves exec succeeded; readiness below also
+        # proves Python imported the runner and persisted the supervisor.
+        with (state / "supervisor.log").open("ab", buffering=0) as log:
+            subprocess.Popen(
+                [sys.executable, "-B", str(Path(__file__).resolve()),
+                 "supervise", str(state), attempt, str(write_fd)],
+                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                start_new_session=True, close_fds=True, pass_fds=(write_fd,))
+            created = True
+        fd, write_fd = write_fd, None
+        os.close(fd)
+        try:
+            readable, _, _ = select.select([read_fd], [], [], 10)
+            ready = bool(readable) and os.read(read_fd, 1) == b"R"
+        except ValueError as exc:
+            launch, error = Launch.UNCONFIRMED, str(exc)
+        else:
+            launch = Launch.READY if ready else Launch.UNCONFIRMED
+            if not ready:
+                error = "supervisor readiness unconfirmed; slot retained; do not retry"
+    except OSError as exc:
+        launch = Launch.UNCONFIRMED if created else Launch.NOT_CREATED
+        error = str(exc)
+    finally:
+        for fd in (read_fd, write_fd):
+            if fd is not None:
+                try:
+                    os.close(fd)
+                except OSError as exc:
+                    if created:
+                        launch, error = Launch.UNCONFIRMED, str(exc)
+    return launch, error
+
+
+def _fail_and_hand_off(conn, state, attempt, actor, error):
+    while attempt:
+        conn.execute("BEGIN IMMEDIATE")
+        attempt = _finish_and_next(conn, attempt, actor, "failed", None, None,
+                                   "supervisor spawn failed: {}".format(error))
+        conn.commit()
+        if attempt is None:
+            return
+        launch, error = _launch_supervisor(state, attempt)
+        if launch is not Launch.NOT_CREATED:
+            return
+
+
 def submit(state, argv, cwd, client):
     if os.name != "posix":
         raise ValueError("pilot supports POSIX hosts only")
     conn = _connect(state, create=True)
-    job, attempt = "j_" + uuid.uuid4().hex, "a_" + uuid.uuid4().hex
-    actor = "client:" + client
-    result = {"job": job, "attempt": attempt, "client": client, "accepted": False}
-    read_fd = write_fd = None
     try:
-        conn.execute("BEGIN IMMEDIATE")
-        conn.execute("INSERT INTO jobs (id,argv,cwd,client,submitted_by,submitted_at) "
-                     "VALUES (?,?,?,?,?,?)", (job, json.dumps(argv), str(cwd), client,
-                     json.dumps({"user": getpass.getuser(), "uid": os.getuid(),
-                                 "host": socket.gethostname(), "pid": os.getpid()}), time.time()))
-        conn.execute("INSERT INTO attempts (id,job_id) VALUES (?,?)", (attempt, job))
-        _transition(conn, attempt, "queued", actor)
-        out, err = _logs(state, attempt)
-        out.parent.mkdir(mode=0o700, parents=True)
-        out.touch(mode=0o600)
-        err.touch(mode=0o600)
-        claimed = _claim(conn, attempt, actor)
-        conn.commit()
-        launch_attempt = attempt if claimed else None
-        original_error = None
-        while launch_attempt:
-            process_created = False
-            try:
-                read_fd, write_fd = os.pipe()
-                # Popen's exec-error pipe proves exec succeeded; readiness below also
-                # proves Python imported the runner and persisted the supervisor.
-                with (state / "supervisor.log").open("ab", buffering=0) as log:
-                    subprocess.Popen(
-                        [sys.executable, "-B", str(Path(__file__).resolve()),
-                         "supervise", str(state), launch_attempt, str(write_fd)],
-                        stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                        start_new_session=True, close_fds=True, pass_fds=(write_fd,))
-                    process_created = True
-            except OSError as exc:
-                if process_created:
-                    if original_error is not None:
-                        break
-                    result.update(state="starting", view="uncertain", error=str(exc))
-                    return result, 3
-                if launch_attempt == attempt:
-                    original_error = str(exc)
-                conn.execute("BEGIN IMMEDIATE")
-                launch_attempt = _finish_and_next(
-                    conn, launch_attempt, actor, "failed", None, None,
-                    "supervisor spawn failed: {}".format(exc))
-                conn.commit()
-                if read_fd is not None:
-                    os.close(read_fd)
-                    read_fd = None
-                continue
-            finally:
-                if write_fd is not None:
-                    os.close(write_fd)
-                    write_fd = None
-            readable, _, _ = select.select([read_fd], [], [], 10)
-            if not readable or os.read(read_fd, 1) != b"R":
-                if original_error is not None:
-                    break
-                result.update(state="starting", view="uncertain",
-                              error="supervisor readiness unconfirmed; slot retained; do not retry")
-                return result, 3
-            break
-        if original_error is not None:
-            result.update(state="finished", outcome="failed", error=original_error)
-            return result, 1
-        result.update(state="starting" if claimed else "queued", accepted=True)
-        return result, 0
+        job, attempt, claimed = _reserve(conn, state, argv, cwd, client)
+        result = {"job": job, "attempt": attempt, "client": client, "accepted": False}
+        if not claimed:
+            return dict(result, state="queued", accepted=True), 0
+        launch, error = _launch_supervisor(state, attempt)
+        if launch is Launch.READY:
+            return dict(result, state="starting", accepted=True), 0
+        if launch is Launch.UNCONFIRMED:
+            return dict(result, state="starting", view="uncertain", error=error), 3
+        _fail_and_hand_off(conn, state, attempt, "client:" + client, error)
+        return dict(result, state="finished", outcome="failed", error=error), 1
     finally:
         conn.close()
-        for fd in (read_fd, write_fd):
-            if fd is not None:
-                os.close(fd)
 
 
 def view(state, job):
@@ -266,7 +288,7 @@ def view(state, job):
                              "ON a.id=s.holder_attempt WHERE s.id=1").fetchone()
         if result["state"] != "finished":
             identity = json.loads(owner[0]) if owner and owner[0] else None
-            if not _alive(identity) or (owner and owner[1] == "waiting for process group to empty"):
+            if not _identity_confirmed(identity) or (owner and owner[1] == GROUP_DRAINING):
                 result["view"] = "uncertain"
         result["transitions"] = [
             {"seq": t["seq"], "job": t["job_id"], "attempt": t["attempt_id"],
@@ -281,9 +303,9 @@ def view(state, job):
         conn.close()
 
 
-def _group_present(pid):
+def _group_may_be_occupied(pgid):
     try:
-        os.killpg(pid, 0)
+        os.killpg(pgid, 0)
         return True
     except ProcessLookupError:
         return False
@@ -299,37 +321,37 @@ def _execute(conn, state, attempt, actor):
     outcome, detail = "incomplete", None
     child = None
     try:
-        for path in _logs(state, attempt):
-            handles.append(path.open("ab", buffering=0))
         try:
-            child = subprocess.Popen(json.loads(row["argv"]), cwd=row["cwd"],
-                                     stdin=subprocess.DEVNULL, stdout=handles[0], stderr=handles[1],
-                                     close_fds=True, start_new_session=True)
+            for path in _logs(state, attempt):
+                handles.append(path.open("ab", buffering=0))
         except OSError as exc:
-            outcome, detail = "failed", "command spawn failed: {}".format(exc)
-        if child is not None:
-            conn.execute("BEGIN IMMEDIATE")
-            _transition(conn, attempt, "running", actor)
-            conn.execute("UPDATE attempts SET child_pid=?,started_at=? WHERE id=?",
-                         (child.pid, time.time(), attempt))
-            conn.commit()
-            returncode = child.wait()
-            if _group_present(child.pid):
+            outcome, detail = "incomplete", "log I/O failed: {}".format(exc)
+        else:
+            try:
+                child = subprocess.Popen(json.loads(row["argv"]), cwd=row["cwd"],
+                                         stdin=subprocess.DEVNULL, stdout=handles[0], stderr=handles[1],
+                                         close_fds=True, start_new_session=True)
+            except OSError as exc:
+                outcome, detail = "failed", "command spawn failed: {}".format(exc)
+            if child is not None:
                 conn.execute("BEGIN IMMEDIATE")
-                conn.execute("UPDATE attempts SET detail=? WHERE id=?",
-                             ("waiting for process group to empty", attempt))
+                _transition(conn, attempt, "running", actor)
+                conn.execute("UPDATE attempts SET child_pid=?,started_at=? WHERE id=?",
+                             (child.pid, time.time(), attempt))
                 conn.commit()
-                while _group_present(child.pid):
-                    time.sleep(0.2)
-            if returncode < 0:
-                outcome, sig = "incomplete", -returncode
-            else:
-                code = returncode
-                outcome = "succeeded" if code == 0 else "failed"
-    except OSError as exc:
-        if child is not None and child.poll() is None:
-            raise
-        outcome, detail = "incomplete", "log I/O failed: {}".format(exc)
+                returncode = child.wait()
+                if _group_may_be_occupied(child.pid):
+                    conn.execute("BEGIN IMMEDIATE")
+                    conn.execute("UPDATE attempts SET detail=? WHERE id=?",
+                                 (GROUP_DRAINING, attempt))
+                    conn.commit()
+                    while _group_may_be_occupied(child.pid):
+                        time.sleep(0.2)
+                if returncode < 0:
+                    outcome, sig = "incomplete", -returncode
+                else:
+                    code = returncode
+                    outcome = "succeeded" if code == 0 else "failed"
     finally:
         for handle in handles:
             try:
@@ -344,7 +366,7 @@ def _execute(conn, state, attempt, actor):
 def supervise(state, attempt, ready_fd):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    identity = _identity(os.getpid())
+    identity = _observe_identity(os.getpid())
     actor = "supervisor:{}".format(os.getpid())
     conn = _connect(state, create=True)
     try:

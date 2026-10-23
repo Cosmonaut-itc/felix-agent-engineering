@@ -77,9 +77,6 @@ def main(argv=None):
                 return 4
             time.sleep(delay if remaining is None else min(delay, remaining))
             delay = min(2.0, delay * 1.5)
-    except KeyboardInterrupt:
-        _emit({"error": "interrupted; execution was not changed"})
-        return 130
     except (OSError, ValueError, KeyError, runner.StateError, RuntimeError) as exc:
         _emit({"error": str(exc)})
         return 2

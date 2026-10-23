@@ -1,9 +1,16 @@
 #!/usr/bin/env python3
+import json
 import sys
 from pathlib import Path
 
 sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-from fleet import cli
+try:
+    from fleet import cli
 
-sys.exit(cli.main())
+    code = cli.main()
+except KeyboardInterrupt:
+    print(json.dumps({"error": "interrupted; execution was not changed"}), flush=True)
+    code = 130
+
+sys.exit(code)

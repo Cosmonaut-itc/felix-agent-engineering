@@ -48,6 +48,9 @@ cuando se lea stdout. La aceptación no espera su finalización.
 | 4 | `wait --timeout` agotado, timed_out=true; no cambia la ejecución |
 | 130 | Lector interrumpido con SIGINT; la ejecución sigue independiente |
 
+El punto de entrada público maneja SIGINT durante la importación del CLI y su
+ejecución con el mismo JSON de interrupción y código 130.
+
 `succeeded`: exit 0 y logs sincronizados/cerrados. `failed`: exit positivo o error
 inequívoco de spawn. `incomplete`: señal o fallo de logs. No se confunde SIGKILL con
 un exit positivo 137. Si desaparece un log después del fin, la lectura reporta
@@ -97,5 +100,7 @@ segundos. Prueba aceptación antes de soltar la barrera, resultados, señales, F
 admisión concurrente, lectores interrumpidos, aislamiento y supervisor perdido.
 Sólo envía señales a procesos creados por sus propias fixtures. La prueba de fallo
 de lanzamiento provoca un error abriendo el log privado, antes de crear supervisor.
+La limpieza exige ausencia de supervisores y grupos propios publicados por el CLI,
+observada con señal 0; si no puede confirmarla, falla y conserva el directorio temporal.
 No está conectada a CI. El coordinador debe guardar resultado y review del diff;
 esta entrega no declara ejecución ni aprobación de pruebas.

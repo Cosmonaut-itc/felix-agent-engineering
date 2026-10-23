@@ -3,6 +3,8 @@ import getpass
 import json
 import os
 from pathlib import Path
+import select
+import shutil
 import signal
 import socket
 import subprocess
@@ -28,8 +30,7 @@ sys.exit(0 if gate.exists() else 90)
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
 class FleetCLI(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory(prefix="fleet-cli-")
-        self.root = Path(self.temp.name)
+        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-"))
         self.state = self.root / "state"
         self.project = self.root / "project-without-profile"
         self.project.mkdir()
@@ -47,32 +48,56 @@ class FleetCLI(unittest.TestCase):
     def tearDown(self):
         for gate, done in self.gates:
             gate.touch()
+        for process in self.processes:
+            try:
+                process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                self.fail("owned CLI process did not exit; retained {}".format(self.root))
+        supervisors, groups = set(), set()
         deadline = time.monotonic() + 9
-        for job, state in self.jobs:
-            while time.monotonic() < deadline:
+        while True:
+            pending = []
+            for job, state in self.jobs:
                 result = self.call("status", job, state=state, check=False)
                 if result.returncode != 0:
-                    break
+                    pending.append((job, result.stdout, result.stderr))
+                    continue
                 value = json.loads(result.stdout)
-                if value["state"] == "finished":
-                    break
-                if value["view"] == "uncertain":
-                    break
-                time.sleep(0.05)
-        for process in self.processes:
-            if process.poll() is None:
-                process.communicate(timeout=10)
-        for gate, done in self.gates:
-            ready = gate.with_name("ready")
-            while ready.exists() and not done.exists() and time.monotonic() < deadline:
-                time.sleep(0.05)
-        time.sleep(0.05)
-        self.temp.cleanup()
+                if value["supervisor"]:
+                    supervisors.add(value["supervisor"]["pid"])
+                if value["child_pid"] is not None:
+                    groups.add(value["child_pid"])
+                if value["state"] in ("starting", "running") and value["child_pid"] is None:
+                    pending.append((job, "command creation unconfirmed"))
+                if value["state"] == "running" and not value["supervisor"]:
+                    pending.append((job, "supervisor identity missing"))
+            for kind, pids, probe in (("supervisor", supervisors, os.kill),
+                                      ("command group", groups, os.killpg)):
+                for pid in pids:
+                    try:
+                        probe(pid, 0)
+                    except ProcessLookupError:
+                        continue
+                    except OSError as exc:
+                        pending.append((kind, pid, str(exc)))
+                    else:
+                        pending.append((kind, pid, "still present"))
+            if not pending:
+                shutil.rmtree(self.root)
+                return
+            if time.monotonic() >= deadline:
+                self.fail("owned process absence unconfirmed; retained {}: {}".format(
+                    self.root, pending))
+            time.sleep(0.05)
 
     def call(self, *args, state=None, check=True, env=None):
         command = [sys.executable, "-B", str(CLI), "--state-dir", str(state or self.state)]
         result = subprocess.run(command + list(args), env=env or self.env,
                                 cwd=str(self.project), capture_output=True, text=True, timeout=15)
+        if args and args[0] == "submit":
+            value = json.loads(result.stdout)
+            if "job" in value:
+                self.jobs.append((value["job"], state or self.state))
         if check:
             self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
         return result
@@ -84,7 +109,6 @@ class FleetCLI(unittest.TestCase):
         options = ["submit"] + (["--client", client] if client is not None else [])
         value = self.value(*options, "--", *argv, state=state, env=env)
         self.assertTrue(value["accepted"])
-        self.jobs.append((value["job"], state or self.state))
         return value
 
     def wait(self, job, code=0, state=None):
@@ -180,7 +204,6 @@ class FleetCLI(unittest.TestCase):
             return self.value("submit", "--client", str(index), "--", sys.executable, "-c", "print('next')")
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             following = list(pool.map(enqueue, range(4)))
-        self.jobs.extend((item["job"], self.state) for item in following)
         views = [self.value("status", item["job"]) for item in following]
         self.assertTrue(all(v["state"] == "queued" for v in views))
         gate.touch()
@@ -198,13 +221,28 @@ class FleetCLI(unittest.TestCase):
         result = self.call("wait", job, "--timeout", "0", check=False)
         self.assertEqual(result.returncode, 4)
         self.assertTrue(json.loads(result.stdout)["timed_out"])
-        process = subprocess.Popen([sys.executable, "-B", str(CLI), "--state-dir", str(self.state),
+        process = subprocess.Popen([sys.executable, "-B", "-X", "importtime", str(CLI),
+                                    "--state-dir", str(self.state),
                                     "wait", job], env=self.env, cwd=self.project,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.processes.append(process)
-        time.sleep(0.3)
+        import_trace = bytearray()
+        deadline = time.monotonic() + 3
+        while not any(line.startswith(b"import time:") and
+                      line.rsplit(b"|", 1)[-1].strip() == b"fleet.cli"
+                      for line in import_trace.split(b"\n")[:-1]):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([process.stderr], [], [], remaining)[0]:
+                self.fail("fleet.cli importtime marker timed out: {}".format(
+                    import_trace.decode(errors="replace")))
+            chunk = os.read(process.stderr.fileno(), 4096)
+            if not chunk:
+                self.fail("reader ended before fleet.cli importtime marker: {}".format(
+                    import_trace.decode(errors="replace")))
+            import_trace.extend(chunk)
         process.send_signal(signal.SIGINT)
         stdout, stderr = process.communicate(timeout=3)
+        stderr = import_trace.decode(errors="replace") + stderr
         self.assertEqual(process.returncode, 130, (stdout, stderr))
         self.assertIn("interrupted", json.loads(stdout)["error"])
         self.assertEqual(self.value("status", job)["transitions"], before)
@@ -306,10 +344,10 @@ class FleetCLI(unittest.TestCase):
         process = subprocess.run([sys.executable, "-B", str(CLI), "submit", "--", sys.executable,
                                   "-c", "pass"], cwd=self.project, env=env,
                                  capture_output=True, text=True, timeout=15)
-        self.assertEqual(process.returncode, 0, process.stdout)
         value = json.loads(process.stdout)
         environment_state = self.root / "environment-state"
         self.jobs.append((value["job"], environment_state))
+        self.assertEqual(process.returncode, 0, process.stdout)
         self.wait(value["job"], state=environment_state)
         self.assertEqual(self.call("status", value["job"], env=env, check=False).returncode, 2)
 
@@ -317,10 +355,10 @@ class FleetCLI(unittest.TestCase):
         result = subprocess.run([sys.executable, "-B", str(CLI), "submit", "--",
                                  sys.executable, "-c", "pass"], cwd=self.project, env=self.env,
                                 capture_output=True, text=True, timeout=15)
-        self.assertEqual(result.returncode, 0, result.stdout)
         job = json.loads(result.stdout)["job"]
         default_state = self.root / "xdg/fleet-pilot"
         self.jobs.append((job, default_state))
+        self.assertEqual(result.returncode, 0, result.stdout)
         self.wait(job, state=default_state)
         reserved = self.root / "xdg/pao"
         refused = self.call("submit", "--", sys.executable, "-c", "pass",
