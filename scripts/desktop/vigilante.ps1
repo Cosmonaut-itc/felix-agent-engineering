@@ -314,7 +314,7 @@ function Read-DesktopState {
     }
 }
 
-function Write-DesktopAtomic {
+function Write-DesktopUncappedControl {
     param([string]$Path, $Value)
     $temp = "$Path.$([guid]::NewGuid().ToString('N')).tmp"
     try {
@@ -348,9 +348,8 @@ function Save-DesktopRecord {
             [Console]::Error.WriteLine($alert.message)
             if ((Add-DesktopJsonLine $StateDir "avisos-$date.jsonl" $alert $Limits) -eq 'capped') { $Sample.persist.alerts = 'capped' }
         }
-        # Control files remain fresh at the cap; their fixed-size overhead is outside the append budget.
-        Write-DesktopAtomic (Join-Path $StateDir 'estado-windows.json') $NewState
-        Write-DesktopAtomic (Join-Path $StateDir 'ultimo.json') $Sample
+        Write-DesktopUncappedControl (Join-Path $StateDir 'estado-windows.json') $NewState
+        Write-DesktopUncappedControl (Join-Path $StateDir 'ultimo.json') $Sample
         $Sample.persist.jsonl = Add-DesktopJsonLine $StateDir "muestras-$date.jsonl" $Sample $Limits
         if ($Sample.persist.jsonl -eq 'capped' -or $Sample.persist.alerts -eq 'capped') {
             $now = [datetime]::Parse($Sample.ts).ToUniversalTime()
@@ -362,16 +361,16 @@ function Save-DesktopRecord {
                 [Console]::Error.WriteLine($notice.message)
                 if ((Add-DesktopJsonLine $StateDir "avisos-$date.jsonl" $notice $Limits) -eq 'capped') { $Sample.persist.alerts = 'capped' }
                 $NewState.capNoticeUtc = $Sample.ts
-                Write-DesktopAtomic (Join-Path $StateDir 'estado-windows.json') $NewState
+                Write-DesktopUncappedControl (Join-Path $StateDir 'estado-windows.json') $NewState
             }
         }
-        Write-DesktopAtomic (Join-Path $StateDir 'ultimo.json') $Sample
+        Write-DesktopUncappedControl (Join-Path $StateDir 'ultimo.json') $Sample
     } catch {
         $Sample.persist.error = $_.Exception.Message
         $Sample.persist.jsonl = 'failed'
         $Sample.errors += "persist: $($Sample.persist.error)"
         [Console]::Error.WriteLine("persist failed: $($Sample.persist.error)")
-        try { Write-DesktopAtomic (Join-Path $StateDir 'ultimo.json') $Sample } catch { [Console]::Error.WriteLine($_.Exception.Message) }
+        try { Write-DesktopUncappedControl (Join-Path $StateDir 'ultimo.json') $Sample } catch { [Console]::Error.WriteLine($_.Exception.Message) }
     }
 }
 
