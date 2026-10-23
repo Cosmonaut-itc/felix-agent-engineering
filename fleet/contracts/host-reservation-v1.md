@@ -135,4 +135,3 @@ No instalación, restart WSL, config de host o cargas ajenas por este contrato.
 Aceptación semántica Fleet: sí, con estas correcciones al v0.
 Aceptación semántica Mini: pendiente.
 Serialización, diseño y evidencia runtime: pendientes.
-
