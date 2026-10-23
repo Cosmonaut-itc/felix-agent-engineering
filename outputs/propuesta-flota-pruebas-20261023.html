@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Prioridades y pausa de pruebas</title>
+<style>
+* { box-sizing: border-box; }
+body { margin: 0; color: var(--foreground, #202124); font-family: var(--font-sans, system-ui, sans-serif); font-size: 14px; line-height: 1.5; }
+h2 { font-size: 21px; line-height: 1.25; margin: 0 0 10px; }
+h3 { font-size: 15px; margin: 0 0 10px; }
+p { margin: 0 0 14px; }
+.muted { color: var(--muted-foreground, #61666d); }
+.flow { display: grid; grid-template-columns: 1fr 20px 1fr 20px 1fr; align-items: center; gap: 6px; margin-bottom: 22px; }
+.box { padding: 16px; border: 1px solid var(--border, #d3d7dd); border-radius: var(--radius, 10px); background: var(--card, #f7f8fa); }
+.flow .box { text-align: center; }
+.arrow { text-align: center; color: var(--muted-foreground, #61666d); }
+.label { display: block; font-weight: 600; }
+.small { font-size: 12px; }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 16px; }
+button { padding: 9px 12px; font: inherit; line-height: 1.3; border-radius: var(--radius, 8px); border: 1px solid var(--border, #c5cbd3); background: var(--secondary, #edf0f5); color: var(--secondary-foreground, #202124); cursor: pointer; }
+button:first-child { background: var(--primary, #284fb6); color: var(--primary-foreground, white); border-color: transparent; }
+button:disabled { cursor: default; opacity: .5; }
+button:focus-visible { outline: 2px solid var(--ring, #3369e8); outline-offset: 3px; }
+.running { border-left: 4px solid var(--info, #4276db); margin-bottom: 14px; }
+.running p { margin-bottom: 0; }
+.job { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding: 11px 0; border-bottom: 1px solid var(--border, #d3d7dd); }
+.job:last-child { border-bottom: 0; }
+.badge { flex-shrink: 0; font-size: 12px; padding: 3px 8px; border-radius: 5px; background: var(--muted, #edf0f5); }
+.urgent { color: var(--warning-foreground, #7b4100); background: var(--warning-surface, #fff0d5); }
+.paused { color: var(--info-foreground, #26528c); background: var(--accent-surface, #e8f0ff); }
+.note { margin-top: 16px; padding: 16px; border-radius: var(--radius, 10px); background: var(--muted, #f1f3f6); }
+.note p:last-child { margin-bottom: 0; }
+#outcome { min-height: 44px; margin: 0 0 16px; }
+@media (max-width: 480px) {
+  .flow { grid-template-columns: 1fr; gap: 5px; }
+  .arrow { transform: rotate(90deg); line-height: 16px; }
+  .flow .box { padding: 16px; }
+  .actions button { flex-grow: 1; }
+}
+</style>
+</head>
+<body>
+<div class="flow" aria-label="Flujo propuesto">
+  <div class="box"><span class="label">Proyecto o agente</span><span class="small muted">El mismo CLI y contrato JSON</span></div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="box"><span class="label">Cola común</span><span class="small muted">Prioridad, equidad y requisitos</span></div>
+  <div class="arrow" aria-hidden="true">→</div>
+  <div class="box"><span class="label">Mini, desktop y más</span><span class="small muted">Admisión y supervisor por nodo</span></div>
+</div>
+<h2>Cómo entraría una tarea urgente</h2>
+<p class="muted">Ejemplo interactivo de la propuesta. Un nodo con un espacio disponible para pruebas. No muestra el estado real de tus equipos.</p>
+<div class="actions">
+  <button id="add" type="button">1. Agregar urgente</button>
+  <button id="yield" type="button" disabled>2. Llegar al punto seguro</button>
+  <button id="reset" type="button">Reiniciar ejemplo</button>
+</div>
+<p id="outcome" aria-live="polite"></p>
+<div class="box running">
+  <h3>En ejecución</h3>
+  <div id="running"></div>
+</div>
+<div class="box">
+  <h3>Pendientes y pausados</h3>
+  <div id="queue"></div>
+</div>
+<div class="note">
+  <p><strong>La pausa libera capacidad cuando el ejecutor lo confirma.</strong> Un trabajo compatible termina su etapa, guarda avance y cierra sus recursos. Reanudarlo vuelve a pasar por admisión.</p>
+  <p class="muted">Los trabajos sin soporte de pausa continúan. Suspender un proceso con SIGSTOP conserva RAM y candados. Una prioridad alta mantiene los límites de seguridad y compatibilidad.</p>
+</div>
+<script>
+let phase = 0;
+const add = document.getElementById('add');
+const yieldButton = document.getElementById('yield');
+const reset = document.getElementById('reset');
+const outcome = document.getElementById('outcome');
+const running = document.getElementById('running');
+const queue = document.getElementById('queue');
+function row(name, state, kind = '') {
+  return '<div class="job"><span>' + name + '</span><span class="badge ' + kind + '">' + state + '</span></div>';
+}
+function render() {
+  add.disabled = phase !== 0;
+  yieldButton.disabled = phase !== 1;
+  if (phase === 0) {
+    outcome.textContent = 'El gate está ejecutando typecheck. Puede ceder entre etapas y después continuar con sus pruebas.';
+    running.innerHTML = row('Gate · typecheck', 'normal');
+    queue.innerHTML = row('Contratos de API', 'normal') + row('Suite nocturna', 'background');
+  } else if (phase === 1) {
+    outcome.textContent = 'La revisión urgente adelanta a los pendientes. El gate recibió la solicitud de pausa y termina su etapa actual.';
+    running.innerHTML = row('Gate · termina typecheck', 'pausa solicitada', 'paused');
+    queue.innerHTML = row('Revisión urgente', 'urgent', 'urgent') + row('Contratos de API', 'normal') + row('Suite nocturna', 'background');
+  } else {
+    outcome.textContent = 'El gate confirmó el punto seguro y liberó su espacio. La revisión urgente obtiene la reserva y empieza.';
+    running.innerHTML = row('Revisión urgente', 'urgent', 'urgent');
+    queue.innerHTML = row('Contratos de API', 'normal') + row('Suite nocturna', 'background') + row('Gate · typecheck completado', 'pausado', 'paused');
+  }
+}
+add.addEventListener('click', () => { phase = 1; render(); });
+yieldButton.addEventListener('click', () => { phase = 2; render(); });
+reset.addEventListener('click', () => { phase = 0; render(); });
+render();
+if (window.innerWidth < 20000) {
+  add.click();
+  if (!running.textContent.includes('pausa solicitada') || !queue.firstElementChild.textContent.includes('Revisión urgente')) throw new Error('La tarea urgente no adelantó los pendientes.');
+  yieldButton.click();
+  if (!running.textContent.includes('Revisión urgente') || !queue.textContent.includes('pausado')) throw new Error('La pausa no conservó el gate.');
+  reset.click();
+  if (yieldButton.disabled !== true || add.disabled !== false) throw new Error('El reinicio del ejemplo falló.');
+  console.log('Ejemplo verificado: prioridad, solicitud de pausa, punto seguro y reinicio.');
+}
+</script>
+</body>
+</html>
