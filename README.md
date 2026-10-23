@@ -99,6 +99,8 @@ y qué parte de este repositorio lo aplica.
 
 ## Estructura
 
+El [vigilante Windows](scripts/desktop/README.md) observa carga nativa con PowerShell 5.1, sin instalar tareas ni actuar sobre procesos.
+
 | Ruta | Propósito |
 |------|-----------|
 | [`docs/orchestration.md`](docs/orchestration.md) | Fuente canónica del contrato común: roles, descendientes y cierre. |
