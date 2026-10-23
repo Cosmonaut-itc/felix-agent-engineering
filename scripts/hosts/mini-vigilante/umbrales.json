@@ -1,0 +1,5 @@
+{
+  "memLevelPct": {"warn": 30, "crit": 15},
+  "memPressure": {"warn": 2, "crit": 4},
+  "freeBytes./System/Volumes/Data": {"warn": 53687091200, "crit": 26843545600}
+}
