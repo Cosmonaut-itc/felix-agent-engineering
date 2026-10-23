@@ -1,4 +1,3 @@
-"""One transactional slot per private directory; no host service or recovery."""
 import ctypes
 import getpass
 import json
@@ -41,7 +40,6 @@ def state_path(explicit=None):
     if raw.is_symlink():
         raise ValueError("state directory must not be a symlink")
     path = raw.resolve()
-    # Never use PAO's state or a legacy admission authority's directory.
     for root in (base.resolve(), (Path.home() / ".local/state").resolve()):
         for name in ("pao", "mini-carga", "u3"):
             reserved = root / name
@@ -126,7 +124,6 @@ def _finish_and_next(conn, attempt, actor, outcome, code, sig, detail, superviso
 
 
 def _identity(pid):
-    """Unobservable identity is unknown, never evidence of spare capacity."""
     result = {"pid": pid, "host": socket.gethostname(), "boot_id": None, "started_at": None}
     try:
         if sys.platform.startswith("linux"):
@@ -192,8 +189,6 @@ def submit(state, argv, cwd, client):
         out.touch(mode=0o600)
         err.touch(mode=0o600)
         claimed = _claim(conn, attempt, actor)
-        # Persist before spawn: a lost client leaves an uncertain reservation,
-        # never an untracked command. Only the child writes its own identity.
         conn.commit()
         launch_attempt = attempt if claimed else None
         original_error = None
@@ -212,7 +207,6 @@ def submit(state, argv, cwd, client):
                     process_created = True
             except OSError as exc:
                 if process_created:
-                    # A post-spawn log-close failure cannot prove no supervisor.
                     if original_error is not None:
                         break
                     result.update(state="starting", view="uncertain", error=str(exc))
@@ -294,7 +288,6 @@ def _group_present(pid):
     except ProcessLookupError:
         return False
     except OSError:
-        # Any observation failure retains capacity, including permission errors.
         return True
 
 
@@ -321,7 +314,6 @@ def _execute(conn, state, attempt, actor):
                          (child.pid, time.time(), attempt))
             conn.commit()
             returncode = child.wait()
-            # Descendants retaining the command's group still occupy the slot.
             if _group_present(child.pid):
                 conn.execute("BEGIN IMMEDIATE")
                 conn.execute("UPDATE attempts SET detail=? WHERE id=?",
@@ -335,7 +327,6 @@ def _execute(conn, state, attempt, actor):
                 code = returncode
                 outcome = "succeeded" if code == 0 else "failed"
     except OSError as exc:
-        # An I/O failure while a child might still live must not release capacity.
         if child is not None and child.poll() is None:
             raise
         outcome, detail = "incomplete", "log I/O failed: {}".format(exc)
@@ -366,7 +357,7 @@ def supervise(state, attempt, ready_fd):
         try:
             os.write(ready_fd, b"R")
         except BrokenPipeError:
-            pass  # The submitting client may have disappeared; execution is owned here.
+            pass
         finally:
             os.close(ready_fd)
         while attempt:

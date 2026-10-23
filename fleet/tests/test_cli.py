@@ -1,8 +1,3 @@
-"""Public CLI integration tests. Run only on the coordinated Mini test turn.
-
-No imports of Fleet, SQL access, external services, or persistent host state.
-Every long-lived command has its own gate and a six-second autoexit.
-"""
 import concurrent.futures
 import getpass
 import json
@@ -50,8 +45,6 @@ class FleetCLI(unittest.TestCase):
         self.processes = []
 
     def tearDown(self):
-        # Open every owned gate even when an assertion failed. No cancellation
-        # of jobs or signals to discovered/unrelated host processes.
         for gate, done in self.gates:
             gate.touch()
         deadline = time.monotonic() + 9
@@ -64,8 +57,6 @@ class FleetCLI(unittest.TestCase):
                 if value["state"] == "finished":
                     break
                 if value["view"] == "uncertain":
-                    # A deliberately killed supervisor cannot finish its job;
-                    # the fixture's own bounded command still must exit.
                     break
                 time.sleep(0.05)
         for process in self.processes:
@@ -75,7 +66,6 @@ class FleetCLI(unittest.TestCase):
             ready = gate.with_name("ready")
             while ready.exists() and not done.exists() and time.monotonic() < deadline:
                 time.sleep(0.05)
-        # Allow an orphan fixture to finish its final exit after writing done.
         time.sleep(0.05)
         self.temp.cleanup()
 
@@ -212,8 +202,6 @@ class FleetCLI(unittest.TestCase):
                                     "wait", job], env=self.env, cwd=self.project,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.processes.append(process)
-        # Startup grace for the reader; the command itself remains behind a
-        # controlled barrier, so this does not assert a throughput benchmark.
         time.sleep(0.3)
         process.send_signal(signal.SIGINT)
         stdout, stderr = process.communicate(timeout=3)
@@ -225,7 +213,6 @@ class FleetCLI(unittest.TestCase):
 
     def test_client_group_signals_and_supervisor_interrupts_are_isolated(self):
         argv, ready, gate, done = self.barrier()
-        # Keep only this owned submitting client's group alive after acceptance.
         wrapper = "import subprocess,sys,time; r=subprocess.run(sys.argv[1:]); time.sleep(2); sys.exit(r.returncode)"
         process = subprocess.Popen([sys.executable, "-c", wrapper, sys.executable, "-B", str(CLI),
                                     "--state-dir", str(self.state), "submit", "--", *argv],
@@ -272,7 +259,7 @@ class FleetCLI(unittest.TestCase):
         self.wait(first["job"])
         log = self.state / "supervisor.log"
         log.unlink()
-        log.mkdir()  # Owned fixture: opening the supervisor's output must fail.
+        log.mkdir()
         result = self.call("submit", "--", sys.executable, "-c", "print('must not run')", check=False)
         self.assertEqual(result.returncode, 1)
         value = json.loads(result.stdout)
@@ -324,7 +311,6 @@ class FleetCLI(unittest.TestCase):
         environment_state = self.root / "environment-state"
         self.jobs.append((value["job"], environment_state))
         self.wait(value["job"], state=environment_state)
-        # Explicit --state-dir already overrode this environment in all helpers.
         self.assertEqual(self.call("status", value["job"], env=env, check=False).returncode, 2)
 
     def test_default_state_and_reserved_paths(self):

@@ -1,4 +1,3 @@
-"""Public JSON CLI. Persistence and execution belong to runner."""
 import argparse
 import getpass
 import json
