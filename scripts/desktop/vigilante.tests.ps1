@@ -171,6 +171,42 @@ Test 'file and directory caps keep snapshot current and publish dropped alerts' 
 
 function Read-DesktopRaw { param([int]$VentanaMs) return (New-Raw) }
 
+Test 'exclusive alert log lock preserves both stderr alerts and reports exit 3 with matching snapshot' {
+    $dir = Join-Path $TestRoot 'locked-alerts'; [void][IO.Directory]::CreateDirectory($dir)
+    $raw = New-Raw; $raw.Processor.obj[0].PercentProcessorTime = 99; $raw.Memory.obj[0].CommittedBytes = 99
+    $fixture = Join-Path $TestRoot 'locked-alerts-raw.json'
+    [IO.File]::WriteAllText($fixture, (ConvertTo-Json -InputObject $raw -Depth 12 -Compress))
+    $stdout = Join-Path $TestRoot 'locked-alerts.stdout'; $stderr = Join-Path $TestRoot 'locked-alerts.stderr'
+    $code = @'
+$ErrorActionPreference = 'Stop'
+. 'SCRIPT_PATH'
+$raw = ConvertTo-DesktopMap ([IO.File]::ReadAllText('FIXTURE_PATH') | ConvertFrom-Json)
+function Read-DesktopRaw { param([int]$VentanaMs) return $raw }
+exit (Invoke-DesktopVigilante -StateDir 'STATE_PATH')
+'@
+    $code = $code.Replace('SCRIPT_PATH', (Join-Path $PSScriptRoot 'vigilante.ps1').Replace("'", "''")).Replace('FIXTURE_PATH', $fixture.Replace("'", "''")).Replace('STATE_PATH', $dir.Replace("'", "''"))
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($code))
+    $log = Join-Path $dir 'avisos-2026-10-23.jsonl'
+    $lock = [IO.File]::Open($log, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    $process = $null
+    try {
+        $process = Start-Process powershell.exe -WindowStyle Hidden -Wait -PassThru -ArgumentList @('-NoProfile', '-NonInteractive', '-EncodedCommand', $encoded) -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+        $json = [IO.File]::ReadAllText($stdout).Trim(); $sample = $json | ConvertFrom-Json
+        $messages = [IO.File]::ReadAllText($stderr)
+        $snapshot = [IO.File]::ReadAllText((Join-Path $dir 'ultimo.json'))
+        $cpuPublished = $messages.Contains('cpuRootPct'); $commitPublished = $messages.Contains('commitRatio')
+        Write-Output "Locked alerts exit=$($process.ExitCode) cpuStderr=$cpuPublished commitStderr=$commitPublished alerts=$($sample.persist.alerts) snapshotMatches=$($snapshot -eq $json)"
+        Assert ($cpuPublished -and $commitPublished) 'Both CPU and commit alerts must reach stderr despite the exclusive log lock.'
+        Assert ($sample.persist.alerts -eq 'failed') 'Locked alert log must report alerts failed.'
+        Assert ($process.ExitCode -eq 3 -and $sample.persist.error -and $sample.persist.jsonl -eq 'failed') 'Append failure must produce exit 3 and persistence error JSON.'
+        Assert ($snapshot -eq $json) 'Snapshot must match stdout including failed persistence.'
+        Assert ($lock.Length -eq 0) 'Exclusively locked log is unchanged.'
+    } finally {
+        if ($null -ne $process) { $process.Dispose() }
+        $lock.Dispose()
+    }
+}
+
 Test 'one-shot emits exactly one JSON line and only an exit code on pipeline' {
     $dir = Join-Path $TestRoot 'no-persist'
     $r = Invoke-Captured @{ NoPersist = $true; StateDir = $dir }

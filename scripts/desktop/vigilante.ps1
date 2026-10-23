@@ -342,12 +342,14 @@ function Add-DesktopJsonLine {
 function Save-DesktopRecord {
     param([string]$StateDir, $Sample, $Alerts, $NewState, [hashtable]$Limits)
     $date = ([datetime]::Parse($Sample.ts)).ToUniversalTime().ToString('yyyy-MM-dd')
-    $Sample.persist.jsonl = 'written'; $Sample.persist.alerts = 'written'
+    foreach ($alert in $Alerts) { [Console]::Error.WriteLine($alert.message) }
+    $Sample.persist.jsonl = 'written'; $Sample.persist.alerts = 'failed'
     try {
+        $alertsStatus = 'written'
         foreach ($alert in $Alerts) {
-            [Console]::Error.WriteLine($alert.message)
-            if ((Add-DesktopJsonLine $StateDir "avisos-$date.jsonl" $alert $Limits) -eq 'capped') { $Sample.persist.alerts = 'capped' }
+            if ((Add-DesktopJsonLine $StateDir "avisos-$date.jsonl" $alert $Limits) -eq 'capped') { $alertsStatus = 'capped' }
         }
+        $Sample.persist.alerts = $alertsStatus
         Write-DesktopUncappedControl (Join-Path $StateDir 'estado-windows.json') $NewState
         Write-DesktopUncappedControl (Join-Path $StateDir 'ultimo.json') $Sample
         $Sample.persist.jsonl = Add-DesktopJsonLine $StateDir "muestras-$date.jsonl" $Sample $Limits
@@ -359,7 +361,9 @@ function Save-DesktopRecord {
                 $notice = @{ schema = 'desktop-vigilante/aviso@1'; ts = $Sample.ts; host = $Sample.host;
                     key = 'persist'; level = 'warn'; kind = 'capped'; message = 'persist capped: historial lleno; ultimo.json sigue fresco.' }
                 [Console]::Error.WriteLine($notice.message)
-                if ((Add-DesktopJsonLine $StateDir "avisos-$date.jsonl" $notice $Limits) -eq 'capped') { $Sample.persist.alerts = 'capped' }
+                $Sample.persist.alerts = 'failed'
+                if ((Add-DesktopJsonLine $StateDir "avisos-$date.jsonl" $notice $Limits) -eq 'capped') { $alertsStatus = 'capped' }
+                $Sample.persist.alerts = $alertsStatus
                 $NewState.capNoticeUtc = $Sample.ts
                 Write-DesktopUncappedControl (Join-Path $StateDir 'estado-windows.json') $NewState
             }
