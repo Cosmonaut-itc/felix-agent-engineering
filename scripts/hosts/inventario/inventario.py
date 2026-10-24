@@ -200,6 +200,9 @@ def inventariar(raiz, ahora=None, tamanos=False):
             por_copia.setdefault(mirror, []).append(item)
         elif item['clase'] in ('dudosa', 'viva'):
             sin_dueno.append(ruta.name)
+    proteccion_copias = {'bloqueoGlobal': list(sin_dueno),
+                         'porCopia': {nombre: [x for x in items if x['clase'] in ('viva', 'dudosa')]
+                                      for nombre, items in por_copia.items()}}
     copias = []
     try:
         listar(raiz)
@@ -255,7 +258,7 @@ def inventariar(raiz, ahora=None, tamanos=False):
                            'tamanoBorrableBytes': sum(x['tamanoBytes'] or 0 for x in elementos if x['borrable']) if tamanos else None}
     return {'schema': 'remote-run-inventario@1', 'host': socket.gethostname(), 'ts': ahora,
             'raiz': str(raiz), 'reglas': dict(REGLAS), 'copias': copias,
-            'corridas': corridas, 'totales': totales}
+            'corridas': corridas, 'totales': totales, 'proteccionCopias': proteccion_copias}
 
 
 def resumen(datos):
