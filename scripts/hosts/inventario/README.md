@@ -100,7 +100,12 @@ literal autoriza exclusivamente `.comprador-felix-mode-83cc1dfe`,
 `.comprador-humo-099-f3371349`, `.comprador-humo-103-680cb5db` y
 `.comprador-humo-int-e5fab47b`. Ningún argumento, archivo o variable de entorno
 amplía esa lista. El modo predeterminado es **seco**: no renombra ni borra.
-Desactiva el bytecode antes de importar el inventario. La invocación es:
+Su primera instrucción desactiva el bytecode, antes de cualquier otra
+importación, así que el script no escribe cachés de lo que importa. Lo que
+carga el arranque del intérprete, antes de esa línea, sólo lo evita `-B`.
+Por eso `-B` es obligatorio, y el shebang también lo lleva. El Python 3.9 de
+Xcode guarda esas cachés bajo `~/Library/Caches/com.apple.python`, no junto
+al código. La invocación es:
 
 ```sh
 /usr/bin/python3 -B scripts/hosts/inventario/borrar_copias.py
@@ -190,5 +195,6 @@ fixtures son temporales y se limpian en la corrida. El guion
 SHA y porcelain (sólo admite `?? .remote-run.lock`), corre ambas suites,
 comprueba las mutaciones de las guardas en copias temporales y muestra el
 JSON seco del remote-run real con du, lsof y ps de las cuatro. Usa `-B` y no
-exporta `PYTHONDONTWRITEBYTECODE`; una prueba CLI fresca acredita que no se
-crean cachés por efecto del script. `run.sh` conserva stdout en su evidencia.
+exporta `PYTHONDONTWRITEBYTECODE`. Una prueba CLI fresca, con
+`PYTHONPYCACHEPREFIX` temporal, acredita que el script no escribe cachés
+más allá de las que escribe el arranque. `run.sh` conserva stdout en su evidencia.

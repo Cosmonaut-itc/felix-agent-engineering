@@ -1,5 +1,10 @@
-#!/usr/bin/env python3
+#!/usr/bin/python3 -B
 """Valida cuatro copias autorizadas de remote-run; en seco por defecto."""
+import sys
+
+# Antes de cualquier otra importación: el modo seco no debe escribir bytecode de lo que carga el script.
+sys.dont_write_bytecode = True
+
 import argparse
 from datetime import datetime, timezone
 import json
@@ -8,9 +13,6 @@ from pathlib import Path
 import secrets
 import stat
 import subprocess
-import sys
-
-sys.dont_write_bytecode = True
 
 from inventario import inventariar
 
