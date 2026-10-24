@@ -108,6 +108,20 @@ class MuestraTests(unittest.TestCase):
                     self.assertNotIn('/private/secret', json.dumps(s))
             self.raw[key] = original
 
+    def test_invalid_swap_tokens_fail_closed(self):
+        for raw in ['total = 1024.00M  used = 0.00Q  free = 1024.00M',
+                    'total = 1024.00M  used = 450.00Q  free = 574.00M',
+                    'total = 1024.00M  used = 4..50M  free = 574.00M']:
+            with self.subTest(raw=raw):
+                self.raw['vm.swapusage'] = raw
+                sample = self.capture()
+                metric = sample['metrics']['swapUsedBytes']
+                self.assertIsNone(metric['value'])
+                self.assertEqual(metric['status'], 'unknown')
+                self.assertTrue(metric['error'])
+                self.assertTrue(any(error['stage'] == 'metrics.swapUsedBytes' for error in sample['errors']))
+                self.assertNotEqual(sample['status'], 'ok')
+
     def test_boot_failure(self):
         for raw in [OSError('secret'), '{ sec = 1, usec = 1000000 }', 'garbage']:
             self.raw['kern.boottime'] = raw
@@ -158,13 +172,24 @@ class MuestraTests(unittest.TestCase):
 
     def test_bad_config_has_no_snapshot(self):
         path = self.out.parent / 'config.json'
-        for content in [None, '{', '{}', 'null', '{"memLevelPct":{"warn":true,"crit":15}}']:
+        for content in [None, '{', '{}', 'null']:
             if content is not None:
                 path.write_text(content)
             with self.subTest(content=content), contextlib.redirect_stderr(io.StringIO()) as err:
                 self.assertEqual(self.run_main(path), 2)
                 self.assertIn('umbrales', err.getvalue())
                 self.assertFalse(self.out.exists())
+
+    def test_boolean_threshold_has_no_snapshot(self):
+        path = self.out.parent / 'config.json'
+        config = json.loads(Path(m.__file__).with_name('umbrales.json').read_text())
+        config['memLevelPct']['crit'] = False
+        config['memLevelPct']['warn'] = 30
+        path.write_text(json.dumps(config))
+        with contextlib.redirect_stderr(io.StringIO()) as err:
+            self.assertEqual(self.run_main(path), 2)
+        self.assertIn('umbrales', err.getvalue())
+        self.assertFalse(self.out.exists())
 
     def test_external_command_timeout(self):
         with patch.object(m.subprocess, 'run', return_value=SimpleNamespace(stdout='77')) as run:
