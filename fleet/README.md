@@ -32,7 +32,19 @@ Referencias literales detectables a la raíz del origen en argv o archivos
 admitidos se rechazan. Además del texto literal de la raíz, se comprueban paths
 absolutos de argv, literales entre comillas simples/dobles (incluidos espacios)
 y tokens absolutos delimitados por espacio, NUL, comillas o `;|<>(){}[],=` en
-argv/contenido, hasta 40.000 tokens por valor. La comprobación
+argv/contenido. Cada literal se separa por `:` antes de comprobar identidad,
+también si el origen aparece en una posición no inicial. No se modifica argv.
+Primero se busca el texto de la raíz; después se comprueban cantidad, longitud
+y profundidad de todos los candidatos antes de resolver ninguno físicamente.
+Se admiten hasta 40.000 candidatos por valor, 16.384 bytes por ruta y 128 barras
+por ruta, incluida la ruta completa de un argumento absoluto. Una lista puede
+contar de nuevo sus componentes al inspeccionar también sus tokens. Los ancestros
+se recorren de forma perezosa, sin materializar una tupla de prefijos. El límite
+de 16 KiB conserva la fixture binaria anterior de 8 KiB; es una cota de trabajo,
+no una afirmación de PATH_MAX del host. Una ruta/candidato que excede una cota
+rechaza el envío con `source_reference_limit`, incluso dentro de un binario;
+no se considera segura por no poder resolverla. Los 32 MiB por archivo son un
+máximo adicional, no una promesa de admitir todo binario de ese tamaño. La comprobación
 de contención compara dispositivo/inode y ancestros existentes, también bajo
 otra grafía de mayúsculas cuando el filesystem identifica el mismo objeto.
 No convierte rutas a lower/casefold ni equipara objetos distintos en un volumen
@@ -76,13 +88,26 @@ y sus dependencias siguen disponibles y pueden cambiar: esta política acotada
 no acredita un sandbox ni congela el runtime, aliases externos futuros o código
 construido dinámicamente.
 
+EACCES, EPERM o ELOOP al obtener identidad física producen
+`path_identity_unavailable`, sin publicar la ruta ni admitir un alias que no
+pueda contrastarse. Es una pérdida explícita de disponibilidad: una referencia
+externa inaccesible o cíclica también puede rechazar una entrada ordinaria.
+ENOENT, ENOTDIR y ENAMETOOLONG del filesystem significan que ese objeto no tiene
+identidad observable; aún se comparan sus ancestros y el texto literal. Otros
+errores se propagan al manejo normal del CLI. Las cotas se comprueban antes de
+realpath/stat/ancestros y de nuevo sobre el resultado de realpath.
+
 Opciones de `submit`, repetibles salvo `--cwd` y `--client`:
 
 - `--cwd DIR`: cwd de origen; por defecto el actual.
 - `--input PATH`: estrecha la selección a archivos/directorios relativos a la
   raíz de captura. En Git la raíz es el toplevel; sin Git es cwd. `.` admite la
   selección automática completa. No permite sobrepasar exclusiones.
-- `--private PATH`: excluye esa ruta y descendientes relativos a la raíz.
+- `--private PATH`: excluye esa ruta y descendientes relativos a la raíz;
+  reconoce archivos/directorios existentes por dispositivo/inode y ancestros,
+  incluidas otras grafías que designen el mismo objeto. Objetos distintos en un
+  volumen sensible a mayúsculas siguen siendo distintos. Los defaults conservan
+  los patrones literales indicados abajo.
 - `--credential-env NAME`: declara como secreto el valor no vacío de esa
   variable, conservando su entrega al comando mediante el entorno privado.
 - `--artifact RELPATH`: salida obligatoria relativa al cwd materializado.
@@ -130,9 +155,13 @@ permanecen en el ledger privado, en claro, sin cifrado.
 `submitted_by.user` procede de la cuenta del uid, sin confiar en LOGNAME/USER.
 Sus textos de usuario/host se redactan con los secretos del emisor antes de
 persistirse. El lector usa la declaración privada guardada con el job para
-sanear también la identidad pública del supervisor, conservando su identidad
-original privada para comprobar dueño. Cambiar el entorno del lector no cambia
-esa redacción ni concede autoridad a `client` o a los metadatos publicados.
+sanear usuario/host, `client`, `detail`, textos descriptivos de la política y
+`transitions.actor`, incluidos actores heredados de otro emisor durante un relevo.
+Sólo `supervisor.host` es descriptivo: PID, boot/inicio, IDs de job/intento,
+secuencias, timestamps, estados, versiones y códigos conservan su valor.
+La identidad original privada se conserva para comprobar dueño. Cambiar el
+entorno del lector no cambia esa redacción ni concede autoridad a `client` o
+a los metadatos publicados.
 
 **No se inspecciona el contenido de archivos arbitrarios para descubrir secretos
 no declarados.** Un secreto desconocido en un archivo normal sí viaja en la
@@ -228,6 +257,10 @@ Una excepción nativa de cierre conserva el descriptor/lock para responsabilidad
 explícita del dueño, sin afirmar recuperación automática. No se acreditan cierre
 ante señales que interrumpan el proceso, SIGTERM/KILL, muerte del intérprete,
 fallos de flock/cierre del sistema ni durabilidad ante pérdida de energía.
+El descriptor que usará el escritor se adquiere antes de abrir SQLite; si falla
+esa apertura de descriptor no existe aún una conexión original que pueda escapar
+al destructor. Si el bootstrap SQLite falla, cierra bajo el flock exterior y
+se retira el descriptor aún no transferido.
 
 La base temporal del lector es exclusivamente `/tmp`, resuelta físicamente antes
 de llamar a `tempfile`, sin consultar `gettempdir()` ni modificar el entorno.
@@ -287,6 +320,18 @@ de admisión puede ser anterior a la respuesta: el job ya podría haber avanzado
 `status`/`wait` consultan su estado actual; el recibo no mezcla queued con una
 vista terminal, no reconstruye permiso y no autoriza reenviar el trabajo.
 
+Después de un registro confirmado, un error manejable al completar lanzamiento,
+NOT_CREATED/relevo o cierre conserva `job`, `attempt`, `registered=true`, entrada
+y política. Devuelve exit 3, `view=uncertain`,
+`error=post_registration_unconfirmed` y `observation=durable_admission`;
+`state=starting|queued` describe la admisión, sin inventar un resultado terminal.
+`accepted` conserva lo confirmado hasta ese punto (queued o READY). No abre otra
+vista, reintenta, libera ni reconstruye permisos para completar ese recibo. Un
+relevo parcialmente confirmado puede haber avanzado otros trabajos; consultar
+las identidades sin reenviar. Antes de confirmar registro siguen siendo posibles
+errores sin IDs. Se mantiene el límite declarado de interrupción por señales
+durante cierre; esta corrección no amplía el manejo de Ctrl-C.
+
 El supervisor y comando tienen sesiones separadas del cliente. SIGINT/SIGHUP
 del cliente no cancelan la carga; el supervisor ignora ambas señales. El comando
 debe ser compatible con el piloto: no daemonizar ni sacar descendientes del
@@ -305,7 +350,7 @@ puede informar `view=uncertain` con exit 0. Ningún lector inicia, libera o reen
 | 0 | submit sin duda en su observación de admisión/lanzamiento; status/evidence lectura; wait éxito acreditado |
 | 1 | submit no creó supervisor, accepted=false; wait failed acreditado |
 | 2 | Uso/entrada/estado inválido, esquema incompatible o job desconocido |
-| 3 | submit lanzamiento o dueño incierto; wait incomplete/uncertain |
+| 3 | submit lanzamiento, dueño o finalización posterior al registro inciertos; wait incomplete/uncertain |
 | 4 | wait agotó timeout de lectura; la ejecución continúa |
 | 130 | SIGINT del lector, incluso durante importación; JSON de interrupción |
 
@@ -323,10 +368,19 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'tes
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_ledger_lifecycle.py' -v
 ```
 
-`test_cli.py` conserva las 57 conductas anteriores y añade once casos de
-`integral_cases.py`: aliases físicos, metadatos declarados y recibo sin lector.
-Son 68 casos públicos y uno focalizado de ciclo de vida en
-`test_ledger_lifecycle.py`, todos escritos y cero ejecutados.
+`test_cli.py` conserva las 68 conductas públicas anteriores y añade once de
+`review_r2_cases.py`: privados por identidad, listas literales, límites de coste,
+identidad inaccesible y actores de relevo entre emisores. Son 79 casos públicos
+y el caso focalizado de ciclo de vida conservado en `test_ledger_lifecycle.py`:
+80 escritos, cero ejecutados. Las tres fixtures de coste calibran primero una
+cota efectiva de memoria de 256 MiB en procesos propios; si no pueden acreditarla
+(incluido Darwin), fallan antes de lanzar el escáner. El control previo reserva
+como máximo 320 MiB de payload, más el intérprete, en un proceso ya acotado por
+la propia fixture. Su ejecución requiere presupuesto Mini para ese pico previo.
+No ejecutar el rojo de coste sin seguir el procedimiento de COVERAGE.
+Los positivos de objetos distintos pueden usar una base temporal propia
+`FLEET_CASE_SENSITIVE_TMPDIR` en volumen sensible, con el resto de aliases en la
+base habitual case-insensitive; no se crea ni monta ningún volumen desde la suite.
 La matriz, selector rojo/verde y fronteras sin fixture están en
 [`tests/COVERAGE.md`](tests/COVERAGE.md).
 Los casos públicos usan subprocess del CLI, fixtures y recursos propios; no

@@ -98,7 +98,11 @@ def state_path(explicit=None):
     base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
     raw = Path(explicit or os.environ.get("FLEET_STATE_DIR") or base / "fleet-pilot").expanduser()
     path = Path(os.path.abspath(raw))
-    for root in (base.resolve(), (Path.home() / ".local/state").resolve()):
+    inputs._path_limit(path)
+    for root in (base, Path.home() / ".local/state"):
+        inputs._path_limit(root)
+        root = root.resolve()
+        inputs._path_limit(root)
         for name in ("pao", "mini-carga", "u3"):
             reserved = root / name
             if path == reserved or reserved in path.parents:
@@ -125,9 +129,14 @@ def _connect(state, create=False):
                         raise ValueError("state_lock_not_exclusive")
             else:
                 _lock(lock_fd, fcntl.LOCK_SH)
-            conn = _connect_locked(state, create)
-            if create:
-                conn.lock_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY | inputs.NOFOLLOW)
+            writer_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY | inputs.NOFOLLOW) if create else None
+            try:
+                conn = _connect_locked(state, create)
+            except BaseException:
+                if writer_fd is not None:
+                    os.close(writer_fd)
+                raise
+            conn.lock_fd = writer_fd
             return conn
     except FileNotFoundError:
         raise ValueError("state_not_found") from None
@@ -137,7 +146,7 @@ def _read_temp_base(state):
     base = Path("/tmp").resolve(strict=True)
     state_info = state.stat()
     state_id = (state_info.st_dev, state_info.st_ino)
-    for path in (base, *base.parents):
+    for path in inputs._ancestors(base):
         with inputs.directory(path) as fd:
             info = os.fstat(fd)
         if (info.st_dev, info.st_ino) == state_id:
@@ -402,31 +411,39 @@ def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), cred
                     "uid": os.getuid(), "host": inputs.redact(socket.gethostname(), plan.secrets),
                     "pid": os.getpid()}
     conn = _connect(state, create=True)
+    result = None
     try:
-        job, attempt = "j_" + uuid.uuid4().hex, "a_" + uuid.uuid4().hex
-        identity = plan.capture(state / "capsules" / job)
-        (state / "attempts" / attempt).mkdir(mode=0o700)
-        inputs.fsync_dir(state / "attempts")
-        execution = {"contract": "fleet-execution@1", "input": identity, "argv": argv,
-                     "environment": env, "outputs": {"contract": "fleet-outputs@1", "required": plan.artifacts},
-                     "context_version": inputs.CONTEXT_VERSION, "context": inputs.CONTEXT,
-                     "credential_names": list(credentials)}
-        job, attempt, claimed, uncertain = _reserve(
-            conn, job, attempt, execution, identity, plan.policy, client, submitted_by)
-        result = {"job": job, "attempt": attempt, "client": client, "registered": True,
-                  "accepted": False, "input": identity, "input_policy": plan.policy}
-        if not claimed:
-            return dict(result, observation="durable_admission", state="queued",
-                        view="uncertain" if uncertain else "queued", accepted=True), 3 if uncertain else 0
-        launch, error = _launch_supervisor(state, attempt, claimed)
-        if launch is Launch.READY:
-            return dict(result, state="starting", accepted=True), 0
-        if launch is Launch.UNCONFIRMED:
-            return dict(result, state="starting", view="uncertain", error=error), 3
-        _fail_and_hand_off(conn, state, attempt, claimed, "client:" + client, error)
-        return dict(result, state="finished", outcome="failed", error=error), 1
-    finally:
-        conn.close()
+        try:
+            job, attempt = "j_" + uuid.uuid4().hex, "a_" + uuid.uuid4().hex
+            identity = plan.capture(state / "capsules" / job)
+            (state / "attempts" / attempt).mkdir(mode=0o700)
+            inputs.fsync_dir(state / "attempts")
+            execution = {"contract": "fleet-execution@1", "input": identity, "argv": argv,
+                         "environment": env, "outputs": {"contract": "fleet-outputs@1", "required": plan.artifacts},
+                         "context_version": inputs.CONTEXT_VERSION, "context": inputs.CONTEXT,
+                         "credential_names": list(credentials)}
+            job, attempt, claimed, uncertain = _reserve(
+                conn, job, attempt, execution, identity, plan.policy, client, submitted_by)
+            result = {"job": job, "attempt": attempt, "client": client, "registered": True,
+                      "accepted": not claimed, "input": identity, "input_policy": plan.policy}
+            if not claimed:
+                return dict(result, observation="durable_admission", state="queued",
+                            view="uncertain" if uncertain else "queued"), 3 if uncertain else 0
+            launch, error = _launch_supervisor(state, attempt, claimed)
+            if launch is Launch.READY:
+                result["accepted"] = True
+                return dict(result, state="starting"), 0
+            if launch is Launch.UNCONFIRMED:
+                return dict(result, state="starting", view="uncertain", error=error), 3
+            _fail_and_hand_off(conn, state, attempt, claimed, "client:" + client, error)
+            return dict(result, state="finished", outcome="failed", error=error), 1
+        finally:
+            conn.close()
+    except (OSError, ValueError, KeyError, StateError, RuntimeError):
+        if result is None:
+            raise
+        return dict(result, observation="durable_admission", state="starting" if claimed else "queued",
+                    view="uncertain", error="post_registration_unconfirmed"), 3
 
 
 def view(state, job):
@@ -446,10 +463,17 @@ def view(state, job):
         result["job"] = job
         for key in ("input", "policy", "submitted_by", "supervisor", "command", "collection"):
             result[key] = json.loads(result[key]) if result[key] else None
-        for key in ("submitted_by", "supervisor"):
+        for key, names in (("submitted_by", ("user", "host")), ("supervisor", ("host",))):
             if result[key]:
-                result[key] = {name: inputs.redact(value, secrets) if isinstance(value, str) else value
-                               for name, value in result[key].items()}
+                for name in names:
+                    result[key][name] = inputs.redact(result[key][name], secrets)
+        for key in ("client", "detail"):
+            if result[key] is not None:
+                result[key] = inputs.redact(result[key], secrets)
+        for key in ("git_bytes", "redaction", "limit"):
+            result["policy"][key] = inputs.redact(result["policy"][key], secrets)
+        result["policy"]["consumer_private"] = [
+            inputs.redact(value, secrets) for value in result["policy"]["consumer_private"]]
         result["input_policy"] = result.pop("policy")
         result["registered"] = True
         result["interruptible"] = False
@@ -462,7 +486,8 @@ def view(state, job):
                 result["view"] = "uncertain"
         result["transitions"] = [
             {"seq": t["seq"], "job": t["job_id"], "attempt": t["attempt_id"],
-             "from": t["from_state"], "to": t["to_state"], "actor": t["actor"], "at": t["at"]}
+             "from": t["from_state"], "to": t["to_state"],
+             "actor": inputs.redact(t["actor"], secrets), "at": t["at"]}
             for t in conn.execute("SELECT * FROM transitions WHERE job_id=? ORDER BY seq", (job,))]
         result.update(stdout_log=None, stderr_log=None)
         if result["state"] == "finished":

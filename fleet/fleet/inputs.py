@@ -41,6 +41,8 @@ VCS = (".git", ".hg", ".svn")
 MAX_FILES = 20000
 MAX_BYTES = 256 * 1024 * 1024
 MAX_FILE = 32 * 1024 * 1024
+MAX_PATH_BYTES = 16384
+MAX_PATH_DEPTH = 128
 NOFOLLOW = os.O_NOFOLLOW | os.O_CLOEXEC
 
 
@@ -182,20 +184,45 @@ def policy_summary(private, secrets):
             "execution_context": CONTEXT}
 
 
+def _path_limit(path):
+    raw = os.fspath(path)
+    if (len(raw) > MAX_PATH_BYTES or raw.count("/") > MAX_PATH_DEPTH
+            or len(os.fsencode(raw)) > MAX_PATH_BYTES):
+        raise InputError("source_reference_limit")
+
+
+def _resolved(path):
+    _path_limit(path)
+    resolved = Path(os.path.realpath(path))
+    _path_limit(resolved)
+    return resolved
+
+
+def _ancestors(path):
+    _path_limit(path)
+    yield path
+    yield from path.parents
+
+
 def _within(path, root):
+    _path_limit(path)
+    _path_limit(root)
     if path == root or root in path.parents:
         return True
     identity = _object_id(root)
     return identity is not None and any(
-        _object_id(parent) == identity for parent in (path, *path.parents))
+        _object_id(parent) == identity for parent in _ancestors(path))
 
 
 def _object_id(path):
+    _path_limit(path)
     try:
         info = path.stat()
     except OSError as exc:
         if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG):
             return None
+        if exc.errno in (errno.EACCES, errno.EPERM, errno.ELOOP):
+            raise InputError("path_identity_unavailable") from None
         raise
     return info.st_dev, info.st_ino
 
@@ -204,29 +231,40 @@ def _overlaps(path, root):
     return _within(path, root) or _within(root, path)
 
 
+def _literal_paths(value, whole_path):
+    if whole_path and os.path.isabs(value):
+        for component in re.finditer(r"[^:]+", value):
+            if component.group().startswith("/"):
+                yield component.group()
+    pattern = r"""'(/[^'\x00\r\n]*)'|"(/[^"\x00\r\n]*)"|(/[^\s\x00'";|<>(){}\[\],=]*)"""
+    for match in re.finditer(pattern, value):
+        literal = match.group(1) or match.group(2) or match.group(3)
+        for component in re.finditer(r"[^:]+", literal):
+            if component.group().startswith("/"):
+                yield component.group()
+
+
 def _source_reference(value, root, whole_path=False):
     if str(root) in value:
         return True
-    if whole_path and os.path.isabs(value) and _within(Path(os.path.realpath(value)), root):
-        return True
-    pattern = r"""'(/[^'\x00\r\n]*)'|"(/[^"\x00\r\n]*)"|(/[^\s\x00'";|<>(){}\[\],=]*)"""
-    for index, match in enumerate(re.finditer(pattern, value)):
+    for index, literal in enumerate(_literal_paths(value, whole_path)):
         if index >= MAX_FILES * 2:
             raise InputError("source_reference_limit")
-        literal = match.group(1) or match.group(2) or match.group(3)
-        if _within(Path(os.path.realpath(literal)), root):
+        _path_limit(literal)
+    for literal in _literal_paths(value, whole_path):
+        if _within(_resolved(literal), root):
             return True
     return False
 
 
 def _check_scope(root, state, env):
-    homes = {Path(os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir))}
+    homes = {_resolved(pwd.getpwuid(os.getuid()).pw_dir)}
     if env.get("HOME"):
-        homes.add(Path(os.path.realpath(env["HOME"])))
-    resolved = Path(os.path.realpath(root))
+        homes.add(_resolved(env["HOME"]))
+    resolved = _resolved(root)
     if resolved == Path("/") or any(_within(home, resolved) for home in homes):
         raise InputError("unsafe_input_root")
-    if _within(resolved, Path(os.path.realpath(state))):
+    if _within(resolved, _resolved(state)):
         raise InputError("source_in_state")
 
 
@@ -237,21 +275,25 @@ def _check_search_paths(env, cwd, root):
         if name not in env:
             continue
         value = env[name]
+        if len(value) > 65536:
+            raise InputError("search_path_limit")
         if separator == "colon-or-space":
             components = value.replace(":", " ").split()
         elif separator == "colon-or-semicolon":
             components = value.replace(";", ":").split(":")
         else:
             components = value.split(":")
-        if len(components) > 1024 or len(value) > 65536:
+        if len(components) > 1024:
             raise InputError("search_path_limit")
         for component in components:
             if "\x00" in component:
                 raise InputError("invalid_search_path")
+            _path_limit(component)
             absolute = os.path.isabs(component)
             raw = Path(component) if absolute else cwd / component
+            _path_limit(raw)
             lexical = Path(os.path.abspath(raw))
-            resolved = Path(os.path.realpath(raw))
+            resolved = _resolved(raw)
             if absolute and (_overlaps(lexical, root) or _overlaps(resolved, root)):
                 raise InputError("source_reference_in_environment")
             if not absolute and (not _within(lexical, root) or not _within(resolved, root)):
@@ -263,7 +305,7 @@ def _check_search_paths(env, cwd, root):
                         entries += 1
                         if entries > MAX_FILES * 2:
                             raise InputError("search_alias_limit")
-                        if child.is_symlink() and _overlaps(Path(os.path.realpath(child.path)), root):
+                        if child.is_symlink() and _overlaps(_resolved(child.path), root):
                             raise InputError("source_reference_in_environment")
 
 
@@ -346,7 +388,7 @@ def require_absent(root, path):
 def _origin(cwd):
     with directory(cwd):
         pass
-    for parent in (cwd, *cwd.parents):
+    for parent in _ancestors(cwd):
         marker = parent / ".git"
         if os.path.lexists(marker):
             if marker.is_symlink() or not (marker.is_file() or marker.is_dir()):
@@ -381,7 +423,7 @@ def _private(path, extra, state, root):
         return True
     if _within(root / path, state):
         return True
-    if any(path == p or path.startswith(p + "/") for p in extra):
+    if any(_within(root / path, root / p) for p in extra):
         return True
     return any(fnmatch.fnmatchcase(part, pattern) for part in parts for pattern in DEFAULT_PRIVATE
                if "/" not in pattern) or any(

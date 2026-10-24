@@ -18,6 +18,7 @@ from content_cases import ContentCases
 from correction_cases import CorrectionCases
 from integral_cases import IntegralCases
 from reader_temp_cases import ReaderTempCases
+from review_r2_cases import ReviewR2Cases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
 BARRIER = """
@@ -57,9 +58,11 @@ class Admission:
 
 
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
-class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, unittest.TestCase):
+class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, ReviewR2Cases, unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-")).resolve()
+        fixture_base = (os.environ.get("FLEET_CASE_SENSITIVE_TMPDIR")
+                        if "case_sensitive_distinct" in self._testMethodName else None)
+        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-", dir=fixture_base)).resolve()
         self.state = self.root / "state"
         self.project = self.root / "project-without-profile"
         self.project.mkdir()
