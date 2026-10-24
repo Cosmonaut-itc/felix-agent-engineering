@@ -208,6 +208,16 @@ class Hostgate:
                 result = copy.deepcopy(historic)
                 result.update(replayed=True, originalResult=historic, currentState=current_state, wouldGrant=False)
                 return result
+            pending = next((p for p in view['pending']
+                            if p['principal'] == auth.principal and p['operationId'] == op_id), None)
+            if pending is not None:
+                if (pending['requester'] != identity_json(auth.peer)
+                        or pending['anchor'] != identity_json(auth.anchor)
+                        or pending['channelBinding'] != auth.channel_binding):
+                    raise self._foreign_owner(op_id)
+                if request['operation'] != 'reservar':
+                    return UnrecordedResult(self._reply(
+                        op_id, [reason('operation-conflict', 'operationId reservado por preparacion')], exit_code=2))
             return action(view)
         def guarded_apply(view, original):
             try:
