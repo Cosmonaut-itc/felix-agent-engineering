@@ -137,8 +137,10 @@ class Contract(Harness):
         self.world.hook = hook
         r = self.reserve()
         self.assertTrue(r['wouldGrant'])
-        self.assertEqual(self.view()['reservations'][0]['effectiveState'], 'uncertain')
-        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+        query_auth = self.world.auth(pid=333, role='query')
+        view = self.gate.estado({}, query_auth)
+        self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertEqual(view['budget']['retained']['slots'], 1)
 
     def test_scope_and_cleanup_all_or_nothing(self):
         key = self.key(self.reserve(exclusiveResources=['sen-slot:1', 'postgres:5434']))
@@ -226,4 +228,34 @@ class Contract(Harness):
         self.world.executor_boots['unix'] = 'restarted'
         self.assertEqual(self.view()['reservations'][0]['effectiveState'], 'uncertain')
         self.world.now = 0
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+
+    def test_preparation_cannot_be_adopted_by_another_peer(self):
+        self.gate.prepare(request(), self.auth)
+        other = self.world.auth(pid=222)
+        r = self.reserve(auth=other)
+        self.assertFalse(r['wouldGrant'])
+        self.assertEqual(r['exitCode'], 5)
+        self.assertEqual(self.view()['reservations'], [])
+
+    def test_dead_peer_cannot_replay_authenticated_operation(self):
+        self.reserve()
+        self.world.processes[self.auth.peer.pid] = 'absent'
+        r = self.reserve()
+        self.assertEqual(r['exitCode'], 5)
+        self.assertNotIn('originalResult', r)
+
+    def test_positive_closure_evidence_is_durable(self):
+        key = self.key(self.reserve())
+        self.release(key)
+        evidence = self.view()['reservations'][0]['closureEvidence']
+        self.assertEqual(evidence['key'], key)
+        self.assertEqual(evidence['provenance'], 'simulation')
+        self.assertTrue(evidence['evidence_digest'])
+
+    def test_malformed_closure_provider_fails_closed(self):
+        key = self.key(self.reserve())
+        self.world.closures[('broken',)] = None
+        reply = self.gate.soltar('broken-provider', key, ['broken'], self.auth)
+        self.assertFalse(reply['wouldGrant'])
         self.assertEqual(self.view()['budget']['retained']['slots'], 1)

@@ -34,10 +34,11 @@ class ClosureEvidence:
 
 
 def closure_reasons(evidence, reservation):
+    if not isinstance(evidence, ClosureEvidence):
+        return [reason('resource-cleanup-unconfirmed', 'proveedor de cierre no disponible')]
     windows = evidence.kind.startswith('windows') or reservation.get('scopeKind') == 'windows'
     code = 'windows-tree-unconfirmed' if windows else 'unix-scope-unconfirmed'
     reasons = []
-    if not isinstance(evidence, ClosureEvidence): return [reason(code, 'proveedor no disponible')]
     values = dict(evidence.__dict__); expected_digest = values.pop('evidence_digest')
     if (not evidence.issuer or evidence.provenance != 'simulation' or not expected_digest
             or digest(values) != expected_digest or evidence.key != reservation['key']

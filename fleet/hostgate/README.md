@@ -71,7 +71,7 @@ SQLite WAL/FULL serializa `BEGIN IMMEDIATE`: vista de estado, presupuesto, exclu
 contador por host/job, operación idempotente y auditoría se confirman juntos. La vista
 compacta con checksum evita repartir escritores y tablas sin caller. No hay transacción
 con recursos externos. Un fallo/ACK perdido de commit devuelve exit 3, `wouldGrant:false`;
-se relee **la misma operación** sin compensar ni repetir creación. Replay autentica
+se relee **la misma operación** sin compensar ni repetir creación. Replay verifica peer/canal y autoriza
 el contexto antes de consultar operaciones, muestra `originalResult` y `currentState`,
 y siempre `wouldGrant:false`. Un rechazo histórico no se vuelve admisible al mejorar
 salud; un cambio de payload da `operation-conflict`. Fencing usa la terna completa.
@@ -100,6 +100,8 @@ wrappers, runtime/versiones y evidencia aceptada es parte de esa acreditación. 
 zombie, subreaper o linaje muestreado no bastan; un proceso único también necesita prueba.
 Cgroup requiere delegación/contención previa; WSL no acredita boot o árbol Windows.
 Windows sólo aceptará empty/never-created del launcher propio validado, no exit0/TTL+5.
+El ledger conserva la evidencia positiva sintética con emisor, key, boot, ámbito,
+procedencia, completitud, limpieza y digest en la transacción del cierre.
 Las pruebas `ClosureEvidence.fixture` modelan estas condiciones y limpieza completa;
 no son evidencia nativa. `soltar` incompleto retiene todo; no hay liberación parcial.
 

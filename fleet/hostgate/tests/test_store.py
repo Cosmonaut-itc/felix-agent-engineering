@@ -26,7 +26,8 @@ class Storage(Harness):
         self.assertFalse(db.exists())
         db.write_bytes(b'corrupt')
         with self.assertRaises(StoreError): self.view()
-        db.unlink()
+        import shutil
+        shutil.rmtree(self.config.state_dir)
         ShadowStore.initialize(self.config)
         with sqlite3.connect(str(db)) as conn:
             conn.execute("UPDATE metadata SET store_id='wrong'")

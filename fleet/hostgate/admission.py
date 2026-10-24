@@ -2,6 +2,7 @@
 import copy
 import json
 import uuid
+from dataclasses import asdict
 from .identity import from_json
 from .model import AuthContext, budget_view, effective, identity_json
 from .protocol import SCHEMA, digest, reason, reply, validate
@@ -27,7 +28,8 @@ class Hostgate:
         if role not in self.config.acl.get(auth.principal, ()) or auth.peer is None:
             return False
         allowed = ('supervisor', 'query', 'operator') if operation == 'estado' else ('supervisor', 'operator')
-        return role in allowed
+        return (role in allowed and self.world.verify(auth.peer).status == 'same'
+                and (operation == 'estado' or self.world.channel_alive(auth.channel_binding)))
 
     def _observe(self, view):
         result = copy.deepcopy(view)
@@ -194,6 +196,10 @@ class Hostgate:
         validate(request, 'reservar')
         def action(view):
             pending = next((p for p in view['pending'] if p['principal'] == auth.principal and p['operationId'] == request['operationId']), None)
+            if pending is not None and (pending['requester'] != identity_json(auth.peer)
+                                        or pending['anchor'] != identity_json(auth.anchor)
+                                        or pending['channelBinding'] != auth.channel_binding):
+                return self._reply(request['operationId'], [reason('identity-unverifiable', 'preparacion de otro dueno/canal')], exit_code=5)
             if pending is not None and pending['requestDigest'] != digest(request):
                 return self._reply(request['operationId'], [reason('operation-conflict', 'preparacion de otro payload')], exit_code=2)
             if pending is None:
@@ -263,12 +269,13 @@ class Hostgate:
     def soltar(self, op_id, key, evidence, auth):
         def mutate(reservation):
             if reservation['state'] == 'released': return []
-            reasons = closure_reasons(self.world.closure(evidence, reservation), reservation)
+            closure = self.world.closure(evidence, reservation)
+            reasons = closure_reasons(closure, reservation)
             if reasons:
                 reservation['state'] = 'uncertain'
                 reservation['reasons'].extend(reasons)
             else:
-                reservation.update(state='released', reasons=[])
+                reservation.update(state='released', reasons=[], closureEvidence=asdict(closure))
             return reasons
         return self._owner_mutation(op_id, key, 'soltar', auth, dict(evidenceIds=list(evidence)), mutate)
 
