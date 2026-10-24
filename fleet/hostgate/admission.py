@@ -57,14 +57,43 @@ class Hostgate:
             reservation['channelAlive'] = self.world.channel_alive(reservation['channelBinding'])
         return effective(result, self.world.monotonic(), self.config.heartbeat_ttl)
 
+    @staticmethod
+    def _copy_projection(view, projection):
+        for kind in ('pending', 'reservations'):
+            identity = (lambda row: row['id']) if kind == 'pending' else (lambda row: canonical(row['key']))
+            observed = {identity(row): row for row in projection[kind]}
+            for saved in view[kind]:
+                projected = observed.get(identity(saved))
+                if projected is not None:
+                    saved.update(state=projected['effectiveState'], reasons=copy.deepcopy(projected['reasons']))
+        view['drained'] = view['drained'] or projection['drained']
+
     def _persist_effective(self, view):
         projection = self._observe(view)
-        for kind in ('pending', 'reservations'):
-            for actual, projected in zip(view[kind], projection[kind]):
-                actual['state'] = projected['effectiveState']
-                actual['reasons'] = projected['reasons']
-        view['drained'] = projection['drained']
+        self._copy_projection(view, projection)
         return projection
+
+    def _guarded_apply(self, op_id, view, original, apply, failures=None):
+        conservative = copy.deepcopy(view)
+
+        def project(candidate):
+            projection = self._persist_effective(candidate)
+            # La acción puede reordenar filas o añadir otras que no deben sobrevivir al fallo.
+            self._copy_projection(conservative, projection)
+            return projection
+
+        try:
+            return apply(view, original, project)
+        except ForeignOwner:
+            raise
+        except Exception as exc:
+            # El fallo conserva observaciones, sin confirmar cambios parciales de la acción.
+            view.clear()
+            view.update(conservative)
+            if failures is not None:
+                failures.append(exc)
+            return UnrecordedResult(self._reply(
+                op_id, [reason('store-unavailable', 'proveedor interno no disponible')], exit_code=6))
 
     def _health(self):
         try:
@@ -139,8 +168,9 @@ class Hostgate:
         validate(request, 'reservar')
         if not self._authorized(auth, 'reservar'): raise self._foreign_owner(request['operationId'])
         op_id = request['operationId']
-        def apply(view, original):
-            self._persist_effective(view)
+        failures = []
+        def apply(view, original, project):
+            project(view)
             if original:
                 if original[2] != canonical(self._auth_context(auth)):
                     raise self._foreign_owner(op_id)
@@ -149,7 +179,12 @@ class Hostgate:
             pending = self._new_pending(request, auth)
             view['pending'].append(pending)
             return {'pendingId': pending['id']}
-        result = self.store.mutate(auth.principal + '\x00preparation', op_id, digest(request), apply, self.world, self._auth_context(auth))
+        def guarded_apply(view, original):
+            return self._guarded_apply(op_id, view, original, apply, failures)
+        result = self.store.mutate(auth.principal + '\x00preparation', op_id, digest(request), guarded_apply, self.world, self._auth_context(auth))
+        # El harness espera la excepción original, pero sólo tras confirmar la observación.
+        if failures:
+            raise failures[0]
         return result['pendingId']
 
     def _decision(self, request, view, pending, project):
@@ -220,27 +255,7 @@ class Hostgate:
                         op_id, [reason('operation-conflict', 'operationId reservado por preparacion')], exit_code=2))
             return action(view, project)
         def guarded_apply(view, original):
-            conservative = copy.deepcopy(view)
-
-            def project(candidate):
-                projection = self._persist_effective(candidate)
-                # Sólo las filas previas reciben la observación; la acción puede añadir preparaciones.
-                for kind in ('pending', 'reservations'):
-                    for saved, observed in zip(conservative[kind], projection[kind]):
-                        saved.update(state=observed['effectiveState'], reasons=copy.deepcopy(observed['reasons']))
-                conservative['drained'] = projection['drained']
-                return projection
-
-            try:
-                return apply(view, original, project)
-            except ForeignOwner:
-                raise
-            except Exception:
-                # El fallo conserva observaciones, sin confirmar cambios parciales de la acción.
-                view.clear()
-                view.update(conservative)
-                return UnrecordedResult(self._reply(
-                    op_id, [reason('store-unavailable', 'proveedor interno no disponible')], exit_code=6))
+            return self._guarded_apply(op_id, view, original, apply)
         try:
             if not self._authorized(auth, request['operation']):
                 return self._reply(op_id, [reason('identity-unverifiable', 'endpoint/rol no autorizado')], exit_code=5)
