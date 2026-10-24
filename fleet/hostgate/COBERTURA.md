@@ -1,4 +1,4 @@
-# Cobertura del candidato Sol, ronda 3
+# Cobertura del candidato Sol, ronda 4
 
 Autoridad: `f6dea9a7afd182dff9742d52784dc4e98aeb451f`, PR #17, contenido idéntico a `a1f00fa`. Esta tabla distingue
 implementación de sombra, simulación con harness y aceptación futura. No acredita
@@ -16,9 +16,9 @@ Rutas relativas a `fleet/hostgate/`.
 | 90 | Estructura del paquete | Inspección `git diff --check`; sin módulos productivos F. |
 | 91 | `README.md`, `__init__.py`, `__main__.py`, `cli.py`, `protocol.py`, `model.py` | `CLI`, `Contract`, `Storage`. |
 | 92 | `admission.py`, `store.py`, `identity.py`, `scope.py`, `owner_record.py` | `Contract`, `Storage`, `Boundaries`. |
-| 93 | `salud/__init__.py`, `salud/lector_desk.py`, `salud/lector_mini.py` | 112 casos originales desk adaptados a unittest, `MiniReader`; ejecutados en Mini, ver estado r2 al final. |
+| 93 | `salud/__init__.py`, `salud/lector_desk.py`, `salud/lector_mini.py` | 112 casos originales desk adaptados a unittest, `MiniReader`; ejecutados en Mini, ver tabla de ejecución r4 al final. |
 | 94 | `fixtures/jale-2254z*.json`, `fixtures/health` | Jale y lectores consumen fixtures; eliminados los tres JSON sin caller; no equivalen a aceptación nativa. |
-| 95 | `tests/test_cli.py`, `test_store.py`, `test_contract.py`, `support/` | Suite unittest prevista por run.sh; pruebas escritas de clientes de varios procesos y SQLite real, ejecutadas en Mini, ver estado r2 al final. |
+| 95 | `tests/test_cli.py`, `test_store.py`, `test_contract.py`, `support/` | Suite unittest prevista por run.sh; pruebas escritas de clientes de varios procesos y SQLite real, ejecutadas en Mini, ver tabla de ejecución r4 al final. |
 | 96 | `identity.py`, `scope.py`, `salud/lector_mini.py` | `Boundaries`, `Contract.test_scope_and_cleanup_all_or_nothing`, `MiniReader`; perfil/cierre real no acreditado. |
 
 Las etiquetas S explícitas están en 02, 21, 37, 56, 72, 74 y 90; 91–96 desarrollan
@@ -28,7 +28,7 @@ la estructura S. Se añade cobertura de las reglas ejecutables sin etiqueta:
 | --- | --- | --- |
 | 01, 04–06, 08 | `README.md`, `model.py`, `store.py` | Configuración administrativa inyectada; `Storage.test_configuration_symlink_and_enforcing_rejected`. Persistencia/localidad del filesystem productivo no acreditada. |
 | 07, 19 | `store.py` | `Storage.test_missing_corrupt_wrong_store_never_recreated`, `test_busy`, `test_commit_cuts_and_response_lost`. |
-| 09–10, 52 | `identity.py` | `Boundaries.test_darwin_structure_and_live_identity_read_only`, `test_linux_exact_stat_parentheses`; lectura real Darwin acotada prevista y fixture proc Linux (`test_linux_proc_fixture_exact_token_reuse_zombie_and_missing`); ejecutadas en Mini, ver estado r2 al final. |
+| 09–10, 52 | `identity.py` | `Boundaries.test_darwin_structure_and_live_identity_read_only`, `test_linux_exact_stat_parentheses`; lectura real Darwin acotada prevista y fixture proc Linux (`test_linux_proc_fixture_exact_token_reuse_zombie_and_missing`); ejecutadas en Mini, ver tabla de ejecución r4 al final. |
 | 11–12 | `protocol.py`, `admission.py` | `CLI.test_demand_and_nul_validation`, `Contract.test_minimum_and_unknown_resource`, `test_budget_dimensions_and_exclusives`. |
 | 13–14, 22–27 | `model.py`, `admission.py` | `Contract.test_jale_real_helpers_bound_to_three_preparations`, `test_channel_eof_withdraws_without_reservation`, `test_commit_revalidation_pid_anchor_channel_heartbeat`. |
 | 15–18, 28–29 | `admission.py`, `scope.py` | `Contract.test_death_after_revalidation_retains_commit`, `test_budget_dimensions_and_exclusives`, `test_old_generation_never_alters_new`. |
@@ -196,3 +196,23 @@ conserva sus blobs. `test_lector_desk_adoptado.py` añade dos casos de JSON ±10
 por el adaptador, con control sano, degradación y rechazo; se mantiene la captura
 de desborde de `admission.py`. No queda pendiente A-M1 para Desktop. La evidencia
 de ejecución de esta adopción se registra con la corrida r4.
+
+
+Correcciones r4, 2026-10-23 (America/Mexico_City), pruebas escritas antes del código:
+
+| Punto r4 | Prueba / límite |
+| --- | --- |
+| 1, autorización propia | `test_prepare_foreign_signal_is_not_an_os_error`; A-I1 y B-G2 intactos. |
+| 2, A2-I1/N-3 | `test_a2_i1_foreign_rejection_persists_uncertainty_and_audit`, `test_a2_i1_foreign_reserve_persists_preparation_expiry`, `test_foreign_rejection_cannot_hide_persistence_failure`. |
+| 3, N-2 | `test_n2_foreign_operations_cannot_consume_prepared_id`, `test_n2_owner_other_operation_does_not_consume_prepared_id`. |
+| 4, A2-M1/N-1 | `test_internal_provider_errors_are_not_request_errors` incluye PermissionError; `test_symlink_os_permission_failure_is_store_unavailable`, `test_commit_and_ack_exceptions_always_replay_one_debit`. |
+| 5, N-4 | Remisiones a tabla r4; replay compara el contexto antes de revelarlo; guion versionado `tests/mini-r4.sh`. |
+| 6, adopción A-M1 | `DesktopAdoption.test_positive_huge_json_is_not_healthy`, `test_negative_huge_json_is_not_healthy`; corpus desk de 113 intacto, captura del adaptador conservada. |
+
+El guion r4 adapta el de r3 dentro del subárbol autorizado; rojo retrospectivo
+A2-I1/N-2 sobre `c23cc0f`, seis familias con 113 desk exactos. Los dos casos del
+archivo nuevo se suman a contrato. Sólo tolera `?? .remote-run.lock` en porcelain.
+Estado antes de corrida: pruebas r4 escritas, no ejecutadas. El registro r3 anterior
+conserva run `20261023-204639-a55097`, SHA `147ff52`, 188/0/0 y rojo A-I1 sobre
+`dad5ef8`, evidencia `495ef06ee60541bd8626124333b1b7f4/`. Suite verde sigue sin
+equivaler a aceptación técnica de Fleet.

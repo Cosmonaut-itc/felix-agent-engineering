@@ -77,11 +77,14 @@ SQLite WAL/FULL serializa `BEGIN IMMEDIATE`: vista de estado, presupuesto, exclu
 contador por host/job, operación idempotente y auditoría se confirman juntos. La vista
 compacta con checksum evita repartir escritores y tablas sin caller. No hay transacción
 con recursos externos. Un fallo/ACK perdido de commit devuelve exit 3, `wouldGrant:false`;
-se relee **la misma operación** sin compensar ni repetir creación. Replay verifica peer/canal y autoriza
-el contexto antes de consultar operaciones, muestra `originalResult` y `currentState`,
+se relee **la misma operación** sin compensar ni repetir creación. Replay lee la
+operación y compara el contexto (peer/ancla/canal) antes de revelar `originalResult`
+y `currentState`,
 y siempre `wouldGrant:false`. La autorización de una preparación/reserva se
 comprueba antes de insertar su resultado: el rechazo de un peer/canal ajeno
-revierte la transacción y no ocupa el `operationId` del dueño. Un rechazo histórico no se vuelve admisible al mejorar
+confirma sólo la proyección conservadora y su auditoría, sin ocupar el `operationId`
+del dueño ni aplicar sus cambios. Un fallo al confirmar sigue la tabla de errores
+del almacén; nunca se informa exit 5 con esa escritura en duda. Un rechazo histórico no se vuelve admisible al mejorar
 salud; un cambio de payload da `operation-conflict`. Fencing usa la terna completa.
 
 `estado` abre sólo lectura, separa `state` y `effectiveState`, y muestra presupuesto
@@ -230,3 +233,21 @@ conserva sus blobs. `test_lector_desk_adoptado.py` añade dos casos de JSON ±10
 por el adaptador, con control sano, degradación y rechazo; se mantiene la captura
 de desborde de `admission.py`. No queda pendiente A-M1 para Desktop. La evidencia
 de ejecución de esta adopción se registra con la corrida r4.
+
+
+Correcciones r4, 2026-10-23 (America/Mexico_City): `ForeignOwner` separa autorización
+de `OSError`/`PermissionError`; fallos de proveedores previos a escritura salen 6.
+El almacén conserva proyección y auditoría ante rechazo ajeno, sin insertar la
+operación. El espacio de `operationId` es por principal: un peer puede ocupar con
+operaciones propias ids que A todavía no usó. Una preparación existente protege
+su id contra otro peer/ancla/canal y contra otra operación del propio dueño
+(`operation-conflict`, exit 2 sin ocupar `operations`).
+`WriteUncertain` comunica fallo de escritura SQLite o de commit/ACK: toda excepción
+en commit o después sale 3 y exige releer la misma operación, sin compensar.
+
+El guion r4 adapta el de r3 en `tests/mini-r4.sh`, dentro del único subárbol
+autorizado. Usa rojo retrospectivo A2-I1/N-2 sobre `c23cc0f`, seis familias y
+exactamente 113 pruebas desk. Los dos casos nuevos del adaptador desk se cuentan
+en la familia contrato, además de descubrirse por unittest. Sólo tolera en
+porcelain la línea exacta `?? .remote-run.lock` (SEN-3885). Las pruebas se escribieron
+antes del código corrector; aún no se han ejecutado en esta ronda.
