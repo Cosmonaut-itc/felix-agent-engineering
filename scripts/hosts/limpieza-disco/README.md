@@ -69,11 +69,22 @@ demás.
   inventario. Un fallo conserva la candidata y deja motivo en el log.
   Si no se puede comprobar `runs/` en conjunto (incluida la pérdida de
   `MARCA`), se detienen ambas reglas para el resto de la pasada. Un fallo
-  de temporales termina la pasada sin borrar. Un fallo o un diagnóstico en
-  la captura de `EN_USO` detiene las reglas 1 y 3; las demás siguen con la
-  captura parcial, como antes.
+  de un temporal exclusivo del inventario (`MARCA`, `INV_JSON`, `INV_LISTA`
+  o `RUNS_NUEVAS`) o del listado de restos `borrando-*` detiene sólo las
+  reglas 1 y 3. Si falla un temporal compartido (`INV_ERR`, `EN_USO` o
+  `USO_*`), se detienen también las reglas 2, 5, 6 y 7, que consultan
+  `EN_USO`. Cada fallo deja su motivo en el log y ningún veto se revierte
+  durante la pasada.
+- **Captura de uso.** Los filtros de cwd, basetemp y archivos abiertos se
+  ejecutan por separado y añaden a `EN_USO` todas las rutas recuperables.
+  Se acumulan los errores de las fuentes (`id`, ambos `lsof` y `ps`), de la
+  extracción de basetemp y de cada `sed`, `sort` o escritura de `EN_USO`;
+  cada causa se registra. Cualquier fallo, o diagnóstico de `lsof` o `ps`,
+  deja sin borrar las reglas 1, 2, 3, 5, 6 y 7 durante esa pasada. Las
+  reglas 4 y 8, que no consultan `EN_USO`, siguen.
 - **Regla 7.** Busca cachés de Next.js en todo el home, pero poda
-  `~/remote-run`, así que no entra en las copias.
+  `~/remote-run` y `~/.local/state`, así que no entra en las copias, el
+  registro de propietarios de Fleet ni el estado de comprador.
 
 El script borra un subconjunto del que el inventario llama borrable. Deja las
 copias `lock-huerfano` y las corridas `preparacion-abortada`, que el

@@ -237,6 +237,11 @@ log "inicio (libre: ${antes} GB$([ "$EMERG" = 1 ] && echo ", EMERGENCIA")$([ "$D
 # Reglas 1 y 3: el inventario decide qué es borrable en ~/remote-run.
 # Instalado junto a este script; desde un temporal permite una pasada en seco previa.
 MARCA= INV_JSON= INV_LISTA= INV_ERR= EN_USO= USO_CWD= USO_ABIERTOS= USO_PS= USO_BASETEMP= RUNS_NUEVAS=
+INV_OK=1 USO_OK=1 INV_MOTIVO=
+sin_uso() {
+  log "reglas 1, 2, 3, 5, 6 y 7 sin borrar: $1"
+  INV_OK=0; USO_OK=0
+}
 limpiar_temporales() {
   rmdir "$LOCK" 2>/dev/null
   for temporal in "$MARCA" "$INV_JSON" "$INV_LISTA" "$INV_ERR" "$EN_USO" \
@@ -247,12 +252,16 @@ limpiar_temporales() {
 trap limpiar_temporales EXIT
 for variable in MARCA INV_JSON INV_LISTA INV_ERR EN_USO USO_CWD USO_ABIERTOS USO_PS USO_BASETEMP RUNS_NUEVAS; do
   temporal=$(mktemp "$STATE/$variable.XXXXXX") && [ -f "$temporal" ] && [ ! -L "$temporal" ] || {
-    log "reglas 1 y 3 sin borrar: falló mktemp o no existe el temporal $variable"; exit 1;
+    case "$variable" in
+      INV_ERR|EN_USO|USO_*) sin_uso "falló mktemp o no existe el temporal $variable" ;;
+      *) log "reglas 1 y 3 sin borrar: falló mktemp o no existe el temporal $variable"; INV_OK=0 ;;
+    esac
+    continue
   }
   printf -v "$variable" '%s' "$temporal"
 done
-restos=$(find "$STATE" -mindepth 1 -maxdepth 1 -name 'borrando-*' -print 2> "$INV_ERR") || {
-  log "reglas 1 y 3 sin borrar: falló find de restos borrando-* en STATE"; exit 1;
+restos=$(find "$STATE" -mindepth 1 -maxdepth 1 -name 'borrando-*' -print 2> "${INV_ERR:-/dev/null}") || {
+  log "reglas 1 y 3 sin borrar: falló find de restos borrando-* en STATE"; INV_OK=0;
 }
 if [ -n "$restos" ]; then
   while IFS= read -r resto; do
@@ -260,8 +269,9 @@ if [ -n "$restos" ]; then
   done <<< "$restos"
 fi
 # MARCA precede al inventario: perderla impide descartar corridas nuevas.
-INV_OK=0
-if ! inventario_dir=$(cd -P -- "$(dirname "$0")" && pwd -P); then
+if [ "$INV_OK" != 1 ]; then
+  :
+elif ! inventario_dir=$(cd -P -- "$(dirname "$0")" && pwd -P); then
   INV_MOTIVO="falló cd -P o pwd -P al localizar el inventario"
 elif [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; then
   INV_MOTIVO="MARCA no existe o no es regular"
@@ -316,44 +326,48 @@ for c in datos['corridas']:
 PY
 then
   INV_MOTIVO="salida del inventario no válida: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
-else
-  INV_OK=1
 fi
 INVENTARIO="${inventario_dir:-}/pao-inventario.py"
-[ "$INV_OK" = 1 ] || log "reglas 1 y 3 sin borrar: $INV_MOTIVO"
+if [ -n "$INV_MOTIVO" ]; then
+  INV_OK=0
+  log "reglas 1 y 3 sin borrar: $INV_MOTIVO"
+fi
 
 # Rutas en uso: cwd de todos mis procesos, cualquier --basetemp en línea de
 # comandos y todos los archivos que tengo abiertos.
-# Un fallo de esta captura deja sin borrar sólo las reglas 1 y 3; las demás
-# siguen con la captura parcial, como antes de este cambio.
-sin_uso() { log "reglas 1 y 3 sin borrar: $1"; INV_OK=0; }
+# Una captura parcial no prueba ausencia de uso: veta todas las reglas que la consultan.
 if ! uid=$(id -u); then
   sin_uso "falló id para EN_USO"; uid=-1
 fi
-if ! lsof -a -u "$uid" -d cwd -Fn > "$USO_CWD" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
+if ! lsof -a -u "$uid" -d cwd -Fn > "$USO_CWD" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló lsof de cwd para EN_USO o emitió diagnósticos"
 fi
-if ! ps -axww -o command= > "$USO_PS" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
+if ! ps -axww -o command= > "$USO_PS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló ps para EN_USO o emitió diagnósticos"
 fi
-if ! lsof -u "$uid" -Fn > "$USO_ABIERTOS" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
+if ! lsof -u "$uid" -Fn > "$USO_ABIERTOS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló lsof de archivos para EN_USO o emitió diagnósticos"
 fi
 grep -o -- '--basetemp[= ][^ ]*' "$USO_PS" > "$USO_BASETEMP"; estado_basetemp=$?
 if [ "$estado_basetemp" -gt 1 ]; then
   sin_uso "falló extracción de basetemp para EN_USO"
 fi
-if ! (set -o pipefail
-  { sed -n 's/^n//p' "$USO_CWD" &&
-    sed 's/^--basetemp[= ]//; s/"//g' "$USO_BASETEMP" &&
-    sed -n 's/^n\(\/.*\)/\1/p' "$USO_ABIERTOS";
-  } | sed 's#^/tmp/#/private/tmp/#' | sort -u > "$EN_USO"
-); then
-  sin_uso "falló captura o filtrado de EN_USO"
-fi
+filtrar_uso() {
+  local fuente="$1" expresion="$2" archivo="$3"
+  local estados
+  sed -n "$expresion" "$archivo" | sed 's#^/tmp/#/private/tmp/#' | sort -u >> "$EN_USO"
+  estados=("${PIPESTATUS[@]}")
+  [ "${estados[0]}" = 0 ] || sin_uso "falló sed de $fuente para EN_USO"
+  [ "${estados[1]}" = 0 ] || sin_uso "falló sed de normalización de $fuente para EN_USO"
+  [ "${estados[2]}" = 0 ] || sin_uso "falló sort o escritura de EN_USO al filtrar $fuente"
+}
+filtrar_uso cwd 's/^n//p' "$USO_CWD"
+filtrar_uso basetemp 's/^--basetemp[= ]//; s/"//g; p' "$USO_BASETEMP"
+filtrar_uso 'archivos abiertos' 's/^n\(\/.*\)/\1/p' "$USO_ABIERTOS"
 
 en_uso() { # Un error al leer la captura también conserva la candidata.
   local estado
+  [ "$USO_OK" = 1 ] || return 0
   grep -qF -- "$1" "$EN_USO"; estado=$?
   [ "$estado" = 1 ] && return 1
   [ "$estado" = 0 ] || log "no borro $1: falló lectura de EN_USO (estado $estado)"
@@ -479,7 +493,7 @@ done
 # 7. Cachés de Next.js (.next/cache y .next/dev) de apps sin servidor vivo
 find "$HOME" -xdev \( -path "$HOME/Library" -o -path "$HOME/.Trash" -o -name node_modules -o -name .git \
     -o -path "$HOME/.cache" -o -path "$HOME/.bun" -o -path "$HOME/.rustup" -o -path "$HOME/.android" \
-    -o -path "$HOME/.cargo" -o -path "$HOME/remote-run" \) -prune -o -type d -name .next -print -prune 2>/dev/null |
+    -o -path "$HOME/.cargo" -o -path "$HOME/remote-run" -o -path "$HOME/.local/state" \) -prune -o -type d -name .next -print -prune 2>/dev/null |
 while read -r nx; do
   app=$(dirname "$nx")
   # Un proceso con cwd en la app (p. ej. next dev) la protege entera.
