@@ -1,6 +1,6 @@
 """Tipos de confianza y proyecciones puras; ningún plazo libera reservas."""
 import copy
-import math
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Tuple
@@ -42,7 +42,7 @@ class NodeConfig:
         if self.mode != 'shadow' or not self.executors or type(self.ncpu) is not int or self.ncpu <= 0:
             raise ValueError('configuracion no acreditada')
         for ttl in (self.pending_ttl, self.heartbeat_ttl):
-            if type(ttl) not in (int, float) or not math.isfinite(ttl) or ttl <= 0:
+            if type(ttl) not in (int, float) or not 0 < ttl <= sys.float_info.max:
                 raise ValueError('TTL del host invalido')
         path = self.state_dir
         if not isinstance(path, Path) or not path.is_absolute() or '..' in path.parts:
@@ -146,7 +146,7 @@ def validate_view(view, config):
             fields(value, 'code detail retryable')
             require(value['code'] in CODES and type(value['retryable']) is bool)
     def instant(value):
-        require(type(value) in (int, float) and math.isfinite(value) and value >= 0)
+        require(type(value) in (int, float) and 0 <= value <= sys.float_info.max)
     require(isinstance(view, dict) and set(view) == {'pending', 'reservations', 'generations', 'drained'})
     require(type(view['drained']) is bool and isinstance(view['generations'], dict))
     require(isinstance(view['pending'], list) and isinstance(view['reservations'], list))

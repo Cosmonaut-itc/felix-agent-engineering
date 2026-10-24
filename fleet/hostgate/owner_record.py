@@ -1,6 +1,6 @@
 """Registro propuesto U1; lectura dudosa protege, raíz terminal no marca ended."""
 import json
-import math
+import sys
 import os
 import tempfile
 from pathlib import Path
@@ -29,7 +29,7 @@ def _validate(record):
                 or root['pid'] == record['pid'] or not isinstance(root.get('start'), list)
                 or not root['start'] or any(type(x) is not int or x < 0 for x in root['start'])):
             raise ValueError('raiz sin identidad exacta separada del supervisor')
-    if type(record['started']) not in (float, int) or not math.isfinite(record['started']) or record['started'] <= 0:
+    if type(record['started']) not in (float, int) or not 0 < record['started'] <= sys.float_info.max:
         raise ValueError('started invalido')
     if not isinstance(record['scope'], dict) or record['scope'].get('status') not in ('unconfirmed', 'confirmed-empty'):
         raise ValueError('ambito invalido')

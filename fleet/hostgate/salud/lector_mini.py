@@ -1,5 +1,11 @@
 """Valida mini-vigilante/muestra@1; boot_actual viene del entorno independiente."""
-from .lector_desk import GIB, _dict, _numero, _ts
+import sys
+from .lector_desk import GIB, _dict, _ts
+
+
+def _numero(value, minimo=0, maximo=sys.float_info.max):
+    return (type(value) in (int, float) and 0 <= value <= sys.float_info.max
+            and minimo <= value <= maximo)
 
 
 def evaluar(muestra, ahora, boot_actual):

@@ -125,12 +125,17 @@ class Storage(Harness):
                    lambda v: v['reservations'][0]['key'].update(generation=True),
                    lambda v: v['pending'][0].update(reservationKey=None),
                    lambda v: v['generations'].update(job=99),
-                   lambda v: v['reservations'][0]['owner'].update(startToken=[])]
+                   lambda v: v['reservations'][0]['owner'].update(startToken=[]),
+                   lambda v: v['reservations'][0].update(heartbeat=10**400),
+                   lambda v: v['pending'][0].update(heartbeat=10**400),
+                   lambda v: v['pending'][0].update(created=10**400),
+                   lambda v: v['pending'][0].update(deadline=10**400)]
         for change in changes:
             with self.subTest(change=change):
                 view = copy.deepcopy(valid); change(view)
                 with sqlite3.connect(str(self.gate.store.path)) as conn:
                     conn.execute('UPDATE host_view SET payload=?, checksum=?', (canonical(view), digest(view)))
+                with self.assertRaises(StoreError): self.gate.store.read()
                 out = io.StringIO()
                 query = dict(schema=request()['schema'], operationId='state', operation='estado')
                 code = main(['estado'], gate=self.gate, auth=self.auth,

@@ -69,7 +69,11 @@ class Hostgate:
             if not self.world.witness or independent_boot is None:
                 reasons.append(reason('boot-unverified', 'SEN-3853 sin acreditar; WSL no es testigo Windows'))
                 independent_boot = None
-            raw = lector_desk.evaluar(sample, self.world.wall(), independent_boot)
+            try:
+                raw = lector_desk.evaluar(sample, self.world.wall(), independent_boot)
+            except OverflowError:
+                # El lector aceptado pertenece a Desktop; el adaptador cierra su desborde.
+                raw = ['metrica fuera de rango numerico']
         elif kind == 'mini':
             raw = lector_mini.evaluar(sample, self.world.wall(), independent_boot)
             if not isinstance(sample, dict) or sample.get('host') != self.config.snapshot_host:

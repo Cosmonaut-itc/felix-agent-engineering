@@ -513,3 +513,17 @@ class Contract(Harness):
         self.assertEqual(self.view()['reservations'][0]['effectiveState'], 'uncertain')
         self.assertEqual(self.view()['budget']['retained']['slots'], 1)
         self.assertEqual(self.view()['resources'][0]['holder'], key)
+
+    def test_desk_huge_integer_is_invalid_at_adapter_boundary(self):
+        from hostgate.salud.lector_desk import _ts
+        self.world.health_kind = 'desk'
+        self.world.sample = json.loads((FIXTURES / 'health/desk.json').read_text())
+        self.world.utc = _ts(self.world.sample['ts']) + 30
+        self.world.sample_boot = self.world.sample['boot']['bootId']
+        self.world.default_shell = self.world.witness = True
+        self.assertEqual(self.gate._health(), [])
+        self.world.sample['metrics']['cpuRootPct']['value'] = 10**400
+        result = self.reserve()
+        self.assertEqual(result['exitCode'], 1)
+        self.assertIn('health-invalid', self.codes(result))
+        self.assertEqual(self.view()['reservations'], [])

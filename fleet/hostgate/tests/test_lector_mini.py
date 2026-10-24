@@ -44,7 +44,7 @@ class MiniReader(unittest.TestCase):
 
     def test_malformed_fields_never_succeed_or_raise(self):
         for name in self.sample['metrics']:
-            for value in (None, True, -1, float('nan'), float('inf'), '', {}, []):
+            for value in (None, True, -1, float('nan'), float('inf'), 10**400, '', {}, []):
                 sample = copy.deepcopy(self.sample); sample['metrics'][name]['value'] = value
                 self.assertTrue(self.reasons(sample), (name, value))
         for field in ('metrics', 'volumes', 'boot', 'persist'):
@@ -53,3 +53,10 @@ class MiniReader(unittest.TestCase):
                 self.assertTrue(self.reasons(sample))
         sample = copy.deepcopy(self.sample); sample['metrics']['ncpu']['value'] = 1.5
         self.assertTrue(self.reasons(sample))
+
+    def test_huge_volume_and_clock_are_invalid(self):
+        for field in ('totalBytes', 'freeBytes'):
+            sample = copy.deepcopy(self.sample)
+            sample['volumes']['/System/Volumes/Data'][field] = 10**400
+            self.assertIn('volumen incompleto', self.reasons(sample))
+        self.assertIn('vigencia', evaluar(self.sample, 10**400, self.boot))

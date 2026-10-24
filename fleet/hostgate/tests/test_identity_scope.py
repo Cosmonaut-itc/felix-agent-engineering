@@ -118,3 +118,15 @@ class Boundaries(unittest.TestCase):
             publish_owner(record, root / 'owner.json')
             with self.assertRaises(ValueError): publish_owner(dict(record, recordSeq=1), root / 'owner.json')
             self.assertEqual(read_owner(root / 'owner.json')['record']['recordSeq'], 2)
+
+    def test_owner_huge_started_is_invalid_and_read_protects(self):
+        from hostgate.owner_record import _validate
+        record = dict(schema='fleet/host-owner@1', runId='r', jobId='j', attemptId='a',
+                      key=dict(storeId='s', reservationId='r', generation=1), physicalHostId='node',
+                      executorId='unix', boot='host/boot', pid=1, start=[1], started=10**400,
+                      ended=None, root=None, recordSeq=1, scope={'status': 'unconfirmed'})
+        with self.assertRaises(ValueError): _validate(record)
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp).resolve() / 'owner.json'
+            path.write_text(json.dumps(record))
+            self.assertEqual(read_owner(path)['protection'], 'uncertain')
