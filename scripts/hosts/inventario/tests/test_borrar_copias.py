@@ -6,6 +6,8 @@ import os
 from pathlib import Path
 import subprocess
 import shutil
+import signal
+import select
 import sys
 import tempfile
 import time
@@ -58,7 +60,7 @@ class BorrarCopiasTest(unittest.TestCase):
         salida = io.StringIO()
         argumentos = ['--ejecutar'] if ejecutar else ['--raiz', str(self.raiz)]
         with contextlib.redirect_stdout(salida), contextlib.redirect_stderr(io.StringIO()), \
-                patch.object(borrar, 'RAIZ_DEFAULT', str(self.raiz)), \
+                patch.object(borrar, 'raiz_predeterminada', return_value=self.raiz), \
                 patch.object(borrar, 'leer_host', return_value=borrar.HOST_MINI):
             codigo = borrar.main(argumentos)
         return codigo, json.loads(salida.getvalue())
@@ -66,6 +68,15 @@ class BorrarCopiasTest(unittest.TestCase):
     def intactas(self, nombres=NOMBRES):
         for nombre in nombres:
             self.assertEqual((self.raiz / 'work' / nombre / 'dato').read_bytes(), b'x' * 8192)
+
+    def cuarentena_intacta(self, datos, indice=0, contenido=b'x' * 8192):
+        copia = datos['copias'][indice]
+        self.assertEqual(copia['resultado']['estado'], 'error-parcial')
+        self.assertIn('horaUTC', copia['resultado'])
+        self.assertTrue(copia['resultado']['error'])
+        self.assertEqual((Path(copia['cuarentena']) / 'dato').read_bytes(), contenido)
+        self.assertFalse((self.raiz / 'work' / copia['nombre']).exists())
+        self.intactas(NOMBRES[indice + 1:])
 
     def test_lista_literal_y_seco_informa_sin_modificar(self):
         self.assertEqual(borrar.COPIAS_AUTORIZADAS, NOMBRES)
@@ -183,8 +194,8 @@ class BorrarCopiasTest(unittest.TestCase):
             codigo, datos = self.llamar(ejecutar=True)
         self.assertNotEqual(codigo, 0)
         self.assertFalse((self.raiz / 'work' / NOMBRES[0]).exists())
-        self.intactas(NOMBRES[1:])
-        self.assertEqual(datos['copias'][1]['resultado']['estado'], 'devuelta')
+        self.intactas(NOMBRES[2:])
+        self.cuarentena_intacta(datos, indice=1)
         self.assertEqual(datos['copias'][2]['resultado']['estado'], 'no-procesada')
         self.assertEqual(datos['resultado'], 'detenido')
 
@@ -260,12 +271,10 @@ class BorrarCopiasTest(unittest.TestCase):
             codigo, datos = self.llamar(ejecutar=True)
         self.assertNotEqual(codigo, 0)
         self.assertTrue((a / 'dato').is_file())
-        self.assertTrue((p / 'dato').is_file())
+        self.assertFalse(p.exists())
         self.assertEqual((a / 'dato').read_bytes(), b'x' * 8192)
-        self.assertEqual((p / 'dato').read_bytes(), b'B')
-        self.assertEqual(datos['copias'][0]['resultado']['estado'], 'devuelta')
+        self.cuarentena_intacta(datos, contenido=b'B')
         self.assertIn('identidad', datos['copias'][0]['resultado']['error'])
-        self.assertIn('horaUTC', datos['copias'][0]['devolucion'])
         self.intactas(NOMBRES[1:])
 
     def test_lock_despues_reverificacion(self):
@@ -276,23 +285,25 @@ class BorrarCopiasTest(unittest.TestCase):
         with patch.object(borrar, 'cuarentenar', side_effect=nuevo_lock):
             codigo, datos = self.llamar(ejecutar=True)
         self.assertNotEqual(codigo, 0)
-        self.assertEqual(datos['copias'][0]['resultado']['estado'], 'devuelta')
+        self.cuarentena_intacta(datos)
         self.assertFalse(datos['copias'][0]['uso']['lock']['libre'])
-        self.intactas()
 
     def test_lsof_proceso_real_cwd(self):
         self.assertTrue(Path('/usr/sbin/lsof').is_file())
-        proceso = subprocess.Popen(['/bin/sleep', '60'], cwd=self.raiz / 'work' / NOMBRES[0])
+        subdir = self.raiz / 'work' / NOMBRES[0] / 'profundo' / 'hijo'
+        subdir.mkdir(parents=True)
+        self.envejecer(self.raiz / 'work' / NOMBRES[0])
+        proceso = subprocess.Popen(['/bin/sleep', '60'], cwd=subdir)
         try:
             codigo, datos = self.llamar(ejecutar=True)
             self.assertNotEqual(codigo, 0)
-            uso = datos['copias'][0]['uso']['lsof']
+            uso = datos['copias'][0]['usoPrevio']['lsof']
             self.assertIn(str(proceso.pid), uso['stdout'])
             self.assertFalse(uso['libre'])
             self.assertEqual(uso['argumentos'], ['/usr/sbin/lsof', '-a', '-p', '^' + str(os.getpid()),
-                                                '-nP', '+D', datos['copias'][0]['cuarentena']])
+                                                '-nP', '+D', str(self.raiz / 'work' / NOMBRES[0])])
             self.assertEqual(uso['timeout'], 120)
-            self.assertEqual(datos['copias'][0]['resultado']['estado'], 'devuelta')
+            self.assertEqual(datos['copias'][0]['resultado']['estado'], 'rechazada')
             self.intactas()
         finally:
             proceso.terminate()
@@ -304,10 +315,10 @@ class BorrarCopiasTest(unittest.TestCase):
         try:
             codigo, datos = self.llamar(ejecutar=True)
             self.assertNotEqual(codigo, 0)
-            uso = datos['copias'][0]['uso']['ps']
+            uso = datos['copias'][0]['usoPrevio']['ps']
             self.assertTrue(any(str(proceso.pid) in x for x in uso['coincidencias']))
             self.assertFalse(uso['libre'])
-            self.assertEqual(datos['copias'][0]['resultado']['estado'], 'devuelta')
+            self.assertEqual(datos['copias'][0]['resultado']['estado'], 'rechazada')
             self.intactas()
         finally:
             proceso.terminate()
@@ -315,7 +326,8 @@ class BorrarCopiasTest(unittest.TestCase):
 
     def test_lsof_error_y_timeout_cuentan_como_uso(self):
         run = borrar.subprocess.run
-        for efecto in (subprocess.CompletedProcess([], 2, '', 'error'),
+        for efecto in (subprocess.CompletedProcess([], 1, '', 'lsof: status error'),
+                       subprocess.CompletedProcess([], 2, '', 'error'),
                        subprocess.TimeoutExpired(['lsof'], 120)):
             def ejecutar(args, **kwargs):
                 if args[0] == '/usr/sbin/lsof':
@@ -323,10 +335,10 @@ class BorrarCopiasTest(unittest.TestCase):
                         raise efecto
                     return efecto
                 return run(args, **kwargs)
-            with self.subTest(efecto=efecto), patch.object(borrar.subprocess, 'run', side_effect=ejecutar):
+            with patch.object(borrar.subprocess, 'run', side_effect=ejecutar):
                 codigo, datos = self.llamar(ejecutar=True)
             self.assertNotEqual(codigo, 0)
-            self.assertFalse(datos['copias'][0]['uso']['lsof']['libre'])
+            self.assertFalse(datos['copias'][0]['usoPrevio']['lsof']['libre'])
             self.intactas()
 
     def test_work_sustituido_despues_abrir_fd(self):
@@ -351,7 +363,7 @@ class BorrarCopiasTest(unittest.TestCase):
             self.assertEqual((self.raiz / 'work-apartado' / nombre / 'dato').read_bytes(), b'x' * 8192)
         self.assertFalse(list((self.raiz / 'work-apartado').glob('.borrando-*')))
 
-    def test_devolucion_no_pisa_copia_recreada(self):
+    def test_cuarentena_no_pisa_copia_recreada(self):
         comprobar = borrar.comprobar_uso
         def recrear(*args, **kwargs):
             p = self.raiz / 'work' / NOMBRES[0]
@@ -363,7 +375,7 @@ class BorrarCopiasTest(unittest.TestCase):
             codigo, datos = self.llamar(ejecutar=True)
         self.assertNotEqual(codigo, 0)
         copia = datos['copias'][0]
-        self.assertEqual(copia['resultado']['estado'], 'en-cuarentena')
+        self.assertEqual(copia['resultado']['estado'], 'error-parcial')
         self.assertEqual((Path(copia['cuarentena']) / 'dato').read_bytes(), b'x' * 8192)
         self.assertEqual((self.raiz / 'work' / NOMBRES[0] / 'nuevo').read_text(), 'productor')
         self.intactas(NOMBRES[1:])
@@ -406,7 +418,7 @@ class BorrarCopiasTest(unittest.TestCase):
             self.intactas()
 
     def cli_rechazada(self, argumentos, host=None):
-        with patch.object(borrar, 'RAIZ_DEFAULT', str(self.raiz)), \
+        with patch.object(borrar, 'raiz_predeterminada', return_value=self.raiz), \
                 patch.object(borrar, 'leer_host', return_value=host or borrar.HOST_MINI), \
                 contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(SystemExit) as exc:
@@ -460,7 +472,7 @@ class BorrarCopiasTest(unittest.TestCase):
         self.assertEqual(salida.returncode, 0, salida.stderr + salida.stdout)
         cache = subprocess.run([sys.executable, '-B', '-c',
                                 'import importlib.util, sys; print(importlib.util.cache_from_source(sys.argv[1]))',
-                                str(codigo / 'inventario.py')],
+                                os.path.realpath(codigo / 'inventario.py')],
                                env=entorno(prefijo), capture_output=True, text=True, timeout=60)
         self.assertEqual(cache.returncode, 0, cache.stderr)
         self.assertTrue(cache.stdout.strip().startswith(str(prefijo)), cache.stdout)
@@ -477,7 +489,7 @@ class BorrarCopiasTest(unittest.TestCase):
                 raise KeyboardInterrupt()
             return vaciar(*args, **kwargs)
         salida, progreso = io.StringIO(), io.StringIO()
-        with patch.object(borrar, 'RAIZ_DEFAULT', str(self.raiz)), \
+        with patch.object(borrar, 'raiz_predeterminada', return_value=self.raiz), \
                 patch.object(borrar, 'leer_host', return_value=borrar.HOST_MINI), \
                 patch.object(borrar, 'vaciar', side_effect=interrumpir), \
                 contextlib.redirect_stdout(salida), contextlib.redirect_stderr(progreso):
@@ -530,7 +542,7 @@ class BorrarCopiasTest(unittest.TestCase):
         self.assertEqual((self.cuarentena / 'montado/externo').read_text(), 'otro dispositivo')
         self.intactas(NOMBRES[1:])
 
-    def test_listado_acepta_recreada_y_detecta_identidad_restante(self):
+    def test_listado_acepta_recreada(self):
         vaciar = borrar.vaciar
         def recrear(*args, **kwargs):
             p = self.raiz / 'work' / NOMBRES[0]
@@ -559,7 +571,8 @@ class BorrarCopiasTest(unittest.TestCase):
             uso = datos['copias'][0]['uso']['inventario']
             self.assertFalse(uso['libre'])
             self.assertTrue(uso['bloqueoGlobal'] if mirror is None else uso['corridas'])
-            self.assertEqual(datos['copias'][0]['resultado']['estado'], 'devuelta')
+            self.cuarentena_intacta(datos)
+            Path(datos['copias'][0]['cuarentena']).rename(self.raiz / 'work' / NOMBRES[0])
             self.intactas()
 
     def test_identidad_distinta_en_reverificacion(self):
@@ -583,3 +596,231 @@ class BorrarCopiasTest(unittest.TestCase):
         self.assertEqual((self.raiz / 'anterior/dato').read_bytes(), b'x' * 8192)
         self.assertEqual((p / 'dato').read_text(), 'sustituta')
         self.intactas(NOMBRES[1:])
+
+    def test_lsof_identidad_ruta_antes_y_despues(self):
+        ruta = self.raiz / 'work' / NOMBRES[0]
+        fd = os.open(str(ruta), borrar.FLAGS_DIRECTORIO)
+        self.addCleanup(os.close, fd)
+        run = borrar.subprocess.run
+        def sustituir(args, **kwargs):
+            ruta.rename(self.raiz / 'apartada')
+            ruta.mkdir()
+            return subprocess.CompletedProcess([], 1, '', '')
+        with patch.object(borrar.subprocess, 'run', side_effect=sustituir):
+            uso = borrar.consultar_lsof(ruta, fd)
+        self.assertFalse(uso['libre'])
+        self.assertIn('identidad', uso['error'])
+        with patch.object(borrar.subprocess, 'run', wraps=run) as consulta:
+            uso = borrar.consultar_lsof(ruta, fd)
+            consulta.assert_not_called()
+        self.assertFalse(uso['libre'])
+        self.assertEqual((self.raiz / 'apartada/dato').read_bytes(), b'x' * 8192)
+
+    def test_fallos_uso_posterior_conservan_cuarentena(self):
+        for consulta in ('consultar_lsof', 'consultar_ps', 'inventariar'):
+            with self.subTest(consulta=consulta):
+                comprobar = borrar.comprobar_uso
+                def fallar(*args, **kwargs):
+                    with patch.object(borrar, consulta, side_effect=OSError('lectura fallida')):
+                        return comprobar(*args, **kwargs)
+                with patch.object(borrar, 'comprobar_uso', side_effect=fallar):
+                    codigo, datos = self.llamar(ejecutar=True)
+                self.assertNotEqual(codigo, 0)
+                self.cuarentena_intacta(datos)
+                Path(datos['copias'][0]['cuarentena']).rename(self.raiz / 'work' / NOMBRES[0])
+
+    def test_uso_previo_rechaza_sin_rename(self):
+        for consulta in ('consultar_lsof', 'consultar_ps'):
+            with patch.object(borrar, consulta, return_value={'libre': False}), \
+                    patch.object(borrar, 'cuarentenar', wraps=borrar.cuarentenar) as apartar:
+                codigo, datos = self.llamar(ejecutar=True)
+                apartar.assert_not_called()
+            self.assertNotEqual(codigo, 0)
+            self.assertFalse(datos['copias'][0]['usoPrevio'][consulta[10:]]['libre'])
+            self.intactas()
+
+    def test_cuarentena_destino_existente_no_se_reemplaza(self):
+        work = self.raiz / 'work'
+        destino = '.borrando-colision'
+        (work / destino).mkdir()
+        fd = os.open(str(work), borrar.FLAGS_DIRECTORIO)
+        try:
+            info = (work / destino).stat()
+            with self.assertRaisesRegex(ValueError, 'ya existe'):
+                borrar.cuarentenar(fd, NOMBRES[0], destino)
+            self.assertEqual(borrar.identidad((work / destino).stat()), borrar.identidad(info))
+            self.intactas()
+        finally:
+            os.close(fd)
+
+    def test_intencion_antes_rename_e_interrupcion_inmediata(self):
+        rename = borrar.os.rename
+        procesar = borrar.procesar
+        informes = []
+        def capturar(raiz, ejecutar, informe, recursos):
+            informes.append(informe)
+            return procesar(raiz, ejecutar, informe, recursos)
+        def interrumpir(origen, destino, **kwargs):
+            informe = informes[0]
+            self.assertIn('primeraEscritura', informe)
+            copia = informe['copias'][0]
+            self.assertEqual(copia['resultado']['estado'], 'cuarentena-intentada')
+            self.assertEqual(Path(copia['cuarentena']).name, destino)
+            rename(origen, destino, **kwargs)
+            raise KeyboardInterrupt()
+        salida = io.StringIO()
+        with patch.object(borrar, 'raiz_predeterminada', return_value=self.raiz), \
+                patch.object(borrar, 'leer_host', return_value=borrar.HOST_MINI), \
+                patch.object(borrar, 'procesar', side_effect=capturar), \
+                patch.object(borrar.os, 'supports_dir_fd', borrar.os.supports_dir_fd | {interrumpir}), \
+                patch.object(borrar.os, 'rename', new=interrumpir), \
+                contextlib.redirect_stdout(salida), contextlib.redirect_stderr(io.StringIO()):
+            with self.assertRaises(KeyboardInterrupt):
+                borrar.main(['--ejecutar'])
+        datos = json.loads(salida.getvalue())
+        self.assertEqual(datos['resultado'], 'interrumpido')
+        self.cuarentena_intacta(datos)
+        reconciliada = datos['copias'][0]['reconciliacion']
+        self.assertEqual(reconciliada['ubicacion'], 'cuarentena')
+        self.assertIsNone(reconciliada['original'])
+        self.assertEqual(reconciliada['cuarentena'], datos['copias'][0]['validacion']['identidades']['copia'])
+
+    def test_intento_rename_fallido_informa_original(self):
+        def fallar(*args, **kwargs):
+            raise OSError('rename rechazado')
+        with patch.object(borrar.os, 'supports_dir_fd', borrar.os.supports_dir_fd | {fallar}), \
+                patch.object(borrar.os, 'rename', new=fallar):
+            codigo, datos = self.llamar(ejecutar=True)
+        self.assertNotEqual(codigo, 0)
+        copia = datos['copias'][0]
+        self.assertEqual(copia['reconciliacion']['ubicacion'], 'original')
+        self.assertEqual(copia['resultado']['estado'], 'rechazada')
+        self.intactas()
+
+    def test_senales_reales_tras_rename_imprimen_json(self):
+        codigo = """
+import os, signal, sys
+from pathlib import Path
+import borrar_copias as borrar
+borrar.raiz_predeterminada = lambda: Path(sys.argv[1])
+borrar.leer_host = lambda: borrar.HOST_MINI
+rename = borrar.os.rename
+def detener(*args, **kwargs):
+    rename(*args, **kwargs)
+    print('RENOMBRADA', file=sys.stderr, flush=True)
+    signal.pause()
+borrar.os.supports_dir_fd = borrar.os.supports_dir_fd | {detener}
+borrar.os.rename = detener
+borrar.main(['--ejecutar'])
+"""
+        for senal in (signal.SIGTERM, signal.SIGHUP):
+            with self.subTest(senal=senal):
+                proceso = subprocess.Popen([sys.executable, '-B', '-c', codigo, str(self.raiz)],
+                    env=dict(os.environ, PYTHONPATH=str(Path(borrar.__file__).parent)),
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                try:
+                    listo, _, _ = select.select([proceso.stderr], [], [], 60)
+                    self.assertTrue(listo, 'el subproceso no llegó a la barrera')
+                    self.assertEqual(proceso.stderr.readline().strip(), 'RENOMBRADA')
+                    proceso.send_signal(senal)
+                    stdout, stderr = proceso.communicate(timeout=30)
+                    self.assertNotEqual(proceso.returncode, 0, stderr)
+                    datos = json.loads(stdout)
+                    self.assertEqual(datos['resultado'], 'interrumpido')
+                    self.cuarentena_intacta(datos)
+                    self.assertEqual(datos['copias'][0]['reconciliacion']['ubicacion'], 'cuarentena')
+                finally:
+                    if proceso.poll() is None:
+                        proceso.kill()
+                    proceso.communicate(timeout=5)
+                Path(datos['copias'][0]['cuarentena']).rename(self.raiz / 'work' / NOMBRES[0])
+
+    def test_descriptores_borrados_abiertos_hasta_listado(self):
+        abrir = borrar.os.open
+        listado = borrar.listado_posterior
+        descriptores = []
+        def abrir_copia(nombre, *args, **kwargs):
+            fd = abrir(nombre, *args, **kwargs)
+            if str(nombre).startswith('.borrando-'):
+                descriptores.append((fd, borrar.identidad(os.fstat(fd))))
+            return fd
+        def comprobar(*args, **kwargs):
+            self.assertEqual(len(descriptores), 4)
+            for fd, ident in descriptores:
+                try:
+                    actual = borrar.identidad(os.fstat(fd))
+                except OSError as exc:
+                    self.fail('descriptor cerrado antes del listado: ' + str(exc))
+                self.assertEqual(actual, ident)
+            return listado(*args, **kwargs)
+        with patch.object(borrar.os, 'supports_dir_fd', borrar.os.supports_dir_fd | {abrir_copia}), \
+                patch.object(borrar.os, 'open', new=abrir_copia), \
+                patch.object(borrar, 'listado_posterior', side_effect=comprobar):
+            codigo, _ = self.llamar(ejecutar=True)
+        self.assertEqual(codigo, 0)
+        for fd, _ in descriptores:
+            with self.assertRaises(OSError):
+                os.fstat(fd)
+
+    def test_listado_rechaza_identidad_borrada_persistente(self):
+        listado = borrar.listado_posterior
+        scandir = borrar.os.scandir
+        def inyectar(raiz, copias, work_fd=None, identidades=None):
+            p = raiz / 'work' / 'identidad-persistente'
+            p.mkdir()
+            ident = copias[0]['validacion']['identidades']['copia']
+            class Entrada:
+                name = p.name
+                def stat(self, **kwargs):
+                    valores = list(p.stat())
+                    valores[1], valores[2] = ident[1], ident[0]
+                    return os.stat_result(valores)
+            class Listado:
+                def __enter__(self):
+                    with scandir(work_fd) as entradas:
+                        return iter([e for e in entradas if e.name != p.name] + [Entrada()])
+                def __exit__(self, *args):
+                    pass
+            with patch.object(borrar.os, 'scandir', return_value=Listado()):
+                return listado(raiz, copias, work_fd, identidades)
+        with patch.object(borrar, 'listado_posterior', side_effect=inyectar):
+            codigo, datos = self.llamar(ejecutar=True)
+        self.assertNotEqual(codigo, 0)
+        self.assertIn('persiste una identidad', datos['listadoPosterior']['error'])
+
+    def test_vaciar_lista_antes_de_unlink(self):
+        p = self.raiz / 'work' / NOMBRES[0]
+        fd = os.open(str(p), borrar.FLAGS_DIRECTORIO)
+        scandir, unlink = borrar.os.scandir, borrar.os.unlink
+        agotado = []
+        def entradas(descriptor):
+            with scandir(descriptor) as items:
+                yield from items
+            agotado.append(True)
+        def borrar_entrada(*args, **kwargs):
+            self.assertTrue(agotado, 'se empezó a borrar antes de terminar el listado')
+            return unlink(*args, **kwargs)
+        try:
+            with patch.object(borrar.os, 'scandir', side_effect=entradas), \
+                    patch.object(borrar.os, 'unlink', side_effect=borrar_entrada):
+                borrar.vaciar(fd, os.fstat(fd).st_dev)
+            self.assertEqual(list(p.iterdir()), [])
+        finally:
+            os.close(fd)
+
+    def test_raiz_predeterminada_ignora_home(self):
+        with patch.dict(os.environ, HOME=str(self.raiz / 'otro-home')):
+            import pwd
+            esperada = Path(pwd.getpwuid(os.getuid()).pw_dir) / 'remote-run'
+            self.assertEqual(borrar.raiz_predeterminada(), esperada)
+
+    def test_inventario_clasificacion_real_cuarentena(self):
+        p = self.raiz / 'work' / ('.borrando-' + NOMBRES[0] + '-fixture')
+        (self.raiz / 'work' / NOMBRES[0]).rename(p)
+        # Se fija mtime para cubrir ambas edades sin depender de la semántica de rename del FS.
+        os.utime(p, None)
+        reciente = next(x for x in inv.inventariar(self.raiz)['copias'] if x['ruta'] == str(p))
+        self.assertEqual((reciente['clase'], reciente['borrable']), ('reciente', False))
+        self.envejecer(p)
+        vieja = next(x for x in inv.inventariar(self.raiz)['copias'] if x['ruta'] == str(p))
+        self.assertEqual((vieja['clase'], vieja['borrable']), ('inactiva', True))
