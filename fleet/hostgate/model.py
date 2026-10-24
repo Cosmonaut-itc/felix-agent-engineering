@@ -122,3 +122,83 @@ def budget_view(config, reservations):
     available = {d: config.budget[d] - retained[d] for d in ('cpuMilli', 'memoryBytes', 'slots')}
     available['diskBytes'] = {v: config.budget['diskBytes'][v] - retained['diskBytes'].get(v, 0) for v in config.budget['diskBytes']}
     return dict(capacity=dict(config.budget), retained=retained, available=available, retainedByState=by_state)
+
+
+def validate_view(view, config):
+    """El checksum acredita bytes; esta validación acredita relaciones del ledger."""
+    from .protocol import CODES, integer, key
+    def require(condition):
+        if not condition: raise ValueError('vista incoherente')
+    def fields(row, required):
+        require(isinstance(row, dict) and set(required.split()) <= set(row))
+    def identity(value, nullable=False):
+        if value is None and nullable: return
+        fields(value, 'executorId uid pid startToken executorBoot physicalBoot')
+        for name in ('executorId', 'executorBoot', 'physicalBoot'): identifier(value[name])
+        integer(value['uid']); integer(value['pid']); require(value['pid'] > 0)
+        require(isinstance(value['startToken'], list) and bool(value['startToken']))
+        for token in value['startToken']: integer(token)
+    def reasons(values):
+        require(isinstance(values, list))
+        for value in values:
+            fields(value, 'code detail retryable')
+            require(value['code'] in CODES and type(value['retryable']) is bool)
+    def instant(value):
+        require(type(value) in (int, float) and math.isfinite(value) and value >= 0)
+    require(isinstance(view, dict) and set(view) == {'pending', 'reservations', 'generations', 'drained'})
+    require(type(view['drained']) is bool and isinstance(view['generations'], dict))
+    require(isinstance(view['pending'], list) and isinstance(view['reservations'], list))
+    for job, generation in view['generations'].items():
+        identifier(job); integer(generation); require(generation > 0)
+    reservations, generations, jobs, resources = {}, {}, set(), set()
+    for row in view['reservations']:
+        fields(row, 'key jobId attemptId executorId physicalHostId principal owner channelBinding demand '
+                    'exclusiveResources profileId scopeKind scope launchPossible state heartbeat seq reasons physicalBoot executorBoot')
+        key(row['key']); require(row['key']['storeId'] == config.store_id)
+        rid = row['key']['reservationId']; require(rid not in reservations)
+        reservations[rid] = row
+        for name in ('jobId', 'attemptId', 'principal', 'channelBinding', 'profileId', 'physicalBoot', 'executorBoot'):
+            identifier(row[name])
+        require(row['executorId'] in config.executors and row['physicalHostId'] == config.host_id)
+        identity(row['owner'])
+        require(row['owner']['executorId'] == row['executorId']
+                and row['owner']['physicalBoot'] == row['physicalBoot']
+                and row['owner']['executorBoot'] == row['executorBoot'])
+        require(row['scopeKind'] == config.executor_scope_kinds.get(row['executorId'], 'unix') and row['scope'] == rid)
+        require(type(row['launchPossible']) is bool and row['state'] in ('reserved', 'running', 'uncertain', 'released'))
+        instant(row['heartbeat']); integer(row['seq']); reasons(row['reasons']); demand(row['demand'])
+        require(set(row['demand']['diskBytes']) <= set(config.budget['diskBytes']))
+        require(isinstance(row['exclusiveResources'], list))
+        claimed = set(row['exclusiveResources'])
+        require(len(claimed) == len(row['exclusiveResources']) and claimed <= set(config.resources))
+        if row['state'] != 'released':
+            require(row['jobId'] not in jobs and not claimed & resources)
+            jobs.add(row['jobId']); resources.update(claimed)
+        generations[row['jobId']] = max(generations.get(row['jobId'], 0), row['key']['generation'])
+        if row['state'] == 'released':
+            from .scope import ClosureEvidence, closure_reasons
+            require(not closure_reasons(ClosureEvidence(**row['closureEvidence']), row))
+    require(generations == view['generations'])
+    pending_ids, linked = set(), set()
+    for row in view['pending']:
+        fields(row, 'id principal jobId attemptId executorId physicalHostId operationId requestDigest requester '
+                    'anchor channelBinding heartbeat created deadline state reasons reservationKey physicalBoot executorBoot')
+        for name in ('id', 'principal', 'jobId', 'attemptId', 'executorId', 'physicalHostId', 'operationId',
+                     'requestDigest', 'channelBinding'): identifier(row[name])
+        require(row['id'] not in pending_ids); pending_ids.add(row['id'])
+        identity(row['requester']); identity(row['anchor'], nullable=True)
+        for name in ('created', 'deadline', 'heartbeat'): instant(row[name])
+        require(row['deadline'] > row['created'])
+        require(row['state'] in ('validating', 'rejected', 'expired', 'withdrawn', 'granted'))
+        reasons(row['reasons'])
+        if row['state'] == 'granted':
+            key(row['reservationKey'])
+            reservation = reservations[row['reservationKey']['reservationId']]
+            require(reservation['key'] == row['reservationKey'] and reservation['key']['reservationId'] not in linked)
+            linked.add(reservation['key']['reservationId'])
+            for name in ('principal', 'jobId', 'attemptId', 'executorId', 'physicalHostId', 'channelBinding', 'physicalBoot', 'executorBoot'):
+                require(row[name] == reservation[name])
+            require(row['requester'] == reservation['owner'])
+        else:
+            require(row['reservationKey'] is None)
+    require(linked == set(reservations))

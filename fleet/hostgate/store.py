@@ -4,6 +4,7 @@ import os
 import sqlite3
 from urllib.parse import quote
 from .protocol import canonical, digest
+from .model import validate_view
 
 APPLICATION_ID = 1212633939
 SCHEMA_VERSION = 2
@@ -85,18 +86,15 @@ class ShadowStore:
         except (OSError, sqlite3.DatabaseError, ValueError, TypeError, KeyError) as exc:
             raise StoreError('estado ausente/corrupto; no se recrea') from exc
 
-    @staticmethod
-    def load(conn):
+    def load(self, conn):
         row = conn.execute('SELECT payload, checksum FROM host_view WHERE id=1').fetchone()
         if row is None: raise StoreError('vista ausente')
         try:
             view = json.loads(row[0])
-            if digest(view) != row[1] or set(view) != {'pending', 'reservations', 'generations', 'drained'}:
-                raise ValueError('checksum/schema')
-            if not isinstance(view['pending'], list) or not isinstance(view['reservations'], list) or not isinstance(view['generations'], dict) or type(view['drained']) is not bool:
-                raise ValueError('tipo')
+            if digest(view) != row[1]: raise ValueError('checksum')
+            validate_view(view, self.config)
             return view
-        except (ValueError, TypeError, KeyError) as exc:
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
             raise StoreError('vista no integra') from exc
 
     def read(self):
@@ -131,5 +129,9 @@ class ShadowStore:
         except sqlite3.DatabaseError as exc:
             raise OSError('persistencia incierta') from exc
         finally:
-            if not committed: conn.rollback()
-            conn.close()
+            # La limpieza no debe ocultar el resultado incierto de escritura/commit.
+            if not committed:
+                try: conn.rollback()
+                except sqlite3.Error: pass
+            try: conn.close()
+            except sqlite3.Error: pass

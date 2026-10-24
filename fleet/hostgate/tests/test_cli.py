@@ -54,3 +54,22 @@ class CLI(Harness):
         code, reply = self.call(json.dumps(dict(schema=request()['schema'], operationId='state', operation='estado')), 'estado')
         self.assertEqual(code, 0)
         self.assertIn('reservations', reply)
+
+    def test_malformed_provider_keeps_json_envelope_and_all_resources(self):
+        from dataclasses import replace
+        from hostgate.protocol import digest
+        from hostgate.scope import ClosureEvidence
+        key = self.key(self.reserve(exclusiveResources=['sen-slot:1', 'postgres:5434']))
+        valid = ClosureEvidence.fixture(key, self.world.boot)
+        for field, value in (('kind', None), ('kind', []), ('complete', 'true'),
+                             ('resources_clean', 1), ('issuer', []), ('key', [])):
+            proof = replace(valid, **{field: value})
+            values = dict(proof.__dict__); values.pop('evidence_digest')
+            self.world.closures[('malformed',)] = replace(proof, evidence_digest=digest(values))
+            payload = dict(schema=request()['schema'], operationId='malformed-' + field + str(value),
+                           operation='soltar', key=key, evidenceIds=['malformed'])
+            code, result = self.call(json.dumps(payload), 'soltar')
+            self.assertEqual(code, 1)
+            self.assertEqual(result['result'], 'shadow')
+            self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+            self.assertEqual(len(self.view()['resources']), 2)

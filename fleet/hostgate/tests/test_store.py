@@ -111,3 +111,61 @@ class Storage(Harness):
         self.assertEqual(view['reservations'][0]['state'], 'uncertain')
         self.assertEqual(view['reservations'][0]['heartbeat'], before)
         self.assertEqual(view['budget']['retained']['slots'], 1)
+
+    def test_valid_checksum_does_not_authorize_invalid_rows(self):
+        import copy
+        import io
+        import json
+        from hostgate.cli import main
+        from hostgate.protocol import canonical, digest
+        self.reserve()
+        valid = self.gate.store.read()
+        changes = [lambda v: v['reservations'][0].update(state='invented'),
+                   lambda v: v['reservations'][0].pop('owner'),
+                   lambda v: v['reservations'][0]['key'].update(generation=True),
+                   lambda v: v['pending'][0].update(reservationKey=None),
+                   lambda v: v['generations'].update(job=99),
+                   lambda v: v['reservations'][0]['owner'].update(startToken=[])]
+        for change in changes:
+            with self.subTest(change=change):
+                view = copy.deepcopy(valid); change(view)
+                with sqlite3.connect(str(self.gate.store.path)) as conn:
+                    conn.execute('UPDATE host_view SET payload=?, checksum=?', (canonical(view), digest(view)))
+                out = io.StringIO()
+                query = dict(schema=request()['schema'], operationId='state', operation='estado')
+                code = main(['estado'], gate=self.gate, auth=self.auth,
+                            stdin=io.StringIO(json.dumps(query)), stdout=out)
+                self.assertEqual(code, 6)
+                self.assertEqual(json.loads(out.getvalue())['reasons'][0]['code'], 'store-unavailable')
+        with sqlite3.connect(str(self.gate.store.path)) as conn:
+            conn.execute('UPDATE host_view SET payload=?, checksum=?', (canonical(valid), digest(valid)))
+
+    def test_sqlite_full_io_and_secondary_cleanup_preserve_uncertainty(self):
+        from unittest.mock import patch
+        store = self.gate.store
+        connect = store.connect
+        for message, after_commit in (('database or disk is full', False), ('disk I/O error', False),
+                                      ('disk I/O error', True)):
+            class Connection:
+                def __init__(self): self.conn = connect(writable=True)
+                def execute(self, sql, *args):
+                    if not after_commit and sql.startswith('UPDATE host_view'):
+                        raise sqlite3.OperationalError(message)
+                    return self.conn.execute(sql, *args)
+                def commit(self):
+                    self.conn.commit()
+                    raise sqlite3.OperationalError(message)
+                def rollback(self):
+                    self.conn.rollback()
+                    raise sqlite3.OperationalError('secondary rollback failure')
+                def close(self):
+                    self.conn.close()
+                    raise sqlite3.OperationalError('secondary close failure')
+            operation = 'storage-' + str(after_commit) + '-' + message
+            with patch.object(store, 'connect', side_effect=lambda **kwargs: Connection()):
+                reply = self.reserve(operation, operation)
+            self.assertEqual(reply['exitCode'], 3)
+            self.assertFalse(reply['wouldGrant'])
+            replay = self.reserve(operation, operation)
+            self.assertEqual(replay.get('replayed', False), after_commit)
+            self.release(self.key(replay), 'release-' + operation)

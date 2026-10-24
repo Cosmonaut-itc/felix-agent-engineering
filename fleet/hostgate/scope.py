@@ -36,12 +36,23 @@ class ClosureEvidence:
 def closure_reasons(evidence, reservation):
     if not isinstance(evidence, ClosureEvidence):
         return [reason('resource-cleanup-unconfirmed', 'proveedor de cierre no disponible')]
+    strings = ('kind', 'issuer', 'boot', 'scope', 'provenance', 'evidence_digest')
+    booleans = ('complete', 'creators_sealed', 'root_terminal', 'scope_empty', 'lineage_complete',
+                'profile_verified', 'resources_clean', 'permit_revoked', 'no_external_effects')
+    if (any(type(getattr(evidence, name)) is not str for name in strings)
+            or any(type(getattr(evidence, name)) is not bool for name in booleans)
+            or not isinstance(evidence.key, dict)):
+        return [reason('resource-cleanup-unconfirmed', 'tipos de evidencia no acreditados')]
     windows = reservation['scopeKind'] == 'windows'
     code = 'windows-tree-unconfirmed' if windows else 'unix-scope-unconfirmed'
     reasons = []
     values = dict(evidence.__dict__); expected_digest = values.pop('evidence_digest')
+    try:
+        computed_digest = digest(values)
+    except (ValueError, TypeError, RecursionError):
+        return [reason(code, 'evidencia no serializable')]
     if (not evidence.issuer or evidence.provenance != 'simulation' or not expected_digest
-            or digest(values) != expected_digest or evidence.key != reservation['key']
+            or computed_digest != expected_digest or evidence.key != reservation['key']
             or evidence.boot != reservation['physicalBoot'] or evidence.scope != reservation['scope']
             or not evidence.complete or not evidence.creators_sealed):
         reasons.append(reason(code, 'emisor/fencing/procedencia/completitud no acreditados'))
