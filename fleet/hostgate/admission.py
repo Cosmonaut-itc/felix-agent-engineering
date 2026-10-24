@@ -57,14 +57,43 @@ class Hostgate:
             reservation['channelAlive'] = self.world.channel_alive(reservation['channelBinding'])
         return effective(result, self.world.monotonic(), self.config.heartbeat_ttl)
 
+    @staticmethod
+    def _copy_projection(view, projection):
+        for kind in ('pending', 'reservations'):
+            identity = (lambda row: row['id']) if kind == 'pending' else (lambda row: canonical(row['key']))
+            observed = {identity(row): row for row in projection[kind]}
+            for saved in view[kind]:
+                projected = observed.get(identity(saved))
+                if projected is not None:
+                    saved.update(state=projected['effectiveState'], reasons=copy.deepcopy(projected['reasons']))
+        view['drained'] = view['drained'] or projection['drained']
+
     def _persist_effective(self, view):
         projection = self._observe(view)
-        for kind in ('pending', 'reservations'):
-            for actual, projected in zip(view[kind], projection[kind]):
-                actual['state'] = projected['effectiveState']
-                actual['reasons'] = projected['reasons']
-        view['drained'] = projection['drained']
+        self._copy_projection(view, projection)
         return projection
+
+    def _guarded_apply(self, op_id, view, original, apply, failures=None):
+        conservative = copy.deepcopy(view)
+
+        def project(candidate):
+            projection = self._persist_effective(candidate)
+            # La acción puede reordenar filas o añadir otras que no deben sobrevivir al fallo.
+            self._copy_projection(conservative, projection)
+            return projection
+
+        try:
+            return apply(view, original, project)
+        except ForeignOwner:
+            raise
+        except Exception as exc:
+            # El fallo conserva observaciones, sin confirmar cambios parciales de la acción.
+            view.clear()
+            view.update(conservative)
+            if failures is not None:
+                failures.append(exc)
+            return UnrecordedResult(self._reply(
+                op_id, [reason('store-unavailable', 'proveedor interno no disponible')], exit_code=6))
 
     def _health(self):
         try:
@@ -139,24 +168,33 @@ class Hostgate:
         validate(request, 'reservar')
         if not self._authorized(auth, 'reservar'): raise self._foreign_owner(request['operationId'])
         op_id = request['operationId']
-        def apply(view, original):
-            self._persist_effective(view)
+        failures = []
+        def apply(view, original, project):
+            project(view)
             if original:
                 if original[2] != canonical(self._auth_context(auth)):
                     raise self._foreign_owner(op_id)
-                if original[0] != digest(request): raise ValueError('operation-conflict')
+                if original[0] != digest(request):
+                    failures.append(ValueError('operation-conflict'))
+                    return UnrecordedResult(self._reply(
+                        op_id, [reason('operation-conflict', 'operationId ya tiene otro payload')], exit_code=2))
                 return json.loads(original[1])
             pending = self._new_pending(request, auth)
             view['pending'].append(pending)
             return {'pendingId': pending['id']}
-        result = self.store.mutate(auth.principal + '\x00preparation', op_id, digest(request), apply, self.world, self._auth_context(auth))
+        def guarded_apply(view, original):
+            return self._guarded_apply(op_id, view, original, apply, failures)
+        result = self.store.mutate(auth.principal + '\x00preparation', op_id, digest(request), guarded_apply, self.world, self._auth_context(auth))
+        # El harness espera la excepción original, pero sólo tras confirmar la observación.
+        if failures:
+            raise failures[0]
         return result['pendingId']
 
-    def _decision(self, request, view, pending):
+    def _decision(self, request, view, pending, project):
         profile_verified = self.world.profile_verified(request['profileId'])
         health_reasons = self._health()
         # La E/S previa no puede acreditar la vida que se valida para el commit.
-        self._persist_effective(view)
+        project(view)
         reasons = list(pending['reasons']) + health_reasons + self._identity_reasons(pending)
         if view['drained']: reasons.append(reason('drained', 'reapertura exige reconciliacion explicita'))
         if request['physicalHostId'] != self.config.host_id or request['executorId'] not in self.config.executors:
@@ -193,8 +231,8 @@ class Hostgate:
         validate(request)
         op_id = request['operationId']
         operation_digest = digest(request)
-        def apply(view, original):
-            projection = self._persist_effective(view)
+        def apply(view, original, project):
+            projection = project(view)
             if original:
                 if original[2] != canonical(self._auth_context(auth)):
                     raise self._foreign_owner(op_id)
@@ -218,12 +256,9 @@ class Hostgate:
                 if request['operation'] != 'reservar':
                     return UnrecordedResult(self._reply(
                         op_id, [reason('operation-conflict', 'operationId reservado por preparacion')], exit_code=2))
-            return action(view)
+            return action(view, project)
         def guarded_apply(view, original):
-            try:
-                return apply(view, original)
-            except OSError as exc:
-                raise StoreError('proveedor no disponible antes de escritura') from exc
+            return self._guarded_apply(op_id, view, original, apply)
         try:
             if not self._authorized(auth, request['operation']):
                 return self._reply(op_id, [reason('identity-unverifiable', 'endpoint/rol no autorizado')], exit_code=5)
@@ -245,7 +280,7 @@ class Hostgate:
 
     def reservar(self, request, auth):
         validate(request, 'reservar')
-        def action(view):
+        def action(view, project):
             pending = next((p for p in view['pending'] if p['principal'] == auth.principal and p['operationId'] == request['operationId']), None)
             if pending is not None and (pending['requester'] != identity_json(auth.peer)
                                         or pending['anchor'] != identity_json(auth.anchor)
@@ -262,7 +297,7 @@ class Hostgate:
                     pending.update(state='expired', reasons=[reason('pending-expired', 'lapida de solicitante; nueva operacion no revive al huerfano')])
                 view['pending'].append(pending)
             self.world.checkpoint('before_revalidate')
-            reasons, incoming = self._decision(request, view, pending)
+            reasons, incoming = self._decision(request, view, pending, project)
             if pending['state'] != 'validating' or reasons:
                 if pending['state'] == 'validating': pending['state'] = 'rejected'
                 pending['reasons'] = reasons or [reason('pending-expired', 'preparacion terminal')]
@@ -285,7 +320,7 @@ class Hostgate:
 
     def _owner_mutation(self, op_id, key, operation, auth, extras, mutate):
         request = dict(schema=SCHEMA, operationId=op_id, operation=operation, key=key, **extras)
-        def action(view):
+        def action(view, project):
             reservation = next((r for r in view['reservations'] if r['key'] == key), None)
             if reservation is None or key['storeId'] != self.config.store_id:
                 return self._reply(op_id, [reason('stale-generation', 'storeId/reservationId/generation no vigente')], exit_code=1)
