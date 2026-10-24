@@ -219,9 +219,9 @@ class Contract(Harness):
         key = self.key(self.reserve(exclusiveResources=resources))
         valid = ClosureEvidence.fixture(key, self.world.boot)
         for field in ('complete', 'creators_sealed', 'root_terminal', 'scope_empty',
-                      'lineage_complete', 'profile_verified', 'resources_clean'):
+                      'lineage_complete', 'profile_verified', 'resources_clean', 'scope'):
             with self.subTest(field=field):
-                proof = replace(valid, **{field: False})
+                proof = replace(valid, **{field: 'foreign-scope' if field == 'scope' else False})
                 values = dict(proof.__dict__); values.pop('evidence_digest')
                 self.world.closures[(field,)] = replace(proof, evidence_digest=digest(values))
                 result = self.gate.soltar('close-' + field, key, [field], self.auth)
@@ -247,6 +247,7 @@ class Contract(Harness):
         for kind in ('unix-scope-empty', 'unconfirmed'):
             self.world.closures[(kind,)] = ClosureEvidence.fixture(key, self.world.boot, kind)
             self.world.now += 15
+            self.assertEqual(self.gate._health(), [])
             result = self.gate.soltar('foreign-' + kind, key, [kind], auth)
             self.assertEqual(result['exitCode'], 1)
             self.assertIn('windows-tree-unconfirmed', self.codes(result))
@@ -267,11 +268,11 @@ class Contract(Harness):
         self.assertEqual(self.world.transport_calls, [])
 
     def test_unknown_health_reason_is_barrier(self):
-        self.world.sample['guestRuntime'] = None
-        self.world.health_kind = 'desk'
-        self.world.sample = json.loads((FIXTURES / 'health/desk.json').read_text())
-        self.world.sample['guestRuntime'] = None
-        self.assertIn('health-invalid', self.codes(self.reserve()))
+        from unittest.mock import patch
+        with patch('hostgate.admission.lector_mini.evaluar', return_value=['new-reader-reason']):
+            result = self.reserve()
+        self.assertFalse(result['wouldGrant'])
+        self.assertEqual(result['reasons'], [dict(code='health-invalid', detail='new-reader-reason', retryable=False)])
 
     def test_jale_real_helpers_bound_to_three_preparations(self):
         import os
@@ -279,16 +280,19 @@ class Contract(Harness):
         import sys
         from hostgate.tests.support.helper import wait
         from hostgate.tests.support.world import SharedWorld, publish_world
-        for filename in ('jale-2254z.json', 'jale-2254z-linked.json'):
+        for filename, possible in [(name, variant) for name in ('jale-2254z.json', 'jale-2254z-linked.json')
+                                  for variant in (False, True)]:
             fixture = json.loads((FIXTURES / filename).read_text())
-            root = Path(self.tmp.name).resolve() / filename
+            root = Path(self.tmp.name).resolve() / (filename + str(possible))
             root.mkdir()
             state_path = root / 'world.json'
             publish_world(state_path, dict(now=100, boot='physical-1',
                           executorBoots={'unix': 'executor-1', 'other': 'executor-1', 'windows': 'executor-1'},
                           realProcesses=True))
             world = SharedWorld(state_path)
-            gate = Hostgate(self.config, world)
+            cfg = config(root / 'shadow')
+            ShadowStore.initialize(cfg)
+            gate = Hostgate(cfg, world)
             query = world.real_auth(os.getpid(), os.getpid(), 'query')
             parents, helpers = [], []
             try:
@@ -297,18 +301,24 @@ class Contract(Harness):
                     directory = root / str(turn); directory.mkdir()
                     parent = subprocess.Popen([sys.executable, '-B', '-m', 'hostgate.tests.support.helper',
                               'parent-' + ('linked' if fixture['linked'] else 'legacy'), str(directory),
-                              str(state_path), str(self.config.state_dir), job], stdin=subprocess.PIPE)
+                              str(state_path), str(cfg.state_dir), job], stdin=subprocess.PIPE)
                     parents.append(parent)
                     wait(directory / 'ready.json')
                     ids = json.loads((directory / 'ready.json').read_text())
                     auth = world.real_auth(ids['pid'], parent.pid, 'channel-' + job)
-                    pending = gate.prepare(request('jale-' + job, job), auth)
+                    req = request('jale-' + job, job)
+                    if possible and turn == fixture['turns'][0]:
+                        committed = gate.reservar(req, auth)
+                        self.assertTrue(committed['wouldGrant'])
+                        pending = committed['pendingId']
+                    else:
+                        pending = gate.prepare(req, auth)
                     helpers.append((directory, pending, auth, job))
                     (directory / 'prepared').touch()
                 view = gate.estado({}, query)
-                self.assertEqual(view['reservations'], [])
-                self.assertEqual(view['budget']['retained']['slots'], 0)
-                self.assertEqual(sum(p['effectiveState'] == 'validating' for p in view['pending']), 3)
+                self.assertEqual(len(view['reservations']), int(possible))
+                self.assertEqual(view['budget']['retained']['slots'], int(possible))
+                self.assertEqual(sum(p['effectiveState'] == 'validating' for p in view['pending']), 3 - int(possible))
                 for parent in parents:
                     parent.stdin.close()
                     self.assertEqual(parent.wait(timeout=45), 0)
@@ -321,17 +331,29 @@ class Contract(Harness):
                         wait(directory / 'retries.json')
                         replies = json.loads((directory / 'retries.json').read_text())
                         self.assertTrue(all(not r['wouldGrant'] for r in replies))
-                        self.assertTrue(all('anchor-dead' in self.codes(r) for r in replies))
+                        if not (possible and job.endswith('-' + str(fixture['turns'][0]))):
+                            self.assertTrue(all('anchor-dead' in self.codes(r) for r in replies))
                     view = gate.estado({}, query)
                     row = next(p for p in view['pending'] if p['id'] == pending)
-                    self.assertEqual(row['effectiveState'], 'expired')
-                    self.assertIn('anchor-dead', self.codes(row))
+                    if possible and job.endswith('-' + str(fixture['turns'][0])):
+                        self.assertEqual(row['effectiveState'], 'granted')
+                    else:
+                        self.assertEqual(row['effectiveState'], 'expired')
+                        self.assertIn('anchor-dead', self.codes(row))
                     self.assertEqual(row['requester']['pid'], auth.peer.pid)
                     self.assertEqual(row['anchor']['pid'], auth.anchor.pid)
                 follower = gate.reservar(request('follower-' + filename, 'follower-' + filename), query)
-                self.assertTrue(follower['wouldGrant'])
+                self.assertEqual(follower['wouldGrant'], not possible)
                 persisted = gate.store.read()
-                self.assertTrue(all(p['state'] == 'expired' for p in persisted['pending'] if p['jobId'].startswith(filename)))
+                self.assertTrue(all(p['state'] in ('expired', 'granted') for p in persisted['pending'] if p['jobId'].startswith(filename)))
+                self.assertEqual(sum(p['state'] == 'expired' for p in persisted['pending'] if p['jobId'].startswith(filename)), 3 - int(possible))
+                if possible:
+                    self.assertIn('reservation-uncertain', self.codes(follower))
+                    view = gate.estado({}, query)
+                    self.assertEqual(view['budget']['retained']['slots'], 1)
+                    self.assertEqual(view['budget']['available']['slots'], 1)
+                    self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
+                    continue
                 key = follower['simulationKey']
                 world.closures[('proof',)] = ClosureEvidence.fixture(key, world.physical_boot())
                 self.assertEqual(gate.soltar('release-' + filename, key, ['proof'], query)['exitCode'], 0)

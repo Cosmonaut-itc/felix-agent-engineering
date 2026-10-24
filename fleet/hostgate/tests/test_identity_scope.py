@@ -110,5 +110,11 @@ class Boundaries(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp).resolve()
             link = root / 'link'; link.symlink_to(root, target_is_directory=True)
-            with self.assertRaises(ValueError):
-                publish_owner({}, link / 'owner.json')
+            record = dict(schema='fleet/host-owner@1', runId='r', jobId='j', attemptId='a',
+                          key=dict(storeId='s', reservationId='r', generation=1), physicalHostId='node',
+                          executorId='unix', boot='b', pid=1, start=[1, 2], started=1,
+                          ended=None, root=None, recordSeq=2, scope={'status': 'unconfirmed'})
+            with self.assertRaises(ValueError): publish_owner(record, link / 'owner.json')
+            publish_owner(record, root / 'owner.json')
+            with self.assertRaises(ValueError): publish_owner(dict(record, recordSeq=1), root / 'owner.json')
+            self.assertEqual(read_owner(root / 'owner.json')['record']['recordSeq'], 2)
