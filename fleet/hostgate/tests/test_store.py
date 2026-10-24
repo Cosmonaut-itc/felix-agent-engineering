@@ -252,3 +252,12 @@ class Storage(Harness):
         result = gate.reservar(request(), self.auth)
         self.assertIn('drained', self.codes(result))
         self.assertFalse(result['wouldGrant'])
+
+    def test_corrupt_operation_is_store_unavailable_not_client_usage(self):
+        self.reserve()
+        with sqlite3.connect(str(self.gate.store.path)) as conn:
+            conn.execute("UPDATE operations SET result='[]' WHERE operation_id='op'")
+        result = self.reserve()
+        self.assertEqual(result['exitCode'], 6)
+        self.assertNotIn('originalResult', result)
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)

@@ -3,7 +3,7 @@ import json
 import os
 import sqlite3
 from urllib.parse import quote
-from .protocol import canonical, digest
+from .protocol import SCHEMA, CODES, canonical, digest, key
 from .model import validate_view
 
 APPLICATION_ID = 1212633939
@@ -97,6 +97,40 @@ class ShadowStore:
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
             raise StoreError('vista no integra') from exc
 
+    @staticmethod
+    def _validate_operation(original, principal, op_id, view):
+        if original is None: return
+        try:
+            operation_digest, raw_result, raw_context = original
+            if len(operation_digest) != 64 or any(c not in '0123456789abcdef' for c in operation_digest):
+                raise ValueError('digest de operacion')
+            context = json.loads(raw_context)
+            if (not isinstance(context, dict) or set(context) != {'principal', 'peer', 'anchor', 'channel'}
+                    or context['principal'] != principal.split('\x00', 1)[0]):
+                raise ValueError('autorizacion de operacion')
+            result = json.loads(raw_result)
+            canonical(result)
+            if principal.endswith('\x00preparation'):
+                if set(result) != {'pendingId'} or not any(p['id'] == result['pendingId'] for p in view['pending']):
+                    raise ValueError('preparacion sin correlacion')
+                return
+            if (not isinstance(result, dict) or result['schema'] != SCHEMA or result['result'] != 'shadow'
+                    or result['operationId'] != op_id or type(result['wouldGrant']) is not bool
+                    or type(result['exitCode']) is not int or result['exitCode'] not in range(7)
+                    or not isinstance(result['reasons'], list)):
+                raise ValueError('resultado de operacion')
+            for reason in result['reasons']:
+                if reason['code'] not in CODES or type(reason['retryable']) is not bool or 'detail' not in reason:
+                    raise ValueError('motivos de operacion')
+            if 'simulationKey' in result:
+                key(result['simulationKey'])
+                if not any(r['key'] == result['simulationKey'] for r in view['reservations']):
+                    raise ValueError('operacion sin reserva')
+            if result['wouldGrant'] and 'simulationKey' not in result:
+                raise ValueError('admision sin reserva')
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
+            raise StoreError('operacion no integra') from exc
+
     def read(self):
         conn = self.connect()
         try:
@@ -112,6 +146,7 @@ class ShadowStore:
             conn.execute('BEGIN IMMEDIATE')
             view = self.load(conn)
             original = conn.execute('SELECT digest, result, auth_context FROM operations WHERE principal=? AND operation_id=?', (principal, op_id)).fetchone()
+            self._validate_operation(original, principal, op_id, view)
             world.checkpoint('before_write')
             result = apply(view, original)
             conn.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (canonical(view), digest(view)))
