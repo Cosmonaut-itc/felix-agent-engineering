@@ -72,6 +72,47 @@ class Contract(Harness):
         self.assertEqual(legitimate['currentState']['state'], 'reserved')
         self.assertEqual(self.view()['reservations'][0]['heartbeat'], before)
 
+    def test_a_i1_foreign_peer_cannot_consume_prepared_operation(self):
+        from dataclasses import replace
+        self.gate.prepare(request(), self.auth)
+        other = self.world.auth(pid=222)
+        self.world.channel_alive = lambda binding: True
+        for auth in (other, replace(self.auth, channel_binding='foreign-channel')):
+            denied = self.reserve(auth=auth)
+            self.assertEqual(denied['exitCode'], 5)
+            self.assertNotIn('originalResult', denied)
+            self.assertEqual(self.view()['reservations'], [])
+        legitimate = self.reserve()
+        self.assertEqual(legitimate['exitCode'], 0)
+        self.assertTrue(legitimate['wouldGrant'])
+        replay = self.reserve()
+        self.assertEqual(replay['originalResult'], legitimate)
+        self.assertFalse(replay['wouldGrant'])
+
+    def test_a_i1_foreign_mutations_leave_ids_available_to_owner(self):
+        from dataclasses import replace
+        key = self.key(self.reserve())
+        other = self.world.auth(pid=222)
+        self.world.channel_alive = lambda binding: True
+        self.world.now += 2
+        before = self.gate.store.read()['reservations'][0]['heartbeat']
+        for auth in (other, replace(self.auth, channel_binding='foreign-channel')):
+            for call in (lambda: self.gate.latido('new-heartbeat', key, 1, auth),
+                         lambda: self.gate.soltar('new-release', key, ['proof'], auth)):
+                denied = call()
+                self.assertEqual(denied['exitCode'], 5)
+                self.assertNotIn('originalResult', denied)
+                row = self.gate.store.read()['reservations'][0]
+                self.assertEqual((row['state'], row['seq'], row['heartbeat']), ('reserved', 0, before))
+        heartbeat = self.gate.latido('new-heartbeat', key, 1, self.auth)
+        self.assertEqual(heartbeat['exitCode'], 0)
+        row = self.gate.store.read()['reservations'][0]
+        self.assertEqual((row['seq'], row['heartbeat']), (1, self.world.now))
+        self.assertGreater(row['heartbeat'], before)
+        self.world.closures[('proof',)] = ClosureEvidence.fixture(key, self.world.boot)
+        self.assertEqual(self.gate.soltar('new-release', key, ['proof'], self.auth)['exitCode'], 0)
+        self.assertEqual(self.view()['budget']['retained']['slots'], 0)
+
     def test_reserve_replay_and_query_role_same_peer_are_not_authority(self):
         from dataclasses import replace
         original = self.reserve()
