@@ -16,9 +16,9 @@ Rutas relativas a `fleet/hostgate/`.
 | 90 | Estructura del paquete | Inspección `git diff --check`; sin módulos productivos F. |
 | 91 | `README.md`, `__init__.py`, `__main__.py`, `cli.py`, `protocol.py`, `model.py` | `CLI`, `Contract`, `Storage`. |
 | 92 | `admission.py`, `store.py`, `identity.py`, `scope.py`, `owner_record.py` | `Contract`, `Storage`, `Boundaries`. |
-| 93 | `salud/__init__.py`, `salud/lector_desk.py`, `salud/lector_mini.py` | 112 casos originales desk adaptados a unittest, `MiniReader`; no ejecutados por falta de turno. |
+| 93 | `salud/__init__.py`, `salud/lector_desk.py`, `salud/lector_mini.py` | 112 casos originales desk adaptados a unittest, `MiniReader`; ejecutados en Mini, ver estado r2 al final. |
 | 94 | `fixtures/jale-2254z*.json`, `fixtures/health`, `fixtures/identities`, `fixtures/launcher`, `fixtures/node-configs` | Jale y lectores consumen fixtures; identidad/launcher/config documentan wire sintético; no equivalen a aceptación nativa. |
-| 95 | `tests/test_cli.py`, `test_store.py`, `test_contract.py`, `support/` | Suite unittest prevista por run.sh; pruebas escritas de clientes de varios procesos y SQLite real, no ejecutadas. |
+| 95 | `tests/test_cli.py`, `test_store.py`, `test_contract.py`, `support/` | Suite unittest prevista por run.sh; pruebas escritas de clientes de varios procesos y SQLite real, ejecutadas en Mini, ver estado r2 al final. |
 | 96 | `identity.py`, `scope.py`, `salud/lector_mini.py` | `Boundaries`, `Contract.test_scope_and_cleanup_all_or_nothing`, `MiniReader`; perfil/cierre real no acreditado. |
 
 Las etiquetas S explícitas están en 02, 21, 37, 56, 72, 74 y 90; 91–96 desarrollan
@@ -28,7 +28,7 @@ la estructura S. Se añade cobertura de las reglas ejecutables sin etiqueta:
 | --- | --- | --- |
 | 01, 04–06, 08 | `README.md`, `model.py`, `store.py` | Configuración administrativa inyectada; `Storage.test_configuration_symlink_and_enforcing_rejected`. Persistencia/localidad del filesystem productivo no acreditada. |
 | 07, 19 | `store.py` | `Storage.test_missing_corrupt_wrong_store_never_recreated`, `test_busy`, `test_commit_cuts_and_response_lost`. |
-| 09–10, 52 | `identity.py` | `Boundaries.test_darwin_structure_and_live_identity_read_only`, `test_linux_exact_stat_parentheses`; lectura real Darwin acotada prevista y fixture proc Linux (`test_linux_proc_fixture_exact_token_reuse_zombie_and_missing`); no ejecutadas. |
+| 09–10, 52 | `identity.py` | `Boundaries.test_darwin_structure_and_live_identity_read_only`, `test_linux_exact_stat_parentheses`; lectura real Darwin acotada prevista y fixture proc Linux (`test_linux_proc_fixture_exact_token_reuse_zombie_and_missing`); ejecutadas en Mini, ver estado r2 al final. |
 | 11–12 | `protocol.py`, `admission.py` | `CLI.test_demand_and_nul_validation`, `Contract.test_minimum_and_unknown_resource`, `test_budget_dimensions_and_exclusives`. |
 | 13–14, 22–27 | `model.py`, `admission.py` | `Contract.test_jale_real_helpers_bound_to_three_preparations`, `test_channel_eof_withdraws_without_reservation`, `test_commit_revalidation_pid_anchor_channel_heartbeat`. |
 | 15–18, 28–29 | `admission.py`, `scope.py` | `Contract.test_death_after_revalidation_retains_commit`, `test_budget_dimensions_and_exclusives`, `test_old_generation_never_alters_new`. |
@@ -70,10 +70,29 @@ la estructura S. Se añade cobertura de las reglas ejecutables sin etiqueta:
 | 12. Tamaño y pruebas honestas | `model.py`, `store.py`, `cli.py`, `README.md` | `Storage.test_queries_never_mutate_sqlite_or_wal`, guion Mini y recibos; sin daemon/polling ni afirmaciones de IPC real. |
 
 
-Estado de ejecución r2 antes de solicitar el turno: **no ejecutada en Mini** para
-cada prueba de esta tabla. La inspección no se presenta como PASS. El primer intento
-`43d94850ecba47a88839709894495440` terminó con salida 130 esperando turno, sin run_id.
-La evidencia y el estado posterior se registrarán por SHA; no se ejecuta en MacBook.
+Estado real de ejecución r2: dos corridas remotas con turno, ambas sobre árbol
+limpio. `72a6d10` y `731d866` descubrieron 174 pruebas cada una; cada corrida tuvo
+173 pruebas correctas y un fallo, sin errores ni omisiones. El primer intento de
+lanzador `43d94850ecba47a88839709894495440` terminó con salida 130 esperando turno,
+sin run_id ni pruebas. No hubo pruebas en MacBook.
+
+| Familia / pruebas | Estado en Mini |
+| --- | --- |
+| CLI, 6 | Ejecutadas, PASS en las dos corridas |
+| Contrato, 28 | Ejecutadas; Jale falló en `72a6d10` y pasó sus cuatro escenarios en `731d866`; las otras 27 pasaron en ambas |
+| Identidad/ámbito/U1, 8 | Ejecutadas, PASS en ambas |
+| Desk, 113 (112 originales + contraste) | Ejecutadas, PASS en ambas |
+| Mini, 4 | Ejecutadas, PASS en ambas |
+| Almacén, 15 | Ejecutadas; todas PASS en `72a6d10`; 14 PASS en `731d866` y fallo de orden en `test_two_executors_shared_world_budget_and_observation_changes` |
+| Corrección `45b0e39` de esa aserción | **No ejecutada**: tope de dos corridas alcanzado. Identifica por executorId, sin depender del orden de commits |
+| Inspección documental y sintaxis AST | Inspección local, no prueba runtime |
+
+B-G1, B-G2 y B-G3 tienen pruebas escritas antes del código corrector. Fallaron sin
+las correcciones en el commit `3f8ce69` reconstruido en Mini y pasaron en ambos SHA
+corregidos. Ese rojo fue retrospectivo, no anterior a los commits correctores.
+Para los otros cambios no se ejecutó rojo previo; Jale y orden concurrente sí tienen
+fallos observados antes de sus correcciones posteriores. No hay evidencia de suite
+verde sobre el head final. Queda pendiente una nueva ejecución autorizada.
 
 | Cambio obligatorio §6 / error | Archivos | Pruebas específicas añadidas o reforzadas |
 | --- | --- | --- |
@@ -94,3 +113,10 @@ fencing, retención y transiciones sintéticas. La inyección SQLite no es una p
 VFS del fsync interno del ledger. Las pruebas de publicación no integran el consumidor
 U1. El coste con historial largo sigue sin medir. La configuración/identidad/launcher
 JSON documental no se presenta como ejecución nativa.
+
+
+Recibos de las dos corridas: `36ec0d9c79bc4457824e988d186493e8` y
+`41feb9cb75f0489c8ab00e2d1f76bc85` en la evidencia del encargo. SHA completos,
+stdout/stderr y códigos están conservados. Último cambio funcional de producción
+probado: `731d866f1c3461fd5bac00a9013c95abe077742b`; después sólo cambian una
+aserción de prueba y documentación. Esto no convierte el head final en PASS.

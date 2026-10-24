@@ -158,11 +158,19 @@ La concurrencia SQLite es real entre clientes del API; IPC/supervisor/launcher/p
 adaptador real y aceptación U1 quedan futuros. No se valida activación con estos fixtures.
 
 La tabla [COBERTURA.md](COBERTURA.md) registra requisitos, límites y estado real
-por prueba. Antes de la corrida final de esta ronda, todas las pruebas nuevas están
-**no ejecutadas**. El primer intento se interrumpió esperando turno, sin run remoto.
-El guion final descubre las seis familias, comprueba el corpus desk, reproduce los
-tres errores graves sobre el commit de regresiones previo a la corrección y ejecuta
-la suite del SHA de la copia remota. Sólo esa evidencia puede marcar ejecución.
+por prueba. Se ejecutaron dos corridas en Mini con turno: ambas descubrieron
+174 pruebas, con un fallo y cero errores. En `72a6d10` falló el conteo de Jale;
+en `731d866` Jale pasó completo y falló una aserción que suponía orden fijo de
+los commits concurrentes. `45b0e39` corrige esa aserción buscando por executorId,
+pero **esa corrección no se ejecutó** porque se alcanzó el tope de dos corridas.
+El head final no se presenta como validado. Hubo además una invocación inicial
+interrumpida esperando turno, sin ejecución remota ni run_id.
+Los tres errores graves fallaron contra `3f8ce69` reconstruido en un temporal de
+la Mini y pasaron sobre los dos SHA corregidos. El rojo se ejecutó retrospectivamente,
+tras escribir las correcciones, y no se confunde con una corrida previa al commit.
+El guion descubre CLI, contrato, identidad/ámbito, desk (112 originales + contraste),
+Mini y almacén. Salidas/recibos: `evidencia-hostgate-sol/resultado-r2.md` y
+`salida-completa-r2.txt`, entregados con el informe del encargo.
 
 El contraste `test_observacion_powershell_contraste_d8fecdc7` usa las seis variantes
 del productor Desktop `d8fecdc7`, con source y scope exactos. La observación no cambia
