@@ -348,9 +348,8 @@ fi
 if ! lsof -u "$uid" -Fn > "$USO_ABIERTOS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló lsof de archivos para EN_USO o emitió diagnósticos"
 fi
-grep -o -- '--basetemp[= ][^ ]*' "$USO_PS" > "$USO_BASETEMP"; estado_basetemp=$?
-if [ "$estado_basetemp" -gt 1 ]; then
-  sin_uso "falló extracción de basetemp para EN_USO"
+if ! { grep -o -- '--basetemp[= ][^ ]*' "$USO_PS"; e=$?; [ "$e" -le 1 ]; } > "$USO_BASETEMP"; then
+  sin_uso "falló extracción o escritura de basetemp para EN_USO"
 fi
 filtrar_uso() {
   local fuente="$1" expresion="$2" archivo="$3"

@@ -79,9 +79,11 @@ demás.
   ejecutan por separado y añaden a `EN_USO` todas las rutas recuperables.
   Se acumulan los errores de las fuentes (`id`, ambos `lsof` y `ps`), de la
   extracción de basetemp y de cada `sed`, `sort` o escritura de `EN_USO`;
-  cada causa se registra. Cualquier fallo, o diagnóstico de `lsof` o `ps`,
-  deja sin borrar las reglas 1, 2, 3, 5, 6 y 7 durante esa pasada. Las
-  reglas 4 y 8, que no consultan `EN_USO`, siguen.
+  cada causa se registra. Un fallo al abrir la salida de basetemp cuenta
+  como fallo de extracción y no como ausencia de coincidencias. Cualquier
+  fallo, o diagnóstico de `lsof` o `ps`, deja sin borrar las reglas 1, 2, 3,
+  5, 6 y 7 durante esa pasada. Las reglas 4 y 8, que no consultan `EN_USO`,
+  siguen.
 - **Regla 7.** Busca cachés de Next.js en todo el home, pero poda
   `~/remote-run` y `~/.local/state`, así que no entra en las copias, el
   registro de propietarios de Fleet ni el estado de comprador.
