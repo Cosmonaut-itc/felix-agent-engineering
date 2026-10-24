@@ -11,6 +11,8 @@ import json
 import os
 from pathlib import Path
 import secrets
+import pwd
+import signal
 import stat
 import subprocess
 
@@ -24,13 +26,24 @@ COPIAS_AUTORIZADAS = (
     '.comprador-humo-int-e5fab47b',
 )
 HOST_MINI = 'Felixs-Mac-mini'
-RAIZ_DEFAULT = '~/remote-run'
 FLAGS_DIRECTORIO = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 ERRORES = (OSError, ValueError, UnicodeError, subprocess.SubprocessError)
 
 
 def hora():
     return datetime.now(timezone.utc).isoformat()
+
+
+def raiz_predeterminada():
+    return Path(pwd.getpwuid(os.getuid()).pw_dir) / 'remote-run'
+
+
+class InterrupcionSenal(BaseException):
+    pass
+
+
+def interrumpir_por_senal(numero, frame):
+    raise InterrupcionSenal(signal.Signals(numero).name)
 
 
 def directorio(ruta):
@@ -173,14 +186,21 @@ def cuarentenar(work_fd, nombre, cuarentena):
     os.rename(nombre, cuarentena, src_dir_fd=work_fd, dst_dir_fd=work_fd)
 
 
-def consultar_lsof(ruta):
+def comprobar_ruta_fd(ruta, fd):
+    if identidad(os.stat(ruta, follow_symlinks=False)) != identidad(os.fstat(fd)):
+        raise ValueError('identidad de la ruta de lsof distinta del descriptor')
+
+
+def consultar_lsof(ruta, fd):
     argumentos = ['/usr/sbin/lsof', '-a', '-p', '^' + str(os.getpid()), '-nP', '+D', str(ruta)]
     paso = {'horaUTC': hora(), 'argumentos': argumentos, 'timeout': 120,
             'codigo': None, 'stdout': '', 'stderr': '', 'libre': False}
     try:
+        comprobar_ruta_fd(ruta, fd)
         salida = subprocess.run(argumentos, capture_output=True, text=True, timeout=120)
         paso.update(codigo=salida.returncode, stdout=salida.stdout, stderr=salida.stderr)
-        paso['libre'] = salida.returncode == 1 and salida.stdout == ''
+        comprobar_ruta_fd(ruta, fd)
+        paso['libre'] = salida.returncode == 1 and salida.stdout == '' and salida.stderr == ''
         if not paso['libre']:
             paso['error'] = 'lsof detectó uso o no acreditó ausencia de uso'
     except ERRORES as exc:
@@ -220,7 +240,7 @@ def comprobar_uso(fd, ruta, raiz, nombre):
     except ERRORES as exc:
         lock['error'] = str(exc)
     paso['lock'] = lock
-    paso['lsof'] = consultar_lsof(ruta)
+    paso['lsof'] = consultar_lsof(ruta, fd)
     paso['ps'] = consultar_ps((nombre, Path(ruta).name))
     inventario = {'horaUTC': hora(), 'libre': False}
     try:
@@ -237,90 +257,111 @@ def comprobar_uso(fd, ruta, raiz, nombre):
     return paso
 
 
-def devolver(work_fd, copia, error):
-    nombre = copia['nombre']
-    cuarentena = Path(copia['cuarentena']).name
-    paso = {'horaUTC': hora(), 'devuelta': False}
-    copia['devolucion'] = paso
+def consultar_uso_previo(raiz, copia):
+    ruta = raiz / 'work' / copia['nombre']
+    paso = {'horaUTC': hora(), 'libre': False}
+    fd = os.open(str(ruta), FLAGS_DIRECTORIO)
     try:
-        if existe(nombre, work_fd) is not None:
-            raise ValueError('nombre original recreado; se conserva la cuarentena')
-        os.rename(cuarentena, nombre, src_dir_fd=work_fd, dst_dir_fd=work_fd)
-        paso['devuelta'] = True
-        estado = 'devuelta'
-        progreso(copia, estado)
-    except ERRORES as exc:
-        paso['error'] = str(exc)
-        estado = 'en-cuarentena'
-        progreso(copia, 'error')
-    copia['resultado'] = {'horaUTC': hora(), 'estado': estado, 'error': error}
+        if identidad(os.fstat(fd)) != copia['reverificacion']['identidades']['copia']:
+            raise ValueError('identidad distinta al consultar uso previo')
+        paso['lsof'] = consultar_lsof(ruta, fd)
+        paso['ps'] = consultar_ps((copia['nombre'],))
+        paso['libre'] = all(paso[k]['libre'] for k in ('lsof', 'ps'))
+    finally:
+        os.close(fd)
     paso['fin'] = {'horaUTC': hora()}
+    return paso
+
+
+def reconciliar(informe, recursos, causa=None):
+    work_fd = recursos.get('work')
+    if work_fd is None:
+        return
+    for copia in informe['copias']:
+        if 'cuarentena' not in copia:
+            continue
+        paso = {'horaUTC': hora(), 'ubicacion': 'no-verificable'}
+        copia['reconciliacion'] = paso
+        try:
+            for clave, nombre in (('original', copia['nombre']),
+                                  ('cuarentena', Path(copia['cuarentena']).name)):
+                info = existe(nombre, work_fd)
+                paso[clave] = identidad(info) if info is not None else None
+            paso['ubicacion'] = ('ambas' if paso['original'] and paso['cuarentena'] else
+                                 'cuarentena' if paso['cuarentena'] else
+                                 'original' if paso['original'] else 'ausente')
+            if copia['resultado']['estado'] == 'borrada':
+                continue
+            fd = recursos['copias'].get(copia['nombre'])
+            if ('borrado' in copia and fd is not None and os.fstat(fd).st_nlink == 0
+                    and paso['cuarentena'] is None):
+                estado = 'borrada'
+            elif paso['cuarentena'] is not None:
+                estado = 'error-parcial'
+            elif paso['original'] == copia['validacion']['identidades']['copia']:
+                estado = 'rechazada'
+            else:
+                estado = 'error-parcial'
+            error = causa or copia['resultado'].get('error') or informe.get('error') or 'operación incompleta'
+            copia['resultado'] = {'horaUTC': hora(), 'estado': estado, 'error': error}
+        except ERRORES as exc:
+            paso['error'] = str(exc)
+            copia['resultado'] = {'horaUTC': hora(), 'estado': 'error-parcial',
+                                  'error': causa or str(exc)}
 
 
 def vaciar(fd, dispositivo):
-    with os.scandir(fd) as entradas:
-        for entrada in entradas:
-            if entrada.is_dir(follow_symlinks=False):
-                hijo = os.open(entrada.name, FLAGS_DIRECTORIO, dir_fd=fd)
-                try:
-                    info = os.fstat(hijo)
-                    if info.st_dev != dispositivo:
-                        raise ValueError('directorio en otro dispositivo: ' + entrada.name)
-                    vaciar(hijo, dispositivo)
-                finally:
-                    os.close(hijo)
-                os.rmdir(entrada.name, dir_fd=fd)
-            else:
-                os.unlink(entrada.name, dir_fd=fd)
+    entradas = list(os.scandir(fd))
+    for entrada in entradas:
+        if entrada.is_dir(follow_symlinks=False):
+            hijo = os.open(entrada.name, FLAGS_DIRECTORIO, dir_fd=fd)
+            try:
+                info = os.fstat(hijo)
+                if info.st_dev != dispositivo:
+                    raise ValueError('directorio en otro dispositivo: ' + entrada.name)
+                vaciar(hijo, dispositivo)
+            finally:
+                os.close(hijo)
+            os.rmdir(entrada.name, dir_fd=fd)
+        else:
+            os.unlink(entrada.name, dir_fd=fd)
 
 
-def eliminar(raiz, work_fd, copia, informe):
+def eliminar(raiz, work_fd, copia, informe, recursos):
     nombre = copia['nombre']
     identidades = copia['reverificacion']['identidades']
     comprobar_work(raiz, work_fd, identidades)
     cuarentena = '.borrando-{}-{}-{}'.format(nombre, datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
                                            secrets.token_hex(8))
     ruta = raiz / 'work' / cuarentena
-    cuarentenar(work_fd, nombre, cuarentena)
     informe.setdefault('primeraEscritura', {'horaUTC': hora()})
     copia['cuarentena'] = str(ruta)
-    copia['resultado'] = {'horaUTC': hora(), 'estado': 'en-cuarentena'}
-    progreso(copia, 'cuarentena')
-    fd = None
+    copia['resultado'] = {'horaUTC': hora(), 'estado': 'cuarentena-intentada'}
     try:
-        try:
-            fd = os.open(cuarentena, FLAGS_DIRECTORIO, dir_fd=work_fd)
-            info = os.fstat(fd)
-            if identidad(info) != identidades['copia']:
-                raise ValueError('identidad distinta tras la cuarentena')
-            copia['uso'] = comprobar_uso(fd, ruta, raiz, nombre)
-            if not copia['uso']['libre']:
-                raise ValueError('lock, proceso o inventario no acreditan ausencia de uso')
-        except ERRORES as exc:
-            progreso(copia, 'error')
-            devolver(work_fd, copia, str(exc))
+        cuarentenar(work_fd, nombre, cuarentena)
+        progreso(copia, 'cuarentena')
+        fd = os.open(cuarentena, FLAGS_DIRECTORIO, dir_fd=work_fd)
+        recursos['copias'][nombre] = fd
+        info = os.fstat(fd)
+        if identidad(info) != identidades['copia']:
+            raise ValueError('identidad distinta tras la cuarentena')
+        copia['uso'] = comprobar_uso(fd, ruta, raiz, nombre)
+        if not copia['uso']['libre']:
+            raise ValueError('lock, proceso o inventario no acreditan ausencia de uso')
+        copia['borrado'] = {'horaUTC': hora()}
+        vaciar(fd, info.st_dev)
+        os.rmdir(cuarentena, dir_fd=work_fd)
+        copia['resultado'] = {'horaUTC': hora(), 'estado': 'borrada'}
+        progreso(copia, 'borrada')
+        return True
+    except BaseException as exc:
+        copia['resultado'] = {'horaUTC': hora(), 'estado': 'error-parcial',
+                              'error': type(exc).__name__ + ': ' + str(exc)}
+        copia['duPosterior'] = medir_du(ruta, None)
+        progreso(copia, 'error')
+        if isinstance(exc, ERRORES):
             return False
-        try:
-            copia['borrado'] = {'horaUTC': hora()}
-            vaciar(fd, info.st_dev)
-            os.rmdir(cuarentena, dir_fd=work_fd)
-            copia['resultado'] = {'horaUTC': hora(), 'estado': 'borrada'}
-            progreso(copia, 'borrada')
-            return True
-        except ERRORES as exc:
-            copia['resultado'] = {'horaUTC': hora(), 'estado': 'error-parcial', 'error': str(exc)}
-            copia['duPosterior'] = medir_du(ruta, None)
-            progreso(copia, 'error')
-            return False
-        except BaseException as exc:
-            copia['resultado'] = {'horaUTC': hora(), 'estado': 'error-parcial',
-                                  'error': type(exc).__name__ + ': ' + str(exc)}
-            copia['duPosterior'] = medir_du(ruta, None)
-            progreso(copia, 'error')
-            raise
-    finally:
-        if fd is not None:
-            os.close(fd)
+        raise
 
 
 def listado_posterior(raiz, copias, work_fd=None, identidades=None):
@@ -357,13 +398,14 @@ def listado_posterior(raiz, copias, work_fd=None, identidades=None):
     return paso
 
 
-def procesar(raiz, ejecutar, informe):
+def procesar(raiz, ejecutar, informe, recursos):
     work_fd = None
     identidades = None
     try:
         capacidades()
         _, identidades = contenedor(raiz)
         work_fd = abrir_work(raiz, identidades)
+        recursos['work'] = work_fd
         informe['cuarentenasPrevias'] = cuarentenas_previas(raiz, work_fd)
         if informe['cuarentenasPrevias']:
             raise ValueError('hay cuarentenas previas; requieren una autorización nueva')
@@ -401,18 +443,17 @@ def procesar(raiz, ejecutar, informe):
                 copia['resultado'] = {'horaUTC': hora(), 'estado': 'rechazada'}
                 informe['error'] = 're-verificación rechazada en raiz/work: ' + copia['nombre']
                 break
+            uso_previo = consultar_uso_previo(raiz, copia)
+            copia['usoPrevio' if ejecutar else 'uso'] = uso_previo
+            if not uso_previo['libre']:
+                copia['resultado'] = {'horaUTC': hora(), 'estado': 'rechazada'}
+                informe['error'] = 'uso previo detectado o no verificable: ' + copia['nombre']
+                break
             if ejecutar:
-                if not eliminar(raiz, work_fd, copia, informe):
+                if not eliminar(raiz, work_fd, copia, informe, recursos):
                     informe['error'] = 'borrado detenido: ' + copia['nombre']
                     break
             else:
-                copia['uso'] = {'horaUTC': hora(),
-                                'lsof': consultar_lsof(raiz / 'work' / copia['nombre']),
-                                'ps': consultar_ps((copia['nombre'],))}
-                if not all(copia['uso'][k]['libre'] for k in ('lsof', 'ps')):
-                    copia['resultado'] = {'horaUTC': hora(), 'estado': 'rechazada'}
-                    informe['error'] = 'uso detectado o no verificable en seco: ' + copia['nombre']
-                    break
                 copia['resultado'] = {'horaUTC': hora(), 'estado': 'conservada-en-seco'}
         else:
             informe['resultado'] = 'borrado-completo' if ejecutar else 'validado-en-seco'
@@ -422,14 +463,11 @@ def procesar(raiz, ejecutar, informe):
             progreso(next((c for c in reversed(informe['copias']) if 'cuarentena' in c),
                           {'nombre': 'sin-copia'}), 'error')
     finally:
-        try:
-            informe['listadoPosterior'] = listado_posterior(raiz, informe['copias'], work_fd, identidades)
-            if 'error' in informe['listadoPosterior'] and informe['resultado'] in ('borrado-completo', 'validado-en-seco'):
-                informe['resultado'] = 'detenido'
-            informe['fin'] = {'horaUTC': hora()}
-        finally:
-            if work_fd is not None:
-                os.close(work_fd)
+        reconciliar(informe, recursos)
+        informe['listadoPosterior'] = listado_posterior(raiz, informe['copias'], work_fd, identidades)
+        if 'error' in informe['listadoPosterior'] and informe['resultado'] in ('borrado-completo', 'validado-en-seco'):
+            informe['resultado'] = 'detenido'
+        informe['fin'] = {'horaUTC': hora()}
     return informe
 
 
@@ -446,21 +484,35 @@ def main(argv=None):
         host['error'] = str(exc)
     if args.ejecutar and (args.raiz is not None or not host['coincide']):
         parser.error('--ejecutar exige el LocalHostName autorizado y no admite --raiz')
-    raiz = Path(os.path.abspath(os.path.expanduser(args.raiz if args.raiz is not None else RAIZ_DEFAULT)))
+    raiz = Path(os.path.abspath(os.path.expanduser(args.raiz))) if args.raiz is not None else raiz_predeterminada()
     informe = {'schema': 'remote-run-borrado-copias@2', 'horaUTC': hora(),
                'modo': 'ejecutar' if args.ejecutar else 'seco', 'raiz': str(raiz), 'host': host,
                'inventario': None, 'copias': [], 'resultado': 'rechazado'}
+    recursos = {'copias': {}}
+    manejadores = {}
     try:
-        procesar(raiz, args.ejecutar, informe)
-    except BaseException as exc:
-        if informe.get('primeraEscritura'):
-            informe.update(resultado='interrumpido', interrupcion=type(exc).__name__)
-            progreso(next((c for c in reversed(informe['copias']) if 'cuarentena' in c),
-                          {'nombre': 'sin-copia'}), 'error')
-            print(json.dumps(informe, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
-        raise
-    print(json.dumps(informe, ensure_ascii=False, indent=2, allow_nan=False))
-    return 0 if informe['resultado'] in ('validado-en-seco', 'borrado-completo') else 1
+        for senal in (signal.SIGTERM, signal.SIGHUP):
+            manejadores[senal] = signal.signal(senal, interrumpir_por_senal)
+        try:
+            procesar(raiz, args.ejecutar, informe, recursos)
+        except BaseException as exc:
+            if informe.get('primeraEscritura'):
+                causa = type(exc).__name__ + ': ' + str(exc)
+                reconciliar(informe, recursos, causa)
+                informe.update(resultado='interrumpido', interrupcion=causa)
+                progreso(next((c for c in reversed(informe['copias']) if 'cuarentena' in c),
+                              {'nombre': 'sin-copia'}), 'error')
+                print(json.dumps(informe, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
+            raise
+        print(json.dumps(informe, ensure_ascii=False, indent=2, allow_nan=False))
+        return 0 if informe['resultado'] in ('validado-en-seco', 'borrado-completo') else 1
+    finally:
+        for fd in recursos['copias'].values():
+            os.close(fd)
+        if recursos.get('work') is not None:
+            os.close(recursos['work'])
+        for senal, manejador in manejadores.items():
+            signal.signal(senal, manejador)
 
 
 if __name__ == '__main__':
