@@ -38,26 +38,6 @@ class Boundaries(unittest.TestCase):
             path.write_text('{')
             self.assertEqual(read_owner(path)['protection'], 'uncertain')
 
-    def test_helpers_real_eof_linked_and_legacy_survives_then_autoexits(self):
-        import subprocess
-        import sys
-        import time
-        script = Path(__file__).parent / 'support/helper.py'
-        for mode in ('linked', 'legacy'):
-            with tempfile.TemporaryDirectory() as tmp:
-                result = subprocess.run([sys.executable, '-B', str(script), 'parent-' + mode, tmp],
-                                        capture_output=True, text=True, timeout=5)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                identities = json.loads(result.stdout)
-                self.assertNotEqual(identities['parent'], identities['helper'])
-                ready, ended = Path(tmp) / 'helper-ready', Path(tmp) / 'helper-ended'
-                deadline = time.monotonic() + 5
-                while not ready.exists() and time.monotonic() < deadline: time.sleep(0.02)
-                self.assertTrue(ready.exists())
-                if mode == 'legacy': self.assertFalse(ended.exists())
-                while not ended.exists() and time.monotonic() < deadline: time.sleep(0.02)
-                self.assertEqual(ended.read_text(), mode)
-
     def test_owner_fsync_failure_preserves_protection(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:

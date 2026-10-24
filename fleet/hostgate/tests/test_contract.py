@@ -273,37 +273,108 @@ class Contract(Harness):
         self.world.sample['guestRuntime'] = None
         self.assertIn('health-invalid', self.codes(self.reserve()))
 
-    def test_jale_two_fixtures_five_conditions(self):
+    def test_jale_real_helpers_bound_to_three_preparations(self):
+        import os
+        import subprocess
+        import sys
+        from hostgate.tests.support.helper import wait
+        from hostgate.tests.support.world import SharedWorld, publish_world
         for filename in ('jale-2254z.json', 'jale-2254z-linked.json'):
-            with self.subTest(fixture=filename):
-                fixture = json.loads((FIXTURES / filename).read_text())
-                helpers = []
+            fixture = json.loads((FIXTURES / filename).read_text())
+            root = Path(self.tmp.name).resolve() / filename
+            root.mkdir()
+            state_path = root / 'world.json'
+            publish_world(state_path, dict(now=100, boot='physical-1',
+                          executorBoots={'unix': 'executor-1', 'other': 'executor-1', 'windows': 'executor-1'},
+                          realProcesses=True))
+            world = SharedWorld(state_path)
+            gate = Hostgate(self.config, world)
+            query = world.real_auth(os.getpid(), os.getpid(), 'query')
+            parents, helpers = [], []
+            try:
                 for turn in fixture['turns']:
-                    auth = self.world.auth(pid=turn)
-                    p = self.gate.prepare(request('jale-%s-%s' % (filename, turn), str(turn)), auth)
-                    helpers.append((auth, p))
-                for auth, _ in helpers:
-                    self.world.processes[auth.anchor.pid] = 'absent'
+                    job = filename + '-' + str(turn)
+                    directory = root / str(turn); directory.mkdir()
+                    parent = subprocess.Popen([sys.executable, '-B', '-m', 'hostgate.tests.support.helper',
+                              'parent-' + ('linked' if fixture['linked'] else 'legacy'), str(directory),
+                              str(state_path), str(self.config.state_dir), job], stdin=subprocess.PIPE)
+                    parents.append(parent)
+                    wait(directory / 'ready.json')
+                    ids = json.loads((directory / 'ready.json').read_text())
+                    auth = world.real_auth(ids['pid'], parent.pid, 'channel-' + job)
+                    pending = gate.prepare(request('jale-' + job, job), auth)
+                    helpers.append((directory, pending, auth, job))
+                    (directory / 'prepared').touch()
+                view = gate.estado({}, query)
+                self.assertEqual(view['reservations'], [])
+                self.assertEqual(view['budget']['retained']['slots'], 0)
+                self.assertEqual(sum(p['effectiveState'] == 'validating' for p in view['pending']), 3)
+                for parent in parents:
+                    parent.stdin.close()
+                    self.assertEqual(parent.wait(timeout=45), 0)
+                for directory, pending, auth, job in helpers:
                     if fixture['linked']:
-                        self.world.processes[auth.peer.pid] = 'absent'
-                self.world.now += 30
-                v = self.view()
-                for auth, pending in helpers:
-                    observed = next(x for x in v['pending'] if x['id'] == pending)
-                    self.assertEqual(observed['effectiveState'], 'expired')
-                    self.assertTrue(observed['reasons'])
-                    self.assertEqual(self.world.processes[auth.peer.pid] == 'absent', fixture['linked'])
-                    r = self.gate.reservar(request('jale-%s-%s' % (filename, auth.peer.pid), str(auth.peer.pid)), auth)
-                    self.assertFalse(r['wouldGrant'])
-                    self.assertFalse(self.gate.reservar(request('retry-%s-%s' % (filename, auth.peer.pid), str(auth.peer.pid)), auth)['wouldGrant'])
-                self.assertTrue(self.reserve('follower-' + filename, 'follower-' + filename)['wouldGrant'])
-                key = self.view()['reservations'][-1]['key']
-                self.release(key, 'release-' + filename)
-        key = self.key(self.reserve('could-create', 'could-create'))
-        self.gate.dudosa('creation-gap', key, 'spawn-ambiguous', [], self.auth)
-        self.world.now += 30
+                        wait(directory / 'ended')
+                    else:
+                        self.assertEqual(world.verify(auth.peer).status, 'same')
+                        (directory / 'retry').touch()
+                        wait(directory / 'retries.json')
+                        replies = json.loads((directory / 'retries.json').read_text())
+                        self.assertTrue(all(not r['wouldGrant'] for r in replies))
+                        self.assertTrue(all('anchor-dead' in self.codes(r) for r in replies))
+                    view = gate.estado({}, query)
+                    row = next(p for p in view['pending'] if p['id'] == pending)
+                    self.assertEqual(row['effectiveState'], 'expired')
+                    self.assertIn('anchor-dead', self.codes(row))
+                    self.assertEqual(row['requester']['pid'], auth.peer.pid)
+                    self.assertEqual(row['anchor']['pid'], auth.anchor.pid)
+                follower = gate.reservar(request('follower-' + filename, 'follower-' + filename), query)
+                self.assertTrue(follower['wouldGrant'])
+                persisted = gate.store.read()
+                self.assertTrue(all(p['state'] == 'expired' for p in persisted['pending'] if p['jobId'].startswith(filename)))
+                key = follower['simulationKey']
+                world.closures[('proof',)] = ClosureEvidence.fixture(key, world.physical_boot())
+                self.assertEqual(gate.soltar('release-' + filename, key, ['proof'], query)['exitCode'], 0)
+            finally:
+                for parent in parents:
+                    if not parent.stdin.closed: parent.stdin.close()
+                    parent.wait(timeout=45)
+                for directory, _, auth, _ in helpers:
+                    (directory / 'retry').touch(); (directory / 'finish').touch()
+                    wait(directory / 'ended')
+                    from hostgate.identity import ProcessTable
+                    import time
+                    deadline = time.monotonic() + 45
+                    table = ProcessTable('unix', host='Mini-Fixture')
+                    while table.identity(auth.peer.pid).status == 'same' and time.monotonic() < deadline:
+                        time.sleep(0.02)
+                    self.assertEqual(table.identity(auth.peer.pid).status, 'confirmed_absent_or_different')
+
+    def test_jale_independent_causes_and_possible_creation(self):
+        from dataclasses import replace
+        for cause, expected in (('anchor', 'anchor-dead'), ('start', 'requester-dead'),
+                                ('ttl', 'pending-expired'), ('eof', 'requester-dead')):
+            auth = self.world.auth(pid=200 + len(self.gate.store.read()['pending']))
+            req = request('prepare-' + cause, cause)
+            pending = self.gate.prepare(req, auth)
+            if cause == 'anchor': self.world.processes[auth.anchor.pid] = 'absent'
+            if cause == 'start': self.world.processes[auth.peer.pid] = replace(auth.peer, start_token=(8, 8))
+            if cause == 'ttl': self.world.now += 10
+            if cause == 'eof': self.world.channel = False
+            row = next(p for p in self.view()['pending'] if p['id'] == pending)
+            self.assertEqual({r['code'] for r in row['reasons']}, {expected})
+            self.assertEqual(self.view()['budget']['retained']['slots'], 0)
+            self.assertFalse(self.gate.reservar(req, auth)['wouldGrant'])
+            self.assertFalse(self.gate.reservar(dict(req, operationId='retry-' + cause), auth)['wouldGrant'])
+            self.world.channel = True
+        self.assertTrue(self.reserve('could-create', 'could-create')['wouldGrant'])
+        self.world.processes[self.auth.peer.pid] = 'absent'
+        self.auth = self.world.auth(pid=777)
+        view = self.view()
+        self.assertEqual(view['budget']['available']['slots'], 1)
+        self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertIn('reservation-uncertain', self.codes(self.reserve('blocked', 'blocked')))
         self.assertEqual(self.view()['budget']['retained']['slots'], 1)
-        self.assertFalse(self.reserve('blocked', 'blocked')['wouldGrant'])
 
     def test_channel_eof_withdraws_without_reservation(self):
         self.gate.prepare(request(), self.auth)

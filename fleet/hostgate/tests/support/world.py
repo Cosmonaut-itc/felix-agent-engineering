@@ -98,3 +98,55 @@ def request(op='op', job='job', **changes):
                   exclusiveResources=[], profileId='fixture')
     result.update(changes)
     return result
+
+
+class SharedWorld(World):
+    """Estado de fronteras leído por cada cliente; nunca entra en producción."""
+    def __init__(self, path):
+        super().__init__()
+        self.path = Path(path)
+
+    def state(self):
+        return json.loads(self.path.read_text())
+
+    def monotonic(self):
+        return self.state()['now']
+
+    def physical_boot(self):
+        return self.state()['boot']
+
+    def executor_boot(self, executor):
+        return self.state()['executorBoots'].get(executor)
+
+    def channel_alive(self, binding):
+        return self.state().get('channels', {}).get(binding, True)
+
+    def verify(self, identity):
+        state = self.state()
+        if state.get('realProcesses'):
+            from hostgate.identity import ProcessTable
+            observed = ProcessTable(identity.executor_id, host='Mini-Fixture').identity(identity.pid)
+            if observed.status != 'same':
+                return observed
+            same = (observed.identity.uid == identity.uid and observed.identity.start_token == identity.start_token)
+            return Observation('same' if same else 'confirmed_absent_or_different', identity if same else None)
+        from hostgate.identity import from_json
+        actual = state.get('processes', {}).get(str(identity.pid))
+        if actual == 'EPERM': return Observation('unverifiable')
+        return Observation('same' if actual and from_json(actual) == identity else 'confirmed_absent_or_different')
+
+    def real_auth(self, pid, parent, channel):
+        from hostgate.identity import ProcessTable
+        from dataclasses import replace
+        def identity(pid):
+            actual = ProcessTable('unix', host='Mini-Fixture').identity(pid)
+            if actual.status != 'same': raise RuntimeError('proceso propio no listo')
+            return replace(actual.identity, executor_boot=self.executor_boot('unix'), physical_boot=self.physical_boot())
+        return AuthContext('fixture', 'supervisor', identity(pid), identity(parent), channel)
+
+
+def publish_world(path, state):
+    path = Path(path)
+    temporary = path.with_suffix('.next')
+    temporary.write_text(json.dumps(state))
+    temporary.replace(path)
