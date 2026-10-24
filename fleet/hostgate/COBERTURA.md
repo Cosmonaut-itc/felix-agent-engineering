@@ -212,7 +212,48 @@ Correcciones r4, 2026-10-23 (America/Mexico_City), pruebas escritas antes del c�
 El guion r4 adapta el de r3 dentro del subárbol autorizado; rojo retrospectivo
 A2-I1/N-2 sobre `c23cc0f`, seis familias con 113 desk exactos. Los dos casos del
 archivo nuevo se suman a contrato. Sólo tolera `?? .remote-run.lock` en porcelain.
-Estado antes de corrida: pruebas r4 escritas, no ejecutadas. El registro r3 anterior
+Estado previo a la corrida: pruebas r4 escritas, aún no ejecutadas entonces. El registro r3 anterior
 conserva run `20261023-204639-a55097`, SHA `147ff52`, 188/0/0 y rojo A-I1 sobre
 `dad5ef8`, evidencia `495ef06ee60541bd8626124333b1b7f4/`. Suite verde sigue sin
 equivaler a aceptación técnica de Fleet.
+
+
+Ejecución r4, 2026-10-23 (America/Mexico_City): run `20261023-211240-fc0f10`,
+SHA probado `1c3aef683a7df5df704fa5910be06a8f7d549a30`, incluida la adopción
+Desktop `98a7bc1`. Árbol limpio y congelado durante espera y ejecución; sólo
+se toleró la línea exacta de SEN-3885. Mini con turno, `/usr/bin/python3` 3.9.6,
+macOS 27 arm64. Una corrida de dos permitidas; no se usó la segunda.
+
+| Familia | Descubiertas / ejecutadas | Resultado |
+| --- | --- | --- |
+| CLI | 10 | PASS |
+| Contrato + adaptador desk adoptado | 41 (39 + 2) | PASS |
+| Identidad/ámbito/U1 | 11 | PASS |
+| Desk | 113 (112 originales + contraste) | PASS |
+| Mini | 5 | PASS |
+| Almacén | 18 | PASS |
+| Total | 198 | 0 fallos / 0 errores / 0 omitidas |
+
+Rojo retrospectivo sobre `c23cc0fe6feda40b5383670554910011d303f4d2` en la
+misma corrida: las cuatro pruebas A2-I1/N-2 fallaron, con 8 aserciones fallidas
+(incluidos subtests), 0 errores. Se observaron `reserved` en vez de `uncertain`,
+`validating` en vez de `expired`, consumo del id ajeno y latido del dueño en vez
+de conflicto. Las cuatro pasaron en el SHA corregido. A-I1 de r3 y replay B-G2
+permanecen intactos y pasaron. También pasaron PermissionError de proveedor y
+symlink, commit/ACK/cierre con OSError/PermissionError/RuntimeError y recuperación
+con un solo débito, además de JSON ±10**400 por el adaptador de salud.
+
+Evidencia completa, sin recortes:
+`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/a746e9d92e33413eb68e93a22172e296/remoto.log`.
+En ese directorio: `lanzador.log`, `script.sh`, `recibo.json` y `terminal.json`.
+Recibo con `evidencia_completa=true`; resultado, start y salida del lanzador 0;
+turno liberado. Lanzador terminado; helpers propios concluyeron en la suite.
+No hubo pruebas ni imports del candidato en MacBook, conexiones al desk, push ni PR.
+El guion se versionó dentro de `fleet/hostgate/` en vez de editar el externo
+`evidencia-hostgate-sol/guion.sh`, para respetar el subárbol exclusivo autorizado.
+La evidencia externa la escribió el runner autorizado. Después de la corrida
+sólo cambian README y COBERTURA; el head documental no se afirma ejecutado.
+Suite verde no equivale a aceptación técnica de Fleet ni activación. Siguen F
+ABI/IPC, supervisor, perfiles reales, consumidor U1, corte de run.sh/mini.lock,
+DefaultShell, SEN-3853, recuperación/reconciliación explícitas y medición del coste
+con historial largo. A-M1 de Desktop ya está resuelto por la adopción autorizada.
