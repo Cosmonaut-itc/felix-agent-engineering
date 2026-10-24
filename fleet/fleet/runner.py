@@ -1,10 +1,10 @@
 import ctypes
 import enum
 import fcntl
-import getpass
 import json
 import os
 from pathlib import Path
+import pwd
 import select
 import signal
 import socket
@@ -82,16 +82,16 @@ class Ledger(sqlite3.Connection):
 
     def close(self):
         if self.lock_fd is not None and not self.locked:
-            _lock(self.lock_fd)
-        try:
-            super().close()
-        finally:
-            if self.lock_fd is not None:
-                os.close(self.lock_fd)
-                self.lock_fd = None
-            if self.snapshot is not None:
-                self.snapshot.cleanup()
-                self.snapshot = None
+            fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
+            self.locked = True
+        super().close()
+        if self.snapshot is not None:
+            self.snapshot.cleanup()
+            self.snapshot = None
+        if self.lock_fd is not None:
+            os.close(self.lock_fd)
+            self.lock_fd = None
+            self.locked = False
 
 
 def state_path(explicit=None):
@@ -310,19 +310,23 @@ class Launch(enum.Enum):
     UNCONFIRMED = "unconfirmed"
 
 
-def _reserve(conn, job, attempt, execution, identity, policy, client):
+def _reserve(conn, job, attempt, execution, identity, policy, client, submitted_by):
     actor = "client:" + client
     conn.execute("BEGIN IMMEDIATE")
     conn.execute("INSERT INTO jobs (id,execution,input,policy,client,submitted_by,submitted_at) "
                  "VALUES (?,?,?,?,?,?,?)", (job, json.dumps(execution), json.dumps(identity),
-                 json.dumps(policy), client,
-                 json.dumps({"user": getpass.getuser(), "uid": os.getuid(),
-                             "host": socket.gethostname(), "pid": os.getpid()}), time.time()))
+                 json.dumps(policy), client, json.dumps(submitted_by), time.time()))
     conn.execute("INSERT INTO attempts (id,job_id) VALUES (?,?)", (attempt, job))
     _transition(conn, attempt, "queued", actor)
     claimed = _claim(conn, attempt, actor)
+    uncertain = False
+    if not claimed:
+        owner = conn.execute("SELECT a.supervisor,a.detail FROM slot s LEFT JOIN attempts a "
+                             "ON a.id=s.holder_attempt WHERE s.id=1").fetchone()
+        supervisor = json.loads(owner[0]) if owner and owner[0] else None
+        uncertain = not _identity_confirmed(supervisor) or owner[1] == GROUP_DRAINING
     conn.commit()
-    return job, attempt, claimed
+    return job, attempt, claimed, uncertain
 
 
 def _launch_supervisor(state, attempt, generation):
@@ -394,6 +398,9 @@ def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), cred
     env = dict(os.environ)
     plan = inputs.Plan(cwd, state, includes, private, artifacts, argv, env, credentials)
     client = inputs.redact(client, plan.secrets)
+    submitted_by = {"user": inputs.redact(pwd.getpwuid(os.getuid()).pw_name, plan.secrets),
+                    "uid": os.getuid(), "host": inputs.redact(socket.gethostname(), plan.secrets),
+                    "pid": os.getpid()}
     conn = _connect(state, create=True)
     try:
         job, attempt = "j_" + uuid.uuid4().hex, "a_" + uuid.uuid4().hex
@@ -404,12 +411,13 @@ def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), cred
                      "environment": env, "outputs": {"contract": "fleet-outputs@1", "required": plan.artifacts},
                      "context_version": inputs.CONTEXT_VERSION, "context": inputs.CONTEXT,
                      "credential_names": list(credentials)}
-        job, attempt, claimed = _reserve(conn, job, attempt, execution, identity, plan.policy, client)
+        job, attempt, claimed, uncertain = _reserve(
+            conn, job, attempt, execution, identity, plan.policy, client, submitted_by)
         result = {"job": job, "attempt": attempt, "client": client, "registered": True,
                   "accepted": False, "input": identity, "input_policy": plan.policy}
         if not claimed:
-            uncertain = view(state, job)["view"] == "uncertain"
-            return dict(result, state="queued", view="uncertain" if uncertain else "queued", accepted=True), 3 if uncertain else 0
+            return dict(result, observation="durable_admission", state="queued",
+                        view="uncertain" if uncertain else "queued", accepted=True), 3 if uncertain else 0
         launch, error = _launch_supervisor(state, attempt, claimed)
         if launch is Launch.READY:
             return dict(result, state="starting", accepted=True), 0
@@ -425,17 +433,23 @@ def view(state, job):
     conn = _connect(state)
     try:
         conn.execute("BEGIN")
-        row = conn.execute("SELECT j.seq,j.id,j.input,j.policy,j.client,j.submitted_by,j.submitted_at,"
+        row = conn.execute("SELECT j.seq,j.id,j.input,j.policy,j.client,j.submitted_by,j.submitted_at,j.execution,"
                            "a.id AS attempt,a.state,a.outcome,a.exit_code,a.signal,"
                            "a.supervisor,a.child_pid,a.started_at,a.ended_at,a.detail,a.command,a.collection,a.evidence_root "
                            "FROM jobs j JOIN attempts a ON a.job_id=j.id WHERE j.id=?", (job,)).fetchone()
         if row is None:
             raise ValueError("unknown_job")
         result = dict(row)
+        execution = json.loads(result.pop("execution"))
+        secrets = inputs.credential_values(execution["environment"], execution["credential_names"])
         result.pop("id")
         result["job"] = job
         for key in ("input", "policy", "submitted_by", "supervisor", "command", "collection"):
             result[key] = json.loads(result[key]) if result[key] else None
+        for key in ("submitted_by", "supervisor"):
+            if result[key]:
+                result[key] = {name: inputs.redact(value, secrets) if isinstance(value, str) else value
+                               for name, value in result[key].items()}
         result["input_policy"] = result.pop("policy")
         result["registered"] = True
         result["interruptible"] = False

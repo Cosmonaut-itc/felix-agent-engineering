@@ -29,7 +29,14 @@ Un contrato de contexto desconocido se rechaza antes de consumir la compuerta
 o crear el comando. El recibo sólo publica la política, sin valores del entorno.
 
 Referencias literales detectables a la raíz del origen en argv o archivos
-admitidos se rechazan. Las variables de búsqueda/carga validadas son exactamente:
+admitidos se rechazan. Además del texto literal de la raíz, se comprueban paths
+absolutos de argv, literales entre comillas simples/dobles (incluidos espacios)
+y tokens absolutos delimitados por espacio, NUL, comillas o `;|<>(){}[],=` en
+argv/contenido, hasta 40.000 tokens por valor. La comprobación
+de contención compara dispositivo/inode y ancestros existentes, también bajo
+otra grafía de mayúsculas cuando el filesystem identifica el mismo objeto.
+No convierte rutas a lower/casefold ni equipara objetos distintos en un volumen
+sensible a mayúsculas. Las variables de búsqueda/carga validadas son exactamente:
 
 ```text
 PATH                            :
@@ -120,6 +127,13 @@ en stdout/stderr recogidos, incluso partidos entre bloques. No se publican
 argv, entorno, valores ni hashes de credenciales. El entorno completo y argv
 permanecen en el ledger privado, en claro, sin cifrado.
 
+`submitted_by.user` procede de la cuenta del uid, sin confiar en LOGNAME/USER.
+Sus textos de usuario/host se redactan con los secretos del emisor antes de
+persistirse. El lector usa la declaración privada guardada con el job para
+sanear también la identidad pública del supervisor, conservando su identidad
+original privada para comprobar dueño. Cambiar el entorno del lector no cambia
+esa redacción ni concede autoridad a `client` o a los metadatos publicados.
+
 **No se inspecciona el contenido de archivos arbitrarios para descubrir secretos
 no declarados.** Un secreto desconocido en un archivo normal sí viaja en la
 instantánea y puede aparecer en la salida. El consumidor debe declarar sus
@@ -142,7 +156,10 @@ Límites por captura: 20.000 archivos, 40.000 entradas de inventario, profundida
 valores secretos, 64 KiB de valores únicos. Antes de inventariar se rechazan HOME
 declarado, HOME del uid y sus ancestros, además de un origen igual o contenido
 en el state-dir. Se comprueban cwd y raíz Git. Un state-dir dentro de un proyecto
-permitido se excluye de la captura. Se conservan las aperturas por componentes
+permitido se excluye de la captura. HOME, sus ancestros, origen y estado se
+comparan también por identidad física de objetos y ancestros existentes; una
+variante de mayúsculas que el volumen resuelva al mismo objeto conserva las
+guardas y exclusiones. Se conservan las aperturas por componentes
 sin symlinks. Los límites fallan explícitamente, sin truncar entradas admitidas.
 
 El layout separa `capsules/<job>/{manifest.json,payload}`, la copia mutable
@@ -201,6 +218,17 @@ de inicio de transacción requiere SQL que comience literalmente por `BEGIN`;
 un cursor o API SQLite que eluda Ledger invalidaría el protocolo de copia.
 No sustituirlo por `mode=ro`, `query_only` o `immutable=1` sobre el original.
 
+Las operaciones ordinarias conservan el timeout de flock de diez segundos.
+El cierre terminal de una conexión original usa adquisición bloqueante sin ese
+timeout: el dueño conserva la conexión y el lock hasta completar cierre SQLite,
+incluido checkpoint, y limpieza propia. Un lector/escritor cooperante detenido
+puede prolongar indefinidamente la salida del cliente o supervisor que cierra;
+agotar la espera ordinaria no autoriza abandonar la conexión al destructor nativo.
+Una excepción nativa de cierre conserva el descriptor/lock para responsabilidad
+explícita del dueño, sin afirmar recuperación automática. No se acreditan cierre
+ante señales que interrumpan el proceso, SIGTERM/KILL, muerte del intérprete,
+fallos de flock/cierre del sistema ni durabilidad ante pérdida de energía.
+
 La base temporal del lector es exclusivamente `/tmp`, resuelta físicamente antes
 de llamar a `tempfile`, sin consultar `gettempdir()` ni modificar el entorno.
 Se ignoran TMPDIR, TEMP y TMP aunque señalen al estado, a un descendiente o a
@@ -219,6 +247,14 @@ administrada por root en Darwin/Linux; layouts distintos pueden perder
 disponibilidad. No garantiza aislamiento frente a un atacante arbitrario del
 mismo uid, root o cambios privilegiados del namespace/montajes durante la
 consulta. No se ha medido aquí espacio temporal, latencia ni RSS.
+
+SIGTERM/KILL durante una consulta puede dejar `/tmp/fleet-read-*` (habitualmente
+`/private/tmp/fleet-read-*` en Darwin), con copia plaintext de BD/WAL, argv y
+entorno privados, fuera del state-dir. Los directorios son 0700 y los archivos
+copiados 0600; no aíslan de otro proceso del mismo uid. No hay limpieza global ni
+handler nuevo de señales. La salida normal limpia su copia; una terminación
+abrupta puede dejarla hasta la limpieza del sistema o retirada atribuida por el
+dueño. No buscar ni borrar temporales de otras consultas/corridas.
 
 Cada consulta copia y sincroniza BD/WAL bajo exclusión antes de abrir SQLite en
 el temporal; no copia SHM del original. Este coste y la espera de escritores
@@ -241,6 +277,16 @@ NOT_CREATED positivo permite relevo; UNCONFIRMED conserva slot. Un error tras
 posible spawn, supervisor perdido o identidad host/boot/PID/inicio no verificable
 retiene capacidad. No hay adopción ni reconciliación host-side.
 
+Para un envío sin claim, el recibo lleva `observation=durable_admission`:
+`state=queued` y `view=queued|uncertain` describen la admisión dentro de la misma
+transacción, con la observación del dueño del slot efectuada antes del commit.
+No se abre un lector después de confirmar el registro para fabricar el recibo.
+Un dueño ausente/no verificable o un grupo drenándose conserva `view=uncertain`
+y exit 3 con `job`, `attempt`, `registered=true` y `accepted=true`. La observación
+de admisión puede ser anterior a la respuesta: el job ya podría haber avanzado.
+`status`/`wait` consultan su estado actual; el recibo no mezcla queued con una
+vista terminal, no reconstruye permiso y no autoriza reenviar el trabajo.
+
 El supervisor y comando tienen sesiones separadas del cliente. SIGINT/SIGHUP
 del cliente no cancelan la carga; el supervisor ignora ambas señales. El comando
 debe ser compatible con el piloto: no daemonizar ni sacar descendientes del
@@ -256,32 +302,38 @@ puede informar `view=uncertain` con exit 0. Ningún lector inicia, libera o reen
 
 | Exit | Contrato |
 | --- | --- |
-| 0 | submit registrado sin duda actual; status/evidence lectura; wait éxito acreditado |
+| 0 | submit sin duda en su observación de admisión/lanzamiento; status/evidence lectura; wait éxito acreditado |
 | 1 | submit no creó supervisor, accepted=false; wait failed acreditado |
 | 2 | Uso/entrada/estado inválido, esquema incompatible o job desconocido |
 | 3 | submit lanzamiento o dueño incierto; wait incomplete/uncertain |
 | 4 | wait agotó timeout de lectura; la ejecución continúa |
 | 130 | SIGINT del lector, incluso durante importación; JSON de interrupción |
 
-Un job queued puede estar aceptado y devolver 3 si su dueño actual es incierto.
+Un job queued puede estar aceptado y devolver 3 si su dueño era incierto al admitirlo.
 `registered=true` acredita registro durable; `accepted` no acredita éxito.
 
 ## Verificación pendiente exclusivamente en Mini
 
-MacBook sólo edición/inspección. Ninguna corrida Mini hasta aviso explícito de
-PAO del cierre de limpieza-disco y borrado real. Después, el coordinador usa
-`run.sh` dentro del turno autorizado y ejecuta exactamente en el checkout:
+MacBook sólo edición/inspección. El coordinador encarga runtime del head exacto
+en Mini por `run.sh` y FIFO original autorizado, sin modificar FIFO129, que sólo
+caracteriza su head anterior. Ejecuta en una copia propia del candidato:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_cli.py' -v
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_ledger_lifecycle.py' -v
 ```
 
-`test_cli.py` conserva las 55 conductas anteriores y carga casos de `content_cases.py`,
-`correction_cases.py` y `reader_temp_cases.py`, con dos regresiones nuevas.
+`test_cli.py` conserva las 57 conductas anteriores y añade once casos de
+`integral_cases.py`: aliases físicos, metadatos declarados y recibo sin lector.
+Son 68 casos públicos y uno focalizado de ciclo de vida en
+`test_ledger_lifecycle.py`, todos escritos y cero ejecutados.
 La matriz, selector rojo/verde y fronteras sin fixture están en
 [`tests/COVERAGE.md`](tests/COVERAGE.md).
-Todas usan subprocess del CLI público, fixtures y recursos propios; no importan
-Fleet ni consultan SQL. El estado incompatible usa una copia cerrada propia y
+Los casos públicos usan subprocess del CLI, fixtures y recursos propios; no
+importan Fleet ni consultan SQL. La prueba focalizada importa el Ledger real
+en un subprocess propio y usa primitivas externas para retener un lector más
+de diez segundos antes de liberar. No reproduce públicamente la finalización
+nativa durante copia BD/WAL. El estado incompatible usa una copia cerrada propia y
 el campo público `user_version` del header SQLite, sin tablas ni SQL. Incluyen
 snapshots sin Git, Git/índice/working tree,
 privacidad positiva y negativa, entorno/PATH en cola, streams simultáneos y un
@@ -297,6 +349,10 @@ mismo estado exclusivo, sin borrado intermedio. La limpieza exige atribución y
 ausencia efectiva de procesos/grupos propios mediante señal 0; ante duda falla
 y retiene temporales. Barreras con autoexit, deadlines acotados y ningún proceso
 ajeno señalado. No hay instalaciones ni CI nuevo.
+
+El watchdog de 30 segundos de la matriz de 144 consultas se conserva: su autoexit
+da error y `done=watchdog`, nunca liberación sana. Su duración y margen siguen
+pendientes de medición en Mini. No se han aumentado timeouts para ocultar un rojo.
 
 Las pruebas nuevas están **escritas, no ejecutadas**. Este candidato requiere
 evidencia Mini, reviews Astra high y Opus high, veto PAO y OK concreto de Felix;

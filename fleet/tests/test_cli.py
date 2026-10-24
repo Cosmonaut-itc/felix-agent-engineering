@@ -16,6 +16,7 @@ import unittest
 
 from content_cases import ContentCases
 from correction_cases import CorrectionCases
+from integral_cases import IntegralCases
 from reader_temp_cases import ReaderTempCases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
@@ -56,7 +57,7 @@ class Admission:
 
 
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
-class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, unittest.TestCase):
+class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-")).resolve()
         self.state = self.root / "state"

@@ -1,9 +1,11 @@
 import contextlib
+import errno
 import hashlib
 import json
 import os
 from pathlib import Path
 import pwd
+import re
 import select
 import stat
 import subprocess
@@ -181,11 +183,40 @@ def policy_summary(private, secrets):
 
 
 def _within(path, root):
-    return path == root or root in path.parents
+    if path == root or root in path.parents:
+        return True
+    identity = _object_id(root)
+    return identity is not None and any(
+        _object_id(parent) == identity for parent in (path, *path.parents))
+
+
+def _object_id(path):
+    try:
+        info = path.stat()
+    except OSError as exc:
+        if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG):
+            return None
+        raise
+    return info.st_dev, info.st_ino
 
 
 def _overlaps(path, root):
     return _within(path, root) or _within(root, path)
+
+
+def _source_reference(value, root, whole_path=False):
+    if str(root) in value:
+        return True
+    if whole_path and os.path.isabs(value) and _within(Path(os.path.realpath(value)), root):
+        return True
+    pattern = r"""'(/[^'\x00\r\n]*)'|"(/[^"\x00\r\n]*)"|(/[^\s\x00'";|<>(){}\[\],=]*)"""
+    for index, match in enumerate(re.finditer(pattern, value)):
+        if index >= MAX_FILES * 2:
+            raise InputError("source_reference_limit")
+        literal = match.group(1) or match.group(2) or match.group(3)
+        if _within(Path(os.path.realpath(literal)), root):
+            return True
+    return False
 
 
 def _check_scope(root, state, env):
@@ -321,7 +352,7 @@ def _origin(cwd):
             if marker.is_symlink() or not (marker.is_file() or marker.is_dir()):
                 raise InputError("invalid_git_metadata")
             top = Path(os.fsdecode(_git(cwd, "rev-parse", "--show-toplevel")).strip())
-            if top != parent:
+            if _object_id(top) != _object_id(parent):
                 raise InputError("invalid_git_root")
             return parent, True
     return cwd, False
@@ -348,7 +379,7 @@ def _private(path, extra, state, root):
     parts = path.split("/")
     if any(p in VCS for p in parts):
         return True
-    if state == root / path or state in (root / path).parents:
+    if _within(root / path, state):
         return True
     if any(path == p or path.startswith(p + "/") for p in extra):
         return True
@@ -401,13 +432,8 @@ class Plan:
         self.policy = policy_summary(self.private, self.secrets)
         if any(name.startswith("FLEET_CONTEXT_") for name in env):
             raise InputError("reserved_environment")
-        if any(str(self.root) in arg for arg in argv):
+        if any(_source_reference(arg, self.root, whole_path=True) for arg in argv):
             raise InputError("source_reference_in_command")
-        for arg in argv:
-            if os.path.isabs(arg):
-                resolved = Path(os.path.realpath(arg))
-                if resolved == self.root or self.root in resolved.parents:
-                    raise InputError("source_reference_in_command")
         _check_search_paths(env, self.cwd, self.root)
         for include in self.includes:
             if _private(include, self.private, state, self.root):
@@ -488,7 +514,7 @@ class Plan:
                     raise InputError("declared_credential_in_path")
                 with open_file(fd, path) as source:
                     data, info = read_stable(source, self.secrets)
-                if os.fsencode(self.root) in data:
+                if _source_reference(os.fsdecode(data), self.root):
                     raise InputError("source_reference_in_content")
                 if stamp(info) != self.files[path]:
                     raise InputError("source_changed")
