@@ -8,6 +8,73 @@ from hostgate.store import ShadowStore, StoreError
 
 
 class Storage(Harness):
+    def test_commit_and_ack_exceptions_always_replay_one_debit(self):
+        from unittest.mock import patch
+        store = self.gate.store
+        connect = store.connect
+        for stage in ('commit', 'after_commit'):
+            for exception in (OSError, PermissionError, RuntimeError):
+                with self.subTest(stage=stage, exception=exception):
+                    operation = stage + '-' + exception.__name__
+                    class Connection:
+                        def __init__(self): self.conn = connect(writable=True)
+                        def execute(self, *args): return self.conn.execute(*args)
+                        def commit(self):
+                            self.conn.commit()
+                            raise exception('commit ACK lost')
+                        def rollback(self): raise AssertionError('no compensar commit intentado')
+                        def close(self): self.conn.close()
+                    def checkpoint(name):
+                        if name == 'after_commit': raise exception('ACK lost')
+                    if stage == 'commit':
+                        with patch.object(store, 'connect', side_effect=lambda **kwargs: Connection()):
+                            result = self.reserve(operation, operation)
+                    else:
+                        with patch.object(self.world, 'checkpoint', side_effect=checkpoint):
+                            result = self.reserve(operation, operation)
+                    self.assertEqual(result['exitCode'], 3)
+                    self.assertFalse(result['wouldGrant'])
+                    self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+                    replay = self.reserve(operation, operation)
+                    self.assertTrue(replay['replayed'])
+                    self.assertTrue(replay['originalResult']['wouldGrant'])
+                    self.assertFalse(replay['wouldGrant'])
+                    self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+                    self.release(self.key(replay), 'release-' + operation)
+
+    def test_foreign_rejection_cannot_hide_persistence_failure(self):
+        from unittest.mock import patch
+        from hostgate.store import Busy
+        key = self.key(self.reserve())
+        other = self.world.auth(pid=222)
+        self.world.processes[self.auth.peer.pid] = 'EPERM'
+        for exception, code in ((Busy, 4), (StoreError, 6), (OSError, 3)):
+            def checkpoint(name):
+                if name == 'before_commit': raise exception('cannot persist rejection')
+            with patch.object(self.world, 'checkpoint', side_effect=checkpoint):
+                result = self.gate.latido('denied', key, 1, other)
+            self.assertEqual(result['exitCode'], code)
+            self.assertFalse(result['wouldGrant'])
+            self.assertEqual(self.gate.store.read()['reservations'][0]['state'], 'reserved')
+        def checkpoint(name):
+            if name == 'after_commit': raise PermissionError('rejection ACK lost')
+        with patch.object(self.world, 'checkpoint', side_effect=checkpoint):
+            result = self.gate.latido('denied', key, 1, other)
+        self.assertEqual(result['exitCode'], 3)
+        self.assertEqual(self.gate.store.read()['reservations'][0]['state'], 'uncertain')
+        self.world.processes[self.auth.peer.pid] = self.auth.peer
+        self.assertEqual(self.gate.latido('denied', key, 1, self.auth)['exitCode'], 0)
+
+    def test_prepare_foreign_signal_is_not_an_os_error(self):
+        from hostgate.store import ForeignOwner
+        self.gate.prepare(request(), self.auth)
+        other = self.world.auth(pid=222)
+        self.world.now += self.config.pending_ttl
+        with self.assertRaises(ForeignOwner) as caught:
+            self.gate.prepare(request(), other)
+        self.assertNotIsInstance(caught.exception, OSError)
+        self.assertEqual(self.gate.store.read()['pending'][0]['state'], 'expired')
+
     def test_concurrent_budget_and_parallel_replay(self):
         def reserve(i):
             return retry_busy(lambda: Hostgate(self.config, self.world).reservar(request('parallel-' + str(i), str(i)), self.auth))

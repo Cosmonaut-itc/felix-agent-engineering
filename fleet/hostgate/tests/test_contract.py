@@ -38,6 +38,78 @@ class Harness(unittest.TestCase):
 
 
 class Contract(Harness):
+    def test_a2_i1_foreign_rejection_persists_uncertainty_and_audit(self):
+        import sqlite3
+        key = self.key(self.reserve(exclusiveResources=['sen-slot:1', 'postgres:5434']))
+        other = self.world.auth(pid=222)
+        before = self.gate.store.read()['reservations'][0]
+        self.world.processes[self.auth.peer.pid] = 'EPERM'
+        denied = self.gate.latido('foreign-heartbeat', key, 1, other)
+        self.assertEqual(denied['exitCode'], 5)
+        stored = self.gate.store.read()['reservations'][0]
+        self.assertEqual(stored['state'], 'uncertain')
+        self.assertEqual(stored['demand'], before['demand'])
+        self.assertEqual(stored['exclusiveResources'], before['exclusiveResources'])
+        self.assertEqual((stored['heartbeat'], stored['seq']), (before['heartbeat'], 0))
+        with sqlite3.connect(str(self.gate.store.path)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM operations WHERE operation_id='foreign-heartbeat'").fetchone()[0], 0)
+            audit = conn.execute(
+                "SELECT payload FROM audit WHERE operation_id='foreign-heartbeat'").fetchall()
+        self.assertEqual([json.loads(row[0]) for row in audit], [denied])
+        self.world.processes[self.auth.peer.pid] = self.auth.peer
+        follower = self.reserve('follower', 'follower', auth=other)
+        self.assertEqual(follower['exitCode'], 1)
+        self.assertIn('reservation-uncertain', self.codes(follower))
+        self.assertEqual(self.gate.latido('foreign-heartbeat', key, 1, self.auth)['exitCode'], 0)
+        self.assertEqual(self.gate.store.read()['reservations'][0]['state'], 'uncertain')
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+        self.assertEqual({r['name'] for r in self.view()['resources']}, {'sen-slot:1', 'postgres:5434'})
+
+    def test_a2_i1_foreign_reserve_persists_preparation_expiry(self):
+        import sqlite3
+        self.gate.prepare(request(), self.auth)
+        other = self.world.auth(pid=222)
+        self.world.now += self.config.pending_ttl
+        self.assertEqual(self.reserve(auth=other)['exitCode'], 5)
+        stored = self.gate.store.read()
+        self.assertEqual(stored['pending'][0]['state'], 'expired')
+        self.assertEqual(stored['reservations'], [])
+        with sqlite3.connect(str(self.gate.store.path)) as conn:
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM operations WHERE principal='fixture' AND operation_id='op'").fetchone()[0], 0)
+            self.assertEqual(conn.execute(
+                "SELECT count(*) FROM audit WHERE principal='fixture' AND operation_id='op'").fetchone()[0], 1)
+        legitimate = self.reserve()
+        self.assertEqual(legitimate['exitCode'], 1)
+        self.assertIn('pending-expired', self.codes(legitimate))
+        self.assertEqual(self.reserve()['originalResult'], legitimate)
+
+    def test_n2_foreign_operations_cannot_consume_prepared_id(self):
+        other = self.world.auth(pid=222)
+        own_key = self.key(self.reserve('other-reserve', 'other-job', auth=other))
+        missing = dict(own_key, reservationId='missing')
+        self.gate.prepare(request(), self.auth)
+        for key in (missing, own_key):
+            for operation in ('latido', 'soltar'):
+                with self.subTest(key=key, operation=operation):
+                    denied = (self.gate.latido('op', key, 1, other) if operation == 'latido'
+                              else self.gate.soltar('op', key, [], other))
+                    self.assertEqual(denied['exitCode'], 5)
+                    self.assertNotIn('originalResult', denied)
+        self.assertEqual(self.gate.store.read()['reservations'][0]['seq'], 0)
+        self.assertEqual(self.reserve()['exitCode'], 0)
+
+    def test_n2_owner_other_operation_does_not_consume_prepared_id(self):
+        own_key = self.key(self.reserve('own-reserve', 'own-job'))
+        self.gate.prepare(request(), self.auth)
+        for result in (self.gate.latido('op', own_key, 1, self.auth),
+                       self.gate.soltar('op', own_key, [], self.auth)):
+            self.assertEqual(result['exitCode'], 2)
+            self.assertEqual(self.codes(result), {'operation-conflict'})
+        self.assertEqual(self.gate.store.read()['reservations'][0]['seq'], 0)
+        self.assertEqual(self.reserve()['exitCode'], 0)
+
     def test_b_g1_windows_proof_cannot_release_unix(self):
         from dataclasses import replace
         from hostgate.protocol import digest

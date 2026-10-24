@@ -99,7 +99,8 @@ class CLI(Harness):
     def test_internal_provider_errors_are_not_request_errors(self):
         from dataclasses import replace
         from unittest.mock import patch
-        for exception in (ValueError, TypeError, KeyError, AttributeError, OverflowError, OSError, RuntimeError):
+        for exception in (ValueError, TypeError, KeyError, AttributeError, OverflowError,
+                          OSError, PermissionError, RuntimeError):
             with self.subTest(provider='health', exception=exception):
                 with patch.object(self.world, 'health', side_effect=exception('internal')):
                     code, result = self.call(json.dumps(request('health-' + exception.__name__)))
@@ -129,6 +130,20 @@ class CLI(Harness):
         self.assertEqual(code, 130)
         self.assertFalse(result['wouldGrant'])
         self.assertEqual(self.gate.store.read()['reservations'], [])
+
+    def test_symlink_os_permission_failure_is_store_unavailable(self):
+        from pathlib import Path
+        from unittest.mock import patch
+        key = self.key(self.reserve())
+        payloads = [('reservar', request('symlink')),
+                    ('latido', dict(schema=request()['schema'], operationId='symlink-heartbeat',
+                                    operation='latido', key=key, seq=1))]
+        for command, payload in payloads:
+            with self.subTest(command=command):
+                with patch.object(Path, 'is_symlink', side_effect=PermissionError('lstat')):
+                    code, result = self.call(json.dumps(payload), command)
+                self.assertEqual(code, 6)
+                self.assertEqual(self.codes(result), {'store-unavailable'})
 
     def test_state_wire_maps_granted_to_simulated(self):
         self.reserve()
