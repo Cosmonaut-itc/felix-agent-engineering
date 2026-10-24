@@ -76,3 +76,58 @@ El JSON es un artefacto remoto, no un archivo del repo. Recogerlo en la
 evidencia con `remote-run pull` a través del mismo `run.sh`, usando
 `--reporte scripts/hosts/inventario/inventario-mini.json`. El lanzador prepara
 ese reporte y lo recupera tras finalizar. Máximo dos corridas.
+
+## Borrado acotado de cuatro copias
+
+`borrar_copias.py` requiere Python 3.9 y sólo biblioteca estándar. Su lista
+literal autoriza exclusivamente `.comprador-felix-mode-83cc1dfe`,
+`.comprador-humo-099-f3371349`, `.comprador-humo-103-680cb5db` y
+`.comprador-humo-int-e5fab47b`. Ningún argumento, archivo o variable de entorno
+permite ampliar esa lista. `--raiz` cambia la raíz, por defecto `~/remote-run`,
+para admitir fixtures temporales.
+
+El modo predeterminado es **seco**: valida e informa sin borrar nada. El
+argumento `--ejecutar` habilita el borrado, que queda **fuera de este encargo**.
+El guion y las corridas reales de esta implementación sólo usan el modo seco:
+
+```sh
+/usr/bin/python3 scripts/hosts/inventario/borrar_copias.py
+```
+
+Antes de avanzar exige las cuatro copias reales mediante `lstat`, padre real
+igual a `raiz/work`, ausencia de cualquier `.remote-run.lock` (incluso
+huérfano) e inventario fresco con `tamanos=True` y `borrable=true`. El
+inventario conserva la protección por corridas vivas o dudosas asociadas y
+el bloqueo global por dueño desconocido o `runs` ilegible. `phasefailed`
+no acredita terminación: la lección de SEN-3284 sigue vigente.
+
+Recoge `/usr/bin/du -sk` para las cuatro, con argumentos separados y timeout
+de 30 segundos, junto con `tamanoBytes`. Una validación previa o un `du`
+fallidos impiden todo borrado. Después repite el inventario completo antes
+de cada copia, incluso en seco. Una re-verificación fallida detiene esa copia
+y las siguientes; una ejecución real podría haber borrado las anteriores.
+
+Exige `shutil.rmtree.avoids_symlink_attacks` verdadero en ambos modos. En
+ejecución, vuelve a comprobar las identidades de raíz, work y copia, abre
+work sin seguir enlaces y ancla allí el directorio actual durante `rmtree`,
+restaurándolo al terminar. Así no vuelve a atravesar ancestros reemplazados.
+Los enlaces internos se eliminan como enlaces, sin recorrer su destino.
+Las observaciones de locks y procesos siguen sin ser una instantánea atómica
+ni una reserva frente a productores concurrentes.
+
+Emite un JSON a stdout con modo, horas UTC de inicio y fin de los pasos,
+totales del inventario inicial, validación e item completo por nombre, `du`,
+re-verificación y resultado. Los pasos no alcanzados quedan en `null` y los
+resultados pendientes en `no-procesada`. Siempre intenta listar work al final
+y comprueba mediante `lstat` que las copias borradas ya no existen; en seco
+comprueba que las conservadas siguen presentes. Exit 0 sólo para
+`validado-en-seco` o `borrado-completo`; rechazo, detención o fallo de listado
+devuelven 1.
+
+Las pruebas nuevas usan exclusivamente raíces temporales: el borrado y sus
+fallos se ejercitan allí. La suite completa se corre sólo en la Mini con
+`run.sh` y turno, nunca en la MacBook. El guion de este encargo es
+`/Users/felixddhs/.claude/encargos/mini-carga/guiones/borrado-mini.sh`:
+imprime y valida el porcelain (sólo tolera `?? .remote-run.lock`), ejecuta
+ambas suites y muestra el JSON del modo seco contra el remote-run real.
+No crea un reporte dentro de la copia; `run.sh` conserva stdout en su evidencia.
