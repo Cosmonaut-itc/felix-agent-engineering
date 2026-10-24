@@ -23,6 +23,12 @@ def _validate(record):
         raise ValueError('PID/secuencia invalida')
     if not isinstance(record['start'], list) or not record['start'] or any(type(x) is not int or x < 0 for x in record['start']):
         raise ValueError('inicio exacto ausente')
+    root = record['root']
+    if root is not None:
+        if (not isinstance(root, dict) or type(root.get('pid')) is not int or root['pid'] <= 0
+                or root['pid'] == record['pid'] or not isinstance(root.get('start'), list)
+                or not root['start'] or any(type(x) is not int or x < 0 for x in root['start'])):
+            raise ValueError('raiz sin identidad exacta separada del supervisor')
     if type(record['started']) not in (float, int) or not math.isfinite(record['started']) or record['started'] <= 0:
         raise ValueError('started invalido')
     if not isinstance(record['scope'], dict) or record['scope'].get('status') not in ('unconfirmed', 'confirmed-empty'):

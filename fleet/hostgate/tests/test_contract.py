@@ -429,3 +429,19 @@ class Contract(Harness):
         self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
         self.assertEqual(view['budget']['retained']['slots'], 1)
         self.assertEqual(view['resources'][0]['holder'], key)
+
+    def test_publication_uncertainty_never_releases_reservation(self):
+        from unittest.mock import patch
+        from hostgate.owner_record import publish_owner
+        key = self.key(self.reserve(exclusiveResources=['postgres:5434']))
+        record = dict(schema='fleet/host-owner@1', runId='r', jobId='job', attemptId='a1',
+                      key=key, physicalHostId='node', executorId='unix', boot=self.world.boot,
+                      pid=self.auth.peer.pid, start=list(self.auth.peer.start_token), started=1,
+                      ended=None, root=None, recordSeq=1, scope={'status': 'unconfirmed'})
+        path = Path(self.tmp.name).resolve() / 'owner.json'
+        with patch('hostgate.owner_record.os.fsync', side_effect=[None, OSError(5, 'directory I/O')]):
+            with self.assertRaises(OSError): publish_owner(record, path)
+        self.gate.dudosa('publication-failure', key, 'owner-publication-uncertain', [], self.auth)
+        self.assertEqual(self.view()['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+        self.assertEqual(self.view()['resources'][0]['holder'], key)

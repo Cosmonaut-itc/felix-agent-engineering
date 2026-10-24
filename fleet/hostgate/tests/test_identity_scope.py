@@ -24,12 +24,12 @@ class Boundaries(unittest.TestCase):
 
     def test_owner_record_partial_and_root_terminal_protect(self):
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'owner.json'
+            path = Path(tmp).resolve() / 'owner.json'
             self.assertEqual(read_owner(path)['protection'], 'uncertain')
             record = dict(schema='fleet/host-owner@1', runId='r', jobId='j', attemptId='a',
                           key=dict(storeId='s', reservationId='r', generation=1), physicalHostId='node',
                           executorId='unix', boot='b', pid=1, start=[1, 2], started=1,
-                          ended=None, root={'exit': 0, 'childAlive': True}, recordSeq=1,
+                          ended=None, root={'pid': 2, 'start': [2, 3], 'exit': 0, 'childAlive': True}, recordSeq=1,
                           scope={'status': 'unconfirmed'})
             publish_owner(record, path)
             self.assertEqual(read_owner(path)['protection'], 'protect')
@@ -41,7 +41,7 @@ class Boundaries(unittest.TestCase):
     def test_owner_fsync_failure_preserves_protection(self):
         from unittest.mock import patch
         with tempfile.TemporaryDirectory() as tmp:
-            path = Path(tmp) / 'owner.json'
+            path = Path(tmp).resolve() / 'owner.json'
             record = dict(schema='fleet/host-owner@1', runId='r', jobId='j', attemptId='a',
                           key=dict(storeId='s', reservationId='r', generation=1), physicalHostId='node',
                           executorId='unix', boot='b', pid=1, start=[1], started=1,
@@ -76,3 +76,39 @@ class Boundaries(unittest.TestCase):
                 self.assertEqual(table.identity(99).status, 'confirmed_absent_or_different')
                 (process / 'stat').write_text('partial')
                 self.assertEqual(table.identity(42).status, 'unverifiable')
+
+    def test_owner_root_identity_must_be_exact_and_separate(self):
+        from hostgate.owner_record import _validate
+        record = dict(schema='fleet/host-owner@1', runId='r', jobId='j', attemptId='a',
+                      key=dict(storeId='s', reservationId='r', generation=1), physicalHostId='node',
+                      executorId='unix', boot='b', pid=1, start=[1, 2], started=1,
+                      ended=None, root=None, recordSeq=1, scope={'status': 'unconfirmed'})
+        for root in ('root', {}, {'pid': 1, 'start': [2]}, {'pid': 2},
+                     {'pid': True, 'start': [2]}, {'pid': 2, 'start': []},
+                     {'pid': 2, 'start': [True]}):
+            with self.subTest(root=root), self.assertRaises(ValueError):
+                _validate(dict(record, root=root))
+        self.assertEqual(_validate(dict(record, root={'pid': 2, 'start': [2, 3]}))['ended'], None)
+
+    def test_directory_fsync_after_replace_keeps_published_protection(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp).resolve() / 'owner.json'
+            record = dict(schema='fleet/host-owner@1', runId='r', jobId='j', attemptId='a',
+                          key=dict(storeId='s', reservationId='r', generation=1), physicalHostId='node',
+                          executorId='unix', boot='b', pid=1, start=[1, 2], started=1,
+                          ended=None, root={'pid': 2, 'start': [2, 3]}, recordSeq=1,
+                          scope={'status': 'unconfirmed'})
+            publish_owner(record, path)
+            with patch('hostgate.owner_record.os.fsync', side_effect=[None, OSError(5, 'directory I/O')]):
+                with self.assertRaises(OSError): publish_owner(dict(record, recordSeq=2), path)
+            self.assertEqual(read_owner(path)['protection'], 'protect')
+            self.assertIsNone(read_owner(path)['record']['ended'])
+            self.assertEqual([p.name for p in path.parent.iterdir()], ['owner.json'])
+
+    def test_owner_rejects_production_symlink_and_stale_sequence(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            link = root / 'link'; link.symlink_to(root, target_is_directory=True)
+            with self.assertRaises(ValueError):
+                publish_owner({}, link / 'owner.json')
