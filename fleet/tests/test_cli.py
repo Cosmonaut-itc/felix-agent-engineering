@@ -51,7 +51,7 @@ class Admission:
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
 class FleetCLI(unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-"))
+        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-")).resolve()
         self.state = self.root / "state"
         self.project = self.root / "project-without-profile"
         self.project.mkdir()
@@ -271,14 +271,20 @@ class FleetCLI(unittest.TestCase):
             responses.append(value)
             return value
 
-        script = ("import json, os, sys\n"
-                  "print(json.dumps([os.environ['FLEET_TEST_MARK'], os.environ['PATH'], "
-                  "sys.executable]), flush=True)\n" + BARRIER)
+        script = ("import json, os\n"
+                  "print(json.dumps([os.environ['FLEET_TEST_MARK'], os.environ['PATH']]), "
+                  "flush=True)\n" + BARRIER)
         for label in ("a", "b"):
             directory = self.root / ("env-bin-" + label)
             directory.mkdir()
             executable = directory / "fleet-env-python"
-            executable.symlink_to(sys.executable)
+            executable_marker = "fictitious-fleet-executable-" + label
+            executable.write_text(
+                f"#!{sys.executable}\n"
+                "import os, sys\n"
+                f"print({executable_marker!r}, flush=True)\n"
+                f"os.execv({sys.executable!r}, [{sys.executable!r}, *sys.argv[1:]])\n")
+            executable.chmod(0o700)
             marker = "fictitious-fleet-environment-" + label
             env = dict(self.env, FLEET_TEST_MARK=marker, PATH=str(directory))
             argv, ready, gate, done = self.barrier()
@@ -287,7 +293,7 @@ class FleetCLI(unittest.TestCase):
             self.assertTrue(submitted["accepted"])
             jobs.append(submitted["job"])
             fixtures.append((ready, gate, done))
-            expected.append([marker, str(directory), str(executable)])
+            expected.append([marker, str(directory), executable_marker])
             if label == "a":
                 self.running(jobs[0], ready)
         queued = control_call("status", jobs[1])
@@ -302,12 +308,14 @@ class FleetCLI(unittest.TestCase):
         second = control_call("wait", jobs[1], "--timeout", "9")
         for final, report in zip((first, second), expected):
             lines = Path(final["stdout_log"]).read_text().splitlines()
-            self.assertEqual(json.loads(lines[0]), report)
-            self.assertEqual(lines[1:], ["ok"])
+            self.assertEqual(lines[0], report[2])
+            self.assertEqual(json.loads(lines[1]), report[:2])
+            self.assertEqual(lines[2:], ["ok"])
         control = "".join(control_output) + (self.state / "supervisor.log").read_text()
         for report in expected:
             self.assertFalse(report[0] in control, "fictitious environment marker leaked")
             self.assertFalse(report[1] in control, "fictitious PATH leaked")
+            self.assertFalse(report[2] in control, "fictitious executable marker leaked")
         self.assertTrue(all("env" not in response for response in responses))
 
     def test_descendant_holds_slot_after_root_exits(self):
@@ -396,11 +404,15 @@ class FleetCLI(unittest.TestCase):
         result = self.call("wait", job, "--timeout", "0", check=False)
         self.assertEqual(result.returncode, 4)
         self.assertTrue(json.loads(result.stdout)["timed_out"])
-        process = subprocess.Popen([sys.executable, "-B", "-X", "importtime", str(CLI),
-                                    "--state-dir", str(self.state),
-                                    "wait", job], env=self.env, cwd=self.project,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.processes.append(process)
+        original_sigint = signal.signal(signal.SIGINT, signal.SIG_DFL)
+        try:
+            process = subprocess.Popen([sys.executable, "-B", "-X", "importtime", str(CLI),
+                                        "--state-dir", str(self.state),
+                                        "wait", job], env=self.env, cwd=self.project,
+                                       stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.processes.append(process)
+        finally:
+            signal.signal(signal.SIGINT, original_sigint)
         import_trace = bytearray()
         deadline = time.monotonic() + 3
         while not any(line.startswith(b"import time:") and
