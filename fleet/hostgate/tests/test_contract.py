@@ -286,9 +286,10 @@ class Contract(Harness):
             root = Path(self.tmp.name).resolve() / (filename + str(possible))
             root.mkdir()
             state_path = root / 'world.json'
-            publish_world(state_path, dict(now=100, boot='physical-1',
-                          executorBoots={'unix': 'executor-1', 'other': 'executor-1', 'windows': 'executor-1'},
-                          realProcesses=True))
+            state = dict(now=100, boot='physical-1',
+                         executorBoots={'unix': 'executor-1', 'other': 'executor-1', 'windows': 'executor-1'},
+                         realProcesses=True, channelParents={})
+            publish_world(state_path, state)
             world = SharedWorld(state_path)
             cfg = config(root / 'shadow')
             ShadowStore.initialize(cfg)
@@ -306,6 +307,9 @@ class Contract(Harness):
                     wait(directory / 'ready.json')
                     ids = json.loads((directory / 'ready.json').read_text())
                     auth = world.real_auth(ids['pid'], parent.pid, 'channel-' + job)
+                    from hostgate.model import identity_json
+                    state['channelParents']['channel-' + job] = identity_json(auth.anchor)
+                    publish_world(state_path, state)
                     req = request('jale-' + job, job)
                     if possible and turn == fixture['turns'][0]:
                         committed = gate.reservar(req, auth)
@@ -331,8 +335,8 @@ class Contract(Harness):
                         wait(directory / 'retries.json')
                         replies = json.loads((directory / 'retries.json').read_text())
                         self.assertTrue(all(not r['wouldGrant'] for r in replies))
-                        if not (possible and job.endswith('-' + str(fixture['turns'][0]))):
-                            self.assertTrue(all('anchor-dead' in self.codes(r) for r in replies))
+                        self.assertTrue(all(r['exitCode'] == 5 and self.codes(r) == {'identity-unverifiable'}
+                                            and 'originalResult' not in r for r in replies))
                     view = gate.estado({}, query)
                     row = next(p for p in view['pending'] if p['id'] == pending)
                     if possible and job.endswith('-' + str(fixture['turns'][0])):
@@ -346,7 +350,8 @@ class Contract(Harness):
                 self.assertEqual(follower['wouldGrant'], not possible)
                 persisted = gate.store.read()
                 self.assertTrue(all(p['state'] in ('expired', 'granted') for p in persisted['pending'] if p['jobId'].startswith(filename)))
-                self.assertEqual(sum(p['state'] == 'expired' for p in persisted['pending'] if p['jobId'].startswith(filename)), 3 - int(possible))
+                original_ids = {pending for _, pending, _, _ in helpers}
+                self.assertEqual(sum(p['state'] == 'expired' for p in persisted['pending'] if p['id'] in original_ids), 3 - int(possible))
                 if possible:
                     self.assertIn('reservation-uncertain', self.codes(follower))
                     view = gate.estado({}, query)

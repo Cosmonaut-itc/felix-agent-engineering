@@ -119,7 +119,12 @@ class SharedWorld(World):
         return self.state()['executorBoots'].get(executor)
 
     def channel_alive(self, binding):
-        return self.state().get('channels', {}).get(binding, True)
+        state = self.state()
+        parent = state.get('channelParents', {}).get(binding)
+        if parent is not None:
+            from hostgate.identity import from_json
+            if self.verify(from_json(parent)).status != 'same': return False
+        return state.get('channels', {}).get(binding, True)
 
     def verify(self, identity):
         state = self.state()
