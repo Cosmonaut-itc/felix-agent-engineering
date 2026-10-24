@@ -19,7 +19,9 @@ DEFAULT_OUTPUT = Path.home() / '.local/state/pao/mini-vigilante/ultimo.json'
 
 
 def ejecutar_comando(argv):
-    return subprocess.run(argv, check=True, capture_output=True, text=True, timeout=5).stdout.strip()
+    # sysctl formatea con LC_NUMERIC del entorno; un locale con coma decimal rompería el parseo.
+    env = dict(os.environ, LC_ALL='C')
+    return subprocess.run(argv, check=True, capture_output=True, text=True, timeout=5, env=env).stdout.strip()
 
 
 def ahora_utc():

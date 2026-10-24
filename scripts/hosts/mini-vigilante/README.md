@@ -9,7 +9,9 @@ Publica `~/.local/state/pao/mini-vigilante/ultimo.json`. No decide admisión.
 ```
 
 Cada captura consulta `scutil --get LocalHostName` y los seis `sysctl` del
-contrato, con argumentos separados y timeout de 5 s por comando. El disco usa
+contrato, con argumentos separados, timeout de 5 s por comando y `LC_ALL=C`,
+porque `sysctl` formatea `vm.swapusage` con el separador decimal del locale
+heredado. El disco usa
 `statvfs('/System/Volumes/Data')`: `f_blocks * f_frsize` para total y
 `f_bavail * f_frsize` para bytes disponibles al usuario. Swap convierte las
 unidades binarias de `vm.swapusage` a bytes; load1 y ncpu sólo se observan.

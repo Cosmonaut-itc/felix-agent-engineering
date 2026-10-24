@@ -217,6 +217,16 @@ class MuestraTests(unittest.TestCase):
         self.assertEqual(run.call_args.kwargs['timeout'], 5)
         self.assertFalse(run.call_args.kwargs.get('shell', False))
 
+    def test_external_command_forces_c_locale(self):
+        inherited = {'LC_ALL': 'es_ES.UTF-8', 'LC_NUMERIC': 'es_ES.UTF-8', 'LANG': 'es_ES.UTF-8', 'PATH': '/usr/bin'}
+        with patch.dict(m.os.environ, inherited, clear=True), \
+                patch.object(m.subprocess, 'run', return_value=SimpleNamespace(stdout='77')) as run:
+            m.ejecutar_comando(['/usr/sbin/sysctl', '-n', 'vm.swapusage'])
+            self.assertEqual(m.os.environ['LC_ALL'], 'es_ES.UTF-8')
+        env = run.call_args.kwargs['env']
+        self.assertEqual(env['LC_ALL'], 'C')
+        self.assertEqual(env['PATH'], '/usr/bin')
+
 
 if __name__ == '__main__':
     unittest.main()
