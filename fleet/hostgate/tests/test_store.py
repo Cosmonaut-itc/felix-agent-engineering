@@ -234,7 +234,8 @@ class Storage(Harness):
         state['processes']['200']['startToken'] = [9, 9]
         publish_world(path, state)
         self.assertEqual(call('reused', 'unix', 200)[0], 5)
-        self.assertEqual(call('observes-reuse', 'other', 300)[1]['reservations'][0]['effectiveState'], 'uncertain')
+        observed = call('observes-reuse', 'other', 300)[1]['reservations']
+        self.assertEqual(next(r for r in observed if r['executorId'] == 'unix')['effectiveState'], 'uncertain')
         state['processes']['200']['startToken'] = [1, 2]
         state['boot'] = 'new-physical'
         publish_world(path, state)
