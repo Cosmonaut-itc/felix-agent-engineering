@@ -42,7 +42,7 @@ class ShadowStore:
             conn.execute('CREATE TABLE host_view (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, checksum TEXT NOT NULL)')
             conn.execute('CREATE TABLE operations (principal TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, auth_context TEXT NOT NULL, PRIMARY KEY(principal, operation_id))')
             conn.execute('CREATE TABLE audit (seq INTEGER PRIMARY KEY, principal TEXT NOT NULL, operation_id TEXT NOT NULL, payload TEXT NOT NULL)')
-            view = dict(pending=[], reservations=[], generations={}, drained=False)
+            view = dict(pending=[], reservations=[], generations={}, drained=config.drained)
             conn.execute('INSERT INTO host_view VALUES (1, ?, ?)', (canonical(view), digest(view)))
             conn.commit()
         finally:

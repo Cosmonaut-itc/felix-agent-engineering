@@ -49,7 +49,7 @@ class CLI(Harness):
                           ('soltar', {'evidenceIds': []})]:
             payload = dict(schema=request()['schema'], operationId=op, operation=op, key=key, **extra)
             code, reply = self.call(json.dumps(payload), op)
-            self.assertIn(code, (0, 1))
+            self.assertEqual(code, 1 if op == 'soltar' else 0)
             self.assertEqual(reply['result'], 'shadow')
         code, reply = self.call(json.dumps(dict(schema=request()['schema'], operationId='state', operation='estado')), 'estado')
         self.assertEqual(code, 0)
@@ -73,3 +73,25 @@ class CLI(Harness):
             self.assertEqual(result['result'], 'shadow')
             self.assertEqual(self.view()['budget']['retained']['slots'], 1)
             self.assertEqual(len(self.view()['resources']), 2)
+
+    def test_heartbeat_sequence_replay_and_different_live_peer(self):
+        from dataclasses import replace
+        key = self.key(self.reserve())
+        def heartbeat(op, seq):
+            return self.call(json.dumps(dict(schema=request()['schema'], operationId=op,
+                             operation='latido', key=key, seq=seq)), 'latido')
+        self.assertEqual(heartbeat('h1', 1)[0], 0)
+        self.world.now += 5
+        code, replay = heartbeat('h1', 1)
+        self.assertEqual(code, 0)
+        self.assertTrue(replay['replayed'])
+        self.assertEqual(self.view()['reservations'][0]['heartbeatAgeSeconds'], 5)
+        self.assertEqual(heartbeat('h2', 1)[0], 1)
+        owner = self.auth
+        self.auth = replace(owner, role='query')
+        self.assertEqual(heartbeat('h3', 2)[0], 5)
+        self.auth = self.world.auth(pid=444)
+        self.assertEqual(heartbeat('h1', 1)[0], 5)
+        self.assertEqual(heartbeat('h4', 2)[0], 5)
+        self.auth = owner
+        self.assertEqual(heartbeat('h5', 2)[0], 0)

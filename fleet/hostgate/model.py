@@ -33,10 +33,12 @@ class NodeConfig:
     ncpu: int
     mode: str = 'shadow'
     executor_scope_kinds: Mapping = field(default_factory=dict)
+    drained: bool = False
 
     def __post_init__(self):
         for value in (self.host_id, self.store_id, self.revision, self.snapshot_host): identifier(value)
         demand(dict(self.budget))
+        if type(self.drained) is not bool: raise ValueError('drenado invalido')
         if self.mode != 'shadow' or not self.executors or type(self.ncpu) is not int or self.ncpu <= 0:
             raise ValueError('configuracion no acreditada')
         for ttl in (self.pending_ttl, self.heartbeat_ttl):

@@ -38,6 +38,7 @@ class Hostgate:
 
     def _observe(self, view):
         result = copy.deepcopy(view)
+        result['drained'] = result['drained'] or self.config.drained
         result.update(physicalBoot=self.world.physical_boot(),
                       executorBoots={e: self.world.executor_boot(e) for e in self.config.executors},
                       heartbeatTTL=self.config.heartbeat_ttl)

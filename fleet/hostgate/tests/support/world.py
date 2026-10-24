@@ -150,3 +150,13 @@ def publish_world(path, state):
     temporary = path.with_suffix('.next')
     temporary.write_text(json.dumps(state))
     temporary.replace(path)
+
+
+def retry_busy(call):
+    import time
+    deadline = time.monotonic() + 15
+    while True:
+        result = call()
+        if result['exitCode'] != 4: return result
+        if time.monotonic() >= deadline: raise AssertionError('busy no resuelto dentro del limite')
+        time.sleep(0.05)
