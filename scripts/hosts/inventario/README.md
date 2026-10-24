@@ -179,6 +179,11 @@ una desviación de la expectativa de 075. No se cambia `inventario.py`. El
 borrado acotado la rechaza por `cuarentenasPrevias` aunque el inventario la
 considere borrable. `limpieza-disco` no la toca porque es un directorio oculto.
 
+El inventario puede mostrar una cuarentena `.borrando-*` como
+`inactiva`/`borrable=true`; ese «borrable» no autoriza nada: sólo
+`borrar_copias` con sus cuatro nombres literales borra, y rechaza si hay
+cuarentena.
+
 El vaciado materializa `entradas = list(os.scandir(fd))` antes de borrar;
 abre los subdirectorios sin seguir enlaces y rechaza otro `st_dev`. Borra archivos y symlinks con unlink relativo al
 padre y directorios vacíos con rmdir relativo. El último paso por nombre es
