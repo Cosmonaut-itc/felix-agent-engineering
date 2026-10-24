@@ -76,7 +76,7 @@ cerrar() {
 trap cerrar EXIT
 if launchctl print "$dominio/$label" >/dev/null 2>&1; then
   descargado=1
-  launchctl bootout "$dominio/$label"
+  launchctl bootout "$dominio/$label" || true
   transcurrido=0
   while launchctl print "$dominio/$label" >/dev/null 2>&1; do
     if [ "$transcurrido" -ge 10 ]; then

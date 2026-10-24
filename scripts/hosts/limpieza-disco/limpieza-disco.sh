@@ -11,7 +11,8 @@
 #                            marca borrable (inactiva: 7 días sin uso, sin lock,
 #                            sin corridas vivas o dudosas ni bloqueo global), que
 #                            sigan sin .remote-run.lock y sin procesos dentro
-#                            según un lsof hecho justo antes de borrar. Nunca
+#                            según un lsof hecho justo antes de renombrar a
+#                            STATE/borrando-* y borrar allí. Nunca
 #                            toca entradas ocultas
 #                            (.comprador-*, .borrando-*): ésas sólo las trata
 #                            borrar_copias.py con autorización explícita.
@@ -52,9 +53,8 @@ DRY=0
 RR="$HOME/remote-run"
 STATE="$HOME/Library/Application Support/limpieza-disco"
 LOCK="$STATE/lock"
-mkdir -p "$STATE"
-
 log() { echo "$(date '+%F %T') $*"; }
+mkdir -p "$STATE" || { log "sin borrar: no pude crear STATE ($STATE)"; exit 1; }
 libre_gb() { df -g /System/Volumes/Data | awk 'NR==2{print $4}'; }
 
 borrar() { # $1 = ruta, $2 = motivo
@@ -65,39 +65,158 @@ borrar() { # $1 = ruta, $2 = motivo
   fi
 }
 
-corrida_nueva() { # ¿hay en runs/ una corrida posterior a $MARCA sin meta o con mirror en la copia $1?
-  local r
-  while IFS= read -r r; do
-    [ -f "$r/meta" ] || return 0
-    grep -qxF -- "mirror=remote-run/work/$1" "$r/meta" && return 0
-  done < <(find "$RR/runs" -mindepth 1 -maxdepth 1 -newer "$MARCA" 2>/dev/null)
+corrida_nueva() {
+  local motivo estado
+  if [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; then
+    log "reglas 1 y 3 sin borrar: MARCA no existe o no es regular"; return 2
+  fi
+  if [ ! -d "$RR/runs" ] || [ -L "$RR/runs" ]; then
+    log "reglas 1 y 3 sin borrar: runs/ no es un directorio regular"; return 2
+  fi
+  if ! find "$RR/runs" -mindepth 1 -maxdepth 1 -newer "$MARCA" -print0 > "$RUNS_NUEVAS" 2> "$INV_ERR"; then
+    log "reglas 1 y 3 sin borrar: falló find de corridas nuevas en runs/"; return 2
+  fi
+  if [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; then
+    log "reglas 1 y 3 sin borrar: MARCA desapareció durante find"; return 2
+  fi
+  if [ ! -d "$RR/runs" ] || [ -L "$RR/runs" ]; then
+    log "reglas 1 y 3 sin borrar: runs/ cambió durante find"; return 2
+  fi
+  # Reutiliza lector y formato del inventario, incluido cmd multilínea.
+  motivo=$(/usr/bin/python3 -B - "$INVENTARIO" "$RUNS_NUEVAS" "$1" 2>&1 <<'PY'
+from pathlib import Path
+import os
+import runpy
+import sys
+
+try:
+    inventario = runpy.run_path(sys.argv[1])
+    with open(sys.argv[2], 'rb') as archivo:
+        listado = archivo.read()
+    if listado and not listado.endswith(b'\0'):
+        raise ValueError('listado de corridas nuevas incompleto')
+except Exception as exc:
+    print('no pude comprobar el listado de runs/ o cargar el inventario: ' + str(exc), file=sys.stderr)
+    sys.exit(2)
+for entrada in listado.split(b'\0')[:-1]:
+    ruta = Path(os.fsdecode(entrada))
+    try:
+        mirror = inventario['espejo'](inventario['leer'](ruta / 'meta'))
+    except (OSError, ValueError, UnicodeError) as exc:
+        sys.exit('lectura o formato de meta no válido en {}: {}'.format(ruta, exc))
+    if mirror is None:
+        sys.exit('corrida nueva sin meta en ' + str(ruta))
+    if mirror.casefold() == sys.argv[3].casefold():
+        sys.exit('corrida nueva asociada a la copia en ' + str(ruta))
+PY
+  )
+  estado=$?
+  if [ "$estado" = 2 ]; then
+    log "reglas 1 y 3 sin borrar: ${motivo%%$'\n'*}"; return 2
+  fi
+  if [ "$estado" != 0 ]; then
+    log "no borro $RR/work/$1: comprobación de meta falló o vetó la copia: ${motivo%%$'\n'*}"
+    return 0
+  fi
   return 1
 }
 
-borrar_en() { # $1 = directorio padre sin symlinks, $2 = nombre, $3 = motivo, $4 = "copia" si es de work/
-  # Con el padre como cwd, sustituirlo después por un symlink no desvía el rm.
-  # En una copia, lock, mtime y corridas nuevas se miran otra vez justo antes del rm.
-  ( cd -P -- "$1" 2>/dev/null && [ "$(pwd -P)" = "$1" ] && [ -d "$2" ] && [ ! -L "$2" ] || exit 3
+borrar_en() {
+  local estado
+  # El cwd fija el padre aunque después sustituyan su ruta por un symlink.
+  (
+    cd -P -- "$1" 2>/dev/null || { log "no borro $1/$2: falló cd -P del padre"; exit 1; }
+    padre=$(pwd -P) || { log "no borro $1/$2: falló pwd -P del padre"; exit 1; }
+    [ "$padre" = "$1" ] && [ -d "./$2" ] && [ ! -L "./$2" ] || {
+      log "no borro $1/$2: el padre no es $1 o la entrada cambió"; exit 1;
+    }
     if [ "${4:-}" = copia ]; then
-      [ -e "$2/.remote-run.lock" ] || [ -L "$2/.remote-run.lock" ] && exit 4
-      [ -z "$(find "./$2" -maxdepth 2 -mtime -7 -print -quit 2>/dev/null)" ] || exit 5
-      corrida_nueva "$2" && exit 6
+      reciente=$(find "./$2" -maxdepth 2 -mtime -7 -print -quit 2> "$INV_ERR") || {
+        log "no borro $1/$2: falló find de actividad de la copia"; exit 1;
+      }
+      [ -z "$reciente" ] || { log "no borro $1/$2: algo cambió en los últimos 7 días"; exit 1; }
+      corrida_nueva "$2"; estado_corridas=$?
+      [ "$estado_corridas" = 2 ] && exit 2
+      [ "$estado_corridas" = 1 ] || exit 1
+      dev_rr=$(stat -f %d "$RR") && dev_state=$(stat -f %d "$STATE") || {
+        log "no borro $1/$2: falló stat del filesystem de remote-run o STATE"; exit 1;
+      }
+      [[ "$dev_rr" =~ ^[0-9]+$ ]] && [ "$dev_rr" = "$dev_state" ] || {
+        log "no borro $1/$2: remote-run y STATE no acreditan el mismo filesystem"; exit 1;
+      }
+      aleatorio=$(openssl rand -hex 8) && [[ "$aleatorio" =~ ^[0-9a-f]{16}$ ]] || {
+        log "no borro $1/$2: no pude generar el aleatorio del rename"; exit 1;
+      }
+      utc=$(date -u +%Y%m%dT%H%M%SZ) && [ -n "$utc" ] || {
+        log "no borro $1/$2: no pude fechar el rename en UTC"; exit 1;
+      }
+      destino="$STATE/borrando-$2-$utc-$aleatorio"
     fi
-    [ "$DRY" = 1 ] && exit 0
-    rm -rf -- "./$2" || exit 7 )
-  case $? in
-    0) log "$([ "$DRY" = 1 ] && echo '[dry-run] borraría' || echo borrado) $1/$2 ($3)" ;;
-    3) log "no borro $1/$2 ($3): el padre no es $1 o la entrada cambió" ;;
-    4) log "no borro $1/$2: apareció un lock" ;;
-    5) log "no borro $1/$2: algo cambió en los últimos 7 días" ;;
-    6) log "no borro $1/$2: hay una corrida nueva desde el inventario" ;;
-    *) log "no pude borrar $1/$2 ($3)" ;;
-  esac
+    en_uso "$1/$2" && { log "no borro $1/$2: aparece en EN_USO o no pudo consultarse"; exit 1; }
+    libre_ahora "./$2" || exit 1
+    if [ "${4:-}" = copia ]; then
+      # No hay recorridos entre estas comprobaciones finales y el rename.
+      if [ -e "./$2/.remote-run.lock" ] || [ -L "./$2/.remote-run.lock" ]; then
+        log "no borro $1/$2: apareció un lock"; exit 1
+      fi
+      mtime=$(stat -f %m "./$2") && ahora=$(date +%s) || {
+        log "no borro $1/$2: falló stat del mtime directo o date"; exit 1;
+      }
+      [[ "$mtime" =~ ^[0-9]+$ ]] && [[ "$ahora" =~ ^[0-9]+$ ]] || {
+        log "no borro $1/$2: mtime directo o fecha no válidos"; exit 1;
+      }
+      (( ahora - mtime >= 7 * 86400 )) || {
+        log "no borro $1/$2: el mtime directo tiene menos de 7 días"; exit 1;
+      }
+      if [ "$DRY" = 1 ]; then
+        log "[dry-run] borraría $1/$2 ($3; rename previo a $destino)"; exit 0
+      fi
+      # renamex_np con RENAME_EXCL no copia entre volúmenes ni pisa un destino.
+      if ! /usr/bin/python3 -B - "./$2" "$destino" <<'PY'
+import ctypes
+import os
+import sys
+
+libc = ctypes.CDLL(None, use_errno=True)
+rename = libc.renamex_np
+rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+rename.restype = ctypes.c_int
+RENAME_EXCL = 0x00000004
+if rename(os.fsencode(sys.argv[1]), os.fsencode(sys.argv[2]), RENAME_EXCL) != 0:
+    codigo = ctypes.get_errno()
+    sys.exit('rename exclusivo falló: ' + os.strerror(codigo))
+PY
+      then
+        log "no borro $1/$2: falló el rename exclusivo a $destino"; exit 1
+      fi
+      log "renombrada $1/$2 a $destino"
+      if rm -rf -- "$destino"; then
+        log "borrado $destino ($3)"
+      else
+        log "falló rm de $destino: queda en STATE; requiere autorización explícita"; exit 1
+      fi
+    else
+      [ -e "./$2/exit" ] || { log "no borro $1/$2: ya no tiene exit"; exit 1; }
+      if [ "$DRY" = 1 ]; then
+        log "[dry-run] borraría $1/$2 ($3)"
+      elif rm -rf -- "./$2"; then
+        log "borrado $1/$2 ($3)"
+      else
+        log "no pude borrar $1/$2 ($3)"; exit 1
+      fi
+    fi
+  )
+  estado=$?
+  [ "$estado" = 2 ] && INV_OK=0
+  return "$estado"
 }
 
 # Evita dos ejecuciones simultáneas; un lock de más de 2 h se considera huérfano.
 if ! mkdir "$LOCK" 2>/dev/null; then
-  if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+  lock_viejo=$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null) || {
+    log "sin borrar: falló find de antigüedad del lock de limpieza"; exit 1;
+  }
+  if [ -n "$lock_viejo" ]; then
     rmdir "$LOCK" && mkdir "$LOCK" || exit 0
   else
     log "otra limpieza en curso; salgo"; exit 0
@@ -117,14 +236,38 @@ log "inicio (libre: ${antes} GB$([ "$EMERG" = 1 ] && echo ", EMERGENCIA")$([ "$D
 
 # Reglas 1 y 3: el inventario decide qué es borrable en ~/remote-run.
 # Instalado junto a este script; desde un temporal permite una pasada en seco previa.
-INVENTARIO="$(cd "$(dirname "$0")" && pwd)/pao-inventario.py"
-# MARCA fecha el inicio del inventario: una corrida posterior veta las copias.
-MARCA=$(mktemp); INV_JSON=$(mktemp); INV_LISTA=$(mktemp); INV_ERR=$(mktemp)
-trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$MARCA" "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
+MARCA= INV_JSON= INV_LISTA= INV_ERR= EN_USO= USO_CWD= USO_ABIERTOS= USO_PS= USO_BASETEMP= RUNS_NUEVAS=
+limpiar_temporales() {
+  rmdir "$LOCK" 2>/dev/null
+  for temporal in "$MARCA" "$INV_JSON" "$INV_LISTA" "$INV_ERR" "$EN_USO" \
+      "$USO_CWD" "$USO_ABIERTOS" "$USO_PS" "$USO_BASETEMP" "$RUNS_NUEVAS"; do
+    [ -z "$temporal" ] || rm -f -- "$temporal"
+  done
+}
+trap limpiar_temporales EXIT
+for variable in MARCA INV_JSON INV_LISTA INV_ERR EN_USO USO_CWD USO_ABIERTOS USO_PS USO_BASETEMP RUNS_NUEVAS; do
+  temporal=$(mktemp "$STATE/$variable.XXXXXX") && [ -f "$temporal" ] && [ ! -L "$temporal" ] || {
+    log "reglas 1 y 3 sin borrar: falló mktemp o no existe el temporal $variable"; exit 1;
+  }
+  printf -v "$variable" '%s' "$temporal"
+done
+restos=$(find "$STATE" -mindepth 1 -maxdepth 1 -name 'borrando-*' -print 2> "$INV_ERR") || {
+  log "reglas 1 y 3 sin borrar: falló find de restos borrando-* en STATE"; exit 1;
+}
+if [ -n "$restos" ]; then
+  while IFS= read -r resto; do
+    log "conservo resto previo $resto: requiere autorización explícita"
+  done <<< "$restos"
+fi
+# MARCA precede al inventario: perderla impide descartar corridas nuevas.
 INV_OK=0
-if [ ! -d "$RR" ]; then
+if ! inventario_dir=$(cd -P -- "$(dirname "$0")" && pwd -P); then
+  INV_MOTIVO="falló cd -P o pwd -P al localizar el inventario"
+elif [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; then
+  INV_MOTIVO="MARCA no existe o no es regular"
+elif [ ! -d "$RR" ]; then
   INV_MOTIVO="no existe $RR"
-elif ! /usr/bin/python3 -B "$INVENTARIO" --raiz "$RR" > "$INV_JSON" 2> "$INV_ERR"; then
+elif ! /usr/bin/python3 -B "$inventario_dir/pao-inventario.py" --raiz "$RR" > "$INV_JSON" 2> "$INV_ERR"; then
   INV_MOTIVO="el inventario falló: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
 elif ! /usr/bin/python3 -B - "$INV_JSON" "$RR" > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
 import json
@@ -176,20 +319,40 @@ then
 else
   INV_OK=1
 fi
+INVENTARIO="${inventario_dir:-}/pao-inventario.py"
 [ "$INV_OK" = 1 ] || log "reglas 1 y 3 sin borrar: $INV_MOTIVO"
 
 # Rutas en uso: cwd de todos mis procesos, cualquier --basetemp en línea de
 # comandos y todos los archivos que tengo abiertos.
-EN_USO=$(mktemp)
-{
-  lsof -a -u "$(id -u)" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
-  ps -axww -o command= | grep -o -- '--basetemp[= ][^ ]*' | sed 's/^--basetemp[= ]//; s/"//g'
-  lsof -u "$(id -u)" -Fn 2>/dev/null | sed -n 's/^n\(\/.*\)/\1/p'
-} | sed 's#^/tmp/#/private/tmp/#' | sort -u > "$EN_USO"
-trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$EN_USO" "$MARCA" "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
+uid=$(id -u) || { log "reglas 1 y 3 sin borrar: falló id para EN_USO"; exit 1; }
+if ! lsof -a -u "$uid" -d cwd -Fn > "$USO_CWD" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
+  log "reglas 1 y 3 sin borrar: falló lsof de cwd para EN_USO o emitió diagnósticos"; exit 1
+fi
+if ! ps -axww -o command= > "$USO_PS" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
+  log "reglas 1 y 3 sin borrar: falló ps para EN_USO o emitió diagnósticos"; exit 1
+fi
+if ! lsof -u "$uid" -Fn > "$USO_ABIERTOS" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
+  log "reglas 1 y 3 sin borrar: falló lsof de archivos para EN_USO o emitió diagnósticos"; exit 1
+fi
+grep -o -- '--basetemp[= ][^ ]*' "$USO_PS" > "$USO_BASETEMP"; estado_basetemp=$?
+if [ "$estado_basetemp" -gt 1 ]; then
+  log "reglas 1 y 3 sin borrar: falló extracción de basetemp para EN_USO"; exit 1
+fi
+if ! (set -o pipefail
+  { sed -n 's/^n//p' "$USO_CWD" &&
+    sed 's/^--basetemp[= ]//; s/"//g' "$USO_BASETEMP" &&
+    sed -n 's/^n\(\/.*\)/\1/p' "$USO_ABIERTOS";
+  } | sed 's#^/tmp/#/private/tmp/#' | sort -u > "$EN_USO"
+); then
+  log "reglas 1 y 3 sin borrar: falló captura o filtrado de EN_USO"; exit 1
+fi
 
-en_uso() { # ¿algún proceso usa $1 o algo dentro de $1?
-  grep -qF -- "$1" "$EN_USO"
+en_uso() { # Un error al leer la captura también conserva la candidata.
+  local estado
+  grep -qF -- "$1" "$EN_USO"; estado=$?
+  [ "$estado" = 1 ] && return 1
+  [ "$estado" = 0 ] || log "no borro $1: falló lectura de EN_USO (estado $estado)"
+  return 0
 }
 
 libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes de borrar
@@ -204,30 +367,39 @@ libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes 
 }
 
 # 1. remote-run/work: copias no ocultas que el inventario marca borrables
-if [ "$INV_OK" = 1 ] && grep -q '^sin-copias' "$INV_LISTA"; then
-  log "regla 1 sin borrar: preparación de menos de 1 h en runs/$(grep -m1 '^sin-copias' "$INV_LISTA" | cut -f2)"
-elif [ "$INV_OK" = 1 ]; then
-  while IFS=$'\t' read -r tipo n; do
-    [ "$tipo" = work ] || continue
-    case "$n" in ""|.*|*/*) continue ;; esac
-    d="$RR/work/$n"
-    [ -d "$d" ] && [ ! -L "$d" ] || continue
-    en_uso "$d" && continue
-    libre_ahora "$d" || continue
-    borrar_en "$RR/work" "$n" "inventario: inactiva y borrable" copia
-  done < "$INV_LISTA"
+if [ "$INV_OK" = 1 ] && { [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; }; then
+  INV_OK=0
+  log "reglas 1 y 3 sin borrar: MARCA no existe o no es regular"
+fi
+if [ "$INV_OK" = 1 ]; then
+  preparacion=$(grep -m1 '^sin-copias' "$INV_LISTA"); estado_preparacion=$?
+  if [ "$estado_preparacion" -gt 1 ]; then
+    INV_OK=0
+    log "reglas 1 y 3 sin borrar: falló lectura de la lista del inventario"
+  elif [ "$estado_preparacion" = 0 ]; then
+    log "regla 1 sin borrar: preparación de menos de 1 h en runs/${preparacion#*$'\t'}"
+  else
+    while IFS=$'\t' read -r tipo n; do
+      [ "$tipo" = work ] || continue
+      case "$n" in ""|.*|*/*) continue ;; esac
+      borrar_en "$RR/work" "$n" "inventario: inactiva y borrable" copia
+      [ "$INV_OK" = 1 ] || break
+    done < "$INV_LISTA"
+  fi
 fi
 
 # 3. remote-run/runs: terminales que el inventario marca borrables (más de 30 días).
 # Va justo tras la 1 para usar el mismo inventario recién tomado.
+if [ "$INV_OK" = 1 ] && { [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; }; then
+  INV_OK=0
+  log "reglas 1 y 3 sin borrar: MARCA no existe o no es regular"
+fi
 if [ "$INV_OK" = 1 ]; then
   while IFS=$'\t' read -r tipo n; do
     [ "$tipo" = runs ] || continue
     case "$n" in ""|.*|*/*) continue ;; esac
     r="$RR/runs/$n"
     [ -d "$r" ] && [ ! -L "$r" ] && [ -e "$r/exit" ] || continue
-    en_uso "$r" && continue
-    libre_ahora "$r" || continue
     borrar_en "$RR/runs" "$n" "inventario: run terminal >30 d"
   done < "$INV_LISTA"
 fi
