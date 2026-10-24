@@ -527,3 +527,50 @@ class Contract(Harness):
         self.assertEqual(result['exitCode'], 1)
         self.assertIn('health-invalid', self.codes(result))
         self.assertEqual(self.view()['reservations'], [])
+
+    def test_boot_change_after_revalidation_keeps_ledger_usable(self):
+        from unittest.mock import patch
+        validate_identity = self.gate._identity_reasons
+        def revalidate(pending):
+            reasons = validate_identity(pending)
+            self.assertEqual(reasons, [])
+            self.world.boot = 'physical-2'
+            self.world.executor_boots['unix'] = 'executor-2'
+            return reasons
+        with patch.object(self.gate, '_identity_reasons', side_effect=revalidate):
+            result = self.reserve()
+        self.assertTrue(result['wouldGrant'])
+        stored = self.gate.store.read()
+        row = stored['reservations'][0]
+        self.assertEqual(row['physicalBoot'], stored['pending'][0]['physicalBoot'])
+        self.assertEqual(row['executorBoot'], stored['pending'][0]['executorBoot'])
+        view = self.view()
+        self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertTrue(view['drained'])
+        self.assertEqual(view['budget']['retained']['slots'], 1)
+        self.assertEqual(self.gate.dudosa('retain', row['key'], 'boot changed', [], self.auth)['exitCode'], 0)
+        self.assertEqual(self.gate.store.read()['reservations'][0]['state'], 'uncertain')
+
+    def test_observation_skips_terminal_history_without_erasing_it(self):
+        from unittest.mock import patch
+        for i in range(4):
+            self.release(self.key(self.reserve('history-' + str(i), 'history-' + str(i))), 'release-' + str(i))
+        self.world.profiles.clear()
+        self.assertEqual(self.reserve('rejected', 'rejected')['exitCode'], 1)
+        self.world.profiles.add('fixture')
+        self.gate.prepare(request('expires', 'expires'), self.auth)
+        self.world.now += 21
+        self.assertTrue(self.reserve('active', 'active')['wouldGrant'])
+        self.gate.prepare(request('validating', 'validating'), self.auth)
+        before = self.gate.store.read()
+        with patch.object(self.world, 'verify', wraps=self.world.verify) as verify, \
+                patch.object(self.world, 'channel_alive', wraps=self.world.channel_alive) as channel:
+            view = self.view()
+        self.assertEqual(verify.call_count, 4)
+        self.assertEqual(channel.call_count, 2)
+        self.assertEqual(len(view['pending']), 8)
+        self.assertEqual(len(view['reservations']), 5)
+        self.assertEqual(self.gate.store.read(), before)
+        self.assertTrue(any(p['state'] == 'expired' for p in before['pending']))
+        replay = self.reserve('rejected', 'rejected')
+        self.assertEqual(replay['originalResult']['exitCode'], 1)

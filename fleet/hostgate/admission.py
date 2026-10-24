@@ -43,10 +43,12 @@ class Hostgate:
                       executorBoots={e: self.world.executor_boot(e) for e in self.config.executors},
                       heartbeatTTL=self.config.heartbeat_ttl)
         for pending in result['pending']:
+            if pending['state'] != 'validating': continue
             pending['requesterObservation'] = self.world.verify(from_json(pending['requester'])).status
             pending['anchorObservation'] = self.world.verify(from_json(pending['anchor'])).status if pending['anchor'] else 'unverifiable'
             pending['channelAlive'] = self.world.channel_alive(pending['channelBinding'])
         for reservation in result['reservations']:
+            if reservation['state'] == 'released': continue
             reservation['ownerObservation'] = self.world.verify(from_json(reservation['owner'])).status
             reservation['channelAlive'] = self.world.channel_alive(reservation['channelBinding'])
         return effective(result, self.world.monotonic(), self.config.heartbeat_ttl)
@@ -246,7 +248,7 @@ class Hostgate:
                                exclusiveResources=list(request['exclusiveResources']), profileId=request['profileId'],
                                scopeKind=self.config.executor_scope_kinds.get(request['executorId'], 'unix'), scope=key['reservationId'], launchPossible=False,
                                state='reserved', heartbeat=self.world.monotonic(), seq=0, reasons=[],
-                               physicalBoot=self.world.physical_boot(), executorBoot=self.world.executor_boot(request['executorId']))
+                               physicalBoot=pending['physicalBoot'], executorBoot=pending['executorBoot'])
             view['reservations'].append(reservation)
             pending.update(state='granted', reservationKey=key)
             return self._reply(request['operationId'], would_grant=True, simulationKey=key, pendingId=pending['id'], simulationState='reserved')
