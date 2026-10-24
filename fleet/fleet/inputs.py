@@ -3,15 +3,34 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import pwd
 import select
-import shutil
 import stat
 import subprocess
 import time
 import unicodedata
 
 VERSION = "fleet-inputs@1"
-CONTEXT_VERSION = "fleet-context@1"
+CONTEXT_VERSION = "fleet-context@2"
+SEARCH_VARIABLES = {
+    "PATH": "colon",
+    "PYTHONPATH": "colon",
+    "LD_LIBRARY_PATH": "colon-or-semicolon",
+    "LD_PRELOAD": "colon-or-space",
+    "DYLD_LIBRARY_PATH": "colon",
+    "DYLD_FALLBACK_LIBRARY_PATH": "colon",
+    "DYLD_FRAMEWORK_PATH": "colon",
+    "DYLD_FALLBACK_FRAMEWORK_PATH": "colon",
+    "DYLD_INSERT_LIBRARIES": "colon",
+    "NODE_PATH": "colon",
+    "RUBYLIB": "colon",
+    "PERL5LIB": "colon",
+}
+CONTEXT = {"version": CONTEXT_VERSION, "PWD": "materialized-cwd",
+           "search_policy": {"version": "fleet-search-paths@1", "variables": SEARCH_VARIABLES,
+                             "empty_component": "cwd;empty-preload-tokens-ignored",
+                             "relative": "within-capture", "absolute": "disjoint-from-source",
+                             "aliases": "components-and-immediate-children", "expansion": "literal-only"}}
 DEFAULT_PRIVATE = (".ssh", ".aws", ".azure", ".config/gcloud", ".gnupg",
                    ".kube", ".env", ".env.*", "*.pem", "*.key", ".npmrc",
                    ".pypirc", ".netrc", "credentials", "credentials.json", ".fleet",
@@ -157,7 +176,71 @@ def policy_summary(private, secrets):
             "excluded_categories": ["VCS metadata", "Fleet state", "Git ignored files"],
             "git_bytes": "Effective working-tree bytes; HEAD and index are provenance, not executed index content.",
             "redaction": "Known and declared credential values in stdout/stderr; full environment is private.",
-            "limit": "Arbitrary file contents are not inspected to discover undeclared secrets."}
+            "limit": "Arbitrary file contents are not inspected to discover undeclared secrets.",
+            "execution_context": CONTEXT}
+
+
+def _within(path, root):
+    return path == root or root in path.parents
+
+
+def _overlaps(path, root):
+    return _within(path, root) or _within(root, path)
+
+
+def _check_scope(root, state, env):
+    homes = {Path(os.path.realpath(pwd.getpwuid(os.getuid()).pw_dir))}
+    if env.get("HOME"):
+        homes.add(Path(os.path.realpath(env["HOME"])))
+    resolved = Path(os.path.realpath(root))
+    if resolved == Path("/") or any(_within(home, resolved) for home in homes):
+        raise InputError("unsafe_input_root")
+    if _within(resolved, Path(os.path.realpath(state))):
+        raise InputError("source_in_state")
+
+
+def _check_search_paths(env, cwd, root):
+    inspected = set()
+    entries = 0
+    for name, separator in SEARCH_VARIABLES.items():
+        if name not in env:
+            continue
+        value = env[name]
+        if separator == "colon-or-space":
+            components = value.replace(":", " ").split()
+        elif separator == "colon-or-semicolon":
+            components = value.replace(";", ":").split(":")
+        else:
+            components = value.split(":")
+        if len(components) > 1024 or len(value) > 65536:
+            raise InputError("search_path_limit")
+        for component in components:
+            if "\x00" in component:
+                raise InputError("invalid_search_path")
+            absolute = os.path.isabs(component)
+            raw = Path(component) if absolute else cwd / component
+            lexical = Path(os.path.abspath(raw))
+            resolved = Path(os.path.realpath(raw))
+            if absolute and (_overlaps(lexical, root) or _overlaps(resolved, root)):
+                raise InputError("source_reference_in_environment")
+            if not absolute and (not _within(lexical, root) or not _within(resolved, root)):
+                raise InputError("search_path_escapes_capture")
+            if absolute and resolved not in inspected and resolved.is_dir():
+                inspected.add(resolved)
+                with os.scandir(resolved) as children:
+                    for child in children:
+                        entries += 1
+                        if entries > MAX_FILES * 2:
+                            raise InputError("search_alias_limit")
+                        if child.is_symlink() and _overlaps(Path(os.path.realpath(child.path)), root):
+                            raise InputError("source_reference_in_environment")
+
+
+def execution_environment(execution, cwd):
+    if (execution.get("context_version") != CONTEXT_VERSION
+            or execution.get("context") != CONTEXT):
+        raise InputError("unsupported_execution_context")
+    return dict(execution["environment"], PWD=str(cwd))
 
 
 def _git(root, *args):
@@ -302,9 +385,9 @@ class Plan:
     def __init__(self, cwd, state, includes, private, artifacts, argv, env, credentials):
         self.cwd = Path(os.path.abspath(cwd))
         self.state = state
+        _check_scope(self.cwd, state, env)
         self.root, self.git = _origin(self.cwd)
-        if self.root == Path.home() or self.root == Path("/"):
-            raise InputError("unsafe_input_root")
+        _check_scope(self.root, state, env)
         self.cwd_rel = self.cwd.relative_to(self.root).as_posix()
         self.includes = [relative(p, True) for p in includes]
         self.private = [relative(p) for p in private]
@@ -325,12 +408,7 @@ class Plan:
                 resolved = Path(os.path.realpath(arg))
                 if resolved == self.root or self.root in resolved.parents:
                     raise InputError("source_reference_in_command")
-        if "/" not in argv[0]:
-            executable = shutil.which(argv[0], path=env.get("PATH", os.defpath))
-            if executable:
-                resolved = Path(os.path.realpath(executable))
-                if resolved == self.root or self.root in resolved.parents:
-                    raise InputError("source_executable_in_path")
+        _check_search_paths(env, self.cwd, self.root)
         for include in self.includes:
             if _private(include, self.private, state, self.root):
                 raise InputError("private_input")

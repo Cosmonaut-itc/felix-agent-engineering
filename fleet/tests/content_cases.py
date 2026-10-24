@@ -105,6 +105,9 @@ class ContentCases:
         (self.project / "public.txt").write_text("public-input")
         first = self.value("submit", "--private", custom.name, "--", sys.executable, "-c", script)
         self.assertEqual(self.output(self.wait(first["job"])), "False\nFalse\npublic-input\n")
+        payload = self.state / "capsules" / first["job"] / "payload"
+        self.assertFalse((payload / ".env").exists())
+        self.assertFalse((payload / custom.name).exists())
         (self.project / ".env").write_text("fictitious-default-private-b")
         custom.write_text("fictitious-consumer-private-b")
         second = self.value("submit", "--private", custom.name, "--", sys.executable, "-c", script)
@@ -135,6 +138,7 @@ class ContentCases:
             self.assertNotIn(hashlib.sha256(secret.encode()).hexdigest(), text)
         self.assertEqual(self.output(final), "admitted\nFalse\n[REDACTED]\n[REDACTED]")
         self.assertEqual(Path(final["stderr_log"]).read_text(), "[REDACTED]")
+        self.assert_publication_excludes_secret(secret, submitted, final, self.value("evidence", submitted["job"]))
         check = self.submit([sys.executable, "-c", "import pathlib; print(pathlib.Path('normal.txt').read_text())"])
         self.assertEqual(self.output(self.wait(check["job"])), "admitted\n")
 
@@ -217,6 +221,7 @@ class ContentCases:
         proof, files = self.artifacts(submitted["job"])
         self.assertEqual(files, [])
         self.assertNotIn(secret, json.dumps(proof) + json.dumps(final))
+        self.assert_publication_excludes_secret(secret, submitted, final, proof)
         self.assertEqual(outside.read_text(), "outside")
 
     def test_evidence_detects_truncation_replacement_and_foreign_manifest(self):
@@ -288,20 +293,30 @@ class ContentCases:
 
     def test_first_admissions_on_nonexistent_state_are_serialized(self):
         start = threading.Barrier(4)
-        argv, ready, gate, _ = self.barrier()
+        fixtures = [self.barrier() for _ in range(4)]
 
         def send(index):
             start.wait(timeout=5)
-            return self.submit(argv, client="first-" + str(index))
+            return self.submit(fixtures[index][0], client="first-" + str(index))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
             accepted = list(pool.map(send, range(4)))
         self.assertEqual(len({v["job"] for v in accepted}), 4)
         views = [self.value("status", v["job"]) for v in accepted]
         ordered = sorted(views, key=lambda v: v["seq"])
+        first_index = int(ordered[0]["client"].split("-")[-1])
+        self.running(ordered[0]["job"], fixtures[first_index][1])
         self.assertTrue(all(v["state"] == "queued" for v in ordered[1:]))
-        gate.touch()
-        finals = [self.wait(v["job"]) for v in ordered]
+        finals = []
+        for offset, view in enumerate(ordered):
+            index = int(view["client"].split("-")[-1])
+            self.running(view["job"], fixtures[index][1])
+            for later in ordered[offset + 1:]:
+                later_index = int(later["client"].split("-")[-1])
+                self.assertFalse(fixtures[later_index][1].exists())
+                self.assertEqual(self.value("status", later["job"])["state"], "queued")
+            fixtures[index][2].touch()
+            finals.append(self.wait(view["job"]))
         for left, right in zip(finals, finals[1:]):
             self.assertLessEqual(left["ended_at"], right["started_at"])
             self.assertLess(left["transitions"][-1]["seq"], right["transitions"][-2]["seq"])

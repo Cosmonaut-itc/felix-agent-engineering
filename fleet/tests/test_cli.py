@@ -15,6 +15,7 @@ import time
 import unittest
 
 from content_cases import ContentCases
+from correction_cases import CorrectionCases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
 BARRIER = """
@@ -54,7 +55,7 @@ class Admission:
 
 
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
-class FleetCLI(ContentCases, unittest.TestCase):
+class FleetCLI(ContentCases, CorrectionCases, unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-")).resolve()
         self.state = self.root / "state"

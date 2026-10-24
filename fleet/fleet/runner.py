@@ -387,7 +387,8 @@ def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), cred
         inputs.fsync_dir(state / "attempts")
         execution = {"contract": "fleet-execution@1", "input": identity, "argv": argv,
                      "environment": env, "outputs": {"contract": "fleet-outputs@1", "required": plan.artifacts},
-                     "context_version": inputs.CONTEXT_VERSION, "credential_names": list(credentials)}
+                     "context_version": inputs.CONTEXT_VERSION, "context": inputs.CONTEXT,
+                     "credential_names": list(credentials)}
         job, attempt, claimed = _reserve(conn, job, attempt, execution, identity, plan.policy, client)
         result = {"job": job, "attempt": attempt, "client": client, "registered": True,
                   "accepted": False, "input": identity, "input_policy": plan.policy}
@@ -476,15 +477,15 @@ def _execute(conn, state, attempt, generation, actor, identity):
     directory = state / "attempts" / attempt
     command = {"kind": "never_created", "reason": "preparation_failed"}
     capture = None
-    detail = "preparation_failed"
-    materialized = False
+    detail = "content_mismatch"
     try:
         cwd = inputs.materialize(state / "capsules" / job, directory / "workspace", input_identity)
-        materialized = True
+        detail = "unsupported_execution_context"
+        environment = inputs.execution_environment(execution, cwd)
+        detail = "preparation_failed"
         secrets = inputs.credential_values(execution["environment"], execution["credential_names"])
         capture = evidence.Capture(directory, cwd, execution["outputs"]["required"], secrets)
     except (OSError, ValueError, KeyError):
-        detail = "preparation_failed" if materialized else "content_mismatch"
         command["reason"] = detail
         if capture:
             capture.close()
@@ -499,7 +500,7 @@ def _execute(conn, state, attempt, generation, actor, identity):
         raise RuntimeError("execution_gate_consumed")
     conn.commit()
     try:
-        child = subprocess.Popen(execution["argv"], cwd=cwd, env=execution["environment"],
+        child = subprocess.Popen(execution["argv"], cwd=cwd, env=environment,
                                  stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  close_fds=True, start_new_session=True)
     except OSError:

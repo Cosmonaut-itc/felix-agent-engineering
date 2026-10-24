@@ -1,0 +1,372 @@
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import subprocess
+import sys
+
+
+class CorrectionCases:
+    def rejected_submission(self, *options, argv=None, env=None, error=None):
+        state = self.root / ("rejected-" + str(len(self.admissions)))
+        self.assertFalse((state / "state.db").exists())
+        result = self.call("submit", *options, "--", *(argv or [sys.executable, "-c", "pass"]),
+                           state=state, env=env, check=False, refute_if_absent=True)
+        self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+        self.assertTrue(self.admissions[-1].refuted)
+        self.assertFalse((state / "state.db").exists())
+        if error:
+            self.assertEqual(json.loads(result.stdout)["error"], error)
+        return result
+
+    def blocked_queue(self):
+        argv, ready, gate, _ = self.barrier()
+        blocker = self.submit(argv)
+        self.running(blocker["job"], ready)
+        return blocker, gate
+
+    def test_pythonpath_absolute_alias_and_relative_escape_are_rejected(self):
+        library = self.project / "lib"
+        library.mkdir()
+        (library / "modulo.py").write_text("VALUE = 'source'\n")
+        alias = self.root / "library-alias"
+        alias.symlink_to(library, target_is_directory=True)
+        for path, error in ((str(library), "source_reference_in_environment"),
+                            (str(alias), "source_reference_in_environment"),
+                            (str(alias / ".." / "lib"), "source_reference_in_environment"),
+                            (str(self.project.parent), "source_reference_in_environment"),
+                            ("../outside", "search_path_escapes_capture")):
+            self.rejected_submission(env=dict(self.env, PYTHONPATH=path), error=error)
+        external = self.root / "external-library"
+        external.mkdir()
+        (self.project / "escape-alias").symlink_to(external, target_is_directory=True)
+        self.rejected_submission(env=dict(self.env, PYTHONPATH="escape-alias"),
+                                 error="search_path_escapes_capture")
+
+    def test_relative_pythonpath_in_queue_uses_captured_module(self):
+        library = self.project / "lib"
+        library.mkdir()
+        module = library / "modulo.py"
+        module.write_text("VALUE = 'captured-module'\n")
+        (self.project / "run.py").write_text("import modulo\nprint(modulo.VALUE)\n")
+        blocker, gate = self.blocked_queue()
+        captured = self.submit([sys.executable, "-B", "run.py"], env=dict(self.env, PYTHONPATH="lib"))
+        self.assertEqual(captured["state"], "queued")
+        module.write_text("VALUE = 'mutated-origin'\n")
+        gate.touch()
+        self.wait(blocker["job"])
+        final = self.wait(captured["job"])
+        self.assertEqual(self.output(final), "captured-module\n")
+        self.assertEqual(final["input"], captured["input"])
+
+    def test_ordinary_pwd_in_queue_is_materialized(self):
+        data = self.project / "data.txt"
+        data.write_text("captured-pwd-data")
+        script = ("import os,pathlib\n"
+                  "print(os.environ['PWD'] == os.getcwd())\n"
+                  "print((pathlib.Path(os.environ['PWD']) / 'data.txt').read_text())\n")
+        blocker, gate = self.blocked_queue()
+        submitted = self.submit([sys.executable, "-c", script], env=dict(self.env, PWD=str(self.project)))
+        self.assertEqual(submitted["state"], "queued")
+        data.write_text("mutated-pwd-origin")
+        gate.touch()
+        self.wait(blocker["job"])
+        final = self.wait(submitted["job"])
+        self.assertEqual(self.output(final), "True\ncaptured-pwd-data\n")
+        context = final["input_policy"]["execution_context"]
+        self.assertEqual(context["version"], "fleet-context@2")
+        self.assertEqual(context["PWD"], "materialized-cwd")
+        self.assertNotIn(str(self.project), json.dumps(context))
+
+    def test_external_pythonpath_remains_available_to_queued_job(self):
+        library = self.root / "external-valid-library"
+        library.mkdir()
+        (library / "external_modulo.py").write_text("VALUE = 'external-dependency'\n")
+        data = self.project / "data.txt"
+        data.write_text("captured-input")
+        blocker, gate = self.blocked_queue()
+        captured = self.submit([sys.executable, "-B", "-c",
+                                "import external_modulo,pathlib; print(external_modulo.VALUE); "
+                                "print(pathlib.Path('data.txt').read_text())"],
+                               env=dict(self.env, PYTHONPATH=str(library)))
+        self.assertEqual(captured["state"], "queued")
+        data.write_text("mutated-input")
+        gate.touch()
+        self.wait(blocker["job"])
+        self.assertEqual(self.output(self.wait(captured["job"])), "external-dependency\ncaptured-input\n")
+
+    def test_path_rejects_secondary_source_tools_and_aliases(self):
+        tools = self.project / "tools"
+        tools.mkdir()
+        secondary = tools / "secondary"
+        secondary.write_text(f"#!{sys.executable}\nprint('mutable-secondary')\n")
+        secondary.chmod(0o755)
+        alias = self.root / "tools-alias"
+        alias.symlink_to(tools, target_is_directory=True)
+        external = self.root / "external-tools"
+        external.mkdir()
+        (external / "secondary").symlink_to(secondary)
+        primary = [sys.executable, "-c", "import subprocess; subprocess.run(['secondary'],check=True)"]
+        for path in (str(tools), str(alias), str(external)):
+            result = self.rejected_submission(argv=primary, env=dict(self.env, PATH=path),
+                                              error="source_reference_in_environment")
+            self.assertNotIn("mutable-secondary", result.stdout + result.stderr)
+        self.rejected_submission(argv=primary, env=dict(self.env, PATH="../outside"),
+                                 error="search_path_escapes_capture")
+
+    def test_relative_path_secondary_tool_in_queue_uses_capture(self):
+        self.initialize_git()
+        package, tools = self.project / "package", self.project / "tools"
+        package.mkdir()
+        tools.mkdir()
+        (package / "keep").write_text("package")
+        secondary = tools / "secondary"
+        secondary.write_text(f"#!{sys.executable}\nprint('captured-secondary')\n")
+        secondary.chmod(0o755)
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture")
+        blocker, gate = self.blocked_queue()
+        captured = self.value("submit", "--cwd", str(package), "--", sys.executable, "-c",
+                              "import subprocess; subprocess.run(['secondary'],check=True)",
+                              env=dict(self.env, PATH="../tools:" + os.defpath))
+        self.assertEqual(captured["state"], "queued")
+        secondary.write_text(f"#!{sys.executable}\nprint('mutated-secondary')\n")
+        gate.touch()
+        self.wait(blocker["job"])
+        self.assertEqual(self.output(self.wait(captured["job"])), "captured-secondary\n")
+
+    def test_empty_path_component_searches_materialized_cwd(self):
+        secondary = self.project / "secondary"
+        secondary.write_text(f"#!{sys.executable}\nprint('captured-current-directory')\n")
+        secondary.chmod(0o755)
+        blocker, gate = self.blocked_queue()
+        captured = self.submit([sys.executable, "-c",
+                                "import subprocess; subprocess.run(['secondary'],check=True)"],
+                               env=dict(self.env, PATH=""))
+        self.assertEqual(captured["state"], "queued")
+        secondary.unlink()
+        gate.touch()
+        self.wait(blocker["job"])
+        self.assertEqual(self.output(self.wait(captured["job"])), "captured-current-directory\n")
+
+    def test_declared_loader_table_rejects_source_components(self):
+        variables = ("LD_LIBRARY_PATH", "LD_PRELOAD", "DYLD_LIBRARY_PATH",
+                     "DYLD_FALLBACK_LIBRARY_PATH", "DYLD_FRAMEWORK_PATH",
+                     "DYLD_FALLBACK_FRAMEWORK_PATH", "DYLD_INSERT_LIBRARIES",
+                     "NODE_PATH", "RUBYLIB", "PERL5LIB")
+        for name in variables:
+            result = self.rejected_submission(env=dict(self.env, **{name: str(self.project)}),
+                                              error="source_reference_in_environment")
+            self.assertNotIn(str(self.project), result.stdout)
+        self.rejected_submission(env=dict(self.env, LD_LIBRARY_PATH="/nonexistent;" + str(self.project)),
+                                 error="source_reference_in_environment")
+        self.rejected_submission(env=dict(self.env, LD_PRELOAD="/nonexistent " + str(self.project)),
+                                 error="source_reference_in_environment")
+
+    def test_broad_roots_are_rejected_before_personal_inventory(self):
+        os.mkfifo(self.home / "must-not-be-inventoried")
+        uid_home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+        for root in (self.home, self.root, uid_home, uid_home.parent, Path("/")):
+            self.rejected_submission("--cwd", str(root), error="unsafe_input_root")
+        self.assertEqual(list(self.home.iterdir()), [self.home / "must-not-be-inventoried"])
+
+    def test_source_in_state_is_rejected_and_nested_state_is_excluded(self):
+        state = self.root / "source-state"
+        source = state / "source"
+        source.mkdir(mode=0o700, parents=True)
+        for cwd in (state, source):
+            result = self.call("submit", "--cwd", str(cwd), "--", sys.executable, "-c", "pass",
+                               state=state, check=False, refute_if_absent=True)
+            self.assertEqual(json.loads(result.stdout)["error"], "source_in_state")
+            self.assertTrue(self.admissions[-1].refuted)
+        self.assertEqual(list(state.iterdir()), [source])
+        nested = self.project / "nested-state"
+        submitted = self.submit([sys.executable, "-c",
+                                 "import pathlib; print(pathlib.Path('nested-state').exists())"], state=nested)
+        self.assertEqual(self.output(self.wait(submitted["job"], state=nested)), "False\n")
+
+    def test_nested_git_selection_and_private_paths_use_capture_root(self):
+        self.initialize_git()
+        package = self.project / "package"
+        package.mkdir()
+        (package / "run.py").write_text(
+            "from pathlib import Path\nprint(Path('data').read_text())\n"
+            "print(Path('private.data').exists())\nprint(Path('../excluded').exists())\n"
+            "Path('reports/result').write_text('nested-artifact')\n")
+        (package / "data").write_text("nested-captured")
+        (package / "private.data").write_text("private")
+        (self.project / "excluded").write_text("unselected")
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture")
+        blocker, gate = self.blocked_queue()
+        submitted = self.value("submit", "--cwd", str(package), "--input", "package",
+                               "--private", "package/private.data", "--artifact", "reports/result", "--",
+                               sys.executable, "run.py")
+        self.assertEqual(submitted["state"], "queued")
+        (package / "data").write_text("mutated")
+        gate.touch()
+        self.wait(blocker["job"])
+        final = self.wait(submitted["job"])
+        self.assertEqual(self.output(final), "nested-captured\nFalse\nFalse\n")
+        _, files = self.artifacts(submitted["job"])
+        self.assertEqual(Path(files[0]["path"]).read_text(), "nested-artifact")
+        self.assertFalse((package / "reports").exists())
+
+    def assert_publication_excludes_secret(self, secret, *responses):
+        forbidden = (secret, hashlib.sha256(secret.encode()).hexdigest())
+        for response in responses:
+            for value in forbidden:
+                self.assertNotIn(value, json.dumps(response))
+        for path in (self.state / "capsules").rglob("*"):
+            for value in forbidden:
+                self.assertNotIn(value, str(path.relative_to(self.state)))
+                if path.is_file():
+                    self.assertNotIn(value.encode(), path.read_bytes())
+        for path in (self.state / "attempts").glob("*/bundle/**/*"):
+            for value in forbidden:
+                self.assertNotIn(value, str(path.relative_to(self.state)))
+                if path.is_file():
+                    self.assertNotIn(value.encode(), path.read_bytes())
+        for value in forbidden:
+            self.assertNotIn(value, (self.state / "supervisor.log").read_text())
+
+    def test_declared_secret_in_client_and_private_metadata_is_redacted(self):
+        secret = "fictitious-metadata-credential-3821"
+        private = "private-" + secret
+        (self.project / private).write_text(secret)
+        submitted = self.value("submit", "--client", "client-" + secret, "--private", private,
+                               "--credential-env", "SERVICE_ACCESS", "--", sys.executable, "-c",
+                               "import os; print(os.environ['SERVICE_ACCESS'])",
+                               env=dict(self.env, SERVICE_ACCESS=secret))
+        final = self.wait(submitted["job"])
+        self.assertEqual(submitted["client"], "client-[REDACTED]")
+        self.assertEqual(submitted["input_policy"]["consumer_private"], ["private-[REDACTED]"])
+        self.assertEqual(self.output(final), "[REDACTED]\n")
+        self.assert_publication_excludes_secret(secret, submitted, final, self.value("evidence", submitted["job"]))
+
+    def test_declared_secret_in_names_selection_artifacts_and_errors_is_not_published(self):
+        secret = "fictitious-path-credential-3821"
+        filename = "file-" + secret
+        (self.project / filename).write_text("innocuous-content")
+        env = dict(self.env, SERVICE_TOKEN=secret)
+        for options in ((), ("--input", filename), ("--artifact", filename + ".report"),
+                        ("--cwd", str(self.root / filename)), ("--private", "../" + filename)):
+            result = self.rejected_submission(*options, env=env)
+            for value in (secret, hashlib.sha256(secret.encode()).hexdigest()):
+                self.assertNotIn(value, result.stdout + result.stderr)
+
+    def test_concurrent_large_streams_redact_secrets_longer_than_read_blocks(self):
+        secret = "fictitious-concurrent-stream-credential" * 300
+        script = ("import os,threading\n"
+                  "secret=os.environ['BULK_CREDENTIAL'].encode()\n"
+                  "def emit(fd,byte):\n"
+                  "    for _ in range(64):\n"
+                  "        data=memoryview(byte*8192 + secret + b'\\n')\n"
+                  "        while data:\n"
+                  "            data=data[os.write(fd,data):]\n"
+                  "a=threading.Thread(target=emit,args=(1,b'O'))\n"
+                  "b=threading.Thread(target=emit,args=(2,b'E'))\n"
+                  "a.start(); b.start(); a.join(); b.join()\n")
+        submitted = self.value("submit", "--credential-env", "BULK_CREDENTIAL", "--",
+                               sys.executable, "-c", script, env=dict(self.env, BULK_CREDENTIAL=secret))
+        final = self.wait(submitted["job"])
+        self.assertEqual(Path(final["stdout_log"]).read_bytes(), (b'O'*8192 + b'[REDACTED]\n')*64)
+        self.assertEqual(Path(final["stderr_log"]).read_bytes(), (b'E'*8192 + b'[REDACTED]\n')*64)
+        self.assert_publication_excludes_secret(secret, submitted, final)
+
+    def state_image(self, state):
+        paths = [state, *sorted(state.rglob("*"))] if state.exists() else []
+        return {str(p.relative_to(state)): (p.lstat().st_mode, p.lstat().st_ino,
+                p.lstat().st_size, p.lstat().st_mtime_ns, p.lstat().st_ctime_ns,
+                hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None) for p in paths}
+
+    def test_reads_preserve_active_wal_shm_and_checkpointed_state(self):
+        blocker, gate = self.blocked_queue()
+        self.assertGreater((self.state / "state.db-wal").stat().st_size, 32)
+        self.assertTrue((self.state / "state.db-shm").is_file())
+        before = self.state_image(self.state)
+        status = self.value("status", blocker["job"])
+        self.assertEqual(status["state"], "running")
+        self.assertEqual(self.call("wait", blocker["job"], "--timeout", "0", check=False).returncode, 4)
+        self.value("evidence", blocker["job"])
+        self.assertEqual(self.state_image(self.state), before)
+        gate.touch()
+        final = self.wait(blocker["job"])
+        self.settle()
+        self.assertFalse((self.state / "state.db-wal").exists())
+        self.assertFalse((self.state / "state.db-shm").exists())
+        before = self.state_image(self.state)
+        for operation in ("status", "wait", "evidence"):
+            value = self.value(operation, blocker["job"])
+            self.assertEqual(value["outcome"], "succeeded")
+        self.assertEqual(self.state_image(self.state), before)
+        self.assertEqual(self.value("status", blocker["job"])["transitions"], final["transitions"])
+
+    def test_readers_reject_unsafe_incompatible_and_empty_state_without_repair(self):
+        submitted = self.submit([sys.executable, "-c", "pass"])
+        self.wait(submitted["job"])
+        self.settle()
+        incompatible = self.root / "incompatible"
+        incompatible.mkdir(mode=0o700)
+        data = bytearray((self.state / "state.db").read_bytes())
+        self.assertEqual(data[:16], b"SQLite format 3\x00")
+        data[60:64] = (999).to_bytes(4, "big")
+        (incompatible / "state.db").write_bytes(data)
+        (incompatible / "state.db").chmod(0o600)
+        unsafe, empty = self.root / "unsafe-reader", self.root / "empty-reader"
+        unsafe.mkdir(mode=0o755)
+        unsafe.chmod(0o755)
+        empty.mkdir(mode=0o700)
+        for state in (unsafe, empty, incompatible, self.root / "absent-reader"):
+            before = self.state_image(state)
+            for operation in ("status", "wait", "evidence"):
+                args = (operation, submitted["job"]) + (("--timeout", "0") if operation == "wait" else ())
+                result = self.call(*args, state=state, check=False)
+                self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+                if state == incompatible:
+                    self.assertEqual(json.loads(result.stdout)["error"],
+                                     "unsupported Fleet pilot schema; no migration")
+            self.assertEqual(self.state_image(state), before)
+
+    def test_missing_payload_and_truncated_manifest_degrade_only_the_view(self):
+        for missing in (True, False):
+            submitted = self.artifact_job("from pathlib import Path; Path('report.txt').write_text('report')")
+            final = self.wait(submitted["job"])
+            if missing:
+                _, files = self.artifacts(submitted["job"])
+                Path(files[0]["path"]).unlink()
+            else:
+                manifest = Path(final["evidence"]["manifest"])
+                manifest.write_bytes(manifest.read_bytes()[:17])
+            degraded = self.wait(submitted["job"], 3)
+            self.assertEqual(degraded["recorded_outcome"], "succeeded")
+            self.assertFalse(degraded["evidence"]["valid"])
+            self.assertEqual(degraded["transitions"], final["transitions"])
+
+    def test_external_process_directory_lock_blocks_bootstrap(self):
+        self.state.mkdir(mode=0o700)
+        fixture = ("import fcntl,os,select,sys\n"
+                   "fd=os.open(sys.argv[1],os.O_RDONLY|os.O_DIRECTORY)\n"
+                   "fcntl.flock(fd,fcntl.LOCK_EX)\n"
+                   "print('locked',flush=True)\n"
+                   "ready=select.select([sys.stdin],[],[],20)[0]\n"
+                   "sys.exit(0 if ready and sys.stdin.readline() == 'release\\n' else 91)\n")
+        process = subprocess.Popen([sys.executable, "-c", fixture, str(self.state)], env=self.env,
+                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                   text=True, start_new_session=True)
+        self.processes.append(process)
+        self.client_groups.append(process.pid)
+        self.assertEqual(self.response_line(process), "locked")
+        try:
+            result = self.call("submit", "--", sys.executable, "-c", "print('must-not-run')",
+                               check=False, refute_if_absent=True)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(json.loads(result.stdout)["error"], "invalid_request_or_state")
+            self.assertTrue(self.admissions[-1].refuted)
+            self.assertEqual(list(self.state.iterdir()), [])
+        finally:
+            stdout, stderr = process.communicate("release\n", timeout=3)
+        self.assertEqual(process.returncode, 0, (stdout, stderr))
+        submitted = self.submit([sys.executable, "-c", "print('after-release')"])
+        self.assertEqual(self.output(self.wait(submitted["job"])), "after-release\n")

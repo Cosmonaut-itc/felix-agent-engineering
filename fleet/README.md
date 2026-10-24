@@ -19,13 +19,55 @@ que termine el comando. El recibo devuelve `job`, `attempt`, `registered`,
 admitidos. Son identidades diferentes. `cwd_rel` identifica el cwd dentro de la
 captura. Las consultas conservan esa identidad aunque cambie o se borre el origen.
 
-Se ejecuta argv literal, sin shell implícito, con stdin cerrado y el entorno
-**íntegro del emisor**, incluido PATH, también en cola. Un shell se solicita como
-comando explícito. El cwd ejecutado es una copia materializada privada; no es la
-ruta original. No se reescriben argumentos. Referencias literales detectables a
-la raíz del origen en argv o archivos admitidos se rechazan; también un
-ejecutable resuelto por PATH dentro del origen. Así se evita ejecutar sus archivos.
-Las herramientas del host y referencias externas siguen disponibles.
+Se ejecuta argv literal, sin shell implícito y con stdin cerrado. El entorno
+**íntegro recibido del emisor** permanece privado, incluido PATH y las variables
+volátiles, también en cola. `fleet-context@2` persiste junto a esa representación
+la transformación `PWD=materialized-cwd` y la tabla `fleet-search-paths@1`.
+Al ejecutar, PWD se deriva del cwd materializado; su ruta aleatoria no entra en
+la representación comparable. No se reescriben argumentos ni otras variables.
+Un contrato de contexto desconocido se rechaza antes de consumir la compuerta
+o crear el comando. El recibo sólo publica la política, sin valores del entorno.
+
+Referencias literales detectables a la raíz del origen en argv o archivos
+admitidos se rechazan. Las variables de búsqueda/carga validadas son exactamente:
+
+```text
+PATH                            :
+PYTHONPATH                      :
+LD_LIBRARY_PATH                 : o ;
+LD_PRELOAD                      : o espacios
+DYLD_LIBRARY_PATH               :
+DYLD_FALLBACK_LIBRARY_PATH      :
+DYLD_FRAMEWORK_PATH             :
+DYLD_FALLBACK_FRAMEWORK_PATH    :
+DYLD_INSERT_LIBRARIES           :
+NODE_PATH                       :
+RUBYLIB                         :
+PERL5LIB                        :
+```
+
+Son separadores literales, sin expansión de shell, `~` o tokens del cargador.
+Para admisión, un componente vacío de una lista de paths se resuelve como cwd;
+los tokens vacíos de LD_PRELOAD se ignoran. Los relativos, incluidos `..`, sólo
+se admiten si tanto su normalización léxica como su resolución de symlinks desde
+cwd quedan dentro de la raíz capturada. Se conservan literalmente y después se
+resuelven desde el cwd materializado. Esto permite herramientas secundarias por
+PATH relativo, no sólo el ejecutable principal. Los componentes absolutos que
+solapan el origen, sus ancestros o aliases resolubles se rechazan, aunque argv[0]
+sea externo. En directorios absolutos externos también se comprueban los aliases
+symlink hijos inmediatos hacia el origen o sus ancestros. Se mantiene el orden
+de búsqueda externo A/B del job. Un nombre de biblioteca sin `/` en LD_PRELOAD
+conserva la resolución propia del cargador del host.
+
+La validación admite hasta 1.024 componentes y 65.536 caracteres por variable,
+y examina hasta 40.000 entradas inmediatas de directorios externos distintos.
+Los rechazos usan `source_reference_in_environment`, `search_path_escapes_capture`,
+`search_path_limit` o `search_alias_limit`, sin reflejar nombres/rutas/valores.
+No recorre recursivamente dependencias externas, no expande código o tokens
+dinámicos ni inspecciona variables fuera de la lista. Las herramientas externas
+y sus dependencias siguen disponibles y pueden cambiar: esta política acotada
+no acredita un sandbox ni congela el runtime, aliases externos futuros o código
+construido dinámicamente.
 
 Opciones de `submit`, repetibles salvo `--cwd` y `--client`:
 
@@ -97,8 +139,11 @@ cambio observado produce `source_changed`, sin reintento automático.
 
 Límites por captura: 20.000 archivos, 40.000 entradas de inventario, profundidad
 128, rutas de 2.048 caracteres, 32 MiB por archivo y 256 MiB totales. Hasta 256
-valores secretos, 64 KiB de valores únicos. La selección no puede tener HOME ni
-`/` como raíz. Los límites fallan explícitamente, sin truncar entradas admitidas.
+valores secretos, 64 KiB de valores únicos. Antes de inventariar se rechazan HOME
+declarado, HOME del uid y sus ancestros, además de un origen igual o contenido
+en el state-dir. Se comprueban cwd y raíz Git. Un state-dir dentro de un proyecto
+permitido se excluye de la captura. Se conservan las aperturas por componentes
+sin symlinks. Los límites fallan explícitamente, sin truncar entradas admitidas.
 
 El layout separa `capsules/<job>/{manifest.json,payload}`, la copia mutable
 `attempts/<attempt>/workspace` y `attempts/<attempt>/bundle`. La cápsula se
@@ -150,6 +195,20 @@ configuran antes de escribir estado durable. Cada transacción y cierre del
 ledger comparte ese lock. Para evitar modificaciones de SHM por SQLite, los
 lectores copian BD/WAL bajo lock a un temporal privado acotado (256 MiB por
 archivo) y consultan esa copia; no reparan ni crean archivos en el state-dir.
+Toda escritura, transacción y cierre futuro sobre la BD original debe pasar por
+`Ledger` y ese flock, incluido un cierre que pueda hacer checkpoint. Su detección
+de inicio de transacción requiere SQL que comience literalmente por `BEGIN`;
+un cursor o API SQLite que eluda Ledger invalidaría el protocolo de copia.
+No sustituirlo por `mode=ro`, `query_only` o `immutable=1` sobre el original.
+
+Cada consulta copia y sincroniza BD/WAL bajo exclusión antes de abrir SQLite en
+el temporal; no copia SHM del original. Este coste y la espera de escritores
+se infieren del código, sin benchmark. `read_stable` puede mantener bytearray y
+bytes simultáneamente; sellado/verificación también cargan logs completos hasta
+256 MiB. La cota de 256 MiB por archivo de ledger puede impedir leer un estado
+acumulado grande: es un límite de disponibilidad, sin cifra medida de RSS o
+latencia. El soporte de flock de directorio, WAL, checkpoints, timestamps y fsync
+de archivos/directorios debe acreditarse en Mini.
 
 La ejecución privada versionada fija commit/null, huella y modos, cwd relativo,
 argv literal, entorno completo, contrato de salidas y versión de contexto. No
@@ -198,9 +257,13 @@ PAO del cierre de limpieza-disco y borrado real. Después, el coordinador usa
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_cli.py' -v
 ```
 
-`test_cli.py` conserva las 16 pruebas heredadas y carga casos de `content_cases.py`.
+`test_cli.py` conserva las 16 pruebas heredadas y carga casos de `content_cases.py`
+y `correction_cases.py`. La matriz y fronteras sin fixture están en
+[`tests/COVERAGE.md`](tests/COVERAGE.md).
 Todas usan subprocess del CLI público, fixtures y recursos propios; no importan
-Fleet ni consultan SQL. Incluyen snapshots sin Git, Git/índice/working tree,
+Fleet ni consultan SQL. El estado incompatible usa una copia cerrada propia y
+el campo público `user_version` del header SQLite, sin tablas ni SQL. Incluyen
+snapshots sin Git, Git/índice/working tree,
 privacidad positiva y negativa, entorno/PATH en cola, streams simultáneos y un
 fallo de escritura mediante RLIMIT_FSIZE real, artefactos inválidos y pérdida
 posterior, concurrencia inicial, lecturas sin efectos y rechazos de entradas.
