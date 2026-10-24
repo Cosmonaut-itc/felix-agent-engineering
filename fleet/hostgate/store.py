@@ -6,7 +6,7 @@ from urllib.parse import quote
 from .protocol import canonical, digest
 
 APPLICATION_ID = 1212633939
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 
 class StoreError(RuntimeError):
@@ -35,11 +35,11 @@ class ShadowStore:
             conn.execute('PRAGMA journal_mode=WAL')
             store._durability(conn)
             conn.execute('PRAGMA application_id=%d' % APPLICATION_ID)
-            conn.execute('PRAGMA user_version=1')
+            conn.execute('PRAGMA user_version=2')
             conn.execute('CREATE TABLE metadata (store_id TEXT NOT NULL, schema_version INTEGER NOT NULL, kind TEXT NOT NULL)')
             conn.execute('INSERT INTO metadata VALUES (?, ?, ?)', (config.store_id, SCHEMA_VERSION, 'shadow'))
             conn.execute('CREATE TABLE host_view (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, checksum TEXT NOT NULL)')
-            conn.execute('CREATE TABLE operations (principal TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, PRIMARY KEY(principal, operation_id))')
+            conn.execute('CREATE TABLE operations (principal TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, auth_context TEXT NOT NULL, PRIMARY KEY(principal, operation_id))')
             conn.execute('CREATE TABLE audit (seq INTEGER PRIMARY KEY, principal TEXT NOT NULL, operation_id TEXT NOT NULL, payload TEXT NOT NULL)')
             view = dict(pending=[], reservations=[], generations={}, drained=False)
             conn.execute('INSERT INTO host_view VALUES (1, ?, ?)', (canonical(view), digest(view)))
@@ -107,18 +107,18 @@ class ShadowStore:
         finally:
             conn.close()
 
-    def mutate(self, principal, op_id, operation_digest, apply, world):
+    def mutate(self, principal, op_id, operation_digest, apply, world, auth_context=None):
         conn = self.connect(writable=True)
         committed = False
         try:
             conn.execute('BEGIN IMMEDIATE')
             view = self.load(conn)
-            original = conn.execute('SELECT digest, result FROM operations WHERE principal=? AND operation_id=?', (principal, op_id)).fetchone()
+            original = conn.execute('SELECT digest, result, auth_context FROM operations WHERE principal=? AND operation_id=?', (principal, op_id)).fetchone()
             world.checkpoint('before_write')
             result = apply(view, original)
             conn.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (canonical(view), digest(view)))
             if original is None:
-                conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?)', (principal, op_id, operation_digest, canonical(result)))
+                conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?, ?)', (principal, op_id, operation_digest, canonical(result), canonical(auth_context)))
             conn.execute('INSERT INTO audit(principal, operation_id, payload) VALUES (?, ?, ?)', (principal, op_id, canonical(result)))
             world.checkpoint('before_commit')
             conn.commit()

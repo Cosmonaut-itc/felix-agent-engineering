@@ -72,6 +72,16 @@ class Contract(Harness):
         self.assertEqual(legitimate['currentState']['state'], 'reserved')
         self.assertEqual(self.view()['reservations'][0]['heartbeat'], before)
 
+    def test_reserve_replay_and_query_role_same_peer_are_not_authority(self):
+        from dataclasses import replace
+        original = self.reserve()
+        for auth in (self.world.auth(pid=222), replace(self.auth, role='query')):
+            denied = self.reserve(auth=auth)
+            self.assertEqual(denied['exitCode'], 5)
+            self.assertNotIn('originalResult', denied)
+        query = replace(self.auth, role='query')
+        self.assertEqual(self.gate.latido('query-heartbeat', self.key(original), 1, query)['exitCode'], 5)
+
     def test_b_g3_revalidate_after_health_io(self):
         from dataclasses import replace
         initial_health = self.world.health

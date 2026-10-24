@@ -5,7 +5,7 @@ import uuid
 from dataclasses import asdict
 from .identity import from_json
 from .model import AuthContext, budget_view, effective, identity_json
-from .protocol import SCHEMA, digest, reason, reply, validate
+from .protocol import SCHEMA, canonical, digest, reason, reply, validate
 from .salud import lector_desk, lector_mini
 from .scope import closure_reasons
 from .store import Busy, ShadowStore, StoreError
@@ -30,6 +30,11 @@ class Hostgate:
         allowed = ('supervisor', 'query', 'operator') if operation == 'estado' else ('supervisor', 'operator')
         return (role in allowed and self.world.verify(auth.peer).status == 'same'
                 and (operation == 'estado' or self.world.channel_alive(auth.channel_binding)))
+
+    @staticmethod
+    def _auth_context(auth):
+        return dict(principal=auth.principal, peer=identity_json(auth.peer),
+                    anchor=identity_json(auth.anchor), channel=auth.channel_binding)
 
     def _observe(self, view):
         result = copy.deepcopy(view)
@@ -120,13 +125,15 @@ class Hostgate:
         def apply(view, original):
             self._persist_effective(view)
             if original:
+                if original[2] != canonical(self._auth_context(auth)):
+                    raise PermissionError('preparacion de otro dueno/canal')
                 if original[0] != digest(request): raise ValueError('operation-conflict')
                 return json.loads(original[1])
             self._persist_effective(view)
             pending = self._new_pending(request, auth)
             view['pending'].append(pending)
             return {'pendingId': pending['id']}
-        result = self.store.mutate(auth.principal + '\x00preparation', op_id, digest(request), apply, self.world)
+        result = self.store.mutate(auth.principal + '\x00preparation', op_id, digest(request), apply, self.world, self._auth_context(auth))
         return result['pendingId']
 
     def _decision(self, request, view, pending):
@@ -171,6 +178,8 @@ class Hostgate:
         operation_digest = digest(request)
         def apply(view, original):
             if original:
+                if original[2] != canonical(self._auth_context(auth)):
+                    return self._reply(op_id, [reason('identity-unverifiable', 'operacion de otro dueno/canal')], exit_code=5)
                 if original[0] != operation_digest:
                     return self._reply(op_id, [reason('operation-conflict', 'operationId ya tiene otro payload')], exit_code=2)
                 historic = json.loads(original[1])
@@ -185,7 +194,7 @@ class Hostgate:
             self._persist_effective(view)
             return action(view)
         try:
-            return self.store.mutate(auth.principal, op_id, operation_digest, apply, self.world)
+            return self.store.mutate(auth.principal, op_id, operation_digest, apply, self.world, self._auth_context(auth))
         except Busy:
             return self._reply(op_id, [reason('busy', 'escritor ocupado', True)], exit_code=4)
         except StoreError:
