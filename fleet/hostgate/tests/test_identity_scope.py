@@ -70,3 +70,29 @@ class Boundaries(unittest.TestCase):
                 with self.assertRaises(OSError): publish_owner(record, path)
             self.assertEqual(read_owner(path)['protection'], 'uncertain')
             self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    def test_linux_proc_fixture_exact_token_reuse_zombie_and_missing(self):
+        from unittest.mock import patch
+        from dataclasses import replace
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            boot = root / 'sys/kernel/random'
+            boot.mkdir(parents=True)
+            (boot / 'boot_id').write_text('boot-1')
+            process = root / '42'
+            process.mkdir()
+            stat = '42 (fixture ) name) S 2 3 4 ' + '0 ' * 15 + '9999999 0'
+            (process / 'stat').write_text(stat)
+            (process / 'status').write_text('Uid:\t501\t501\t501\t501\n')
+            table = ProcessTable('unix', 'host', root)
+            with patch('hostgate.identity.sys.platform', 'linux'):
+                observed = table.identity(42)
+                self.assertEqual(observed.status, 'same')
+                self.assertEqual(observed.identity.start_token, (9999999,))
+                self.assertEqual(table.verify(replace(observed.identity, start_token=(9999998,))).status,
+                                 'confirmed_absent_or_different')
+                (process / 'stat').write_text(stat.replace(' S ', ' Z '))
+                self.assertEqual(table.identity(42).status, 'confirmed_absent_or_different')
+                self.assertEqual(table.identity(99).status, 'confirmed_absent_or_different')
+                (process / 'stat').write_text('partial')
+                self.assertEqual(table.identity(42).status, 'unverifiable')

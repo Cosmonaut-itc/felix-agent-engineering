@@ -114,12 +114,11 @@ class ShadowStore:
             conn.execute('BEGIN IMMEDIATE')
             view = self.load(conn)
             original = conn.execute('SELECT digest, result FROM operations WHERE principal=? AND operation_id=?', (principal, op_id)).fetchone()
-            if original:
-                return apply(view, original)
             world.checkpoint('before_write')
-            result = apply(view, None)
+            result = apply(view, original)
             conn.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (canonical(view), digest(view)))
-            conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?)', (principal, op_id, operation_digest, canonical(result)))
+            if original is None:
+                conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?)', (principal, op_id, operation_digest, canonical(result)))
             conn.execute('INSERT INTO audit(principal, operation_id, payload) VALUES (?, ?, ?)', (principal, op_id, canonical(result)))
             world.checkpoint('before_commit')
             conn.commit()

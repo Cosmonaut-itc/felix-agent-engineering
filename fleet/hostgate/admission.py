@@ -118,6 +118,7 @@ class Hostgate:
         if not self._authorized(auth, 'reservar'): raise PermissionError('no autorizado')
         op_id = request['operationId']
         def apply(view, original):
+            self._persist_effective(view)
             if original:
                 if original[0] != digest(request): raise ValueError('operation-conflict')
                 return json.loads(original[1])
@@ -173,7 +174,7 @@ class Hostgate:
                 if original[0] != operation_digest:
                     return self._reply(op_id, [reason('operation-conflict', 'operationId ya tiene otro payload')], exit_code=2)
                 historic = json.loads(original[1])
-                projection = self._observe(view)
+                projection = self._persist_effective(view)
                 key = historic.get('simulationKey')
                 current = next((r for r in projection['reservations'] if r['key'] == key), None)
                 current_state = {'state': current['effectiveState'], 'reasons': current['reasons']} if current else None

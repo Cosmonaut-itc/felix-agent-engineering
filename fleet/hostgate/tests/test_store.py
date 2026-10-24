@@ -99,3 +99,15 @@ class Storage(Harness):
         self.assertEqual(retry.returncode, 0, retry.stderr)
         self.assertTrue(json.loads(retry.stdout)['replayed'])
         self.assertFalse(json.loads(retry.stdout)['wouldGrant'])
+
+    def test_replay_persists_expiry_without_renewing_or_regranting(self):
+        original = self.reserve()
+        before = self.view()['reservations'][0]['heartbeat']
+        self.world.now += 40
+        replay = self.reserve()
+        self.assertFalse(replay['wouldGrant'])
+        self.assertEqual(replay['originalResult'], original)
+        view = self.view()
+        self.assertEqual(view['reservations'][0]['state'], 'uncertain')
+        self.assertEqual(view['reservations'][0]['heartbeat'], before)
+        self.assertEqual(view['budget']['retained']['slots'], 1)

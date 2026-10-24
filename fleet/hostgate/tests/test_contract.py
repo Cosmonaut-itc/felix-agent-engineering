@@ -259,3 +259,14 @@ class Contract(Harness):
         reply = self.gate.soltar('broken-provider', key, ['broken'], self.auth)
         self.assertFalse(reply['wouldGrant'])
         self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+
+    def test_supervisor_lost_with_descendant_alive_retains_all(self):
+        key = self.key(self.reserve(exclusiveResources=['sen-slot:1']))
+        child = self.world.auth(pid=444).peer
+        query_auth = self.world.auth(pid=555, role='query')
+        self.world.processes[self.auth.peer.pid] = 'absent'
+        view = self.gate.estado({}, query_auth)
+        self.assertEqual(self.world.verify(child).status, 'same')
+        self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertEqual(view['budget']['retained']['slots'], 1)
+        self.assertEqual(view['resources'][0]['holder'], key)
