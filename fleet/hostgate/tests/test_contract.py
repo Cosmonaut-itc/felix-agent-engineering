@@ -38,6 +38,66 @@ class Harness(unittest.TestCase):
 
 
 class Contract(Harness):
+    def test_b_g1_windows_proof_cannot_release_unix(self):
+        from dataclasses import replace
+        from hostgate.protocol import digest
+        key = self.key(self.reserve(exclusiveResources=['sen-slot:1', 'postgres:5434']))
+        proof = replace(ClosureEvidence.fixture(key, self.world.boot, 'windows-tree-empty'),
+                        profile_verified=False, lineage_complete=False)
+        values = dict(proof.__dict__); values.pop('evidence_digest')
+        proof = replace(proof, evidence_digest=digest(values))
+        self.world.closures[('cross-platform',)] = proof
+        result = self.gate.soltar('cross-platform', key, ['cross-platform'], self.auth)
+        self.assertEqual(result['exitCode'], 1)
+        self.assertIn('unix-scope-unconfirmed', self.codes(result))
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+        self.assertEqual({r['name'] for r in self.view()['resources']}, {'sen-slot:1', 'postgres:5434'})
+
+    def test_b_g2_replay_requires_exact_peer_and_channel(self):
+        from dataclasses import replace
+        key = self.key(self.reserve())
+        original = self.gate.latido('heartbeat', key, 1, self.auth)
+        before = self.view()['reservations'][0]['heartbeat']
+        other = self.world.auth(pid=222)
+        self.world.now += 1
+        for auth in (other, replace(self.auth, channel_binding='other-channel')):
+            with self.subTest(auth=auth):
+                self.world.channel_alive = lambda binding: True
+                result = self.gate.latido('heartbeat', key, 1, auth)
+                self.assertEqual(result['exitCode'], 5)
+                self.assertNotIn('originalResult', result)
+        legitimate = self.gate.latido('heartbeat', key, 1, self.auth)
+        self.assertEqual(legitimate['originalResult'], original)
+        self.assertFalse(legitimate['wouldGrant'])
+        self.assertEqual(legitimate['currentState']['state'], 'reserved')
+        self.assertEqual(self.view()['reservations'][0]['heartbeat'], before)
+
+    def test_b_g3_revalidate_after_health_io(self):
+        from dataclasses import replace
+        initial_health = self.world.health
+        for fault in ('death', 'reused', 'anchor', 'eof', 'boot', 'executor-boot', 'deadline'):
+            with self.subTest(fault=fault):
+                self.world.boot = 'physical-1'
+                self.world.executor_boots['unix'] = 'executor-1'
+                self.world.channel = True
+                self.world.now = 100
+                self.auth = self.world.auth()
+                def health():
+                    sample = initial_health()
+                    if fault == 'death': self.world.processes[self.auth.peer.pid] = 'absent'
+                    if fault == 'reused': self.world.processes[self.auth.peer.pid] = replace(self.auth.peer, start_token=(9, 9))
+                    if fault == 'anchor': self.world.processes[self.auth.anchor.pid] = 'absent'
+                    if fault == 'eof': self.world.channel = False
+                    if fault == 'boot': self.world.boot = 'physical-2'
+                    if fault == 'executor-boot': self.world.executor_boots['unix'] = 'executor-2'
+                    if fault == 'deadline': self.world.now += 21
+                    return sample
+                self.world.health = health
+                result = self.reserve('during-health-' + fault, fault)
+                self.assertFalse(result['wouldGrant'])
+                self.assertEqual(self.gate.store.read()['reservations'], [])
+        self.world.health = initial_health
+
     def test_shadow_only_and_future_interfaces_closed(self):
         r = self.reserve()
         self.assertEqual((r['result'], r['wouldGrant']), ('shadow', True))
