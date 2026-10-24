@@ -85,9 +85,17 @@ confirma sólo la proyección conservadora y su auditoría, sin ocupar el `opera
 del dueño ni aplicar sus cambios. Un fallo de proveedor dentro de la transacción
 confirma sólo la proyección conservadora, incluida la segunda revalidación y el
 drenado, y su audit; devuelve exit 6, sin aplicar la mutación ni ocupar `operations`.
-Si esa confirmación falla, devuelve exit 3. `prepare` sigue la misma regla de
-persistencia; su interfaz interna relanza la excepción original después de confirmar
-el audit con exit 6, y propaga el fallo de persistencia si la confirmación falla.
+Si la escritura o el commit de esa confirmación fallan, devuelve exit 3. `prepare`
+sigue la misma regla de persistencia; su interfaz interna relanza la excepción
+original después de confirmar el audit con exit 6, y propaga el fallo de
+persistencia si la confirmación falla.
+Un conflicto de payload en `prepare` confirma la proyección y el audit con
+`operation-conflict`, exit 2, y después relanza `ValueError('operation-conflict')`;
+conserva la operación original sin crear otra preparación.
+Límite conocido: si un proveedor devuelve `nan` o `inf` y falla la serialización
+de la vista, la salida es exit 6 y no se conserva la duda observada. Este límite
+queda pendiente hasta que haya proveedores reales y se sigue en
+[SEN-3952](https://linear.app/mdr/issue/SEN-3952).
 Un fallo al confirmar un rechazo ajeno sigue la tabla de errores
 del almacén; nunca se informa exit 5 con esa escritura en duda. Un rechazo histórico no se vuelve admisible al mejorar
 salud; un cambio de payload da `operation-conflict`. Fencing usa la terna completa.
@@ -244,8 +252,9 @@ de ejecución de esta adopción se registra con la corrida r4.
 Correcciones r4, 2026-10-23 (America/Mexico_City): `ForeignOwner` separa autorización
 de `OSError`/`PermissionError`; fallos de proveedores previos a escritura salen 6.
 SEN-3900 añade la confirmación de la proyección conservadora y su audit ante esos
-fallos; si esa confirmación falla, la salida es 3. Esto también rige para `prepare`,
-que conserva la señal de excepción de su interfaz interna.
+fallos; si la escritura o el commit de esa confirmación fallan, la salida es 3.
+Esto también rige para `prepare`, que conserva la señal de excepción de su
+interfaz interna.
 El almacén conserva proyección y auditoría ante rechazo ajeno, sin insertar la
 operación. El espacio de `operationId` es por principal: un peer puede ocupar con
 operaciones propias ids que A todavía no usó. Una preparación existente protege

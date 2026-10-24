@@ -174,7 +174,10 @@ class Hostgate:
             if original:
                 if original[2] != canonical(self._auth_context(auth)):
                     raise self._foreign_owner(op_id)
-                if original[0] != digest(request): raise ValueError('operation-conflict')
+                if original[0] != digest(request):
+                    failures.append(ValueError('operation-conflict'))
+                    return UnrecordedResult(self._reply(
+                        op_id, [reason('operation-conflict', 'operationId ya tiene otro payload')], exit_code=2))
                 return json.loads(original[1])
             pending = self._new_pending(request, auth)
             view['pending'].append(pending)
