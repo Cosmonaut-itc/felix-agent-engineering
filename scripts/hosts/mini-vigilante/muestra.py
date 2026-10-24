@@ -63,7 +63,7 @@ def numero(text, integer=False, minimum=0, maximum=math.inf):
 
 
 def swap_bytes(text):
-    match = re.search(r'\bused\s*=\s*(\d+(?:\.\d+)?)\s*([KMGT]?)\b', text)
+    match = re.search(r'\bused\s*=\s*(\d+(?:\.\d+)?)\s*([KMGT]?)(?= |$)', text)
     if not match:
         raise ValueError('formato')
     value = Decimal(match[1]) * (1024 ** (' KMGT'.index(match[2]) if match[2] else 0))
