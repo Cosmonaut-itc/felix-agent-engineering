@@ -2,6 +2,8 @@ import contextlib
 import io
 import json
 import os
+import subprocess
+import time
 from pathlib import Path
 import tempfile
 import unittest
@@ -180,10 +182,52 @@ class InventarioTest(unittest.TestCase):
                                       'corridasAsociadas', 'tamanoBytes'})
         self.assertEqual(antes, foto())
 
-    def test_ps_timeout_y_argumentos(self):
-        with patch.object(inv.subprocess, 'run') as run:
-            run.return_value.returncode = 0
-            run.return_value.stdout = 'Fri Oct 23 12:00:00 2026\n'
-            self.assertIsInstance(inv.consultar_inicio(12), float)
-            self.assertEqual(run.call_args.args[0], ['ps', '-o', 'lstart=', '-p', '12'])
-            self.assertGreater(run.call_args.kwargs['timeout'], 0)
+    def test_ps_epoch_entorno_y_zona_padre(self):
+        anterior = os.environ.get('TZ')
+        try:
+            for zona in ('UTC0', 'America/New_York', 'Asia/Tokyo'):
+                with self.subTest(zona=zona), patch.dict(os.environ, TZ=zona):
+                    time.tzset()
+                    with patch.object(inv.subprocess, 'run') as run:
+                        run.return_value = subprocess.CompletedProcess([], 0, 'Fri Oct 23 12:00:00 2026\n', '')
+                        self.assertEqual(inv.consultar_inicio(12), 1792756800)
+                        self.assertEqual(run.call_args.args[0], ['ps', '-o', 'lstart=', '-p', '12'])
+                        self.assertEqual(run.call_args.kwargs['env']['TZ'], 'UTC0')
+                        self.assertEqual(run.call_args.kwargs['env']['LC_ALL'], 'C')
+                        self.assertEqual(run.call_args.kwargs['timeout'], 5)
+        finally:
+            if anterior is None:
+                os.environ.pop('TZ', None)
+            else:
+                os.environ['TZ'] = anterior
+            time.tzset()
+
+    def test_ps_dos_identidades_hora_repetida(self):
+        self.copia()
+        r = self.corrida(pid=12)
+        for salida, epoch in [('Sun Nov  1 05:30:00 2026', 1793511000),
+                              ('Sun Nov  1 06:30:00 2026', 1793514600)]:
+            with self.subTest(epoch=epoch), patch.object(inv.subprocess, 'run') as run:
+                run.return_value = subprocess.CompletedProcess([], 0, salida, '')
+                (r / 'started').write_text(str(epoch))
+                self.assertEqual(inv.consultar_inicio(12), epoch)
+                data = inv.inventariar(self.root, ahora=epoch + 40 * inv.DIA)
+                self.assertEqual((data['corridas'][0]['clase'], data['corridas'][0]['borrable']), ('viva', False))
+                self.assertEqual((data['copias'][0]['clase'], data['copias'][0]['borrable']), ('en-uso', False))
+
+    def test_ps_ausencia_errores_y_timeout(self):
+        self.corrida(pid=12)
+        with patch.object(inv.subprocess, 'run', return_value=subprocess.CompletedProcess([], 1, '', '')):
+            self.assertIsNone(inv.consultar_inicio(12))
+            item = inv.inventariar(self.root, ahora=self.now)['corridas'][0]
+            self.assertEqual((item['clase'], item['borrable']), ('terminal', True))
+        for resultado in (subprocess.CompletedProcess([], 1, '', 'permiso denegado'),
+                          subprocess.CompletedProcess([], 0, 'salida inválida', ''),
+                          subprocess.TimeoutExpired(['ps'], 5)):
+            with self.subTest(resultado=resultado), patch.object(inv.subprocess, 'run') as run:
+                if isinstance(resultado, Exception):
+                    run.side_effect = resultado
+                else:
+                    run.return_value = resultado
+                item = inv.inventariar(self.root, ahora=self.now)['corridas'][0]
+                self.assertEqual((item['clase'], item['borrable']), ('dudosa', False))

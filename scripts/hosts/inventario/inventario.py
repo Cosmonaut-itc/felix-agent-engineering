@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Inventario de remote-run de sólo lectura, compatible con Python 3.9."""
 import argparse
+import calendar
+from datetime import datetime
 from collections import Counter
 import json
 import math
@@ -19,14 +21,23 @@ REGLAS = {'copiaDias': 7, 'corridaDias': 30, 'ventanaInicioS': 120}
 
 def consultar_inicio(pid):
     """Devuelve epoch, None si no existe; los fallos se propagan como duda."""
-    entorno = dict(os.environ, LC_ALL='C')
+    entorno = dict(os.environ, LC_ALL='C', TZ='UTC0')
     resultado = subprocess.run(['ps', '-o', 'lstart=', '-p', str(pid)],
                                capture_output=True, text=True, timeout=5, env=entorno)
     if resultado.returncode == 1 and not resultado.stdout.strip() and not resultado.stderr.strip():
         return None
     if resultado.returncode != 0:
         raise OSError('ps falló: ' + resultado.stderr.strip())
-    return time.mktime(time.strptime(resultado.stdout.strip(), '%a %b %d %H:%M:%S %Y'))
+    meses = {nombre: i for i, nombre in enumerate(
+        ('Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'), 1)}
+    partes = resultado.stdout.split()
+    if len(partes) != 5 or partes[1] not in meses:
+        raise ValueError('lstart inválido')
+    hora = [int(n) for n in partes[3].split(':')]
+    if len(hora) != 3:
+        raise ValueError('hora de lstart inválida')
+    fecha = datetime(int(partes[4]), meses[partes[1]], int(partes[2]), *hora)
+    return calendar.timegm(fecha.timetuple())
 
 
 def listar(ruta):
