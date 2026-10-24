@@ -164,7 +164,7 @@ def test_snapshot_no_objeto(muestra):
 
 
 def test_observacion_powershell_contraste_d8fecdc7():
-    # ConvertTo-DesktopPowerShellObservation, Desktop d8fecdc7:436-472.
+    # ConvertTo-DesktopPowerShellObservation, Desktop d8fecdc7:436-498.
     common = dict(schema='desktop-vigilante/powershell-count@1', unit='count',
                   source='local-process-enumeration+Win32-retained-handle',
                   scope='monitor-process-token-user-sid/all-sessions/exclude-self',
@@ -173,11 +173,14 @@ def test_observacion_powershell_contraste_d8fecdc7():
     variants = dict(ausente=None,
         complete0=dict(value=0, status='ok', coverage='complete', observedLowerBound=0, unresolvedCandidates=0),
         completewarn=dict(value=3, status='warn', coverage='complete', observedLowerBound=3, unresolvedCandidates=0),
-        partialunknown=dict(value=None, status='unknown', coverage='partial', observedLowerBound=2, unresolvedCandidates=4),
+        partialunknown=dict(value=None, status='unknown', coverage='partial', observedLowerBound=2, unresolvedCandidates=4,
+                            error='access-denied', errors=[dict(stage='open', code='access-denied', win32=5, count=4)]),
         unavailable=dict(value=None, status='unknown', coverage='unavailable', observedLowerBound=0,
-                         unresolvedCandidates=None, error='capture-failed'),
+                         unresolvedCandidates=None, error='capture-unavailable',
+                         errors=[dict(stage='capture', code='capture-unavailable', win32=None, count=1)]),
         diagnosticutc=dict(value=None, status='unknown', coverage='unavailable', observedLowerBound=0,
                            unresolvedCandidates=None, error='capture-invalid',
+                           errors=[dict(stage='capture', code='capture-invalid', win32=None, count=1)],
                            startedUtc='2026-10-23T22:33:08.0000000Z', completedUtc='2026-10-23T22:33:08.0000000Z'))
     for failure in (None, 'status', 'errors', 'metrics'):
         base = copy.deepcopy(REAL)
@@ -189,7 +192,12 @@ def test_observacion_powershell_contraste_d8fecdc7():
         for name, observation in variants.items():
             sample = copy.deepcopy(base)
             if observation is not None:
-                sample['observations'] = {'powerShellLongLived': dict(common, **observation)}
+                wire = dict(common, **observation)
+                assert wire['error'] == (wire['errors'][0]['code'] if wire['errors'] else None)
+                for error in wire['errors']:
+                    assert set(error) == {'stage', 'code', 'win32', 'count'}
+                    assert error['code'] in {'access-denied', 'capture-unavailable', 'capture-invalid'}
+                sample['observations'] = {'powerShellLongLived': wire}
             result = evaluar(sample, AHORA, BOOT)
             assert result == expected, (name, failure, result)
             assert type(result) is list and all(type(reason) is str for reason in result)

@@ -142,7 +142,6 @@ class Hostgate:
                     raise PermissionError('preparacion de otro dueno/canal')
                 if original[0] != digest(request): raise ValueError('operation-conflict')
                 return json.loads(original[1])
-            self._persist_effective(view)
             pending = self._new_pending(request, auth)
             view['pending'].append(pending)
             return {'pendingId': pending['id']}

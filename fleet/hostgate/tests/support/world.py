@@ -13,7 +13,6 @@ FIXTURES = Path(__file__).parents[2] / 'fixtures'
 class World:
     def __init__(self):
         self.now = 100.0
-        self.utc = 1792792830.0
         self.boot = 'physical-1'
         self.executor_boots = {'unix': 'executor-1', 'other': 'executor-1', 'windows': 'executor-1'}
         self.processes = {}

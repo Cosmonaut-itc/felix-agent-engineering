@@ -3,7 +3,6 @@ import ctypes
 import errno
 import os
 import sys
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -122,12 +121,6 @@ class ProcessTable:
         if observed.status == 'same' and observed.identity != expected:
             return Observation('confirmed_absent_or_different', observed.identity)
         return observed
-
-
-def host_monotonic():
-    if sys.platform.startswith('linux'):
-        return time.clock_gettime(time.CLOCK_BOOTTIME)
-    return time.clock_gettime(time.CLOCK_MONOTONIC)
 
 
 def from_json(value):

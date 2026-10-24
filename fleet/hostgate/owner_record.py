@@ -12,12 +12,14 @@ def _validate(record):
               'boot', 'pid', 'start', 'started', 'ended', 'root', 'recordSeq', 'scope'}
     if not isinstance(record, dict) or set(record) != fields or record['schema'] != 'fleet/host-owner@1':
         raise ValueError('registro incompleto')
-    for name in ('runId', 'jobId', 'attemptId', 'physicalHostId', 'executorId', 'boot'):
+    for name in ('runId', 'jobId', 'attemptId', 'physicalHostId', 'executorId'):
         value = record[name]
         if not isinstance(value, str) or not value or '/' in value or '\x00' in value or value in ('.', '..'):
-            # boot contiene host/fecha: se valida aparte.
-            if name != 'boot' or not isinstance(value, str) or not value or '\x00' in value:
-                raise ValueError('identificador de registro invalido')
+            raise ValueError('identificador de registro invalido')
+    # Boot admite host/fecha; los identificadores de registro no admiten rutas.
+    boot = record['boot']
+    if not isinstance(boot, str) or not boot or '\x00' in boot:
+        raise ValueError('boot de registro invalido')
     key(record['key'])
     if type(record['pid']) is not int or record['pid'] <= 0 or type(record['recordSeq']) is not int or record['recordSeq'] <= 0:
         raise ValueError('PID/secuencia invalida')

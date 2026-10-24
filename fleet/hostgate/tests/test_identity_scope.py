@@ -130,3 +130,34 @@ class Boundaries(unittest.TestCase):
             path = Path(tmp).resolve() / 'owner.json'
             path.write_text(json.dumps(record))
             self.assertEqual(read_owner(path)['protection'], 'uncertain')
+
+    def test_owner_boot_allows_separator_but_ids_do_not(self):
+        from hostgate.owner_record import _validate
+        record = dict(schema='fleet/host-owner@1', runId='r', jobId='j', attemptId='a',
+                      key=dict(storeId='s', reservationId='r', generation=1), physicalHostId='node',
+                      executorId='unix', boot='host/boot', pid=1, start=[1], started=1,
+                      ended=None, root=None, recordSeq=1, scope={'status': 'unconfirmed'})
+        self.assertEqual(_validate(record)['boot'], 'host/boot')
+        for value in (None, '', 'bad\x00boot'):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                _validate(dict(record, boot=value))
+        for field in ('runId', 'jobId', 'attemptId', 'physicalHostId', 'executorId'):
+            with self.subTest(field=field), self.assertRaises(ValueError):
+                _validate(dict(record, **{field: 'host/boot'}))
+
+    def test_helper_json_publication_never_exposes_partial_target(self):
+        from unittest.mock import patch
+        from hostgate.tests.support.world import publish_world
+        with tempfile.TemporaryDirectory() as tmp:
+            for name in ('ready.json', 'retries.json'):
+                path = Path(tmp).resolve() / name
+                old, new = {'pid': 1}, [{'exitCode': 5}]
+                publish_world(path, old)
+                replace = Path.replace
+                def inspect(temporary, target):
+                    self.assertEqual(json.loads(target.read_text()), old)
+                    self.assertEqual(json.loads(temporary.read_text()), new)
+                    return replace(temporary, target)
+                with patch.object(Path, 'replace', inspect):
+                    publish_world(path, new)
+                self.assertEqual(json.loads(path.read_text()), new)

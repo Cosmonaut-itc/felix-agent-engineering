@@ -1,12 +1,11 @@
 """Padres propios conservan el único escritor hasta su salida normal."""
-import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import time
 from hostgate.admission import Hostgate
-from hostgate.tests.support.world import SharedWorld, config, request
+from hostgate.tests.support.world import SharedWorld, config, request, publish_world
 
 
 def wait(path, seconds=45):
@@ -35,7 +34,7 @@ def child():
     directory = Path(directory)
     world = SharedWorld(world_path)
     auth = world.real_auth(os.getpid(), os.getppid(), 'channel-' + job)
-    (directory / 'ready.json').write_text(json.dumps(dict(pid=os.getpid(), parent=os.getppid())))
+    publish_world(directory / 'ready.json', dict(pid=os.getpid(), parent=os.getppid()))
     wait(directory / 'prepared')
     if mode == 'linked':
         while os.read(int(fd), 1): pass
@@ -44,7 +43,7 @@ def child():
         gate = Hostgate(config(Path(store_path)), world)
         replies = [gate.reservar(request('jale-' + job, job), auth),
                    gate.reservar(request('retry-' + job, job), auth)]
-        (directory / 'retries.json').write_text(json.dumps(replies))
+        publish_world(directory / 'retries.json', replies)
         wait(directory / 'finish')
     (directory / 'ended').write_text(mode)
 
