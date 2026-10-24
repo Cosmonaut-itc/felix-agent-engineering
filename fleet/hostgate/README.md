@@ -1,7 +1,8 @@
 # Hostgate en sombra
 
 Implementación local Python 3.9 stdlib de `fleet/host-reservation@1`, autoridad
-`a1f00fafa2fb7b6146a9575923c6f97074403e10`. Mini ya aceptó la semántica.
+`f6dea9a7afd182dff9742d52784dc4e98aeb451f`, merge del PR #17
+(contenido idéntico al aceptado `a1f00fa`). Mini ya aceptó la semántica.
 Fleet revisará wire/IPC/PR; PAO solicita el OK concreto de Felix para activar.
 Este paquete no instala, conecta, ejecuta cargas ni añade daemon o polling.
 `nativos=[]`. No modifica el runner, los slots ni los consumidores.
@@ -30,7 +31,9 @@ Fleet. El harness acredita roles, perfiles, canales y evidencia **sintéticos**.
 
 La configuración `NodeConfig` se construye en la frontera administrativa de confianza,
 fuera del JSON. Declara host/store/ejecutores, revisión, presupuesto, mínimos por perfil,
-recursos canónicos, ACL, rutas y TTL del host. `ShadowStore.initialize` exige directorio
+recursos canónicos, ACL, rutas, TTL, plataforma por ejecutor y drenado inicial del host.
+La plataforma se registra en la reserva; el kind de la evidencia no la decide.
+El drenado administrativo es persistente y una consulta no lo reabre. `ShadowStore.initialize` exige directorio
 nuevo privado fuera del repo; es una acción administrativa explícita del harness.
 Abrir un ledger ausente, corrupto, de otro store/schema/modo o con symlinks nunca lo
 recrea. El despliegue deberá acreditar filesystem local persistente, ownership,
@@ -67,6 +70,7 @@ La allowlist de umbrales sólo clasifica: no autoriza degradación, cuya políti
 está acordada. Un motivo nuevo siempre es `health-invalid`. La selección por carga,
 la cola y el veto auto son de Fleet, no se implementan aquí.
 
+El ledger sombra usa schema interno 2; no migra ni promueve ledgers previos.
 SQLite WAL/FULL serializa `BEGIN IMMEDIATE`: vista de estado, presupuesto, exclusivos,
 contador por host/job, operación idempotente y auditoría se confirman juntos. La vista
 compacta con checksum evita repartir escritores y tablas sin caller. No hay transacción
@@ -103,6 +107,8 @@ Windows sólo aceptará empty/never-created del launcher propio validado, no exi
 El ledger conserva la evidencia positiva sintética con emisor, key, boot, ámbito,
 procedencia, completitud, limpieza y digest en la transacción del cierre.
 Las pruebas `ClosureEvidence.fixture` modelan estas condiciones y limpieza completa;
+los negativos alteran una garantía y recalculan su digest. La reserva Windows del
+harness es explícita; ni una prueba Windows libera Unix ni una Unix libera Windows;
 no son evidencia nativa. `soltar` incompleto retiene todo; no hay liberación parcial.
 
 `AuthContext` sólo entra como objeto de la frontera de confianza en proceso, nunca
@@ -145,6 +151,27 @@ cd fleet
 Los fixtures Jale son **reproducciones modeladas**, no la captura original de las 22:54Z:
 tres preparaciones sin reserva, PID/inicio/ancla/canal/latido, lápidas, replay sin adquisición,
 seguidor y variante que pudo crear. El fixture ligado y el legado son distintos; además
-un helper real de prueba sale por EOF del padre y otro sobrevive con autoexit acotado.
+tres helpers reales salen por EOF al terminar sus padres, y tres legados sobreviven
+y reintentan contra el motor. Ambas variantes incluyen el caso que pudo reservar:
+retiene aunque quede presupuesto. Los helpers tienen barreras y salida acotada.
 La concurrencia SQLite es real entre clientes del API; IPC/supervisor/launcher/profiles/
 adaptador real y aceptación U1 quedan futuros. No se valida activación con estos fixtures.
+
+La tabla [COBERTURA.md](COBERTURA.md) registra requisitos, límites y estado real
+por prueba. Antes de la corrida final de esta ronda, todas las pruebas nuevas están
+**no ejecutadas**. El primer intento se interrumpió esperando turno, sin run remoto.
+El guion final descubre las seis familias, comprueba el corpus desk, reproduce los
+tres errores graves sobre el commit de regresiones previo a la corrección y ejecuta
+la suite del SHA de la copia remota. Sólo esa evidencia puede marcar ejecución.
+
+El contraste `test_observacion_powershell_contraste_d8fecdc7` usa las seis variantes
+del productor Desktop `d8fecdc7`, con source y scope exactos. La observación no cambia
+motivos del lector ni expone conteos, tampoco convierte lower bounds o null en salud.
+No se modifica el lector desk aceptado.
+
+SQLite reescribe la vista y comprueba quick_check al abrir: su coste con historial
+extenso no está medido y la poda requiere acuerdo. Los fallos FULL/I/O se inyectan
+en la frontera SQLite y los fsync del registro antes/después de replace; no se
+acredita daño físico real ni un fallo del fsync interno de SQLite a nivel VFS.
+ABI/IPC, perfiles reales, consumidor U1, corte real, DefaultShell, SEN-3853 y
+recuperación explícita permanecen pendientes. Ningún fixture acredita activación.

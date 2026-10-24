@@ -1,0 +1,96 @@
+# Cobertura del candidato Sol, ronda 2
+
+Autoridad: `f6dea9a7afd182dff9742d52784dc4e98aeb451f`, PR #17, contenido idéntico a `a1f00fa`. Esta tabla distingue
+implementación de sombra, simulación con harness y aceptación futura. No acredita
+activación, integración de consumidores, aislamiento hostil ni corte real del runner.
+Rutas relativas a `fleet/hostgate/`.
+
+| Línea S del sketch | Archivo | Prueba / límite |
+| --- | --- | --- |
+| 02 | `__init__.py`, `cli.py`, `README.md` | `CLI.test_owner_payload_cannot_construct_auth`, `Contract.test_desk_no_transport_even_degraded`; Python 3.9 stdlib. |
+| 21 | `admission.py`, `protocol.py`, `store.py` | `Contract.test_shadow_only_and_future_interfaces_closed`; ningún permiso efectivo. |
+| 37 | `model.py:expire_pending`, `admission.py:_persist_effective` | `Storage.test_queries_never_mutate_sqlite_or_wal`, `test_replay_persists_expiry_without_renewing_or_regranting`, `Contract.test_jale_real_helpers_bound_to_three_preparations`; sin timer. |
+| 56 | `admission.py:Hostgate`, `cli.py` | Casos de `Contract`, `CLI`; API sólo simulación, IPC futuro. |
+| 72 | `cli.py`, `tests/support/world.py` | `CLI.test_owner_payload_cannot_construct_auth`, `CLI.test_public_cli_harness_and_strict_json`; endpoint sin auth rechaza. |
+| 74 | `protocol.py:reply`, `admission.py:_run` | `Contract.test_shadow_only_and_future_interfaces_closed`, `Contract.test_replay_authentication_conflict_and_historical_state`; key dentro de `simulationKey`. |
+| 90 | Estructura del paquete | Inspección `git diff --check`; sin módulos productivos F. |
+| 91 | `README.md`, `__init__.py`, `__main__.py`, `cli.py`, `protocol.py`, `model.py` | `CLI`, `Contract`, `Storage`. |
+| 92 | `admission.py`, `store.py`, `identity.py`, `scope.py`, `owner_record.py` | `Contract`, `Storage`, `Boundaries`. |
+| 93 | `salud/__init__.py`, `salud/lector_desk.py`, `salud/lector_mini.py` | 112 casos originales desk adaptados a unittest, `MiniReader`; no ejecutados por falta de turno. |
+| 94 | `fixtures/jale-2254z*.json`, `fixtures/health`, `fixtures/identities`, `fixtures/launcher`, `fixtures/node-configs` | Jale y lectores consumen fixtures; identidad/launcher/config documentan wire sintético; no equivalen a aceptación nativa. |
+| 95 | `tests/test_cli.py`, `test_store.py`, `test_contract.py`, `support/` | Suite unittest prevista por run.sh; pruebas escritas de clientes de varios procesos y SQLite real, no ejecutadas. |
+| 96 | `identity.py`, `scope.py`, `salud/lector_mini.py` | `Boundaries`, `Contract.test_scope_and_cleanup_all_or_nothing`, `MiniReader`; perfil/cierre real no acreditado. |
+
+Las etiquetas S explícitas están en 02, 21, 37, 56, 72, 74 y 90; 91–96 desarrollan
+la estructura S. Se añade cobertura de las reglas ejecutables sin etiqueta:
+
+| Líneas | Archivo | Prueba / motivo de no cobertura real |
+| --- | --- | --- |
+| 01, 04–06, 08 | `README.md`, `model.py`, `store.py` | Configuración administrativa inyectada; `Storage.test_configuration_symlink_and_enforcing_rejected`. Persistencia/localidad del filesystem productivo no acreditada. |
+| 07, 19 | `store.py` | `Storage.test_missing_corrupt_wrong_store_never_recreated`, `test_busy`, `test_commit_cuts_and_response_lost`. |
+| 09–10, 52 | `identity.py` | `Boundaries.test_darwin_structure_and_live_identity_read_only`, `test_linux_exact_stat_parentheses`; lectura real Darwin acotada prevista y fixture proc Linux (`test_linux_proc_fixture_exact_token_reuse_zombie_and_missing`); no ejecutadas. |
+| 11–12 | `protocol.py`, `admission.py` | `CLI.test_demand_and_nul_validation`, `Contract.test_minimum_and_unknown_resource`, `test_budget_dimensions_and_exclusives`. |
+| 13–14, 22–27 | `model.py`, `admission.py` | `Contract.test_jale_real_helpers_bound_to_three_preparations`, `test_channel_eof_withdraws_without_reservation`, `test_commit_revalidation_pid_anchor_channel_heartbeat`. |
+| 15–18, 28–29 | `admission.py`, `scope.py` | `Contract.test_death_after_revalidation_retains_commit`, `test_budget_dimensions_and_exclusives`, `test_old_generation_never_alters_new`. |
+| 20, 84–85 | `owner_record.py`, `README.md` | `Boundaries.test_owner_record_partial_and_root_terminal_protect`, `test_owner_fsync_failure_preserves_protection`. No cubierta integración U1: consumidor actual aún no entiende Fleet. |
+| 30, 33, 40–42 | `scope.py`, `README.md` | `authorize_creation`/`record_started` fallan cerrados. No cubierto runtime de supervisor, permiso, publicación previa a efectos o reconciliación: F. |
+| 31–32, 34–36 | `model.py`, `admission.py`, `scope.py` | `Contract.test_ttl_owner_lost_boot_and_heartbeat_cannot_release`, `test_scope_and_cleanup_all_or_nothing`, `Storage.test_queries_never_mutate_sqlite_or_wal`. |
+| 43–50 | `scope.py`, `README.md` | Cierre positivo sintético fenced y casos negativos; `Contract.test_windows_fixture_only_positive_evidence_fenced`. No cubierta contención/launcher/cierre nativo real: F. |
+| 51 | `README.md`, código sin control de procesos | Inspección y helpers propios con autoexit; no SIGSTOP ni terminación de procesos. |
+| 54–55 | `admission.py`, `store.py`, `cli.py` | `Contract.test_replay_authentication_conflict_and_historical_state`, `Storage.test_commit_cuts_and_response_lost`; autenticación real espera F. |
+| 57–62, 65–71 | `admission.py`, `model.py`, `salud/`, `cli.py`, `protocol.py` | `CLI`, `Contract`, `MiniReader` y 112 casos desk. |
+| 73, 75–78 | `protocol.py`, `cli.py`, `admission.py` | `CLI.test_cli_all_commands_and_exit_mapping`, `Contract.test_replay_authentication_conflict_and_historical_state`. |
+| 79–81 | `salud/`, `admission.py` | Lectores y `Contract.test_desk_no_transport_even_degraded`; transporte invocado cero veces. |
+| 83 | `README.md` | No cubierta ordenación Fleet: pertenece al consumidor; hostgate muestra degradación y barreras sin admitirla. |
+| 86–89 | `README.md`, `model.py`, fixtures Jale | Adaptador modelado, slots retenidos, boot drena. No cubierto corte/rechazo real de runners antiguos: activación F. |
+| 98–100 | `tests/test_store.py`, `test_contract.py`, `test_cli.py` | Pruebas escritas de concurrencia por API y procesos CLI con presupuesto compartido; exclusivos, límites, replay, conflictos y generación vieja. |
+| 101 | `tests/test_store.py`, `test_contract.py` | Cortes modelados antes de escritura/commit y ACK perdido; muerte postrevalidación. No cubiertos permiso/spawn reales: F. |
+| 102–104 | `fixtures/jale-2254z*.json`, `tests/support/helper.py`, `test_contract.py` | Dos reproducciones modeladas, helpers reales EOF/legado acotado y variante que pudo crear. Adaptador run.sh real no cubierto: F. |
+| 105 | `test_contract.py`, `test_identity_scope.py` | PID exacto/reutilización, EPERM modelado, latido, reloj/boot físico/ejecutor. |
+| 106 | `test_store.py`, `test_identity_scope.py` | BD ausente/corrupta/storeId, busy, cortes/commit incierto; ENOSPC/fsync inyectado en publicación. No se llena disco real. |
+| 107–108 | `test_contract.py` | Cierre/limpieza conservadores y Windows positivo sólo modelado. |
+| 109–110 | `test_lector_desk.py`, `test_lector_mini.py`, `test_contract.py` | Corpus, Mini, falta de testigo y cero transporte. |
+| 111–112 | `test_store.py`, `test_contract.py`, `test_identity_scope.py` | Consultas sin mutación, drenado por boot, pausa/slots/registro incompleto con protección. |
+| 113 | Guion/evidencia de comprador | Sólo Mini por run.sh con turno; sin flags de producción. |
+| 03, 38–39, 53, 63–64, 82, 97, 114–115 | `scope.py`, `cli.py`, `README.md` | F: no servicio/timer/IPC/supervisor/transporte/permiso productivos; interfaces disponibles rechazan. Sin activación por fixtures. |
+
+| Corrección §5 | Archivo | Prueba / límite |
+| --- | --- | --- |
+| 1. Autoridad vigente | `README.md` | Inspección del merge contractual `f6dea9a7` / PR #17; Mini aceptada, no se pide nueva aceptación. |
+| 2. Wire y generación | `protocol.py`, `admission.py`, `store.py` | `Contract.test_old_generation_never_alters_new`, `test_replay_authentication_conflict_and_historical_state`, `Storage.test_concurrent_budget_and_parallel_replay`. |
+| 3. Preparación sin reserva tentativa | `model.py`, `admission.py` | `Contract.test_jale_real_helpers_bound_to_three_preparations`, `Storage.test_missing_corrupt_wrong_store_never_recreated`. |
+| 4. Pausa y cierre conjunto | `scope.py`, `admission.py` | `Contract.test_scope_and_cleanup_all_or_nothing`, `test_positive_closure_evidence_is_durable`, `test_malformed_closure_provider_fails_closed`; todo o nada. |
+| 5. Unix perfil + ámbito + linaje | `scope.py`, `README.md` | `Contract.test_scope_and_cleanup_all_or_nothing`; perfiles reales rechazados, garantía real pendiente F. |
+| 6. Autenticación realizable | `model.py`, `cli.py`, `README.md` | `CLI.test_owner_payload_cannot_construct_auth`, `Contract.test_replay_authentication_conflict_and_historical_state`; transporte/peer real F no cubierto. |
+| 7. Salud/transporte cerrado | `salud/`, `admission.py` | Lectores, `Contract.test_desk_no_transport_even_degraded`, `test_unknown_health_reason_is_barrier`; sin degradación admisible inventada. |
+| 8. Motivos estables | `protocol.py`, `admission.py` | `Contract.test_budget_dimensions_and_exclusives`, `CLI.test_cli_all_commands_and_exit_mapping`; catálogo cerrado. |
+| 9. Registro U1 | `owner_record.py`, `README.md` | `Boundaries.test_owner_record_partial_and_root_terminal_protect`, `Contract.test_supervisor_lost_with_descendant_alive_retains_all`; integración U1 no cubierta, requiere acuerdo versionado. |
+| 10. Frontera real de migración | `README.md`, fixtures Jale | No cubierta: no se permite alterar/adaptar run.sh en este PR de sombra. Se documenta el corte antes de abrir Fleet. |
+| 11. Jale, cinco condiciones/dos fixtures | `fixtures/jale-2254z*.json`, `test_contract.py`, `tests/support/helper.py` | `Contract.test_jale_real_helpers_bound_to_three_preparations`, `Contract.test_jale_independent_causes_and_possible_creation`; reproducción, no captura original. |
+| 12. Tamaño y pruebas honestas | `model.py`, `store.py`, `cli.py`, `README.md` | `Storage.test_queries_never_mutate_sqlite_or_wal`, guion Mini y recibos; sin daemon/polling ni afirmaciones de IPC real. |
+
+
+Estado de ejecución r2 antes de solicitar el turno: **no ejecutada en Mini** para
+cada prueba de esta tabla. La inspección no se presenta como PASS. El primer intento
+`43d94850ecba47a88839709894495440` terminó con salida 130 esperando turno, sin run_id.
+La evidencia y el estado posterior se registrarán por SHA; no se ejecuta en MacBook.
+
+| Cambio obligatorio §6 / error | Archivos | Pruebas específicas añadidas o reforzadas |
+| --- | --- | --- |
+| 1 / B-G1, injerto 1 | `model.py`, `scope.py`, `admission.py`, `tests/support/world.py`, `tests/test_contract.py` | `test_b_g1_windows_proof_cannot_release_unix`, `test_scope_and_cleanup_all_or_nothing`, `test_windows_fixture_only_positive_evidence_fenced` |
+| 2 / B-G2, injerto 4 | `admission.py`, `store.py`, `tests/test_contract.py`, `tests/test_cli.py` | `test_b_g2_replay_requires_exact_peer_and_channel`, `test_reserve_replay_and_query_role_same_peer_are_not_authority`, `test_heartbeat_sequence_replay_and_different_live_peer` |
+| 3 / B-G3 | `admission.py`, `tests/test_contract.py` | `test_b_g3_revalidate_after_health_io`, `test_death_after_revalidation_retains_commit` |
+| 4 / Jale, injerto 2 | `tests/support/helper.py`, `tests/support/world.py`, `tests/test_contract.py` | `test_jale_real_helpers_bound_to_three_preparations` (dos fixtures, cuatro escenarios), `test_jale_independent_causes_and_possible_creation` |
+| 5 / B-M2, B-M3 | `scope.py`, `model.py`, `store.py`, `tests/test_cli.py`, `tests/test_store.py` | `test_malformed_provider_keeps_json_envelope_and_all_resources`, `test_valid_checksum_does_not_authorize_invalid_rows`, `test_sqlite_full_io_and_secondary_cleanup_preserve_uncertainty` |
+| 6 / B-M1, B-M6 | `admission.py`, `tests/test_store.py` | `test_digest_conflict_persists_expiry_without_changing_original`, `test_state_reads_health_exactly_once`; coste de quick_check/reescritura sin medir |
+| 7 / B-M4, B-M7, injerto 5 | `owner_record.py`, `tests/test_identity_scope.py`, `tests/test_contract.py` | `test_owner_root_identity_must_be_exact_and_separate`, `test_directory_fsync_after_replace_keeps_published_protection`, `test_owner_fsync_failure_preserves_protection`, `test_publication_uncertainty_never_releases_reservation`, `test_owner_rejects_production_symlink_and_stale_sequence` |
+| 8 / B-M5, injertos 3 y 4 | `model.py`, `admission.py`, `store.py`, `tests/support/world.py`, `client.py`, `tests/test_store.py` | `test_two_executors_shared_world_budget_and_observation_changes`, `test_trusted_initial_drain_cannot_be_reopened_by_query`, concurrencia/replay con retry busy acotado |
+| 9 / trazabilidad | `README.md`, `COBERTURA.md` | Inspección documental. Aceptación Mini ya existente; límites F conservados |
+| 10 / evidencia | Guion y evidencia externa autorizada | Seis familias por unittest; estado según recibos. No cubierta activación |
+| Desktop d8fecdc7 | `tests/test_lector_desk.py` | `test_observacion_powershell_contraste_d8fecdc7`: ausente, complete0, completewarn, partialunknown, unavailable, diagnosticutc; sano y errores superiores conservados |
+
+No se acredita la liberación por perfil real Unix ni launcher Windows; sólo tipos,
+fencing, retención y transiciones sintéticas. La inyección SQLite no es una prueba
+VFS del fsync interno del ledger. Las pruebas de publicación no integran el consumidor
+U1. El coste con historial largo sigue sin medir. La configuración/identidad/launcher
+JSON documental no se presenta como ejecución nativa.
