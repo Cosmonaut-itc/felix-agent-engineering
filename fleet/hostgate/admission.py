@@ -198,6 +198,9 @@ class Hostgate:
             return action(view)
         try:
             return self.store.mutate(auth.principal, op_id, operation_digest, apply, self.world, self._auth_context(auth))
+        except PermissionError:
+            # Un rechazo ajeno no puede ocupar la operación idempotente del dueño.
+            return self._reply(op_id, [reason('identity-unverifiable', 'preparacion/reserva de otro dueno/canal')], exit_code=5)
         except Busy:
             return self._reply(op_id, [reason('busy', 'escritor ocupado', True)], exit_code=4)
         except StoreError:
@@ -212,7 +215,7 @@ class Hostgate:
             if pending is not None and (pending['requester'] != identity_json(auth.peer)
                                         or pending['anchor'] != identity_json(auth.anchor)
                                         or pending['channelBinding'] != auth.channel_binding):
-                return self._reply(request['operationId'], [reason('identity-unverifiable', 'preparacion de otro dueno/canal')], exit_code=5)
+                raise PermissionError('preparacion de otro dueno/canal')
             if pending is not None and pending['requestDigest'] != digest(request):
                 return self._reply(request['operationId'], [reason('operation-conflict', 'preparacion de otro payload')], exit_code=2)
             if pending is None:
@@ -252,10 +255,10 @@ class Hostgate:
             if reservation is None or key['storeId'] != self.config.store_id:
                 return self._reply(op_id, [reason('stale-generation', 'storeId/reservationId/generation no vigente')], exit_code=1)
             if reservation['principal'] != auth.principal or reservation['owner'] != identity_json(auth.peer):
-                return self._reply(op_id, [reason('identity-unverifiable', 'no es el dueno exacto')], exit_code=5)
+                raise PermissionError('no es el dueno exacto')
             if (self.world.verify(auth.peer).status != 'same' or not self.world.channel_alive(auth.channel_binding)
                     or reservation['channelBinding'] != auth.channel_binding):
-                return self._reply(op_id, [reason('identity-unverifiable', 'dueno/canal no verificable')], exit_code=5)
+                raise PermissionError('dueno/canal no verificable')
             reasons = mutate(reservation)
             return self._reply(op_id, reasons, exit_code=1 if reasons else 0, simulationKey=key,
                                simulationState=reservation['state'])
