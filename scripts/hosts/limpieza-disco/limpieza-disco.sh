@@ -7,17 +7,24 @@
 # antigüedad se acortan (entre paréntesis, el valor en emergencia).
 #
 # Qué borra:
-#   1. ~/remote-run/work/*   sin .remote-run.lock, sin nada modificado en 6 h (2 h)
-#                            en sus dos primeros niveles, que no sea el
-#                            mirror de una ejecución de las últimas 6 h ni el cwd
-#                            de un proceso vivo.
+#   1. ~/remote-run/work/*   sólo las copias no ocultas que ~/bin/pao-inventario.py
+#                            marca borrable (inactiva: 7 días sin uso, sin lock,
+#                            sin corridas vivas o dudosas ni bloqueo global), que
+#                            sigan sin .remote-run.lock y no sean cwd ni tengan
+#                            archivos abiertos. Nunca toca entradas ocultas
+#                            (.comprador-*, .borrando-*): ésas sólo las trata
+#                            borrar_copias.py con autorización explícita.
 #   2. Temporales de pytest  /private/tmp/bt-*, /private/tmp/gold*, ~/pytest-bt-*
 #                            y cualquier carpeta mía de /private/tmp con
 #                            subcarpetas popen-gw* (--basetemp de xdist), más los
 #                            /private/tmp/wt-* vacíos; con más de 12 h (3 h) sin
 #                            tocar, que no sean --basetemp ni cwd de un proceso
 #                            vivo ni tengan archivos abiertos.
-#   3. ~/remote-run/runs/*   terminadas (tienen archivo exit) hace más de 14 días.
+#   3. ~/remote-run/runs/*   sólo las que el inventario clasifica terminal y
+#                            borrable (más de 30 días), no ocultas y con exit.
+#      Si el inventario falla, su salida no se valida o hay bloqueo global, las
+#      reglas 1 y 3 no borran nada en esa pasada y el log dice por qué.
+#      Ninguna otra regla entra en ~/remote-run.
 #   4. Caché de Bun          bun pm cache rm, como mucho una vez por semana y sólo
 #                            si pasa de 10 GB.
 #   5. Worktrees de Codex    ~/.codex/worktrees/* sin tocar en 3 días (1 día), sin
@@ -69,9 +76,9 @@ antes=$(libre_gb)
 
 # Umbrales en minutos: normales y en emergencia (<15 GB libres).
 if [ "$antes" -lt 15 ]; then
-  EMERG=1; WORK_MIN=120; PYTEST_MIN=180; CODEX_MIN=1440; CLAUDE_MIN=1440
+  EMERG=1; PYTEST_MIN=180; CODEX_MIN=1440; CLAUDE_MIN=1440
 else
-  EMERG=0; WORK_MIN=360; PYTEST_MIN=720; CODEX_MIN=4320; CLAUDE_MIN=4320
+  EMERG=0; PYTEST_MIN=720; CODEX_MIN=4320; CLAUDE_MIN=4320
 fi
 log "inicio (libre: ${antes} GB$([ "$EMERG" = 1 ] && echo ", EMERGENCIA")$([ "$DRY" = 1 ] && echo ", dry-run"))"
 
@@ -85,23 +92,74 @@ EN_USO=$(mktemp)
 } | sed 's#^/tmp/#/private/tmp/#' | sort -u > "$EN_USO"
 trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$EN_USO"' EXIT
 
+# Reglas 1 y 3: el inventario decide qué es borrable en ~/remote-run.
+# Instalado junto a este script; desde un temporal permite una pasada en seco previa.
+INVENTARIO="$(cd "$(dirname "$0")" && pwd)/pao-inventario.py"
+INV_JSON=$(mktemp); INV_LISTA=$(mktemp); INV_ERR=$(mktemp)
+trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$EN_USO" "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
+INV_OK=0
+if [ ! -d "$RR" ]; then
+  INV_MOTIVO="no existe $RR"
+elif ! /usr/bin/python3 -B "$INVENTARIO" --raiz "$RR" > "$INV_JSON" 2> "$INV_ERR"; then
+  INV_MOTIVO="el inventario falló: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
+elif ! /usr/bin/python3 -B - "$INV_JSON" "$RR" > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
+import json
+import os
+import sys
+
+datos = json.load(open(sys.argv[1]))
+raiz = os.path.abspath(sys.argv[2])
+if datos.get('schema') != 'remote-run-inventario@1' or os.path.abspath(datos.get('raiz', '')) != raiz:
+    sys.exit('esquema o raíz inesperados')
+work, runs = os.path.join(raiz, 'work'), os.path.join(raiz, 'runs')
+bloqueos = [c['motivo'] for c in datos['copias']
+            if c['motivo'].startswith('ejecución no descartable; corridas de dueño desconocido')]
+bloqueos += [c['motivo'] for c in datos['corridas'] if os.path.abspath(c['ruta']) == runs]
+bloqueos += [c['motivo'] for c in datos['copias'] if os.path.abspath(c['ruta']) == work]
+if bloqueos:
+    sys.exit('bloqueo global del inventario: ' + bloqueos[0])
+
+
+def nombre(ruta, padre):
+    base = os.path.basename(ruta)
+    if os.path.dirname(os.path.abspath(ruta)) != padre or not base or '\n' in base:
+        sys.exit('ruta inesperada en el inventario: ' + ruta)
+    return base
+
+
+def visible(c):
+    return not os.path.basename(c['ruta']).startswith('.')
+
+
+for c in datos['copias']:
+    if c['borrable'] is True and c['clase'] == 'inactiva' and visible(c):
+        print('work\t' + nombre(c['ruta'], work))
+for c in datos['corridas']:
+    if c['borrable'] is True and c['clase'] == 'terminal' and visible(c):
+        print('runs\t' + nombre(c['ruta'], runs))
+PY
+then
+  INV_MOTIVO="salida del inventario no válida: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
+else
+  INV_OK=1
+fi
+[ "$INV_OK" = 1 ] || log "reglas 1 y 3 sin borrar: $INV_MOTIVO"
+
 en_uso() { # ¿algún proceso usa $1 o algo dentro de $1?
   grep -qF -- "$1" "$EN_USO"
 }
 
-# 1. remote-run/work
-if [ -d "$RR/work" ]; then
-  RECIENTES=$(find "$RR/runs" -maxdepth 2 -name meta -mmin -360 -exec grep -h '^mirror=' {} + 2>/dev/null \
-    | sed 's#.*/work/##' | sort -u)
-  for d in "$RR/work"/*/; do
-    d=${d%/}; n=$(basename "$d")
+# 1. remote-run/work: copias no ocultas que el inventario marca borrables
+if [ "$INV_OK" = 1 ]; then
+  while IFS=$'\t' read -r tipo n; do
+    [ "$tipo" = work ] || continue
+    case "$n" in ""|.*|*/*) continue ;; esac
+    d="$RR/work/$n"
+    [ -d "$d" ] && [ ! -L "$d" ] || continue
     [ -e "$d/.remote-run.lock" ] && continue
-    [ -n "$(find "$d" -maxdepth 2 -mmin -"$WORK_MIN" -print -quit 2>/dev/null)" ] && continue
-    printf '%s\n' "$RECIENTES" | grep -qxF -- "$n" && continue
     en_uso "$d" && continue
-    [ -e "$d/.remote-run.lock" ] && continue  # re-chequeo justo antes de borrar
-    borrar "$d" "remote-run/work"
-  done
+    borrar "$d" "remote-run/work, inventario: inactiva y borrable"
+  done < "$INV_LISTA"
 fi
 
 # 2. Temporales de pytest
@@ -123,11 +181,16 @@ for d in /private/tmp/* "$HOME"/pytest-bt-*; do
   borrar "$d" "$motivo"
 done
 
-# 3. remote-run/runs terminadas hace más de 14 días
-if [ -d "$RR/runs" ]; then
-  find "$RR/runs" -mindepth 2 -maxdepth 2 -name exit -mtime +14 2>/dev/null | while read -r f; do
-    borrar "$(dirname "$f")" "run terminada >14 d"
-  done
+# 3. remote-run/runs: terminales que el inventario marca borrables (más de 30 días)
+if [ "$INV_OK" = 1 ]; then
+  while IFS=$'\t' read -r tipo n; do
+    [ "$tipo" = runs ] || continue
+    case "$n" in ""|.*|*/*) continue ;; esac
+    r="$RR/runs/$n"
+    [ -d "$r" ] && [ ! -L "$r" ] && [ -e "$r/exit" ] || continue
+    en_uso "$r" && continue
+    borrar "$r" "run terminal >30 d, inventario"
+  done < "$INV_LISTA"
 fi
 
 # 4. Caché de Bun: semanal y sólo si pasa de 10 GB
@@ -181,7 +244,7 @@ done
 # 7. Cachés de Next.js (.next/cache y .next/dev) de apps sin servidor vivo
 find "$HOME" -xdev \( -path "$HOME/Library" -o -path "$HOME/.Trash" -o -name node_modules -o -name .git \
     -o -path "$HOME/.cache" -o -path "$HOME/.bun" -o -path "$HOME/.rustup" -o -path "$HOME/.android" \
-    -o -path "$HOME/.cargo" \) -prune -o -type d -name .next -print -prune 2>/dev/null |
+    -o -path "$HOME/.cargo" -o -path "$HOME/remote-run" \) -prune -o -type d -name .next -print -prune 2>/dev/null |
 while read -r nx; do
   app=$(dirname "$nx")
   # Un proceso con cwd en la app (p. ej. next dev) la protege entera.
