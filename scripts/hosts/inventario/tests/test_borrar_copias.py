@@ -441,11 +441,14 @@ class BorrarCopiasTest(unittest.TestCase):
         codigo.mkdir()
         for nombre in ('borrar_copias.py', 'inventario.py'):
             shutil.copyfile(Path(borrar.__file__).parent / nombre, codigo / nombre)
-        entorno = dict(os.environ)
+        # El Python de Apple guarda el bytecode bajo ~/Library/Caches/com.apple.python, no junto al código.
+        prefijo = self.raiz / 'pycache'
+        entorno = dict(os.environ, PYTHONPYCACHEPREFIX=str(prefijo))
         entorno.pop('PYTHONDONTWRITEBYTECODE', None)
         salida = subprocess.run([sys.executable, str(codigo / 'borrar_copias.py'), '--raiz', str(self.raiz)],
                                 cwd=self.raiz, env=entorno, capture_output=True, text=True, timeout=180)
         self.assertEqual(salida.returncode, 0, salida.stderr + salida.stdout)
+        self.assertFalse(prefijo.exists())
         self.assertFalse((codigo / '__pycache__').exists())
 
     def test_interrupcion_segunda_con_informe_y_rastro(self):
