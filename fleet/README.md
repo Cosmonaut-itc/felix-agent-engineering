@@ -32,8 +32,10 @@ Referencias literales detectables a la raíz del origen en argv o archivos
 admitidos se rechazan. Además del texto literal de la raíz, se comprueban paths
 absolutos de argv, literales entre comillas simples/dobles (incluidos espacios)
 y tokens absolutos delimitados por espacio, NUL, comillas o `;|<>(){}[],=` en
-argv/contenido. Cada literal se separa por `:` antes de comprobar identidad,
-también si el origen aparece en una posición no inicial. No se modifica argv.
+argv/contenido. Se conserva y comprueba el literal completo, además de sus
+posibles componentes separados por `:`, también en posición no inicial. Un
+nombre POSIX individual puede contener `:`; ese carácter no acredita una lista.
+No se modifica argv.
 Primero se busca el texto de la raíz; después se comprueban cantidad, longitud
 y profundidad de todos los candidatos antes de resolver ninguno físicamente.
 Se admiten hasta 40.000 candidatos por valor, 16.384 bytes por ruta y 128 barras
@@ -43,8 +45,10 @@ se recorren de forma perezosa, sin materializar una tupla de prefijos. El límit
 de 16 KiB conserva la fixture binaria anterior de 8 KiB; es una cota de trabajo,
 no una afirmación de PATH_MAX del host. Una ruta/candidato que excede una cota
 rechaza el envío con `source_reference_limit`, incluso dentro de un binario;
-no se considera segura por no poder resolverla. Los 32 MiB por archivo son un
-máximo adicional, no una promesa de admitir todo binario de ese tamaño. La comprobación
+no se considera segura por no poder resolverla. Esto puede rechazar notebooks,
+CSS o JSON con base64 textual reconocido como candidato excesivo, aunque el
+archivo tenga menos de 32 MiB. Los 32 MiB por archivo son un máximo adicional,
+no una promesa de admitir cualquier archivo menor que ese tamaño. La comprobación
 de contención compara dispositivo/inode y ancestros existentes, también bajo
 otra grafía de mayúsculas cuando el filesystem identifica el mismo objeto.
 No convierte rutas a lower/casefold ni equipara objetos distintos en un volumen
@@ -92,6 +96,9 @@ EACCES, EPERM o ELOOP al obtener identidad física producen
 `path_identity_unavailable`, sin publicar la ruta ni admitir un alias que no
 pueda contrastarse. Es una pérdida explícita de disponibilidad: una referencia
 externa inaccesible o cíclica también puede rechazar una entrada ordinaria.
+También se comprueba la identidad de entradas recorridas antes de descartarlas
+por Git: un symlink cíclico ignorado puede rechazar el envío. Es el contrato
+conservador de esta edición; no cambia el orden del inventario ni abre aliases.
 ENOENT, ENOTDIR y ENAMETOOLONG del filesystem significan que ese objeto no tiene
 identidad observable; aún se comparan sus ancestros y el texto literal. Otros
 errores se propagan al manejo normal del CLI. Las cotas se comprueban antes de
@@ -332,6 +339,13 @@ las identidades sin reenviar. Antes de confirmar registro siguen siendo posibles
 errores sin IDs. Se mantiene el límite declarado de interrupción por señales
 durante cierre; esta corrección no amplía el manejo de Ctrl-C.
 
+Si se acredita que no se creó supervisor y se completa NOT_CREATED/relevo,
+submit devuelve exit 1, IDs, `registered=true` y `accepted=false`, sin `outcome`.
+Ese recibo acredita no creación; `status`/`wait` son la fuente del resultado de
+evidencia. Si el sellado falla, el comando sigue siendo `never_created`, pero
+el resultado es `incomplete` y wait devuelve 3. No se añade una lectura del
+ledger para completar el recibo ni se deduce `failed` del exit 1 de submit.
+
 El supervisor y comando tienen sesiones separadas del cliente. SIGINT/SIGHUP
 del cliente no cancelan la carga; el supervisor ignora ambas señales. El comando
 debe ser compatible con el piloto: no daemonizar ni sacar descendientes del
@@ -368,27 +382,53 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'tes
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_ledger_lifecycle.py' -v
 ```
 
-`test_cli.py` conserva las 68 conductas públicas anteriores y añade once de
-`review_r2_cases.py`: privados por identidad, listas literales, límites de coste,
-identidad inaccesible y actores de relevo entre emisores. Son 79 casos públicos
-y el caso focalizado de ciclo de vida conservado en `test_ledger_lifecycle.py`:
-80 escritos, cero ejecutados. Las tres fixtures de coste calibran primero una
-cota efectiva de memoria de 256 MiB en procesos propios; si no pueden acreditarla
-(incluido Darwin), fallan antes de lanzar el escáner. El control previo reserva
-como máximo 320 MiB de payload, más el intérprete, en un proceso ya acotado por
-la propia fixture. Su ejecución requiere presupuesto Mini para ese pico previo.
-No ejecutar el rojo de coste sin seguir el procedimiento de COVERAGE.
-Los positivos de objetos distintos pueden usar una base temporal propia
-`FLEET_CASE_SENSITIVE_TMPDIR` en volumen sensible, con el resto de aliases en la
-base habitual case-insensitive; no se crea ni monta ningún volumen desde la suite.
+La base cde tenía 80 métodos escritos, sin ejecución de ese candidato. Se
+conservan 73 cuerpos de método sin cambios; cuatro métodos refuerzan oráculos o
+preparación (loader, dos lectores y ciclo de vida), y se sustituyen las tres
+fixtures grandes de coste por fronteras pequeñas de longitud, profundidad/base64
+y cantidad. Se añaden siete regresiones: cuatro de literal completo con `:`,
+NOT_CREATED/sellado incompleto,
+fallo previo al entrypoint sin JSON y ciclo ignorado con estado inicializado.
+El inventario actual es 86 métodos públicos y uno focalizado: 87 escritos,
+cero ejecutados. El harness cambia ubicación, diagnósticos y atribución;
+conservar métodos no acredita equivalencia runtime. Las tres entradas funcionales son
+16.385 bytes, 516 bytes de base64 textual y 160.004 bytes binarios; mantienen
+exit 2/`source_reference_limit`, refutación previa a registro y timeout de 15 s.
+El estrés de 4/12 MiB queda **PENDIENTE de contención efectiva coordinada**,
+fuera de la suite funcional y sin skip verde. No ejecutar un rojo potencialmente
+OOM; ni RLIMIT_AS ni RSS advisory acreditan una cota dura Darwin por declaración.
+
+Antes de asignar temporales, ambos harnesses exigen rutas existentes, absolutas,
+físicas y propias suministradas por el coordinador al launcher autorizado:
+
+- `FLEET_TEST_RUN_DIR`: directorio real `remote-run/runs/<runId>`, sin escritura
+  de grupo/otros; el harness no deduce HOME ni runId.
+- `FLEET_TEST_FIXTURE_BASE`: base y jerarquía privadas (0700) físicamente bajo
+  esa corrida, en filesystem que permita los aliases case-insensitive exigidos.
+- `FLEET_CASE_SENSITIVE_TMPDIR`: otra base privada bajo la misma corrida,
+  obligatoria para los dos métodos `case_sensitive_distinct`, con objetos
+  distintos acreditados por identidad en un filesystem sensible a mayúsculas.
+
+Sin variable válida se falla antes de mkdtemp. No hay fallback a T compartido,
+HOME o `/tmp`, ni creación/montaje de volumen. Si las bases disponibles no
+pueden satisfacer ubicación y filesystem simultáneamente, queda pendiente la
+precondición de plataforma; el padre debe coordinarla con Mini antes de correr.
+Los skips históricos de volumen y de rutas que ya contienen secretos declarados
+dejan su dimensión pendiente; no acreditan cobertura.
 La matriz, selector rojo/verde y fronteras sin fixture están en
 [`tests/COVERAGE.md`](tests/COVERAGE.md).
 Los casos públicos usan subprocess del CLI, fixtures y recursos propios; no
 importan Fleet ni consultan SQL. La prueba focalizada importa el Ledger real
 en un subprocess propio y usa primitivas externas para retener un lector más
 de diez segundos antes de liberar. No reproduce públicamente la finalización
-nativa durante copia BD/WAL. El estado incompatible usa una copia cerrada propia y
-el campo público `user_version` del header SQLite, sin tablas ni SQL. Incluyen
+nativa durante copia BD/WAL. Antes de alterar `user_version` o exigir lectura
+sin sidecars en los dos oráculos de lectores, se acredita status terminal,
+atribución, ausencia de procesos propios, exclusión del directorio, ausencia de
+WAL/SHM y header público esperado. Una preparación no acreditada devuelve su
+causa y retiene evidencia; no borra WAL ni cambia el error esperado
+`unsupported Fleet pilot schema; no migration` por uno genérico. La comparación
+con WAL activo sigue separada e íntegra. Esto no acredita resuelto el rojo 3.9
+de FIFO129: esa corrida era de b5ca4987, nunca de cde ni del head actual. Incluyen
 snapshots sin Git, Git/índice/working tree,
 privacidad positiva y negativa, entorno/PATH en cola, streams simultáneos y un
 fallo de escritura mediante RLIMIT_FSIZE real, artefactos inválidos y pérdida
@@ -396,13 +436,31 @@ posterior, concurrencia inicial, lecturas sin efectos y rechazos de entradas.
 El límite público ejercita escritura; no afirma inyectar separadamente un fallo
 de cierre/fsync. El soporte concreto de flock y durabilidad sigue pendiente.
 
+La tabla loader de Fleet se ejercita con Python ya arrancado: un bootstrap
+propio introduce el entorno del job y ejecuta el script real `bin/fleet` mediante
+runpy, conservando argv/exit/JSON, sin importar Fleet desde la fixture. Un caso
+separado usa PYTHONHOME propio vacío para fallar antes del entrypoint. Un loader
+puede actuar en esa frontera nativa distinta; los reportes129 no contienen el
+stderr causante y no acreditan que ésa fuera su causa observada.
+
 Cada admisión se inventaría antes de lanzar, incluidos wrappers/directos y
-concurrencia. Timeout, JSON ilegible o respuesta perdida conservan el pendiente.
-Sólo se refuta ausencia con cliente terminado y BD ausente antes/después en el
-mismo estado exclusivo, sin borrado intermedio. La limpieza exige atribución y
-ausencia efectiva de procesos/grupos propios mediante señal 0; ante duda falla
-y retiene temporales. Barreras con autoexit, deadlines acotados y ningún proceso
-ajeno señalado. No hay instalaciones ni CI nuevo.
+concurrencia. Un JSON ilegible conserva rc/stdout/stderr y produce un diagnóstico
+explícito. Sólo se refuta por ausencia con cliente terminado y BD ausente
+antes/después en el mismo estado exclusivo, sin borrado intermedio. Timeout o
+respuesta perdida conservan incertidumbre si falta esa acreditación. El negativo
+del ciclo ignorado usa otro oráculo explícito: BD inicializada cerrada, EX propio
+mantenido durante el CLI, respuesta exacta de identidad no disponible y estado
+completo invariable, sin sidecars. Esa refutación no se aplica a JSON ilegible.
+La limpieza exige atribución y ausencia efectiva de procesos/grupos propios
+mediante señal 0; ante duda falla
+y retiene la raíz en su base de corrida. En `<base>/fleet-cli-*` quedan
+`admission-*.json`, `cli-json-*.json`, `closed-database-preparation.json` cuando
+corresponda y el estado/cápsulas/intentos originales. El caso sin JSON conserva
+su diagnóstico incluso si la ausencia se refuta. La focalizada conserva
+`<base>/fleet-lifecycle-*/lifecycle-client.json` y estado si no logra recoger al
+cliente. No se mueve ni oculta una carga incierta para limpiar. Barreras con
+autoexit, deadlines acotados y ningún proceso ajeno señalado. No hay instalaciones
+ni CI nuevo.
 
 El watchdog de 30 segundos de la matriz de 144 consultas se conserva: su autoexit
 da error y `done=watchdog`, nunca liberación sana. Su duración y margen siguen

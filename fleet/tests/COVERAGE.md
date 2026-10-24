@@ -1,14 +1,64 @@
-# SEN-3821, corrección consolidada posterior a review integral r2
+# SEN-3821, corrección autorizada para review4 integral
 
 Sólo inspección estática. Ninguna prueba se ha ejecutado en este encargo.
-La suite pública es `test_cli.py`, que incorpora cinco mixins. Se conservan las
-69 conductas de e469add3: 16 heredadas, 21 de contenido, 18 de corrección r1,
+La suite pública es `test_cli.py`, que incorpora cinco mixins. Se parte de las
+69 conductas escritas de e469add3: 16 heredadas, 21 de contenido, 18 de corrección r1,
 dos de temporales r2, once integrales y una focalizada de ciclo de vida.
-`review_r2_cases.py` añade once métodos públicos: 80 escritos (79 públicos y
-uno focalizado), cero ejecutados. En la suite pública
-no se importa Fleet ni se consulta SQL. Cada submit se registra antes de lanzar;
-los rechazos usan estado exclusivo, cliente terminado y BD ausente antes/después.
-Un fallo de atribución o de cierre propio conserva los temporales.
+Sobre cde (80 métodos escritos, cero ejecutados de ese candidato), quedan 73
+cuerpos de método sin cambios, cuatro métodos con oráculo/preparación reforzados
+(loader, dos lectores y ciclo de vida), tres fixtures de coste sustituidas y
+siete métodos nuevos. Son 87 escritos: 86 públicos y uno focalizado, cero
+ejecutados. Los helpers comunes de atribución/ubicación/diagnóstico también
+cambian; conservar cuerpos no prueba equivalencia runtime. La dimensión de
+estrés retirada no se cuenta como conservada ni ejecutada.
+En la suite pública no se importa Fleet ni se consulta SQL. Cada submit se
+registra antes de lanzar; el rechazo por ausencia exige estado exclusivo,
+cliente terminado y BD ausente antes/después, sin borrado intermedio. La
+refutación específica del ciclo ignorado con BD existente se describe abajo.
+Un fallo de atribución o de cierre propio conserva las fixtures en su corrida.
+
+## Siete regresiones públicas nuevas para review4
+
+- Cuatro métodos `r4_colon_`: argv y contenido con symlink externo fijo cuyo
+  nombre contiene `:` (y espacio), y argv/contenido con raíz `Project:Source`
+  bajo otra grafía acreditada físicamente. Antes de enviar, todos exigen
+  samefile y dev/inode del archivo real; el texto canónico de la raíz no aparece
+  en el literal. Se exige rechazo específico antes de registro. Se conservan
+  ambos casos de componente no inicial y los positivos de objetos distintos.
+  El literal completo y sus componentes se validan antes de resolver ninguno;
+  `:` no prueba que el valor sea una lista. No se añade expansión ni AST.
+- `r4_not_created_receipt`: FIFO propio antes de spawn, cápsula sólo como
+  candidata y status positivo registered/starting/supervisor=null con IDs antes
+  de obstruir el destino bundle con un archivo propio. Tras liberar el FIFO y
+  recoger el cliente, el recibo auténtico atribuye los mismos IDs, exit1,
+  registered=true, accepted=false y ningún outcome. status y wait acreditan
+  never_created, collection incomplete, bundle_seal_failed y outcome/recorded_outcome
+  incomplete; wait debe dar exit3. No SQL ni respuestas simuladas. finally
+  libera/recoge y sólo restaura el log tras acreditar cierre propio.
+- `r4_pre_entrypoint_failure`: PYTHONHOME propio vacío impide arrancar el CLI
+  real. Debe terminar sin JSON/BD, con stderr de encodings. `call` falla con
+  diagnóstico rc/stdout/stderr persistido, y sólo la ausencia acreditada en
+  estado exclusivo refuta el submit. No se trata como rechazo correcto Fleet.
+  Se conserva intacto el negativo de admisión aceptada pero no atribuida;
+  guard_admissions no se relaja.
+- `r4_ignored_cyclic_symlink`: Git inicializado y estado propio previamente
+  ejecutado/cerrado. Git debe confirmar que ignora el symlink y stat acreditar
+  ELOOP sin seguir recursos ajenos. Se mantiene EX propio durante el nuevo CLI;
+  se exige exit2/path_identity_unavailable y la imagen completa invariable,
+  con BD existente y sin WAL/SHM. La refutación requiere además identidad del
+  descriptor del estado y una segunda adquisición EX rechazada. Si no se
+  acredita, queda pendiente y no se borra la carga. Este oráculo sólo vale para
+  esa respuesta JSON exacta; no se usa para refutar stdout ilegible.
+
+La tabla loader se prueba por `bin/fleet` real usando un bootstrap propio que,
+después de arrancar Python, introduce las variables del job y ejecuta el script
+con runpy, argv y exit originales. No llama funciones de producción ni importa
+Fleet desde la fixture. El fallo previo al entrypoint es otra frontera. FIFO129
+no publicó el stderr causante: no se le atribuye una causa nativa observada.
+Ante JSON ilegible se conservan rc/stdout/stderr, incluso con exit no cero;
+sin cliente terminado y BD ausente antes/después en estado exclusivo no hay
+refutación. Cada admisión conserva un recibo privado de atribución y la
+exclusividad se revoca si otro envío pendiente comparte estado.
 
 ## Delta consolidado r2, pendiente de ejecución
 
@@ -41,14 +91,15 @@ Un fallo de atribución o de cierre propio conserva los temporales.
 4. Coste: `r2_whole_argv` exige rechazo por longitud y profundidad antes de
    resolver el argumento absoluto completo. También exige detección textual
    del origen aunque aparezca después de un prefijo que supera la cota.
-   Tres casos `r2_cost_` usan un token slash-heavy de 4 MiB, base64 de 4 MiB
-   con una barra cada 64 bytes y binario de 12 MiB con NUL/no UTF-8 y millones
-   de tokens cortos. El resultado elegido es exit2/source_reference_limit,
-   BD ausente y admisión refutada; no admisión silenciosa ni truncación. La
-   cota de cada subprocess CLI es 15 segundos y 256 MiB de espacio de direcciones
-   con calibración efectiva previa descrita abajo. El escáner valida todos los
-   candidatos antes de resolver el primero; los casos de tokens largos no
-   alcanzan realpath y el binario excede cantidad antes de efectuar sus stat.
+   Los tres métodos `r2_cost_` se sustituyen por entradas pequeñas: `/` más
+   16.384 bytes Q (16.385 bytes), `/AAA` repetido 129 veces (516 bytes de base64
+   textual con 129 barras) y `/Q\0\xff` repetido 40.001 veces (160.004 bytes).
+   Cruzan respectivamente longitud, profundidad y cantidad. Deben devolver
+   exit2/source_reference_limit, BD ausente y admisión refutada antes del
+   registro, dentro de los mismos 15 segundos. No hay calibración ni RLIMIT_AS.
+   El escáner valida todos los candidatos antes de resolver el primero; los
+   casos largos/profundos no alcanzan realpath y el binario excede cantidad
+   antes de efectuar sus stat. No se elevan las cotas 16384/128/40000.
    El positivo binario anterior de 8 KiB se conserva intacto. No se promete
    admitir todo binario de hasta 32 MiB ni se adoptan estimaciones del revisor
    como medición. Las cotas son de algoritmo; RSS/tiempo reales siguen pendientes.
@@ -78,44 +129,71 @@ Un fallo de atribución o de cierre propio conserva los temporales.
    La focalizada de cierre de 12s se conserva. No hay fixture que fuerce EMFILE
    exactamente en la antigua ventana; el orden y la limpieza son inspección.
 
+## Bases de fixtures y evidencia que debe preparar el coordinador
+
+Ambos harnesses validan antes de mkdtemp las rutas existentes suministradas al
+launcher autorizado. `FLEET_TEST_RUN_DIR` es el directorio físico real de la
+corrida `remote-run/runs/<runId>`, propio y sin escritura de grupo/otros; no se
+adivina desde HOME o runId. `FLEET_TEST_FIXTURE_BASE` debe ser un directorio físico
+propio dentro de esa corrida, con toda su jerarquía bajo ella privada (0700).
+Se rechazan rutas relativas, symlinks/componentes symlink y bases ajenas a la
+corrida. No hay creación de base ni fallback a T compartido, HOME o `/tmp`.
+
 Los aliases nuevos fallan su precondición, sin skip, en un volumen no apto.
 Usar una copia Mini en volumen case-insensitive para `r2_private_case_aliases`
-y `r2_colon_`, y otra propia en volumen case-sensitive para
+y `r2_colon_`/`r4_colon_*case_alias`, y otra propia en volumen case-sensitive para
 `r2_private_case_sensitive`. Acreditar ambas corridas sin skips/precondiciones
 fallidas. La suite no monta ni formatea volúmenes. Los skips históricos no se
 convierten en evidencia: repetir también sus selectores en el volumen pertinente.
 HOME real del uid sigue por inspección; no se inventaría para una regresión.
 Para una corrida completa sin skips de volumen, el harness admite
-`FLEET_CASE_SENSITIVE_TMPDIR` como base temporal propia ya existente en el volumen
-sensible: sólo los dos métodos cuyo nombre contiene `case_sensitive_distinct`
-crean allí su raíz; el resto usa la base habitual case-insensitive. Todo HOME,
+`FLEET_CASE_SENSITIVE_TMPDIR` como base obligatoria propia ya existente en el
+volumen sensible, también física y con jerarquía 0700 bajo FLEET_TEST_RUN_DIR:
+sólo los dos métodos cuyo nombre contiene `case_sensitive_distinct` crean allí
+su raíz; el resto usa FLEET_TEST_FIXTURE_BASE case-insensitive. Todo HOME,
 proyecto, estado y cleanup sigue dentro de la raíz exclusiva de cada método.
-No se crea ni configura un volumen desde las pruebas. Sin esa base, usar los
-selectores separados; no presentar un intento completo fallido como verde.
+No se crea ni configura un volumen desde las pruebas. Si no hay bases que
+satisfagan a la vez ubicación y filesystem, declarar la precondición pendiente
+y coordinar con Mini antes de correr. Los selectores separados no dispensan
+la ubicación dentro de la corrida ni acreditan un conjunto sin ejecutar.
+El caso histórico de cuenta/hostname puede hacer skip si su ruta contiene el
+valor declarado; no cuenta esa dimensión como verde. Tampoco se inventa una
+ubicación fuera de la corrida para evitarlo.
 
-### Cota efectiva antes del rojo de coste
+Los recursos retenidos permanecen en `<base>/fleet-cli-*`: `admission-*.json`
+contiene estado, exclusividad, ausencia inicial, IDs/refutación y respuesta;
+`cli-json-*.json` guarda rc/stdout/stderr ilegibles; el caso sin JSON conserva
+esa raíz intencionadamente. `closed-database-preparation.json` explica una
+preparación no acreditada; `not-created-client.json` conserva PID/recogida en
+el caso FIFO nuevo. Estado, cápsulas e intentos quedan junto a esos recibos.
+La focalizada usa `<base>/fleet-lifecycle-*`, con `lifecycle-client.json` y
+estado retenidos si no confirma recogida. No mover/ocultar cargas inciertas ni
+borrarlas con refutación incompleta. El temporal de copia BD/WAL del producto
+conserva su base `/tmp` validada y su límite plaintext; esta orden de fixtures
+no modifica ese contrato.
 
-No ejecutar el rojo slash-heavy/base64 con sólo un timeout. Cada caso de coste
-realiza dos calibraciones en procesos propios, secuenciales y recogidos, antes
-de lanzar el CLI. El control sin un límite nuevo asigna como máximo 320 bloques
-de 1 MiB y debe completar 320 MiB; después termina y libera todo. El segundo fija
-RLIMIT_AS soft=hard=256 MiB y usa la misma secuencia: debe recibir MemoryError
-antes de acumular 256 MiB y publicar ambos límites exactos. Sólo entonces se
-lanza el CLI por exec con el mismo RLIMIT_AS y Python. Se imprime la calibración
-real. Esto contrasta un límite efectivo sobre asignaciones acumuladas frente
-al mero éxito de setrlimit/getrlimit. La calibración no importa Fleet ni admite
-cargas; su payload máximo es 320 MiB, más intérprete/overhead, por proceso.
+### Estrés grande PENDIENTE de contención efectiva coordinada
 
-Antes de seleccionar estos casos, el coordinador debe asignar ese presupuesto
-de memoria temporal al turno propio Mini y conservar plataforma/Python, límites
-y salidas completas. No sumar calibraciones concurrentes. En Darwin no se
-presume que RLIMIT_AS funcione: si setrlimit falla, el control no completa o
-el proceso limitado llega a 256 MiB, la fixture falla antes del escáner y retiene
-esa cobertura como pendiente. No omitir esa precondición, cambiarla por RSS
-advisory, un flag declarativo o alargar timeout. Sin acreditación efectiva en
-ese Darwin, no correr manualmente el rojo: obtener otra contención efectiva
-con el dueño de Mini y documentar la prueba antes de reintentar. La inspección
-actual no acredita ninguna calibración ni contención Darwin.
+El recorte autorizado retira de la suite funcional las tres calibraciones
+RLIMIT_AS/320 MiB y los payloads grandes. No se convierten en skips ni se
+cuenta la dimensión de coste grande como cubierta por las fronteras pequeñas.
+Se conserva el procedimiento pendiente: preparar copias propias roja y verde,
+coordinar con Mini una contención efectiva acreditada antes de lanzar cualquier
+rojo potencialmente OOM, reservar su presupuesto y recoger cada cliente antes
+del siguiente. No basta timeout, setrlimit/getrlimit ni RSS advisory como cota
+dura Darwin. No se añade aquí contención, dependencia o volumen nuevo y no
+se ejecuta el procedimiento sin resolver esa precondición con el dueño.
+
+Entradas pendientes: slash-heavy `b'/Q' * (2*1024*1024)` (4 MiB), base64
+`(b'/' + b'A'*63) * 65536` (4 MiB) y binario `b'/Q\0\xff' * (3*1024*1024)`
+(12 MiB). Expectativa verde: exit2/source_reference_limit antes de resolver,
+BD ausente y refutación válida, sin truncación/admisión silenciosa y con el
+deadline de 15 s. Preservar plataforma/Python, entradas, rc/stdout/stderr,
+tiempos y evidencia real de contención. El binario puede rechazar por cantidad
+en ambos heads; registrar causa/coste sin inventar rojo obligatorio. La medida
+de RSS no es esa contención. No se incluye un launcher de estrés funcional.
+Esta pérdida de disponibilidad afecta también archivos ordinarios con base64
+en notebooks/CSS/JSON; el máximo de 32 MiB no promete admitirlos todos.
 
 ### Procedimiento Mini del relevo fallido y del descriptor
 
@@ -144,20 +222,22 @@ todavía script ejecutado ni se presenta la focalizada conservada como esa prueb
 
 ### Selectores rojo/verde consolidados
 
-Rojo desde e469add3 y verde desde el nuevo head exacto, en copias propias. Antes
-del rojo, trasladar sólo el harness nuevo (incluye la calibración de coste):
+Procedimiento pendiente, sólo tras APTO doble y coordinación Mini. Rojo desde
+e469add3 y verde desde el nuevo head exacto, en copias propias. Antes del rojo,
+trasladar los cuatro harnesses editados, con bases de corrida y coste pequeño:
 
 ```sh
 git diff e469add3e663f9475cb7a75d0c56c2d1179b93fd "$R2_CANDIDATE" -- \
-  fleet/tests/test_cli.py fleet/tests/review_r2_cases.py | git -C "$R2_RED_COPY" apply
+  fleet/tests/test_cli.py fleet/tests/correction_cases.py \
+  fleet/tests/review_r2_cases.py fleet/tests/test_ledger_lifecycle.py | git -C "$R2_RED_COPY" apply
 ```
 
 Con el turno FIFO original y los dos Python autorizados, usar `-k r2_private_case_aliases`,
 `-k r2_colon_`, `-k r2_handoff_actor`, `-k r2_whole_argv`,
 `-k r2_unobservable_` sobre `test_cli.py` en volumen case-insensitive, uid sin
 privilegios y raíz temporal que no contenga el hostname declarado. En volumen
-sensible usar `-k r2_private_case_sensitive`. Para coste, sólo tras reservar el
-presupuesto previo y manteniendo la calibración dentro de cada caso:
+sensible usar `-k r2_private_case_sensitive`. Proporcionar las tres variables
+de bases descritas arriba. Para las tres fronteras funcionales pequeñas:
 
 ```sh
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_cli.py' -k r2_cost_ -v
@@ -165,14 +245,17 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'tes
 
 Rojo esperado estático: privados incluidos/huella variable, aliases posteriores
 al colon admitidos y hostname del emisor A publicado en actores de B. Los nuevos
-límites de ruta deben faltar en rojo; el token de 4 MiB puede fallar por memoria bajo
-la cota efectiva en lugar del error acotado esperado. El binario de 12 MiB puede ser
-rechazado en ambos heads por cantidad: se registra coste y causa, sin atribuirle
-un rojo funcional obligatorio. Los casos de identidad deben distinguir el error
+límites de ruta deben faltar en rojo. El caso pequeño de cantidad puede rechazar
+en ambos heads; se conserva su causa sin atribuirle un rojo obligatorio.
+Los casos de identidad deben distinguir el error
 genérico anterior de path_identity_unavailable. El positivo de objetos distintos
 debe pasar en ambos heads. Ninguna de estas expectativas ha sido ejecutada.
-Después ejecutar las 79 conductas públicas con esa base sensible y la base habitual
-case-insensitive, más la focalizada conservada, o distribuir selectores según
+Para review4, preparar además copia roja de cde con sólo los cuatro harnesses
+actuales y seleccionar `-k r4_`. Los cuatro literales y la ausencia de outcome
+deben discriminar la corrección; los negativos de infraestructura y ciclo
+pueden pasar en ambos heads. No ejecutar ni restaurar payloads grandes desde
+estos selectores. Después ejecutar las 86 conductas públicas con esa base
+sensible y la base habitual case-insensitive, más la focalizada conservada, o distribuir selectores según
 volumen; un verde parcial con skips no acredita el conjunto.
 
 ## Correcciones integrales r3, todas pendientes de Mini
@@ -239,7 +322,11 @@ volumen; un verde parcial con skips no acredita el conjunto.
   cambio futuro de sincronización debe conservar salida acotada y cleanup
   atribuible, sin limitarse a aumentar segundos.
 
-Procedimiento histórico rojo/verde r3, **no ejecutado**: preparar en Mini dos copias propias
+Procedimiento histórico rojo/verde r3, **no ejecutado ni vigente tal cual**:
+el harness histórico usa T compartido; antes de cualquier comparación futura,
+incorporar las bases/recibos actuales bajo corrida y conservar todos sus mixins,
+sin trasladar calibraciones ni payloads grandes. El padre coordina esa preparación.
+La receta histórica de código era preparar en Mini dos copias propias
 separadas, roja desde cb8f812 y verde desde el head exacto entregado, con ambos
 worktrees originales y FIFO129 intactos. `INTEGRAL_RED_COPY` es la ruta de la copia
 roja. Aplicar sólo el harness original r3, fijado a e469add3 para no introducir
@@ -268,7 +355,7 @@ El caso de objetos distintos debe seguir pasando donde exista. Verde esperado:
 rechazos previos a BD, exclusión de estado/huella, metadatos saneados, recibo con
 IDs y cierre bloqueado hasta liberar. Registrar skips, tiempos, errores y bytes
 reales sin atribuirles aquí ejecución. El harness original tenía 68 conductas
-públicas y una focalizada; el candidato consolidado requiere las 79 públicas
+públicas y una focalizada; el candidato actual requiere las 86 públicas
 y la focalizada completas. Una ejecución con skips de aliases no cierra B1.
 
 ## Temporales del lector: regresiones r2 pendientes de Mini
@@ -310,7 +397,9 @@ para probar rechazo de una base insegura: esa rama, la administración root de
 la jerarquía y su disponibilidad requieren evidencia de plataforma adicional.
 No se promete resistencia frente a manipulación adversaria del mismo uid.
 
-Selector rojo/verde, **no ejecutado aquí**. El coordinador debe preparar en Mini
+Selector histórico rojo/verde, **no ejecutado aquí ni vigente tal cual**.
+También requiere incorporar primero las bases/recibos actuales bajo corrida;
+no usar el harness histórico con T compartido. El coordinador debe preparar en Mini
 dos copias propias desechables bajo el turno autorizado, sin alterar FIFO129 ni
 los candidatos originales. `READER_CANDIDATE` es el head exacto entregado y
 `READER_RED_COPY` una copia limpia separada de b5ca4987. Desde la copia candidata,
@@ -330,7 +419,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'tes
 Rojo esperado por inspección: b5ca4987 crea y retira temporales dentro del estado,
 con diferencias de mtime/ctime. No se modifica su runner. Verde esperado: la
 copia candidata conserva inventario/metadatos y los exits 0/4/2 correspondientes.
-Ambas expectativas necesitan ejecución, también la suite actual de 79 casos CLI
+Ambas expectativas necesitan ejecución, también la suite actual de 86 casos CLI
 en los dos Python previstos; los casos antiguos no sustituyen esta matriz.
 
 ## Fixtures escritas, pendientes de Mini
@@ -365,7 +454,17 @@ en los dos Python previstos; los casos antiguos no sustituyen esta matriz.
   exitosas sin recrearlos. Estado inexistente, vacío, inseguro e incompatible se
   conserva sin bootstrap/reparación. El incompatible se obtiene de una BD propia
   cerrada: se cambia a 999 el entero big-endian público de `user_version`, offset
-  60 del header SQLite; no se abren tablas ni se usa SQL.
+  60 del header SQLite; no se abren tablas ni se usa SQL. Los dos oráculos de
+  correction_cases acreditan antes status finished con los IDs propios, recogen
+  clientes y verifican ausencia de supervisores/grupos, adquieren EX no bloqueante
+  del directorio y exigen ausencia real de WAL/SHM y header SQLite/Fleet esperado.
+  Si no se acredita, informan causa de preparación y retienen imagen/recibo; no
+  borran sidecars ni fingen un defecto del lector. Se conserva el error exacto
+  `unsupported Fleet pilot schema; no migration` y la imagen íntegra antes/después.
+  La prueba con WAL activo permanece separada, con su comparación sin relajar.
+  FIFO129 corrió b5ca4987: sus fallos3.9 no prueban un resultado de cde ni del
+  candidato actual. El cierre SQLite/descriptor corregidos de cde no acreditan
+  por sí solos que ambos fallos estén resueltos; queda pendiente Mini 3.9/3.14.
 - Exclusión y FIFO: primeras cuatro admisiones simultáneas sobre estado ausente,
   con barrera de clientes y marcadores/gates distintos por comando. Sólo el
   primero llega a su barrera; los siguientes permanecen queued sin marcador

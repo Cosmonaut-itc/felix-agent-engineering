@@ -233,14 +233,16 @@ def _overlaps(path, root):
 
 def _literal_paths(value, whole_path):
     if whole_path and os.path.isabs(value):
+        yield value
         for component in re.finditer(r"[^:]+", value):
-            if component.group().startswith("/"):
+            if component.group() != value and component.group().startswith("/"):
                 yield component.group()
     pattern = r"""'(/[^'\x00\r\n]*)'|"(/[^"\x00\r\n]*)"|(/[^\s\x00'";|<>(){}\[\],=]*)"""
     for match in re.finditer(pattern, value):
         literal = match.group(1) or match.group(2) or match.group(3)
+        yield literal
         for component in re.finditer(r"[^:]+", literal):
-            if component.group().startswith("/"):
+            if component.group() != literal and component.group().startswith("/"):
                 yield component.group()
 
 

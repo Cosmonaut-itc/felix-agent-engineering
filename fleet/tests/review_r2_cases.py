@@ -1,4 +1,5 @@
 import errno
+import fcntl
 import json
 import os
 import re
@@ -95,6 +96,43 @@ class ReviewR2Cases:
         (self.project / "run.py").write_text("paths = '/opt/external:" + str(alias / "lib") + "'\n")
         self.rejected_submission(argv=[sys.executable, "run.py"], error="source_reference_in_content")
 
+    def colon_source_literal(self, case_alias):
+        if case_alias:
+            renamed = self.project.with_name("Project:Source")
+            self.project.rename(renamed)
+            self.project = renamed
+            alias = self.physical_case_alias(self.project)
+        else:
+            alias = self.root / "fixed:source alias"
+            alias.symlink_to(self.project, target_is_directory=True)
+        source = self.project / "run.py"
+        source.write_text("print('must-not-run')\n")
+        literal = alias / source.name
+        self.assertNotEqual(str(literal), str(source))
+        self.assertNotIn(str(self.project), str(literal))
+        self.assertEqual((literal.stat().st_dev, literal.stat().st_ino),
+                         (source.stat().st_dev, source.stat().st_ino))
+        self.assertTrue(os.path.samefile(literal, source))
+        return str(literal)
+
+    def test_r4_colon_argv_keeps_complete_external_symlink_literal(self):
+        literal = self.colon_source_literal(case_alias=False)
+        self.rejected_submission(argv=[sys.executable, literal], error="source_reference_in_command")
+
+    def test_r4_colon_content_keeps_complete_external_symlink_literal(self):
+        literal = self.colon_source_literal(case_alias=False)
+        (self.project / "reference.txt").write_text("source = '" + literal + "'\n")
+        self.rejected_submission(argv=[sys.executable, "run.py"], error="source_reference_in_content")
+
+    def test_r4_colon_argv_keeps_complete_physical_case_alias(self):
+        literal = self.colon_source_literal(case_alias=True)
+        self.rejected_submission(argv=[sys.executable, literal], error="source_reference_in_command")
+
+    def test_r4_colon_content_keeps_complete_physical_case_alias(self):
+        literal = self.colon_source_literal(case_alias=True)
+        (self.project / "reference.txt").write_text('source = "' + literal + '"\n')
+        self.rejected_submission(argv=[sys.executable, "run.py"], error="source_reference_in_content")
+
     def test_r2_whole_argv_paths_have_length_and_depth_limits_before_resolution(self):
         for literal in ("/" + "Q" * 18000, "/" + "x/" * 129):
             self.rejected_submission(argv=[sys.executable, "-c", "pass", literal],
@@ -131,6 +169,52 @@ class ReviewR2Cases:
                                      error="path_identity_unavailable")
         finally:
             denied.chmod(0o700)
+
+    def test_r4_ignored_cyclic_symlink_rejects_with_initialized_state(self):
+        self.initialize_git()
+        (self.project / ".gitignore").write_text("ignored-loop\n")
+        self.git("add", ".")
+        self.git("commit", "-qm", "fixture")
+        seed = self.submit([sys.executable, "-c", "pass"])
+        self.wait(seed["job"])
+        self.closed_database_bytes(seed)
+        loop = self.project / "ignored-loop"
+        loop.symlink_to(loop.name)
+        self.assertEqual(self.git("check-ignore", "--", loop.name), loop.name)
+        with self.assertRaises(OSError) as failure:
+            loop.stat()
+        self.assertEqual(failure.exception.errno, errno.ELOOP)
+        fd = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            before = self.state_image(self.state)
+            result = self.call("submit", "--", sys.executable, "-c", "pass", check=False)
+            admission = self.admissions[-1]
+            after = self.state_image(self.state)
+            admission.refute_if_unchanged_closed(result, fd, before, after)
+            self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+            self.assertEqual(json.loads(result.stdout), {"error": "path_identity_unavailable"})
+            self.assertEqual(after, before)
+            self.assertTrue(admission.refuted, "closed exclusive state did not refute this admission")
+        finally:
+            os.close(fd)
+
+    def test_r4_pre_entrypoint_failure_preserves_diagnostic_and_refutes_absent_database(self):
+        empty_home = self.root / "empty-python-home"
+        empty_home.mkdir()
+        state = self.root / "pre-entrypoint-state"
+        with self.assertRaisesRegex(AssertionError, "CLI stdout is not a JSON object"):
+            self.call("submit", "--", sys.executable, "-c", "pass", state=state,
+                      env=dict(self.env, PYTHONHOME=str(empty_home)), check=False,
+                      refute_if_absent=True)
+        report = json.loads(self.diagnostics[-1].read_text())
+        self.assertNotEqual(report["returncode"], 0)
+        self.assertEqual(report["stdout"], "")
+        self.assertIn("encodings", report["stderr"])
+        self.assertFalse(os.path.lexists(state / "state.db"))
+        self.assertTrue(self.admissions[-1].refuted)
+        self.assertIsNone(self.admissions[-1].job)
+        self.guard_admissions()
 
     def test_r2_handoff_actor_uses_destination_job_secrets(self):
         from test_cli import CLI
@@ -220,56 +304,116 @@ class ReviewR2Cases:
                     log.chmod(0o600)
         self.assert_publication_excludes_secret(host, second, final, status, proof)
 
-    def bounded_cost_rejection(self, data):
-        from test_cli import CLI
-        limit = 256 * 1024 * 1024
-        probe = ("import json,resource,sys\n"
-                 "limit=int(sys.argv[1]); capped=sys.argv[2]=='capped'\n"
-                 "if capped: resource.setrlimit(resource.RLIMIT_AS,(limit,limit))\n"
-                 "blocks=[]; failed=False\n"
-                 "try:\n"
-                 "    for _ in range(320): blocks.append(bytearray(1024*1024))\n"
-                 "except MemoryError: failed=True\n"
-                 "print(json.dumps({'allocated':len(blocks)*1024*1024,'failed':failed,"
-                 "'limits':resource.getrlimit(resource.RLIMIT_AS)}),flush=True)\n")
-        reports = {}
-        for mode in ("control", "capped"):
-            result = subprocess.run([sys.executable, "-I", "-B", "-c", probe, str(limit), mode],
-                                    env=self.env, capture_output=True, text=True, timeout=15)
-            self.assertEqual(result.returncode, 0, "memory-cap calibration failed: " + result.stderr)
-            reports[mode] = json.loads(result.stdout)
-        self.assertFalse(reports["control"]["failed"], reports)
-        self.assertEqual(reports["control"]["allocated"], 320 * 1024 * 1024)
-        self.assertTrue(reports["capped"]["failed"], "RLIMIT_AS is not effective; scanner was not launched")
-        self.assertLess(reports["capped"]["allocated"], limit, reports)
-        self.assertEqual(reports["capped"]["limits"], [limit, limit], reports)
-        print("effective cost-fixture cap: " + json.dumps(reports), flush=True)
+    def boundary_cost_rejection(self, data):
         (self.project / "cost.data").write_bytes(data)
         state = self.root / "cost-rejected"
-        admission = self.admit(state)
-        wrapper = ("import os,resource,sys\n"
-                   "limit=int(sys.argv[1]); resource.setrlimit(resource.RLIMIT_AS,(limit,limit))\n"
-                   "if resource.getrlimit(resource.RLIMIT_AS)!=(limit,limit): sys.exit(91)\n"
-                   "os.execv(sys.executable,[sys.executable,'-B',*sys.argv[2:]])\n")
         started = time.monotonic()
-        result = subprocess.run([sys.executable, "-I", "-B", "-c", wrapper, str(limit), str(CLI),
-                                 "--state-dir", str(state), "submit", "--", sys.executable, "-c", "pass"],
-                                env=self.env, cwd=self.project, capture_output=True, text=True, timeout=15)
+        result = self.call("submit", "--", sys.executable, "-c", "pass", state=state,
+                           check=False, refute_if_absent=True)
         value = json.loads(result.stdout)
-        if "job" in value:
-            admission.attribute(value)
-        else:
-            admission.refute_if_absent(result)
         self.assertLess(time.monotonic() - started, 15)
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
         self.assertEqual(value, {"error": "source_reference_limit"})
-        self.assertTrue(admission.refuted)
+        self.assertTrue(self.admissions[-1].refuted)
+        self.assertFalse(os.path.lexists(state / "state.db"))
 
-    def test_r2_cost_slash_heavy_4mib_is_rejected_before_physical_resolution(self):
-        self.bounded_cost_rejection(b"/Q" * (2 * 1024 * 1024))
+    def test_r2_cost_length_boundary_is_rejected_before_physical_resolution(self):
+        self.boundary_cost_rejection(b"/" + b"Q" * 16384)
 
-    def test_r2_cost_base64_4mib_is_rejected_before_physical_resolution(self):
-        self.bounded_cost_rejection((b"/" + b"A" * 63) * 65536)
+    def test_r2_cost_base64_depth_boundary_is_rejected_before_physical_resolution(self):
+        self.boundary_cost_rejection(b"/AAA" * 129)
 
-    def test_r2_cost_binary_12mib_has_explicit_candidate_limit_rejection(self):
-        self.bounded_cost_rejection(b"/Q\x00\xff" * (3 * 1024 * 1024))
+    def test_r2_cost_binary_candidate_boundary_has_explicit_rejection(self):
+        self.boundary_cost_rejection(b"/Q\x00\xff" * 40001)
+
+    def test_r4_not_created_receipt_defers_incomplete_outcome_to_readers(self):
+        from test_cli import CLI
+        seed = self.submit([sys.executable, "-c", "pass"])
+        self.wait(seed["job"])
+        self.closed_database_bytes(seed)
+        capsules = self.state / "capsules"
+        baseline = {path.name for path in capsules.iterdir()}
+        log = self.state / "supervisor.log"
+        log.unlink()
+        os.mkfifo(log, 0o600)
+        admission = self.admit(self.state)
+        process = reader = candidate = None
+        receipt = self.root / "not-created-client.json"
+        try:
+            process = subprocess.Popen([sys.executable, "-B", str(CLI), "--state-dir", str(self.state),
+                                        "submit", "--", sys.executable, "-c", "print('must-not-run')"],
+                                       env=self.env, cwd=self.project, stdout=subprocess.PIPE,
+                                       stderr=subprocess.PIPE, text=True)
+            self.processes.append(process)
+            receipt.write_text(json.dumps({"pid": process.pid, "returncode": None}) + "\n")
+            receipt.chmod(0o600)
+
+            def registered_starting():
+                nonlocal candidate
+                names = {path.name for path in capsules.iterdir()} - baseline
+                self.assertLessEqual(len(names), 1, "ambiguous capsule candidate; admission remains pending")
+                if not names:
+                    return False
+                name = next(iter(names))
+                self.assertTrue(re.fullmatch(r"j_[0-9a-f]{32}", name))
+                result = self.call("status", name, check=False)
+                if result.returncode != 0:
+                    return False
+                value = json.loads(result.stdout)
+                if value.get("registered") and value["state"] == "starting" and value["supervisor"] is None:
+                    self.assertEqual(value["job"], name)
+                    self.assertRegex(value["attempt"], r"^a_[0-9a-f]{32}$")
+                    self.assertIsNone(value["child_pid"])
+                    candidate = value
+                    return True
+                return False
+
+            self.until(registered_starting)
+            bundle = self.state / "attempts" / candidate["attempt"] / "bundle"
+            with bundle.open("xb") as blocker:
+                blocker.write(b"owned bundle-seal obstruction")
+            bundle.chmod(0o600)
+            reader = os.open(log, os.O_RDONLY | os.O_NONBLOCK)
+            stdout, stderr = process.communicate(timeout=15)
+            receipt.write_text(json.dumps({"pid": process.pid, "returncode": process.returncode,
+                                           "stdout": stdout, "stderr": stderr}) + "\n")
+            value = json.loads(stdout)
+            admission.attribute(value)
+            self.assertEqual(process.returncode, 1, (stdout, stderr))
+            self.assertEqual((value["job"], value["attempt"]), (candidate["job"], candidate["attempt"]))
+            self.assertTrue(value["registered"])
+            self.assertFalse(value["accepted"])
+            self.assertNotIn("outcome", value)
+            self.assertEqual(bundle.read_bytes(), b"owned bundle-seal obstruction")
+            status = self.value("status", value["job"])
+            final = self.wait(value["job"], 3)
+            for observed in (status, final):
+                self.assertEqual((observed["job"], observed["attempt"]), (value["job"], value["attempt"]))
+                self.assertEqual((observed["state"], observed["outcome"], observed["recorded_outcome"]),
+                                 ("finished", "incomplete", "incomplete"))
+                self.assertEqual(observed["command"]["kind"], "never_created")
+                self.assertIsNone(observed["supervisor"])
+                self.assertIsNone(observed["child_pid"])
+                self.assertEqual(observed["collection"]["state"], "incomplete")
+                self.assertIn("bundle_seal_failed", observed["collection"]["errors"])
+                self.assertFalse(observed["evidence"]["valid"])
+        finally:
+            if process is not None:
+                if reader is None:
+                    reader = os.open(log, os.O_RDONLY | os.O_NONBLOCK)
+                try:
+                    stdout, stderr = process.communicate(timeout=15)
+                    receipt.write_text(json.dumps({"pid": process.pid, "returncode": process.returncode,
+                                                   "stdout": stdout, "stderr": stderr}) + "\n")
+                    if admission.job is None:
+                        admission.attribute(json.loads(stdout))
+                    if candidate is not None:
+                        self.assertEqual((admission.job, admission.attempt),
+                                         (candidate["job"], candidate["attempt"]))
+                finally:
+                    os.close(reader)
+                if admission.job is not None and process.returncode is not None:
+                    self.settle()
+                    log.unlink()
+                    log.write_bytes(b"")
+                    log.chmod(0o600)

@@ -1,3 +1,4 @@
+import fcntl
 import hashlib
 import json
 import os
@@ -8,11 +9,12 @@ import sys
 
 
 class CorrectionCases:
-    def rejected_submission(self, *options, argv=None, env=None, error=None):
+    def rejected_submission(self, *options, argv=None, env=None, error=None, job_environment=None):
         state = self.root / ("rejected-" + str(len(self.admissions)))
         self.assertFalse((state / "state.db").exists())
         result = self.call("submit", *options, "--", *(argv or [sys.executable, "-c", "pass"]),
-                           state=state, env=env, check=False, refute_if_absent=True)
+                           state=state, env=env, check=False, refute_if_absent=True,
+                           job_environment=job_environment)
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
         self.assertTrue(self.admissions[-1].refuted)
         self.assertFalse((state / "state.db").exists())
@@ -156,12 +158,12 @@ class CorrectionCases:
                      "DYLD_FALLBACK_FRAMEWORK_PATH", "DYLD_INSERT_LIBRARIES",
                      "NODE_PATH", "RUBYLIB", "PERL5LIB")
         for name in variables:
-            result = self.rejected_submission(env=dict(self.env, **{name: str(self.project)}),
+            result = self.rejected_submission(job_environment={name: str(self.project)},
                                               error="source_reference_in_environment")
             self.assertNotIn(str(self.project), result.stdout)
-        self.rejected_submission(env=dict(self.env, LD_LIBRARY_PATH="/nonexistent;" + str(self.project)),
+        self.rejected_submission(job_environment={"LD_LIBRARY_PATH": "/nonexistent;" + str(self.project)},
                                  error="source_reference_in_environment")
-        self.rejected_submission(env=dict(self.env, LD_PRELOAD="/nonexistent " + str(self.project)),
+        self.rejected_submission(job_environment={"LD_PRELOAD": "/nonexistent " + str(self.project)},
                                  error="source_reference_in_environment")
 
     def test_broad_roots_are_rejected_before_personal_inventory(self):
@@ -282,6 +284,43 @@ class CorrectionCases:
                 p.lstat().st_size, p.lstat().st_mtime_ns, p.lstat().st_ctime_ns,
                 hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None) for p in paths}
 
+    def closed_database_bytes(self, submitted):
+        fd = None
+        try:
+            result = self.call("status", submitted["job"], check=False)
+            observed = json.loads(result.stdout)
+            if (result.returncode != 0
+                    or (observed.get("job"), observed.get("attempt"), observed.get("state"))
+                    != (submitted["job"], submitted["attempt"], "finished")):
+                raise ValueError("terminal identity not confirmed: rc={}, stdout={!r}, stderr={!r}".format(
+                    result.returncode, result.stdout, result.stderr))
+            self.settle()
+            self.guard_admissions()
+            fd = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            sidecars = [name for name in ("state.db-wal", "state.db-shm")
+                        if os.path.lexists(self.state / name)]
+            if sidecars:
+                raise ValueError("sidecars remain after attributed clients, supervisors and groups exited: "
+                                 + repr(sidecars))
+            data = (self.state / "state.db").read_bytes()
+            if (len(data) < 100 or data[:16] != b"SQLite format 3\x00"
+                    or int.from_bytes(data[60:64], "big") != 3
+                    or data[68:72] != b"FLT1"):
+                raise ValueError("closed main file does not contain the expected public Fleet schema header")
+            return data
+        except (AssertionError, OSError, ValueError) as exc:
+            report = self.root / "closed-database-preparation.json"
+            self.diagnostics.append(report)
+            report.write_text(json.dumps({"cause": str(exc), "job": submitted["job"],
+                                          "attempt": submitted["attempt"], "state": str(self.state),
+                                          "image": self.state_image(self.state)}) + "\n")
+            report.chmod(0o600)
+            self.fail("closed database preparation unconfirmed; {}; retained {}".format(exc, report))
+        finally:
+            if fd is not None:
+                os.close(fd)
+
     def test_reads_preserve_active_wal_shm_and_checkpointed_state(self):
         blocker, gate = self.blocked_queue()
         self.assertGreater((self.state / "state.db-wal").stat().st_size, 32)
@@ -294,9 +333,7 @@ class CorrectionCases:
         self.assertEqual(self.state_image(self.state), before)
         gate.touch()
         final = self.wait(blocker["job"])
-        self.settle()
-        self.assertFalse((self.state / "state.db-wal").exists())
-        self.assertFalse((self.state / "state.db-shm").exists())
+        self.closed_database_bytes(blocker)
         before = self.state_image(self.state)
         for operation in ("status", "wait", "evidence"):
             value = self.value(operation, blocker["job"])
@@ -307,11 +344,9 @@ class CorrectionCases:
     def test_readers_reject_unsafe_incompatible_and_empty_state_without_repair(self):
         submitted = self.submit([sys.executable, "-c", "pass"])
         self.wait(submitted["job"])
-        self.settle()
         incompatible = self.root / "incompatible"
         incompatible.mkdir(mode=0o700)
-        data = bytearray((self.state / "state.db").read_bytes())
-        self.assertEqual(data[:16], b"SQLite format 3\x00")
+        data = bytearray(self.closed_database_bytes(submitted))
         data[60:64] = (999).to_bytes(4, "big")
         (incompatible / "state.db").write_bytes(data)
         (incompatible / "state.db").chmod(0o600)

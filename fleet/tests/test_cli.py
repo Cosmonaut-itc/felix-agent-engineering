@@ -1,4 +1,5 @@
 import concurrent.futures
+import fcntl
 import getpass
 import json
 import os
@@ -8,9 +9,11 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 
@@ -21,6 +24,11 @@ from reader_temp_cases import ReaderTempCases
 from review_r2_cases import ReviewR2Cases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
+JOB_ENV_BOOTSTRAP = ("import json,os,runpy,sys\n"
+                     "entry,updates=sys.argv[1],json.loads(sys.argv[2])\n"
+                     "sys.argv=sys.argv[3:]\n"
+                     "os.environ.update(updates)\n"
+                     "runpy.run_path(entry,run_name='__main__')\n")
 BARRIER = """
 import pathlib, sys, time
 ready, gate, done = map(pathlib.Path, sys.argv[1:])
@@ -37,12 +45,54 @@ sys.exit(0 if gate.exists() else 90)
 """
 
 
+def fixture_base(case_sensitive=False):
+    def supplied(name):
+        raw = os.environ.get(name)
+        if not raw or not Path(raw).is_absolute():
+            raise ValueError(name + " must name an existing absolute directory; no fallback")
+        path = Path(raw)
+        if path != path.resolve(strict=True) or any(p.is_symlink() for p in (path, *path.parents)):
+            raise ValueError(name + " must use a physical path without symlinks")
+        info = path.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ValueError(name + " must be an owned directory without group/other write access")
+        return path
+
+    run = supplied("FLEET_TEST_RUN_DIR")
+    if run.parent.name != "runs" or run.parent.parent.name != "remote-run":
+        raise ValueError("FLEET_TEST_RUN_DIR must identify the supplied remote-run/runs/<runId>")
+    name = "FLEET_CASE_SENSITIVE_TMPDIR" if case_sensitive else "FLEET_TEST_FIXTURE_BASE"
+    base = supplied(name)
+    if run not in base.parents:
+        raise ValueError(name + " must be below FLEET_TEST_RUN_DIR; no fallback")
+    for path in (base, *base.parents):
+        if path == run:
+            break
+        info = path.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError(name + " must have an owned private hierarchy below the run")
+    return base
+
+
 class Admission:
-    def __init__(self, state):
+    def __init__(self, state, exclusive, receipt):
         self.state = state
-        self.database_absent_before = not (state / "state.db").exists()
+        self.exclusive = exclusive
+        self.receipt = receipt
+        self.receipt_lock = threading.Lock()
+        self.database_absent_before = not os.path.lexists(state / "state.db")
         self.job = self.attempt = None
         self.refuted = False
+        self.response = None
+
+    def record(self):
+        with self.receipt_lock:
+            self.receipt.write_text(json.dumps({
+                "state": str(self.state), "exclusive": self.exclusive,
+                "database_absent_before": self.database_absent_before,
+                "job": self.job, "attempt": self.attempt, "refuted": self.refuted,
+                "response": self.response}, ensure_ascii=True) + "\n")
+            self.receipt.chmod(0o600)
 
     def attribute(self, response):
         job, attempt = response.get("job"), response.get("attempt")
@@ -50,19 +100,39 @@ class Admission:
                 or not isinstance(attempt, str) or not re.fullmatch(r"a_[0-9a-f]{32}", attempt)):
             raise AssertionError("submit response has no attributable identity")
         self.job, self.attempt = job, attempt
+        self.response = response
+        self.record()
 
     def refute_if_absent(self, result):
-        if (result.returncode is not None and self.database_absent_before
-                and not (self.state / "state.db").exists()):
+        if (self.exclusive and result.returncode is not None and self.database_absent_before
+                and not os.path.lexists(self.state / "state.db")):
             self.refuted = True
+            self.record()
+
+    def refute_if_unchanged_closed(self, result, lock_fd, before, after):
+        if (result.returncode != 2 or self.database_absent_before or before != after
+                or "state.db" not in before or any(name in before for name in ("state.db-wal", "state.db-shm"))
+                or json.loads(result.stdout) != {"error": "path_identity_unavailable"}):
+            return
+        held, current = os.fstat(lock_fd), self.state.stat()
+        if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+            return
+        probe = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.refuted = True
+                self.record()
+        finally:
+            os.close(probe)
 
 
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
 class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, ReviewR2Cases, unittest.TestCase):
     def setUp(self):
-        fixture_base = (os.environ.get("FLEET_CASE_SENSITIVE_TMPDIR")
-                        if "case_sensitive_distinct" in self._testMethodName else None)
-        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-", dir=fixture_base)).resolve()
+        base = fixture_base("case_sensitive_distinct" in self._testMethodName)
+        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-", dir=base)).resolve()
         self.state = self.root / "state"
         self.project = self.root / "project-without-profile"
         self.project.mkdir()
@@ -75,8 +145,10 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
                         TMPDIR=str(self.root), PYTHONDONTWRITEBYTECODE="1")
         self.gates = []
         self.admissions = []
+        self.admission_lock = threading.Lock()
         self.processes = []
         self.client_groups = []
+        self.diagnostics = []
 
     def tearDown(self):
         self.cleanup()
@@ -84,6 +156,9 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
     def cleanup(self):
         self.settle()
         self.guard_admissions()
+        if self.diagnostics:
+            print("retained fixture diagnostics: " + str(self.root), flush=True)
+            return
         shutil.rmtree(self.root)
 
     def guard_admissions(self):
@@ -143,17 +218,44 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
 
     def admit(self, state):
         self.assertIn(self.root, state.parents)
-        admission = Admission(state)
-        self.admissions.append(admission)
+        fd, path = tempfile.mkstemp(prefix="admission-", suffix=".json", dir=self.root)
+        os.close(fd)
+        receipt = Path(path)
+        with self.admission_lock:
+            prior = [a for a in self.admissions if a.state == state and not a.refuted]
+            for previous in prior:
+                previous.exclusive = False
+                previous.record()
+            admission = Admission(state, not prior, receipt)
+            self.admissions.append(admission)
+            admission.record()
         return admission
 
-    def call(self, *args, state=None, check=True, env=None, refute_if_absent=False):
+    def call(self, *args, state=None, check=True, env=None, refute_if_absent=False,
+             job_environment=None):
         admission = self.admit(state or self.state) if args and args[0] == "submit" else None
         command = [sys.executable, "-B", str(CLI), "--state-dir", str(state or self.state)]
+        if job_environment is not None:
+            command = [sys.executable, "-B", "-c", JOB_ENV_BOOTSTRAP, str(CLI),
+                       json.dumps(job_environment), *command[2:]]
         result = subprocess.run(command + list(args), env=env or self.env,
-                                cwd=str(self.project), capture_output=True, text=True, timeout=15)
-        if admission is not None:
+                                cwd=str(self.project), capture_output=True, text=True,
+                                errors="surrogateescape", timeout=15)
+        try:
             value = json.loads(result.stdout)
+            if not isinstance(value, dict):
+                raise ValueError("JSON response is not an object")
+        except ValueError:
+            if admission is not None and refute_if_absent:
+                admission.refute_if_absent(result)
+            fd, path = tempfile.mkstemp(prefix="cli-json-", suffix=".json", dir=self.root)
+            with os.fdopen(fd, "w") as output:
+                json.dump({"returncode": result.returncode, "stdout": result.stdout,
+                           "stderr": result.stderr}, output, ensure_ascii=True)
+            self.diagnostics.append(Path(path))
+            self.fail("CLI stdout is not a JSON object; rc={}; stdout={!r}; stderr={!r}; retained {}".format(
+                result.returncode, result.stdout, result.stderr, path))
+        if admission is not None:
             if "job" in value:
                 admission.attribute(value)
             elif refute_if_absent:

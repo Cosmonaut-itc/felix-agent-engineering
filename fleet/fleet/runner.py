@@ -436,7 +436,7 @@ def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), cred
             if launch is Launch.UNCONFIRMED:
                 return dict(result, state="starting", view="uncertain", error=error), 3
             _fail_and_hand_off(conn, state, attempt, claimed, "client:" + client, error)
-            return dict(result, state="finished", outcome="failed", error=error), 1
+            return dict(result, state="finished", error=error), 1
         finally:
             conn.close()
     except (OSError, ValueError, KeyError, StateError, RuntimeError):

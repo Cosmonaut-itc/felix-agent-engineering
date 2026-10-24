@@ -1,4 +1,5 @@
 import fcntl
+import json
 import os
 from pathlib import Path
 import select
@@ -9,11 +10,13 @@ import tempfile
 import time
 import unittest
 
+from test_cli import fixture_base
+
 
 @unittest.skipUnless(os.name == "posix", "Ledger lifecycle requires POSIX flock")
 class LedgerLifecycle(unittest.TestCase):
     def test_ledger_close_waits_beyond_operation_timeout_until_reader_releases(self):
-        root = Path(tempfile.mkdtemp(prefix="fleet-lifecycle-")).resolve()
+        root = Path(tempfile.mkdtemp(prefix="fleet-lifecycle-", dir=fixture_base())).resolve()
         state = root / "state"
         script = ("import pathlib,sqlite3,sys\n"
                   "sys.path.insert(0,sys.argv[1])\n"
@@ -30,6 +33,10 @@ class LedgerLifecycle(unittest.TestCase):
                                     str(Path(__file__).resolve().parents[1]), str(state)],
                                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                    text=True, start_new_session=True)
+        receipt = root / "lifecycle-client.json"
+        receipt.write_text(json.dumps({"pid": process.pid, "state": str(state),
+                                       "returncode": None}) + "\n")
+        receipt.chmod(0o600)
         lock_fd = None
         settled = False
 
@@ -56,6 +63,9 @@ class LedgerLifecycle(unittest.TestCase):
             os.close(lock_fd)
             lock_fd = None
             stdout, stderr = process.communicate(timeout=5)
+            receipt.write_text(json.dumps({"pid": process.pid, "state": str(state),
+                                           "returncode": process.returncode,
+                                           "stdout": stdout, "stderr": stderr}) + "\n")
             settled = True
             self.assertEqual(process.returncode, 0, (stdout, stderr))
             self.assertEqual(stdout.strip(), "closed")
@@ -67,9 +77,17 @@ class LedgerLifecycle(unittest.TestCase):
                 os.close(lock_fd)
             if not settled:
                 try:
-                    process.communicate("close\n" if not process.stdin.closed else None, timeout=5)
+                    stdout, stderr = process.communicate(
+                        "close\n" if not process.stdin.closed else None, timeout=5)
+                    receipt.write_text(json.dumps({"pid": process.pid, "state": str(state),
+                                                   "returncode": process.returncode,
+                                                   "stdout": stdout, "stderr": stderr}) + "\n")
                     settled = True
-                except subprocess.TimeoutExpired:
+                except subprocess.TimeoutExpired as exc:
+                    receipt.write_text(json.dumps({"pid": process.pid, "state": str(state),
+                                                   "returncode": process.poll(),
+                                                   "stdout": (exc.stdout or b"").decode(errors="replace"),
+                                                   "stderr": (exc.stderr or b"").decode(errors="replace")}) + "\n")
                     self.fail("lifecycle process absence unconfirmed; retained {}".format(root))
             if settled:
                 shutil.rmtree(root)
