@@ -90,6 +90,26 @@ def elemento(ruta, clase, motivo, ultimo=None, asociados=None):
             'ultimoUso': ultimo, 'corridasAsociadas': asociados or [], 'tamanoBytes': None}
 
 
+def preparacion(entradas):
+    nombres = {p.name for p in entradas}
+    directorios = {'git-input', 'git-preparado', 'manifest'}
+    archivos = {'meta', 'cmd.sh', 'manifest-helper.sh', 'script.sh', 'log'}
+    if not nombres <= directorios | archivos:
+        return False
+    for p in entradas:
+        if p.name in directorios:
+            listar(p)
+        elif leer(p) is None:
+            raise ValueError('artefacto desaparecido: ' + p.name)
+    if nombres & {'log', 'manifest-helper.sh', 'script.sh'}:
+        if 'manifest' not in nombres:
+            return False
+        # files.jsonl identifica el manifiesto del productor anterior al despacho.
+        if leer(entradas[0].parent / 'manifest' / 'files.jsonl') is None:
+            return False
+    return True
+
+
 def corrida(ruta, ahora):
     item = elemento(ruta, 'dudosa', 'sin evidencia suficiente')
     mirror = None
@@ -110,10 +130,10 @@ def corrida(ruta, ahora):
         if fin is not None:
             item.update(clase='terminal', motivo='existe exit')
         elif pid is None and started is None:
-            if {p.name for p in entradas} <= {'git-input', 'cmd.sh', 'meta'}:
-                item.update(clase='preparacion-abortada', motivo='preparación sin pid ni started')
+            if preparacion(entradas):
+                item.update(clase='preparacion-abortada', motivo='artefactos de preparación; runner no transferido; sin identidad de ejecución')
             else:
-                item['motivo'] = 'sin pid ni started, con archivos de ejecución'
+                item['motivo'] = 'ejecución no descartable: sin pid ni started y preparación no reconocida'
         elif pid is None or started is None:
             item['motivo'] = 'falta pid o started para validar la identidad'
         else:
@@ -206,10 +226,12 @@ def inventariar(raiz, ahora=None, tamanos=False):
             if any(x['clase'] == 'viva' for x in asociadas) or (bloqueada and bloqueada['clase'] == 'viva'):
                 item.update(clase='en-uso', motivo='corrida asociada o lock con identidad viva')
             elif sin_dueno or any(x['clase'] == 'dudosa' for x in asociadas):
-                item['motivo'] = ('corridas de dueño desconocido: ' + ', '.join(sin_dueno)
+                item['motivo'] = ('ejecución no descartable; corridas de dueño desconocido: ' + ', '.join(sin_dueno)
                                   if sin_dueno else 'corrida asociada dudosa')
             elif lock is not None and (bloqueada is None or bloqueada['clase'] != 'terminal'):
-                item['motivo'] = 'lock sin corrida terminal verificable: ' + lock.strip()
+                item['motivo'] = ('lock de preparación reconocida; sin evidencia terminal: '
+                                  if bloqueada and bloqueada['clase'] == 'preparacion-abortada'
+                                  else 'lock sin corrida terminal verificable: ') + lock.strip()
             else:
                 clase = 'lock-huerfano' if lock is not None else 'inactiva'
                 motivo = 'lock huérfano con corrida terminal' if lock is not None else 'sin lock ni corridas vivas o dudosas'

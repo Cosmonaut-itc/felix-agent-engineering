@@ -82,7 +82,7 @@ class InventarioTest(unittest.TestCase):
         self.vieja(p, 40)
         self.corrida(pid=12)
         self.procesos[12] = self.now - 31 * 86400
-        self.assertEqual(self.inventario()['copias'][0]['clase'], 'en-uso')
+        self.assertEqual((self.inventario()['copias'][0]['clase'], self.inventario()['copias'][0]['borrable']), ('en-uso', False))
         (self.root / 'runs/20261001-120000-abcdef/started').unlink()
         item = self.inventario()['copias'][0]
         self.assertEqual(item['clase'], 'protegida-dudosa')
@@ -120,7 +120,7 @@ class InventarioTest(unittest.TestCase):
         lock = p / '.remote-run.lock'
         lock.write_text(r.name)
         self.procesos[12] = self.now - 31 * 86400
-        self.assertEqual(self.inventario()['copias'][0]['clase'], 'en-uso')
+        self.assertEqual((self.inventario()['copias'][0]['clase'], self.inventario()['copias'][0]['borrable']), ('en-uso', False))
         (r / 'started').unlink()
         self.assertEqual(self.inventario()['copias'][0]['clase'], 'protegida-dudosa')
         lock.write_text('inexistente')
@@ -231,3 +231,153 @@ class InventarioTest(unittest.TestCase):
                     run.return_value = resultado
                 item = inv.inventariar(self.root, ahora=self.now)['corridas'][0]
                 self.assertEqual((item['clase'], item['borrable']), ('dudosa', False))
+
+    def test_ventana_ambos_signos(self):
+        for pid, delta in enumerate((-121, -120, 120, 121), 10):
+            self.corrida(name=str(delta), pid=pid)
+            self.procesos[pid] = self.now - 31 * inv.DIA + delta
+        for x in self.inventario()['corridas']:
+            delta = int(Path(x['ruta']).name)
+            self.assertEqual((x['clase'], x['borrable']),
+                             ('terminal', True) if abs(delta) == 121 else ('viva', False))
+
+    def test_stop_libera_copia_asociada_sin_lock(self):
+        p = self.copia(dias=40)
+        r = self.corrida(pid=12)
+        self.procesos[12] = None
+        self.assertFalse((p / '.remote-run.lock').exists())
+        data = self.inventario()
+        self.assertEqual((data['corridas'][0]['clase'], data['corridas'][0]['borrable']), ('terminal', True))
+        x = data['copias'][0]
+        self.assertEqual(x['corridasAsociadas'], [r.name])
+        self.assertEqual((x['clase'], x['borrable']), ('inactiva', True))
+
+    def test_ultimo_uso_maximo_lock_directorio_y_started(self):
+        p = self.copia(dias=40)
+        r = self.corrida(fin=True)
+        lock = p / '.remote-run.lock'
+        lock.write_text(r.name)
+        for edad_dir, edad_lock in ((40, 1), (1, 40)):
+            with self.subTest(directorio=edad_dir, lock=edad_lock):
+                self.vieja(lock, edad_lock)
+                self.vieja(p, edad_dir)
+                x = self.inventario()['copias'][0]
+                self.assertEqual(x['ultimoUso'], self.now - inv.DIA)
+                self.assertEqual((x['clase'], x['borrable']), ('reciente', False))
+        self.vieja(lock, 40)
+        self.vieja(p, 40)
+        self.corrida(name='a-reciente', dias=2, fin=True)
+        self.corrida(name='z-vieja', dias=20, fin=True)
+        x = self.inventario()['copias'][0]
+        self.assertEqual(len(x['corridasAsociadas']), 3)
+        self.assertEqual(x['ultimoUso'], self.now - 2 * inv.DIA)
+        self.assertEqual((x['clase'], x['borrable']), ('reciente', False))
+
+    def test_hijo_ilegible_no_oculta_hermano(self):
+        mala = self.corrida(name='mala', started=False)
+        buena = self.corrida(name='buena', fin=True)
+        self.copia('copia')
+        self.copia('hermana')
+        listar = inv.listar
+        def lectura(p):
+            if p == mala:
+                raise PermissionError('hijo ilegible')
+            return listar(p)
+        with patch.object(inv, 'listar', side_effect=lectura):
+            data = self.inventario()
+        items = {Path(x['ruta']).name: x for x in data['corridas']}
+        self.assertEqual((items[mala.name]['clase'], items[mala.name]['borrable']), ('dudosa', False))
+        self.assertEqual((items[buena.name]['clase'], items[buena.name]['borrable']), ('terminal', True))
+
+    def test_preparaciones_con_artefactos_y_contracasos(self):
+        for nombre, archivos, dirs in (
+                ('legada', ('cmd.sh',), ('git-input', 'git-preparado')),
+                ('20261018-113929-4f1d61', ('log', 'manifest-helper.sh'), ('manifest',)),
+                ('20261022-223247-52eb43', ('log', 'manifest-helper.sh', 'script.sh'), ('manifest', 'git-input'))):
+            r = self.corrida(name=nombre, started=False, mirror='copia' if nombre == 'legada' else None)
+            for d in dirs:
+                (r / d).mkdir()
+            if 'manifest' in dirs:
+                (r / 'manifest/files.jsonl').write_text('')
+            for a in archivos:
+                (r / a).write_text('contenido')
+            self.vieja(r, 31)
+        for archivo in ('runner.sh', 'desconocido', 'log', 'exit.tmp'):
+            r = self.corrida(name=archivo, started=False, mirror=None)
+            (r / archivo).write_text('contenido')
+            self.vieja(r, 31)
+        for x in self.inventario()['corridas']:
+            nombre = Path(x['ruta']).name
+            esperado = ('dudosa', False) if nombre in ('runner.sh', 'desconocido', 'log', 'exit.tmp') else ('preparacion-abortada', True)
+            self.assertEqual((x['clase'], x['borrable']), esperado)
+            if esperado[0] == 'preparacion-abortada':
+                self.assertIn('artefactos de preparación; runner no transferido; sin identidad de ejecución', x['motivo'])
+
+    def test_preparacion_rechaza_tipos_meta_y_ilegibilidad(self):
+        for nombre in ('tipo', 'meta', 'enlace', 'ilegible', 'manifest-vacio'):
+            r = self.corrida(name=nombre, started=False, mirror=None)
+            if nombre == 'tipo':
+                (r / 'git-input').write_text('no directorio')
+            elif nombre == 'meta':
+                (r / 'meta').write_text('incorrecto')
+            elif nombre == 'enlace':
+                (r / 'cmd.sh').symlink_to('/no-existe')
+            elif nombre == 'manifest-vacio':
+                (r / 'manifest').mkdir()
+                (r / 'log').write_text('')
+            else:
+                (r / 'cmd.sh').write_text('')
+        leer = inv.leer
+        def lectura(p):
+            if p == self.root / 'runs/ilegible/cmd.sh':
+                raise PermissionError('sin permiso')
+            return leer(p)
+        with patch.object(inv, 'leer', side_effect=lectura):
+            data = self.inventario()
+        self.assertEqual(len(data['corridas']), 5)
+        for x in data['corridas']:
+            self.assertEqual((x['clase'], x['borrable']), ('dudosa', False))
+
+    def test_alcance_global_y_lock_preparacion(self):
+        a = self.copia('a', dias=40)
+        self.copia('b', dias=40)
+        r = self.corrida(started=False, mirror=None)
+        def copias():
+            return {Path(x['ruta']).name: x for x in self.inventario()['copias']}
+        self.assertTrue(all(x['borrable'] for x in copias().values()))
+        lock = a / '.remote-run.lock'
+        lock.write_text(r.name)
+        self.vieja(lock, 40)
+        self.vieja(a, 40)
+        items = copias()
+        self.assertEqual((items['a']['clase'], items['a']['borrable']), ('protegida-dudosa', False))
+        self.assertIn('preparación reconocida', items['a']['motivo'])
+        self.assertTrue(items['b']['borrable'])
+        lock.unlink()
+        self.vieja(a, 40)
+        (r / 'runner.sh').write_text('runner')
+        (r / 'meta').write_text('mirror=remote-run/work/a\n')
+        items = copias()
+        self.assertFalse(items['a']['borrable'])
+        self.assertTrue(items['b']['borrable'])
+        (r / 'meta').unlink()
+        for x in copias().values():
+            self.assertEqual((x['clase'], x['borrable']), ('protegida-dudosa', False))
+            self.assertIn('ejecución no descartable', x['motivo'])
+        (r / 'pid').write_text('12')
+        (r / 'started').write_text(str(self.now - 31 * inv.DIA))
+        self.procesos[12] = self.now - 31 * inv.DIA
+        self.assertTrue(all(not x['borrable'] for x in copias().values()))
+
+    def test_runs_ilegible_protege_globalmente(self):
+        self.copia('a')
+        self.copia('b')
+        listar = inv.listar
+        def lectura(p):
+            if p == self.root / 'runs':
+                raise PermissionError('runs ilegible')
+            return listar(p)
+        with patch.object(inv, 'listar', side_effect=lectura):
+            data = self.inventario()
+        self.assertEqual(len(data['copias']), 2)
+        self.assertTrue(all(x['clase'] == 'protegida-dudosa' and not x['borrable'] for x in data['copias']))
