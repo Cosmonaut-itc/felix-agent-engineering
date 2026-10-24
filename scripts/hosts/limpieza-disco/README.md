@@ -18,10 +18,23 @@ demás.
   dudosas.
 - **Regla 3.** Borra corridas de `runs/` que el inventario marca `borrable`
   con clase `terminal`, más de 30 días, y que tengan archivo `exit`.
-- **Comprobación previa.** Justo antes de borrar cada candidata, el script
+- **Comprobación previa.** Antes de borrar cada candidata, el script
   comprueba que no tenga `.remote-run.lock`, ni como archivo ni como
-  symlink. También exige que `lsof +D` salga con código 1 y sin salida. Si
-  no se cumple, la deja y lo anota.
+  symlink. También exige que `lsof +D` salga con código 1 y sin salida; si
+  no, anota en el log el código y la primera línea de la salida.
+- **Última comprobación de una copia.** Ya dentro del padre, justo antes del
+  `rm`, vuelve a mirar tres cosas sobre la copia:
+  - que siga sin lock;
+  - que nada en sus dos primeros niveles haya cambiado en los últimos 7
+    días;
+  - que en `runs/` no haya una corrida posterior al inicio del inventario
+    sin `meta` o con `mirror=remote-run/work/<nombre>`.
+
+  Si falla alguna, la deja y lo anota.
+- **Preparación en curso.** Si el inventario ve una corrida
+  `preparacion-abortada` de menos de 1 h, la regla 1 no borra nada en esa
+  pasada. Esa corrida todavía no tiene `mirror` en `meta`, así que no se sabe
+  qué copia usa.
 - **Borrado anclado.** El borrado entra con `cd -P` en `work/` o `runs/`,
   comprueba que `pwd -P` sea la ruta esperada y borra `./<nombre>`. Si
   alguien sustituye el padre por un symlink después de entrar, `rm` no lo
@@ -48,10 +61,14 @@ El script borra un subconjunto del que el inventario llama borrable. Deja las
 copias `lock-huerfano` y las corridas `preparacion-abortada`, que el
 inventario sí admite.
 
-**Riesgo residual.** Entre el inventario y el `rm` pasan segundos. Una
-corrida que empiece a usar una copia en ese intervalo y termine sin dejar
-lock, ni proceso dentro, antes de la comprobación previa no se detecta. No
-hay un protocolo de exclusión compartido con `remote-run` que lo cierre.
+**Riesgo residual.** La pasada puede durar minutos, porque `lsof +D` y el
+`rm -rf` de las candidatas anteriores tardan. Ese tramo lo cubre la última
+comprobación de cada copia. Queda sin cubrir la ventana entre esa última
+comprobación y el `rm`. Una corrida que entre y salga en ella sin dejar lock,
+sin tocar el mtime y sin proceso vivo no se detecta. No hay un protocolo de
+exclusión compartido con `remote-run` que la cierre. El orquestador de PAO
+aceptó ese riesgo para copias con siete días sin uso, porque `remote-run`
+escribe el lock al preparar y toca el árbol al correr.
 
 ## Instalar y actualizar
 
@@ -82,8 +99,9 @@ bash scripts/hosts/limpieza-disco/instalar.sh
   Si algo falla después del `bootout`, intenta recargar el plist que haya en
   sitio y avisa si el LaunchAgent queda descargado.
 
-El instalador anota en `~/bin/pao-inventario.origen` el SHA de PAO, el blob y
-el sha256 de `~/bin/pao-inventario.py`. Para actualizar el inventario, vuelve
+El instalador anota en `~/bin/pao-inventario.origen` el SHA de PAO, si está
+en `origin/main`, y el blob y el sha256 de `~/bin/pao-inventario.py`. Avisa
+cuando el commit no está en `origin/main`. Para actualizar el inventario, vuelve
 a ejecutar el instalador desde el `main` nuevo. Todos los `ssh` y `scp`
 deshabilitan la multiplexación.
 

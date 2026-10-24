@@ -65,14 +65,33 @@ borrar() { # $1 = ruta, $2 = motivo
   fi
 }
 
-borrar_en() { # $1 = directorio padre sin symlinks, $2 = nombre, $3 = motivo
+corrida_nueva() { # ¿hay en runs/ una corrida posterior a $MARCA sin meta o con mirror en la copia $1?
+  local r
+  while IFS= read -r r; do
+    [ -f "$r/meta" ] || return 0
+    grep -qxF -- "mirror=remote-run/work/$1" "$r/meta" && return 0
+  done < <(find "$RR/runs" -mindepth 1 -maxdepth 1 -newer "$MARCA" 2>/dev/null)
+  return 1
+}
+
+borrar_en() { # $1 = directorio padre sin symlinks, $2 = nombre, $3 = motivo, $4 = "copia" si es de work/
   # Con el padre como cwd, sustituirlo después por un symlink no desvía el rm.
+  # En una copia, lock, mtime y corridas nuevas se miran otra vez justo antes del rm.
   ( cd -P -- "$1" 2>/dev/null && [ "$(pwd -P)" = "$1" ] && [ -d "$2" ] && [ ! -L "$2" ] || exit 3
+    if [ "${4:-}" = copia ]; then
+      [ -e "$2/.remote-run.lock" ] || [ -L "$2/.remote-run.lock" ] && exit 4
+      [ -z "$(find "./$2" -maxdepth 2 -mtime -7 -print -quit 2>/dev/null)" ] || exit 5
+      corrida_nueva "$2" && exit 6
+    fi
     [ "$DRY" = 1 ] && exit 0
-    rm -rf -- "./$2" )
+    rm -rf -- "./$2" || exit 7 )
   case $? in
     0) log "$([ "$DRY" = 1 ] && echo '[dry-run] borraría' || echo borrado) $1/$2 ($3)" ;;
     3) log "no borro $1/$2 ($3): el padre no es $1 o la entrada cambió" ;;
+    4) log "no borro $1/$2: apareció un lock" ;;
+    5) log "no borro $1/$2: algo cambió en los últimos 7 días" ;;
+    6) log "no borro $1/$2: hay una corrida nueva desde el inventario" ;;
+    *) log "no pude borrar $1/$2 ($3)" ;;
   esac
 }
 
@@ -99,8 +118,9 @@ log "inicio (libre: ${antes} GB$([ "$EMERG" = 1 ] && echo ", EMERGENCIA")$([ "$D
 # Reglas 1 y 3: el inventario decide qué es borrable en ~/remote-run.
 # Instalado junto a este script; desde un temporal permite una pasada en seco previa.
 INVENTARIO="$(cd "$(dirname "$0")" && pwd)/pao-inventario.py"
-INV_JSON=$(mktemp); INV_LISTA=$(mktemp); INV_ERR=$(mktemp)
-trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
+# MARCA fecha el inicio del inventario: una corrida posterior veta las copias.
+MARCA=$(mktemp); INV_JSON=$(mktemp); INV_LISTA=$(mktemp); INV_ERR=$(mktemp)
+trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$MARCA" "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
 INV_OK=0
 if [ ! -d "$RR" ]; then
   INV_MOTIVO="no existe $RR"
@@ -140,6 +160,10 @@ def visible(c):
     return not os.path.basename(c['ruta']).startswith('.')
 
 
+# Una preparación reciente aún no tiene mirror en meta: no se sabe qué copia usa.
+for c in datos['corridas']:
+    if c['clase'] == 'preparacion-abortada' and datos['ts'] - (c['ultimoUso'] or 0) < 3600:
+        print('sin-copias\t' + nombre(c['ruta'], runs))
 for c in datos['copias']:
     if c['borrable'] is True and c['clase'] == 'inactiva' and visible(c):
         print('work\t' + nombre(c['ruta'], work))
@@ -162,29 +186,35 @@ EN_USO=$(mktemp)
   ps -axww -o command= | grep -o -- '--basetemp[= ][^ ]*' | sed 's/^--basetemp[= ]//; s/"//g'
   lsof -u "$(id -u)" -Fn 2>/dev/null | sed -n 's/^n\(\/.*\)/\1/p'
 } | sed 's#^/tmp/#/private/tmp/#' | sort -u > "$EN_USO"
-trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$EN_USO" "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
+trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$EN_USO" "$MARCA" "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
 
 en_uso() { # ¿algún proceso usa $1 o algo dentro de $1?
   grep -qF -- "$1" "$EN_USO"
 }
 
 libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes de borrar
-  if [ -e "$1/.remote-run.lock" ] || [ -L "$1/.remote-run.lock" ]; then return 1; fi
+  if [ -e "$1/.remote-run.lock" ] || [ -L "$1/.remote-run.lock" ]; then
+    log "no borro $1: tiene lock"; return 1
+  fi
   local salida estado
   salida=$(lsof -nP +D "$1" 2>&1); estado=$?
-  [ "$estado" = 1 ] && [ -z "$salida" ]
+  [ "$estado" = 1 ] && [ -z "$salida" ] && return 0
+  log "no borro $1: lsof salió $estado: $(printf '%s\n' "$salida" | head -1 | cut -c1-200)"
+  return 1
 }
 
 # 1. remote-run/work: copias no ocultas que el inventario marca borrables
-if [ "$INV_OK" = 1 ]; then
+if [ "$INV_OK" = 1 ] && grep -q '^sin-copias' "$INV_LISTA"; then
+  log "regla 1 sin borrar: preparación de menos de 1 h en runs/$(grep -m1 '^sin-copias' "$INV_LISTA" | cut -f2)"
+elif [ "$INV_OK" = 1 ]; then
   while IFS=$'\t' read -r tipo n; do
     [ "$tipo" = work ] || continue
     case "$n" in ""|.*|*/*) continue ;; esac
     d="$RR/work/$n"
     [ -d "$d" ] && [ ! -L "$d" ] || continue
     en_uso "$d" && continue
-    libre_ahora "$d" || { log "no borro $d: lock o proceso dentro"; continue; }
-    borrar_en "$RR/work" "$n" "inventario: inactiva y borrable"
+    libre_ahora "$d" || continue
+    borrar_en "$RR/work" "$n" "inventario: inactiva y borrable" copia
   done < "$INV_LISTA"
 fi
 
@@ -197,7 +227,7 @@ if [ "$INV_OK" = 1 ]; then
     r="$RR/runs/$n"
     [ -d "$r" ] && [ ! -L "$r" ] && [ -e "$r/exit" ] || continue
     en_uso "$r" && continue
-    libre_ahora "$r" || { log "no borro $r: proceso dentro"; continue; }
+    libre_ahora "$r" || continue
     borrar_en "$RR/runs" "$n" "inventario: run terminal >30 d"
   done < "$INV_LISTA"
 fi

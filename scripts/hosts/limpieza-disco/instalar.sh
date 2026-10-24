@@ -13,10 +13,16 @@ if [ "$#" -gt 1 ]; then
 fi
 # Los bytes salen del commit, no del árbol: así el SHA registrado los identifica.
 sha=$(git -C "$origen" rev-parse HEAD)
-git -C "$origen" fetch -q origin
+git -C "$origen" fetch -q --prune origin
 if [ -z "$(git -C "$origen" branch -r --contains "$sha")" ]; then
   echo "instalar.sh: $sha no está en ningún remoto; publícalo antes de instalar" >&2
   exit 1
+fi
+if git -C "$origen" merge-base --is-ancestor "$sha" origin/main; then
+  en_main=si
+else
+  en_main=no
+  echo "instalar.sh: aviso: $sha no está en origin/main" >&2
 fi
 local_tmp=$(mktemp -d)
 remoto=$(ssh "${ssh_args[@]}" mini 'mktemp -d /tmp/limpieza-disco.XXXXXX')
@@ -29,12 +35,13 @@ blob=$(git -C "$origen" rev-parse "$sha:$base/inventario/inventario.py")
 (cd "$local_tmp" && shasum -a 256 limpieza-disco.sh com.cosmonaut.limpieza-disco.plist pao-inventario.py > sumas)
 scp "${ssh_args[@]}" "$local_tmp/limpieza-disco.sh" "$local_tmp/com.cosmonaut.limpieza-disco.plist" \
   "$local_tmp/pao-inventario.py" "$local_tmp/sumas" "mini:$remoto/"
-ssh "${ssh_args[@]}" mini "bash -s -- '$remoto' '$accion' '$sha' '$blob'" <<'REMOTO'
+ssh "${ssh_args[@]}" mini "bash -s -- '$remoto' '$accion' '$sha' '$blob' '$en_main'" <<'REMOTO'
 set -euo pipefail
 temporal=$1
 accion=$2
 sha=$3
 blob=$4
+en_main=$5
 label=com.cosmonaut.limpieza-disco
 dominio="gui/$(id -u)"
 plist="$HOME/Library/LaunchAgents/$label.plist"
@@ -68,8 +75,8 @@ cerrar() {
 }
 trap cerrar EXIT
 if launchctl print "$dominio/$label" >/dev/null 2>&1; then
-  launchctl bootout "$dominio/$label"
   descargado=1
+  launchctl bootout "$dominio/$label"
   transcurrido=0
   while launchctl print "$dominio/$label" >/dev/null 2>&1; do
     if [ "$transcurrido" -ge 10 ]; then
@@ -90,8 +97,8 @@ if [ -e "$plist" ] && [ ! -e "$estado/$label.plist$respaldo" ]; then
 fi
 mkdir -p "$HOME/bin" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 install -m 755 "$temporal/pao-inventario.py" "$HOME/bin/pao-inventario.py"
-printf 'repo=personal-agent-orchestration\nsha=%s\nruta=scripts/hosts/inventario/inventario.py\nblob=%s\nsha256=%s\ninstalado=%s\n' \
-  "$sha" "$blob" "$(shasum -a 256 "$HOME/bin/pao-inventario.py" | cut -d' ' -f1)" "$(date -u +%FT%TZ)" \
+printf 'repo=personal-agent-orchestration\nsha=%s\nenMain=%s\nruta=scripts/hosts/inventario/inventario.py\nblob=%s\nsha256=%s\ninstalado=%s\n' \
+  "$sha" "$en_main" "$blob" "$(shasum -a 256 "$HOME/bin/pao-inventario.py" | cut -d' ' -f1)" "$(date -u +%FT%TZ)" \
   > "$HOME/bin/pao-inventario.origen"
 install -m 755 "$temporal/limpieza-disco.sh" "$HOME/bin/limpieza-disco.sh"
 install -m 644 "$temporal/$label.plist" "$plist"
