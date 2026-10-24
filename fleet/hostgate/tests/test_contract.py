@@ -216,14 +216,17 @@ class Contract(Harness):
         self.assertTrue(self.view()['drained'])
         self.assertEqual(self.view()['budget']['retained']['slots'], 1)
 
-    def test_identity_reused_unverifiable_zombie(self):
+    def test_absent_reused_and_unverifiable_peer_is_unauthorized(self):
         for value in ('absent', 'EPERM', copy.copy(self.auth.peer)):
             with self.subTest(value=value):
                 self.world.processes[self.auth.peer.pid] = value
                 if value == self.auth.peer:
                     from dataclasses import replace
                     self.world.processes[self.auth.peer.pid] = replace(value, start_token=(1, 3))
-                self.assertFalse(self.reserve('identity-' + str(value))['wouldGrant'])
+                result = self.reserve('identity-' + str(value))
+                self.assertFalse(result['wouldGrant'])
+                self.assertEqual(result['exitCode'], 5)
+                self.assertEqual(self.codes(result), {'identity-unverifiable'})
 
     def test_commit_revalidation_pid_anchor_channel_heartbeat(self):
         for fault in ('pid', 'anchor', 'channel', 'heartbeat'):
@@ -298,14 +301,25 @@ class Contract(Harness):
         self.assertEqual(self.view()['budget']['retained']['slots'], 1)
 
     def test_desk_no_transport_even_degraded(self):
+        from hostgate.salud.lector_desk import _ts
         self.world.health_kind = 'desk'
         self.world.sample = json.loads((FIXTURES / 'health/desk.json').read_text())
-        self.world.sample_boot = None
-        for state in (False, True):
-            self.world.default_shell = state
-            r = self.reserve('desk-' + str(state))
-            self.assertFalse(r['wouldGrant'])
-            self.assertIn('boot-unverified', self.codes(r))
+        self.world.utc = _ts(self.world.sample['ts']) + 30
+        self.world.sample_boot = self.world.sample['boot']['bootId']
+        self.world.witness = True
+        self.world.default_shell = False
+        denied = self.reserve('desk-shell')
+        self.assertFalse(denied['wouldGrant'])
+        self.assertEqual(self.codes(denied), {'default-shell-unverified'})
+        self.world.default_shell = True
+        self.assertTrue(self.reserve('desk-synthetic-gates')['wouldGrant'])
+        self.release(self.key(self.reserve('desk-synthetic-gates')))
+        self.world.witness = False
+        for shell in (False, True):
+            self.world.default_shell = shell
+            denied = self.reserve('desk-no-witness-' + str(shell))
+            self.assertFalse(denied['wouldGrant'])
+            self.assertIn('boot-unverified', self.codes(denied))
         self.assertEqual(self.world.transport_calls, [])
 
     def test_unknown_health_reason_is_barrier(self):
@@ -381,7 +395,7 @@ class Contract(Harness):
                     view = gate.estado({}, query)
                     row = next(p for p in view['pending'] if p['id'] == pending)
                     if possible and job.endswith('-' + str(fixture['turns'][0])):
-                        self.assertEqual(row['effectiveState'], 'granted')
+                        self.assertEqual(row['effectiveState'], 'simulated')
                     else:
                         self.assertEqual(row['effectiveState'], 'expired')
                         self.assertIn('anchor-dead', self.codes(row))
@@ -498,7 +512,7 @@ class Contract(Harness):
         self.assertEqual(view['budget']['retained']['slots'], 1)
         self.assertEqual(view['resources'][0]['holder'], key)
 
-    def test_publication_uncertainty_never_releases_reservation(self):
+    def test_explicit_dudosa_retains_after_publication_failure(self):
         from unittest.mock import patch
         from hostgate.owner_record import publish_owner
         key = self.key(self.reserve(exclusiveResources=['postgres:5434']))
@@ -574,3 +588,48 @@ class Contract(Harness):
         self.assertTrue(any(p['state'] == 'expired' for p in before['pending']))
         replay = self.reserve('rejected', 'rejected')
         self.assertEqual(replay['originalResult']['exitCode'], 1)
+
+    def test_closure_fencing_fields_and_never_created_each_fail_alone(self):
+        from dataclasses import replace
+        from hostgate.protocol import digest
+        resources = ['sen-slot:1', 'postgres:5434']
+        key = self.key(self.reserve(exclusiveResources=resources))
+        for kind in ('unix-scope-empty', 'never-created'):
+            valid = ClosureEvidence.fixture(key, self.world.boot, kind)
+            changes = [('boot', 'foreign-boot'), ('issuer', ''), ('provenance', 'untrusted')]
+            if kind == 'never-created':
+                changes += [('permit_revoked', False), ('no_external_effects', False)]
+            for field, value in changes:
+                with self.subTest(kind=kind, field=field):
+                    values = dict(valid.__dict__)
+                    values.pop('evidence_digest')
+                    values[field] = value
+                    proof = ClosureEvidence(**values, evidence_digest=digest(values))
+                    evidence_id = kind + '-' + field
+                    self.world.closures[(evidence_id,)] = proof
+                    denied = self.gate.soltar(evidence_id, key, [evidence_id], self.auth)
+                    self.assertEqual(denied['exitCode'], 1)
+                    self.assertIn('unix-scope-unconfirmed', self.codes(denied))
+                    self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+                    self.assertEqual({r['name'] for r in self.view()['resources']}, set(resources))
+        valid = ClosureEvidence.fixture(key, self.world.boot)
+        self.world.closures[('bad-digest',)] = replace(valid, issuer='other-harness')
+        self.assertEqual(self.gate.soltar('bad-digest', key, ['bad-digest'], self.auth)['exitCode'], 1)
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+        self.assertEqual(self.release(key)['exitCode'], 0)
+
+    def test_pending_deadline_expires_before_heartbeat(self):
+        from dataclasses import replace
+        self.config = replace(self.config, heartbeat_ttl=100, pending_ttl=20)
+        self.gate = Hostgate(self.config, self.world)
+        pending = self.gate.prepare(request(), self.auth)
+        self.world.now += 20
+        row = next(p for p in self.view()['pending'] if p['id'] == pending)
+        self.assertLess(self.world.now - row['heartbeat'], self.config.heartbeat_ttl)
+        self.assertEqual(row['effectiveState'], 'expired')
+        self.assertEqual(self.codes(row), {'pending-expired'})
+        denied = self.reserve()
+        self.assertFalse(denied['wouldGrant'])
+        self.assertEqual(self.codes(denied), {'pending-expired'})
+        self.assertEqual(self.gate.store.read()['pending'][0]['state'], 'expired')
+        self.assertEqual(self.view()['budget']['retained']['slots'], 0)

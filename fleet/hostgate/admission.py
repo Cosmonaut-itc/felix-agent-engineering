@@ -326,6 +326,8 @@ class Hostgate:
         for kind in ('pending', 'reservations'):
             for item in view[kind]:
                 item.pop('channelBinding', None)
+                for field in ('state', 'effectiveState'):
+                    if item[field] == 'granted': item[field] = 'simulated'
                 if 'heartbeat' in item: item['heartbeatAgeSeconds'] = self.world.monotonic() - item['heartbeat']
         resources = [dict(name=name, holder=r['key'], state=r['effectiveState'])
                      for r in view['reservations'] if r['effectiveState'] != 'released'

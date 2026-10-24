@@ -129,3 +129,20 @@ class CLI(Harness):
         self.assertEqual(code, 130)
         self.assertFalse(result['wouldGrant'])
         self.assertEqual(self.gate.store.read()['reservations'], [])
+
+    def test_state_wire_maps_granted_to_simulated(self):
+        self.reserve()
+        self.assertEqual(self.gate.store.read()['pending'][0]['state'], 'granted')
+        query = json.dumps(dict(schema=request()['schema'], operationId='state', operation='estado'))
+        code, result = self.call(query, 'estado')
+        self.assertEqual(code, 0)
+        self.assertEqual(result['pending'][0]['state'], 'simulated')
+        self.assertEqual(result['pending'][0]['effectiveState'], 'simulated')
+        def check(value):
+            if isinstance(value, dict):
+                for name, item in value.items():
+                    if name in ('state', 'effectiveState'): self.assertNotEqual(item, 'granted')
+                    check(item)
+            elif isinstance(value, list):
+                for item in value: check(item)
+        check(result)
