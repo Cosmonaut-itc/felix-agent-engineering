@@ -2,6 +2,7 @@
 import json
 import os
 import sqlite3
+from dataclasses import dataclass
 from urllib.parse import quote
 from .protocol import SCHEMA, CODES, canonical, digest, key
 from .model import validate_view
@@ -16,6 +17,17 @@ class StoreError(RuntimeError):
 
 class Busy(StoreError):
     pass
+
+
+class ForeignOwner(Exception):
+    def __init__(self, result):
+        super().__init__('dueno o canal ajeno')
+        self.result = result
+
+
+@dataclass(frozen=True)
+class UnrecordedResult:
+    result: dict
 
 
 class ShadowStore:
@@ -148,15 +160,25 @@ class ShadowStore:
             original = conn.execute('SELECT digest, result, auth_context FROM operations WHERE principal=? AND operation_id=?', (principal, op_id)).fetchone()
             self._validate_operation(original, principal, op_id, view)
             world.checkpoint('before_write')
-            result = apply(view, original)
+            foreign = None
+            try:
+                result = apply(view, original)
+            except ForeignOwner as exc:
+                foreign = exc
+                result = UnrecordedResult(exc.result)
+            record_operation = not isinstance(result, UnrecordedResult)
+            if not record_operation:
+                result = result.result
             conn.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (canonical(view), digest(view)))
-            if original is None:
+            if original is None and record_operation:
                 conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?, ?)', (principal, op_id, operation_digest, canonical(result), canonical(auth_context)))
             conn.execute('INSERT INTO audit(principal, operation_id, payload) VALUES (?, ?, ?)', (principal, op_id, canonical(result)))
             world.checkpoint('before_commit')
             conn.commit()
             committed = True
             world.checkpoint('after_commit')
+            if foreign is not None:
+                raise foreign
             return result
         except sqlite3.OperationalError as exc:
             if 'locked' in str(exc).lower() or 'busy' in str(exc).lower(): raise Busy('escritor ocupado') from exc

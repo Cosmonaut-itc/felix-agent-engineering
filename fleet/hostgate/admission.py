@@ -8,7 +8,7 @@ from .model import AuthContext, budget_view, effective, identity_json
 from .protocol import SCHEMA, canonical, digest, reason, reply, validate
 from .salud import lector_desk, lector_mini
 from .scope import closure_reasons
-from .store import Busy, ShadowStore, StoreError
+from .store import Busy, ForeignOwner, ShadowStore, StoreError, UnrecordedResult
 
 THRESHOLDS = frozenset(('cpuRootPct', 'commitRatio', 'eLatencyMs', 'C: libre', 'E: libre',
                        'memLevelPct', 'memPressure', 'data libre'))
@@ -21,6 +21,10 @@ class Hostgate:
 
     def _reply(self, op_id, reasons=(), would_grant=False, exit_code=0, **fields):
         return reply(op_id, self.config.revision, reasons, would_grant, exit_code, **fields)
+
+    def _foreign_owner(self, op_id):
+        return ForeignOwner(self._reply(
+            op_id, [reason('identity-unverifiable', 'preparacion/reserva de otro dueno/canal')], exit_code=5))
 
     def _authorized(self, auth, operation):
         if not isinstance(auth, AuthContext): return False
@@ -133,13 +137,13 @@ class Hostgate:
     def prepare(self, request, auth):
         """Preparación interna del harness, sin reserva, turno ni endpoint CLI."""
         validate(request, 'reservar')
-        if not self._authorized(auth, 'reservar'): raise PermissionError('no autorizado')
+        if not self._authorized(auth, 'reservar'): raise self._foreign_owner(request['operationId'])
         op_id = request['operationId']
         def apply(view, original):
             self._persist_effective(view)
             if original:
                 if original[2] != canonical(self._auth_context(auth)):
-                    raise PermissionError('preparacion de otro dueno/canal')
+                    raise self._foreign_owner(op_id)
                 if original[0] != digest(request): raise ValueError('operation-conflict')
                 return json.loads(original[1])
             pending = self._new_pending(request, auth)
@@ -208,8 +212,6 @@ class Hostgate:
         def guarded_apply(view, original):
             try:
                 return apply(view, original)
-            except PermissionError:
-                raise
             except OSError as exc:
                 raise StoreError('proveedor no disponible antes de escritura') from exc
         try:
@@ -220,9 +222,8 @@ class Hostgate:
             return self._reply(op_id, [reason('store-unavailable', 'proveedor de identidad no disponible')], exit_code=6)
         try:
             return self.store.mutate(auth.principal, op_id, operation_digest, guarded_apply, self.world, context)
-        except PermissionError:
-            # Un rechazo ajeno no puede ocupar la operación idempotente del dueño.
-            return self._reply(op_id, [reason('identity-unverifiable', 'preparacion/reserva de otro dueno/canal')], exit_code=5)
+        except ForeignOwner as exc:
+            return exc.result
         except Busy:
             return self._reply(op_id, [reason('busy', 'escritor ocupado', True)], exit_code=4)
         except StoreError:
@@ -239,7 +240,7 @@ class Hostgate:
             if pending is not None and (pending['requester'] != identity_json(auth.peer)
                                         or pending['anchor'] != identity_json(auth.anchor)
                                         or pending['channelBinding'] != auth.channel_binding):
-                raise PermissionError('preparacion de otro dueno/canal')
+                raise self._foreign_owner(request['operationId'])
             if pending is not None and pending['requestDigest'] != digest(request):
                 return self._reply(request['operationId'], [reason('operation-conflict', 'preparacion de otro payload')], exit_code=2)
             if pending is None:
@@ -279,10 +280,10 @@ class Hostgate:
             if reservation is None or key['storeId'] != self.config.store_id:
                 return self._reply(op_id, [reason('stale-generation', 'storeId/reservationId/generation no vigente')], exit_code=1)
             if reservation['principal'] != auth.principal or reservation['owner'] != identity_json(auth.peer):
-                raise PermissionError('no es el dueno exacto')
+                raise self._foreign_owner(op_id)
             if (self.world.verify(auth.peer).status != 'same' or not self.world.channel_alive(auth.channel_binding)
                     or reservation['channelBinding'] != auth.channel_binding):
-                raise PermissionError('dueno/canal no verificable')
+                raise self._foreign_owner(op_id)
             reasons = mutate(reservation)
             return self._reply(op_id, reasons, exit_code=1 if reasons else 0, simulationKey=key,
                                simulationState=reservation['state'])
