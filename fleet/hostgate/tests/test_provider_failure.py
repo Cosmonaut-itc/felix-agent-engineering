@@ -10,14 +10,14 @@ from hostgate.tests.test_contract import Harness
 
 
 class ProviderFailure(Harness):
-    def call(self, payload, auth):
+    def call(self, payload, auth, msg=None):
         output = io.StringIO()
         code = main([payload['operation']], gate=self.gate, auth=auth,
                     stdin=io.StringIO(json.dumps(payload)), stdout=output, stderr=io.StringIO())
         lines = output.getvalue().splitlines()
-        self.assertEqual(len(lines), 1)
+        self.assertEqual(len(lines), 1, msg)
         result = json.loads(lines[0])
-        self.assertEqual(result['exitCode'], code)
+        self.assertEqual(result['exitCode'], code, msg)
         return code, result
 
     def records(self, operation_id, preparation=False):
@@ -169,7 +169,7 @@ class ProviderFailure(Harness):
             store = self.gate.store
             connect = store.connect
             op = 'failed-' + stage
-            self.assertEqual(before['reservations'][0]['state'], 'reserved')
+            self.assertEqual(before['reservations'][0]['state'], 'reserved', stage)
 
             class Connection:
                 def __init__(self):
@@ -202,22 +202,44 @@ class ProviderFailure(Harness):
             with patch.object(store, 'connect', side_effect=lambda **kwargs: Connection()), \
                     patch.object(self.world, 'checkpoint', side_effect=checkpoint), \
                     patch.object(self.world, 'profile_verified', side_effect=OSError('profile')):
-                code, failed = self.call(request(op, 'job-b'), other)
+                code, failed = self.call(request(op, 'job-b'), other, msg=stage)
             self.assertEqual(code, 3, 'SEN3900_CONFIRMACION_INCIERTA: ' + stage)
-            self.assertFalse(failed['wouldGrant'])
+            self.assertFalse(failed['wouldGrant'], stage)
             operations, audit = self.records(op)
-            self.assertEqual(operations, 0)
+            self.assertEqual(operations, 0, stage)
             stored = store.read()
             if stage in ('write', 'audit', 'before_commit'):
-                self.assertEqual(stored, before)
-                self.assertEqual(audit, [])
+                self.assertEqual(stored, before, stage)
+                self.assertEqual(audit, [], stage)
             else:
-                self.assertEqual(stored['reservations'][0]['state'], 'uncertain')
-                self.assertEqual(stored['reservations'][0]['demand'], before['reservations'][0]['demand'])
-                self.assertEqual(stored['pending'], before['pending'])
-                self.assertEqual(len(audit), 1)
-                self.assertEqual(audit[0]['exitCode'], 6)
-                self.assertFalse(audit[0]['wouldGrant'])
+                self.assertEqual(stored['reservations'][0]['state'], 'uncertain', stage)
+                self.assertEqual(stored['reservations'][0]['demand'], before['reservations'][0]['demand'], stage)
+                self.assertEqual(stored['pending'], before['pending'], stage)
+                self.assertEqual(len(audit), 1, stage)
+                self.assertEqual(audit[0]['exitCode'], 6, stage)
+                self.assertFalse(audit[0]['wouldGrant'], stage)
+
+    def test_sen3900_prepare_conflict_is_audited_without_replacing_original(self):
+        payload = request('prepare-conflict', 'job-a')
+        pending_id = self.gate.prepare(payload, self.auth)
+        before = self.gate.store.read()
+        with sqlite3.connect(str(self.gate.store.path)) as conn:
+            original = conn.execute('SELECT * FROM operations').fetchall()
+
+        with self.assertRaisesRegex(ValueError, '^operation-conflict$'):
+            self.gate.prepare(dict(payload, attemptId='a2'), self.auth)
+
+        operations, audit = self.records(payload['operationId'], preparation=True)
+        self.assertEqual([(entry['exitCode'], self.codes(entry), entry['wouldGrant'])
+                          for entry in audit[1:]], [(2, {'operation-conflict'}, False)],
+                         'SEN3900_PREPARE_CONFLICTO_CLASIFICADO')
+        self.assertEqual(operations, 1)
+        self.assertEqual(audit[0], {'pendingId': pending_id})
+        self.assertEqual(audit[1]['operationId'], payload['operationId'])
+        self.assertEqual(self.gate.store.read(), before)
+        self.assertEqual([pending['id'] for pending in before['pending']], [pending_id])
+        with sqlite3.connect(str(self.gate.store.path)) as conn:
+            self.assertEqual(conn.execute('SELECT * FROM operations').fetchall(), original)
 
     def test_sen3900_prepare_failure_keeps_doubt_after_owner_recovers(self):
         granted = self.reserve('reserve-a', 'job-a',
