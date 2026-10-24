@@ -63,6 +63,12 @@ class Hostgate:
         return projection
 
     def _health(self):
+        try:
+            return self._read_health()
+        except Exception:
+            return [reason('health-reader-pending', 'proveedor/lector de salud no disponible')]
+
+    def _read_health(self):
         kind, sample, independent_boot = self.world.health()
         reasons = []
         if kind == 'desk':
@@ -183,8 +189,6 @@ class Hostgate:
     def _run(self, request, auth, action):
         validate(request)
         op_id = request['operationId']
-        if not self._authorized(auth, request['operation']):
-            return self._reply(op_id, [reason('identity-unverifiable', 'endpoint/rol no autorizado')], exit_code=5)
         operation_digest = digest(request)
         def apply(view, original):
             projection = self._persist_effective(view)
@@ -202,8 +206,21 @@ class Hostgate:
                 result.update(replayed=True, originalResult=historic, currentState=current_state, wouldGrant=False)
                 return result
             return action(view)
+        def guarded_apply(view, original):
+            try:
+                return apply(view, original)
+            except PermissionError:
+                raise
+            except OSError as exc:
+                raise StoreError('proveedor no disponible antes de escritura') from exc
         try:
-            return self.store.mutate(auth.principal, op_id, operation_digest, apply, self.world, self._auth_context(auth))
+            if not self._authorized(auth, request['operation']):
+                return self._reply(op_id, [reason('identity-unverifiable', 'endpoint/rol no autorizado')], exit_code=5)
+            context = self._auth_context(auth)
+        except Exception:
+            return self._reply(op_id, [reason('store-unavailable', 'proveedor de identidad no disponible')], exit_code=6)
+        try:
+            return self.store.mutate(auth.principal, op_id, operation_digest, guarded_apply, self.world, context)
         except PermissionError:
             # Un rechazo ajeno no puede ocupar la operación idempotente del dueño.
             return self._reply(op_id, [reason('identity-unverifiable', 'preparacion/reserva de otro dueno/canal')], exit_code=5)
@@ -213,6 +230,8 @@ class Hostgate:
             return self._reply(op_id, [reason('store-unavailable', 'estado ausente/corrupto/no acreditado')], exit_code=6)
         except OSError:
             return self._reply(op_id, [reason('store-unavailable', 'commit no confirmado; releer misma operacion')], exit_code=3)
+        except Exception:
+            return self._reply(op_id, [reason('store-unavailable', 'proveedor interno no disponible')], exit_code=6)
 
     def reservar(self, request, auth):
         validate(request, 'reservar')

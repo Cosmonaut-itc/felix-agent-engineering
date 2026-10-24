@@ -95,3 +95,37 @@ class CLI(Harness):
         self.assertEqual(heartbeat('h4', 2)[0], 5)
         self.auth = owner
         self.assertEqual(heartbeat('h5', 2)[0], 0)
+
+    def test_internal_provider_errors_are_not_request_errors(self):
+        from dataclasses import replace
+        from unittest.mock import patch
+        for exception in (ValueError, TypeError, KeyError, AttributeError, OverflowError, OSError, RuntimeError):
+            with self.subTest(provider='health', exception=exception):
+                with patch.object(self.world, 'health', side_effect=exception('internal')):
+                    code, result = self.call(json.dumps(request('health-' + exception.__name__)))
+                self.assertIn(code, (1, 6))
+                self.assertTrue(self.codes(result) <= {'health-reader-pending', 'health-invalid', 'store-unavailable'})
+                self.assertFalse(result['wouldGrant'])
+            with self.subTest(provider='profile', exception=exception):
+                with patch.object(self.world, 'profile_verified', side_effect=exception('internal')):
+                    code, result = self.call(json.dumps(request('profile-' + exception.__name__)))
+                self.assertEqual(code, 6)
+                self.assertEqual(self.codes(result), {'store-unavailable'})
+        owner = self.auth
+        self.auth = replace(owner, peer=object())
+        self.assertEqual(self.call(json.dumps(request('bad-auth')))[0], 6)
+        self.auth = owner
+        self.assertEqual(self.gate.store.read()['reservations'], [])
+
+    def test_internal_query_failure_and_interrupt_keep_envelope(self):
+        from unittest.mock import patch
+        query = json.dumps(dict(schema=request()['schema'], operationId='state', operation='estado'))
+        with patch.object(self.world, 'verify', side_effect=AttributeError('provider')):
+            code, result = self.call(query, 'estado')
+        self.assertEqual(code, 6)
+        self.assertEqual(self.codes(result), {'store-unavailable'})
+        with patch.object(self.world, 'health', side_effect=KeyboardInterrupt):
+            code, result = self.call(json.dumps(request('interrupted')))
+        self.assertEqual(code, 130)
+        self.assertFalse(result['wouldGrant'])
+        self.assertEqual(self.gate.store.read()['reservations'], [])
