@@ -324,19 +324,24 @@ INVENTARIO="${inventario_dir:-}/pao-inventario.py"
 
 # Rutas en uso: cwd de todos mis procesos, cualquier --basetemp en línea de
 # comandos y todos los archivos que tengo abiertos.
-uid=$(id -u) || { log "reglas 1 y 3 sin borrar: falló id para EN_USO"; exit 1; }
+# Un fallo de esta captura deja sin borrar sólo las reglas 1 y 3; las demás
+# siguen con la captura parcial, como antes de este cambio.
+sin_uso() { log "reglas 1 y 3 sin borrar: $1"; INV_OK=0; }
+if ! uid=$(id -u); then
+  sin_uso "falló id para EN_USO"; uid=-1
+fi
 if ! lsof -a -u "$uid" -d cwd -Fn > "$USO_CWD" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
-  log "reglas 1 y 3 sin borrar: falló lsof de cwd para EN_USO o emitió diagnósticos"; exit 1
+  sin_uso "falló lsof de cwd para EN_USO o emitió diagnósticos"
 fi
 if ! ps -axww -o command= > "$USO_PS" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
-  log "reglas 1 y 3 sin borrar: falló ps para EN_USO o emitió diagnósticos"; exit 1
+  sin_uso "falló ps para EN_USO o emitió diagnósticos"
 fi
 if ! lsof -u "$uid" -Fn > "$USO_ABIERTOS" 2> "$INV_ERR" || [ -s "$INV_ERR" ]; then
-  log "reglas 1 y 3 sin borrar: falló lsof de archivos para EN_USO o emitió diagnósticos"; exit 1
+  sin_uso "falló lsof de archivos para EN_USO o emitió diagnósticos"
 fi
 grep -o -- '--basetemp[= ][^ ]*' "$USO_PS" > "$USO_BASETEMP"; estado_basetemp=$?
 if [ "$estado_basetemp" -gt 1 ]; then
-  log "reglas 1 y 3 sin borrar: falló extracción de basetemp para EN_USO"; exit 1
+  sin_uso "falló extracción de basetemp para EN_USO"
 fi
 if ! (set -o pipefail
   { sed -n 's/^n//p' "$USO_CWD" &&
@@ -344,7 +349,7 @@ if ! (set -o pipefail
     sed -n 's/^n\(\/.*\)/\1/p' "$USO_ABIERTOS";
   } | sed 's#^/tmp/#/private/tmp/#' | sort -u > "$EN_USO"
 ); then
-  log "reglas 1 y 3 sin borrar: falló captura o filtrado de EN_USO"; exit 1
+  sin_uso "falló captura o filtrado de EN_USO"
 fi
 
 en_uso() { # Un error al leer la captura también conserva la candidata.

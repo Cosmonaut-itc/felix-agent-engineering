@@ -69,7 +69,9 @@ demás.
   inventario. Un fallo conserva la candidata y deja motivo en el log.
   Si no se puede comprobar `runs/` en conjunto (incluida la pérdida de
   `MARCA`), se detienen ambas reglas para el resto de la pasada. Un fallo
-  de temporales o de captura de `EN_USO` termina la pasada sin borrar.
+  de temporales termina la pasada sin borrar. Un fallo o un diagnóstico en
+  la captura de `EN_USO` detiene las reglas 1 y 3; las demás siguen con la
+  captura parcial, como antes.
 - **Regla 7.** Busca cachés de Next.js en todo el home, pero poda
   `~/remote-run`, así que no entra en las copias.
 
