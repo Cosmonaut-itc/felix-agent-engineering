@@ -136,7 +136,7 @@ posteriores y el encargo r3 mandan sobre el trabajo aún pendiente.
 | Punto r3 | Prueba / límite |
 | --- | --- |
 | 1, A-I1 | `test_a_i1_foreign_peer_cannot_consume_prepared_operation`, `test_a_i1_foreign_mutations_leave_ids_available_to_owner`; replay B-G2 y rechazo durable conservados. |
-| 2, A-M1 | `test_valid_checksum_does_not_authorize_invalid_rows`, `MiniReader.test_malformed_fields_never_succeed_or_raise`, `test_huge_volume_and_clock_are_invalid`, `test_owner_huge_started_is_invalid_and_read_protects`, `test_desk_huge_integer_is_invalid_at_adapter_boundary`. Lector desk intacto; pendiente Desktop. |
+| 2, A-M1 | `test_valid_checksum_does_not_authorize_invalid_rows`, `MiniReader.test_malformed_fields_never_succeed_or_raise`, `test_huge_volume_and_clock_are_invalid`, `test_owner_huge_started_is_invalid_and_read_protects`, `test_desk_huge_integer_is_invalid_at_adapter_boundary`. Lector desk entonces intacto; A-M1 resuelto por adopción r4. |
 | 3, M-2 | `test_boot_change_after_revalidation_keeps_ledger_usable`. |
 | 4, M-1/A-M2 | `test_observation_skips_terminal_history_without_erasing_it`; siguen `quick_check` y reescritura completa, coste pendiente de medir. |
 | 5, M-7 | `test_internal_provider_errors_are_not_request_errors`, `test_internal_query_failure_and_interrupt_keep_envelope`; incluye exit 130. |
@@ -182,4 +182,17 @@ recibo completo, resultado y salida del lanzador 0, turno liberado. Los procesos
 propios del lanzador terminaron; los helpers propios concluyeron en la suite.
 El commit posterior cambia sólo README/COBERTURA, sin nueva ejecución. Esto acredita
 suite verde sobre el SHA citado; la aceptación técnica de Fleet sigue pendiente,
-al igual que las interfaces F y el aviso a Desktop por A-M1 del lector desk intacto.
+al igual que las interfaces F. A-M1 se resuelve por adopción r4, registrada abajo.
+
+
+Adopción A-M1, 2026-10-23 (America/Mexico_City): copia byte a byte de
+`/Users/felixddhs/.claude/encargos/desktop-carga/lector-numero-am1/artifact/lector_desk.py`,
+Desktop `d21312b1`, empaquetado en `ca44846d`. Blob verificado antes del commit:
+`1ef0465d847836129dc155a80bf34fac8e169a4a`. Desktop acreditó en Mini los runs
+`20261023-205755-d82822` (112/112 en base y corregido; regresiones 22 fallos en base
+y 36/36 en corregido) y `20261023-210507-aedc03` (113/113 del corpus hostgate en ambos).
+El corpus `test_lector_desk.py`, `support/cases.py` y `fixtures/health/desk.json`
+conserva sus blobs. `test_lector_desk_adoptado.py` añade dos casos de JSON ±10**400
+por el adaptador, con control sano, degradación y rechazo; se mantiene la captura
+de desborde de `admission.py`. No queda pendiente A-M1 para Desktop. La evidencia
+de ejecución de esta adopción se registra con la corrida r4.

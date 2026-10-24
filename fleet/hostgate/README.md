@@ -130,16 +130,15 @@ ese transporte ni finge autenticación con PPID. Misma cuenta OS con escritura d
 BD puede alterar el estado; no se promete aislamiento hostil. Separar cuenta es decisión
 de provisión, no requisito oculto para probar sombra.
 
-`salud/lector_desk.py` se trasladó sin cambios. Sus 112 casos/aserciones originales
+`salud/lector_desk.py` adopta la copia corregida y aceptada de Desktop (registro r4 abajo). Sus 112 casos/aserciones originales
 se ejecutan con parametrización stdlib en `tests/support/cases.py`. `lector_mini`
 implementa el contrato U4; recibe boot independiente por parámetro. Usa la ventana
 [-60,180] s de B, propuesta del consumidor que U4 no especifica y debe aceptar Fleet.
 La identidad del host y ncpu se contrastan con configuración. Sin SEN-3853 el desk no
 es sano ni degradado; DefaultShell pendiente/fallido implica cero llamadas al transporte.
 No se implementa transporte. Ninguna consulta dispara sondas ni intenta obtener testigo.
-A-M1 pendiente para Desktop: `_numero` del lector desk aceptado puede lanzar
-`OverflowError` ante `10**400`. El adaptador captura ese desborde como `health-invalid`;
-`salud/lector_desk.py` permanece intacto y su corrección corresponde a Desktop.
+A-M1 queda resuelto por la adopción del lector Desktop corregido. La captura de
+`OverflowError` en el adaptador se conserva como defensa en profundidad.
 
 `owner_record.py` propone `fleet/host-owner@1`, con supervisor exacto separado de raíz,
 key/correlación/boot/started/secuencia. Publica temporal privado, fsync, replace y fsync
@@ -208,7 +207,7 @@ técnica de Fleet, integración ni activación.
 El contraste `test_observacion_powershell_contraste_d8fecdc7` usa las seis variantes
 del productor Desktop `d8fecdc7`, con source y scope exactos. La observación no cambia
 motivos del lector ni expone conteos, tampoco convierte lower bounds o null en salud.
-No se modifica el lector desk aceptado.
+El corpus desk aceptado se conserva; la adopción autorizada r4 se registra abajo.
 
 La observación de identidad/canal se limita a preparaciones `validating` y reservas
 no liberadas. No se borran lápidas ni operaciones. SQLite aún ejecuta `quick_check`
@@ -218,3 +217,16 @@ en la frontera SQLite y los fsync del registro antes/después de replace; no se
 acredita daño físico real ni un fallo del fsync interno de SQLite a nivel VFS.
 ABI/IPC, perfiles reales, consumidor U1, corte real, DefaultShell, SEN-3853 y
 recuperación explícita permanecen pendientes. Ningún fixture acredita activación.
+
+
+Adopción A-M1, 2026-10-23 (America/Mexico_City): copia byte a byte de
+`/Users/felixddhs/.claude/encargos/desktop-carga/lector-numero-am1/artifact/lector_desk.py`,
+Desktop `d21312b1`, empaquetado en `ca44846d`. Blob verificado antes del commit:
+`1ef0465d847836129dc155a80bf34fac8e169a4a`. Desktop acreditó en Mini los runs
+`20261023-205755-d82822` (112/112 en base y corregido; regresiones 22 fallos en base
+y 36/36 en corregido) y `20261023-210507-aedc03` (113/113 del corpus hostgate en ambos).
+El corpus `test_lector_desk.py`, `support/cases.py` y `fixtures/health/desk.json`
+conserva sus blobs. `test_lector_desk_adoptado.py` añade dos casos de JSON ±10**400
+por el adaptador, con control sano, degradación y rechazo; se mantiene la captura
+de desborde de `admission.py`. No queda pendiente A-M1 para Desktop. La evidencia
+de ejecución de esta adopción se registra con la corrida r4.

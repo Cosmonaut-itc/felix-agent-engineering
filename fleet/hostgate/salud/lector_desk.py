@@ -5,6 +5,7 @@ Valida sólo los campos del contrato e ignora cualquier otra clave, incluida
 """
 import math
 import re
+import sys
 from datetime import datetime, timezone
 
 GIB = 1024 ** 3
@@ -23,7 +24,10 @@ def _ts(texto):
 
 
 def _numero(x, minimo=0.0, maximo=math.inf):
-    return type(x) in (int, float) and math.isfinite(x) and minimo <= x <= maximo
+    # Comparar no convierte los enteros JSON a float, incluso fuera de su rango.
+    return (type(x) in (int, float)
+            and -sys.float_info.max <= x <= sys.float_info.max
+            and minimo <= x <= maximo)
 
 
 def _dict(x):
