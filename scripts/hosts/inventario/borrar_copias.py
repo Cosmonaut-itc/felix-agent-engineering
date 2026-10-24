@@ -12,7 +12,6 @@ import os
 from pathlib import Path
 import secrets
 import pwd
-import signal
 import stat
 import subprocess
 
@@ -36,14 +35,6 @@ def hora():
 
 def raiz_predeterminada():
     return Path(pwd.getpwuid(os.getuid()).pw_dir) / 'remote-run'
-
-
-class InterrupcionSenal(BaseException):
-    pass
-
-
-def interrumpir_por_senal(numero, frame):
-    raise InterrupcionSenal(signal.Signals(numero).name)
 
 
 def directorio(ruta):
@@ -273,43 +264,6 @@ def consultar_uso_previo(raiz, copia):
     return paso
 
 
-def reconciliar(informe, recursos, causa=None):
-    work_fd = recursos.get('work')
-    if work_fd is None:
-        return
-    for copia in informe['copias']:
-        if 'cuarentena' not in copia:
-            continue
-        paso = {'horaUTC': hora(), 'ubicacion': 'no-verificable'}
-        copia['reconciliacion'] = paso
-        try:
-            for clave, nombre in (('original', copia['nombre']),
-                                  ('cuarentena', Path(copia['cuarentena']).name)):
-                info = existe(nombre, work_fd)
-                paso[clave] = identidad(info) if info is not None else None
-            paso['ubicacion'] = ('ambas' if paso['original'] and paso['cuarentena'] else
-                                 'cuarentena' if paso['cuarentena'] else
-                                 'original' if paso['original'] else 'ausente')
-            if copia['resultado']['estado'] == 'borrada':
-                continue
-            fd = recursos['copias'].get(copia['nombre'])
-            if ('borrado' in copia and fd is not None and os.fstat(fd).st_nlink == 0
-                    and paso['cuarentena'] is None):
-                estado = 'borrada'
-            elif paso['cuarentena'] is not None:
-                estado = 'error-parcial'
-            elif paso['original'] == copia['validacion']['identidades']['copia']:
-                estado = 'rechazada'
-            else:
-                estado = 'error-parcial'
-            error = causa or copia['resultado'].get('error') or informe.get('error') or 'operación incompleta'
-            copia['resultado'] = {'horaUTC': hora(), 'estado': estado, 'error': error}
-        except ERRORES as exc:
-            paso['error'] = str(exc)
-            copia['resultado'] = {'horaUTC': hora(), 'estado': 'error-parcial',
-                                  'error': causa or str(exc)}
-
-
 def vaciar(fd, dispositivo):
     entradas = list(os.scandir(fd))
     for entrada in entradas:
@@ -327,16 +281,14 @@ def vaciar(fd, dispositivo):
             os.unlink(entrada.name, dir_fd=fd)
 
 
-def eliminar(raiz, work_fd, copia, informe, recursos):
+def eliminar(raiz, work_fd, copia, recursos):
     nombre = copia['nombre']
     identidades = copia['reverificacion']['identidades']
     comprobar_work(raiz, work_fd, identidades)
     cuarentena = '.borrando-{}-{}-{}'.format(nombre, datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ'),
                                            secrets.token_hex(8))
     ruta = raiz / 'work' / cuarentena
-    informe.setdefault('primeraEscritura', {'horaUTC': hora()})
     copia['cuarentena'] = str(ruta)
-    copia['resultado'] = {'horaUTC': hora(), 'estado': 'cuarentena-intentada'}
     try:
         cuarentenar(work_fd, nombre, cuarentena)
         progreso(copia, 'cuarentena')
@@ -351,17 +303,15 @@ def eliminar(raiz, work_fd, copia, informe, recursos):
         copia['borrado'] = {'horaUTC': hora()}
         vaciar(fd, info.st_dev)
         os.rmdir(cuarentena, dir_fd=work_fd)
-        copia['resultado'] = {'horaUTC': hora(), 'estado': 'borrada'}
-        progreso(copia, 'borrada')
-        return True
-    except BaseException as exc:
+    except ERRORES as exc:
         copia['resultado'] = {'horaUTC': hora(), 'estado': 'error-parcial',
                               'error': type(exc).__name__ + ': ' + str(exc)}
         copia['duPosterior'] = medir_du(ruta, None)
         progreso(copia, 'error')
-        if isinstance(exc, ERRORES):
-            return False
-        raise
+        return False
+    copia['resultado'] = {'horaUTC': hora(), 'estado': 'borrada'}
+    progreso(copia, 'borrada')
+    return True
 
 
 def listado_posterior(raiz, copias, work_fd=None, identidades=None):
@@ -450,24 +400,20 @@ def procesar(raiz, ejecutar, informe, recursos):
                 informe['error'] = 'uso previo detectado o no verificable: ' + copia['nombre']
                 break
             if ejecutar:
-                if not eliminar(raiz, work_fd, copia, informe, recursos):
+                if not eliminar(raiz, work_fd, copia, recursos):
                     informe['error'] = 'borrado detenido: ' + copia['nombre']
                     break
             else:
                 copia['resultado'] = {'horaUTC': hora(), 'estado': 'conservada-en-seco'}
-        else:
-            informe['resultado'] = 'borrado-completo' if ejecutar else 'validado-en-seco'
     except ERRORES as exc:
         informe['error'] = str(exc)
-        if informe.get('primeraEscritura'):
-            progreso(next((c for c in reversed(informe['copias']) if 'cuarentena' in c),
-                          {'nombre': 'sin-copia'}), 'error')
-    finally:
-        reconciliar(informe, recursos)
-        informe['listadoPosterior'] = listado_posterior(raiz, informe['copias'], work_fd, identidades)
-        if 'error' in informe['listadoPosterior'] and informe['resultado'] in ('borrado-completo', 'validado-en-seco'):
-            informe['resultado'] = 'detenido'
-        informe['fin'] = {'horaUTC': hora()}
+    informe['listadoPosterior'] = listado_posterior(raiz, informe['copias'], work_fd, identidades)
+    estado_final = 'borrada' if ejecutar else 'conservada-en-seco'
+    if (len(informe['copias']) == len(COPIAS_AUTORIZADAS)
+            and all(c['resultado']['estado'] == estado_final for c in informe['copias'])
+            and 'error' not in informe['listadoPosterior'] and 'error' not in informe):
+        informe['resultado'] = 'borrado-completo' if ejecutar else 'validado-en-seco'
+    informe['fin'] = {'horaUTC': hora()}
     return informe
 
 
@@ -489,21 +435,8 @@ def main(argv=None):
                'modo': 'ejecutar' if args.ejecutar else 'seco', 'raiz': str(raiz), 'host': host,
                'inventario': None, 'copias': [], 'resultado': 'rechazado'}
     recursos = {'copias': {}}
-    manejadores = {}
     try:
-        for senal in (signal.SIGTERM, signal.SIGHUP):
-            manejadores[senal] = signal.signal(senal, interrumpir_por_senal)
-        try:
-            procesar(raiz, args.ejecutar, informe, recursos)
-        except BaseException as exc:
-            if informe.get('primeraEscritura'):
-                causa = type(exc).__name__ + ': ' + str(exc)
-                reconciliar(informe, recursos, causa)
-                informe.update(resultado='interrumpido', interrupcion=causa)
-                progreso(next((c for c in reversed(informe['copias']) if 'cuarentena' in c),
-                              {'nombre': 'sin-copia'}), 'error')
-                print(json.dumps(informe, ensure_ascii=False, indent=2, allow_nan=False), flush=True)
-            raise
+        procesar(raiz, args.ejecutar, informe, recursos)
         print(json.dumps(informe, ensure_ascii=False, indent=2, allow_nan=False))
         return 0 if informe['resultado'] in ('validado-en-seco', 'borrado-completo') else 1
     finally:
@@ -511,8 +444,6 @@ def main(argv=None):
             os.close(fd)
         if recursos.get('work') is not None:
             os.close(recursos['work'])
-        for senal, manejador in manejadores.items():
-            signal.signal(senal, manejador)
 
 
 if __name__ == '__main__':

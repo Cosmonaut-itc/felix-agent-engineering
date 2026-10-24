@@ -140,10 +140,9 @@ contra las identidades y el descriptor. Antes de renombrar consulta también
 uso, rechaza sin renombrar. Las comprobaciones posteriores siguen mandando.
 Renombra sólo por `work_fd` a
 `.borrando-<nombre>-<hora UTC>-<secrets.token_hex(8)>`, oculto e impredecible.
-Antes de llamar a rename registra `primeraEscritura`, la ruta prevista y el
-estado `cuarentena-intentada`. Ese campo indica un intento de escritura, no
-que la syscall haya terminado. Tras el rename escribe progreso en stderr con
-flush. Abre ese objeto sin seguir enlaces y compara su identidad validada.
+Registra la ruta de cuarentena prevista y, tras el rename, escribe progreso
+en stderr con flush. Abre ese objeto sin seguir enlaces y compara su identidad
+validada.
 
 Sobre el objeto apartado exige estas cuatro lecturas satisfactorias:
 
@@ -214,23 +213,31 @@ antes, en el mismo guion; esta ronda sólo autoriza ejecutar ese seco.
 En seco añade lsof y ps sobre cada ruta original, sin cuarentena. Emite JSON
 con modo, host, UTC de los pasos, validación, item, du, re-verificación y uso
 por copia. En ejecución escribe progreso para cuarentena, borrado y error.
-SIGTERM y SIGHUP se convierten en excepciones. Ante una excepción o señal
-capturable desde la intención de rename, reconcilia por `work_fd` el nombre
-original y el previsto y registra ambas identidades y la ubicación observada.
-Un rename que no se consumó deja `rechazada`; uno consumado deja
-`error-parcial` en cuarentena. Si el rmdir final se consumó antes de la
-interrupción, el fd retenido acredita su desaparición. `main` imprime el
-informe parcial con `resultado: "interrumpido"` y vuelve a lanzar la excepción.
-No se promete informe ante SIGKILL. Las pruebas de SIGTERM y SIGHUP usan una
-barrera después del rename real para evitar depender de temporizaciones.
+El JSON sólo está garantizado cuando el script termina normalmente.
+No instala manejadores de SIGTERM ni SIGHUP. Una interrupción o una excepción
+no prevista termina el proceso con exit distinto de 0, sin informe JSON.
+El rastro lo dan las líneas de progreso en stderr con flush y ruta de
+cuarentena, `cuarentenasPrevias` en la corrida siguiente y el listado
+independiente del guion de ejecución. No se reintenta el borrado.
+
+Los estados se fijan durante la operación, sin reconciliación posterior ni
+regla de `st_nlink`. Sólo marca `borrada` después de retornar el rmdir final.
+Si éste lanza un error previsto, incluso después de quitar realmente el
+directorio, conserva `error-parcial` y devuelve 1; no infiere el éxito por
+lecturas posteriores. Un rename rechazado también da `error-parcial`, con
+la ruta prevista aunque el original permanezca intacto. Las excepciones no
+previstas se propagan sin JSON. Una lectura final fallida nunca degrada una
+copia que ya quedó `borrada`.
 
 Los fd de todas las copias apartadas, incluidas las borradas, se mantienen
 abiertos hasta terminar el listado final, para evitar la reutilización de sus
 inodos. El listado usa el mismo `work_fd` y compara identidad por ruta. Por cada
 borrada exige ausencia de su identidad validada y del nombre de cuarentena;
 un nombre original con otra identidad se informa `recreada-por-productor` y
-se acepta. Exit 0 sólo para `validado-en-seco` y `borrado-completo`; cualquier
-rechazo, detención o fallo de listado devuelve 1 (guardas de CLI: 2).
+se acepta. `borrado-completo` y exit 0 exigen las cuatro copias `borrada`;
+`validado-en-seco` y exit 0 exigen las cuatro `conservada-en-seco`. Ambos
+requieren listado sin error y ninguna causa de detención. Cualquier rechazo,
+detención o fallo de listado devuelve 1 (guardas de CLI: 2).
 
 La suite se ejecuta sólo en la Mini con turno de `run.sh`. Sus procesos y
 fixtures son temporales y se limpian en la corrida. El guion
