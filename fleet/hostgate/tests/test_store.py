@@ -169,3 +169,24 @@ class Storage(Harness):
             replay = self.reserve(operation, operation)
             self.assertEqual(replay.get('replayed', False), after_commit)
             self.release(self.key(replay), 'release-' + operation)
+
+    def test_digest_conflict_persists_expiry_without_changing_original(self):
+        original = self.reserve()
+        before = self.view()['reservations'][0]['heartbeat']
+        self.world.now += 40
+        conflict = self.gate.reservar(dict(request(), attemptId='other'), self.auth)
+        self.assertEqual(conflict['exitCode'], 2)
+        stored = self.gate.store.read()['reservations'][0]
+        self.assertEqual(stored['state'], 'uncertain')
+        self.assertEqual(stored['heartbeat'], before)
+        replay = self.reserve()
+        self.assertEqual(replay['originalResult'], original)
+        self.assertFalse(replay['wouldGrant'])
+        self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+
+    def test_state_reads_health_exactly_once(self):
+        from unittest.mock import patch
+        with patch.object(self.world, 'health', wraps=self.world.health) as health:
+            state = self.view()
+        self.assertEqual(health.call_count, 1)
+        self.assertEqual(state['degraded'], bool(state['reasons']))

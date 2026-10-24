@@ -180,13 +180,13 @@ class Hostgate:
             return self._reply(op_id, [reason('identity-unverifiable', 'endpoint/rol no autorizado')], exit_code=5)
         operation_digest = digest(request)
         def apply(view, original):
+            projection = self._persist_effective(view)
             if original:
                 if original[2] != canonical(self._auth_context(auth)):
                     return self._reply(op_id, [reason('identity-unverifiable', 'operacion de otro dueno/canal')], exit_code=5)
                 if original[0] != operation_digest:
                     return self._reply(op_id, [reason('operation-conflict', 'operationId ya tiene otro payload')], exit_code=2)
                 historic = json.loads(original[1])
-                projection = self._persist_effective(view)
                 key = historic.get('simulationKey')
                 current = next((r for r in projection['reservations'] if r['key'] == key), None)
                 current_state = {'state': current['effectiveState'], 'reasons': current['reasons']} if current else None
@@ -194,7 +194,6 @@ class Hostgate:
                 result = copy.deepcopy(historic)
                 result.update(replayed=True, originalResult=historic, currentState=current_state, wouldGrant=False)
                 return result
-            self._persist_effective(view)
             return action(view)
         try:
             return self.store.mutate(auth.principal, op_id, operation_digest, apply, self.world, self._auth_context(auth))
@@ -302,7 +301,8 @@ class Hostgate:
         resources = [dict(name=name, holder=r['key'], state=r['effectiveState'])
                      for r in view['reservations'] if r['effectiveState'] != 'released'
                      for name in r['exclusiveResources']]
-        return self._reply(None, self._health(), pending=view['pending'], reservations=view['reservations'],
+        health_reasons = self._health()
+        return self._reply(None, health_reasons, pending=view['pending'], reservations=view['reservations'],
                            budget=budget_view(self.config, view['reservations']), resources=resources,
-                           drained=view['drained'], degraded=bool(self._health()),
+                           drained=view['drained'], degraded=bool(health_reasons),
                            physicalHostId=self.config.host_id)
