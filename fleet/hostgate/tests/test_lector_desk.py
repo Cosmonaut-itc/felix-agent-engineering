@@ -163,5 +163,39 @@ def test_snapshot_no_objeto(muestra):
     assert evaluar(muestra, AHORA, BOOT) == ['snapshot no es objeto']
 
 
+def test_observacion_powershell_contraste_d8fecdc7():
+    # ConvertTo-DesktopPowerShellObservation, Desktop d8fecdc7:436-472.
+    common = dict(schema='desktop-vigilante/powershell-count@1', unit='count',
+                  source='local-process-enumeration+Win32-retained-handle',
+                  scope='monitor-process-token-user-sid/all-sessions/exclude-self',
+                  minAgeSeconds=300, warnCount=1, error=None, errors=[],
+                  startedUtc='2026-10-23T22:33:07.1000000Z', completedUtc='2026-10-23T22:33:07.4000000Z')
+    variants = dict(ausente=None,
+        complete0=dict(value=0, status='ok', coverage='complete', observedLowerBound=0, unresolvedCandidates=0),
+        completewarn=dict(value=3, status='warn', coverage='complete', observedLowerBound=3, unresolvedCandidates=0),
+        partialunknown=dict(value=None, status='unknown', coverage='partial', observedLowerBound=2, unresolvedCandidates=4),
+        unavailable=dict(value=None, status='unknown', coverage='unavailable', observedLowerBound=0,
+                         unresolvedCandidates=None, error='capture-failed'),
+        diagnosticutc=dict(value=None, status='unknown', coverage='unavailable', observedLowerBound=0,
+                           unresolvedCandidates=None, error='capture-invalid',
+                           startedUtc='2026-10-23T22:33:08.0000000Z', completedUtc='2026-10-23T22:33:08.0000000Z'))
+    for failure in (None, 'status', 'errors', 'metrics'):
+        base = copy.deepcopy(REAL)
+        base.pop('observations', None)
+        if failure == 'status': base['status'] = 'warn'
+        if failure == 'errors': base['errors'].append({'stage': 'capture', 'code': 'failed'})
+        if failure == 'metrics': base['metrics']['cpuRootPct']['value'] = None
+        expected = evaluar(base, AHORA, BOOT)
+        for name, observation in variants.items():
+            sample = copy.deepcopy(base)
+            if observation is not None:
+                sample['observations'] = {'powerShellLongLived': dict(common, **observation)}
+            result = evaluar(sample, AHORA, BOOT)
+            assert result == expected, (name, failure, result)
+            assert type(result) is list and all(type(reason) is str for reason in result)
+            assert not any('powerShell' in reason or 'observedLowerBound' in reason for reason in result)
+            assert {k: sample[k] for k in ('status', 'errors', 'metrics')} == {k: base[k] for k in ('status', 'errors', 'metrics')}
+
+
 def load_tests(loader, tests, pattern):
     return suite(globals())
