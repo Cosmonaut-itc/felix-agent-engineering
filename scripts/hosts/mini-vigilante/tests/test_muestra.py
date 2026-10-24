@@ -111,7 +111,12 @@ class MuestraTests(unittest.TestCase):
     def test_invalid_swap_tokens_fail_closed(self):
         for raw in ['total = 1024.00M  used = 0.00Q  free = 1024.00M',
                     'total = 1024.00M  used = 450.00Q  free = 574.00M',
-                    'total = 1024.00M  used = 4..50M  free = 574.00M']:
+                    'total = 1024.00M  used = 4..50M  free = 574.00M',
+                    'total = 1024.00M  used = 0.00 Q  free = 1024.00M',
+                    'total = 1024.00M  used = 450.00 Q  free = 574.00M',
+                    'total = 1024.00M  used = 450.00 M\tfree = 574.00M',
+                    'total = 1024.00M  used = 450.00M',
+                    'total = 1024.00M  used = 450.00M  free = 574.00M trailing']:
             with self.subTest(raw=raw):
                 self.raw['vm.swapusage'] = raw
                 sample = self.capture()
@@ -121,6 +126,21 @@ class MuestraTests(unittest.TestCase):
                 self.assertTrue(metric['error'])
                 self.assertTrue(any(error['stage'] == 'metrics.swapUsedBytes' for error in sample['errors']))
                 self.assertNotEqual(sample['status'], 'ok')
+
+    def test_valid_swap_lines_are_fully_parsed(self):
+        for raw in [
+            'total = 1024.00M  used = 450.00M  free = 574.00M  (encrypted)',
+            'total = 1024.00M  used = 450.00M  free = 574.00M',
+            'total\t=\t1024.00M\tused\t=\t450.00M\tfree\t=\t574.00M',
+        ]:
+            with self.subTest(raw=raw):
+                self.raw['vm.swapusage'] = raw
+                sample = self.capture()
+                self.assertEqual(sample['metrics']['swapUsedBytes']['value'], 450 * 1024 ** 2)
+                self.assertEqual(sample['metrics']['swapUsedBytes']['status'], 'ok')
+                self.assertIsNone(sample['metrics']['swapUsedBytes']['error'])
+                self.assertEqual(sample['status'], 'ok')
+                self.assertEqual(sample['errors'], [])
 
     def test_boot_failure(self):
         for raw in [OSError('secret'), '{ sec = 1, usec = 1000000 }', 'garbage']:
