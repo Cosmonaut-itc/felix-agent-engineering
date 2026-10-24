@@ -137,13 +137,16 @@ class Hostgate:
         return result['pendingId']
 
     def _decision(self, request, view, pending):
-        reasons = list(pending['reasons']) + self._identity_reasons(pending)
+        profile_verified = self.world.profile_verified(request['profileId'])
+        health_reasons = self._health()
+        # La E/S previa no puede acreditar la vida que se valida para el commit.
+        self._persist_effective(view)
+        reasons = list(pending['reasons']) + health_reasons + self._identity_reasons(pending)
         if view['drained']: reasons.append(reason('drained', 'reapertura exige reconciliacion explicita'))
         if request['physicalHostId'] != self.config.host_id or request['executorId'] not in self.config.executors:
             reasons.append(reason('executor-incompatible', 'host/ejecutor no configurado'))
-        if not self.world.profile_verified(request['profileId']):
+        if not profile_verified:
             reasons.append(reason('profile-unverified', 'perfil real sin acreditacion de no escape/delegacion'))
-        reasons.extend(self._health())
         held = [r for r in view['reservations'] if r['state'] != 'released']
         if any(r['state'] == 'uncertain' for r in held): reasons.append(reason('reservation-uncertain', 'host cerrado por reserva dudosa'))
         if any(r['jobId'] == request['jobId'] for r in held): reasons.append(reason('resource-busy', 'trabajo ya tiene reserva', True))
@@ -221,8 +224,6 @@ class Hostgate:
                     pending.update(state='expired', reasons=[reason('pending-expired', 'lapida de solicitante; nueva operacion no revive al huerfano')])
                 view['pending'].append(pending)
             self.world.checkpoint('before_revalidate')
-            # Recalcular toda la vista tras I/O y revalidar dentro de BEGIN IMMEDIATE.
-            self._persist_effective(view)
             reasons, incoming = self._decision(request, view, pending)
             if pending['state'] != 'validating' or reasons:
                 if pending['state'] == 'validating': pending['state'] = 'rejected'
