@@ -1,7 +1,7 @@
 """Tipos de confianza y proyecciones puras; ningún plazo libera reservas."""
 import copy
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Mapping, Optional, Tuple
 from .protocol import demand, identifier, reason
@@ -32,6 +32,7 @@ class NodeConfig:
     snapshot_host: str
     ncpu: int
     mode: str = 'shadow'
+    executor_scope_kinds: Mapping = field(default_factory=dict)
 
     def __post_init__(self):
         for value in (self.host_id, self.store_id, self.revision, self.snapshot_host): identifier(value)
@@ -49,6 +50,9 @@ class NodeConfig:
         for parent in (path,) + tuple(path.parents):
             if parent.is_symlink() or (parent / '.git').exists():
                 raise ValueError('stateDir debe ser local y separado del checkout')
+        if any(e not in self.executors or kind not in ('unix', 'windows')
+               for e, kind in self.executor_scope_kinds.items()):
+            raise ValueError('plataforma no acreditada')
         for minimum in self.profile_minima.values(): demand(dict(minimum))
         if len(set(self.resources)) != len(self.resources): raise ValueError('alias de recurso')
 

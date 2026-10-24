@@ -203,28 +203,46 @@ class Contract(Harness):
         self.assertEqual(view['budget']['retained']['slots'], 1)
 
     def test_scope_and_cleanup_all_or_nothing(self):
-        key = self.key(self.reserve(exclusiveResources=['sen-slot:1', 'postgres:5434']))
-        for scenario in ('root-exit-child', 'escape-seen', 'escape-unseen', 'no-profile', 'partial-cleanup',
-                         'paused', 'slot-disappeared', 'windows-unconfirmed'):
-            self.world.closures[(scenario,)] = ClosureEvidence(kind=scenario)
-            r = self.gate.soltar(scenario, key, [scenario], self.auth)
-            self.assertFalse(r['wouldGrant'])
-            self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+        from dataclasses import replace
+        from hostgate.protocol import digest
+        resources = ['sen-slot:1', 'postgres:5434', 'sen-test-db-1']
+        key = self.key(self.reserve(exclusiveResources=resources))
+        valid = ClosureEvidence.fixture(key, self.world.boot)
+        for field in ('complete', 'creators_sealed', 'root_terminal', 'scope_empty',
+                      'lineage_complete', 'profile_verified', 'resources_clean'):
+            with self.subTest(field=field):
+                proof = replace(valid, **{field: False})
+                values = dict(proof.__dict__); values.pop('evidence_digest')
+                self.world.closures[(field,)] = replace(proof, evidence_digest=digest(values))
+                result = self.gate.soltar('close-' + field, key, [field], self.auth)
+                self.assertEqual(result['exitCode'], 1)
+                self.assertIn('resource-cleanup-unconfirmed' if field == 'resources_clean'
+                              else 'unix-scope-unconfirmed', self.codes(result))
+                self.assertEqual(self.view()['budget']['retained']['slots'], 1)
+                self.assertEqual({r['name'] for r in self.view()['resources']}, set(resources))
         self.release(key)
         self.assertEqual(self.view()['budget']['retained']['slots'], 0)
         self.gate.soltar('repeat-release', key, [], self.auth)
         self.assertEqual(self.view()['budget']['retained']['slots'], 0)
 
     def test_windows_fixture_only_positive_evidence_fenced(self):
+        auth = self.world.auth(pid=222, executor='windows')
         for kind in ('windows-tree-empty', 'never-created'):
-            key = self.key(self.reserve(kind, kind))
+            key = self.key(self.reserve(kind, kind, auth=auth, executorId='windows'))
             proof = ClosureEvidence.fixture(key, self.world.boot, kind=kind)
             self.world.closures[(kind,)] = proof
-            r = self.gate.soltar('close-' + kind, key, [kind], self.auth)
-            self.assertEqual(r['simulationState'], 'released')
-        key = self.key(self.reserve('third', 'third'))
+            result = self.gate.soltar('close-' + kind, key, [kind], auth)
+            self.assertEqual(result['simulationState'], 'released')
+        key = self.key(self.reserve('third', 'third', auth=auth, executorId='windows'))
+        for kind in ('unix-scope-empty', 'unconfirmed'):
+            self.world.closures[(kind,)] = ClosureEvidence.fixture(key, self.world.boot, kind)
+            self.world.now += 15
+            result = self.gate.soltar('foreign-' + kind, key, [kind], auth)
+            self.assertEqual(result['exitCode'], 1)
+            self.assertIn('windows-tree-unconfirmed', self.codes(result))
+            self.assertEqual(self.view()['budget']['retained']['slots'], 1)
         self.world.closures[('old',)] = proof
-        self.gate.soltar('bad-proof', key, ['old'], self.auth)
+        self.gate.soltar('bad-proof', key, ['old'], auth)
         self.assertEqual(self.view()['budget']['retained']['slots'], 1)
 
     def test_desk_no_transport_even_degraded(self):

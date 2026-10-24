@@ -227,7 +227,7 @@ class Hostgate:
                                principal=auth.principal, owner=identity_json(auth.peer),
                                channelBinding=auth.channel_binding, demand=incoming,
                                exclusiveResources=list(request['exclusiveResources']), profileId=request['profileId'],
-                               scopeKind='unix', scope=None, launchPossible=False,
+                               scopeKind=self.config.executor_scope_kinds.get(request['executorId'], 'unix'), scope=key['reservationId'], launchPossible=False,
                                state='reserved', heartbeat=self.world.monotonic(), seq=0, reasons=[],
                                physicalBoot=self.world.physical_boot(), executorBoot=self.world.executor_boot(request['executorId']))
             view['reservations'].append(reservation)

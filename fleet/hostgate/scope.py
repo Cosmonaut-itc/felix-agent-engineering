@@ -36,15 +36,18 @@ class ClosureEvidence:
 def closure_reasons(evidence, reservation):
     if not isinstance(evidence, ClosureEvidence):
         return [reason('resource-cleanup-unconfirmed', 'proveedor de cierre no disponible')]
-    windows = evidence.kind.startswith('windows') or reservation.get('scopeKind') == 'windows'
+    windows = reservation['scopeKind'] == 'windows'
     code = 'windows-tree-unconfirmed' if windows else 'unix-scope-unconfirmed'
     reasons = []
     values = dict(evidence.__dict__); expected_digest = values.pop('evidence_digest')
     if (not evidence.issuer or evidence.provenance != 'simulation' or not expected_digest
             or digest(values) != expected_digest or evidence.key != reservation['key']
-            or evidence.boot != reservation['physicalBoot'] or evidence.scope != reservation['key']['reservationId']
+            or evidence.boot != reservation['physicalBoot'] or evidence.scope != reservation['scope']
             or not evidence.complete or not evidence.creators_sealed):
         reasons.append(reason(code, 'emisor/fencing/procedencia/completitud no acreditados'))
+    compatible = ('windows-tree-empty', 'never-created') if windows else ('unix-scope-empty', 'never-created')
+    if evidence.kind not in compatible:
+        reasons.append(reason(code, 'tipo de evidencia ajeno al ambito registrado'))
     if evidence.kind == 'never-created':
         if not evidence.permit_revoked or not evidence.no_external_effects: reasons.append(reason(code, 'permiso o efectos no sellados'))
     elif evidence.kind in ('unix-scope-empty', 'windows-tree-empty'):

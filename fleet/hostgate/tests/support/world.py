@@ -15,7 +15,7 @@ class World:
         self.now = 100.0
         self.utc = 1792792830.0
         self.boot = 'physical-1'
-        self.executor_boots = {'unix': 'executor-1', 'other': 'executor-1'}
+        self.executor_boots = {'unix': 'executor-1', 'other': 'executor-1', 'windows': 'executor-1'}
         self.processes = {}
         self.channel = True
         self.transport_calls = []
@@ -68,9 +68,9 @@ class World:
         if self.fault == name:
             raise OSError('injected ' + name)
 
-    def auth(self, pid=100, principal='fixture', role='supervisor', start=(1, 2)):
-        peer = Identity('unix', 501, pid, start, 'executor-1', self.boot)
-        anchor = Identity('unix', 501, pid + 1000, (1, 1), 'executor-1', self.boot)
+    def auth(self, pid=100, principal='fixture', role='supervisor', start=(1, 2), executor='unix'):
+        peer = Identity(executor, 501, pid, start, 'executor-1', self.boot)
+        anchor = Identity(executor, 501, pid + 1000, (1, 1), 'executor-1', self.boot)
         self.processes[pid] = peer
         self.processes[anchor.pid] = anchor
         return AuthContext(principal, role, peer, anchor, 'fixture-channel')
@@ -81,14 +81,14 @@ class World:
 
 
 def config(path):
-    return NodeConfig('node', 'shadow-store', ('unix', 'other'),
+    return NodeConfig('node', 'shadow-store', ('unix', 'other', 'windows'),
                       {'cpuMilli': 2000, 'memoryBytes': 2000,
                        'diskBytes': {'data': 2000}, 'slots': 2},
                       ('postgres:5434', 'postgres:5435', 'sen-slot:1', 'sen-slot:2',
                        'sen-test-db-1', 'sen-test-db-2'), Path(path).resolve(),
                       20.0, 10.0, 'r1', {'fixture': ('supervisor', 'query', 'operator')},
                       {'fixture': {'cpuMilli': 1000, 'memoryBytes': 1000,
-                                   'diskBytes': {'data': 1000}, 'slots': 1}}, 'Mini-Fixture', 10)
+                                   'diskBytes': {'data': 1000}, 'slots': 1}}, 'Mini-Fixture', 10, executor_scope_kinds={'unix': 'unix', 'other': 'unix', 'windows': 'windows'})
 
 
 def request(op='op', job='job', **changes):
