@@ -148,8 +148,38 @@ posteriores y el encargo r3 mandan sobre el trabajo aún pendiente.
 | 11, M-12 | `test_helper_json_publication_never_exposes_partial_target`, Jale publica ready/retries por replace atómico. Los padres salen con `os._exit`; no se simula muerte por señal. |
 | 12, M-11 | Código/fixtures huérfanos eliminados; `test_owner_boot_allows_separator_but_ids_do_not`; sin reformateo global. |
 | 13, M-9/M-10 | README: operator sin autoridad sobre otro supervisor; recuperación explícita F (SEN-3834/3835/3836). ProcessTable iguala boots y debe corregirse antes de integrar WSL. |
-| 14, I-1/A-M3 | Registro fechado de tres corridas históricas; la corrida r3 se añadirá con su SHA y recibo. |
+| 14, I-1/A-M3 | Registro fechado de tres corridas históricas y corrida r3 con SHA/recibo abajo. |
 | Reconexión | F: no hay IPC/canal de reconexión autenticado ni supervisor productivo; el replay local no demuestra reconexión. |
 
-Pruebas r3 escritas, todavía no ejecutadas. Sólo se ejecutarán en Mini con turno;
-no se realizaron pruebas ni imports del candidato en MacBook.
+Actualización de ejecución r3, 2026-10-23 (America/Mexico_City): run
+`20261023-204639-a55097`, SHA probado `147ff527d04b6f622bce940ea27ed999520443e7`.
+Árbol limpio y congelado durante espera/ejecución, Mini con turno y Python 3.9.6.
+Una corrida, salida 0; no se usó la segunda. No hubo pruebas ni imports del candidato
+en MacBook; sólo inspección AST de sintaxis 3.9 y diff.
+
+| Familia | Descubiertas / ejecutadas | Resultado |
+| --- | --- | --- |
+| CLI | 9 | PASS |
+| Contrato | 35 | PASS |
+| Identidad/ámbito/U1 | 11 | PASS |
+| Desk | 113 (112 originales + contraste) | PASS |
+| Mini | 5 | PASS |
+| Almacén | 15 | PASS |
+| Total | 188 | 0 fallos / 0 errores / 0 omitidas |
+
+A-I1: las dos pruebas nuevas dieron rojo sobre `dad5ef8` en esta misma corrida,
+2 fallos y 0 errores de entorno: el dueño recibía exit 5 en lugar de 0 tanto en
+reserva preparada como en latido. Dieron verde en el SHA probado; la secuencia
+completa corregida incluye soltar con el mismo ID que el peer rechazado. B-G2 y
+el rechazo durable autorizado también dieron verde. Fue rojo retrospectivo:
+pruebas escritas antes del código, ejecución posterior en Mini con snapshot temporal.
+El guion conserva las seis familias y exige exactamente 113 casos desk.
+
+Evidencia completa, sin recortes:
+`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/495ef06ee60541bd8626124333b1b7f4/remoto.log`.
+En el mismo directorio: `lanzador.log`, `script.sh`, `recibo.json` y `terminal.json`;
+recibo completo, resultado y salida del lanzador 0, turno liberado. Los procesos
+propios del lanzador terminaron; los helpers propios concluyeron en la suite.
+El commit posterior cambia sólo README/COBERTURA, sin nueva ejecución. Esto acredita
+suite verde sobre el SHA citado; la aceptación técnica de Fleet sigue pendiente,
+al igual que las interfaces F y el aviso a Desktop por A-M1 del lector desk intacto.

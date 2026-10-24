@@ -184,10 +184,26 @@ misma corrida. Evidencia completa:
 `/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/9df0741daa4d4a629ac47bf2c4b6be5a/lanzador.log`.
 Esa suite verde acredita ese SHA, incluida la aserción corregida; no equivale a
 aceptación técnica: las revisiones posteriores identificaron A-I1 y los puntos
-de esta ronda. La ronda 3 de implementación aún espera su corrida en Mini.
+de esta ronda.
 El guion descubre las seis familias CLI, contrato, identidad/ámbito/U1,
-desk (112 originales + contraste), Mini y almacén. El rojo de A-I1 sobre `dad5ef8`
-se ejecutará retrospectivamente en el mismo turno, con las pruebas nuevas.
+desk (112 originales + contraste), Mini y almacén. El guion r3 sustituyó el rojo retrospectivo anterior por las dos regresiones A-I1
+sobre `dad5ef8`, copiando sólo las pruebas nuevas al snapshot temporal de la base.
+
+Corrida r3, 2026-10-23 (America/Mexico_City): run `20261023-204639-a55097`, SHA
+`147ff527d04b6f622bce940ea27ed999520443e7`, árbol limpio, Python 3.9.6 en Mini
+macOS 27 arm64. El turno llegó tras unos 63 minutos. Descubrimiento: CLI 9,
+contrato 35, identidad/ámbito/U1 11, desk 113, Mini 5 y almacén 15.
+Resultado: **188 pruebas, 0 fallos, 0 errores, 0 omitidas**. En la misma corrida,
+las dos regresiones A-I1 fallaron sobre `dad5ef8` (2 fallos, 0 errores, ambos
+`5 != 0` al reintentar el dueño) y pasaron sobre el SHA corregido. El replay B-G2
+y el rechazo durable con salud recuperada también pasaron.
+Evidencia completa:
+`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/495ef06ee60541bd8626124333b1b7f4/remoto.log`,
+con `lanzador.log`, `script.sh`, `recibo.json` y `terminal.json` en ese directorio.
+Una corrida de las dos permitidas; no se usó la segunda. Lanzador terminado y
+turno liberado, salida 0. El commit posterior sólo actualiza README y COBERTURA;
+no se presenta como otro SHA ejecutado. Suite verde no equivale a aceptación
+técnica de Fleet, integración ni activación.
 
 El contraste `test_observacion_powershell_contraste_d8fecdc7` usa las seis variantes
 del productor Desktop `d8fecdc7`, con source y scope exactos. La observación no cambia
