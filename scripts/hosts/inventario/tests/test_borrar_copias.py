@@ -441,14 +441,31 @@ class BorrarCopiasTest(unittest.TestCase):
         codigo.mkdir()
         for nombre in ('borrar_copias.py', 'inventario.py'):
             shutil.copyfile(Path(borrar.__file__).parent / nombre, codigo / nombre)
-        # El Python de Apple guarda el bytecode bajo ~/Library/Caches/com.apple.python, no junto al código.
-        prefijo = self.raiz / 'pycache'
-        entorno = dict(os.environ, PYTHONPYCACHEPREFIX=str(prefijo))
-        entorno.pop('PYTHONDONTWRITEBYTECODE', None)
+        # El Python de Apple guarda el bytecode bajo ~/Library/Caches/com.apple.python, no junto al código,
+        # y el arranque del intérprete escribe el suyo antes de la primera línea del script.
+        def entorno(prefijo):
+            valores = dict(os.environ, PYTHONPYCACHEPREFIX=str(prefijo))
+            valores.pop('PYTHONDONTWRITEBYTECODE', None)
+            return valores
+
+        def archivos(prefijo):
+            return {str(p.relative_to(prefijo)) for p in prefijo.rglob('*') if p.is_file()} if prefijo.exists() else set()
+
+        base, prefijo = self.raiz / 'pycache-arranque', self.raiz / 'pycache-script'
+        arranque = subprocess.run([sys.executable, '-c', 'pass'], cwd=self.raiz, env=entorno(base),
+                                  capture_output=True, text=True, timeout=60)
+        self.assertEqual(arranque.returncode, 0, arranque.stderr)
         salida = subprocess.run([sys.executable, str(codigo / 'borrar_copias.py'), '--raiz', str(self.raiz)],
-                                cwd=self.raiz, env=entorno, capture_output=True, text=True, timeout=180)
+                                cwd=self.raiz, env=entorno(prefijo), capture_output=True, text=True, timeout=180)
         self.assertEqual(salida.returncode, 0, salida.stderr + salida.stdout)
-        self.assertFalse(prefijo.exists())
+        cache = subprocess.run([sys.executable, '-B', '-c',
+                                'import importlib.util, sys; print(importlib.util.cache_from_source(sys.argv[1]))',
+                                str(codigo / 'inventario.py')],
+                               env=entorno(prefijo), capture_output=True, text=True, timeout=60)
+        self.assertEqual(cache.returncode, 0, cache.stderr)
+        self.assertTrue(cache.stdout.strip().startswith(str(prefijo)), cache.stdout)
+        self.assertFalse(Path(cache.stdout.strip()).exists())
+        self.assertEqual(archivos(prefijo) - archivos(base), set())
         self.assertFalse((codigo / '__pycache__').exists())
 
     def test_interrupcion_segunda_con_informe_y_rastro(self):
