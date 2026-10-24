@@ -202,4 +202,6 @@ class ShadowStore:
                 try: conn.rollback()
                 except Exception: pass
             try: conn.close()
-            except Exception: pass
+            except Exception as exc:
+                if commit_attempted:
+                    raise WriteUncertain('cierre posterior al commit incierto') from exc

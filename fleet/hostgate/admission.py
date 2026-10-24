@@ -197,7 +197,7 @@ class Hostgate:
             projection = self._persist_effective(view)
             if original:
                 if original[2] != canonical(self._auth_context(auth)):
-                    return self._reply(op_id, [reason('identity-unverifiable', 'operacion de otro dueno/canal')], exit_code=5)
+                    raise self._foreign_owner(op_id)
                 if original[0] != operation_digest:
                     return self._reply(op_id, [reason('operation-conflict', 'operationId ya tiene otro payload')], exit_code=2)
                 historic = json.loads(original[1])

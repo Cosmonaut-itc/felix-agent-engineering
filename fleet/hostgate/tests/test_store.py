@@ -12,7 +12,7 @@ class Storage(Harness):
         from unittest.mock import patch
         store = self.gate.store
         connect = store.connect
-        for stage in ('commit', 'after_commit'):
+        for stage in ('commit', 'after_commit', 'close'):
             for exception in (OSError, PermissionError, RuntimeError):
                 with self.subTest(stage=stage, exception=exception):
                     operation = stage + '-' + exception.__name__
@@ -21,12 +21,14 @@ class Storage(Harness):
                         def execute(self, *args): return self.conn.execute(*args)
                         def commit(self):
                             self.conn.commit()
-                            raise exception('commit ACK lost')
+                            if stage == 'commit': raise exception('commit ACK lost')
                         def rollback(self): raise AssertionError('no compensar commit intentado')
-                        def close(self): self.conn.close()
+                        def close(self):
+                            self.conn.close()
+                            if stage == 'close': raise exception('close after commit')
                     def checkpoint(name):
                         if name == 'after_commit': raise exception('ACK lost')
-                    if stage == 'commit':
+                    if stage in ('commit', 'close'):
                         with patch.object(store, 'connect', side_effect=lambda **kwargs: Connection()):
                             result = self.reserve(operation, operation)
                     else:
