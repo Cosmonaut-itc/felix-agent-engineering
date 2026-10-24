@@ -572,7 +572,13 @@ class Contract(Harness):
         self.world.profiles.clear()
         self.assertEqual(self.reserve('rejected', 'rejected')['exitCode'], 1)
         self.world.profiles.add('fixture')
+        self.gate.prepare(request('withdraws', 'withdraws'), self.auth)
+        def close_channel(name):
+            if name == 'before_write': self.world.channel = False
+        self.world.hook = close_channel
         self.gate.prepare(request('expires', 'expires'), self.auth)
+        self.world.hook = None
+        self.world.channel = True
         self.world.now += 21
         self.assertTrue(self.reserve('active', 'active')['wouldGrant'])
         self.gate.prepare(request('validating', 'validating'), self.auth)
@@ -582,10 +588,11 @@ class Contract(Harness):
             view = self.view()
         self.assertEqual(verify.call_count, 4)
         self.assertEqual(channel.call_count, 2)
-        self.assertEqual(len(view['pending']), 8)
+        self.assertEqual(len(view['pending']), 9)
         self.assertEqual(len(view['reservations']), 5)
         self.assertEqual(self.gate.store.read(), before)
         self.assertTrue(any(p['state'] == 'expired' for p in before['pending']))
+        self.assertTrue(any(p['state'] == 'withdrawn' for p in before['pending']))
         replay = self.reserve('rejected', 'rejected')
         self.assertEqual(replay['originalResult']['exitCode'], 1)
 

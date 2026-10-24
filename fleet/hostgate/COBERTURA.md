@@ -1,4 +1,4 @@
-# Cobertura del candidato Sol, ronda 2
+# Cobertura del candidato Sol, ronda 3
 
 Autoridad: `f6dea9a7afd182dff9742d52784dc4e98aeb451f`, PR #17, contenido idéntico a `a1f00fa`. Esta tabla distingue
 implementación de sombra, simulación con harness y aceptación futura. No acredita
@@ -17,7 +17,7 @@ Rutas relativas a `fleet/hostgate/`.
 | 91 | `README.md`, `__init__.py`, `__main__.py`, `cli.py`, `protocol.py`, `model.py` | `CLI`, `Contract`, `Storage`. |
 | 92 | `admission.py`, `store.py`, `identity.py`, `scope.py`, `owner_record.py` | `Contract`, `Storage`, `Boundaries`. |
 | 93 | `salud/__init__.py`, `salud/lector_desk.py`, `salud/lector_mini.py` | 112 casos originales desk adaptados a unittest, `MiniReader`; ejecutados en Mini, ver estado r2 al final. |
-| 94 | `fixtures/jale-2254z*.json`, `fixtures/health`, `fixtures/identities`, `fixtures/launcher`, `fixtures/node-configs` | Jale y lectores consumen fixtures; identidad/launcher/config documentan wire sintético; no equivalen a aceptación nativa. |
+| 94 | `fixtures/jale-2254z*.json`, `fixtures/health` | Jale y lectores consumen fixtures; eliminados los tres JSON sin caller; no equivalen a aceptación nativa. |
 | 95 | `tests/test_cli.py`, `test_store.py`, `test_contract.py`, `support/` | Suite unittest prevista por run.sh; pruebas escritas de clientes de varios procesos y SQLite real, ejecutadas en Mini, ver estado r2 al final. |
 | 96 | `identity.py`, `scope.py`, `salud/lector_mini.py` | `Boundaries`, `Contract.test_scope_and_cleanup_all_or_nothing`, `MiniReader`; perfil/cierre real no acreditado. |
 
@@ -70,7 +70,7 @@ la estructura S. Se añade cobertura de las reglas ejecutables sin etiqueta:
 | 12. Tamaño y pruebas honestas | `model.py`, `store.py`, `cli.py`, `README.md` | `Storage.test_queries_never_mutate_sqlite_or_wal`, guion Mini y recibos; sin daemon/polling ni afirmaciones de IPC real. |
 
 
-Estado real de ejecución r2: dos corridas remotas con turno, ambas sobre árbol
+Registro histórico al cierre inicial de r2: dos corridas remotas con turno, ambas sobre árbol
 limpio. `72a6d10` y `731d866` descubrieron 174 pruebas cada una; cada corrida tuvo
 173 pruebas correctas y un fallo, sin errores ni omisiones. El primer intento de
 lanzador `43d94850ecba47a88839709894495440` terminó con salida 130 esperando turno,
@@ -84,15 +84,15 @@ sin run_id ni pruebas. No hubo pruebas en MacBook.
 | Desk, 113 (112 originales + contraste) | Ejecutadas, PASS en ambas |
 | Mini, 4 | Ejecutadas, PASS en ambas |
 | Almacén, 15 | Ejecutadas; todas PASS en `72a6d10`; 14 PASS en `731d866` y fallo de orden en `test_two_executors_shared_world_budget_and_observation_changes` |
-| Corrección `45b0e39` de esa aserción | **No ejecutada**: tope de dos corridas alcanzado. Identifica por executorId, sin depender del orden de commits |
+| Corrección `45b0e39` de esa aserción | No ejecutada en esas dos corridas; ejecutada después en `dad5ef8` (actualización fechada abajo). Identifica por executorId, sin depender del orden de commits |
 | Inspección documental y sintaxis AST | Inspección local, no prueba runtime |
 
 B-G1, B-G2 y B-G3 tienen pruebas escritas antes del código corrector. Fallaron sin
 las correcciones en el commit `3f8ce69` reconstruido en Mini y pasaron en ambos SHA
 corregidos. Ese rojo fue retrospectivo, no anterior a los commits correctores.
 Para los otros cambios no se ejecutó rojo previo; Jale y orden concurrente sí tienen
-fallos observados antes de sus correcciones posteriores. No hay evidencia de suite
-verde sobre el head final. Queda pendiente una nueva ejecución autorizada.
+fallos observados antes de sus correcciones posteriores. Al redactar ese registro aún no había suite verde sobre el head final; la tercera
+corrida de la actualización fechada abajo supersede ese estado.
 
 | Cambio obligatorio §6 / error | Archivos | Pruebas específicas añadidas o reforzadas |
 | --- | --- | --- |
@@ -102,7 +102,7 @@ verde sobre el head final. Queda pendiente una nueva ejecución autorizada.
 | 4 / Jale, injerto 2 | `tests/support/helper.py`, `tests/support/world.py`, `tests/test_contract.py` | `test_jale_real_helpers_bound_to_three_preparations` (dos fixtures, cuatro escenarios), `test_jale_independent_causes_and_possible_creation` |
 | 5 / B-M2, B-M3 | `scope.py`, `model.py`, `store.py`, `tests/test_cli.py`, `tests/test_store.py` | `test_malformed_provider_keeps_json_envelope_and_all_resources`, `test_valid_checksum_does_not_authorize_invalid_rows`, `test_sqlite_full_io_and_secondary_cleanup_preserve_uncertainty` |
 | 6 / B-M1, B-M6 | `admission.py`, `tests/test_store.py` | `test_digest_conflict_persists_expiry_without_changing_original`, `test_state_reads_health_exactly_once`; coste de quick_check/reescritura sin medir |
-| 7 / B-M4, B-M7, injerto 5 | `owner_record.py`, `tests/test_identity_scope.py`, `tests/test_contract.py` | `test_owner_root_identity_must_be_exact_and_separate`, `test_directory_fsync_after_replace_keeps_published_protection`, `test_owner_fsync_failure_preserves_protection`, `test_publication_uncertainty_never_releases_reservation`, `test_owner_rejects_production_symlink_and_stale_sequence` |
+| 7 / B-M4, B-M7, injerto 5 | `owner_record.py`, `tests/test_identity_scope.py`, `tests/test_contract.py` | `test_owner_root_identity_must_be_exact_and_separate`, `test_directory_fsync_after_replace_keeps_published_protection`, `test_owner_fsync_failure_preserves_protection`, `test_explicit_dudosa_retains_after_publication_failure`, `test_owner_rejects_production_symlink_and_stale_sequence` |
 | 8 / B-M5, injertos 3 y 4 | `model.py`, `admission.py`, `store.py`, `tests/support/world.py`, `client.py`, `tests/test_store.py` | `test_two_executors_shared_world_budget_and_observation_changes`, `test_trusted_initial_drain_cannot_be_reopened_by_query`, concurrencia/replay con retry busy acotado |
 | 9 / trazabilidad | `README.md`, `COBERTURA.md` | Inspección documental. Aceptación Mini ya existente; límites F conservados |
 | 10 / evidencia | Guion y evidencia externa autorizada | Seis familias por unittest; estado según recibos. No cubierta activación |
@@ -111,12 +111,45 @@ verde sobre el head final. Queda pendiente una nueva ejecución autorizada.
 No se acredita la liberación por perfil real Unix ni launcher Windows; sólo tipos,
 fencing, retención y transiciones sintéticas. La inyección SQLite no es una prueba
 VFS del fsync interno del ledger. Las pruebas de publicación no integran el consumidor
-U1. El coste con historial largo sigue sin medir. La configuración/identidad/launcher
-JSON documental no se presenta como ejecución nativa.
+U1. El coste con historial largo sigue sin medir. Los tres fixtures JSON de configuración/identidad/launcher sin caller se eliminaron
+en r3; no acreditaban ejecución nativa.
 
 
 Recibos de las dos corridas: `36ec0d9c79bc4457824e988d186493e8` y
 `41feb9cb75f0489c8ab00e2d1f76bc85` en la evidencia del encargo. SHA completos,
 stdout/stderr y códigos están conservados. Último cambio funcional de producción
 probado: `731d866f1c3461fd5bac00a9013c95abe077742b`; después sólo cambian una
-aserción de prueba y documentación. Esto no convierte el head final en PASS.
+aserción de prueba y documentación. Ese era el estado al cerrar las dos primeras corridas; véase actualización posterior.
+
+
+Actualización fechada 2026-10-23 (America/Mexico_City), I-1 / A-M3: se conservan
+las dos corridas fallidas anteriores y se registra la tercera, run
+`20261023-192300-c75aef`, SHA `dad5ef88158daffe76a2a47566fec4924502da5d`.
+Resultado: 174 pruebas / 0 fallos / 0 errores / 0 omitidas; CLI 6, contrato 28,
+identidad/ámbito/U1 8, desk 113, Mini 4 y almacén 15. Las tres regresiones
+B-G1/B-G2/B-G3 dieron rojo sobre `3f8ce69` en la misma corrida y verde sobre
+`dad5ef8`. Evidencia:
+`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/9df0741daa4d4a629ac47bf2c4b6be5a/lanzador.log`.
+Suite verde sobre ese SHA no equivale a aceptación técnica; las dos reviews
+posteriores y el encargo r3 mandan sobre el trabajo aún pendiente.
+
+| Punto r3 | Prueba / límite |
+| --- | --- |
+| 1, A-I1 | `test_a_i1_foreign_peer_cannot_consume_prepared_operation`, `test_a_i1_foreign_mutations_leave_ids_available_to_owner`; replay B-G2 y rechazo durable conservados. |
+| 2, A-M1 | `test_valid_checksum_does_not_authorize_invalid_rows`, `MiniReader.test_malformed_fields_never_succeed_or_raise`, `test_huge_volume_and_clock_are_invalid`, `test_owner_huge_started_is_invalid_and_read_protects`, `test_desk_huge_integer_is_invalid_at_adapter_boundary`. Lector desk intacto; pendiente Desktop. |
+| 3, M-2 | `test_boot_change_after_revalidation_keeps_ledger_usable`. |
+| 4, M-1/A-M2 | `test_observation_skips_terminal_history_without_erasing_it`; siguen `quick_check` y reescritura completa, coste pendiente de medir. |
+| 5, M-7 | `test_internal_provider_errors_are_not_request_errors`, `test_internal_query_failure_and_interrupt_keep_envelope`; incluye exit 130. |
+| 6, M-8 | `test_state_wire_maps_granted_to_simulated`; sketch 25 interno, `simulated` público. |
+| 7, M-4 | `test_closure_fencing_fields_and_never_created_each_fail_alone`; digest recalculado salvo el negativo específico de digest. |
+| 8, M-5 | `test_pending_deadline_expires_before_heartbeat`; TTL de latido mayor que el de preparación. |
+| 9, M-6 | `test_desk_no_transport_even_degraded` aísla DefaultShell con testigo válido. Renombrados `test_absent_reused_and_unverifiable_peer_is_unauthorized` y `test_explicit_dudosa_retains_after_publication_failure` según su alcance real. |
+| 10, M-3/A-M4 | `test_observacion_powershell_contraste_d8fecdc7`: seis variantes y dos aserciones; errores agregados fieles a 472–498, corpus de 112 intacto. |
+| 11, M-12 | `test_helper_json_publication_never_exposes_partial_target`, Jale publica ready/retries por replace atómico. Los padres salen con `os._exit`; no se simula muerte por señal. |
+| 12, M-11 | Código/fixtures huérfanos eliminados; `test_owner_boot_allows_separator_but_ids_do_not`; sin reformateo global. |
+| 13, M-9/M-10 | README: operator sin autoridad sobre otro supervisor; recuperación explícita F (SEN-3834/3835/3836). ProcessTable iguala boots y debe corregirse antes de integrar WSL. |
+| 14, I-1/A-M3 | Registro fechado de tres corridas históricas; la corrida r3 se añadirá con su SHA y recibo. |
+| Reconexión | F: no hay IPC/canal de reconexión autenticado ni supervisor productivo; el replay local no demuestra reconexión. |
+
+Pruebas r3 escritas, todavía no ejecutadas. Sólo se ejecutarán en Mini con turno;
+no se realizaron pruebas ni imports del candidato en MacBook.

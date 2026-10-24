@@ -12,7 +12,9 @@ Toda respuesta pública lleva `result: shadow`, `wouldGrant`, `operationId`,
 ni `granted` efectivo. `simulationKey` es exclusivamente diagnóstico de la BD
 `shadow.db`: nunca promoverla, copiar sus generaciones a un ledger efectivo ni
 usar sus reservas para ejecutar. El estado interno `granted` de una preparación
-sólo significa que terminó la simulación de su commit.
+sólo significa que terminó la simulación de su commit (sketch 25). `estado` lo
+publica como `simulated` tanto en `state` como en `effectiveState`; el literal
+`granted` queda exclusivamente dentro del ledger.
 
 Desde `fleet/`:
 
@@ -77,7 +79,9 @@ compacta con checksum evita repartir escritores y tablas sin caller. No hay tran
 con recursos externos. Un fallo/ACK perdido de commit devuelve exit 3, `wouldGrant:false`;
 se relee **la misma operación** sin compensar ni repetir creación. Replay verifica peer/canal y autoriza
 el contexto antes de consultar operaciones, muestra `originalResult` y `currentState`,
-y siempre `wouldGrant:false`. Un rechazo histórico no se vuelve admisible al mejorar
+y siempre `wouldGrant:false`. La autorización de una preparación/reserva se
+comprueba antes de insertar su resultado: el rechazo de un peer/canal ajeno
+revierte la transacción y no ocupa el `operationId` del dueño. Un rechazo histórico no se vuelve admisible al mejorar
 salud; un cambio de payload da `operation-conflict`. Fencing usa la terna completa.
 
 `estado` abre sólo lectura, separa `state` y `effectiveState`, y muestra presupuesto
@@ -89,11 +93,17 @@ incluso si el dueño muere inmediatamente después de revalidación. Boot/reloj/
 control dudosos conservan toda la demanda y exclusivos. Heartbeat fresco no reconcilia.
 Pausa, root exit, salud sana, desaparición de slots/BD o restart WSL tampoco liberan.
 Cambiar boot drena el físico; reapertura/reconciliación positiva queda pendiente.
+El rol `operator` no puede ejecutar `dudosa` ni `soltar` sobre la reserva de otro
+supervisor: ambas exigen al dueño exacto y su canal. Sin supervisor, la reserva
+queda `uncertain` hasta recuperación explícita. Esa recuperación es F, pendiente
+de SEN-3834, SEN-3835 y SEN-3836; no hay excepción administrativa implementada.
 
 `ProcessTable` consulta sólo un PID por vez: libproc/sysctlbyname mediante ctypes en
 Darwin, `/proc` con ticks exactos y boot antes/después en Linux. EPERM/lectura parcial
 es `unverifiable`; PID reutilizado/zombie es ausencia/diferencia del solicitante, nunca
-prueba de cierre de ámbito. No enumera ni mata. ABI/clock en Mini aún requieren una
+prueba de cierre de ámbito. No enumera ni mata. `ProcessTable` iguala hoy el boot
+físico al del ejecutor; esa limitación debe resolverse antes de cablear WSL, cuyo
+boot no acredita el de Windows. No hay integración WSL implementada. ABI/clock en Mini aún requieren una
 aceptación específica de plataforma: el test de identidad puntual es evidencia acotada.
 
 Las interfaces `authorize_creation` y `record_started` lanzan `NotImplementedError`.
@@ -127,6 +137,9 @@ implementa el contrato U4; recibe boot independiente por parámetro. Usa la vent
 La identidad del host y ncpu se contrastan con configuración. Sin SEN-3853 el desk no
 es sano ni degradado; DefaultShell pendiente/fallido implica cero llamadas al transporte.
 No se implementa transporte. Ninguna consulta dispara sondas ni intenta obtener testigo.
+A-M1 pendiente para Desktop: `_numero` del lector desk aceptado puede lanzar
+`OverflowError` ante `10**400`. El adaptador captura ese desborde como `health-invalid`;
+`salud/lector_desk.py` permanece intacto y su corrección corresponde a Desktop.
 
 `owner_record.py` propone `fleet/host-owner@1`, con supervisor exacto separado de raíz,
 key/correlación/boot/started/secuencia. Publica temporal privado, fsync, replace y fsync
@@ -158,27 +171,33 @@ La concurrencia SQLite es real entre clientes del API; IPC/supervisor/launcher/p
 adaptador real y aceptación U1 quedan futuros. No se valida activación con estos fixtures.
 
 La tabla [COBERTURA.md](COBERTURA.md) registra requisitos, límites y estado real
-por prueba. Se ejecutaron dos corridas en Mini con turno: ambas descubrieron
-174 pruebas, con un fallo y cero errores. En `72a6d10` falló el conteo de Jale;
-en `731d866` Jale pasó completo y falló una aserción que suponía orden fijo de
-los commits concurrentes. `45b0e39` corrige esa aserción buscando por executorId,
-pero **esa corrección no se ejecutó** porque se alcanzó el tope de dos corridas.
-El head final no se presenta como validado. Hubo además una invocación inicial
-interrumpida esperando turno, sin ejecución remota ni run_id.
-Los tres errores graves fallaron contra `3f8ce69` reconstruido en un temporal de
-la Mini y pasaron sobre los dos SHA corregidos. El rojo se ejecutó retrospectivamente,
-tras escribir las correcciones, y no se confunde con una corrida previa al commit.
-El guion descubre CLI, contrato, identidad/ámbito, desk (112 originales + contraste),
-Mini y almacén. Salidas/recibos: `evidencia-hostgate-sol/resultado-r2.md` y
-`salida-completa-r2.txt`, entregados con el informe del encargo.
+por prueba. Actualización fechada 2026-10-23 (America/Mexico_City): las dos
+primeras corridas se conservan como fallidas, ambas con 174 pruebas y cero errores.
+En `72a6d10` falló el conteo de Jale; en `731d866` Jale pasó y falló el supuesto de
+orden fijo en commits concurrentes. `45b0e39` corrigió esa aserción. Una invocación
+anterior terminó esperando turno, sin ejecución remota ni run_id.
+
+La tercera corrida, run `20261023-192300-c75aef`, probó exactamente
+`dad5ef88158daffe76a2a47566fec4924502da5d`: 174 pruebas, 0 fallos, 0 errores,
+0 omitidas. Incluyó el rojo retrospectivo de B-G1/B-G2/B-G3 sobre `3f8ce69` en la
+misma corrida. Evidencia completa:
+`/Users/felixddhs/.claude/encargos/mini-carga/evidencia-hostgate-sol/9df0741daa4d4a629ac47bf2c4b6be5a/lanzador.log`.
+Esa suite verde acredita ese SHA, incluida la aserción corregida; no equivale a
+aceptación técnica: las revisiones posteriores identificaron A-I1 y los puntos
+de esta ronda. La ronda 3 de implementación aún espera su corrida en Mini.
+El guion descubre las seis familias CLI, contrato, identidad/ámbito/U1,
+desk (112 originales + contraste), Mini y almacén. El rojo de A-I1 sobre `dad5ef8`
+se ejecutará retrospectivamente en el mismo turno, con las pruebas nuevas.
 
 El contraste `test_observacion_powershell_contraste_d8fecdc7` usa las seis variantes
 del productor Desktop `d8fecdc7`, con source y scope exactos. La observación no cambia
 motivos del lector ni expone conteos, tampoco convierte lower bounds o null en salud.
 No se modifica el lector desk aceptado.
 
-SQLite reescribe la vista y comprueba quick_check al abrir: su coste con historial
-extenso no está medido y la poda requiere acuerdo. Los fallos FULL/I/O se inyectan
+La observación de identidad/canal se limita a preparaciones `validating` y reservas
+no liberadas. No se borran lápidas ni operaciones. SQLite aún ejecuta `quick_check`
+al abrir y reescribe la vista completa por mutación: ese coste crece con el historial,
+no está medido y cualquier conservación/compactación requiere acuerdo. Los fallos FULL/I/O se inyectan
 en la frontera SQLite y los fsync del registro antes/después de replace; no se
 acredita daño físico real ni un fallo del fsync interno de SQLite a nivel VFS.
 ABI/IPC, perfiles reales, consumidor U1, corte real, DefaultShell, SEN-3853 y
