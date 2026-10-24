@@ -1,0 +1,61 @@
+{
+  "schema": "mini-vigilante/muestra@1",
+  "host": "Mini-Fixture",
+  "ts": "2026-10-24T00:40:00Z",
+  "boot": {
+    "bootId": "Mini-Fixture/2026-10-23T00:00:00.000000Z",
+    "lastBootUtc": "2026-10-23T00:00:00.000000Z",
+    "error": null
+  },
+  "status": "ok",
+  "metrics": {
+    "memLevelPct": {
+      "value": 77,
+      "unit": "pct",
+      "status": "ok",
+      "error": null,
+      "source": "sysctl kern.memorystatus_level"
+    },
+    "memPressure": {
+      "value": 1,
+      "unit": "level",
+      "status": "ok",
+      "error": null,
+      "source": "sysctl kern.memorystatus_vm_pressure_level"
+    },
+    "swapUsedBytes": {
+      "value": 0,
+      "unit": "bytes",
+      "status": "ok",
+      "error": null,
+      "source": "sysctl vm.swapusage"
+    },
+    "load1": {
+      "value": 2.79,
+      "unit": "load",
+      "status": "ok",
+      "error": null,
+      "source": "sysctl vm.loadavg"
+    },
+    "ncpu": {
+      "value": 10,
+      "unit": "count",
+      "status": "ok",
+      "error": null,
+      "source": "sysctl hw.ncpu"
+    }
+  },
+  "volumes": {
+    "/System/Volumes/Data": {
+      "status": "ok",
+      "error": null,
+      "totalBytes": 1099511627776,
+      "freeBytes": 107374182400
+    }
+  },
+  "errors": [],
+  "persist": {
+    "error": null,
+    "ultimo": "written"
+  }
+}
