@@ -341,6 +341,7 @@ class FleetCLI(unittest.TestCase):
         self.assertFalse(next_ready.exists())
         self.assertFalse(done.exists())
         gate.touch()
+        self.until(lambda: self.value("status", first["job"])["state"] == "finished")
         self.assertEqual(self.wait(first["job"])["outcome"], "succeeded")
         self.until(done.exists)
         self.running(second["job"], next_ready)
