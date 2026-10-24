@@ -14,6 +14,8 @@ import tempfile
 import time
 import unittest
 
+from content_cases import ContentCases
+
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
 BARRIER = """
 import pathlib, sys, time
@@ -22,7 +24,10 @@ ready.write_text('ready')
 deadline = time.monotonic() + 6
 while not gate.exists() and time.monotonic() < deadline:
     time.sleep(0.02)
-print('ok', flush=True)
+try:
+    print('ok', flush=True)
+except BrokenPipeError:
+    pass
 done.write_text('done')
 sys.exit(0 if gate.exists() else 90)
 """
@@ -49,7 +54,7 @@ class Admission:
 
 
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
-class FleetCLI(unittest.TestCase):
+class FleetCLI(ContentCases, unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-")).resolve()
         self.state = self.root / "state"
@@ -65,6 +70,7 @@ class FleetCLI(unittest.TestCase):
         self.gates = []
         self.admissions = []
         self.processes = []
+        self.client_groups = []
 
     def tearDown(self):
         self.cleanup()
@@ -87,7 +93,7 @@ class FleetCLI(unittest.TestCase):
                 process.communicate(timeout=10)
             except subprocess.TimeoutExpired:
                 self.fail("owned CLI process did not exit; retained {}".format(self.root))
-        supervisors, groups = set(), set()
+        supervisors, groups = set(), set(self.client_groups)
         deadline = time.monotonic() + 9
         while True:
             pending = []
@@ -155,7 +161,9 @@ class FleetCLI(unittest.TestCase):
 
     def submit(self, argv, state=None, client=None, env=None):
         options = ["submit"] + (["--client", client] if client is not None else [])
-        value = self.value(*options, "--", *argv, state=state, env=env)
+        response = self.call(*options, "--", *argv, state=state, env=env, check=False)
+        self.assertIn(response.returncode, (0, 3), (response.stdout, response.stderr))
+        value = json.loads(response.stdout)
         self.assertTrue(value["accepted"])
         return value
 
@@ -172,6 +180,21 @@ class FleetCLI(unittest.TestCase):
                 return value
             time.sleep(0.02)
         self.fail("owned fixture did not reach its barrier")
+
+    def response_line(self, process):
+        result = bytearray()
+        deadline = time.monotonic() + 5
+        while b"\n" not in result:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
+                self.fail("submit response timed out; admission remains pending")
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk:
+                self.fail("submit response ended without a complete line; admission remains pending")
+            result.extend(chunk)
+            if len(result) > 65536:
+                self.fail("submit response limit exceeded; admission remains pending")
+        return result.split(b"\n", 1)[0].decode()
 
     def barrier(self):
         directory = self.root / ("fixture-" + str(len(self.gates)))
@@ -223,11 +246,14 @@ class FleetCLI(unittest.TestCase):
 
     def test_literal_argv_cwd_stdin_and_logs(self):
         literal = "$(touch SHOULD_NOT_EXIST); * ' spaces"
-        script = "import os,sys; print(os.getcwd()); print(repr(sys.stdin.read())); print(sys.argv[1]); print('err',file=sys.stderr)"
+        (self.project / "identity.txt").write_text("materialized-content")
+        script = "import os,sys,pathlib; print(os.getcwd()); print(repr(sys.stdin.read())); print(sys.argv[1]); print(pathlib.Path('identity.txt').read_text()); print('err',file=sys.stderr)"
         job = self.submit([sys.executable, "-c", script, literal])["job"]
         final = self.wait(job)
-        self.assertEqual(Path(final["stdout_log"]).read_text().splitlines(),
-                         [str(self.project), "''", literal])
+        lines = Path(final["stdout_log"]).read_text().splitlines()
+        self.assertNotEqual(lines[0], str(self.project))
+        self.assertEqual(lines[1:], ["''", literal, "materialized-content"])
+        self.assertEqual(final["input"], self.value("status", job)["input"])
         self.assertEqual(Path(final["stderr_log"]).read_text(), "err\n")
         self.assertFalse((self.project / "SHOULD_NOT_EXIST").exists())
 
@@ -445,7 +471,8 @@ class FleetCLI(unittest.TestCase):
                                    start_new_session=True, env=self.env, cwd=self.project,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.processes.append(process)
-        line = process.stdout.readline()
+        self.client_groups.append(process.pid)
+        line = self.response_line(process)
         submitted = json.loads(line)
         admission.attribute(submitted)
         self.running(submitted["job"], ready)
@@ -470,7 +497,9 @@ class FleetCLI(unittest.TestCase):
         self.assertTrue(uncertain)
         self.assertEqual(self.wait(job, 3)["state"], "running")
         next_argv, next_ready, next_gate, next_done = self.barrier()
-        queued = self.submit(next_argv)
+        response = self.call("submit", "--", *next_argv, check=False)
+        self.assertEqual(response.returncode, 3, response.stdout)
+        queued = json.loads(response.stdout)
         self.assertEqual(queued["state"], "queued")
         self.assertEqual(self.wait(queued["job"], 3)["view"], "uncertain")
         gate.touch()

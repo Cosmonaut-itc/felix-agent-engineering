@@ -19,12 +19,16 @@ def _parser():
     parser = Parser(description="Fleet: opt-in local single-slot pilot")
     parser.add_argument("--state-dir", default=argparse.SUPPRESS)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("submit", "status", "wait"):
+    for name in ("submit", "status", "wait", "evidence"):
         sub = commands.add_parser(name)
         sub.add_argument("--state-dir", default=argparse.SUPPRESS)
         if name == "submit":
             sub.add_argument("--client")
             sub.add_argument("--cwd", default=".")
+            sub.add_argument("--input", action="append", default=[])
+            sub.add_argument("--private", action="append", default=[])
+            sub.add_argument("--credential-env", action="append", default=[])
+            sub.add_argument("--artifact", action="append", default=[])
             sub.add_argument("argv", nargs=argparse.REMAINDER)
         else:
             sub.add_argument("job")
@@ -47,16 +51,22 @@ def main(argv=None):
                 command = command[1:]
             if not command or not command[0] or any("\x00" in a for a in command):
                 raise ValueError("submit requires -- COMMAND [ARG ...] without NUL bytes")
-            cwd = Path(args.cwd).expanduser().resolve(strict=True)
-            if not cwd.is_dir():
-                raise ValueError("cwd must be a directory")
+            cwd = Path(os.path.abspath(Path(args.cwd).expanduser()))
             client = args.client or os.environ.get("FLEET_CLIENT")
             client = client or "{}@{}".format(getpass.getuser(), socket.gethostname())
-            result, code = runner.submit(state, command, cwd, client)
+            result, code = runner.submit(state, command, cwd, client, args.input, args.private,
+                                         args.artifact, args.credential_env)
             _emit(result)
             return code
         if args.command == "status":
             _emit(runner.view(state, args.job))
+            return 0
+        if args.command == "evidence":
+            value = runner.view(state, args.job)
+            _emit({"job": value["job"], "attempt": value["attempt"], "input": value["input"],
+                   "input_policy": value["input_policy"], "outcome": value["outcome"],
+                   "collection": value["collection"],
+                   "evidence": value["evidence"]})
             return 0
         if args.timeout is not None and (not math.isfinite(args.timeout) or args.timeout < 0):
             raise ValueError("timeout must be finite and nonnegative")
@@ -78,5 +88,8 @@ def main(argv=None):
             time.sleep(delay if remaining is None else min(delay, remaining))
             delay = min(2.0, delay * 1.5)
     except (OSError, ValueError, KeyError, runner.StateError, RuntimeError) as exc:
-        _emit({"error": str(exc)})
+        safe = ("state directory must be private to the current user",
+                "reserved_state_directory", "unsupported Fleet pilot schema; no migration")
+        message = str(exc) if isinstance(exc, runner.inputs.InputError) or str(exc) in safe else "invalid_request_or_state"
+        _emit({"error": message})
         return 2
