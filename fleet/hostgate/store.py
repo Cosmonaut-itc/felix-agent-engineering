@@ -19,6 +19,10 @@ class Busy(StoreError):
     pass
 
 
+class WriteUncertain(RuntimeError):
+    pass
+
+
 class ForeignOwner(Exception):
     def __init__(self, result):
         super().__init__('dueno o canal ajeno')
@@ -71,9 +75,10 @@ class ShadowStore:
         conn.execute('PRAGMA foreign_keys=ON')
 
     def connect(self, writable=False):
-        for path in (self.config.state_dir, self.path, self.path.with_name('shadow.db-wal'), self.path.with_name('shadow.db-shm')):
-            if path.is_symlink(): raise StoreError('symlink de estado')
         try:
+            for path in (self.config.state_dir, self.path,
+                         self.path.with_name('shadow.db-wal'), self.path.with_name('shadow.db-shm')):
+                if path.is_symlink(): raise StoreError('symlink de estado')
             stat = self.config.state_dir.stat()
             if stat.st_uid != os.getuid() or stat.st_mode & 0o077: raise StoreError('directorio no privado')
             if self.path.stat().st_uid != os.getuid() or self.path.stat().st_mode & 0o077: raise StoreError('BD no privada')
@@ -153,7 +158,8 @@ class ShadowStore:
 
     def mutate(self, principal, op_id, operation_digest, apply, world, auth_context=None):
         conn = self.connect(writable=True)
-        committed = False
+        commit_attempted = False
+        write_started = False
         try:
             conn.execute('BEGIN IMMEDIATE')
             view = self.load(conn)
@@ -169,26 +175,31 @@ class ShadowStore:
             record_operation = not isinstance(result, UnrecordedResult)
             if not record_operation:
                 result = result.result
+            write_started = True
             conn.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (canonical(view), digest(view)))
             if original is None and record_operation:
                 conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?, ?)', (principal, op_id, operation_digest, canonical(result), canonical(auth_context)))
             conn.execute('INSERT INTO audit(principal, operation_id, payload) VALUES (?, ?, ?)', (principal, op_id, canonical(result)))
             world.checkpoint('before_commit')
-            conn.commit()
-            committed = True
-            world.checkpoint('after_commit')
+            commit_attempted = True
+            try:
+                conn.commit()
+                world.checkpoint('after_commit')
+            except Exception as exc:
+                raise WriteUncertain('commit/ACK incierto; releer misma operacion') from exc
             if foreign is not None:
                 raise foreign
             return result
         except sqlite3.OperationalError as exc:
-            if 'locked' in str(exc).lower() or 'busy' in str(exc).lower(): raise Busy('escritor ocupado') from exc
-            raise OSError('resultado SQLite incierto') from exc
+            if not write_started and ('locked' in str(exc).lower() or 'busy' in str(exc).lower()):
+                raise Busy('escritor ocupado') from exc
+            raise WriteUncertain('resultado SQLite incierto') from exc
         except sqlite3.DatabaseError as exc:
-            raise OSError('persistencia incierta') from exc
+            raise WriteUncertain('persistencia incierta') from exc
         finally:
             # La limpieza no debe ocultar el resultado incierto de escritura/commit.
-            if not committed:
+            if not commit_attempted:
                 try: conn.rollback()
-                except sqlite3.Error: pass
+                except Exception: pass
             try: conn.close()
-            except sqlite3.Error: pass
+            except Exception: pass

@@ -8,7 +8,7 @@ from .model import AuthContext, budget_view, effective, identity_json
 from .protocol import SCHEMA, canonical, digest, reason, reply, validate
 from .salud import lector_desk, lector_mini
 from .scope import closure_reasons
-from .store import Busy, ForeignOwner, ShadowStore, StoreError, UnrecordedResult
+from .store import Busy, ForeignOwner, ShadowStore, StoreError, UnrecordedResult, WriteUncertain
 
 THRESHOLDS = frozenset(('cpuRootPct', 'commitRatio', 'eLatencyMs', 'C: libre', 'E: libre',
                        'memLevelPct', 'memPressure', 'data libre'))
@@ -238,7 +238,7 @@ class Hostgate:
             return self._reply(op_id, [reason('busy', 'escritor ocupado', True)], exit_code=4)
         except StoreError:
             return self._reply(op_id, [reason('store-unavailable', 'estado ausente/corrupto/no acreditado')], exit_code=6)
-        except OSError:
+        except (WriteUncertain, OSError):
             return self._reply(op_id, [reason('store-unavailable', 'commit no confirmado; releer misma operacion')], exit_code=3)
         except Exception:
             return self._reply(op_id, [reason('store-unavailable', 'proveedor interno no disponible')], exit_code=6)
