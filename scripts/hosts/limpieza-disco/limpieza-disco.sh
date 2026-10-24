@@ -10,8 +10,9 @@
 #   1. ~/remote-run/work/*   sólo las copias no ocultas que ~/bin/pao-inventario.py
 #                            marca borrable (inactiva: 7 días sin uso, sin lock,
 #                            sin corridas vivas o dudosas ni bloqueo global), que
-#                            sigan sin .remote-run.lock y no sean cwd ni tengan
-#                            archivos abiertos. Nunca toca entradas ocultas
+#                            sigan sin .remote-run.lock y sin procesos dentro
+#                            según un lsof hecho justo antes de borrar. Nunca
+#                            toca entradas ocultas
 #                            (.comprador-*, .borrando-*): ésas sólo las trata
 #                            borrar_copias.py con autorización explícita.
 #   2. Temporales de pytest  /private/tmp/bt-*, /private/tmp/gold*, ~/pytest-bt-*
@@ -21,9 +22,11 @@
 #                            tocar, que no sean --basetemp ni cwd de un proceso
 #                            vivo ni tengan archivos abiertos.
 #   3. ~/remote-run/runs/*   sólo las que el inventario clasifica terminal y
-#                            borrable (más de 30 días), no ocultas y con exit.
-#      Si el inventario falla, su salida no se valida o hay bloqueo global, las
-#      reglas 1 y 3 no borran nada en esa pasada y el log dice por qué.
+#                            borrable (más de 30 días), no ocultas, con exit y
+#                            sin procesos dentro. Corre justo después de la 1.
+#      Si el inventario falla, su salida no se valida, hay bloqueo global o no
+#      puede descartarse, las reglas 1 y 3 no borran nada en esa pasada y el log
+#      dice por qué. Borran desde el directorio padre fijado como cwd.
 #      Ninguna otra regla entra en ~/remote-run.
 #   4. Caché de Bun          bun pm cache rm, como mucho una vez por semana y sólo
 #                            si pasa de 10 GB.
@@ -62,6 +65,17 @@ borrar() { # $1 = ruta, $2 = motivo
   fi
 }
 
+borrar_en() { # $1 = directorio padre sin symlinks, $2 = nombre, $3 = motivo
+  # Con el padre como cwd, sustituirlo después por un symlink no desvía el rm.
+  ( cd -P -- "$1" 2>/dev/null && [ "$(pwd -P)" = "$1" ] && [ -d "$2" ] && [ ! -L "$2" ] || exit 3
+    [ "$DRY" = 1 ] && exit 0
+    rm -rf -- "./$2" )
+  case $? in
+    0) log "$([ "$DRY" = 1 ] && echo '[dry-run] borraría' || echo borrado) $1/$2 ($3)" ;;
+    3) log "no borro $1/$2 ($3): el padre no es $1 o la entrada cambió" ;;
+  esac
+}
+
 # Evita dos ejecuciones simultáneas; un lock de más de 2 h se considera huérfano.
 if ! mkdir "$LOCK" 2>/dev/null; then
   if [ -n "$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
@@ -82,21 +96,11 @@ else
 fi
 log "inicio (libre: ${antes} GB$([ "$EMERG" = 1 ] && echo ", EMERGENCIA")$([ "$DRY" = 1 ] && echo ", dry-run"))"
 
-# Rutas en uso: cwd de todos mis procesos, cualquier --basetemp en línea de
-# comandos y todos los archivos que tengo abiertos.
-EN_USO=$(mktemp)
-{
-  lsof -a -u "$(id -u)" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
-  ps -axww -o command= | grep -o -- '--basetemp[= ][^ ]*' | sed 's/^--basetemp[= ]//; s/"//g'
-  lsof -u "$(id -u)" -Fn 2>/dev/null | sed -n 's/^n\(\/.*\)/\1/p'
-} | sed 's#^/tmp/#/private/tmp/#' | sort -u > "$EN_USO"
-trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$EN_USO"' EXIT
-
 # Reglas 1 y 3: el inventario decide qué es borrable en ~/remote-run.
 # Instalado junto a este script; desde un temporal permite una pasada en seco previa.
 INVENTARIO="$(cd "$(dirname "$0")" && pwd)/pao-inventario.py"
 INV_JSON=$(mktemp); INV_LISTA=$(mktemp); INV_ERR=$(mktemp)
-trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$EN_USO" "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
+trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
 INV_OK=0
 if [ ! -d "$RR" ]; then
   INV_MOTIVO="no existe $RR"
@@ -118,11 +122,16 @@ bloqueos += [c['motivo'] for c in datos['corridas'] if os.path.abspath(c['ruta']
 bloqueos += [c['motivo'] for c in datos['copias'] if os.path.abspath(c['ruta']) == work]
 if bloqueos:
     sys.exit('bloqueo global del inventario: ' + bloqueos[0])
+# El inventario sólo clasifica una copia como inactiva, reciente o lock-huerfano
+# cuando no halló corridas de dueño desconocido; sin una así, el bloqueo no se descarta.
+if not any(c['clase'] in ('inactiva', 'reciente', 'lock-huerfano') for c in datos['copias']):
+    sys.exit('sin prueba de ausencia de bloqueo global: ninguna copia llegó a clasificarse')
 
 
 def nombre(ruta, padre):
     base = os.path.basename(ruta)
-    if os.path.dirname(os.path.abspath(ruta)) != padre or not base or '\n' in base:
+    if (os.path.dirname(os.path.abspath(ruta)) != padre or not base
+            or any(ord(ch) < 32 or ord(ch) == 127 for ch in base)):
         sys.exit('ruta inesperada en el inventario: ' + ruta)
     return base
 
@@ -145,8 +154,25 @@ else
 fi
 [ "$INV_OK" = 1 ] || log "reglas 1 y 3 sin borrar: $INV_MOTIVO"
 
+# Rutas en uso: cwd de todos mis procesos, cualquier --basetemp en línea de
+# comandos y todos los archivos que tengo abiertos.
+EN_USO=$(mktemp)
+{
+  lsof -a -u "$(id -u)" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p'
+  ps -axww -o command= | grep -o -- '--basetemp[= ][^ ]*' | sed 's/^--basetemp[= ]//; s/"//g'
+  lsof -u "$(id -u)" -Fn 2>/dev/null | sed -n 's/^n\(\/.*\)/\1/p'
+} | sed 's#^/tmp/#/private/tmp/#' | sort -u > "$EN_USO"
+trap 'rmdir "$LOCK" 2>/dev/null; rm -f "$EN_USO" "$INV_JSON" "$INV_LISTA" "$INV_ERR"' EXIT
+
 en_uso() { # ¿algún proceso usa $1 o algo dentro de $1?
   grep -qF -- "$1" "$EN_USO"
+}
+
+libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes de borrar
+  if [ -e "$1/.remote-run.lock" ] || [ -L "$1/.remote-run.lock" ]; then return 1; fi
+  local salida estado
+  salida=$(lsof -nP +D "$1" 2>&1); estado=$?
+  [ "$estado" = 1 ] && [ -z "$salida" ]
 }
 
 # 1. remote-run/work: copias no ocultas que el inventario marca borrables
@@ -156,9 +182,23 @@ if [ "$INV_OK" = 1 ]; then
     case "$n" in ""|.*|*/*) continue ;; esac
     d="$RR/work/$n"
     [ -d "$d" ] && [ ! -L "$d" ] || continue
-    [ -e "$d/.remote-run.lock" ] && continue
     en_uso "$d" && continue
-    borrar "$d" "remote-run/work, inventario: inactiva y borrable"
+    libre_ahora "$d" || { log "no borro $d: lock o proceso dentro"; continue; }
+    borrar_en "$RR/work" "$n" "inventario: inactiva y borrable"
+  done < "$INV_LISTA"
+fi
+
+# 3. remote-run/runs: terminales que el inventario marca borrables (más de 30 días).
+# Va justo tras la 1 para usar el mismo inventario recién tomado.
+if [ "$INV_OK" = 1 ]; then
+  while IFS=$'\t' read -r tipo n; do
+    [ "$tipo" = runs ] || continue
+    case "$n" in ""|.*|*/*) continue ;; esac
+    r="$RR/runs/$n"
+    [ -d "$r" ] && [ ! -L "$r" ] && [ -e "$r/exit" ] || continue
+    en_uso "$r" && continue
+    libre_ahora "$r" || { log "no borro $r: proceso dentro"; continue; }
+    borrar_en "$RR/runs" "$n" "inventario: run terminal >30 d"
   done < "$INV_LISTA"
 fi
 
@@ -180,18 +220,6 @@ for d in /private/tmp/* "$HOME"/pytest-bt-*; do
   en_uso "$d" && continue
   borrar "$d" "$motivo"
 done
-
-# 3. remote-run/runs: terminales que el inventario marca borrables (más de 30 días)
-if [ "$INV_OK" = 1 ]; then
-  while IFS=$'\t' read -r tipo n; do
-    [ "$tipo" = runs ] || continue
-    case "$n" in ""|.*|*/*) continue ;; esac
-    r="$RR/runs/$n"
-    [ -d "$r" ] && [ ! -L "$r" ] && [ -e "$r/exit" ] || continue
-    en_uso "$r" && continue
-    borrar "$r" "run terminal >30 d, inventario"
-  done < "$INV_LISTA"
-fi
 
 # 4. Caché de Bun: semanal y sólo si pasa de 10 GB
 BUN_CACHE="$HOME/.bun/install/cache"
