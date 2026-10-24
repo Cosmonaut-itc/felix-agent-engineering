@@ -8,12 +8,14 @@ import select
 import signal
 import socket
 import sqlite3
+import stat
 import subprocess
 import sys
 import time
 import uuid
 
 APP_ID = 0x464C5431
+SCHEMA_VERSION = 2
 GROUP_DRAINING = "waiting for process group to empty"
 StateError = sqlite3.Error
 LEGAL = {(None, "queued"), ("queued", "starting"),
@@ -21,7 +23,8 @@ LEGAL = {(None, "queued"), ("queued", "starting"),
          ("running", "finished")}
 SCHEMA = (
     "CREATE TABLE IF NOT EXISTS jobs (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
-    "id TEXT UNIQUE NOT NULL, argv TEXT NOT NULL, cwd TEXT NOT NULL, client TEXT NOT NULL, "
+    "id TEXT UNIQUE NOT NULL, argv TEXT NOT NULL, cwd TEXT NOT NULL, env TEXT NOT NULL, "
+    "client TEXT NOT NULL, "
     "submitted_by TEXT NOT NULL, submitted_at REAL NOT NULL)",
     "CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, job_id TEXT UNIQUE NOT NULL "
     "REFERENCES jobs(id), n INTEGER NOT NULL DEFAULT 1, state TEXT, outcome TEXT, "
@@ -56,6 +59,15 @@ def _connect(state, create=False):
         raise ValueError("state files must not be symlinks")
     if create:
         state.mkdir(mode=0o700, parents=True, exist_ok=True)
+    directory = state.lstat()
+    if (not stat.S_ISDIR(directory.st_mode) or directory.st_uid != os.getuid()
+            or stat.S_IMODE(directory.st_mode) & 0o077):
+        raise ValueError("state directory must be private to the current user")
+    if database.exists():
+        info = database.lstat()
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ValueError("state database must be a regular file owned by the current user")
+    if create:
         if not database.exists() and any(state.iterdir()):
             raise ValueError("state directory must be empty or belong to Fleet")
         conn = sqlite3.connect(str(database), timeout=10, isolation_level=None)
@@ -71,14 +83,20 @@ def _connect(state, create=False):
             tables = conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
             if app != APP_ID and (app != 0 or tables):
                 raise ValueError("not a Fleet pilot database")
+            version = conn.execute("PRAGMA user_version").fetchone()[0]
+            if (app == APP_ID and version != SCHEMA_VERSION) or (app == 0 and version != 0):
+                raise ValueError("unsupported Fleet pilot schema; use a new state directory")
             conn.execute("PRAGMA application_id={}".format(APP_ID))
             for statement in SCHEMA:
                 conn.execute(statement)
+            conn.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
             conn.commit()
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA synchronous=FULL")
         elif conn.execute("PRAGMA application_id").fetchone()[0] != APP_ID:
             raise ValueError("not a Fleet pilot database")
+        elif conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION:
+            raise ValueError("unsupported Fleet pilot schema; use a new state directory")
         else:
             conn.execute("PRAGMA query_only=ON")
         return conn
@@ -176,12 +194,12 @@ class Launch(enum.Enum):
     UNCONFIRMED = "unconfirmed"
 
 
-def _reserve(conn, state, argv, cwd, client):
+def _reserve(conn, state, argv, cwd, env, client):
     job, attempt = "j_" + uuid.uuid4().hex, "a_" + uuid.uuid4().hex
     actor = "client:" + client
     conn.execute("BEGIN IMMEDIATE")
-    conn.execute("INSERT INTO jobs (id,argv,cwd,client,submitted_by,submitted_at) "
-                 "VALUES (?,?,?,?,?,?)", (job, json.dumps(argv), str(cwd), client,
+    conn.execute("INSERT INTO jobs (id,argv,cwd,env,client,submitted_by,submitted_at) "
+                 "VALUES (?,?,?,?,?,?,?)", (job, json.dumps(argv), str(cwd), json.dumps(env), client,
                  json.dumps({"user": getpass.getuser(), "uid": os.getuid(),
                              "host": socket.gethostname(), "pid": os.getpid()}), time.time()))
     conn.execute("INSERT INTO attempts (id,job_id) VALUES (?,?)", (attempt, job))
@@ -253,7 +271,7 @@ def submit(state, argv, cwd, client):
         raise ValueError("pilot supports POSIX hosts only")
     conn = _connect(state, create=True)
     try:
-        job, attempt, claimed = _reserve(conn, state, argv, cwd, client)
+        job, attempt, claimed = _reserve(conn, state, argv, cwd, dict(os.environ), client)
         result = {"job": job, "attempt": attempt, "client": client, "accepted": False}
         if not claimed:
             return dict(result, state="queued", accepted=True), 0
@@ -272,7 +290,8 @@ def view(state, job):
     conn = _connect(state)
     try:
         conn.execute("BEGIN")
-        row = conn.execute("SELECT j.*,a.id AS attempt,a.state,a.outcome,a.exit_code,a.signal,"
+        row = conn.execute("SELECT j.seq,j.id,j.argv,j.cwd,j.client,j.submitted_by,j.submitted_at,"
+                           "a.id AS attempt,a.state,a.outcome,a.exit_code,a.signal,"
                            "a.supervisor,a.child_pid,a.started_at,a.ended_at,a.detail "
                            "FROM jobs j JOIN attempts a ON a.job_id=j.id WHERE j.id=?", (job,)).fetchone()
         if row is None:
@@ -314,7 +333,7 @@ def _group_may_be_occupied(pgid):
 
 
 def _execute(conn, state, attempt, actor):
-    row = conn.execute("SELECT j.argv,j.cwd FROM jobs j JOIN attempts a ON a.job_id=j.id "
+    row = conn.execute("SELECT j.argv,j.cwd,j.env FROM jobs j JOIN attempts a ON a.job_id=j.id "
                        "WHERE a.id=?", (attempt,)).fetchone()
     handles = []
     code = sig = None
@@ -329,6 +348,7 @@ def _execute(conn, state, attempt, actor):
         else:
             try:
                 child = subprocess.Popen(json.loads(row["argv"]), cwd=row["cwd"],
+                                         env=json.loads(row["env"]),
                                          stdin=subprocess.DEVNULL, stdout=handles[0], stderr=handles[1],
                                          close_fds=True, start_new_session=True)
             except OSError as exc:

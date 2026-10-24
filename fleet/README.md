@@ -14,15 +14,20 @@ fleet/bin/fleet wait j_... --timeout 30
 ```
 
 `submit` acepta argv literal, sin shell, stdin cerrado, cwd explícito (por defecto el
-actual) y entorno heredado. Para usar un shell debe pedirse explícitamente como argv.
+actual) y una copia del entorno del emisor guardada por job junto a argv/cwd, tanto si
+arranca inmediatamente como si espera en cola. Incluye `PATH`, que se usa para resolver
+el ejecutable. Para usar un shell debe pedirse explícitamente como argv.
 El supervisor y el comando arrancan en sesiones separadas del cliente. El supervisor
 ignora SIGINT/SIGHUP; el comando hereda esas disposiciones. No hay cancelación,
 timeout de ejecución ni interrupción automática. `wait --timeout` limita sólo la lectura.
 
 `--state-dir` puede ir antes o después del subcomando. Precedencia: opción explícita,
 `FLEET_STATE_DIR`, `${XDG_STATE_HOME:-$HOME/.local/state}/fleet-pilot`. El directorio
-debe estar vacío o pertenecer al piloto. Se rechazan directorios reservados `pao`,
-`mini-carga` y `u3` bajo las raíces de estado, y symlinks de estado/BD/attempts.
+debe estar vacío o pertenecer al piloto, ser del uid actual y no tener bits de permisos
+para grupo/otros. Un directorio preexistente inseguro se rechaza sin cambiar sus
+permisos; una BD existente debe pertenecer al uid actual. Se rechazan directorios
+reservados `pao`, `mini-carga` y `u3` bajo las raíces de estado, y symlinks de
+estado/BD/attempts.
 No apuntarlo a estado compartido, ajeno, remoto o a un filesystem sin locks SQLite.
 
 `--client` > `FLEET_CLIENT` > `user@host`. Es una etiqueta declarada, sin autoridad.
@@ -64,6 +69,12 @@ La creación registra `null → queued` con el cliente como emisor. El superviso
 termina, libera y reclama el siguiente FIFO en la misma transacción; no hay daemon
 residente. Las fechas sirven de observación; FIFO se decide por secuencia de inserción.
 
+El esquema usa `user_version=2`; una BD del piloto con otra versión se rechaza en
+submit, lecturas y supervisor. No hay migrador ni fallback al entorno del supervisor.
+El entorno persistido puede contener secretos: queda bajo la privacidad del directorio,
+sin cifrado ni aislamiento frente al mismo uid. No se incluye en respuestas de control,
+transiciones ni logs del supervisor. El comando sí puede escribir su entorno en sus logs.
+
 La aceptación de un nuevo supervisor requiere exec exitoso y un handshake después
 de persistir su identidad (hasta diez segundos). Un fallo inequívoco de lanzamiento
 queda como failed y no se comunica como aceptación. Una caída entre persistencia,
@@ -80,8 +91,9 @@ supervisor no demuestra fin del comando: conserva capacidad incluso tras su auto
 Un error al persistir el resultado también conserva capacidad; no existe reconciliación.
 
 Sin prioridad, cancelación, nodos, SSH, snapshots, leases, recovery ni autoridad host-side
-activa. El runtime/cwd/entorno se usan tal cual, sin snapshot inmutable ni aislamiento
-de seguridad. No editar o actualizar el runtime mientras haya supervisores activos.
+activa. Guardar el entorno no congela ejecutables ni contenido del cwd: no hay snapshot
+inmutable del runtime ni aislamiento de seguridad. No editar o actualizar el runtime
+mientras haya supervisores activos.
 Git Bash/Windows no está soportado en este piloto.
 
 ## Validación exclusivamente en Mini
@@ -98,9 +110,20 @@ inspecciona tablas privadas. HOME, XDG_STATE_HOME, estado y fixtures son tempora
 y propios; ninguna dependencia se instala. Las barreras tienen autoexit de seis
 segundos. Prueba aceptación antes de soltar la barrera, resultados, señales, FIFO,
 admisión concurrente, lectores interrumpidos, aislamiento y supervisor perdido.
+Comprueba entornos y resolución por PATH distintos con el segundo job en cola,
+retención por un descendiente del mismo grupo tras salir la raíz y rechazo sin cambios
+de un directorio público. La versión de esquema se inspecciona estáticamente; no hay
+una prueba runtime que construya una BD privada.
 Sólo envía señales a procesos creados por sus propias fixtures. La prueba de fallo
 de lanzamiento provoca un error abriendo el log privado, antes de crear supervisor.
-La limpieza exige ausencia de supervisores y grupos propios publicados por el CLI,
-observada con señal 0; si no puede confirmarla, falla y conserva el directorio temporal.
+El harness registra cada admisión antes de lanzar submit, también en llamadas directas
+y wrappers. Una aceptación real guardada sin atribuir prueba que el guard de limpieza
+falla conservando el temporal; después recupera esa respuesta pública y acredita cierre.
+Timeout, JSON ilegible o pérdida de stdout dejan la admisión pendiente. Un error JSON2
+no prueba ausencia de efectos: sólo se refuta creación en un estado nuevo/exclusivo si
+su BD no existía antes y sigue ausente con el cliente terminado, sin borrado intermedio.
+La limpieza exige todas las admisiones resueltas y ausencia de supervisores y grupos
+propios publicados por el CLI, observada con señal 0; si no puede confirmarla, falla
+y conserva el directorio temporal.
 No está conectada a CI. El coordinador debe guardar resultado y review del diff;
 esta entrega no declara ejecución ni aprobación de pruebas.

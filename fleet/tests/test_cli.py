@@ -3,6 +3,7 @@ import getpass
 import json
 import os
 from pathlib import Path
+import re
 import select
 import shutil
 import signal
@@ -27,6 +28,26 @@ sys.exit(0 if gate.exists() else 90)
 """
 
 
+class Admission:
+    def __init__(self, state):
+        self.state = state
+        self.database_absent_before = not (state / "state.db").exists()
+        self.job = self.attempt = None
+        self.refuted = False
+
+    def attribute(self, response):
+        job, attempt = response.get("job"), response.get("attempt")
+        if (not isinstance(job, str) or not re.fullmatch(r"j_[0-9a-f]{32}", job)
+                or not isinstance(attempt, str) or not re.fullmatch(r"a_[0-9a-f]{32}", attempt)):
+            raise AssertionError("submit response has no attributable identity")
+        self.job, self.attempt = job, attempt
+
+    def refute_if_absent(self, result):
+        if (result.returncode is not None and self.database_absent_before
+                and not (self.state / "state.db").exists()):
+            self.refuted = True
+
+
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
 class FleetCLI(unittest.TestCase):
     def setUp(self):
@@ -42,10 +63,23 @@ class FleetCLI(unittest.TestCase):
         self.env.update(HOME=str(self.home), XDG_STATE_HOME=str(self.root / "xdg"),
                         TMPDIR=str(self.root), PYTHONDONTWRITEBYTECODE="1")
         self.gates = []
-        self.jobs = []
+        self.admissions = []
         self.processes = []
 
     def tearDown(self):
+        self.cleanup()
+
+    def cleanup(self):
+        self.settle()
+        self.guard_admissions()
+        shutil.rmtree(self.root)
+
+    def guard_admissions(self):
+        unresolved = [str(a.state) for a in self.admissions if a.job is None and not a.refuted]
+        if unresolved:
+            self.fail("unattributed admission; retained {}: {}".format(self.root, unresolved))
+
+    def settle(self):
         for gate, done in self.gates:
             gate.touch()
         for process in self.processes:
@@ -57,12 +91,18 @@ class FleetCLI(unittest.TestCase):
         deadline = time.monotonic() + 9
         while True:
             pending = []
-            for job, state in self.jobs:
-                result = self.call("status", job, state=state, check=False)
+            for admission in self.admissions:
+                if admission.job is None:
+                    continue
+                job = admission.job
+                result = self.call("status", job, state=admission.state, check=False)
                 if result.returncode != 0:
                     pending.append((job, result.stdout, result.stderr))
                     continue
                 value = json.loads(result.stdout)
+                if (value["job"], value["attempt"]) != (job, admission.attempt):
+                    pending.append((job, "public identity mismatch"))
+                    continue
                 if value["supervisor"]:
                     supervisors.add(value["supervisor"]["pid"])
                 if value["child_pid"] is not None:
@@ -83,21 +123,29 @@ class FleetCLI(unittest.TestCase):
                     else:
                         pending.append((kind, pid, "still present"))
             if not pending:
-                shutil.rmtree(self.root)
                 return
             if time.monotonic() >= deadline:
                 self.fail("owned process absence unconfirmed; retained {}: {}".format(
                     self.root, pending))
             time.sleep(0.05)
 
-    def call(self, *args, state=None, check=True, env=None):
+    def admit(self, state):
+        self.assertIn(self.root, state.parents)
+        admission = Admission(state)
+        self.admissions.append(admission)
+        return admission
+
+    def call(self, *args, state=None, check=True, env=None, refute_if_absent=False):
+        admission = self.admit(state or self.state) if args and args[0] == "submit" else None
         command = [sys.executable, "-B", str(CLI), "--state-dir", str(state or self.state)]
         result = subprocess.run(command + list(args), env=env or self.env,
                                 cwd=str(self.project), capture_output=True, text=True, timeout=15)
-        if args and args[0] == "submit":
+        if admission is not None:
             value = json.loads(result.stdout)
             if "job" in value:
-                self.jobs.append((value["job"], state or self.state))
+                admission.attribute(value)
+            elif refute_if_absent:
+                admission.refute_if_absent(result)
         if check:
             self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
         return result
@@ -213,6 +261,132 @@ class FleetCLI(unittest.TestCase):
             self.assertLessEqual(left["ended_at"], right["started_at"])
             self.assertLess(left["transitions"][-1]["seq"], right["transitions"][-2]["seq"])
 
+    def test_queued_job_uses_its_submitters_environment_and_path(self):
+        responses, control_output, jobs, fixtures, expected = [], [], [], [], []
+
+        def control_call(*args, env=None):
+            result = self.call(*args, env=env)
+            control_output.extend((result.stdout, result.stderr))
+            value = json.loads(result.stdout)
+            responses.append(value)
+            return value
+
+        script = ("import json, os, sys\n"
+                  "print(json.dumps([os.environ['FLEET_TEST_MARK'], os.environ['PATH'], "
+                  "sys.executable]), flush=True)\n" + BARRIER)
+        for label in ("a", "b"):
+            directory = self.root / ("env-bin-" + label)
+            directory.mkdir()
+            executable = directory / "fleet-env-python"
+            executable.symlink_to(sys.executable)
+            marker = "fictitious-fleet-environment-" + label
+            env = dict(self.env, FLEET_TEST_MARK=marker, PATH=str(directory))
+            argv, ready, gate, done = self.barrier()
+            argv[:4] = ["fleet-env-python", "-B", "-c", script]
+            submitted = control_call("submit", "--", *argv, env=env)
+            self.assertTrue(submitted["accepted"])
+            jobs.append(submitted["job"])
+            fixtures.append((ready, gate, done))
+            expected.append([marker, str(directory), str(executable)])
+            if label == "a":
+                self.running(jobs[0], ready)
+        queued = control_call("status", jobs[1])
+        self.assertEqual(queued["state"], "queued")
+        self.assertFalse(fixtures[1][0].exists())
+        control_call("status", jobs[0])
+        fixtures[0][1].touch()
+        first = control_call("wait", jobs[0], "--timeout", "9")
+        self.running(jobs[1], fixtures[1][0])
+        control_call("status", jobs[1])
+        fixtures[1][1].touch()
+        second = control_call("wait", jobs[1], "--timeout", "9")
+        for final, report in zip((first, second), expected):
+            lines = Path(final["stdout_log"]).read_text().splitlines()
+            self.assertEqual(json.loads(lines[0]), report)
+            self.assertEqual(lines[1:], ["ok"])
+        control = "".join(control_output) + (self.state / "supervisor.log").read_text()
+        for report in expected:
+            self.assertFalse(report[0] in control, "fictitious environment marker leaked")
+            self.assertFalse(report[1] in control, "fictitious PATH leaked")
+        self.assertTrue(all("env" not in response for response in responses))
+
+    def test_descendant_holds_slot_after_root_exits(self):
+        argv, ready, gate, done = self.barrier()
+        child_script = BARRIER.replace("import pathlib, sys, time", "import json, os, pathlib, sys, time")
+        child_script = child_script.replace("ready.write_text('ready')",
+                                            "ready.write_text(json.dumps({'pgid': os.getpgrp()}))")
+        root_script = ("import subprocess, sys\n"
+                       "subprocess.Popen([sys.executable, '-B', '-c', sys.argv[1], *sys.argv[2:]])\n")
+        first = self.submit([sys.executable, "-B", "-c", root_script, child_script, *argv[4:]])
+        self.running(first["job"], ready)
+        current = self.value("status", first["job"])
+        root_pid = current["child_pid"]
+        self.assertEqual(json.loads(ready.read_text())["pgid"], root_pid)
+
+        def root_absent():
+            try:
+                os.kill(root_pid, 0)
+            except ProcessLookupError:
+                return True
+            return False
+
+        self.until(root_absent)
+        self.until(lambda: self.value("status", first["job"])["view"] == "uncertain")
+        os.killpg(root_pid, 0)
+        next_argv, next_ready, next_gate, _ = self.barrier()
+        second = self.submit(next_argv)
+        self.assertEqual(second["state"], "queued")
+        queued = self.wait(second["job"], 3)
+        self.assertEqual((queued["state"], queued["view"]), ("queued", "uncertain"))
+        self.assertFalse(next_ready.exists())
+        self.assertFalse(done.exists())
+        gate.touch()
+        self.assertEqual(self.wait(first["job"])["outcome"], "succeeded")
+        self.until(done.exists)
+        self.running(second["job"], next_ready)
+        next_gate.touch()
+        self.assertEqual(self.wait(second["job"])["outcome"], "succeeded")
+
+    def test_cleanup_retains_accepted_but_unattributed_admission(self):
+        argv, ready, gate, done = self.barrier()
+        response = self.root / "unattributed-submit.json"
+        admission = self.admit(self.state)
+        with response.open("w") as output:
+            result = subprocess.run([sys.executable, "-B", str(CLI), "--state-dir", str(self.state),
+                                     "submit", "--", *argv], env=self.env, cwd=self.project,
+                                    stdout=output, stderr=subprocess.PIPE, text=True, timeout=15)
+        try:
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.until(ready.exists)
+            self.assertIsNone(admission.job)
+            with self.assertRaisesRegex(AssertionError, "unattributed admission"):
+                self.guard_admissions()
+            self.assertTrue(self.root.is_dir())
+            self.assertTrue(response.is_file())
+            self.assertFalse(gate.exists())
+            self.assertFalse(done.exists())
+        finally:
+            value = json.loads(response.read_text())
+            admission.attribute(value)
+            gate.touch()
+        self.assertTrue(value["accepted"])
+        self.assertEqual(self.wait(value["job"])["outcome"], "succeeded")
+        self.settle()
+
+    def test_public_state_directory_is_refused_without_changes(self):
+        public = self.root / "public-state"
+        public.mkdir(mode=0o755)
+        public.chmod(0o755)
+        mode = public.stat().st_mode
+        result = self.call("submit", "--", sys.executable, "-c", "pass", state=public,
+                           check=False, refute_if_absent=True)
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("private", json.loads(result.stdout)["error"])
+        self.assertFalse((public / "state.db").exists())
+        self.assertEqual(public.stat().st_mode, mode)
+        self.assertEqual(list(public.iterdir()), [])
+        self.assertTrue(self.admissions[-1].refuted)
+
     def test_wait_timeout_and_interrupt_do_not_change_execution(self):
         argv, ready, gate, done = self.barrier()
         job = self.submit(argv)["job"]
@@ -252,6 +426,7 @@ class FleetCLI(unittest.TestCase):
     def test_client_group_signals_and_supervisor_interrupts_are_isolated(self):
         argv, ready, gate, done = self.barrier()
         wrapper = "import subprocess,sys,time; r=subprocess.run(sys.argv[1:]); time.sleep(2); sys.exit(r.returncode)"
+        admission = self.admit(self.state)
         process = subprocess.Popen([sys.executable, "-c", wrapper, sys.executable, "-B", str(CLI),
                                     "--state-dir", str(self.state), "submit", "--", *argv],
                                    start_new_session=True, env=self.env, cwd=self.project,
@@ -259,7 +434,7 @@ class FleetCLI(unittest.TestCase):
         self.processes.append(process)
         line = process.stdout.readline()
         submitted = json.loads(line)
-        self.jobs.append((submitted["job"], self.state))
+        admission.attribute(submitted)
         self.running(submitted["job"], ready)
         os.killpg(process.pid, signal.SIGHUP)
         process.communicate(timeout=3)
@@ -330,7 +505,7 @@ class FleetCLI(unittest.TestCase):
         self.assertEqual(list(self.project.iterdir()), [])
 
     def test_json_errors_missing_logs_and_state_selection(self):
-        for args in (("nonsense",), ("submit", "--"), ("status", "unknown"),
+        for args in (("nonsense",), ("status", "unknown"),
                      ("wait", "unknown", "--timeout", "nan")):
             result = self.call(*args, check=False)
             self.assertEqual(result.returncode, 2)
@@ -340,29 +515,32 @@ class FleetCLI(unittest.TestCase):
         Path(final["stdout_log"]).unlink()
         self.assertEqual(self.value("status", job)["outcome"], "incomplete")
         self.wait(job, 3)
-        env = dict(self.env, FLEET_STATE_DIR=str(self.root / "environment-state"))
+        environment_state = self.root / "environment-state"
+        env = dict(self.env, FLEET_STATE_DIR=str(environment_state))
+        admission = self.admit(environment_state)
         process = subprocess.run([sys.executable, "-B", str(CLI), "submit", "--", sys.executable,
                                   "-c", "pass"], cwd=self.project, env=env,
                                  capture_output=True, text=True, timeout=15)
         value = json.loads(process.stdout)
-        environment_state = self.root / "environment-state"
-        self.jobs.append((value["job"], environment_state))
+        admission.attribute(value)
         self.assertEqual(process.returncode, 0, process.stdout)
         self.wait(value["job"], state=environment_state)
         self.assertEqual(self.call("status", value["job"], env=env, check=False).returncode, 2)
 
     def test_default_state_and_reserved_paths(self):
+        default_state = self.root / "xdg/fleet-pilot"
+        admission = self.admit(default_state)
         result = subprocess.run([sys.executable, "-B", str(CLI), "submit", "--",
                                  sys.executable, "-c", "pass"], cwd=self.project, env=self.env,
                                 capture_output=True, text=True, timeout=15)
-        job = json.loads(result.stdout)["job"]
-        default_state = self.root / "xdg/fleet-pilot"
-        self.jobs.append((job, default_state))
+        value = json.loads(result.stdout)
+        admission.attribute(value)
+        job = value["job"]
         self.assertEqual(result.returncode, 0, result.stdout)
         self.wait(job, state=default_state)
         reserved = self.root / "xdg/pao"
         refused = self.call("submit", "--", sys.executable, "-c", "pass",
-                            state=reserved, check=False)
+                            state=reserved, check=False, refute_if_absent=True)
         self.assertEqual(refused.returncode, 2)
         self.assertIn("reserved", json.loads(refused.stdout)["error"])
         self.assertFalse(reserved.exists())
