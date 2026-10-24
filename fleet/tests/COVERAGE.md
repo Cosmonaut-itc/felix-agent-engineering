@@ -1,11 +1,74 @@
-# SEN-3821, corrección r1: cobertura propuesta
+# SEN-3821, corrección r2: cobertura propuesta
 
 Sólo inspección estática. Ninguna prueba se ha ejecutado en este encargo.
-La suite pública es `test_cli.py`, que incorpora los dos mixins. Las 16 conductas
-heredadas y los 21 casos de contenido se conservan; la corrección añade 18 casos.
+La suite pública es `test_cli.py`, que incorpora tres mixins. Se conservan las
+55 conductas anteriores: 16 heredadas, 21 de contenido y 18 de corrección r1.
+La corrección r2 añade dos métodos con matrices de lectores y entorno temporal.
 No se importa Fleet ni se consulta SQL. Cada submit se registra antes de lanzar;
 los rechazos usan estado exclusivo, cliente terminado y BD ausente antes/después.
 Un fallo de atribución o de cierre propio conserva los temporales.
+
+## Temporales del lector: regresiones r2 pendientes de Mini
+
+`reader_temp_cases.py` usa exclusivamente subprocess del CLI público, sin importar
+Fleet, editar el ledger, ejecutar SQL ni sustituir funciones. Cada consulta es
+un proceso nuevo, sin caché heredada de `tempfile`. Se retiran las tres variables
+temporales y se introduce sólo la variable bajo prueba: TMPDIR, TEMP o TMP.
+Cada una apunta al estado, a un subdirectorio privado suyo, a un symlink al estado
+o a una cadena de symlinks al subdirectorio. Para cada combinación se consultan
+status/wait/evidence con el job real y con un identificador desconocido.
+
+Hay 72 consultas por fixture. La quieta se obtiene con submit/wait y cierre
+propio acreditado por el harness; no tiene WAL/SHM. La activa usa una carga
+sin escrituras al estado tras alcanzar running y una barrera FIFO externa:
+sólo el controlador libera al productor después de toda la matriz. Un watchdog
+de 30 segundos termina con error 91, nunca con éxito; el marcador externo done
+debe seguir ausente después de cada lector y decir released al finalizar.
+No se amplían los deadlines heredados ni se usa el autoexit de seis segundos
+para sostener la comparación. El finally libera incluso ante fallo y el harness
+conserva sus comprobaciones de atribución y cierre antes de borrar recursos.
+La fixture exige WAL con contenido y SHM presente, y observa running desde
+la versión efectiva que incluye WAL. Tras liberar y cerrar exige ambos ausentes.
+
+Antes y después de **cada** operación se compara el inventario recursivo completo,
+incluido el propio directorio del estado: dispositivo, inode, modo, uid/gid,
+nlink, tamaño, mtime/ctime en ns y hash de archivos, incluidos BD/WAL/SHM.
+Crear y retirar un temporal o una sonda en cualquiera de los destinos altera
+los metadatos del directorio aunque el inventario y los bytes finales coincidan.
+La fixture primero crea y retira una sonda propia en el estado y en el
+subdirectorio y exige detectar cada cambio antes de tomar las bases del lector.
+No se compara atime, que puede cambiar por las lecturas de la propia fixture.
+La capacidad discriminante de los timestamps también debe pasar en Mini.
+
+Las entradas hostiles acreditan la elección de base independiente del entorno.
+La precedencia de las guardas respecto de la primera llamada a `tempfile` se
+comprueba también por inspección. No se modifica `/tmp` ni se fabrican montajes
+para probar rechazo de una base insegura: esa rama, la administración root de
+la jerarquía y su disponibilidad requieren evidencia de plataforma adicional.
+No se promete resistencia frente a manipulación adversaria del mismo uid.
+
+Selector rojo/verde, **no ejecutado aquí**. El coordinador debe preparar en Mini
+dos copias propias desechables bajo el turno autorizado, sin alterar FIFO129 ni
+los candidatos originales. `READER_CANDIDATE` es el head exacto entregado y
+`READER_RED_COPY` una copia limpia separada de b5ca4987. Desde la copia candidata,
+aplicar sólo el harness nuevo sobre la copia roja:
+
+```sh
+git diff b5ca4987b00672b3d7eec9945b709e733efdefc9 "$READER_CANDIDATE" -- \
+  fleet/tests/test_cli.py fleet/tests/correction_cases.py fleet/tests/reader_temp_cases.py | git -C "$READER_RED_COPY" apply
+```
+
+Desde cada copia, con el Python autorizado de la corrida:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_cli.py' -k reader_temp_environment -v
+```
+
+Rojo esperado por inspección: b5ca4987 crea y retira temporales dentro del estado,
+con diferencias de mtime/ctime. No se modifica su runner. Verde esperado: la
+copia candidata conserva inventario/metadatos y los exits 0/4/2 correspondientes.
+Ambas expectativas necesitan ejecución, también la suite completa de 57 casos
+en los dos Python previstos; los casos antiguos no sustituyen esta matriz.
 
 ## Fixtures escritas, pendientes de Mini
 

@@ -277,7 +277,8 @@ class CorrectionCases:
 
     def state_image(self, state):
         paths = [state, *sorted(state.rglob("*"))] if state.exists() else []
-        return {str(p.relative_to(state)): (p.lstat().st_mode, p.lstat().st_ino,
+        return {str(p.relative_to(state)): (p.lstat().st_dev, p.lstat().st_ino,
+                p.lstat().st_mode, p.lstat().st_uid, p.lstat().st_gid, p.lstat().st_nlink,
                 p.lstat().st_size, p.lstat().st_mtime_ns, p.lstat().st_ctime_ns,
                 hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None) for p in paths}
 

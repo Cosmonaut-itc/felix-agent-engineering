@@ -133,6 +133,21 @@ def _connect(state, create=False):
         raise ValueError("state_not_found") from None
 
 
+def _read_temp_base(state):
+    base = Path("/tmp").resolve(strict=True)
+    state_info = state.stat()
+    state_id = (state_info.st_dev, state_info.st_ino)
+    for path in (base, *base.parents):
+        with inputs.directory(path) as fd:
+            info = os.fstat(fd)
+        if (info.st_dev, info.st_ino) == state_id:
+            raise ValueError("unsafe_reader_temp_base")
+        if info.st_uid != 0 or (info.st_mode & 0o022 and
+                                (path != base or not info.st_mode & stat.S_ISVTX)):
+            raise ValueError("unsafe_reader_temp_base")
+    return base
+
+
 def _connect_locked(state, create):
     database = state / "state.db"
     for name in ("state.db", "state.db-wal", "state.db-shm", "attempts", "capsules"):
@@ -153,7 +168,7 @@ def _connect_locked(state, create):
     else:
         # SQLite's readonly WAL readers can update shared memory. Copy under the
         # transaction lock so public reads never create or repair ledger files.
-        snapshot = tempfile.TemporaryDirectory(prefix="fleet-read-")
+        snapshot = tempfile.TemporaryDirectory(prefix="fleet-read-", dir=_read_temp_base(state))
         try:
             with inputs.directory(state) as fd:
                 for name in ("state.db", "state.db-wal"):

@@ -201,6 +201,25 @@ de inicio de transacción requiere SQL que comience literalmente por `BEGIN`;
 un cursor o API SQLite que eluda Ledger invalidaría el protocolo de copia.
 No sustituirlo por `mode=ro`, `query_only` o `immutable=1` sobre el original.
 
+La base temporal del lector es exclusivamente `/tmp`, resuelta físicamente antes
+de llamar a `tempfile`, sin consultar `gettempdir()` ni modificar el entorno.
+Se ignoran TMPDIR, TEMP y TMP aunque señalen al estado, a un descendiente o a
+un alias. En Darwin habitual `/tmp` resuelve a `/private/tmp`; en Linux habitual
+permanece `/tmp`. La base y cada ancestro físico se abren por componentes sin
+symlinks: deben pertenecer a root y no permitir escritura a grupo/otros, salvo
+la base con sticky bit. Se comparan dispositivo/inode del estado con la base y
+sus ancestros para rechazar una base dentro del estado, también mediante aliases
+de directorio. Sólo después se crea un directorio privado exclusivo con `dir`
+explícito. SQLite y la limpieza operan sobre esa copia propia.
+
+Si `/tmp` no existe, no puede resolverse/validarse, está dentro del estado o no
+permite crear la copia, la consulta falla cerrada con exit 2; no busca otra base
+ni prueba escritura en el estado. Esta elección requiere una jerarquía temporal
+administrada por root en Darwin/Linux; layouts distintos pueden perder
+disponibilidad. No garantiza aislamiento frente a un atacante arbitrario del
+mismo uid, root o cambios privilegiados del namespace/montajes durante la
+consulta. No se ha medido aquí espacio temporal, latencia ni RSS.
+
 Cada consulta copia y sincroniza BD/WAL bajo exclusión antes de abrir SQLite en
 el temporal; no copia SHM del original. Este coste y la espera de escritores
 se infieren del código, sin benchmark. `read_stable` puede mantener bytearray y
@@ -257,8 +276,9 @@ PAO del cierre de limpieza-disco y borrado real. Después, el coordinador usa
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_cli.py' -v
 ```
 
-`test_cli.py` conserva las 16 pruebas heredadas y carga casos de `content_cases.py`
-y `correction_cases.py`. La matriz y fronteras sin fixture están en
+`test_cli.py` conserva las 55 conductas anteriores y carga casos de `content_cases.py`,
+`correction_cases.py` y `reader_temp_cases.py`, con dos regresiones nuevas.
+La matriz, selector rojo/verde y fronteras sin fixture están en
 [`tests/COVERAGE.md`](tests/COVERAGE.md).
 Todas usan subprocess del CLI público, fixtures y recursos propios; no importan
 Fleet ni consultan SQL. El estado incompatible usa una copia cerrada propia y
