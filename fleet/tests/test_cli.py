@@ -1,5 +1,6 @@
 import concurrent.futures
 import getpass
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -8,18 +9,20 @@ import select
 import shutil
 import signal
 import socket
+import stat
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
+from core3820_cases import Core3820Cases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
 BARRIER = """
 import pathlib, sys, time
 ready, gate, done = map(pathlib.Path, sys.argv[1:])
 ready.write_text('ready')
-deadline = time.monotonic() + 6
+deadline = time.monotonic() + 30
 while not gate.exists() and time.monotonic() < deadline:
     time.sleep(0.02)
 print('ok', flush=True)
@@ -48,10 +51,17 @@ class Admission:
             self.refuted = True
 
 
-@unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
-class FleetCLI(unittest.TestCase):
+class FleetCLI(Core3820Cases, unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-")).resolve()
+        self.assertEqual(os.name, "posix", "precondition: local pilot requires POSIX")
+        base = os.environ.get("FLEET_TEST_RUN_BASE")
+        self.assertTrue(base, "precondition: FLEET_TEST_RUN_BASE under the owned future run is required")
+        run_base = Path(base)
+        self.assertEqual(run_base, run_base.resolve(strict=True), "precondition: physical run base required")
+        self.assertEqual(run_base.stat().st_uid, os.getuid())
+        self.assertFalse(run_base.stat().st_mode & 0o077)
+        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-", dir=run_base)).resolve()
+        self.owned_bases = [self.root]
         self.state = self.root / "state"
         self.project = self.root / "project-without-profile"
         self.project.mkdir()
@@ -65,6 +75,8 @@ class FleetCLI(unittest.TestCase):
         self.gates = []
         self.admissions = []
         self.processes = []
+        self.external_evidence = []
+        self.legacy_admissions = []
 
     def tearDown(self):
         self.cleanup()
@@ -72,10 +84,65 @@ class FleetCLI(unittest.TestCase):
     def cleanup(self):
         self.settle()
         self.guard_admissions()
+        snapshots = []
+        for admission in self.admissions:
+            if admission.job is None:
+                continue
+            result = self.call("status", admission.job, state=admission.state, check=False)
+            self.assertEqual(result.returncode, 0, "public snapshot failed; retained " + str(self.root))
+            snapshots.append(json.loads(result.stdout))
+        retained = any(s["observation"]["completion"] != "complete" for s in snapshots)
+        report = self.root.parent / ("evidence-" + self.root.name)
+        report.mkdir(mode=0o700)
+        public_files = []
+        if not retained:
+            for snapshot in snapshots:
+                proof = snapshot["observation"]["evidence"]
+                entries = [*proof["files"], {"path": proof["manifest"], "sha256": proof["root_sha256"]}]
+                for entry in entries:
+                    path = Path(entry["path"])
+                    self.assertTrue(any(base in path.parents for base in self.owned_bases))
+                    before = path.lstat()
+                    self.assertTrue(stat.S_ISREG(before.st_mode))
+                    data = path.read_bytes()
+                    after = path.lstat()
+                    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+                    self.assertEqual(tuple(getattr(before, name) for name in fields),
+                                     tuple(getattr(after, name) for name in fields),
+                                     "public evidence changed before retirement")
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"])
+                    public_files.append({"original_path": str(path), "sha256": entry["sha256"],
+                                         "bytes_hex": data.hex()})
+        counters = []
+        for gate, done in self.gates:
+            path = gate.parent / "counter"
+            if path.exists():
+                counters.append({"path": str(path), "entries": path.read_text().splitlines()})
+        payload = {"test": self.id(), "retained": retained, "root": str(self.root) if retained else None,
+                   "owned_bases": [str(base) for base in self.owned_bases], "snapshots": snapshots,
+                   "external_evidence": self.external_evidence, "public_files": public_files,
+                   "fixture_counters": counters}
+        with (report / "public-snapshots.json").open("x") as output:
+            json.dump(payload, output)
+            output.flush()
+            os.fsync(output.fileno())
+        descriptor = os.open(report, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        descriptor = os.open(report.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if retained:
+            return
         shutil.rmtree(self.root)
 
     def guard_admissions(self):
         unresolved = [str(a.state) for a in self.admissions if a.job is None and not a.refuted]
+        unresolved += [record["state"] for record in self.legacy_admissions if not record["closure_confirmed"]]
         if unresolved:
             self.fail("unattributed admission; retained {}: {}".format(self.root, unresolved))
 
@@ -99,7 +166,7 @@ class FleetCLI(unittest.TestCase):
                 if result.returncode != 0:
                     pending.append((job, result.stdout, result.stderr))
                     continue
-                value = json.loads(result.stdout)
+                value = self.projection(json.loads(result.stdout))
                 if (value["job"], value["attempt"]) != (job, admission.attempt):
                     pending.append((job, "public identity mismatch"))
                     continue
@@ -130,7 +197,7 @@ class FleetCLI(unittest.TestCase):
             time.sleep(0.05)
 
     def admit(self, state):
-        self.assertIn(self.root, state.parents)
+        self.assertTrue(any(base in state.parents for base in self.owned_bases))
         admission = Admission(state)
         self.admissions.append(admission)
         return admission
@@ -144,6 +211,9 @@ class FleetCLI(unittest.TestCase):
             value = json.loads(result.stdout)
             if "job" in value:
                 admission.attribute(value)
+            elif (value.get("candidate", {}).get("accepted") is False or
+                  value.get("error", {}).get("effects") == "no_new_admission"):
+                admission.refuted = True
             elif refute_if_absent:
                 admission.refute_if_absent(result)
         if check:
@@ -151,7 +221,18 @@ class FleetCLI(unittest.TestCase):
         return result
 
     def value(self, *args, **kwargs):
-        return json.loads(self.call(*args, **kwargs).stdout)
+        return self.projection(json.loads(self.call(*args, **kwargs).stdout))
+
+    def projection(self, value):
+        # Test-only projection of actual versioned JSON; raw output is preserved.
+        if not isinstance(value.get("observation"), dict):
+            return value
+        result = dict(value, **value["observation"])
+        result.update(exit_code=result["command"]["exit_code"], signal=result["command"]["signal"],
+                      detail=result["command"]["reason"])
+        result["transitions"] = [dict(t, to=t["to_state"], **{"from": t["from_state"]})
+                                 for t in result["transitions"] if t["from_state"] != t["to_state"]]
+        return result
 
     def submit(self, argv, state=None, client=None, env=None):
         options = ["submit"] + (["--client", client] if client is not None else [])
@@ -160,9 +241,24 @@ class FleetCLI(unittest.TestCase):
         return value
 
     def wait(self, job, code=0, state=None):
-        result = self.call("wait", job, "--timeout", "9", state=state, check=False)
+        deadline = time.monotonic() + 9
+        while True:
+            result = self.call("wait", job, "--timeout", "9", state=state, check=False)
+            value = json.loads(result.stdout)
+            observation = value.get("observation", {})
+            # Completion is a conjunction. A genuine terminal/publication window
+            # returns 3 immediately; this baseline helper retries only that window.
+            if (code in (0, 1) and result.returncode == 3 and
+                    observation.get("state") == "finished" and
+                    observation.get("collection", {}).get("state") != "incomplete" and
+                    observation.get("publication", {}).get("state") == "pending" and
+                    time.monotonic() < deadline):
+                self.external_evidence.append({"case": "baseline-wait-publication", "response": value})
+                time.sleep(0.02)
+                continue
+            break
         self.assertEqual(result.returncode, code, (result.stdout, result.stderr))
-        return json.loads(result.stdout)
+        return self.projection(value)
 
     def until(self, predicate):
         deadline = time.monotonic() + 5
@@ -212,13 +308,13 @@ class FleetCLI(unittest.TestCase):
     def test_client_precedence_and_default(self):
         env = dict(self.env, FLEET_CLIENT="environment-label")
         first = self.submit([sys.executable, "-c", "pass"], env=env)
-        self.assertEqual(first["client"], "environment-label")
+        self.assertEqual(self.value("status", first["job"])["client"], "environment-label")
         self.wait(first["job"])
         second = self.submit([sys.executable, "-c", "pass"], client="explicit", env=env)
-        self.assertEqual(second["client"], "explicit")
+        self.assertEqual(self.value("status", second["job"])["client"], "explicit")
         self.wait(second["job"])
         third = self.submit([sys.executable, "-c", "pass"])
-        self.assertEqual(third["client"], "{}@{}".format(getpass.getuser(), socket.gethostname()))
+        self.assertEqual(self.value("status", third["job"])["client"], "{}@{}".format(getpass.getuser(), socket.gethostname()))
         self.wait(third["job"])
 
     def test_literal_argv_cwd_stdin_and_logs(self):
@@ -226,8 +322,9 @@ class FleetCLI(unittest.TestCase):
         script = "import os,sys; print(os.getcwd()); print(repr(sys.stdin.read())); print(sys.argv[1]); print('err',file=sys.stderr)"
         job = self.submit([sys.executable, "-c", script, literal])["job"]
         final = self.wait(job)
-        self.assertEqual(Path(final["stdout_log"]).read_text().splitlines(),
-                         [str(self.project), "''", literal])
+        lines = Path(final["stdout_log"]).read_text().splitlines()
+        self.assertEqual(Path(lines[0]).name, "workspace")
+        self.assertEqual(lines[1:], ["''", literal])
         self.assertEqual(Path(final["stderr_log"]).read_text(), "err\n")
         self.assertFalse((self.project / "SHOULD_NOT_EXIST").exists())
 
@@ -238,7 +335,7 @@ class FleetCLI(unittest.TestCase):
         missing = self.submit([str(self.root / "no-such-command")])
         result = self.wait(missing["job"], 1)
         self.assertEqual(result["outcome"], "failed")
-        self.assertIn("command spawn failed", result["detail"])
+        self.assertEqual("command_spawn_failed", result["detail"])
         killed = self.submit([sys.executable, "-c", "import os,signal; os.kill(os.getpid(),signal.SIGKILL)"])
         result = self.wait(killed["job"], 3)
         self.assertEqual((result["outcome"], result["signal"]), ("incomplete", signal.SIGKILL))
@@ -269,7 +366,7 @@ class FleetCLI(unittest.TestCase):
             control_output.extend((result.stdout, result.stderr))
             value = json.loads(result.stdout)
             responses.append(value)
-            return value
+            return self.projection(value)
 
         script = ("import json, os\n"
                   "print(json.dumps([os.environ['FLEET_TEST_MARK'], os.environ['PATH']]), "
@@ -343,7 +440,7 @@ class FleetCLI(unittest.TestCase):
         os.killpg(root_pid, 0)
         next_argv, next_ready, next_gate, _ = self.barrier()
         second = self.submit(next_argv)
-        self.assertEqual(second["state"], "queued")
+        self.assertEqual(self.value("status", second["job"])["state"], "queued")
         queued = self.wait(second["job"], 3)
         self.assertEqual((queued["state"], queued["view"]), ("queued", "uncertain"))
         self.assertFalse(next_ready.exists())
@@ -390,7 +487,7 @@ class FleetCLI(unittest.TestCase):
         result = self.call("submit", "--", sys.executable, "-c", "pass", state=public,
                            check=False, refute_if_absent=True)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("private", json.loads(result.stdout)["error"])
+        self.assertEqual("state_directory_not_private", json.loads(result.stdout)["error"]["code"])
         self.assertFalse((public / "state.db").exists())
         self.assertEqual(public.stat().st_mode, mode)
         self.assertEqual(list(public.iterdir()), [])
@@ -431,7 +528,7 @@ class FleetCLI(unittest.TestCase):
         stdout, stderr = process.communicate(timeout=3)
         stderr = import_trace.decode(errors="replace") + stderr
         self.assertEqual(process.returncode, 130, (stdout, stderr))
-        self.assertIn("interrupted", json.loads(stdout)["error"])
+        self.assertEqual("client_interrupted", json.loads(stdout)["error"]["code"])
         self.assertEqual(self.value("status", job)["transitions"], before)
         gate.touch()
         self.assertEqual(self.wait(job)["outcome"], "succeeded")
@@ -471,7 +568,7 @@ class FleetCLI(unittest.TestCase):
         self.assertEqual(self.wait(job, 3)["state"], "running")
         next_argv, next_ready, next_gate, next_done = self.barrier()
         queued = self.submit(next_argv)
-        self.assertEqual(queued["state"], "queued")
+        self.assertEqual(self.value("status", queued["job"])["state"], "queued")
         self.assertEqual(self.wait(queued["job"], 3)["view"], "uncertain")
         gate.touch()
         self.until(done.exists)
@@ -480,20 +577,20 @@ class FleetCLI(unittest.TestCase):
         self.assertFalse(next_ready.exists())
         self.assertEqual([t["to"] for t in current["transitions"]], ["queued"])
 
-    def test_supervisor_launch_failure_is_not_accepted(self):
+    def test_supervisor_launch_failure_preserves_historical_admission(self):
         first = self.submit([sys.executable, "-c", "pass"])
         self.wait(first["job"])
         log = self.state / "supervisor.log"
         log.unlink()
         log.mkdir()
         result = self.call("submit", "--", sys.executable, "-c", "print('must not run')", check=False)
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0)
         value = json.loads(result.stdout)
-        self.assertFalse(value["accepted"])
-        self.assertEqual(value["state"], "finished")
+        self.assertTrue(value["accepted"])
+        self.assertIsNone(value["observation"])
         final = self.wait(value["job"], 1)
         self.assertEqual(final["outcome"], "failed")
-        self.assertIn("supervisor spawn failed", final["detail"])
+        self.assertEqual("supervisor_spawn_failed", final["detail"])
         log.rmdir()
         next_job = self.submit([sys.executable, "-c", "pass"])
         self.wait(next_job["job"])
@@ -555,7 +652,7 @@ class FleetCLI(unittest.TestCase):
         refused = self.call("submit", "--", sys.executable, "-c", "pass",
                             state=reserved, check=False, refute_if_absent=True)
         self.assertEqual(refused.returncode, 2)
-        self.assertIn("reserved", json.loads(refused.stdout)["error"])
+        self.assertEqual("reserved_state_directory", json.loads(refused.stdout)["error"]["code"])
         self.assertFalse(reserved.exists())
 
 

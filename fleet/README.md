@@ -1,129 +1,162 @@
-# Fleet local pilot — SEN-3819
+# Fleet local — SEN-3820 r1
 
-CLI opt-in, Python **3.9+**, biblioteca estándar, macOS/Linux POSIX. Un slot y una cola
-FIFO por directorio de estado propio. No requiere perfil del proyecto ni instalación.
-No se integra con `pao`, Mini, desktop ni servicios activos; este slot sólo aísla el
-piloto. Fleet será posteriormente la autoridad host-side bajo un contrato separado.
+CLI opt-in de un slot FIFO por autoridad local, Python 3.9/3.14 por inspección,
+biblioteca estándar, Linux/macOS POSIX. Esta entrega contiene código y pruebas
+**escritas, cero ejecutadas**. MacBook sólo permite edición e inspección.
 
-```sh
-export FLEET_STATE_DIR=$(mktemp -d)
-fleet/bin/fleet submit --client demo --cwd /ruta/proyecto -- python3 -c 'print(42)'
-# {"job":"j_...","attempt":"a_...","client":"demo","accepted":true,"state":"starting"}
-fleet/bin/fleet status j_...
-fleet/bin/fleet wait j_... --timeout 30
+El contrato público es `fleet-job-api@1`; el ledger usa esquema **4**, incompatible
+con 2/3, sin migración. El código no activa hostgate, reservas compartidas, Mini,
+desk, SSH, Windows, cancelación ni selección de nodos. Los contratos vigentes
+permanecen intactos. [Contrato y procedencia](SEN-3820.md) y
+[matriz completa de pruebas pendientes](tests/COVERAGE.md).
+
+## Interfaz
+
+Ejemplos documentales para un futuro entorno autorizado; **NO EJECUTAR aquí**.
+El estado debe ser propio, privado 0700, físico, exclusivo y sobre almacenamiento
+local con locks/durabilidad adecuados. No usar otro state-dir para eludir retención.
+
+```text
+fleet/bin/fleet --state-dir /estado/propio submit --client qa --cwd /proyecto/propio --idempotency-key suite-3820 --artifact reports/result.json -- tool check
+fleet/bin/fleet --state-dir /estado/propio status --idempotency-key suite-3820
+fleet/bin/fleet --state-dir /estado/propio wait --idempotency-key suite-3820 --timeout 30
+fleet/bin/fleet --state-dir /estado/propio evidence j_<32hex> --attempt a_<32hex>
+fleet/bin/fleet --state-dir /estado/propio recover
 ```
 
-`submit` acepta argv literal, sin shell, stdin cerrado, cwd explícito (por defecto el
-actual) y una copia del entorno del emisor guardada por job junto a argv/cwd, tanto si
-arranca inmediatamente como si espera en cola. Incluye `PATH`, que se usa para resolver
-el ejecutable. Para usar un shell debe pedirse explícitamente como argv.
-El supervisor y el comando arrancan en sesiones separadas del cliente. El supervisor
-ignora SIGINT/SIGHUP; el comando hereda esas disposiciones. No hay cancelación,
-timeout de ejecución ni interrupción automática. `wait --timeout` limita sólo la lectura.
+`--state-dir` puede ir antes o después del subcomando. Precedencia: argumento,
+`FLEET_STATE_DIR`, `${XDG_STATE_HOME:-$HOME/.local/state}/fleet-pilot`. Se rechazan
+symlinks en el recorrido físico y estados públicos/ajenos o rutas reservadas
+`pao`, `mini-carga`, `u3` bajo raíces de estado. No se cambian sus permisos.
+`--client` > `FLEET_CLIENT` > usuario@host es etiqueta; no otorga autoridad.
 
-`--state-dir` puede ir antes o después del subcomando. Precedencia: opción explícita,
-`FLEET_STATE_DIR`, `${XDG_STATE_HOME:-$HOME/.local/state}/fleet-pilot`. El directorio
-debe estar vacío o pertenecer al piloto, ser del uid actual y no tener bits de permisos
-para grupo/otros. Un directorio preexistente inseguro se rechaza sin cambiar sus
-permisos; una BD existente debe pertenecer al uid actual. Se rechazan directorios
-reservados `pao`, `mini-carga` y `u3` bajo las raíces de estado, y symlinks de
-estado/BD/attempts.
-No apuntarlo a estado compartido, ajeno, remoto o a un filesystem sin locks SQLite.
+`submit` acepta argv literal, stdin cerrado, cwd y entorno completos del emisor.
+Captura los archivos admitidos antes de vincular la clave y ejecuta una copia
+materializada; no ejecuta directamente el origen. `--input`, `--private`,
+`--artifact`, `--credential-env` son repetibles. PWD presente se transforma al cwd
+materializado. Las dependencias externas y los ejecutables no quedan congelados.
+El comando debe ser compatible: no daemonizar, cambiar sesión o escapar del grupo
+original. No existe aislamiento de seguridad ni prueba global de procesos escapados.
 
-`--client` > `FLEET_CLIENT` > `user@host`. Es una etiqueta declarada, sin autoridad.
-`submitted_by` contiene por separado usuario OS, uid, host y PID del cliente.
-`supervisor` contiene PID, host, identidad de boot e inicio del proceso. Identidad
-ausente, ilegible, zombie o distinta deriva en `view=uncertain`, nunca capacidad libre.
+La clave opcional es ASCII `[A-Za-z0-9][A-Za-z0-9._:-]{0,127}`, ámbito
+`(authority UUID, uid OS, key)`. Misma clave y contenido efectivo privado igual
+reproduce IDs/admisión originales; distinto devuelve conflicto5/existing original.
+La comparación incluye manifiesto, bytes reales, HEAD, cwd relativo, argv, entorno,
+client, selecciones y declaraciones/políticas. No usa sólo hashes o redacción.
+PWD derivable es la excepción; si se declara credencial, también cuenta su valor raw.
+Un replay no despacha, renueva, repara, libera ni reabre. Sin clave, cada envío es nuevo.
 
-Cada respuesta operativa es un objeto JSON en una línea de stdout; errores también
-usan `{"error":"..."}`. `--help` es ayuda humana de argparse. Identidades opacas
-`job`/`attempt` permiten consultar la misma ejecución después de cerrar el cliente.
-`status`/`wait` incluyen argv, cwd, client, submitted_by, supervisor, timestamps,
-`state`, `view`, `outcome`, `exit_code`, `signal`, rutas de logs y `transitions`.
-Cada transición tiene secuencia global, job, attempt, origen, destino, emisor y fecha.
-`state` en la aceptación es una instantánea; un comando corto puede haber terminado
-cuando se lea stdout. La aceptación no espera su finalización.
+`submit0` sólo confirma admisión histórica. Se imprime después de intentar el
+despacho opcional, sin prometer readiness: `wait` posterior puede dar3 transitorio.
+Incluso un lanzamiento de supervisor fallido conserva la admisión y produce su
+expediente original never-created. `--enqueue-only` omite la solicitud inmediata;
+un supervisor ya activo puede reclamar ese FIFO si el control está abierto.
 
-| Exit | Contrato |
+Status/wait/evidence exigen exactamente JOB o `--idempotency-key`; `--attempt`
+opcional debe coincidir. No necesitan origen ni entorno del envío. La admisión es
+inmutable y va separada de `observation`. Not-found sólo describe una revisión de
+esa autoridad. Captura candidata rechazada dice `candidate.accepted=false` y
+`key_binding=not_evaluated`; no afirma que una clave histórica esté libre.
+
+Cada respuesta operativa es un JSON de una línea, con `api`, `operation`, autoridad
+cuando acreditada y errores `{code,effects}`. No publica argv/entorno/comparador.
+`--help` es ayuda humana. Salida perdida o muerte preentrypoint puede impedir JSON.
+
+| Código | Significado |
 | --- | --- |
-| 0 | `submit`: aceptado; `status`: lectura válida, incluso incierta; `wait`: succeeded |
-| 1 | `submit`: no se pudo lanzar supervisor, accepted=false, identidad persistida y failed; `wait`: failed |
-| 2 | Uso inválido, job desconocido o estado ilegible; JSON error |
-| 3 | `submit`: no se confirmó readiness, accepted=false, identidad persistida e incertidumbre; `wait`: incomplete o uncertain |
-| 4 | `wait --timeout` agotado, timed_out=true; no cambia la ejecución |
-| 130 | Lector interrumpido con SIGINT; la ejecución sigue independiente |
+| 0 | Submit: admisión; status/evidence: lectura; wait: complete+succeeded; recover/operador: decisión confirmada, no éxito global de jobs. |
+| 1 | Sólo wait: complete+failed (exit positivo o never-created íntegro). |
+| 2 | Uso, candidato, selector, estado ausente/ilegible/incompatible, autenticación o prueba inválida. |
+| 3 | Wait: incertidumbre/incomplete inmediato; recover parcial/retención; operador insuficiente/stale/bloqueado o persistencia incierta; submit no decidible. |
+| 4 | Sólo wait pending: deadline agotado. |
+| 5 | Conflicto de contenido/operation-id o generación/época equivocada. |
+| 130 | SIGINT manejado del cliente; consultar lo durable, no inferir cancelación ni rollback. |
 
-El punto de entrada público maneja SIGINT durante la importación del CLI y su
-ejecución con el mismo JSON de interrupción y código 130.
+Los lectores nunca escriben el estado original. Copian BD/WAL bajo lock a un temporal
+privado independiente de TMPDIR/TEMP/TMP y consultan la copia. Recover sí es un
+escritor explícito: reconcilia publicación/release ordinarios acreditados y reclama
+sólo el pendiente FIFO seguro. No adopta procesos, repone permisos, cancela, reintenta
+ni continúa operaciones privilegiadas. Ver la tabla total en SEN-3820.md.
 
-`succeeded`: exit 0 y logs sincronizados/cerrados. `failed`: exit positivo o error
-inequívoco de spawn. `incomplete`: señal o fallo de logs. No se confunde SIGKILL con
-un exit positivo 137. Si desaparece un log después del fin, la lectura reporta
-`incomplete` sin modificar el resultado persistido.
+## Retención y operación local
 
-Layout privado: `state.db` (SQLite WAL), `attempts/<attempt>/{stdout,stderr}` y
-`supervisor.log`. Un solo intento por job. Las transacciones usan `BEGIN IMMEDIATE`;
-una tabla de transiciones legales y un único escritor de estados validan
-`queued → starting → running → finished` o `starting → finished` por fallo de spawn.
-La creación registra `null → queued` con el cliente como emisor. El supervisor
-termina, libera y reclama el siguiente FIFO en la misma transacción; no hay daemon
-residente. Las fechas sirven de observación; FIFO se decide por secuencia de inserción.
+Colección incompleta conserva el slot por defecto y puede inmovilizar toda la
+autoridad indefinidamente. Finished, exit0, grupo vacío, TTL y salud no autorizan
+release. Hace falta cierre original positivo, permiso cerrado y publicación/colección
+íntegras para liberación ordinaria. Una señal conserva `signal`, outcome incomplete
+(y wait3), aunque con expediente íntegro sí puede liberar capacidad.
 
-El esquema usa `user_version=2`; una BD del piloto con otra versión se rechaza en
-submit, lecturas y supervisor. No hay migrador ni fallback al entorno del supervisor.
-El entorno persistido puede contener secretos: queda bajo la privacidad del directorio,
-sin cifrado ni aislamiento frente al mismo uid. No se incluye en respuestas de control,
-transiciones ni logs del supervisor. El comando sí puede escribir su entorno en sus logs.
+Existe salida explícita **sólo pilot_slot**, para capacidad con cierre original ya
+acreditado aunque falte evidencia del job. Invocaciones documentales:
 
-La aceptación de un nuevo supervisor requiere exec exitoso y un handshake después
-de persistir su identidad (hasta diez segundos). Un fallo inequívoco de lanzamiento
-queda como failed y no se comunica como aceptación. Una caída entre persistencia,
-exec y handshake conserva el slot. Consultar las identidades devueltas; **no reenviar**
-automáticamente: no hay idempotencia ni recovery. Los trabajos detrás de un dueño
-incierto siguen queued y `wait` retorna 3. Los lectores nunca liberan ni reencolan.
-
-Se espera que el comando sea compatible con supervisión local: no debe daemonizar,
-cambiar de sesión ni mover descendientes fuera de su grupo. Si queda un descendiente
-en el grupo original, se conserva el slot y se informa incertidumbre hasta que ese
-grupo quede vacío. Un proceso que escapa del grupo no puede verificarse en este
-piloto: no usar esos comandos ni activar el piloto como autoridad real. Matar el
-supervisor no demuestra fin del comando: conserva capacidad incluso tras su autoexit.
-Un error al persistir el resultado también conserva capacidad; no existe reconciliación.
-
-Sin prioridad, cancelación, nodos, SSH, snapshots, leases, recovery ni autoridad host-side
-activa. Guardar el entorno no congela ejecutables ni contenido del cwd: no hay snapshot
-inmutable del runtime ni aislamiento de seguridad. No editar o actualizar el runtime
-mientras haya supervisores activos.
-Git Bash/Windows no está soportado en este piloto.
-
-## Validación exclusivamente en Mini
-
-MacBook: sólo edición e inspección; no ejecutar este CLI, tests, compilación ni gates.
-En un checkout de Mini preparado por el coordinador, dentro de su turno liviano:
-
-```sh
-PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'test_cli.py' -v
+```text
+fleet/bin/fleet --state-dir /estado/propio operator drain --operation-id drain-1 --reason "investigación local"
+fleet/bin/fleet --state-dir /estado/propio operator assess j_<32hex> --attempt a_<32hex> --reservation r_<32hex> --generation 1 --drain-id d_<32hex> --operation-id assess-1 --reason "verificar cierre original"
+fleet/bin/fleet --state-dir /estado/propio operator release j_<32hex> --attempt a_<32hex> --reservation r_<32hex> --generation 1 --drain-id d_<32hex> --proof p_<32hex> --operation-id release-1 --reason "resolver capacidad retenida"
+fleet/bin/fleet --state-dir /estado/propio operator status --operation-id release-1
+fleet/bin/fleet --state-dir /estado/propio operator reopen --drain-id d_<32hex> --operation-id reopen-1 --reason "capacidad reconciliada"
 ```
 
-La suite usa únicamente subprocess del CLI público; no importa Fleet, abre SQL ni
-inspecciona tablas privadas. HOME, XDG_STATE_HOME, estado y fixtures son temporales
-y propios; ninguna dependencia se instala. Las barreras tienen autoexit de seis
-segundos. Prueba aceptación antes de soltar la barrera, resultados, señales, FIFO,
-admisión concurrente, lectores interrumpidos, aislamiento y supervisor perdido.
-Comprueba entornos y resolución por PATH distintos con el segundo job en cola,
-retención por un descendiente del mismo grupo tras salir la raíz y rechazo sin cambios
-de un directorio público. La versión de esquema se inspecciona estáticamente; no hay
-una prueba runtime que construya una BD privada.
-Sólo envía señales a procesos creados por sus propias fixtures. La prueba de fallo
-de lanzamiento provoca un error abriendo el log privado, antes de crear supervisor.
-El harness registra cada admisión antes de lanzar submit, también en llamadas directas
-y wrappers. Una aceptación real guardada sin atribuir prueba que el guard de limpieza
-falla conservando el temporal; después recupera esa respuesta pública y acredita cierre.
-Timeout, JSON ilegible o pérdida de stdout dejan la admisión pendiente. Un error JSON2
-no prueba ausencia de efectos: sólo se refuta creación en un estado nuevo/exclusivo si
-su BD no existía antes y sigue ausente con el cliente terminado, sin borrado intermedio.
-La limpieza exige todas las admisiones resueltas y ausencia de supervisores y grupos
-propios publicados por el CLI, observada con señal 0; si no puede confirmarla, falla
-y conserva el directorio temporal.
-No está conectada a CI. El coordinador debe guardar resultado y review del diff;
-esta entrega no declara ejecución ni aprobación de pruebas.
+Actor nativo OS/owner del estado; no se acepta `--actor`, `--uid`, force ni JSON de
+cierre. Motivo UTF-8 de1–512 caracteres sin controles ni secretos declarados.
+Drain impide nuevos claims, también el relevo ordinario del supervisor, sin cancelar
+carga existente. Assess conserva una prueba ligada al cierre original, época y
+revisión relevante. Release revalida y confirma capacidad+decisión+auditoría en la
+misma transacción; mantiene drained, colección e historia incompletas.
+Reopen requiere reconciliación positiva y época vigente; no despacha por sí mismo.
+Después se solicita recover. `already_drained` da0, `not_drained` da3 y época vieja5.
+
+Decisión, binding y auditoría locales son atómicos: status muestra not_found o
+committed; **no hay intención pending durable**. Rollback no deja binding; ACK perdido
+se resuelve por status/repetición exacta. Otra petición con igual operation-id da5.
+Recover devuelve `operator_pending=[]`; nunca completa una acción del operador.
+`operator status --after-seq N --limit 50` pagina decisiones y auditoría.
+
+`--backend host-reservation@1` se rechaza explícitamente en submit y operador.
+**C21 positivo permanece abierto; O10 positivo está fuera de SEN-3820.** Estos
+rechazos no son integración, simulación ni prueba positiva de hostgate.
+
+## Persistencia, privacidad y límites
+
+BD WAL/FULL, lock de directorio y transacciones serializan claves/claim/control/audit.
+Un job, un intento, un permiso durable no regenerable. Se retienen claves, cápsulas,
+historia, pruebas y auditoría sin TTL/purga. Preparaciones fallidas o huérfanas quedan
+atribuidas y retenidas; sólo su creador puede retirar una preparación resuelta y no
+referenciada. Recover/operador no limpian preparaciones.
+
+Cápsulas, comparador, argv/entorno y auditoría son plaintext privados 0700/0600,
+sin defensa frente a root o adversario del mismo uid. Los payloads normalizados
+pueden ser0644/0755 dentro de directorios privados. Privados por defecto/ampliables
+se excluyen de captura/huella. Secretos conocidos/declarados se rechazan en entradas
+admitidas y se redactan en streams; secretos no declarados en archivos ordinarios
+pueden viajar. No existe detector universal ni garantía sobre transformaciones.
+
+Límites:20.000 archivos,32MiB/archivo,256MiB de entrada,1MiB de metadata comparable
+y1MiB de argv/entorno,256MiB/stream; copia lectora de BD/WAL limitada a256MiB por
+archivo. Exceso/fallo no purga asociaciones ni concede permisos. La certificación de
+filesystem, semántica nativa de Linux/Darwin y durabilidad siguen pendientes runtime.
+
+## Suite futura — NO EJECUTAR en MacBook
+
+PAO prepara una copia nueva del head congelado y el entorno propio, sólo después de
+reviews estáticas nuevas, detrás de SEN-3821 101×2 y en su turno autorizado Mini.
+Esta entrega no prepara copia, payload, launcher ni FIFO.
+
+Con `FLEET_TEST_RUN_BASE` físico, propio0700 dentro de la futura corrida, repetir con
+cada intérprete real provisto (3.9 y3.14), sin instalar ni sustituir interpretes:
+
+```sh
+PYTHONDONTWRITEBYTECODE=1 /ruta/python3.9 -B -m unittest discover -s fleet/tests -p 'test_cli.py' -v
+PYTHONDONTWRITEBYTECODE=1 /ruta/python3.14 -B -m unittest discover -s fleet/tests -p 'test_cli.py' -v
+```
+
+Un único TestCase hereda mixins; discovery sólo `test_cli.py` evita duplicación.
+Inventario textual:16 métodos base preservados +24 C +13 O/A/B =**53 métodos**;
+34 filas contractuales (26 definidas,6 parciales/condicionales,2 positivas abiertas)
+y3 requisitos adicionales. Método y subcaso son unidades diferentes.
+La matriz detalla precondiciones faltantes; su ausencia falla explícitamente, sin
+skip contado como cobertura. El harness usa CLI real, recursos propios, barreras
+con watchdog30s y contadores externos; retiene estados incompletos o no atribuibles.
+Guarda snapshots, campañas, contadores y copia verificada de evidencia pública antes
+de retirar fixtures completas en `evidence-<fixture>/public-snapshots.json`.
+No hay imports Fleet, SQL, hooks privados ni respuestas simuladas en los tests.
