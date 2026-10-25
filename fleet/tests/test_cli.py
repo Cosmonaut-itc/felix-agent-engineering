@@ -109,9 +109,9 @@ class Admission:
             self.refuted = True
             self.record()
 
-    def refute_if_unchanged_closed(self, result, lock_fd, before, after):
+    def refute_if_unchanged_exclusive(self, result, lock_fd, before, after):
         if (result.returncode != 2 or self.database_absent_before or before != after
-                or "state.db" not in before or any(name in before for name in ("state.db-wal", "state.db-shm"))
+                or "state.db" not in before
                 or json.loads(result.stdout) != {"error": "path_identity_unavailable"}):
             return
         held, current = os.fstat(lock_fd), self.state.stat()

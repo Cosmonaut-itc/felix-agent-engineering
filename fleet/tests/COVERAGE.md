@@ -1,4 +1,4 @@
-# SEN-3821, corrección autorizada para review4 integral
+# SEN-3821, fase B autorizada para review5 integral
 
 Sólo inspección estática. Ninguna prueba se ha ejecutado en este encargo.
 La suite pública es `test_cli.py`, que incorpora cinco mixins. Se parte de las
@@ -7,8 +7,11 @@ dos de temporales r2, once integrales y una focalizada de ciclo de vida.
 Sobre cde (80 métodos escritos, cero ejecutados de ese candidato), quedan 73
 cuerpos de método sin cambios, cuatro métodos con oráculo/preparación reforzados
 (loader, dos lectores y ciclo de vida), tres fixtures de coste sustituidas y
-siete métodos nuevos. Son 87 escritos: 86 públicos y uno focalizado, cero
-ejecutados. Los helpers comunes de atribución/ubicación/diagnóstico también
+siete métodos nuevos. Ése fue el inventario review4 de 87 métodos.
+Fase B conserva sus 87 nombres y 84 cuerpos sin cambios; modifica la preparación
+de NOT_CREATED, el oráculo del ciclo ignorado y el cierre focalizado, y añade
+nueve métodos. Son 96 escritos: 95 públicos y uno focalizado, cero ejecutados
+de este candidato. Los helpers comunes de atribución/ubicación/diagnóstico también
 cambian; conservar cuerpos no prueba equivalencia runtime. La dimensión de
 estrés retirada no se cuenta como conservada ni ejecutada.
 En la suite pública no se importa Fleet ni se consulta SQL. Cada submit se
@@ -16,6 +19,45 @@ registra antes de lanzar; el rechazo por ausencia exige estado exclusivo,
 cliente terminado y BD ausente antes/después, sin borrado intermedio. La
 refutación específica del ciclo ignorado con BD existente se describe abajo.
 Un fallo de atribución o de cierre propio conserva las fixtures en su corrida.
+
+## Nueve regresiones nuevas para review5, sin ejecutar
+
+- F1: rechazo de alias externo propio `fixed:alias with space/run.py` hacia el
+  origen, acreditado por samefile/dev/inode sin texto canónico de la raíz. Se
+  prueban `--config=`, `-I` y `VAR=` en el elemento argv intacto. Un segundo
+  método entrega esas formas externas válidas con espacios al comando y exige
+  igualdad literal. Otro coloca un enlace ELOOP antes de sufijos excesivos en
+  el mismo elemento: exige `source_reference_limit`, no resolución del enlace.
+  Incluye longitud en bytes multibyte, 16.384 bytes y 128 barras, sin ampliar
+  cotas ni retirar los componentes `:` no iniciales.
+- PI: dos métodos seleccionan una herramienta externa propia en un directorio
+  accesible junto a un enlace ajeno. El target tiene EACCES real bajo chmod0 o
+  ENOENT real tipo cursor; stat de enlace y target deben acreditar el errno.
+  Exigen ejecución correcta y diagnóstico privado con enlace/ruta/errno reales.
+  El nombre contiene una credencial ficticia declarada: las respuestas,
+  cápsulas, bundles y log supervisor deben excluirla; el diagnóstico privado
+  0700/0600 sí la conserva fuera de las publicaciones y de la huella.
+- PI: un método exige rechazo ante el ejecutable PATH inaccesible o cíclico,
+  otro rechaza su alias seleccionado hacia el origen mutable (bare y absoluto).
+  Dos métodos conservan el orden PATH con candidato anterior ENOENT o EACCES y
+  herramienta posterior válida; comprueban resultado y diagnóstico. Todos usan
+  recursos propios, sin mocks/root ni rutas del sistema modificadas. Una
+  precondición física incumplida falla: no es skip ni cobertura acreditada.
+
+El diagnóstico de hijos especulativos está acotado a 64 registros/65.536 bytes
+de registros más envoltura/cuenta de omitidos. Errores inesperados y errores de
+identidad necesaria conservan rechazo; no se desactiva la comprobación física.
+Los errores necesarios conservan ruta/errno en la excepción interna y sólo el
+código seguro en JSON público. No se añade un escáner dinámico de dependencias.
+
+Fase A de f967 fue diagnóstico: 87 métodos por intérprete, 3.9.6 con
+18 pass/67 fail/0 error/2 skip y 3.14.7 con 19/66/0/2. F1 sólo estático; los
+otros seis F2 se bloquearon por PI antes de sus oráculos. PAO69 midió una causa
+concreta suficiente (enlace ajeno EACCES bajo PATH accesible), no el stat de las
+61 trazas históricas ni un replay. Case-sensitive no estaba disponible: un
+método falló y otro hizo skip; metadatos cuenta/host también skip. El padre debe
+resolver las precondiciones antes de la verificación autorizada. Ni esos skips
+ni métodos PI/no alcanzados cuentan como funcionalidad verde de fase B.
 
 ## Siete regresiones públicas nuevas para review4
 
@@ -45,10 +87,19 @@ Un fallo de atribución o de cierre propio conserva las fixtures en su corrida.
   ejecutado/cerrado. Git debe confirmar que ignora el symlink y stat acreditar
   ELOOP sin seguir recursos ajenos. Se mantiene EX propio durante el nuevo CLI;
   se exige exit2/path_identity_unavailable y la imagen completa invariable,
-  con BD existente y sin WAL/SHM. La refutación requiere además identidad del
+  con BD existente, incluidos WAL/SHM si existen. La refutación requiere además identidad del
   descriptor del estado y una segunda adquisición EX rechazada. Si no se
   acredita, queda pendiente y no se borra la carga. Este oráculo sólo vale para
   esa respuesta JSON exacta; no se usa para refutar stdout ilegible.
+
+En fase B, NOT_CREATED y ciclo ignorado exigen status positivo finished con IDs
+propios y outcome succeeded para la semilla, recogida y guard_admissions. No
+usan la preparación sin sidecars de los lectores. El ciclo conserva EX durante
+todo el CLI y compara la imagen íntegra (inventario, identidad, modos, dueños,
+tamaños, mtime/ctime y hashes de todos los archivos, incluidos BD/WAL/SHM).
+NOT_CREATED conserva sus barreras, obstrucción y recibo auténtico sin outcome,
+así como status/wait incompletos y wait3. No se alteran correction_cases,
+reader_temp_cases ni los oráculos de lectores para lograr esta preparación.
 
 La tabla loader se prueba por `bin/fleet` real usando un bootstrap propio que,
 después de arrancar Python, introduce las variables del job y ejecuta el script
@@ -306,9 +357,16 @@ volumen; un verde parcial con skips no acredita el conjunto.
   el bootstrap real y anuncia la frontera de cierre. El controlador mantiene
   flock compartido durante 12 segundos, verifica que el dueño sigue vivo y que
   BD/WAL no cambiaron; libera explícitamente y exige cierre real de la conexión,
-  salida 0 y retirada de WAL/SHM. Usa pipes/flock externos, sin mocks, hooks de
+  salida 0, recogida y nueva adquisición EX. Conserva imagen tamaño/hash de
+  BD/WAL/SHM existentes antes de liberar y después del cierre; durante SH exige
+  invariancia también del SHM existente. No exige retirada de sidecars ni
+  atribuye checkpoint a partir de presencia/ausencia. La prueba anterior 3.9
+  llegó a closed/exit0 y falló sólo por WAL.exists; PERSIST_WAL y causa SQLite
+  no se midieron. La lectura del cierre bloqueante no exige corrección productiva.
+  Usa pipes/flock externos, sin mocks, hooks de
   producto ni timeout global modificado. Finalmente libera, recoge al hijo y
-  sólo borra su raíz tras confirmar su salida; conserva recursos ante duda.
+  sólo borra su raíz tras confirmar salida y todos los oráculos; conserva
+  recibo/estado ante cualquier fallo.
   Acredita espera de cierre mayor al timeout ordinario, no la reproducción
   pública del intercalado exacto copia-BD/cierre-nativo/copia-WAL. Tampoco acredita
   errores nativos de flock/cierre ni muerte por señales; siguen pendientes.
@@ -450,7 +508,7 @@ en los dos Python previstos; los casos antiguos no sustituyen esta matriz.
   privado legítimo de argv/entorno y el workspace mutable escrito por la carga.
 - Lectores: WAL activo y SHM presentes durante una barrera, wait timeout cero,
   status/evidence, sin alterar inventario, modos, inode, tamaño, mtime, ctime o hash.
-  Tras cierre propio/checkpoint se exige ausencia de ambos sidecars y lecturas
+  Para la preparación quieta se exige ausencia de ambos sidecars y lecturas
   exitosas sin recrearlos. Estado inexistente, vacío, inseguro e incompatible se
   conserva sin bootstrap/reparación. El incompatible se obtiene de una BD propia
   cerrada: se cambia a 999 el entero big-endian público de `user_version`, offset
@@ -465,6 +523,9 @@ en los dos Python previstos; los casos antiguos no sustituyen esta matriz.
   FIFO129 corrió b5ca4987: sus fallos3.9 no prueban un resultado de cde ni del
   candidato actual. El cierre SQLite/descriptor corregidos de cde no acreditan
   por sí solos que ambos fallos estén resueltos; queda pendiente Mini 3.9/3.14.
+  Esas preparaciones no acreditadas siguen siendo un límite fuera del recorte
+  de fase B; no se borran WAL/SHM ni se cambian errores para dar verde. La
+  presencia/ausencia de sidecars por sí sola no acredita un checkpoint.
 - Exclusión y FIFO: primeras cuatro admisiones simultáneas sobre estado ausente,
   con barrera de clientes y marcadores/gates distintos por comando. Sólo el
   primero llega a su barrera; los siguientes permanecen queued sin marcador

@@ -141,6 +141,175 @@ class ReviewR2Cases:
         self.rejected_submission(argv=[sys.executable, "-c", "pass", literal],
                                  error="source_reference_in_command")
 
+    def test_r5_prefixed_argv_keeps_complete_source_alias_with_spaces(self):
+        alias = self.root / "fixed:alias with space"
+        alias.symlink_to(self.project, target_is_directory=True)
+        source = self.project / "run.py"
+        source.write_text("print('must-not-run')\n")
+        literal = str(alias / source.name)
+        self.assertNotIn(str(self.project), literal)
+        self.assertTrue(os.path.samefile(alias / source.name, source))
+        self.assertEqual((source.stat().st_dev, source.stat().st_ino),
+                         ((alias / source.name).stat().st_dev, (alias / source.name).stat().st_ino))
+        for prefix in ("--config=", "-I", "VAR="):
+            self.rejected_submission(argv=[sys.executable, "-c", "pass", prefix + literal],
+                                     error="source_reference_in_command")
+
+    def test_r5_prefixed_external_argv_with_spaces_is_delivered_intact(self):
+        external = self.root / "external:area with space"
+        external.mkdir()
+        path = external / "config.data"
+        path.write_text("external configuration")
+        for prefix in ("--config=", "-I", "VAR="):
+            literal = prefix + str(path)
+            submitted = self.submit([sys.executable, "-c", "import sys; print(sys.argv[1])", literal])
+            self.assertEqual(self.output(self.wait(submitted["job"])), literal + "\n")
+
+    def test_r5_prefixed_argv_limits_precede_physical_resolution(self):
+        loop = self.root / "limit-loop"
+        loop.symlink_to(loop.name)
+        for prefix in ("--config=", "-I", "VAR="):
+            for literal in ("/" + "Q" * 16384, "/" + "é" * 8192, "/" + "x/" * 129):
+                self.rejected_submission(argv=[sys.executable, "-c", "pass",
+                                                prefix + str(loop) + " suffix with space " + literal],
+                                         error="source_reference_limit")
+
+    def path_tool(self, directory):
+        directory.mkdir()
+        tool = directory / "fleet-r5-tool"
+        tool.write_text("#!/bin/sh\nprintf 'external-tool-ok\\n'\n")
+        tool.chmod(0o700)
+        return tool
+
+    def unselected_path_alias(self, inaccessible):
+        secret = "fictitious-path-diagnostic-secret-3821"
+        tool = self.path_tool(self.root / "external-bin")
+        target_dir = self.root / ("target-" + secret)
+        target_dir.mkdir()
+        target = target_dir / "tool-target"
+        alias = tool.parent / ("unselected-" + secret)
+        alias.symlink_to(target)
+        if inaccessible:
+            target.write_text("owned inaccessible target")
+            target_dir.chmod(0)
+        expected = errno.EACCES if inaccessible else errno.ENOENT
+        try:
+            self.assertTrue(tool.parent.is_dir())
+            self.assertEqual(alias.lstat().st_uid, os.getuid())
+            with self.assertRaises(OSError) as failure:
+                target.stat()
+            self.assertEqual(failure.exception.errno, expected,
+                             "requires physically effective permissions; an unmet precondition is not coverage")
+            with self.assertRaises(OSError) as failure:
+                alias.stat()
+            self.assertEqual(failure.exception.errno, expected)
+            env = dict(self.env, PATH=str(tool.parent), DIAGNOSTIC_TOKEN=secret)
+            result = self.call("submit", "--credential-env", "DIAGNOSTIC_TOKEN", "--", tool.name, env=env)
+            self.assertNotIn(secret, result.stdout + result.stderr)
+            submitted = json.loads(result.stdout)
+            final = self.wait(submitted["job"])
+            self.assertEqual(self.output(final), "external-tool-ok\n")
+            parent = self.state / "input-diagnostics"
+            report = parent / (submitted["job"] + ".json")
+            self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
+            self.assertEqual(report.stat().st_mode & 0o777, 0o600)
+            diagnostic = json.loads(report.read_text())
+            self.assertEqual((diagnostic["version"], diagnostic["job"]),
+                             ("fleet-input-diagnostics@1", submitted["job"]))
+            self.assertIn({"variable": "PATH", "entry": str(alias), "path": str(target), "errno": expected},
+                          diagnostic["unselected_aliases"])
+            self.assertEqual(diagnostic["omitted"], 0)
+            status = self.value("status", submitted["job"])
+            proof = self.value("evidence", submitted["job"])
+            self.assert_publication_excludes_secret(secret, submitted, final, status, proof)
+        finally:
+            target_dir.chmod(0o700)
+
+    def test_r5_unselected_eacces_path_alias_records_private_diagnostic(self):
+        self.unselected_path_alias(inaccessible=True)
+
+    def test_r5_unselected_dangling_cursor_like_alias_records_enoent(self):
+        self.unselected_path_alias(inaccessible=False)
+
+    def test_r5_selected_path_requires_observable_identity(self):
+        directory = self.root / "selected-bin"
+        directory.mkdir()
+        denied = self.root / "selected-denied"
+        denied.mkdir()
+        target = denied / "target"
+        target.write_text("owned target")
+        selected = directory / "fleet-r5-tool"
+        selected.symlink_to(target)
+        denied.chmod(0)
+        try:
+            with self.assertRaises(OSError) as failure:
+                selected.stat()
+            self.assertEqual(failure.exception.errno, errno.EACCES,
+                             "requires an unprivileged uid with effective permission checks")
+            self.rejected_submission(argv=[selected.name], env=dict(self.env, PATH=str(directory)),
+                                     error="path_identity_unavailable")
+        finally:
+            denied.chmod(0o700)
+        selected.unlink()
+        selected.symlink_to(selected.name)
+        with self.assertRaises(OSError) as failure:
+            selected.stat()
+        self.assertEqual(failure.exception.errno, errno.ELOOP)
+        self.rejected_submission(argv=[selected.name], env=dict(self.env, PATH=str(directory)),
+                                 error="path_identity_unavailable")
+
+    def test_r5_selected_path_alias_to_mutable_source_is_rejected(self):
+        tool = self.project / "fleet-r5-tool"
+        tool.write_text("#!/bin/sh\necho must-not-run\n")
+        tool.chmod(0o700)
+        directory = self.root / "selected-alias-bin"
+        directory.mkdir()
+        alias = directory / tool.name
+        alias.symlink_to(tool)
+        self.assertTrue(os.path.samefile(alias, tool))
+        self.rejected_submission(argv=[alias.name], env=dict(self.env, PATH=str(directory)),
+                                 error="source_reference_in_environment")
+        self.rejected_submission(argv=[str(alias)], error="source_reference_in_command")
+
+    def test_r5_dangling_path_candidate_allows_later_valid_selection(self):
+        first = self.root / "first-bin"
+        first.mkdir()
+        tool = self.path_tool(self.root / "second-bin")
+        alias = first / tool.name
+        target = self.root / "absent-tool"
+        alias.symlink_to(target)
+        with self.assertRaises(OSError) as failure:
+            alias.stat()
+        self.assertEqual(failure.exception.errno, errno.ENOENT)
+        submitted = self.submit([tool.name], env=dict(self.env, PATH=str(first) + ":" + str(tool.parent)))
+        self.assertEqual(self.output(self.wait(submitted["job"])), "external-tool-ok\n")
+        report = self.state / "input-diagnostics" / (submitted["job"] + ".json")
+        self.assertIn({"variable": "PATH", "entry": str(alias), "path": str(target), "errno": errno.ENOENT},
+                      json.loads(report.read_text())["unselected_aliases"])
+
+    def test_r5_inaccessible_path_candidate_allows_later_valid_selection(self):
+        first = self.root / "first-bin"
+        first.mkdir()
+        tool = self.path_tool(self.root / "second-bin")
+        denied = self.root / "earlier-denied"
+        denied.mkdir()
+        target = denied / "tool"
+        target.write_text("owned target")
+        alias = first / tool.name
+        alias.symlink_to(target)
+        denied.chmod(0)
+        try:
+            with self.assertRaises(OSError) as failure:
+                alias.stat()
+            self.assertEqual(failure.exception.errno, errno.EACCES)
+            submitted = self.submit([tool.name], env=dict(self.env, PATH=str(first) + ":" + str(tool.parent)))
+            self.assertEqual(self.output(self.wait(submitted["job"])), "external-tool-ok\n")
+            report = self.state / "input-diagnostics" / (submitted["job"] + ".json")
+            self.assertIn({"variable": "PATH", "entry": str(alias), "path": str(target), "errno": errno.EACCES},
+                          json.loads(report.read_text())["unselected_aliases"])
+        finally:
+            denied.chmod(0o700)
+
     def test_r2_unobservable_loop_identity_rejects_argv_and_content(self):
         loop = self.root / "own-loop"
         loop.symlink_to(loop.name)
@@ -177,7 +346,7 @@ class ReviewR2Cases:
         self.git("commit", "-qm", "fixture")
         seed = self.submit([sys.executable, "-c", "pass"])
         self.wait(seed["job"])
-        self.closed_database_bytes(seed)
+        self.settled_terminal_state(seed)
         loop = self.project / "ignored-loop"
         loop.symlink_to(loop.name)
         self.assertEqual(self.git("check-ignore", "--", loop.name), loop.name)
@@ -191,11 +360,11 @@ class ReviewR2Cases:
             result = self.call("submit", "--", sys.executable, "-c", "pass", check=False)
             admission = self.admissions[-1]
             after = self.state_image(self.state)
-            admission.refute_if_unchanged_closed(result, fd, before, after)
+            admission.refute_if_unchanged_exclusive(result, fd, before, after)
             self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
             self.assertEqual(json.loads(result.stdout), {"error": "path_identity_unavailable"})
             self.assertEqual(after, before)
-            self.assertTrue(admission.refuted, "closed exclusive state did not refute this admission")
+            self.assertTrue(admission.refuted, "unchanged exclusive state did not refute this admission")
         finally:
             os.close(fd)
 
@@ -326,11 +495,19 @@ class ReviewR2Cases:
     def test_r2_cost_binary_candidate_boundary_has_explicit_rejection(self):
         self.boundary_cost_rejection(b"/Q\x00\xff" * 40001)
 
+    def settled_terminal_state(self, submitted):
+        observed = self.value("status", submitted["job"])
+        self.assertEqual((observed["job"], observed["attempt"], observed["state"]),
+                         (submitted["job"], submitted["attempt"], "finished"))
+        self.assertEqual(observed["outcome"], "succeeded")
+        self.settle()
+        self.guard_admissions()
+
     def test_r4_not_created_receipt_defers_incomplete_outcome_to_readers(self):
         from test_cli import CLI
         seed = self.submit([sys.executable, "-c", "pass"])
         self.wait(seed["job"])
-        self.closed_database_bytes(seed)
+        self.settled_terminal_state(seed)
         capsules = self.state / "capsules"
         baseline = {path.name for path in capsules.iterdir()}
         log = self.state / "supervisor.log"

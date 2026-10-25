@@ -50,6 +50,13 @@ class InputError(ValueError):
     pass
 
 
+class PathIdentityError(InputError):
+    def __init__(self, path, number):
+        super().__init__("path_identity_unavailable")
+        self.path = os.fspath(path)
+        self.errno = number
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, ensure_ascii=True, separators=(",", ":")).encode()
 
@@ -222,7 +229,7 @@ def _object_id(path):
         if exc.errno in (errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG):
             return None
         if exc.errno in (errno.EACCES, errno.EPERM, errno.ELOOP):
-            raise InputError("path_identity_unavailable") from None
+            raise PathIdentityError(path, exc.errno) from None
         raise
     return info.st_dev, info.st_ino
 
@@ -240,10 +247,16 @@ def _literal_paths(value, whole_path):
     pattern = r"""'(/[^'\x00\r\n]*)'|"(/[^"\x00\r\n]*)"|(/[^\s\x00'";|<>(){}\[\],=]*)"""
     for match in re.finditer(pattern, value):
         literal = match.group(1) or match.group(2) or match.group(3)
-        yield literal
-        for component in re.finditer(r"[^:]+", literal):
-            if component.group() != literal and component.group().startswith("/"):
-                yield component.group()
+        literals = (literal,)
+        if whole_path and match.group(3) is not None:
+            suffix = value[match.start(3):]
+            if suffix != literal:
+                literals += (suffix,)
+        for candidate in literals:
+            yield candidate
+            for component in re.finditer(r"[^:]+", candidate):
+                if component.group() != candidate and component.group().startswith("/"):
+                    yield component.group()
 
 
 def _source_reference(value, root, whole_path=False):
@@ -270,7 +283,7 @@ def _check_scope(root, state, env):
         raise InputError("source_in_state")
 
 
-def _check_search_paths(env, cwd, root):
+def _check_search_paths(env, cwd, root, diagnostics):
     inspected = set()
     entries = 0
     for name, separator in SEARCH_VARIABLES.items():
@@ -307,8 +320,76 @@ def _check_search_paths(env, cwd, root):
                         entries += 1
                         if entries > MAX_FILES * 2:
                             raise InputError("search_alias_limit")
-                        if child.is_symlink() and _overlaps(_resolved(child.path), root):
-                            raise InputError("source_reference_in_environment")
+                        if child.is_symlink():
+                            target = _resolved(child.path)
+                            try:
+                                overlaps = _overlaps(target, root)
+                                if not overlaps:
+                                    target.stat()
+                            except (OSError, PathIdentityError) as exc:
+                                if exc.errno not in (errno.ENOENT, errno.ENOTDIR, errno.ENAMETOOLONG,
+                                                     errno.EACCES, errno.EPERM, errno.ELOOP):
+                                    raise
+                                failed = exc.path if isinstance(exc, PathIdentityError) else exc.filename or target
+                                diagnostics.add(name, child.path, failed, exc.errno)
+                                continue
+                            if overlaps:
+                                raise InputError("source_reference_in_environment")
+
+
+def _check_executable(argv0, env, cwd, root):
+    if "/" in argv0:
+        return
+    unavailable = None
+    for component in env.get("PATH", os.defpath).split(":"):
+        candidate = Path(component) / argv0
+        if not candidate.is_absolute():
+            candidate = cwd / candidate
+        target = _resolved(candidate)
+        try:
+            identity = _object_id(target)
+        except PathIdentityError as exc:
+            unavailable = unavailable or exc
+            continue
+        if identity is not None and target.is_file() and os.access(candidate, os.X_OK):
+            if os.path.isabs(component) and _within(target, root):
+                raise InputError("source_reference_in_environment")
+            return
+    if unavailable is not None:
+        raise unavailable
+
+
+class SearchDiagnostics:
+    def __init__(self):
+        self.records = []
+        self.bytes = self.omitted = 0
+
+    def add(self, variable, entry, path, number):
+        record = {"variable": variable, "entry": os.fspath(entry),
+                  "path": os.fspath(path), "errno": number}
+        size = len(canonical(record))
+        if len(self.records) >= 64 or self.bytes + size > 65536:
+            self.omitted += 1
+        else:
+            self.records.append(record)
+            self.bytes += size
+
+    def save(self, state, job):
+        if not self.records and not self.omitted:
+            return
+        with directory(state / "input-diagnostics", create=True) as parent:
+            info = os.fstat(parent)
+            if info.st_uid != os.getuid() or stat.S_IMODE(info.st_mode) & 0o077:
+                raise InputError("unsafe_input_diagnostics")
+            fd = os.open(job + ".json", os.O_WRONLY | os.O_CREAT | os.O_EXCL | NOFOLLOW,
+                         0o600, dir_fd=parent)
+            with os.fdopen(fd, "wb") as output:
+                output.write(canonical({"version": "fleet-input-diagnostics@1", "job": job,
+                                        "unselected_aliases": self.records, "omitted": self.omitted}))
+                output.flush()
+                os.fsync(output.fileno())
+            os.fsync(parent)
+        fsync_dir(state)
 
 
 def execution_environment(execution, cwd):
@@ -478,7 +559,9 @@ class Plan:
             raise InputError("reserved_environment")
         if any(_source_reference(arg, self.root, whole_path=True) for arg in argv):
             raise InputError("source_reference_in_command")
-        _check_search_paths(env, self.cwd, self.root)
+        self.diagnostics = SearchDiagnostics()
+        _check_search_paths(env, self.cwd, self.root, self.diagnostics)
+        _check_executable(argv[0], env, self.cwd, self.root)
         for include in self.includes:
             if _private(include, self.private, state, self.root):
                 raise InputError("private_input")
@@ -600,6 +683,7 @@ class Plan:
         sync_tree(payload)
         fsync_dir(capsule)
         fsync_dir(capsule.parent)
+        self.diagnostics.save(self.state, capsule.name)
         return identity
 
 

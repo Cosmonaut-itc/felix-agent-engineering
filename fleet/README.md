@@ -35,7 +35,9 @@ y tokens absolutos delimitados por espacio, NUL, comillas o `;|<>(){}[],=` en
 argv/contenido. Se conserva y comprueba el literal completo, además de sus
 posibles componentes separados por `:`, también en posición no inicial. Un
 nombre POSIX individual puede contener `:`; ese carácter no acredita una lista.
-No se modifica argv.
+En argv también se conserva el sufijo absoluto hasta el final del elemento
+recibido, incluidos espacios tras prefijos como `--config=`, `-I` o `VAR=`.
+No se tokeniza por shell ni se modifica argv.
 Primero se busca el texto de la raíz; después se comprueban cantidad, longitud
 y profundidad de todos los candidatos antes de resolver ninguno físicamente.
 Se admiten hasta 40.000 candidatos por valor, 16.384 bytes por ruta y 128 barras
@@ -92,10 +94,28 @@ y sus dependencias siguen disponibles y pueden cambiar: esta política acotada
 no acredita un sandbox ni congela el runtime, aliases externos futuros o código
 construido dinámicamente.
 
-EACCES, EPERM o ELOOP al obtener identidad física producen
-`path_identity_unavailable`, sin publicar la ruta ni admitir un alias que no
-pueda contrastarse. Es una pérdida explícita de disponibilidad: una referencia
-externa inaccesible o cíclica también puede rechazar una entrada ordinaria.
+EACCES, EPERM o ELOOP al obtener una identidad necesaria producen
+`path_identity_unavailable`, sin publicar rutas. La excepción conserva ruta y
+errno para el diagnóstico interno. Un symlink hijo inmediato ajeno cuya
+identidad no puede observarse no invalida por sí solo un directorio de búsqueda
+accesible: se registra el error y se continúa. Los aliases observables hacia el
+origen o sus ancestros siguen rechazados. Para argv[0] sin `/` se contrasta la
+primera herramienta regular ejecutable observable en orden PATH; un candidato
+inaccesible anterior permite continuar hacia una herramienta válida posterior.
+Si no se encuentra una y hubo identidad inaccesible/cíclica, se rechaza. Un
+comando inexistente conserva su resultado de spawn fallido. Los argumentos
+absolutos, referencias de contenido, componentes de búsqueda, privados, HOME,
+cwd y estado conservan sus comprobaciones físicas.
+
+Los errores de esos hijos especulativos (incluidos ENOENT, ENOTDIR y
+ENAMETOOLONG) se guardan al capturar en
+`<state>/input-diagnostics/<job>.json`: variable, enlace, ruta que falló y errno
+reales, hasta 64 registros y 65.536 bytes de registros JSON, más su envoltura y
+cuenta de omitidos. El directorio es privado 0700 y el archivo 0600. Puede
+contener rutas y valores de credenciales declaradas: tiene la misma sensibilidad
+que el entorno privado del ledger. No entra en cápsulas, huella, bundles,
+recibos públicos ni logs; no se publica su contenido sin redacción. No es una
+exploración de dependencias ni acredita que una carga futura no invoque un enlace.
 También se comprueba la identidad de entradas recorridas antes de descartarlas
 por Git: un symlink cíclico ignorado puede rechazar el envío. Es el contrato
 conservador de esta edición; no cambia el orden del inventario ni abre aliases.
@@ -389,8 +409,11 @@ fixtures grandes de coste por fronteras pequeñas de longitud, profundidad/base6
 y cantidad. Se añaden siete regresiones: cuatro de literal completo con `:`,
 NOT_CREATED/sellado incompleto,
 fallo previo al entrypoint sin JSON y ciclo ignorado con estado inicializado.
-El inventario actual es 86 métodos públicos y uno focalizado: 87 escritos,
-cero ejecutados. El harness cambia ubicación, diagnósticos y atribución;
+Ése era el inventario de review4: 86 métodos públicos y uno focalizado, 87.
+Fase B conserva los 87 nombres: 84 cuerpos sin cambios, tres oráculos o
+preparaciones modificados (ciclo ignorado, NOT_CREATED y cierre), y nueve
+regresiones nuevas de PI/F1. El candidato actual tiene 95 métodos públicos y
+uno focalizado: 96 escritos, cero ejecutados. El harness cambia ubicación, diagnósticos y atribución;
 conservar métodos no acredita equivalencia runtime. Las tres entradas funcionales son
 16.385 bytes, 516 bytes de base64 textual y 160.004 bytes binarios; mantienen
 exit 2/`source_reference_limit`, refutación previa a registro y timeout de 15 s.
@@ -448,17 +471,23 @@ concurrencia. Un JSON ilegible conserva rc/stdout/stderr y produce un diagnósti
 explícito. Sólo se refuta por ausencia con cliente terminado y BD ausente
 antes/después en el mismo estado exclusivo, sin borrado intermedio. Timeout o
 respuesta perdida conservan incertidumbre si falta esa acreditación. El negativo
-del ciclo ignorado usa otro oráculo explícito: BD inicializada cerrada, EX propio
+del ciclo ignorado usa otro oráculo explícito: BD inicializada, emisores recogidos, EX propio
 mantenido durante el CLI, respuesta exacta de identidad no disponible y estado
-completo invariable, sin sidecars. Esa refutación no se aplica a JSON ilegible.
+completo invariable, incluidos BD/WAL/SHM si existen. No exige su desaparición.
+NOT_CREATED también parte de status terminal positivo y procesos propios
+recogidos, sin exigir ausencia de sidecars. Esa refutación no se aplica a JSON ilegible.
 La limpieza exige atribución y ausencia efectiva de procesos/grupos propios
 mediante señal 0; ante duda falla
 y retiene la raíz en su base de corrida. En `<base>/fleet-cli-*` quedan
 `admission-*.json`, `cli-json-*.json`, `closed-database-preparation.json` cuando
 corresponda y el estado/cápsulas/intentos originales. El caso sin JSON conserva
 su diagnóstico incluso si la ausencia se refuta. La focalizada conserva
-`<base>/fleet-lifecycle-*/lifecycle-client.json` y estado si no logra recoger al
-cliente. No se mueve ni oculta una carga incierta para limpiar. Barreras con
+`<base>/fleet-lifecycle-*/lifecycle-client.json` y estado ante fallo de cualquier
+oráculo. Retiene SH durante 12 s, exige invariancia BD/WAL y SHM existente antes
+de liberar, conexión realmente cerrada, salida 0, recogida y EX posterior.
+Registra tamaño/hash de los archivos existentes antes de liberar y tras cerrar;
+no exige borrar WAL/SHM ni infiere checkpoint por su presencia o ausencia.
+No se mueve ni oculta una carga incierta para limpiar. Barreras con
 autoexit, deadlines acotados y ningún proceso ajeno señalado. No hay instalaciones
 ni CI nuevo.
 
@@ -469,3 +498,13 @@ pendientes de medición en Mini. No se han aumentado timeouts para ocultar un ro
 Las pruebas nuevas están **escritas, no ejecutadas**. Este candidato requiere
 evidencia Mini, reviews Astra high y Opus high, veto PAO y OK concreto de Felix;
 no declara el ticket aprobado ni cerrado.
+
+El diagnóstico fase A de f967 ejecutó 87 métodos por intérprete: 3.9.6 obtuvo
+18 pass/67 fail/0 error/2 skip y 3.14.7 obtuvo 19/66/0/2. No fue aceptación:
+PI impidió alcanzar muchas conductas; los otros seis F2 no fueron seis rojos
+WAL medidos y F1 sólo tuvo análisis estático. La prueba de cierre 3.9 llegó a
+`closed`/exit0 y falló después por exigir ausencia WAL; no se midió PERSIST_WAL
+ni su causa SQLite. La lectura PAO69 acreditó un enlace ajeno con EACCES en un
+directorio PATH accesible y otro dangling con ENOENT; no conserva el stat
+histórico de las 61 trazas PI ni es un replay de ellas. Los límites de volumen
+case-sensitive y los skips de metadatos siguen pendientes de preparación del padre.

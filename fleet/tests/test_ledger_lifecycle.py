@@ -1,4 +1,5 @@
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -39,6 +40,15 @@ class LedgerLifecycle(unittest.TestCase):
         receipt.chmod(0o600)
         lock_fd = None
         settled = False
+        verified = False
+
+        def image():
+            result = {}
+            for name in ("state.db", "state.db-wal", "state.db-shm"):
+                if (state / name).exists():
+                    data = (state / name).read_bytes()
+                    result[name] = {"size": len(data), "sha256": hashlib.sha256(data).hexdigest()}
+            return result
 
         def line():
             self.assertTrue(select.select([process.stdout], [], [], 5)[0], "lifecycle barrier timed out")
@@ -49,6 +59,7 @@ class LedgerLifecycle(unittest.TestCase):
             lock_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
             fcntl.flock(lock_fd, fcntl.LOCK_SH | fcntl.LOCK_NB)
             before = {name: (state / name).read_bytes() for name in ("state.db", "state.db-wal")}
+            before_image = image()
             process.stdin.write("close\n")
             process.stdin.flush()
             self.assertEqual(line(), "closing")
@@ -59,18 +70,22 @@ class LedgerLifecycle(unittest.TestCase):
             self.assertIsNone(process.poll(), "connection owner abandoned terminal close")
             for name, data in before.items():
                 self.assertEqual((state / name).read_bytes(), data)
+            self.assertEqual(image(), before_image)
             fcntl.flock(lock_fd, fcntl.LOCK_UN)
             os.close(lock_fd)
             lock_fd = None
             stdout, stderr = process.communicate(timeout=5)
             receipt.write_text(json.dumps({"pid": process.pid, "state": str(state),
                                            "returncode": process.returncode,
-                                           "stdout": stdout, "stderr": stderr}) + "\n")
+                                           "stdout": stdout, "stderr": stderr,
+                                           "before_release": before_image, "after_close": image()}) + "\n")
             settled = True
             self.assertEqual(process.returncode, 0, (stdout, stderr))
             self.assertEqual(stdout.strip(), "closed")
-            self.assertFalse((state / "state.db-wal").exists())
-            self.assertFalse((state / "state.db-shm").exists())
+            self.assertTrue((state / "state.db").is_file())
+            lock_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            verified = True
         finally:
             if lock_fd is not None:
                 fcntl.flock(lock_fd, fcntl.LOCK_UN)
@@ -89,8 +104,10 @@ class LedgerLifecycle(unittest.TestCase):
                                                    "stdout": (exc.stdout or b"").decode(errors="replace"),
                                                    "stderr": (exc.stderr or b"").decode(errors="replace")}) + "\n")
                     self.fail("lifecycle process absence unconfirmed; retained {}".format(root))
-            if settled:
+            if verified:
                 shutil.rmtree(root)
+            else:
+                print("retained lifecycle evidence: " + str(root), flush=True)
 
 
 if __name__ == "__main__":
