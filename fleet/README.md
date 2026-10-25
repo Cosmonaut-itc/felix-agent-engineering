@@ -428,16 +428,24 @@ físicas y propias suministradas por el coordinador al launcher autorizado:
   de grupo/otros; el harness no deduce HOME ni runId.
 - `FLEET_TEST_FIXTURE_BASE`: base y jerarquía privadas (0700) físicamente bajo
   esa corrida, en filesystem que permita los aliases case-insensitive exigidos.
-- `FLEET_CASE_SENSITIVE_TMPDIR`: otra base privada bajo la misma corrida,
-  obligatoria para los dos métodos `case_sensitive_distinct`, con objetos
-  distintos acreditados por identidad en un filesystem sensible a mayúsculas.
+- `FLEET_TEST_CS_BASE`: única base externa autorizada, existente, física, del
+  uid y exactamente 0700, sin symlinks ni fallback. Cada uno de los dos métodos
+  `case_sensitive_distinct` y el de cuenta/host reales crea una raíz exclusiva
+  `fleet-cli-<runId>-py<major>-<minor>-pid<pid>-<azar>` allí. Mide case-sensitivity
+  con objetos propios y conserva identidades distintas. Las regresiones h2 del
+  helper también crean recursos propios allí; el inventario actual está en COVERAGE.
 
 Sin variable válida se falla antes de mkdtemp. No hay fallback a T compartido,
 HOME o `/tmp`, ni creación/montaje de volumen. Si las bases disponibles no
-pueden satisfacer ubicación y filesystem simultáneamente, queda pendiente la
-precondición de plataforma; el padre debe coordinarla con Mini antes de correr.
-Los skips históricos de volumen y de rutas que ya contienen secretos declarados
-dejan su dimensión pendiente; no acreditan cobertura.
+pueden satisfacer ubicación y filesystem, queda pendiente la precondición de
+plataforma. Felix creará el volumen APFS sensible en disk3, cuota 512 MiB,
+`/Volumes/pao-cs/fleet-tests` de cosmonaut 0700; existencia/identidad y diskutil info
+con Owners Enabled siguen pendientes de Felix/PAO. La suite no lo busca ni monta.
+Las dos precondiciones h1 no hacen skip: falta de base sensible, FS incorrecto o
+ruta externa incompatible con los secretos reales fallan explícitamente. Cuenta
+y host mantienen sus valores reales y el estado vive en la raíz externa; el
+prefijo `/Users/cosmonaut` de la corrida de evidencia no provoca skip. Los otros
+skips históricos de aliases no cambian ni acreditan cobertura.
 La matriz, selector rojo/verde y fronteras sin fixture están en
 [`tests/COVERAGE.md`](tests/COVERAGE.md).
 Los casos públicos usan subprocess del CLI, fixtures y recursos propios; no
@@ -477,8 +485,23 @@ completo invariable, incluidos BD/WAL/SHM si existen. No exige su desaparición.
 NOT_CREATED también parte de status terminal positivo y procesos propios
 recogidos, sin exigir ausencia de sidecars. Esa refutación no se aplica a JSON ilegible.
 La limpieza exige atribución y ausencia efectiva de procesos/grupos propios
-mediante señal 0; ante duda falla
-y retiene la raíz en su base de corrida. En `<base>/fleet-cli-*` quedan
+mediante señal 0; ante duda falla y conserva los recursos que realmente quedan.
+Las raíces ordinarias se retienen bajo la corrida y las externas en CS_BASE.
+Antes de retirar una raíz externa segura, la evidencia se copia a un directorio
+0700 `external-fixture-evidence-*` en FLEET_TEST_FIXTURE_BASE bajo runs/<id>:
+respuestas CLI originales, diagnósticos, publicaciones y snapshot/mapa con hashes,
+en archivos privados 0600 sin seguir symlinks. Archivos, directorio de evidencia
+y su padre se sincronizan antes del borrado. El snapshot `external-fixture.json`
+y sus copias son inmutables; `removal-result.json` registra aparte la ausencia
+observada. Resultado ausente/parcial o persistencia fallida deja confirmación
+incierta. `cleanup-failure.json` conserva causa y estado observado sin reemplazar
+el snapshot ni ocultar la excepción original; si falla también, ambas causas se
+declaran y encadenan. Un fallo previo impide borrar, rmtree fallido puede dejar
+datos parciales y el fallo posterior puede encontrar la raíz ausente. No se
+promete retención íntegra tras intentar retirarla ni se reintenta borrar trabajo
+incierto. Las regresiones h2 conservan intencionalmente sus raíces de fallo previo
+y parcial para recogida atribuida, con evidencia bajo la corrida.
+En `<base>/fleet-cli-*` quedan
 `admission-*.json`, `cli-json-*.json`, `closed-database-preparation.json` cuando
 corresponda y el estado/cápsulas/intentos originales. El caso sin JSON conserva
 su diagnóstico incluso si la ausencia se refuta. La focalizada conserva
@@ -507,4 +530,5 @@ WAL medidos y F1 sólo tuvo análisis estático. La prueba de cierre 3.9 llegó 
 ni su causa SQLite. La lectura PAO69 acreditó un enlace ajeno con EACCES en un
 directorio PATH accesible y otro dangling con ENOENT; no conserva el stat
 histórico de las 61 trazas PI ni es un replay de ellas. Los límites de volumen
-case-sensitive y los skips de metadatos siguen pendientes de preparación del padre.
+case-sensitive y de ubicación de metadatos se resuelven estáticamente en h1;
+su verificación espera volumen certificado y APTO doble de harness h2.

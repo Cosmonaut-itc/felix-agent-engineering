@@ -17,6 +17,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 
 from content_cases import ContentCases
 from correction_cases import CorrectionCases
@@ -84,13 +85,12 @@ class ExternalFixture:
         ordinary = fixture_base()
         run = Path(os.environ["FLEET_TEST_RUN_DIR"])
         self.evidence = Path(tempfile.mkdtemp(prefix="external-fixture-evidence-", dir=ordinary))
-        self.root = None
-        self.cli_count = 0
+        self.root, self.cli_count = None, 0
+        self.snapshot_ready = self.removal_started = self.removal_confirmed = False
         self.report = {"method": method, "run": str(run), "uid": os.getuid(),
                        "pid": os.getpid(), "python": sys.executable,
                        "version": list(sys.version_info[:3]),
                        "supplied_cs_base": os.environ.get("FLEET_TEST_CS_BASE")}
-        self.record("validating")
         try:
             self.base = fixture_base(case_sensitive=True)
             self.report["base"] = self.identity(self.base)
@@ -98,7 +98,6 @@ class ExternalFixture:
                 run.name, sys.version_info.major, sys.version_info.minor, os.getpid())
             self.root = Path(tempfile.mkdtemp(prefix=prefix, dir=self.base))
             self.report["root"] = self.identity(self.root)
-            self.record("created")
             probe, variant = self.root / "CaseProbe", self.root / "caseprobe"
             probe.mkdir(mode=0o700)
             self.report["case_probe"] = {"first": self.identity(probe),
@@ -112,12 +111,15 @@ class ExternalFixture:
                 raise ValueError("case probe did not create distinct physical objects")
             probe.rmdir()
             variant.rmdir()
-            self.record("case_sensitive_measured")
+            self.write("setup.json", (json.dumps(self.report, ensure_ascii=True) + "\n").encode())
         except (OSError, ValueError) as exc:
-            self.record("precondition_failed", cause=str(exc))
-            if self.root is not None:
-                self.remove("precondition_failed_removed")
-            raise ValueError("external fixture precondition failed; evidence " + str(self.evidence)) from exc
+            try:
+                self.snapshot(None, "precondition_failed", cause=self.cause(exc))
+                if self.root is not None and isinstance(exc, ValueError):
+                    self.remove("precondition_failed_removed")
+            except BaseException as cleanup_error:
+                self.fail(exc, "precondition", cleanup_error)
+            raise
 
     @staticmethod
     def identity(path):
@@ -125,21 +127,22 @@ class ExternalFixture:
         return {"path": str(path), "dev": info.st_dev, "ino": info.st_ino,
                 "uid": info.st_uid, "mode": stat.S_IMODE(info.st_mode)}
 
-    def write(self, name, data):
-        fd = os.open(self.evidence / name, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
-        with os.fdopen(fd, "wb") as output:
-            output.write(data)
-            output.flush()
-            os.fsync(output.fileno())
-        fd = os.open(self.evidence, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+    @staticmethod
+    def sync_directory(path):
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         try:
             os.fsync(fd)
         finally:
             os.close(fd)
 
-    def record(self, phase, **fields):
-        self.report.update(fields, phase=phase)
-        self.write("external-fixture.json", (json.dumps(self.report, ensure_ascii=True) + "\n").encode())
+    def write(self, name, data):
+        fd = os.open(self.evidence / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        self.sync_directory(self.evidence)
+        self.sync_directory(self.evidence.parent)
 
     def record_cli(self, command, result):
         self.cli_count += 1
@@ -155,6 +158,8 @@ class ExternalFixture:
 
     def snapshot(self, fixture, phase, **fields):
         receipts = []
+        admissions = fixture.admissions if fixture is not None else []
+        diagnostics = fixture.diagnostics if fixture is not None else []
 
         def preserve(path, name):
             info = path.lstat()
@@ -166,11 +171,11 @@ class ExternalFixture:
             receipts.append({"file": name, "source": str(relative), "size": len(data),
                              "sha256": hashlib.sha256(data).hexdigest()})
 
-        for path in [*(a.receipt for a in fixture.admissions), *fixture.diagnostics]:
+        for path in [*(a.receipt for a in admissions), *diagnostics]:
             if path.parent != self.root:
                 raise ValueError("diagnostic is outside the fixture root; retained " + str(self.root))
             preserve(path, "fixture-" + path.name)
-        for state in sorted({a.state for a in fixture.admissions}):
+        for state in sorted({a.state for a in admissions}):
             paths = [state / "supervisor.log"] if os.path.lexists(state / "supervisor.log") else []
             paths.extend((state / "capsules").rglob("*"))
             for bundle in sorted(state.glob("attempts/*/bundle")):
@@ -179,22 +184,161 @@ class ExternalFixture:
                 if stat.S_ISDIR(path.lstat().st_mode):
                     continue
                 preserve(path, "published-{}.bin".format(len(receipts)))
-        self.record(phase, receipts=receipts,
-                    clients=[{"pid": p.pid, "returncode": p.returncode} for p in fixture.processes],
-                    admissions=[{"state": str(a.state), "job": a.job, "attempt": a.attempt,
-                                 "refuted": a.refuted} for a in fixture.admissions], **fields)
+        snapshot = dict(self.report, phase=phase, receipts=receipts,
+                        clients=[{"pid": p.pid, "returncode": p.returncode}
+                                 for p in (fixture.processes if fixture is not None else [])],
+                        admissions=[{"state": str(a.state), "job": a.job, "attempt": a.attempt,
+                                     "refuted": a.refuted} for a in admissions], **fields)
+        self.write("external-fixture.json", (json.dumps(snapshot, ensure_ascii=True) + "\n").encode())
+        self.snapshot_ready = True
+
+    @staticmethod
+    def cause(exc):
+        return {"type": type(exc).__name__, "message": str(exc), "errno": getattr(exc, "errno", None)}
+
+    def observe_root(self):
+        if self.root is None:
+            return {"state": "not_created"}
+        try:
+            identity = self.identity(self.root)
+        except FileNotFoundError:
+            return {"state": "absent"}
+        except OSError as exc:
+            return {"state": "unobservable", "cause": self.cause(exc)}
+        matches = identity == self.report.get("root")
+        return {"state": "identity_changed" if not matches else
+                        "present_contents_uncertain" if self.removal_started else "retained",
+                "identity": identity, "matches_created": matches}
+
+    def fail(self, exc, stage, secondary=None):
+        result = {"stage": stage, "cause": self.cause(exc), "root": self.observe_root(),
+                  "snapshot_durable": self.snapshot_ready, "removal_attempted": self.removal_started,
+                  "confirmation": "unconfirmed", "evidence": str(self.evidence)}
+        if secondary is not None:
+            result["secondary_cause"] = self.cause(secondary)
+        exc.external_fixture_failure = result
+        try:
+            self.write("cleanup-failure.json", (json.dumps(result, ensure_ascii=True) + "\n").encode())
+        except BaseException as persistence_error:
+            print("external fixture failure (diagnostic persistence also failed): " + repr(result)
+                  + "; persistence=" + repr(persistence_error), file=sys.stderr, flush=True)
+            raise exc from persistence_error
+        if secondary is not None:
+            raise exc from secondary
+        raise exc
+
+    def finish(self, fixture):
+        stage = "snapshot"
+        try:
+            self.snapshot(fixture, "settled_and_attributed")
+            stage = "removal"
+            self.remove()
+        except BaseException as exc:
+            self.fail(exc, stage)
 
     def remove(self, phase="removed_after_settle_and_attribution"):
-        if (fixture_base(case_sensitive=True) != self.base
+        if (not self.snapshot_ready or fixture_base(case_sensitive=True) != self.base
                 or self.identity(self.base) != self.report["base"]
                 or self.root.parent != self.base
                 or self.root != self.root.resolve(strict=True)
                 or self.identity(self.root) != self.report["root"]):
-            raise ValueError("external fixture identity changed; retained " + str(self.root))
+            raise ValueError("external fixture snapshot or identity unconfirmed: " + str(self.root))
+        self.removal_started = True
         shutil.rmtree(self.root)
-        if os.path.lexists(self.root):
-            raise ValueError("external fixture removal unconfirmed; retained " + str(self.root))
-        self.record(phase, root_absent=True)
+        observed = self.observe_root()
+        if observed["state"] != "absent":
+            raise ValueError("external fixture removal unconfirmed: " + repr(observed))
+        self.write("removal-result.json", (json.dumps({"phase": phase, "root": observed,
+                   "snapshot": "external-fixture.json", "confirmation": "observed_absent"}) + "\n").encode())
+        self.removal_confirmed = True
+
+
+class ExternalFixtureEvidenceTests(unittest.TestCase):
+    def exercise_failure(self, boundary, expected_root, lose_diagnostic=False):
+        external = ExternalFixture(self.id())
+        self.addCleanup(print, "h2 regression evidence retained: " + str(external.evidence)
+                        + "; original root: " + str(external.root))
+        self.admissions, self.processes = [], []
+        original = external.root / "original.bin"
+        original.write_bytes(b"owned diagnostic\x00\xff\n")
+        original.chmod(0o600)
+        kept = external.root / "kept.bin"
+        kept.write_bytes(b"owned survivor")
+        kept.chmod(0o600)
+        self.diagnostics = [original]
+        data = original.read_bytes()
+        error, secondary = OSError(5, "controlled " + boundary), OSError(28, "controlled diagnostic failure")
+        write, rmtree, frozen = external.write, shutil.rmtree, {}
+
+        def persist(name, content):
+            if name == boundary or (lose_diagnostic and name == "cleanup-failure.json"):
+                write(name, content[:9])
+                raise secondary if name == "cleanup-failure.json" else error
+            write(name, content)
+            if name == "external-fixture.json":
+                frozen.update({p.name: p.read_bytes() for p in external.evidence.iterdir()})
+
+        def retire(path):
+            self.assertEqual(path, external.root)
+            self.assertTrue(external.snapshot_ready)
+            self.assertTrue(frozen, "snapshot must be preserved before any deletion")
+            if boundary == "rmtree":
+                original.unlink()
+                raise error
+            rmtree(path)
+
+        with mock.patch.object(external, "write", side_effect=persist), \
+                mock.patch.object(shutil, "rmtree", side_effect=retire):
+            with self.assertRaises(OSError) as failure:
+                external.finish(self)
+        self.assertIs(failure.exception, error)
+        self.assertIs(error.__cause__, secondary if lose_diagnostic else None)
+        result = error.external_fixture_failure
+        self.assertEqual(result["cause"], {"type": "OSError", "message": str(error), "errno": 5})
+        self.assertEqual(result["root"]["state"], expected_root)
+        self.assertEqual(result["confirmation"], "unconfirmed")
+        self.assertFalse(external.removal_confirmed)
+        self.assertEqual(result["snapshot_durable"], boundary != "external-fixture.json")
+        self.assertEqual(result["removal_attempted"], boundary != "external-fixture.json")
+        if not lose_diagnostic:
+            self.assertEqual(json.loads((external.evidence / "cleanup-failure.json").read_bytes()), result)
+        if expected_root == "absent":
+            with self.assertRaises(FileNotFoundError):
+                external.root.lstat()
+        else:
+            self.assertEqual(external.identity(external.root), external.report["root"])
+            self.assertEqual(kept.read_bytes(), b"owned survivor")
+        if frozen:
+            for name, content in frozen.items():
+                self.assertEqual((external.evidence / name).read_bytes(), content)
+            snapshot = json.loads(frozen["external-fixture.json"])
+            self.assertEqual(snapshot["root"], external.report["root"])
+            self.assertEqual(snapshot["case_probe"], external.report["case_probe"])
+            self.assertEqual(snapshot["receipts"], [{"file": "fixture-original.bin", "source": "original.bin",
+                             "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}])
+            self.assertEqual(frozen["fixture-original.bin"], data)
+        else:
+            self.assertEqual(original.read_bytes(), data)
+            self.assertEqual((external.evidence / "fixture-original.bin").read_bytes(), data)
+        if boundary != "rmtree":
+            with self.assertRaises(ValueError):
+                json.loads((external.evidence / boundary).read_bytes())
+        else:
+            with self.assertRaises(FileNotFoundError):
+                original.lstat()
+        if expected_root != "absent":
+            self.assertFalse((external.evidence / "removal-result.json").exists())
+
+    def test_h2_post_removal_persistence_preserves_snapshot_and_original_error(self):
+        for lose_diagnostic in (False, True):
+            with self.subTest(diagnostic_persistence_fails=lose_diagnostic):
+                self.exercise_failure("removal-result.json", "absent", lose_diagnostic)
+
+    def test_h2_snapshot_failure_prevents_removal_and_preserves_original_error(self):
+        self.exercise_failure("external-fixture.json", "retained")
+
+    def test_h2_partial_removal_preserves_snapshot_and_original_error(self):
+        self.exercise_failure("rmtree", "present_contents_uncertain")
 
 
 class Admission:
@@ -295,11 +439,14 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
             self.guard_admissions()
         except BaseException as exc:
             if self.external is not None:
-                self.external.snapshot(self, "retained_uncertain", cause=str(exc))
+                try:
+                    self.external.snapshot(self, "retained_uncertain", cause=self.external.cause(exc))
+                except BaseException as snapshot_error:
+                    self.external.fail(exc, "settle_and_attribution", snapshot_error)
+                self.external.fail(exc, "settle_and_attribution")
             raise
         if self.external is not None:
-            self.external.snapshot(self, "settled_and_attributed")
-            self.external.remove()
+            self.external.finish(self)
             print("external fixture evidence: " + str(self.external.evidence), flush=True)
             return
         if self.diagnostics:
