@@ -1,8 +1,9 @@
-# SEN-3820 r1 — matriz pública, cero ejecución
+# SEN-3820 r2 — matriz pública, cero ejecución
 
-Inventario obtenido por texto, sin discovery/imports: **53 métodos** en un único
-TestCase `FleetCLI`:16 base en `test_cli.py`,24 en `Core3820Cases`,13 en
-`Operator3820Cases` (10 O y3 A/B). Discovery futuro sólo `test_cli.py`, según README.
+Inventario obtenido por texto, sin discovery/imports: **58 métodos** en un único
+TestCase `FleetCLI`:16 base en `test_cli.py`,27 en `Core3820Cases`,15 en
+`Operator3820Cases`. Se conservan los53 r1 (16+24+13), se añaden cinco y se refuerza
+C02 dentro de su método original. Discovery futuro sólo `test_cli.py`, según README.
 **34 filas padre =26 definidas +6 parciales/condicionales +2 positivas abiertas**.
 Los3 requisitos adicionales no cambian esa partición. No se cuentan métodos como
 subcasos ni código escrito como cobertura runtime. Todos siguen sin ejecutar.
@@ -18,7 +19,7 @@ Ninguna prueba importa Fleet, escribe SQL o inyecta respuestas/cierre en product
 | Fila / clasificación frozen | Método (prefijo test_) | Subcasos y oráculo escrito; límite |
 | --- | --- | --- |
 | C01 / definido | c01_equal_concurrent_admission_and_external_single_entry | Dos clientes con barrera externa de inicio: new/replay, IDs/admission/input originales, contador1, wait0 tras final. Carrera acotada; no acredita interleaving interno determinista. |
-| C02 / definido | c02_different_concurrent_content_conflicts_without_second_entry | Argv distinguibles concurrentes: códigos0/5, existing ganador, una entrada externa y ejecución del ganador. Sin ganador predeterminado. |
+| C02 / definido | c02_different_concurrent_content_conflicts_without_second_entry | r2: correspondencia argv/etiqueta/CompletedProcess/respuesta0/5; existing original y rechazo explícito. Contador externo exactamente [etiqueta ganadora] durante running y al terminar. Stdout y artifact winner.txt publican sólo esa etiqueta; evidence/manifiesto y hashes ligados a job/attempt/input ganadores. Carrera acotada, sin ganador predeterminado ni intercalación interna acreditada. A5 corrige el oráculo, no demuestra ejecución errónea r1. |
 | C03 / definido | c03_discarded_submit_stdout_recovers_by_key_and_replays_once | Toda salida submit a DEVNULL; otro status K atribuye admisión, replay exacto conserva IDs, contador1. ACK perdido, no caída en commit. |
 | C04 / definido | c04_lookup_after_origin_removed_and_candidate_rejection_is_scoped | Origen retirado tras running; status/wait/evidence con env diferente resuelven original; nuevo candidato imposible2/not_evaluated, asociación conservada. |
 | C05 / definido | c05_finished_success_and_failure_replay_never_execute_again | Exit0 y7 separados: wait0/1 con complete; replay conserva recibo y contador1. |
@@ -56,9 +57,29 @@ Ninguna prueba importa Fleet, escribe SQL o inyecta respuestas/cierre en product
 
 | ID | Método (prefijo test_) | Oráculo y parte pendiente |
 | --- | --- | --- |
-| A-W1 | a_w1_live_drain_blocks_reopen_and_ordinary_supervisor_handoff | A running causal, B queued → drain D → reopen prematuro3/reopen_blocked → cierre ordinario A completo/released, B permanece queued durante D → reopen nuevo+recover → B una vez; audit/transiciones/counters. Cubre guarda drained del relevo del supervisor. |
+| A-W1 | a_w1_live_drain_blocks_reopen_and_ordinary_supervisor_handoff | A running causal, B queued → drain D → reopen prematuro3/reopen_blocked → cierre ordinario A completo/released, B permanece queued durante D → reopen nuevo+recover → B una vez; audit/transiciones/counters. A6 diferido: released no acredita que el supervisor haya recorrido el relevo antes de reopen; no cierra cobertura causal de esa guarda. |
 | B-W1 | b_w1_sigint_dispatch_campaign_records_actual_observable_window | Tres submits propios, observar admisión/estado/vínculo, SIGINT sólo si cliente vive, salida0/130 y admisión durable; gate, terminal/released y contador≤1. Registro explícito exact_pre_spawn_proven=false. Starting/unbound no prueba que Popen no ocurrió. Falta control externo causal del hueco preciso claim→spawn, sin hooks/SQL/sleeps que lo finjan. Política de producto sí está implementada y descrita en SEN-3820.md. |
 | B-W2 | b_w2_atomic_local_binding_not_found_committed_ack_loss_and_conflict | Status not_found, drain con stdout perdido, committed/audit, replay receipt igual, cambio5; recover operator_pending vacío y drained, segundo ID already_drained0 misma época. Rollback/cuota en O06 y muerte acotada en O07; no pending durable en modelo local. |
+
+## Regresiones r2 adicionales
+
+Los nombres llevan prefijo `test_`. La trazabilidad estática exacta contra0b,
+incluida la diferencia de A5, está en [SEN-3820-r2.md](../SEN-3820-r2.md).
+Estas cinco adiciones no reclasifican las34 filas contractuales.
+
+| Hallazgo / módulo | Método | Subcasos escritos y discriminante |
+| --- | --- | --- |
+| A1 / core | r2_a1_complete_selections_validation_and_true_equivalences | 6 estímulos tras setups: punto+foo5 sobre bytes iguales; automático/punto duplicado/reordenación con duplicados replay; punto+missing y punto+.env2/not_evaluated. Original/contador intactos. 4 invocaciones subTest. |
+| A2 / operator | r2_a2_conflict_audits_entire_denied_request_without_rebinding | 3 conflictos con otra asignación auténtica (release/assess/reopen), todos los selectores/prueba/época distintos; request íntegra/redactada y5/efectos nulos. Motivo secreto2 auditado sin binding;3 backends malformados2 sin auditoría; replay G conserva receipt ante H retenida. 6 invocaciones subTest,8 estímulos de estas categorías. |
+| A3 / operator | r2_a3_pages_exhaust_divergent_operations_and_audit | 1 recorrido: una operación+3 conflictos sólo audit, límite2, ambos cursores, orden/identidades/listas exactas, avance y fin; página vacía, selección exacta e inventario iguales. |
+| A4 / core | r2_a4_reader_open_and_selector_failures_are_read_only | 19 estímulos:4 lectores ×2 aperturas (ausente/privacidad insegura),3 lectores ×3 selectores erróneos, operation_not_found y paginación inválida. Todos2/read_only/sin observation; no crear autoridad, inventario idéntico. 17 invocaciones subTest. |
+| A4 / core | r2_a4_real_directory_lock_distinguishes_readers_and_writer | 4 lectores concurrentes bajo flock EX externo causal devuelven2/read_only/state_lock_timeout;1 escritor distinto conserva3/unknown. Gate/finally, recursos propios, watchdog60s, ausencia de binding e inventarios idénticos. Ningún ledger escrito por fixture. |
+
+Cinco métodos nuevos y27 invocaciones `subTest` nuevas por expansión estática de
+bucles; recorridos/aserciones sin subTest no son métodos adicionales. Todos escritos,
+cero ejecutados. Esquema incompatible sigue en C23 condicionado a CLI auténticos;
+corrupción SQLite real/EACCES de apertura no tienen nueva fixture en r2. Su manejo
+se inspeccionó; no se fabrican bytes de ledger para cerrar esos escenarios.
 
 ## Prerrequisitos externos y registro futuro
 

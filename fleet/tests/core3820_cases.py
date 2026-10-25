@@ -109,29 +109,201 @@ class Core3820Cases(Operator3820Cases):
 
     def test_c02_different_concurrent_content_conflicts_without_second_entry(self):
         first, counter, ready, gate = self.counted("left")
+        first[3] = COUNTED.replace("raise SystemExit(int(sys.argv[5]))",
+                                   "print(sys.argv[4], flush=True)\n"
+                                   "pathlib.Path('winner.txt').write_text(sys.argv[4] + '\\n')\n"
+                                   "raise SystemExit(int(sys.argv[5]))")
         second = list(first)
         second[-2] = "right"
         start = self.root / "different-start"
 
         def submit(argv):
             self.until(start.exists)
-            return self.call("submit", "--client", "contract", "--idempotency-key", "c02", "--", *argv,
-                             check=False)
+            return self.call("submit", "--client", "contract", "--idempotency-key", "c02",
+                             "--artifact", "winner.txt", "--", *argv, check=False)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [pool.submit(submit, argv) for argv in (first, second)]
+            futures = [(argv, pool.submit(submit, argv)) for argv in (first, second)]
             start.touch()
-            results = [f.result() for f in futures]
-        self.assertEqual(sorted(r.returncode for r in results), [0, 5])
-        winner = json.loads(next(r.stdout for r in results if r.returncode == 0))
-        loser = json.loads(next(r.stdout for r in results if r.returncode == 5))
+            results = [(argv, future.result()) for argv, future in futures]
+        self.assertEqual(sorted(result.returncode for argv, result in results), [0, 5])
+        winner_argv, winner_process = next(pair for pair in results if pair[1].returncode == 0)
+        loser_argv, loser_process = next(pair for pair in results if pair[1].returncode == 5)
+        winner, loser = json.loads(winner_process.stdout), json.loads(loser_process.stdout)
+        winner_label, loser_label = winner_argv[-2], loser_argv[-2]
+        self.assertNotEqual(winner_label, loser_label)
+        for argv, result in results:
+            self.assertEqual(result.args[-len(argv):], argv)
+        self.external_evidence.append({"case": "C02", "clients": [
+            {"argv": argv, "client_argv": result.args, "label": argv[-2], "returncode": result.returncode,
+             "response": json.loads(result.stdout)} for argv, result in results]})
         self.assertEqual(loser["existing"], {"job": winner["job"], "attempt": winner["attempt"]})
+        self.assertEqual(loser["error"], {"code": "idempotency_conflict", "effects": "no_new_admission"})
         self.ready("c02", ready)
-        self.assertEqual(len(self.entries(counter)), 1)
+        self.assertEqual(self.entries(counter), [winner_label])
         gate.touch()
-        self.terminal("c02")
+        terminal = self.terminal("c02")
         self.wait_key("c02")
-        self.assertEqual(len(self.entries(counter)), 1)
+        proof = self.raw("evidence", winner["job"], "--attempt", winner["attempt"])
+        for value in (terminal, proof):
+            for field in ("job", "attempt", "input", "admission"):
+                self.assertEqual(value[field], winner[field])
+            evidence = value["observation"]["evidence"]
+            self.assertIs(evidence["valid"], True)
+            manifest = json.loads(Path(evidence["manifest"]).read_bytes())
+            for field in ("job", "attempt", "input"):
+                self.assertEqual(manifest[field], winner[field])
+            self.assertEqual({entry["path"] for entry in manifest["entries"]},
+                             {"stdout", "stderr", "artifacts/winner.txt"})
+            self.assertEqual(len(evidence["files"]), 3)
+            self.assertEqual({(entry["kind"], Path(entry["path"]).name) for entry in evidence["files"]},
+                             {("log", "stdout"), ("log", "stderr"), ("artifact", "winner.txt")})
+            for entry in evidence["files"]:
+                self.assertIs(entry["valid"], True)
+                content = Path(entry["path"]).read_bytes()
+                expected = b"" if entry["path"].endswith("/stderr") else (winner_label + "\n").encode()
+                self.assertEqual(content, expected)
+                self.assertNotIn(loser_label.encode(), content)
+                self.assertEqual(hashlib.sha256(content).hexdigest(), entry["sha256"])
+        self.assertEqual(self.entries(counter), [winner_label])
+
+    def test_r2_a1_complete_selections_validation_and_true_equivalences(self):
+        (self.project / "foo").write_text("same captured bytes")
+        (self.project / "bar").write_text("also captured")
+        (self.project / ".env").write_text("private fixture")
+        argv, counter, ready, gate = self.counted("A1")
+        gate.touch()
+        first = self.send("r2-a1", argv, options=("--input", ".",))
+        before = self.terminal("r2-a1")
+        for options in ((), ("--input", ".", "--input", ".")):
+            with self.subTest(equivalent=options):
+                replay = self.send("r2-a1", argv, options=options)
+                self.same_receipt(first, replay)
+                self.assertEqual(replay["binding"], "replay")
+        conflict = self.send("r2-a1", argv, options=("--input", ".", "--input", "foo"), code=5)
+        self.assertEqual(conflict["error"], {"code": "idempotency_conflict", "effects": "no_new_admission"})
+        self.assertEqual(conflict["existing"], {"job": first["job"], "attempt": first["attempt"]})
+        for additional, error_code in (("missing", "input_not_admitted"), (".env", "private_input")):
+            with self.subTest(invalid_selection=additional):
+                rejected = self.send("r2-a1", argv,
+                                     options=("--input", ".", "--input", additional), code=2)
+                self.assertEqual(rejected["error"]["code"], error_code)
+                self.assertIs(rejected["candidate"]["accepted"], False)
+                self.assertEqual(rejected["key_binding"], "not_evaluated")
+        current = self.status_key("r2-a1")
+        for field in ("job", "attempt", "admission", "input"):
+            self.assertEqual(current[field], first[field])
+        for field in ("transitions", "reservation", "command"):
+            self.assertEqual(current["observation"][field], before["observation"][field])
+        self.assertEqual(self.entries(counter), ["A1"])
+        ordered = self.send("r2-a1-order", [sys.executable, "-c", "pass"],
+                            options=("--input", "foo", "--input", "bar"))
+        self.terminal("r2-a1-order")
+        reordered = self.send("r2-a1-order", [sys.executable, "-c", "pass"],
+                              options=("--input", "bar", "--input", "foo", "--input", "foo"))
+        self.same_receipt(ordered, reordered)
+        self.assertEqual(reordered["binding"], "replay")
+
+    def test_r2_a4_reader_open_and_selector_failures_are_read_only(self):
+        first = self.send("r2-a4", [sys.executable, "-c", "pass"])
+        final = self.terminal("r2-a4")
+        self.until(lambda: not self.process_present(final["observation"]["supervisor"]["pid"]))
+        original = self.inventory(self.state)
+        readers = (("status", first["job"]), ("evidence", first["job"]),
+                   ("wait", first["job"], "--timeout", "0"), ("operator", "status"))
+        missing = self.root / "r2-absent-state"
+        for args in readers:
+            with self.subTest(reader=args, condition="absent"):
+                value = self.raw(*args, state=missing, code=2)
+                self.assertEqual(value["error"], {"code": "state_not_found", "effects": "read_only"})
+                self.assertNotIn("observation", value)
+                self.assertFalse(missing.exists())
+        try:
+            self.state.chmod(0o755)
+            for args in readers:
+                with self.subTest(reader=args, condition="unsafe"):
+                    value = self.raw(*args, code=2)
+                    self.assertEqual(value["error"], {"code": "state_directory_not_private", "effects": "read_only"})
+                    self.assertNotIn("observation", value)
+        finally:
+            self.state.chmod(0o700)
+        self.assertEqual(self.inventory(self.state), original)
+        for command in ("status", "evidence", "wait"):
+            for selector in (("--idempotency-key", "r2-missing"),
+                             (first["job"], "--attempt", "a_" + "f" * 32), ("invalid",)):
+                with self.subTest(reader=command, selector=selector):
+                    value = self.raw(command, *selector, code=2)
+                    self.assertEqual(value["error"]["effects"], "read_only")
+                    self.assertNotIn("observation", value)
+        for options, expected in ((("--operation-id", "r2-missing"), "operation_not_found"),
+                                  (("--after-seq", "-1"), "invalid_pagination")):
+            value = self.raw("operator", "status", *options, code=2)
+            self.assertEqual(value["error"], {"code": expected, "effects": "read_only"})
+            self.assertNotIn("observation", value)
+        self.assertEqual(self.inventory(self.state), original)
+
+    def test_r2_a4_real_directory_lock_distinguishes_readers_and_writer(self):
+        from test_cli import CLI
+        first = self.send("r2-lock", [sys.executable, "-c", "pass"], options=("--enqueue-only",))
+        before = self.inventory(self.state)
+        directory = self.root / "r2-directory-lock"
+        directory.mkdir()
+        ready, gate, done = [directory / name for name in ("ready", "gate", "done")]
+        self.gates.append((gate, done))
+        fixture = r"""
+import fcntl, os, pathlib, sys, time
+state, ready, gate, done = map(pathlib.Path, sys.argv[1:])
+fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY)
+try:
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    ready.write_text('exclusive directory lock acquired')
+    deadline = time.monotonic() + 60
+    while not gate.exists() and time.monotonic() < deadline:
+        time.sleep(0.01)
+    if not gate.exists():
+        raise SystemExit(90)
+finally:
+    os.close(fd)
+done.write_text('lock closed')
+"""
+        holder = subprocess.Popen([sys.executable, "-B", "-c", fixture, str(self.state),
+                                   str(ready), str(gate), str(done)], cwd=self.project, env=self.env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.processes.append(holder)
+        try:
+            self.until(ready.exists)
+            readers = (("status", first["job"]), ("evidence", first["job"]),
+                       ("wait", first["job"], "--timeout", "0"), ("operator", "status"))
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
+                futures = [(args, pool.submit(self.raw, *args, code=2)) for args in readers]
+                for args, future in futures:
+                    value = future.result()
+                    self.assertEqual(value["error"], {"code": "state_lock_timeout", "effects": "read_only"})
+                    self.assertNotIn("observation", value)
+                    self.external_evidence.append({"case": "r2-A4-lock", "reader": args, "response": value})
+            # Writers can wait again while closing a failed open. Bound this
+            # genuine client separately; do not reclassify its unknown effects.
+            writer = subprocess.Popen([sys.executable, "-B", str(CLI), "--state-dir", str(self.state),
+                                       "operator", "drain", "--operation-id", "r2-locked-writer",
+                                       "--reason", "own lock fixture"], cwd=self.project, env=self.env,
+                                      stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            self.processes.append(writer)
+            stdout, stderr = writer.communicate(timeout=30)
+            self.assertEqual(writer.returncode, 3, (stdout, stderr))
+            value = json.loads(stdout)
+            self.assertEqual(value["error"], {"code": "state_lock_timeout", "effects": "unknown"})
+            self.external_evidence.append({"case": "r2-A4-lock", "writer": value})
+            self.assertFalse(gate.exists(), "watchdog/release cannot substitute for contention")
+            self.assertIsNone(holder.poll(), "fixture must still hold the lock")
+            self.assertEqual(self.inventory(self.state), before)
+        finally:
+            gate.touch()
+            stdout, stderr = holder.communicate(timeout=5)
+            self.assertEqual(holder.returncode, 0, (stdout, stderr))
+        self.assertTrue(done.exists())
+        self.assertEqual(self.inventory(self.state), before)
+        absent = self.raw("operator", "status", "--operation-id", "r2-locked-writer", code=2)
+        self.assertEqual(absent["error"], {"code": "operation_not_found", "effects": "read_only"})
 
     def discarded_submit(self, key, argv):
         from test_cli import CLI

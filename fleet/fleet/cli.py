@@ -56,6 +56,7 @@ def _parser():
         command.add_argument("--operation-id", required=action != "status")
         if action == "status":
             command.add_argument("--after-seq", type=int, default=0)
+            command.add_argument("--after-audit-seq", type=int)
             command.add_argument("--limit", type=int, default=50)
         else:
             command.add_argument("--reason", required=True)
@@ -91,7 +92,7 @@ def _run(args, state):
         return runner.recover(state)
     if args.command == "operator":
         if args.action == "status":
-            return operator.status(state, args.operation_id, args.after_seq, args.limit)
+            return operator.status(state, args.operation_id, args.after_seq, args.limit, args.after_audit_seq)
         fields = {name: getattr(args, name, None) for name in
                   ("job", "attempt", "reservation", "generation", "drain_id", "proof")}
         request = operator.validate_request(args.action, args.operation_id, args.reason,
@@ -130,6 +131,10 @@ def main(argv=None):
         result = error(operation, Fault("client_interrupted", 130), effects="unknown" if writer else "read_only")
         code = 130
     except Fault as fault:
+        if operation in ("status", "evidence", "wait", "operator.status"):
+            # A failed query has no observation. Writer Faults keep their own
+            # uncertainty/effects; observed wait outcomes return through _run.
+            fault = Fault(fault.code, 2, "read_only", **fault.fields)
         result = error(operation, fault, effects="no_capacity_change" if operation.startswith("operator.") else
                        "not_admitted" if operation == "submit" else "unknown" if writer else "read_only")
         code = fault.exit_code

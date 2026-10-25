@@ -39,6 +39,133 @@ class Operator3820Cases:
         proof = assessed["receipt"]["proof_id"]
         return first, final, argv, counter, drain_id, selectors, proof
 
+    def test_r2_a2_conflict_audits_entire_denied_request_without_rebinding(self):
+        secret = "r2-persisted-fictitious-credential"
+        self.send("r2-a2-secret", [sys.executable, "-c", "pass"],
+                  env=dict(self.env, FICTITIOUS_SECRET=secret))
+        self.terminal("r2-a2-secret")
+        _, g, _, _, d1, g_selectors, g_proof = self.resolution("r2-a2-g")
+        original = self.op("release", "r2-a2-bound", *g_selectors, "--proof", g_proof)
+        original_status = self.raw("operator", "status", "--operation-id", "r2-a2-bound")
+        self.op("reopen", "r2-a2-open", "--drain-id", d1)
+        _, h, _, counter, d2, h_selectors, h_proof = self.resolution("r2-a2-h")
+        for field in ("job", "attempt"):
+            self.assertNotEqual(g[field], h[field])
+        self.assertNotEqual(g_proof, h_proof)
+        self.assertNotEqual(d1, d2)
+        self.until(lambda: not self.process_present(h["observation"]["supervisor"]["pid"]))
+        before = self.status_key("r2-a2-h")["observation"]
+        reservation = before["reservation"]
+        self.assertNotEqual(g["observation"]["reservation"]["id"], reservation["id"])
+        self.assertGreater(reservation["generation"], g["observation"]["reservation"]["generation"])
+        reason = "attributed denied request for the genuine second assignment"
+        target = {"job": h["job"], "attempt": h["attempt"], "reservation": reservation["id"],
+                  "generation": reservation["generation"]}
+        stimuli = (("release", (*h_selectors, "--proof", h_proof), dict(target, proof=h_proof), "pilot_slot"),
+                   ("assess", h_selectors, dict(target, proof=None), "pilot_slot"),
+                   ("reopen", ("--drain-id", d2, "--backend", secret),
+                    dict(job=None, attempt=None, reservation=None, generation=None, proof=None), "[REDACTED]"))
+        last_revision = original["receipt"]["decision_revision"]
+        for action, options, fields, backend in stimuli:
+            with self.subTest(action=action):
+                conflict = self.op(action, "r2-a2-bound", *options, reason=reason, code=5)
+                self.assertEqual(conflict["error"], {"code": "operation_conflict", "effects": "no_capacity_change"})
+                self.assertTrue(conflict["audit_recorded"])
+                listing = self.raw("operator", "status", "--limit", "100")
+                event = next(e for e in listing["audit_events"] if e["seq"] == conflict["audit_seq"])
+                expected = dict(fields, action=action, operation_id="r2-a2-bound", reason=reason,
+                                drain_id=d2, backend=backend)
+                self.assertEqual(event["request"], expected)
+                self.assertEqual(event["action"], action)
+                self.assertEqual(event["decision"], "operation_conflict")
+                self.assertEqual(event["operation_id"], "r2-a2-bound")
+                self.assertEqual(event["reason"], reason)
+                self.assertEqual(event["authority_id"], original["authority_id"])
+                self.assertEqual(event["principal_uid"], os.getuid())
+                self.assertEqual(event["actor"]["uid"], os.getuid())
+                self.assertTrue(event["actor"]["birth"])
+                self.assertTrue(event["at"].endswith("Z"))
+                self.assertGreater(event["decision_revision"], last_revision)
+                last_revision = event["decision_revision"]
+                self.assertNotIn(secret, json.dumps(listing))
+                current = self.status_key("r2-a2-h")["observation"]
+                for name in ("reservation", "capacity_resolution", "transitions", "collection", "command", "control"):
+                    self.assertEqual(current[name], before[name])
+                saved = self.raw("operator", "status", "--operation-id", "r2-a2-bound")
+                self.assertEqual(saved["receipt"], original_status["receipt"])
+        # Known secret in reason is rejected/audited without a new binding. Its
+        # full sanitized request is still inspectable using persisted declarations.
+        denied = self.op("release", "r2-a2-secret-denied", *h_selectors, "--proof", h_proof,
+                         reason=secret, code=2)
+        events = self.raw("operator", "status", "--limit", "100")["audit_events"]
+        event = next(e for e in events if e["seq"] == denied["audit_seq"])
+        self.assertEqual(event["decision"], "credential_in_operator_request")
+        self.assertEqual(event["request"], dict(target, action="release", operation_id="r2-a2-secret-denied",
+                                               reason="[REDACTED]", drain_id=d2, proof=h_proof, backend="pilot_slot"))
+        self.assertNotIn(secret, json.dumps(events))
+        self.raw("operator", "status", "--operation-id", "r2-a2-secret-denied", code=2)
+        replay = self.op("release", "r2-a2-bound", *g_selectors, "--proof", g_proof)
+        self.assertEqual(replay["binding"], "replay")
+        self.assertEqual(replay["receipt"], original["receipt"])
+        self.assertEqual(self.status_key("r2-a2-h")["observation"]["reservation"]["disposition"], "retained")
+        self.assertEqual(self.entries(counter), ["entry"])
+        before_invalid = self.inventory(self.state)
+        for backend in ("", "b" * 129, "line\nbreak"):
+            with self.subTest(invalid_backend=backend):
+                invalid = self.op("drain", "r2-a2-malformed", "--backend", backend, code=2)
+                self.assertEqual(invalid["error"]["code"], "invalid_operator_backend")
+                self.assertIs(invalid["audit_recorded"], False)
+        self.assertEqual(self.inventory(self.state), before_invalid)
+
+    def test_r2_a3_pages_exhaust_divergent_operations_and_audit(self):
+        self.send("r2-a3-init", [sys.executable, "-c", "pass"])
+        final = self.terminal("r2-a3-init")
+        self.until(lambda: not self.process_present(final["observation"]["supervisor"]["pid"]))
+        original = self.op("drain", "r2-a3-only-operation")
+        conflicts = [self.op("drain", "r2-a3-only-operation", reason="conflict " + str(index), code=5)
+                     for index in range(3)]
+        before = self.inventory(self.state)
+        expected = self.raw("operator", "status", "--limit", "100")
+        self.assertEqual([e["seq"] for e in expected["audit_events"]],
+                         [original["receipt"]["audit_seq"], *(r["audit_seq"] for r in conflicts)])
+        operations, events, cursors = [], [], []
+        after, after_audit = 0, 0
+        for _ in range(5):
+            page = self.raw("operator", "status", "--after-seq", str(after),
+                            "--after-audit-seq", str(after_audit), "--limit", "2")
+            for stream, offset in ((page["operations"], after), (page["audit_events"], after_audit)):
+                self.assertLessEqual(len(stream), 2)
+                self.assertTrue(all(r["seq"] > offset for r in stream))
+                self.assertEqual([r["seq"] for r in stream], sorted(r["seq"] for r in stream))
+            operations.extend(page["operations"])
+            events.extend(page["audit_events"])
+            cursor = (page["next_after_seq"], page["next_after_audit_seq"])
+            self.assertEqual(cursor, (page["operations"][-1]["seq"] if page["operations"] else after,
+                                      page["audit_events"][-1]["seq"] if page["audit_events"] else after_audit))
+            if not page["has_more"]:
+                break
+            self.assertTrue(cursor[0] > after or cursor[1] > after_audit,
+                            "both cursors cannot stall while has_more is true")
+            self.assertNotIn(cursor, cursors)
+            cursors.append(cursor)
+            after, after_audit = cursor
+        else:
+            self.fail("pagination did not terminate")
+        self.assertEqual(operations, expected["operations"])
+        self.assertEqual(events, expected["audit_events"])
+        self.assertEqual(len(operations), 1)
+        self.assertEqual(len({e["seq"] for e in events}), 4)
+        self.assertEqual(operations[0]["receipt"], original["receipt"])
+        end = self.raw("operator", "status", "--after-seq", str(expected["next_after_seq"]),
+                       "--after-audit-seq", str(expected["next_after_audit_seq"]), "--limit", "2")
+        self.assertEqual((end["operations"], end["audit_events"], end["has_more"]), ([], [], False))
+        self.assertEqual((end["next_after_seq"], end["next_after_audit_seq"]),
+                         (expected["next_after_seq"], expected["next_after_audit_seq"]))
+        exact = self.raw("operator", "status", "--operation-id", "r2-a3-only-operation")
+        self.assertEqual(exact["receipt"], original["receipt"])
+        self.assertNotIn("operations", exact)
+        self.assertEqual(self.inventory(self.state), before)
+
     def test_o01_positive_local_resolution_keeps_failed_evidence_and_drained_fifo(self):
         first, final, argv, counter = self.incomplete_job("o01")
         next_argv, next_counter, ready, gate = self.counted("next")

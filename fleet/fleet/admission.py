@@ -137,8 +137,8 @@ def admit(db, argv, cwd, client, includes, private, artifacts, credentials, idem
         raise Fault("submission_metadata_limit")
     includes, private, artifacts = (normalized(includes, True), normalized(private), normalized(artifacts))
     credentials = sorted(set(credentials), key=os.fsencode)
-    if "." in includes:
-        includes = ["."]
+    # A dot selects all bytes, but does not erase other contractual selections
+    # or their validation. Only automatic selection and a lone dot are equivalent.
     try:
         plan = inputs.Plan(cwd, db.state, includes, private, artifacts, argv, environment, credentials)
     except OSError:

@@ -32,10 +32,23 @@ def public_actor(actor, secrets):
             for name, value in actor.items()}
 
 
+def public_request(request, secrets):
+    """Flat validated request, including null selectors, with all strings sane.
+
+    Keep the complete denied stimulus, not a reconstruction from the old binding.
+    Redaction uses persisted declarations, never the operator reader's environment.
+    """
+    return {name: inputs.redact(value, secrets) if isinstance(value, str) else value
+            for name, value in request.items()}
+
+
 def validate_request(action, operation_id, reason, job=None, attempt=None, reservation=None,
                      generation=None, drain_id=None, proof=None, backend="pilot_slot"):
     key(operation_id)
     reason_valid(reason)
+    if (not isinstance(backend, str) or not 1 <= len(backend) <= 128
+            or any(unicodedata.category(c) in ("Cc", "Cs") for c in backend)):
+        raise Fault("invalid_operator_backend")
     if action in ("assess", "release"):
         identifier(job, "j")
         identifier(attempt, "a")
@@ -201,6 +214,7 @@ def mutate(state, request):
                 revision = db.revision()
                 event = {"operation_id": inputs.redact(request["operation_id"], secrets),
                          "action": request["action"], "decision": "credential_in_operator_request",
+                         "request": public_request(request, secrets),
                          "decision_revision": revision, "actor": public_actor(actor, secrets),
                          "reason": inputs.redact(request["reason"], secrets), "at": now()}
                 event.update(authority_id=db.authority["id"], principal_uid=db.authority["uid"])
@@ -217,6 +231,7 @@ def mutate(state, request):
                 if existing["request"] != dump(request):
                     revision = db.revision()
                     event = {"operation_id": request["operation_id"], "decision": "operation_conflict",
+                             "action": request["action"], "request": public_request(request, secrets),
                              "decision_revision": revision, "actor": public_actor(actor, secrets),
                              "reason": inputs.redact(request["reason"], secrets), "at": now()}
                     event.update(authority_id=db.authority["id"], principal_uid=db.authority["uid"])
@@ -265,10 +280,15 @@ def mutate(state, request):
         return response, code
 
 
-def status(state, operation_id=None, after_seq=0, limit=50):
+def status(state, operation_id=None, after_seq=0, limit=50, after_audit_seq=None):
     if operation_id is not None:
         key(operation_id)
-    if type(after_seq) is not int or after_seq < 0 or type(limit) is not int or not 1 <= limit <= 100:
+    # Omitted audit cursor retains the original shared starting offset. Subsequent
+    # pages must carry BOTH returned offsets; the streams grow independently.
+    if after_audit_seq is None:
+        after_audit_seq = after_seq
+    if (type(after_seq) is not int or after_seq < 0 or type(after_audit_seq) is not int
+            or after_audit_seq < 0 or type(limit) is not int or not 1 <= limit <= 100):
         raise Fault("invalid_pagination")
     with Ledger(state) as db:
         db.execute("BEGIN")
@@ -282,10 +302,15 @@ def status(state, operation_id=None, after_seq=0, limit=50):
             result.update(operation_id=operation_id, status="committed", receipt=load(row["receipt"]))
         else:
             rows = db.execute("SELECT * FROM operations WHERE seq>? ORDER BY seq LIMIT ?",
-                              (after_seq, limit)).fetchall()
-            result.update(operations=[{"operation_id": row["id"], "status": "committed",
-                                       "receipt": load(row["receipt"])} for row in rows],
-                          next_after_seq=rows[-1]["seq"] if rows else after_seq)
-            result["audit_events"] = [dict(seq=row["seq"], **load(row["event"])) for row in db.execute(
-                "SELECT * FROM audit WHERE seq>? ORDER BY seq LIMIT ?", (after_seq, limit))]
+                              (after_seq, limit + 1)).fetchall()
+            events = db.execute("SELECT * FROM audit WHERE seq>? ORDER BY seq LIMIT ?",
+                                (after_audit_seq, limit + 1)).fetchall()
+            has_more = len(rows) > limit or len(events) > limit
+            rows, events = rows[:limit], events[:limit]
+            result.update(operations=[{"seq": row["seq"], "operation_id": row["id"],
+                                       "status": "committed", "receipt": load(row["receipt"])} for row in rows],
+                          audit_events=[dict(seq=row["seq"], **load(row["event"])) for row in events],
+                          next_after_seq=rows[-1]["seq"] if rows else after_seq,
+                          next_after_audit_seq=events[-1]["seq"] if events else after_audit_seq,
+                          has_more=has_more)
         return result, 0

@@ -1,4 +1,4 @@
-# Fleet local — SEN-3820 r1
+# Fleet local — SEN-3820 r2
 
 CLI opt-in de un slot FIFO por autoridad local, Python 3.9/3.14 por inspección,
 biblioteca estándar, Linux/macOS POSIX. Esta entrega contiene código y pruebas
@@ -9,6 +9,7 @@ con 2/3, sin migración. El código no activa hostgate, reservas compartidas, Mi
 desk, SSH, Windows, cancelación ni selección de nodos. Los contratos vigentes
 permanecen intactos. [Contrato y procedencia](SEN-3820.md) y
 [matriz completa de pruebas pendientes](tests/COVERAGE.md).
+[Respuesta r2 y regresiones contra0b](SEN-3820-r2.md).
 
 ## Interfaz
 
@@ -44,6 +45,9 @@ reproduce IDs/admisión originales; distinto devuelve conflicto5/existing origin
 La comparación incluye manifiesto, bytes reales, HEAD, cwd relativo, argv, entorno,
 client, selecciones y declaraciones/políticas. No usa sólo hashes o redacción.
 PWD derivable es la excepción; si se declara credencial, también cuenta su valor raw.
+Punto no elimina otras selecciones: `--input . --input foo` difiere de `--input .`
+aunque hoy capture los mismos bytes. Se validan todas las selecciones explícitas;
+sólo se ordenan/eliminan duplicados idénticos y se equiparan automático/punto solo.
 Un replay no despacha, renueva, repara, libera ni reabre. Sin clave, cada envío es nuevo.
 
 `submit0` sólo confirma admisión histórica. Se imprime después de intentar el
@@ -77,6 +81,10 @@ privado independiente de TMPDIR/TEMP/TMP y consultan la copia. Recover sí es un
 escritor explícito: reconcilia publicación/release ordinarios acreditados y reclama
 sólo el pendiente FIFO seguro. No adopta procesos, repone permisos, cancela, reintenta
 ni continúa operaciones privilegiadas. Ver la tabla total en SEN-3820.md.
+Error de apertura/lock/consulta/selector en status/evidence/wait/operator.status da
+2/read_only, sin observation inventada. Wait3 sigue reservado a incertidumbre o
+completion incompleta observadas;4 al deadline pending;130 a SIGINT manejado.
+Un escritor con timeout de lock conserva3/unknown.
 
 ## Retención y operación local
 
@@ -110,7 +118,21 @@ Decisión, binding y auditoría locales son atómicos: status muestra not_found 
 committed; **no hay intención pending durable**. Rollback no deja binding; ACK perdido
 se resuelve por status/repetición exacta. Otra petición con igual operation-id da5.
 Recover devuelve `operator_pending=[]`; nunca completa una acción del operador.
-`operator status --after-seq N --limit 50` pagina decisiones y auditoría.
+Un conflicto conserva en auditoría `request` con los diez campos canónicos de la
+petición denegada, incluidos action/backend/selectores/drain/proof/nulls, saneados
+con credenciales persistidas. No cambia el binding/receipt original. Backend
+operatorio tiene cota de forma1–128 caracteres sin controles/surrogates; no añade
+soporte a ningún backend.
+
+`operator status --after-seq N --after-audit-seq A --limit 50` pagina decisiones y
+auditoría con cursores independientes. Empezar con N=A=0; después pasar
+`next_after_seq` y `next_after_audit_seq` hasta `has_more=false`. Cada lista va en
+orden seq y tiene como máximo limit entradas (1–100, default50). Un stream vacío
+conserva su cursor; has_more usa ambos. Si se omite el cursor audit, su offset
+inicial es N por compatibilidad; para continuar deben enviarse ambos cursores.
+El fin describe esa revisión; cada página tiene su copia, sin snapshot concurrente
+de todo el recorrido. Pueden conservarse ambos offsets para otra consulta posterior.
+Con `--operation-id` se devuelve únicamente el recibo exacto y el control actual.
 
 `--backend host-reservation@1` se rechaza explícitamente en submit y operador.
 **C21 positivo permanece abierto; O10 positivo está fuera de SEN-3820.** Estos
@@ -151,12 +173,14 @@ PYTHONDONTWRITEBYTECODE=1 /ruta/python3.14 -B -m unittest discover -s fleet/test
 ```
 
 Un único TestCase hereda mixins; discovery sólo `test_cli.py` evita duplicación.
-Inventario textual:16 métodos base preservados +24 C +13 O/A/B =**53 métodos**;
+Inventario textual: los53 métodos r1 se conservan;16 base +27 core +15 operator
+=**58 métodos**, cinco nuevos r2 y C02 reforzado;
 34 filas contractuales (26 definidas,6 parciales/condicionales,2 positivas abiertas)
 y3 requisitos adicionales. Método y subcaso son unidades diferentes.
 La matriz detalla precondiciones faltantes; su ausencia falla explícitamente, sin
 skip contado como cobertura. El harness usa CLI real, recursos propios, barreras
 con watchdog30s y contadores externos; retiene estados incompletos o no atribuibles.
+La fixture externa de contención de directorio r2 tiene watchdog60s y gate propio.
 Guarda snapshots, campañas, contadores y copia verificada de evidencia pública antes
 de retirar fixtures completas en `evidence-<fixture>/public-snapshots.json`.
 No hay imports Fleet, SQL, hooks privados ni respuestas simuladas en los tests.
