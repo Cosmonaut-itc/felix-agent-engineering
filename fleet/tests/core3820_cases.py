@@ -204,6 +204,59 @@ class Core3820Cases(Operator3820Cases):
         self.same_receipt(ordered, reordered)
         self.assertEqual(reordered["binding"], "replay")
 
+    def test_r3_a02_empty_inventory_automatic_and_dot_replay_without_dispatch(self):
+        # counted's resources are outside the source. No admitted file is planted
+        # to make an allegedly empty inventory pass explicit-dot validation.
+        self.assertEqual(list(self.project.iterdir()), [])
+        self.assertFalse(any((p / ".git").exists() for p in (self.project, *self.project.parents)))
+        argv, counter, ready, gate = self.counted("r3-empty")
+        first = self.send("r3-a02-empty", argv, options=("--enqueue-only",))
+        self.assertEqual(first["binding"], "new")
+        original = self.status_key("r3-a02-empty")
+        self.assertIsNone(first["input"]["commit_sha"])
+        self.assertEqual(first["input"]["effective_sha256"], hashlib.sha256(b"[]").hexdigest())
+        for options in (("--input", "."), ("--input", ".", "--input", "."), ()):
+            with self.subTest(empty_equivalent=options):
+                # Deliberately omit enqueue-only: a replay must not dispatch.
+                replay = self.send("r3-a02-empty", argv, options=options)
+                self.same_receipt(first, replay)
+                self.assertEqual(replay["binding"], "replay")
+        for extra, expected in (("missing", "input_not_admitted"), (".env", "private_input"),
+                                ("..", "invalid_relative_path"), ("./", "invalid_relative_path")):
+            with self.subTest(empty_invalid_extra=extra):
+                rejected = self.send("r3-a02-empty", argv,
+                                     options=("--input", ".", "--input", extra), code=2)
+                self.assertEqual(rejected["error"]["code"], expected)
+                self.assertIs(rejected["candidate"]["accepted"], False)
+                self.assertEqual(rejected["key_binding"], "not_evaluated")
+        # Default-excluded bytes also leave the admitted inventory truly empty.
+        (self.project / ".env").write_text("fictitious excluded bytes")
+        self.assertEqual([p.name for p in self.project.iterdir()], [".env"])
+        for options in ((), ("--input", ".")):
+            with self.subTest(excluded_only_equivalent=options):
+                replay = self.send("r3-a02-empty", argv, options=options)
+                self.same_receipt(first, replay)
+                self.assertEqual(replay["binding"], "replay")
+        # Same empty bytes do not erase a different contractual declaration.
+        conflict = self.send("r3-a02-empty", argv,
+                             options=("--input", ".", "--private", "other-private"), code=5)
+        self.assertEqual(conflict["error"], {"code": "idempotency_conflict", "effects": "no_new_admission"})
+        self.assertEqual(conflict["existing"], {"job": first["job"], "attempt": first["attempt"]})
+        current = self.status_key("r3-a02-empty")
+        for field in ("job", "attempt", "admission", "input", "observation"):
+            if field == "observation":
+                for name in ("state", "view", "dispatch", "reservation", "supervisor", "child_pid",
+                             "transitions", "command", "control", "completion"):
+                    self.assertEqual(current[field][name], original[field][name])
+            else:
+                self.assertEqual(current[field], original[field])
+        self.assertEqual(current["observation"]["state"], "queued")
+        self.assertIs(current["observation"]["dispatch"]["safe_pending"], True)
+        self.assertEqual(self.entries(counter), [])
+        self.assertFalse(ready.exists())
+        self.assertFalse((self.state / "supervisor.log").exists())
+        self.assertEqual(list(self.project.iterdir()), [self.project / ".env"])
+
     def test_r2_a4_reader_open_and_selector_failures_are_read_only(self):
         first = self.send("r2-a4", [sys.executable, "-c", "pass"])
         final = self.terminal("r2-a4")
