@@ -63,8 +63,8 @@ Orchestrate aunque el playbook elegido sea otro:
    de `show-me-your-work`.
 2. `units.tsv` lleva una fila por unidad, actualizada con `orch`. Si la unidad
    tiene ticket, su `id` es el del ticket, como `SEN-3480`.
-3. Escribe en `decisions.tsv` cada decisión, lanzamiento, ronda, veredicto y
-   pausa, como fila nueva.
+3. Escribe en `decisions.tsv` cada decisión, lanzamiento, ronda, veredicto,
+   merge y pausa, como fila nueva.
 
 El estado de las unidades va sólo en esas tablas. Un `todo.md` lleva sólo los
 pasos del playbook; no uses `state.md`, tablas propias ni el `progress.md` de
@@ -102,9 +102,9 @@ T3 que lo toma; en un programa, el hilo del orquestador.
    `Tomado por la sesión <slug>: hilo «<título>», rama <rama>, worktree <ruta>, store <ruta o «sin store»>.`
 4. **Comprobar.** Linear no tiene escritura condicional: si dos sesiones
    toman el mismo ticket, gana la última etiqueta. Vuelve a leer el ticket
-   después de tomarlo y antes de cada lanzamiento, ronda, commit o push
-   sobre él. Si la etiqueta ya no es la tuya, detén ese trabajo, comenta lo
-   que dejaste y avisa al usuario.
+   después de tomarlo y antes de cada lanzamiento, ronda, commit, push o
+   merge sobre él. Si la etiqueta ya no es la tuya, detén ese trabajo,
+   comenta lo que dejaste y avisa al usuario.
 5. **Soltar.** Si dejas un ticket sin terminar, quita tu etiqueta con
    `removeLabels` y comenta `Soltado por la sesión <slug>: <motivo y estado>.`
    Un ticket terminado conserva la etiqueta, porque tu sesión atiende su
@@ -204,12 +204,51 @@ siendo obligatorios.
 - Si no puede correr ningún revisor independiente, la puerta sigue cerrada,
   como dice `poteto-mode`. Tu propia lectura no cuenta como review.
 
+## Merge
+
+Un PR se mergea sin esperar al usuario cuando su head es APTO y verde:
+
+- **APTO.** La última ronda de **Revisión** dio APTO sobre ese head. En alto
+  riesgo, A y B dieron APTO y tu veto no dejó hallazgos abiertos. Un APTO con
+  cambios o con salvedades no basta: aplica los cambios y corre otra ronda
+  sobre el head nuevo.
+- **Verde.** Sobre ese head pasaron la **Verificación** y los gates del
+  `AGENTS.md`, y todos los checks del PR terminaron en verde, sin pendientes.
+  El forge lo reporta mergeable, sin conflictos ni hilos abiertos con un
+  hallazgo real.
+
+Eso te da autoridad de merge aunque el merge dispare un deploy, también en
+alto riesgo. Sustituye la espera del operador en Babysit, Shipping,
+Autopilot-full y Autopilot-stack, y la pausa por deploy de «Always pause» no
+aplica a ese merge. Ese APTO es el veredicto independiente del paso 1 de
+Shipping. En un programa mergea sólo el orquestador, o el stacker si el
+programa lo tiene.
+
+1. **Main al día.** Trae `main` justo antes de mergear. Si avanzó desde la
+   base que vio la review, aplica la prueba del paso 5 de Autopilot-full. Un
+   conflicto o un archivo que cambiaron los dos lados pide rebase, CI y una
+   review delta de gpt-6-astra en `high` sobre el head nuevo. Un cambio en
+   algo de lo que depende el patch, como código que llama, dependencias,
+   schema, archivos generados o el número de una migración, pide correr sus
+   checks sobre el resultado del merge. Si `main` te obliga a un tercer
+   rebase del mismo PR, detente y avisa al usuario: otra sesión trabaja la
+   misma zona.
+2. **Merge guardado.** Sigue el paso 4 de Shipping:
+   `gh pr merge <pr> --squash --match-head-commit <head aprobado>`, un PR a
+   la vez y de abajo arriba en un stack. No uses `--auto` ni `--admin`.
+3. **Después.** Lee el PR de vuelta y confirma que su merge commit está en
+   `origin/main`. Sigue el CI de `main` y el deploy que dispare hasta su
+   resultado. Si `main` queda rojo o el deploy falla, avisa al usuario de
+   inmediato y trata la falla como un bug que afecta producción, la primera
+   unidad de **Unidades**.
+
 ## Autonomía
 
 Manda la autorización vigente del contrato. Además de la lista «Always
 pause» de pstack, pausa antes de:
 
-- hacer push a `main` o mergear cuando eso dispare un deploy;
+- hacer push directo a `main` o un deploy que no salga de un merge de
+  **Merge**;
 - escribir en ICG u otro sistema de un cliente en producción;
 - actualizar el tracker más allá de lo que prescriben el flujo del
   repositorio y **Tickets de Linear**;

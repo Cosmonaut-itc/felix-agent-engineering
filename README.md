@@ -26,7 +26,7 @@ config:
 flowchart LR
   P["<b>Planeación</b><br/>Matt Pocock<br/><br/>grilling<br/>to-spec y to-tickets<br/>triage hasta ready-for-agent"]
   I["<b>Implementación</b><br/>pstack y mi contrato<br/><br/>felix-mode y su playbook<br/>delegación según el routing<br/>tdd y verify<br/>review de gpt-6-astra"]
-  D["<b>Despliegue</b><br/>el repositorio y yo<br/><br/>PR<br/>deploy con mi OK<br/>y el merge que lo dispara<br/>verificación posterior<br/>retro si el repo la pide"]
+  D["<b>Despliegue</b><br/>el repositorio y yo<br/><br/>PR<br/>merge solo si APTO y verde<br/>otro deploy con mi OK<br/>verificación posterior<br/>retro si el repo la pide"]
   P --> I --> D
   D -.->|candidatas de la retro| P
 ```
@@ -46,11 +46,12 @@ Las partes y las skills de cada fase están en el
   la prueba sobre el artefacto real, con `verify` o con los docs de
   verificación del repositorio, y un revisor gpt-6-astra en `high` lo aprueba.
 - **Despliegue.** Partes 11 a 13, más lo que pide el `AGENTS.md` de cada
-  repositorio. El agente abre el PR. El merge espera mi OK cuando dispara un
-  deploy, y el deploy siempre lo espera. Después, el agente verifica el cambio
-  como indica el repositorio. Donde el `AGENTS.md` lo pide, un trabajador corre
-  `retro` sobre la sesión y sus candidatas vuelven a Planeación como issues
-  `needs-triage`.
+  repositorio. El agente abre el PR y lo mergea solo cuando todas las
+  reviews dan APTO y los checks están verdes, aunque el merge dispare un
+  deploy. Un deploy que no sale de ese merge espera mi OK. Después, el
+  agente verifica el cambio como indica el repositorio. Donde el `AGENTS.md`
+  lo pide, un trabajador corre `retro` sobre la sesión y sus candidatas
+  vuelven a Planeación como issues `needs-triage`.
 
 ### De dónde viene cada idea
 

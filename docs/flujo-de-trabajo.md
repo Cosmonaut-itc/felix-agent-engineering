@@ -56,7 +56,7 @@ que el encargo lo pida.
 | 9. Verificar | Prueba sobre el artefacto real con la skill del repositorio. Si falta, sigue sus docs y propone crearla. | `verify` del repositorio, `create-verification-skill` | Agente |
 | 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda, y la ronda 4 espera al dueño. | `interrogate` | Agente |
 | 11. Abrir el PR | Un PR por unidad. Un bug de producción sale en el suyo antes que cualquier mejora. Limpia código y prosa y escribe título y descripción. | `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
-| 12. Llevar a merge | CI, comentarios y conflictos. Aterrizar un stack verde. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Tú lo pides |
+| 12. Llevar a merge | CI, comentarios y conflictos. Mergea solo cuando todas las reviews dan APTO y los checks están verdes. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Agente |
 | 13. Cerrar | Informe con evidencia y etiquetas: medido, inferido o suposición. Bitácora en trabajo largo. | `show-me-your-work` | Agente |
 
 Los playbooks de pstack que más se usan son Bug fix, Perf issue, Hillclimb,
@@ -89,7 +89,8 @@ lectura propia del orquestador no cuenta como review.
 
 El agente avanza sin preguntar en trabajo local y reversible. Pausa antes de:
 
-- hacer push a `main` o mergear cuando eso dispare un deploy;
+- hacer push directo a `main` o un deploy que no salga de un merge APTO y
+  verde;
 - escribir en ICG u otro sistema de un cliente en producción;
 - actualizar el tracker más allá de lo que prescriben el repositorio y la
   sección «Tickets de Linear» de `felix-mode`;
