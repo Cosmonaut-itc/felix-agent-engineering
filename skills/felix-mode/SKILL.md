@@ -43,8 +43,15 @@ respuesta.
 
 ## Unidades
 
-Entrega el trabajo en **unidades**: cada una es un PR desde `main` que se
-prueba solo y puede llegar a producción sin esperar a otra.
+Entrega el trabajo en **unidades**: cada una es un PR hacia `main`, o la
+rama de entrega del repositorio, que se prueba solo y puede llegar a
+producción sin esperar a otra.
+
+Si una spec tiene tickets que necesitan salir juntos por un contrato,
+schema o migración compartidos, usa `implement-spec` con el
+[flujo de acumulador](references/acumulador.md). El conjunto es una unidad
+de entrega y cada ticket conserva su prueba y review. El tamaño por sí solo
+no pide acumulador: los tickets independientes siguen en PRs separados.
 
 - Un bug que afecta producción es la primera unidad. Abre su PR en cuanto
   pasan su prueba y su review, antes de empezar cualquier mejora.
@@ -125,6 +132,7 @@ T3 que lo toma; en un programa, el hilo del orquestador.
 | Bug | playbook Bug fix | `diagnosing-bugs`, `systematic-debugging` |
 | Prototipo | playbook Prototype | `prototype` de Matt Pocock |
 | Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
+| Implementar tickets acoplados | `implement-spec` con [Acumulador](references/acumulador.md) | Un PR hacia `main` por ticket |
 | Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |
 | Pausar o retomar | playbooks Pause safely y Session pickup | `handoff` |
 | Escribir skills o `AGENTS.md` | playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
@@ -187,6 +195,9 @@ siendo obligatorios.
   la siguiente ronda. Si la ronda 3 de un mismo cambio no da APTO, pausa:
   entrega al usuario lo que sigue abierto y una propuesta para recortar
   alcance, y espera su respuesta antes de la ronda 4.
+  Las reviews delta y las renovaciones por cambio de head también cuentan.
+  Antes de cualquier ronda 4 pide autorización, aunque la ronda 3 haya
+  sido APTO y después cambiara el head.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
   que entrega dos candidatos estructuralmente distintos. Tú eliges y no hay
@@ -206,49 +217,22 @@ siendo obligatorios.
 
 ## Merge
 
-Un PR se mergea sin esperar al usuario cuando su head es APTO y verde:
-
-- **APTO.** La última ronda de **Revisión** dio APTO sobre ese head. En alto
-  riesgo, A y B dieron APTO y tu veto no dejó hallazgos abiertos. Un APTO con
-  cambios o con salvedades no basta: aplica los cambios y corre otra ronda
-  sobre el head nuevo.
-- **Verde.** Sobre ese head pasaron la **Verificación** y los gates del
-  `AGENTS.md`, y todos los checks del PR terminaron en verde, sin pendientes.
-  El forge lo reporta mergeable, sin conflictos ni hilos abiertos con un
-  hallazgo real.
-
-Eso te da autoridad de merge aunque el merge dispare un deploy, también en
-alto riesgo. Sustituye la espera del operador en Babysit, Shipping,
-Autopilot-full y Autopilot-stack, y la pausa por deploy de «Always pause» no
-aplica a ese merge. Ese APTO es el veredicto independiente del paso 1 de
-Shipping. En un programa mergea sólo el orquestador, o el stacker si el
-programa lo tiene.
-
-1. **Main al día.** Trae `main` justo antes de mergear. Si avanzó desde la
-   base que vio la review, aplica la prueba del paso 5 de Autopilot-full. Un
-   conflicto o un archivo que cambiaron los dos lados pide rebase, CI y una
-   review delta de gpt-6-astra en `high` sobre el head nuevo. Un cambio en
-   algo de lo que depende el patch, como código que llama, dependencias,
-   schema, archivos generados o el número de una migración, pide correr sus
-   checks sobre el resultado del merge. Si `main` te obliga a un tercer
-   rebase del mismo PR, detente y avisa al usuario: otra sesión trabaja la
-   misma zona.
-2. **Merge guardado.** Sigue el paso 4 de Shipping:
-   `gh pr merge <pr> --squash --match-head-commit <head aprobado>`, un PR a
-   la vez y de abajo arriba en un stack. No uses `--auto` ni `--admin`.
-3. **Después.** Lee el PR de vuelta y confirma que su merge commit está en
-   `origin/main`. Sigue el CI de `main` y el deploy que dispare hasta su
-   resultado. Si `main` queda rojo o el deploy falla, avisa al usuario de
-   inmediato y trata la falla como un bug que afecta producción, la primera
-   unidad de **Unidades**.
+Al abrir el PR de tu unidad, continúa hasta mergearlo con el
+[procedimiento de merge](references/merge.md), sin esperar otro pedido.
+También se aplica al acumulador y a los PR de la cola de tu programa. Exige
+APTO independiente y verde sobre el head que aterriza, aunque el merge
+dispare un deploy o el cambio sea de alto riesgo.
 
 ## Autonomía
 
-Manda la autorización vigente del contrato. Además de la lista «Always
-pause» de pstack, pausa antes de:
+Manda la autorización vigente del contrato. La autoridad de **Merge** cubre
+el merge y los efectos que su automatización dispara por sí sola, también
+despliegues, migraciones, borrados, configuración global de agentes y
+escrituras en sistemas de cliente. No autoriza ejecutar esos pasos a mano.
+Fuera de esa excepción y de lo ya autorizado por el usuario, además de
+«Always pause» de pstack, pausa antes de:
 
-- hacer push directo a `main` o un deploy que no salga de un merge de
-  **Merge**;
+- hacer push directo a `main` o ejecutar un comando de deploy;
 - escribir en ICG u otro sistema de un cliente en producción;
 - actualizar el tracker más allá de lo que prescriben el flujo del
   repositorio y **Tickets de Linear**;

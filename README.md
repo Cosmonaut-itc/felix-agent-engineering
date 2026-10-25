@@ -45,10 +45,13 @@ Las partes y las skills de cada fase están en el
   y delega el código según el routing. La fase termina cuando el cambio pasa
   la prueba sobre el artefacto real, con `verify` o con los docs de
   verificación del repositorio, y un revisor gpt-6-astra en `high` lo aprueba.
+  Los tickets que necesitan salir juntos usan `implement-spec` con una rama
+  de integración y un PR acumulador. Cada ticket pasa prueba y review antes
+  de entrar, y el acumulador recibe verificación y review del conjunto.
 - **Despliegue.** Partes 11 a 13, más lo que pide el `AGENTS.md` de cada
   repositorio. El agente abre el PR y lo mergea solo cuando todas las
   reviews dan APTO y los checks están verdes, aunque el merge dispare un
-  deploy. Un deploy que no sale de ese merge espera mi OK. Después, el
+  deploy. Ejecutar un comando de deploy espera mi OK. Después, el
   agente verifica el cambio como indica el repositorio. Donde el `AGENTS.md`
   lo pide, un trabajador corre `retro` sobre la sesión y sus candidatas
   vuelven a Planeación como issues `needs-triage`.
@@ -60,7 +63,7 @@ Las partes y las skills de cada fase están en el
 | **Grilling.** El agente me entrevista en rondas hasta que entendemos lo mismo. Yo decido y él busca los hechos. | **Probar en lo real.** Nada está hecho hasta probarlo sobre el artefacto real, con la skill `verify` del proyecto o, si falta, con sus docs de verificación. Que compile no basta. | **[Contrato de delegación](docs/orchestration.md).** Despachar → Recoger → Vetar → Cerrar, igual en Claude Code y en Codex. |
 | **Tickets en rebanadas.** Salvo en un refactor amplio, cada ticket cruza todas las capas, se puede probar por sí solo y cabe en una sesión. | **Restar antes de sumar.** El cambio más pequeño que resuelve el problema. Primero quito lo que sobra y después construyo sobre la base más simple. | **[Modelo por rol y costo](docs/agent-routing.md).** Para ejecutar, parto del modelo más barato que puede hacerlo y escalo si no basta. La review y el diseño usan el modelo que el routing fija por rol. |
 | **Retro.** Al cerrar una sesión, la retro propone mejoras al entorno del agente, no sólo al código. | **Evidencia etiquetada.** Cada afirmación dice si está medida, inferida o supuesta. | **Review independiente.** gpt-6-astra en `high` revisa con contexto nuevo, sin el razonamiento del autor. En alto riesgo se suma Opus. |
-| | **Lección en estructura.** Una instrucción que se repite se vuelve lint, script o check. | **[Pausas explícitas](docs/flujo-de-trabajo.md#pausas).** El agente recomienda y espera mi OK antes de un push a `main`, un deploy o una escritura en el sistema de un cliente. |
+| | **Lección en estructura.** Una instrucción que se repite se vuelve lint, script o check. | **[Pausas explícitas](docs/flujo-de-trabajo.md#pausas).** El merge APTO y verde y los efectos de su automatización están autorizados. Un push directo a `main`, un comando de deploy y las demás pausas siguen esperando mi OK. |
 
 ## Agentic engineering
 
