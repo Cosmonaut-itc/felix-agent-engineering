@@ -166,6 +166,225 @@ class Operator3820Cases:
         self.assertNotIn("operations", exact)
         self.assertEqual(self.inventory(self.state), before)
 
+    def r3_public_operator(self, *args, secrets, code=0, **kwargs):
+        """Inspect both actual CLI channels before retaining any public response."""
+        process = self.call("operator", *args, check=False, **kwargs)
+        # A failing confidentiality oracle must not repeat the leaked bytes in
+        # unittest's diagnostic or in the external public evidence.
+        self.assertFalse(any(secret in process.stdout + process.stderr for secret in secrets),
+                         "declared credential in public operator output")
+        self.assertNotIn("Traceback", process.stderr)
+        self.assertEqual(process.returncode, code, (process.stdout, process.stderr))
+        value = json.loads(process.stdout)
+        self.assertEqual(value["api"], "fleet-job-api@1")
+        return value
+
+    def test_r3_a01_new_denial_sanitizes_all_selectors_and_preserves_raw_binding(self):
+        declared = {"FICTITIOUS_JOB_A": "j_" + "1" * 32, "FICTITIOUS_JOB_B": "j_" + "2" * 32,
+                    "FICTITIOUS_ATTEMPT": "a_" + "3" * 32, "FICTITIOUS_RESERVATION": "r_" + "4" * 32,
+                    "FICTITIOUS_DRAIN": "d_" + "5" * 32, "FICTITIOUS_PROOF": "p_" + "6" * 32}
+        secrets = list(declared.values())
+        credentials = tuple(part for name in declared for part in ("--credential-env", name))
+        argv, counter, ready, gate = self.counted("r3-credential-holder")
+        first = self.send("r3-a01-holder", argv, options=("--enqueue-only", *credentials),
+                          env=dict(self.env, **declared))
+        before = self.status_key("r3-a01-holder")["observation"]
+        self.assertNotIn(first["job"], secrets)
+        reason = "new attributable denial with declared selectors"
+
+        def options(job):
+            return (job, "--attempt", declared["FICTITIOUS_ATTEMPT"],
+                    "--reservation", declared["FICTITIOUS_RESERVATION"], "--generation", "7",
+                    "--drain-id", declared["FICTITIOUS_DRAIN"], "--proof", declared["FICTITIOUS_PROOF"])
+
+        def public(*args, code=0):
+            # This env does not carry the declarations/values used at admission.
+            return self.r3_public_operator(*args, secrets=secrets, code=code, env=self.env)
+
+        absent = public("status", "--operation-id", "r3-a01-new", code=2)
+        self.assertEqual(absent["error"]["code"], "operation_not_found")
+        request = ("release", "--operation-id", "r3-a01-new", "--reason", reason,
+                   *options(declared["FICTITIOUS_JOB_A"]))
+        denied = public(*request, code=2)
+        self.assertEqual(denied["error"], {"code": "unknown_job", "effects": "no_capacity_change"})
+        self.assertEqual((denied["binding"], denied["status"]), ("new", "committed"))
+        receipt = denied["receipt"]
+        target = {"job": "[REDACTED]", "attempt": "[REDACTED]", "reservation": "[REDACTED]", "generation": 7}
+        self.assertEqual(receipt["target"], target)
+        self.assertEqual((receipt["drain_id"], receipt["proof_id"]), ("[REDACTED]", "[REDACTED]"))
+        self.assertEqual((receipt["decision"], receipt["action"], receipt["reason"]), ("unknown_job", "release", reason))
+        self.assertIs(receipt["release_eligible"], False)
+        self.assertIs(receipt["validation_processed"], True)
+        self.assertIs(receipt["audit_recorded"], True)
+        self.assertEqual(receipt["actor"]["uid"], os.getuid())
+        self.assertTrue(receipt["actor"]["birth"])
+        self.assertTrue(receipt["at"].endswith("Z"))
+        self.assertIsNone(receipt["reservation_before"])
+        self.assertIsNone(receipt["reservation_after"])
+        exact = public("status", "--operation-id", "r3-a01-new")
+        self.assertEqual(exact["receipt"], receipt)
+        replay = public(*request, code=2)
+        self.assertEqual(replay["binding"], "replay")
+        self.assertEqual(replay["receipt"], receipt)
+        # Both job values project to the same marker. They MUST remain different
+        # private bindings, so the second raw request conflicts instead of replay.
+        changed = public("release", "--operation-id", "r3-a01-new", "--reason", reason,
+                         *options(declared["FICTITIOUS_JOB_B"]), code=5)
+        self.assertEqual(changed["error"], {"code": "operation_conflict", "effects": "no_capacity_change"})
+        self.assertIs(changed["audit_recorded"], True)
+        for operation_id, why in (("r3-a01-secret-reason", declared["FICTITIOUS_JOB_A"]),
+                                  (declared["FICTITIOUS_JOB_B"], "known credential in operation id")):
+            with self.subTest(credential_rejection="reason" if operation_id.startswith("r3-") else "id"):
+                rejected = public("release", "--operation-id", operation_id, "--reason", why,
+                                  *options(declared["FICTITIOUS_JOB_A"]), code=2)
+                self.assertEqual(rejected["error"], {"code": "credential_in_operator_request",
+                                                     "effects": "no_capacity_change"})
+                self.assertIs(rejected["audit_recorded"], True)
+                unbound = public("status", "--operation-id", operation_id, code=2)
+                self.assertEqual(unbound["error"]["code"], "operation_not_found")
+        # Nonsecret, well-formed selectors keep their original decision/fields.
+        control = public("assess", first["job"], "--attempt", first["attempt"],
+                         "--reservation", "r_" + "0" * 32, "--generation", "1",
+                         "--drain-id", "d_" + "0" * 32, "--operation-id", "r3-a01-control",
+                         "--reason", "nonsecret selector control", code=5)
+        self.assertEqual(control["error"]["code"], "generation_mismatch")
+        self.assertEqual(control["receipt"]["target"]["job"], first["job"])
+        self.assertEqual(control["receipt"]["target"]["generation"], 1)
+        original = self.inventory(self.state)
+        listing = public("status", "--limit", "100")
+        self.assertEqual(len(listing["operations"]), 2)
+        self.assertEqual(len(listing["audit_events"]), 5)
+        event = next(e for e in listing["audit_events"] if e["seq"] == receipt["audit_seq"])
+        for field in ("target", "drain_id", "proof_id", "decision", "action", "reason", "actor", "decision_revision"):
+            self.assertEqual(event[field], receipt[field])
+        conflict_event = next(e for e in listing["audit_events"] if e["seq"] == changed["audit_seq"])
+        self.assertEqual(conflict_event["request"], dict(target, action="release", operation_id="r3-a01-new",
+                                                        reason=reason, drain_id="[REDACTED]", proof="[REDACTED]",
+                                                        backend="pilot_slot"))
+        operations, events = [], []
+        after, audit_after = 0, 0
+        for _ in range(10):
+            page = public("status", "--after-seq", str(after), "--after-audit-seq", str(audit_after), "--limit", "1")
+            operations.extend(page["operations"])
+            events.extend(page["audit_events"])
+            cursor = (page["next_after_seq"], page["next_after_audit_seq"])
+            if not page["has_more"]:
+                break
+            self.assertTrue(cursor[0] > after or cursor[1] > audit_after)
+            after, audit_after = cursor
+        else:
+            self.fail("r3 public projection pagination did not terminate")
+        self.assertEqual((operations, events), (listing["operations"], listing["audit_events"]))
+        self.assertEqual(public("status", "--operation-id", "r3-a01-new")["receipt"], receipt)
+        self.assertEqual(self.inventory(self.state), original, "all status projections must be read-only")
+        self.assertEqual(public(*request, code=2)["receipt"], receipt)
+        current = self.status_key("r3-a01-holder")["observation"]
+        for name in ("state", "dispatch", "reservation", "capacity_resolution", "transitions", "command", "control"):
+            self.assertEqual(current[name], before[name])
+        self.assertEqual(self.entries(counter), [])
+        self.assertFalse(ready.exists())
+        self.assertFalse((self.state / "supervisor.log").exists())
+        self.external_evidence.append({"case": "r3-A01-new", "response": denied, "replay": replay,
+                                       "exact": exact, "operations": operations, "audit_events": events})
+
+    def test_r3_a01_readers_resanitize_history_with_later_persisted_declarations(self):
+        argv, counter, ready, gate = self.counted("r3-history-holder")
+        self.send("r3-a01-history-init", argv, options=("--enqueue-only",))
+        declared = {"FICTITIOUS_HISTORY_JOB": "j_" + "7" * 32, "FICTITIOUS_HISTORY_ATTEMPT": "a_" + "8" * 32,
+                    "FICTITIOUS_HISTORY_RESERVATION": "r_" + "9" * 32,
+                    "FICTITIOUS_HISTORY_DRAIN": "d_" + "a" * 32, "FICTITIOUS_HISTORY_PROOF": "p_" + "b" * 32}
+        request = ("release", "--operation-id", "r3-a01-history", "--reason", "historical denied selectors",
+                   declared["FICTITIOUS_HISTORY_JOB"], "--attempt", declared["FICTITIOUS_HISTORY_ATTEMPT"],
+                   "--reservation", declared["FICTITIOUS_HISTORY_RESERVATION"], "--generation", "9",
+                   "--drain-id", declared["FICTITIOUS_HISTORY_DRAIN"], "--proof", declared["FICTITIOUS_HISTORY_PROOF"])
+        # These fictitious values are not yet credentials in this authority. This
+        # authentic CLI producer stores history that later readers must sanitize;
+        # no stored object, SQL, mock, old executable or private hook is injected.
+        historical = self.raw("operator", *request, code=2)["receipt"]
+        self.assertEqual(historical["decision"], "unknown_job")
+        expected = dict(historical, target={"job": "[REDACTED]", "attempt": "[REDACTED]",
+                                           "reservation": "[REDACTED]", "generation": 9},
+                        drain_id="[REDACTED]", proof_id="[REDACTED]")
+        credentials = tuple(part for name in declared for part in ("--credential-env", name))
+        self.send("r3-a01-history-declare", argv, options=("--enqueue-only", *credentials),
+                  env=dict(self.env, **declared))
+        original = self.inventory(self.state)
+        secrets = list(declared.values())
+        exact = self.r3_public_operator("status", "--operation-id", "r3-a01-history", secrets=secrets)
+        self.assertEqual(exact["receipt"], expected)
+        page = self.r3_public_operator("status", "--after-seq", "0", "--after-audit-seq", "0", "--limit", "1",
+                                      secrets=secrets)
+        self.assertEqual(page["operations"][0]["receipt"], expected)
+        self.assertEqual(page["audit_events"][0]["target"], expected["target"])
+        self.assertEqual(page["audit_events"][0]["drain_id"], "[REDACTED]")
+        self.assertEqual(page["audit_events"][0]["proof_id"], "[REDACTED]")
+        self.assertIs(page["has_more"], False)
+        end = self.r3_public_operator("status", "--after-seq", str(page["next_after_seq"]),
+                                     "--after-audit-seq", str(page["next_after_audit_seq"]), "--limit", "1", secrets=secrets)
+        self.assertEqual((end["operations"], end["audit_events"], end["has_more"]), ([], [], False))
+        self.assertEqual(self.inventory(self.state), original, "reader must project, never rewrite stored history")
+        replay = self.r3_public_operator(*request, secrets=secrets, code=2)
+        self.assertEqual(replay["binding"], "replay")
+        self.assertEqual(replay["receipt"], expected)
+        after = self.r3_public_operator("status", secrets=secrets)
+        self.assertEqual(after["operations"], page["operations"])
+        self.assertEqual(after["audit_events"], page["audit_events"])
+        self.assertEqual(after["as_of_revision"], exact["as_of_revision"])
+        self.assertEqual(self.entries(counter), [])
+        self.assertFalse(ready.exists())
+        self.external_evidence.append({"case": "r3-A01-history", "exact": exact, "page": page, "replay": replay})
+
+    def test_r3_a03_both_cursor_ranges_return_json_without_mutation(self):
+        self.send("r3-a03-holder", [sys.executable, "-c", "pass"], options=("--enqueue-only",))
+        bound = self.op("drain", "r3-a03-bound")
+        self.op("drain", "r3-a03-bound", reason="extra audit-only event", code=5)
+        original = self.inventory(self.state)
+        maximum = 9223372036854775807
+        for flag in ("--after-seq", "--after-audit-seq"):
+            for cursor in (-1, maximum + 1, 18446744073709551615):
+                for selection in ((), ("--operation-id", "r3-a03-bound")):
+                    with self.subTest(flag=flag, invalid=cursor, selection=selection):
+                        process = self.call("operator", "status", flag, str(cursor), *selection, check=False)
+                        self.assertNotIn("Traceback", process.stdout + process.stderr)
+                        self.assertEqual(process.returncode, 2)
+                        self.assertEqual(len(process.stdout.splitlines()), 1)
+                        value = json.loads(process.stdout)
+                        self.assertEqual(value["api"], "fleet-job-api@1")
+                        self.assertEqual(value["operation"], "operator.status")
+                        self.assertEqual(value["error"], {"code": "invalid_pagination", "effects": "read_only"})
+                        self.assertIs(value["audit_recorded"], False)
+                        self.assertNotIn("observation", value)
+                        self.assertNotIn("operations", value)
+                        self.assertEqual(self.inventory(self.state), original)
+            for cursor in (0, maximum - 1, maximum):
+                with self.subTest(flag=flag, valid=cursor):
+                    page = self.raw("operator", "status", flag, str(cursor), "--limit", "1")
+                    exact = self.raw("operator", "status", flag, str(cursor), "--operation-id", "r3-a03-bound")
+                    self.assertEqual(exact["receipt"], bound["receipt"])
+                    self.assertNotIn("operations", exact)
+                    if cursor == 0:
+                        self.assertEqual(len(page["operations"]), 1)
+                        self.assertEqual(len(page["audit_events"]), 1)
+                        self.assertIs(page["has_more"], True)
+                    else:
+                        self.assertEqual(page["audit_events"], [])
+                        self.assertEqual(page["next_after_audit_seq"], cursor)
+                        self.assertIs(page["has_more"], False)
+                        self.assertEqual(len(page["operations"]), 0 if flag == "--after-seq" else 1)
+                        self.assertEqual(page["next_after_seq"], cursor if flag == "--after-seq" else 1)
+                    self.assertEqual(self.inventory(self.state), original)
+        # A maximum operation offset does not exhaust the independent audit stream.
+        page = self.raw("operator", "status", "--after-seq", str(maximum), "--after-audit-seq", "0", "--limit", "1")
+        self.assertEqual(page["operations"], [])
+        self.assertEqual(page["next_after_seq"], maximum)
+        self.assertEqual([e["seq"] for e in page["audit_events"]], [1])
+        self.assertIs(page["has_more"], True)
+        last = self.raw("operator", "status", "--after-seq", str(page["next_after_seq"]),
+                        "--after-audit-seq", str(page["next_after_audit_seq"]), "--limit", "1")
+        self.assertEqual([e["seq"] for e in last["audit_events"]], [2])
+        self.assertIs(last["has_more"], False)
+        self.assertEqual(self.inventory(self.state), original)
+
     def test_o01_positive_local_resolution_keeps_failed_evidence_and_drained_fifo(self):
         first, final, argv, counter = self.incomplete_job("o01")
         next_argv, next_counter, ready, gate = self.counted("next")

@@ -1,9 +1,10 @@
-# SEN-3820 r2 — matriz pública, cero ejecución
+# SEN-3820 r3 — matriz pública, cero ejecución
 
-Inventario obtenido por texto, sin discovery/imports: **58 métodos** en un único
-TestCase `FleetCLI`:16 base en `test_cli.py`,27 en `Core3820Cases`,15 en
-`Operator3820Cases`. Se conservan los53 r1 (16+24+13), se añaden cinco y se refuerza
-C02 dentro de su método original. Discovery futuro sólo `test_cli.py`, según README.
+Inventario obtenido por texto, sin discovery/imports: **62 métodos** en un único
+TestCase `FleetCLI`:16 base en `test_cli.py`,28 en `Core3820Cases`,18 en
+`Operator3820Cases`. Se conservan íntegros los58 métodos de127 (16+27+15), sus
+setups/settles/oráculos; r3 añade cuatro. Los53 r1, cinco r2 y refuerzo C02 quedan
+conservados. Discovery futuro sólo `test_cli.py`, según README.
 **34 filas padre =26 definidas +6 parciales/condicionales +2 positivas abiertas**.
 Los3 requisitos adicionales no cambian esa partición. No se cuentan métodos como
 subcasos ni código escrito como cobertura runtime. Todos siguen sin ejecutar.
@@ -80,6 +81,23 @@ bucles; recorridos/aserciones sin subTest no son métodos adicionales. Todos esc
 cero ejecutados. Esquema incompatible sigue en C23 condicionado a CLI auténticos;
 corrupción SQLite real/EACCES de apertura no tienen nueva fixture en r2. Su manejo
 se inspeccionó; no se fabrican bytes de ledger para cerrar esos escenarios.
+
+## Regresiones r3 adicionales
+
+Los cuatro métodos completos llevan prefijo `test_`. La respuesta individual,
+fuentes127 y semántica pública están en [SEN-3820-r3.md](../SEN-3820-r3.md).
+Los58 métodos anteriores y las34 filas padre conservan sus setups y oráculos.
+
+| Hallazgo / módulo | Método | Subcasos escritos y discriminante contra127 |
+| --- | --- | --- |
+| R2-A01 / operator | r3_a01_new_denial_sanitizes_all_selectors_and_preserves_raw_binding | Credenciales ficticias de forma válida persistidas por submit enqueue-only; lector sin ese env; operation-id ausente y release NUEVO2/unknown_job. Ausencia de valores en ambos canales, target anidado/drain/proof redactados, generation int7 y atribución conservadas; receipt exacto, replay2 y recorrido completo limit1 iguales a listado grande (2 operaciones/5 eventos). Cambiar sólo un secreto por otro da conflicto5 pese a igual redacción; reason/ID secretos dan2 auditado sin binding, control no secreto conserva generation_mismatch5. Job/control/capacidad/contador sin efectos.127 publica los selectores crudos en la primera respuesta nueva: falla el oráculo de ausencia antes de comparar receipt. 2 invocaciones subTest de rechazo por credencial. |
+| R2-A01 / operator | r3_a01_readers_resanitize_history_with_later_persisted_declarations | Productor CLI auténtico guarda una denegación antes de declarar sus selectores ficticios como credenciales; segundo submit enqueue-only los declara. Status exacto, página limit1/fin y replay deben ahora sanear esa historia sin reescribirla, preservando receipt atribuible, revisión y listas.127 devuelve history cruda: falla ausencia en status exacto. No SQL/mocks/ejecutable antiguo ni objeto guardado inyectado. Sin subTest. |
+| R2-A02 / core | r3_a02_empty_inventory_automatic_and_dot_replay_without_dispatch | Origen realmente vacío y sin ancestro Git: automático admite input hash de []; punto, punto duplicado y automático replay0 aunque se omita enqueue-only. Punto+missing/.env/.././ sigue2/not_evaluated; sólo .env excluido mantiene inventario vacío y equivalencia. Otra declaración private conserva conflicto5 aun con mismos bytes vacíos; job/admission/input/safe-pending/control/transiciones intactos, sin contador/supervisor.127 rechaza el primer replay punto2/input_not_admitted. 9 invocaciones subTest (3+4+2). |
+| R2-A03 / operator | r3_a03_both_cursor_ranges_return_json_without_mutation | Autoridad válida, una operación/dos eventos. Ambos flags con -1, int64max+1 y uint64max, tanto enumerando como por ID: JSON una línea2/invalid_pagination/read_only, sin traceback/auditoría/observation/mutación.0, max-1 y max válidos; exacto conserva receipt, default audit y streams independientes conservados, páginas normales y fin.127 desborda SQLite con max+1 enumerado en cualquiera de los flags: traceback1 sin JSON. 18 invocaciones subTest (12 inválidas+6 válidas); además recorrido independiente de2 páginas sin subTest. |
+
+Cuatro métodos nuevos,29 invocaciones subTest nuevas por expansión estática
+(A01=2, A02=9, A03=18). Son casos escritos; **cero ejecutados**, incluido baseline127.
+Se mantienen las27 invocaciones subTest añadidas en r2 y todos los demás casos.
 
 ## Prerrequisitos externos y registro futuro
 

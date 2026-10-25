@@ -628,7 +628,7 @@ class Plan:
                 if len(result) > MAX_FILES:
                     raise InputError("input_count_limit")
         for include in self.includes:
-            if not any(include == "." or p == include or p.startswith(include + "/") for p in result):
+            if include != "." and not any(p == include or p.startswith(include + "/") for p in result):
                 raise InputError("input_not_admitted")
         collisions(result)
         return result

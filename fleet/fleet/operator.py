@@ -27,19 +27,30 @@ def secrets_for(db, job=None):
     return sorted(secrets, key=len, reverse=True)
 
 
-def public_actor(actor, secrets):
-    return {name: inputs.redact(value, secrets) if isinstance(value, str) else value
-            for name, value in actor.items()}
+def public_projection(value, secrets):
+    """Sanitize public JSON data, including nested targets and stored history.
+
+    Schema keys and scalar types stay intact. This makes a new projection, never
+    changes the private request used for binding, and never consults reader env.
+    Persisted receipts/events must pass here again when read: storage is not a
+    promise that their strings are safe under the current persisted declarations.
+    """
+    if isinstance(value, str):
+        return inputs.redact(value, secrets)
+    if isinstance(value, dict):
+        return {name: public_projection(item, secrets) for name, item in value.items()}
+    if isinstance(value, list):
+        return [public_projection(item, secrets) for item in value]
+    return value
 
 
 def public_request(request, secrets):
-    """Flat validated request, including null selectors, with all strings sane.
+    """Complete validated request, including null selectors, with all strings sane.
 
     Keep the complete denied stimulus, not a reconstruction from the old binding.
     Redaction uses persisted declarations, never the operator reader's environment.
     """
-    return {name: inputs.redact(value, secrets) if isinstance(value, str) else value
-            for name, value in request.items()}
+    return public_projection(request, secrets)
 
 
 def validate_request(action, operation_id, reason, job=None, attempt=None, reservation=None,
@@ -212,12 +223,13 @@ def mutate(state, request):
             if any(secret in request["reason"].encode() or secret in request["operation_id"].encode()
                    for secret in secrets):
                 revision = db.revision()
-                event = {"operation_id": inputs.redact(request["operation_id"], secrets),
+                event = {"operation_id": request["operation_id"],
                          "action": request["action"], "decision": "credential_in_operator_request",
                          "request": public_request(request, secrets),
-                         "decision_revision": revision, "actor": public_actor(actor, secrets),
-                         "reason": inputs.redact(request["reason"], secrets), "at": now()}
+                         "decision_revision": revision, "actor": actor,
+                         "reason": request["reason"], "at": now()}
                 event.update(authority_id=db.authority["id"], principal_uid=db.authority["uid"])
+                event = public_projection(event, secrets)
                 audit_seq = db.execute("INSERT INTO audit (event) VALUES (?)", (dump(event),)).lastrowid
                 response = envelope("operator." + request["action"], db.authority,
                                     audit_recorded=True, audit_seq=audit_seq,
@@ -232,9 +244,10 @@ def mutate(state, request):
                     revision = db.revision()
                     event = {"operation_id": request["operation_id"], "decision": "operation_conflict",
                              "action": request["action"], "request": public_request(request, secrets),
-                             "decision_revision": revision, "actor": public_actor(actor, secrets),
-                             "reason": inputs.redact(request["reason"], secrets), "at": now()}
+                             "decision_revision": revision, "actor": actor,
+                             "reason": request["reason"], "at": now()}
                     event.update(authority_id=db.authority["id"], principal_uid=db.authority["uid"])
+                    event = public_projection(event, secrets)
                     cursor = db.execute("INSERT INTO audit (event) VALUES (?)", (dump(event),))
                     code = 5
                     response = envelope("operator." + request["action"], db.authority,
@@ -262,14 +275,16 @@ def mutate(state, request):
                                "reasons": fault.fields.get("reasons", [])}
                 revision = db.revision()
                 event = dict(details, action=request["action"], operation_id=request["operation_id"],
-                             decision_revision=revision, actor=public_actor(actor, secrets),
-                             reason=inputs.redact(request["reason"], secrets), at=now())
+                             decision_revision=revision, actor=actor,
+                             reason=request["reason"], at=now())
                 event.update(authority_id=db.authority["id"], principal_uid=db.authority["uid"])
+                event = public_projection(event, secrets)
                 audit_seq = db.execute("INSERT INTO audit (event) VALUES (?)", (dump(event),)).lastrowid
                 receipt = dict(details, action=request["action"], operation_id=request["operation_id"],
-                               decision_revision=revision, actor=public_actor(actor, secrets),
-                               reason=inputs.redact(request["reason"], secrets), audit_seq=audit_seq,
+                               decision_revision=revision, actor=actor,
+                               reason=request["reason"], audit_seq=audit_seq,
                                audit_recorded=True, at=now())
+                receipt = public_projection(receipt, secrets)
                 db.execute("INSERT INTO operations (id,request,receipt,exit_code,error) VALUES (?,?,?,?,?)",
                            (request["operation_id"], dump(request), dump(receipt), code, error_code))
                 response = envelope("operator." + request["action"], db.authority,
@@ -277,7 +292,7 @@ def mutate(state, request):
                 if error_code:
                     response["error"] = {"code": error_code, "effects": "no_capacity_change"}
         response.update(control=db.control, observed_at=now())
-        return response, code
+        return public_projection(response, secrets), code
 
 
 def status(state, operation_id=None, after_seq=0, limit=50, after_audit_seq=None):
@@ -287,8 +302,11 @@ def status(state, operation_id=None, after_seq=0, limit=50, after_audit_seq=None
     # pages must carry BOTH returned offsets; the streams grow independently.
     if after_audit_seq is None:
         after_audit_seq = after_seq
-    if (type(after_seq) is not int or after_seq < 0 or type(after_audit_seq) is not int
-            or after_audit_seq < 0 or type(limit) is not int or not 1 <= limit <= 100):
+    # SQLite sequence parameters are signed int64. Reject out-of-range cursors
+    # before opening the snapshot or binding any SQL parameter, also with an ID.
+    if (type(after_seq) is not int or not 0 <= after_seq <= 9223372036854775807
+            or type(after_audit_seq) is not int or not 0 <= after_audit_seq <= 9223372036854775807
+            or type(limit) is not int or not 1 <= limit <= 100):
         raise Fault("invalid_pagination")
     with Ledger(state) as db:
         db.execute("BEGIN")
@@ -313,4 +331,4 @@ def status(state, operation_id=None, after_seq=0, limit=50, after_audit_seq=None
                           next_after_seq=rows[-1]["seq"] if rows else after_seq,
                           next_after_audit_seq=events[-1]["seq"] if events else after_audit_seq,
                           has_more=has_more)
-        return result, 0
+        return public_projection(result, secrets_for(db)), 0

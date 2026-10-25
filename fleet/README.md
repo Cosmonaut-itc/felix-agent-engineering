@@ -1,4 +1,4 @@
-# Fleet local — SEN-3820 r2
+# Fleet local — SEN-3820 r3
 
 CLI opt-in de un slot FIFO por autoridad local, Python 3.9/3.14 por inspección,
 biblioteca estándar, Linux/macOS POSIX. Esta entrega contiene código y pruebas
@@ -9,7 +9,8 @@ con 2/3, sin migración. El código no activa hostgate, reservas compartidas, Mi
 desk, SSH, Windows, cancelación ni selección de nodos. Los contratos vigentes
 permanecen intactos. [Contrato y procedencia](SEN-3820.md) y
 [matriz completa de pruebas pendientes](tests/COVERAGE.md).
-[Respuesta r2 y regresiones contra0b](SEN-3820-r2.md).
+[Respuesta r3 y regresiones contra127](SEN-3820-r3.md).
+[Antecedente r2 y regresiones contra0b](SEN-3820-r2.md).
 
 ## Interfaz
 
@@ -48,6 +49,8 @@ PWD derivable es la excepción; si se declara credencial, también cuenta su val
 Punto no elimina otras selecciones: `--input . --input foo` difiere de `--input .`
 aunque hoy capture los mismos bytes. Se validan todas las selecciones explícitas;
 sólo se ordenan/eliminan duplicados idénticos y se equiparan automático/punto solo.
+Esa equivalencia incluye un origen noGit vacío o un inventario admitido vacío;
+punto no exime de validar cada selección adicional.
 Un replay no despacha, renueva, repara, libera ni reabre. Sin clave, cada envío es nuevo.
 
 `submit0` sólo confirma admisión histórica. Se imprime después de intentar el
@@ -124,6 +127,14 @@ con credenciales persistidas. No cambia el binding/receipt original. Backend
 operatorio tiene cota de forma1–128 caracteres sin controles/surrogates; no añade
 soporte a ningún backend.
 
+Toda proyección pública operatoria pasa por una única regla recursiva de redacción,
+incluidos details/target anidados, recibos y eventos antes de persistir, respuesta,
+replay y status exacto/paginado. Los lectores vuelven a sanear la historia con las
+declaraciones/valores persistidos en su copia de la autoridad; no confían en que un
+objeto guardado ya sea seguro ni reescriben historia. Se conservan estructura/tipos
+y atribución. El request crudo permanece privado para decidir y comparar binding:
+dos secretos distintos no se vuelven iguales porque compartan redacción pública.
+
 `operator status --after-seq N --after-audit-seq A --limit 50` pagina decisiones y
 auditoría con cursores independientes. Empezar con N=A=0; después pasar
 `next_after_seq` y `next_after_audit_seq` hasta `has_more=false`. Cada lista va en
@@ -133,6 +144,10 @@ inicial es N por compatibilidad; para continuar deben enviarse ambos cursores.
 El fin describe esa revisión; cada página tiene su copia, sin snapshot concurrente
 de todo el recorrido. Pueden conservarse ambos offsets para otra consulta posterior.
 Con `--operation-id` se devuelve únicamente el recibo exacto y el control actual.
+Ambos cursores admiten enteros entre0 y9223372036854775807 inclusive. Fuera de ese
+rango se devuelve2/invalid_pagination/read_only antes de abrir SQLite, también con
+selección exacta por ID; nunca se intenta enlazar ese entero. Un máximo válido
+sin filas posteriores conserva el cursor y deja vacío su stream, sin agotar el otro.
 
 `--backend host-reservation@1` se rechaza explícitamente en submit y operador.
 **C21 positivo permanece abierto; O10 positivo está fuera de SEN-3820.** Estos
@@ -173,8 +188,9 @@ PYTHONDONTWRITEBYTECODE=1 /ruta/python3.14 -B -m unittest discover -s fleet/test
 ```
 
 Un único TestCase hereda mixins; discovery sólo `test_cli.py` evita duplicación.
-Inventario textual: los53 métodos r1 se conservan;16 base +27 core +15 operator
-=**58 métodos**, cinco nuevos r2 y C02 reforzado;
+Inventario textual: se conservan los58 métodos de127, incluidos los53 r1 y cinco r2;
+16 base +28 core +18 operator =**62 métodos**, cuatro nuevos r3.
+R3 añade29 invocaciones subTest por expansión estática; cero métodos ejecutados.
 34 filas contractuales (26 definidas,6 parciales/condicionales,2 positivas abiertas)
 y3 requisitos adicionales. Método y subcaso son unidades diferentes.
 La matriz detalla precondiciones faltantes; su ausencia falla explícitamente, sin
