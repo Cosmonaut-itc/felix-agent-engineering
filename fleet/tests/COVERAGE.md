@@ -1,4 +1,4 @@
-# SEN-3821, fase B autorizada para review5 integral
+# SEN-3821, harness h1 sobre fase B e999
 
 Sólo inspección estática. Ninguna prueba se ha ejecutado en este encargo.
 La suite pública es `test_cli.py`, que incorpora cinco mixins. Se parte de las
@@ -18,7 +18,15 @@ En la suite pública no se importa Fleet ni se consulta SQL. Cada submit se
 registra antes de lanzar; el rechazo por ausencia exige estado exclusivo,
 cliente terminado y BD ausente antes/después, sin borrado intermedio. La
 refutación específica del ciclo ignorado con BD existente se describe abajo.
-Un fallo de atribución o de cierre propio conserva las fixtures en su corrida.
+Un fallo de atribución o de cierre propio conserva las fixtures en su base y
+la evidencia bajo la corrida.
+La ronda h1 preserva los 96 nombres, sin métodos añadidos. Cambia sólo las bases,
+la evidencia/limpieza externa y dos cuerpos integrales: precondición sensible sin
+skip y cuenta/host reales sin skip por el home. Conserva todos sus oráculos y
+añade comprobaciones explícitas de salida y metadatos redactados. Cero ejecutados.
+El APTO estático doble de producto e999 sigue siendo antecedente; h1 requiere
+review doble nueva. Este contrato de bases sustituye al apartado de preparación
+del README de e999, que permanece intacto por el recorte autorizado.
 
 ## Nueve regresiones nuevas para review5, sin ejecutar
 
@@ -182,34 +190,82 @@ exclusividad se revoca si otro envío pendiente comparte estado.
 
 ## Bases de fixtures y evidencia que debe preparar el coordinador
 
-Ambos harnesses validan antes de mkdtemp las rutas existentes suministradas al
-launcher autorizado. `FLEET_TEST_RUN_DIR` es el directorio físico real de la
+Cada harness valida la base antes de crear recursos dentro de ella; las rutas
+existentes las suministra el launcher autorizado. `FLEET_TEST_RUN_DIR` es el
+directorio físico real de la
 corrida `remote-run/runs/<runId>`, propio y sin escritura de grupo/otros; no se
 adivina desde HOME o runId. `FLEET_TEST_FIXTURE_BASE` debe ser un directorio físico
 propio dentro de esa corrida, con toda su jerarquía bajo ella privada (0700).
 Se rechazan rutas relativas, symlinks/componentes symlink y bases ajenas a la
 corrida. No hay creación de base ni fallback a T compartido, HOME o `/tmp`.
 
-Los aliases nuevos fallan su precondición, sin skip, en un volumen no apto.
-Usar una copia Mini en volumen case-insensitive para `r2_private_case_aliases`
-y `r2_colon_`/`r4_colon_*case_alias`, y otra propia en volumen case-sensitive para
-`r2_private_case_sensitive`. Acreditar ambas corridas sin skips/precondiciones
-fallidas. La suite no monta ni formatea volúmenes. Los skips históricos no se
-convierten en evidencia: repetir también sus selectores en el volumen pertinente.
-HOME real del uid sigue por inspección; no se inventaría para una regresión.
-Para una corrida completa sin skips de volumen, el harness admite
-`FLEET_CASE_SENSITIVE_TMPDIR` como base obligatoria propia ya existente en el
-volumen sensible, también física y con jerarquía 0700 bajo FLEET_TEST_RUN_DIR:
-sólo los dos métodos cuyo nombre contiene `case_sensitive_distinct` crean allí
-su raíz; el resto usa FLEET_TEST_FIXTURE_BASE case-insensitive. Todo HOME,
-proyecto, estado y cleanup sigue dentro de la raíz exclusiva de cada método.
-No se crea ni configura un volumen desde las pruebas. Si no hay bases que
-satisfagan a la vez ubicación y filesystem, declarar la precondición pendiente
-y coordinar con Mini antes de correr. Los selectores separados no dispensan
-la ubicación dentro de la corrida ni acreditan un conjunto sin ejecutar.
-El caso histórico de cuenta/hostname puede hacer skip si su ruta contiene el
-valor declarado; no cuenta esa dimensión como verde. Tampoco se inventa una
-ubicación fuera de la corrida para evitarlo.
+`FLEET_TEST_CS_BASE` es la única excepción externa: directorio existente físico
+del volumen sensible autorizado, del uid actual y modo exactamente 0700, sin
+symlinks en su ruta ni ancestros. No tiene valor por defecto ni usa la variable
+anterior `FLEET_CASE_SENSITIVE_TMPDIR`. No se crean bases, montajes ni volúmenes,
+ni se reparan permisos. `/Volumes/pao-cs/fleet-tests` es sólo una ruta propuesta,
+pendiente de identidad certificada por Mini/PAO; el harness no presupone que exista.
+La suite no conecta para buscarla. Mini debe dimensionar el volumen para tres
+fixtures CLI seriales, sus estados/cápsulas/workspaces/bundles y margen de SQLite,
+no para la suite entera ni el estrés pendiente. Propuesta de capacidad: 512 MiB,
+estimación conservadora sin medición ni garantía de espacio suficiente; Mini
+debe certificar capacidad disponible junto a ruta/uid/modo/identidad del volumen.
+
+Sólo los dos métodos cuyo nombre contiene `case_sensitive_distinct` y
+`test_declared_account_and_host_metadata_are_redacted` usan esa excepción.
+Cada uno crea con mkdtemp un subárbol 0700 exclusivo directamente bajo CS_BASE:
+`fleet-cli-<runId>-py<major>-<minor>-pid<pid>-<azar>`. La identidad dev/inode,
+uid/modo, método, corrida e intérprete se registran bajo la base ordinaria.
+El azar de mkdtemp segrega también invocaciones/intérpretes del mismo runId;
+no se reutilizan raíces preexistentes. HOME, proyecto y estado de esos tres
+métodos permanecen dentro de su subárbol. Los otros 92 métodos CLI y la focalizada
+siguen exclusivamente bajo FLEET_TEST_FIXTURE_BASE dentro de la corrida real.
+
+Antes de cualquier submit externo se mide el comportamiento real del subárbol
+con dos directorios propios CaseProbe/caseprobe. La segunda grafía debe estar
+ausente tras crear la primera y luego tener otra identidad física/samefile falso.
+Se guardan ambas identidades. Falta de variable, ruta/uid/modo inseguros o volumen
+no sensible falla explícitamente, sin skip ni cobertura verde. Una precondición
+fallida antes de admitir permite retirar sólo el subárbol recién creado, tras
+revalidar identidad; su diagnóstico permanece bajo la corrida. Los aliases de la
+base ordinaria siguen requiriendo case-insensitivity física. Sus skips heredados
+no se modifican ni cuentan como cobertura; Mini debe acreditar ese filesystem.
+
+Cuenta/host proceden siempre de pwd.getpwuid(os.getuid()).pw_name y
+socket.gethostname(), sin simularlos ni modificar la cuenta. Se contrastan los
+componentes relativos de state y los componentes de la raíz externa contra los
+valores declarados, en bytes, para respetar la guarda productiva de credencial
+en el state ABSOLUTO. El prefijo /Users/cosmonaut de la corrida sólo aloja
+evidencia, no el state de este método y no produce skip. Una ruta externa que
+también contenga un valor declarado falla la precondición, sin symlinks ni
+sustitución de secretos. Se preservan las aserciones de submit/status/supervisor/
+evidence, cápsulas y bundles; se exige además stdout con ambas líneas REDACTED y
+los campos concretos de usuario/host redactados también en wait. La evidencia
+pública debe ser válida y excluir ambos valores y sus digests.
+
+La evidencia externa se guarda en un directorio nuevo 0700
+`<FLEET_TEST_FIXTURE_BASE>/external-fixture-evidence-<azar>`, bajo runs/<runId>.
+`external-fixture.json` registra fases, identidades y medición de case; cada
+`cli-<n>.json` conserva comando, rc/stdout/stderr originales del CLI, sin imprimirlos.
+Un timeout conserva returncode=null, plazo y los bytes parciales como campos hex
+cuando subprocess los entrega en bytes; no se fabrica un rc ni un JSON de Fleet.
+Antes de borrar se copian los recibos de admisión, diagnósticos propios,
+supervisor.log, cápsulas y bundles publicados de los estados admitidos, con
+ruta relativa/tamaño/SHA256, y se anotan IDs/refutaciones y retornos de clientes.
+Las copias publicadas son archivos binarios privados numerados, con el mapa de
+origen en external-fixture.json; conservan también los bytes si falló la redacción.
+Los archivos y el directorio de evidencia se sincronizan antes de retirar la raíz.
+Son archivos privados 0600; pueden contener identidad real y valores declarados.
+No se exporta el entorno completo ni se copia el ledger a la evidencia.
+
+La retirada externa sólo ocurre después de settle y guard_admissions originales,
+con clientes recogidos y ausencia de procesos/grupos propios acreditada por el
+harness. Se revalidan base y raíz por path físico/dev/inode/uid/modo; se elimina
+sólo esa raíz y se registra su ausencia, conservando evidencia en la corrida.
+Un error de atribución/cierre retiene la raíz y registra retained_uncertain;
+un fallo de copia/evidencia/identidad también impide borrarla. No se borra CS_BASE,
+montaje, hermano ni residuo histórico. El cleanup de setup incompleto sólo aplica
+al recurso externo de esa fixture, con el mismo protocolo; no hay atexit.
 
 Los recursos retenidos permanecen en `<base>/fleet-cli-*`: `admission-*.json`
 contiene estado, exclusividad, ausencia inicial, IDs/refutación y respuesta;
@@ -305,9 +361,9 @@ Para review4, preparar además copia roja de cde con sólo los cuatro harnesses
 actuales y seleccionar `-k r4_`. Los cuatro literales y la ausencia de outcome
 deben discriminar la corrección; los negativos de infraestructura y ciclo
 pueden pasar en ambos heads. No ejecutar ni restaurar payloads grandes desde
-estos selectores. Después ejecutar las 86 conductas públicas con esa base
-sensible y la base habitual case-insensitive, más la focalizada conservada, o distribuir selectores según
-volumen; un verde parcial con skips no acredita el conjunto.
+estos selectores. Después ejecutar las 95 conductas públicas y la focalizada
+conservada, con FLEET_TEST_RUN_DIR, FLEET_TEST_FIXTURE_BASE y FLEET_TEST_CS_BASE
+explícitos según el contrato h1. Un verde parcial con skips no acredita el conjunto.
 
 ## Correcciones integrales r3, todas pendientes de Mini
 
@@ -333,9 +389,9 @@ volumen; un verde parcial con skips no acredita el conjunto.
   del secreto/digest en publicación, cápsulas, bundles y supervisor.log. Otro
   caso declara como secretos la cuenta real del uid y el hostname, exige
   submitted_by.user/host y supervisor.host redactados y repite la inspección
-  pública. Usa sólo sus nombres, sin inventariar HOME. Si esos valores aparecen
-  ya en la ruta privada de la fixture, declara skip para respetar el rechazo de
-  credenciales en paths; ese skip deja pendiente la cobertura correspondiente.
+  pública. Usa sólo sus nombres, sin inventariar HOME. En h1 esta fixture reside
+  en su subárbol externo sensible propio; una ubicación incompatible con la
+  guarda de credencial en state absoluto falla sin skip, según el contrato arriba.
   La inspección acredita que submitted_by se sanea antes de persistir y el lector
   usa los secretos guardados del emisor, sin depender del entorno de quien lee.
 - Recibo durable: ocho trabajos legítimos con entorno privado de 48 KiB generan
@@ -413,7 +469,7 @@ El caso de objetos distintos debe seguir pasando donde exista. Verde esperado:
 rechazos previos a BD, exclusión de estado/huella, metadatos saneados, recibo con
 IDs y cierre bloqueado hasta liberar. Registrar skips, tiempos, errores y bytes
 reales sin atribuirles aquí ejecución. El harness original tenía 68 conductas
-públicas y una focalizada; el candidato actual requiere las 86 públicas
+públicas y una focalizada; el candidato actual requiere las 95 públicas
 y la focalizada completas. Una ejecución con skips de aliases no cierra B1.
 
 ## Temporales del lector: regresiones r2 pendientes de Mini
@@ -477,7 +533,7 @@ PYTHONDONTWRITEBYTECODE=1 python3 -B -m unittest discover -s fleet/tests -p 'tes
 Rojo esperado por inspección: b5ca4987 crea y retira temporales dentro del estado,
 con diferencias de mtime/ctime. No se modifica su runner. Verde esperado: la
 copia candidata conserva inventario/metadatos y los exits 0/4/2 correspondientes.
-Ambas expectativas necesitan ejecución, también la suite actual de 86 casos CLI
+Ambas expectativas necesitan ejecución, también la suite actual de 95 casos CLI
 en los dos Python previstos; los casos antiguos no sustituyen esta matriz.
 
 ## Fixtures escritas, pendientes de Mini

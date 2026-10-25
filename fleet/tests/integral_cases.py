@@ -97,10 +97,8 @@ class IntegralCases:
     def test_case_sensitive_distinct_source_names_remain_distinct(self):
         source, external = self.root / "CaseProject", self.root / "caseproject"
         source.mkdir()
-        try:
-            external.mkdir()
-        except FileExistsError:
-            self.skipTest("fixture volume is case-insensitive; distinct-object case needs a sensitive volume")
+        self.assertFalse(external.exists(), "case-sensitive fixture precondition failed; no skip")
+        external.mkdir()
         self.assertFalse(os.path.samefile(source, external))
         (external / "run.py").write_text("print('external-distinct-object')\n")
         submitted = self.value("submit", "--cwd", str(source), "--", sys.executable,
@@ -123,23 +121,36 @@ class IntegralCases:
 
     def test_declared_account_and_host_metadata_are_redacted(self):
         account, host = pwd.getpwuid(os.getuid()).pw_name, socket.gethostname()
-        if any(value in str(self.state) for value in (account, host)):
-            self.skipTest("fixture state path contains a declared value and must be rejected at admission")
+        self.assertTrue(account and host, "real account/host precondition requires nonempty values")
+        for component in self.state.relative_to(self.root).parts:
+            for value in (account, host):
+                self.assertNotIn(os.fsencode(value), os.fsencode(component),
+                                 "fixture state component conflicts with a declared account/host")
+        for component in self.root.parts:
+            for value in (account, host):
+                self.assertNotIn(os.fsencode(value), os.fsencode(component),
+                                 "external base conflicts with the absolute-state credential guard; no skip")
         submitted = self.value("submit", "--client", "fixture-client", "--credential-env", "ACCOUNT_VALUE",
                                "--credential-env", "HOST_VALUE", "--", sys.executable, "-c",
                                "import os; print(os.environ['ACCOUNT_VALUE']); print(os.environ['HOST_VALUE'])",
                                env=dict(self.env, ACCOUNT_VALUE=account, HOST_VALUE=host))
         final = self.wait(submitted["job"])
         status = self.value("status", submitted["job"])
+        self.assertEqual(self.output(final), "[REDACTED]\n[REDACTED]\n")
+        self.assertEqual(final["submitted_by"]["user"], "[REDACTED]")
+        self.assertEqual(final["submitted_by"]["host"], "[REDACTED]")
+        self.assertEqual(final["supervisor"]["host"], "[REDACTED]")
         self.assertEqual(status["submitted_by"]["user"], "[REDACTED]")
         self.assertEqual(status["submitted_by"]["host"], "[REDACTED]")
         self.assertEqual(status["supervisor"]["host"], "[REDACTED]")
-        self.assertTrue(self.value("evidence", submitted["job"])["evidence"]["valid"])
+        proof = self.value("evidence", submitted["job"])
+        self.assertTrue(proof["evidence"]["valid"])
         for secret in (account, host):
             self.assert_publication_excludes_secret(
                 secret, submitted["client"], list(final["submitted_by"].values()),
                 list(final["supervisor"].values()), list(status["submitted_by"].values()),
-                list(status["supervisor"].values()))
+                list(status["supervisor"].values()), proof["evidence"]["manifest"],
+                [entry["path"] for entry in proof["evidence"]["files"]])
 
     def limited_file_cli(self, limit, *args):
         from test_cli import CLI
