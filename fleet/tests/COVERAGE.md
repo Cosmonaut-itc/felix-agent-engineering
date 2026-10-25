@@ -1,8 +1,8 @@
-# SEN-3821, harness h2 sobre fase B e999
+# SEN-3821, harness h3 sobre fase B e999
 
 Sólo inspección estática. Ninguna prueba se ha ejecutado en este encargo.
 La suite pública está en `test_cli.py`, que incorpora cinco mixins y contiene
-además tres regresiones de infraestructura separadas del CLI. Se parte de las
+además cinco regresiones de infraestructura separadas del CLI. Se parte de las
 69 conductas escritas de e469add3: 16 heredadas, 21 de contenido, 18 de corrección r1,
 dos de temporales r2, once integrales y una focalizada de ciclo de vida.
 Sobre cde (80 métodos escritos, cero ejecutados de ese candidato), quedan 73
@@ -25,21 +25,25 @@ La ronda h1 preserva los 96 nombres, sin métodos añadidos. Cambia sólo las ba
 la evidencia/limpieza externa y dos cuerpos integrales: precondición sensible sin
 skip y cuenta/host reales sin skip por el home. Conserva todos sus oráculos y
 añade comprobaciones explícitas de salida y metadatos redactados. Cero ejecutados.
-H2 preserva esos 96 métodos y añade EXACTAMENTE tres de infraestructura: **99
-métodos escritos, 95 públicos previos + 3 de infraestructura + 1 focalizado;
-CERO ejecutados**. Es inventario textual, sin discovery ni garantía runtime.
+H2 preserva esos 96 métodos y añade tres de infraestructura: 99 escritos.
+H3 preserva los 99 nombres y añade EXACTAMENTE dos métodos de infraestructura:
+**101 escritos = 95 públicos + 5 de infraestructura + 1 focalizado; CERO
+ejecutados**. Los subcasos no son métodos adicionales. Es inventario textual,
+sin discovery ni garantía runtime.
 El APTO estático doble de producto e999 se conserva como antecedente. H1 no
-obtuvo APTO doble de harness; h2 requiere reviews nuevas. README se reconcilia
-sólo en CS_BASE/ubicación/retención, sin ampliar producto ni otros oráculos.
+obtuvo APTO doble de harness y h2 tampoco; h3 requiere reviews nuevas.
+README se reconcilia en conteo y garantías de enumeración/error/retención del
+harness, conservando CS_BASE/ubicación y sin ampliar producto ni otros oráculos.
 
-## Tres regresiones de infraestructura h2, sin ejecutar
+## Cinco regresiones de infraestructura h2/h3, sin ejecutar
 
 `ExternalFixtureEvidenceTests` usa el helper real sobre raíces físicas propias
 en CS_BASE y evidencia privada bajo la corrida. No importa ni ejecuta Fleet,
-no simula identidad, filesystem, cuenta ni host. Inyecta fallos sólo en la
-escritura del helper o su retirada. Sus datos binarios son diagnósticos propios,
-no respuestas CLI fabricadas. Son tres métodos descubribles por nombre, sin
-contarlos como tres conductas públicas:
+no simula case-sensitivity, identidad, cuenta ni host. Inyecta fallos sólo en la
+escritura del helper, enumeración de sus directorios o su retirada, y en stderr
+local. Sus datos binarios y metadatos de admisión describen recursos propios,
+no respuestas CLI fabricadas. Son cinco métodos escritos por nombre, sin
+contarlos como conductas públicas ni haber ejecutado discovery:
 
 - `test_h2_post_removal_persistence_preserves_snapshot_and_original_error`:
   tras snapshot sincronizado, elimina realmente la raíz y escribe sólo un
@@ -59,16 +63,36 @@ contarlos como tres conductas públicas:
   de raíz conservada, mapa/hashes/copias intactos, causa auténtica y ninguna
   confirmación de ausencia. El helper informa presencia con contenido incierto,
   sin prometer retención íntegra tras rmtree parcial.
+- `test_h3_enumeration_errors_prevent_removal_and_preserve_originals`:
+  en cápsulas, attempts y contenido de bundle, inyecta EIO y ENOENT de scandir
+  sobre directorios físicos propios con admisión atribuida y estado terminado.
+  Exige la misma excepción/errno, snapshot no acreditado, ninguna retirada y
+  bytes/identidades originales intactos. Tres omisiones de publicación exigida
+  (manifest de cápsula, intento atribuido y manifest de bundle) deben fallar
+  también. Un control de admisión refutada permite estado ausente y exige su
+  registro como ausencia opcional, con recibo/hash conservado.
+- `test_h3_stderr_failure_preserves_primary_error_and_snapshot`:
+  tras retirada real y fallo de persistir resultado y diagnóstico, falla write
+  o flush de stderr. Exige la misma excepción primaria, causa de persistencia
+  encadenada y referencias a ambas secundarias, ausencia física observada,
+  confirmación incierta y snapshot/mapa/hashes/objetos físicos intactos.
+
+Los escenarios h2 congelan sólo la primera imagen persistida y exigen exactamente
+una escritura del snapshot antes de retirar; una reescritura posterior no mueve
+el valor esperado. La comparación incluye bytes e identidad de los objetos.
 
 Cada invocación crea otra raíz exclusiva y acredita el probe sensible real.
-Los cuatro escenarios son seriales; no trasladan la suite pública al volumen.
+Los subcasos son seriales; no trasladan la suite pública al volumen.
 La evidencia se conserva incluso si falla una aserción. Las raíces del fallo
 previo y del fallo parcial quedan retenidas intencionalmente con los datos que
-realmente quedan; no hay cleanup automático que reintente borrar tras el error.
+realmente quedan. También quedan las nueve raíces de fallo de enumeración h3
+y el control refutado; los dos subcasos stderr observan raíces ya retiradas.
+Éste es el diseño de retención para una futura corrida, no recursos creados en
+este encargo. No hay cleanup automático que reintente borrar tras el error.
 Se imprimen sus rutas y evidencia para la recogida atribuida por el coordinador.
 Estas regresiones no miden EIO nativo, probabilidad de fallo, pérdida de energía
 ni durabilidad efectiva en Mini. Los fallos de persistencia productivos siguen
-con sus límites previos; h2 prueba exclusivamente este protocolo del harness.
+con sus límites previos; h2/h3 comprueban exclusivamente este protocolo del harness.
 
 ## Nueve regresiones nuevas para review5, sin ejecutar
 
@@ -252,7 +276,7 @@ diskutil info con Owners Enabled; stat no demuestra enforcement si Owners está
 desactivado. La suite no conecta para buscarlo. La cuota no es medición ni
 garantía de espacio suficiente para las tres fixtures CLI seriales, sus
 estados/cápsulas/workspaces/bundles, margen SQLite y los pequeños escenarios
-de infraestructura h2 con retenciones. No aloja la suite entera ni el estrés.
+de infraestructura h2/h3 con retenciones. No aloja la suite entera ni el estrés.
 
 De las 95 conductas públicas, sólo los dos métodos cuyo nombre contiene
 `case_sensitive_distinct` y el de cuenta/host usan esa excepción.
@@ -295,6 +319,14 @@ cuando subprocess los entrega en bytes; no se fabrica un rc ni un JSON de Fleet.
 Antes de borrar se copian los recibos de admisión, diagnósticos propios,
 supervisor.log, cápsulas y bundles publicados de los estados admitidos, con
 ruta relativa/tamaño/SHA256, y se anotan IDs/refutaciones y retornos de clientes.
+La enumeración usa scandir sin suprimir OSError, tanto en cápsulas como en
+attempts y contenido recursivo de bundles. Sólo un lstat previo con ENOENT puede
+registrar una ausencia opcional; ENOENT durante scandir es error. Una admisión
+atribuida exige cápsula/payload/manifest e intento enumerados. El último estado
+CLI auténtico terminado con colección sin bundle_seal_failed exige además
+manifest del bundle; no se fabrica ni se exige bundle a todo caso refutado o
+sin sellado. Rutas exigidas omitidas, lectura o copia incompleta impiden acreditar
+snapshot y borrar originales; se conserva la evidencia ya disponible.
 Las copias publicadas son archivos binarios privados numerados y conservan
 también los bytes si falló la redacción. `external-fixture.json` es el snapshot
 previo inmutable: fase, identidades/probe, mapa de origen, tamaños/hashes, IDs,
@@ -325,8 +357,11 @@ un fallo posterior puede encontrar la raíz ya ausente. No se afirma retención
 integral ni se fabrica root_absent. La confirmación queda `unconfirmed` ante error,
 incluso si un resultado parcial contiene bytes de una observación anterior.
 La excepción original se vuelve a lanzar. Si persiste mal también este diagnóstico,
-el error secundario se encadena a la excepción primaria, con ambas causas/estado
-en stderr y en el atributo external_fixture_failure de la excepción (Python3.9/3.14).
+el error secundario se encadena a la excepción primaria y se intenta stderr.
+Si write/flush de ese último canal falla, se entrega igualmente la primaria:
+external_fixture_failure conserva causas/estado en memoria y
+external_fixture_errors las referencias secundarias (Python3.9/3.14). Esto no
+acredita diagnóstico durable ni salida completa cuando ambos canales fallaron.
 El snapshot válido no se modifica por ninguno de esos intentos.
 
 Un error de atribución/cierre impide borrar: se intenta snapshot retained_uncertain
@@ -335,7 +370,7 @@ copia. Una precondición inválida antes de admitir sólo permite retirar su ra�
 recién creada si se acredita snapshot y se revalida identidad; un OSError previo
 conserva recursos propios. No se borra CS_BASE, montaje, hermano ni residuo histórico.
 El cleanup de setup incompleto sólo aplica al recurso propio con el mismo protocolo;
-no hay atexit ni reintento de retirada de las regresiones h2 tras su error esperado.
+no hay atexit ni reintento de retirada de las regresiones h2/h3 tras su error esperado.
 
 Los recursos retenidos permanecen en `<base>/fleet-cli-*`: `admission-*.json`
 contiene estado, exclusividad, ausencia inicial, IDs/refutación y respuesta;
@@ -433,8 +468,8 @@ deben discriminar la corrección; los negativos de infraestructura y ciclo
 pueden pasar en ambos heads. No ejecutar ni restaurar payloads grandes desde
 estos selectores. Después ejecutar las 95 conductas públicas y la focalizada
 conservada, con FLEET_TEST_RUN_DIR, FLEET_TEST_FIXTURE_BASE y FLEET_TEST_CS_BASE
-explícitos según este contrato, más las tres regresiones h2 de infraestructura.
-Un verde parcial con skips no acredita el conjunto de 99 métodos escritos.
+explícitos según este contrato, más las cinco regresiones h2/h3 de infraestructura.
+Un verde parcial con skips no acredita el conjunto de 101 métodos escritos.
 
 ## Correcciones integrales r3, todas pendientes de Mini
 
@@ -541,7 +576,7 @@ rechazos previos a BD, exclusión de estado/huella, metadatos saneados, recibo c
 IDs y cierre bloqueado hasta liberar. Registrar skips, tiempos, errores y bytes
 reales sin atribuirles aquí ejecución. El harness original tenía 68 conductas
 públicas y una focalizada; el candidato actual requiere las 95 públicas,
-las tres de infraestructura h2 y la focalizada completas. Los skips de aliases no cierran B1.
+las cinco de infraestructura h2/h3 y la focalizada completas. Los skips de aliases no cierran B1.
 
 ## Temporales del lector: regresiones r2 pendientes de Mini
 
@@ -605,7 +640,7 @@ Rojo esperado por inspección: b5ca4987 crea y retira temporales dentro del esta
 con diferencias de mtime/ctime. No se modifica su runner. Verde esperado: la
 copia candidata conserva inventario/metadatos y los exits 0/4/2 correspondientes.
 Ambas expectativas necesitan ejecución, también los 95 casos CLI previos,
-las tres regresiones h2 y la focalizada en los dos Python previstos.
+las cinco regresiones h2/h3 y la focalizada en los dos Python previstos.
 Los casos antiguos no sustituyen esta matriz.
 
 ## Fixtures escritas, pendientes de Mini

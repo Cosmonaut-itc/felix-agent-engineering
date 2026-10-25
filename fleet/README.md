@@ -412,8 +412,11 @@ fallo previo al entrypoint sin JSON y ciclo ignorado con estado inicializado.
 Ése era el inventario de review4: 86 métodos públicos y uno focalizado, 87.
 Fase B conserva los 87 nombres: 84 cuerpos sin cambios, tres oráculos o
 preparaciones modificados (ciclo ignorado, NOT_CREATED y cierre), y nueve
-regresiones nuevas de PI/F1. El candidato actual tiene 95 métodos públicos y
-uno focalizado: 96 escritos, cero ejecutados. El harness cambia ubicación, diagnósticos y atribución;
+regresiones nuevas de PI/F1: fase B tenía 96 escritos (95 públicos y uno
+focalizado). H2 añadió tres de infraestructura, llegando a 99; h3 preserva esos
+99 nombres y añade dos de infraestructura. El candidato actual tiene **101
+escritos = 95 públicos + 5 de infraestructura + 1 focalizado; cero ejecutados**.
+El harness cambia ubicación, diagnósticos, atribución y garantías de snapshot/error;
 conservar métodos no acredita equivalencia runtime. Las tres entradas funcionales son
 16.385 bytes, 516 bytes de base64 textual y 160.004 bytes binarios; mantienen
 exit 2/`source_reference_limit`, refutación previa a registro y timeout de 15 s.
@@ -432,7 +435,7 @@ físicas y propias suministradas por el coordinador al launcher autorizado:
   uid y exactamente 0700, sin symlinks ni fallback. Cada uno de los dos métodos
   `case_sensitive_distinct` y el de cuenta/host reales crea una raíz exclusiva
   `fleet-cli-<runId>-py<major>-<minor>-pid<pid>-<azar>` allí. Mide case-sensitivity
-  con objetos propios y conserva identidades distintas. Las regresiones h2 del
+  con objetos propios y conserva identidades distintas. Las regresiones h2/h3 del
   helper también crean recursos propios allí; el inventario actual está en COVERAGE.
 
 Sin variable válida se falla antes de mkdtemp. No hay fallback a T compartido,
@@ -491,16 +494,30 @@ Antes de retirar una raíz externa segura, la evidencia se copia a un directorio
 0700 `external-fixture-evidence-*` en FLEET_TEST_FIXTURE_BASE bajo runs/<id>:
 respuestas CLI originales, diagnósticos, publicaciones y snapshot/mapa con hashes,
 en archivos privados 0600 sin seguir symlinks. Archivos, directorio de evidencia
-y su padre se sincronizan antes del borrado. El snapshot `external-fixture.json`
+y su padre se sincronizan antes del borrado. La enumeración de cápsulas, attempts
+y contenido de bundles usa scandir y propaga sus errores, incluido ENOENT:
+no certifica un árbol vacío por fallo de lectura. Sólo la ausencia previa por
+lstat de una ruta opcional se registra como tal. Las admisiones atribuidas exigen
+cápsula/payload/manifest e intento; el estado CLI auténtico terminado con colección
+sin bundle_seal_failed exige manifest del bundle. No se inventan bundles para
+casos refutados o sin sellado. Una enumeración/copia incompleta o ruta exigida
+omitida impide acreditar snapshot y retirar originales; no se copia ledger ni entorno.
+El snapshot `external-fixture.json`
 y sus copias son inmutables; `removal-result.json` registra aparte la ausencia
 observada. Resultado ausente/parcial o persistencia fallida deja confirmación
 incierta. `cleanup-failure.json` conserva causa y estado observado sin reemplazar
-el snapshot ni ocultar la excepción original; si falla también, ambas causas se
-declaran y encadenan. Un fallo previo impide borrar, rmtree fallido puede dejar
+el snapshot ni ocultar la excepción original; si falla también, la secundaria se
+encadena y se intenta stderr. Aunque fallen write/flush de stderr, el llamador
+recibe la misma primaria con causas secundarias disponibles en memoria; no se
+declara diagnóstico durable ni cierre confirmado por ello. Un fallo previo impide borrar, rmtree fallido puede dejar
 datos parciales y el fallo posterior puede encontrar la raíz ausente. No se
 promete retención íntegra tras intentar retirarla ni se reintenta borrar trabajo
-incierto. Las regresiones h2 conservan intencionalmente sus raíces de fallo previo
-y parcial para recogida atribuida, con evidencia bajo la corrida.
+incierto. Las regresiones h2 congelan la primera imagen y exigen una sola escritura
+de snapshot antes del borrado, conservando bytes/hashes e identidad física.
+H2/h3 prevén retener intencionalmente raíces de fallo previo/parcial y de
+enumeración, además del control refutado, para recogida atribuida con evidencia
+bajo la corrida. Los fallos stderr comprueban raíces ya ausentes y snapshot intacto.
+Estos recursos sólo se crearían al ejecutar; aquí no se ha ejecutado ningún caso.
 En `<base>/fleet-cli-*` quedan
 `admission-*.json`, `cli-json-*.json`, `closed-database-preparation.json` cuando
 corresponda y el estado/cápsulas/intentos originales. El caso sin JSON conserva
@@ -531,4 +548,4 @@ ni su causa SQLite. La lectura PAO69 acreditó un enlace ajeno con EACCES en un
 directorio PATH accesible y otro dangling con ENOENT; no conserva el stat
 histórico de las 61 trazas PI ni es un replay de ellas. Los límites de volumen
 case-sensitive y de ubicación de metadatos se resuelven estáticamente en h1;
-su verificación espera volumen certificado y APTO doble de harness h2.
+su verificación espera volumen certificado y APTO doble de harness h3.
