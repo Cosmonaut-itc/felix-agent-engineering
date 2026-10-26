@@ -43,8 +43,15 @@ respuesta.
 
 ## Unidades
 
-Entrega el trabajo en **unidades**: cada una es un PR desde `main` que se
-prueba solo y puede llegar a producción sin esperar a otra.
+Entrega el trabajo en **unidades**: cada una es un PR hacia `main`, o la
+rama de entrega del repositorio, que se prueba solo y puede llegar a
+producción sin esperar a otra.
+
+Si una spec tiene tickets que necesitan salir juntos por un contrato,
+schema o migración compartidos, sigue la referencia `implement-spec` con el
+[flujo de acumulador](references/acumulador.md). El conjunto es una unidad
+de entrega y cada ticket conserva su prueba y review. El tamaño por sí solo
+no pide acumulador: los tickets independientes siguen en PRs separados.
 
 - Un bug que afecta producción es la primera unidad. Abre su PR en cuanto
   pasan su prueba y su review, antes de empezar cualquier mejora.
@@ -63,8 +70,8 @@ Orchestrate aunque el playbook elegido sea otro:
    de `show-me-your-work`.
 2. `units.tsv` lleva una fila por unidad, actualizada con `orch`. Si la unidad
    tiene ticket, su `id` es el del ticket, como `SEN-3480`.
-3. Escribe en `decisions.tsv` cada decisión, lanzamiento, ronda, veredicto y
-   pausa, como fila nueva.
+3. Escribe en `decisions.tsv` cada decisión, lanzamiento, ronda, veredicto,
+   merge y pausa, como fila nueva.
 
 El estado de las unidades va sólo en esas tablas. Un `todo.md` lleva sólo los
 pasos del playbook; no uses `state.md`, tablas propias ni el `progress.md` de
@@ -102,9 +109,9 @@ T3 que lo toma; en un programa, el hilo del orquestador.
    `Tomado por la sesión <slug>: hilo «<título>», rama <rama>, worktree <ruta>, store <ruta o «sin store»>.`
 4. **Comprobar.** Linear no tiene escritura condicional: si dos sesiones
    toman el mismo ticket, gana la última etiqueta. Vuelve a leer el ticket
-   después de tomarlo y antes de cada lanzamiento, ronda, commit o push
-   sobre él. Si la etiqueta ya no es la tuya, detén ese trabajo, comenta lo
-   que dejaste y avisa al usuario.
+   después de tomarlo y antes de cada lanzamiento, ronda, commit, push o
+   merge sobre él. Si la etiqueta ya no es la tuya, detén ese trabajo,
+   comenta lo que dejaste y avisa al usuario.
 5. **Soltar.** Si dejas un ticket sin terminar, quita tu etiqueta con
    `removeLabels` y comenta `Soltado por la sesión <slug>: <motivo y estado>.`
    Un ticket terminado conserva la etiqueta, porque tu sesión atiende su
@@ -125,6 +132,7 @@ T3 que lo toma; en un programa, el hilo del orquestador.
 | Bug | playbook Bug fix | `diagnosing-bugs`, `systematic-debugging` |
 | Prototipo | playbook Prototype | `prototype` de Matt Pocock |
 | Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
+| Implementar tickets acoplados | Referencia `implement-spec` con [Acumulador](references/acumulador.md) | Un PR hacia `main` por ticket |
 | Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |
 | Pausar o retomar | playbooks Pause safely y Session pickup | `handoff` |
 | Escribir skills o `AGENTS.md` | playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
@@ -182,11 +190,13 @@ siendo obligatorios.
   servicios, y las rutas de alto riesgo del repositorio.
 - **Rondas.** Una review converge cuando cada ronda trae menos hallazgos y
   ninguno abre un caso nuevo en reglas que una ronda anterior ya corrigió.
-  Si una ronda abre ese caso, ataca la premisa
-  (`principle-attack-the-premise`): quita código o cambia el enfoque antes de
-  la siguiente ronda. Si la ronda 3 de un mismo cambio no da APTO, pausa:
-  entrega al usuario lo que sigue abierto y una propuesta para recortar
-  alcance, y espera su respuesta antes de la ronda 4.
+  Si una ronda no converge, o la ronda 3 no da APTO, lee y aplica
+  `principle-attack-the-premise` de pstack y **Autonomía** antes de la
+  siguiente corrección. Un mismo cambio tiene hasta ocho rondas sin
+  autorización adicional, contando las reviews delta y las renovaciones
+  por cambio de head. Antes de la ronda 9 pausa, aunque la ronda 8 haya
+  dado APTO: entrega al usuario lo que sigue abierto y el replanteamiento
+  realizado.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
   que entrega dos candidatos estructuralmente distintos. Tú eliges y no hay
@@ -204,12 +214,45 @@ siendo obligatorios.
 - Si no puede correr ningún revisor independiente, la puerta sigue cerrada,
   como dice `poteto-mode`. Tu propia lectura no cuenta como review.
 
+## Merge
+
+Al abrir el PR de tu unidad, continúa hasta mergearlo con el
+[procedimiento de merge](references/merge.md), sin esperar otro pedido.
+También se aplica al acumulador y a los PR de la cola de tu programa.
+Mergea con APTO y verde sobre el head que aterriza, y verificado si el
+merge despliega o el cambio es de alto riesgo. La autoridad cubre
+los efectos que la automatización del merge dispara por sí sola, como
+despliegues, migraciones, borrados y escrituras en sistemas de cliente.
+Ejecutarlos a mano sigue las pausas de **Autonomía**. El procedimiento
+fija esas condiciones y los PR que se detienen en merge-ready, como los
+que tocan CI, dependencias o la gobernanza de agentes.
+
 ## Autonomía
 
-Manda la autorización vigente del contrato. Además de la lista «Always
-pause» de pstack, pausa antes de:
+Manda la autorización vigente del contrato. Decide el enfoque y recorta el
+trabajo de implementación dentro del objetivo autorizado siguiendo los
+principios y playbooks de pstack. Si un playbook pide al operador elegir
+entre otra ronda o un alcance menor tras intentos fallidos, como
+Autopilot-full 4, decide tú dentro del límite de **Rondas**. Registra la
+evidencia y la decisión, informa y continúa sin esperar autorización.
+Conserva los requisitos explícitos y la condición de terminado, las reviews
+y los gates, y las demás pausas.
 
-- hacer push a `main` o mergear cuando eso dispare un deploy;
+Al cambiar de enfoque, recortar el trabajo o dividir el cambio, incluido
+elegir un alcance menor:
+
+- En alto riesgo, el enfoque nuevo pasa por **Diseño disputado** antes de
+  implementarse.
+- El brief de cada ronda siguiente lleva el brief original y su condición
+  de terminado sin reescribir, además de tu decisión registrada. El
+  revisor juzga contra el original.
+- El conteo de rondas sigue. Cada parte de una división es una unidad de
+  **Unidades** o entra al acumulador.
+
+Fuera de la autoridad de **Merge** y de lo ya autorizado por el usuario,
+además de «Always pause» de pstack, pausa antes de:
+
+- hacer push directo a `main` o ejecutar un comando de deploy;
 - escribir en ICG u otro sistema de un cliente en producción;
 - actualizar el tracker más allá de lo que prescriben el flujo del
   repositorio y **Tickets de Linear**;
@@ -217,11 +260,21 @@ pause» de pstack, pausa antes de:
   agentes;
 - implementar UI/UX sin un prototipo aprobado por el dueño, como pide el
   routing;
-- la ronda 4 de review de un mismo cambio, como dice **Rondas**.
+- la ronda 9 de review de un mismo cambio, como dice **Rondas**.
 
 El resto del trabajo local y reversible avanza sin preguntar.
 
 ## Respuesta
+
+Toda pregunta que necesite una respuesta, decisión o autorización de Felix
+se hace con la herramienta de preguntas con opciones del entorno. Usa
+`AskUserQuestion` en Claude Code; en Codex, `request_user_input_async` o
+`request_user_input`, según disponibilidad y restricciones del modo actual.
+Incluye el contexto necesario y dos o tres opciones claras, con la
+recomendada primero. Conserva las autorizaciones vigentes y espera la
+respuesta antes de actuar sobre una decisión pendiente. Si no hay una
+herramienta de preguntas utilizable, explica esa limitación y presenta las
+opciones numeradas en texto.
 
 Responde en español con las reglas de «Writing the reply» de `poteto-mode`:
 frases cortas, sin raya larga y cada afirmación con su evidencia o su

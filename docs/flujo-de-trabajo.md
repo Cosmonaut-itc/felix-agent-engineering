@@ -20,7 +20,7 @@ repositorio declara. Ante un conflicto manda la capa de más arriba.
 | Entrypoints | Cargan el contrato y activan `felix-mode` con la sección «Flujo de ingeniería». | [`CLAUDE.md`](../configs/claude/CLAUDE.md) y [`AGENTS.md`](../configs/codex/AGENTS.md). |
 | `felix-mode` | Cómo encajan pstack, el contrato y Matt Pocock: precedencia, sustituciones, revisión y pausas. | [`skills/felix-mode`](../skills/felix-mode/SKILL.md). |
 | pstack | Playbooks de ejecución, principios y verificación sobre el artefacto real. | Plugin `pstack@pstack-claude`, del upstream [michael-denyer/pstack-claude](https://github.com/michael-denyer/pstack-claude). |
-| Matt Pocock | Producto y planificación: entrevistas, specs, tickets y triage. | [`vendor/mattpocock`](../vendor/mattpocock/), copia del último release de [mattpocock/skills](https://github.com/mattpocock/skills). |
+| Matt Pocock | Producto y planificación, más el grafo de tickets y acumulador de `implement-spec` adaptado por felix-mode. | [`vendor/mattpocock`](../vendor/mattpocock/), copia del último release de [mattpocock/skills](https://github.com/mattpocock/skills). |
 | Transporte | Cómo llega un encargo a otro runtime y cómo se recoge. | [`native-subagents.md`](native-subagents.md), [`t3-delegation.md`](t3-delegation.md), [`codex-delegation.md`](../configs/claude/docs/codex-delegation.md), [`claude-workers.md`](../configs/codex/docs/claude-workers.md) y [`opencode-workers.md`](opencode-workers.md). |
 
 La precedencia de `felix-mode` es la misma: usuario, `AGENTS.md` del
@@ -54,9 +54,9 @@ que el encargo lo pida.
 | 7. Implementar | Por encima del umbral de «Delegación» del routing, un trabajador escribe el código. En bugs, el test que falla va antes del arreglo. | `tdd`, `swarm` | Agente |
 | 8. Medir | Antes de creer o reportar un número de rendimiento. | `benchmark-checklist` | Agente |
 | 9. Verificar | Prueba sobre el artefacto real con la skill del repositorio. Si falta, sigue sus docs y propone crearla. | `verify` del repositorio, `create-verification-skill` | Agente |
-| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda, y la ronda 4 espera al dueño. | `interrogate` | Agente |
-| 11. Abrir el PR | Un PR por unidad. Un bug de producción sale en el suyo antes que cualquier mejora. Limpia código y prosa y escribe título y descripción. | `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
-| 12. Llevar a merge | CI, comentarios y conflictos. Aterrizar un stack verde. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Tú lo pides |
+| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda. Si la ronda 3 no da APTO, ataca la premisa antes de seguir. Hasta ocho rondas sin autorización adicional; la ronda 9 espera al dueño. | `interrogate` | Agente |
+| 11. Abrir el PR | Un PR por unidad de entrega. Los tickets acoplados se reúnen en un acumulador. Un bug de producción sale en el suyo antes que cualquier mejora. | `implement-spec` adaptada, `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
+| 12. Llevar a merge | CI, comentarios y conflictos. Mergea solo cuando todas las reviews dan APTO y los checks están verdes. Si el merge despliega o el cambio es de alto riesgo, antes un verificador independiente corre el cambio. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Agente |
 | 13. Cerrar | Informe con evidencia y etiquetas: medido, inferido o suposición. Bitácora en trabajo largo. | `show-me-your-work` | Agente |
 
 Los playbooks de pstack que más se usan son Bug fix, Perf issue, Hillclimb,
@@ -73,6 +73,23 @@ del hilo dice en palabras simples el tema que implementa. Lo detallan las seccio
 «Programas» y «Tickets de Linear» de
 [`felix-mode`](../skills/felix-mode/SKILL.md).
 
+Si varios tickets necesitan salir juntos por un contrato, schema o migración,
+`implement-spec` aporta una rama de integración y un PR acumulador. Cada
+trabajador parte de un SHA fijo en su worktree y cada ticket pasa prueba y
+review antes de entrar. Un único integrador incorpora los resultados de uno
+en uno y comprueba sus interacciones. El acumulador recibe los gates del
+conjunto y una review final antes de mergearse automáticamente. Los tickets
+independientes conservan PRs separados. El procedimiento está en
+[Acumulador](../skills/felix-mode/references/acumulador.md).
+
+El agente lleva sus PRs y los de su cola hasta merge sin otro pedido. Usa
+Babysit para resolver bloqueos y Shipping para aterrizar el head aprobado.
+Un pedido de consultar estado o atender comentarios mantiene ese alcance.
+El [procedimiento de merge](../skills/felix-mode/references/merge.md) fija
+los gates, la renovación del APTO, el destino y la verificación posterior.
+También fija los PRs que paran en merge-ready y te esperan, como los que
+tocan CI, dependencias o la gobernanza de agentes.
+
 ## Revisión
 
 | Nivel | Cuándo | Cómo |
@@ -87,16 +104,35 @@ lectura propia del orquestador no cuenta como review.
 
 ## Pausas
 
-El agente avanza sin preguntar en trabajo local y reversible. Pausa antes de:
+Con `felix-mode`, el agente decide cambios de enfoque y recortes del trabajo
+de implementación siguiendo pstack, dentro del objetivo autorizado. Después
+de un cambio de enfoque o un recorte, las reviews juzgan contra tu brief
+original. En alto riesgo, el enfoque nuevo pasa antes por diseño disputado.
+La sección **Autonomía** de la skill fija esa autoridad y sus límites.
 
-- hacer push a `main` o mergear cuando eso dispare un deploy;
+El agente avanza sin preguntar en trabajo local y reversible. El merge que
+autoriza la sección **Merge** de la skill y los efectos automáticos de ese
+merge tampoco esperan. Fuera de eso y de lo ya autorizado por el usuario,
+pausa antes de:
+
+- hacer push directo a `main` o ejecutar un comando de deploy;
 - escribir en ICG u otro sistema de un cliente en producción;
 - actualizar el tracker más allá de lo que prescriben el repositorio y la
   sección «Tickets de Linear» de `felix-mode`;
 - instalar dependencias, cambiar CI o tocar la configuración global de agentes;
 - implementar UI/UX sin un prototipo aprobado;
-- la ronda 4 de review de un mismo cambio;
-- un force push, un deploy, un borrado de datos o un mensaje a un cliente.
+- la ronda 9 de review de un mismo cambio;
+- un force push a una rama compartida, un borrado de datos o un mensaje a un cliente.
+
+## Preguntas al dueño
+
+Con `felix-mode`, toda pregunta que requiera una respuesta o decisión de
+Felix usa la herramienta de preguntas con opciones del entorno, como
+establece la sección **Respuesta** de `felix-mode`. Presenta dos o tres
+opciones claras, con la recomendada primero. Si la herramienta no está
+disponible o no admite esa pregunta en el modo actual, explica la
+limitación y muestra las opciones numeradas en texto. Se conservan las
+autorizaciones vigentes.
 
 ## Lo que hace el dueño
 
@@ -108,7 +144,8 @@ El agente avanza sin preguntar en trabajo local y reversible. Pausa antes de:
 
 ## Skills que invoca el dueño
 
-Estas skills no las dispara ningún playbook. Corren cuando las pides.
+Estas skills corren cuando las pides, salvo los casos automáticos que indica
+la tabla o que exige el `AGENTS.md` del repositorio.
 
 | Skill | Para qué |
 |-------|----------|
@@ -126,7 +163,8 @@ Estas skills no las dispara ningún playbook. Corren cuando las pides.
 | `pstack:poteto-help`, `ask-matt` | Recomiendan qué skill o playbook usar. |
 | `setup-matt-pocock-skills` | Configura un repositorio para las skills de planificación: tracker, etiquetas y docs de dominio. |
 | `improve-codebase-architecture`, `codebase-design` | Buscan oportunidades de profundizar módulos y dan el vocabulario para diseñarlos. |
-| `implement-spec`, `retro` | Implementan una spec y hacen la retrospectiva de una sesión, cuando el `AGENTS.md` del repositorio las pide. |
+| `implement-spec` | Implementa tickets acoplados con el flujo de acumulador de felix-mode, o cuando la pides o el `AGENTS.md` la exige. |
+| `retro` | Hace la retrospectiva de una sesión cuando la pides o el `AGENTS.md` la exige. |
 | `wizard` | Genera un asistente en bash para pasos que sólo puede hacer una persona. |
 
 ## Duplicados retirados
