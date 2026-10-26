@@ -1,9 +1,10 @@
-# SEN-3820 r4 — matriz pública, cero ejecución
+# SEN-3820 r5 — matriz pública, cero ejecución
 
 Inventario obtenido por texto, sin discovery/imports: **64 métodos** en un único
 TestCase `FleetCLI`:16 base en `test_cli.py`,28 en `Core3820Cases`,20 en
 `Operator3820Cases`. Se conservan íntegros los62 métodos de d5 (16+28+18), sus
-setups/settles/oráculos; r4 añade dos. Los53 r1, cinco r2, cuatro r3 y refuerzo C02
+setups/settles/oráculos; r4 añadió dos y r5 corrige sólo el oráculo temporal del
+primer método r4, sin añadir métodos. Los53 r1, cinco r2, cuatro r3 y refuerzo C02
 quedan conservados. Discovery futuro sólo `test_cli.py`, según README.
 **34 filas padre =26 definidas +6 parciales/condicionales +2 positivas abiertas**.
 Los3 requisitos adicionales no cambian esa partición. No se cuentan métodos como
@@ -101,8 +102,8 @@ Se mantienen las27 invocaciones subTest añadidas en r2 y todos los demás casos
 
 ## Regresiones r4 adicionales — R3-A01
 
-Dos métodos nuevos en `operator3820_cases.py`, ambos con prefijo `test_`, más el
-helper de recorrido `r4_operator_pages`. No se modifica un método/helper anterior.
+Dos métodos añadidos en r4 a `operator3820_cases.py`, ambos con prefijo `test_`, más el
+helper de recorrido `r4_operator_pages`. R5 sólo modifica el primero de esos métodos.
 Regla pública y fuentes completas en [SEN-3820-r4.md](../SEN-3820-r4.md).
 El discriminante se deduce de leer d5 y el oráculo; no hay baseline FAIL ni PASS
 medidos. La ausencia global sólo se exige para selectores secretos; credenciales
@@ -118,6 +119,15 @@ el segundo no usa subTest. Se conservan62 métodos, cuatro adiciones r3/29 subTe
 cinco r2/27 subTest y las34 filas26/6/2, más A-W1/B-W1/B-W2. **0 ejecutados**,
 incluido d5. Una historia cuyo productor ya borró un literal no se repara aquí;
 el caso posterior declara credenciales tras producir historia auténtica intacta.
+
+Corrección R4-A01/F1 en [SEN-3820-r5.md](../SEN-3820-r5.md): evento y recibo tienen
+capturas de tiempo independientes. El primer método valida por separado sus tiempos
+UTC con microsegundos en esta fixture y conserva cada valor desde su propio origen,
+antes/después de declarar credenciales, en replay/status y todos los recorridos de
+páginas pertinentes. No exige igualdad, orden ni delta entre relojes. Mantiene las
+igualdades de destino/decisión/acción/actor/motivo/revisión, enlace audit_seq y todos
+los asserts posteriores de privacidad, binding y ausencia de efectos. Los64 métodos
+y los2 subTest r4 se conservan, **0 ejecutados**; N2 de credenciales cortas sigue diferido.
 
 ## Prerrequisitos externos y registro futuro
 

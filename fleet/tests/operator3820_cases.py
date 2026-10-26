@@ -404,6 +404,8 @@ class Operator3820Cases:
         return expected
 
     def test_r4_a01_denial_literals_and_copied_data_before_and_after_declaration(self):
+        from datetime import datetime
+
         self.assertEqual(list(self.project.iterdir()), [])
         self.assertFalse(any((p / ".git").exists() for p in (self.project, *self.project.parents)))
         declared = {"R4_API": "fleet-job-api@1", "R4_CODE": "unknown_job", "R4_EFFECT": "no_capacity_change",
@@ -435,6 +437,8 @@ class Operator3820Cases:
                 denied = producer(*request, code=2)
                 changed = producer("release", "--operation-id", "r4-bound", "--reason", "fixture audit",
                                    declared["R4_JOB_B"], *selectors[1:], "--backend", declared["R4_API"], code=5)
+                recorded_event_at = next(e for e in producer("status", "--limit", "100")["audit_events"]
+                                         if e["seq"] == denied["receipt"]["audit_seq"])["at"]
                 if timing == "after":
                     # Genuine earlier ledger history, never seeded or rewritten.
                     self.assertEqual(denied["receipt"]["target"]["job"], declared["R4_JOB_A"])
@@ -444,6 +448,7 @@ class Operator3820Cases:
                 exact = public("status", "--operation-id", "r4-bound")
                 replay = public(*request, code=2)
                 receipt = exact["receipt"]
+                self.assertEqual(receipt["at"], denied["receipt"]["at"])
                 self.assertEqual((exact["status"], replay["status"], replay["binding"]), ("committed", "committed", "replay"))
                 self.assertEqual(replay["error"], {"code": "unknown_job", "effects": "no_capacity_change"})
                 self.assertEqual(replay["receipt"], receipt)
@@ -461,8 +466,15 @@ class Operator3820Cases:
                 self.assertEqual(receipt["actor"]["uid"], os.getuid())
                 listing = self.r4_operator_pages(public)
                 event = next(e for e in listing["audit_events"] if e["seq"] == receipt["audit_seq"])
-                for field in ("target", "decision", "action", "actor", "reason", "at", "decision_revision"):
+                for field in ("target", "decision", "action", "actor", "reason", "decision_revision"):
                     self.assertEqual(event[field], receipt[field])
+                # These are two independent now() captures. Validate each value
+                # in this fixture and preserve its own history, never compare clocks.
+                for timestamp in (event["at"], receipt["at"]):
+                    self.assertIsInstance(timestamp, str)
+                    parsed = datetime.strptime(timestamp, "%Y-%m-%dT%H:%M:%S.%fZ")
+                    self.assertEqual(parsed.isoformat(timespec="microseconds") + "Z", timestamp)
+                self.assertEqual(event["at"], recorded_event_at)
                 conflict = next(e for e in listing["audit_events"] if e["seq"] == changed["audit_seq"])
                 self.assertEqual(conflict["decision"], "operation_conflict")
                 self.assertEqual(conflict["request"], dict(target, action="release", operation_id="r4-bound",
@@ -477,7 +489,11 @@ class Operator3820Cases:
                 rejected = public("release", "--operation-id", "unknown_job", "--reason", "unknown_job",
                                   *selectors, code=2)
                 self.assertEqual(rejected["error"], {"code": "credential_in_operator_request", "effects": "no_capacity_change"})
-                event = next(e for e in self.r4_operator_pages(public)["audit_events"] if e["seq"] == rejected["audit_seq"])
+                later = self.r4_operator_pages(public)
+                self.assertEqual(next(e for e in later["audit_events"]
+                                      if e["seq"] == receipt["audit_seq"])["at"], recorded_event_at)
+                self.assertEqual(later["operations"][0]["receipt"], receipt)
+                event = next(e for e in later["audit_events"] if e["seq"] == rejected["audit_seq"])
                 self.assertEqual((event["operation_id"], event["reason"], event["request"]["operation_id"],
                                   event["request"]["reason"]), ("[REDACTED]",) * 4)
                 self.assertEqual(public("status", "--operation-id", "unknown_job", code=2)["error"]["code"], "operation_not_found")
