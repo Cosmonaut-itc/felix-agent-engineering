@@ -54,10 +54,10 @@ Las partes y las skills de cada fase están en el
   deploy. Si despliega o es de alto riesgo, antes un verificador
   independiente corre el cambio. Un PR que toca CI, dependencias o la
   gobernanza de agentes espera mi OK, igual que ejecutar un comando de
-  deploy. Después, el
-  agente verifica el cambio como indica el repositorio. Donde el `AGENTS.md`
-  lo pide, un trabajador corre `retro` sobre la sesión y sus candidatas
-  vuelven a Planeación como issues `needs-triage`.
+  deploy. Después, el agente verifica el cambio como indica el
+  repositorio. Donde el `AGENTS.md` lo pide, un trabajador corre `retro`
+  sobre la sesión y sus candidatas vuelven a Planeación como issues
+  `needs-triage`.
 
 ### De dónde viene cada idea
 

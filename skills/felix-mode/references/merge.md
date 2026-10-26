@@ -5,8 +5,9 @@ Estos PR se detienen en merge-ready y esperan autorización explícita:
 
 - un PR ajeno, fuera de la cola o reservado por el usuario;
 - un PR cuyo diff toca CI, manifiestos o lockfiles de dependencias, o la
-  gobernanza de agentes, como skills, configuración de agentes,
-  `AGENTS.md` o `CLAUDE.md`.
+  gobernanza de agentes, como instrucciones, contrato, routing, skills,
+  hooks, configuración o instaladores de agentes, incluidos `AGENTS.md` y
+  `CLAUDE.md`.
 
 Un pedido de consultar estado o atender comentarios conserva su alcance.
 Una restricción del usuario o del `AGENTS.md` conserva su precedencia.
@@ -54,8 +55,9 @@ Estas condiciones deben cumplirse juntas:
   ni gates omitidos. Babysit confirma merge-ready en el forge activo, sin
   conflictos ni hallazgos reales pendientes. Cero checks configurados no
   sustituye la verificación del repositorio.
-- **Verificado.** Si el merge dispara un deploy o el cambio es de alto
-  riesgo, un verificador que no escribió el código corre el cambio sobre
+- **Verificado.** Si el merge despliega, de inmediato o por una
+  automatización programada que identifica el paso 1, o el cambio es de
+  alto riesgo, un verificador que no escribió el código corre el cambio sobre
   ese head como pide Shipping 1 y da `PASS` o `PASS+NOTES`. Usa el modelo
   de `swarm workers` del routing.
 

@@ -220,7 +220,7 @@ Al abrir el PR de tu unidad, continúa hasta mergearlo con el
 [procedimiento de merge](references/merge.md), sin esperar otro pedido.
 También se aplica al acumulador y a los PR de la cola de tu programa.
 Mergea con APTO y verde sobre el head que aterriza, y verificado si el
-merge dispara un deploy o el cambio es de alto riesgo. La autoridad cubre
+merge despliega o el cambio es de alto riesgo. La autoridad cubre
 los efectos que la automatización del merge dispara por sí sola, como
 despliegues, migraciones, borrados y escrituras en sistemas de cliente.
 Ejecutarlos a mano sigue las pausas de **Autonomía**. El procedimiento
@@ -238,7 +238,8 @@ evidencia y la decisión, informa y continúa sin esperar autorización.
 Conserva los requisitos explícitos y la condición de terminado, las reviews
 y los gates, y las demás pausas.
 
-Al cambiar de enfoque o dividir el cambio:
+Al cambiar de enfoque, recortar el trabajo o dividir el cambio, incluido
+elegir un alcance menor:
 
 - En alto riesgo, el enfoque nuevo pasa por **Diseño disputado** antes de
   implementarse.

@@ -105,10 +105,10 @@ lectura propia del orquestador no cuenta como review.
 ## Pausas
 
 Con `felix-mode`, el agente decide cambios de enfoque y recortes del trabajo
-de implementación siguiendo pstack, dentro del objetivo autorizado. En alto
-riesgo, el enfoque nuevo pasa antes por diseño disputado, y las reviews
-siguientes juzgan contra tu brief original. La sección **Autonomía** de la
-skill fija esa autoridad y sus límites.
+de implementación siguiendo pstack, dentro del objetivo autorizado. Después
+de un cambio de enfoque o un recorte, las reviews juzgan contra tu brief
+original. En alto riesgo, el enfoque nuevo pasa antes por diseño disputado.
+La sección **Autonomía** de la skill fija esa autoridad y sus límites.
 
 El agente avanza sin preguntar en trabajo local y reversible. El merge que
 autoriza la sección **Merge** de la skill y los efectos automáticos de ese
@@ -128,10 +128,11 @@ pausa antes de:
 
 Con `felix-mode`, toda pregunta que requiera una respuesta o decisión de
 Felix usa la herramienta de preguntas con opciones del entorno, como
-establece la sección **Respuesta** de `felix-mode`. Presenta dos o tres opciones claras,
-con la recomendada primero. Si la herramienta no está disponible o no
-admite esa pregunta en el modo actual, explica la limitación y muestra las
-opciones numeradas en texto. Se conservan las autorizaciones vigentes.
+establece la sección **Respuesta** de `felix-mode`. Presenta dos o tres
+opciones claras, con la recomendada primero. Si la herramienta no está
+disponible o no admite esa pregunta en el modo actual, explica la
+limitación y muestra las opciones numeradas en texto. Se conservan las
+autorizaciones vigentes.
 
 ## Lo que hace el dueño
 

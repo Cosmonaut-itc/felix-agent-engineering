@@ -198,7 +198,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr><td><b>Prototype</b></td><td>Un boceto desechable para decidir, o para observar en vez de preguntar.</td><td>Dos bocetos de una pantalla antes de implementarla.</td></tr>
       <tr><td><b>Investigation</b></td><td>Una pregunta de sólo lectura con respuesta citada.</td><td><q>¿Cómo funciona X?</q>, <q>¿por qué se hizo Y así?</q></td></tr>
       <tr><td><b>Babysit</b></td><td>Llevar un PR a mergeable: CI, comentarios y conflictos.</td><td><q>Cuida el PR 123.</q></td></tr>
-      <tr><td><b>Shipping</b></td><td>Verificar un stack verde y aterrizarlo de abajo arriba.</td><td><q>Aterriza el stack.</q> Mergea sólo con APTO y verde, y con un verificador independiente si despliega. Un comando de deploy pausa.</td></tr>
+      <tr><td><b>Shipping</b></td><td>Verificar un stack verde y aterrizarlo de abajo arriba.</td><td><q>Aterriza el stack.</q> Mergea sólo con APTO y verde, y con un verificador independiente si despliega o es de alto riesgo. Un comando de deploy pausa.</td></tr>
       <tr><td><b>Pause safely</b> y <b>Session pickup</b></td><td>Pausar trabajo para retomarlo, o tomar el de otro agente.</td><td>Sustituyen a <code>handoff</code>.</td></tr>
       <tr><td><b>Multi-phase plan</b></td><td>Sólo cuando pides un plan.</td><td>La planificación normal sigue en Matt Pocock.</td></tr>
       <tr><td><b>figure-it-out</b> (skill)</td><td>Una migración grande o trabajo que revisas al volver.</td><td>Diseña un playbook propio y deja bitácora.</td></tr>
@@ -354,7 +354,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <li>Lo irreversible de pstack: force push a ramas compartidas, borrar datos y mensajes a clientes.</li>
     </ul>
   </div>
-  <p>El agente decide cambios de enfoque y recortes del trabajo de implementación siguiendo pstack, dentro del objetivo autorizado. En alto riesgo, el enfoque nuevo pasa antes por diseño disputado, y las reviews siguientes juzgan contra tu brief original. La sección Autonomía de <code>felix-mode</code> fija los límites.</p>
+  <p>El agente decide cambios de enfoque y recortes del trabajo de implementación siguiendo pstack, dentro del objetivo autorizado. Después de un cambio de enfoque o un recorte, las reviews juzgan contra tu brief original. En alto riesgo, el enfoque nuevo pasa antes por diseño disputado. La sección Autonomía de <code>felix-mode</code> fija los límites.</p>
 </section>
 
 <section id="archivos">
