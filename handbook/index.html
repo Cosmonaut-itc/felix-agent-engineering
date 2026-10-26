@@ -208,7 +208,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <section id="revision">
   <h2>Revisión</h2>
-  <p class="lead">Ningún otro modelo revisa cambios. Antes de cada ronda, el orquestador clasifica el diff completo como normal o alto riesgo, veta los hallazgos y dice qué nivel aplicó y por qué. Las reviews delta y las renovaciones cuentan como rondas. La ronda 4 requiere tu autorización, aunque la tercera fuera APTO y después cambiara el head.</p>
+  <p class="lead">Ningún otro modelo revisa cambios. Antes de cada ronda, el orquestador clasifica el diff completo como normal o alto riesgo, veta los hallazgos y dice qué nivel aplicó y por qué. Las reviews delta y las renovaciones cuentan como rondas. Puede ejecutar hasta ocho rondas sin autorización adicional. La ronda 9 requiere tu autorización, aunque la octava fuera APTO y después cambiara el head.</p>
   <div class="grid g2">
     <div class="card"><span class="tag">Normal</span><h3>Un revisor astra en high</h3><p>gpt-6-astra en <code>high</code>, con contexto nuevo y evidencia primaria. Cumple los pasos donde pstack pide <code>interrogate</code> o <code>thermos</code>.</p></div>
     <div class="card"><span class="tag">Alto riesgo</span><h3>astra y Opus por separado</h3><p><code>interrogate</code> con gpt-6-astra en high como Reviewer A y opus-5.5 en high. Ejemplos: permisos, nómina o impuestos.</p></div>
@@ -348,7 +348,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <li>Actualizar el tracker más allá de lo que pide el flujo del repo.</li>
       <li>Instalar dependencias, cambiar CI o tocar la configuración global de agentes.</li>
       <li>Implementar UI sin un prototipo que aprobaste.</li>
-      <li>La ronda 4 de review de un mismo cambio.</li>
+      <li>La ronda 9 de review de un mismo cambio.</li>
       <li>Lo irreversible de pstack: force push a ramas compartidas, borrar datos y mensajes a clientes.</li>
     </ul>
   </div>

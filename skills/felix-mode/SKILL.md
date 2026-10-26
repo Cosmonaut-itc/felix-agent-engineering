@@ -192,11 +192,12 @@ siendo obligatorios.
   ninguno abre un caso nuevo en reglas que una ronda anterior ya corrigió.
   Si una ronda abre ese caso, ataca la premisa
   (`principle-attack-the-premise`): quita código o cambia el enfoque antes de
-  la siguiente ronda. Si la ronda 3 de un mismo cambio no da APTO, pausa:
+  la siguiente ronda. Puedes ejecutar hasta ocho rondas de un mismo cambio
+  sin autorización adicional. Si la ronda 8 no da APTO, pausa:
   entrega al usuario lo que sigue abierto y una propuesta para recortar
-  alcance, y espera su respuesta antes de la ronda 4.
+  alcance, y espera su respuesta antes de la ronda 9.
   Las reviews delta y las renovaciones por cambio de head también cuentan.
-  Antes de cualquier ronda 4 pide autorización, aunque la ronda 3 haya
+  Antes de cualquier ronda 9 pide autorización, aunque la ronda 8 haya
   sido APTO y después cambiara el head.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
@@ -240,7 +241,7 @@ Fuera de esa excepción y de lo ya autorizado por el usuario, además de
   agentes;
 - implementar UI/UX sin un prototipo aprobado por el dueño, como pide el
   routing;
-- la ronda 4 de review de un mismo cambio, como dice **Rondas**.
+- la ronda 9 de review de un mismo cambio, como dice **Rondas**.
 
 El resto del trabajo local y reversible avanza sin preguntar.
 

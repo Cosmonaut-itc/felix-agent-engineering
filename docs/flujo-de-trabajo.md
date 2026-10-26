@@ -54,7 +54,7 @@ que el encargo lo pida.
 | 7. Implementar | Por encima del umbral de «Delegación» del routing, un trabajador escribe el código. En bugs, el test que falla va antes del arreglo. | `tdd`, `swarm` | Agente |
 | 8. Medir | Antes de creer o reportar un número de rendimiento. | `benchmark-checklist` | Agente |
 | 9. Verificar | Prueba sobre el artefacto real con la skill del repositorio. Si falta, sigue sus docs y propone crearla. | `verify` del repositorio, `create-verification-skill` | Agente |
-| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda, y la ronda 4 espera al dueño. | `interrogate` | Agente |
+| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda. Hasta ocho rondas sin autorización adicional; la ronda 9 espera al dueño. | `interrogate` | Agente |
 | 11. Abrir el PR | Un PR por unidad de entrega. Los tickets acoplados se reúnen en un acumulador. Un bug de producción sale en el suyo antes que cualquier mejora. | `implement-spec` adaptada, `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
 | 12. Llevar a merge | CI, comentarios y conflictos. Mergea solo cuando todas las reviews dan APTO y los checks están verdes. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Agente |
 | 13. Cerrar | Informe con evidencia y etiquetas: medido, inferido o suposición. Bitácora en trabajo largo. | `show-me-your-work` | Agente |
@@ -115,7 +115,7 @@ de esa excepción y de lo ya autorizado por el usuario, pausa antes de:
   sección «Tickets de Linear» de `felix-mode`;
 - instalar dependencias, cambiar CI o tocar la configuración global de agentes;
 - implementar UI/UX sin un prototipo aprobado;
-- la ronda 4 de review de un mismo cambio;
+- la ronda 9 de review de un mismo cambio;
 - un force push a una rama compartida, un borrado de datos o un mensaje a un cliente.
 
 ## Lo que hace el dueño
