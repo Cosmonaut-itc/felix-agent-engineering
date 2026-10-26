@@ -385,6 +385,163 @@ class Operator3820Cases:
         self.assertIs(last["has_more"], False)
         self.assertEqual(self.inventory(self.state), original)
 
+    def r4_operator_pages(self, public):
+        expected = public("status", "--limit", "100")
+        operations, events = [], []
+        after, audit_after = 0, 0
+        for _ in range(len(expected["operations"]) + len(expected["audit_events"]) + 1):
+            page = public("status", "--after-seq", str(after), "--after-audit-seq", str(audit_after), "--limit", "1")
+            operations.extend(page["operations"])
+            events.extend(page["audit_events"])
+            cursor = (page["next_after_seq"], page["next_after_audit_seq"])
+            if not page["has_more"]:
+                break
+            self.assertTrue(cursor[0] > after or cursor[1] > audit_after)
+            after, audit_after = cursor
+        else:
+            self.fail("r4 operator pagination did not terminate")
+        self.assertEqual((operations, events), (expected["operations"], expected["audit_events"]))
+        return expected
+
+    def test_r4_a01_denial_literals_and_copied_data_before_and_after_declaration(self):
+        self.assertEqual(list(self.project.iterdir()), [])
+        self.assertFalse(any((p / ".git").exists() for p in (self.project, *self.project.parents)))
+        declared = {"R4_API": "fleet-job-api@1", "R4_CODE": "unknown_job", "R4_EFFECT": "no_capacity_change",
+                    "R4_JOB_A": "j_" + "1" * 32, "R4_JOB_B": "j_" + "2" * 32,
+                    "R4_ATTEMPT": "a_" + "3" * 32, "R4_RESERVATION": "r_" + "4" * 32,
+                    "R4_DRAIN": "d_" + "5" * 32, "R4_PROOF": "p_" + "6" * 32}
+        selectors = (declared["R4_JOB_A"], "--attempt", declared["R4_ATTEMPT"],
+                     "--reservation", declared["R4_RESERVATION"], "--generation", "7",
+                     "--drain-id", declared["R4_DRAIN"], "--proof", declared["R4_PROOF"])
+        credentials = tuple(part for name in declared for part in ("--credential-env", name))
+        secret_selectors = [value for name, value in declared.items() if name not in ("R4_API", "R4_CODE", "R4_EFFECT")]
+        reader_env = {name: value for name, value in self.env.items() if name not in declared}
+        for timing in ("before", "after"):
+            with self.subTest(declared=timing):
+                state = self.root / ("r4-" + timing)
+                argv, counter, ready, gate = self.counted("r4-holder")
+                self.send("r4-holder", argv, state=state, options=("--enqueue-only", *credentials)
+                          if timing == "before" else ("--enqueue-only",),
+                          env=dict(reader_env, **declared) if timing == "before" else reader_env)
+                before = self.status_key("r4-holder", state=state, env=reader_env)["observation"]
+
+                def public(*args, code=0):
+                    # Only copied selector secrets have a global absence oracle.
+                    # Protocol-colliding credentials are checked by field below.
+                    return self.r3_public_operator(*args, secrets=secret_selectors, code=code, state=state, env=reader_env)
+
+                producer = public if timing == "before" else lambda *a, **kw: self.raw("operator", *a, state=state, env=reader_env, **kw)
+                request = ("release", "--operation-id", "r4-bound", "--reason", "fixture audit", *selectors)
+                denied = producer(*request, code=2)
+                changed = producer("release", "--operation-id", "r4-bound", "--reason", "fixture audit",
+                                   declared["R4_JOB_B"], *selectors[1:], "--backend", declared["R4_API"], code=5)
+                if timing == "after":
+                    # Genuine earlier ledger history, never seeded or rewritten.
+                    self.assertEqual(denied["receipt"]["target"]["job"], declared["R4_JOB_A"])
+                    self.send("r4-secrets", argv, state=state, options=("--enqueue-only", *credentials),
+                              env=dict(reader_env, **declared))
+                saved = self.inventory(state)
+                exact = public("status", "--operation-id", "r4-bound")
+                replay = public(*request, code=2)
+                receipt = exact["receipt"]
+                self.assertEqual((exact["status"], replay["status"], replay["binding"]), ("committed", "committed", "replay"))
+                self.assertEqual(replay["error"], {"code": "unknown_job", "effects": "no_capacity_change"})
+                self.assertEqual(replay["receipt"], receipt)
+                if timing == "before":
+                    self.assertEqual((denied["binding"], denied["status"]), ("new", "committed"))
+                    self.assertEqual(denied["error"], replay["error"])
+                    self.assertEqual(denied["receipt"], receipt)
+                target = {"job": "[REDACTED]", "attempt": "[REDACTED]", "reservation": "[REDACTED]", "generation": 7}
+                self.assertEqual(receipt["target"], target)
+                self.assertEqual((receipt["drain_id"], receipt["proof_id"]), ("[REDACTED]", "[REDACTED]"))
+                self.assertEqual((receipt["decision"], receipt["action"], receipt["reason"]), ("unknown_job", "release", "fixture audit"))
+                self.assertIs(receipt["validation_processed"], True)
+                self.assertIs(receipt["release_eligible"], False)
+                self.assertIs(receipt["audit_recorded"], True)
+                self.assertEqual(receipt["actor"]["uid"], os.getuid())
+                listing = self.r4_operator_pages(public)
+                event = next(e for e in listing["audit_events"] if e["seq"] == receipt["audit_seq"])
+                for field in ("target", "decision", "action", "actor", "reason", "at", "decision_revision"):
+                    self.assertEqual(event[field], receipt[field])
+                conflict = next(e for e in listing["audit_events"] if e["seq"] == changed["audit_seq"])
+                self.assertEqual(conflict["decision"], "operation_conflict")
+                self.assertEqual(conflict["request"], dict(target, action="release", operation_id="r4-bound",
+                                                         reason="fixture audit", drain_id="[REDACTED]",
+                                                         proof="[REDACTED]", backend="[REDACTED]"))
+                self.assertEqual(listing["operations"][0]["receipt"], receipt)
+                self.assertEqual(self.inventory(state), saved, "reading later declarations must not rewrite history")
+                # Change ONLY a secret selector: equal public redaction is not replay.
+                conflict = public("release", "--operation-id", "r4-bound", "--reason", "fixture audit",
+                                  declared["R4_JOB_B"], *selectors[1:], code=5)
+                self.assertEqual(conflict["error"], {"code": "operation_conflict", "effects": "no_capacity_change"})
+                rejected = public("release", "--operation-id", "unknown_job", "--reason", "unknown_job",
+                                  *selectors, code=2)
+                self.assertEqual(rejected["error"], {"code": "credential_in_operator_request", "effects": "no_capacity_change"})
+                event = next(e for e in self.r4_operator_pages(public)["audit_events"] if e["seq"] == rejected["audit_seq"])
+                self.assertEqual((event["operation_id"], event["reason"], event["request"]["operation_id"],
+                                  event["request"]["reason"]), ("[REDACTED]",) * 4)
+                self.assertEqual(public("status", "--operation-id", "unknown_job", code=2)["error"]["code"], "operation_not_found")
+                self.assertEqual(public("status", "--operation-id", "r4-bound")["receipt"], receipt)
+                current = self.status_key("r4-holder", state=state, env=reader_env)["observation"]
+                for field in ("state", "reservation", "capacity_resolution", "transitions", "command", "control"):
+                    self.assertEqual(current[field], before[field])
+                self.assertEqual(self.entries(counter), [])
+                self.assertFalse(ready.exists())
+                self.assertFalse((state / "supervisor.log").exists())
+                self.external_evidence.append({"case": "r4-denial-" + timing, "exact": exact, "replay": replay,
+                                               "listing": listing})
+
+    def test_r4_a01_effective_control_preserves_committed_and_historical_replay(self):
+        self.assertEqual(list(self.project.iterdir()), [])
+        self.assertFalse(any((p / ".git").exists() for p in (self.project, *self.project.parents)))
+        argv, counter, ready, gate = self.counted("r4-control")
+        declared = {"R4_STATUS": "committed", "R4_API": "fleet-job-api@1"}
+        reader_env = {name: value for name, value in self.env.items() if name not in declared}
+        self.send("r4-control-holder", argv, options=("--enqueue-only", "--credential-env", "R4_STATUS",
+                                                     "--credential-env", "R4_API"), env=dict(reader_env, **declared))
+
+        def public(*args, code=0):
+            return self.r3_public_operator(*args, secrets=(), code=code, env=reader_env)
+
+        request = ("drain", "--operation-id", "r4-control", "--reason", "fixture audit")
+        drained = public(*request)
+        receipt = drained["receipt"]
+        self.assertEqual((drained["binding"], drained["status"], receipt["decision"], receipt["action"]),
+                         ("new", "committed", "committed", "drain"))
+        self.assertIs(drained["control"]["drained"], True)
+        self.assertIs(receipt["target"], None)
+        self.assertIs(receipt["audit_recorded"], True)
+        drain_id = receipt["drain_id"]
+        opened = public("reopen", "--operation-id", "r4-open", "--reason", "fixture audit", "--drain-id", drain_id)
+        self.assertEqual((opened["status"], opened["receipt"]["decision"]), ("committed", "committed"))
+        self.assertIs(opened["control"]["drained"], False)
+        saved = self.inventory(self.state)
+        replay = public(*request)
+        exact = public("status", "--operation-id", "r4-control")
+        for value in (replay, exact):
+            self.assertEqual(value["status"], "committed")
+            self.assertEqual(value["receipt"], receipt)
+            self.assertEqual(value["control"], opened["control"])
+        self.assertEqual(replay["binding"], "replay")
+        listing = self.r4_operator_pages(public)
+        self.assertEqual([r["status"] for r in listing["operations"]], ["committed", "committed"])
+        self.assertEqual([e["decision"] for e in listing["audit_events"]], ["committed", "committed"])
+        self.assertEqual(listing["operations"][0]["receipt"], receipt)
+        self.assertEqual(self.inventory(self.state), saved, "historical replay must not repeat drain or audit")
+        rejected = public("drain", "--operation-id", "r4-secret", "--reason", "committed", code=2)
+        self.assertEqual(rejected["error"], {"code": "credential_in_operator_request", "effects": "no_capacity_change"})
+        event = next(e for e in self.r4_operator_pages(public)["audit_events"] if e["seq"] == rejected["audit_seq"])
+        self.assertEqual((event["reason"], event["request"]["reason"]), ("[REDACTED]", "[REDACTED]"))
+        self.assertIs(public("status")["control"]["drained"], False)
+        pending = self.status_key("r4-control-holder", env=reader_env)["observation"]
+        self.assertEqual(pending["state"], "queued")
+        self.assertIsNone(pending["reservation"])
+        self.assertEqual(self.entries(counter), [])
+        self.assertFalse(ready.exists())
+        self.assertFalse((self.state / "supervisor.log").exists())
+        self.external_evidence.append({"case": "r4-effective-control", "drain": drained, "open": opened,
+                                       "replay": replay, "exact": exact, "listing": listing})
+
     def test_o01_positive_local_resolution_keeps_failed_evidence_and_drained_fifo(self):
         first, final, argv, counter = self.incomplete_job("o01")
         next_argv, next_counter, ready, gate = self.counted("next")

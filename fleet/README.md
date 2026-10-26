@@ -1,4 +1,4 @@
-# Fleet local — SEN-3820 r3
+# Fleet local — SEN-3820 r4
 
 CLI opt-in de un slot FIFO por autoridad local, Python 3.9/3.14 por inspección,
 biblioteca estándar, Linux/macOS POSIX. Esta entrega contiene código y pruebas
@@ -9,6 +9,7 @@ con 2/3, sin migración. El código no activa hostgate, reservas compartidas, Mi
 desk, SSH, Windows, cancelación ni selección de nodos. Los contratos vigentes
 permanecen intactos. [Contrato y procedencia](SEN-3820.md) y
 [matriz completa de pruebas pendientes](tests/COVERAGE.md).
+[Corrección r4 de literales públicos y regresiones contra d5](SEN-3820-r4.md).
 [Respuesta r3 y regresiones contra127](SEN-3820-r3.md).
 [Antecedente r2 y regresiones contra0b](SEN-3820-r2.md).
 
@@ -127,13 +128,20 @@ con credenciales persistidas. No cambia el binding/receipt original. Backend
 operatorio tiene cota de forma1–128 caracteres sin controles/surrogates; no añade
 soporte a ningún backend.
 
-Toda proyección pública operatoria pasa por una única regla recursiva de redacción,
-incluidos details/target anidados, recibos y eventos antes de persistir, respuesta,
-replay y status exacto/paginado. Los lectores vuelven a sanear la historia con las
-declaraciones/valores persistidos en su copia de la autoridad; no confían en que un
-objeto guardado ya sea seguro ni reescriben historia. Se conservan estructura/tipos
-y atribución. El request crudo permanece privado para decidir y comparar binding:
-dos secretos distintos no se vuelven iguales porque compartan redacción pública.
+Toda proyección pública operatoria comparte una regla recursiva por procedencia y
+esquema. Los literales del protocolo (api, operación, binding/status, acción/decisión,
+códigos/efectos, motivos tipados y disposiciones) conservan significado aunque sus
+bytes coincidan con credenciales válidas. Los datos copiables se redactan, incluidos
+selectores/details/target anidados, motivo, identificadores del solicitante, backend
+de request y datos descriptivos del actor. Un backend o motivo copiado no queda
+exento por coincidir con un literal público. Campos no reconocidos se tratan como datos.
+Recibos y eventos pasan por la regla antes de persistir; respuesta, replay y status
+exacto/paginado vuelven a aplicarla. Los lectores usan declaraciones/valores
+persistidos de su snapshot, sin confiar en que historia guardada sea segura ni
+reescribirla. Se conservan estructura/tipos y atribución. El request crudo permanece
+privado para decidir y comparar binding: dos secretos distintos no se vuelven
+iguales porque compartan redacción pública. No hay migración ni reconstrucción de
+literales que un productor anterior ya hubiera sustituido por marcadores.
 
 `operator status --after-seq N --after-audit-seq A --limit 50` pagina decisiones y
 auditoría con cursores independientes. Empezar con N=A=0; después pasar
@@ -188,9 +196,10 @@ PYTHONDONTWRITEBYTECODE=1 /ruta/python3.14 -B -m unittest discover -s fleet/test
 ```
 
 Un único TestCase hereda mixins; discovery sólo `test_cli.py` evita duplicación.
-Inventario textual: se conservan los58 métodos de127, incluidos los53 r1 y cinco r2;
-16 base +28 core +18 operator =**62 métodos**, cuatro nuevos r3.
-R3 añade29 invocaciones subTest por expansión estática; cero métodos ejecutados.
+Inventario textual: se conservan los62 métodos de d5, incluidos los53 r1, cinco r2
+y cuatro r3;16 base +28 core +20 operator =**64 métodos**, dos nuevos r4.
+R4 añade2 invocaciones subTest (declaración anterior/posterior a la historia), más
+un método efectivo sin subTest. Se conservan los29 subTest r3 y27 r2; cero ejecutados.
 34 filas contractuales (26 definidas,6 parciales/condicionales,2 positivas abiertas)
 y3 requisitos adicionales. Método y subcaso son unidades diferentes.
 La matriz detalla precondiciones faltantes; su ausencia falla explícitamente, sin

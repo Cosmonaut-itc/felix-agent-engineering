@@ -1,10 +1,10 @@
-# SEN-3820 r3 — matriz pública, cero ejecución
+# SEN-3820 r4 — matriz pública, cero ejecución
 
-Inventario obtenido por texto, sin discovery/imports: **62 métodos** en un único
-TestCase `FleetCLI`:16 base en `test_cli.py`,28 en `Core3820Cases`,18 en
-`Operator3820Cases`. Se conservan íntegros los58 métodos de127 (16+27+15), sus
-setups/settles/oráculos; r3 añade cuatro. Los53 r1, cinco r2 y refuerzo C02 quedan
-conservados. Discovery futuro sólo `test_cli.py`, según README.
+Inventario obtenido por texto, sin discovery/imports: **64 métodos** en un único
+TestCase `FleetCLI`:16 base en `test_cli.py`,28 en `Core3820Cases`,20 en
+`Operator3820Cases`. Se conservan íntegros los62 métodos de d5 (16+28+18), sus
+setups/settles/oráculos; r4 añade dos. Los53 r1, cinco r2, cuatro r3 y refuerzo C02
+quedan conservados. Discovery futuro sólo `test_cli.py`, según README.
 **34 filas padre =26 definidas +6 parciales/condicionales +2 positivas abiertas**.
 Los3 requisitos adicionales no cambian esa partición. No se cuentan métodos como
 subcasos ni código escrito como cobertura runtime. Todos siguen sin ejecutar.
@@ -98,6 +98,26 @@ Los58 métodos anteriores y las34 filas padre conservan sus setups y oráculos.
 Cuatro métodos nuevos,29 invocaciones subTest nuevas por expansión estática
 (A01=2, A02=9, A03=18). Son casos escritos; **cero ejecutados**, incluido baseline127.
 Se mantienen las27 invocaciones subTest añadidas en r2 y todos los demás casos.
+
+## Regresiones r4 adicionales — R3-A01
+
+Dos métodos nuevos en `operator3820_cases.py`, ambos con prefijo `test_`, más el
+helper de recorrido `r4_operator_pages`. No se modifica un método/helper anterior.
+Regla pública y fuentes completas en [SEN-3820-r4.md](../SEN-3820-r4.md).
+El discriminante se deduce de leer d5 y el oráculo; no hay baseline FAIL ni PASS
+medidos. La ausencia global sólo se exige para selectores secretos; credenciales
+que coinciden con protocolo se comprueban por campo y procedencia.
+
+| Método | Fixture CLI válida, oráculo y discriminante estático contra d5 |
+| --- | --- |
+| r4_a01_denial_literals_and_copied_data_before_and_after_declaration | Origen físico vacío noGit, counted externo, submit enqueue-only con declaraciones explícitas de fleet-job-api@1/unknown_job/no_capacity_change y seis selectores válidos. Dos subTest: declaración antes de la NUEVA denegación y después de historia auténtica (denegación+conflicto por CLI). Release de job inexistente llega a unknown_job antes de drenado/prueba. Respuesta/recibo/evento/replay/exacto/listado y todas las páginas limit1 conservan api/error.code/effects/decision/status/action/binding; target/drain/proof siguen redactados y generation int7. Un backend copiado igual al literal api se redacta en request del conflicto. Cambiar sólo j_A por j_B da5, aunque ambas proyecciones sean iguales; binding/receipt originales intactos. ID y reason copiados iguales a unknown_job se rechazan y sus cuatro campos auditados muestran marcadores, sin binding. Lectores no reescriben historia; control/capacidad/transiciones/contador/supervisor sin efectos. En d5, el primer public nuevo (antes) o exacto tras declaración (después) pierde api; también decision/error/effects. El oráculo de literal falla por inspección. |
+| r4_a01_effective_control_preserves_committed_and_historical_replay | Origen vacío noGit, submit enqueue-only declara committed y fleet-job-api@1; lector sin esas variables. Drain efectivo confirma control drenado y receipt/status/decision committed; reopen separado abre. Replay del drain y status exacto/paginado conservan historia committed y muestran control actual abierto. Inventario y auditoría no cambian por replay/lectores; dos operaciones/dos eventos committed. Reason copiado committed se rechaza y redacta en evento/request, conservando códigos/efectos; no drena ni despacha el holder. En d5 ya la respuesta drain pierde api/status/decision; sin la colisión api también fallan los asserts committed. No se mide runtime. |
+
+Dos métodos, **2 invocaciones subTest nuevas** por expansión del primer método;
+el segundo no usa subTest. Se conservan62 métodos, cuatro adiciones r3/29 subTest,
+cinco r2/27 subTest y las34 filas26/6/2, más A-W1/B-W1/B-W2. **0 ejecutados**,
+incluido d5. Una historia cuyo productor ya borró un literal no se repara aquí;
+el caso posterior declara credenciales tras producir historia auténtica intacta.
 
 ## Prerrequisitos externos y registro futuro
 
