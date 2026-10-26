@@ -6,11 +6,13 @@ que pueden llegar solos a producción. No agrupes sólo por tener muchos
 tickets. El programa entrega un PR acumulador hacia la rama de entrega,
 normalmente `main`, desde una rama de integración.
 
-Lee `implement-spec` de Matt Pocock. Conserva su grafo de dependencias,
-frontera de tickets disponibles y worktree por implementador. Aplica los
-pasos siguientes sobre sus pasos 3 a 9. Sustituyen su draft PR, su revisión
-final con `code-review`, su TDD y sus merges de trabajadores. Una adaptación
-local exigida por `AGENTS.md` mantiene sus controles y su precedencia.
+Lee `~/.agents/skills/implement-spec/SKILL.md` de Matt Pocock como referencia.
+Su `disable-model-invocation` impide invocarla automáticamente como skill,
+pero no leerla. Conserva su grafo de dependencias, frontera de tickets
+disponibles y worktree por implementador. Aplica los pasos siguientes sobre
+sus pasos 3 a 9. Sustituyen su draft PR, su revisión final con `code-review`,
+su TDD y sus merges de trabajadores. Una adaptación local exigida por
+`AGENTS.md` mantiene sus controles y su precedencia.
 
 ## Preparar el programa
 
@@ -57,7 +59,7 @@ local exigida por `AGENTS.md` mantiene sus controles y su precedencia.
 7. Avanza integración sólo si todavía apunta al SHA usado para preparar el
    candidato. Si cambió, reconcilia y repite el paso 6. Publica con push
    normal y comprueba el SHA remoto. Un rechazo de fast-forward no permite
-   forzar. El coordinador y el stacker no escriben a la vez en integración.
+   forzar. Nadie más que el integrador escribe en integración.
    Guarda base, candidato, pruebas y reviews por ticket en el store, y
    actualiza el acumulador y la frontera después de cada integración.
 
@@ -84,6 +86,9 @@ El ledger por PR y head se usa para la verificación final del acumulador.
 10. Con la spec completa, APTO final y verde, sigue [Merge](merge.md).
     El acumulador se mergea automáticamente, aunque dispare deploy. Aplica
     también la comprobación de la base contra cambios de otras sesiones.
+    Si Merge pide un rebase, repite el paso 8 mediante merge en un candidato
+    nuevo y renueva los gates y la review del paso 9. Cada sincronización
+    requerida desde merge prep cuenta para detenerte antes de la tercera.
     Confirma merge y entrega antes de cerrar tickets que dependan de ella.
     Limpia sólo los worktrees propios cuyo trabajo y evidencias quedaron
     conservados y cuyos procesos terminaron.

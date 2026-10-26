@@ -137,7 +137,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <li><b>No corres nada para activarlo.</b> <code>felix-mode</code> ya está instalado y se activa solo. Para forzarlo escribe <code>/felix-mode</code> en Claude Code o <code>$felix-mode</code> en Codex.</li>
       <li><b>Reinicias las sesiones viejas.</b> Una sesión no ve las skills ni la versión de pstack que llegaron después de abrirla.</li>
       <li><b>Das objetivo y prueba.</b> Qué quieres, cuándo está terminado y qué evidencia quieres ver.</li>
-      <li><b>Apruebas lo que pausa.</b> Prototipos de UI, merges y deploys, escrituras en ICG o producción, dependencias, CI y configuración global.</li>
+      <li><b>Apruebas lo que pausa.</b> Los prototipos de UI y las acciones de la sección Pausas. Los PR propios y de la cola se mergean solos con APTO y verde, incluidos sus efectos automáticos.</li>
       <li><b>Lees el informe.</b> Cada afirmación trae su evidencia o una etiqueta: medido, inferido o suposición.</li>
     </ol>
   </div>
@@ -197,7 +197,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr><td><b>Prototype</b></td><td>Un boceto desechable para decidir, o para observar en vez de preguntar.</td><td>Dos bocetos de una pantalla antes de implementarla.</td></tr>
       <tr><td><b>Investigation</b></td><td>Una pregunta de sólo lectura con respuesta citada.</td><td><q>¿Cómo funciona X?</q>, <q>¿por qué se hizo Y así?</q></td></tr>
       <tr><td><b>Babysit</b></td><td>Llevar un PR a mergeable: CI, comentarios y conflictos.</td><td><q>Cuida el PR 123.</q></td></tr>
-      <tr><td><b>Shipping</b></td><td>Verificar un stack verde y aterrizarlo de abajo arriba.</td><td><q>Aterriza el stack.</q> Pausa antes de un merge que despliega.</td></tr>
+      <tr><td><b>Shipping</b></td><td>Verificar un stack verde y aterrizarlo de abajo arriba.</td><td><q>Aterriza el stack.</q> Mergea sólo con APTO y verde. Un comando de deploy pausa.</td></tr>
       <tr><td><b>Pause safely</b> y <b>Session pickup</b></td><td>Pausar trabajo para retomarlo, o tomar el de otro agente.</td><td>Sustituyen a <code>handoff</code>.</td></tr>
       <tr><td><b>Multi-phase plan</b></td><td>Sólo cuando pides un plan.</td><td>La planificación normal sigue en Matt Pocock.</td></tr>
       <tr><td><b>figure-it-out</b> (skill)</td><td>Una migración grande o trabajo que revisas al volver.</td><td>Diseña un playbook propio y deja bitácora.</td></tr>
@@ -208,7 +208,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <section id="revision">
   <h2>Revisión</h2>
-  <p class="lead">Ningún otro modelo revisa cambios. Antes de cada ronda, el orquestador clasifica el diff completo como normal o alto riesgo, veta los hallazgos y dice qué nivel aplicó y por qué. Si la ronda 3 no da APTO, se detiene y te propone recortar alcance.</p>
+  <p class="lead">Ningún otro modelo revisa cambios. Antes de cada ronda, el orquestador clasifica el diff completo como normal o alto riesgo, veta los hallazgos y dice qué nivel aplicó y por qué. Las reviews delta y las renovaciones cuentan como rondas. La ronda 4 requiere tu autorización, aunque la tercera fuera APTO y después cambiara el head.</p>
   <div class="grid g2">
     <div class="card"><span class="tag">Normal</span><h3>Un revisor astra en high</h3><p>gpt-6-astra en <code>high</code>, con contexto nuevo y evidencia primaria. Cumple los pasos donde pstack pide <code>interrogate</code> o <code>thermos</code>.</p></div>
     <div class="card"><span class="tag">Alto riesgo</span><h3>astra y Opus por separado</h3><p><code>interrogate</code> con gpt-6-astra en high como Reviewer A y opus-5.5 en high. Ejemplos: permisos, nómina o impuestos.</p></div>
@@ -271,7 +271,8 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr data-k="plan"><td><code>setup-matt-pocock-skills</code></td><td>Configura un repo para estas skills: tracker, etiquetas de triage y docs de dominio. Una vez por repo.</td><td><span class="badge b-plan">Matt Pocock</span></td></tr>
       <tr data-k="you"><td><code>ask-matt</code></td><td>Te dice qué skill de Matt Pocock encaja.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="you"><td><code>wait-what</code>, <code>teach</code></td><td>Repite en llano un mensaje que no se entendió, o te enseña un concepto dentro del workspace.</td><td><span class="badge b-you">Tú</span></td></tr>
-      <tr data-k="you"><td><code>implement-spec</code>, <code>retro</code></td><td>Implementan una spec y hacen la retro de una sesión, cuando el <code>AGENTS.md</code> del repo las pide.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="auto"><td><code>implement-spec</code></td><td><code>felix-mode</code> lee esta referencia para tickets acoplados: rama de integración, review por ticket y un PR acumulador con review final. También se usa cuando la pides o el <code>AGENTS.md</code> la exige.</td><td><span class="badge b-auto">Automática</span></td></tr>
+      <tr data-k="you"><td><code>retro</code></td><td>Hace la retro de una sesión cuando la pides o el <code>AGENTS.md</code> del repo la exige.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="you"><td><code>wizard</code></td><td>Genera un asistente en bash para pasos que sólo puede hacer una persona.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="avoid"><td><code>setup-pstack</code></td><td>Reescribe completa la hoja <code>pstack-models.md</code>. La tuya sale del routing.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td><code>babysit</code> de pstack</td><td>Para un PR, pide el playbook Babysit: <q>cuida el PR N</q>.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
@@ -339,10 +340,10 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <section id="pausas">
   <h2>Pausas</h2>
-  <p class="lead">El trabajo local y reversible avanza sin preguntar. El agente se detiene antes de esto:</p>
+  <p class="lead">El trabajo local y reversible avanza sin preguntar. El merge APTO y verde de una unidad propia o de la cola y los efectos de su automatización están autorizados, también en alto riesgo. Incluye despliegues, migraciones, borrados, configuración global y escrituras en sistemas de cliente que el merge dispara por sí solo. No autoriza ejecutarlos a mano. Fuera de esa excepción y de lo que ya autorizaste, el agente se detiene antes de esto:</p>
   <div class="card">
     <ul class="plain">
-      <li>Push a <code>main</code>, o un merge que dispare un deploy.</li>
+      <li>Push directo a <code>main</code> o ejecutar un comando de deploy.</li>
       <li>Escribir en ICG u otro sistema de un cliente en producción.</li>
       <li>Actualizar el tracker más allá de lo que pide el flujo del repo.</li>
       <li>Instalar dependencias, cambiar CI o tocar la configuración global de agentes.</li>

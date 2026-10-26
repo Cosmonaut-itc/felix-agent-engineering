@@ -13,10 +13,17 @@ cambia documentación. Esto sustituye su entrada sólo por pedido y su modo
 `check` para PR pequeños. En un programa, el trabajador devuelve el PR y
 sus evidencias al orquestador. No mergea ni queda vigilándolo.
 
+Un acumulador en curso observa CI y comentarios en `background` o `check`.
+No intenta llegar a merge-ready hasta completar la spec. Cualquier
+corrección entra por el candidato del paso 6 de [Acumulador](acumulador.md),
+con su único integrador. Después del candidato final sigue el flujo normal.
+
 En T3 Code, usa `watch_pull_request` para esperar checks y eventos, y
 termina el turno. Al despertar, vuelve a comprobar los gates antes del
-merge. El watch programa la continuación. Fuera de T3, usa el mecanismo
-del playbook Babysit. No mantengas dos watchers del mismo PR.
+merge. Confirma el estado con `watch-pr --status-only` en GitHub, o las
+lecturas de `origin pr` de Babysit en Origin, incluidos hilos y reviews
+bloqueantes. El watch programa la continuación. Fuera de T3, usa el
+mecanismo del playbook Babysit. No mantengas dos watchers del mismo PR.
 
 Estas condiciones deben cumplirse juntas:
 

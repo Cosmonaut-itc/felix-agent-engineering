@@ -48,7 +48,7 @@ rama de entrega del repositorio, que se prueba solo y puede llegar a
 producción sin esperar a otra.
 
 Si una spec tiene tickets que necesitan salir juntos por un contrato,
-schema o migración compartidos, usa `implement-spec` con el
+schema o migración compartidos, sigue la referencia `implement-spec` con el
 [flujo de acumulador](references/acumulador.md). El conjunto es una unidad
 de entrega y cada ticket conserva su prueba y review. El tamaño por sí solo
 no pide acumulador: los tickets independientes siguen en PRs separados.
@@ -132,7 +132,7 @@ T3 que lo toma; en un programa, el hilo del orquestador.
 | Bug | playbook Bug fix | `diagnosing-bugs`, `systematic-debugging` |
 | Prototipo | playbook Prototype | `prototype` de Matt Pocock |
 | Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
-| Implementar tickets acoplados | `implement-spec` con [Acumulador](references/acumulador.md) | Un PR hacia `main` por ticket |
+| Implementar tickets acoplados | Referencia `implement-spec` con [Acumulador](references/acumulador.md) | Un PR hacia `main` por ticket |
 | Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |
 | Pausar o retomar | playbooks Pause safely y Session pickup | `handoff` |
 | Escribir skills o `AGENTS.md` | playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
