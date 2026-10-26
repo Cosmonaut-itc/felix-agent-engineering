@@ -247,6 +247,16 @@ El resto del trabajo local y reversible avanza sin preguntar.
 
 ## Respuesta
 
+Toda pregunta que necesite una respuesta, decisión o autorización de Felix
+se hace con la herramienta de preguntas con opciones del entorno. Usa
+`AskUserQuestion` en Claude Code; en Codex, `request_user_input_async` o
+`request_user_input`, según disponibilidad y restricciones del modo actual.
+Incluye el contexto necesario y dos o tres opciones claras, con la
+recomendada primero. Conserva las autorizaciones vigentes y espera la
+respuesta antes de actuar sobre una decisión pendiente. Si no hay una
+herramienta de preguntas utilizable, explica esa limitación y presenta las
+opciones numeradas en texto.
+
 Responde en español con las reglas de «Writing the reply» de `poteto-mode`:
 frases cortas, sin raya larga y cada afirmación con su evidencia o su
 etiqueta (medido, inferido, suposición). Nombra los principios que cambiaron

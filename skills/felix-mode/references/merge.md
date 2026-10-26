@@ -23,7 +23,8 @@ En GitHub, usa el ejecutable de Babysit 6,
 `<plugin pstack>/skills/poteto-mode/scripts/watch-pr/watch-pr`, con
 `--owner <owner> --repo <repo> --pr <n> --interval 20 --timeout 150`, sin
 `--status-only`. El plazo permite la confirmación de 60 segundos sin checks.
-Deja terminar la comprobación: `WAITING` es una salida intermedia.
+Ejecuta la comprobación en background o con un plazo de herramienta de al
+menos 180 segundos y recoge su terminal: `WAITING` es una salida intermedia.
 Sólo `READY` para ese PR y el head aprobado confirma merge-ready.
 Ante `BLOCKER`, sigue Babysit. Si termina en `TIMEOUT` por `pending-checks`,
 informa qué checks faltan, conserva o rearma `watch_pull_request` de T3 y

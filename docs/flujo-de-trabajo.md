@@ -118,6 +118,15 @@ de esa excepción y de lo ya autorizado por el usuario, pausa antes de:
 - la ronda 9 de review de un mismo cambio;
 - un force push a una rama compartida, un borrado de datos o un mensaje a un cliente.
 
+## Preguntas al dueño
+
+Toda pregunta que requiera una respuesta o decisión de Felix usa la
+herramienta de preguntas con opciones del entorno, como establece la
+sección **Respuesta** de `felix-mode`. Presenta dos o tres opciones claras,
+con la recomendada primero. Si la herramienta no está disponible o no
+admite esa pregunta en el modo actual, explica la limitación y muestra las
+opciones numeradas en texto. Se conservan las autorizaciones vigentes.
+
 ## Lo que hace el dueño
 
 - Da el objetivo y la prueba que quiere ver. Un issue `ready-for-agent`, una
