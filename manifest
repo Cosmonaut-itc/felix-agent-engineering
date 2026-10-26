@@ -32,13 +32,13 @@ skill vendor/mattpocock/teach teach
 skill vendor/mattpocock/to-questionnaire to-questionnaire
 skill vendor/mattpocock/wait-what wait-what
 skill vendor/mattpocock/writing-for-agents writing-for-agents
+skill vendor/mattpocock/handoff handoff
 retire tdd
 retire diagnosing-bugs
 retire prototype
 retire code-review
 retire pr
 retire implement
-retire handoff
 retire resolving-merge-conflicts
 plugin claude pstack@pstack-claude michael-denyer/pstack-claude
 plugin codex pstack@pstack-claude https://github.com/michael-denyer/pstack-claude.git

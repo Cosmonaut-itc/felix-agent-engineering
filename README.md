@@ -249,7 +249,7 @@ su gestión.
 
 ### Actualizaciones de skills y plugins
 
-Las 20 skills de Matt Pocock se distribuyen en `vendor/mattpocock/`, con su
+Las 21 skills de Matt Pocock se distribuyen en `vendor/mattpocock/`, con su
 licencia MIT y el tag y commit de origen en `UPSTREAM`. No se editan a mano.
 El workflow diario ejecuta `bin/pao vendor-sync`, valida el resultado y
 corre las pruebas antes de hacer un commit a `main`. También se puede lanzar

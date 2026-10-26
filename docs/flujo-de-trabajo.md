@@ -177,7 +177,7 @@ pstack cubre estas necesidades, así que sus equivalentes no se instalan.
 | Prototipo | Playbook Prototype | `prototype` de Matt Pocock |
 | Implementar un issue o una spec | Playbook Feature | `implement`, `subagent-driven-development`, `executing-plans` |
 | Review de cambios | Sección Revisión | `code-review`, `pr`, `requesting-code-review` |
-| Pausar o retomar | Playbooks Pause safely y Session pickup | `handoff` |
+| Pausar o retomar | Playbooks Pause safely y Session pickup; `handoff` de Matt Pocock cuando pides un documento de traspaso | — |
 | Escribir skills o `AGENTS.md` | Playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
 | Conflictos de merge | `fix-merge-conflicts` | `resolving-merge-conflicts` |
 

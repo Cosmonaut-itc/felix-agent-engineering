@@ -134,7 +134,7 @@ T3 que lo toma; en un programa, el hilo del orquestador.
 | Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
 | Implementar tickets acoplados | [Acumulador](references/acumulador.md) | `implement-spec` de Matt Pocock |
 | Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |
-| Pausar o retomar | playbooks Pause safely y Session pickup | `handoff` |
+| Pausar o retomar | playbooks Pause safely y Session pickup; `handoff` de Matt Pocock cuando pides un documento de traspaso | — |
 | Escribir skills o `AGENTS.md` | playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
 
 Superpowers no se usa: este modo lo sustituye. Una skill local que el
