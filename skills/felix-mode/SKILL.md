@@ -188,14 +188,12 @@ siendo obligatorios.
   pagos, CFDI, nómina), migraciones o borrado de datos, autenticación y
   permisos, cálculos de dinero o impuestos, contratos entre paquetes o
   servicios, y las rutas de alto riesgo del repositorio.
-- **Rondas.** Una review converge cuando cada ronda trae menos hallazgos y
-  ninguno abre un caso nuevo en reglas que una ronda anterior ya corrigió.
-  Si una ronda abre ese caso, ataca la premisa
-  (`principle-attack-the-premise`): quita código o cambia el enfoque antes de
-  la siguiente ronda. Puedes ejecutar hasta ocho rondas de un mismo cambio
-  sin autorización adicional. Si la ronda 8 no da APTO, pausa:
-  entrega al usuario lo que sigue abierto y una propuesta para recortar
-  alcance, y espera su respuesta antes de la ronda 9.
+- **Rondas.** Si las reviews no convergen, lee y aplica
+  `principle-attack-the-premise` de pstack y **Autonomía** antes de otra
+  corrección. Puedes ejecutar hasta ocho rondas de un mismo cambio sin
+  autorización adicional. Si la ronda 8 no da APTO, entrega al usuario lo
+  que sigue abierto y el replanteamiento realizado, y pausa antes de la
+  ronda 9.
   Las reviews delta y las renovaciones por cambio de head también cuentan.
   Antes de cualquier ronda 9 pide autorización, aunque la ronda 8 haya
   sido APTO y después cambiara el head.
@@ -226,8 +224,18 @@ dispare un deploy o el cambio sea de alto riesgo.
 
 ## Autonomía
 
-Manda la autorización vigente del contrato. La autoridad de **Merge** cubre
-el merge y los efectos que su automatización dispara por sí sola, también
+Manda la autorización vigente del contrato. Decide el enfoque y recorta el
+trabajo de implementación dentro del objetivo autorizado siguiendo los
+principios y playbooks de pstack. Si un playbook pide al operador elegir
+entre otra ronda o un alcance menor tras intentos fallidos, como
+Autopilot-full 4, decide tú dentro del límite de **Rondas**. Registra la
+evidencia y la decisión, informa y continúa sin esperar autorización.
+Conserva los requisitos explícitos y la condición de terminado, las reviews
+y los gates, y las demás pausas. Cambiar de enfoque o dividir el mismo
+cambio no reinicia el conteo de rondas.
+
+La autoridad de **Merge** cubre el merge y los efectos que su automatización
+dispara por sí sola, también
 despliegues, migraciones, borrados, configuración global de agentes y
 escrituras en sistemas de cliente. No autoriza ejecutar esos pasos a mano.
 Fuera de esa excepción y de lo ya autorizado por el usuario, además de

@@ -102,6 +102,11 @@ lectura propia del orquestador no cuenta como review.
 
 ## Pausas
 
+Con `felix-mode`, el agente decide cambios de enfoque y recortes del trabajo
+de implementación siguiendo pstack, dentro del objetivo autorizado. La
+sección **Autonomía** de la skill fija esa autoridad y sus límites. Conserva
+los requisitos, la condición de terminado, los gates y el conteo de rondas.
+
 El agente avanza sin preguntar en trabajo local y reversible. Un merge APTO
 y verde de su unidad o cola está autorizado, junto con los efectos que su
 automatización dispara por sí sola, también en alto riesgo. Esa excepción
@@ -120,8 +125,8 @@ de esa excepción y de lo ya autorizado por el usuario, pausa antes de:
 
 ## Preguntas al dueño
 
-Toda pregunta que requiera una respuesta o decisión de Felix usa la
-herramienta de preguntas con opciones del entorno, como establece la
+Con `felix-mode`, toda pregunta que requiera una respuesta o decisión de
+Felix usa la herramienta de preguntas con opciones del entorno, como establece la
 sección **Respuesta** de `felix-mode`. Presenta dos o tres opciones claras,
 con la recomendada primero. Si la herramienta no está disponible o no
 admite esa pregunta en el modo actual, explica la limitación y muestra las

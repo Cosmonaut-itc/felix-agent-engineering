@@ -141,6 +141,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <li><b>Lees el informe.</b> Cada afirmación trae su evidencia o una etiqueta: medido, inferido o suposición.</li>
     </ol>
   </div>
+  <p class="note">Con <code>felix-mode</code>, toda pregunta que necesite tu respuesta o decisión usa la herramienta de preguntas con dos o tres opciones, con la recomendada primero. Si el entorno no permite usarla, el agente explica la limitación y presenta las opciones numeradas. Tus autorizaciones vigentes se conservan.</p>
 </section>
 
 <section id="activacion">
@@ -205,8 +206,6 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
     </tbody>
   </table>
 </section>
-
-<p class="note">Toda pregunta que necesite tu respuesta o decisión usa la herramienta de preguntas con dos o tres opciones, con la recomendada primero. Si el entorno no permite usarla, el agente explica la limitación y presenta las opciones numeradas. Tus autorizaciones vigentes se conservan.</p>
 
 <section id="revision">
   <h2>Revisión</h2>
@@ -342,6 +341,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <section id="pausas">
   <h2>Pausas</h2>
+  <p>El agente decide cambios de enfoque y recortes del trabajo de implementación siguiendo pstack, dentro del objetivo autorizado. La sección Autonomía de <code>felix-mode</code> fija los límites. Conserva los requisitos, la condición de terminado, los gates y el conteo de rondas.</p>
   <p class="lead">El trabajo local y reversible avanza sin preguntar. El merge APTO y verde de una unidad propia o de la cola y los efectos de su automatización están autorizados, también en alto riesgo. Incluye despliegues, migraciones, borrados, configuración global y escrituras en sistemas de cliente que el merge dispara por sí solo. No autoriza ejecutarlos a mano. Fuera de esa excepción y de lo que ya autorizaste, el agente se detiene antes de esto:</p>
   <div class="card">
     <ul class="plain">
