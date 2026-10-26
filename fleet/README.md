@@ -1,4 +1,4 @@
-# Fleet local — SEN-3820 r4
+# Fleet local — SEN-3820 harness r6
 
 CLI opt-in de un slot FIFO por autoridad local, Python 3.9/3.14 por inspección,
 biblioteca estándar, Linux/macOS POSIX. Esta entrega contiene código y pruebas
@@ -184,7 +184,9 @@ filesystem, semántica nativa de Linux/Darwin y durabilidad siguen pendientes ru
 ## Suite futura — NO EJECUTAR en MacBook
 
 PAO prepara una copia nueva del head congelado y el entorno propio, sólo después de
-reviews estáticas nuevas, detrás de SEN-3821 101×2 y en su turno autorizado Mini.
+reviews estáticas nuevas, veto PAO y orden posterior, en su turno autorizado Mini.
+La implementación h5/r6 puede ser paralela en checkouts disjuntos; sus suites y
+cualquier llenado de cuota permanecen serializados, sin concurrir con SEN-3821.
 Esta entrega no prepara copia, payload, launcher ni FIFO.
 
 Con `FLEET_TEST_RUN_BASE` físico, propio0700 dentro de la futura corrida, repetir con
@@ -209,3 +211,75 @@ La fixture externa de contención de directorio r2 tiene watchdog60s y gate prop
 Guarda snapshots, campañas, contadores y copia verificada de evidencia pública antes
 de retirar fixtures completas en `evidence-<fixture>/public-snapshots.json`.
 No hay imports Fleet, SQL, hooks privados ni respuestas simuladas en los tests.
+
+## Harness r6 y evidencia histórica
+
+Esta revisión modifica sólo tres archivos de pruebas, esta documentación y la
+matriz; `fleet/fleet/**` y `fleet/bin/**` siguen idénticos a c63. Conserva los64
+métodos, sin nuevos métodos; O06 declara dos subTest de fases condicionales.
+**Cero ejecución de r6**: ni Python/imports/discovery/sintaxis/tests ni gates en
+MacBook. El bloqueo inicial del autor fue aceptado; PAO-CLARIFICATION-1 autoriza
+continuar los tres arreglos y el setup sin certificar las fronteras de cuota.
+
+C07/C08 lanzan exclusivamente sus propios clientes mediante un shim de un hilo
+que comprueba SIGHUP/SIGINT=SIG_DFL y registra un marcador antes de exec del
+intérprete auténtico. No usa preexec_fn ni cambia señales del padre/transporte.
+C07 conserva5s,130/client_interrupted y ausencia de cambios de historia/capacidad.
+Su acuse importtime acredita importación, **no entrada en main**: una interrupción
+demasiado temprana falla el oráculo, sin aceptar0 ni añadir sleeps. C08 conserva
+sesión propia, SIGHUP real al grupo, salida por esa señal en5s, supervisor original,
+reserva/historia y contador1; settle sigue10s. Setsid/restore_signals no se toman
+como normalización. Sólo la barrera de lost_supervisor omite su print decorativo;
+done ya no depende del lector de stdout que el caso mata con SIGKILL. Los demás
+usuarios de BARRIER conservan sus logs y oráculos.
+
+Los dos r4_a01 conservan imágenes físicas completas, incluidos SHM/WAL y
+modo/tamaño/mtime/ctime/hash, antes y después de ventanas de lectores puros.
+El replay escritor se comprueba por CLI antes/después: autoridad/uid/revisión,
+operaciones y auditoría completas con IDs/seq/recibos/tiempos propios, ambos
+cursores, control y todas las observaciones de los holders salvo observed_at.
+No añade historia ni cambia capacidad/dispatch; siguen los contadores sin entrada,
+los literales, el binding raw, privacidad y los asserts posteriores de r5.
+Un cambio físico de SHM no se presenta como reescritura lógica.
+
+C20/O06 siguen **CONDICIONALES/BLOCKED**, nunca skip verde. Configuración futura
+explícita: `FLEET_TEST_QUOTA_BASE=/Volumes/pao-cs/fleet-tests`,
+`FLEET_TEST_ISOLATED_QUOTA=1`, `FLEET_TEST_QUOTA_FILL_LIMIT` positivo ≤536870912.
+El setup exige disco disk3s7, UUID F4FF2E7E-751F-48B3-BA0D-F5F2656C23BC,
+Case-sensitive APFS, Owners Enabled, cuota exacta512MiB y base física cosmonaut0700.
+Revalida con diskutil en el futuro entorno autorizado; un env no es certificado.
+No monta, redimensiona ni cambia permisos. Fallos de certificado, falta de espacio
+previo o cambios de metadatos ajenos bloquean; nunca se limpia para ganar espacio.
+
+Cada fase crea sólo una raíz nueva atribuida0700, con state/project/home/fixtures
+dentro; inventaría metadatos inmediatos del base sin descender a historias ajenas
+y su propia raíz recursiva antes/después. Conserva raíces y evidencia. El journal
+administrativo con fsync queda bajo el directorio original del caso, fuera de
+pao-cs; cleanup conserva ese caso y publica sus registros. La estabilidad de
+metadatos ajenos **no acredita ausencia de archivos abiertos o de uso ajeno**.
+
+Actualmente el caso se detiene explícitamente después del setup: **no admite
+carga, crea gates ni llena cuota**. No implementa una observación causal nueva.
+Rc3/persistence_unconfirmed/operation_not_found puede proceder de apertura previa
+del ledger y no demuestra fallo en commit de capacidad. C20 exige además ack
+terminal propio; un gate/contador fallido no demuestra colección terminal. Por
+ello el setup no puede producir PASS. O06 intenta registrar por separado los
+prerrequisitos de release y reopen mediante subTest, sin fingir assess/release.
+
+Una futura decisión PAO sobre un discriminante admisible debe preceder a cualquier
+implementación de agotamiento. Sólo ENOSPC/EDQUOT real y frontera objetivo probada
+permitirían PASS: C20 colección/publicación terminal, O06 release tras assess y
+reopen tras release. Deben conservarse error2/3, wait/recover3, contador1 y consulta
+not_found o committed con auditoría/capacidad/control correlacionados. Barreras
+preparadas antes de llenar, inventarios y guardas contra uso ajeno son obligatorios.
+Sólo el relleno propio atribuido podría retirarse en finally, registrándolo; estados,
+raíces, evidencia e históricos permanecen. En r6 no existe relleno ni retirada.
+
+C23 permanece BLOCKED por CLI auténticos2/3 e historial propio>7d, sin reloj/SQL ni
+skip. A6, C21 positivo, O10 host-side, ventanas internas y negativos OS no se cierran.
+La suite histórica c63 run20261026-143952-e9b9eb dio3.9=56pass/6fail/2error y
+3.14=58pass/4fail/2error; C20/O06/C23 fueron3 BLOCKED por stack. C08 tuvo63/64
+reportes públicos por cierre no acreditado entonces. Su cierre posterior por
+ausencia a20:50:26Zrc0 no rellena reportes ni cambia el resultado. Las hipótesis de
+señales/BrokenPipe históricas siguen delimitadas; no se midió getsignal de esos
+clientes. R6 prepara correcciones, no declara aceptación runtime.

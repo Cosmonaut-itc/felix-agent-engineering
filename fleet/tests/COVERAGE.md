@@ -1,14 +1,16 @@
-# SEN-3820 r5 — matriz pública, cero ejecución
+# SEN-3820 harness r6 — matriz pública, cero ejecución del candidato
 
 Inventario obtenido por texto, sin discovery/imports: **64 métodos** en un único
 TestCase `FleetCLI`:16 base en `test_cli.py`,28 en `Core3820Cases`,20 en
 `Operator3820Cases`. Se conservan íntegros los62 métodos de d5 (16+28+18), sus
-setups/settles/oráculos; r4 añadió dos y r5 corrige sólo el oráculo temporal del
-primer método r4, sin añadir métodos. Los53 r1, cinco r2, cuatro r3 y refuerzo C02
+contratos; r4 añadió dos y r5 corrigió sólo el oráculo temporal del
+primer método r4, sin añadir métodos. R6 corrige las fronteras descritas abajo,
+sin nuevos métodos. Los53 r1, cinco r2, cuatro r3 y refuerzo C02
 quedan conservados. Discovery futuro sólo `test_cli.py`, según README.
 **34 filas padre =26 definidas +6 parciales/condicionales +2 positivas abiertas**.
 Los3 requisitos adicionales no cambian esa partición. No se cuentan métodos como
-subcasos ni código escrito como cobertura runtime. Todos siguen sin ejecutar.
+subcasos ni código escrito como cobertura runtime. R6 sigue sin ejecutar; los
+resultados históricos de c63 se distinguen al final.
 
 Cada nombre siguiente es un método real completo, con prefijo `test_`. C reside en
 `core3820_cases.py`, O/A/B en `operator3820_cases.py`. Recursos comunes: directorio
@@ -26,8 +28,8 @@ Ninguna prueba importa Fleet, escribe SQL o inyecta respuestas/cierre en product
 | C04 / definido | c04_lookup_after_origin_removed_and_candidate_rejection_is_scoped | Origen retirado tras running; status/wait/evidence con env diferente resuelven original; nuevo candidato imposible2/not_evaluated, asociación conservada. |
 | C05 / definido | c05_finished_success_and_failure_replay_never_execute_again | Exit0 y7 separados: wait0/1 con complete; replay conserva recibo y contador1. |
 | C06 / definido | c06_lost_supervisor_and_empty_group_do_not_prove_terminal | SIGKILL a supervisor propio tras running, gate termina comando, ausencia de grupo observada; A incierto, B bloqueado owner_uncertain, replay0, wait/recover3, sin otra entrada. |
-| C07 / definido | c07_sigint_wait_only_interrupts_reader | Running en barrera; acuse externo importtime del lector, SIGINT130/client_interrupted, transiciones iguales; luego final independiente. Importtime no localiza una transacción. |
-| C08 / definido | c08_client_group_loss_preserves_original_supervisor | Wrapper cliente en sesión propia y SIGHUP a su grupo tras ready; supervisor original y running siguen; cierre normal y contador1. No SSH. |
+| C07 / definido | c07_sigint_wait_only_interrupts_reader | Shim propio restablece y comprueba SIGHUP/SIGINT=SIG_DFL antes de exec auténtico, con marcador. Running en barrera; importtime acredita importación, no entrada en main. SIGINT real exige130/client_interrupted en5s; historia/revisión/capacidad/dispatch iguales y contador1. Una interrupción pre-main falla, no se acepta0 ni se alarga timeout. |
+| C08 / definido | c08_client_group_loss_preserves_original_supervisor | Mismo shim exclusivo de clientes C07/C08, wrapper en sesión propia y SIGHUP real al grupo tras ready; marcador y retorno por SIGHUP en5s. Supervisor original, running, reserva/transiciones y contador1; settle10s. Sin preexec_fn ni política global. |
 | C09 / definido | c09_timeout_only_for_safe_pending_and_uncertainty_precedes_it | Running da4; dueño perdido da3 antes de timeout0. Ventanas terminal/publication/release pendientes sólo si se alcanzan externamente (C20/O07); no acreditadas aquí. Baseline wait registra/reintenta únicamente la ventana finished/publication pending para esperar complete. |
 | C10 / definido | c10_enqueue_only_survives_and_two_recoverers_claim_once | Enqueue-only queued seguro y dispatch_not_requested; replay no despacha; dos nuevos recoverers, un claim durable/contador1. Se tolera3 transitorio de un observador concurrente starting sin vínculo. |
 | C11 / definido | c11_results_survive_new_coordinator_processes | Exit0/7, procesos nuevos status/evidence/recover; comando/huella/IDs persistidos, wait0/1, contador1. |
@@ -39,7 +41,7 @@ Ninguna prueba importa Fleet, escribe SQL o inyecta respuestas/cierre en product
 | C17 / definido | c17_absence_is_revision_and_authority_scoped | Not_found antes de envío y admisión posterior con revisión mayor; lector no inicializa otra autoridad; mismo K nuevo en otra autoridad tiene UUID distinto. La ausencia no pronostica una carrera futura. |
 | C18 / definido | c18_missing_artifact_signal_and_positive_never_created | Exit0 sin artifact: cierre original, collection incomplete, retained, wait/recover3 y replay histórico; señal propia SIGKILL conserva signal/no exit137 y wait3 aun released; ejecutable inexistente: never-created positivo, bundle vacío explícitamente N/A, complete/failed/wait1. |
 | C19 / definido | c19_post_completion_payload_loss_does_not_rewrite_history_or_reacquire | Retirar artifact después de complete; sustituir manifest de un segundo job por el primero, conservando copias: recorded succeeded, outcome incomplete/evidence false, wait3 y released permanece. Recover no readquiere capacidad. |
-| C20 / condicional | c20_real_quota_failure_at_terminal_collection | Cuota externa aislada preexistente: running antes del llenado propio acotado, errno ENOSPC/EDQUOT, abrir gate y observar cierre/incierto; restaurar sólo espacio propio, wait/recover3 y contador1. Falta acreditar cuota y frontera realmente alcanzada; admisión fallida no cubre cierre. |
+| C20 / condicional BLOCKED | c20_real_quota_failure_at_terminal_collection | R6 prepara sólo setup pao-cs certificado, raíz propia e inventarios; termina BLOCKED antes de admisión/gate/relleno porque falta discriminante aprobado de colección/publicación terminal y ack terminal propio. ENOSPC/EDQUOT del relleno, gate fallido o incertidumbre no acreditan esa frontera. Una implementación futura aprobada debe conservar retención/wait/recover3/contador1 y restaurar exclusivamente relleno propio atribuido en finally. Ningún PASS/skip por setup. |
 | C21 / ABIERTO positivo | c21_host_backend_rejected_without_claiming_positive_generation_coverage | Sólo submit backend host-reservation@1 rechazado2/backend_unsupported/not_evaluated, sin crear estado. Falta integración capaz de entregar/procesar cierre ordinario G con H activo. No API simulada ni test positivo. |
 | C22 / definido | c22_readers_and_replay_leave_original_authority_unchanged | Running en barrera y luego supervisor perdido con grupo terminado; status/evidence/wait/lector fallido con TMPDIR/TEMP/TMP apuntando a estado y alias; inventarios sin atime idénticos en ambas vistas. Replay con env original conserva transiciones, payloads originales y contador; permite sólo preparación propia atribuible. |
 | C23 / parcial/condicional | c23_authentic_incompatible_cli_states_and_retention_preconditions | CLI auténticos2/3 en copias propias crean estados activos y cerrados; nuevo status por JOB/K, wait, evidence, recover, submit con/sin K rechazan2/unsupported_schema con inventario sin cambios. Historial auténtico>7d consulta K y fecha real; sin reloj inyectado/SQL. Faltan copias CLI provistas e historial auténtico; edad uncertain separada no acreditada por un historial finished. |
@@ -49,7 +51,7 @@ Ninguna prueba importa Fleet, escribe SQL o inyecta respuestas/cierre en product
 | O03 / condicional | o03_reason_and_declared_actor_rejections_with_real_os_actor | Motivo ausente/vacío/espacios/control/largo y flags --actor/--uid rechazados2; USER ficticio no cambia uid/cuenta/birth nativos. Otra cuenta real y denegación real de observación nativa requieren ejecutores externos preexistentes: no hay fixtures equivalentes ni cobertura positiva de esos negativos. |
 | O04 / definido, operador | o04_new_old_generation_release_is_processed_and_rejected_before_proof | G liberado, H running, C queued, drain nuevo; nueva operación para G da5/generation_mismatch, validation_processed auditado, H intacto. Replay G devuelve historia sin tocar H; C sólo tras cierre/reopen/recover. No cierra C21. |
 | O05 / definido | o05_operation_binding_replay_conflict_and_concurrent_release | Dos releases mismo ID convergen new/replay con receipt igual; motivo distinto5/audit; dos IDs distintos de otra reserva producen committed/already_released, un release efectivo. |
-| O06 / condicional | o06_real_quota_failure_cannot_commit_capacity_without_audit | Dos cuotas/fixtures propias: llenar después de assess antes de release y después de release antes de reopen. Rechazo2/3; restaurar sólo relleno propio y consultar not_found/retención o committed con auditoría/capacidad/control correlacionados si ACK fue incierto. Falta cuota aislada y acreditar fallo en operación, no sólo llenar. No inyecta cada fsync. |
+| O06 / condicional BLOCKED | o06_real_quota_failure_cannot_commit_capacity_without_audit | Dos subTest de setup propio, release y reopen, ambos BLOCKED antes de admisión/relleno. No se simula assess/release. Falta discriminante aprobado de fallo real en commit tras assess y tras release respectivamente; rc3/persistence_unconfirmed/operation_not_found puede venir de apertura y nunca basta para PASS. Mantiene como obligación futura rechazo2/3 y status not_found/retención o committed con auditoría completa/capacidad/control correlacionados, contador1 y recuperación. No inyección ni observación interna fabricada. |
 | O07 / parcial | o07_lost_stdout_recovers_each_atomic_operator_binding | Descartar stdout de los4 verbos, status y replay recuperan receipt; segunda asignación terminal, SIGKILL a clientes propios después de importtime y consulta/repetición explícita. Registra si señal se envió y binding observado. Frontera exacta intención/commit/fsync no probada; importtime/ACK no se presentan como tal. |
 | O08 / definido | o08_only_explicit_current_epoch_reopen_allows_dispatch | Release incompleto sin reopen; evidence/recover no abren ni B entra. Reopen explícito; nuevo drain D2, replay viejo devuelve historia, nueva operación D1 da5. Reopen D2+recover permite B1. |
 | O09 / definido | o09_old_epoch_proof_and_cross_authority_proof_cannot_change_current | Tras release/reopen/drain nuevo, misma asignación ya libre responde already_released sin repetir release. Proof de otra autoridad contra destino todavía retenido da2/proof_invalid; proof propio sí libera. Mismatch prioritario con H en O04. Proof_stale exige cambio relevante acreditado, no se simula alterando revisión. |
@@ -112,7 +114,7 @@ que coinciden con protocolo se comprueban por campo y procedencia.
 | Método | Fixture CLI válida, oráculo y discriminante estático contra d5 |
 | --- | --- |
 | r4_a01_denial_literals_and_copied_data_before_and_after_declaration | Origen físico vacío noGit, counted externo, submit enqueue-only con declaraciones explícitas de fleet-job-api@1/unknown_job/no_capacity_change y seis selectores válidos. Dos subTest: declaración antes de la NUEVA denegación y después de historia auténtica (denegación+conflicto por CLI). Release de job inexistente llega a unknown_job antes de drenado/prueba. Respuesta/recibo/evento/replay/exacto/listado y todas las páginas limit1 conservan api/error.code/effects/decision/status/action/binding; target/drain/proof siguen redactados y generation int7. Un backend copiado igual al literal api se redacta en request del conflicto. Cambiar sólo j_A por j_B da5, aunque ambas proyecciones sean iguales; binding/receipt originales intactos. ID y reason copiados iguales a unknown_job se rechazan y sus cuatro campos auditados muestran marcadores, sin binding. Lectores no reescriben historia; control/capacidad/transiciones/contador/supervisor sin efectos. En d5, el primer public nuevo (antes) o exacto tras declaración (después) pierde api; también decision/error/effects. El oráculo de literal falla por inspección. |
-| r4_a01_effective_control_preserves_committed_and_historical_replay | Origen vacío noGit, submit enqueue-only declara committed y fleet-job-api@1; lector sin esas variables. Drain efectivo confirma control drenado y receipt/status/decision committed; reopen separado abre. Replay del drain y status exacto/paginado conservan historia committed y muestran control actual abierto. Inventario y auditoría no cambian por replay/lectores; dos operaciones/dos eventos committed. Reason copiado committed se rechaza y redacta en evento/request, conservando códigos/efectos; no drena ni despacha el holder. En d5 ya la respuesta drain pierde api/status/decision; sin la colisión api también fallan los asserts committed. No se mide runtime. |
+| r4_a01_effective_control_preserves_committed_and_historical_replay | Origen vacío noGit, submit enqueue-only declara committed y fleet-job-api@1; lector sin esas variables. Drain efectivo confirma control drenado y receipt/status/decision committed; reopen separado abre. Replay del drain conserva historia y control actual abierto. R6 separa inventario íntegro de lectores y comparación durable del replay descrita abajo; dos operaciones/dos eventos committed. Reason copiado committed se rechaza y redacta en evento/request, conservando códigos/efectos; no drena ni despacha el holder. En d5 ya la respuesta drain pierde api/status/decision; sin la colisión api también fallan los asserts committed. No se mide runtime r6. |
 
 Dos métodos, **2 invocaciones subTest nuevas** por expansión del primer método;
 el segundo no usa subTest. Se conservan62 métodos, cuatro adiciones r3/29 subTest,
@@ -138,7 +140,7 @@ Ausencia de un prerrequisito falla explícitamente; no hay skips que sumen cober
 | Condición | Variables/entrada futura | Parte no acreditada |
 | --- | --- | --- |
 | Directorio de corrida | `FLEET_TEST_RUN_BASE`, físico, owner actual0700 | Sin él ninguna fixture arranca. No usar residuos3821 ni un temporal compartido. |
-| Cuota aislada propia | `FLEET_TEST_QUOTA_BASE`, `FLEET_TEST_ISOLATED_QUOTA=1`, `FLEET_TEST_QUOTA_FILL_LIMIT` positivo ≤1GiB | La declaración no certifica filesystem: el dueño debe aportar aislamiento y límite seguro. Sin ENOSPC/EDQUOT real o sin fallo en fase objetivo, C20/O06 no cubiertos. No crear/montar volúmenes. |
+| Cuota pao-cs propia | `FLEET_TEST_QUOTA_BASE=/Volumes/pao-cs/fleet-tests`, `FLEET_TEST_ISOLATED_QUOTA=1`, `FLEET_TEST_QUOTA_FILL_LIMIT` positivo ≤536870912 | Revalidación futura disk3s7/UUID F4FF2E7E-751F-48B3-BA0D-F5F2656C23BC/Case-sensitive APFS/Owners Enabled/cuota exacta512MiB/cosmonaut0700. Sin espacio previo o con cambio de metadatos ajenos: BLOCKED. La estabilidad no prueba ausencia de uso ajeno. R6 sólo setup; falta discriminante de frontera aprobado, no admite ni llena. |
 | Esquemas auténticos | `FLEET_TEST_SCHEMA2_CLI`, `FLEET_TEST_SCHEMA3_CLI`, copias públicas completas de CLI reales | No se siembran tablas/versiones. Inventarios activos sólo con comando en barrera sin escritor antiguo avanzando. |
 | Retención edad | `FLEET_TEST_AGED_AUTHORITY`, `FLEET_TEST_AGED_KEY`, autoridad propia e historial auténtico>7d | Sólo consulta; no registra admisión ni limpia/modifica ese estado externo. Falta edad incierta si el historial sólo es finished. No existe clock flag del producto. |
 | Negativos OS O03 | Otra cuenta/ejecutor externo y entorno que deniegue realmente identidad nativa | No implementados como sustituto env. Sin ellos los dos negativos permanecen bloqueados. No crear cuentas/permisos globales. |
@@ -169,4 +171,63 @@ Cambios intencionales versionados: JSON en observation y errores tipados; cwd ah
 materializado; fallo de supervisor conserva accepted histórico (método renombrado);
 finished/publication pending da3 y helper base sólo reobserva esa ventana; run base
 obligatorio, watchdog30s y conservación de evidencia/incompletos. No se elimina un
-caso para acomodar un resultado del runtime: no se ha ejecutado ninguno.
+caso para acomodar un resultado del runtime. R6 no se ha ejecutado; los resultados
+históricos de c63 se registran abajo sin reclasificarlos.
+
+## Aclaración y cambios r6 respecto de c63
+
+El bloqueo inicial del autor se conserva como antecedente. PAO-CLARIFICATION-1
+autoriza implementar los tres arreglos y el setup; no autoriza inventar una
+observación causal externa. Si se identifica una propuesta admisible, PAO decide
+antes de implementarla. No hay nueva observación implementada ni cuota ejecutada.
+
+Lost_supervisor usa una variante local de BARRIER que omite sólo el print; done
+es independiente del pipe cuyo lector murió. Sigue SIGKILL al supervisor, wait3,
+slot incierto retenido, segundo queued/sin ready y transición única queued. Los
+otros usuarios de barrier(), sus variantes de descendientes y entorno/PATH y los
+oráculos stdout=ok siguen usando el BARRIER original. No se captura ni acepta
+genéricamente un fallo del comando y no se acepta done ausente.
+
+En ambos r4_a01, el helper r4_replay_boundary conserva inventarios completos
+antes/después de los lectores a cada lado del replay. Inventory global sigue
+incluyendo SHM/WAL, modo/tamaño/mtime/ctime/hash. Sustituye la igualdad física
+cruzando el escritor por igualdad contractual CLI: api/operación/autoridad/uid,
+revisión, control, operaciones y auditoría completas, seq, recibos, los dos
+cursores y fin. Pagina ambos streams limit1 con avance y fin explícitos. Compara
+además todas las respuestas status de los holders, incluido el de declaración
+posterior, excepto el único observed_at de observación. Esto cubre identidad,
+admisión/input, reserva/capacidad, dispatch, transiciones y revisión sin SQL.
+Mantiene before/after/control, request/binding exactos, privacidad tras declarar,
+literales y las dos historias temporales independientes r5; tampoco elimina los
+asserts posteriores de secreto en motivo/ID, conflicto pese a igual redacción,
+contador vacío y ausencia de supervisor. No infiere mutación lógica desde SHM.
+
+El setup de cuota inventaría sólo metadatos inmediatos del base y su raíz propia
+recursiva. Identifica cada raíz por creación exclusiva/dev/ino/uid0700, sin
+atribuir por prefijo; state/project/home/fixtures se preparan dentro. Journal
+JSONL y registros públicos con fsync quedan en la corrida original fuera del
+volumen; cleanup retiene raíz original del caso y raíces de cuota incluso sin
+admisiones, y publica external_evidence. No limpia históricos ni genera relleno.
+Un error de inventario propaga fallo y conserva originales. Los dos subTest O06
+permiten informar ambas fases aunque una precondición falle; siguen64 métodos,
+con2 invocaciones subTest condicionales explícitas en O06,0 métodos nuevos.
+
+PASS de cuota requeriría ENOSPC/EDQUOT real en fase objetivo probada, no sólo
+llenado, apertura fallida o errno genérico: C20 con ack terminal propio y O06 con
+commit de capacidad/auditoría correlacionados. Barreras deben prepararse antes de
+llenar y su propio fallo nunca acredita producto. Sólo se podría restituir el
+relleno propio atribuido en finally con registro; raíces/estado/evidencia quedan.
+Esa experimentación permanece pendiente de una decisión posterior sobre el
+discriminante; r6 falla BLOCKED después de setup y jamás produce skip/PASS.
+
+Evidencia histórica c63, run20261026-143952-e9b9eb:3.9=56pass/6fail/2error,
+3.14=58pass/4fail/2error,0skip; C20/O06/C23 son3 BLOCKED por stack. C07/C08
+timeout5s, C08 además settle10s y63/64 reportes públicos; cierre posterior por
+ausencia20:50:26Zrc0 no cambia esas pruebas ni rellena los reportes. Lost_supervisor
+no llegó a done; los r4_a01 fallaron inventario sólo3.9. El mecanismo de señales y
+BrokenPipe sigue siendo hipótesis histórica delimitada, sin getsignal/EPIPE
+medidos de esos clientes. La inclusión/efectos físicos SHM y ventana escritora
+sí fueron constatados en fuentes públicas. Son discriminantes históricos de los
+tres arreglos; C20/O06 no tuvieron baseline FAIL causal porque no pasaron setup.
+R6 conserva64 métodos,0 ejecutados, sin afirmar PASS ni aceptación de plataforma.
+C23 permanece BLOCKED; A6/C21 positivo/O10/ventanas/OS mantienen sus límites.
