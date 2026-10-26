@@ -1,9 +1,14 @@
 # Mergear un PR APTO y verde
 
-Este procedimiento da autoridad de merge para los PR de tu unidad y los de
-la cola de tu programa, incluido el acumulador. Un pedido de consultar
-estado o atender comentarios conserva su alcance. Un PR ajeno, fuera de la
-cola o reservado por el usuario sigue esperando autorización explícita.
+Sigue este procedimiento en cada merge que autoriza **Merge** de felix-mode.
+Estos PR se detienen en merge-ready y esperan autorización explícita:
+
+- un PR ajeno, fuera de la cola o reservado por el usuario;
+- un PR cuyo diff toca CI, manifiestos o lockfiles de dependencias, o la
+  gobernanza de agentes, como skills, configuración de agentes,
+  `AGENTS.md` o `CLAUDE.md`.
+
+Un pedido de consultar estado o atender comentarios conserva su alcance.
 Una restricción del usuario o del `AGENTS.md` conserva su precedencia.
 
 ## Llevar el PR hasta verde
@@ -49,8 +54,13 @@ Estas condiciones deben cumplirse juntas:
   ni gates omitidos. Babysit confirma merge-ready en el forge activo, sin
   conflictos ni hallazgos reales pendientes. Cero checks configurados no
   sustituye la verificación del repositorio.
+- **Verificado.** Si el merge dispara un deploy o el cambio es de alto
+  riesgo, un verificador que no escribió el código corre el cambio sobre
+  ese head como pide Shipping 1 y da `PASS` o `PASS+NOTES`. Usa el modelo
+  de `swarm workers` del routing.
 
-Ese APTO y su evidencia cumplen el veredicto independiente de Shipping 1.
+Sin deploy ni alto riesgo, ese APTO y su evidencia cumplen el veredicto
+independiente de Shipping 1. En los demás casos lo cumple **Verificado**.
 La autoridad sustituye la espera del operador en Babysit 9, Shipping,
 Autopilot-full 5 y Autopilot-stack, incluido su permiso para corregir un
 problema durante el aterrizaje. Conserva los límites de alcance, las pausas
@@ -75,7 +85,8 @@ restantes y la separación entre propietario, verificador y stacker.
    ronda del mismo cambio, con el límite de **Rondas**. Un patch-id idéntico
    puede conservar pruebas aplicables según Shipping 3, pero no sustituye
    ese APTO. Si sólo avanza el SHA base, documenta la aplicabilidad de la
-   review y las pruebas del paso 2. Ante duda, renueva ambos.
+   review y las pruebas del paso 2. Ante duda, renueva ambos. Un veredicto
+   de **Verificado** sobrevive a un head nuevo sólo según Shipping 3.
 4. **Merge protegido.** Sigue Shipping 4 y su referencia `merge-safety.md`,
    con inspección y cancelación de solicitudes pendientes antes de cambiar
    topología. Mergea un PR a la vez, de abajo arriba. En GitHub usa
@@ -95,12 +106,13 @@ restantes y la separación entre propietario, verificador y stacker.
    informa que está pendiente, con su cadencia o enlace si los conoces.
    No lo declares verificado. Ante CI rojo o fallo de deploy, avisa de
    inmediato y abre la unidad de corrección prioritaria de **Unidades**.
-   Un revert también necesita APTO y verde. Ejecutar un rollback manual
+   Un revert cumple las mismas condiciones. Ejecutar un rollback manual
    conserva las pausas de **Autonomía**.
 
 En un programa mergea el orquestador o su único stacker. El brief del
 stacker incluye este archivo, el alcance autorizado, el destino, el head y
-las evidencias APTO y verdes. Si alguna cambió o falta, devuelve el bloqueo.
+las evidencias de cada condición. Si alguna cambió o falta, devuelve el
+bloqueo.
 Registra cada merge en `decisions.tsv`. En T3, enlaza cada PR con
 `link_pull_request` y retira el watch al entregar el resultado.
 

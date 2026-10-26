@@ -188,15 +188,15 @@ siendo obligatorios.
   pagos, CFDI, nómina), migraciones o borrado de datos, autenticación y
   permisos, cálculos de dinero o impuestos, contratos entre paquetes o
   servicios, y las rutas de alto riesgo del repositorio.
-- **Rondas.** Si las reviews no convergen, lee y aplica
-  `principle-attack-the-premise` de pstack y **Autonomía** antes de otra
-  corrección. Puedes ejecutar hasta ocho rondas de un mismo cambio sin
-  autorización adicional. Si la ronda 8 no da APTO, entrega al usuario lo
-  que sigue abierto y el replanteamiento realizado, y pausa antes de la
-  ronda 9.
-  Las reviews delta y las renovaciones por cambio de head también cuentan.
-  Antes de cualquier ronda 9 pide autorización, aunque la ronda 8 haya
-  sido APTO y después cambiara el head.
+- **Rondas.** Una review converge cuando cada ronda trae menos hallazgos y
+  ninguno abre un caso nuevo en reglas que una ronda anterior ya corrigió.
+  Si una ronda no converge, o la ronda 3 no da APTO, lee y aplica
+  `principle-attack-the-premise` de pstack y **Autonomía** antes de la
+  siguiente corrección. Un mismo cambio tiene hasta ocho rondas sin
+  autorización adicional, contando las reviews delta y las renovaciones
+  por cambio de head. Antes de la ronda 9 pausa, aunque la ronda 8 haya
+  dado APTO: entrega al usuario lo que sigue abierto y el replanteamiento
+  realizado.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
   que entrega dos candidatos estructuralmente distintos. Tú eliges y no hay
@@ -218,9 +218,14 @@ siendo obligatorios.
 
 Al abrir el PR de tu unidad, continúa hasta mergearlo con el
 [procedimiento de merge](references/merge.md), sin esperar otro pedido.
-También se aplica al acumulador y a los PR de la cola de tu programa. Exige
-APTO independiente y verde sobre el head que aterriza, aunque el merge
-dispare un deploy o el cambio sea de alto riesgo.
+También se aplica al acumulador y a los PR de la cola de tu programa.
+Mergea con APTO y verde sobre el head que aterriza, y verificado si el
+merge dispara un deploy o el cambio es de alto riesgo. La autoridad cubre
+los efectos que la automatización del merge dispara por sí sola, como
+despliegues, migraciones, borrados y escrituras en sistemas de cliente.
+Ejecutarlos a mano sigue las pausas de **Autonomía**. El procedimiento
+fija esas condiciones y los PR que se detienen en merge-ready, como los
+que tocan CI, dependencias o la gobernanza de agentes.
 
 ## Autonomía
 
@@ -231,15 +236,20 @@ entre otra ronda o un alcance menor tras intentos fallidos, como
 Autopilot-full 4, decide tú dentro del límite de **Rondas**. Registra la
 evidencia y la decisión, informa y continúa sin esperar autorización.
 Conserva los requisitos explícitos y la condición de terminado, las reviews
-y los gates, y las demás pausas. Cambiar de enfoque o dividir el mismo
-cambio no reinicia el conteo de rondas.
+y los gates, y las demás pausas.
 
-La autoridad de **Merge** cubre el merge y los efectos que su automatización
-dispara por sí sola, también
-despliegues, migraciones, borrados, configuración global de agentes y
-escrituras en sistemas de cliente. No autoriza ejecutar esos pasos a mano.
-Fuera de esa excepción y de lo ya autorizado por el usuario, además de
-«Always pause» de pstack, pausa antes de:
+Al cambiar de enfoque o dividir el cambio:
+
+- En alto riesgo, el enfoque nuevo pasa por **Diseño disputado** antes de
+  implementarse.
+- El brief de cada ronda siguiente lleva el brief original y su condición
+  de terminado sin reescribir, además de tu decisión registrada. El
+  revisor juzga contra el original.
+- El conteo de rondas sigue. Cada parte de una división es una unidad de
+  **Unidades** o entra al acumulador.
+
+Fuera de la autoridad de **Merge** y de lo ya autorizado por el usuario,
+además de «Always pause» de pstack, pausa antes de:
 
 - hacer push directo a `main` o ejecutar un comando de deploy;
 - escribir en ICG u otro sistema de un cliente en producción;

@@ -82,10 +82,11 @@ El ledger por PR y head se usa para la verificación final del acumulador.
    criterios de la spec y cambios que aún no tengan review. Cada revisor
    emite APTO para el conjunto. Clasifica el riesgo del diff completo.
    Las correcciones repiten los gates y la review afectados, con el límite
-   de **Rondas** aplicado al acumulador como cambio propio.
+   de **Rondas** aplicado al acumulador como cambio propio. Si el
+   acumulador nace de dividir un cambio, sigue el conteo de ese cambio.
 10. Con la spec completa, APTO final y verde, sigue [Merge](merge.md).
-    El acumulador se mergea automáticamente, aunque dispare deploy. Aplica
-    también la comprobación de la base contra cambios de otras sesiones.
+    Aplica también la comprobación de la base contra cambios de otras
+    sesiones.
     Si Merge pide un rebase, repite el paso 8 mediante merge en un candidato
     nuevo y renueva los gates y la review del paso 9. Cada sincronización
     requerida desde merge prep cuenta para detenerte antes de la tercera.

@@ -54,9 +54,9 @@ que el encargo lo pida.
 | 7. Implementar | Por encima del umbral de «Delegación» del routing, un trabajador escribe el código. En bugs, el test que falla va antes del arreglo. | `tdd`, `swarm` | Agente |
 | 8. Medir | Antes de creer o reportar un número de rendimiento. | `benchmark-checklist` | Agente |
 | 9. Verificar | Prueba sobre el artefacto real con la skill del repositorio. Si falta, sigue sus docs y propone crearla. | `verify` del repositorio, `create-verification-skill` | Agente |
-| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda. Hasta ocho rondas sin autorización adicional; la ronda 9 espera al dueño. | `interrogate` | Agente |
+| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda. Si la ronda 3 no da APTO, ataca la premisa antes de seguir. Hasta ocho rondas sin autorización adicional; la ronda 9 espera al dueño. | `interrogate` | Agente |
 | 11. Abrir el PR | Un PR por unidad de entrega. Los tickets acoplados se reúnen en un acumulador. Un bug de producción sale en el suyo antes que cualquier mejora. | `implement-spec` adaptada, `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
-| 12. Llevar a merge | CI, comentarios y conflictos. Mergea solo cuando todas las reviews dan APTO y los checks están verdes. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Agente |
+| 12. Llevar a merge | CI, comentarios y conflictos. Mergea solo cuando todas las reviews dan APTO y los checks están verdes. Si el merge despliega o el cambio es de alto riesgo, antes un verificador independiente corre el cambio. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Agente |
 | 13. Cerrar | Informe con evidencia y etiquetas: medido, inferido o suposición. Bitácora en trabajo largo. | `show-me-your-work` | Agente |
 
 Los playbooks de pstack que más se usan son Bug fix, Perf issue, Hillclimb,
@@ -87,6 +87,8 @@ Babysit para resolver bloqueos y Shipping para aterrizar el head aprobado.
 Un pedido de consultar estado o atender comentarios mantiene ese alcance.
 El [procedimiento de merge](../skills/felix-mode/references/merge.md) fija
 los gates, la renovación del APTO, el destino y la verificación posterior.
+También fija los PRs que paran en merge-ready y te esperan, como los que
+tocan CI, dependencias o la gobernanza de agentes.
 
 ## Revisión
 
@@ -103,16 +105,15 @@ lectura propia del orquestador no cuenta como review.
 ## Pausas
 
 Con `felix-mode`, el agente decide cambios de enfoque y recortes del trabajo
-de implementación siguiendo pstack, dentro del objetivo autorizado. La
-sección **Autonomía** de la skill fija esa autoridad y sus límites. Conserva
-los requisitos, la condición de terminado, los gates y el conteo de rondas.
+de implementación siguiendo pstack, dentro del objetivo autorizado. En alto
+riesgo, el enfoque nuevo pasa antes por diseño disputado, y las reviews
+siguientes juzgan contra tu brief original. La sección **Autonomía** de la
+skill fija esa autoridad y sus límites.
 
-El agente avanza sin preguntar en trabajo local y reversible. Un merge APTO
-y verde de su unidad o cola está autorizado, junto con los efectos que su
-automatización dispara por sí sola, también en alto riesgo. Esa excepción
-incluye despliegues, migraciones, borrados, configuración global de agentes
-y escrituras en sistemas de cliente. No autoriza ejecutarlos a mano. Fuera
-de esa excepción y de lo ya autorizado por el usuario, pausa antes de:
+El agente avanza sin preguntar en trabajo local y reversible. El merge que
+autoriza la sección **Merge** de la skill y los efectos automáticos de ese
+merge tampoco esperan. Fuera de eso y de lo ya autorizado por el usuario,
+pausa antes de:
 
 - hacer push directo a `main` o ejecutar un comando de deploy;
 - escribir en ICG u otro sistema de un cliente en producción;
@@ -126,8 +127,8 @@ de esa excepción y de lo ya autorizado por el usuario, pausa antes de:
 ## Preguntas al dueño
 
 Con `felix-mode`, toda pregunta que requiera una respuesta o decisión de
-Felix usa la herramienta de preguntas con opciones del entorno, como establece la
-sección **Respuesta** de `felix-mode`. Presenta dos o tres opciones claras,
+Felix usa la herramienta de preguntas con opciones del entorno, como
+establece la sección **Respuesta** de `felix-mode`. Presenta dos o tres opciones claras,
 con la recomendada primero. Si la herramienta no está disponible o no
 admite esa pregunta en el modo actual, explica la limitación y muestra las
 opciones numeradas en texto. Se conservan las autorizaciones vigentes.
