@@ -18,7 +18,7 @@ done
 ROOT=$(cd "$ROOT" && pwd -P) || exit 2
 REGISTRY=$ROOT/skills/felix-mode/scripts/pstack-refs.tsv
 [ -f "$REGISTRY" ] || { printf 'registro ausente: %s\n' "$REGISTRY"; exit 1; }
-PLAYBOOKS=()
+INPUTS=("$REGISTRY") PLAYBOOK_COUNT=0
 if [ "$REGISTRY_ONLY" = 0 ]; then
     if [ -z "$PSTACK" ] && [ -f "$HOME/.claude/plugins/installed_plugins.json" ]; then
         # Tokenize JSON strings and delimiters, so key order, whitespace and
@@ -42,14 +42,18 @@ if [ "$REGISTRY_ONLY" = 0 ]; then
     if [ -d "$PSTACK/skills/poteto-mode/playbooks" ]; then PSTACK=$PSTACK/skills/poteto-mode/playbooks; fi
     [ -n "$PSTACK" ] && [ -d "$PSTACK" ] || { printf 'pstack no encontrado: %s\n' "${PSTACK:-pstack@pstack-claude en installed_plugins.json}"; exit 2; }
     PSTACK=$(cd "$PSTACK" && pwd -P) || exit 2
-    for file in "$PSTACK"/*.md; do [ ! -f "$file" ] || PLAYBOOKS[${#PLAYBOOKS[@]}]=$file; done
-    [ "${#PLAYBOOKS[@]}" -gt 0 ] || { printf 'pstack no encontrado: sin playbooks en %s\n' "$PSTACK"; exit 2; }
+    for file in "$PSTACK"/*.md; do
+        [ -f "$file" ] || continue
+        INPUTS[${#INPUTS[@]}]=$file; PLAYBOOK_COUNT=$((PLAYBOOK_COUNT + 1))
+    done
+    [ "$PLAYBOOK_COUNT" -gt 0 ] || { printf 'pstack no encontrado: sin playbooks en %s\n' "$PSTACK"; exit 2; }
 fi
-DOCS=()
+DOC_COUNT=0
 for file in "$ROOT/skills/felix-mode/SKILL.md" "$ROOT/skills/felix-mode/references"/*.md; do
-    [ ! -f "$file" ] || DOCS[${#DOCS[@]}]=$file
+    [ -f "$file" ] || continue
+    INPUTS[${#INPUTS[@]}]=$file; DOC_COUNT=$((DOC_COUNT + 1))
 done
-[ "${#DOCS[@]}" -gt 0 ] || { printf 'sin documentos de felix-mode en %s\n' "$ROOT"; exit 1; }
+[ "$DOC_COUNT" -gt 0 ] || { printf 'sin documentos de felix-mode en %s\n' "$ROOT"; exit 1; }
 awk -v registry="$REGISTRY" -v root="$ROOT" -v pstack="$PSTACK" -v only="$REGISTRY_ONLY" '
 function flat(s) { gsub(/[[:space:]]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); return s }
 function problem(s) { print s; errors++ }
@@ -132,4 +136,4 @@ END {
     }
     if (errors) exit 1
     print "ok: " (citations + 0) " citas; " (only ? "registro sin pstack (--registry-only)" : "pstack " pstack)
-}' "$REGISTRY" "${PLAYBOOKS[@]}" "${DOCS[@]}"
+}' "${INPUTS[@]}"
