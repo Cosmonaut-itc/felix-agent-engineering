@@ -1,4 +1,4 @@
-# SEN-3821, harness h4 sobre h3 y producto e999 intacto
+# SEN-3821, harness h5 sobre h4 y producto e999 intacto
 
 Sólo inspección estática. Ninguna prueba se ha ejecutado en este encargo.
 La suite pública está en `test_cli.py`, que incorpora cinco mixins y contiene
@@ -16,7 +16,8 @@ Los helpers comunes de atribución/ubicación/diagnóstico también
 cambian; conservar cuerpos no prueba equivalencia runtime. La dimensión de
 estrés retirada no se cuenta como conservada ni ejecutada.
 En la suite pública no se importa Fleet ni se consulta SQL sobre el original.
-H4 valida además una copia aislada del main file, descrita abajo. Cada submit se
+H4 valida además una copia aislada del main file; h5 prepara el incompatible
+en otras copias privadas, según el contrato siguiente. Cada submit se
 registra antes de lanzar; el rechazo por ausencia exige estado exclusivo,
 cliente terminado y BD ausente antes/después, sin borrado intermedio. La
 refutación específica del ciclo ignorado con BD existente se describe abajo.
@@ -39,6 +40,57 @@ requiere reviews nuevas y después suite exacta en ambos intérpretes.
 Los apartados históricos describen cobertura escrita y límites de sus autorías;
 sus menciones a «sin ejecutar» no sustituyen los resultados h3 citados abajo
 ni se convierten en resultados de h4.
+
+## H5: incompatible derivado de un main rollback comprobado
+
+Autoridad: Felix vía PAO075b50e8, decisión ~23:05Z del 2026-10-26 y brief
+`SEN-3821-harness-h5-rollback.md`, SHA256
+`e0845def0e802ed907e9009868e6004a9bee05f14aaa003cb5594ab3228db573`.
+Base `4083b397794df995abf2b286b93fa87245eb7d3c`; producto e999 intacto.
+H5 conserva **101 métodos escritos, cero ejecutados en esta autoría**; cambia
+sólo la preparación del caso incompatible y su documentación. No añade métodos,
+skips ni cambios a `closed_database_bytes` o a los otros tres casos WAL.
+
+La suite h4 midió 100 pass/1 fail en Apple3.9 y 101 pass en3.14. La sonda A,
+`D/reports/SEN-3821-incompatible-probe-A-resultados.md`, SHA256
+`23729dead80845fbec3a5de5a1b0bb4a2f97be8afdde7e6b02aa006afb098a68`,
+localizó el fallo Apple en application_id: connect/foreign_keys pasan, pero el
+main-only con header WAL2/2 no es abrible en ro antes del schema check. El
+genérico de producto era el saneamiento previsto. No hay código numérico3.9
+medido; SQLITE_CANTOPEN es clasificación del custodio. H3 tampoco pasó ese caso
+en3.9: falló antes por sidecars. Estos resultados no son ejecución de h5.
+
+`incompatible_rollback_state` recibe los bytes acreditados por el helper h4 y
+el resultado terminal del wait auténtico. Crea `incompatible-preparation/state.db`
+nuevo 0600 bajo directorio propio0700, sin copiar sidecars. Sólo ese archivo se
+abre rw: comprueba modo inicial wal/delete, luego wal_checkpoint(TRUNCATE), con
+retorno exacto (0,0,0) para WAL (sin busy ni frames pendientes), o (0,-1,-1) para
+un main ya DELETE. Después exige retorno delete de journal_mode=DELETE y cierre
+SQLite satisfactorio. WAL0 no sustituye estos retornos ni la validación siguiente.
+
+El main cerrado debe tener header SQLite/FLT1/schema3 y bytes18/19=1/1. En
+`incompatible-validation/schema-3.db`, copia independiente0600, abre mode=ro
+**sin immutable**: foreign_keys/application_id/user_version, modo delete,
+integrity_check=ok, job/attempt finished, outcome persistido e historia por
+seq/IDs/estados/tiempos iguales al wait; no añade actor a la proyección h4.
+Exige historia no vacía terminada en finished e imagen íntegra invariable de la
+validación. Sólo entonces cambia60:64 a999 y repite esas comprobaciones sobre
+otra copia `schema-999.db`, antes de escribir el fixture incompatible0600/0700.
+Así discrimina también la apertura normal ro del derivado, sin fabricar18/19 ni
+sembrar tablas. Contrasta además la imagen completa del estado original.
+
+El bucle unsafe/empty/incompatible/absent conserva sus doce lecturas
+status/wait/evidence, rc2, literal EXACTO `unsupported Fleet pilot schema; no migration`
+e imagen íntegra antes/después. Un fallo de preparación marca retención antes
+de observar/persistir diagnóstico: copia/imagen/retornos/causa quedan en la raíz,
+con `incompatible-preparation.json`0600 si puede escribirse. La misma primaria
+se relanza; errores de cierre, imagen o informe quedan encadenados/en memoria,
+sin éxito ni diagnóstico durable inventados. El cleanup existente no borra la raíz.
+N5 comprende **todas** las copias nuevas: ningún main de preparación/validación/
+incompatible, ledger/WAL/SHM/closed-main ni entorno privado entra en el paquete,
+independientemente del nombre. No se tocan los seis nits h4 ni el lector producto.
+Reviews nuevas Astra high + Opus high, APTO doble y veto PAO preceden una orden
+posterior de suite Mini; esta edición no autoriza ni acredita runtime.
 
 ## H4: quietud física y validación independiente del main file
 
@@ -749,8 +801,9 @@ Los casos antiguos no sustituyen esta matriz.
   Para la preparación quieta se exige una de las dos formas h4 y lecturas
   exitosas sin cambiar la imagen completa. Estado inexistente, vacío, inseguro e incompatible se
   conserva sin bootstrap/reparación. El incompatible se obtiene de una BD propia
-  cerrada: se cambia a 999 el entero big-endian público de `user_version`, offset
-  60 del header SQLite; no se usa SQL para crear o modificar esa fixture. Los cuatro casos
+  cerrada: h5 convierte sólo una copia propia a rollback y valida su main según
+  el contrato anterior; después cambia a 999 el entero big-endian público de
+  `user_version`, offset60 del header SQLite, sin SQL de sembrado. Los cuatro casos
   acreditan antes status finished con los IDs propios, recogen
   clientes y verifican ausencia de supervisores/grupos, adquieren EX no bloqueante
   del directorio y exigen forma quieta, header SQLite/Fleet y validación de la

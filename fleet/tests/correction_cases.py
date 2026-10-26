@@ -1,4 +1,5 @@
 import fcntl
+from contextlib import contextmanager
 import hashlib
 import json
 import os
@@ -403,15 +404,131 @@ class CorrectionCases:
         self.assertEqual(self.state_image(self.state), before)
         self.assertEqual(self.value("status", blocker["job"])["transitions"], final["transitions"])
 
+    def incompatible_rollback_state(self, submitted, observed):
+        """Convert only a new private copy; retain every preparation failure."""
+        preparation = self.root / "incompatible-preparation"
+        validation = self.root / "incompatible-validation"
+        incompatible = self.root / "incompatible"
+        report = self.root / "incompatible-preparation.json"
+        returns = {}
+        original = None
+
+        @contextmanager
+        def closing(resource):
+            try:
+                yield resource
+            except BaseException as exc:
+                try:
+                    resource.close()
+                except BaseException as close_error:
+                    raise exc from close_error
+                raise
+            else:
+                resource.close()
+
+        def connection(database, mode):
+            return closing(sqlite3.connect(database.as_uri() + "?mode=" + mode, uri=True,
+                                           timeout=10, isolation_level=None))
+
+        def write_private(database, data):
+            with closing(os.fdopen(os.open(database, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                           0o600), "wb")) as output:
+                output.write(data)
+            self.assertEqual(stat.S_IMODE(database.lstat().st_mode), 0o600)
+            self.assertEqual(hashlib.sha256(database.read_bytes()).hexdigest(),
+                             hashlib.sha256(data).hexdigest())
+
+        try:
+            data = self.closed_database_bytes(submitted)
+            original = self.state_image(self.state)
+            self.assertEqual((observed["job"], observed["attempt"], observed["state"]),
+                             (submitted["job"], submitted["attempt"], "finished"))
+            for directory in (preparation, validation, incompatible):
+                directory.mkdir(mode=0o700)
+                self.assertEqual(stat.S_IMODE(directory.lstat().st_mode), 0o700)
+            copy = preparation / "state.db"
+            write_private(copy, data)
+            with connection(copy, "rw") as conn:
+                returns["initial_mode"] = conn.execute("PRAGMA journal_mode").fetchall()
+                self.assertIn(returns["initial_mode"], ([("wal",)], [("delete",)]))
+                # Drain/reset WAL before leaving WAL mode. TRUNCATE must finish
+                # with busy=0 and zero frames; non-WAL reports -1/-1 instead.
+                returns["checkpoint"] = conn.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchall()
+                expected = [(0, 0, 0)] if returns["initial_mode"] == [("wal",)] else [(0, -1, -1)]
+                self.assertEqual(returns["checkpoint"], expected)
+                returns["rollback_mode"] = conn.execute("PRAGMA journal_mode=DELETE").fetchall()
+                self.assertEqual(returns["rollback_mode"], [("delete",)])
+            # Read only after SQLite has closed. Validate a standalone main,
+            # never sidecars from the converter, and never the original ledger.
+            data = copy.read_bytes()
+            self.assertTrue(len(data) >= 100 and data[:16] == b"SQLite format 3\x00"
+                            and data[18:20] == b"\x01\x01" and data[68:72] == b"FLT1"
+                            and int.from_bytes(data[60:64], "big") == 3,
+                            "converted main must have SQLite/FLT1/schema3 and rollback header 1/1")
+            for version in (3, 999):
+                if version == 999:
+                    # Derive only after the closed rollback main passed all
+                    # integrity, identity, outcome and history checks below.
+                    data = bytearray(data)
+                    data[60:64] = (999).to_bytes(4, "big")
+                standalone = validation / ("schema-{}.db".format(version))
+                write_private(standalone, data)
+                before = self.state_image(validation)
+                with connection(standalone, "ro") as conn:
+                    conn.execute("PRAGMA foreign_keys=ON")
+                    self.assertEqual(conn.execute("PRAGMA application_id").fetchall(), [(0x464C5431,)])
+                    self.assertEqual(conn.execute("PRAGMA user_version").fetchall(), [(version,)])
+                    self.assertEqual(conn.execute("PRAGMA journal_mode").fetchall(), [("delete",)])
+                    self.assertEqual(conn.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
+                    row = conn.execute("SELECT j.id,a.id,a.state,a.outcome FROM jobs j "
+                                       "JOIN attempts a ON a.job_id=j.id WHERE j.id=? AND a.id=?",
+                                       (submitted["job"], submitted["attempt"])).fetchone()
+                    self.assertEqual(row, (submitted["job"], submitted["attempt"], "finished",
+                                           observed["recorded_outcome"]))
+                    transitions = conn.execute("SELECT seq,job_id,attempt_id,from_state,to_state,at "
+                                               "FROM transitions WHERE job_id=? ORDER BY seq",
+                                               (submitted["job"],)).fetchall()
+                    self.assertEqual(transitions, [(t["seq"], t["job"], t["attempt"], t["from"], t["to"], t["at"])
+                                                    for t in observed["transitions"]])
+                    self.assertTrue(transitions, "rollback main has no terminal history")
+                    self.assertEqual(transitions[-1][4], "finished")
+                self.assertEqual(self.state_image(validation), before)
+            write_private(incompatible / "state.db", data)
+            self.assertEqual(self.state_image(self.state), original)
+            return incompatible
+        except BaseException as exc:
+            # Mark retention before any fallible observation/persistence. Never
+            # let a secondary close/image/report error replace the primary.
+            self.diagnostics.append(report)
+            diagnostic = {"cause": {"type": type(exc).__name__, "message": str(exc)},
+                          "job": submitted["job"], "attempt": submitted["attempt"],
+                          "returns": returns, "original_before": original,
+                          "private_copies_not_for_publication": True, "images": {}}
+            secondary = [exc.__cause__] if exc.__cause__ is not None else []
+            for directory in (self.state, preparation, validation, incompatible):
+                try:
+                    diagnostic["images"][str(directory)] = self.state_image(directory)
+                except BaseException as image_error:
+                    secondary.append(image_error)
+                    diagnostic["images"][str(directory)] = {"unavailable": repr(image_error)}
+            exc.incompatible_preparation = diagnostic
+            diagnostic["secondary_causes"] = [repr(error) for error in secondary]
+            try:
+                with closing(os.fdopen(os.open(report, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW,
+                                               0o600), "w")) as output:
+                    output.write(json.dumps(diagnostic) + "\n")
+            except BaseException as report_error:
+                secondary.append(report_error)
+                diagnostic["secondary_causes"].append(repr(report_error))
+            exc.incompatible_preparation_errors = tuple(secondary)
+            if secondary:
+                raise exc from secondary[0]
+            raise
+
     def test_readers_reject_unsafe_incompatible_and_empty_state_without_repair(self):
         submitted = self.submit([sys.executable, "-c", "pass"])
-        self.wait(submitted["job"])
-        incompatible = self.root / "incompatible"
-        incompatible.mkdir(mode=0o700)
-        data = bytearray(self.closed_database_bytes(submitted))
-        data[60:64] = (999).to_bytes(4, "big")
-        (incompatible / "state.db").write_bytes(data)
-        (incompatible / "state.db").chmod(0o600)
+        observed = self.wait(submitted["job"])
+        incompatible = self.incompatible_rollback_state(submitted, observed)
         unsafe, empty = self.root / "unsafe-reader", self.root / "empty-reader"
         unsafe.mkdir(mode=0o755)
         unsafe.chmod(0o755)

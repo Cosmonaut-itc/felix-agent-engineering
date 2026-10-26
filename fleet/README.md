@@ -418,6 +418,8 @@ focalizado). H2 añadió tres de infraestructura, llegando a 99; h3 preserva eso
 cambia cuatro casos WAL y sus helpers, más README/COVERAGE; producto e999 intacto.
 El candidato h4 tiene **101
 escritos = 95 públicos + 5 de infraestructura + 1 focalizado; cero ejecutados**.
+H5 conserva esos 101 métodos y sólo cambia la preparación del incompatible y
+su documentación: **101 escritos, cero ejecutados en h5**. Producto e999 intacto.
 H1–h3 cambiaron ubicación, diagnósticos, atribución y garantías de snapshot/error;
 conservar métodos no acredita equivalencia runtime. Las tres entradas funcionales son
 16.385 bytes, 516 bytes de base64 textual y 160.004 bytes binarios; mantienen
@@ -512,6 +514,40 @@ no prueban el caso quieto WAL0; h4 necesita su suite101×2 tras APTO doble nuevo
 No se declaran aquí PASS/FAIL de h4 ni aceptación integral. El detalle por caso
 está en COVERAGE. Los apartados históricos describen las garantías y límites
 de sus respectivas autorías; la evidencia h3 no equivale a ejecución de h4.
+
+H5 parte de `4083b397794df995abf2b286b93fa87245eb7d3c`, autorizado por Felix vía
+PAO075b50e8 ~23:05Z del 2026-10-26. La suite h4 posterior dio100 pass/1 fail en
+Apple3.9 y101 pass en3.14. La sonda A (`D/reports/SEN-3821-incompatible-probe-A-resultados.md`,
+SHA256 `23729dead80845fbec3a5de5a1b0bb4a2f97be8afdde7e6b02aa006afb098a68`)
+localizó la excepción Apple en application_id, antes del schema check: el main
+derivado conservaba header WAL2/2 sin sidecars. Connect/foreign_keys pasaban;
+3.14 leía999 y creaba sidecars en su copia directa. Los originales CLI quedaron
+invariantes. No hay error numérico3.9 disponible; CANTOPEN es atribución del
+custodio. El saneamiento genérico de un archivo no abrible no era un bug producto.
+
+La preparación h5 conserva `closed_database_bytes` y los otros tres casos WAL.
+Sólo una copia nueva0600 en `incompatible-preparation`0700 se abre rw, tras
+acreditar el main original. Comprueba modo wal/delete, checkpoint TRUNCATE
+(0,0,0) sin busy/frames pendientes en WAL, o (0,-1,-1) si ya era DELETE, y exige
+journal_mode=DELETE con retorno delete antes de cerrar. Lee entonces el main:
+header SQLite/FLT1/schema3 y18/19=1/1. Una copia independiente en
+`incompatible-validation` se abre con mode=ro sin immutable y debe conservar
+integridad, IDs/finished/outcome e historia por seq/IDs/estados/tiempos, así como
+su imagen completa. Sólo después deriva999 por60:64 y valida otra copia ro con
+esa versión antes de escribir el fixture incompatible. No cambia18/19 a mano,
+siembra tablas ni hace SQL/checkpoint sobre originales o WAL activo.
+
+El oráculo sigue siendo rc2 y `unsupported Fleet pilot schema; no migration`,
+con status/wait/evidence e imagen íntegra antes/después de unsafe/empty/
+incompatible/absent. Una preparación fallida retiene copias, imágenes y causa;
+intenta `incompatible-preparation.json`0600 sin sustituir la excepción primaria
+si fallan cierre/observación/persistencia. No declara un pase ni informe durable
+cuando falla esa persistencia. N5 excluye del paquete todas las copias privadas
+nuevas de preparación/validación/incompatible, con cualquier nombre, además de
+ledger/WAL/SHM/closed-main y entorno privado. Los seis nits h4 siguen diferidos.
+H5 no se ha ejecutado: necesita reviews NUEVAS Astra high + Opus high, APTO doble,
+veto PAO y orden posterior antes de la suite Mini. No es aceptación runtime.
+
 Las pruebas incluyen
 snapshots sin Git, Git/índice/working tree,
 privacidad positiva y negativa, entorno/PATH en cola, streams simultáneos y un
