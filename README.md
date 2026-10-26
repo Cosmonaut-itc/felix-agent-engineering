@@ -45,9 +45,10 @@ Las partes y las skills de cada fase están en el
   y delega el código según el routing. La fase termina cuando el cambio pasa
   la prueba sobre el artefacto real, con `verify` o con los docs de
   verificación del repositorio, y un revisor gpt-6-astra en `high` lo aprueba.
-  Los tickets que necesitan salir juntos usan `implement-spec` con una rama
-  de integración y un PR acumulador. Cada ticket pasa prueba y review antes
-  de entrar, y el acumulador recibe verificación y review del conjunto.
+  Los tickets que necesitan salir juntos usan el acumulador de `felix-mode`,
+  adaptado de `implement-spec`, con una rama de integración y un PR
+  acumulador. Cada ticket pasa prueba y review antes de entrar, y el
+  acumulador recibe verificación y review del conjunto.
 - **Despliegue.** Partes 11 a 13, más lo que pide el `AGENTS.md` de cada
   repositorio. El agente abre el PR y lo mergea solo cuando todas las
   reviews dan APTO y los checks están verdes, aunque el merge dispare un
