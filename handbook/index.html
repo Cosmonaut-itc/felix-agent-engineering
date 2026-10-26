@@ -199,7 +199,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr><td><b>Investigation</b></td><td>Una pregunta de sólo lectura con respuesta citada.</td><td><q>¿Cómo funciona X?</q>, <q>¿por qué se hizo Y así?</q></td></tr>
       <tr><td><b>Babysit</b></td><td>Llevar un PR a mergeable: CI, comentarios y conflictos.</td><td><q>Cuida el PR 123.</q></td></tr>
       <tr><td><b>Shipping</b></td><td>Verificar un stack verde y aterrizarlo de abajo arriba.</td><td><q>Aterriza el stack.</q> Mergea sólo con APTO y verde, y con un verificador independiente si despliega o es de alto riesgo. Un comando de deploy pausa.</td></tr>
-      <tr><td><b>Pause safely</b> y <b>Session pickup</b></td><td>Pausar trabajo para retomarlo, o tomar el de otro agente.</td><td>Sustituyen a <code>handoff</code>.</td></tr>
+      <tr><td><b>Pause safely</b> y <b>Session pickup</b></td><td>Pausar trabajo para retomarlo, o tomar el de otro agente.</td><td>Para un documento de traspaso a un agente nuevo, pide <code>handoff</code>.</td></tr>
       <tr><td><b>Multi-phase plan</b></td><td>Sólo cuando pides un plan.</td><td>La planificación normal sigue en Matt Pocock.</td></tr>
       <tr><td><b>figure-it-out</b> (skill)</td><td>Una migración grande o trabajo que revisas al volver.</td><td>Diseña un playbook propio y deja bitácora.</td></tr>
       <tr><td><b>Opening a PR</b></td><td>Al final de todos.</td><td>Título Conventional Commits y cuerpo corto: por qué, qué cambia, alcance, riesgo, verificación.</td></tr>
@@ -274,10 +274,11 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr data-k="you"><td><code>wait-what</code>, <code>teach</code></td><td>Repite en llano un mensaje que no se entendió, o te enseña un concepto dentro del workspace.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="you"><td><code>implement-spec</code>, <code>retro</code></td><td>Implementan una spec y hacen la retro de una sesión, cuando el <code>AGENTS.md</code> del repo las pide.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="you"><td><code>wizard</code></td><td>Genera un asistente en bash para pasos que sólo puede hacer una persona.</td><td><span class="badge b-you">Tú</span></td></tr>
+      <tr data-k="you"><td><code>handoff</code></td><td>Resume la conversación en un documento de traspaso, fuera del workspace, para que otro agente la retome.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="avoid"><td><code>setup-pstack</code></td><td>Reescribe completa la hoja <code>pstack-models.md</code>. La tuya sale del routing.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td><code>babysit</code> de pstack</td><td>Para un PR, pide el playbook Babysit: <q>cuida el PR N</q>.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td><code>thermos</code>, <code>thermo-nuclear-review</code></td><td>No para revisar cambios. Tu routing reserva eso a astra, y a Opus en alto riesgo.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
-      <tr data-k="avoid"><td>Matt Pocock: <code>tdd</code>, <code>diagnosing-bugs</code>, <code>prototype</code>, <code>code-review</code>, <code>pr</code>, <code>implement</code>, <code>handoff</code>, <code>resolving-merge-conflicts</code></td><td>No se instalan: pstack las cubre. <code>pao</code> las retira de <code>~/.agents/skills</code> y <code>~/.claude/skills</code>. Superpowers está apagado.</td><td><span class="badge b-avoid">Retirada</span></td></tr>
+      <tr data-k="avoid"><td>Matt Pocock: <code>tdd</code>, <code>diagnosing-bugs</code>, <code>prototype</code>, <code>code-review</code>, <code>pr</code>, <code>implement</code>, <code>resolving-merge-conflicts</code></td><td>No se instalan: pstack las cubre. <code>pao</code> las retira de <code>~/.agents/skills</code> y <code>~/.claude/skills</code>. Superpowers está apagado.</td><td><span class="badge b-avoid">Retirada</span></td></tr>
     </tbody>
   </table>
 </section>
@@ -363,7 +364,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
     <thead><tr><th>Archivo</th><th>Qué contiene</th></tr></thead>
     <tbody>
       <tr><td><code>~/.agents/skills/felix-mode</code></td><td>El modo. Enlaza a <code>skills/felix-mode</code> del clon, igual que su par en <code>~/.claude/skills</code>.</td></tr>
-      <tr><td><code>~/.agents/skills/&lt;matt&gt;</code></td><td>Las 20 skills de Matt Pocock en uso. Enlazan a <code>vendor/mattpocock</code>, la copia del último release.</td></tr>
+      <tr><td><code>~/.agents/skills/&lt;matt&gt;</code></td><td>Las 21 skills de Matt Pocock en uso. Enlazan a <code>vendor/mattpocock</code>, la copia del último release.</td></tr>
       <tr><td><code>~/.agents/docs/agent-routing.md</code></td><td>Modelos, esfuerzo, revisión, roles de pstack y transporte. Es la fuente.</td></tr>
       <tr><td><code>~/.agents/docs/orchestration.md</code></td><td>El contrato Despachar, Recoger, Vetar y Cerrar. Es la fuente.</td></tr>
       <tr><td><code>~/.claude/CLAUDE.md</code></td><td>Copia del contrato, tabla de modelos y la sección «Flujo de ingeniería» que activa <code>felix-mode</code>.</td></tr>
