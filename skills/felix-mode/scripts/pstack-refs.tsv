@@ -1,0 +1,10 @@
+playbook	paso	ancla
+Autopilot-full	4	Swarm-verify once.
+Autopilot-full	5	The operator merges only what you verified, tested on the trunk it lands on.
+Babysit	6	Trust the active forge's verdict, not a green check list.
+Babysit	9	Stop at the human's line.
+Feature	4	Delegate code-writing to a subagent using your configured feature model
+Orchestrate	2	Install the runtime.
+Shipping	1	Resolve the forge, then verify each PR independently before it lands.
+Shipping	3	Re-check that the verdicts still describe the code.
+Shipping	4	Land bottom-up, one PR at a time.

@@ -1,0 +1,135 @@
+#!/bin/bash
+# Validate felix-mode citations without executing any pstack code.
+set -uo pipefail
+ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd -P) || exit 2
+REGISTRY_ONLY=0 PSTACK=''
+usage() { printf 'Uso: pstack-refs [--registry-only] [--root DIR] [--pstack DIR]\n' >&2; exit 2; }
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --registry-only) REGISTRY_ONLY=1; shift ;;
+        --root|--pstack)
+            [ "$#" -ge 2 ] && [ -n "$2" ] && [[ $2 != --* ]] || usage
+            if [ "$1" = --root ]; then ROOT=$2; else PSTACK=$2; fi
+            shift 2 ;;
+        *) usage ;;
+    esac
+done
+[ -d "$ROOT" ] || usage
+ROOT=$(cd "$ROOT" && pwd -P) || exit 2
+REGISTRY=$ROOT/skills/felix-mode/scripts/pstack-refs.tsv
+[ -f "$REGISTRY" ] || { printf 'registro ausente: %s\n' "$REGISTRY"; exit 1; }
+PLAYBOOKS=()
+if [ "$REGISTRY_ONLY" = 0 ]; then
+    if [ -z "$PSTACK" ] && [ -f "$HOME/.claude/plugins/installed_plugins.json" ]; then
+        # Tokenize JSON strings and delimiters, so key order, whitespace and
+        # unrelated installPath entries do not affect discovery. Never eval JSON.
+        PSTACK=$(awk '
+        { gsub(/\r/, ""); json = json $0 " " }
+        END {
+            while (match(json, /"([^"\\]|\\.)*"|[][{}:,]/)) {
+                token = substr(json, RSTART, RLENGTH)
+                json = substr(json, RSTART + RLENGTH)
+                if (token == "\"pstack@pstack-claude\"") selected = 1
+                else if (selected && token == "\"installPath\"") path = 1
+                else if (path && token ~ /^"/) {
+                    token = substr(token, 2, length(token) - 2)
+                    gsub(/\\\//, "/", token); gsub(/\\\\/, "/", token)
+                    print token; exit
+                } else if (selected && token == "]") exit
+            }
+        }' "$HOME/.claude/plugins/installed_plugins.json")
+    fi
+    if [ -d "$PSTACK/skills/poteto-mode/playbooks" ]; then PSTACK=$PSTACK/skills/poteto-mode/playbooks; fi
+    [ -n "$PSTACK" ] && [ -d "$PSTACK" ] || { printf 'pstack no encontrado: %s\n' "${PSTACK:-pstack@pstack-claude en installed_plugins.json}"; exit 2; }
+    PSTACK=$(cd "$PSTACK" && pwd -P) || exit 2
+    for file in "$PSTACK"/*.md; do [ ! -f "$file" ] || PLAYBOOKS[${#PLAYBOOKS[@]}]=$file; done
+    [ "${#PLAYBOOKS[@]}" -gt 0 ] || { printf 'pstack no encontrado: sin playbooks en %s\n' "$PSTACK"; exit 2; }
+fi
+DOCS=()
+for file in "$ROOT/skills/felix-mode/SKILL.md" "$ROOT/skills/felix-mode/references"/*.md; do
+    [ ! -f "$file" ] || DOCS[${#DOCS[@]}]=$file
+done
+[ "${#DOCS[@]}" -gt 0 ] || { printf 'sin documentos de felix-mode en %s\n' "$ROOT"; exit 1; }
+awk -v registry="$REGISTRY" -v root="$ROOT" -v pstack="$PSTACK" -v only="$REGISTRY_ONLY" '
+function flat(s) { gsub(/[[:space:]]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); return s }
+function problem(s) { print s; errors++ }
+function stem(s) { s = tolower(s); gsub(/ /, "-", s); return s ".md" }
+function location(file, pos,    i) {
+    for (i = 1; i <= lines[file]; i++) if (pos <= ends[file, i]) return substr(file, length(root) + 2) ":" i
+    return substr(file, length(root) + 2) ":" lines[file]
+}
+function cite(file, pos, name, number,    key) {
+    number += 0; key = name SUBSEP number; citations++; seen[key]++
+    if (!(key in anchors)) problem(location(file, pos) " cita «" name " " number "», que no está en skills/felix-mode/scripts/pstack-refs.tsv. Añade la fila: " name "\t" number "\t<título del paso>")
+}
+function scan(file,    name, text, offset, at, before, after, prefix, nums, n, i, pos) {
+    text = documents[file]
+    for (name in names) {
+        offset = 1
+        while ((at = index(substr(text, offset), name)) > 0) {
+            pos = offset + at - 1; before = substr(text, 1, pos - 1)
+            after = substr(text, pos + length(name)); offset = pos + length(name)
+            if (before ~ /[[:alnum:]_-]$/ || after ~ /^[[:alnum:]_-]/) continue
+            if (match(after, /^(, paso | )[0-9]+(\/[0-9]+)*/)) {
+                nums = substr(after, RSTART, RLENGTH); sub(/^(, paso | )/, "", nums)
+                n = split(nums, nums_list, "/")
+                for (i = 1; i <= n; i++) cite(file, pos, name, nums_list[i])
+            }
+            if (match(before, /paso [0-9]+ del playbook $/)) {
+                prefix = substr(before, RSTART); nums = prefix
+                sub(/^paso /, "", nums); sub(/ del playbook $/, "", nums)
+                cite(file, RSTART, name, nums)
+            }
+        }
+    }
+}
+{
+    gsub(/\r/, "")
+    if (FILENAME == registry) {
+        if (FNR == 1) {
+            if ($0 != "playbook\tpaso\tancla") problem("pstack-refs.tsv:1 cabecera inválida")
+            next
+        }
+        count = split($0, fields, "\t")
+        if (count != 3 || fields[1] !~ /^[[:alpha:]][[:alnum:] -]*$/ || fields[2] !~ /^[1-9][0-9]*$/ || flat(fields[3]) == "") {
+            problem("pstack-refs.tsv:" FNR " fila inválida"); next
+        }
+        key = fields[1] SUBSEP (fields[2] + 0)
+        if (key in anchors) problem("pstack-refs.tsv:" FNR " fila duplicada")
+        anchors[key] = flat(fields[3]); names[fields[1]] = 1; next
+    }
+    if (pstack != "" && index(FILENAME, pstack "/") == 1) {
+        book = substr(FILENAME, length(pstack) + 2); books[book] = 1
+        if (FNR == 1) step = ""
+        if (/^### /) { title = $0; sub(/^### /, "", title); names[flat(title)] = 1 }
+        if (/^#/ || /^\*\*Reply/) step = ""
+        if (/^[0-9]+\. /) { step = $0; sub(/\. .*/, "", step); step += 0 }
+        if (step != "") steps[book, step] = steps[book, step] " " $0
+        next
+    }
+    # Keep one normalized space per newline and its source-line offset.
+    line = flat($0); documents[FILENAME] = documents[FILENAME] line " "
+    lines[FILENAME]++; ends[FILENAME, FNR] = length(documents[FILENAME])
+}
+END {
+    for (file in documents) scan(file)
+    for (key in anchors) {
+        split(key, parts, SUBSEP); name = parts[1]; number = parts[2]; label = name " " number
+        if (!(key in seen)) problem("fila sin cita: " label)
+        if (only) continue
+        book = stem(name)
+        if (!(book in books)) { problem(label ": playbook ausente: " book); continue }
+        exists = ((book SUBSEP number) in steps)
+        if (index(flat(steps[book, number]), anchors[key])) continue
+        moved = ""
+        for (other in steps) {
+            split(other, parts, SUBSEP)
+            if (parts[1] == book && parts[2] != number && index(flat(steps[other]), anchors[key])) moved = moved (moved == "" ? "" : ", ") parts[2]
+        }
+        if (moved != "") problem(label ": ancla movida al paso " moved ": " anchors[key])
+        else if (!exists) problem(label ": paso ausente; ancla desaparecida: " anchors[key])
+        else problem(label ": ancla desaparecida: " anchors[key])
+    }
+    if (errors) exit 1
+    print "ok: " (citations + 0) " citas; " (only ? "registro sin pstack (--registry-only)" : "pstack " pstack)
+}' "$REGISTRY" "${PLAYBOOKS[@]}" "${DOCS[@]}"
