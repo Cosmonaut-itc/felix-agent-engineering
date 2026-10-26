@@ -110,13 +110,16 @@ function scan(file,    name, text, offset, at, before, after, prefix, nums, n, i
     }
     if (pstack != "" && index(FILENAME, pstack "/") == 1) {
         book = substr(FILENAME, length(pstack) + 2); books[book] = 1
-        if (FNR == 1) mark = ""
-        if (/^### /) { title = $0; sub(/^### /, "", title); names[flat(title)] = 1 }
-        if (/^#/ || /^\*\*Reply/) mark = ""
-        if (/^[0-9]+\.$/ || /^[0-9]+\.[ \t]/) {
-            number = $0; sub(/\..*/, "", number); number += 0
-            marks[book, number]++; mark = book SUBSEP number SUBSEP marks[book, number]
-            sub(/^[0-9]+\.[ \t]*/, "")
+        if (FNR == 1) { mark = ""; fence = 0 }
+        if (/^[ \t]*(```|~~~)/) fence = !fence
+        else if (!fence) {
+            if (/^### /) { title = $0; sub(/^### /, "", title); names[flat(title)] = 1 }
+            if (/^#/ || /^\*\*Reply/) mark = ""
+            if (/^[0-9]+\.$/ || /^[0-9]+\.[ \t]/) {
+                number = $0; sub(/\..*/, "", number); number += 0
+                marks[book, number]++; mark = book SUBSEP number SUBSEP marks[book, number]
+                sub(/^[0-9]+\.[ \t]*/, "")
+            }
         }
         if (mark != "") openings[mark] = openings[mark] " " $0
         next
@@ -133,9 +136,8 @@ END {
         if (only) continue
         book = stem(name)
         if (!(book in books)) { problem(label ": playbook ausente: " book); continue }
-        found = 0
-        for (k = 1; k <= marks[book, number]; k++) if (opens(book SUBSEP number SUBSEP k, anchors[key])) found = 1
-        if (found) continue
+        if (marks[book, number] > 1) { problem(label ": paso ambiguo: " book " tiene " marks[book, number] " marcadores " number "."); continue }
+        if (marks[book, number] == 1 && opens(book SUBSEP number SUBSEP 1, anchors[key])) continue
         moved = ""
         for (mark in openings) {
             split(mark, parts, SUBSEP)

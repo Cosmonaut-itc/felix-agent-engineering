@@ -144,6 +144,16 @@ empty_marker() {
     printf '### Shipping\n1.\n   **Resolve the forge.**\n' > "$PSTACK/shipping.md"
     check 0 'ok: 1 citas;'
 }
+code_block() {
+    fixture
+    printf '### Shipping\n1. **Different task.**\n2. **Resolve the forge.**\n\n```markdown\n1. **Resolve the forge.**\n```\n' > "$PSTACK/shipping.md"
+    check 1 'Shipping 1: ancla movida al paso 2'
+}
+repeated_number() {
+    fixture
+    printf '### Shipping\n1. **Resolve the forge.**\n## Otra lista\n1. **Something else.**\n' > "$PSTACK/shipping.md"
+    check 1 'Shipping 1: paso ambiguo: shipping.md tiene 2 marcadores 1.'
+}
 unnamed_playbook() {
     fixture
     printf '### Extra\n1. **Start.**\n' > "$PSTACK/extra.md"
@@ -162,7 +172,7 @@ installed_path() {
 usage() { expect 2 'Uso:' --root; }
 real_registry() { expect 0 'ok:' --registry-only --root "$REPO"; }
 failed=0
-for CASE in all_green missing_row unused_row renumbered lost_anchor missing_step missing_book registry_only not_installed citation_forms split_line unregistered_playbook slash_split crlf local_docs new_title step_boundaries tab_marker empty_marker unnamed_playbook installed_path usage real_registry; do
+for CASE in all_green missing_row unused_row renumbered lost_anchor missing_step missing_book registry_only not_installed citation_forms split_line unregistered_playbook slash_split crlf local_docs new_title step_boundaries tab_marker empty_marker code_block repeated_number unnamed_playbook installed_path usage real_registry; do
     if (set -e; "$CASE"); then printf 'ok %s\n' "$CASE"; else printf 'FAIL %s\n' "$CASE" >&2; failed=$((failed + 1)); fi
 done
 [ "$failed" = 0 ]
