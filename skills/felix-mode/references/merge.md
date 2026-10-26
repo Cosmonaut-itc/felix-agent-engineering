@@ -18,14 +18,19 @@ No intenta llegar a merge-ready hasta completar la spec. Cualquier
 corrección entra por el candidato del paso 6 de [Acumulador](acumulador.md),
 con su único integrador. Después del candidato final sigue el flujo normal.
 
-En T3 Code, usa `watch_pull_request` para esperar checks y eventos, y
-termina el turno. Al despertar, vuelve a comprobar los gates antes del
-merge. En GitHub, ejecuta una comprobación acotada con
-`watch-pr --owner <owner> --repo <repo> --pr <n> --timeout 45`, sin
-`--status-only`. Sólo `READY` para ese PR y el head aprobado confirma
-merge-ready. Ante `WAITING` o `TIMEOUT`, conserva o rearma el watch de T3 y
-termina el turno; ante `BLOCKER`, sigue Babysit. Reserva `--status-only`
-para observar un acumulador en curso: su salida no confirma merge-ready.
+En T3 Code, comprueba los gates antes de ceder la espera y en cada despertar.
+En GitHub, usa el ejecutable de Babysit 6,
+`<plugin pstack>/skills/poteto-mode/scripts/watch-pr/watch-pr`, con
+`--owner <owner> --repo <repo> --pr <n> --interval 20 --timeout 150`, sin
+`--status-only`. El plazo permite la confirmación de 60 segundos sin checks.
+Deja terminar la comprobación: `WAITING` es una salida intermedia.
+Sólo `READY` para ese PR y el head aprobado confirma merge-ready.
+Ante `BLOCKER`, sigue Babysit. Si termina en `TIMEOUT` por `pending-checks`,
+informa qué checks faltan, conserva o rearma `watch_pull_request` de T3 y
+termina el turno. Ante otro `TIMEOUT` o un fallo de lectura, informa la
+razón y retira el watch para devolver el hilo al inbox; un nuevo evento
+no está garantizado. Reserva `--status-only` para observar un acumulador
+en curso: su salida no confirma merge-ready.
 En Origin, usa las lecturas y el criterio de merge-ready de Babysit,
 incluidos hilos y reviews bloqueantes. T3 es el único watcher persistente.
 Fuera de T3, usa el mecanismo del playbook Babysit.
