@@ -20,10 +20,15 @@ con su único integrador. Después del candidato final sigue el flujo normal.
 
 En T3 Code, usa `watch_pull_request` para esperar checks y eventos, y
 termina el turno. Al despertar, vuelve a comprobar los gates antes del
-merge. Confirma el estado con `watch-pr --status-only` en GitHub, o las
-lecturas de `origin pr` de Babysit en Origin, incluidos hilos y reviews
-bloqueantes. El watch programa la continuación. Fuera de T3, usa el
-mecanismo del playbook Babysit. No mantengas dos watchers del mismo PR.
+merge. En GitHub, ejecuta una comprobación acotada con
+`watch-pr --owner <owner> --repo <repo> --pr <n> --timeout 45`, sin
+`--status-only`. Sólo `READY` para ese PR y el head aprobado confirma
+merge-ready. Ante `WAITING` o `TIMEOUT`, conserva o rearma el watch de T3 y
+termina el turno; ante `BLOCKER`, sigue Babysit. Reserva `--status-only`
+para observar un acumulador en curso: su salida no confirma merge-ready.
+En Origin, usa las lecturas y el criterio de merge-ready de Babysit,
+incluidos hilos y reviews bloqueantes. T3 es el único watcher persistente.
+Fuera de T3, usa el mecanismo del playbook Babysit.
 
 Estas condiciones deben cumplirse juntas:
 
