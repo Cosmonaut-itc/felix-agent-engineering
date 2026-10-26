@@ -10,9 +10,8 @@ Este flujo adapta `implement-spec` de Matt Pocock y la sustituye en
 felix-mode. Toma de ella el **grafo de tareas**: los tickets de la spec y
 sus relaciones de bloqueo. La **frontera** son los tickets cuyas
 dependencias ya están integradas y verdes. Cada implementador trabaja un
-ticket de la frontera en su propio worktree y su propia rama. Una
-adaptación local exigida por `AGENTS.md` mantiene sus controles y su
-precedencia.
+ticket en su propio worktree y su propia rama. Una adaptación local
+exigida por `AGENTS.md` mantiene sus controles y su precedencia.
 
 ## Preparar el programa
 
@@ -21,8 +20,10 @@ precedencia.
    propietario de la integración. Usa Orchestrate para el programa largo
    y el playbook Feature de pstack para cada ticket, con `tdd` de pstack,
    **Verificación**, routing y **Revisión** de felix-mode.
-2. Registra cada ticket en `units.tsv`, sin inventar un PR por ticket. En
-   este flujo sus filas representan partes de la unidad de entrega. Guarda
+2. Lee la spec y todos sus tickets y obtén el grafo de tareas antes del
+   primer despacho. Registra cada ticket en `units.tsv`, sin inventar un
+   PR por ticket. En este flujo sus filas representan partes de la unidad
+   de entrega. Guarda
    la relación con el PR acumulador en `overview.md` y sus decisiones en
    `decisions.tsv`. Un ticket integrado aún no equivale a desplegado. Sigue
    el tracker del repositorio para cerrarlo, sin anticipar la entrega.
