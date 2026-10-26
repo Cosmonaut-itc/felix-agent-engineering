@@ -126,7 +126,7 @@ new_title() {
 step_boundaries() {
     fixture
     printf 'playbook\tpaso\tancla\nShipping\t1\tAn indented paragraph belongs\n' > "$SKILL/scripts/pstack-refs.tsv"
-    check 0 'ok: 1 citas;' || return 1
+    check 1 'ancla desaparecida: An indented paragraph belongs' || return 1
     printf 'playbook\tpaso\tancla\nShipping\t1\tstop.\n' > "$SKILL/scripts/pstack-refs.tsv"
     check 1 'ancla desaparecida: stop.' || return 1
     printf '### Shipping\n1. **Start.**\n# Heading\nstop.\n' > "$PSTACK/shipping.md"
@@ -136,6 +136,13 @@ tab_marker() {
     fixture
     printf '### Shipping\n1. **Start.**\n2.\t**Resolve the forge.**\n' > "$PSTACK/shipping.md"
     check 1 'Shipping 1: ancla movida al paso 2'
+}
+empty_marker() {
+    fixture
+    printf '### Shipping\n1. **Start.**\n2.\n   **Resolve the forge.**\n' > "$PSTACK/shipping.md"
+    check 1 'Shipping 1: ancla movida al paso 2' || return 1
+    printf '### Shipping\n1.\n   **Resolve the forge.**\n' > "$PSTACK/shipping.md"
+    check 0 'ok: 1 citas;'
 }
 unnamed_playbook() {
     fixture
@@ -155,7 +162,7 @@ installed_path() {
 usage() { expect 2 'Uso:' --root; }
 real_registry() { expect 0 'ok:' --registry-only --root "$REPO"; }
 failed=0
-for CASE in all_green missing_row unused_row renumbered lost_anchor missing_step missing_book registry_only not_installed citation_forms split_line unregistered_playbook slash_split crlf local_docs new_title step_boundaries tab_marker unnamed_playbook installed_path usage real_registry; do
+for CASE in all_green missing_row unused_row renumbered lost_anchor missing_step missing_book registry_only not_installed citation_forms split_line unregistered_playbook slash_split crlf local_docs new_title step_boundaries tab_marker empty_marker unnamed_playbook installed_path usage real_registry; do
     if (set -e; "$CASE"); then printf 'ok %s\n' "$CASE"; else printf 'FAIL %s\n' "$CASE" >&2; failed=$((failed + 1)); fi
 done
 [ "$failed" = 0 ]

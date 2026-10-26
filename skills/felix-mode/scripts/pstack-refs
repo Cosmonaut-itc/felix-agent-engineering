@@ -61,6 +61,8 @@ awk -v registry="$REGISTRY" -v root="$ROOT" -v pstack="$PSTACK" -v only="$REGIST
 function flat(s) { gsub(/[[:space:]]+/, " ", s); sub(/^ /, "", s); sub(/ $/, "", s); return s }
 function problem(s) { print s; errors++ }
 function stem(s) { s = tolower(s); gsub(/ /, "-", s); return s ".md" }
+# An anchor must open its step, so a misread step boundary fails instead of passing.
+function opens(mark, anchor,    s) { s = openings[mark]; gsub(/\*\*/, "", s); return index(flat(s), anchor) == 1 }
 function location(file, pos,    i) {
     for (i = 1; i <= lines[file]; i++) if (pos <= ends[file, i]) return substr(file, length(root) + 2) ":" i
     return substr(file, length(root) + 2) ":" lines[file]
@@ -108,11 +110,15 @@ function scan(file,    name, text, offset, at, before, after, prefix, nums, n, i
     }
     if (pstack != "" && index(FILENAME, pstack "/") == 1) {
         book = substr(FILENAME, length(pstack) + 2); books[book] = 1
-        if (FNR == 1) step = ""
+        if (FNR == 1) mark = ""
         if (/^### /) { title = $0; sub(/^### /, "", title); names[flat(title)] = 1 }
-        if (/^#/ || /^\*\*Reply/) step = ""
-        if (/^[0-9]+\.[ \t]/) { step = $0; sub(/\..*/, "", step); step += 0 }
-        if (step != "") steps[book, step] = steps[book, step] " " $0
+        if (/^#/ || /^\*\*Reply/) mark = ""
+        if (/^[0-9]+\.$/ || /^[0-9]+\.[ \t]/) {
+            number = $0; sub(/\..*/, "", number); number += 0
+            marks[book, number]++; mark = book SUBSEP number SUBSEP marks[book, number]
+            sub(/^[0-9]+\.[ \t]*/, "")
+        }
+        if (mark != "") openings[mark] = openings[mark] " " $0
         next
     }
     # Keep one normalized space per newline and its source-line offset.
@@ -127,15 +133,16 @@ END {
         if (only) continue
         book = stem(name)
         if (!(book in books)) { problem(label ": playbook ausente: " book); continue }
-        exists = ((book SUBSEP number) in steps)
-        if (index(flat(steps[book, number]), anchors[key])) continue
+        found = 0
+        for (k = 1; k <= marks[book, number]; k++) if (opens(book SUBSEP number SUBSEP k, anchors[key])) found = 1
+        if (found) continue
         moved = ""
-        for (other in steps) {
-            split(other, parts, SUBSEP)
-            if (parts[1] == book && parts[2] != number && index(flat(steps[other]), anchors[key])) moved = moved (moved == "" ? "" : ", ") parts[2]
+        for (mark in openings) {
+            split(mark, parts, SUBSEP)
+            if (parts[1] == book && parts[2] != number && opens(mark, anchors[key])) moved = moved (moved == "" ? "" : ", ") parts[2]
         }
         if (moved != "") problem(label ": ancla movida al paso " moved ": " anchors[key])
-        else if (!exists) problem(label ": paso ausente; ancla desaparecida: " anchors[key])
+        else if (!marks[book, number]) problem(label ": paso ausente; ancla desaparecida: " anchors[key])
         else problem(label ": ancla desaparecida: " anchors[key])
     }
     if (!only) for (book in books) if (!(book in named)) problem("pstack tiene " book ", que no corresponde a ningún nombre de PLAYBOOKS en pstack-refs")
