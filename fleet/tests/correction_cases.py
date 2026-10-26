@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 import pwd
+import sqlite3
+import stat
 import subprocess
 import sys
 
@@ -284,6 +286,32 @@ class CorrectionCases:
                 p.lstat().st_size, p.lstat().st_mtime_ns, p.lstat().st_ctime_ns,
                 hashlib.sha256(p.read_bytes()).hexdigest() if p.is_file() else None) for p in paths}
 
+    def quiet_database_image(self):
+        """Observe a closed fixture under its directory EX lock; never repair it."""
+        files = {}
+        for name in ("state.db", "state.db-wal", "state.db-shm"):
+            try:
+                info = (self.state / name).lstat()
+            except FileNotFoundError:
+                if name == "state.db":
+                    raise
+                continue
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                    or info.st_mode & 0o077 or info.st_nlink != 1):
+                raise ValueError("quiet database files must be regular, private, owned and have one link: " + name)
+            files[name] = (info.st_dev, info.st_ino, info.st_mode, info.st_uid, info.st_gid,
+                           info.st_nlink, info.st_size, info.st_mtime_ns, info.st_ctime_ns)
+        sidecars = set(files) - {"state.db"}
+        if sidecars and (sidecars != {"state.db-wal", "state.db-shm"}
+                         or files["state.db-wal"][6] != 0):
+            raise ValueError("quiet state requires no sidecars or an empty WAL with SHM present")
+        image = self.state_image(self.state)
+        if any(image.get(name, ())[:9] != identity for name, identity in files.items()):
+            raise ValueError("quiet database files changed during observation")
+        if {name for name in ("state.db-wal", "state.db-shm") if name in image} != sidecars:
+            raise ValueError("quiet sidecar presence changed during observation")
+        return image
+
     def closed_database_bytes(self, submitted):
         fd = None
         try:
@@ -298,18 +326,52 @@ class CorrectionCases:
             self.guard_admissions()
             fd = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            sidecars = [name for name in ("state.db-wal", "state.db-shm")
-                        if os.path.lexists(self.state / name)]
-            if sidecars:
-                raise ValueError("sidecars remain after attributed clients, supervisors and groups exited: "
-                                 + repr(sidecars))
-            data = (self.state / "state.db").read_bytes()
+            directory = os.fstat(fd)
+            current = self.state.lstat()
+            if (directory.st_uid != os.getuid() or directory.st_mode & 0o077
+                    or (directory.st_dev, directory.st_ino)
+                    != (current.st_dev, current.st_ino)):
+                raise ValueError("closed database directory is not private, owned and stable")
+            before = self.quiet_database_image()
+            with os.fdopen(os.open("state.db", os.O_RDONLY | os.O_NOFOLLOW, dir_fd=fd), "rb") as source:
+                opened = os.fstat(source.fileno())
+                if (opened.st_dev, opened.st_ino) != before["state.db"][:2]:
+                    raise ValueError("closed main file identity changed before reading")
+                data = source.read()
+            if hashlib.sha256(data).hexdigest() != before["state.db"][-1]:
+                raise ValueError("closed main file bytes changed during reading")
             if (len(data) < 100 or data[:16] != b"SQLite format 3\x00"
                     or int.from_bytes(data[60:64], "big") != 3
                     or data[68:72] != b"FLT1"):
                 raise ValueError("closed main file does not contain the expected public Fleet schema header")
+            # Sidecar shape is not checkpoint/integrity proof. Validate only a
+            # standalone byte copy, without WAL/SHM or SQLite on the original.
+            copy = self.root / "closed-main.db"
+            with os.fdopen(os.open(copy, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600), "wb") as output:
+                output.write(data)
+            self.assertEqual(copy.read_bytes(), data)
+            conn = sqlite3.connect(copy.as_uri() + "?mode=ro&immutable=1", uri=True)
+            try:
+                self.assertEqual(conn.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
+                self.assertEqual(conn.execute("PRAGMA application_id").fetchone(), (0x464C5431,))
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone(), (3,))
+                row = conn.execute("SELECT j.id,a.id,a.state,a.outcome FROM jobs j "
+                                   "JOIN attempts a ON a.job_id=j.id WHERE j.id=? AND a.id=?",
+                                   (submitted["job"], submitted["attempt"])).fetchone()
+                self.assertEqual(row, (submitted["job"], submitted["attempt"], "finished",
+                                       observed["recorded_outcome"]))
+                transitions = conn.execute("SELECT seq,job_id,attempt_id,from_state,to_state,at "
+                                           "FROM transitions WHERE job_id=? ORDER BY seq",
+                                           (submitted["job"],)).fetchall()
+                self.assertEqual(transitions, [(t["seq"], t["job"], t["attempt"], t["from"], t["to"], t["at"])
+                                                for t in observed["transitions"]])
+                self.assertTrue(transitions, "closed main file has no terminal history")
+                self.assertEqual(transitions[-1][4], "finished")
+            finally:
+                conn.close()
+            self.assertEqual(self.quiet_database_image(), before)
             return data
-        except (AssertionError, OSError, ValueError) as exc:
+        except (AssertionError, OSError, ValueError, sqlite3.Error) as exc:
             report = self.root / "closed-database-preparation.json"
             self.diagnostics.append(report)
             report.write_text(json.dumps({"cause": str(exc), "job": submitted["job"],

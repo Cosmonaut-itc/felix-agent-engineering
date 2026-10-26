@@ -414,9 +414,11 @@ Fase B conserva los 87 nombres: 84 cuerpos sin cambios, tres oráculos o
 preparaciones modificados (ciclo ignorado, NOT_CREATED y cierre), y nueve
 regresiones nuevas de PI/F1: fase B tenía 96 escritos (95 públicos y uno
 focalizado). H2 añadió tres de infraestructura, llegando a 99; h3 preserva esos
-99 nombres y añade dos de infraestructura. El candidato actual tiene **101
+99 nombres y añade dos de infraestructura. H4 conserva esos 101 nombres y sólo
+cambia cuatro casos WAL y sus helpers, más README/COVERAGE; producto e999 intacto.
+El candidato h4 tiene **101
 escritos = 95 públicos + 5 de infraestructura + 1 focalizado; cero ejecutados**.
-El harness cambia ubicación, diagnósticos, atribución y garantías de snapshot/error;
+H1–h3 cambiaron ubicación, diagnósticos, atribución y garantías de snapshot/error;
 conservar métodos no acredita equivalencia runtime. Las tres entradas funcionales son
 16.385 bytes, 516 bytes de base64 textual y 160.004 bytes binarios; mantienen
 exit 2/`source_reference_limit`, refutación previa a registro y timeout de 15 s.
@@ -441,9 +443,10 @@ físicas y propias suministradas por el coordinador al launcher autorizado:
 Sin variable válida se falla antes de mkdtemp. No hay fallback a T compartido,
 HOME o `/tmp`, ni creación/montaje de volumen. Si las bases disponibles no
 pueden satisfacer ubicación y filesystem, queda pendiente la precondición de
-plataforma. Felix creará el volumen APFS sensible en disk3, cuota 512 MiB,
-`/Volumes/pao-cs/fleet-tests` de cosmonaut 0700; existencia/identidad y diskutil info
-con Owners Enabled siguen pendientes de Felix/PAO. La suite no lo busca ni monta.
+plataforma. Para h3 Felix creó el volumen APFS sensible en disk3, cuota 512 MiB,
+`/Volumes/pao-cs/fleet-tests` de cosmonaut 0700; PAO comunicó certificado con
+Owners Enabled en preferences82. H4 no inspecciona ni modifica el volumen.
+La suite no lo busca ni monta.
 Las dos precondiciones h1 no hacen skip: falta de base sensible, FS incorrecto o
 ruta externa incompatible con los secretos reales fallan explícitamente. Cuenta
 y host mantienen sus valores reales y el estado vive en la raíz externa; el
@@ -452,17 +455,64 @@ skips históricos de aliases no cambian ni acreditan cobertura.
 La matriz, selector rojo/verde y fronteras sin fixture están en
 [`tests/COVERAGE.md`](tests/COVERAGE.md).
 Los casos públicos usan subprocess del CLI, fixtures y recursos propios; no
-importan Fleet ni consultan SQL. La prueba focalizada importa el Ledger real
+importan Fleet ni consultan SQL en el original. H4 valida además una copia
+aislada del main file. La prueba focalizada importa el Ledger real
 en un subprocess propio y usa primitivas externas para retener un lector más
 de diez segundos antes de liberar. No reproduce públicamente la finalización
-nativa durante copia BD/WAL. Antes de alterar `user_version` o exigir lectura
-sin sidecars en los dos oráculos de lectores, se acredita status terminal,
-atribución, ausencia de procesos propios, exclusión del directorio, ausencia de
-WAL/SHM y header público esperado. Una preparación no acreditada devuelve su
-causa y retiene evidencia; no borra WAL ni cambia el error esperado
+nativa durante copia BD/WAL. Los cuatro casos WAL comparten `closed_database_bytes`
+por el MRO existente: status finished con job/attempt exactos, settle,
+guard_admissions y EX no bloqueante del directorio físico, propio y privado.
+La forma quieta admite exactamente ausencia de WAL/SHM o WAL regular de 0 B
+con SHM presente. Main y sidecars presentes deben ser regulares, del uid,
+privados y con un solo link; lstat no confunde un symlink colgante con ausencia.
+WAL con contenido, un único sidecar, archivos inseguros o cambios observados
+fallan. Se compara la imagen recursiva completa, incluido el directorio,
+identidad, modo, uid/gid, nlink, tamaño, mtime/ctime y hash.
+
+WAL0 no prueba checkpoint ni integridad. El helper lee por fd el main físico
+sin seguir symlinks, contrasta identidad/hash y header SQLite/application_id FLT1/
+user_version3. Copia sólo esos bytes en un archivo nuevo 0600 `closed-main.db`
+bajo la raíz propia, sin WAL/SHM. Abre SQLite únicamente en esa copia, mode=ro e
+immutable=1, y exige bytes idénticos, integrity_check=ok, application_id/user_version
+y el mismo job/attempt finished, outcome persistido y transiciones completas
+por IDs, estados, secuencias y tiempos. Así acredita que ese main por sí solo
+contiene el estado terminal; no atribuye autor ni momento de checkpoint, ni
+integridad a SHM por existir. No modifica el original ni borra/mueve/trunca
+sidecars, ni cambia journal_mode, fuerza checkpoint o usa SQL de preparación.
+Una preparación no acreditada conserva la copia que exista (datos privados),
+imagen y closed-database-preparation.json; el cleanup retiene la raíz.
+Antes de alterar `user_version` en la copia incompatible se mantiene esa
+validación independiente. No cambia el error esperado
 `unsupported Fleet pilot schema; no migration` por uno genérico. La comparación
 con WAL activo sigue separada e íntegra. Esto no acredita resuelto el rojo 3.9
-de FIFO129: esa corrida era de b5ca4987, nunca de cde ni del head actual. Incluyen
+de FIFO129: esa corrida era de b5ca4987, nunca de cde ni de h4.
+
+La evidencia posterior h3 `893160c4` consta en
+`D/reports/SEN-3821-suite-r1-diagnostico.md`, SHA256
+`9c1de08ffe45a2f2b8377d1682be0a4a08f07bac56bafe86cce60b9fda7c2b9e`:
+3.9.6 obtuvo 97 pass/4 fail/0 error/0 skip; 3.14.7, 101/0/0/0.
+`D=/Users/felixddhs/.claude/orchestrate/fleet-pruebas`.
+El custodio PAO075b50e8 leyó metadatos a **18:25Z del 2026-10-26**, recogidos en
+`D/reports/metadatos-sqlite-075b50e8.md`, SHA256
+`052d7024e2cc51d8de80847f90c6cc15e37ba58ecd4763f295b74347908a8f08`:
+Xcode3.9 enlaza libsqlite3 de Apple con persist-WAL por defecto; Homebrew3.14,
+SQLite upstream. Es un hecho de plataforma atribuido al custodio, no una
+medición de esta autoría ni sólo una diferencia de versión SQLite. El
+journal_mode de `:memory:` no se extrapola al ledger. El cierre de Fleet no
+prescribe unlink de sidecars.
+
+Por lectura de 893, los dos reader_temp fallaban por WAL.exists tras cierre;
+sólo se capturó ese booleano, no tamaño ni SHM final. Los dos correction fallaban
+en la preparación: sólo allí se midió main40960/WAL0/SHM32768. H4 sustituye esa
+equivalencia cierre→unlink por el contrato anterior y conserva los oráculos
+posteriores: 72 consultas quietas, 72 activas, done ausente y released, watchdog30/
+error91, sondas transitorias, WAL>32B/SHM activos, lecturas terminales y
+unsafe/empty/absent/incompatible sin reparación. Las 72 activas medidas en h3
+no prueban el caso quieto WAL0; h4 necesita su suite101×2 tras APTO doble nuevo.
+No se declaran aquí PASS/FAIL de h4 ni aceptación integral. El detalle por caso
+está en COVERAGE. Los apartados históricos describen las garantías y límites
+de sus respectivas autorías; la evidencia h3 no equivale a ejecución de h4.
+Las pruebas incluyen
 snapshots sin Git, Git/índice/working tree,
 privacidad positiva y negativa, entorno/PATH en cola, streams simultáneos y un
 fallo de escritura mediante RLIMIT_FSIZE real, artefactos inválidos y pérdida
@@ -517,7 +567,8 @@ de snapshot antes del borrado, conservando bytes/hashes e identidad física.
 H2/h3 prevén retener intencionalmente raíces de fallo previo/parcial y de
 enumeración, además del control refutado, para recogida atribuida con evidencia
 bajo la corrida. Los fallos stderr comprueban raíces ya ausentes y snapshot intacto.
-Estos recursos sólo se crearían al ejecutar; aquí no se ha ejecutado ningún caso.
+En h4 no se ha ejecutado ni creado ningún recurso de prueba; el inventario de
+la corrida h3 está en el diagnóstico citado, sin retirar sus residuos.
 En `<base>/fleet-cli-*` quedan
 `admission-*.json`, `cli-json-*.json`, `closed-database-preparation.json` cuando
 corresponda y el estado/cápsulas/intentos originales. El caso sin JSON conserva
@@ -548,4 +599,5 @@ ni su causa SQLite. La lectura PAO69 acreditó un enlace ajeno con EACCES en un
 directorio PATH accesible y otro dangling con ENOENT; no conserva el stat
 histórico de las 61 trazas PI ni es un replay de ellas. Los límites de volumen
 case-sensitive y de ubicación de metadatos se resuelven estáticamente en h1;
-su verificación espera volumen certificado y APTO doble de harness h3.
+su verificación tuvo la corrida h3 citada. H4 requiere APTO doble nuevo y
+verificación propia; el estrés y las fronteras no ejercitadas siguen pendientes.

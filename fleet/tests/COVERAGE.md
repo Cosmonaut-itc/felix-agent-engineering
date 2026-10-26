@@ -1,4 +1,4 @@
-# SEN-3821, harness h3 sobre fase B e999
+# SEN-3821, harness h4 sobre h3 y producto e999 intacto
 
 Sólo inspección estática. Ninguna prueba se ha ejecutado en este encargo.
 La suite pública está en `test_cli.py`, que incorpora cinco mixins y contiene
@@ -15,7 +15,8 @@ nueve métodos. En fase B eran 96 escritos: 95 públicos y uno focalizado.
 Los helpers comunes de atribución/ubicación/diagnóstico también
 cambian; conservar cuerpos no prueba equivalencia runtime. La dimensión de
 estrés retirada no se cuenta como conservada ni ejecutada.
-En la suite pública no se importa Fleet ni se consulta SQL. Cada submit se
+En la suite pública no se importa Fleet ni se consulta SQL sobre el original.
+H4 valida además una copia aislada del main file, descrita abajo. Cada submit se
 registra antes de lanzar; el rechazo por ausencia exige estado exclusivo,
 cliente terminado y BD ausente antes/después, sin borrado intermedio. La
 refutación específica del ciclo ignorado con BD existente se describe abajo.
@@ -28,12 +29,82 @@ añade comprobaciones explícitas de salida y metadatos redactados. Cero ejecuta
 H2 preserva esos 96 métodos y añade tres de infraestructura: 99 escritos.
 H3 preserva los 99 nombres y añade EXACTAMENTE dos métodos de infraestructura:
 **101 escritos = 95 públicos + 5 de infraestructura + 1 focalizado; CERO
-ejecutados**. Los subcasos no son métodos adicionales. Es inventario textual,
+ejecutados en aquella autoría**. Los subcasos no son métodos adicionales. Es inventario textual,
 sin discovery ni garantía runtime.
 El APTO estático doble de producto e999 se conserva como antecedente. H1 no
-obtuvo APTO doble de harness y h2 tampoco; h3 requiere reviews nuevas.
-README se reconcilia en conteo y garantías de enumeración/error/retención del
-harness, conservando CS_BASE/ubicación y sin ampliar producto ni otros oráculos.
+obtuvo APTO doble de harness y h2 tampoco; h3 obtuvo APTO estático doble.
+H4 preserva los 101 métodos, sin añadir ni reclasificar ninguno, y sólo cambia
+los cuatro casos WAL y sus helpers, README y COVERAGE. Cero ejecutados en h4;
+requiere reviews nuevas y después suite exacta en ambos intérpretes.
+Los apartados históricos describen cobertura escrita y límites de sus autorías;
+sus menciones a «sin ejecutar» no sustituyen los resultados h3 citados abajo
+ni se convierten en resultados de h4.
+
+## H4: quietud física y validación independiente del main file
+
+Autoridad: decisión Felix transmitida por PAO075b50e8 ~19:05Z del 2026-10-26,
+preferences85. Base h3 `893160c43c3ede2f5f98f94fa03cc095194353ac`; producto
+`e999e40033d754f790f82d726c458afda2b1281b` intacto. El diagnóstico público
+`D/reports/SEN-3821-suite-r1-diagnostico.md` (SHA256
+`9c1de08ffe45a2f2b8377d1682be0a4a08f07bac56bafe86cce60b9fda7c2b9e`)
+registra h3: Python3.9.6 97 pass/4 fail/0 error/0 skip; Python3.14.7
+101/0/0/0. Son mediciones anteriores, no resultados de h4. `D` es
+`/Users/felixddhs/.claude/orchestrate/fleet-pruebas`.
+
+Hecho de plataforma atribuido al custodio PAO, lectura **18:25Z**:
+`D/reports/metadatos-sqlite-075b50e8.md` (SHA256
+`052d7024e2cc51d8de80847f90c6cc15e37ba58ecd4763f295b74347908a8f08`).
+Xcode3.9 enlaza la libsqlite3 de Apple, con persist-WAL por defecto; Homebrew3.14
+enlaza SQLite upstream. La diferencia no se reduce a una versión semánticamente
+más nueva. No se extrapola el journal_mode de `:memory:` al ledger ni se repite
+la medición del custodio. El producto configura WAL/FULL, serializa cierre y
+transacciones, y copia BD/WAL para leer; no prescribe unlink de los sidecars.
+
+`closed_database_bytes`, compartido por los cuatro casos mediante el MRO
+existente, conserva status finished con job/attempt exactos, settle,
+guard_admissions y flock EX no bloqueante. Bajo EX comprueba dueño, privacidad
+e identidad física del directorio. `quiet_database_image` admite exactamente
+dos formas: ni WAL ni SHM, o WAL regular de **0 B con SHM presente**. Main y
+sidecars presentes deben ser regulares, propios, privados y tener un solo link.
+Usa lstat: un symlink, también colgante, no significa ausencia. WAL con contenido,
+WAL sin SHM, SHM sin WAL, tipos/permisos/dueño inseguros o cambios observados
+fallan; no se borran, mueven ni truncan sidecars para preparar la fixture.
+Se contrasta identidad/modo/uid/gid/nlink/tamaño/mtime/ctime de la observación
+con la imagen, y la imagen recursiva completa antes/después debe coincidir.
+
+**WAL0 no prueba checkpoint ni integridad.** El helper lee el main físico por
+fd sin seguir symlinks, contrasta identidad/hash y conserva la comprobación
+de header SQLite, application_id FLT1 y user_version3. Escribe exclusivamente
+sus bytes en `closed-main.db`, copia nueva privada bajo la raíz propia, sin
+sidecars copiados. SQLite se abre sólo sobre esa copia con mode=ro e immutable=1:
+comprueba bytes copiados, integrity_check=ok, application_id/user_version y el
+job/attempt finished con outcome persistido y secuencia completa de transiciones
+(IDs, estados, secuencias y tiempos) iguales al status original. Eso acredita
+que el main por sí solo contiene ese estado terminal; no prueba quién hizo
+checkpoint ni cuándo, ni valida SHM por su mera presencia. No usa SQL de
+preparación ni cambia journal_mode, fuerza checkpoint o abre SQLite en el original.
+Ante fallo conserva la copia que exista, imagen y diagnóstico
+closed-database-preparation.json; el cleanup existente retiene la raíz.
+La copia contiene datos privados del ledger y queda 0600; no se publica.
+
+Discriminante por lectura de 893: `reader_temp_environment_preserves_quiet_state`
+fallaba en la preparación por WAL.exists; ahora acredita el cierre y la imagen
+principal antes de sus 72 consultas hostiles. `reader_temp_environment_preserves_live_wal`
+fallaba al exigir unlink final, después de sus 72 consultas activas y released;
+ahora valida la forma quieta y el main tras ese mismo cierre. En ambos el paquete
+sólo capturó WAL.exists=True al final: **no** tamaños ni SHM final.
+`readers_reject_unsafe_incompatible_and_empty_state_without_repair` y
+`reads_preserve_active_wal_shm_and_checkpointed_state` fallaban en el helper:
+sólo esos dos diagnósticos midieron main40960/WAL0/SHM32768. El primero conserva
+la copia incompatible auténtica por header999 y el error exacto
+`unsupported Fleet pilot schema; no migration`, más unsafe/empty/absent invariables.
+El segundo conserva carga activa, WAL>32B/SHM, running/wait4/evidence e imagen,
+y después los tres lectores succeeded y transiciones intactas sobre el estado
+terminal comprobado independientemente. Ningún oráculo posterior se retira.
+Las 72 lecturas activas no acreditan por sí mismas el caso quieto WAL0: las
+72 quietas y la suite101×2 del head h4 siguen pendientes. No se añade skip ni
+se declara aceptación integral; watchdog30/error91, barrera FIFO, done ausente,
+released y sondas transitorias observables conservan su fuerza.
 
 ## Cinco regresiones de infraestructura h2/h3, sin ejecutar
 
@@ -168,12 +239,13 @@ ni métodos PI/no alcanzados cuentan como funcionalidad verde de fase B.
 
 En fase B, NOT_CREATED y ciclo ignorado exigen status positivo finished con IDs
 propios y outcome succeeded para la semilla, recogida y guard_admissions. No
-usan la preparación sin sidecars de los lectores. El ciclo conserva EX durante
+usan la preparación del main file de los lectores. El ciclo conserva EX durante
 todo el CLI y compara la imagen íntegra (inventario, identidad, modos, dueños,
 tamaños, mtime/ctime y hashes de todos los archivos, incluidos BD/WAL/SHM).
 NOT_CREATED conserva sus barreras, obstrucción y recibo auténtico sin outcome,
-así como status/wait incompletos y wait3. No se alteran correction_cases,
-reader_temp_cases ni los oráculos de lectores para lograr esta preparación.
+así como status/wait incompletos y wait3. Aquella preparación de fase B no
+alteró correction_cases ni reader_temp_cases; h4 los cambia sólo según su
+contrato WAL anterior, sin tocar NOT_CREATED ni ciclo ignorado.
 
 La tabla loader se prueba por `bin/fleet` real usando un bootstrap propio que,
 después de arrancar Python, introduce las variables del job y ejecuta el script
@@ -269,11 +341,11 @@ corrida. No hay creación de base ni fallback a T compartido, HOME o `/tmp`.
 del volumen sensible autorizado, del uid actual y modo exactamente 0700, sin
 symlinks en su ruta ni ancestros. No tiene valor por defecto ni usa la variable
 anterior `FLEET_CASE_SENSITIVE_TMPDIR`. No se crean bases, montajes ni volúmenes,
-ni se reparan permisos. Felix creará personalmente el volumen APFS sensible,
+ni se reparan permisos. Para h3 Felix creó el volumen APFS sensible,
 contenedor disk3, cuota 512 MiB, `/Volumes/pao-cs/fleet-tests` de cosmonaut 0700.
-Su existencia e identidad siguen pendientes de la entrega Felix/PAO, incluido
-diskutil info con Owners Enabled; stat no demuestra enforcement si Owners está
-desactivado. La suite no conecta para buscarlo. La cuota no es medición ni
+PAO comunicó certificado con Owners Enabled en preferences82 para la corrida h3;
+no se inspecciona ni modifica aquí el volumen. Stat no demuestra enforcement si
+Owners está desactivado. La suite no conecta para buscarlo. La cuota no es medición ni
 garantía de espacio suficiente para las tres fixtures CLI seriales, sus
 estados/cápsulas/workspaces/bundles, margen SQLite y los pequeños escenarios
 de infraestructura h2/h3 con retenciones. No aloja la suite entera ni el estrés.
@@ -578,10 +650,11 @@ reales sin atribuirles aquí ejecución. El harness original tenía 68 conductas
 públicas y una focalizada; el candidato actual requiere las 95 públicas,
 las cinco de infraestructura h2/h3 y la focalizada completas. Los skips de aliases no cierran B1.
 
-## Temporales del lector: regresiones r2 pendientes de Mini
+## Temporales del lector: oráculos conservados, h4 pendiente de Mini
 
-`reader_temp_cases.py` usa exclusivamente subprocess del CLI público, sin importar
-Fleet, editar el ledger, ejecutar SQL ni sustituir funciones. Cada consulta es
+Las lecturas bajo prueba en `reader_temp_cases.py` usan subprocess del CLI público, sin importar
+Fleet, editar el ledger ni sustituir funciones. La validación independiente
+de la copia del main file es la única consulta SQL añadida por h4. Cada consulta CLI es
 un proceso nuevo, sin caché heredada de `tempfile`. Se retiran las tres variables
 temporales y se introduce sólo la variable bajo prueba: TMPDIR, TEMP o TMP.
 Cada una apunta al estado, a un subdirectorio privado suyo, a un symlink al estado
@@ -589,7 +662,8 @@ o a una cadena de symlinks al subdirectorio. Para cada combinación se consultan
 status/wait/evidence con el job real y con un identificador desconocido.
 
 Hay 72 consultas por fixture. La quieta se obtiene con submit/wait y cierre
-propio acreditado por el harness; no tiene WAL/SHM. La activa usa una carga
+propio y main file acreditados por el helper h4; admite las dos formas quietas
+descritas arriba. La activa usa una carga
 sin escrituras al estado tras alcanzar running y una barrera FIFO externa:
 sólo el controlador libera al productor después de toda la matriz. Un watchdog
 de 30 segundos termina con error 91, nunca con éxito; el marcador externo done
@@ -598,7 +672,8 @@ No se amplían los deadlines heredados ni se usa el autoexit de seis segundos
 para sostener la comparación. El finally libera incluso ante fallo y el harness
 conserva sus comprobaciones de atribución y cierre antes de borrar recursos.
 La fixture exige WAL con contenido y SHM presente, y observa running desde
-la versión efectiva que incluye WAL. Tras liberar y cerrar exige ambos ausentes.
+la versión efectiva que incluye WAL. Tras liberar y cerrar exige una de las dos
+formas quietas y valida el main independientemente, sin exigir unlink.
 
 Antes y después de **cada** operación se compara el inventario recursivo completo,
 incluido el propio directorio del estado: dispositivo, inode, modo, uid/gid,
@@ -671,23 +746,24 @@ Los casos antiguos no sustituyen esta matriz.
   privado legítimo de argv/entorno y el workspace mutable escrito por la carga.
 - Lectores: WAL activo y SHM presentes durante una barrera, wait timeout cero,
   status/evidence, sin alterar inventario, modos, inode, tamaño, mtime, ctime o hash.
-  Para la preparación quieta se exige ausencia de ambos sidecars y lecturas
-  exitosas sin recrearlos. Estado inexistente, vacío, inseguro e incompatible se
+  Para la preparación quieta se exige una de las dos formas h4 y lecturas
+  exitosas sin cambiar la imagen completa. Estado inexistente, vacío, inseguro e incompatible se
   conserva sin bootstrap/reparación. El incompatible se obtiene de una BD propia
   cerrada: se cambia a 999 el entero big-endian público de `user_version`, offset
-  60 del header SQLite; no se abren tablas ni se usa SQL. Los dos oráculos de
-  correction_cases acreditan antes status finished con los IDs propios, recogen
+  60 del header SQLite; no se usa SQL para crear o modificar esa fixture. Los cuatro casos
+  acreditan antes status finished con los IDs propios, recogen
   clientes y verifican ausencia de supervisores/grupos, adquieren EX no bloqueante
-  del directorio y exigen ausencia real de WAL/SHM y header SQLite/Fleet esperado.
+  del directorio y exigen forma quieta, header SQLite/Fleet y validación de la
+  copia aislada del main según el contrato h4 anterior.
   Si no se acredita, informan causa de preparación y retienen imagen/recibo; no
   borran sidecars ni fingen un defecto del lector. Se conserva el error exacto
   `unsupported Fleet pilot schema; no migration` y la imagen íntegra antes/después.
   La prueba con WAL activo permanece separada, con su comparación sin relajar.
   FIFO129 corrió b5ca4987: sus fallos3.9 no prueban un resultado de cde ni del
-  candidato actual. El cierre SQLite/descriptor corregidos de cde no acreditan
-  por sí solos que ambos fallos estén resueltos; queda pendiente Mini 3.9/3.14.
-  Esas preparaciones no acreditadas siguen siendo un límite fuera del recorte
-  de fase B; no se borran WAL/SHM ni se cambian errores para dar verde. La
+  candidato h4. La corrida h3 y sus cuatro fallos tienen evidencia propia,
+  descrita arriba; h4 todavía requiere Mini 3.9/3.14. Las preparaciones estaban
+  fuera de fase B y ahora se corrigen sólo por la autorización h4; no se borran
+  WAL/SHM ni se cambian errores para dar verde. La
   presencia/ausencia de sidecars por sí sola no acredita un checkpoint.
 - Exclusión y FIFO: primeras cuatro admisiones simultáneas sobre estado ausente,
   con barrera de clientes y marcadores/gates distintos por comando. Sólo el

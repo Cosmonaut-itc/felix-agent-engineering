@@ -53,9 +53,7 @@ class ReaderTempCases:
     def test_reader_temp_environment_preserves_quiet_state(self):
         submitted = self.submit([sys.executable, "-c", "print('quiet-reader-fixture')"])
         self.wait(submitted["job"])
-        self.settle()
-        self.assertFalse((self.state / "state.db-wal").exists())
-        self.assertFalse((self.state / "state.db-shm").exists())
+        self.closed_database_bytes(submitted)
         self.assert_hostile_temp_reads_preserve_state(submitted)
 
     def test_reader_temp_environment_preserves_live_wal(self):
@@ -87,6 +85,4 @@ class ReaderTempCases:
         final = self.wait(submitted["job"])
         self.assertEqual(final["outcome"], "succeeded")
         self.assertEqual(done.read_text(), "released")
-        self.settle()
-        self.assertFalse((self.state / "state.db-wal").exists())
-        self.assertFalse((self.state / "state.db-shm").exists())
+        self.closed_database_bytes(submitted)
