@@ -27,30 +27,48 @@ def secrets_for(db, job=None):
     return sorted(secrets, key=len, reverse=True)
 
 
-def public_projection(value, secrets):
-    """Sanitize public JSON data, including nested targets and stored history.
+# Only these fields originate in the protocol, rather than copied operator data.
+# Context matters: request.backend/reason and target selectors remain data even
+# when their bytes coincide with a public literal. Unknown fields default to data.
+PUBLIC_SCHEMAS = {
+    "response": {"api": "literal", "operation": "literal", "binding": "literal",
+                 "status": "literal", "error": "error", "receipt": "decision",
+                 "operations": "operation_record", "audit_events": "decision"},
+    "operation_record": {"status": "literal", "receipt": "decision"},
+    "decision": {"action": "literal", "decision": "literal", "reasons": "literal",
+                 "reservation_before": "literal", "reservation_after": "literal",
+                 "actor": "actor", "request": "request"},
+    "request": {"action": "literal"},
+    "actor": {"role": "literal"},
+    "error": {"code": "literal", "effects": "literal"},
+}
 
-    Schema keys and scalar types stay intact. This makes a new projection, never
-    changes the private request used for binding, and never consults reader env.
-    Persisted receipts/events must pass here again when read: storage is not a
-    promise that their strings are safe under the current persisted declarations.
+
+def public_projection(value, secrets, schema="response"):
+    """Project operator JSON by provenance, including persisted history.
+
+    Fixed protocol literals retain their meaning; all other strings use the same
+    redactor, recursively, including unknown fields and nested targets. This makes
+    a new projection without changing private binding or consulting reader env.
+    Storage is not a promise of safety under the snapshot's current declarations.
     """
     if isinstance(value, str):
-        return inputs.redact(value, secrets)
+        return value if schema == "literal" else inputs.redact(value, secrets)
     if isinstance(value, dict):
-        return {name: public_projection(item, secrets) for name, item in value.items()}
+        fields = PUBLIC_SCHEMAS.get(schema, {})
+        return {name: public_projection(item, secrets, fields.get(name)) for name, item in value.items()}
     if isinstance(value, list):
-        return [public_projection(item, secrets) for item in value]
+        return [public_projection(item, secrets, schema) for item in value]
     return value
 
 
 def public_request(request, secrets):
-    """Complete validated request, including null selectors, with all strings sane.
+    """Complete validated request, including null selectors, with copied data sane.
 
     Keep the complete denied stimulus, not a reconstruction from the old binding.
     Redaction uses persisted declarations, never the operator reader's environment.
     """
-    return public_projection(request, secrets)
+    return public_projection(request, secrets, "request")
 
 
 def validate_request(action, operation_id, reason, job=None, attempt=None, reservation=None,
@@ -229,7 +247,7 @@ def mutate(state, request):
                          "decision_revision": revision, "actor": actor,
                          "reason": request["reason"], "at": now()}
                 event.update(authority_id=db.authority["id"], principal_uid=db.authority["uid"])
-                event = public_projection(event, secrets)
+                event = public_projection(event, secrets, "decision")
                 audit_seq = db.execute("INSERT INTO audit (event) VALUES (?)", (dump(event),)).lastrowid
                 response = envelope("operator." + request["action"], db.authority,
                                     audit_recorded=True, audit_seq=audit_seq,
@@ -247,7 +265,7 @@ def mutate(state, request):
                              "decision_revision": revision, "actor": actor,
                              "reason": request["reason"], "at": now()}
                     event.update(authority_id=db.authority["id"], principal_uid=db.authority["uid"])
-                    event = public_projection(event, secrets)
+                    event = public_projection(event, secrets, "decision")
                     cursor = db.execute("INSERT INTO audit (event) VALUES (?)", (dump(event),))
                     code = 5
                     response = envelope("operator." + request["action"], db.authority,
@@ -278,13 +296,13 @@ def mutate(state, request):
                              decision_revision=revision, actor=actor,
                              reason=request["reason"], at=now())
                 event.update(authority_id=db.authority["id"], principal_uid=db.authority["uid"])
-                event = public_projection(event, secrets)
+                event = public_projection(event, secrets, "decision")
                 audit_seq = db.execute("INSERT INTO audit (event) VALUES (?)", (dump(event),)).lastrowid
                 receipt = dict(details, action=request["action"], operation_id=request["operation_id"],
                                decision_revision=revision, actor=actor,
                                reason=request["reason"], audit_seq=audit_seq,
                                audit_recorded=True, at=now())
-                receipt = public_projection(receipt, secrets)
+                receipt = public_projection(receipt, secrets, "decision")
                 db.execute("INSERT INTO operations (id,request,receipt,exit_code,error) VALUES (?,?,?,?,?)",
                            (request["operation_id"], dump(request), dump(receipt), code, error_code))
                 response = envelope("operator." + request["action"], db.authority,
