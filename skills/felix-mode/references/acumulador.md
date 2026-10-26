@@ -6,13 +6,12 @@ que pueden llegar solos a producción. No agrupes sólo por tener muchos
 tickets. El programa entrega un PR acumulador hacia la rama de entrega,
 normalmente `main`, desde una rama de integración.
 
-Lee `~/.agents/skills/implement-spec/SKILL.md` de Matt Pocock como referencia.
-Su `disable-model-invocation` impide invocarla automáticamente como skill,
-pero no leerla. Conserva su grafo de dependencias, frontera de tickets
-disponibles y worktree por implementador. Aplica los pasos siguientes sobre
-sus pasos 3 a 9. Sustituyen su draft PR, su revisión final con `code-review`,
-su TDD y sus merges de trabajadores. Una adaptación local exigida por
-`AGENTS.md` mantiene sus controles y su precedencia.
+Este flujo adapta `implement-spec` de Matt Pocock y la sustituye en
+felix-mode. Toma de ella el **grafo de tareas**: los tickets de la spec y
+sus relaciones de bloqueo. La **frontera** son los tickets cuyas
+dependencias ya están integradas y verdes. Cada implementador trabaja un
+ticket en su propio worktree y su propia rama. Una adaptación local
+exigida por `AGENTS.md` mantiene sus controles y su precedencia.
 
 ## Preparar el programa
 
@@ -21,8 +20,10 @@ su TDD y sus merges de trabajadores. Una adaptación local exigida por
    propietario de la integración. Usa Orchestrate para el programa largo
    y el playbook Feature de pstack para cada ticket, con `tdd` de pstack,
    **Verificación**, routing y **Revisión** de felix-mode.
-2. Registra cada ticket en `units.tsv`, sin inventar un PR por ticket. En
-   este flujo sus filas representan partes de la unidad de entrega. Guarda
+2. Lee la spec y todos sus tickets y obtén el grafo de tareas antes del
+   primer despacho. Registra cada ticket en `units.tsv`, sin inventar un
+   PR por ticket. En este flujo sus filas representan partes de la unidad
+   de entrega. Guarda
    la relación con el PR acumulador en `overview.md` y sus decisiones en
    `decisions.tsv`. Un ticket integrado aún no equivale a desplegado. Sigue
    el tracker del repositorio para cerrarlo, sin anticipar la entrega.
@@ -38,16 +39,15 @@ su TDD y sus merges de trabajadores. Una adaptación local exigida por
 
 4. Antes de cada despacho, fija el SHA de integración del trabajador y sus
    rutas de escritura en el brief. Prepara su worktree desde ese SHA.
-   Los tickets bloqueados esperan a que sus dependencias estén integradas
-   y verdes. Los tickets con rutas o contratos compartidos se secuencian,
-   o reciben primero un contrato común verificado. No despaches dos
-   propietarios simultáneos de la misma ruta.
-5. Cada implementador escribe sólo en su rama y devuelve el SHA candidato,
-   la base recibida y las pruebas. No resetea ni rebasa un checkout con
-   trabajo, no incorpora por su cuenta la punta cambiante de integración,
-   no escribe en integración y no abre ni mergea PRs. Esto sustituye esos
-   pasos de `implement-spec`. El orquestador veta la entrega y obtiene la
-   **Revisión** independiente de ese ticket sobre su candidato fijo.
+   Despacha sólo tickets de la frontera. Los tickets con rutas o contratos
+   compartidos se secuencian, o reciben primero un contrato común
+   verificado. No despaches dos propietarios simultáneos de la misma ruta.
+5. Cada implementador escribe sólo en su rama, sobre la base que recibió,
+   y devuelve el SHA candidato, esa base y las pruebas. Conserva el trabajo
+   de su checkout tal como está, sin reset ni rebase. La integración, los
+   PRs y los merges quedan para el integrador y el orquestador. El
+   orquestador veta la entrega y obtiene la **Revisión** independiente de
+   ese ticket sobre su candidato fijo.
 6. El único integrador incorpora un ticket a la vez. Si integración sigue
    en la base verificada, incorpora el SHA aprobado sin modificarlo. Si
    avanzó, prepara en una rama de candidato el resultado de combinar la

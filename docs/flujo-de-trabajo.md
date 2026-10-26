@@ -55,7 +55,7 @@ que el encargo lo pida.
 | 8. Medir | Antes de creer o reportar un número de rendimiento. | `benchmark-checklist` | Agente |
 | 9. Verificar | Prueba sobre el artefacto real con la skill del repositorio. Si falta, sigue sus docs y propone crearla. | `verify` del repositorio, `create-verification-skill` | Agente |
 | 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda. Si la ronda 3 no da APTO, ataca la premisa antes de seguir. Hasta ocho rondas sin autorización adicional; la ronda 9 espera al dueño. | `interrogate` | Agente |
-| 11. Abrir el PR | Un PR por unidad de entrega. Los tickets acoplados se reúnen en un acumulador. Un bug de producción sale en el suyo antes que cualquier mejora. | `implement-spec` adaptada, `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
+| 11. Abrir el PR | Un PR por unidad de entrega. Los tickets acoplados se reúnen en un acumulador. Un bug de producción sale en el suyo antes que cualquier mejora. | Acumulador de `felix-mode`, `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
 | 12. Llevar a merge | CI, comentarios y conflictos. Mergea solo cuando todas las reviews dan APTO y los checks están verdes. Si el merge despliega o el cambio es de alto riesgo, antes un verificador independiente corre el cambio. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Agente |
 | 13. Cerrar | Informe con evidencia y etiquetas: medido, inferido o suposición. Bitácora en trabajo largo. | `show-me-your-work` | Agente |
 
@@ -74,12 +74,13 @@ del hilo dice en palabras simples el tema que implementa. Lo detallan las seccio
 [`felix-mode`](../skills/felix-mode/SKILL.md).
 
 Si varios tickets necesitan salir juntos por un contrato, schema o migración,
-`implement-spec` aporta una rama de integración y un PR acumulador. Cada
-trabajador parte de un SHA fijo en su worktree y cada ticket pasa prueba y
-review antes de entrar. Un único integrador incorpora los resultados de uno
-en uno y comprueba sus interacciones. El acumulador recibe los gates del
-conjunto y una review final antes de mergearse automáticamente. Los tickets
-independientes conservan PRs separados. El procedimiento está en
+`felix-mode` los reúne en una rama de integración y un PR acumulador, con
+un flujo adaptado de `implement-spec`. Cada trabajador parte de un SHA fijo
+en su worktree y cada ticket pasa prueba y review antes de entrar. Un único
+integrador incorpora los resultados de uno en uno y comprueba sus
+interacciones. El acumulador recibe los gates del conjunto y una review
+final antes del merge. Los tickets independientes conservan PRs separados.
+El procedimiento está en
 [Acumulador](../skills/felix-mode/references/acumulador.md).
 
 El agente lleva sus PRs y los de su cola hasta merge sin otro pedido. Usa
@@ -144,8 +145,7 @@ autorizaciones vigentes.
 
 ## Skills que invoca el dueño
 
-Estas skills corren cuando las pides, salvo los casos automáticos que indica
-la tabla o que exige el `AGENTS.md` del repositorio.
+Estas skills no las dispara ningún playbook. Corren cuando las pides.
 
 | Skill | Para qué |
 |-------|----------|
@@ -163,8 +163,7 @@ la tabla o que exige el `AGENTS.md` del repositorio.
 | `pstack:poteto-help`, `ask-matt` | Recomiendan qué skill o playbook usar. |
 | `setup-matt-pocock-skills` | Configura un repositorio para las skills de planificación: tracker, etiquetas y docs de dominio. |
 | `improve-codebase-architecture`, `codebase-design` | Buscan oportunidades de profundizar módulos y dan el vocabulario para diseñarlos. |
-| `implement-spec` | Implementa tickets acoplados con el flujo de acumulador de felix-mode, o cuando la pides o el `AGENTS.md` la exige. |
-| `retro` | Hace la retrospectiva de una sesión cuando la pides o el `AGENTS.md` la exige. |
+| `implement-spec`, `retro` | Implementan una spec y hacen la retrospectiva de una sesión, cuando el `AGENTS.md` del repositorio las pide. |
 | `wizard` | Genera un asistente en bash para pasos que sólo puede hacer una persona. |
 
 ## Duplicados retirados
