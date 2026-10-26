@@ -1,11 +1,13 @@
 """Public operator scenarios; genuine local producer proof, no injected closure API."""
 import concurrent.futures
-import errno
 import json
 import os
 from pathlib import Path
+import plistlib
+import pwd
 import select
 import signal
+import stat
 import subprocess
 import sys
 import tempfile
@@ -391,9 +393,16 @@ class Operator3820Cases:
         after, audit_after = 0, 0
         for _ in range(len(expected["operations"]) + len(expected["audit_events"]) + 1):
             page = public("status", "--after-seq", str(after), "--after-audit-seq", str(audit_after), "--limit", "1")
+            for field in ("authority_id", "principal_uid", "as_of_revision", "control"):
+                self.assertEqual(page[field], expected[field])
+            for stream, offset in ((page["operations"], after), (page["audit_events"], audit_after)):
+                self.assertLessEqual(len(stream), 1)
+                self.assertTrue(all(row["seq"] > offset for row in stream))
             operations.extend(page["operations"])
             events.extend(page["audit_events"])
             cursor = (page["next_after_seq"], page["next_after_audit_seq"])
+            self.assertEqual(cursor, (page["operations"][-1]["seq"] if page["operations"] else after,
+                                      page["audit_events"][-1]["seq"] if page["audit_events"] else audit_after))
             if not page["has_more"]:
                 break
             self.assertTrue(cursor[0] > after or cursor[1] > audit_after)
@@ -401,7 +410,41 @@ class Operator3820Cases:
         else:
             self.fail("r4 operator pagination did not terminate")
         self.assertEqual((operations, events), (expected["operations"], expected["audit_events"]))
+        self.assertEqual(cursor, (expected["next_after_seq"], expected["next_after_audit_seq"]))
+        end = public("status", "--after-seq", str(cursor[0]), "--after-audit-seq", str(cursor[1]), "--limit", "1")
+        self.assertEqual((end["operations"], end["audit_events"], end["has_more"]), ([], [], False))
+        self.assertEqual((end["next_after_seq"], end["next_after_audit_seq"]), cursor)
         return expected
+
+    def r4_replay_boundary(self, public, request, keys, state, env, code=0):
+        """Pure readers keep the full image; writer replay keeps durable facts."""
+        def jobs():
+            result = []
+            for key in keys:
+                value = self.status_key(key, state=state, env=env)
+                value["observation"] = {name: item for name, item in value["observation"].items()
+                                        if name != "observed_at"}
+                result.append(value)
+            return result
+
+        saved = self.inventory(state)
+        before = self.r4_operator_pages(public)
+        before_jobs = jobs()
+        self.assertEqual(self.inventory(state), saved, "pre-replay readers changed the full source image")
+        replay = public(*request, code=code)
+        # A writer may touch SQLite shared memory. Do not infer logical change
+        # from it, or remove sidecars from inventory() for any reader.
+        saved = self.inventory(state)
+        after = self.r4_operator_pages(public)
+        after_jobs = jobs()
+        self.assertEqual(self.inventory(state), saved, "post-replay readers changed the full source image")
+        for field in ("api", "operation", "authority_id", "principal_uid", "as_of_revision", "control",
+                      "operations", "audit_events", "next_after_seq", "next_after_audit_seq", "has_more"):
+            self.assertEqual(after[field], before[field], "replay changed durable " + field)
+        self.assertEqual(after_jobs, before_jobs, "replay changed job identity/history/capacity/dispatch")
+        self.external_evidence.append({"case": "r4-replay-boundary", "before": before, "after": after,
+                                       "jobs_before": before_jobs, "jobs_after": after_jobs})
+        return replay
 
     def test_r4_a01_denial_literals_and_copied_data_before_and_after_declaration(self):
         from datetime import datetime
@@ -446,7 +489,11 @@ class Operator3820Cases:
                               env=dict(reader_env, **declared))
                 saved = self.inventory(state)
                 exact = public("status", "--operation-id", "r4-bound")
-                replay = public(*request, code=2)
+                self.r4_operator_pages(public)
+                self.assertEqual(self.inventory(state), saved, "reading later declarations must not rewrite history")
+                keys = ("r4-holder", "r4-secrets") if timing == "after" else ("r4-holder",)
+                replay = self.r4_replay_boundary(public, request, keys, state, reader_env, code=2)
+                saved = self.inventory(state)
                 receipt = exact["receipt"]
                 self.assertEqual(receipt["at"], denied["receipt"]["at"])
                 self.assertEqual((exact["status"], replay["status"], replay["binding"]), ("committed", "committed", "replay"))
@@ -532,7 +579,11 @@ class Operator3820Cases:
         self.assertEqual((opened["status"], opened["receipt"]["decision"]), ("committed", "committed"))
         self.assertIs(opened["control"]["drained"], False)
         saved = self.inventory(self.state)
-        replay = public(*request)
+        self.r4_operator_pages(public)
+        public("status", "--operation-id", "r4-control")
+        self.assertEqual(self.inventory(self.state), saved, "historical readers must not rewrite history")
+        replay = self.r4_replay_boundary(public, request, ("r4-control-holder",), self.state, reader_env)
+        saved = self.inventory(self.state)
         exact = public("status", "--operation-id", "r4-control")
         for value in (replay, exact):
             self.assertEqual(value["status"], "committed")
@@ -543,7 +594,7 @@ class Operator3820Cases:
         self.assertEqual([r["status"] for r in listing["operations"]], ["committed", "committed"])
         self.assertEqual([e["decision"] for e in listing["audit_events"]], ["committed", "committed"])
         self.assertEqual(listing["operations"][0]["receipt"], receipt)
-        self.assertEqual(self.inventory(self.state), saved, "historical replay must not repeat drain or audit")
+        self.assertEqual(self.inventory(self.state), saved, "post-replay historical readers must preserve the full image")
         rejected = public("drain", "--operation-id", "r4-secret", "--reason", "committed", code=2)
         self.assertEqual(rejected["error"], {"code": "credential_in_operator_request", "effects": "no_capacity_change"})
         event = next(e for e in self.r4_operator_pages(public)["audit_events"] if e["seq"] == rejected["audit_seq"])
@@ -681,83 +732,138 @@ class Operator3820Cases:
         self.assertEqual(sorted(r["receipt"]["decision"] for r in outcomes), ["already_released", "committed"])
         self.assertEqual(self.status_key("o05-second")["observation"]["reservation"]["disposition"], "released")
 
-    def quota_case(self, label, operator_phase=False):
-        base = os.environ.get("FLEET_TEST_QUOTA_BASE")
-        isolated = os.environ.get("FLEET_TEST_ISOLATED_QUOTA") == "1"
-        limit = int(os.environ.get("FLEET_TEST_QUOTA_FILL_LIMIT", "0"))
-        self.assertTrue(base and isolated and 0 < limit <= 1024 * 1024 * 1024,
-                        "BLOCKED C20/O06: certified preexisting isolated disposable quota and bounded fill limit required")
-        physical = Path(base)
-        self.assertEqual(physical, physical.resolve(strict=True))
-        self.assertEqual(physical.stat().st_uid, os.getuid())
-        self.assertFalse(physical.stat().st_mode & 0o077)
-        quota_root = Path(tempfile.mkdtemp(prefix=label + "-", dir=physical))
-        self.owned_bases.append(quota_root)
-        state = quota_root / "state"
-        if operator_phase:
-            _, final, _, _, drain, selectors, proof = self.resolution(label, state=state)
-            action = operator_phase
-            if action == "reopen":
-                self.op("release", label + "-setup-release", *selectors, "--proof", proof, state=state)
-        else:
-            argv, counter, ready, gate = self.counted()
-            self.send(label, argv, state=state)
-            self.ready(label, ready, state=state)
-        filler = quota_root / "owned-fill"
-        exhausted = False
-        written = 0
+    def quota_base_inventory(self, base):
+        # Immediate metadata only. Never descend into somebody else's history.
+        result = {}
+        with os.scandir(base) as entries:
+            for entry in entries:
+                info = entry.stat(follow_symlinks=False)
+                result[entry.name] = {name: getattr(info, name) for name in (
+                    "st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")}
+        return result
+
+    def quota_record(self, label, event):
+        # Administrative evidence lives in the original run, outside pao-cs.
+        self.external_evidence.append(dict(case=label, **event))
+        with (self.root / (label + "-quota.jsonl")).open("a") as stream:
+            stream.write(json.dumps(event, sort_keys=True) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
         try:
-            with filler.open("wb", buffering=0) as stream:
-                try:
-                    while written < limit:
-                        block = b"q" * min(65536, limit - written)
-                        written += stream.write(block)
-                    os.fsync(stream.fileno())
-                except OSError as exc:
-                    self.assertIn(exc.errno, (errno.ENOSPC, errno.EDQUOT))
-                    exhausted = True
-                    self.external_evidence.append({"case": label, "phase": "owned-quota-fill",
-                                                   "errno": exc.errno, "bytes_written": written})
-            self.assertTrue(exhausted, "precondition: isolated quota was not exhausted within the certified bound")
-            if operator_phase:
-                options = (*selectors, "--proof", proof) if action == "release" else ("--drain-id", drain)
-                response = self.call("operator", action, "--operation-id", label + "-decision", "--reason", "quota fixture",
-                                     *options, state=state, check=False)
-                self.assertIn(response.returncode, (2, 3), (response.stdout, response.stderr))
-                self.external_evidence.append({"case": label, "phase": action, "response": json.loads(response.stdout)})
-            else:
-                gate.touch()
-                # The command publishes an external acknowledgement after gate; a
-                # filesystem failure must actually reach terminal publication.
-                self.until(lambda: self.status_key(label, state=state)["observation"]["view"] == "uncertain" or
-                           self.status_key(label, state=state)["observation"]["state"] == "finished")
+            os.fsync(descriptor)
         finally:
-            if filler.exists():
-                filler.unlink()
-        if operator_phase:
-            current = self.status_key(label, state=state)["observation"]
-            result = self.call("operator", "status", "--operation-id", label + "-decision", state=state, check=False)
-            self.assertIn(result.returncode, (0, 2), (result.stdout, result.stderr))
-            op = json.loads(result.stdout)
-            if result.returncode == 2:
-                self.assertEqual(op["error"]["code"], "operation_not_found")
-                self.assertEqual(current["reservation"]["disposition"], "retained" if action == "release" else "released")
-                self.assertTrue(current["control"]["drained"])
-            else:
-                self.assertEqual(op["status"], "committed")
-                self.assertTrue(op["receipt"]["audit_recorded"])
-                if op["receipt"]["decision"] == "committed":
-                    self.assertEqual(current["reservation"]["disposition"], "released")
-                    self.assertEqual(current["control"]["drained"], action == "release")
-        else:
-            self.wait_key(label, 3, state=state)
-            self.raw("recover", state=state, code=3)
-            self.assertEqual(self.entries(counter), ["entry"])
-        # Retained own quota root is reported, never removed by ordinary cleanup.
+            os.close(descriptor)
+
+    def quota_owned_inventory(self, root):
+        # Unlike os.walk's default error handling, scandir failures propagate.
+        # Only this exact newly attributed root is traversed; no symlink follows.
+        result = {}
+
+        def visit(directory):
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    info = entry.stat(follow_symlinks=False)
+                    result[str(Path(entry.path).relative_to(root))] = {
+                        name: getattr(info, name) for name in (
+                            "st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")}
+                    if stat.S_ISDIR(info.st_mode):
+                        visit(Path(entry.path))
+
+        visit(root)
+        return result
+
+    def quota_case(self, label, operator_phase=False):
+        """Certified setup only until PAO approves a causal discriminator.
+
+        No amount of fill, rc3 or operation_not_found proves that a capacity
+        transaction was reached. C20 also needs its own terminal acknowledgement.
+        Do not run the old ambiguous experiment and report it as coverage.
+        """
+        phase = operator_phase or "terminal-publication"
+        self.quota_record(label, {"phase": phase, "status": "BLOCKED", "target_boundary_proven": False})
+        self.assertEqual(os.environ.get("FLEET_TEST_QUOTA_BASE"), "/Volumes/pao-cs/fleet-tests",
+                         "BLOCKED C20/O06: exact authorized pao-cs base required; no fallback")
+        self.assertEqual(os.environ.get("FLEET_TEST_ISOLATED_QUOTA"), "1",
+                         "BLOCKED C20/O06: exclusive future quota turn required")
+        limit_text = os.environ.get("FLEET_TEST_QUOTA_FILL_LIMIT", "")
+        self.assertTrue(limit_text.isascii() and limit_text.isdecimal(), "BLOCKED: explicit fill bound required")
+        limit = int(limit_text)
+        self.assertTrue(0 < limit <= 536870912, "BLOCKED: fill bound must be at most 512 MiB")
+        physical = Path("/Volumes/pao-cs/fleet-tests")
+        self.assertEqual(physical, physical.resolve(strict=True), "BLOCKED: physical quota base required")
+        info = physical.lstat()
+        self.assertTrue(stat.S_ISDIR(info.st_mode))
+        self.assertEqual(info.st_uid, os.getuid())
+        self.assertEqual(pwd.getpwuid(info.st_uid).pw_name, "cosmonaut")
+        self.assertEqual(stat.S_IMODE(info.st_mode), 0o700)
+        self.assertEqual(info.st_dev, physical.parent.stat().st_dev)
+        self.assertNotEqual(self.root.stat().st_dev, info.st_dev,
+                            "BLOCKED: administrative run evidence must be outside the quota volume")
+
+        def diskutil(*args):
+            response = subprocess.run(["/usr/sbin/diskutil", *args], capture_output=True, timeout=15)
+            self.assertEqual(response.returncode, 0, "BLOCKED: disk certificate query failed")
+            return response.stdout
+
+        # Match the certificate's public diskutil fields exactly. Unknown or
+        # changed output is BLOCKED rather than an inferred certification.
+        fields = [line.partition(":") for line in diskutil("info", str(physical.parent)).decode().splitlines()]
+        certificate = {name.strip(): value.strip() for name, separator, value in fields if separator}
+        for name, expected in (("Device Identifier", "disk3s7"),
+                               ("Volume UUID", "F4FF2E7E-751F-48B3-BA0D-F5F2656C23BC"),
+                               ("File System Personality", "Case-sensitive APFS"),
+                               ("Mount Point", "/Volumes/pao-cs"), ("Owners", "Enabled")):
+            self.assertEqual(certificate.get(name), expected, "BLOCKED: certificate mismatch: " + name)
+        containers = plistlib.loads(diskutil("apfs", "list", "-plist")).get("Containers", [])
+        volumes = [volume for container in containers for volume in container.get("Volumes", [])
+                   if volume.get("DeviceIdentifier") == "disk3s7"]
+        self.assertEqual(len(volumes), 1, "BLOCKED: quota certificate volume is not unique")
+        self.assertEqual(volumes[0].get("CapacityQuota"), 536870912, "BLOCKED: exact 512 MiB quota required")
+        initial = self.quota_base_inventory(physical)
+        space = os.statvfs(physical)
+        available = space.f_bavail * space.f_frsize
+        self.quota_record(label, {"phase": "preflight", "base_before": initial,
+                                  "available_bytes": available, "fill_limit": limit,
+                                  "certificate": {name: certificate.get(name) for name in (
+                                      "Device Identifier", "Volume UUID", "File System Personality", "Owners")}})
+        self.assertGreater(available, 0, "BLOCKED: no prior free quota space; never reclaim foreign files")
+        self.assertLessEqual(available, limit, "BLOCKED: available space exceeds the authorized fill bound")
+        quota_root = Path(tempfile.mkdtemp(prefix=label + "-", dir=physical))
+        self.quota_roots.append(quota_root)
+        self.owned_bases.append(quota_root)
+        owned = quota_root.lstat()
+        try:
+            self.assertEqual(stat.S_IMODE(owned.st_mode), 0o700)
+            self.assertEqual(owned.st_uid, os.getuid())
+            self.quota_record(label, {"phase": "owned-root-created", "root": str(quota_root),
+                                      "dev": owned.st_dev, "ino": owned.st_ino,
+                                      "uid": owned.st_uid, "mode": stat.S_IMODE(owned.st_mode),
+                                      "own_inventory_before": self.quota_owned_inventory(quota_root)})
+            for name in ("state", "project", "home", "fixtures"):
+                (quota_root / name).mkdir(mode=0o700)
+            for directory in (quota_root, physical):
+                descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            self.fail("BLOCKED C20/O06: certified setup retained; no PAO-approved discriminator for "
+                      + phase + "; no admission or fill attempted; C20 requires an own terminal ack")
+        finally:
+            final = self.quota_base_inventory(physical)
+            current = final.pop(quota_root.name)
+            self.assertEqual((current["st_dev"], current["st_ino"]), (owned.st_dev, owned.st_ino))
+            self.quota_record(label, {"phase": "setup-final", "base_after_except_own_root": final,
+                                      "own_root_metadata": current, "own_inventory": self.quota_owned_inventory(quota_root),
+                                      "fill_created": False, "fill_removed": False, "root_retained": True,
+                                      "target_boundary_proven": False})
+            self.assertEqual(final, initial, "BLOCKED: foreign base metadata changed; do not fill or clean")
 
     def test_o06_real_quota_failure_cannot_commit_capacity_without_audit(self):
-        self.quota_case("o06-release", operator_phase="release")
-        self.quota_case("o06-reopen", operator_phase="reopen")
+        for phase in ("release", "reopen"):
+            with self.subTest(conditional_quota_phase=phase):
+                self.quota_case("o06-" + phase, operator_phase=phase)
 
     def discard_operator(self, action, operation_id, *options):
         from test_cli import CLI

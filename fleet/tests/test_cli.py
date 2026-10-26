@@ -456,6 +456,7 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
         self.owned_bases = [self.root]
         self.external_evidence = []
         self.legacy_admissions = []
+        self.quota_roots = []
         self.setup_complete = True
     def cleanup_incomplete_setup(self):
         if not self.setup_complete: self.cleanup()
@@ -485,7 +486,8 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
             result = self.call("status", admission.job, state=admission.state, check=False)
             self.assertEqual(result.returncode, 0, "public snapshot failed; retained " + str(self.root))
             snapshots.append(json.loads(result.stdout))
-        retained = any(s["observation"]["completion"] != "complete" for s in snapshots)
+        retained = bool(self.quota_roots) or any(
+            s["observation"]["completion"] != "complete" for s in snapshots)
         report = self.root.parent / ("evidence-" + self.root.name)
         report.mkdir(mode=0o700)
         public_files = []
@@ -976,6 +978,9 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
 
     def test_lost_supervisor_retains_slot_without_duplicate(self):
         argv, ready, gate, done = self.barrier()
+        # Only this command loses its pipe reader by design. Its own completion
+        # marker must not depend on stdout; all other BARRIER users keep 'ok'.
+        argv[3] = BARRIER.replace("print('ok', flush=True)\n", "")
         job = self.submit(argv)["job"]
         self.running(job, ready)
         current = self.value("status", job)

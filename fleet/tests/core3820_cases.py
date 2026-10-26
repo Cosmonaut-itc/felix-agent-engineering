@@ -27,6 +27,19 @@ if not gate.exists():
 raise SystemExit(int(sys.argv[5]))
 """
 
+# Single-threaded child preparation, never preexec_fn or a parent signal policy.
+# exec preserves the PID/session and the defaults; the new Python interpreter
+# then installs its normal SIGINT handler instead of inheriting SIG_IGN.
+SIGNAL_CLIENT = r"""
+import os, signal, sys
+for name in (signal.SIGHUP, signal.SIGINT):
+    signal.signal(name, signal.SIG_DFL)
+    if signal.getsignal(name) != signal.SIG_DFL:
+        raise SystemExit(91)
+os.write(2, b'fleet-test-signal-defaults-before-exec\n')
+os.execv(sys.argv[1], sys.argv[1:])
+"""
+
 
 class Core3820Cases(Operator3820Cases):
     def raw(self, *args, code=0, **kwargs):
@@ -455,8 +468,9 @@ done.write_text('lock closed')
         argv, counter, ready, gate = self.counted()
         self.send("c07", argv)
         self.ready("c07", ready)
-        before = self.status_key("c07")["observation"]["transitions"]
-        process = subprocess.Popen([sys.executable, "-B", "-X", "importtime", str(CLI), "--state-dir", str(self.state),
+        before = self.status_key("c07")["observation"]
+        process = subprocess.Popen([sys.executable, "-B", "-c", SIGNAL_CLIENT,
+                                    sys.executable, "-B", "-X", "importtime", str(CLI), "--state-dir", str(self.state),
                                     "wait", "--idempotency-key", "c07"], cwd=self.project, env=self.env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.processes.append(process)
@@ -469,11 +483,20 @@ done.write_text('lock closed')
             chunk = os.read(process.stderr.fileno(), 4096)
             self.assertTrue(chunk)
             trace += chunk
+        self.assertIn(b"fleet-test-signal-defaults-before-exec\n", trace)
+        # This is an import acknowledgement, not proof of entering main's try.
+        # A pre-main interruption must fail the JSON/130 oracle, never pass as 0.
         process.send_signal(signal.SIGINT)
         stdout, stderr = process.communicate(timeout=5)
         self.assertEqual(process.returncode, 130, (stdout, stderr))
         self.assertEqual(json.loads(stdout)["error"]["code"], "client_interrupted")
-        self.assertEqual(self.status_key("c07")["observation"]["transitions"], before)
+        current = self.status_key("c07")["observation"]
+        for field in ("state", "view", "revision", "transitions", "reservation", "capacity_resolution",
+                      "control", "dispatch", "supervisor", "child_pid", "command"):
+            self.assertEqual(current[field], before[field])
+        self.external_evidence.append({"case": "C07", "signals_default_before_exec": True,
+                                       "readiness": "fleet.cli import only; main entry not proven",
+                                       "client_returncode": process.returncode, "response": json.loads(stdout)})
         self.assertEqual(self.entries(counter), ["entry"])
         gate.touch()
         self.terminal("c07")
@@ -484,7 +507,8 @@ done.write_text('lock closed')
         argv, counter, ready, gate = self.counted()
         admission = self.admit(self.state)
         wrapper = "import subprocess,sys,time; subprocess.run(sys.argv[1:]); time.sleep(30)"
-        process = subprocess.Popen([sys.executable, "-c", wrapper, sys.executable, "-B", str(CLI),
+        process = subprocess.Popen([sys.executable, "-B", "-c", SIGNAL_CLIENT,
+                                    sys.executable, "-c", wrapper, sys.executable, "-B", str(CLI),
                                     "--state-dir", str(self.state), "submit", "--client", "contract",
                                     "--idempotency-key", "c08", "--", *argv], cwd=self.project, env=self.env,
                                    start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
@@ -494,10 +518,16 @@ done.write_text('lock closed')
         admission.attribute(admitted)
         original = admitted["observation"]["supervisor"]
         os.killpg(process.pid, signal.SIGHUP)
-        process.communicate(timeout=5)
+        _, stderr = process.communicate(timeout=5)
+        self.assertIn(b"fleet-test-signal-defaults-before-exec\n", stderr)
+        self.assertEqual(process.returncode, -signal.SIGHUP, stderr)
         current = self.status_key("c08")
         self.assertEqual(current["observation"]["supervisor"], original)
         self.assertEqual(current["observation"]["state"], "running")
+        self.assertEqual(current["observation"]["reservation"], admitted["observation"]["reservation"])
+        self.assertEqual(current["observation"]["transitions"], admitted["observation"]["transitions"])
+        self.external_evidence.append({"case": "C08", "signals_default_before_exec": True,
+                                       "client_returncode": process.returncode, "original_supervisor": original})
         gate.touch()
         self.terminal("c08")
         self.wait_key("c08")
