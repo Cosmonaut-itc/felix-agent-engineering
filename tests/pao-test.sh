@@ -542,8 +542,7 @@ STUB
     assert test "$(wc -l < "$HOME/refs-calls" | tr -d ' ')" = 3
 }
 
-if ! prepare_template >
- "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
+if ! prepare_template > "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
 FAILURES=0 CASE=0
 for test_case in pstack_refs_status clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning uninstall_rm_failure windows_job_backup; do
     CASE=$((CASE + 1))

@@ -86,7 +86,7 @@ citation_forms() {
 }
 split_line() {
     fixture
-    printf 'Introducción.\nShipping\n  1.\n' > "$SKILL/SKILL.md"
+    printf 'Introducción.\nShipping\n\n  1.\n' > "$SKILL/SKILL.md"
     check 0 'ok: 1 citas;' || return 1
     printf 'Shipping\n  2.\n' > "$SKILL/SKILL.md"
     check 1 'SKILL.md:1 cita «Shipping 2»'

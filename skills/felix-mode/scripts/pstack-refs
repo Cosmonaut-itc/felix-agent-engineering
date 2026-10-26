@@ -108,7 +108,7 @@ function scan(file,    name, text, offset, at, before, after, prefix, nums, n, i
         next
     }
     # Keep one normalized space per newline and its source-line offset.
-    line = flat($0); documents[FILENAME] = documents[FILENAME] line " "
+    line = flat($0); if (line != "") documents[FILENAME] = documents[FILENAME] line " "
     lines[FILENAME]++; ends[FILENAME, FNR] = length(documents[FILENAME])
 }
 END {
