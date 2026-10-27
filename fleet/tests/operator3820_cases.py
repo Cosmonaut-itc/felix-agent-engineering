@@ -732,9 +732,9 @@ class Operator3820Cases:
         self.assertEqual(sorted(r["receipt"]["decision"] for r in outcomes), ["already_released", "committed"])
         self.assertEqual(self.status_key("o05-second")["observation"]["reservation"]["disposition"], "released")
 
-    def quota_base_inventory(self, base):
+    def quota_base_inventory(self, base, result=None):
         # Immediate metadata only. Never descend into somebody else's history.
-        result = {}
+        result = {} if result is None else result
         with os.scandir(base) as entries:
             for entry in entries:
                 info = entry.stat(follow_symlinks=False)
@@ -742,23 +742,61 @@ class Operator3820Cases:
                     "st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")}
         return result
 
-    def quota_record(self, label, event):
-        # Administrative evidence lives in the original run, outside pao-cs.
-        self.external_evidence.append(dict(case=label, **event))
-        with (self.root / (label + "-quota.jsonl")).open("a") as stream:
-            stream.write(json.dumps(event, sort_keys=True) + "\n")
-            stream.flush()
-            os.fsync(stream.fileno())
-        descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+    def quota_error(self, exc):
+        detail = {"type": type(exc).__name__}
         try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+            detail["message"] = str(exc)
+            for name in ("errno", "filename", "filename2", "returncode", "stdout", "stderr"):
+                value = getattr(exc, name, None)
+                if isinstance(value, bytes):
+                    value = value.decode(errors="replace")
+                if value is not None and isinstance(value, (str, int)):
+                    detail[name] = value
+        except BaseException as diagnostic:
+            detail["diagnostic_error"] = type(diagnostic).__name__
+        return detail
 
-    def quota_owned_inventory(self, root):
+    def quota_record(self, label, event, attempts):
+        # Memory/snapshots do not certify a failed journal write or fsync.
+        persistence = {"status": "unconfirmed", "phase": "open", "errors": []}
+        attempts.append(persistence)
+        self.external_evidence.append(dict(case=label, **event, persistence=persistence))
+        stream = descriptor = None
+        failure = None
+        try:
+            stream = (self.root / (label + "-quota.jsonl")).open("a")
+            persistence["phase"] = "write"
+            stream.write(json.dumps(event, sort_keys=True) + "\n")
+            persistence["phase"] = "flush"
+            stream.flush()
+            persistence["phase"] = "file-fsync"
+            os.fsync(stream.fileno())
+            persistence["phase"] = "directory-open"
+            descriptor = os.open(self.root, os.O_RDONLY | os.O_DIRECTORY)
+            persistence["phase"] = "directory-fsync"
+            os.fsync(descriptor)
+        except BaseException as exc:
+            failure = (exc, exc.__traceback__)
+            persistence["errors"].append(dict(phase=persistence["phase"], **self.quota_error(exc)))
+        finally:
+            for stage, resource in (("stream-close", stream), ("directory-close", descriptor)):
+                if resource is None:
+                    continue
+                try:
+                    resource.close() if resource is stream else os.close(resource)
+                except BaseException as exc:
+                    persistence["errors"].append(dict(phase=stage, **self.quota_error(exc)))
+                    if failure is None:
+                        failure = (exc, exc.__traceback__)
+        if failure is not None:
+            raise failure[0].with_traceback(failure[1])
+        persistence["status"] = "synced"
+        persistence["phase"] = "complete"
+
+    def quota_owned_inventory(self, root, result=None):
         # Unlike os.walk's default error handling, scandir failures propagate.
         # Only this exact newly attributed root is traversed; no symlink follows.
-        result = {}
+        result = {} if result is None else result
 
         def visit(directory):
             with os.scandir(directory) as entries:
@@ -780,85 +818,216 @@ class Operator3820Cases:
         transaction was reached. C20 also needs its own terminal acknowledgement.
         Do not run the old ambiguous experiment and report it as coverage.
         """
-        phase = operator_phase or "terminal-publication"
-        self.quota_record(label, {"phase": phase, "status": "BLOCKED", "target_boundary_proven": False})
-        self.assertEqual(os.environ.get("FLEET_TEST_QUOTA_BASE"), "/Volumes/pao-cs/fleet-tests",
-                         "BLOCKED C20/O06: exact authorized pao-cs base required; no fallback")
-        self.assertEqual(os.environ.get("FLEET_TEST_ISOLATED_QUOTA"), "1",
-                         "BLOCKED C20/O06: exclusive future quota turn required")
-        limit_text = os.environ.get("FLEET_TEST_QUOTA_FILL_LIMIT", "")
-        self.assertTrue(limit_text.isascii() and limit_text.isdecimal(), "BLOCKED: explicit fill bound required")
-        limit = int(limit_text)
-        self.assertTrue(0 < limit <= 536870912, "BLOCKED: fill bound must be at most 512 MiB")
+        self.retain_administrative_root = True
+        target = operator_phase or "terminal-publication"
         physical = Path("/Volumes/pao-cs/fleet-tests")
-        self.assertEqual(physical, physical.resolve(strict=True), "BLOCKED: physical quota base required")
-        info = physical.lstat()
-        self.assertTrue(stat.S_ISDIR(info.st_mode))
-        self.assertEqual(info.st_uid, os.getuid())
-        self.assertEqual(pwd.getpwuid(info.st_uid).pw_name, "cosmonaut")
-        self.assertEqual(stat.S_IMODE(info.st_mode), 0o700)
-        self.assertEqual(info.st_dev, physical.parent.stat().st_dev)
-        self.assertNotEqual(self.root.stat().st_dev, info.st_dev,
-                            "BLOCKED: administrative run evidence must be outside the quota volume")
+        quota_root = base_identity = owned_identity = None
+        base_verified = False
+        failures = []
+        report = {"event": "setup-final", "phase": "initial-record", "target_phase": target,
+                  "status": "BLOCKED", "target_boundary_proven": False,
+                  "administrative_root": str(self.root), "administrative_retention_requested": True,
+                  "root": None, "root_attributed": False, "primary_error": None, "secondary_errors": [],
+                  "fill_created": False, "fill_removed": False, "configuration": {},
+                  "certificate_queries": [], "journal_attempts": [],
+                  "inventories": {name: {"status": "not_performed", "reason": "setup has not reached this inventory"}
+                                  for name in ("base_before", "own_before", "base_after", "own_after")},
+                  "foreign_comparison": {"status": "not_performed", "reason": "complete baseline unavailable"}}
+
+        def remember(stage, exc):
+            failures.append((exc, exc.__traceback__))
+            detail = dict(phase=stage, **self.quota_error(exc))
+            if report["primary_error"] is None:
+                report["primary_error"] = detail
+            else:
+                report["secondary_errors"].append(detail)
+
+        def metadata(root):
+            info = root.lstat()
+            return {name: getattr(info, name) for name in (
+                "st_dev", "st_ino", "st_uid", "st_gid", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")}
+
+        def check_base():
+            self.assertEqual(physical, physical.resolve(strict=True), "BLOCKED: quota base changed")
+            current = metadata(physical)
+            for name in ("st_dev", "st_ino", "st_uid", "st_mode"):
+                self.assertEqual(current[name], base_identity[name], "BLOCKED: quota base identity changed: " + name)
+
+        def inventory(name, own=False):
+            observed = {"status": "incomplete", "entries": {}}
+            report["inventories"][name] = observed
+            try:
+                check_base()
+                if own:
+                    current = metadata(quota_root)
+                    observed["root_metadata"] = current
+                    for field in ("st_dev", "st_ino", "st_uid", "st_mode"):
+                        self.assertEqual(current[field], owned_identity[field],
+                                         "BLOCKED: owned quota root changed: " + field)
+                    self.assertEqual(quota_root, quota_root.resolve(strict=True))
+                    self.quota_owned_inventory(quota_root, observed["entries"])
+                else:
+                    self.quota_base_inventory(physical, observed["entries"])
+            except BaseException as exc:
+                observed["error"] = self.quota_error(exc)
+                raise
+            observed["status"] = "complete"
+            return observed["entries"]
 
         def diskutil(*args):
-            response = subprocess.run(["/usr/sbin/diskutil", *args], capture_output=True, timeout=15)
-            self.assertEqual(response.returncode, 0, "BLOCKED: disk certificate query failed")
+            query = {"argv": ["/usr/sbin/diskutil", *args], "returncode": None}
+            report["certificate_queries"].append(query)
+            try:
+                response = subprocess.run(query["argv"], capture_output=True, timeout=15)
+            except BaseException as exc:
+                query["error"] = self.quota_error(exc)
+                raise
+            query.update(returncode=response.returncode, stderr=response.stderr.decode(errors="replace"))
+            if response.returncode != 0:
+                query["stdout"] = response.stdout.decode(errors="replace")
+            self.assertEqual(response.returncode, 0, "BLOCKED: disk certificate query failed: " + repr(query))
             return response.stdout
 
-        # Match the certificate's public diskutil fields exactly. Unknown or
-        # changed output is BLOCKED rather than an inferred certification.
-        fields = [line.partition(":") for line in diskutil("info", str(physical.parent)).decode().splitlines()]
-        certificate = {name.strip(): value.strip() for name, separator, value in fields if separator}
-        for name, expected in (("Device Identifier", "disk3s7"),
-                               ("Volume UUID", "F4FF2E7E-751F-48B3-BA0D-F5F2656C23BC"),
-                               ("File System Personality", "Case-sensitive APFS"),
-                               ("Mount Point", "/Volumes/pao-cs"), ("Owners", "Enabled")):
-            self.assertEqual(certificate.get(name), expected, "BLOCKED: certificate mismatch: " + name)
-        containers = plistlib.loads(diskutil("apfs", "list", "-plist")).get("Containers", [])
-        volumes = [volume for container in containers for volume in container.get("Volumes", [])
-                   if volume.get("DeviceIdentifier") == "disk3s7"]
-        self.assertEqual(len(volumes), 1, "BLOCKED: quota certificate volume is not unique")
-        self.assertEqual(volumes[0].get("CapacityQuota"), 536870912, "BLOCKED: exact 512 MiB quota required")
-        initial = self.quota_base_inventory(physical)
-        space = os.statvfs(physical)
-        available = space.f_bavail * space.f_frsize
-        self.quota_record(label, {"phase": "preflight", "base_before": initial,
-                                  "available_bytes": available, "fill_limit": limit,
-                                  "certificate": {name: certificate.get(name) for name in (
-                                      "Device Identifier", "Volume UUID", "File System Personality", "Owners")}})
-        self.assertGreater(available, 0, "BLOCKED: no prior free quota space; never reclaim foreign files")
-        self.assertLessEqual(available, limit, "BLOCKED: available space exceeds the authorized fill bound")
-        quota_root = Path(tempfile.mkdtemp(prefix=label + "-", dir=physical))
-        self.quota_roots.append(quota_root)
-        self.owned_bases.append(quota_root)
-        owned = quota_root.lstat()
         try:
-            self.assertEqual(stat.S_IMODE(owned.st_mode), 0o700)
-            self.assertEqual(owned.st_uid, os.getuid())
+            self.quota_record(label, {"phase": report["phase"], "target_phase": target,
+                                      "status": "BLOCKED", "target_boundary_proven": False}, report["journal_attempts"])
+            report["phase"] = "configuration-base"
+            report["configuration"]["base"] = os.environ.get("FLEET_TEST_QUOTA_BASE")
+            self.assertEqual(report["configuration"]["base"], str(physical),
+                             "BLOCKED C20/O06: exact authorized pao-cs base required; no fallback")
+            report["phase"] = "configuration-isolation"
+            report["configuration"]["isolated"] = os.environ.get("FLEET_TEST_ISOLATED_QUOTA")
+            self.assertEqual(report["configuration"]["isolated"], "1",
+                             "BLOCKED C20/O06: exclusive future quota turn required")
+            report["phase"] = "configuration-fill-bound"
+            limit_text = os.environ.get("FLEET_TEST_QUOTA_FILL_LIMIT", "")
+            report["configuration"]["fill_limit"] = limit_text
+            self.assertTrue(limit_text.isascii() and limit_text.isdecimal(), "BLOCKED: explicit fill bound required")
+            limit = int(limit_text)
+            report["fill_limit"] = limit
+            self.assertTrue(0 < limit <= 536870912, "BLOCKED: fill bound must be at most 512 MiB")
+            report["phase"] = "base-identification"
+            self.assertEqual(physical, physical.resolve(strict=True), "BLOCKED: physical quota base required")
+            base_identity = metadata(physical)
+            report["base_identity"] = base_identity
+            self.assertTrue(stat.S_ISDIR(base_identity["st_mode"]))
+            self.assertEqual(base_identity["st_uid"], os.getuid())
+            self.assertEqual(pwd.getpwuid(base_identity["st_uid"]).pw_name, "cosmonaut")
+            self.assertEqual(stat.S_IMODE(base_identity["st_mode"]), 0o700)
+            self.assertEqual(base_identity["st_dev"], physical.parent.stat().st_dev)
+            self.assertNotEqual(self.root.stat().st_dev, base_identity["st_dev"],
+                                "BLOCKED: administrative run evidence must be outside the quota volume")
+            base_verified = True
+            report["phase"] = "certificate-info"
+            fields = [line.partition(":") for line in diskutil("info", str(physical.parent)).decode().splitlines()]
+            certificate = {name.strip(): value.strip() for name, separator, value in fields if separator}
+            report["certificate"] = {name: certificate.get(name) for name in (
+                "Device Identifier", "Volume UUID", "File System Personality", "Mount Point", "Owners")}
+            for name, expected in (("Device Identifier", "disk3s7"),
+                                   ("Volume UUID", "F4FF2E7E-751F-48B3-BA0D-F5F2656C23BC"),
+                                   ("File System Personality", "Case-sensitive APFS"),
+                                   ("Mount Point", "/Volumes/pao-cs"), ("Owners", "Enabled")):
+                self.assertEqual(certificate.get(name), expected, "BLOCKED: certificate mismatch: " + name)
+            report["phase"] = "certificate-quota"
+            containers = plistlib.loads(diskutil("apfs", "list", "-plist")).get("Containers", [])
+            volumes = [volume for container in containers for volume in container.get("Volumes", [])
+                       if volume.get("DeviceIdentifier") == "disk3s7"]
+            self.assertEqual(len(volumes), 1, "BLOCKED: quota certificate volume is not unique")
+            report["capacity_quota"] = volumes[0].get("CapacityQuota")
+            self.assertEqual(report["capacity_quota"], 536870912, "BLOCKED: exact 512 MiB quota required")
+            report["phase"] = "base-inventory-before"
+            initial = inventory("base_before")
+            report["phase"] = "space-preflight"
+            space = os.statvfs(physical)
+            available = space.f_bavail * space.f_frsize
+            report["available_bytes"] = available
+            report["phase"] = "preflight-record"
+            self.quota_record(label, {"phase": report["phase"], "base_before": initial,
+                                      "available_bytes": available, "fill_limit": limit,
+                                      "certificate": report["certificate"]}, report["journal_attempts"])
+            report["phase"] = "space-validation"
+            self.assertGreater(available, 0, "BLOCKED: no prior free quota space; never reclaim foreign files")
+            self.assertLessEqual(available, limit, "BLOCKED: available space exceeds the authorized fill bound")
+            report["phase"] = "mkdtemp"
+            quota_root = Path(tempfile.mkdtemp(prefix=label + "-", dir=physical))
+            report["root"] = str(quota_root)  # Creation returned; identity is not yet confirmed.
+            self.quota_roots.append(quota_root)
+            report["phase"] = "owned-root-identification"
+            observed = metadata(quota_root)
+            report["own_root_metadata"] = observed
+            self.assertTrue(stat.S_ISDIR(observed["st_mode"]))
+            self.assertEqual(stat.S_IMODE(observed["st_mode"]), 0o700)
+            self.assertEqual(observed["st_uid"], os.getuid())
+            self.assertEqual(observed["st_dev"], base_identity["st_dev"])
+            owned_identity = observed
+            report["root_attributed"] = True
+            self.owned_bases.append(quota_root)
+            report["phase"] = "owned-inventory-before"
+            inventory("own_before", own=True)
+            report["phase"] = "owned-root-record"
             self.quota_record(label, {"phase": "owned-root-created", "root": str(quota_root),
-                                      "dev": owned.st_dev, "ino": owned.st_ino,
-                                      "uid": owned.st_uid, "mode": stat.S_IMODE(owned.st_mode),
-                                      "own_inventory_before": self.quota_owned_inventory(quota_root)})
+                                      "identity": owned_identity, "own_inventory_before": report["inventories"]["own_before"]},
+                              report["journal_attempts"])
             for name in ("state", "project", "home", "fixtures"):
+                report["phase"] = "mkdir-" + name
                 (quota_root / name).mkdir(mode=0o700)
             for directory in (quota_root, physical):
+                report["phase"] = "sync-" + ("owned-root" if directory == quota_root else "base")
                 descriptor = os.open(directory, os.O_RDONLY | os.O_DIRECTORY)
                 try:
                     os.fsync(descriptor)
+                except BaseException as exc:
+                    remember(report["phase"], exc)
                 finally:
-                    os.close(descriptor)
+                    try:
+                        os.close(descriptor)
+                    except BaseException as exc:
+                        remember(report["phase"] + "-close", exc)
+                if failures:
+                    break
+            if failures:
+                raise failures[0][0].with_traceback(failures[0][1])
+            report["phase"] = "causal-boundary-unproven"
             self.fail("BLOCKED C20/O06: certified setup retained; no PAO-approved discriminator for "
-                      + phase + "; no admission or fill attempted; C20 requires an own terminal ack")
+                      + target + "; no admission or fill attempted; C20 requires an own terminal ack")
+        except BaseException as exc:
+            if not failures or exc is not failures[0][0]:
+                remember(report["phase"], exc)
         finally:
-            final = self.quota_base_inventory(physical)
-            current = final.pop(quota_root.name)
-            self.assertEqual((current["st_dev"], current["st_ino"]), (owned.st_dev, owned.st_ino))
-            self.quota_record(label, {"phase": "setup-final", "base_after_except_own_root": final,
-                                      "own_root_metadata": current, "own_inventory": self.quota_owned_inventory(quota_root),
-                                      "fill_created": False, "fill_removed": False, "root_retained": True,
-                                      "target_boundary_proven": False})
-            self.assertEqual(final, initial, "BLOCKED: foreign base metadata changed; do not fill or clean")
+            for name, allowed, own in (("base_after", base_verified, False),
+                                       ("own_after", owned_identity is not None, True)):
+                if not allowed:
+                    report["inventories"][name]["reason"] = "base not verified" if not own else "own root not attributed"
+                    continue
+                try:
+                    inventory(name, own=own)
+                except BaseException as exc:
+                    remember(name, exc)
+            before, after = (report["inventories"][name] for name in ("base_before", "base_after"))
+            if before["status"] == after["status"] == "complete":
+                comparison = {"status": "incomplete"}
+                report["foreign_comparison"] = comparison
+                try:
+                    foreign = dict(after["entries"])
+                    if quota_root is not None:
+                        self.assertIsNotNone(owned_identity, "BLOCKED: created root identity unconfirmed")
+                        current = foreign.pop(quota_root.name)
+                        for field in ("st_dev", "st_ino", "st_uid", "st_mode"):
+                            self.assertEqual(current[field], owned_identity[field], "BLOCKED: own root identity changed")
+                    self.assertEqual(foreign, before["entries"], "BLOCKED: foreign base metadata changed; do not fill or clean")
+                except BaseException as exc:
+                    comparison["error"] = self.quota_error(exc)
+                    remember("foreign-comparison", exc)
+                else:
+                    comparison["status"] = "complete"
+            try:
+                self.quota_record(label, report, report["journal_attempts"])
+            except BaseException as exc:
+                # The event is already in external_evidence with unconfirmed
+                # persistence. Preserve it and the same primary exception.
+                remember("final-record", exc)
+        if failures:
+            raise failures[0][0].with_traceback(failures[0][1])
 
     def test_o06_real_quota_failure_cannot_commit_capacity_without_audit(self):
         for phase in ("release", "reopen"):

@@ -78,6 +78,7 @@ class FleetCLI(Core3820Cases, unittest.TestCase):
         self.external_evidence = []
         self.legacy_admissions = []
         self.quota_roots = []
+        self.retain_administrative_root = False
 
     def tearDown(self):
         self.cleanup()
@@ -92,7 +93,7 @@ class FleetCLI(Core3820Cases, unittest.TestCase):
             result = self.call("status", admission.job, state=admission.state, check=False)
             self.assertEqual(result.returncode, 0, "public snapshot failed; retained " + str(self.root))
             snapshots.append(json.loads(result.stdout))
-        retained = bool(self.quota_roots) or any(
+        retained = self.retain_administrative_root or bool(self.quota_roots) or any(
             s["observation"]["completion"] != "complete" for s in snapshots)
         report = self.root.parent / ("evidence-" + self.root.name)
         report.mkdir(mode=0o700)

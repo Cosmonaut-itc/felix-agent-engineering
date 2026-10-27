@@ -1,4 +1,4 @@
-# Fleet local — SEN-3820 harness r6
+# Fleet local — SEN-3820 harness r7
 
 CLI opt-in de un slot FIFO por autoridad local, Python 3.9/3.14 por inspección,
 biblioteca estándar, Linux/macOS POSIX. Esta entrega contiene código y pruebas
@@ -212,22 +212,27 @@ Guarda snapshots, campañas, contadores y copia verificada de evidencia pública
 de retirar fixtures completas en `evidence-<fixture>/public-snapshots.json`.
 No hay imports Fleet, SQL, hooks privados ni respuestas simuladas en los tests.
 
-## Harness r6 y evidencia histórica
+## Harness r7 y evidencia histórica
 
 Esta revisión modifica sólo tres archivos de pruebas, esta documentación y la
 matriz; `fleet/fleet/**` y `fleet/bin/**` siguen idénticos a c63. Conserva los64
 métodos, sin nuevos métodos; O06 declara dos subTest de fases condicionales.
-**Cero ejecución de r6**: ni Python/imports/discovery/sintaxis/tests ni gates en
-MacBook. El bloqueo inicial del autor fue aceptado; PAO-CLARIFICATION-1 autoriza
-continuar los tres arreglos y el setup sin certificar las fronteras de cuota.
+**Cero ejecución de r7**: ni Python/imports/discovery/sintaxis/tests ni gates en
+MacBook. El bloqueo inicial del autor r6 fue aceptado; PAO-CLARIFICATION-1 autoriza
+los arreglos y el setup r6 sin certificar las fronteras de cuota. R7 corrige sólo
+retención temprana, fotografía C08 y respuesta lectora C07 sobre ese antecedente.
 
 C07/C08 lanzan exclusivamente sus propios clientes mediante un shim de un hilo
 que comprueba SIGHUP/SIGINT=SIG_DFL y registra un marcador antes de exec del
 intérprete auténtico. No usa preexec_fn ni cambia señales del padre/transporte.
 C07 conserva5s,130/client_interrupted y ausencia de cambios de historia/capacidad.
-Su acuse importtime acredita importación, **no entrada en main**: una interrupción
-demasiado temprana falla el oráculo, sin aceptar0 ni añadir sleeps. C08 conserva
-sesión propia, SIGHUP real al grupo, salida por esa señal en5s, supervisor original,
+Su acuse importtime acredita sólo importación. La respuesta exige además
+operation=wait y error.effects=read_only: descarta el catcher exterior unknown/unknown
+y acredita que main identificó la operación lectora, **no entrada exacta en el bucle
+wait**. No acepta0 ni añade sleeps. C08 espera marcador y running público durable
+con self.ready("c08", ready) antes de fotografiar admitted; así no compara starting
+con una transición running legítima posterior. Conserva sesión propia, SIGHUP real
+al grupo, salida por esa señal en5s, supervisor original,
 reserva/historia y contador1; settle sigue10s. Setsid/restore_signals no se toman
 como normalización. Sólo la barrera de lost_supervisor omite su print decorativo;
 done ya no depende del lector de stdout que el caso mata con SIGKILL. Los demás
@@ -251,11 +256,25 @@ Revalida con diskutil en el futuro entorno autorizado; un env no es certificado.
 No monta, redimensiona ni cambia permisos. Fallos de certificado, falta de espacio
 previo o cambios de metadatos ajenos bloquean; nunca se limpia para ganar espacio.
 
-Cada fase crea sólo una raíz nueva atribuida0700, con state/project/home/fixtures
-dentro; inventaría metadatos inmediatos del base sin descender a historias ajenas
-y su propia raíz recursiva antes/después. Conserva raíces y evidencia. El journal
-administrativo con fsync queda bajo el directorio original del caso, fuera de
-pao-cs; cleanup conserva ese caso y publica sus registros. La estabilidad de
+Cada intento activa retención administrativa **antes del primer quota_record,
+preflight o mkdtemp**. Cleanup conserva el directorio original y su journal incluso
+sin raíz de cuota ni admisión y aunque la primera escritura falle; el snapshot
+exterior no sustituye esos originales. Sólo una creación mkdtemp devuelta se registra
+como raíz creada; la atribución exige dev/ino/uid/modo verificados antes de recorrerla.
+Si alcanza el setup, prepara state/project/home/fixtures dentro de esa raíz0700.
+Inventaría metadatos inmediatos del base sin descender a historias ajenas y sólo
+su raíz atribuida recursivamente. Registra fase administrativa real separada del
+objetivo, fallo primario, errores secundarios y cada inventario como complete,
+incomplete con entradas parciales/error, o not_performed con motivo. Finally intenta
+las observaciones permitidas y el registro final también ante fallo temprano.
+Consultas de certificado conservan rc/stderr o error/timeout; no publica el entorno
+privado. La misma excepción primaria se relanza después de observación/persistencia
+y cierre de descriptores; sin primaria previa se propaga el primer fallo real.
+El journal se intenta escribir y sincronizar fuera de pao-cs. Sólo una escritura,
+fsync de archivo/directorio y cierres completos dejan persistence=synced en memoria;
+un fallo conserva unconfirmed y sus errores, sin prometer durabilidad. Se retienen
+los originales disponibles aunque tampoco pueda persistirse el diagnóstico final.
+La estabilidad de
 metadatos ajenos **no acredita ausencia de archivos abiertos o de uso ajeno**.
 
 Actualmente el caso se detiene explícitamente después del setup: **no admite
@@ -273,7 +292,7 @@ reopen tras release. Deben conservarse error2/3, wait/recover3, contador1 y cons
 not_found o committed con auditoría/capacidad/control correlacionados. Barreras
 preparadas antes de llenar, inventarios y guardas contra uso ajeno son obligatorios.
 Sólo el relleno propio atribuido podría retirarse en finally, registrándolo; estados,
-raíces, evidencia e históricos permanecen. En r6 no existe relleno ni retirada.
+raíces, evidencia e históricos permanecen. En r7 no existe relleno ni retirada.
 
 C23 permanece BLOCKED por CLI auténticos2/3 e historial propio>7d, sin reloj/SQL ni
 skip. A6, C21 positivo, O10 host-side, ventanas internas y negativos OS no se cierran.
@@ -282,4 +301,8 @@ La suite histórica c63 run20261026-143952-e9b9eb dio3.9=56pass/6fail/2error y
 reportes públicos por cierre no acreditado entonces. Su cierre posterior por
 ausencia a20:50:26Zrc0 no rellena reportes ni cambia el resultado. Las hipótesis de
 señales/BrokenPipe históricas siguen delimitadas; no se midió getsignal de esos
-clientes. R6 prepara correcciones, no declara aceptación runtime.
+clientes. Los tres discriminantes contra3b son recorridos estáticos: antes el fallo
+previo a quota_roots podía borrar el journal; C08 podía fotografiar starting; C07
+aceptaba la respuesta exterior unknown/unknown. No se midió FAIL/PASS de esos
+recorridos ni se declara aceptación runtime de r7. Lost_supervisor y replay r6
+permanecen intactos; los nits B-N1/B-N2 y los anteriores siguen diferidos.

@@ -1,15 +1,16 @@
-# SEN-3820 harness r6 — matriz pública, cero ejecución del candidato
+# SEN-3820 harness r7 — matriz pública, cero ejecución del candidato
 
 Inventario obtenido por texto, sin discovery/imports: **64 métodos** en un único
 TestCase `FleetCLI`:16 base en `test_cli.py`,28 en `Core3820Cases`,20 en
 `Operator3820Cases`. Se conservan íntegros los62 métodos de d5 (16+28+18), sus
 contratos; r4 añadió dos y r5 corrigió sólo el oráculo temporal del
-primer método r4, sin añadir métodos. R6 corrige las fronteras descritas abajo,
-sin nuevos métodos. Los53 r1, cinco r2, cuatro r3 y refuerzo C02
+primer método r4, sin añadir métodos. R7 conserva r6 y corrige sólo retención
+temprana, fotografía C08 y respuesta lectora C07, sin nuevos métodos.
+Los53 r1, cinco r2, cuatro r3 y refuerzo C02
 quedan conservados. Discovery futuro sólo `test_cli.py`, según README.
 **34 filas padre =26 definidas +6 parciales/condicionales +2 positivas abiertas**.
 Los3 requisitos adicionales no cambian esa partición. No se cuentan métodos como
-subcasos ni código escrito como cobertura runtime. R6 sigue sin ejecutar; los
+subcasos ni código escrito como cobertura runtime. R7 sigue sin ejecutar; los
 resultados históricos de c63 se distinguen al final.
 
 Cada nombre siguiente es un método real completo, con prefijo `test_`. C reside en
@@ -28,8 +29,8 @@ Ninguna prueba importa Fleet, escribe SQL o inyecta respuestas/cierre en product
 | C04 / definido | c04_lookup_after_origin_removed_and_candidate_rejection_is_scoped | Origen retirado tras running; status/wait/evidence con env diferente resuelven original; nuevo candidato imposible2/not_evaluated, asociación conservada. |
 | C05 / definido | c05_finished_success_and_failure_replay_never_execute_again | Exit0 y7 separados: wait0/1 con complete; replay conserva recibo y contador1. |
 | C06 / definido | c06_lost_supervisor_and_empty_group_do_not_prove_terminal | SIGKILL a supervisor propio tras running, gate termina comando, ausencia de grupo observada; A incierto, B bloqueado owner_uncertain, replay0, wait/recover3, sin otra entrada. |
-| C07 / definido | c07_sigint_wait_only_interrupts_reader | Shim propio restablece y comprueba SIGHUP/SIGINT=SIG_DFL antes de exec auténtico, con marcador. Running en barrera; importtime acredita importación, no entrada en main. SIGINT real exige130/client_interrupted en5s; historia/revisión/capacidad/dispatch iguales y contador1. Una interrupción pre-main falla, no se acepta0 ni se alarga timeout. |
-| C08 / definido | c08_client_group_loss_preserves_original_supervisor | Mismo shim exclusivo de clientes C07/C08, wrapper en sesión propia y SIGHUP real al grupo tras ready; marcador y retorno por SIGHUP en5s. Supervisor original, running, reserva/transiciones y contador1; settle10s. Sin preexec_fn ni política global. |
+| C07 / definido | c07_sigint_wait_only_interrupts_reader | Shim propio restablece y comprueba SIGHUP/SIGINT=SIG_DFL antes de exec auténtico, con marcador. Running en barrera; importtime acredita sólo importación. SIGINT real exige130/client_interrupted, operation=wait y error.effects=read_only en5s: descarta catcher exterior unknown/unknown y acredita identificación de operación lectora en main, no entrada exacta al bucle wait. Historia/revisión/capacidad/dispatch iguales y contador1; no acepta0 ni alarga timeout. |
+| C08 / definido | c08_client_group_loss_preserves_original_supervisor | Mismo shim exclusivo de clientes C07/C08, wrapper en sesión propia. self.ready("c08", ready) exige marcador y running público durable antes de fotografiar admitted y enviar SIGHUP real al grupo; marcador y retorno por SIGHUP en5s. Supervisor original, running, reserva/transiciones y contador1; settle10s. Sin preexec_fn ni política global. |
 | C09 / definido | c09_timeout_only_for_safe_pending_and_uncertainty_precedes_it | Running da4; dueño perdido da3 antes de timeout0. Ventanas terminal/publication/release pendientes sólo si se alcanzan externamente (C20/O07); no acreditadas aquí. Baseline wait registra/reintenta únicamente la ventana finished/publication pending para esperar complete. |
 | C10 / definido | c10_enqueue_only_survives_and_two_recoverers_claim_once | Enqueue-only queued seguro y dispatch_not_requested; replay no despacha; dos nuevos recoverers, un claim durable/contador1. Se tolera3 transitorio de un observador concurrente starting sin vínculo. |
 | C11 / definido | c11_results_survive_new_coordinator_processes | Exit0/7, procesos nuevos status/evidence/recover; comando/huella/IDs persistidos, wait0/1, contador1. |
@@ -171,10 +172,10 @@ Cambios intencionales versionados: JSON en observation y errores tipados; cwd ah
 materializado; fallo de supervisor conserva accepted histórico (método renombrado);
 finished/publication pending da3 y helper base sólo reobserva esa ventana; run base
 obligatorio, watchdog30s y conservación de evidencia/incompletos. No se elimina un
-caso para acomodar un resultado del runtime. R6 no se ha ejecutado; los resultados
+caso para acomodar un resultado del runtime. R7 no se ha ejecutado; los resultados
 históricos de c63 se registran abajo sin reclasificarlos.
 
-## Aclaración y cambios r6 respecto de c63
+## Aclaración r6 y correcciones r7 respecto de c63
 
 El bloqueo inicial del autor se conserva como antecedente. PAO-CLARIFICATION-1
 autoriza implementar los tres arreglos y el setup; no autoriza inventar una
@@ -204,11 +205,23 @@ contador vacío y ausencia de supervisor. No infiere mutación lógica desde SHM
 
 El setup de cuota inventaría sólo metadatos inmediatos del base y su raíz propia
 recursiva. Identifica cada raíz por creación exclusiva/dev/ino/uid0700, sin
-atribuir por prefijo; state/project/home/fixtures se preparan dentro. Journal
-JSONL y registros públicos con fsync quedan en la corrida original fuera del
-volumen; cleanup retiene raíz original del caso y raíces de cuota incluso sin
-admisiones, y publica external_evidence. No limpia históricos ni genera relleno.
-Un error de inventario propaga fallo y conserva originales. Los dos subTest O06
+atribuir por prefijo; state/project/home/fixtures se preparan dentro. R7 activa
+retención administrativa antes del primer quota_record/preflight/mkdtemp: cleanup
+conserva self.root y journal original aunque no haya raíz de cuota ni admisiones
+o falle esa primera escritura. El snapshot exterior no sustituye los originales.
+El registro separa fase real y objetivo, primaria/secundarios, raíz creada y
+atribución confirmada. Cada inventario es complete sólo tras enumeración íntegra,
+incomplete con entradas parciales y error, o not_performed con motivo. Finally
+intenta inventarios permitidos y registro final aun en fallos de configuración,
+certificado, espacio, mkdtemp o metadatos. No recorre una raíz sin atribución ni
+un base cuya identidad no se confirmó. Conserva rc/stderr de diskutil o error de
+consulta/timeout sin publicar el entorno privado. Errores de inventario, persistencia
+y cierre quedan explícitos y no sustituyen la misma primaria; sin primaria previa
+se propaga el primer fallo real. Journal fuera de cuota: persistence sólo pasa a
+synced en memoria tras escritura/fsync de archivo y directorio/cierres completos;
+si falla permanece unconfirmed, sin promesa de durabilidad. Se conservan los
+originales disponibles incluso si no se puede persistir el diagnóstico final.
+No limpia históricos ni genera relleno. Los dos subTest O06
 permiten informar ambas fases aunque una precondición falle; siguen64 métodos,
 con2 invocaciones subTest condicionales explícitas en O06,0 métodos nuevos.
 
@@ -231,3 +244,12 @@ sí fueron constatados en fuentes públicas. Son discriminantes históricos de l
 tres arreglos; C20/O06 no tuvieron baseline FAIL causal porque no pasaron setup.
 R6 conserva64 métodos,0 ejecutados, sin afirmar PASS ni aceptación de plataforma.
 C23 permanece BLOCKED; A6/C21 positivo/O10/ventanas/OS mantienen sus límites.
+
+R7 conserva los64 nombres y MRO,0 métodos nuevos/skips y0 ejecutados. Sus tres
+discriminantes contra3b son estáticos: fallo antes de quota_roots ya no permite
+rmtree del journal; C08 fotografía después de running durable, evitando atribuir
+a SIGHUP una transición legítima starting→running; C07 rechaza la respuesta
+exterior unknown/unknown que antes satisfacía130/client_interrupted. No hay
+FAIL/PASS medidos de esos recorridos. Lost_supervisor y replay r6 quedan intactos;
+B-N1/B-N2 y nits anteriores diferidos. Ningún observador causal nuevo ni frontera
+C20/O06/C23 cerrada por esta revisión.
