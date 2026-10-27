@@ -1,0 +1,179 @@
+#!/bin/bash
+set -uo pipefail
+command -v python3 >/dev/null 2>&1 || exit 0
+
+python3 -c '
+import fnmatch
+import json
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+from urllib.parse import urlparse
+
+REGISTRY = [
+    ("*", "CI", pattern) for pattern in (
+        ".github/*", ".gitlab-ci.yml", ".circleci/*", ".buildkite/*",
+        "azure-pipelines.yml", "bitbucket-pipelines.yml", "Jenkinsfile")
+] + [
+    ("*", "dependencias", pattern) for pattern in (
+        "package.json", "package-lock.json", "npm-shrinkwrap.json", "yarn.lock",
+        "pnpm-lock.yaml", "pnpm-workspace.yaml", "bun.lock", "bun.lockb",
+        "requirements*.txt", "pyproject.toml", "poetry.lock", "uv.lock",
+        "Pipfile", "Pipfile.lock", "Cargo.toml", "Cargo.lock", "go.mod", "go.sum",
+        "Gemfile", "Gemfile.lock", "Podfile", "Podfile.lock", "Package.swift",
+        "Package.resolved", "composer.json", "composer.lock", "build.gradle",
+        "build.gradle.kts", "settings.gradle", "settings.gradle.kts", "libs.versions.toml")
+] + [
+    ("*", "gobernanza de agentes", pattern) for pattern in (
+        "AGENTS.md", "CLAUDE.md", "GEMINI.md", "SKILL.md", ".mcp.json",
+        ".claude/*", "*/.claude/*", ".agents/*", "*/.agents/*", ".codex/*", "*/.codex/*")
+] + [
+    ("Cosmonaut-itc/felix-agent-engineering", "gobernanza de agentes", pattern)
+    for pattern in (
+        "manifest", "bin/*", "skills/*", "vendor/*", "configs/*",
+        "docs/orchestration.md", "docs/agent-routing.md", "docs/native-subagents.md",
+        "docs/opencode-workers.md", "docs/t3-delegation.md")
+]
+NO_HEAD = ("gh pr merge necesita --match-head-commit <head aprobado>, para que GitHub rechace "
+           "el merge si el head cambió después de la review. Usa el head que aprobaron "
+           "la review y el CI, no el que leas ahora del PR. Procedimiento: references/merge.md de felix-mode.")
+
+
+def emit(decision, reasons):
+    message = ("merge-guard: merge sin --match-head-commit" if decision == "deny"
+               else "merge-guard: el merge necesita la confirmación de Felix")
+    print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+          "permissionDecision": decision, "permissionDecisionReason": "\n".join(reasons)},
+          "systemMessage": message}, ensure_ascii=False))
+
+
+def failed(cause):
+    return ("No pude comprobar si este PR toca CI, dependencias o gobernanza de agentes "
+            f"({cause}). felix-mode pide tu autorización explícita para esos PR. ¿Autorizas este merge?")
+
+
+def inspect(selector, repo, env, cwd):
+    executable = shutil.which("gh")
+    if not executable:
+        return failed("gh no disponible")
+    args = [executable, "pr", "view"] + ([selector] if selector else [])
+    if repo is not None:
+        args += ["--repo", repo]
+    args += ["--json", "url,files,changedFiles"]
+    try:
+        result = subprocess.run(args, cwd=cwd, env=env, timeout=10,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    except subprocess.TimeoutExpired:
+        return failed("tiempo agotado")
+    except OSError:
+        return failed("gh o directorio no disponible")
+    if result.returncode:
+        return failed("gh pr view falló")
+    try:
+        data = json.loads(result.stdout)
+        url, files, count = data["url"], data["files"], data["changedFiles"]
+        if not isinstance(url, str) or not isinstance(files, list) or type(count) is not int or count < 0:
+            raise ValueError()
+        parts = urlparse(url).path.strip("/").split("/")
+        if len(parts) < 4 or parts[2] != "pull" or not urlparse(url).netloc:
+            raise ValueError()
+        owner_repo = "/".join(parts[:2]).lower()
+        paths = [item["path"] for item in files]
+        if not all(isinstance(path, str) and path for path in paths):
+            raise ValueError()
+    except (ValueError, KeyError, TypeError):
+        return failed("respuesta JSON incompleta o inválida")
+    if count > len(files):
+        return failed("lista de archivos incompleta")
+    categories, matched = [], []
+    for path in paths:
+        for scope, category, pattern in REGISTRY:
+            target = path if "/" in pattern else path.rsplit("/", 1)[-1]
+            if (scope == "*" or scope.lower() == owner_repo) and fnmatch.fnmatchcase(target, pattern):
+                if category not in categories:
+                    categories.append(category)
+                if path not in matched:
+                    matched.append(path)
+    if matched:
+        suffix = f" (y {len(matched) - 5} más)" if len(matched) > 5 else ""
+        category_text, path_text = ", ".join(categories), ", ".join(matched[:5])
+        return (f"El PR {url} toca {category_text}: {path_text}{suffix}. "
+                "felix-mode lo detiene en merge-ready hasta tu autorización explícita. ¿Autorizas este merge?")
+    return None
+
+
+def main():
+    payload = json.load(sys.stdin)
+    command = payload["tool_input"]["command"]
+    if not isinstance(command, str):
+        return
+    tokens = []
+    for line in command.replace("\\\n", " ").splitlines():
+        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        try:
+            tokens += list(lexer) + [";"]
+        except ValueError:
+            tokens.append(";")
+    boundaries = {";", ";;", "&", "&&", "|", "||", "|&", "(", ")"}
+    cwd = payload.get("cwd") or os.getcwd()
+    merges, segment = [], []
+    for token in tokens:
+        if token not in boundaries:
+            segment.append(token)
+            continue
+        env = os.environ.copy()
+        while segment and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
+            key, value = segment.pop(0).split("=", 1)
+            env[key] = value
+        if segment and segment[0].rsplit("/", 1)[-1] == "cd" and len(segment) == 2:
+            cwd = os.path.abspath(os.path.join(cwd, os.path.expanduser(segment[1])))
+        elif (len(segment) >= 3 and segment[0].rsplit("/", 1)[-1] == "gh"
+              and segment[1:3] == ["pr", "merge"]):
+            selector, repo, head, disabled = None, None, None, False
+            args, index = segment[3:], 0
+            valued = {"--repo", "-R", "--match-head-commit", "--body", "-b",
+                      "--body-file", "-F", "--subject", "-t", "--author-email", "-A"}
+            while index < len(args):
+                arg = args[index]
+                flag, equal, value = arg.partition("=")
+                if flag == "--disable-auto":
+                    disabled = True
+                if flag in valued:
+                    if not equal:
+                        value = ""
+                        if index + 1 < len(args) and not args[index + 1].startswith("-"):
+                            index += 1
+                            value = args[index]
+                    if flag in {"--repo", "-R"}:
+                        repo = value
+                    elif flag == "--match-head-commit":
+                        head = value
+                elif not arg.startswith("-") and selector is None:
+                    selector = arg
+                index += 1
+            if not disabled:
+                merges.append((selector, repo, head, env, cwd))
+        segment = []
+    denials = [NO_HEAD for _, _, head, _, _ in merges if not head]
+    if denials:
+        emit("deny", denials)
+        return
+    reasons = []
+    for selector, repo, _, env, directory in merges:
+        reason = inspect(selector, repo, env, directory)
+        if reason:
+            reasons.append(reason)
+    if reasons:
+        emit("ask", reasons)
+
+
+try:
+    main()
+except Exception:
+    pass
+' 2>/dev/null || true
+exit 0

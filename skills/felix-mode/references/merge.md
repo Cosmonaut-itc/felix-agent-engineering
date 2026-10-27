@@ -61,6 +61,11 @@ Estas condiciones deben cumplirse juntas:
   ese head como pide Shipping 1 y da `PASS` o `PASS+NOTES`. Usa el modelo
   de `swarm workers` del routing.
 
+Un hallazgo real abierto impide merge-ready. Si lo llevas al dueño, sitúa
+el defecto respecto de la rama destino: di si ya está en ella o si este
+merge lo introduce. Llama «preexistente» sólo a un defecto que la rama
+destino ya tiene.
+
 Sin deploy ni alto riesgo, ese APTO y su evidencia cumplen el veredicto
 independiente de Shipping 1. En los demás casos lo cumple **Verificado**.
 La autoridad sustituye la espera del operador en Babysit 9, Shipping,
@@ -93,6 +98,10 @@ restantes y la separación entre propietario, verificador y stacker.
    con inspección y cancelación de solicitudes pendientes antes de cambiar
    topología. Mergea un PR a la vez, de abajo arriba. En GitHub usa
    `gh pr merge <pr> --repo <owner/repo> --squash --match-head-commit <head aprobado>`.
+   Mergea siempre con ese comando, porque en Claude Code el hook
+   `scripts/merge-guard` lo revisa: niega el merge sin `--match-head-commit` y
+   pide la confirmación del dueño cuando el diff toca CI, dependencias o
+   gobernanza de agentes.
    Confirma la rama destino inmediatamente antes de ejecutarlo. No uses
    `--auto` ni `--admin`, ni cambies las protecciones. En otro forge sin
    condición equivalente del servidor sobre el head, para en merge-ready.
