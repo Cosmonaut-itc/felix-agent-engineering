@@ -43,25 +43,42 @@ NO_HEAD = ("gh pr merge necesita --match-head-commit <head aprobado>, para que G
            "el merge si el head cambió después de la review. Usa el head que aprobaron "
            "la review y el CI, no el que leas ahora del PR. Procedimiento: references/merge.md de felix-mode.")
 
-DOUBT = ("No pude analizar este comando con seguridad y menciona gh pr merge. "
-         "El hook decide solo un merge en un comando propio con valores literales: "
-         "[cd <dir> &&] gh pr merge <pr> --repo <owner/repo> --squash "
-         "--match-head-commit <head>. Revisa que este lleve el head aprobado y que el PR "
-         "tenga tu autorización si toca CI, dependencias o gobernanza de agentes. ¿Lo ejecuto?")
+CANONICAL = ("Ejecuta el merge en una llamada propia, con valores literales y sin redirecciones, "
+             "tuberías, variables ni otros comandos: [cd <dir> &&] gh pr merge <pr> --repo <owner/repo> "
+             "--squash --match-head-commit <head aprobado>.")
+
+FORMAT = ("Este comando menciona gh pr merge y merge-guard no puede analizarlo. " + CANONICAL +
+          " Si sólo buscas o citas el texto, escríbelo de otra forma, como gh pr merg[e], o pásalo en un archivo.")
+
+CRASH = ("merge-guard falló al revisar este comando, que menciona gh pr merge. Revisa que lleve "
+         "el head aprobado y que el PR tenga tu autorización si toca CI, dependencias o gobernanza "
+         "de agentes. ¿Lo ejecuto?")
+
+CAUSES = {
+    "formato": ("deny", "merge bloqueado por formato; el agente debe repetirlo en la forma canónica"),
+    "head": ("deny", "merge sin --match-head-commit"),
+    "sensible": ("ask", "el PR toca CI, dependencias o gobernanza de agentes"),
+    "lectura": ("ask", "no pude comprobar los archivos del PR"),
+    "fallo": ("ask", "el hook falló"),
+}
 mentions = 0
 
 
-def emit(decision, reasons):
-    message = ("merge-guard: merge sin --match-head-commit" if decision == "deny"
-               else "merge-guard: el merge necesita la confirmación de Felix")
+def emit(findings):
+    causes = list(dict.fromkeys(cause for cause, _ in findings))
+    decision = CAUSES[causes[0]][0]
+    labels = [CAUSES[cause][1] for cause in causes]
+    message = ("merge-guard: " + "; ".join(labels) if decision == "deny"
+               else "merge-guard: necesita la confirmación de Felix porque " + " y ".join(labels))
     print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
-          "permissionDecision": decision, "permissionDecisionReason": "\n".join(reasons)},
+          "permissionDecision": decision,
+          "permissionDecisionReason": "\n".join(reason for _, reason in findings)},
           "systemMessage": message}, ensure_ascii=False))
 
 
-def failed(cause):
-    return ("No pude comprobar si este PR toca CI, dependencias o gobernanza de agentes "
-            f"({cause}). felix-mode pide tu autorización explícita para esos PR. ¿Autorizas este merge?")
+def failed(detail):
+    return ("lectura", "No pude comprobar si este PR toca CI, dependencias o gobernanza de agentes "
+            f"({detail}). felix-mode pide tu autorización explícita para esos PR. ¿Autorizas este merge?")
 
 
 def inspect(selector, repo, env, cwd, deadline):
@@ -117,7 +134,7 @@ def inspect(selector, repo, env, cwd, deadline):
     if matched:
         suffix = f" (y {len(matched) - 5} más)" if len(matched) > 5 else ""
         category_text, path_text = ", ".join(categories), ", ".join(matched[:5])
-        return (f"El PR {url} toca {category_text}: {path_text}{suffix}. "
+        return ("sensible", f"El PR {url} toca {category_text}: {path_text}{suffix}. "
                 "felix-mode lo detiene en merge-ready hasta tu autorización explícita. ¿Autorizas este merge?")
     return None
 
@@ -250,31 +267,35 @@ def main():
     if not mentions:
         return
     if any(char.isspace() and char not in " \t\n" for char in command):
-        emit("ask", [DOUBT])
+        emit([("formato", FORMAT)])
         return
     merges, found, doubtful = collect(command, payload.get("cwd") or os.getcwd(), os.environ.copy())
     if doubtful or found != mentions or "<<" in command:
-        emit("ask", [DOUBT])
+        emit([("formato", FORMAT)])
         return
-    denials = [NO_HEAD for _, _, head, _, _, _ in merges if not head]
+    unknown = [("formato", f"gh pr merge lleva un flag que merge-guard no reconoce: {flags[0]}. " + CANONICAL)
+               for *_, flags in merges if flags]
+    if unknown:
+        emit(unknown)
+        return
+    denials = [("head", NO_HEAD) for _, _, head, _, _, _ in merges if not head]
     if denials:
-        emit("deny", denials)
+        emit(denials)
         return
-    reasons = []
+    findings = []
     deadline = time.monotonic() + 10
-    for selector, repo, _, env, directory, unknown in merges:
-        reason = (failed("flag no reconocido: " + unknown[0]) if unknown
-                  else inspect(selector, repo, env, directory, deadline))
-        if reason:
-            reasons.append(reason)
-    if reasons:
-        emit("ask", reasons)
+    for selector, repo, _, env, directory, _ in merges:
+        finding = inspect(selector, repo, env, directory, deadline)
+        if finding:
+            findings.append(finding)
+    if findings:
+        emit(findings)
 
 
 try:
     main()
 except Exception:
     if mentions:
-        emit("ask", [DOUBT])
+        emit([("fallo", CRASH)])
 ' 2>/dev/null || true
 exit 0
