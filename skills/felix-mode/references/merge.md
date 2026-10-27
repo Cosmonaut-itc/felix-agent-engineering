@@ -99,10 +99,12 @@ restantes y la separación entre propietario, verificador y stacker.
    topología. Mergea un PR a la vez, de abajo arriba. En GitHub usa
    `gh pr merge <pr> --repo <owner/repo> --squash --match-head-commit <head aprobado>`.
    Mergea siempre con ese comando, en una llamada propia y con valores
-   literales, porque en Claude Code el hook `scripts/merge-guard` lo revisa:
-   niega el merge sin `--match-head-commit` y pide la confirmación del dueño
-   cuando el diff toca CI, dependencias o gobernanza de agentes, o cuando no
-   puede analizar el comando.
+   literales, porque en Claude Code el hook `scripts/merge-guard` lo revisa.
+   Niega el merge sin `--match-head-commit` o fuera de esa forma: repítelo
+   con la forma que indica su razón. Pide la confirmación del dueño cuando
+   el diff toca CI, dependencias o gobernanza de agentes, o cuando no puede
+   comprobar los archivos del PR. Para buscar o citar ese comando en otra
+   llamada, escríbelo como `gh pr merg[e]` o pásalo en un archivo.
    Confirma la rama destino inmediatamente antes de ejecutarlo. No uses
    `--auto` ni `--admin`, ni cambies las protecciones. En otro forge sin
    condición equivalente del servidor sobre el head, para en merge-ready.

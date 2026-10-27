@@ -905,14 +905,26 @@ env.pop("CDPATH", None)
 env.pop("approved_head", None)
 url = "https://github.com/Cosmonaut-itc/felix-agent-engineering/pull/30"
 head = "--match-head-commit approved"
-doubt = ("No pude analizar este comando con seguridad y menciona gh pr merge. "
-         "El hook decide solo un merge en un comando propio con valores literales: "
-         "[cd <dir> &&] gh pr merge <pr> --repo <owner/repo> --squash "
-         "--match-head-commit <head>. Revisa que este lleve el head aprobado y que el PR "
-         "tenga tu autorización si toca CI, dependencias o gobernanza de agentes. ¿Lo ejecuto?")
+canonical = ("Ejecuta el merge en una llamada propia, con valores literales y sin redirecciones, "
+             "tuberías, variables ni otros comandos: [cd <dir> &&] gh pr merge <pr> --repo <owner/repo> "
+             "--squash --match-head-commit <head aprobado>.")
+unparsed = ("Este comando menciona gh pr merge y merge-guard no puede analizarlo. " + canonical +
+            " Si sólo buscas o citas el texto, escríbelo de otra forma, como gh pr merg[e], o pásalo en un archivo.")
+crash = ("merge-guard falló al revisar este comando, que menciona gh pr merge. Revisa que lleve "
+         "el head aprobado y que el PR tenga tu autorización si toca CI, dependencias o gobernanza "
+         "de agentes. ¿Lo ejecuto?")
 no_head = ("gh pr merge necesita --match-head-commit <head aprobado>, para que GitHub rechace "
            "el merge si el head cambió después de la review. Usa el head que aprobaron "
            "la review y el CI, no el que leas ahora del PR. Procedimiento: references/merge.md de felix-mode.")
+outcomes = {
+    "formato": ("deny", "merge-guard: merge bloqueado por formato; el agente debe repetirlo en la forma canónica"),
+    "head": ("deny", "merge-guard: merge sin --match-head-commit"),
+    "sensible": ("ask", "merge-guard: necesita la confirmación de Felix porque el PR toca CI, dependencias o gobernanza de agentes"),
+    "lectura": ("ask", "merge-guard: necesita la confirmación de Felix porque no pude comprobar los archivos del PR"),
+    "fallo": ("ask", "merge-guard: necesita la confirmación de Felix porque el hook falló"),
+    "mixto": ("ask", "merge-guard: necesita la confirmación de Felix porque el PR toca CI, dependencias "
+              "o gobernanza de agentes y no pude comprobar los archivos del PR"),
+}
 
 def files(paths, pr_url=url, count=None):
     env["MERGE_JSON"] = json.dumps({"url": pr_url, "files": [{"path": p} for p in paths],
@@ -928,13 +940,13 @@ def invoke(command=None, raw=None):
 def calls():
     return [json.loads(line) for line in log.read_text(encoding="utf-8").splitlines()] if log.exists() else []
 
-def decision(value, kind, reason=None):
-    assert value is not None, (kind, reason)
+def decision(value, outcome, reason=None):
+    assert value is not None, (outcome, reason)
     output = value["hookSpecificOutput"]
+    kind, message = outcomes[outcome]
     expected = {"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": kind,
                 "permissionDecisionReason": reason if reason is not None else output["permissionDecisionReason"]},
-                "systemMessage": ("merge-guard: merge sin --match-head-commit" if kind == "deny"
-                                  else "merge-guard: el merge necesita la confirmación de Felix")}
+                "systemMessage": message}
     assert value == expected, value
     return output["permissionDecisionReason"]
 
@@ -946,11 +958,11 @@ if mode == "deny":
                     "cd sub && gh pr merge 30 --squash",
                     "gh pr merge 30 --match-head-commit", "gh pr merge 30 --match-head-commit=",
                     "/usr/bin/gh pr merge 30", "gh pr merge 30 \\\n--squash"):
-        decision(invoke(command), "deny", no_head)
+        decision(invoke(command), "head", no_head)
         assert calls() == [], command
-    decision(invoke("echo listo\ngh pr merge 30"), "ask", doubt)
+    decision(invoke("echo listo\ngh pr merge 30"), "formato", unparsed)
     assert calls() == []
-    decision(invoke("gh pr merge 1; gh pr merge 2"), "deny", no_head + "\n" + no_head)
+    decision(invoke("gh pr merge 1; gh pr merge 2"), "head", no_head + "\n" + no_head)
     assert calls() == []
 elif mode == "silent":
     for command in ("gh pr view 30", "git log --grep 'pr merge'", "git merge main",
@@ -958,7 +970,7 @@ elif mode == "silent":
         assert invoke(command) is None, command
         assert calls() == [], command
     for command in ('echo "gh pr merge 30"', "echo gh pr merge 30", "ssh mini gh pr merge 30"):
-        decision(invoke(command), "ask", doubt)
+        decision(invoke(command), "formato", unparsed)
         assert calls() == [], command
     for raw in ("invalid json", "{}", '{"tool_input":{"command":null}}',
                 '{"tool_input":{"command":42}}'):
@@ -974,36 +986,36 @@ elif mode == "ask":
                            ("skills/felix-mode/SKILL.md", "gobernanza de agentes")):
         files([path])
         reason = f"El PR {url} toca {category}: {path}. felix-mode lo detiene en merge-ready hasta tu autorización explícita. ¿Autorizas este merge?"
-        decision(invoke(f"gh pr merge 30 {head}"), "ask", reason)
+        decision(invoke(f"gh pr merge 30 {head}"), "sensible", reason)
     paths = [".github/workflows/check.yml", "apps/web/package.json", "AGENTS.md",
              "apps/api/CLAUDE.md", ".claude/settings.json", "skills/x/run.sh", "manifest"]
     files(paths)
-    decision(invoke(f"gh pr merge 30 {head}"), "ask",
+    decision(invoke(f"gh pr merge 30 {head}"), "sensible",
              f"El PR {url} toca CI, dependencias, gobernanza de agentes: " + ", ".join(paths[:5]) +
              " (y 2 más). felix-mode lo detiene en merge-ready hasta tu autorización explícita. ¿Autorizas este merge?")
     env["MERGE_EXIT"] = "1"
-    reason = decision(invoke(f"gh pr merge 30 {head}"), "ask")
+    reason = decision(invoke(f"gh pr merge 30 {head}"), "lectura")
     assert reason == ("No pude comprobar si este PR toca CI, dependencias o gobernanza de agentes "
                       "(gh pr view falló). felix-mode pide tu autorización explícita para esos PR. ¿Autorizas este merge?")
     env["MERGE_EXIT"] = "0"
     files(["runner.py"], count=2)
-    assert "(lista de archivos incompleta)" in decision(invoke(f"gh pr merge 30 {head}"), "ask")
+    assert "(lista de archivos incompleta)" in decision(invoke(f"gh pr merge 30 {head}"), "lectura")
     for response in ("invalid", "{}", '{"url":null,"files":[],"changedFiles":0}'):
         env["MERGE_JSON"] = response
-        assert "(respuesta JSON incompleta o inválida)" in decision(invoke(f"gh pr merge 30 {head}"), "ask")
+        assert "(respuesta JSON incompleta o inválida)" in decision(invoke(f"gh pr merge 30 {head}"), "lectura")
     files(["AGENTS.md"])
-    reason = decision(invoke(f"gh pr merge 30 {head}; gh pr merge 31 {head}"), "ask")
+    reason = decision(invoke(f"gh pr merge 30 {head}; gh pr merge 31 {head}"), "sensible")
     assert len(calls()) == 2 and len(reason.splitlines()) == 2
 elif mode == "invalid_utf8":
     env["MERGE_INVALID_UTF8"] = "1"
-    reason = decision(invoke(f"gh pr merge 30 {head}"), "ask")
+    reason = decision(invoke(f"gh pr merge 30 {head}"), "lectura")
     assert "(respuesta JSON incompleta o inválida)" in reason, reason
     assert len(calls()) == 1
 elif mode == "scope":
     files(["skills/x/run.sh"], "https://github.com/other/repo/pull/1")
     assert invoke(f"gh pr merge 1 {head}") is None
     files(["manifest"], url.replace("Cosmonaut-itc", "cosmonaut-ITC"))
-    decision(invoke(f"gh pr merge 30 {head}"), "ask")
+    decision(invoke(f"gh pr merge 30 {head}"), "sensible")
 elif mode == "arguments":
     for flag in ("--repo a/b", "--repo=a/b", "-R a/b"):
         assert invoke(f"gh pr merge {flag} 30 {head}") is None
@@ -1015,7 +1027,7 @@ elif mode == "arguments":
                     f"cd sub; cd ..; gh pr merge {head}",
                     f"cd sub; GH_REPO=a/b gh pr merge 30 {head}",
                     f"cd sub; gh pr merge 30 --repo= {head}"):
-        decision(invoke(command), "ask", doubt)
+        decision(invoke(command), "formato", unparsed)
         assert calls() == [], command
     assert invoke(f"cd sub; gh pr merge 30 --repo a/b {head}") is None
     assert calls()[0]["args"] == ["pr", "view", "30", "--repo", "a/b", "--json", "url,files,changedFiles"]
@@ -1035,31 +1047,30 @@ elif mode == "arguments":
                     f"gh pr merge 30 {head} |& gh pr merge 31 {head}",
                     f"gh pr merge 30 {head} ;; gh pr merge 31 {head}",
                     f'"GH_REPO=a/b" gh pr merge 30 {head}'):
-        decision(invoke(command), "ask", doubt)
+        decision(invoke(command), "formato", unparsed)
         assert calls() == [], command
     for body in ("'$literal `text` * ? [a] {a,b} ~ < >'", '"* ? [a] {a,b} ~ < >"'):
         assert invoke(f"gh pr merge 30 {head} --body {body}") is None
         assert len(calls()) == 1
     env["CDPATH"] = "/tmp"
-    decision(invoke(f"cd sub; gh pr merge 30 {head}"), "ask", doubt)
+    decision(invoke(f"cd sub; gh pr merge 30 {head}"), "formato", unparsed)
     assert calls() == []
-    decision(invoke(f"cd ./sub; gh pr merge 30 {head}"), "ask", doubt)
+    decision(invoke(f"cd ./sub; gh pr merge 30 {head}"), "formato", unparsed)
     assert calls() == []
     assert invoke(f"cd sub; gh pr merge 30 --repo a/b {head}") is None
     assert Path(calls()[0]["cwd"]).resolve() == base.resolve()
     env.pop("CDPATH")
     for space in ("\r", "\v", "\f", "\u00a0", "\u0085", "\u2028", "\u2029"):
-        decision(invoke(f"gh pr merge 30 {head}{space}"), "ask", doubt)
+        decision(invoke(f"gh pr merge 30 {head}{space}"), "formato", unparsed)
         assert calls() == [], repr(space)
     for command in ("gh pr merge 30 --disable-auto --foo",
                     f"gh pr merge 30 --disable-auto --disable-auto=true {head}"):
-        decision(invoke(command), "ask", doubt)
+        decision(invoke(command), "formato", unparsed)
         assert calls() == [], command
 elif mode == "unknown_flags":
     for flag in ("-Rowner/repo", "-sd", "--foo", "--auto=yes", "--disable-auto=false"):
-        reason = decision(invoke(f"gh pr merge {flag} 30 {head}"), "ask")
-        assert reason == ("No pude comprobar si este PR toca CI, dependencias o gobernanza de agentes "
-                          f"(flag no reconocido: {flag}). felix-mode pide tu autorización explícita para esos PR. ¿Autorizas este merge?")
+        decision(invoke(f"gh pr merge {flag} 30 {head}"), "formato",
+                 f"gh pr merge lleva un flag que merge-guard no reconoce: {flag}. " + canonical)
         assert calls() == [], flag
     for flag in ("--admin", "--auto", "--delete-branch", "-d", "--merge", "-m",
                  "--rebase", "-r", "--squash", "-s"):
@@ -1074,7 +1085,7 @@ elif mode == "wrappers":
                     'bash -c "gh pr merge 1"', "exec gh pr merge 1", "nohup gh pr merge 1",
                     "time gh pr merge 1", 'sh -ec "gh pr merge 1"',
                     'zsh -c "gh pr merge 1"', "command env GH_REPO=a/b exec gh pr merge 1"):
-        decision(invoke(command), "ask", doubt)
+        decision(invoke(command), "formato", unparsed)
         assert calls() == [], command
     for command in (f"env GH_REPO=a/b gh pr merge 1 {head}",
                     f'bash -lc "cd sub && gh pr merge 30 {head}"',
@@ -1082,14 +1093,15 @@ elif mode == "wrappers":
                     f"env -u GH_REPO gh pr merge 30 {head}",
                     "env -i GH_REPO=a/b gh pr merge 1",
                     f'bash -c "cd sub"; gh pr merge 30 {head}'):
-        decision(invoke(command), "ask", doubt)
+        decision(invoke(command), "formato", unparsed)
         assert calls() == [], command
 elif mode == "deadline":
     env["MERGE_SLEEP"] = "6"
+    files(["AGENTS.md"])
     for total in (2, 3):
         started = time.monotonic()
         command = "; ".join(f"gh pr merge {30 + index} {head}" for index in range(total))
-        reason = decision(invoke(command), "ask")
+        reason = decision(invoke(command), "mixto")
         elapsed = time.monotonic() - started
         assert elapsed < 12, elapsed
         assert len(calls()) == 2, calls()
@@ -1100,69 +1112,69 @@ elif mode == "differential":
     (stubs / "gh").write_text('#!/bin/bash\nexec python3 "$(dirname "$0")/gh-fake.py" "$@"\n', encoding="utf-8")
     (stubs / "gh").chmod(0o755)
     corpus = [
-        ('gh pr merge 30 --squash', 'deny'),
-        ('gh pr merge 30 --squash --match-head-commit abc', 'ask'),
-        ('cd work && gh pr merge 30 --squash', 'deny'),
-        ('gh pr merge 30 --squash --body "primera\nsegunda"', 'ask'),
-        ('gh pr mer\\\nge 30 --squash', 'deny'),
-        ('(echo listo); gh pr merge 30 --squash', 'ask'),
-        ('command -- gh pr merge 30 --squash', 'ask'),
-        ('time -p gh pr merge 30 --squash', 'ask'),
-        ('if true; then gh pr merge 30 --squash; fi', 'ask'),
-        ('for p in 30; do gh pr merge $p --squash; done', 'ask'),
-        ('{ gh pr merge 30 --squash; }', 'ask'),
-        ('true && gh pr merge 30 --squash', 'ask'),
-        ('echo x|gh pr merge 30 --squash', 'ask'),
-        ('bash -c "gh pr merge 30 --squash"', 'ask'),
-        ('eval gh pr merge 30 --squash', 'ask'),
-        ('f(){ gh pr merge 30 --squash; }; f', 'ask'),
-        ('echo ";" gh pr merge 30', 'ask'),
-        ("cat <<'EOT'\ngh pr merge 30\nEOT", 'ask'),
-        ('echo "gh pr merge 30"', 'ask'),
+        ('gh pr merge 30 --squash', 'head'),
+        ('gh pr merge 30 --squash --match-head-commit abc', 'sensible'),
+        ('cd work && gh pr merge 30 --squash', 'head'),
+        ('gh pr merge 30 --squash --body "primera\nsegunda"', 'formato'),
+        ('gh pr mer\\\nge 30 --squash', 'head'),
+        ('(echo listo); gh pr merge 30 --squash', 'formato'),
+        ('command -- gh pr merge 30 --squash', 'formato'),
+        ('time -p gh pr merge 30 --squash', 'formato'),
+        ('if true; then gh pr merge 30 --squash; fi', 'formato'),
+        ('for p in 30; do gh pr merge $p --squash; done', 'formato'),
+        ('{ gh pr merge 30 --squash; }', 'formato'),
+        ('true && gh pr merge 30 --squash', 'formato'),
+        ('echo x|gh pr merge 30 --squash', 'formato'),
+        ('bash -c "gh pr merge 30 --squash"', 'formato'),
+        ('eval gh pr merge 30 --squash', 'formato'),
+        ('f(){ gh pr merge 30 --squash; }; f', 'formato'),
+        ('echo ";" gh pr merge 30', 'formato'),
+        ("cat <<'EOT'\ngh pr merge 30\nEOT", 'formato'),
+        ('echo "gh pr merge 30"', 'formato'),
         ('gh pr view 30', 'silent'),
         ("git log --grep 'pr merge'", 'silent'),
-        ('gh pr merge 30 --body "primera\nsegunda"', 'ask'),
-        ('bash -c "echo listo\ngh pr merge 30"', 'ask'),
-        ('gh pr mer\\\nge 30', 'deny'),
-        ('(echo listo); gh pr merge 30', 'ask'),
-        ('command -- gh pr merge 30', 'ask'),
-        ('time -p gh pr merge 30', 'ask'),
-        ('if true; then gh pr merge 30 --squash; fi', 'ask'),
-        ('echo "\\\n"; gh pr merge 30', 'ask'),
-        ('gh pr merge 30 --body "; & | ( )"', 'deny'),
-        ('gh pr merge 30 --body=";"', 'deny'),
+        ('gh pr merge 30 --body "primera\nsegunda"', 'formato'),
+        ('bash -c "echo listo\ngh pr merge 30"', 'formato'),
+        ('gh pr mer\\\nge 30', 'head'),
+        ('(echo listo); gh pr merge 30', 'formato'),
+        ('command -- gh pr merge 30', 'formato'),
+        ('time -p gh pr merge 30', 'formato'),
+        ('if true; then gh pr merge 30 --squash; fi', 'formato'),
+        ('echo "\\\n"; gh pr merge 30', 'formato'),
+        ('gh pr merge 30 --body "; & | ( )"', 'head'),
+        ('gh pr merge 30 --body=";"', 'head'),
         ('gh pr merge 30 --disable-auto', 'silent'),
-        ('bash -c "gh pr merge 30 --disable-auto"', 'ask'),
-        ('echo "gh pr merge 30"; gh pr merge 30', 'ask'),
-        ('gh pr merge 30 --body "unfinished', 'ask'),
-        ('gh pr merge 30 --match-head-commit X', 'ask'),
-        ('gh pr merge 30 > --disable-auto', 'ask'),
-        ('gh pr merge 30 --match-head-commit "$approved_head"', 'ask'),
-        ('(cd sub); gh pr merge 30 --match-head-commit X', 'ask'),
-        ('cd sub | cat; gh pr merge 30 --match-head-commit X', 'ask'),
-        ('false && cd sub; gh pr merge 30 --match-head-commit X', 'ask'),
-        ('export GH_REPO=sensitive/repo; gh pr merge 30 --match-head-commit X', 'ask'),
-        ('f() {\n gh pr merge 30\n}\necho done', 'ask'),
-        ('cd sub && gh pr merge 30 --match-head-commit X', 'ask'),
-        ('cd sub; gh pr merge 30 --match-head-commit X', 'ask'),
-        ('GH_REPO=a/b gh pr merge 30 --match-head-commit X', 'ask'),
-        ('gh pr merge 30 --squash --disable-auto --disable-auto=false', 'ask'),
-        ('cd missing; cd ..; gh pr merge 30 --squash --match-head-commit X', 'ask'),
-        ('cd sub; cd -; gh pr merge 30 --squash --match-head-commit X', 'ask'),
-        ('cd missing && gh pr merge 30 --squash', 'deny'),
-        ('gh pr merge 30 --squash --disable-auto=false', 'deny'),
-        ('cd missing; cd ..; gh pr merge 30 --repo a/b --squash --match-head-commit X', 'ask'),
-        ('cd sub; cd -; gh pr merge 30 -R a/b --match-head-commit X', 'ask'),
-        ('cd sub && gh pr merge 30 --repo a/b --match-head-commit X', 'ask'),
-        ('cd sub; gh pr merge 30 --repo a/b --match-head-commit X', 'ask'),
-        ('gh pr merge 30 --squash --match-head-commit X', 'ask'),
-        ('gh pr merge 30 --squash --match-head-commit X\r', 'ask'),
-        ('cd sub; gh pr merge 30 --repo old/repo --repo=a/b --match-head-commit X', 'ask'),
-        ('cd sub; gh pr merge 30 --repo=old/repo -R a/b --match-head-commit X', 'ask'),
-        ('cd sub; gh pr merge 30 -R old/repo --repo a/b --match-head-commit X', 'ask'),
+        ('bash -c "gh pr merge 30 --disable-auto"', 'formato'),
+        ('echo "gh pr merge 30"; gh pr merge 30', 'formato'),
+        ('gh pr merge 30 --body "unfinished', 'formato'),
+        ('gh pr merge 30 --match-head-commit X', 'sensible'),
+        ('gh pr merge 30 > --disable-auto', 'formato'),
+        ('gh pr merge 30 --match-head-commit "$approved_head"', 'formato'),
+        ('(cd sub); gh pr merge 30 --match-head-commit X', 'formato'),
+        ('cd sub | cat; gh pr merge 30 --match-head-commit X', 'formato'),
+        ('false && cd sub; gh pr merge 30 --match-head-commit X', 'formato'),
+        ('export GH_REPO=sensitive/repo; gh pr merge 30 --match-head-commit X', 'formato'),
+        ('f() {\n gh pr merge 30\n}\necho done', 'formato'),
+        ('cd sub && gh pr merge 30 --match-head-commit X', 'formato'),
+        ('cd sub; gh pr merge 30 --match-head-commit X', 'formato'),
+        ('GH_REPO=a/b gh pr merge 30 --match-head-commit X', 'sensible'),
+        ('gh pr merge 30 --squash --disable-auto --disable-auto=false', 'formato'),
+        ('cd missing; cd ..; gh pr merge 30 --squash --match-head-commit X', 'formato'),
+        ('cd sub; cd -; gh pr merge 30 --squash --match-head-commit X', 'formato'),
+        ('cd missing && gh pr merge 30 --squash', 'head'),
+        ('gh pr merge 30 --squash --disable-auto=false', 'head'),
+        ('cd missing; cd ..; gh pr merge 30 --repo a/b --squash --match-head-commit X', 'sensible'),
+        ('cd sub; cd -; gh pr merge 30 -R a/b --match-head-commit X', 'sensible'),
+        ('cd sub && gh pr merge 30 --repo a/b --match-head-commit X', 'sensible'),
+        ('cd sub; gh pr merge 30 --repo a/b --match-head-commit X', 'sensible'),
+        ('gh pr merge 30 --squash --match-head-commit X', 'formato'),
+        ('gh pr merge 30 --squash --match-head-commit X\r', 'formato'),
+        ('cd sub; gh pr merge 30 --repo old/repo --repo=a/b --match-head-commit X', 'sensible'),
+        ('cd sub; gh pr merge 30 --repo=old/repo -R a/b --match-head-commit X', 'sensible'),
+        ('cd sub; gh pr merge 30 -R old/repo --repo a/b --match-head-commit X', 'sensible'),
     ]
     payload = json.dumps({"cwd": ["invalid"], "tool_input": {"command": "cd sub; gh pr merge 30"}})
-    decision(invoke(raw=payload), "ask", doubt)
+    decision(invoke(raw=payload), "fallo", crash)
     assert calls() == []
     def identity(args):
         selector, repo, index = None, None, 2
@@ -1202,7 +1214,10 @@ elif mode == "differential":
         value = invoke(command)
         actual = value["hookSpecificOutput"]["permissionDecision"] if value else "silent"
         assert not executed or value is not None, ("FUGA", command)
-        assert actual == expected, (command, actual, expected)
+        if expected == "silent":
+            assert value is None, command
+        else:
+            decision(value, expected, unparsed if expected == "formato" else None)
         for view, merge in zip(calls(), bash_calls):
             assert view["args"][:2] == ["pr", "view"], view
             selector, repo = identity(merge["args"])
@@ -1212,21 +1227,8 @@ elif mode == "differential":
                 assert Path(view["cwd"]).resolve() == Path(merge["cwd"]).resolve(), (command, view, merge)
                 assert view["repo"] == merge["repo"], (command, view, merge)
         assert not calls() or len(calls()) == len(bash_calls), (command, calls(), bash_calls)
-        if expected == "ask" and command not in {
-                'gh pr merge 30 --squash --match-head-commit abc',
-                'gh pr merge 30 --match-head-commit X',
-                'cd sub && gh pr merge 30 --repo a/b --match-head-commit X',
-                'cd sub; gh pr merge 30 --repo a/b --match-head-commit X',
-                'cd missing; cd ..; gh pr merge 30 --repo a/b --squash --match-head-commit X',
-                'cd sub; cd -; gh pr merge 30 -R a/b --match-head-commit X',
-                'cd sub; gh pr merge 30 --repo old/repo --repo=a/b --match-head-commit X',
-                'cd sub; gh pr merge 30 --repo=old/repo -R a/b --match-head-commit X',
-                'cd sub; gh pr merge 30 -R old/repo --repo a/b --match-head-commit X',
-                'GH_REPO=a/b gh pr merge 30 --match-head-commit X'}:
-            decision(value, "ask", doubt)
+        if expected == "formato":
             assert calls() == [], command
-        if command == 'echo "gh pr merge 30"; gh pr merge 30':
-            decision(value, "ask", doubt)
         print(json.dumps({"command": command, "merge": executed, "decision": actual}, ensure_ascii=False))
 elif mode == "manifest":
     for line in (Path(repo) / "manifest").read_text().splitlines():
@@ -1236,7 +1238,7 @@ elif mode == "manifest":
         paths = [columns[1]] if columns[0] == "file" else [columns[1] + "/SKILL.md", columns[1] + "/otro.md"]
         for path in paths:
             files([path])
-            reason = decision(invoke(f"gh pr merge 30 {head}"), "ask")
+            reason = decision(invoke(f"gh pr merge 30 {head}"), "sensible")
             assert "gobernanza de agentes: " + path + "." in reason, reason
 else:
     raise AssertionError(mode)
