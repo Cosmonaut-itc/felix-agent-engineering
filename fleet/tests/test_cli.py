@@ -1,20 +1,21 @@
 import concurrent.futures
-import getpass
-import json
-import os
+import fcntl, getpass, hashlib, json, os
 from pathlib import Path
-import re
-import select
-import shutil
-import signal
-import socket
-import subprocess
-import sys
-import tempfile
-import time
-import unittest
+import re, select, shutil, signal, socket, stat, subprocess, sys, tempfile, threading, time, unittest
+from unittest import mock
+
+from content_cases import ContentCases
+from correction_cases import CorrectionCases
+from integral_cases import IntegralCases
+from reader_temp_cases import ReaderTempCases
+from review_r2_cases import ReviewR2Cases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
+JOB_ENV_BOOTSTRAP = ("import json,os,runpy,sys\n"
+                     "entry,updates=sys.argv[1],json.loads(sys.argv[2])\n"
+                     "sys.argv=sys.argv[3:]\n"
+                     "os.environ.update(updates)\n"
+                     "runpy.run_path(entry,run_name='__main__')\n")
 BARRIER = """
 import pathlib, sys, time
 ready, gate, done = map(pathlib.Path, sys.argv[1:])
@@ -22,38 +23,436 @@ ready.write_text('ready')
 deadline = time.monotonic() + 6
 while not gate.exists() and time.monotonic() < deadline:
     time.sleep(0.02)
-print('ok', flush=True)
+try:
+    print('ok', flush=True)
+except BrokenPipeError:
+    pass
 done.write_text('done')
 sys.exit(0 if gate.exists() else 90)
 """
 
 
-class Admission:
-    def __init__(self, state):
-        self.state = state
-        self.database_absent_before = not (state / "state.db").exists()
-        self.job = self.attempt = None
-        self.refuted = False
+def fixture_base(case_sensitive=False):
+    def supplied(name):
+        raw = os.environ.get(name)
+        if not raw or not Path(raw).is_absolute():
+            raise ValueError(name + " must name an existing absolute directory; no fallback")
+        path = Path(raw)
+        if path != path.resolve(strict=True) or any(p.is_symlink() for p in (path, *path.parents)):
+            raise ValueError(name + " must use a physical path without symlinks")
+        info = path.stat()
+        if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o022:
+            raise ValueError(name + " must be an owned directory without group/other write access")
+        return path
 
+    run = supplied("FLEET_TEST_RUN_DIR")
+    if run.parent.name != "runs" or run.parent.parent.name != "remote-run":
+        raise ValueError("FLEET_TEST_RUN_DIR must identify the supplied remote-run/runs/<runId>")
+    name = "FLEET_TEST_CS_BASE" if case_sensitive else "FLEET_TEST_FIXTURE_BASE"
+    base = supplied(name)
+    if case_sensitive:
+        if stat.S_IMODE(base.stat().st_mode) != 0o700:
+            raise ValueError(name + " must be private (0700); permissions are not repaired")
+        return base
+    if run not in base.parents:
+        raise ValueError(name + " must be below FLEET_TEST_RUN_DIR; no fallback")
+    for path in (base, *base.parents):
+        if path == run:
+            break
+        info = path.stat()
+        if info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError(name + " must have an owned private hierarchy below the run")
+    return base
+
+
+class ExternalFixture:
+    def __init__(self, method):
+        ordinary = fixture_base()
+        run = Path(os.environ["FLEET_TEST_RUN_DIR"])
+        self.evidence = Path(tempfile.mkdtemp(prefix="external-fixture-evidence-", dir=ordinary))
+        self.root, self.cli_count = None, 0
+        self.observations = {}
+        self.snapshot_ready = self.removal_started = self.removal_confirmed = False
+        self.report = {"method": method, "run": str(run), "uid": os.getuid(),
+                       "pid": os.getpid(), "python": sys.executable, "version": list(sys.version_info[:3]),
+                       "supplied_cs_base": os.environ.get("FLEET_TEST_CS_BASE")}
+        try:
+            self.base = fixture_base(case_sensitive=True)
+            self.report["base"] = self.identity(self.base)
+            prefix = "fleet-cli-{}-py{}-{}-pid{}-".format(
+                run.name, sys.version_info.major, sys.version_info.minor, os.getpid())
+            self.root = Path(tempfile.mkdtemp(prefix=prefix, dir=self.base))
+            self.report["root"] = self.identity(self.root)
+            probe, variant = self.root / "CaseProbe", self.root / "caseprobe"
+            probe.mkdir(mode=0o700)
+            self.report["case_probe"] = {"first": self.identity(probe), "variant_exists": variant.exists()}
+            if variant.exists():
+                self.report["case_probe"]["variant"] = self.identity(variant)
+                raise ValueError("FLEET_TEST_CS_BASE is not case-sensitive; no skip")
+            variant.mkdir(mode=0o700)
+            self.report["case_probe"]["variant"] = self.identity(variant)
+            if os.path.samefile(probe, variant): raise ValueError("case probe did not create distinct physical objects")
+            probe.rmdir()
+            variant.rmdir()
+            self.write("setup.json", (json.dumps(self.report, ensure_ascii=True) + "\n").encode())
+        except (OSError, ValueError) as exc:
+            try:
+                self.snapshot(None, "precondition_failed", cause=self.cause(exc))
+                if self.root is not None and isinstance(exc, ValueError):
+                    self.remove("precondition_failed_removed")
+            except BaseException as cleanup_error: self.fail(exc, "precondition", cleanup_error)
+            raise
+    @staticmethod
+    def identity(path):
+        info = path.lstat()
+        return {"path": str(path), "dev": info.st_dev, "ino": info.st_ino, "uid": info.st_uid, "mode": stat.S_IMODE(info.st_mode)}
+    @staticmethod
+    def sync_directory(path):
+        fd = os.open(path, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try: os.fsync(fd)
+        finally: os.close(fd)
+    def write(self, name, data):
+        fd = os.open(self.evidence / name, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+        with os.fdopen(fd, "wb") as output:
+            output.write(data)
+            output.flush()
+            os.fsync(output.fileno())
+        for path in (self.evidence, self.evidence.parent): self.sync_directory(path)
+    def record_cli(self, command, result):
+        self.cli_count += 1
+        value = {"command": command, "returncode": getattr(result, "returncode", None),
+                 "stdout": result.stdout, "stderr": result.stderr}
+        if isinstance(result, subprocess.TimeoutExpired): value["timeout"] = result.timeout
+        for stream in ("stdout", "stderr"):
+            if isinstance(value[stream], bytes):
+                value.update({stream + "_hex": value[stream].hex(), stream: None})
+        self.write("cli-{}.json".format(self.cli_count), (json.dumps(value, ensure_ascii=True) + "\n").encode())
+        try:
+            observed = json.loads(result.stdout)
+            if isinstance(observed, dict) and "state" in observed:
+                self.observations[observed["job"], observed["attempt"]] = observed
+        except (ValueError, TypeError, KeyError): pass
+    def snapshot(self, fixture, phase, **fields):
+        receipts, absent = [], []
+        admissions = fixture.admissions if fixture is not None else []
+        diagnostics = fixture.diagnostics if fixture is not None else []
+        def children(path, optional=False):
+            try: info = path.lstat()
+            except FileNotFoundError:
+                if not optional: raise
+                absent.append(str(path.relative_to(self.root)))
+                return []
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.getuid():
+                raise ValueError("fixture directory is not physical and owned: " + str(path))
+            # Even ENOENT during scandir is a failed enumeration, not optional absence.
+            with os.scandir(path) as entries: return sorted(path / entry.name for entry in entries)
+        def tree(path):
+            result = {path}
+            if stat.S_ISDIR(path.lstat().st_mode):
+                for child in children(path): result.update(tree(child))
+            return result
+        def preserve(path, name):
+            info = path.lstat()
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                raise ValueError("fixture diagnostic is not a regular owned file; retained " + str(self.root))
+            data = path.read_bytes()
+            self.write(name, data)
+            receipts.append({"file": name, "source": str(path.relative_to(self.root)), "size": len(data),
+                             "sha256": hashlib.sha256(data).hexdigest()})
+        for path in [*(a.receipt for a in admissions), *diagnostics]:
+            if path.parent != self.root: raise ValueError("diagnostic is outside the fixture root; retained " + str(self.root))
+            preserve(path, "fixture-" + path.name)
+        for state in sorted({a.state for a in admissions}):
+            attributed = [a for a in admissions if a.state == state and a.job is not None]
+            paths, log = set(), state / "supervisor.log"
+            try: log.lstat()
+            except FileNotFoundError: absent.append(str(log.relative_to(self.root)))
+            else: paths.add(log)
+            for capsule in children(state / "capsules", optional=not attributed): paths.update(tree(capsule))
+            for attempt in children(state / "attempts", optional=not attributed):
+                paths.add(attempt)
+                bundle = attempt / "bundle"
+                if bundle in children(attempt): paths.update(tree(bundle))
+                else: absent.append(str(bundle.relative_to(self.root)))
+            for admission in attributed:
+                capsule = state / "capsules" / admission.job
+                attempt = state / "attempts" / admission.attempt
+                required = {capsule: stat.S_ISDIR, capsule / "payload": stat.S_ISDIR,
+                            capsule / "manifest.json": stat.S_ISREG, attempt: stat.S_ISDIR}
+                observed = self.observations.get((admission.job, admission.attempt), admission.response or {})
+                if (observed.get("state") == "finished" and observed.get("collection")
+                        and "bundle_seal_failed" not in observed["collection"]["errors"]):
+                    required[attempt / "bundle/manifest.json"] = stat.S_ISREG
+                for path, kind in required.items():
+                    if path not in paths or not kind(path.lstat().st_mode):
+                        raise ValueError("expected fixture publication missing or wrong type: " + str(path))
+            for path in sorted(paths):
+                if stat.S_ISDIR(path.lstat().st_mode): continue
+                preserve(path, "published-{}.bin".format(len(receipts)))
+        snapshot = dict(self.report, phase=phase, receipts=receipts, optional_absences=absent,
+                        clients=[{"pid": p.pid, "returncode": p.returncode}
+                                 for p in (fixture.processes if fixture is not None else [])],
+                        admissions=[{"state": str(a.state), "job": a.job, "attempt": a.attempt,
+                                     "refuted": a.refuted} for a in admissions], **fields)
+        self.write("external-fixture.json", (json.dumps(snapshot, ensure_ascii=True) + "\n").encode())
+        self.snapshot_ready = True
+    @staticmethod
+    def cause(exc): return {"type": type(exc).__name__, "message": str(exc), "errno": getattr(exc, "errno", None)}
+    def observe_root(self):
+        if self.root is None: return {"state": "not_created"}
+        try: identity = self.identity(self.root)
+        except FileNotFoundError: return {"state": "absent"}
+        except OSError as exc: return {"state": "unobservable", "cause": self.cause(exc)}
+        matches = identity == self.report.get("root")
+        return {"state": "identity_changed" if not matches else
+                        "present_contents_uncertain" if self.removal_started else "retained",
+                "identity": identity, "matches_created": matches}
+    def fail(self, exc, stage, secondary=None):
+        result = {"stage": stage, "cause": self.cause(exc), "root": self.observe_root(),
+                  "snapshot_durable": self.snapshot_ready, "removal_attempted": self.removal_started,
+                  "confirmation": "unconfirmed", "evidence": str(self.evidence)}
+        if secondary is not None: result["secondary_cause"] = self.cause(secondary)
+        exc.external_fixture_failure = result
+        try: self.write("cleanup-failure.json", (json.dumps(result, ensure_ascii=True) + "\n").encode())
+        except BaseException as persistence_error:
+            exc.external_fixture_errors = (secondary, persistence_error)
+            result["persistence_cause"] = self.cause(persistence_error)
+            try:
+                print("external fixture failure (diagnostic persistence also failed): " + repr(result),
+                      file=sys.stderr, flush=True)
+            except BaseException as stderr_error:
+                exc.external_fixture_errors += (stderr_error,)
+                result["stderr_cause"] = self.cause(stderr_error)
+            raise exc from persistence_error
+        if secondary is not None: raise exc from secondary
+        raise exc
+    def finish(self, fixture):
+        try:
+            self.snapshot(fixture, "settled_and_attributed")
+            self.remove()
+        except BaseException as exc:
+            self.fail(exc, "removal" if self.snapshot_ready else "snapshot")
+    def remove(self, phase="removed_after_settle_and_attribution"):
+        if (not self.snapshot_ready or fixture_base(case_sensitive=True) != self.base
+                or self.identity(self.base) != self.report["base"]
+                or self.root.parent != self.base or self.root != self.root.resolve(strict=True)
+                or self.identity(self.root) != self.report["root"]):
+            raise ValueError("external fixture snapshot or identity unconfirmed: " + str(self.root))
+        self.removal_started = True
+        shutil.rmtree(self.root)
+        observed = self.observe_root()
+        if observed["state"] != "absent": raise ValueError("external fixture removal unconfirmed: " + repr(observed))
+        self.write("removal-result.json", (json.dumps({"phase": phase, "root": observed,
+                   "snapshot": "external-fixture.json", "confirmation": "observed_absent"}) + "\n").encode())
+        self.removal_confirmed = True
+
+
+class ExternalFixtureEvidenceTests(unittest.TestCase):
+    def owned_fixture(self):
+        external = ExternalFixture(self.id())
+        self.addCleanup(print, "harness regression evidence retained: " + str(external.evidence)
+                        + "; original root: " + str(external.root))
+        self.admissions, self.processes, self.diagnostics = [], [], []
+        return external
+    def image(self, paths): return {p: (p.read_bytes(), ExternalFixture.identity(p)) for p in paths}
+    def exercise_failure(self, boundary, expected_root, lose_diagnostic=False, stderr_failure=None, fault="eio"):
+        external = self.owned_fixture()
+        original, kept = external.root / "original.bin", external.root / "kept.bin"
+        files = {original: b"owned diagnostic\x00\xff\n", kept: b"owned survivor"}
+        self.diagnostics = [original]
+        enumeration = boundary in ("capsules", "attempts", "bundle")
+        if enumeration:
+            state = external.root / "state"
+            capsule, attempt = state / "capsules" / ("j_" + "1"*32), state / "attempts" / ("a_" + "2"*32)
+            bundle = attempt / "bundle"
+            for directory in (capsule / "payload", bundle): directory.mkdir(mode=0o700, parents=True)
+            admission = Admission(state, True, external.root / "admission.json")
+            admission.job, admission.attempt = capsule.name, attempt.name
+            self.admissions = [admission]
+            # Metadata of owned helper resources; no Fleet call/response is substituted.
+            external.observations[admission.job, admission.attempt] = {"state": "finished", "collection": {"errors": []}}
+            expected = {"capsules": capsule / "manifest.json", "attempts": attempt,
+                        "bundle": bundle / "manifest.json"}[boundary]
+            files.update({capsule / "manifest.json": b"capsule manifest", capsule / "payload/input.bin": b"input",
+                          bundle / "manifest.json": b"bundle manifest", bundle / "stdout": b"output"})
+            if fault == "missing":
+                if boundary == "attempts": admission.attempt = "a_" + "3"*32
+                else: files.pop(expected)
+                if boundary == "attempts": expected = attempt.with_name(admission.attempt)
+            admission.record()
+            files[admission.receipt] = admission.receipt.read_bytes()
+            target = {"capsules": state / "capsules", "attempts": state / "attempts", "bundle": bundle}[boundary]
+        for path, data in files.items():
+            path.write_bytes(data)
+            path.chmod(0o600)
+        before = self.image(files)
+        data = files[original]
+        error = (FileNotFoundError(2, "controlled scandir disappearance", str(target)) if enumeration and fault == "enoent"
+                 else OSError(5, "controlled " + boundary))
+        secondary, last_error = OSError(28, "controlled diagnostic failure"), BrokenPipeError(32, "controlled stderr")
+        write, rmtree, scandir, frozen, snapshots = external.write, shutil.rmtree, os.scandir, {}, []
+        stream = mock.Mock()
+        if stderr_failure: getattr(stream, stderr_failure).side_effect = last_error
+        def persist(name, content):
+            if name == "external-fixture.json": snapshots.append(external.removal_started)
+            if name == boundary or (lose_diagnostic and name == "cleanup-failure.json"):
+                write(name, content[:9])
+                raise secondary if name == "cleanup-failure.json" else error
+            write(name, content)
+            if name == "external-fixture.json" and not frozen: frozen.update(self.image(external.evidence.iterdir()))
+        def retire(path):
+            self.assertEqual((path, snapshots, enumeration), (external.root, [False], False),
+                             "exactly one snapshot before deletion; enumeration failures must retain")
+            self.assertTrue(external.snapshot_ready and frozen, "snapshot must precede deletion")
+            if boundary == "rmtree":
+                original.unlink()
+                raise error
+            rmtree(path)
+        def scan(path):
+            if enumeration and Path(path) == target and fault != "missing": raise error
+            return scandir(path)
+        with mock.patch.object(external, "write", side_effect=persist), mock.patch.object(os, "scandir", side_effect=scan), \
+                mock.patch.object(shutil, "rmtree", side_effect=retire) as removal, mock.patch.object(sys, "stderr", stream):
+            with self.assertRaises(ValueError if enumeration and fault == "missing" else OSError) as failure: external.finish(self)
+        if enumeration and fault == "missing": self.assertIn(str(expected), str(failure.exception))
+        else: self.assertIs(failure.exception, error)
+        delivered = failure.exception
+        self.assertIs(delivered.__cause__, secondary if lose_diagnostic else None)
+        self.assertEqual(snapshots, [] if enumeration else [False])
+        result = delivered.external_fixture_failure
+        self.assertEqual(result["cause"], {"type": "ValueError" if enumeration and fault == "missing" else
+                         "FileNotFoundError" if enumeration and fault == "enoent" else "OSError",
+                         "message": str(delivered), "errno": None if enumeration and fault == "missing" else
+                         2 if enumeration and fault == "enoent" else 5})
+        self.assertEqual((result["root"]["state"], result["confirmation"], external.removal_confirmed),
+                         (expected_root, "unconfirmed", False))
+        ready = not enumeration and boundary != "external-fixture.json"
+        self.assertEqual((external.snapshot_ready, result["snapshot_durable"], result["removal_attempted"],
+                          external.removal_started), (ready, ready, ready, ready))
+        if lose_diagnostic:
+            self.assertIs(delivered.external_fixture_errors[1], secondary)
+            self.assertEqual(result["persistence_cause"], external.cause(secondary))
+            stream.write.assert_called()
+            if stderr_failure:
+                getattr(stream, stderr_failure).assert_called()
+                self.assertIs(delivered.external_fixture_errors[2], last_error)
+                self.assertEqual(result["stderr_cause"], external.cause(last_error))
+            else:
+                stream.flush.assert_called_once()
+                self.assertIn(str(error), "".join(call.args[0] for call in stream.write.call_args_list))
+        else: self.assertEqual(json.loads((external.evidence / "cleanup-failure.json").read_bytes()), result)
+        if expected_root == "absent":
+            with self.assertRaises(FileNotFoundError): external.root.lstat()
+        else:
+            self.assertEqual(external.identity(external.root), external.report["root"])
+            self.assertEqual(kept.read_bytes(), files[kept])
+        if frozen:
+            self.assertEqual(self.image(frozen), frozen)
+            snapshot = json.loads(frozen[external.evidence / "external-fixture.json"][0])
+            self.assertEqual((snapshot["root"], snapshot["case_probe"]), (external.report["root"], external.report["case_probe"]))
+            self.assertEqual(snapshot["receipts"], [{"file": "fixture-original.bin", "source": "original.bin",
+                             "size": len(data), "sha256": hashlib.sha256(data).hexdigest()}])
+            self.assertEqual(frozen[external.evidence / "fixture-original.bin"][0], data)
+        else:
+            self.assertEqual(self.image(before), before)
+            self.assertEqual((external.evidence / "fixture-original.bin").read_bytes(), data)
+        if enumeration:
+            removal.assert_not_called()
+            self.assertEqual(result["stage"], "snapshot")
+            self.assertFalse((external.evidence / "external-fixture.json").exists())
+        elif boundary != "rmtree":
+            with self.assertRaises(ValueError): json.loads((external.evidence / boundary).read_bytes())
+        else:
+            with self.assertRaises(FileNotFoundError): original.lstat()
+        if expected_root != "absent": self.assertFalse((external.evidence / "removal-result.json").exists())
+    def test_h2_post_removal_persistence_preserves_snapshot_and_original_error(self):
+        for lose_diagnostic in (False, True):
+            with self.subTest(diagnostic_persistence_fails=lose_diagnostic): self.exercise_failure("removal-result.json", "absent", lose_diagnostic)
+    def test_h2_snapshot_failure_prevents_removal_and_preserves_original_error(self): self.exercise_failure("external-fixture.json", "retained")
+    def test_h2_partial_removal_preserves_snapshot_and_original_error(self): self.exercise_failure("rmtree", "present_contents_uncertain")
+    def test_h3_enumeration_errors_prevent_removal_and_preserve_originals(self):
+        for boundary in ("capsules", "attempts", "bundle"):
+            for fault in ("eio", "enoent", "missing"):
+                with self.subTest(boundary=boundary, fault=fault):
+                    self.exercise_failure(boundary, "retained", fault=fault)
+        external = self.owned_fixture()
+        admission = Admission(external.root / "refuted-state", True, external.root / "admission.json")
+        admission.refuted = True
+        admission.record()
+        self.admissions = [admission]
+        external.snapshot(self, "retained_refuted_control")
+        snapshot = json.loads((external.evidence / "external-fixture.json").read_bytes())
+        self.assertEqual(snapshot["optional_absences"], ["refuted-state/supervisor.log", "refuted-state/capsules",
+                                                        "refuted-state/attempts"])
+        self.assertEqual(snapshot["receipts"][0]["sha256"], hashlib.sha256(admission.receipt.read_bytes()).hexdigest())
+    def test_h3_stderr_failure_preserves_primary_error_and_snapshot(self):
+        for channel in ("write", "flush"):
+            with self.subTest(stderr_failure=channel): self.exercise_failure("removal-result.json", "absent", True, channel)
+
+
+class Admission:
+    def __init__(self, state, exclusive, receipt):
+        self.state, self.exclusive, self.receipt = state, exclusive, receipt
+        self.receipt_lock = threading.Lock()
+        self.database_absent_before = not os.path.lexists(state / "state.db")
+        self.job = self.attempt = None
+        self.refuted, self.response = False, None
+    def record(self):
+        with self.receipt_lock:
+            self.receipt.write_text(json.dumps({
+                "state": str(self.state), "exclusive": self.exclusive,
+                "database_absent_before": self.database_absent_before,
+                "job": self.job, "attempt": self.attempt, "refuted": self.refuted,
+                "response": self.response}, ensure_ascii=True) + "\n")
+            self.receipt.chmod(0o600)
     def attribute(self, response):
         job, attempt = response.get("job"), response.get("attempt")
         if (not isinstance(job, str) or not re.fullmatch(r"j_[0-9a-f]{32}", job)
                 or not isinstance(attempt, str) or not re.fullmatch(r"a_[0-9a-f]{32}", attempt)):
             raise AssertionError("submit response has no attributable identity")
         self.job, self.attempt = job, attempt
-
+        self.response = response
+        self.record()
     def refute_if_absent(self, result):
-        if (result.returncode is not None and self.database_absent_before
-                and not (self.state / "state.db").exists()):
+        if (self.exclusive and result.returncode is not None and self.database_absent_before
+                and not os.path.lexists(self.state / "state.db")):
             self.refuted = True
+            self.record()
+    def refute_if_unchanged_exclusive(self, result, lock_fd, before, after):
+        if (result.returncode != 2 or self.database_absent_before or before != after
+                or "state.db" not in before
+                or json.loads(result.stdout) != {"error": "path_identity_unavailable"}):
+            return
+        held, current = os.fstat(lock_fd), self.state.stat()
+        if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
+            return
+        probe = os.open(self.state, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        try:
+            try:
+                fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                self.refuted = True
+                self.record()
+        finally:
+            os.close(probe)
 
 
 @unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
-class FleetCLI(unittest.TestCase):
+class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, ReviewR2Cases, unittest.TestCase):
     def setUp(self):
-        self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-")).resolve()
-        self.state = self.root / "state"
-        self.project = self.root / "project-without-profile"
+        self.gates, self.admissions = [], []
+        self.admission_lock = threading.Lock()
+        self.processes, self.client_groups, self.diagnostics = [], [], []
+        self.external, self.setup_complete = None, False
+        external = ("case_sensitive_distinct" in self._testMethodName
+                    or self._testMethodName == "test_declared_account_and_host_metadata_are_redacted")
+        if external:
+            self.external = ExternalFixture(self.id())
+            self.root = self.external.root
+            self.addCleanup(self.cleanup_incomplete_setup)
+        else:
+            self.root = Path(tempfile.mkdtemp(prefix="fleet-cli-", dir=fixture_base())).resolve()
+        self.state, self.project = self.root / "state", self.root / "project-without-profile"
         self.project.mkdir()
         self.home = self.root / "home"
         self.home.mkdir()
@@ -62,38 +461,45 @@ class FleetCLI(unittest.TestCase):
         self.env.pop("FLEET_CLIENT", None)
         self.env.update(HOME=str(self.home), XDG_STATE_HOME=str(self.root / "xdg"),
                         TMPDIR=str(self.root), PYTHONDONTWRITEBYTECODE="1")
-        self.gates = []
-        self.admissions = []
-        self.processes = []
-
-    def tearDown(self):
-        self.cleanup()
-
+        self.setup_complete = True
+    def cleanup_incomplete_setup(self):
+        if not self.setup_complete: self.cleanup()
+    def tearDown(self): self.cleanup()
     def cleanup(self):
-        self.settle()
-        self.guard_admissions()
+        try:
+            self.settle()
+            self.guard_admissions()
+        except BaseException as exc:
+            if self.external is not None:
+                try:
+                    self.external.snapshot(self, "retained_uncertain", cause=self.external.cause(exc))
+                except BaseException as snapshot_error:
+                    self.external.fail(exc, "settle_and_attribution", snapshot_error)
+                self.external.fail(exc, "settle_and_attribution")
+            raise
+        if self.external is not None:
+            self.external.finish(self)
+            print("external fixture evidence: " + str(self.external.evidence), flush=True)
+            return
+        if self.diagnostics:
+            print("retained fixture diagnostics: " + str(self.root), flush=True)
+            return
         shutil.rmtree(self.root)
-
     def guard_admissions(self):
         unresolved = [str(a.state) for a in self.admissions if a.job is None and not a.refuted]
-        if unresolved:
-            self.fail("unattributed admission; retained {}: {}".format(self.root, unresolved))
-
+        if unresolved: self.fail("unattributed admission; retained {}: {}".format(self.root, unresolved))
     def settle(self):
-        for gate, done in self.gates:
-            gate.touch()
+        for gate, done in self.gates: gate.touch()
         for process in self.processes:
-            try:
-                process.communicate(timeout=10)
+            try: process.communicate(timeout=10)
             except subprocess.TimeoutExpired:
                 self.fail("owned CLI process did not exit; retained {}".format(self.root))
-        supervisors, groups = set(), set()
+        supervisors, groups = set(), set(self.client_groups)
         deadline = time.monotonic() + 9
         while True:
             pending = []
             for admission in self.admissions:
-                if admission.job is None:
-                    continue
+                if admission.job is None: continue
                 job = admission.job
                 result = self.call("status", job, state=admission.state, check=False)
                 if result.returncode != 0:
@@ -103,10 +509,8 @@ class FleetCLI(unittest.TestCase):
                 if (value["job"], value["attempt"]) != (job, admission.attempt):
                     pending.append((job, "public identity mismatch"))
                     continue
-                if value["supervisor"]:
-                    supervisors.add(value["supervisor"]["pid"])
-                if value["child_pid"] is not None:
-                    groups.add(value["child_pid"])
+                if value["supervisor"]: supervisors.add(value["supervisor"]["pid"])
+                if value["child_pid"] is not None: groups.add(value["child_pid"])
                 if value["state"] in ("starting", "running") and value["child_pid"] is None:
                     pending.append((job, "command creation unconfirmed"))
                 if value["state"] == "running" and not value["supervisor"]:
@@ -114,72 +518,99 @@ class FleetCLI(unittest.TestCase):
             for kind, pids, probe in (("supervisor", supervisors, os.kill),
                                       ("command group", groups, os.killpg)):
                 for pid in pids:
-                    try:
-                        probe(pid, 0)
-                    except ProcessLookupError:
-                        continue
-                    except OSError as exc:
-                        pending.append((kind, pid, str(exc)))
-                    else:
-                        pending.append((kind, pid, "still present"))
-            if not pending:
-                return
+                    try: probe(pid, 0)
+                    except ProcessLookupError: continue
+                    except OSError as exc: pending.append((kind, pid, str(exc)))
+                    else: pending.append((kind, pid, "still present"))
+            if not pending: return
             if time.monotonic() >= deadline:
                 self.fail("owned process absence unconfirmed; retained {}: {}".format(
                     self.root, pending))
             time.sleep(0.05)
-
     def admit(self, state):
         self.assertIn(self.root, state.parents)
-        admission = Admission(state)
-        self.admissions.append(admission)
+        fd, path = tempfile.mkstemp(prefix="admission-", suffix=".json", dir=self.root)
+        os.close(fd)
+        receipt = Path(path)
+        with self.admission_lock:
+            prior = [a for a in self.admissions if a.state == state and not a.refuted]
+            for previous in prior:
+                previous.exclusive = False
+                previous.record()
+            admission = Admission(state, not prior, receipt)
+            self.admissions.append(admission)
+            admission.record()
         return admission
-
-    def call(self, *args, state=None, check=True, env=None, refute_if_absent=False):
+    def call(self, *args, state=None, check=True, env=None, refute_if_absent=False,
+             job_environment=None):
         admission = self.admit(state or self.state) if args and args[0] == "submit" else None
         command = [sys.executable, "-B", str(CLI), "--state-dir", str(state or self.state)]
-        result = subprocess.run(command + list(args), env=env or self.env,
-                                cwd=str(self.project), capture_output=True, text=True, timeout=15)
-        if admission is not None:
+        if job_environment is not None:
+            command = [sys.executable, "-B", "-c", JOB_ENV_BOOTSTRAP, str(CLI),
+                       json.dumps(job_environment), *command[2:]]
+        try:
+            result = subprocess.run(command + list(args), env=env or self.env, cwd=str(self.project),
+                                    capture_output=True, text=True, errors="surrogateescape", timeout=15)
+        except subprocess.TimeoutExpired as exc:
+            if self.external is not None: self.external.record_cli(command + list(args), exc)
+            raise
+        if self.external is not None: self.external.record_cli(command + list(args), result)
+        try:
             value = json.loads(result.stdout)
-            if "job" in value:
-                admission.attribute(value)
-            elif refute_if_absent:
-                admission.refute_if_absent(result)
-        if check:
-            self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
+            if not isinstance(value, dict): raise ValueError("JSON response is not an object")
+        except ValueError:
+            if admission is not None and refute_if_absent: admission.refute_if_absent(result)
+            fd, path = tempfile.mkstemp(prefix="cli-json-", suffix=".json", dir=self.root)
+            with os.fdopen(fd, "w") as output:
+                json.dump({"returncode": result.returncode, "stdout": result.stdout,
+                           "stderr": result.stderr}, output, ensure_ascii=True)
+            self.diagnostics.append(Path(path))
+            self.fail("CLI stdout is not a JSON object; rc={}; stdout={!r}; stderr={!r}; retained {}".format(
+                result.returncode, result.stdout, result.stderr, path))
+        if admission is not None:
+            if "job" in value: admission.attribute(value)
+            elif refute_if_absent: admission.refute_if_absent(result)
+        if check: self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
         return result
-
-    def value(self, *args, **kwargs):
-        return json.loads(self.call(*args, **kwargs).stdout)
-
+    def value(self, *args, **kwargs): return json.loads(self.call(*args, **kwargs).stdout)
     def submit(self, argv, state=None, client=None, env=None):
         options = ["submit"] + (["--client", client] if client is not None else [])
-        value = self.value(*options, "--", *argv, state=state, env=env)
+        response = self.call(*options, "--", *argv, state=state, env=env, check=False)
+        self.assertIn(response.returncode, (0, 3), (response.stdout, response.stderr))
+        value = json.loads(response.stdout)
         self.assertTrue(value["accepted"])
         return value
-
     def wait(self, job, code=0, state=None):
         result = self.call("wait", job, "--timeout", "9", state=state, check=False)
         self.assertEqual(result.returncode, code, (result.stdout, result.stderr))
         return json.loads(result.stdout)
-
     def until(self, predicate):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
             value = predicate()
-            if value:
-                return value
+            if value: return value
             time.sleep(0.02)
         self.fail("owned fixture did not reach its barrier")
-
+    def response_line(self, process):
+        result = bytearray()
+        deadline = time.monotonic() + 5
+        while b"\n" not in result:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0 or not select.select([process.stdout], [], [], remaining)[0]:
+                self.fail("submit response timed out; admission remains pending")
+            chunk = os.read(process.stdout.fileno(), 4096)
+            if not chunk:
+                self.fail("submit response ended without a complete line; admission remains pending")
+            result.extend(chunk)
+            if len(result) > 65536:
+                self.fail("submit response limit exceeded; admission remains pending")
+        return result.split(b"\n", 1)[0].decode()
     def barrier(self):
         directory = self.root / ("fixture-" + str(len(self.gates)))
         directory.mkdir()
         ready, gate, done = [directory / name for name in ("ready", "gate", "done")]
         self.gates.append((gate, done))
         return [sys.executable, "-B", "-c", BARRIER, str(ready), str(gate), str(done)], ready, gate, done
-
     def running(self, job, ready, state=None):
         self.until(lambda: ready.exists() and self.value("status", job, state=state)["state"] == "running")
 
@@ -223,11 +654,14 @@ class FleetCLI(unittest.TestCase):
 
     def test_literal_argv_cwd_stdin_and_logs(self):
         literal = "$(touch SHOULD_NOT_EXIST); * ' spaces"
-        script = "import os,sys; print(os.getcwd()); print(repr(sys.stdin.read())); print(sys.argv[1]); print('err',file=sys.stderr)"
+        (self.project / "identity.txt").write_text("materialized-content")
+        script = "import os,sys,pathlib; print(os.getcwd()); print(repr(sys.stdin.read())); print(sys.argv[1]); print(pathlib.Path('identity.txt').read_text()); print('err',file=sys.stderr)"
         job = self.submit([sys.executable, "-c", script, literal])["job"]
         final = self.wait(job)
-        self.assertEqual(Path(final["stdout_log"]).read_text().splitlines(),
-                         [str(self.project), "''", literal])
+        lines = Path(final["stdout_log"]).read_text().splitlines()
+        self.assertNotEqual(lines[0], str(self.project))
+        self.assertEqual(lines[1:], ["''", literal, "materialized-content"])
+        self.assertEqual(final["input"], self.value("status", job)["input"])
         self.assertEqual(Path(final["stderr_log"]).read_text(), "err\n")
         self.assertFalse((self.project / "SHOULD_NOT_EXIST").exists())
 
@@ -445,7 +879,8 @@ class FleetCLI(unittest.TestCase):
                                    start_new_session=True, env=self.env, cwd=self.project,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.processes.append(process)
-        line = process.stdout.readline()
+        self.client_groups.append(process.pid)
+        line = self.response_line(process)
         submitted = json.loads(line)
         admission.attribute(submitted)
         self.running(submitted["job"], ready)
@@ -470,7 +905,9 @@ class FleetCLI(unittest.TestCase):
         self.assertTrue(uncertain)
         self.assertEqual(self.wait(job, 3)["state"], "running")
         next_argv, next_ready, next_gate, next_done = self.barrier()
-        queued = self.submit(next_argv)
+        response = self.call("submit", "--", *next_argv, check=False)
+        self.assertEqual(response.returncode, 3, response.stdout)
+        queued = json.loads(response.stdout)
         self.assertEqual(queued["state"], "queued")
         self.assertEqual(self.wait(queued["job"], 3)["view"], "uncertain")
         gate.touch()
