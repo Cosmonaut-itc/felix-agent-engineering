@@ -95,8 +95,10 @@ brief orientan al trabajador, pero no lo detienen.
 
 Archiva el hilo de cada hijo que cierras, aceptado, rechazado o cancelado,
 con `t3_thread_organize`, `action: "archive"` y `threadId: childThreadId`.
-Cada ronda deja su propio hijo, así que archiva todos. Hazlo después de
-integrar su worktree, porque archivar detiene su sesión y sus terminales. El
+Cada ronda deja su propio hijo, así que archiva todos. Primero conserva
+cambios y evidencia e integra lo aceptado; después archiva el hilo, también
+si no tiene worktree. Archivar desvincula el hilo de la sesión del proveedor
+y cierra sus terminales. El
 hilo archivado sigue legible con `t3_thread_read`, pero rechaza mensajes:
 para retomarlo, desarchívalo con `action: "unarchive"`. Cada padre archiva
 los hijos que recogió y no archiva un hilo con hijos vivos, porque T3 no
