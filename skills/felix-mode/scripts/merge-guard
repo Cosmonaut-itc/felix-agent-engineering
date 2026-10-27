@@ -55,7 +55,7 @@ CRASH = ("merge-guard falló al revisar este comando, que menciona gh pr merge. 
          "de agentes. ¿Lo ejecuto?")
 
 CAUSES = {
-    "formato": ("deny", "merge bloqueado por formato; el agente debe repetirlo en la forma canónica"),
+    "formato": ("deny", "comando bloqueado por formato; el agente debe corregirlo sin tu intervención"),
     "head": ("deny", "merge sin --match-head-commit"),
     "sensible": ("ask", "el PR toca CI, dependencias o gobernanza de agentes"),
     "lectura": ("ask", "no pude comprobar los archivos del PR"),
@@ -222,7 +222,7 @@ def collect(command, cwd, inherited_env):
             args, index, unknown = segment[3:], 0, []
             valued = {"--repo", "-R", "--match-head-commit", "--body", "-b",
                       "--body-file", "-F", "--subject", "-t", "--author-email", "-A"}
-            boolean = {"--admin", "--auto", "--delete-branch", "-d", "--disable-auto",
+            boolean = {"--delete-branch", "-d", "--disable-auto",
                        "--merge", "-m", "--rebase", "-r", "--squash", "-s"}
             while index < len(args):
                 arg = args[index]
@@ -273,7 +273,7 @@ def main():
     if doubtful or found != mentions or "<<" in command:
         emit([("formato", FORMAT)])
         return
-    unknown = [("formato", f"gh pr merge lleva un flag que merge-guard no reconoce: {flags[0]}. " + CANONICAL)
+    unknown = [("formato", f"gh pr merge lleva un flag que merge-guard no admite: {flags[0]}. " + CANONICAL)
                for *_, flags in merges if flags]
     if unknown:
         emit(unknown)

@@ -917,7 +917,7 @@ no_head = ("gh pr merge necesita --match-head-commit <head aprobado>, para que G
            "el merge si el head cambió después de la review. Usa el head que aprobaron "
            "la review y el CI, no el que leas ahora del PR. Procedimiento: references/merge.md de felix-mode.")
 outcomes = {
-    "formato": ("deny", "merge-guard: merge bloqueado por formato; el agente debe repetirlo en la forma canónica"),
+    "formato": ("deny", "merge-guard: comando bloqueado por formato; el agente debe corregirlo sin tu intervención"),
     "head": ("deny", "merge-guard: merge sin --match-head-commit"),
     "sensible": ("ask", "merge-guard: necesita la confirmación de Felix porque el PR toca CI, dependencias o gobernanza de agentes"),
     "lectura": ("ask", "merge-guard: necesita la confirmación de Felix porque no pude comprobar los archivos del PR"),
@@ -1068,12 +1068,12 @@ elif mode == "arguments":
         decision(invoke(command), "formato", unparsed)
         assert calls() == [], command
 elif mode == "unknown_flags":
-    for flag in ("-Rowner/repo", "-sd", "--foo", "--auto=yes", "--disable-auto=false"):
+    for flag in ("-Rowner/repo", "-sd", "--foo", "--auto=yes", "--disable-auto=false", "--admin", "--auto"):
         for command in (f"gh pr merge {flag} 30 {head}", f"gh pr merge {flag} 30"):
             decision(invoke(command), "formato",
-                     f"gh pr merge lleva un flag que merge-guard no reconoce: {flag}. " + canonical)
+                     f"gh pr merge lleva un flag que merge-guard no admite: {flag}. " + canonical)
             assert calls() == [], command
-    for flag in ("--admin", "--auto", "--delete-branch", "-d", "--merge", "-m",
+    for flag in ("--delete-branch", "-d", "--merge", "-m",
                  "--rebase", "-r", "--squash", "-s"):
         assert invoke(f"gh pr merge 30 {flag} {head}") is None, flag
         assert len(calls()) == 1
