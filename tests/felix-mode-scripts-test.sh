@@ -853,14 +853,14 @@ store_silent() {
 }
 
 merge_cases() {
-    python3 - "$SCRIPTS/merge-guard" "$TEST_TMP" "$REPO" "$1" <<'PY_MERGE'
+    python3 - "$SCRIPTS/merge-guard" "$TEST_TMP" "$REPO" "$1" "$BASH" <<'PY_MERGE'
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 
-script, temporary, repo, mode = sys.argv[1:]
+script, temporary, repo, mode, bash = sys.argv[1:]
 base = Path(temporary) / ("merge-" + mode)
 stubs = base / "bin"
 stubs.mkdir(parents=True)
@@ -875,8 +875,9 @@ time.sleep(float(os.environ.get("MERGE_SLEEP", "0")))
 print(os.environ["MERGE_JSON"])
 sys.exit(int(os.environ.get("MERGE_EXIT", "0")))
 """, encoding="utf-8")
-(stubs / "gh").write_text('#!/bin/bash\nexec python3 "$(dirname "$0")/gh-fake.py" "$@"\n', encoding="utf-8")
-(stubs / "gh").chmod(0o755)
+if os.name != "nt":
+    (stubs / "gh").write_text('#!/bin/bash\nexec python3 "$(dirname "$0")/gh-fake.py" "$@"\n', encoding="utf-8")
+    (stubs / "gh").chmod(0o755)
 (stubs / "gh.cmd").write_text('@echo off\r\npython "%~dp0gh-fake.py" %*\r\n', encoding="utf-8")
 log = base / "calls"
 env = dict(os.environ, PATH=str(stubs) + os.pathsep + os.environ["PATH"],
@@ -895,7 +896,7 @@ def files(paths, pr_url=url, count=None):
 def invoke(command=None, raw=None):
     log.unlink(missing_ok=True)
     payload = raw if raw is not None else json.dumps({"cwd": str(base), "tool_input": {"command": command}})
-    result = subprocess.run(["bash", script], input=payload, text=True, capture_output=True, env=env)
+    result = subprocess.run([bash, script], input=payload, text=True, capture_output=True, env=env)
     assert result.returncode == 0 and not result.stderr, result
     return json.loads(result.stdout) if result.stdout else None
 
