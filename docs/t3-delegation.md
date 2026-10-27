@@ -90,3 +90,18 @@ original, los hallazgos previos, las respuestas y las objeciones abiertas.
 `task_cancel` con el `taskId` detiene al hijo y a sus descendientes. T3 no
 impone tope de tiempo, y un hijo colgado no despierta al hilo. Los minutos del
 brief orientan al trabajador, pero no lo detienen.
+
+## Cerrar
+
+Archiva el hilo de cada hijo que cierras, aceptado, rechazado o cancelado,
+con `t3_thread_organize`, `action: "archive"` y `threadId: childThreadId`.
+Cada ronda deja su propio hijo, así que archiva todos. Hazlo después de
+integrar su worktree, porque archivar detiene su sesión y sus terminales. El
+hilo archivado sigue legible con `t3_thread_read`, pero rechaza mensajes:
+para retomarlo, desarchívalo con `action: "unarchive"`. Cada padre archiva
+los hijos que recogió y no archiva un hilo con hijos vivos, porque T3 no
+entrega resultados a un padre archivado.
+
+Cada hilo sin archivar encarece las consultas de T3 que recorren la lista de
+hilos, y un día de delegación deja cientos. Si el archivado falla, dilo al
+cerrar.
