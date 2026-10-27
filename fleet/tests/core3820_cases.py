@@ -484,19 +484,22 @@ done.write_text('lock closed')
             self.assertTrue(chunk)
             trace += chunk
         self.assertIn(b"fleet-test-signal-defaults-before-exec\n", trace)
-        # This is an import acknowledgement, not proof of entering main's try.
-        # A pre-main interruption must fail the JSON/130 oracle, never pass as 0.
+        # importtime acknowledges import only. The response must identify wait
+        # in main; it does not prove entry into the exact wait loop.
         process.send_signal(signal.SIGINT)
         stdout, stderr = process.communicate(timeout=5)
         self.assertEqual(process.returncode, 130, (stdout, stderr))
-        self.assertEqual(json.loads(stdout)["error"]["code"], "client_interrupted")
+        response = json.loads(stdout)
+        self.assertEqual(response["error"]["code"], "client_interrupted")
+        self.assertEqual(response["operation"], "wait")
+        self.assertEqual(response["error"]["effects"], "read_only")
         current = self.status_key("c07")["observation"]
         for field in ("state", "view", "revision", "transitions", "reservation", "capacity_resolution",
                       "control", "dispatch", "supervisor", "child_pid", "command"):
             self.assertEqual(current[field], before[field])
         self.external_evidence.append({"case": "C07", "signals_default_before_exec": True,
-                                       "readiness": "fleet.cli import only; main entry not proven",
-                                       "client_returncode": process.returncode, "response": json.loads(stdout)})
+                                       "readiness": "import acknowledged; response identifies wait in main, not exact loop entry",
+                                       "client_returncode": process.returncode, "response": response})
         self.assertEqual(self.entries(counter), ["entry"])
         gate.touch()
         self.terminal("c07")
@@ -513,7 +516,7 @@ done.write_text('lock closed')
                                     "--idempotency-key", "c08", "--", *argv], cwd=self.project, env=self.env,
                                    start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
         self.processes.append(process)
-        self.until(ready.exists)
+        self.ready("c08", ready)
         admitted = self.status_key("c08")
         admission.attribute(admitted)
         original = admitted["observation"]["supervisor"]
