@@ -44,8 +44,10 @@ NO_HEAD = ("gh pr merge necesita --match-head-commit <head aprobado>, para que G
            "la review y el CI, no el que leas ahora del PR. Procedimiento: references/merge.md de felix-mode.")
 
 DOUBT = ("No pude analizar este comando con seguridad y menciona gh pr merge. "
-         "Revisa que lleve --match-head-commit con el head aprobado y que el PR tenga tu "
-         "autorización si toca CI, dependencias o gobernanza de agentes. ¿Lo ejecuto?")
+         "El hook decide solo un merge en un comando propio con valores literales: "
+         "[cd <dir> &&] gh pr merge <pr> --repo <owner/repo> --squash "
+         "--match-head-commit <head>. Revisa que este lleve el head aprobado y que el PR "
+         "tenga tu autorización si toca CI, dependencias o gobernanza de agentes. ¿Lo ejecuto?")
 mentions = 0
 
 
@@ -120,6 +122,34 @@ def inspect(selector, repo, env, cwd, deadline):
     return None
 
 
+def literal(raw, cd_argument=False):
+    quote = None
+    index = 0
+    while index < len(raw):
+        char = raw[index]
+        if quote == "\x27":
+            if char == "\x27":
+                quote = None
+        elif char in "$`":
+            return False
+        elif char == "\\":
+            if index + 1 < len(raw):
+                if raw[index + 1] in "$`" or (quote is None and raw[index + 1] in "<>*?[]{}~"):
+                    return False
+                index += 1
+        elif char == quote:
+            quote = None
+        elif quote is None:
+            if char in "\x27\"":
+                quote = char
+            elif char in "<>*?[]{}~":
+                if not (char == "~" and cd_argument and index == 0
+                        and (len(raw) == 1 or raw[1] == "/")):
+                    return False
+        index += 1
+    return quote is None
+
+
 def collect(command, cwd, inherited_env):
     tokens, doubtful = [], False
     word = re.compile(r"(?:[^\s;&|()\"\x27\\]|\\.|\"(?:\\.|[^\"\\])*\"|\x27[^\x27]*\x27)+|[;&|()]+")
@@ -143,48 +173,36 @@ def collect(command, cwd, inherited_env):
             except (ValueError, IndexError):
                 doubtful = True
                 break
-            tokens.append((token, punctuation))
-        tokens.append((";", True))
-    boundaries = {";", ";;", "&", "&&", "|", "||", "|&", "(", ")"}
+            tokens.append((token, punctuation, raw))
+        tokens.append((";", True, ";"))
     merges, segment, found = [], [], 0
-    for token, punctuation in tokens:
-        if not punctuation or token not in boundaries:
-            segment.append(token)
+    for token, punctuation, raw in tokens:
+        if not punctuation:
+            segment.append((token, raw))
             continue
+        if token not in {";", "&&"}:
+            doubtful = True
+        if not segment:
+            continue
+        is_cd = segment[0][0] == "cd" and len(segment) == 2
+        if any(not literal(source, is_cd and index == 1)
+               for index, (_, source) in enumerate(segment)):
+            doubtful = True
         env = inherited_env.copy()
-        while segment:
-            name = segment[0].rsplit("/", 1)[-1]
-            if re.match(r"[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
-                key, value = segment.pop(0).split("=", 1)
-                env[key] = value
-            elif name in {"command", "exec", "nohup", "time"}:
-                segment.pop(0)
-            elif name == "env":
-                segment.pop(0)
-                while segment:
-                    if segment[0] == "-i":
-                        env.clear()
-                        segment.pop(0)
-                    elif segment[0] == "-u" and len(segment) > 1:
-                        segment.pop(0)
-                        env.pop(segment.pop(0), None)
-                    elif re.match(r"[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
-                        key, value = segment.pop(0).split("=", 1)
-                        env[key] = value
-                    else:
-                        break
-            else:
-                break
-        if segment and segment[0].rsplit("/", 1)[-1] == "cd" and len(segment) == 2:
-            cwd = os.path.abspath(os.path.join(cwd, os.path.expanduser(segment[1])))
-        elif (len(segment) >= 3 and segment[0].rsplit("/", 1)[-1] in {"bash", "sh", "zsh"}
-              and segment[1] in {"-c", "-lc", "-ec"}):
-            nested, count, uncertain = collect(segment[2], cwd, env)
-            merges.extend(nested)
-            found += count
-            doubtful = doubtful or uncertain
-        elif (len(segment) >= 3 and segment[0].rsplit("/", 1)[-1] == "gh"
-              and segment[1:3] == ["pr", "merge"]):
+        if is_cd:
+            directory, source = segment[1]
+            if ("CDPATH" in env and not directory.startswith(("/", "./", "../", "~"))):
+                doubtful = True
+            directory = os.path.expanduser(directory) if source.startswith("~") else directory
+            cwd = os.path.abspath(os.path.join(cwd, directory))
+            segment = []
+            continue
+        while segment and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", segment[0][1]):
+            key, value = segment.pop(0)[0].split("=", 1)
+            env[key] = value
+        segment = [value for value, _ in segment]
+        if (len(segment) >= 3 and segment[0].rsplit("/", 1)[-1] == "gh"
+                and segment[1:3] == ["pr", "merge"]):
             found += 1
             selector, repo, head, disabled = None, None, None, False
             args, index, unknown = segment[3:], 0, []
@@ -214,6 +232,8 @@ def collect(command, cwd, inherited_env):
                 index += 1
             if not disabled:
                 merges.append((selector, repo, head, env, cwd, unknown))
+        else:
+            doubtful = True
         segment = []
     return merges, found, doubtful
 

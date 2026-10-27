@@ -887,11 +887,15 @@ log = base / "calls"
 env = dict(os.environ, PATH=str(stubs) + os.pathsep + os.environ["PATH"],
            MERGE_LOG=str(log), MERGE_EXIT="0", MERGE_SLEEP="0")
 env.pop("GH_REPO", None)
+env.pop("CDPATH", None)
+env.pop("approved_head", None)
 url = "https://github.com/Cosmonaut-itc/felix-agent-engineering/pull/30"
 head = "--match-head-commit approved"
 doubt = ("No pude analizar este comando con seguridad y menciona gh pr merge. "
-         "Revisa que lleve --match-head-commit con el head aprobado y que el PR tenga tu "
-         "autorización si toca CI, dependencias o gobernanza de agentes. ¿Lo ejecuto?")
+         "El hook decide solo un merge en un comando propio con valores literales: "
+         "[cd <dir> &&] gh pr merge <pr> --repo <owner/repo> --squash "
+         "--match-head-commit <head>. Revisa que este lleve el head aprobado y que el PR "
+         "tenga tu autorización si toca CI, dependencias o gobernanza de agentes. ¿Lo ejecuto?")
 no_head = ("gh pr merge necesita --match-head-commit <head aprobado>, para que GitHub rechace "
            "el merge si el head cambió después de la review. Usa el head que aprobaron "
            "la review y el CI, no el que leas ahora del PR. Procedimiento: references/merge.md de felix-mode.")
@@ -924,11 +928,14 @@ files(["fleet/fleet/runner.py"])
 if mode == "deny":
     for command in ("gh pr merge 30 --squash", "gh pr merge --squash --delete-branch",
                     "cd repo; gh pr merge 30 --squash", "GH_REPO=a/b gh pr merge 1",
-                    f"gh pr merge 30 {head}; gh pr merge 31", "echo listo\ngh pr merge 30",
+                    f"gh pr merge 30 {head}; gh pr merge 31", "gh pr merge 30\n",
+                    "cd sub && gh pr merge 30 --squash",
                     "gh pr merge 30 --match-head-commit", "gh pr merge 30 --match-head-commit=",
                     "/usr/bin/gh pr merge 30", "gh pr merge 30 \\\n--squash"):
         decision(invoke(command), "deny", no_head)
         assert calls() == [], command
+    decision(invoke("echo listo\ngh pr merge 30"), "ask", doubt)
+    assert calls() == []
     decision(invoke("gh pr merge 1; gh pr merge 2"), "deny", no_head + "\n" + no_head)
     assert calls() == []
 elif mode == "silent":
@@ -997,6 +1004,30 @@ elif mode == "arguments":
     assert Path(calls()[0]["cwd"]).resolve() == base.resolve()
     assert invoke(f'gh pr merge --body "some body" -b body --body-file file -F file --subject subject -t title --author-email a@b -A a@b --match-head-commit=approved https://github.com/a/b/pull/1') is None
     assert calls()[0]["args"] == ["pr", "view", "https://github.com/a/b/pull/1", "--json", "url,files,changedFiles"]
+    for command in (f'gh pr merge 30 {head} > output',
+                    'gh pr merge 30 --match-head-commit "$approved_head"',
+                    'gh pr merge 30 --match-head-commit `printf approved`',
+                    f"gh pr merge 30 {head} --body *",
+                    f"gh pr merge 30 {head} --body ?",
+                    f"gh pr merge 30 {head} --body [ab]",
+                    f"gh pr merge 30 {head} --body {{a,b}}",
+                    f"gh pr merge 30 {head} --body ~",
+                    f"gh pr merge 30 {head} || gh pr merge 31 {head}",
+                    f"gh pr merge 30 {head} & gh pr merge 31 {head}",
+                    f"gh pr merge 30 {head} |& gh pr merge 31 {head}",
+                    f"gh pr merge 30 {head} ;; gh pr merge 31 {head}",
+                    f'"GH_REPO=a/b" gh pr merge 30 {head}'):
+        decision(invoke(command), "ask", doubt)
+        assert calls() == [], command
+    for body in ("'$literal `text` * ? [a] {a,b} ~ < >'", '"* ? [a] {a,b} ~ < >"'):
+        assert invoke(f"gh pr merge 30 {head} --body {body}") is None
+        assert len(calls()) == 1
+    env["CDPATH"] = "/tmp"
+    decision(invoke(f"cd sub; gh pr merge 30 {head}"), "ask", doubt)
+    assert calls() == []
+    assert invoke(f"cd ./sub; gh pr merge 30 {head}") is None
+    assert Path(calls()[0]["cwd"]).resolve() == (base / "sub").resolve()
+    env.pop("CDPATH")
 elif mode == "unknown_flags":
     for flag in ("-Rowner/repo", "-sd", "--foo", "--auto=yes"):
         reason = decision(invoke(f"gh pr merge {flag} 30 {head}"), "ask")
@@ -1016,22 +1047,16 @@ elif mode == "wrappers":
                     'bash -c "gh pr merge 1"', "exec gh pr merge 1", "nohup gh pr merge 1",
                     "time gh pr merge 1", 'sh -ec "gh pr merge 1"',
                     'zsh -c "gh pr merge 1"', "command env GH_REPO=a/b exec gh pr merge 1"):
-        decision(invoke(command), "deny", no_head)
+        decision(invoke(command), "ask", doubt)
         assert calls() == [], command
-    assert invoke(f"env GH_REPO=a/b gh pr merge 1 {head}") is None
-    assert calls()[0]["repo"] == "a/b"
-    assert invoke(f'bash -lc "cd sub && gh pr merge 30 {head}"') is None
-    assert Path(calls()[0]["cwd"]).resolve() == (base / "sub").resolve()
-    assert invoke(f'env GH_REPO=a/b bash -c "gh pr merge 30 {head}"') is None
-    assert calls()[0]["repo"] == "a/b"
-    env["GH_REPO"] = "old/repo"
-    assert invoke(f"env -u GH_REPO gh pr merge 30 {head}") is None
-    assert calls()[0]["repo"] is None
-    env.pop("GH_REPO")
-    decision(invoke("env -i GH_REPO=a/b gh pr merge 1"), "deny", no_head)
-    assert calls() == []
-    assert invoke(f'bash -c "cd sub"; gh pr merge 30 {head}') is None
-    assert Path(calls()[0]["cwd"]).resolve() == base.resolve()
+    for command in (f"env GH_REPO=a/b gh pr merge 1 {head}",
+                    f'bash -lc "cd sub && gh pr merge 30 {head}"',
+                    f'env GH_REPO=a/b bash -c "gh pr merge 30 {head}"',
+                    f"env -u GH_REPO gh pr merge 30 {head}",
+                    "env -i GH_REPO=a/b gh pr merge 1",
+                    f'bash -c "cd sub"; gh pr merge 30 {head}'):
+        decision(invoke(command), "ask", doubt)
+        assert calls() == [], command
 elif mode == "deadline":
     env["MERGE_SLEEP"] = "6"
     for total in (2, 3):
@@ -1059,9 +1084,9 @@ elif mode == "differential":
         ('if true; then gh pr merge 30 --squash; fi', 'ask'),
         ('for p in 30; do gh pr merge $p --squash; done', 'ask'),
         ('{ gh pr merge 30 --squash; }', 'ask'),
-        ('true && gh pr merge 30 --squash', 'deny'),
-        ('echo x|gh pr merge 30 --squash', 'deny'),
-        ('bash -c "gh pr merge 30 --squash"', 'deny'),
+        ('true && gh pr merge 30 --squash', 'ask'),
+        ('echo x|gh pr merge 30 --squash', 'ask'),
+        ('bash -c "gh pr merge 30 --squash"', 'ask'),
         ('eval gh pr merge 30 --squash', 'ask'),
         ('f(){ gh pr merge 30 --squash; }; f', 'ask'),
         ('echo ";" gh pr merge 30', 'ask'),
@@ -1076,14 +1101,24 @@ elif mode == "differential":
         ('command -- gh pr merge 30', 'ask'),
         ('time -p gh pr merge 30', 'ask'),
         ('if true; then gh pr merge 30 --squash; fi', 'ask'),
-        ('echo "\\\n"; gh pr merge 30', 'deny'),
+        ('echo "\\\n"; gh pr merge 30', 'ask'),
         ('gh pr merge 30 --body "; & | ( )"', 'deny'),
         ('gh pr merge 30 --body=";"', 'deny'),
         ('gh pr merge 30 --disable-auto', 'silent'),
-        ('bash -c "gh pr merge 30 --disable-auto"', 'silent'),
+        ('bash -c "gh pr merge 30 --disable-auto"', 'ask'),
         ('echo "gh pr merge 30"; gh pr merge 30', 'ask'),
         ('gh pr merge 30 --body "unfinished', 'ask'),
         ('gh pr merge 30 --match-head-commit X', 'ask'),
+        ('gh pr merge 30 > --disable-auto', 'ask'),
+        ('gh pr merge 30 --match-head-commit "$approved_head"', 'ask'),
+        ('(cd sub); gh pr merge 30 --match-head-commit X', 'ask'),
+        ('cd sub | cat; gh pr merge 30 --match-head-commit X', 'ask'),
+        ('false && cd sub; gh pr merge 30 --match-head-commit X', 'ask'),
+        ('export GH_REPO=sensitive/repo; gh pr merge 30 --match-head-commit X', 'ask'),
+        ('f() {\n gh pr merge 30\n}\necho done', 'ask'),
+        ('cd sub && gh pr merge 30 --match-head-commit X', 'ask'),
+        ('cd sub; gh pr merge 30 --match-head-commit X', 'ask'),
+        ('GH_REPO=a/b gh pr merge 30 --match-head-commit X', 'ask'),
     ]
     payload = json.dumps({"cwd": ["invalid"], "tool_input": {"command": "cd sub; gh pr merge 30"}})
     decision(invoke(raw=payload), "ask", doubt)
@@ -1091,13 +1126,23 @@ elif mode == "differential":
     for command, expected in corpus:
         log.unlink(missing_ok=True)
         subprocess.run([bash, "-c", command], cwd=base, env=env, capture_output=True, timeout=10)
-        executed = any(call["args"][:2] == ["pr", "merge"] and
-                       "--disable-auto" not in call["args"] for call in calls())
+        bash_calls = [call for call in calls() if call["args"][:2] == ["pr", "merge"]]
+        executed = any("--disable-auto" not in call["args"] for call in bash_calls)
         value = invoke(command)
         actual = value["hookSpecificOutput"]["permissionDecision"] if value else "silent"
         assert not executed or value is not None, ("FUGA", command)
         assert actual == expected, (command, actual, expected)
-        if expected == "ask" and "--match-head-commit" not in command:
+        for view, merge in zip(calls(), bash_calls):
+            assert view["args"][:2] == ["pr", "view"], view
+            assert Path(view["cwd"]).resolve() == Path(merge["cwd"]).resolve(), (command, view, merge)
+            assert view["repo"] == merge["repo"], (command, view, merge)
+        assert not calls() or len(calls()) == len(bash_calls), (command, calls(), bash_calls)
+        if expected == "ask" and command not in {
+                'gh pr merge 30 --squash --match-head-commit abc',
+                'gh pr merge 30 --match-head-commit X',
+                'cd sub && gh pr merge 30 --match-head-commit X',
+                'cd sub; gh pr merge 30 --match-head-commit X',
+                'GH_REPO=a/b gh pr merge 30 --match-head-commit X'}:
             decision(value, "ask", doubt)
             assert calls() == [], command
         if command == 'echo "gh pr merge 30"; gh pr merge 30':
@@ -1147,7 +1192,9 @@ for test_case in "${TEST_CASES[@]}"; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
     result=$?
-    if [ "$result" = 0 ]; then printf 'PASS %s\n' "$test_case";
+    if [ "$result" = 0 ]; then
+        printf 'PASS %s\n' "$test_case"
+        if [ "$test_case" = merge_differential ]; then cat "$TEST_TMP/$test_case.log"; fi
     else printf 'FAIL %s\n' "$test_case"; cat "$TEST_TMP/$test_case.log"; FAILURES=$((FAILURES + 1)); fi
 done
 printf '%s casos, %s fallos\n' "$CASE" "$FAILURES"
