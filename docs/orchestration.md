@@ -65,7 +65,9 @@ fundamentada para cada criterio.
 
 Integra únicamente resultados aceptados dentro de la autorización vigente.
 Confirma que el trabajador y sus descendientes terminaron o fueron detenidos.
-Conserva cambios y evidencia antes de limpiar recursos.
+Conserva cambios y evidencia antes de limpiar recursos. En T3 Code, limpiar
+incluye archivar el hilo de cada hijo, como indica
+`~/.agents/docs/t3-delegation.md`.
 
 Informa el resultado real y los pendientes, incluida cualquier revisión
 obligatoria que no pudiste realizar. Un encargo bloqueado o cancelado puede
