@@ -869,9 +869,23 @@ stubs.mkdir(parents=True)
 fake = stubs / "gh-fake.py"
 fake.write_text("""
 import json, os, pathlib, sys, time
+args = sys.argv[1:]
+executed = False
+if args[:2] == ["pr", "merge"]:
+    disabled = False
+    for arg in args[2:]:
+        flag, equal, value = arg.partition("=")
+        if flag == "--disable-auto":
+            if not equal or value in ("1", "t", "T", "TRUE", "true", "True"):
+                disabled = True
+            elif value in ("0", "f", "F", "FALSE", "false", "False"):
+                disabled = False
+            else:
+                sys.exit(1)
+    executed = not disabled
 with pathlib.Path(os.environ["MERGE_LOG"]).open("a", encoding="utf-8") as log:
     log.write(json.dumps({"args": sys.argv[1:], "cwd": os.getcwd(),
-                          "repo": os.environ.get("GH_REPO")}) + "\\n")
+                          "repo": os.environ.get("GH_REPO"), "executed": executed}) + "\\n")
 time.sleep(float(os.environ.get("MERGE_SLEEP", "0")))
 if os.environ.get("MERGE_INVALID_UTF8"):
     sys.stdout.buffer.write(bytes([255]))
@@ -997,10 +1011,14 @@ elif mode == "arguments":
     assert invoke(f"GH_REPO=a/b gh pr merge branch {head}") is None
     assert calls()[0]["repo"] == "a/b"
     assert calls()[0]["args"] == ["pr", "view", "branch", "--json", "url,files,changedFiles"]
-    assert invoke(f"cd sub; gh pr merge 30 {head}") is None
-    assert Path(calls()[0]["cwd"]).resolve() == (base / "sub").resolve()
-    assert invoke(f"cd sub; cd ..; gh pr merge {head}") is None
-    assert calls()[0]["args"] == ["pr", "view", "--json", "url,files,changedFiles"]
+    for command in (f"cd sub; gh pr merge 30 {head}",
+                    f"cd sub; cd ..; gh pr merge {head}",
+                    f"cd sub; GH_REPO=a/b gh pr merge 30 {head}",
+                    f"cd sub; gh pr merge 30 --repo= {head}"):
+        decision(invoke(command), "ask", doubt)
+        assert calls() == [], command
+    assert invoke(f"cd sub; gh pr merge 30 --repo a/b {head}") is None
+    assert calls()[0]["args"] == ["pr", "view", "30", "--repo", "a/b", "--json", "url,files,changedFiles"]
     assert Path(calls()[0]["cwd"]).resolve() == base.resolve()
     assert invoke(f'gh pr merge --body "some body" -b body --body-file file -F file --subject subject -t title --author-email a@b -A a@b --match-head-commit=approved https://github.com/a/b/pull/1') is None
     assert calls()[0]["args"] == ["pr", "view", "https://github.com/a/b/pull/1", "--json", "url,files,changedFiles"]
@@ -1025,11 +1043,20 @@ elif mode == "arguments":
     env["CDPATH"] = "/tmp"
     decision(invoke(f"cd sub; gh pr merge 30 {head}"), "ask", doubt)
     assert calls() == []
-    assert invoke(f"cd ./sub; gh pr merge 30 {head}") is None
-    assert Path(calls()[0]["cwd"]).resolve() == (base / "sub").resolve()
+    decision(invoke(f"cd ./sub; gh pr merge 30 {head}"), "ask", doubt)
+    assert calls() == []
+    assert invoke(f"cd sub; gh pr merge 30 --repo a/b {head}") is None
+    assert Path(calls()[0]["cwd"]).resolve() == base.resolve()
     env.pop("CDPATH")
+    for space in ("\r", "\v", "\f", "\u00a0", "\u0085", "\u2028", "\u2029"):
+        decision(invoke(f"gh pr merge 30 {head}{space}"), "ask", doubt)
+        assert calls() == [], repr(space)
+    for command in ("gh pr merge 30 --disable-auto --foo",
+                    f"gh pr merge 30 --disable-auto --disable-auto=true {head}"):
+        decision(invoke(command), "ask", doubt)
+        assert calls() == [], command
 elif mode == "unknown_flags":
-    for flag in ("-Rowner/repo", "-sd", "--foo", "--auto=yes"):
+    for flag in ("-Rowner/repo", "-sd", "--foo", "--auto=yes", "--disable-auto=false"):
         reason = decision(invoke(f"gh pr merge {flag} 30 {head}"), "ask")
         assert reason == ("No pude comprobar si este PR toca CI, dependencias o gobernanza de agentes "
                           f"(flag no reconocido: {flag}). felix-mode pide tu autorización explícita para esos PR. ¿Autorizas este merge?")
@@ -1119,29 +1146,82 @@ elif mode == "differential":
         ('cd sub && gh pr merge 30 --match-head-commit X', 'ask'),
         ('cd sub; gh pr merge 30 --match-head-commit X', 'ask'),
         ('GH_REPO=a/b gh pr merge 30 --match-head-commit X', 'ask'),
+        ('gh pr merge 30 --squash --disable-auto --disable-auto=false', 'ask'),
+        ('cd missing; cd ..; gh pr merge 30 --squash --match-head-commit X', 'ask'),
+        ('cd sub; cd -; gh pr merge 30 --squash --match-head-commit X', 'ask'),
+        ('cd missing && gh pr merge 30 --squash', 'deny'),
+        ('gh pr merge 30 --squash --disable-auto=false', 'deny'),
+        ('cd missing; cd ..; gh pr merge 30 --repo a/b --squash --match-head-commit X', 'ask'),
+        ('cd sub; cd -; gh pr merge 30 -R a/b --match-head-commit X', 'ask'),
+        ('cd sub && gh pr merge 30 --repo a/b --match-head-commit X', 'ask'),
+        ('cd sub; gh pr merge 30 --repo a/b --match-head-commit X', 'ask'),
+        ('gh pr merge 30 --squash --match-head-commit X', 'ask'),
+        ('gh pr merge 30 --squash --match-head-commit X\r', 'ask'),
+        ('cd sub; gh pr merge 30 --repo old/repo --repo=a/b --match-head-commit X', 'ask'),
+        ('cd sub; gh pr merge 30 --repo=old/repo -R a/b --match-head-commit X', 'ask'),
+        ('cd sub; gh pr merge 30 -R old/repo --repo a/b --match-head-commit X', 'ask'),
     ]
     payload = json.dumps({"cwd": ["invalid"], "tool_input": {"command": "cd sub; gh pr merge 30"}})
     decision(invoke(raw=payload), "ask", doubt)
     assert calls() == []
+    def identity(args):
+        selector, repo, index = None, None, 2
+        valued = {"--repo", "-R", "--match-head-commit", "--body", "-b",
+                  "--body-file", "-F", "--subject", "-t", "--author-email", "-A", "--json"}
+        while index < len(args):
+            arg = args[index]
+            flag, equal, value = arg.partition("=")
+            if flag in valued:
+                if not equal:
+                    index += 1
+                    value = args[index]
+                if flag in {"--repo", "-R"}:
+                    repo = value
+            elif not arg.startswith("-") and selector is None:
+                selector = arg
+            index += 1
+        return selector, repo
+
+    for values, expected_merge, expected_exit in (
+            *(([value], False, 0) for value in ("1", "t", "T", "TRUE", "true", "True")),
+            *(([value], True, 0) for value in ("0", "f", "F", "FALSE", "false", "False")),
+            (["invalid"], False, 1), (["false", None], False, 0),
+            ([None, "false"], True, 0), (["invalid", "false"], False, 1)):
+        log.unlink(missing_ok=True)
+        flags = ["--disable-auto" + ("=" + value if value is not None else "") for value in values]
+        result = subprocess.run([bash, "-c", "gh pr merge 30 " + " ".join(flags)],
+                                cwd=base, env=env, capture_output=True, timeout=10)
+        assert result.returncode == expected_exit, (values, result)
+        assert any(call["executed"] for call in calls()) == expected_merge, (values, calls())
+
     for command, expected in corpus:
         log.unlink(missing_ok=True)
         subprocess.run([bash, "-c", command], cwd=base, env=env, capture_output=True, timeout=10)
         bash_calls = [call for call in calls() if call["args"][:2] == ["pr", "merge"]]
-        executed = any("--disable-auto" not in call["args"] for call in bash_calls)
+        executed = any(call["executed"] for call in bash_calls)
         value = invoke(command)
         actual = value["hookSpecificOutput"]["permissionDecision"] if value else "silent"
         assert not executed or value is not None, ("FUGA", command)
         assert actual == expected, (command, actual, expected)
         for view, merge in zip(calls(), bash_calls):
             assert view["args"][:2] == ["pr", "view"], view
-            assert Path(view["cwd"]).resolve() == Path(merge["cwd"]).resolve(), (command, view, merge)
-            assert view["repo"] == merge["repo"], (command, view, merge)
+            selector, repo = identity(merge["args"])
+            if repo is not None:
+                assert identity(view["args"]) == (selector, repo), (command, view, merge)
+            else:
+                assert Path(view["cwd"]).resolve() == Path(merge["cwd"]).resolve(), (command, view, merge)
+                assert view["repo"] == merge["repo"], (command, view, merge)
         assert not calls() or len(calls()) == len(bash_calls), (command, calls(), bash_calls)
         if expected == "ask" and command not in {
                 'gh pr merge 30 --squash --match-head-commit abc',
                 'gh pr merge 30 --match-head-commit X',
-                'cd sub && gh pr merge 30 --match-head-commit X',
-                'cd sub; gh pr merge 30 --match-head-commit X',
+                'cd sub && gh pr merge 30 --repo a/b --match-head-commit X',
+                'cd sub; gh pr merge 30 --repo a/b --match-head-commit X',
+                'cd missing; cd ..; gh pr merge 30 --repo a/b --squash --match-head-commit X',
+                'cd sub; cd -; gh pr merge 30 -R a/b --match-head-commit X',
+                'cd sub; gh pr merge 30 --repo old/repo --repo=a/b --match-head-commit X',
+                'cd sub; gh pr merge 30 --repo=old/repo -R a/b --match-head-commit X',
+                'cd sub; gh pr merge 30 -R old/repo --repo a/b --match-head-commit X',
                 'GH_REPO=a/b gh pr merge 30 --match-head-commit X'}:
             decision(value, "ask", doubt)
             assert calls() == [], command

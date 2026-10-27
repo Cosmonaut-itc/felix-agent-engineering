@@ -151,9 +151,10 @@ def literal(raw, cd_argument=False):
 
 
 def collect(command, cwd, inherited_env):
-    tokens, doubtful = [], False
+    cwd = os.fspath(cwd)
+    tokens, doubtful, preceded_by_cd = [], False, False
     word = re.compile(r"(?:[^\s;&|()\"\x27\\]|\\.|\"(?:\\.|[^\"\\])*\"|\x27[^\x27]*\x27)+|[;&|()]+")
-    for line in command.splitlines():
+    for line in command.split("\n"):
         offset = 0
         while offset < len(line):
             if line[offset].isspace():
@@ -190,11 +191,7 @@ def collect(command, cwd, inherited_env):
             doubtful = True
         env = inherited_env.copy()
         if is_cd:
-            directory, source = segment[1]
-            if ("CDPATH" in env and not directory.startswith(("/", "./", "../", "~"))):
-                doubtful = True
-            directory = os.path.expanduser(directory) if source.startswith("~") else directory
-            cwd = os.path.abspath(os.path.join(cwd, directory))
+            preceded_by_cd = True
             segment = []
             continue
         while segment and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", segment[0][1]):
@@ -230,7 +227,11 @@ def collect(command, cwd, inherited_env):
                 elif not arg.startswith("-") and selector is None:
                     selector = arg
                 index += 1
+            if disabled and unknown:
+                doubtful = True
             if not disabled:
+                if head and preceded_by_cd and not repo:
+                    doubtful = True
                 merges.append((selector, repo, head, env, cwd, unknown))
         else:
             doubtful = True
@@ -247,6 +248,9 @@ def main():
     command = command.replace("\\\n", "")
     mentions = len(re.findall(r"(?<![\w-])gh\s+pr\s+merge\b", command))
     if not mentions:
+        return
+    if any(char.isspace() and char not in " \t\n" for char in command):
+        emit("ask", [DOUBT])
         return
     merges, found, doubtful = collect(command, payload.get("cwd") or os.getcwd(), os.environ.copy())
     if doubtful or found != mentions or "<<" in command:
