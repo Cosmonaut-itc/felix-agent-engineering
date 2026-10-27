@@ -1069,9 +1069,10 @@ elif mode == "arguments":
         assert calls() == [], command
 elif mode == "unknown_flags":
     for flag in ("-Rowner/repo", "-sd", "--foo", "--auto=yes", "--disable-auto=false"):
-        decision(invoke(f"gh pr merge {flag} 30 {head}"), "formato",
-                 f"gh pr merge lleva un flag que merge-guard no reconoce: {flag}. " + canonical)
-        assert calls() == [], flag
+        for command in (f"gh pr merge {flag} 30 {head}", f"gh pr merge {flag} 30"):
+            decision(invoke(command), "formato",
+                     f"gh pr merge lleva un flag que merge-guard no reconoce: {flag}. " + canonical)
+            assert calls() == [], command
     for flag in ("--admin", "--auto", "--delete-branch", "-d", "--merge", "-m",
                  "--rebase", "-r", "--squash", "-s"):
         assert invoke(f"gh pr merge 30 {flag} {head}") is None, flag
@@ -1162,7 +1163,7 @@ elif mode == "differential":
         ('cd missing; cd ..; gh pr merge 30 --squash --match-head-commit X', 'formato'),
         ('cd sub; cd -; gh pr merge 30 --squash --match-head-commit X', 'formato'),
         ('cd missing && gh pr merge 30 --squash', 'head'),
-        ('gh pr merge 30 --squash --disable-auto=false', 'head'),
+        ('gh pr merge 30 --squash --disable-auto=false', 'formato'),
         ('cd missing; cd ..; gh pr merge 30 --repo a/b --squash --match-head-commit X', 'sensible'),
         ('cd sub; cd -; gh pr merge 30 -R a/b --match-head-commit X', 'sensible'),
         ('cd sub && gh pr merge 30 --repo a/b --match-head-commit X', 'sensible'),
@@ -1217,7 +1218,8 @@ elif mode == "differential":
         if expected == "silent":
             assert value is None, command
         else:
-            decision(value, expected, unparsed if expected == "formato" else None)
+            reason = decision(value, expected)
+            assert expected != "formato" or reason.endswith(canonical) or reason == unparsed, (command, reason)
         for view, merge in zip(calls(), bash_calls):
             assert view["args"][:2] == ["pr", "view"], view
             selector, repo = identity(merge["args"])

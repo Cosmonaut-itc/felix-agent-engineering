@@ -100,8 +100,9 @@ restantes y la separación entre propietario, verificador y stacker.
    `gh pr merge <pr> --repo <owner/repo> --squash --match-head-commit <head aprobado>`.
    Mergea siempre con ese comando, en una llamada propia y con valores
    literales, porque en Claude Code el hook `scripts/merge-guard` lo revisa.
-   Niega el merge sin `--match-head-commit` o fuera de esa forma: repítelo
-   con la forma que indica su razón. Pide la confirmación del dueño cuando
+   Niega el merge sin `--match-head-commit`, con un flag que no reconoce o
+   cuando no puede analizar el comando: repítelo con la forma que indica
+   su razón. Pide la confirmación del dueño cuando
    el diff toca CI, dependencias o gobernanza de agentes, o cuando no puede
    comprobar los archivos del PR. Para buscar o citar ese comando en otra
    llamada, escríbelo como `gh pr merg[e]` o pásalo en un archivo.

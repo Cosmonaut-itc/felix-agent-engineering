@@ -273,14 +273,14 @@ def main():
     if doubtful or found != mentions or "<<" in command:
         emit([("formato", FORMAT)])
         return
-    denials = [("head", NO_HEAD) for _, _, head, _, _, _ in merges if not head]
-    if denials:
-        emit(denials)
-        return
     unknown = [("formato", f"gh pr merge lleva un flag que merge-guard no reconoce: {flags[0]}. " + CANONICAL)
                for *_, flags in merges if flags]
     if unknown:
         emit(unknown)
+        return
+    denials = [("head", NO_HEAD) for _, _, head, _, _, _ in merges if not head]
+    if denials:
+        emit(denials)
         return
     findings = []
     deadline = time.monotonic() + 10
