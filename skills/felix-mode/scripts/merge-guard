@@ -43,6 +43,11 @@ NO_HEAD = ("gh pr merge necesita --match-head-commit <head aprobado>, para que G
            "el merge si el head cambió después de la review. Usa el head que aprobaron "
            "la review y el CI, no el que leas ahora del PR. Procedimiento: references/merge.md de felix-mode.")
 
+DOUBT = ("No pude analizar este comando con seguridad y menciona gh pr merge. "
+         "Revisa que lleve --match-head-commit con el head aprobado y que el PR tenga tu "
+         "autorización si toca CI, dependencias o gobernanza de agentes. ¿Lo ejecuto?")
+mentions = 0
+
 
 def emit(decision, reasons):
     message = ("merge-guard: merge sin --match-head-commit" if decision == "deny"
@@ -76,6 +81,8 @@ def inspect(selector, repo, env, cwd, deadline):
             response = output.read()
     except subprocess.TimeoutExpired:
         return failed("tiempo agotado")
+    except UnicodeError:
+        return failed("respuesta JSON incompleta o inválida")
     except OSError:
         return failed("gh o directorio no disponible")
     if result.returncode:
@@ -114,18 +121,34 @@ def inspect(selector, repo, env, cwd, deadline):
 
 
 def collect(command, cwd, inherited_env):
-    tokens = []
-    for line in command.replace("\\\n", " ").splitlines():
-        lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
-        lexer.whitespace_split = True
-        try:
-            tokens += list(lexer) + [";"]
-        except ValueError:
-            tokens.append(";")
+    tokens, doubtful = [], False
+    word = re.compile(r"(?:[^\s;&|()\"\x27\\]|\\.|\"(?:\\.|[^\"\\])*\"|\x27[^\x27]*\x27)+|[;&|()]+")
+    for line in command.splitlines():
+        offset = 0
+        while offset < len(line):
+            if line[offset].isspace():
+                offset += 1
+                continue
+            if line[offset] == "#":
+                break
+            match = word.match(line, offset)
+            if match is None:
+                doubtful = True
+                break
+            raw = match.group()
+            offset = match.end()
+            punctuation = all(char in ";&|()" for char in raw)
+            try:
+                token = raw if punctuation else shlex.split(raw, comments=False, posix=True)[0]
+            except (ValueError, IndexError):
+                doubtful = True
+                break
+            tokens.append((token, punctuation))
+        tokens.append((";", True))
     boundaries = {";", ";;", "&", "&&", "|", "||", "|&", "(", ")"}
-    merges, segment = [], []
-    for token in tokens:
-        if token not in boundaries:
+    merges, segment, found = [], [], 0
+    for token, punctuation in tokens:
+        if not punctuation or token not in boundaries:
             segment.append(token)
             continue
         env = inherited_env.copy()
@@ -156,9 +179,13 @@ def collect(command, cwd, inherited_env):
             cwd = os.path.abspath(os.path.join(cwd, os.path.expanduser(segment[1])))
         elif (len(segment) >= 3 and segment[0].rsplit("/", 1)[-1] in {"bash", "sh", "zsh"}
               and segment[1] in {"-c", "-lc", "-ec"}):
-            merges.extend(collect(segment[2], cwd, env))
+            nested, count, uncertain = collect(segment[2], cwd, env)
+            merges.extend(nested)
+            found += count
+            doubtful = doubtful or uncertain
         elif (len(segment) >= 3 and segment[0].rsplit("/", 1)[-1] == "gh"
               and segment[1:3] == ["pr", "merge"]):
+            found += 1
             selector, repo, head, disabled = None, None, None, False
             args, index, unknown = segment[3:], 0, []
             valued = {"--repo", "-R", "--match-head-commit", "--body", "-b",
@@ -188,15 +215,23 @@ def collect(command, cwd, inherited_env):
             if not disabled:
                 merges.append((selector, repo, head, env, cwd, unknown))
         segment = []
-    return merges
+    return merges, found, doubtful
 
 
 def main():
+    global mentions
     payload = json.load(sys.stdin)
     command = payload["tool_input"]["command"]
     if not isinstance(command, str):
         return
-    merges = collect(command, payload.get("cwd") or os.getcwd(), os.environ.copy())
+    command = command.replace("\\\n", "")
+    mentions = len(re.findall(r"(?<![\w-])gh\s+pr\s+merge\b", command))
+    if not mentions:
+        return
+    merges, found, doubtful = collect(command, payload.get("cwd") or os.getcwd(), os.environ.copy())
+    if doubtful or found != mentions or "<<" in command:
+        emit("ask", [DOUBT])
+        return
     denials = [NO_HEAD for _, _, head, _, _, _ in merges if not head]
     if denials:
         emit("deny", denials)
@@ -215,6 +250,7 @@ def main():
 try:
     main()
 except Exception:
-    pass
+    if mentions:
+        emit("ask", [DOUBT])
 ' 2>/dev/null || true
 exit 0

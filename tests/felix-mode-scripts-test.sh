@@ -873,6 +873,9 @@ with pathlib.Path(os.environ["MERGE_LOG"]).open("a", encoding="utf-8") as log:
     log.write(json.dumps({"args": sys.argv[1:], "cwd": os.getcwd(),
                           "repo": os.environ.get("GH_REPO")}) + "\\n")
 time.sleep(float(os.environ.get("MERGE_SLEEP", "0")))
+if os.environ.get("MERGE_INVALID_UTF8"):
+    sys.stdout.buffer.write(bytes([255]))
+    sys.exit(0)
 print(os.environ["MERGE_JSON"])
 sys.exit(int(os.environ.get("MERGE_EXIT", "0")))
 """, encoding="utf-8")
@@ -886,6 +889,9 @@ env = dict(os.environ, PATH=str(stubs) + os.pathsep + os.environ["PATH"],
 env.pop("GH_REPO", None)
 url = "https://github.com/Cosmonaut-itc/felix-agent-engineering/pull/30"
 head = "--match-head-commit approved"
+doubt = ("No pude analizar este comando con seguridad y menciona gh pr merge. "
+         "Revisa que lleve --match-head-commit con el head aprobado y que el PR tenga tu "
+         "autorización si toca CI, dependencias o gobernanza de agentes. ¿Lo ejecuto?")
 no_head = ("gh pr merge necesita --match-head-commit <head aprobado>, para que GitHub rechace "
            "el merge si el head cambió después de la review. Usa el head que aprobaron "
            "la review y el CI, no el que leas ahora del PR. Procedimiento: references/merge.md de felix-mode.")
@@ -926,10 +932,12 @@ if mode == "deny":
     decision(invoke("gh pr merge 1; gh pr merge 2"), "deny", no_head + "\n" + no_head)
     assert calls() == []
 elif mode == "silent":
-    for command in ("gh pr view 30", 'echo "gh pr merge 30"', "git merge main",
-                    "gh pr merge 30 --disable-auto", "echo gh pr merge 30",
-                    "ssh mini gh pr merge 30"):
+    for command in ("gh pr view 30", "git log --grep 'pr merge'", "git merge main",
+                    "gh pr merge 30 --disable-auto"):
         assert invoke(command) is None, command
+        assert calls() == [], command
+    for command in ('echo "gh pr merge 30"', "echo gh pr merge 30", "ssh mini gh pr merge 30"):
+        decision(invoke(command), "ask", doubt)
         assert calls() == [], command
     for raw in ("invalid json", "{}", '{"tool_input":{"command":null}}',
                 '{"tool_input":{"command":42}}'):
@@ -965,6 +973,11 @@ elif mode == "ask":
     files(["AGENTS.md"])
     reason = decision(invoke(f"gh pr merge 30 {head}; gh pr merge 31 {head}"), "ask")
     assert len(calls()) == 2 and len(reason.splitlines()) == 2
+elif mode == "invalid_utf8":
+    env["MERGE_INVALID_UTF8"] = "1"
+    reason = decision(invoke(f"gh pr merge 30 {head}"), "ask")
+    assert "(respuesta JSON incompleta o inválida)" in reason, reason
+    assert len(calls()) == 1
 elif mode == "scope":
     files(["skills/x/run.sh"], "https://github.com/other/repo/pull/1")
     assert invoke(f"gh pr merge 1 {head}") is None
@@ -1029,6 +1042,67 @@ elif mode == "deadline":
         assert elapsed < 12, elapsed
         assert len(calls()) == 2, calls()
         assert reason.count("(tiempo agotado)") == total - 1, reason
+elif mode == "differential":
+    files(["AGENTS.md"])
+    (base / "work").mkdir()
+    (stubs / "gh").write_text('#!/bin/bash\nexec python3 "$(dirname "$0")/gh-fake.py" "$@"\n', encoding="utf-8")
+    (stubs / "gh").chmod(0o755)
+    corpus = [
+        ('gh pr merge 30 --squash', 'deny'),
+        ('gh pr merge 30 --squash --match-head-commit abc', 'ask'),
+        ('cd work && gh pr merge 30 --squash', 'deny'),
+        ('gh pr merge 30 --squash --body "primera\nsegunda"', 'ask'),
+        ('gh pr mer\\\nge 30 --squash', 'deny'),
+        ('(echo listo); gh pr merge 30 --squash', 'ask'),
+        ('command -- gh pr merge 30 --squash', 'ask'),
+        ('time -p gh pr merge 30 --squash', 'ask'),
+        ('if true; then gh pr merge 30 --squash; fi', 'ask'),
+        ('for p in 30; do gh pr merge $p --squash; done', 'ask'),
+        ('{ gh pr merge 30 --squash; }', 'ask'),
+        ('true && gh pr merge 30 --squash', 'deny'),
+        ('echo x|gh pr merge 30 --squash', 'deny'),
+        ('bash -c "gh pr merge 30 --squash"', 'deny'),
+        ('eval gh pr merge 30 --squash', 'ask'),
+        ('f(){ gh pr merge 30 --squash; }; f', 'ask'),
+        ('echo ";" gh pr merge 30', 'ask'),
+        ("cat <<'EOT'\ngh pr merge 30\nEOT", 'ask'),
+        ('echo "gh pr merge 30"', 'ask'),
+        ('gh pr view 30', 'silent'),
+        ("git log --grep 'pr merge'", 'silent'),
+        ('gh pr merge 30 --body "primera\nsegunda"', 'ask'),
+        ('bash -c "echo listo\ngh pr merge 30"', 'ask'),
+        ('gh pr mer\\\nge 30', 'deny'),
+        ('(echo listo); gh pr merge 30', 'ask'),
+        ('command -- gh pr merge 30', 'ask'),
+        ('time -p gh pr merge 30', 'ask'),
+        ('if true; then gh pr merge 30 --squash; fi', 'ask'),
+        ('echo "\\\n"; gh pr merge 30', 'deny'),
+        ('gh pr merge 30 --body "; & | ( )"', 'deny'),
+        ('gh pr merge 30 --body=";"', 'deny'),
+        ('gh pr merge 30 --disable-auto', 'silent'),
+        ('bash -c "gh pr merge 30 --disable-auto"', 'silent'),
+        ('echo "gh pr merge 30"; gh pr merge 30', 'ask'),
+        ('gh pr merge 30 --body "unfinished', 'ask'),
+        ('gh pr merge 30 --match-head-commit X', 'ask'),
+    ]
+    payload = json.dumps({"cwd": ["invalid"], "tool_input": {"command": "cd sub; gh pr merge 30"}})
+    decision(invoke(raw=payload), "ask", doubt)
+    assert calls() == []
+    for command, expected in corpus:
+        log.unlink(missing_ok=True)
+        subprocess.run([bash, "-c", command], cwd=base, env=env, capture_output=True, timeout=10)
+        executed = any(call["args"][:2] == ["pr", "merge"] and
+                       "--disable-auto" not in call["args"] for call in calls())
+        value = invoke(command)
+        actual = value["hookSpecificOutput"]["permissionDecision"] if value else "silent"
+        assert not executed or value is not None, ("FUGA", command)
+        assert actual == expected, (command, actual, expected)
+        if expected == "ask" and "--match-head-commit" not in command:
+            decision(value, "ask", doubt)
+            assert calls() == [], command
+        if command == 'echo "gh pr merge 30"; gh pr merge 30':
+            decision(value, "ask", doubt)
+        print(json.dumps({"command": command, "merge": executed, "decision": actual}, ensure_ascii=False))
 elif mode == "manifest":
     for line in (Path(repo) / "manifest").read_text().splitlines():
         columns = line.split()
@@ -1053,6 +1127,8 @@ merge_manifest() { merge_cases manifest; }
 merge_unknown_flags() { merge_cases unknown_flags; }
 merge_wrappers() { merge_cases wrappers; }
 merge_deadline() { merge_cases deadline; }
+merge_differential() { merge_cases differential; }
+merge_invalid_utf8() { merge_cases invalid_utf8; }
 
 FAILURES=0 CASE=0
 TEST_CASES=(validation)
@@ -1062,7 +1138,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline)
+TEST_CASES+=(laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
