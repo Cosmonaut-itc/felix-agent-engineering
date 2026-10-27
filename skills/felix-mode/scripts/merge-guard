@@ -11,6 +11,8 @@ import shlex
 import shutil
 import subprocess
 import sys
+import time
+import tempfile
 from urllib.parse import urlparse
 
 REGISTRY = [
@@ -55,8 +57,11 @@ def failed(cause):
             f"({cause}). felix-mode pide tu autorización explícita para esos PR. ¿Autorizas este merge?")
 
 
-def inspect(selector, repo, env, cwd):
-    executable = shutil.which("gh")
+def inspect(selector, repo, env, cwd, deadline):
+    remaining = deadline - time.monotonic()
+    if remaining <= 0:
+        return failed("tiempo agotado")
+    executable = shutil.which("gh", path=env.get("PATH", os.defpath))
     if not executable:
         return failed("gh no disponible")
     args = [executable, "pr", "view"] + ([selector] if selector else [])
@@ -64,8 +69,11 @@ def inspect(selector, repo, env, cwd):
         args += ["--repo", repo]
     args += ["--json", "url,files,changedFiles"]
     try:
-        result = subprocess.run(args, cwd=cwd, env=env, timeout=10,
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        with tempfile.TemporaryFile(mode="w+", encoding="utf-8") as output:
+            result = subprocess.run(args, cwd=cwd, env=env, timeout=remaining,
+                                    stdout=output, stderr=subprocess.DEVNULL)
+            output.seek(0)
+            response = output.read()
     except subprocess.TimeoutExpired:
         return failed("tiempo agotado")
     except OSError:
@@ -73,7 +81,7 @@ def inspect(selector, repo, env, cwd):
     if result.returncode:
         return failed("gh pr view falló")
     try:
-        data = json.loads(result.stdout)
+        data = json.loads(response)
         url, files, count = data["url"], data["files"], data["changedFiles"]
         if not isinstance(url, str) or not isinstance(files, list) or type(count) is not int or count < 0:
             raise ValueError()
@@ -105,11 +113,7 @@ def inspect(selector, repo, env, cwd):
     return None
 
 
-def main():
-    payload = json.load(sys.stdin)
-    command = payload["tool_input"]["command"]
-    if not isinstance(command, str):
-        return
+def collect(command, cwd, inherited_env):
     tokens = []
     for line in command.replace("\\\n", " ").splitlines():
         lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
@@ -119,52 +123,89 @@ def main():
         except ValueError:
             tokens.append(";")
     boundaries = {";", ";;", "&", "&&", "|", "||", "|&", "(", ")"}
-    cwd = payload.get("cwd") or os.getcwd()
     merges, segment = [], []
     for token in tokens:
         if token not in boundaries:
             segment.append(token)
             continue
-        env = os.environ.copy()
-        while segment and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
-            key, value = segment.pop(0).split("=", 1)
-            env[key] = value
+        env = inherited_env.copy()
+        while segment:
+            name = segment[0].rsplit("/", 1)[-1]
+            if re.match(r"[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
+                key, value = segment.pop(0).split("=", 1)
+                env[key] = value
+            elif name in {"command", "exec", "nohup", "time"}:
+                segment.pop(0)
+            elif name == "env":
+                segment.pop(0)
+                while segment:
+                    if segment[0] == "-i":
+                        env.clear()
+                        segment.pop(0)
+                    elif segment[0] == "-u" and len(segment) > 1:
+                        segment.pop(0)
+                        env.pop(segment.pop(0), None)
+                    elif re.match(r"[A-Za-z_][A-Za-z0-9_]*=", segment[0]):
+                        key, value = segment.pop(0).split("=", 1)
+                        env[key] = value
+                    else:
+                        break
+            else:
+                break
         if segment and segment[0].rsplit("/", 1)[-1] == "cd" and len(segment) == 2:
             cwd = os.path.abspath(os.path.join(cwd, os.path.expanduser(segment[1])))
+        elif (len(segment) >= 3 and segment[0].rsplit("/", 1)[-1] in {"bash", "sh", "zsh"}
+              and segment[1] in {"-c", "-lc", "-ec"}):
+            merges.extend(collect(segment[2], cwd, env))
         elif (len(segment) >= 3 and segment[0].rsplit("/", 1)[-1] == "gh"
               and segment[1:3] == ["pr", "merge"]):
             selector, repo, head, disabled = None, None, None, False
-            args, index = segment[3:], 0
+            args, index, unknown = segment[3:], 0, []
             valued = {"--repo", "-R", "--match-head-commit", "--body", "-b",
                       "--body-file", "-F", "--subject", "-t", "--author-email", "-A"}
+            boolean = {"--admin", "--auto", "--delete-branch", "-d", "--disable-auto",
+                       "--merge", "-m", "--rebase", "-r", "--squash", "-s"}
             while index < len(args):
                 arg = args[index]
                 flag, equal, value = arg.partition("=")
-                if flag == "--disable-auto":
+                if arg == "--disable-auto":
                     disabled = True
                 if flag in valued:
                     if not equal:
                         value = ""
-                        if index + 1 < len(args) and not args[index + 1].startswith("-"):
+                        if index + 1 < len(args):
                             index += 1
                             value = args[index]
                     if flag in {"--repo", "-R"}:
                         repo = value
                     elif flag == "--match-head-commit":
                         head = value
+                elif arg.startswith("-") and arg not in boolean:
+                    unknown.append(arg)
                 elif not arg.startswith("-") and selector is None:
                     selector = arg
                 index += 1
             if not disabled:
-                merges.append((selector, repo, head, env, cwd))
+                merges.append((selector, repo, head, env, cwd, unknown))
         segment = []
-    denials = [NO_HEAD for _, _, head, _, _ in merges if not head]
+    return merges
+
+
+def main():
+    payload = json.load(sys.stdin)
+    command = payload["tool_input"]["command"]
+    if not isinstance(command, str):
+        return
+    merges = collect(command, payload.get("cwd") or os.getcwd(), os.environ.copy())
+    denials = [NO_HEAD for _, _, head, _, _, _ in merges if not head]
     if denials:
         emit("deny", denials)
         return
     reasons = []
-    for selector, repo, _, env, directory in merges:
-        reason = inspect(selector, repo, env, directory)
+    deadline = time.monotonic() + 10
+    for selector, repo, _, env, directory, unknown in merges:
+        reason = (failed("flag no reconocido: " + unknown[0]) if unknown
+                  else inspect(selector, repo, env, directory, deadline))
         if reason:
             reasons.append(reason)
     if reasons:

@@ -859,6 +859,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 script, temporary, repo, mode, bash = sys.argv[1:]
 base = Path(temporary) / ("merge-" + mode)
@@ -983,6 +984,51 @@ elif mode == "arguments":
     assert Path(calls()[0]["cwd"]).resolve() == base.resolve()
     assert invoke(f'gh pr merge --body "some body" -b body --body-file file -F file --subject subject -t title --author-email a@b -A a@b --match-head-commit=approved https://github.com/a/b/pull/1') is None
     assert calls()[0]["args"] == ["pr", "view", "https://github.com/a/b/pull/1", "--json", "url,files,changedFiles"]
+elif mode == "unknown_flags":
+    for flag in ("-Rowner/repo", "-sd", "--foo", "--auto=yes"):
+        reason = decision(invoke(f"gh pr merge {flag} 30 {head}"), "ask")
+        assert reason == ("No pude comprobar si este PR toca CI, dependencias o gobernanza de agentes "
+                          f"(flag no reconocido: {flag}). felix-mode pide tu autorización explícita para esos PR. ¿Autorizas este merge?")
+        assert calls() == [], flag
+    for flag in ("--admin", "--auto", "--delete-branch", "-d", "--merge", "-m",
+                 "--rebase", "-r", "--squash", "-s"):
+        assert invoke(f"gh pr merge 30 {flag} {head}") is None, flag
+        assert len(calls()) == 1
+    for flag in ("--body", "-b", "--body-file", "-F", "--subject", "-t", "--author-email", "-A"):
+        for value in (f"{flag} --foo", f"{flag}=--foo"):
+            assert invoke(f"gh pr merge 30 {value} {head}") is None, value
+            assert calls()[0]["args"][2] == "30", calls()
+elif mode == "wrappers":
+    for command in ("env GH_REPO=a/b gh pr merge 1", "command gh pr merge 1",
+                    'bash -c "gh pr merge 1"', "exec gh pr merge 1", "nohup gh pr merge 1",
+                    "time gh pr merge 1", 'sh -ec "gh pr merge 1"',
+                    'zsh -c "gh pr merge 1"', "command env GH_REPO=a/b exec gh pr merge 1"):
+        decision(invoke(command), "deny", no_head)
+        assert calls() == [], command
+    assert invoke(f"env GH_REPO=a/b gh pr merge 1 {head}") is None
+    assert calls()[0]["repo"] == "a/b"
+    assert invoke(f'bash -lc "cd sub && gh pr merge 30 {head}"') is None
+    assert Path(calls()[0]["cwd"]).resolve() == (base / "sub").resolve()
+    assert invoke(f'env GH_REPO=a/b bash -c "gh pr merge 30 {head}"') is None
+    assert calls()[0]["repo"] == "a/b"
+    env["GH_REPO"] = "old/repo"
+    assert invoke(f"env -u GH_REPO gh pr merge 30 {head}") is None
+    assert calls()[0]["repo"] is None
+    env.pop("GH_REPO")
+    decision(invoke("env -i GH_REPO=a/b gh pr merge 1"), "deny", no_head)
+    assert calls() == []
+    assert invoke(f'bash -c "cd sub"; gh pr merge 30 {head}') is None
+    assert Path(calls()[0]["cwd"]).resolve() == base.resolve()
+elif mode == "deadline":
+    env["MERGE_SLEEP"] = "6"
+    for total in (2, 3):
+        started = time.monotonic()
+        command = "; ".join(f"gh pr merge {30 + index} {head}" for index in range(total))
+        reason = decision(invoke(command), "ask")
+        elapsed = time.monotonic() - started
+        assert elapsed < 12, elapsed
+        assert len(calls()) == 2, calls()
+        assert reason.count("(tiempo agotado)") == total - 1, reason
 elif mode == "manifest":
     for line in (Path(repo) / "manifest").read_text().splitlines():
         columns = line.split()
@@ -1004,6 +1050,9 @@ merge_ask() { merge_cases ask; }
 merge_scope() { merge_cases scope; }
 merge_arguments() { merge_cases arguments; }
 merge_manifest() { merge_cases manifest; }
+merge_unknown_flags() { merge_cases unknown_flags; }
+merge_wrappers() { merge_cases wrappers; }
+merge_deadline() { merge_cases deadline; }
 
 FAILURES=0 CASE=0
 TEST_CASES=(validation)
@@ -1013,7 +1062,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest)
+TEST_CASES+=(laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
