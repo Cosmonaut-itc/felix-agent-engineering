@@ -82,9 +82,10 @@ sin `orch init`.
 El hook `scripts/store-guard` avisa cuando una herramienta toca un store sin
 `units.tsv` o sin `decisions.tsv`. En Write y Edit es exacto; en Bash deduce
 las rutas del comando sin ejecutarlo y puede fallar en los dos sentidos, así
-que su silencio no prueba que el store esté completo. Él y
-`scripts/laptop-guard` se registran en `~/.claude/settings.json`, como dice
-el README, porque T3 Code no ejecuta los hooks del frontmatter de una skill.
+que su silencio no prueba que el store esté completo. Él,
+`scripts/laptop-guard` y `scripts/merge-guard` se registran en
+`~/.claude/settings.json`, como dice el README, porque T3 Code no ejecuta los
+hooks del frontmatter de una skill.
 
 ## Tickets de Linear
 
