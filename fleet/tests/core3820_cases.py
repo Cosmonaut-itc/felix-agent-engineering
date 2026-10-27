@@ -469,38 +469,223 @@ done.write_text('lock closed')
         self.send("c07", argv)
         self.ready("c07", ready)
         before = self.status_key("c07")["observation"]
-        process = subprocess.Popen([sys.executable, "-B", "-c", SIGNAL_CLIENT,
-                                    sys.executable, "-B", "-X", "importtime", str(CLI), "--state-dir", str(self.state),
-                                    "wait", "--idempotency-key", "c07"], cwd=self.project, env=self.env,
-                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-        self.processes.append(process)
-        trace = b""
-        deadline = time.monotonic() + 5
-        while not any(line.rsplit(b"|", 1)[-1].strip() == b"fleet.cli" for line in trace.splitlines()):
-            remaining = deadline - time.monotonic()
-            self.assertGreater(remaining, 0, "reader import acknowledgement missing")
-            self.assertTrue(select.select([process.stderr], [], [], remaining)[0])
-            chunk = os.read(process.stderr.fileno(), 4096)
-            self.assertTrue(chunk)
-            trace += chunk
-        self.assertIn(b"fleet-test-signal-defaults-before-exec\n", trace)
-        # importtime acknowledges import only. The response must identify wait
-        # in main; it does not prove entry into the exact wait loop.
-        process.send_signal(signal.SIGINT)
-        stdout, stderr = process.communicate(timeout=5)
-        self.assertEqual(process.returncode, 130, (stdout, stderr))
-        response = json.loads(stdout)
-        self.assertEqual(response["error"]["code"], "client_interrupted")
-        self.assertEqual(response["operation"], "wait")
-        self.assertEqual(response["error"]["effects"], "read_only")
-        current = self.status_key("c07")["observation"]
-        for field in ("state", "view", "revision", "transitions", "reservation", "capacity_resolution",
-                      "control", "dispatch", "supervisor", "child_pid", "command"):
-            self.assertEqual(current[field], before[field])
-        self.external_evidence.append({"case": "C07", "signals_default_before_exec": True,
-                                       "readiness": "import acknowledged; response identifies wait in main, not exact loop entry",
-                                       "client_returncode": process.returncode, "response": response})
-        self.assertEqual(self.entries(counter), ["entry"])
+        original_entries = self.entries(counter)
+        campaign = {"case": "C07", "status": "incomplete", "max_attempts": 3, "budget_seconds": 10,
+                    "reference": before, "reference_counter": original_entries, "attempts": [],
+                    "unknown_count": 0, "unknown_signals": [], "total_attempts": 0,
+                    "persistence": "unconfirmed; external_evidence awaits existing cleanup snapshot",
+                    "readiness": "import only; success identifies wait in main, not exact loop entry"}
+        self.external_evidence.append(campaign)
+        self.assertEqual(original_entries, ["entry"], campaign)
+        self.assertEqual(before["state"], "running", campaign)
+        self.assertEqual(before["view"], "running", campaign)
+        started = time.monotonic()
+        deadline = started + 10
+
+        def utc():
+            return datetime.now(timezone.utc).isoformat(timespec="microseconds").replace("+00:00", "Z")
+
+        def remaining():
+            return deadline - time.monotonic()
+
+        def budget():
+            left = remaining()
+            if left <= 0:
+                raise TimeoutError("C07 total campaign budget exhausted")
+            return left
+
+        def timing(record, origin):
+            observed = time.monotonic()
+            record.update(duration_seconds=observed - origin, remaining_seconds=deadline - observed)
+
+        def channels(record, stdout, stderr, complete):
+            # Hex preserves every byte, even if an incomplete channel is not UTF-8.
+            for name, data in (("stdout", stdout), ("stderr", stderr)):
+                record[name] = None if data is None else data.decode("utf-8", errors="replace")
+                record[name + "_hex"] = None if data is None else data.hex()
+            record["channels_complete"] = complete
+
+        def unique_object(pairs):
+            result = {}
+            for name, value in pairs:
+                if name in result:
+                    raise ValueError("duplicate JSON field: " + name)
+                result[name] = value
+            return result
+
+        def invalid_constant(value):
+            raise ValueError("non-JSON constant: " + value)
+
+        def decode(data):
+            return json.loads(data.decode("utf-8"), object_pairs_hook=unique_object,
+                              parse_constant=invalid_constant)
+
+        def blocked(reason):
+            campaign.update(status="BLOCKED", reason=reason)
+            timing(campaign, started)
+            self.fail("BLOCKED C07 harness preparation: " + json.dumps(campaign, sort_keys=True))
+
+        previous, previous_entries = before, original_entries
+        try:
+            for number in range(1, 4):
+                if remaining() <= 0:
+                    blocked("10s exhausted without an identified wait sample")
+                attempt_started = time.monotonic()
+                record = {"number": number, "pid": None, "started_utc": utc(),
+                          "signal_requested_utc": None, "signal_utc": None,
+                          "finished_utc": None, "signal_sent": False, "returncode": None,
+                          "collection": "not_started", "stdout": None, "stderr": None,
+                          "channels_complete": False, "import_acknowledged": False,
+                          "signals_default_before_exec": False, "response": None,
+                          "public_image": None, "counter": None, "errors": [],
+                          "status_reader": {"collection": "not_started"}}
+                campaign["attempts"].append(record)
+                campaign["total_attempts"] = len(campaign["attempts"])
+                process, trace, stdout = None, b"", None
+                stage = "launch"
+                try:
+                    budget()
+                    process = subprocess.Popen([sys.executable, "-B", "-c", SIGNAL_CLIENT,
+                                                sys.executable, "-B", "-X", "importtime", str(CLI),
+                                                "--state-dir", str(self.state), "wait", "--idempotency-key", "c07"],
+                                               cwd=self.project, env=self.env,
+                                               stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                    self.processes.append(process)
+                    record.update(pid=process.pid, collection="not_collected")
+                    stage = "import-acknowledgement"
+                    import_deadline = min(deadline, attempt_started + 5)
+                    while not record["import_acknowledged"]:
+                        left = min(budget(), import_deadline - time.monotonic())
+                        if left <= 0 or not select.select([process.stderr], [], [], left)[0]:
+                            raise TimeoutError("C07 reader import acknowledgement missing")
+                        chunk = os.read(process.stderr.fileno(), 4096)
+                        if not chunk:
+                            raise RuntimeError("C07 reader ended before import acknowledgement")
+                        trace += chunk
+                        record["import_acknowledged"] = any(
+                            line.startswith(b"import time:") and line.rsplit(b"|", 1)[-1].strip() == b"fleet.cli"
+                            for line in trace.split(b"\n")[:-1])
+                    record["signals_default_before_exec"] = b"fleet-test-signal-defaults-before-exec\n" in trace
+                    if not record["signals_default_before_exec"]:
+                        raise RuntimeError("C07 signal-defaults marker missing")
+                    # No scheduling delay: importtime is only an import ack.
+                    stage = "signal"
+                    budget()
+                    if process.poll() is not None:
+                        raise RuntimeError("C07 reader exited before SIGINT")
+                    record["signal_requested_utc"] = utc()
+                    os.kill(process.pid, signal.SIGINT)
+                    record.update(signal_sent=True, signal_utc=utc())
+                except BaseException as exc:
+                    record["errors"].append(dict(stage=stage, **self.quota_error(exc)))
+
+                # One collection per client, including the LAST attempt. Never
+                # renew the global deadline or leave a live reader for a retry.
+                if process is not None:
+                    channels(record, None, trace, False)
+                    try:
+                        record["communicate_timeout_seconds"] = min(5, budget())
+                        stdout, tail = process.communicate(timeout=record["communicate_timeout_seconds"])
+                        channels(record, stdout, trace + tail, True)
+                        record.update(collection="collected", returncode=process.returncode, finished_utc=utc())
+                    except subprocess.TimeoutExpired as exc:
+                        channels(record, exc.output, trace + (exc.stderr or b""), False)
+                        record.update(collection="timed_out", returncode=process.returncode)
+                        record["errors"].append(dict(stage="collection", **self.quota_error(exc)))
+                    except BaseException as exc:
+                        record["errors"].append(dict(stage="collection", **self.quota_error(exc)))
+                    record["returncode"] = process.returncode
+                if record["collection"] == "collected":
+                    try:
+                        record["response"] = decode(stdout)
+                        if isinstance(record["response"], dict) and record["response"].get("operation") == "unknown":
+                            campaign["unknown_signals"].append({"number": number, "signal_utc": record["signal_utc"]})
+                            campaign["unknown_count"] = len(campaign["unknown_signals"])
+                    except BaseException as exc:
+                        record["errors"].append(dict(stage="response-json", **self.quota_error(exc)))
+
+                    # self.call has a fixed 15s timeout; this campaign's public
+                    # observation instead shares the original remaining 10s.
+                    observer = record["status_reader"]
+                    try:
+                        observer.update(started_utc=utc(), timeout_seconds=budget())
+                        reader = subprocess.Popen([sys.executable, "-B", str(CLI), "--state-dir", str(self.state),
+                                                   "status", "--idempotency-key", "c07"],
+                                                  cwd=self.project, env=self.env,
+                                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                        self.processes.append(reader)
+                        observer.update(pid=reader.pid, collection="not_collected")
+                        observer["timeout_seconds"] = min(5, budget())
+                        image_stdout, image_stderr = reader.communicate(timeout=observer["timeout_seconds"])
+                        channels(observer, image_stdout, image_stderr, True)
+                        observer.update(collection="collected", returncode=reader.returncode, finished_utc=utc())
+                        record["public_image"] = decode(image_stdout)
+                    except subprocess.TimeoutExpired as exc:
+                        channels(observer, exc.output, exc.stderr, False)
+                        observer["collection"] = "timed_out"
+                        record["errors"].append(dict(stage="public-image", **self.quota_error(exc)))
+                    except BaseException as exc:
+                        record["errors"].append(dict(stage="public-image", **self.quota_error(exc)))
+                else:
+                    record["status_reader"]["reason"] = "reader not collected; no further client launched"
+                try:
+                    budget()
+                    record["counter"] = self.entries(counter)
+                except BaseException as exc:
+                    record["errors"].append(dict(stage="counter", **self.quota_error(exc)))
+                record["missing"] = [name for name in ("pid", "signal_utc", "finished_utc", "stdout", "stderr",
+                                                       "returncode", "response", "public_image", "counter")
+                                     if record[name] is None]
+                timing(record, attempt_started)
+                timing(campaign, started)
+
+                # Everything available is in external_evidence BEFORE asserts.
+                if record["errors"]:
+                    blocked("attempt preparation/collection/observation failed; no retry")
+                self.assertEqual(record["collection"], "collected", campaign)
+                self.assertTrue(record["signal_sent"], campaign)
+                self.assertTrue(record["signals_default_before_exec"], campaign)
+                self.assertTrue(record["import_acknowledged"], campaign)
+                self.assertEqual(record["returncode"], 130, campaign)
+                response = record["response"]
+                self.assertIsInstance(response, dict, campaign)
+                self.assertEqual(response.get("api"), "fleet-job-api@1", campaign)
+                error = response.get("error")
+                self.assertIsInstance(error, dict, campaign)
+                self.assertEqual(error.get("code"), "client_interrupted", campaign)
+                self.assertEqual(record["status_reader"]["returncode"], 0, campaign)
+                image = record["public_image"]
+                self.assertIsInstance(image, dict, campaign)
+                self.assertEqual(image.get("api"), "fleet-job-api@1", campaign)
+                self.assertEqual(image.get("operation"), "status", campaign)
+                current = image["observation"]
+                for field in ("state", "view", "revision", "transitions", "reservation", "capacity_resolution",
+                              "control", "dispatch", "supervisor", "child_pid", "command"):
+                    self.assertEqual(current[field], before[field], campaign)
+                    self.assertEqual(current[field], previous[field], campaign)
+                self.assertEqual(record["counter"], original_entries, campaign)
+                self.assertEqual(record["counter"], previous_entries, campaign)
+                self.assertEqual(record["counter"], ["entry"], campaign)
+                operation, effects = response.get("operation"), error.get("effects")
+                identified = operation == "wait" and effects == "read_only"
+                retryable = operation == "unknown" and effects in ("unknown", "read_only")
+                self.assertTrue(identified or retryable, campaign)
+                record.update(invariants="confirmed", retryable_unknown=retryable, identified_wait=identified)
+                timing(record, attempt_started)
+                timing(campaign, started)
+                if remaining() <= 0:
+                    blocked("10s exhausted including collection and checks; no sample within budget")
+                if identified:
+                    campaign.update(status="identified_wait", successful_attempt=number)
+                    break
+                previous, previous_entries = current, record["counter"]
+            else:
+                blocked("3 attempts exhausted without an identified wait sample")
+        except BaseException as exc:
+            if campaign["status"] != "BLOCKED":
+                campaign.update(status="failed", error=self.quota_error(exc))
+            timing(campaign, started)
+            raise
         gate.touch()
         self.terminal("c07")
         self.wait_key("c07")

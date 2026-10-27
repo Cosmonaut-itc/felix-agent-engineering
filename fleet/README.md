@@ -1,4 +1,4 @@
-# Fleet local — SEN-3820 harness r7
+# Fleet local — SEN-3820 harness r8
 
 CLI opt-in de un slot FIFO por autoridad local, Python 3.9/3.14 por inspección,
 biblioteca estándar, Linux/macOS POSIX. Esta entrega contiene código y pruebas
@@ -212,24 +212,57 @@ Guarda snapshots, campañas, contadores y copia verificada de evidencia pública
 de retirar fixtures completas en `evidence-<fixture>/public-snapshots.json`.
 No hay imports Fleet, SQL, hooks privados ni respuestas simuladas en los tests.
 
-## Harness r7 y evidencia histórica
+## Harness r8 y evidencia histórica
 
-Esta revisión modifica sólo tres archivos de pruebas, esta documentación y la
+R8 modifica sólo C07 en core3820_cases.py, esta documentación y la
 matriz; `fleet/fleet/**` y `fleet/bin/**` siguen idénticos a c63. Conserva los64
 métodos, sin nuevos métodos; O06 declara dos subTest de fases condicionales.
-**Cero ejecución de r7**: ni Python/imports/discovery/sintaxis/tests ni gates en
+**Cero ejecución de r7/r8**: ni Python/imports/discovery/sintaxis/tests ni gates en
 MacBook. El bloqueo inicial del autor r6 fue aceptado; PAO-CLARIFICATION-1 autoriza
 los arreglos y el setup r6 sin certificar las fronteras de cuota. R7 corrige sólo
 retención temprana, fotografía C08 y respuesta lectora C07 sobre ese antecedente.
+R7 conserva A Astra APTO individual y B Opus NO APTO por W1: importtime puede
+preceder a la identificación de wait. Esa ventana es posible por código; su
+frecuencia en Mini no está medida. R8 no modifica retrospectivamente esos votos.
 
 C07/C08 lanzan exclusivamente sus propios clientes mediante un shim de un hilo
 que comprueba SIGHUP/SIGINT=SIG_DFL y registra un marcador antes de exec del
 intérprete auténtico. No usa preexec_fn ni cambia señales del padre/transporte.
-C07 conserva5s,130/client_interrupted y ausencia de cambios de historia/capacidad.
-Su acuse importtime acredita sólo importación. La respuesta exige además
-operation=wait y error.effects=read_only: descarta el catcher exterior unknown/unknown
-y acredita que main identificó la operación lectora, **no entrada exacta en el bucle
-wait**. No acepta0 ni añade sleeps. C08 espera marcador y running público durable
+C07 mantiene el comando running en su barrera y limita la campaña a **3 intentos
+totales y10s monotónicos totales**, desde antes del primer lanzamiento hasta la
+recogida y comprobaciones del último intento. Cada communicate del lector tiene
+timeout≤5s y≤remanente global; importtime y la consulta pública también consumen
+ese mismo presupuesto. No se renueva por intento ni se introduce demora50ms,
+sleep adaptativo/ciego u otra ayuda de planificación. Watchdog30s y cleanup/cierre
+originales siguen intactos. El acuse importtime acredita sólo importación.
+
+Cada intento conserva antes de los asserts número/PID, UTC de inicio, petición y
+envío de SIGINT, recogida final observada, rc, stdout/stderr íntegros (incluido el
+importtime ya consumido y bytes hex), completitud/errores/faltantes, duración y
+remanente, consulta pública y contador. UTC de fin es la recogida observada, no
+el instante interno de exit. Datos no observados quedan null o incompletos; no
+se vuelca el entorno. external_evidence entrega los registros al snapshot de
+cleanup existente; quedan con persistencia no confirmada en memoria, sin prometer
+evidencia durable si falla ese registro/cierre. Una observación fallida es explícita
+y no autoriza reintento. La imagen de cada intento se compara con la referencia
+original y la anterior: estado/vista/revisión/transiciones/reserva/resolución,
+control/dispatch/supervisor/hijo/comando y contador exactamente1.
+
+Sólo se repite un cliente **ya terminado y recogido** cuya respuesta JSON válida
+sea130/client_interrupted, operation=unknown y error.effects=unknown oread_only,
+con invariantes satisfechas e intentos/tiempo restantes. No hay lectores vivos
+superpuestos. Timeout, recogida incierta, marcador ausente, JSON inválido, otro
+retorno/error/efecto o imagen/contador cambiados fallan sin reintento;0 nunca pasa.
+Sólo130/client_interrupted con operation=wait y error.effects=read_only, recogido
+dentro del presupuesto y con invariantes, acredita la muestra: main identificó
+la operación lectora, **no entrada exacta en el bucle wait**. Unknown nunca es PASS
+ni cobertura. Agotar3 intentos/10s sin muestra falla **BLOCKED de preparación del
+harness**, sin skip verde ni atribuir defecto al producto. El registro deja total
+de intentos, unknown_count y sus UTC de señal disponibles, con faltantes explícitos,
+para una futura estimación PAO de la ventana real. Ninguna frecuencia se ha medido.
+Tras la muestra se conserva apertura del gate, terminal/wait y cierre originales.
+
+C08 espera marcador y running público durable
 con self.ready("c08", ready) antes de fotografiar admitted; así no compara starting
 con una transición running legítima posterior. Conserva sesión propia, SIGHUP real
 al grupo, salida por esa señal en5s, supervisor original,
@@ -305,4 +338,9 @@ clientes. Los tres discriminantes contra3b son recorridos estáticos: antes el f
 previo a quota_roots podía borrar el journal; C08 podía fotografiar starting; C07
 aceptaba la respuesta exterior unknown/unknown. No se midió FAIL/PASS de esos
 recorridos ni se declara aceptación runtime de r7. Lost_supervisor y replay r6
-permanecen intactos; los nits B-N1/B-N2 y los anteriores siguen diferidos.
+permanecen intactos. El discriminante r8 contra af es estático: unknown completo
+recogido deja de abortar por identificación temprana y sólo habilita otro intento
+acotado; agotamiento no acredita wait. No hay FAIL/PASS r8 medidos. N1 rótulos r6
+no motiva barrido; N2 KeyboardInterrupt secundario durante finally de cuota sigue
+declarado, sin tocar operator ni precedencia de la primaria. Replace/tamaño/refactor
+y los demás nits históricos permanecen diferidos.

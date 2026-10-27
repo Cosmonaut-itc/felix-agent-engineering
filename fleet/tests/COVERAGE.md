@@ -1,4 +1,4 @@
-# SEN-3820 harness r7 — matriz pública, cero ejecución del candidato
+# SEN-3820 harness r8 — matriz pública, cero ejecución del candidato
 
 Inventario obtenido por texto, sin discovery/imports: **64 métodos** en un único
 TestCase `FleetCLI`:16 base en `test_cli.py`,28 en `Core3820Cases`,20 en
@@ -6,11 +6,12 @@ TestCase `FleetCLI`:16 base en `test_cli.py`,28 en `Core3820Cases`,20 en
 contratos; r4 añadió dos y r5 corrigió sólo el oráculo temporal del
 primer método r4, sin añadir métodos. R7 conserva r6 y corrige sólo retención
 temprana, fotografía C08 y respuesta lectora C07, sin nuevos métodos.
+R8 añade sólo la campaña acotada C07, preservando test_cli/operator byte a byte.
 Los53 r1, cinco r2, cuatro r3 y refuerzo C02
 quedan conservados. Discovery futuro sólo `test_cli.py`, según README.
 **34 filas padre =26 definidas +6 parciales/condicionales +2 positivas abiertas**.
 Los3 requisitos adicionales no cambian esa partición. No se cuentan métodos como
-subcasos ni código escrito como cobertura runtime. R7 sigue sin ejecutar; los
+subcasos ni código escrito como cobertura runtime. R7/r8 siguen sin ejecutar; los
 resultados históricos de c63 se distinguen al final.
 
 Cada nombre siguiente es un método real completo, con prefijo `test_`. C reside en
@@ -29,7 +30,7 @@ Ninguna prueba importa Fleet, escribe SQL o inyecta respuestas/cierre en product
 | C04 / definido | c04_lookup_after_origin_removed_and_candidate_rejection_is_scoped | Origen retirado tras running; status/wait/evidence con env diferente resuelven original; nuevo candidato imposible2/not_evaluated, asociación conservada. |
 | C05 / definido | c05_finished_success_and_failure_replay_never_execute_again | Exit0 y7 separados: wait0/1 con complete; replay conserva recibo y contador1. |
 | C06 / definido | c06_lost_supervisor_and_empty_group_do_not_prove_terminal | SIGKILL a supervisor propio tras running, gate termina comando, ausencia de grupo observada; A incierto, B bloqueado owner_uncertain, replay0, wait/recover3, sin otra entrada. |
-| C07 / definido | c07_sigint_wait_only_interrupts_reader | Shim propio restablece y comprueba SIGHUP/SIGINT=SIG_DFL antes de exec auténtico, con marcador. Running en barrera; importtime acredita sólo importación. SIGINT real exige130/client_interrupted, operation=wait y error.effects=read_only en5s: descarta catcher exterior unknown/unknown y acredita identificación de operación lectora en main, no entrada exacta al bucle wait. Historia/revisión/capacidad/dispatch iguales y contador1; no acepta0 ni alarga timeout. |
+| C07 / definido, muestra condicionada a preparación | c07_sigint_wait_only_interrupts_reader | Comando running en barrera, mismo shim SIG_DFL/marcador, importtime sólo importación y SIGINT real al lector propio. Campaña≤3 intentos/10s monotónicos TOTALES, incluida recogida y comprobaciones del último; communicate≤5s y≤remanente, todas las esperas acotadas por ese remanente. Sólo130/client_interrupted/unknown con effects unknown oread_only, JSON válido, cliente recogido e invariantes habilita reintento si queda cota. Sólo wait/read_only recogido130 con invariantes acredita identificación en main, no entrada exacta al bucle wait. Imagen pública/contador1 contra original y anterior cada intento; canales íntegros/UTC/recogida/faltantes antes de asserts. Unknown nunca PASS/cobertura; agotamiento BLOCKED de preparación, nunca skip verde/defecto de producto; registro total/unknown_count/UTC de señales. Sin demora50ms ni otra ayuda de planificación. Watchdog30s/cleanup/cierre original intactos. |
 | C08 / definido | c08_client_group_loss_preserves_original_supervisor | Mismo shim exclusivo de clientes C07/C08, wrapper en sesión propia. self.ready("c08", ready) exige marcador y running público durable antes de fotografiar admitted y enviar SIGHUP real al grupo; marcador y retorno por SIGHUP en5s. Supervisor original, running, reserva/transiciones y contador1; settle10s. Sin preexec_fn ni política global. |
 | C09 / definido | c09_timeout_only_for_safe_pending_and_uncertainty_precedes_it | Running da4; dueño perdido da3 antes de timeout0. Ventanas terminal/publication/release pendientes sólo si se alcanzan externamente (C20/O07); no acreditadas aquí. Baseline wait registra/reintenta únicamente la ventana finished/publication pending para esperar complete. |
 | C10 / definido | c10_enqueue_only_survives_and_two_recoverers_claim_once | Enqueue-only queued seguro y dispatch_not_requested; replay no despacha; dos nuevos recoverers, un claim durable/contador1. Se tolera3 transitorio de un observador concurrente starting sin vínculo. |
@@ -252,4 +253,33 @@ a SIGHUP una transición legítima starting→running; C07 rechaza la respuesta
 exterior unknown/unknown que antes satisfacía130/client_interrupted. No hay
 FAIL/PASS medidos de esos recorridos. Lost_supervisor y replay r6 quedan intactos;
 B-N1/B-N2 y nits anteriores diferidos. Ningún observador causal nuevo ni frontera
-C20/O06/C23 cerrada por esta revisión.
+C20/O06/C23 cerrada por esa revisión.
+
+R7 mantiene A Astra APTO individual/B Opus NO APTO por W1, sin aceptar ni medir
+su frecuencia: entre importtime y la asignación de operation puede responder
+unknown. R8 implementa la campaña autorizada sin demoras. Contra af, una respuesta
+unknown completa/recogida ya no aborta sólo por identificación temprana: permite
+otro intento únicamente con130/client_interrupted/effects unknown oread_only,
+imagen pública íntegra sin cambios y contador1. Timeout, falta de recogida/marcador,
+JSON inválido, otro retorno/error/efecto o mutación fallan sin reintentar. No lanza
+otro cliente si el previo no está recogido. Los10s incluyen la última recogida,
+consulta pública y comparaciones, sin renovación por intento; communicate≤5s.
+La muestra exige wait/read_only auténtico130 recogido dentro de cota. Conserva
+gate final/terminal/wait. Identificación en main no acredita entrada exacta al bucle.
+
+Cada intento guarda antes de los asserts número/PID, UTC de inicio/petición/señal
+y fin observado al recoger (no instante interno de exit), stdout y stderr íntegros
+con importtime ya consumido/bytes hex, rc, recogida/completitud/errores/faltantes,
+duración/remanente, imagen pública y contador. Compara estado/vista/revisión,
+transiciones/reserva/resolución/control/dispatch/supervisor/hijo/comando y contador1
+con referencia original y anterior. Datos no observados no se rellenan. Registros
+en external_evidence para el snapshot de cleanup existente, sin volcar environment
+ni prometer persistencia durable si falla escritura/cierre. Agotamiento3/10s:
+BLOCKED de preparación del harness, con total de intentos, unknown_count y sus UTC
+de señal disponibles/faltantes, nunca PASS/skip/cobertura ni defecto de producto.
+No hay frecuencia, FAIL o PASS r8 medidos. R7/r8 no reclasifican c63 ni sus reportes.
+Sin demora50ms, sleeps adaptativos/ciegos, hooks ni señales globales/producto.
+N1 rótulos r6 no motiva barrido; N2 KeyboardInterrupt secundario de finally de cuota
+se declara sin modificar operator ni orden de la primaria. Replace/tamaño/refactor
+y nits anteriores siguen diferidos. Retención/inventarios/primaria r7, C08,
+lost_supervisor, replay r4 y condicionalidad C20/O06/C23 permanecen intactos.
