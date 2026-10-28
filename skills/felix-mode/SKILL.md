@@ -218,12 +218,12 @@ siendo obligatorios.
   exigido, con la forma
   `Revisión: <modelo> <esfuerzo>, ronda <n>, <veredicto> sobre <head>`.
   Copia el veredicto literal, también NO APTO o SIN DICTAMEN. Mientras el
-  head actual no tiene veredicto, `<veredicto>` es `pendiente` y `<n>` es
-  la ronda que lo juzgará. En un acumulador, la línea refleja sólo la
-  review final del conjunto. El orquestador la escribe y la actualiza tras
-  cada ronda y cambio de head, y quien edita el cuerpo la conserva. Esta
-  línea sustituye la exclusión de veredictos «CLEAN» del cuerpo en
-  «Opening a PR».
+  head del PR no tiene veredicto, `<veredicto>` es `pendiente` y `<n>` es
+  la ronda que lo juzgará. En un acumulador sólo cuenta la review final del
+  conjunto: hasta entonces la línea dice `pendiente`, con los revisores del
+  nivel vigente. El orquestador la escribe y la actualiza tras cada ronda y
+  cambio de head, y quien edita el cuerpo la conserva. Esta línea sustituye
+  la exclusión de veredictos «CLEAN» del cuerpo en «Opening a PR».
 
 ## Merge
 
