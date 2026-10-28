@@ -214,6 +214,13 @@ siendo obligatorios.
   contra el sketch elegido.
 - Si no puede correr ningún revisor independiente, la puerta sigue cerrada,
   como dice `poteto-mode`. Tu propia lectura no cuenta como review.
+- **Constancia.** El cuerpo de cada PR termina con una línea por revisor
+  exigido, con la forma
+  `Revisión: <modelo> <esfuerzo>, ronda <n>, <veredicto> sobre <head>`.
+  Escríbela al abrir el PR, con `en curso` mientras la ronda corre, y
+  actualízala tras cada ronda o cambio de head. Copia el veredicto literal,
+  también NO APTO o SIN DICTAMEN. Esta línea sustituye la regla de
+  «Opening a PR» que saca los veredictos del cuerpo.
 
 ## Merge
 
