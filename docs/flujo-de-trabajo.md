@@ -54,7 +54,7 @@ que el encargo lo pida.
 | 7. Implementar | Por encima del umbral de «Delegación» del routing, un trabajador escribe el código. En bugs, el test que falla va antes del arreglo. | `tdd`, `swarm` | Agente |
 | 8. Medir | Antes de creer o reportar un número de rendimiento. | `benchmark-checklist` | Agente |
 | 9. Verificar | Prueba sobre el artefacto real con la skill del repositorio. Si falta, sigue sus docs y propone crearla. | `verify` del repositorio, `create-verification-skill` | Agente |
-| 10. Revisar | Revisor independiente gpt-6-astra en `high`. En alto riesgo, `interrogate` con astra y opus-5.5. El nivel se reclasifica en cada ronda. Si la ronda 3 no da APTO, ataca la premisa antes de seguir. Hasta ocho rondas sin autorización adicional; la ronda 9 espera al dueño. | `interrogate` | Agente |
+| 10. Revisar | Revisor independiente gpt-6.1-sol en `high`. En alto riesgo, `interrogate` con sol y opus-5.5. El nivel se reclasifica en cada ronda. Si la ronda 3 no da APTO, ataca la premisa antes de seguir. Hasta ocho rondas sin autorización adicional; la ronda 9 espera al dueño. | `interrogate` | Agente |
 | 11. Abrir el PR | Un PR por unidad de entrega. Los tickets acoplados se reúnen en un acumulador. Un bug de producción sale en el suyo antes que cualquier mejora. | Acumulador de `felix-mode`, `deslop`, `no-comments`, `technical-writing`, `unslop` | Agente |
 | 12. Llevar a merge | CI, comentarios y conflictos. Mergea solo cuando todas las reviews dan APTO y los checks están verdes. Si el merge despliega o el cambio es de alto riesgo, antes un verificador independiente corre el cambio. | Playbooks Babysit y Shipping, `fix-ci`, `fix-merge-conflicts`, `get-pr-comments` | Agente |
 | 13. Cerrar | Informe con evidencia y etiquetas: medido, inferido o suposición. Bitácora en trabajo largo. | `show-me-your-work` | Agente |
@@ -95,8 +95,8 @@ tocan CI, dependencias o la gobernanza de agentes.
 
 | Nivel | Cuándo | Cómo |
 |-------|--------|------|
-| Normal | Toda review de cambios. | Un revisor gpt-6-astra en `high`, con contexto nuevo y evidencia primaria. |
-| Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o lo que el `AGENTS.md` marque. | `interrogate` con astra en `high` como Reviewer A y opus-5.5 en `high`. El orquestador veta los hallazgos. |
+| Normal | Toda review de cambios. | Un revisor gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. |
+| Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o lo que el `AGENTS.md` marque. | `interrogate` con sol en `high` como Reviewer A y opus-5.5 en `high`. El orquestador veta los hallazgos. |
 | Diseño | Decisiones de forma antes de implementar. | `architect` con un runner opus-5.5 y dos candidatos. Sin juez cruzado. |
 | Diseño disputado | Alto riesgo, o dos candidatos empatados. | `arena` con opus-5.5 y gpt-6.1-sol, juzgado por astra, y dos implementaciones completas. |
 
