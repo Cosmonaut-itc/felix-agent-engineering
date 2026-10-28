@@ -214,6 +214,17 @@ siendo obligatorios.
   contra el sketch elegido.
 - Si no puede correr ningún revisor independiente, la puerta sigue cerrada,
   como dice `poteto-mode`. Tu propia lectura no cuenta como review.
+- **Constancia.** El cuerpo de cada PR termina con una línea por revisor
+  exigido, con la forma
+  `Revisión: <modelo> <esfuerzo>, ronda <n>, <veredicto> sobre <head>`.
+  Copia el veredicto literal, también NO APTO o SIN DICTAMEN. Mientras el
+  head del PR no tiene veredicto, `<veredicto>` es `pendiente` y `<n>` es
+  la ronda que lo juzgará. En un acumulador sólo cuenta la review final del
+  conjunto: hasta entonces la línea dice `pendiente`, con los revisores del
+  nivel vigente. Quien abre el PR la escribe, el orquestador la actualiza
+  tras cada ronda y cambio de head, y quien edita el cuerpo la conserva.
+  Esta línea sustituye la exclusión de veredictos «CLEAN» del cuerpo en
+  «Opening a PR».
 
 ## Merge
 
