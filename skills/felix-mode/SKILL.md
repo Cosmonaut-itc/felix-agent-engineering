@@ -198,11 +198,11 @@ siendo obligatorios.
   por cambio de head. Antes de la ronda 9 pausa, aunque la ronda 8 haya
   dado APTO: entrega al usuario lo que sigue abierto y el replanteamiento
   realizado.
-- **Hallazgos.** Resuelve cada hallazgo aceptado con el cambio mínimo, sin
-  ampliar el alcance: lo que pide trabajo fuera del objetivo es otra unidad,
-  como dice **Unidades**. Rebate con evidencia el hallazgo que esté mal.
-  Declina los nits, como los de comentarios, documentación o estilo: no
-  impiden APTO, y cada cambio de head exige otra ronda.
+- **Hallazgos.** Resuelve cada critical o warning aceptado con el cambio
+  mínimo, o rebátelo con evidencia; ninguno se declina por su tema. Una
+  sugerencia que pide trabajo fuera del objetivo va a otra unidad, como
+  dice **Unidades**. Declina los nits, sean de comentarios, documentación
+  o estilo: no impiden APTO, y cada cambio de head exige otra ronda.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
   que entrega dos candidatos estructuralmente distintos. Tú eliges y no hay
