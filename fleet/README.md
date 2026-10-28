@@ -545,8 +545,8 @@ si fallan cierre/observación/persistencia. No declara un pase ni informe durabl
 cuando falla esa persistencia. N5 excluye del paquete todas las copias privadas
 nuevas de preparación/validación/incompatible, con cualquier nombre, además de
 ledger/WAL/SHM/closed-main y entorno privado. Los seis nits h4 siguen diferidos.
-H5 no se ha ejecutado: necesita reviews NUEVAS Astra high + Opus high, APTO doble,
-veto PAO y orden posterior antes de la suite Mini. No es aceptación runtime.
+H5 quedó cerrado en el PR 31: reviews Astra high + Opus high con APTO doble,
+veto PAO y suite Mini h5 (turno 340) con 101/0/0/0 en ambos stacks.
 
 Las pruebas incluyen
 snapshots sin Git, Git/índice/working tree,
@@ -622,9 +622,9 @@ El watchdog de 30 segundos de la matriz de 144 consultas se conserva: su autoexi
 da error y `done=watchdog`, nunca liberación sana. Su duración y margen siguen
 pendientes de medición en Mini. No se han aumentado timeouts para ocultar un rojo.
 
-Las pruebas nuevas están **escritas, no ejecutadas**. Este candidato requiere
-evidencia Mini, reviews Astra high y Opus high, veto PAO y OK concreto de Felix;
-no declara el ticket aprobado ni cerrado.
+Las pruebas nuevas se ejecutaron en la suite Mini h5 (turno 340). El candidato
+se cerró con esa evidencia, reviews Astra high y Opus high con APTO doble, veto
+PAO y autorización de Felix, y se mergeó en el PR 31.
 
 El diagnóstico fase A de f967 ejecutó 87 métodos por intérprete: 3.9.6 obtuvo
 18 pass/67 fail/0 error/2 skip y 3.14.7 obtuvo 19/66/0/2. No fue aceptación:
