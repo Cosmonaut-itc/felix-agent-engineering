@@ -198,6 +198,12 @@ siendo obligatorios.
   por cambio de head. Antes de la ronda 9 pausa, aunque la ronda 8 haya
   dado APTO: entrega al usuario lo que sigue abierto y el replanteamiento
   realizado.
+- **Hallazgos.** Corrige cada hallazgo aceptado con el cambio mínimo y
+  rebate con evidencia el que esté mal. Lo que pide trabajo fuera del
+  objetivo sigue **Unidades** y el [procedimiento de merge](references/merge.md).
+  Declina los nits, sean de comentarios, documentación o estilo: no impiden
+  APTO, y cada cambio de head exige otra ronda. Un critical o warning nunca
+  es un nit, aunque trate de documentación.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
   que entrega dos candidatos estructuralmente distintos. Tú eliges y no hay
