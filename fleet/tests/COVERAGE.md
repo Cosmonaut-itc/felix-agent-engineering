@@ -89,8 +89,8 @@ sin éxito ni diagnóstico durable inventados. El cleanup existente no borra la 
 N5 comprende **todas** las copias nuevas: ningún main de preparación/validación/
 incompatible, ledger/WAL/SHM/closed-main ni entorno privado entra en el paquete,
 independientemente del nombre. No se tocan los seis nits h4 ni el lector producto.
-Reviews nuevas Astra high + Opus high, APTO doble y veto PAO preceden una orden
-posterior de suite Mini; esta edición no autoriza ni acredita runtime.
+H5 se cerró con reviews Astra high + Opus high, APTO doble, veto PAO y suite
+Mini h5 (turno 340, 101/0/0/0 por stack), y se mergeó en el PR 31.
 
 ## H4: quietud física y validación independiente del main file
 
