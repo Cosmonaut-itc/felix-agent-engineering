@@ -125,7 +125,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
   <p class="lead"><code>felix-mode</code> une tres piezas. Cada una tiene su terreno.</p>
   <div class="grid g3">
     <div class="card"><span class="tag">Ejecuta</span><h3>pstack</h3><p>Los playbooks de <code>poteto-mode</code> dicen los pasos de cada tipo de tarea. Sus skills hacen el trabajo especializado.</p></div>
-    <div class="card"><span class="tag">Delega</span><h3>Tu contrato</h3><p>El routing elige modelo y esfuerzo. Cada encargo pasa por Despachar, Recoger, Vetar y Cerrar. astra revisa los cambios.</p></div>
+    <div class="card"><span class="tag">Delega</span><h3>Tu contrato</h3><p>El routing elige modelo y esfuerzo. Cada encargo pasa por Despachar, Recoger, Vetar y Cerrar. sol revisa los cambios.</p></div>
     <div class="card"><span class="tag">Planifica</span><h3>Matt Pocock</h3><p><code>grilling</code>, <code>to-spec</code>, <code>to-tickets</code>, <code>triage</code> y <code>wayfinder</code>. Un issue listo es el brief que recibe <code>felix-mode</code>.</p></div>
   </div>
 </section>
@@ -160,7 +160,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
     <div class="step"><b>3</b><span>Elige un playbook y sigue sus pasos.</span></div>
     <div class="step"><b>4</b><span>Delega según el routing. Por encima del umbral de «Delegación», un trabajador escribe el código.</span></div>
     <div class="step"><b>5</b><span>Prueba en la app real con <code>verify</code>.</span></div>
-    <div class="step"><b>6</b><span>Revisión de astra en high, y de Opus si es alto riesgo.</span></div>
+    <div class="step"><b>6</b><span>Revisión de sol en high, y de Opus si es alto riesgo.</span></div>
     <div class="step"><b>7</b><span>Abre un PR por unidad y te da un informe con evidencia. Un bug de producción sale primero, en su propio PR.</span></div>
   </div>
   <h3>Quién manda si chocan</h3>
@@ -211,8 +211,8 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
   <h2>Revisión</h2>
   <p class="lead">Ningún otro modelo revisa cambios. Antes de cada ronda, el orquestador clasifica el diff completo como normal o alto riesgo, veta los hallazgos y dice qué nivel aplicó y por qué. Si la ronda 3 no da APTO, ataca la premisa antes de seguir. Las reviews delta y las renovaciones cuentan como rondas. Puede ejecutar hasta ocho rondas sin autorización adicional. La ronda 9 requiere tu autorización, aunque la octava fuera APTO y después cambiara el head.</p>
   <div class="grid g2">
-    <div class="card"><span class="tag">Normal</span><h3>Un revisor astra en high</h3><p>gpt-6-astra en <code>high</code>, con contexto nuevo y evidencia primaria. Cumple los pasos donde pstack pide <code>interrogate</code> o <code>thermos</code>.</p></div>
-    <div class="card"><span class="tag">Alto riesgo</span><h3>astra y Opus por separado</h3><p><code>interrogate</code> con gpt-6-astra en high como Reviewer A y opus-5.5 en high. Ejemplos: permisos, nómina o impuestos.</p></div>
+    <div class="card"><span class="tag">Normal</span><h3>Un revisor sol en high</h3><p>gpt-6.1-sol en <code>high</code>, con contexto nuevo y evidencia primaria. Cumple los pasos donde pstack pide <code>interrogate</code> o <code>thermos</code>.</p></div>
+    <div class="card"><span class="tag">Alto riesgo</span><h3>sol y Opus por separado</h3><p><code>interrogate</code> con gpt-6.1-sol en high como Reviewer A y opus-5.5 en high. Ejemplos: permisos, nómina o impuestos.</p></div>
     <div class="card"><span class="tag">Diseño</span><h3>Dos candidatos de Opus</h3><p><code>architect</code> corre <code>arena</code> con un solo runner opus-5.5 que entrega dos diseños distintos. El orquestador elige y no hay juez cruzado.</p></div>
     <div class="card"><span class="tag">Diseño disputado</span><h3>Opus contra Sol, juez astra</h3><p>Alto riesgo o empate entre los candidatos de Opus. Compiten opus-5.5 y gpt-6.1-sol, gpt-6-astra juzga, y salen dos implementaciones completas.</p></div>
   </div>
@@ -277,7 +277,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr data-k="you"><td><code>handoff</code></td><td>Resume la conversación en un documento de traspaso, fuera del workspace, para que otro agente la retome.</td><td><span class="badge b-you">Tú</span></td></tr>
       <tr data-k="avoid"><td><code>setup-pstack</code></td><td>Reescribe completa la hoja <code>pstack-models.md</code>. La tuya sale del routing.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td><code>babysit</code> de pstack</td><td>Para un PR, pide el playbook Babysit: <q>cuida el PR N</q>.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
-      <tr data-k="avoid"><td><code>thermos</code>, <code>thermo-nuclear-review</code></td><td>No para revisar cambios. Tu routing reserva eso a astra, y a Opus en alto riesgo.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
+      <tr data-k="avoid"><td><code>thermos</code>, <code>thermo-nuclear-review</code></td><td>No para revisar cambios. Tu routing reserva eso a sol, y a Opus en alto riesgo.</td><td><span class="badge b-avoid">Evitar</span></td></tr>
       <tr data-k="avoid"><td>Matt Pocock: <code>tdd</code>, <code>diagnosing-bugs</code>, <code>prototype</code>, <code>code-review</code>, <code>pr</code>, <code>implement</code>, <code>resolving-merge-conflicts</code></td><td>No se instalan: pstack las cubre. <code>pao</code> las retira de <code>~/.agents/skills</code> y <code>~/.claude/skills</code>. Superpowers está apagado.</td><td><span class="badge b-avoid">Retirada</span></td></tr>
     </tbody>
   </table>
@@ -289,8 +289,8 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
   <table>
     <thead><tr><th>Modelo</th><th>Costo</th><th>Intel.</th><th>Gusto</th><th>Cuándo</th></tr></thead>
     <tbody>
-      <tr><td><b>gpt-6-astra</b></td><td class="num">5</td><td class="num">10</td><td class="num">7</td><td>Lo que Sol no resolvió. Reviews de cambios en high. Fuera de reviews parte de low.</td></tr>
-      <tr><td><b>gpt-6.1-sol</b></td><td class="num">9</td><td class="num">9</td><td class="num">6</td><td>Opción habitual para ejecución técnica.</td></tr>
+      <tr><td><b>gpt-6-astra</b></td><td class="num">5</td><td class="num">10</td><td class="num">7</td><td>Lo que Sol no resolvió. Parte de low.</td></tr>
+      <tr><td><b>gpt-6.1-sol</b></td><td class="num">9</td><td class="num">9</td><td class="num">6</td><td>Opción habitual para ejecución técnica. Reviews de cambios en high.</td></tr>
       <tr><td><b>gpt-6-luna</b></td><td class="num">10</td><td class="num">7</td><td class="num">4</td><td>Encargos claros y fáciles de verificar.</td></tr>
       <tr><td><b>opus-5.5</b></td><td class="num">8</td><td class="num">9</td><td class="num">9</td><td>Gusto visual y decisiones de producto.</td></tr>
       <tr><td><b>sonnet-5.5</b></td><td class="num">6</td><td class="num">7</td><td class="num">7</td><td>Trabajo en Claude que no pide el juicio de Opus.</td></tr>
@@ -312,7 +312,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
       <tr><td>Síntesis de <code>how</code>, <code>why</code> y <code>reflect</code></td><td>sonnet-5.5 en medium.</td></tr>
       <tr><td>Runners de <code>architect</code> y <code>arena</code></td><td>opus-5.5. En diseño disputado, también gpt-6.1-sol.</td></tr>
       <tr><td>Juez de <code>arena</code></td><td>De otra familia que el autor. Panel mixto: gpt-6-astra.</td></tr>
-      <tr><td>Revisores de <code>interrogate</code></td><td>gpt-6-astra en high. En alto riesgo, también opus-5.5 en high.</td></tr>
+      <tr><td>Revisores de <code>interrogate</code></td><td>gpt-6.1-sol en high. En alto riesgo, también opus-5.5 en high.</td></tr>
     </tbody>
   </table>
 </section>
@@ -324,7 +324,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
     <tbody>
       <tr><td><b>Claude Code</b></td><td><code>~/.claude</code></td><td>Sí</td><td>Sí, por <code>CLAUDE.md</code></td><td>Orquestar.</td></tr>
       <tr><td><b>App de Codex</b></td><td><code>~/.codex</code>, ChatGPT directo</td><td>Sí</td><td>Sí, por <code>AGENTS.md</code></td><td>Orquestar.</td></tr>
-      <tr><td><b>CLI de Codex con proxy</b></td><td><code>~/.config/codex-cli</code>, pasa por el proxy de DESKTOP en el puerto 8317</td><td>No</td><td>No, no tiene <code>AGENTS.md</code> global</td><td>Trabajadores GPT y reviews de astra que despacha Claude. Comando <code>codex</code> con <code>CODEX_HOME</code>.</td></tr>
+      <tr><td><b>CLI de Codex con proxy</b></td><td><code>~/.config/codex-cli</code>, pasa por el proxy de DESKTOP en el puerto 8317</td><td>No</td><td>No, no tiene <code>AGENTS.md</code> global</td><td>Trabajadores GPT y reviews de sol que despacha Claude. Comando <code>codex</code> con <code>CODEX_HOME</code>.</td></tr>
       <tr><td><b>OpenCode Go</b></td><td>Perfiles de <code>opencode-workers.md</code></td><td>No aplica</td><td>No</td><td>DeepSeek, MiniMax y Kimi para encargos acotados.</td></tr>
     </tbody>
   </table>

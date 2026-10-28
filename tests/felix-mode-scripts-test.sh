@@ -128,7 +128,7 @@ validation() {
     reject start --model gpt-6-astra --effort high --timeout 0 "$TEST_TMP/brief.md"
     reject wait absent --timeout nope
     run --help > "$TEST_TMP/help"
-    assert grep -q 'gpt-6-astra --effort high --ephemeral' "$TEST_TMP/help"
+    assert grep -q 'gpt-6.1-sol --effort high --ephemeral' "$TEST_TMP/help"
     assert grep -q 'gpt-6.1-sol --effort medium --write' "$TEST_TMP/help"
 }
 

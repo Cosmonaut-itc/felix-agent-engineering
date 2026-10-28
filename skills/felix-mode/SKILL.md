@@ -178,11 +178,11 @@ siendo obligatorios.
   puede subir de nivel. El brief de cada ronda abre con `Nivel: <normal o
   alto> por <señal o ruta>`, y tu respuesta repite el nivel y su motivo.
 - **Normal.** Toda review de cambios la hace un revisor independiente
-  gpt-6-astra en `high`, con contexto nuevo y evidencia primaria. Donde pstack
+  gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
   normal, ese revisor cumple el paso.
 - **Alto riesgo.** Corre `interrogate` con dos revisores independientes:
-  gpt-6-astra en `high` por Transporte, siempre como Reviewer A, y opus-5.5
+  gpt-6.1-sol en `high` por Transporte, siempre como Reviewer A, y opus-5.5
   en `high`, el asiento Claude que trae la hoja. Ese asiento corre sólo en
   alto riesgo. Tú eres el lead reviewer y vetas los hallazgos. Cuentan como
   señales: escrituras a producción o a un sistema de cliente (ICG, ERP,
