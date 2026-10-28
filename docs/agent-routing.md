@@ -15,8 +15,8 @@ gusto.
 
 | Modelo        | costo | inteligencia | gusto | Cuándo |
 |---------------|-------|--------------|-------|--------|
-| gpt-6-astra   | 5     | 10           | 7     | Problemas más complejos que Sol no resolvió o que claramente lo superan; reviews de cambios en high. |
-| gpt-6.1-sol   | 9     | 9            | 6     | Opción habitual para ejecución técnica. |
+| gpt-6-astra   | 5     | 10           | 7     | Problemas más complejos que Sol no resolvió o que claramente lo superan. |
+| gpt-6.1-sol   | 9     | 9            | 6     | Opción habitual para ejecución técnica; reviews de cambios en high. |
 | gpt-6-luna    | 10    | 7            | 4     | Primera opción Codex para encargos claros y fáciles de verificar; cuesta la mitad que gpt-5.6-luna. |
 | opus-5.5      | 8     | 9            | 9     | Gusto visual y decisiones de producto. |
 | sonnet-5.5    | 6     | 7            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |
@@ -71,7 +71,7 @@ cada modelo. El esfuerzo sigue la incertidumbre del encargo, no su tamaño.
 | medium | Hace falta interpretar, planificar o comparar alternativas; punto de partida habitual. |
 | high | Persisten incertidumbres importantes o se necesita razonamiento profundo. |
 
-**Fuera de reviews de cambios, gpt-6-astra se calibra un escalón por debajo.**
+**gpt-6-astra se calibra un escalón por debajo.**
 Astra en low rinde más que gpt-5.6-sol en high, según
 [OpenAI](https://x.com/thsottiaux/status/2096688770523467947).
 Con Astra, `low` es el punto de partida habitual y `medium` cubre lo que con
@@ -117,7 +117,7 @@ pendiente.
 
 ## Revisión y UI/UX
 
-Las reviews de cambios las hace un revisor independiente con gpt-6-astra en
+Las reviews de cambios las hace un revisor independiente con gpt-6.1-sol en
 esfuerzo `high`. En un cambio de alto riesgo, según lo juzgue el orquestador,
 se suma opus-5.5 en `high` como segundo revisor independiente. Ningún otro
 modelo revisa cambios. El orquestador veta el cambio y los hallazgos.
@@ -141,7 +141,7 @@ defaults de pstack. A partir de ahí rigen Esfuerzo y Escalado.
 | `how explainer`, `why synthesizer`, `reflect judgment, divergent, synthesizer` | sonnet-5.5 en `medium`. |
 | `architect runners`, `arena runners` | opus-5.5; en diseño disputado (alto riesgo o empate entre los candidatos de opus-5.5, según `felix-mode`), también gpt-6.1-sol. |
 | `arena cross-judge pool` | Familia distinta del autor: gpt-6-astra si el autor es Claude, opus-5.5 si es GPT. Un panel mixto opus-5.5 y gpt-6.1-sol tiene un juez único, gpt-6-astra. |
-| `interrogate reviewers` | Según Revisión: gpt-6-astra en `high`; en alto riesgo, también opus-5.5 en `high`. |
+| `interrogate reviewers` | Según Revisión: gpt-6.1-sol en `high`; en alto riesgo, también opus-5.5 en `high`. |
 | Revisor del rastro de `show-me-your-work` | gpt-6-astra. |
 
 El `Agent` de pstack en Claude Code sólo acepta modelos Claude, así que la

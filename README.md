@@ -25,7 +25,7 @@ config:
 ---
 flowchart LR
   P["<b>Planeación</b><br/>Matt Pocock<br/><br/>grilling<br/>to-spec y to-tickets<br/>triage hasta ready-for-agent"]
-  I["<b>Implementación</b><br/>pstack y mi contrato<br/><br/>felix-mode y su playbook<br/>delegación según el routing<br/>tdd y verify<br/>review de gpt-6-astra"]
+  I["<b>Implementación</b><br/>pstack y mi contrato<br/><br/>felix-mode y su playbook<br/>delegación según el routing<br/>tdd y verify<br/>review de gpt-6.1-sol"]
   D["<b>Despliegue</b><br/>el repositorio y yo<br/><br/>PR<br/>merge solo si APTO y verde<br/>gobernanza y otro deploy con mi OK<br/>verificación posterior<br/>retro si el repo la pide"]
   P --> I --> D
   D -.->|candidatas de la retro| P
@@ -44,7 +44,7 @@ Las partes y las skills de cada fase están en el
 - **Implementación.** Partes 3 a 10. `felix-mode` elige el playbook de pstack
   y delega el código según el routing. La fase termina cuando el cambio pasa
   la prueba sobre el artefacto real, con `verify` o con los docs de
-  verificación del repositorio, y un revisor gpt-6-astra en `high` lo aprueba.
+  verificación del repositorio, y un revisor gpt-6.1-sol en `high` lo aprueba.
   Los tickets que necesitan salir juntos usan el acumulador de `felix-mode`,
   adaptado de `implement-spec`, con una rama de integración y un PR
   acumulador. Cada ticket pasa prueba y review antes de entrar, y el
@@ -66,7 +66,7 @@ Las partes y las skills de cada fase están en el
 |---|---|---|
 | **Grilling.** El agente me entrevista en rondas hasta que entendemos lo mismo. Yo decido y él busca los hechos. | **Probar en lo real.** Nada está hecho hasta probarlo sobre el artefacto real, con la skill `verify` del proyecto o, si falta, con sus docs de verificación. Que compile no basta. | **[Contrato de delegación](docs/orchestration.md).** Despachar → Recoger → Vetar → Cerrar, igual en Claude Code y en Codex. |
 | **Tickets en rebanadas.** Salvo en un refactor amplio, cada ticket cruza todas las capas, se puede probar por sí solo y cabe en una sesión. | **Restar antes de sumar.** El cambio más pequeño que resuelve el problema. Primero quito lo que sobra y después construyo sobre la base más simple. | **[Modelo por rol y costo](docs/agent-routing.md).** Para ejecutar, parto del modelo más barato que puede hacerlo y escalo si no basta. La review y el diseño usan el modelo que el routing fija por rol. |
-| **Retro.** Al cerrar una sesión, la retro propone mejoras al entorno del agente, no sólo al código. | **Evidencia etiquetada.** Cada afirmación dice si está medida, inferida o supuesta. | **Review independiente.** gpt-6-astra en `high` revisa con contexto nuevo, sin el razonamiento del autor. En alto riesgo se suma Opus. |
+| **Retro.** Al cerrar una sesión, la retro propone mejoras al entorno del agente, no sólo al código. | **Evidencia etiquetada.** Cada afirmación dice si está medida, inferida o supuesta. | **Review independiente.** gpt-6.1-sol en `high` revisa con contexto nuevo, sin el razonamiento del autor. En alto riesgo se suma Opus. |
 | | **Lección en estructura.** Una instrucción que se repite se vuelve lint, script o check. | **[Pausas explícitas](docs/flujo-de-trabajo.md#pausas).** El merge APTO y verde y los efectos de su automatización están autorizados. Un push directo a `main`, un comando de deploy, un PR de gobernanza, CI o dependencias y las demás pausas siguen esperando mi OK. |
 
 ## Agentic engineering

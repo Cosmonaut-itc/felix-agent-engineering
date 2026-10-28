@@ -35,7 +35,7 @@ resume se rechaza si el original o algún resume-N sigue running o stuck.
 El exit code puede mentir: comprueba tools, el mensaje y el entregable.
 
 Review:
-  codex-run start --model gpt-6-astra --effort high --ephemeral review.md
+  codex-run start --model gpt-6.1-sol --effort high --ephemeral review.md
 Implementación:
   codex-run start --model gpt-6.1-sol --effort medium --write brief.md
 
