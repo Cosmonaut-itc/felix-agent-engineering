@@ -217,10 +217,13 @@ siendo obligatorios.
 - **Constancia.** El cuerpo de cada PR termina con una línea por revisor
   exigido, con la forma
   `Revisión: <modelo> <esfuerzo>, ronda <n>, <veredicto> sobre <head>`.
-  Escríbela al abrir el PR, con `en curso` mientras la ronda corre, y
-  actualízala tras cada ronda o cambio de head. Copia el veredicto literal,
-  también NO APTO o SIN DICTAMEN. Esta línea sustituye la regla de
-  «Opening a PR» que saca los veredictos del cuerpo.
+  Copia el veredicto literal, también NO APTO o SIN DICTAMEN. Mientras el
+  head actual no tiene veredicto, `<veredicto>` es `pendiente` y `<n>` es
+  la ronda que lo juzgará. En un acumulador, la línea refleja sólo la
+  review final del conjunto. El orquestador la escribe y la actualiza tras
+  cada ronda y cambio de head, y quien edita el cuerpo la conserva. Esta
+  línea sustituye la exclusión de veredictos «CLEAN» del cuerpo en
+  «Opening a PR».
 
 ## Merge
 
