@@ -55,6 +55,8 @@ navegador headless.
    - Antes de cada persona, en cada ronda, dale una sesión limpia. Abre
      Chrome con un perfil vacío:
      `open -na "Google Chrome" --args --user-data-dir=<directorio de la ronda>/<persona>/perfil --no-first-run <URL de entrada>`.
+     Para la persona móvil, abre `about:blank` en lugar de la URL de
+     entrada: aplica sus ajustes antes de la primera carga.
      Usa cuentas y correos de prueba que nadie haya usado, o reinicia sus
      datos. El perfil nuevo trae DevTools sin modo de dispositivo ni red
      limitada. En una app Android, borra sus datos con
