@@ -32,7 +32,9 @@ navegador headless.
    - Las cuentas, correos y tarjetas de prueba, y lo que ninguna persona
      toca, como pagos reales o correos a terceros.
    - El Mac de pruebas: la Mac Mini, salvo que el `AGENTS.md` del
-     repositorio diga otro. Toma su `environmentId` de `t3_environment_links`.
+     repositorio diga otro. Las personas corren en su escritorio: lanza esta
+     skill desde un hilo de T3 Code en ese Mac, o, si tu servidor de T3 lo
+     tiene enlazado, usa su `environmentId`.
    - El directorio de la ronda en ese Mac:
      `~/qa-runs/<proyecto>/<AAAAMMDD-HHMM>-r<n>/`.
 
@@ -47,8 +49,8 @@ navegador headless.
    `role: "test"`, la plantilla de brief de
    [personas.md](references/personas.md) completa y este `target`:
    proveedor `codex`, modelo `gpt-6.1-terra`,
-   `options: {reasoningEffort: "medium"}` y el `environmentId` del Mac de
-   pruebas. El límite por persona es de 20 minutos, salvo que el flujo pida
+   `options: {reasoningEffort: "medium"}` y, si corres en otro Mac, el
+   `environmentId` del Mac de pruebas. El límite por persona es de 20 minutos, salvo que el flujo pida
    más.
    - Computer Use controla un solo escritorio. Despacha una persona a la vez
      por Mac y lanza la siguiente cuando la anterior entregó su resultado
