@@ -12,6 +12,7 @@ file configs/claude/docs/codex-delegation.md ~/.claude/docs/codex-delegation.md
 file configs/claude/pstack-models.md ~/.claude/pstack-models.md
 file configs/claude/hooks/duplicate-session-guard ~/.claude/hooks/duplicate-session-guard
 skill skills/felix-mode felix-mode
+skill skills/launch-qa launch-qa
 skill vendor/mattpocock/ask-matt ask-matt
 skill vendor/mattpocock/codebase-design codebase-design
 skill vendor/mattpocock/domain-modeling domain-modeling
