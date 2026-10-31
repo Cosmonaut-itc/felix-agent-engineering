@@ -89,7 +89,7 @@ hooks del frontmatter de una skill.
 ## Tickets de Linear
 
 Antes de tomar, comprobar, soltar o traspasar un ticket de Linear, y al
-cerrar una sesión que tomó tickets, sigue
+cerrar una sesión o un programa que tomó tickets, sigue
 [Tickets de Linear](references/linear.md).
 
 ## Qué skill usar
@@ -162,7 +162,7 @@ siendo obligatorios.
   siguiente corrección. Un mismo cambio tiene hasta ocho rondas sin
   autorización adicional, contando las reviews delta y las renovaciones
   por cambio de head. Antes de la ronda 9 pausa, aunque la ronda 8 haya
-  dado APTO: entrega al usuario lo que sigue abierto y el replanteamiento
+  dado APTO. Entrega al usuario lo que sigue abierto y el replanteamiento
   realizado.
 - **Hallazgos.** Corrige cada hallazgo aceptado con el cambio mínimo y
   rebate con evidencia el que esté mal. Lo que pide trabajo fuera del

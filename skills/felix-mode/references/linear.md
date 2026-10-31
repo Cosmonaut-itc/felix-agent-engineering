@@ -10,7 +10,8 @@ T3 que lo toma. En un programa, es el hilo del orquestador.
 2. **Título.** Renombra el hilo con `t3_thread_update` (`action: rename`) y
    el tema general de lo que implementa, en palabras que Felix entienda sin
    abrir Linear, como `Precios nuevos y correo de acceso de Jale`. El título
-   lleva sólo el tema, porque la etiqueta ya liga los tickets con la sesión.
+   expresa el tema general y omite los IDs de tickets, porque la etiqueta
+   ya liga los tickets con la sesión.
    Cámbialo sólo si cambia el tema.
 3. **Tomar.** Lee el ticket con `get_issue`. Está libre si no lleva etiqueta
    `sesión` o si la que lleva está retirada. Si lleva otra etiqueta activa,
