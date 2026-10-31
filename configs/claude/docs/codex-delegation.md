@@ -29,8 +29,8 @@ esta ruta:
 
 Los trabajadores usan sólo el `CODEX_HOME` conectado al proxy:
 `~/.config/codex-cli` (alias interactivo `codex`). Hoy existe sólo en la
-MacBook. En la Mac Mini falta, y Codex sale con «failed to resolve
-CODEX_HOME» en lugar de ir en directo. Su
+MacBook. En la Mac Mini falta, y Codex falla porque ese directorio no
+existe, en lugar de ir en directo. Su
 `config.toml` fija `model_provider = "cpa"` hacia `felix-desktop:8317/v1`, y el
 proxy reparte las cuentas y gestiona sus límites; no cambies de cuenta a mano.
 

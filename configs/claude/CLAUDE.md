@@ -39,8 +39,9 @@ Para delegar en Codex, lee `~/.claude/docs/codex-delegation.md`. Si corres en
 un hilo de T3 Code con su `delegate_task` disponible, despacha por ahí
 primero. Si no, usa sólo la CLI conectada al proxy, pasando en cada invocación
 `CODEX_HOME="$HOME/.config/codex-cli"` (alias `codex`); el proxy gestiona
-cuentas y límites. Hoy esa CLI existe sólo en la MacBook. No uses `~/.codex`
-(alias `codex-original`): es la app de ChatGPT, en directo y sin proxy.
+cuentas y límites. Hoy ese `CODEX_HOME` existe sólo en la MacBook. No uses
+`~/.codex` (alias `codex-original`): es la app de ChatGPT, en directo y sin
+proxy.
 
 ## Flujo de ingeniería
 
