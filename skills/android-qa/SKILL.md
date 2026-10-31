@@ -1,23 +1,23 @@
 ---
 name: android-qa
-description: Android en dispositivo o emulador. Úsala en toda prueba, QA o reproducción de un bug sobre un Android real o emulado, y antes de elegir entre la Android CLI (`android`) y adb.
+description: Android, pruebas en dispositivo o emulador. Úsala al probar o reproducir un bug en un Android, y al elegir entre la Android CLI (`android`) y adb.
 ---
 
 # QA en Android
 
-La Android CLI (`android`) maneja los dispositivos y
-emuladores de toda prueba. adb queda para las tareas que la CLI no cubre.
-Donde la skill oficial `android-cli` de Google enseña `adb shell input` con
-coordenadas, manda esta skill.
+La Android CLI (`android`) maneja los dispositivos y emuladores de toda
+prueba. adb queda para las tareas que la CLI no cubre. Donde la skill oficial
+`android-cli` de Google enseña `adb shell input` con coordenadas, manda esta
+skill.
 
 ## Antes de empezar
 
-1. Corre en la máquina que diga el `AGENTS.md` del repositorio; si no dice
-   nada, en la Mac Mini, como fija «Máquinas» del entrypoint global.
+1. Corre en la máquina que diga el `AGENTS.md` del repositorio. Si no dice
+   nada, corre en la Mac Mini, como fija «Máquinas» del entrypoint global.
 2. Comprueba la versión con `android -V`. Esta skill necesita 1.1.16717390
    o posterior, la que añade `android device hub`. `android input` llegó
    antes, en 1.0.16625370. Si la versión es anterior, `android update`
-   instala la última en esa máquina; dilo en tu reporte.
+   instala la última en esa máquina. Dilo en tu reporte.
 3. Con más de un dispositivo conectado, pasa `--device <serial>`, con el
    serial que lista `adb devices`, a los comandos que actúan sobre un
    dispositivo: `install`, `run`, `layout`, `input`, `screen capture` y
@@ -31,7 +31,7 @@ Los flags de cada comando salen de `android <comando> -h`.
 |---|---|
 | Listar, arrancar y apagar emuladores | `android emulator list`, `android emulator start --headless <avd>`, `android emulator stop <avd>` |
 | Instalar o lanzar un build | `android install`, `android run` |
-| Leer la pantalla | `android layout`: JSON con los elementos interactivos y su `center`. `--full` añade el texto no interactivo. |
+| Leer la pantalla | `android layout` devuelve JSON con los elementos interactivos y su `center`. `--full` añade el texto no interactivo. |
 | Tocar, escribir, deslizar, desplazar | `android input tap`, `text`, `swipe` y `scroll`, con selectores `text=`, `id=`, `desc=` y `class=` |
 | Teclas y botones del sistema | `android input key <tecla>`, como `back`, `home` o `enter`, o un keycode |
 | Captura de evidencia | `android screen capture -o <archivo>.png` |
@@ -42,12 +42,12 @@ Los flags de cada comando salen de `android <comando> -h`.
 
 - Toca, escribe y desliza por selector. `android input tap`, `text`,
   `swipe` y `scroll` salen con código distinto de cero si el elemento no
-  existe o si coinciden varios. `adb shell input tap`
-  devuelve 0 aunque no toque nada.
+  existe o si coinciden varios. `adb shell input tap` devuelve 0 aunque no
+  toque nada.
 - Lee el código de salida de cada paso. Un código distinto de cero es un
   fallo del paso.
 - Un selector de texto coincide con cualquier subcadena, sin distinguir
-  mayúsculas: `text=Guardar` también encuentra «Guardar borrador». Para una
+  mayúsculas. `text=Guardar` también encuentra «Guardar borrador». Para una
   coincidencia exacta usa una expresión regular, como `text=/^Guardar$/`.
 - Espera con `--wait=<ms>` a que el elemento aparezca. Usa `--match=first`
   sólo cuando cualquiera de las coincidencias sirve.
