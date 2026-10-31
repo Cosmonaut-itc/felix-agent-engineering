@@ -1,6 +1,6 @@
 ---
 name: felix-mode
-description: "Modo de trabajo de Felix sobre pstack. Úsalo antes de actuar en toda tarea de ingeniería que toque más de un archivo, cambie una firma que otros llaman, implique una decisión de diseño o sea un bug de causa desconocida o un problema de rendimiento, y cuando pidan /felix-mode. No lo uses al resolver un encargo que te delegó otro agente, salvo que el encargo lo pida. Corre el playbook de poteto-mode con la precedencia, los modelos por rol, la revisión y la autonomía de Felix."
+description: "Modo de ingeniería de Felix sobre pstack. Úsalo antes de actuar en una tarea que toque más de un archivo, cambie una firma que otros llaman, implique una decisión de diseño, o sea un bug de causa desconocida o un problema de rendimiento. Un encargo que te delegó otro agente lo usa sólo si lo pide."
 ---
 
 # felix-mode
@@ -8,9 +8,9 @@ description: "Modo de trabajo de Felix sobre pstack. Úsalo antes de actuar en t
 pstack ejecuta, el contrato global delega y Matt Pocock planifica. Este
 archivo fija cómo encajan. Lo que no cambia aquí lo decide `poteto-mode`.
 
-Si trabajas un encargo que te delegó otro agente, eres trabajador: no
-apliques este modo salvo que el encargo lo pida. Resuelve el encargo y
-devuelve evidencia, como dice el contrato.
+Si otro agente te delegó un encargo, eres trabajador. Resuelve el encargo y
+devuelve evidencia, como dice el contrato, y aplica este modo sólo si el
+encargo lo pide.
 
 ## Arranque
 
@@ -43,15 +43,15 @@ respuesta.
 
 ## Unidades
 
-Entrega el trabajo en **unidades**: cada una es un PR hacia `main`, o la
-rama de entrega del repositorio, que se prueba solo y puede llegar a
+Entrega el trabajo en **unidades**. Una unidad es un PR hacia `main`, o hacia
+la rama de entrega del repositorio, que se prueba solo y puede llegar a
 producción sin esperar a otra.
 
 Si una spec tiene tickets que necesitan salir juntos por un contrato,
 schema o migración compartidos, sigue el
 [flujo de acumulador](references/acumulador.md). El conjunto es una unidad
 de entrega y cada ticket conserva su prueba y review. El tamaño por sí solo
-no pide acumulador: los tickets independientes siguen en PRs separados.
+no pide acumulador. Los tickets independientes siguen en PRs separados.
 
 - Un bug que afecta producción es la primera unidad. Abre su PR en cuanto
   pasan su prueba y su review, antes de empezar cualquier mejora.
@@ -74,10 +74,9 @@ Orchestrate aunque el playbook elegido sea otro:
    merge y pausa, como fila nueva.
 
 El estado de las unidades va sólo en esas tablas. Un `todo.md` lleva sólo los
-pasos del playbook; no uses `state.md`, tablas propias ni el `progress.md` de
-Superpowers. El store es sólo de programas: una unidad suelta guarda sus
-encargos, salidas de trabajadores y parches en `~/.claude/encargos/<slug>/`,
-sin `orch init`.
+pasos del playbook. El store es sólo de programas. Una unidad suelta guarda
+sus encargos, salidas de trabajadores y parches en
+`~/.claude/encargos/<slug>/`, sin `orch init`.
 
 El hook `scripts/store-guard` avisa cuando una herramienta toca un store sin
 `units.tsv` o sin `decisions.tsv`. En Write y Edit es exacto; en Bash deduce
@@ -89,41 +88,9 @@ hooks del frontmatter de una skill.
 
 ## Tickets de Linear
 
-En Linear, cada ticket muestra qué sesión lo trabaja. La sesión es el hilo de
-T3 que lo toma; en un programa, el hilo del orquestador.
-
-1. **Etiqueta.** El equipo SEN tiene el grupo de etiquetas `sesión`, de
-   selección única. Tu sesión usa una etiqueta de ese grupo con el slug de su
-   store, o un slug corto del hilo si no tiene store. Si no existe, créala con
-   `save_issue_label` y `parent: sesión`.
-2. **Título.** Renombra el hilo con el tema general de lo que implementa,
-   en palabras que Felix entienda sin abrir Linear, con `t3_thread_update`
-   (`action: rename`), como `Precios nuevos y correo de acceso de Jale`. No
-   pongas IDs de tickets: la etiqueta ya liga los tickets con la sesión.
-   Cámbialo sólo si cambia el tema.
-3. **Tomar.** Lee el ticket con `get_issue`. Está libre si no lleva etiqueta
-   `sesión` o si la que lleva está retirada. Si lleva otra etiqueta activa,
-   no lo tomes y avisa al usuario, que decide si la sesión anterior murió.
-   Si está libre, en un solo `save_issue` añade tu etiqueta con `addLabels`
-   y pasa el estado a In Progress. Un ticket ya terminado (In Review, Done o
-   Canceled) conserva su estado: sólo recibe la etiqueta. Comenta:
-   `Tomado por la sesión <slug>: hilo «<título>», rama <rama>, worktree <ruta>, store <ruta o «sin store»>.`
-4. **Comprobar.** Linear no tiene escritura condicional: si dos sesiones
-   toman el mismo ticket, gana la última etiqueta. Vuelve a leer el ticket
-   después de tomarlo y antes de cada lanzamiento, ronda, commit, push o
-   merge sobre él. Si la etiqueta ya no es la tuya, detén ese trabajo,
-   comenta lo que dejaste y avisa al usuario.
-5. **Soltar.** Si dejas un ticket sin terminar, quita tu etiqueta con
-   `removeLabels` y comenta `Soltado por la sesión <slug>: <motivo y estado>.`
-   Un ticket terminado conserva la etiqueta, porque tu sesión atiende su
-   review.
-6. **Traspasar.** Si otro hilo retoma el programa, como en Session pickup,
-   la etiqueta sigue siendo la del store. El hilo nuevo primero pone su
-   título como en el paso 2 y después comenta
-   `Retomado por el hilo «<título>»` en cada ticket abierto del programa.
-7. **Cerrar.** Al cerrar la sesión o el programa, retira su etiqueta con
-   `retire_issue_label`. Sigue visible en los tickets, nadie la reusa y sus
-   tickets quedan libres si se reabren.
+Antes de tomar, comprobar, soltar o traspasar un ticket de Linear, y al
+cerrar una sesión o un programa que tomó tickets, sigue
+[Tickets de Linear](references/linear.md).
 
 ## Qué skill usar
 
@@ -138,17 +105,16 @@ T3 que lo toma; en un programa, el hilo del orquestador.
 | Pausar o retomar | playbooks Pause safely y Session pickup; `handoff` de Matt Pocock cuando pides un documento de traspaso | — |
 | Escribir skills o `AGENTS.md` | playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
 
-Superpowers no se usa: este modo lo sustituye. Una skill local que el
-`AGENTS.md` del repositorio exige, como `implement-spec` o `retro`, sigue
-vigente.
+Este modo sustituye a Superpowers. Una skill local que el `AGENTS.md` del
+repositorio exige, como `implement-spec` o `retro`, sigue vigente.
 
 ## Verificación
 
-Prueba sobre el artefacto real con la skill `verify` del proyecto:
-`.claude/skills/verify/` en Claude Code y `.agents/skills/verify/` en Codex,
-o la del paquete que tocas en un monorepo. Si no existe, sigue los docs de
-verificación del repositorio (gates, `remote-run`, QA) y propón una vez
-generarla con `create-verification-skill`. Los gates del `AGENTS.md` siguen
+Prueba sobre el artefacto real con la skill `verify` del proyecto, que vive
+en `.claude/skills/verify/` en Claude Code y en `.agents/skills/verify/` en
+Codex, o con la del paquete que tocas en un monorepo. Si no existe, sigue los
+docs de verificación del repositorio (gates, `remote-run`, QA) y propón una
+vez generarla con `create-verification-skill`. Los gates del `AGENTS.md` siguen
 siendo obligatorios.
 
 ## Modelos y transporte
@@ -157,8 +123,8 @@ siendo obligatorios.
   sección «Roles de pstack». Si un default de pstack o la hoja
   `pstack-models.md` difieren de esa tabla, manda la tabla.
 - Un rol que cae en GPT o en Go se despacha por la guía de la sección
-  Transporte del routing, no con el `Agent` de pstack. El contrato Despachar →
-  Recoger → Vetar → Cerrar rige cada despacho.
+  Transporte del routing. El contrato Despachar → Recoger → Vetar → Cerrar
+  rige cada despacho.
 - El esfuerzo tiene tope `high`. Donde pstack diga `xhigh` o `max`, usa
   `high`. Su ajuste por tarea sólo baja desde el punto de partida del routing.
 - Quién implementa lo fija la sección «Delegación» del routing. Por encima de
@@ -196,13 +162,13 @@ siendo obligatorios.
   siguiente corrección. Un mismo cambio tiene hasta ocho rondas sin
   autorización adicional, contando las reviews delta y las renovaciones
   por cambio de head. Antes de la ronda 9 pausa, aunque la ronda 8 haya
-  dado APTO: entrega al usuario lo que sigue abierto y el replanteamiento
+  dado APTO. Entrega al usuario lo que sigue abierto y el replanteamiento
   realizado.
 - **Hallazgos.** Corrige cada hallazgo aceptado con el cambio mínimo y
   rebate con evidencia el que esté mal. Lo que pide trabajo fuera del
   objetivo sigue **Unidades** y el [procedimiento de merge](references/merge.md).
-  Declina los nits, sean de comentarios, documentación o estilo: no impiden
-  APTO, y cada cambio de head exige otra ronda. Un critical o warning nunca
+  Declina todos los nits, también los de comentarios, documentación o
+  estilo. No impiden APTO, y cada cambio de head exige otra ronda. Un critical o warning nunca
   es un nit, aunque trate de documentación.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
@@ -218,15 +184,15 @@ siendo obligatorios.
   gpt-6.1-sol, y produce dos implementaciones completas aunque no veas
   varias formas válidas. Fuera de ese caso, un solo delegado implementa
   contra el sketch elegido.
-- Si no puede correr ningún revisor independiente, la puerta sigue cerrada,
-  como dice `poteto-mode`. Tu propia lectura no cuenta como review.
+- **Sin revisor.** Si no puede correr ningún revisor independiente, la
+  puerta sigue cerrada, como dice `poteto-mode`. Tu propia lectura no cuenta como review.
 - **Constancia.** El cuerpo de cada PR termina con una línea por revisor
   exigido, con la forma
   `Revisión: <modelo> <esfuerzo>, ronda <n>, <veredicto> sobre <head>`.
   Copia el veredicto literal, también NO APTO o SIN DICTAMEN. Mientras el
   head del PR no tiene veredicto, `<veredicto>` es `pendiente` y `<n>` es
   la ronda que lo juzgará. En un acumulador sólo cuenta la review final del
-  conjunto: hasta entonces la línea dice `pendiente`, con los revisores del
+  conjunto. Hasta entonces la línea dice `pendiente`, con los revisores del
   nivel vigente. Quien abre el PR la escribe, el orquestador la actualiza
   tras cada ronda y cambio de head, y quien edita el cuerpo la conserva.
   Esta línea sustituye la exclusión de veredictos «CLEAN» del cuerpo en
@@ -273,7 +239,7 @@ además de «Always pause» de pstack, pausa antes de:
 - hacer push directo a `main` o ejecutar un comando de deploy;
 - escribir en ICG u otro sistema de un cliente en producción;
 - actualizar el tracker más allá de lo que prescriben el flujo del
-  repositorio y **Tickets de Linear**;
+  repositorio y [Tickets de Linear](references/linear.md);
 - instalar dependencias, cambiar CI o tocar la configuración global de
   agentes;
 - implementar UI/UX sin un prototipo aprobado por el dueño, como pide el

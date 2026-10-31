@@ -2,13 +2,12 @@
 
 Usa este flujo cuando una spec contiene tickets que necesitan salir juntos
 por un contrato, schema o migración compartidos. Conserva fuera los tickets
-que pueden llegar solos a producción. No agrupes sólo por tener muchos
-tickets. El programa entrega un PR acumulador hacia la rama de entrega,
+que pueden llegar solos a producción. El programa entrega un PR acumulador hacia la rama de entrega,
 normalmente `main`, desde una rama de integración.
 
 Este flujo adapta `implement-spec` de Matt Pocock y la sustituye en
-felix-mode. Toma de ella el **grafo de tareas**: los tickets de la spec y
-sus relaciones de bloqueo. La **frontera** son los tickets cuyas
+felix-mode. Toma de ella el **grafo de tareas**, formado por los tickets de
+la spec y sus relaciones de bloqueo. La **frontera** son los tickets cuyas
 dependencias ya están integradas y verdes. Cada implementador trabaja un
 ticket en su propio worktree y su propia rama. Una adaptación local
 exigida por `AGENTS.md` mantiene sus controles y su precedencia.
@@ -23,9 +22,8 @@ exigida por `AGENTS.md` mantiene sus controles y su precedencia.
 2. Lee la spec y todos sus tickets y obtén el grafo de tareas antes del
    primer despacho. Registra cada ticket en `units.tsv`, sin inventar un
    PR por ticket. En este flujo sus filas representan partes de la unidad
-   de entrega. Guarda
-   la relación con el PR acumulador en `overview.md` y sus decisiones en
-   `decisions.tsv`. Un ticket integrado aún no equivale a desplegado. Sigue
+   de entrega. Guarda la relación con el PR acumulador en `overview.md` y
+   sus decisiones en `decisions.tsv`. Un ticket integrado aún no equivale a desplegado. Sigue
    el tracker del repositorio para cerrarlo, sin anticipar la entrega.
 3. Crea la integración desde la rama de entrega actual. Abre el acumulador
    como PR normal después de integrar el primer ticket. Su descripción
@@ -41,7 +39,7 @@ exigida por `AGENTS.md` mantiene sus controles y su precedencia.
    rutas de escritura en el brief. Prepara su worktree desde ese SHA.
    Despacha sólo tickets de la frontera. Los tickets con rutas o contratos
    compartidos se secuencian, o reciben primero un contrato común
-   verificado. No despaches dos propietarios simultáneos de la misma ruta.
+   verificado. Cada ruta tiene un solo propietario a la vez.
 5. Cada implementador escribe sólo en su rama, sobre la base que recibió,
    y devuelve el SHA candidato, esa base y las pruebas. Conserva el trabajo
    de su checkout tal como está, sin reset ni rebase. La integración, los
@@ -86,8 +84,7 @@ El ledger por PR y head se usa para la verificación final del acumulador.
    acumulador nace de dividir un cambio, sigue el conteo de ese cambio.
 10. Con la spec completa, APTO final y verde, sigue [Merge](merge.md).
     Aplica también la comprobación de la base contra cambios de otras
-    sesiones.
-    Si Merge pide un rebase, repite el paso 8 mediante merge en un candidato
+    sesiones. Si Merge pide un rebase, repite el paso 8 mediante merge en un candidato
     nuevo y renueva los gates y la review del paso 9. Cada sincronización
     requerida desde merge prep cuenta para detenerte antes de la tercera.
     Confirma merge y entrega antes de cerrar tickets que dependan de ella.
@@ -95,6 +92,6 @@ El ledger por PR y head se usa para la verificación final del acumulador.
     conservados y cuyos procesos terminaron.
 
 Este flujo concentra la integración del programa en un escritor. Otra
-sesión puede seguir cambiando `main`: sincroniza durante el programa cuando
+sesión puede seguir cambiando `main`. Sincroniza durante el programa cuando
 su avance afecte a los tickets, además de la sincronización final. Ante
 colisiones repetidas, secuencia las áreas compartidas con esa sesión.

@@ -17,10 +17,11 @@ Una restricción del usuario o del `AGENTS.md` conserva su precedencia.
 Después de abrir el PR, sigue Babysit hasta merge-ready, también si sólo
 cambia documentación. Esto sustituye su entrada sólo por pedido y su modo
 `check` para PR pequeños. En un programa, el trabajador devuelve el PR y
-sus evidencias al orquestador. No mergea ni queda vigilándolo.
+sus evidencias al orquestador y ahí termina su encargo. El merge y la
+vigilancia son del orquestador o de su único stacker.
 
-Un acumulador en curso observa CI y comentarios en `background` o `check`.
-No intenta llegar a merge-ready hasta completar la spec. Cualquier
+Un acumulador en curso observa CI y comentarios en `background` o `check`,
+y busca merge-ready sólo con la spec completa. Cualquier
 corrección entra por el candidato del paso 6 de [Acumulador](acumulador.md),
 con su único integrador. Después del candidato final sigue el flujo normal.
 
@@ -30,14 +31,14 @@ En GitHub, usa el ejecutable de Babysit 6,
 `--owner <owner> --repo <repo> --pr <n> --interval 20 --timeout 150`, sin
 `--status-only`. El plazo permite la confirmación de 60 segundos sin checks.
 Ejecuta la comprobación en background o con un plazo de herramienta de al
-menos 180 segundos y recoge su terminal: `WAITING` es una salida intermedia.
+menos 180 segundos y recoge su terminal. `WAITING` es una salida intermedia.
 Sólo `READY` para ese PR y el head aprobado confirma merge-ready.
 Ante `BLOCKER`, sigue Babysit. Si termina en `TIMEOUT` por `pending-checks`,
 informa qué checks faltan, conserva o rearma `watch_pull_request` de T3 y
 termina el turno. Ante otro `TIMEOUT` o un fallo de lectura, informa la
-razón y retira el watch para devolver el hilo al inbox; un nuevo evento
-no está garantizado. Reserva `--status-only` para observar un acumulador
-en curso: su salida no confirma merge-ready.
+razón y retira el watch para devolver el hilo al inbox, porque un nuevo
+evento no está garantizado. Reserva `--status-only` para observar un
+acumulador en curso. Su salida no confirma merge-ready.
 En Origin, usa las lecturas y el criterio de merge-ready de Babysit,
 incluidos hilos y reviews bloqueantes. T3 es el único watcher persistente.
 Fuera de T3, usa el mecanismo del playbook Babysit.
@@ -100,11 +101,12 @@ restantes y la separación entre propietario, verificador y stacker.
    `gh pr merge <pr> --repo <owner/repo> --squash --match-head-commit <head aprobado>`.
    Mergea siempre con ese comando, en una llamada propia y con valores
    literales, porque en Claude Code el hook `scripts/merge-guard` lo revisa.
-   Niega el merge sin `--match-head-commit`, con un flag que no admite,
-   como `--admin` o `--auto`, o cuando no puede analizar el comando:
-   repítelo con la forma que indica su razón. Pide la confirmación del dueño cuando
-   el diff toca CI, dependencias o gobernanza de agentes, o cuando no puede
-   comprobar los archivos del PR. Para buscar o citar ese comando en otra
+   El hook niega el merge sin `--match-head-commit`, con un flag que no
+   admite, como `--admin` o `--auto`, o cuando no puede analizar el comando.
+   Si lo niega, repite el comando con la forma que indica su razón. El hook
+   también pide la confirmación del dueño cuando el diff toca CI,
+   dependencias o gobernanza de agentes, o cuando no puede comprobar los
+   archivos del PR. Para buscar o citar ese comando en otra
    llamada, escríbelo como `gh pr merg[e]` o pásalo en un archivo.
    Confirma la rama destino inmediatamente antes de ejecutarlo. No uses
    `--auto` ni `--admin`, ni cambies las protecciones. En otro forge sin
