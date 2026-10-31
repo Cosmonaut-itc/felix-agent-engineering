@@ -29,9 +29,9 @@ detente y devuelve BLOQUEADO con el error exacto.
 debes aplicarlos y comprobarlos antes de navegar a la URL de entrada.>
 
 Alcance: tu única fuente es la pantalla, y la terminal sirve sólo para guardar
-capturas. Mantén intactos los archivos existentes. El código, los docs, git y los archivos del repositorio quedan fuera
-de tu alcance, igual que <lo prohibido>. Usa estas cuentas de prueba:
-<cuentas>.
+capturas. Mantén intactos los archivos existentes. El código, los docs, git y
+los archivos del repositorio quedan fuera de tu alcance, igual que
+<lo prohibido>. Usa estas cuentas de prueba: <cuentas>.
 
 Evidencia: cada vez que te confundas, te atasques o algo te moleste, guarda una
 captura en <directorio de la ronda>/<persona>/<nn>-<slug>.png, con la captura
