@@ -15,8 +15,9 @@ encargo lo pide.
 ## Arranque
 
 1. Invoca `pstack:poteto-mode` y léelo completo. Elige su playbook y sigue
-   sus pasos en orden desde el propio playbook, sin copiarlos a una lista de
-   tareas. Nombra el playbook en tu primera respuesta.
+   sus pasos en orden desde el propio playbook. La única copia de esos pasos
+   es el `todo.md` que `poteto-mode` pide cuando la sesión no tiene
+   herramienta de tareas. Nombra el playbook en tu primera respuesta.
 2. Aplica este archivo sobre esos pasos. Donde sustituye un paso de pstack,
    manda este archivo.
 3. Si el repositorio tiene `.agents/playbooks/`, aplica sus project playbooks
