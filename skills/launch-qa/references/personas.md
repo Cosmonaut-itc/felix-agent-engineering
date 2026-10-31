@@ -6,7 +6,7 @@
 |---|---|---|---|
 | La impaciente | Hojea, pulsa el primer botón visible y abandona en el primer error. | Llamadas a la acción confusas, errores en el camino feliz, pasos de más. | Aplica a todo producto. |
 | El escéptico | Antes de registrarse lee precios, términos y privacidad. | Precios ocultos o contradictorios, enlaces legales rotos, datos que se piden sin explicar. | Sin precios ni registro, como una herramienta interna: quítalo, o que lea sólo lo que exista. |
-| La móvil | Hace todo en una pantalla de 375 px de ancho con red 3G lenta. | Diseño roto, objetivos táctiles pequeños, cargas lentas sin aviso. | Web: Chrome con el modo de dispositivo de DevTools a 375×667 y un perfil de red propio de 400 kb/s de bajada y de subida con 2 000 ms de latencia, los valores del antiguo «Slow 3G». Anota en el informe el perfil aplicado. App Android: emulador con ventana según la skill `android-qa` y `adb emu network speed umts`. Sin uso móvil real: quítala. |
+| La móvil | Hace todo en una pantalla de 375 px de ancho con red 3G lenta. | Diseño roto, objetivos táctiles pequeños, cargas lentas sin aviso. | Web: Chrome con el modo de dispositivo de DevTools a 375×667 y un perfil de red propio de 400 kb/s de bajada y de subida con 2 000 ms de latencia, los valores del antiguo «Slow 3G». La ventana abre en `about:blank`; la persona aplica y comprueba tamaño y red antes de navegar por primera vez a la URL de entrada. Anota en el informe el perfil aplicado. App Android: emulador con ventana según la skill `android-qa` y `adb emu network speed umts`. Sin uso móvil real: quítala. |
 | El no nativo | No domina el idioma de la UI y sigue sólo lo que la UI dice literalmente, sin inferir modismos, jerga ni iconos sin etiqueta. | Textos ambiguos, jerga, iconos sin etiqueta, errores que no dicen qué hacer. | Juega a alguien cuyo idioma nativo no es el de la UI, sea cual sea ese idioma. |
 | La rompedora | Pega basura en los formularios, vuelve atrás a mitad del flujo, recarga y hace doble clic en todo. | Validaciones que faltan, envíos duplicados, estados perdidos, errores crudos. | Sólo en local, staging o preview. |
 
@@ -21,11 +21,12 @@ sabes de él lo que muestra la pantalla.
 Objetivo: llegar desde <URL de entrada> hasta <primer éxito>.
 
 Herramienta: el MCP `computer-use` sobre la ventana de <Chrome o el emulador>
-que ya está abierta en <URL de entrada o pantalla inicial> con una sesión
-limpia, en este Mac. Antes de
+que ya está abierta en <URL de entrada, pantalla inicial o about:blank> con
+una sesión limpia, en este Mac. Antes de
 actuar, sigue la skill `computer-use`. Si el MCP no está disponible o falta un
 permiso de macOS, detente y devuelve BLOQUEADO con el error exacto.
-<Ajustes de la persona, como el modo de dispositivo y el perfil de red.>
+<Ajustes de la persona, como el modo de dispositivo y el perfil de red, y si
+debes aplicarlos y comprobarlos antes de navegar a la URL de entrada.>
 
 Límites: tu única fuente es la pantalla; el código, los docs y el repositorio
 quedan fuera de tu alcance. La terminal sirve sólo para guardar capturas; no
