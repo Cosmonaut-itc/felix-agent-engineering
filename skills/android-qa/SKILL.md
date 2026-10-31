@@ -16,8 +16,8 @@ coordenadas, manda esta skill.
    nada, en la Mac Mini, como fija «Máquinas» del entrypoint global.
 2. Comprueba la versión con `android -V`. Esta skill necesita 1.1.16717390
    o posterior, la que añade `android device hub`. `android input` llegó
-   antes, en 1.0.16625370. Si la versión es anterior, `android update` instala la última en esa máquina;
-   dilo en tu reporte.
+   antes, en 1.0.16625370. Si la versión es anterior, `android update`
+   instala la última en esa máquina; dilo en tu reporte.
 3. Con más de un dispositivo conectado, pasa `--device <serial>`, con el
    serial que lista `adb devices`, a los comandos que actúan sobre un
    dispositivo: `install`, `run`, `layout`, `input`, `screen capture` y
