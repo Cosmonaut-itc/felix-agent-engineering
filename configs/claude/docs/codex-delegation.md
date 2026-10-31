@@ -11,10 +11,13 @@ esta ruta:
 
 - Instancia `codex`, con ids completos como `gpt-6.1-sol` y opciones
   `{ "reasoningEffort": "<nivel>" }`.
-- La instancia pasa por el proxy: en `~/.t3/userdata/settings.json`,
-  `providerInstances.codex.config.homePath` es
-  `/Users/felixddhs/.config/codex-cli`. Con otra ruta, como `~/.codex`, T3
-  no está disponible para esta ruta.
+- La instancia pasa por el proxy. En la MacBook,
+  `providerInstances.codex.config.homePath` de
+  `~/.t3/userdata/settings.json` es `~/.config/codex-cli`. En la Mac Mini, la
+  instancia usa `~/.codex` y entra al proxy por sus `launchArgs`, con
+  `model_provider=cpa`, como documenta `SET_UP.md` del repositorio
+  `cli-proxy`. Si la instancia no pasa por el proxy, T3 no está disponible
+  para esta ruta.
 - El respaldo es `codex-run`, descrito desde «CLI de Codex con proxy». Para
   un tope duro de tiempo, `codex-run --timeout`.
 - El trabajador es el mismo Codex. Aplican igual los guardarraíles de
@@ -25,21 +28,23 @@ esta ruta:
 ## CLI de Codex con proxy
 
 Los trabajadores usan sólo el `CODEX_HOME` conectado al proxy:
-`/Users/felixddhs/.config/codex-cli` (alias interactivo `codex`). Su
+`~/.config/codex-cli` (alias interactivo `codex`). Hoy existe sólo en la
+MacBook. En la Mac Mini falta, y Codex falla porque ese directorio no
+existe, en lugar de ir en directo. Su
 `config.toml` fija `model_provider = "cpa"` hacia `felix-desktop:8317/v1`, y el
 proxy reparte las cuentas y gestiona sus límites; no cambies de cuenta a mano.
 
-`~/.claude/settings.json` fija `env.CODEX_HOME` en esa ruta para las sesiones
-nuevas; aun así, pásalo explícito en cada invocación (runtime del plugin o
-CLI), porque una sesión abierta antes conserva su entorno y los alias de
-`~/.zshrc` no existen en un shell no interactivo:
+En la MacBook, `~/.claude/settings.json` fija `env.CODEX_HOME` en esa ruta
+para las sesiones nuevas. Aun así, pásalo explícito en cada invocación
+(runtime del plugin o CLI), porque una sesión abierta antes conserva su
+entorno y los alias de `~/.zshrc` no existen en un shell no interactivo:
 
 ```bash
-CODEX_HOME=/Users/felixddhs/.config/codex-cli codex exec ...
-CODEX_HOME=/Users/felixddhs/.config/codex-cli node "$companion_path" task ...
+CODEX_HOME="$HOME/.config/codex-cli" codex exec ...
+CODEX_HOME="$HOME/.config/codex-cli" node "$companion_path" task ...
 ```
 
-No uses `CODEX_HOME=/Users/felixddhs/.codex` (alias `codex-original`): es la
+No uses `CODEX_HOME="$HOME/.codex"` (alias `codex-original`): es la
 configuración de la app de ChatGPT, en modo directo con la cuenta Gmail, sin
 proxy. El banner de `codex exec` debe mostrar `provider: cpa`.
 
