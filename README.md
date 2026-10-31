@@ -123,6 +123,7 @@ El [vigilante Windows](scripts/desktop/README.md) observa carga nativa con Power
 | [`skills/felix-mode/scripts/`](skills/felix-mode/scripts) | `pstack-refs` comprueba las citas a pasos de pstack contra su registro `pstack-refs.tsv`. `codex-run` despacha trabajadores GPT. Los hooks `laptop-guard` (`PreToolUse`) y `store-guard` (`PostToolUse`) avisan de trabajo pesado en la MacBook y de stores de programa incompletos. `merge-guard` (`PreToolUse`) niega `gh pr merge` sin `--match-head-commit`, con un flag que no admite, como `--admin` o `--auto`, o cuando no puede analizar el comando, y pide confirmación cuando el PR toca CI, dependencias o gobernanza de agentes, o cuando no puede comprobar sus archivos. Los tres se registran a mano en `~/.claude/settings.json`, como dice «Pasos manuales». |
 | [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K3, con instrucciones compartidas. |
 | [`skills/felix-mode/`](skills/felix-mode/SKILL.md) | Router de ingeniería sobre pstack: precedencia, modelos por rol, revisión y autonomía. |
+| [`skills/android-qa/`](skills/android-qa/SKILL.md) | Pruebas en dispositivos y emuladores Android con la Android CLI. adb queda para lo que la CLI no cubre. |
 | [`configs/*/pstack-models.md`](configs/claude/pstack-models.md) | Hojas de modelos de pstack para Claude Code y Codex, derivadas del routing. |
 | [`manifest`](manifest) | Registro único de archivos, skills, retiradas y plugins. |
 | [`bin/pao`](bin/pao) | Instalador, actualizador y diagnóstico para macOS, Linux y Git Bash. |
@@ -256,8 +257,9 @@ corre las pruebas antes de hacer un commit a `main`. También se puede lanzar
 con `workflow_dispatch`. El job local recoge ese commit en la siguiente
 actualización.
 
-pstack se instala y actualiza con el CLI de cada runtime si está disponible.
-Si falta un CLI, queda `skipped`. Codex siempre gestiona el plugin de la app
+pstack y el plugin oficial `android-cli` de Google se instalan y actualizan
+con el CLI de cada runtime si está disponible.
+Si falta un CLI, queda `skipped`. Codex siempre gestiona los plugins de la app
 con `CODEX_HOME="$HOME/.codex"`. No usa la configuración de la CLI del proxy.
 Reinicia las sesiones abiertas después de actualizar pstack. La skill
 `verify` de proyecto requiere Claude Code 2.1.200 o posterior.
