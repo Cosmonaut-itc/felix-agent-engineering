@@ -8,7 +8,7 @@ Elige siempre dentro de esta tabla; los entrypoints globales llevan una
 copia, así que al cambiarla replícala en ambos. Las puntuaciones son preferencias
 operativas (10 = mejor; en costo, más económico) y se ajustan con resultados
 observados. Inteligencia y gusto de los modelos Go, de gpt-6.1-sol,
-gpt-6-luna, sonnet-5.5 y haiku-5.5, son hipótesis iniciales,
+gpt-6.1-terra, gpt-6-luna, sonnet-5.5 y haiku-5.5, son hipótesis iniciales,
 pendientes de calibrar con encargos propios. Gusto valora criterio de
 producto, claridad y coherencia visual; admitir imágenes no demuestra buen
 gusto.
@@ -17,6 +17,7 @@ gusto.
 |---------------|-------|--------------|-------|--------|
 | gpt-6-astra   | 5     | 10           | 7     | Problemas más complejos que Sol no resolvió o que claramente lo superan. |
 | gpt-6.1-sol   | 9     | 9            | 6     | Opción habitual para ejecución técnica; reviews de cambios en high. |
+| gpt-6.1-terra | 10    | 8            | 6     | Computer Use y QA con usuarios simulados (`launch-qa`); cuesta la mitad que gpt-6.1-sol. |
 | gpt-6-luna    | 10    | 7            | 4     | Primera opción Codex para encargos claros y fáciles de verificar; cuesta la mitad que gpt-5.6-luna. |
 | opus-5.5      | 8     | 9            | 9     | Gusto visual y decisiones de producto. |
 | sonnet-5.5    | 6     | 7            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |

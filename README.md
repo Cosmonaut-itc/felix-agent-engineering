@@ -124,6 +124,7 @@ El [vigilante Windows](scripts/desktop/README.md) observa carga nativa con Power
 | [`configs/opencode/`](configs/opencode/opencode.json) | Perfiles DeepSeek V4.1 Flash, MiniMax M3 y Kimi K3, con instrucciones compartidas. |
 | [`skills/felix-mode/`](skills/felix-mode/SKILL.md) | Router de ingeniería sobre pstack: precedencia, modelos por rol, revisión y autonomía. |
 | [`skills/android-qa/`](skills/android-qa/SKILL.md) | Pruebas en dispositivos y emuladores Android con la Android CLI. adb queda para lo que la CLI no cubre. |
+| [`skills/launch-qa/`](skills/launch-qa/SKILL.md) | QA de lanzamiento con usuarios primerizos simulados por gpt-6.1-terra y Computer Use. Se invoca a mano. |
 | [`configs/*/pstack-models.md`](configs/claude/pstack-models.md) | Hojas de modelos de pstack para Claude Code y Codex, derivadas del routing. |
 | [`manifest`](manifest) | Registro único de archivos, skills, retiradas y plugins. |
 | [`bin/pao`](bin/pao) | Instalador, actualizador y diagnóstico para macOS, Linux y Git Bash. |

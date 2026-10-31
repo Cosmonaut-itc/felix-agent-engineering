@@ -14,6 +14,7 @@ fuente: al cambiar una, cambia la otra.
 |---------------|-------|--------------|-------|--------|
 | gpt-6-astra   | 5     | 10           | 7     | Problemas más complejos que Sol no resolvió o que claramente lo superan. |
 | gpt-6.1-sol   | 9     | 9            | 6     | Opción habitual para ejecución técnica; reviews de cambios en high. |
+| gpt-6.1-terra | 10    | 8            | 6     | Computer Use y QA con usuarios simulados (`launch-qa`); cuesta la mitad que gpt-6.1-sol. |
 | gpt-6-luna    | 10    | 7            | 4     | Primera opción Codex para encargos claros y fáciles de verificar; cuesta la mitad que gpt-5.6-luna. |
 | opus-5.5      | 8     | 9            | 9     | Gusto visual y decisiones de producto. |
 | sonnet-5.5    | 6     | 7            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |

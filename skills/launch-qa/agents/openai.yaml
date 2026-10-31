@@ -1,0 +1,5 @@
+interface:
+  display_name: "Launch QA"
+  short_description: "Usuarios primerizos simulados, arreglo y repetición"
+policy:
+  allow_implicit_invocation: false
