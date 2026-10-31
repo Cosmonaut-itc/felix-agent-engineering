@@ -97,8 +97,9 @@ persona devuelve BLOQUEADO.
    evidencia el hallazgo que no sea un problema real. Una sola unidad de
    `felix-mode` arregla los demás, con su playbook, su delegación y su review.
 
-   Termina cuando cada problema está arreglado con APTO, rebatido o en manos
-   del dueño, y el build arreglado corre en el entorno de la ronda.
+   Termina cuando cada problema está arreglado con APTO, rebatido con
+   evidencia o pendiente del dueño con su pregunta anotada en el informe, y
+   el build arreglado corre en el entorno de la ronda.
 
 6. **Repite la ronda.** Corre el mismo reparto, con los mismos briefs, el
    mismo entorno y encargos nuevos, contra el build arreglado. Marca cada
