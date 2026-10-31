@@ -50,8 +50,16 @@ navegador headless.
    [personas.md](references/personas.md) completa y este `target`:
    proveedor `codex`, modelo `gpt-6.1-terra`,
    `options: {reasoningEffort: "medium"}` y, si corres en otro Mac, el
-   `environmentId` del Mac de pruebas. El límite por persona es de 20 minutos, salvo que el flujo pida
-   más.
+   `environmentId` del Mac de pruebas. El límite por persona es de 20 minutos,
+   salvo que el flujo pida más.
+   - Antes de cada persona, en cada ronda, dale una sesión limpia. Abre
+     Chrome con un perfil vacío:
+     `open -na "Google Chrome" --args --user-data-dir=<directorio de la ronda>/<persona>/perfil --no-first-run <URL de entrada>`.
+     Usa cuentas y correos de prueba que nadie haya usado, o reinicia sus
+     datos. El perfil nuevo trae DevTools sin modo de dispositivo ni red
+     limitada. En una app Android, borra sus datos con
+     `adb shell pm clear <paquete>`. Cierra esa ventana cuando la persona
+     termine.
    - Computer Use controla un solo escritorio. Despacha una persona a la vez
      por Mac y lanza la siguiente cuando la anterior entregó su resultado
      terminal. Si hay varios Macs con Computer Use, reparte entre ellos.
@@ -59,8 +67,12 @@ navegador headless.
      el mismo modelo y esfuerzo, en una sesión con Computer Use del Mac de
      pruebas.
    - Veta cada resultado con el contrato. Cada hallazgo trae el texto literal
-     de la UI y una captura que existe. Una persona que volvió sin capturas,
-     o que leyó el código, se repite con un encargo nuevo.
+     de la UI y una captura que existe, y el resultado trae la captura final
+     del éxito o del abandono. Un éxito sin hallazgos es un resultado válido.
+     Una persona sin captura final, con un hallazgo sin captura o que leyó el
+     código se repite con un encargo nuevo. Una persona BLOQUEADO no cuenta
+     como recorrido: resuelve el bloqueo, como un permiso de macOS o el MCP
+     ausente, y vuelve a despacharla.
 
 4. **Junta y ordena.** Copia las capturas al directorio del encargo. Agrupa
    en un solo problema los hallazgos que comparten pantalla y causa. Ordena
