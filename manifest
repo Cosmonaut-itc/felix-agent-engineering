@@ -12,6 +12,7 @@ file configs/claude/docs/codex-delegation.md ~/.claude/docs/codex-delegation.md
 file configs/claude/pstack-models.md ~/.claude/pstack-models.md
 file configs/claude/hooks/duplicate-session-guard ~/.claude/hooks/duplicate-session-guard
 skill skills/felix-mode felix-mode
+skill skills/android-qa android-qa
 skill vendor/mattpocock/ask-matt ask-matt
 skill vendor/mattpocock/codebase-design codebase-design
 skill vendor/mattpocock/domain-modeling domain-modeling
@@ -42,3 +43,5 @@ retire implement
 retire resolving-merge-conflicts
 plugin claude pstack@pstack-claude michael-denyer/pstack-claude
 plugin codex pstack@pstack-claude https://github.com/michael-denyer/pstack-claude.git
+plugin claude android-cli@android-cli-plugin android/android-cli-plugin
+plugin codex android-cli@android-cli-plugin android/android-cli-plugin
