@@ -177,6 +177,16 @@ siendo obligatorios.
   Declina todos los nits, también los de comentarios, documentación o
   estilo. No impiden APTO, y cada cambio de head exige otra ronda. Un critical o warning nunca
   es un nit, aunque trate de documentación.
+- **Regla por hallazgo.** Si un hallazgo aceptado es mecánico, como un
+  patrón de sintaxis, una API prohibida, una forma de import o una regla de
+  ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
+  el orden de `pstack:correct`: arquitectura, tipos, un lint cuyo error
+  nombra el arreglo, y por último un test. Muestra en la verificación del PR
+  que la regla falla sobre el código anterior al arreglo y pasa después. Si
+  la regla sale del objetivo del PR, o pide instalar dependencias o cambiar
+  CI, no la metas en el PR. Abre un issue con el hallazgo y la regla
+  propuesta, y la regla sigue **Unidades**. El hallazgo se corrige igual en
+  el PR. Un hallazgo de juicio no lleva regla.
 - **Diseño.** `architect` y `arena` no son review de cambios. En diseño
   normal, la fase B de `architect` corre `arena` con un solo runner opus-5.5
   que entrega dos candidatos estructuralmente distintos. Tú eliges y no hay
