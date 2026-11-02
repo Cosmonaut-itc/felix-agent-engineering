@@ -1347,7 +1347,34 @@ risk_classify_moves_and_errors() {
 
     git -C "$repo" commit -q -m mueve
     moved=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" switch -q -c choque
+    printf 'choque\n' > "$repo/docs/a.md"
+    git -C "$repo" commit -q -am choque
+    git -C "$repo" switch -q -
+    printf 'tronco\n' > "$repo/docs/a.md"
+    git -C "$repo" commit -q -am tronco
+    git -C "$repo" merge -q choque >/dev/null 2>&1 || true
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -q 'el stage tiene conflictos sin resolver' <<< "$output"
+    git -C "$repo" merge --abort
+
+    printf 'secreto\n' > "$repo/docs/secreto.md"
+    chmod 0 "$repo/docs/secreto.md"
+    if [ ! -r "$repo/docs/secreto.md" ]; then
+        status=0
+        output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
+        assert test "$status" = 2
+        assert grep -q 'no puedo leer el working tree' <<< "$output"
+    fi
+    rm -f "$repo/docs/secreto.md"
+
     git -C "$repo" switch -q --orphan suelta
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -q 'el repositorio no tiene commits' <<< "$output"
     git -C "$repo" commit -q --allow-empty -m suelta
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
