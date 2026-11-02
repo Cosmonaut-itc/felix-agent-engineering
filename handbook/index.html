@@ -217,7 +217,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
     <div class="card"><span class="tag">Diseño disputado</span><h3>Opus contra Sol, juez astra</h3><p>Alto riesgo o empate entre los candidatos de Opus. Compiten opus-5.5 y gpt-6.1-sol, gpt-6-astra juzga, y salen dos implementaciones completas.</p></div>
   </div>
   <div class="callout"><b>Señales de alto riesgo.</b> Escrituras a producción o a un sistema de cliente (ICG, ERP, pagos, CFDI, nómina). Migraciones o borrado de datos. Autenticación y permisos. Dinero o impuestos. Contratos entre paquetes o servicios. Las rutas de alto riesgo que el <code>AGENTS.md</code> del repo indique. Si no puede correr ningún revisor independiente, la puerta sigue cerrada.</div>
-  <div class="callout"><b>Regla por hallazgo.</b> Un hallazgo mecánico aceptado, como una API prohibida o una forma de import, deja en el mismo PR la regla de lint, el tipo o el test que lo impide, con la prueba de que falla sobre el código anterior. Si la regla pide dependencias o CI, se abre un issue.</div>
+  <div class="callout"><b>Regla por hallazgo.</b> Un hallazgo mecánico aceptado, como una API prohibida o una forma de import, deja en el mismo PR lo que lo impide: arquitectura, tipos, lint o test, en ese orden de preferencia, con la prueba de que falla sobre el código anterior. Si la regla sale del objetivo o pide dependencias o CI, se abre un issue. Detalle en «Regla por hallazgo» de <code>felix-mode</code>.</div>
 </section>
 
 <section id="skills">
