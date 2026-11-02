@@ -1310,7 +1310,7 @@ risk_classify() {
 }
 
 risk_classify_moves_and_errors() {
-    local repo output status
+    local repo output status moved
     repo=$(risk_repo)
     mkdir -p "$repo/.agents" "$repo/lib"
     printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
@@ -1333,6 +1333,15 @@ risk_classify_moves_and_errors() {
     output=$(cd "$TEST_TMP" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
     assert test "$status" = 2
     assert grep -q 'no estás en un repositorio git' <<< "$output"
+
+    git -C "$repo" commit -q -m mueve
+    moved=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" switch -q --orphan suelta
+    git -C "$repo" commit -q --allow-empty -m suelta
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -q 'la rama no comparte historia con el destino' <<< "$output"
 }
 
 risk_classify_sources() {
@@ -1402,7 +1411,6 @@ risk_classify_target() {
     git -C "$repo" commit -q -m lista
     git -C "$repo" switch -q -c tema
     printf 'new\n' > "$repo/lib/refund.ts"
-    printf 'y\n' >> "$repo/convex/payments/charge.ts"
     git -C "$repo" commit -q -am tema
     git -C "$repo" switch -q -
     printf 'x\n' > "$repo/convex/payments/new.ts"
@@ -1411,8 +1419,12 @@ risk_classify_target() {
     git -C "$repo" update-ref refs/remotes/origin/main HEAD
     git -C "$repo" switch -q tema
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
-    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
-    assert test -z "$(grep -F 'new.ts' <<< "$output")"
+    assert test "$output" = $'Nivel: alto por convex/payments/**\nconvex/payments/**\tconvex/payments/new.ts'
+    git -C "$repo" merge -q --no-edit origin/main
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -q '^Rutas: el cambio frente a' <<< "$output"
+    printf 'y\n' >> "$repo/convex/payments/charge.ts"
+    git -C "$repo" commit -q -am tema
 
     git -C "$repo" switch -q -
     git -C "$repo" mv lib/refund.ts convex/payments/refund.ts
