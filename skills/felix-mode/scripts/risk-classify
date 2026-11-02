@@ -2,9 +2,10 @@
 # Marca un cambio como alto riesgo cuando toca una ruta de
 # .agents/high-risk-paths. Para HEAD, el stage y el working tree con sus
 # archivos sin trackear, cuenta la ruta si cambia frente al merge-base con el
-# destino o si cambia al simular el squash sobre el destino. Una ruta en
-# conflicto siempre cambia frente al merge-base o en la simulación. Puede
-# marcar alto de más, nunca de menos.
+# destino o al simular el squash sobre el destino. Si el cambio toca un archivo
+# que el destino borró, o que está en un directorio que el destino quitó,
+# también cuenta todo lo que cambió el destino. Puede marcar alto de más,
+# nunca de menos.
 # Cada línea es una pathspec :(glob) de git relativa a la raíz: * no cruza /,
 # y ** sólo vale como segmento entero (**/x, x/**, x/**/y).
 # El destino por defecto es origin/HEAD, u origin/main; tráelo antes.
@@ -14,14 +15,14 @@ LIST=.agents/high-risk-paths
 fail() { printf 'risk-classify: %s\n' "$1" >&2; exit 2; }
 
 case "${1:-}" in
-    -h|--help) sed -n '2,10s/^# //p' "$0"; printf 'Uso: risk-classify [DESTINO]\n'; exit 0 ;;
+    -h|--help) sed -n '2,11s/^# //p' "$0"; printf 'Uso: risk-classify [DESTINO]\n'; exit 0 ;;
 esac
 [ "$#" -le 1 ] || fail 'uso: risk-classify [DESTINO]'
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'no estás en un repositorio git'
 cd "$root" || exit 2
 
-if [ ! -e "$LIST" ]; then
+if [ ! -e "$LIST" ] && [ ! -L "$LIST" ]; then
     printf 'Rutas: el repositorio no declara %s\n' "$LIST"
     exit 0
 fi
@@ -40,9 +41,23 @@ head=$(git rev-parse HEAD) || fail 'el repositorio no tiene commits'
 index=$(git rev-parse --git-path index)
 cp "$index" "$scratch/staged" || exit 2
 staged=$(GIT_INDEX_FILE=$scratch/staged git write-tree) || fail 'el stage tiene conflictos sin resolver'
-GIT_INDEX_FILE=$scratch/worktree git read-tree HEAD || exit 2
-GIT_INDEX_FILE=$scratch/worktree git add -A >/dev/null 2>&1 || fail 'no puedo leer el working tree'
-worktree=$(GIT_INDEX_FILE=$scratch/worktree git write-tree) || exit 2
+# Un flag que oculta un archivo presente se quita; un archivo fuera del cono
+# sparse que no está en disco sigue sin cambios, como en git status.
+cp "$index" "$scratch/worktree" || exit 2
+export GIT_INDEX_FILE=$scratch/worktree
+while IFS= read -r -d '' entry; do
+    case "$entry" in 'H '*) continue ;; esac
+    path=${entry#??}
+    if [ -e "$path" ] || [ -L "$path" ]; then printf '%s\0' "$path"; fi
+done < <(git ls-files -z -v) > "$scratch/flagged" || fail 'no puedo leer el índice'
+# update-index aplica un solo flag de marca por llamada.
+for flag in --no-assume-unchanged --no-skip-worktree; do
+    git update-index "$flag" -z --stdin < "$scratch/flagged" || fail 'no puedo leer el índice'
+done
+git -c core.fsmonitor=false -c core.ignoreStat=false -c core.untrackedCache=false \
+    add --sparse -A >/dev/null 2>&1 || fail 'no puedo leer el working tree'
+worktree=$(git write-tree) || exit 2
+unset GIT_INDEX_FILE
 
 from=() to=()
 for tree in "$head^{tree}" "$staged" "$worktree"; do
@@ -52,6 +67,22 @@ for tree in "$head^{tree}" "$staged" "$worktree"; do
     from+=("$target") to+=("${merged%%$'\n'*}")
     for base in $(git merge-base --all "$target" "$candidate"); do
         from+=("$base") to+=("$tree")
+        # Un rename del destino lleva el cambio a una ruta que la rama no toca.
+        removed=()
+        while IFS= read -r -d '' path; do
+            removed+=("$path")
+            while case "$path" in */*) ;; *) false ;; esac; do
+                path=${path%/*}
+                git cat-file -e "$target:$path" 2>/dev/null && break
+                removed+=("$path")
+            done
+        done < <(git diff -z --name-only --no-renames --diff-filter=D "$base" "$target")
+        [ "${#removed[@]}" -gt 0 ] || continue
+        while IFS= read -r -d '' path; do
+            for gone in "${removed[@]}"; do
+                case "$path" in "$gone"|"$gone"/*) from+=("$base") to+=("$target"); break 2 ;; esac
+            done
+        done < <(git diff -z --name-only --no-renames "$base" "$tree")
     done
 done
 

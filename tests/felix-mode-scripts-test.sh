@@ -1405,9 +1405,17 @@ risk_classify_target() {
     printf 'y\n' >> "$repo/convex/payments/charge.ts"
     git -C "$repo" commit -q -am tema
     git -C "$repo" switch -q -
-    git -C "$repo" mv lib/refund.ts convex/payments/refund.ts
     printf 'x\n' > "$repo/convex/payments/new.ts"
     git -C "$repo" add convex/payments/new.ts
+    git -C "$repo" commit -q -m nuevo
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+    git -C "$repo" switch -q tema
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+    assert test -z "$(grep -F 'new.ts' <<< "$output")"
+
+    git -C "$repo" switch -q -
+    git -C "$repo" mv lib/refund.ts convex/payments/refund.ts
     printf 'y\n' >> "$repo/convex/payments/charge.ts"
     git -C "$repo" commit -q -am destino
     git -C "$repo" update-ref refs/remotes/origin/main HEAD
@@ -1415,7 +1423,23 @@ risk_classify_target() {
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
     assert grep -qxF $'convex/payments/**\tconvex/payments/refund.ts' <<< "$output"
     assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
-    assert test -z "$(grep -F 'new.ts' <<< "$output")"
+
+    git -C "$repo" switch -q -
+    mkdir -p "$repo/lib"
+    git -C "$repo" mv convex/payments/refund.ts lib/refund.ts
+    git -C "$repo" commit -q -m vuelve
+    printf 'z\n' > "$repo/convex/payments/after.ts"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m despues
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+    git -C "$repo" switch -q -c carpeta HEAD~1
+    git -C "$repo" mv convex/payments convex/cobros
+    git -C "$repo" commit -q -m carpeta
+    printf 'convex/payments/after.ts\n' > "$repo/.agents/high-risk-paths"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/after.ts\tconvex/payments/after.ts' <<< "$output"
+    git -C "$repo" checkout -q -- .agents/high-risk-paths
+    git -C "$repo" switch -q tema
 
     git -C "$repo" rm -q convex/payments/charge.ts
     git -C "$repo" commit -q -m borra
@@ -1482,6 +1506,57 @@ risk_classify_edges() {
         assert grep -qF 'no puedo leer .agents/high-risk-paths' <<< "$output"
     fi
     chmod 644 "$repo/.agents/high-risk-paths"
+    rm "$repo/.agents/high-risk-paths"
+    ln -s falta "$repo/.agents/high-risk-paths"
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -qF 'no puedo leer .agents/high-risk-paths' <<< "$output"
+
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents" "$repo/lib"
+    printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
+    seq 1 20 > "$repo/lib/refund.ts"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m lista
+    base=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" config merge.mio.driver true
+    printf 'lib/refund.ts merge=mio\nconvex/payments/refund.ts merge=mio\n' > "$repo/.gitattributes"
+    printf 'rama\n' >> "$repo/lib/refund.ts"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m rama
+    git -C "$repo" checkout -q --detach "$base"
+    git -C "$repo" mv lib/refund.ts convex/payments/refund.ts
+    { printf 'destino\n'; seq 2 20; } > "$repo/convex/payments/refund.ts"
+    git -C "$repo" commit -q -am destino
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q -
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/refund.ts' <<< "$output"
+
+    git -C "$repo" checkout -q --detach "$base"
+    git -C "$repo" sparse-checkout set docs .agents
+    mkdir -p "$repo/convex/payments"
+    printf 'fuera del cono\n' > "$repo/convex/payments/charge.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
+    assert test "$(sed -n 2p <<< "$output")" = $'convex/payments/**\tconvex/payments/charge.ts'
+    assert test "$(wc -l <<< "$output" | tr -d ' ')" = 2
+
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents" "$repo/lib"
+    printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
+    printf 'x\n' > "$repo/lib/refund.ts"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m lista
+    base=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" mv lib convex/payments/lib
+    git -C "$repo" commit -q -m destino
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$base"
+    git -C "$repo" config merge.directoryRenames false
+    printf 'x\n' > "$repo/lib/nuevo.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/lib/refund.ts' <<< "$output"
 }
 
 TEST_CASES=(validation)
