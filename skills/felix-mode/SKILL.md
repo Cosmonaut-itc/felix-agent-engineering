@@ -143,9 +143,10 @@ siendo obligatorios.
   `scripts/risk-classify` de esta skill desde el checkout del cambio.
   Compara con las pathspec `:(glob)` de `.agents/high-risk-paths`, una por
   línea, lo que cambiaron desde el merge-base HEAD, el stage, el working
-  tree y esa rama; su `--help` da la sintaxis. Si imprime `Nivel: alto`, el
-  nivel es alto. Si sólo lista archivos que la rama no tocó, actualiza la
-  rama con el destino y vuelve a correrlo. Si imprime `Rutas:`, clasifica
+  tree y esa rama, y marca `rename de directorio` cuando git podría mover un
+  archivo; su `--help` da la sintaxis. Si imprime `Nivel: alto`, el nivel es
+  alto. Si sólo lista archivos que la rama no tocó, o un `rename de
+  directorio`, actualiza la rama con el destino y vuelve a correrlo. Si imprime `Rutas:`, clasifica
   el diff completo con las demás señales de **Alto riesgo**. Si sale con 2,
   corrige lo que dice antes de la ronda; un error no cuenta como normal. Un diff que crece puede subir de
   nivel. El brief de cada ronda abre con `Nivel: <normal o alto> por <señal

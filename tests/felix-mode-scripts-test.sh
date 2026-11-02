@@ -1460,7 +1460,7 @@ risk_classify_target() {
 }
 
 risk_classify_edges() {
-    local repo output base target flag status
+    local repo output base target flag status other one
     repo=$(risk_repo)
     mkdir -p "$repo/.agents"
     printf 'convex/payments/charge.ts\nvendor/**\n' > "$repo/.agents/high-risk-paths"
@@ -1548,6 +1548,7 @@ risk_classify_edges() {
 
     git -C "$repo" checkout -q --detach "$base"
     git -C "$repo" sparse-checkout set docs .agents
+    printf 'convex/payments/**\nmigrations/**\n' > "$repo/.agents/high-risk-paths"
     mkdir -p "$repo/convex/payments"
     printf 'fuera del cono\n' > "$repo/convex/payments/charge.ts"
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
@@ -1570,7 +1571,7 @@ risk_classify_edges() {
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
     assert grep -qxF $'convex/payments/**\tconvex/payments/lib/refund.ts' <<< "$output"
 
-    rm -rf "$repo/lib"
+    rm -rf "${repo:?}/lib"
     git -C "$repo" checkout -q --detach "$target"
     printf 'archivo\n' > "$repo/lib"
     git -C "$repo" add lib
@@ -1601,6 +1602,62 @@ risk_classify_edges() {
     git -C "$repo" config merge.renames false
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
     assert grep -qxF $'convex/payments/**\tconvex/payments/sub' <<< "$output"
+
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents" "$repo/old"
+    printf 'convex/payments/*.icg.ts\n' > "$repo/.agents/high-risk-paths"
+    printf 'x\n' > "$repo/old/keep.txt"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m lista
+    base=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" mv old convex/payments/old
+    git -C "$repo" commit -q -m destino
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$base"
+    printf 'x\n' > "$repo/old/nuevo.icg.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert test "$output" = $'Nivel: alto por rename de directorio\nrename de directorio\told/nuevo.icg.ts'
+    git -C "$repo" add old/nuevo.icg.ts
+    git -C "$repo" commit -q -m otro
+    other=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$target"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$other")
+    assert test "$output" = $'Nivel: alto por rename de directorio\nrename de directorio\told/nuevo.icg.ts'
+    printf 'archivo\n' > "$repo/old"
+    git -C "$repo" add old
+    git -C "$repo" commit -q -m archivo
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$other"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'rename de directorio\told/nuevo.icg.ts' <<< "$output"
+
+    git -C "$repo" checkout -q -f --detach "$base"
+    git -C "$repo" clean -qfd
+    git -C "$repo" config diff.ignoreSubmodules all
+    git -C "$repo" update-index --add --cacheinfo "160000,$base,vendor/sub"
+    git -C "$repo" commit -q -m gitlink
+    one=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" update-index --force-remove vendor/sub
+    git -C "$repo" commit -q -m quita
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$one"
+    mkdir -p "$repo/vendor"
+    printf 'x\n' > "$repo/vendor/x.txt"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'rename de directorio\tvendor/x.txt' <<< "$output"
+    rm "$repo/vendor/x.txt"
+    git -C "$repo" update-index --cacheinfo "160000,$target,vendor/sub"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'rename de directorio\tvendor/sub' <<< "$output"
+    git -C "$repo" config --unset diff.ignoreSubmodules
+
+    git -C "$repo" checkout -q -f --detach "$base"
+    git -C "$repo" clean -qfd
+    printf 'old/keep.txt\n' > "$repo/.agents/high-risk-paths"
+    git -C "$repo" update-index --assume-unchanged old/keep.txt
+    rm "$repo/old/keep.txt"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
+    assert test "$output" = $'Nivel: alto por old/keep.txt\nold/keep.txt\told/keep.txt'
 }
 
 TEST_CASES=(validation)
