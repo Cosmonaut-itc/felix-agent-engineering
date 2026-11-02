@@ -1423,6 +1423,34 @@ risk_classify_target() {
     assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
 }
 
+risk_classify_edges() {
+    local repo output base target
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents"
+    printf 'convex/payments/charge.ts\nvendor/**\n' > "$repo/.agents/high-risk-paths"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m lista
+    base=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" mv convex/payments/charge.ts left.ts
+    git -C "$repo" commit -q -m izquierda
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$base"
+    git -C "$repo" mv convex/payments/charge.ts right.ts
+    git -C "$repo" commit -q -m derecha
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'convex/payments/charge.ts\tconvex/payments/charge.ts' <<< "$output"
+
+    git -C "$repo" checkout -q --detach "$base"
+    git -C "$repo" update-index --add --cacheinfo "160000,$base,vendor/payments"
+    git -C "$repo" commit -q -m submodulo
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" update-index --cacheinfo "160000,$target,vendor/payments"
+    git -C "$repo" commit -q -m sube
+    git -C "$repo" config diff.ignoreSubmodules all
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'vendor/**\tvendor/payments' <<< "$output"
+}
+
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -1430,7 +1458,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

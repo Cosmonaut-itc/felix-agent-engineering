@@ -38,7 +38,7 @@ cp "$index" "$scratch/staged" && cp "$index" "$scratch/worktree" || exit 2
 staged=$(GIT_INDEX_FILE=$scratch/staged git write-tree) || fail 'el stage tiene conflictos sin resolver'
 GIT_INDEX_FILE=$scratch/worktree git add -A >/dev/null 2>&1 || fail 'no puedo leer el working tree'
 worktree=$(GIT_INDEX_FILE=$scratch/worktree git write-tree) || exit 2
-empty=$(git hash-object -t tree --stdin < /dev/null)
+blob=$(git hash-object -w --stdin < /dev/null) || exit 2
 
 landed=() n=0
 for tree in "$head^{tree}" "$staged" "$worktree"; do
@@ -47,7 +47,10 @@ for tree in "$head^{tree}" "$staged" "$worktree"; do
     merged=$(git merge-tree --write-tree --name-only --no-messages "$target" "$candidate")
     [ "$?" -le 1 ] || fail 'git merge-tree --write-tree falló; requiere git 2.38 o posterior'
     landed+=("${merged%%$'\n'*}")
-    case "$merged" in *$'\n'*) printf '%s\n' "${merged#*$'\n'}" ;; esac > "$scratch/conflicts-$n"
+    case "$merged" in *$'\n'*) printf '%s\n' "${merged#*$'\n'}" ;; esac |
+        while IFS= read -r path; do
+            if [ -n "$path" ]; then printf '100644 %s\t%s\n' "$blob" "$path"; fi
+        done | GIT_INDEX_FILE=$scratch/conflicts-$n git update-index --add --index-info || exit 2
 done
 
 matched=() report=''
@@ -65,13 +68,11 @@ while IFS= read -r line || [ -n "$line" ]; do
     files='' n=0
     for tree in "${landed[@]}"; do
         n=$((n + 1))
-        files+=$(git diff --name-only "$target" "$tree" -- ":(glob)$pattern" 2>/dev/null) ||
-            fail "$LIST:$number: patrón inválido: $pattern"
+        files+=$(git diff --name-only --ignore-submodules=none "$target" "$tree" \
+            -- ":(glob)$pattern" 2>/dev/null) || fail "$LIST:$number: patrón inválido: $pattern"
         files+=$'\n'
-        [ -s "$scratch/conflicts-$n" ] || continue
-        files+=$({ git diff --name-only "$empty" "$target" -- ":(glob)$pattern" &&
-            git diff --name-only "$empty" "$tree" -- ":(glob)$pattern"; } 2>/dev/null |
-            sort -u | grep -Fxf "$scratch/conflicts-$n")
+        [ -f "$scratch/conflicts-$n" ] || continue
+        files+=$(GIT_INDEX_FILE=$scratch/conflicts-$n git ls-files -- ":(glob)$pattern")
         files+=$'\n'
     done
     files=$(printf '%s' "$files" | sed '/^$/d' | sort -u)
