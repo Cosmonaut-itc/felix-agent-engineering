@@ -53,8 +53,7 @@ done < <(git ls-files -z -v) 3> "$scratch/assumed" 4> "$scratch/skipped" || fail
 # update-index aplica un solo flag de marca por llamada.
 git update-index --no-assume-unchanged -z --stdin < "$scratch/assumed" || fail 'no puedo leer el índice'
 git update-index --no-skip-worktree -z --stdin < "$scratch/skipped" || fail 'no puedo leer el índice'
-git -c core.fsmonitor=false -c core.ignoreStat=false -c core.untrackedCache=false \
-    add --sparse -A >/dev/null 2>&1 || fail 'no puedo leer el working tree'
+git add --sparse -A >/dev/null 2>&1 || fail 'no puedo leer el working tree'
 worktree=$(git write-tree) || exit 2
 unset GIT_INDEX_FILE
 
