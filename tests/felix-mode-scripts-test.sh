@@ -1260,6 +1260,76 @@ merge_differential() { merge_cases differential; }
 merge_invalid_utf8() { merge_cases invalid_utf8; }
 
 FAILURES=0 CASE=0
+risk_repo() {
+    local repo="$TEST_TMP/risk repo"
+    rm -rf "$repo"
+    mkdir -p "$repo/convex/payments" "$repo/migrations/old" "$repo/docs"
+    git -C "$repo" init -q
+    git -C "$repo" config user.email test@example.com
+    git -C "$repo" config user.name test
+    printf 'x\n' > "$repo/convex/payments/charge.ts"
+    printf 'x\n' > "$repo/migrations/old/1.sql"
+    printf 'x\n' > "$repo/docs/a.md"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m base
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+    printf '%s' "$repo"
+}
+
+risk_classify() {
+    local repo output
+    repo=$(risk_repo)
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert test "$output" = 'Rutas: el repositorio no declara .agents/high-risk-paths'
+
+    mkdir -p "$repo/.agents"
+    printf '# pagos\r\n\r\n  convex/payments/**  \r\n**/*.icg.ts\nmigrations/*.sql\n' > "$repo/.agents/high-risk-paths"
+    printf 'y\n' >> "$repo/docs/a.md"
+    printf 'y\n' >> "$repo/migrations/old/1.sql"
+    output=$(cd "$repo/docs" && "$SCRIPTS/risk-classify")
+    assert grep -q '^Rutas: ningún archivo del diff contra [0-9a-f]* coincide con .agents/high-risk-paths$' <<< "$output"
+
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m docs
+    printf 'y\n' >> "$repo/convex/payments/charge.ts"
+    mkdir -p "$repo/src/sync dir"
+    printf 'x\n' > "$repo/src/sync dir/pedido.icg.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert test "$(head -n 1 <<< "$output")" = 'Nivel: alto por convex/payments/**, **/*.icg.ts'
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+    assert grep -qxF $'**/*.icg.ts\tsrc/sync dir/pedido.icg.ts' <<< "$output"
+    assert test "$(wc -l <<< "$output" | tr -d ' ')" = 3
+
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" HEAD)
+    assert test "$(head -n 1 <<< "$output")" = 'Nivel: alto por convex/payments/**, **/*.icg.ts'
+}
+
+risk_classify_moves_and_errors() {
+    local repo output status
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents" "$repo/lib"
+    printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
+    git -C "$repo" mv convex/payments/charge.ts lib/charge.ts
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" no-existe 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -q 'base inválida: no-existe' <<< "$output"
+
+    git -C "$repo" update-ref -d refs/remotes/origin/main
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -q 'no encuentro la base con origin/main' <<< "$output"
+
+    status=0
+    output=$(cd "$TEST_TMP" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -q 'no estás en un repositorio git' <<< "$output"
+}
+
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -1267,7 +1337,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(risk_classify risk_classify_moves_and_errors laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

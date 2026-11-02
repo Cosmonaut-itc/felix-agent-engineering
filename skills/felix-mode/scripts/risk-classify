@@ -1,0 +1,52 @@
+#!/bin/bash
+# Marca un diff como alto riesgo cuando toca una ruta de .agents/high-risk-paths.
+set -uo pipefail
+
+LIST=.agents/high-risk-paths
+fail() { printf 'risk-classify: %s\n' "$1" >&2; exit 2; }
+
+case "${1:-}" in
+    -h|--help) printf 'Uso: risk-classify [BASE]\n'; exit 0 ;;
+esac
+[ "$#" -le 1 ] || fail 'uso: risk-classify [BASE]'
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'no estás en un repositorio git'
+cd "$root" || exit 2
+
+if [ ! -f "$LIST" ]; then
+    printf 'Rutas: el repositorio no declara %s\n' "$LIST"
+    exit 0
+fi
+
+base=${1:-}
+if [ -z "$base" ]; then
+    upstream=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null) || upstream=origin/main
+    base=$(git merge-base HEAD "$upstream" 2>/dev/null) ||
+        fail "no encuentro la base con $upstream; pásala como argumento"
+fi
+git rev-parse --verify --quiet "$base^{commit}" >/dev/null || fail "base inválida: $base"
+
+matched=() report=''
+number=0
+while IFS= read -r line || [ -n "$line" ]; do
+    number=$((number + 1))
+    pattern=${line%$'\r'}
+    pattern=${pattern#"${pattern%%[![:space:]]*}"}
+    pattern=${pattern%"${pattern##*[![:space:]]}"}
+    case "$pattern" in ''|'#'*) continue ;; esac
+    files=$(git diff --name-only "$base" -- ":(glob)$pattern" 2>/dev/null &&
+        git ls-files --others --exclude-standard -- ":(glob)$pattern" 2>/dev/null) ||
+        fail "$LIST:$number: patrón inválido: $pattern"
+    [ -n "$files" ] || continue
+    matched+=("$pattern")
+    while IFS= read -r file; do
+        report+=$(printf '%s\t%s' "$pattern" "$file")$'\n'
+    done < <(printf '%s\n' "$files" | sort -u)
+done < "$LIST"
+
+if [ "${#matched[@]}" = 0 ]; then
+    printf 'Rutas: ningún archivo del diff contra %s coincide con %s\n' "$(git rev-parse --short "$base")" "$LIST"
+    exit 0
+fi
+joined=$(printf ', %s' "${matched[@]}")
+printf 'Nivel: alto por %s\n%s' "${joined#, }" "$report"
