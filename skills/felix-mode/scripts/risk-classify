@@ -32,16 +32,16 @@ fi
 
 target=${1:-}
 if [ -z "$target" ]; then
-    target=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null) || target=origin/main
+    target=$(git rev-parse origin/HEAD 2>/dev/null) || target=origin/main
 fi
 git rev-parse --verify --quiet "$target^{commit}" >/dev/null || fail "destino inválido: $target"
 
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/risk-classify.XXXXXX") || exit 2
 trap 'rm -rf "$scratch"' EXIT
-head=$(git rev-parse HEAD) || fail 'el repositorio no tiene commits'
+head=$(git rev-parse --verify --quiet HEAD) || fail 'el repositorio no tiene commits'
 index=$(git rev-parse --git-path index)
 cp "$index" "$scratch/staged" || exit 2
-staged=$(GIT_INDEX_FILE=$scratch/staged git write-tree) || fail 'el stage tiene conflictos sin resolver'
+staged=$(GIT_INDEX_FILE=$scratch/staged git write-tree 2>/dev/null) || fail 'el stage tiene conflictos sin resolver'
 # assume-unchanged se quita siempre. skip-worktree sólo si el archivo está en
 # disco: uno fuera del cono sparse que no está sigue sin cambios.
 cp "$index" "$scratch/worktree" || exit 2

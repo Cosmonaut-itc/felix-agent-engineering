@@ -1289,7 +1289,8 @@ risk_classify() {
     output=$(cd "$repo/docs" && "$SCRIPTS/risk-classify")
     assert test "$output" = "Rutas: el cambio frente a $(git -C "$repo" rev-parse --short origin/main) no toca ninguna ruta de .agents/high-risk-paths"
     output=$("$SCRIPTS/risk-classify" --help)
-    assert grep -qx 'Uso: risk-classify \[DESTINO\]' <<< "$output"
+    assert test "$(tail -n 1 <<< "$output")" = 'Uso: risk-classify [DESTINO]'
+    assert test "$(wc -l <<< "$output" | tr -d ' ')" = 11
 
     git -C "$repo" add -A
     git -C "$repo" commit -q -m docs
@@ -1327,23 +1328,23 @@ risk_classify_moves_and_errors() {
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" HEAD HEAD 2>&1) || status=$?
     assert test "$status" = 2
-    assert grep -q 'uso: risk-classify \[DESTINO\]' <<< "$output"
+    assert test "$output" = 'risk-classify: uso: risk-classify [DESTINO]'
 
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" no-existe 2>&1) || status=$?
     assert test "$status" = 2
-    assert grep -q 'destino inválido: no-existe' <<< "$output"
+    assert test "$output" = 'risk-classify: destino inválido: no-existe'
 
     git -C "$repo" update-ref -d refs/remotes/origin/main
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
     assert test "$status" = 2
-    assert grep -q 'destino inválido: origin/main' <<< "$output"
+    assert test "$output" = 'risk-classify: destino inválido: origin/main'
 
     status=0
     output=$(cd "$TEST_TMP" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
     assert test "$status" = 2
-    assert grep -q 'no estás en un repositorio git' <<< "$output"
+    assert test "$output" = 'risk-classify: no estás en un repositorio git'
 
     git -C "$repo" commit -q -m mueve
     moved=$(git -C "$repo" rev-parse HEAD)
@@ -1357,7 +1358,7 @@ risk_classify_moves_and_errors() {
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
     assert test "$status" = 2
-    assert grep -q 'el stage tiene conflictos sin resolver' <<< "$output"
+    assert test "$output" = 'risk-classify: el stage tiene conflictos sin resolver'
     git -C "$repo" merge --abort
 
     printf 'secreto\n' > "$repo/docs/secreto.md"
@@ -1366,7 +1367,7 @@ risk_classify_moves_and_errors() {
         status=0
         output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
         assert test "$status" = 2
-        assert grep -q 'no puedo leer el working tree' <<< "$output"
+        assert test "$output" = 'risk-classify: no puedo leer el working tree'
     fi
     rm -f "$repo/docs/secreto.md"
 
@@ -1374,12 +1375,12 @@ risk_classify_moves_and_errors() {
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
     assert test "$status" = 2
-    assert grep -q 'el repositorio no tiene commits' <<< "$output"
+    assert test "$output" = 'risk-classify: el repositorio no tiene commits'
     git -C "$repo" commit -q --allow-empty -m suelta
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$moved" 2>&1) || status=$?
     assert test "$status" = 2
-    assert grep -q 'la rama no comparte historia con el destino' <<< "$output"
+    assert test "$output" = 'risk-classify: la rama no comparte historia con el destino'
 }
 
 risk_classify_sources() {
@@ -1393,7 +1394,7 @@ risk_classify_sources() {
     printf 'y\n' >> "$repo/convex/payments/charge.ts"
     git -C "$repo" commit -q -am cambio
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
-    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+    assert test "$output" = $'Nivel: alto por convex/payments/**\nconvex/payments/**\tconvex/payments/charge.ts'
 
     git -C "$repo" show HEAD~1:convex/payments/charge.ts > "$repo/convex/payments/charge.ts"
     git -C "$repo" add convex/payments/charge.ts
@@ -1436,7 +1437,12 @@ risk_classify_sources() {
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
     assert test "$status" = 2
-    assert grep -qF '.agents/high-risk-paths:2: patrón inválido: convex/payments/**z.ts' <<< "$output"
+    assert test "$output" = 'risk-classify: .agents/high-risk-paths:2: patrón inválido: convex/payments/**z.ts'
+    printf '../fuera\n' > "$repo/.agents/high-risk-paths"
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert test "$output" = 'risk-classify: .agents/high-risk-paths:1: patrón inválido: ../fuera'
 }
 
 risk_classify_target() {
@@ -1535,14 +1541,15 @@ risk_classify_edges() {
         git -C "$repo" update-index "--no-$flag" convex/payments/charge.ts
         git -C "$repo" checkout -q -- convex/payments/charge.ts
     done
-    git -C "$repo" update-index --assume-unchanged convex/payments/charge.ts
-    git -C "$repo" update-index --skip-worktree convex/payments/charge.ts
+    # Dos rutas con flags: update-index sin -z sólo leería la primera.
+    git -C "$repo" update-index --assume-unchanged .agents/high-risk-paths convex/payments/charge.ts
+    git -C "$repo" update-index --skip-worktree .agents/high-risk-paths convex/payments/charge.ts
     assert test "$(git -C "$repo" ls-files -v convex/payments/charge.ts)" = 's convex/payments/charge.ts'
     printf 'oculto\n' >> "$repo/convex/payments/charge.ts"
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
     assert grep -qxF $'convex/payments/charge.ts\tconvex/payments/charge.ts' <<< "$output"
-    git -C "$repo" update-index --no-assume-unchanged convex/payments/charge.ts
-    git -C "$repo" update-index --no-skip-worktree convex/payments/charge.ts
+    git -C "$repo" update-index --no-assume-unchanged .agents/high-risk-paths convex/payments/charge.ts
+    git -C "$repo" update-index --no-skip-worktree .agents/high-risk-paths convex/payments/charge.ts
     git -C "$repo" checkout -q -- convex/payments/charge.ts
 
     git -C "$repo" config merge.mio.driver true
@@ -1564,7 +1571,7 @@ risk_classify_edges() {
         status=0
         output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target" 2>&1) || status=$?
         assert test "$status" = 2
-        assert grep -qF 'no puedo leer .agents/high-risk-paths' <<< "$output"
+        assert test "$output" = 'risk-classify: no puedo leer .agents/high-risk-paths'
     fi
     chmod 644 "$repo/.agents/high-risk-paths"
     rm "$repo/.agents/high-risk-paths"
@@ -1578,7 +1585,7 @@ risk_classify_edges() {
         status=0
         output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target" 2>&1) || status=$?
         assert test "$status" = 2
-        assert grep -qF 'no puedo leer .agents/high-risk-paths' <<< "$output"
+        assert test "$output" = 'risk-classify: no puedo leer .agents/high-risk-paths'
         rm -rf "${repo:?}/.agents/high-risk-paths"
     done
 
@@ -1676,7 +1683,7 @@ risk_classify_edges() {
     assert grep -qxF $'rename de directorio\told/keep.txt' <<< "$output"
     git -C "$repo" mv fuera.txt old/keep.txt
     printf 'x\n' > "$repo/old/nuevo.icg.ts"
-    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target" 2>&1)
     assert test "$output" = $'Nivel: alto por rename de directorio\nrename de directorio\told/nuevo.icg.ts'
     git -C "$repo" add old/nuevo.icg.ts
     git -C "$repo" commit -q -m otro
@@ -1733,6 +1740,30 @@ risk_classify_edges() {
         output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
         assert grep -qxF $'convex/payments/**\tconvex/payments/enlace' <<< "$output"
     fi
+
+    # Windows no admite \ en nombres de archivo.
+    case "$(uname)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents" "$repo/o\\ld"
+    printf 'x\n' > "$repo/convex/payments/a\\b.ts"
+    printf 'x\n' > "$repo/o\\ld/keep.txt"
+    printf '%s\n' 'convex/payments/a\\b.ts' 'docs/a\*\*' > "$repo/.agents/high-risk-paths"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m barras
+    base=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" update-index --assume-unchanged 'convex/payments/a\b.ts'
+    printf 'y\n' >> "$repo/convex/payments/a\\b.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base" 2>&1)
+    assert test "$output" = "$(printf 'Nivel: alto por %s\n%s\t%s' 'convex/payments/a\\b.ts' 'convex/payments/a\\b.ts' '"convex/payments/a\\b.ts"')"
+    git -C "$repo" update-index --no-assume-unchanged 'convex/payments/a\b.ts'
+    git -C "$repo" checkout -q -- 'convex/payments/a\b.ts'
+    git -C "$repo" rm -q -r 'o\ld'
+    git -C "$repo" commit -q -m quita
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$base"
+    printf 'x\n' > "$repo/o\\ld/nuevo.txt"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF "$(printf '%s\t%s' 'rename de directorio' 'o\ld/nuevo.txt')" <<< "$output"
 }
 
 TEST_CASES=(validation)
