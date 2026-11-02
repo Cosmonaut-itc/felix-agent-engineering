@@ -66,12 +66,13 @@ for store in stores:
     missing = [name for name in ("units.tsv", "decisions.tsv") if not os.path.isfile(os.path.join(store, name))]
     if not missing:
         continue
-    orch = shlex.quote(os.path.join(pstack, "skills", "poteto-mode", "scripts", "orch", "orch.ts"))
     log = shlex.quote(os.path.join(pstack, "skills", "show-me-your-work", "scripts", "log.sh"))
     trail = shlex.quote(os.path.join(store, "decisions.tsv"))
     steps = []
     if "units.tsv" in missing:
-        steps.append(f"bun {orch} --store {shlex.quote(store)} init")
+        header = shlex.quote("id\\ttrack\\tstate\\tbranch\\tpr\\tsha\\tbrief\\n")
+        units = shlex.quote(os.path.join(store, "units.tsv"))
+        steps.append(f"printf {header} > {units}")
     if "decisions.tsv" in missing:
         steps.append(f"{log} {trail} start <decisión> <por qué> <evidencia> <resultado>")
     absent = " ni ".join(missing)

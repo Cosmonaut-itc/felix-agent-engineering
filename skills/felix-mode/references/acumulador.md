@@ -62,10 +62,10 @@ exigida por `AGENTS.md` mantiene sus controles y su precedencia.
    actualiza el acumulador y la frontera después de cada integración.
 
 La frontera de tickets sale del grafo de la spec y de `units.tsv`.
-`orch frontier set` describe cadenas de PRs, no tickets sin PR. Ejecútalo
-cuando exista el acumulador, para su cadena de un PR, sin simular eslabones
-por ticket. Las evidencias por ticket viven en sus informes del store.
-El ledger por PR y head se usa para la verificación final del acumulador.
+Cuando exista el acumulador, sus columnas `pr` y `sha` en `units.tsv` llevan
+su PR y su head, sin simular un PR por ticket. Las evidencias por ticket
+viven en sus informes del store. La verificación final del acumulador va en
+`decisions.tsv`, con el PR y el head que juzga.
 
 ## Cerrar la entrega
 
