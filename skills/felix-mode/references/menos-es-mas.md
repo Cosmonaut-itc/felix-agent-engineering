@@ -47,7 +47,10 @@ que tiene respuesta. Quita lo que no.
 
 ## Terminado
 
-Recorre la pantalla elemento por elemento e intenta quitar cada uno. Lo que
-se quita sin que el usuario pierda nada se va. El reporte lista lo que
-quitaste y, para cada elemento que agregaste fuera del prototipo, su razón
-en una frase.
+- **Prototipo.** Antes de pedir aprobación, recorre la pantalla elemento por
+  elemento e intenta quitar cada uno. Lo que se quita sin que el usuario
+  pierda nada se va. El reporte lista lo que quitaste.
+- **Implementación.** Cada elemento del prototipo aprobado está, y cada
+  elemento que agregaste tiene su razón en una frase en el reporte. Un
+  elemento aprobado que falla la prueba se queda y se reporta al dueño, que
+  decide si sale.
