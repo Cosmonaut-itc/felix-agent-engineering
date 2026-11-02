@@ -1543,7 +1543,8 @@ risk_classify_edges() {
     rm "$repo/.agents/high-risk-paths"
     for kind in symlink directorio; do
         if [ "$kind" = symlink ]; then
-            ln -s falta "$repo/.agents/high-risk-paths"
+            # Git Bash de Windows no crea symlinks a un destino que no existe.
+            ln -s falta "$repo/.agents/high-risk-paths" 2>/dev/null || continue
         else
             mkdir "$repo/.agents/high-risk-paths"
         fi
@@ -1695,8 +1696,7 @@ risk_classify_edges() {
     repo=$(risk_repo)
     mkdir -p "$repo/.agents"
     printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
-    ln -s uno "$repo/convex/payments/enlace"
-    if [ -L "$repo/convex/payments/enlace" ]; then
+    if ln -s uno "$repo/convex/payments/enlace" 2>/dev/null; then
         git -C "$repo" add -A
         git -C "$repo" commit -q -m enlace
         base=$(git -C "$repo" rev-parse HEAD)
