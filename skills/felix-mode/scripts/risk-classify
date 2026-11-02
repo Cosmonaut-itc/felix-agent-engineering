@@ -1,12 +1,14 @@
 #!/bin/bash
 # Marca un diff como alto riesgo cuando toca una ruta de .agents/high-risk-paths.
+# Cada línea es una pathspec :(glob) de git relativa a la raíz: * no cruza /,
+# y ** sólo vale como segmento entero (**/x, x/**, x/**/y).
 set -uo pipefail
 
 LIST=.agents/high-risk-paths
 fail() { printf 'risk-classify: %s\n' "$1" >&2; exit 2; }
 
 case "${1:-}" in
-    -h|--help) printf 'Uso: risk-classify [BASE]\n'; exit 0 ;;
+    -h|--help) sed -n '2,4s/^# //p' "$0"; printf 'Uso: risk-classify [BASE]\n'; exit 0 ;;
 esac
 [ "$#" -le 1 ] || fail 'uso: risk-classify [BASE]'
 
@@ -34,14 +36,23 @@ while IFS= read -r line || [ -n "$line" ]; do
     pattern=${pattern#"${pattern%%[![:space:]]*}"}
     pattern=${pattern%"${pattern##*[![:space:]]}"}
     case "$pattern" in ''|'#'*) continue ;; esac
-    files=$(git diff --name-only "$base" -- ":(glob)$pattern" 2>/dev/null &&
-        git ls-files --others --exclude-standard -- ":(glob)$pattern" 2>/dev/null) ||
+    IFS=/ read -r -a segments <<< "$pattern"
+    for segment in "${segments[@]}"; do
+        case "$segment" in '**') ;; *'**'*) fail "$LIST:$number: patrón inválido: $pattern" ;; esac
+    done
+    spec=":(glob)$pattern"
+    files=$({ git log --format= --name-only --no-merges "$base..HEAD" -- "$spec" &&
+        git diff --name-only "$base" HEAD -- "$spec" &&
+        git diff --name-only --cached -- "$spec" &&
+        git diff --name-only -- "$spec" &&
+        git ls-files --others --exclude-standard -- "$spec"; } 2>/dev/null) ||
         fail "$LIST:$number: patrón inválido: $pattern"
+    files=$(printf '%s\n' "$files" | sed '/^$/d' | sort -u)
     [ -n "$files" ] || continue
     matched+=("$pattern")
     while IFS= read -r file; do
         report+=$(printf '%s\t%s' "$pattern" "$file")$'\n'
-    done < <(printf '%s\n' "$files" | sort -u)
+    done <<< "$files"
 done < "$LIST"
 
 if [ "${#matched[@]}" = 0 ]; then

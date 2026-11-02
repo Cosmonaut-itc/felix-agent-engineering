@@ -140,11 +140,13 @@ siendo obligatorios.
 ## Revisión
 
 - **Riesgo.** Antes de cada ronda, corre `scripts/risk-classify` de esta
-  skill desde el checkout del cambio. Compara el diff con los globs de
-  `.agents/high-risk-paths` del repositorio, uno por línea. Si imprime
-  `Nivel: alto`, el nivel es alto. Si no, clasifica el diff completo con las
-  demás señales de **Alto riesgo**. Un diff que crece puede subir de nivel. El brief de cada ronda abre con `Nivel: <normal o
-  alto> por <señal o ruta>`, y tu respuesta repite el nivel y su motivo.
+  skill desde el checkout del cambio. Compara los commits sobre la base y el
+  working tree con las pathspec `:(glob)` de `.agents/high-risk-paths`, una
+  por línea; su `--help` da la sintaxis. Si imprime `Nivel: alto`, el nivel
+  es alto. Si no, clasifica el diff completo con las demás señales de **Alto
+  riesgo**. Un diff que crece puede subir de nivel. El brief de cada ronda
+  abre con `Nivel: <normal o alto> por <señal o ruta>`, y tu respuesta
+  repite el nivel y su motivo.
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio

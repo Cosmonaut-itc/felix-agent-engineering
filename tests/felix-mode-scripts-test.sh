@@ -1330,6 +1330,55 @@ risk_classify_moves_and_errors() {
     assert grep -q 'no estás en un repositorio git' <<< "$output"
 }
 
+risk_classify_sources() {
+    local repo output status
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents"
+    printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m lista
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+    printf 'y\n' >> "$repo/convex/payments/charge.ts"
+    git -C "$repo" commit -q -am cambio
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+
+    git -C "$repo" show HEAD~1:convex/payments/charge.ts > "$repo/convex/payments/charge.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+
+    git -C "$repo" commit -q -am revierte
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+
+    git -C "$repo" update-ref refs/remotes/origin/main HEAD
+    printf 'z\n' >> "$repo/convex/payments/charge.ts"
+    git -C "$repo" add convex/payments/charge.ts
+    git -C "$repo" show HEAD:convex/payments/charge.ts > "$repo/convex/payments/charge.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+
+    git -C "$repo" reset -q --hard
+    git -C "$repo" switch -q -c lado
+    printf 'lado\n' >> "$repo/docs/a.md"
+    git -C "$repo" commit -q -am lado
+    git -C "$repo" switch -q -
+    printf 'tronco\n' > "$repo/docs/b.md"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m tronco
+    git -C "$repo" merge -q --no-commit --no-ff lado
+    printf 'merge\n' >> "$repo/convex/payments/charge.ts"
+    git -C "$repo" commit -q -am merge
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+
+    printf '# ok\nconvex/payments/**z.ts\n' > "$repo/.agents/high-risk-paths"
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -qF '.agents/high-risk-paths:2: patrón inválido: convex/payments/**z.ts' <<< "$output"
+}
+
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -1337,7 +1386,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

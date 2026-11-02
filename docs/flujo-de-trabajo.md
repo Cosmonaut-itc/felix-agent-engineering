@@ -191,8 +191,11 @@ Superpowers no se usa. Tampoco `setup-pstack`, que reescribe la hoja
 Cada repositorio de trabajo aporta lo que el flujo no puede saber:
 
 - su `AGENTS.md`, con gates, tracker y señales de alto riesgo;
-- `.agents/high-risk-paths`, un glob de git por línea, con las rutas que
-  `risk-classify` marca como alto riesgo;
+- `.agents/high-risk-paths`, con las rutas que `risk-classify` marca como
+  alto riesgo. Cada línea es una pathspec `:(glob)` de git relativa a la
+  raíz. `*` no cruza `/`, y `**` cruza directorios sólo como segmento
+  entero, como en `convex/payments/**` o `**/*.icg.ts`. `#` abre un
+  comentario;
 - la skill `verify` en `.agents/skills/verify/`, enlazada en
   `.claude/skills/verify`, que maneja la app real y devuelve evidencia;
 - project playbooks opcionales en `.agents/playbooks/`, que extienden los de
