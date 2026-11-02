@@ -1,18 +1,19 @@
 #!/bin/bash
-# Marca un diff como alto riesgo cuando lo que aterrizaría con squash toca una
-# ruta de .agents/high-risk-paths: HEAD, stage, working tree y sin trackear
-# frente a la base. Un cambio que la historia de la rama deshace no aterriza.
+# Marca un cambio como alto riesgo cuando su squash sobre el destino toca una
+# ruta de .agents/high-risk-paths. Simula el squash de HEAD, del stage y del
+# working tree con sus archivos sin trackear, y lee qué rutas cambia cada uno.
 # Cada línea es una pathspec :(glob) de git relativa a la raíz: * no cruza /,
 # y ** sólo vale como segmento entero (**/x, x/**, x/**/y).
+# El destino por defecto es origin/HEAD, u origin/main; tráelo antes.
 set -uo pipefail
 
 LIST=.agents/high-risk-paths
 fail() { printf 'risk-classify: %s\n' "$1" >&2; exit 2; }
 
 case "${1:-}" in
-    -h|--help) sed -n '2,6s/^# //p' "$0"; printf 'Uso: risk-classify [BASE]\n'; exit 0 ;;
+    -h|--help) sed -n '2,7s/^# //p' "$0"; printf 'Uso: risk-classify [DESTINO]\n'; exit 0 ;;
 esac
-[ "$#" -le 1 ] || fail 'uso: risk-classify [BASE]'
+[ "$#" -le 1 ] || fail 'uso: risk-classify [DESTINO]'
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'no estás en un repositorio git'
 cd "$root" || exit 2
@@ -22,13 +23,28 @@ if [ ! -f "$LIST" ]; then
     exit 0
 fi
 
-base=${1:-}
-if [ -z "$base" ]; then
-    upstream=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null) || upstream=origin/main
-    base=$(git merge-base HEAD "$upstream" 2>/dev/null) ||
-        fail "no encuentro la base con $upstream; pásala como argumento"
+target=${1:-}
+if [ -z "$target" ]; then
+    target=$(git rev-parse --abbrev-ref origin/HEAD 2>/dev/null) || target=origin/main
 fi
-git rev-parse --verify --quiet "$base^{commit}" >/dev/null || fail "base inválida: $base"
+git rev-parse --verify --quiet "$target^{commit}" >/dev/null || fail "destino inválido: $target"
+target=$(git rev-parse "$target^{commit}")
+
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/risk-classify.XXXXXX") || exit 2
+trap 'rm -rf "$scratch"' EXIT
+head=$(git rev-parse HEAD) || fail 'el repositorio no tiene commits'
+staged=$(git write-tree) || fail 'el stage tiene conflictos sin resolver'
+cp "$(git rev-parse --git-path index)" "$scratch/index" || exit 2
+GIT_INDEX_FILE=$scratch/index git add -A >/dev/null 2>&1 || fail 'no puedo leer el working tree'
+worktree=$(GIT_INDEX_FILE=$scratch/index git write-tree) || exit 2
+
+landed=()
+for tree in "$head^{tree}" "$staged" "$worktree"; do
+    candidate=$(git commit-tree -p "$head" -m risk-classify "$tree") || exit 2
+    merged=$(git merge-tree --write-tree --no-messages "$target" "$candidate")
+    [ "$?" -le 1 ] || fail 'git merge-tree --write-tree falló; requiere git 2.38 o posterior'
+    landed+=("${merged%%$'\n'*}")
+done
 
 matched=() report=''
 number=0
@@ -42,13 +58,13 @@ while IFS= read -r line || [ -n "$line" ]; do
     for segment in "${segments[@]}"; do
         case "$segment" in '**') ;; *'**'*) fail "$LIST:$number: patrón inválido: $pattern" ;; esac
     done
-    spec=":(glob)$pattern"
-    files=$({ git diff --name-only "$base" HEAD -- "$spec" &&
-        git diff --name-only --cached -- "$spec" &&
-        git diff --name-only -- "$spec" &&
-        git ls-files --others --exclude-standard -- "$spec"; } 2>/dev/null) ||
-        fail "$LIST:$number: patrón inválido: $pattern"
-    files=$(printf '%s\n' "$files" | sed '/^$/d' | sort -u)
+    files=''
+    for tree in "${landed[@]}"; do
+        files+=$(git diff --name-only "$target" "$tree" -- ":(glob)$pattern" 2>/dev/null) ||
+            fail "$LIST:$number: patrón inválido: $pattern"
+        files+=$'\n'
+    done
+    files=$(printf '%s' "$files" | sed '/^$/d' | sort -u)
     [ -n "$files" ] || continue
     matched+=("$pattern")
     while IFS= read -r file; do
@@ -57,7 +73,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$LIST"
 
 if [ "${#matched[@]}" = 0 ]; then
-    printf 'Rutas: ningún archivo del diff contra %s coincide con %s\n' "$(git rev-parse --short "$base")" "$LIST"
+    printf 'Rutas: el squash sobre %s no toca ninguna ruta de %s\n' "$(git rev-parse --short "$target")" "$LIST"
     exit 0
 fi
 joined=$(printf ', %s' "${matched[@]}")
