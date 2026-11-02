@@ -801,13 +801,18 @@ store_warnings() {
     printf '{"plugins":{"pstack@pstack-claude":[{"installPath":"/p/0.9.95"}]}}' > "$HOME/.claude/plugins/installed_plugins.json"
     output=$(store_hook Write file_path "$store/state.md")
     printf '%s' "$output" | STORE="$store" python3 -c '
-import json, os, shlex, sys
+import json, os, shlex, subprocess, sys
 value = json.load(sys.stdin)
 context = value["hookSpecificOutput"]["additionalContext"]
-store = shlex.quote(os.environ["STORE"])
 assert value["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
 assert "no tiene units.tsv ni decisions.tsv." in context
-assert f"`bun /p/0.9.95/skills/poteto-mode/scripts/orch/orch.ts --store {store} init`" in context
+header = shlex.quote("id\\ttrack\\tstate\\tbranch\\tpr\\tsha\\tbrief\\n")
+units = os.path.join(os.environ["STORE"], "units.tsv")
+step = f"printf {header} > {shlex.quote(units)}"
+assert f"`{step}`" in context
+subprocess.run(["bash", "-c", step], check=True)
+with open(units) as handle:
+    assert handle.read() == "id\ttrack\tstate\tbranch\tpr\tsha\tbrief\n"
 assert "`/p/0.9.95/skills/show-me-your-work/scripts/log.sh " in context and "/decisions.tsv start" in context
 assert "/.claude/encargos/mev-1018, no en el store." in context
 assert value["systemMessage"] == "store-guard: store de programa sin units.tsv o decisions.tsv"
@@ -816,7 +821,7 @@ assert value["systemMessage"] == "store-guard: store de programa sin units.tsv o
     # shellcheck disable=SC2016
     output=$(store_hook Bash command 'printf x >> "$HOME"/.claude/orchestrate/mev-1018/todo.md')
     assert grep -q 'mev-1018 no tiene decisions.tsv. ' <<< "$output"
-    assert test -z "$(grep 'orch.ts' <<< "$output")"
+    assert test -z "$(grep 'printf' <<< "$output")"
     assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'printf x > state.md' "$store/runs")"
     assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'touch mev-1018/state.md' "$base")"
     assert grep -q 'mev-1018 no tiene' <<< "$(store_hook Bash command 'touch .claude/orchestrate/mev-1018/state.md' "$HOME")"
@@ -827,7 +832,7 @@ assert value["systemMessage"] == "store-guard: store de programa sin units.tsv o
     # shellcheck disable=SC2016
     output=$(store_hook Bash command 'printf x > "$HOME/.claude/orchestrate/sesión ñ/state.md"')
     assert grep -q 'sesión ñ no tiene' <<< "$output"
-    assert grep -q "'$base/sesión ñ'" <<< "$output"
+    assert grep -q "'$base/sesión ñ/units.tsv'" <<< "$output"
     assert grep -q 'sesión ñ no tiene' <<< "$(store_hook Write file_path "$base/sesión ñ/state.md")"
 }
 

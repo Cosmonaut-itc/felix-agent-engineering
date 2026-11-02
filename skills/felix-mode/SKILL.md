@@ -63,21 +63,22 @@ no pide acumulador. Los tickets independientes siguen en PRs separados.
 
 Un programa es trabajo de varias unidades que corre en los playbooks
 Autopilot-full, Autopilot-stack, Orchestrate o Autonomous run. Su estado vive
-en el store `~/.claude/orchestrate/<slug>/`, con el formato del playbook
-Orchestrate aunque el playbook elegido sea otro:
+en el store `~/.claude/orchestrate/<slug>/`, con este formato aunque el
+playbook use otro. No depende de scripts de pstack:
 
-1. Antes del primer despacho, crea el store con `orch init` (playbook
-   Orchestrate, paso 2) y abre el trail `decisions.tsv` con `scripts/log.sh`
-   de `show-me-your-work`.
-2. `units.tsv` lleva una fila por unidad, actualizada con `orch`. Si la unidad
-   tiene ticket, su `id` es el del ticket, como `SEN-3480`.
+1. Antes del primer despacho, crea `units.tsv` con la cabecera
+   `id	track	state	branch	pr	sha	brief`, separada por tabuladores, y abre
+   el trail `decisions.tsv` con `scripts/log.sh` de `show-me-your-work`.
+2. `units.tsv` lleva una fila por unidad con esas siete columnas, y la
+   editas en su lugar. Si la unidad tiene ticket, su `id` es el del ticket,
+   como `SEN-3480`.
 3. Escribe en `decisions.tsv` cada decisión, lanzamiento, ronda, veredicto,
    merge y pausa, como fila nueva.
 
 El estado de las unidades va sólo en esas tablas. Un `todo.md` lleva sólo los
 pasos del playbook. El store es sólo de programas. Una unidad suelta guarda
 sus encargos, salidas de trabajadores y parches en
-`~/.claude/encargos/<slug>/`, sin `orch init`.
+`~/.claude/encargos/<slug>/`, sin crear store.
 
 El hook `scripts/store-guard` avisa cuando una herramienta toca un store sin
 `units.tsv` o sin `decisions.tsv`. En Write y Edit es exacto; en Bash deduce

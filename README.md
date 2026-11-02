@@ -179,7 +179,7 @@ Claude Code y Codex con su hook apagado, y
 - La planificación sigue en las skills de Matt Pocock. Superpowers y las
   skills de Matt Pocock que pstack duplica se retiran.
 - Cada sesión marca en Linear los tickets que toma con una etiqueta del
-  grupo `sesión`. Cada programa lleva su estado en el store de pstack, con
+  grupo `sesión`. Cada programa lleva su estado en su store, con
   `units.tsv` y el trail `decisions.tsv`; el hook `store-guard` avisa si
   falta alguno. Una unidad suelta guarda sus encargos en
   `~/.claude/encargos/<slug>/`.
