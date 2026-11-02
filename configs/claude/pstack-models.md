@@ -27,6 +27,8 @@ arena cross-judge pool: opus @high
 swarm workers: haiku @low
 architect runners: opus @high
 interrogate reviewers: opus @high
+thermos reviewers: opus @high
+no-comments reviewer: sonnet @medium
 
 default effort: medium
 session hook: off
