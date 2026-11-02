@@ -1557,6 +1557,38 @@ risk_classify_edges() {
     printf 'x\n' > "$repo/lib/nuevo.ts"
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
     assert grep -qxF $'convex/payments/**\tconvex/payments/lib/refund.ts' <<< "$output"
+
+    rm -rf "$repo/lib"
+    git -C "$repo" checkout -q --detach "$target"
+    printf 'archivo\n' > "$repo/lib"
+    git -C "$repo" add lib
+    git -C "$repo" commit -q -m archivo
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$base"
+    printf 'x\n' > "$repo/lib/nuevo.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/lib/refund.ts' <<< "$output"
+
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents"
+    printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m lista
+    one=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" update-index --add --cacheinfo "160000,$one,lib/sub"
+    git -C "$repo" commit -q -m submodulo
+    base=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" update-index --force-remove lib/sub
+    git -C "$repo" update-index --add --cacheinfo "160000,$one,convex/payments/sub"
+    git -C "$repo" commit -q -m mueve
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$base"
+    git -C "$repo" update-index --cacheinfo "160000,$target,lib/sub"
+    git -C "$repo" commit -q -m sube
+    git -C "$repo" config diff.ignoreSubmodules all
+    git -C "$repo" config merge.renames false
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/sub' <<< "$output"
 }
 
 TEST_CASES=(validation)

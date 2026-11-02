@@ -73,16 +73,18 @@ for tree in "$head^{tree}" "$staged" "$worktree"; do
             removed+=("$path")
             while case "$path" in */*) ;; *) false ;; esac; do
                 path=${path%/*}
-                git cat-file -e "$target:$path" 2>/dev/null && break
+                [ "$(git cat-file -t "$target:$path" 2>/dev/null)" != tree ] || break
                 removed+=("$path")
             done
-        done < <(git diff -z --name-only --no-renames --diff-filter=D "$base" "$target")
+        done < <(git diff -z --name-only --no-renames --ignore-submodules=none \
+            --diff-filter=D "$base" "$target")
         [ "${#removed[@]}" -gt 0 ] || continue
         while IFS= read -r -d '' path; do
             for gone in "${removed[@]}"; do
                 case "$path" in "$gone"|"$gone"/*) from+=("$base") to+=("$target"); break 2 ;; esac
             done
-        done < <(git diff -z --name-only --no-renames "$base" "$tree")
+        done < <(git diff -z --name-only --no-renames --ignore-submodules=none \
+            "$base" "$tree")
     done
 done
 
