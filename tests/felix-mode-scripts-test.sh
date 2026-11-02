@@ -1349,7 +1349,14 @@ risk_classify_sources() {
 
     git -C "$repo" commit -q -am revierte
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
-    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+    assert grep -q '^Rutas: ningún archivo' <<< "$output"
+    git -C "$repo" switch -q -c descartado
+    printf 'descartado\n' >> "$repo/convex/payments/charge.ts"
+    git -C "$repo" commit -q -am descartado
+    git -C "$repo" switch -q -
+    git -C "$repo" merge -q --no-ff -s ours descartado -m descarta
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -q '^Rutas: ningún archivo' <<< "$output"
 
     git -C "$repo" update-ref refs/remotes/origin/main HEAD
     printf 'z\n' >> "$repo/convex/payments/charge.ts"
