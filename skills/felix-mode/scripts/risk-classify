@@ -1,7 +1,10 @@
 #!/bin/bash
-# Marca un cambio como alto riesgo cuando su squash sobre el destino toca una
-# ruta de .agents/high-risk-paths. Simula el squash de HEAD, del stage y del
-# working tree con sus archivos sin trackear, y lee qué rutas cambia cada uno.
+# Marca un cambio como alto riesgo cuando toca una ruta de
+# .agents/high-risk-paths. Para HEAD, el stage y el working tree con sus
+# archivos sin trackear, cuenta la ruta si cambia frente al merge-base con el
+# destino o si cambia al simular el squash sobre el destino. Una ruta en
+# conflicto siempre cambia frente al merge-base o en la simulación. Puede
+# marcar alto de más, nunca de menos.
 # Cada línea es una pathspec :(glob) de git relativa a la raíz: * no cruza /,
 # y ** sólo vale como segmento entero (**/x, x/**, x/**/y).
 # El destino por defecto es origin/HEAD, u origin/main; tráelo antes.
@@ -11,17 +14,18 @@ LIST=.agents/high-risk-paths
 fail() { printf 'risk-classify: %s\n' "$1" >&2; exit 2; }
 
 case "${1:-}" in
-    -h|--help) sed -n '2,7s/^# //p' "$0"; printf 'Uso: risk-classify [DESTINO]\n'; exit 0 ;;
+    -h|--help) sed -n '2,10s/^# //p' "$0"; printf 'Uso: risk-classify [DESTINO]\n'; exit 0 ;;
 esac
 [ "$#" -le 1 ] || fail 'uso: risk-classify [DESTINO]'
 
 root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'no estás en un repositorio git'
 cd "$root" || exit 2
 
-if [ ! -f "$LIST" ]; then
+if [ ! -e "$LIST" ]; then
     printf 'Rutas: el repositorio no declara %s\n' "$LIST"
     exit 0
 fi
+[ -f "$LIST" ] && [ -r "$LIST" ] || fail "no puedo leer $LIST"
 
 target=${1:-}
 if [ -z "$target" ]; then
@@ -34,23 +38,21 @@ scratch=$(mktemp -d "${TMPDIR:-/tmp}/risk-classify.XXXXXX") || exit 2
 trap 'rm -rf "$scratch"' EXIT
 head=$(git rev-parse HEAD) || fail 'el repositorio no tiene commits'
 index=$(git rev-parse --git-path index)
-cp "$index" "$scratch/staged" && cp "$index" "$scratch/worktree" || exit 2
+cp "$index" "$scratch/staged" || exit 2
 staged=$(GIT_INDEX_FILE=$scratch/staged git write-tree) || fail 'el stage tiene conflictos sin resolver'
+GIT_INDEX_FILE=$scratch/worktree git read-tree HEAD || exit 2
 GIT_INDEX_FILE=$scratch/worktree git add -A >/dev/null 2>&1 || fail 'no puedo leer el working tree'
 worktree=$(GIT_INDEX_FILE=$scratch/worktree git write-tree) || exit 2
-blob=$(git hash-object -w --stdin < /dev/null) || exit 2
 
-landed=() n=0
+from=() to=()
 for tree in "$head^{tree}" "$staged" "$worktree"; do
-    n=$((n + 1))
     candidate=$(git commit-tree -p "$head" -m risk-classify "$tree") || exit 2
-    merged=$(git merge-tree --write-tree --name-only --no-messages "$target" "$candidate")
+    merged=$(git merge-tree --write-tree --no-messages "$target" "$candidate")
     [ "$?" -le 1 ] || fail 'git merge-tree --write-tree falló; requiere git 2.38 o posterior'
-    landed+=("${merged%%$'\n'*}")
-    case "$merged" in *$'\n'*) printf '%s\n' "${merged#*$'\n'}" ;; esac |
-        while IFS= read -r path; do
-            if [ -n "$path" ]; then printf '100644 %s\t%s\n' "$blob" "$path"; fi
-        done | GIT_INDEX_FILE=$scratch/conflicts-$n git update-index --add --index-info || exit 2
+    from+=("$target") to+=("${merged%%$'\n'*}")
+    for base in $(git merge-base --all "$target" "$candidate"); do
+        from+=("$base") to+=("$tree")
+    done
 done
 
 matched=() report=''
@@ -65,14 +67,10 @@ while IFS= read -r line || [ -n "$line" ]; do
     for segment in "${segments[@]}"; do
         case "$segment" in '**') ;; *'**'*) fail "$LIST:$number: patrón inválido: $pattern" ;; esac
     done
-    files='' n=0
-    for tree in "${landed[@]}"; do
-        n=$((n + 1))
-        files+=$(git diff --name-only --ignore-submodules=none "$target" "$tree" \
+    files=''
+    for i in "${!from[@]}"; do
+        files+=$(git diff --name-only --ignore-submodules=none "${from[$i]}" "${to[$i]}" \
             -- ":(glob)$pattern" 2>/dev/null) || fail "$LIST:$number: patrón inválido: $pattern"
-        files+=$'\n'
-        [ -f "$scratch/conflicts-$n" ] || continue
-        files+=$(GIT_INDEX_FILE=$scratch/conflicts-$n git ls-files -- ":(glob)$pattern")
         files+=$'\n'
     done
     files=$(printf '%s' "$files" | sed '/^$/d' | sort -u)
@@ -84,7 +82,7 @@ while IFS= read -r line || [ -n "$line" ]; do
 done < "$LIST"
 
 if [ "${#matched[@]}" = 0 ]; then
-    printf 'Rutas: el squash sobre %s no toca ninguna ruta de %s\n' "$(git rev-parse --short "$target")" "$LIST"
+    printf 'Rutas: el cambio frente a %s no toca ninguna ruta de %s\n' "$(git rev-parse --short "$target")" "$LIST"
     exit 0
 fi
 joined=$(printf ', %s' "${matched[@]}")

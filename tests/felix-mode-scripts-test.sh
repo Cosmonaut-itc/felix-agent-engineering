@@ -1287,7 +1287,7 @@ risk_classify() {
     printf 'y\n' >> "$repo/docs/a.md"
     printf 'y\n' >> "$repo/migrations/old/1.sql"
     output=$(cd "$repo/docs" && "$SCRIPTS/risk-classify")
-    assert grep -q '^Rutas: el squash sobre [0-9a-f]* no toca ninguna ruta de .agents/high-risk-paths$' <<< "$output"
+    assert grep -q '^Rutas: el cambio frente a [0-9a-f]* no toca ninguna ruta de .agents/high-risk-paths$' <<< "$output"
 
     git -C "$repo" add -A
     git -C "$repo" commit -q -m docs
@@ -1355,14 +1355,14 @@ risk_classify_sources() {
 
     git -C "$repo" commit -q -am revierte
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
-    assert grep -q '^Rutas: el squash sobre' <<< "$output"
+    assert grep -q '^Rutas: el cambio frente a' <<< "$output"
     git -C "$repo" switch -q -c descartado
     printf 'descartado\n' >> "$repo/convex/payments/charge.ts"
     git -C "$repo" commit -q -am descartado
     git -C "$repo" switch -q -
     git -C "$repo" merge -q --no-ff -s ours descartado -m descarta
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
-    assert grep -q '^Rutas: el squash sobre' <<< "$output"
+    assert grep -q '^Rutas: el cambio frente a' <<< "$output"
 
     git -C "$repo" update-ref refs/remotes/origin/main HEAD
     printf 'z\n' >> "$repo/convex/payments/charge.ts"
@@ -1414,7 +1414,7 @@ risk_classify_target() {
     git -C "$repo" switch -q tema
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
     assert grep -qxF $'convex/payments/**\tconvex/payments/refund.ts' <<< "$output"
-    assert test -z "$(grep -F 'charge.ts' <<< "$output")"
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
     assert test -z "$(grep -F 'new.ts' <<< "$output")"
 
     git -C "$repo" rm -q convex/payments/charge.ts
@@ -1424,7 +1424,7 @@ risk_classify_target() {
 }
 
 risk_classify_edges() {
-    local repo output base target
+    local repo output base target flag status
     repo=$(risk_repo)
     mkdir -p "$repo/.agents"
     printf 'convex/payments/charge.ts\nvendor/**\n' > "$repo/.agents/high-risk-paths"
@@ -1449,6 +1449,39 @@ risk_classify_edges() {
     git -C "$repo" config diff.ignoreSubmodules all
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
     assert grep -qxF $'vendor/**\tvendor/payments' <<< "$output"
+
+    for flag in assume-unchanged skip-worktree; do
+        git -C "$repo" checkout -q --detach "$base"
+        git -C "$repo" update-index "--$flag" convex/payments/charge.ts
+        printf 'oculto\n' >> "$repo/convex/payments/charge.ts"
+        output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
+        assert grep -qxF $'convex/payments/charge.ts\tconvex/payments/charge.ts' <<< "$output"
+        git -C "$repo" update-index "--no-$flag" convex/payments/charge.ts
+        git -C "$repo" checkout -q -- convex/payments/charge.ts
+    done
+
+    git -C "$repo" config merge.mio.driver true
+    printf 'destino\n' > "$repo/convex/payments/charge.ts"
+    git -C "$repo" commit -q -am destino
+    target=$(git -C "$repo" rev-parse HEAD)
+    git -C "$repo" checkout -q --detach "$base"
+    printf 'convex/payments/charge.ts merge=mio\n' > "$repo/.gitattributes"
+    printf 'rama\n' > "$repo/convex/payments/charge.ts"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m rama
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'convex/payments/charge.ts\tconvex/payments/charge.ts' <<< "$output"
+
+    printf '.agents/\n' > "$repo/.gitignore"
+    git -C "$repo" rm -q --cached .agents/high-risk-paths
+    chmod 0 "$repo/.agents/high-risk-paths"
+    if [ ! -r "$repo/.agents/high-risk-paths" ]; then
+        status=0
+        output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target" 2>&1) || status=$?
+        assert test "$status" = 2
+        assert grep -qF 'no puedo leer .agents/high-risk-paths' <<< "$output"
+    fi
+    chmod 644 "$repo/.agents/high-risk-paths"
 }
 
 TEST_CASES=(validation)

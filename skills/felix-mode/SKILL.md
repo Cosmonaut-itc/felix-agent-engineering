@@ -140,10 +140,11 @@ siendo obligatorios.
 ## Revisión
 
 - **Riesgo.** Antes de cada ronda, trae la rama de entrega y corre
-  `scripts/risk-classify` de esta skill desde el checkout del cambio. Simula
-  el squash de HEAD, del stage y del working tree sobre esa rama y lo
-  compara con las pathspec `:(glob)` de `.agents/high-risk-paths`, una por
-  línea; su `--help` da la sintaxis. Si imprime `Nivel: alto`, el nivel es
+  `scripts/risk-classify` de esta skill desde el checkout del cambio. Para
+  HEAD, el stage y el working tree, compara contra las pathspec `:(glob)` de
+  `.agents/high-risk-paths`, una por línea, lo que cambia frente al
+  merge-base y al simular el squash sobre esa rama; puede marcar alto de
+  más, nunca de menos. Su `--help` da la sintaxis. Si imprime `Nivel: alto`, el nivel es
   alto. Si imprime `Rutas:`, clasifica el diff completo con las demás
   señales de **Alto riesgo**. Si sale con 2, corrige lo que dice antes de la
   ronda; un error no cuenta como normal. Un diff que crece puede subir de
