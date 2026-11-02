@@ -143,6 +143,8 @@ defaults de pstack. A partir de ahí rigen Esfuerzo y Escalado.
 | `architect runners`, `arena runners` | opus-5.5; en diseño disputado (alto riesgo o empate entre los candidatos de opus-5.5, según `felix-mode`), también gpt-6.1-sol. |
 | `arena cross-judge pool` | Familia distinta del autor: gpt-6-astra si el autor es Claude, opus-5.5 si es GPT. Un panel mixto opus-5.5 y gpt-6.1-sol tiene un juez único, gpt-6-astra. |
 | `interrogate reviewers` | Según Revisión: gpt-6.1-sol en `high`; en alto riesgo, también opus-5.5 en `high`. |
+| `thermos reviewers` | opus-5.5 en `high`. `felix-mode` no usa `thermos` para revisar cambios; la fila sólo fija el asiento si alguien lo invoca. |
+| `no-comments reviewer` | sonnet-5.5 en `medium`. Limpia comentarios antes de la review y no cuenta como revisor de cambios. |
 | Revisor del rastro de `show-me-your-work` | gpt-6-astra. |
 
 El `Agent` de pstack en Claude Code sólo acepta modelos Claude, así que la
