@@ -96,12 +96,14 @@ tocan CI, dependencias o la gobernanza de agentes.
 | Nivel | Cuándo | Cómo |
 |-------|--------|------|
 | Normal | Toda review de cambios. | Un revisor gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. |
-| Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o lo que el `AGENTS.md` marque. | `interrogate` con sol en `high` como Reviewer A y opus-5.5 en `high`. El orquestador veta los hallazgos. |
+| Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o lo que el `AGENTS.md` marque. | `interrogate` con sol en `high` como Reviewer A y opus-5.5 en `high`. |
 | Diseño | Decisiones de forma antes de implementar. | `architect` con un runner opus-5.5 y dos candidatos. Sin juez cruzado. |
 | Diseño disputado | Alto riesgo, o dos candidatos empatados. | `arena` con opus-5.5 y gpt-6.1-sol, juzgado por astra, y dos implementaciones completas. |
 
-Si no puede correr ningún revisor independiente, la puerta sigue cerrada. La
-lectura propia del orquestador no cuenta como review.
+Cada critical o warning trae el comando que lo prueba y su salida. El
+orquestador vuelve a correr ese comando y sólo deja abierto el hallazgo que
+reproduce. Si no puede correr ningún revisor independiente, la puerta sigue
+cerrada. La lectura propia del orquestador no cuenta como review.
 
 ## Pausas
 
