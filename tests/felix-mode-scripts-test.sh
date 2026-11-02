@@ -1277,7 +1277,7 @@ risk_repo() {
 }
 
 risk_classify() {
-    local repo output before
+    local repo output index
     repo=$(risk_repo)
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
     assert test "$output" = 'Rutas: el repositorio no declara .agents/high-risk-paths'
@@ -1294,9 +1294,12 @@ risk_classify() {
     printf 'y\n' >> "$repo/convex/payments/charge.ts"
     mkdir -p "$repo/src/sync dir"
     printf 'x\n' > "$repo/src/sync dir/pedido.icg.ts"
-    before=$(git -C "$repo" status --porcelain)
+    printf 'x\n' > "$repo/docs/c.md"
+    git -C "$repo" add docs/c.md
+    index=$(cksum < "$repo/.git/index")
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
-    assert test "$(git -C "$repo" status --porcelain)" = "$before"
+    assert test "$(cksum < "$repo/.git/index")" = "$index"
+    assert test "$(git -C "$repo" diff --cached --name-only)" = docs/c.md
     assert test "$(head -n 1 <<< "$output")" = 'Nivel: alto por convex/payments/**, **/*.icg.ts'
     assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
     assert grep -qxF $'**/*.icg.ts\tsrc/sync dir/pedido.icg.ts' <<< "$output"
@@ -1413,6 +1416,11 @@ risk_classify_target() {
     assert grep -qxF $'convex/payments/**\tconvex/payments/refund.ts' <<< "$output"
     assert test -z "$(grep -F 'charge.ts' <<< "$output")"
     assert test -z "$(grep -F 'new.ts' <<< "$output")"
+
+    git -C "$repo" rm -q convex/payments/charge.ts
+    git -C "$repo" commit -q -m borra
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
 }
 
 TEST_CASES=(validation)

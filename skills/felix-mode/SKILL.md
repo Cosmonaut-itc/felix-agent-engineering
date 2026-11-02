@@ -144,10 +144,11 @@ siendo obligatorios.
   el squash de HEAD, del stage y del working tree sobre esa rama y lo
   compara con las pathspec `:(glob)` de `.agents/high-risk-paths`, una por
   línea; su `--help` da la sintaxis. Si imprime `Nivel: alto`, el nivel es
-  alto. Si no, clasifica el diff completo con las demás señales de **Alto
-  riesgo**. Un diff que crece puede subir de nivel. El brief de cada ronda
-  abre con `Nivel: <normal o alto> por <señal o ruta>`, y tu respuesta
-  repite el nivel y su motivo.
+  alto. Si imprime `Rutas:`, clasifica el diff completo con las demás
+  señales de **Alto riesgo**. Si sale con 2, corrige lo que dice antes de la
+  ronda; un error no cuenta como normal. Un diff que crece puede subir de
+  nivel. El brief de cada ronda abre con `Nivel: <normal o alto> por <señal
+  o ruta>`, y tu respuesta repite el nivel y su motivo.
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
