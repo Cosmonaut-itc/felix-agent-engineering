@@ -151,11 +151,17 @@ siendo obligatorios.
 - **Alto riesgo.** Corre `interrogate` con dos revisores independientes:
   gpt-6.1-sol en `high` por Transporte, siempre como Reviewer A, y opus-5.5
   en `high`, el asiento Claude que trae la hoja. Ese asiento corre sólo en
-  alto riesgo. Tú eres el lead reviewer y vetas los hallazgos. Cuentan como
+  alto riesgo. Vetas sus hallazgos con **Prueba**. Cuentan como
   señales: escrituras a producción o a un sistema de cliente (ICG, ERP,
   pagos, CFDI, nómina), migraciones o borrado de datos, autenticación y
   permisos, cálculos de dinero o impuestos, contratos entre paquetes o
   servicios, y las rutas de alto riesgo del repositorio.
+- **Prueba.** El brief de todo revisor pide que cada critical o warning
+  traiga el comando que corrió, la salida que imprimió y la salida que exige
+  la intención, como el brief de `interrogate`. En un hallazgo de
+  documentación, el comando muestra las líneas que se contradicen. En el
+  veto vuelves a correr cada comando. Un critical o warning sin comando, o
+  cuyo comando no reproduce el fallo, no queda abierto.
 - **Rondas.** Una review converge cuando cada ronda trae menos hallazgos y
   ninguno abre un caso nuevo en reglas que una ronda anterior ya corrigió.
   Si una ronda no converge, o la ronda 3 no da APTO, lee y aplica
