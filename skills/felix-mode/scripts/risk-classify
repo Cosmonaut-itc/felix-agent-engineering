@@ -48,7 +48,7 @@ cp "$index" "$scratch/worktree" || exit 2
 export GIT_INDEX_FILE=$scratch/worktree
 while IFS= read -r -d '' entry; do
     path=${entry#??}
-    case "$entry" in [hsmrck]' '*) printf '%s\0' "$path" >&3 ;; esac
+    case "$entry" in [hs]' '*) printf '%s\0' "$path" >&3 ;; esac
     case "$entry" in [Ss]' '*) if [ -e "$path" ] || [ -L "$path" ]; then printf '%s\0' "$path" >&4; fi ;; esac
 done < <(git ls-files -z -v) 3> "$scratch/assumed" 4> "$scratch/skipped" || fail 'no puedo leer el índice'
 # update-index aplica un solo flag de marca por llamada.
@@ -90,8 +90,7 @@ matched=() report=''
 number=0
 while IFS= read -r line || [ -n "$line" ]; do
     number=$((number + 1))
-    pattern=${line%$'\r'}
-    pattern=${pattern#"${pattern%%[![:space:]]*}"}
+    pattern=${line#"${line%%[![:space:]]*}"}
     pattern=${pattern%"${pattern##*[![:space:]]}"}
     case "$pattern" in ''|'#'*) continue ;; esac
     IFS=/ read -r -a segments <<< "$pattern"

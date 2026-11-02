@@ -1476,7 +1476,7 @@ risk_classify_edges() {
     local repo output base target flag status other one kind
     repo=$(risk_repo)
     mkdir -p "$repo/.agents"
-    printf 'convex/payments/charge.ts\nvendor/**\n' > "$repo/.agents/high-risk-paths"
+    printf 'convex/payments/charge.ts\nvendor/**' > "$repo/.agents/high-risk-paths"
     git -C "$repo" add -A
     git -C "$repo" commit -q -m lista
     base=$(git -C "$repo" rev-parse HEAD)
@@ -1508,6 +1508,15 @@ risk_classify_edges() {
         git -C "$repo" update-index "--no-$flag" convex/payments/charge.ts
         git -C "$repo" checkout -q -- convex/payments/charge.ts
     done
+    git -C "$repo" update-index --assume-unchanged convex/payments/charge.ts
+    git -C "$repo" update-index --skip-worktree convex/payments/charge.ts
+    assert test "$(git -C "$repo" ls-files -v convex/payments/charge.ts)" = 's convex/payments/charge.ts'
+    printf 'oculto\n' >> "$repo/convex/payments/charge.ts"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
+    assert grep -qxF $'convex/payments/charge.ts\tconvex/payments/charge.ts' <<< "$output"
+    git -C "$repo" update-index --no-assume-unchanged convex/payments/charge.ts
+    git -C "$repo" update-index --no-skip-worktree convex/payments/charge.ts
+    git -C "$repo" checkout -q -- convex/payments/charge.ts
 
     git -C "$repo" config merge.mio.driver true
     printf 'destino\n' > "$repo/convex/payments/charge.ts"
@@ -1634,6 +1643,10 @@ risk_classify_edges() {
     git -C "$repo" commit -q -m destino
     target=$(git -C "$repo" rev-parse HEAD)
     git -C "$repo" checkout -q --detach "$base"
+    git -C "$repo" mv old/keep.txt fuera.txt
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
+    assert grep -qxF $'rename de directorio\told/keep.txt' <<< "$output"
+    git -C "$repo" mv fuera.txt old/keep.txt
     printf 'x\n' > "$repo/old/nuevo.icg.ts"
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target")
     assert test "$output" = $'Nivel: alto por rename de directorio\nrename de directorio\told/nuevo.icg.ts'
@@ -1678,6 +1691,21 @@ risk_classify_edges() {
     rm "$repo/old/keep.txt"
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
     assert test "$output" = $'Nivel: alto por old/keep.txt\nold/keep.txt\told/keep.txt'
+
+    repo=$(risk_repo)
+    mkdir -p "$repo/.agents"
+    printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
+    ln -s uno "$repo/convex/payments/enlace"
+    if [ -L "$repo/convex/payments/enlace" ]; then
+        git -C "$repo" add -A
+        git -C "$repo" commit -q -m enlace
+        base=$(git -C "$repo" rev-parse HEAD)
+        git -C "$repo" update-index --skip-worktree convex/payments/enlace
+        rm "$repo/convex/payments/enlace"
+        ln -s dos "$repo/convex/payments/enlace"
+        output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$base")
+        assert grep -qxF $'convex/payments/**\tconvex/payments/enlace' <<< "$output"
+    fi
 }
 
 TEST_CASES=(validation)
