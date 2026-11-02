@@ -1287,7 +1287,9 @@ risk_classify() {
     printf 'y\n' >> "$repo/docs/a.md"
     printf 'y\n' >> "$repo/migrations/old/1.sql"
     output=$(cd "$repo/docs" && "$SCRIPTS/risk-classify")
-    assert grep -q '^Rutas: el cambio frente a [0-9a-f]* no toca ninguna ruta de .agents/high-risk-paths$' <<< "$output"
+    assert test "$output" = "Rutas: el cambio frente a $(git -C "$repo" rev-parse --short origin/main) no toca ninguna ruta de .agents/high-risk-paths"
+    output=$("$SCRIPTS/risk-classify" --help)
+    assert grep -qx 'Uso: risk-classify \[DESTINO\]' <<< "$output"
 
     git -C "$repo" add -A
     git -C "$repo" commit -q -m docs
@@ -1297,8 +1299,10 @@ risk_classify() {
     printf 'x\n' > "$repo/docs/c.md"
     git -C "$repo" add docs/c.md
     index=$(cksum < "$repo/.git/index")
-    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    mkdir "$TEST_TMP/risk tmp"
+    output=$(cd "$repo" && TMPDIR="$TEST_TMP/risk tmp" "$SCRIPTS/risk-classify")
     assert test "$(cksum < "$repo/.git/index")" = "$index"
+    assert test -z "$(ls -A "$TEST_TMP/risk tmp")"
     assert test "$(git -C "$repo" diff --cached --name-only)" = docs/c.md
     assert test "$(head -n 1 <<< "$output")" = 'Nivel: alto por convex/payments/**, **/*.icg.ts'
     assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
@@ -1306,6 +1310,8 @@ risk_classify() {
     assert test "$(wc -l <<< "$output" | tr -d ' ')" = 3
 
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" HEAD)
+    assert test "$(head -n 1 <<< "$output")" = 'Nivel: alto por convex/payments/**, **/*.icg.ts'
+    output=$(cd "$repo" && GIT_LITERAL_PATHSPECS=1 "$SCRIPTS/risk-classify" HEAD)
     assert test "$(head -n 1 <<< "$output")" = 'Nivel: alto por convex/payments/**, **/*.icg.ts'
 }
 
@@ -1317,6 +1323,11 @@ risk_classify_moves_and_errors() {
     git -C "$repo" mv convex/payments/charge.ts lib/charge.ts
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
     assert grep -qxF $'convex/payments/**\tconvex/payments/charge.ts' <<< "$output"
+
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" HEAD HEAD 2>&1) || status=$?
+    assert test "$status" = 2
+    assert grep -q 'uso: risk-classify \[DESTINO\]' <<< "$output"
 
     status=0
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" no-existe 2>&1) || status=$?
@@ -1407,6 +1418,7 @@ risk_classify_target() {
     mkdir -p "$repo/.agents" "$repo/lib"
     printf 'convex/payments/**\n' > "$repo/.agents/high-risk-paths"
     printf 'old\n' > "$repo/lib/refund.ts"
+    printf 'otro\n' > "$repo/lib/otro.ts"
     git -C "$repo" add -A
     git -C "$repo" commit -q -m lista
     git -C "$repo" switch -q -c tema
@@ -1415,6 +1427,7 @@ risk_classify_target() {
     git -C "$repo" switch -q -
     printf 'x\n' > "$repo/convex/payments/new.ts"
     git -C "$repo" add convex/payments/new.ts
+    git -C "$repo" rm -q lib/otro.ts
     git -C "$repo" commit -q -m nuevo
     git -C "$repo" update-ref refs/remotes/origin/main HEAD
     git -C "$repo" switch -q tema
@@ -1460,7 +1473,7 @@ risk_classify_target() {
 }
 
 risk_classify_edges() {
-    local repo output base target flag status other one
+    local repo output base target flag status other one kind
     repo=$(risk_repo)
     mkdir -p "$repo/.agents"
     printf 'convex/payments/charge.ts\nvendor/**\n' > "$repo/.agents/high-risk-paths"
@@ -1519,11 +1532,18 @@ risk_classify_edges() {
     fi
     chmod 644 "$repo/.agents/high-risk-paths"
     rm "$repo/.agents/high-risk-paths"
-    ln -s falta "$repo/.agents/high-risk-paths"
-    status=0
-    output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target" 2>&1) || status=$?
-    assert test "$status" = 2
-    assert grep -qF 'no puedo leer .agents/high-risk-paths' <<< "$output"
+    for kind in symlink directorio; do
+        if [ "$kind" = symlink ]; then
+            ln -s falta "$repo/.agents/high-risk-paths"
+        else
+            mkdir "$repo/.agents/high-risk-paths"
+        fi
+        status=0
+        output=$(cd "$repo" && "$SCRIPTS/risk-classify" "$target" 2>&1) || status=$?
+        assert test "$status" = 2
+        assert grep -qF 'no puedo leer .agents/high-risk-paths' <<< "$output"
+        rm -rf "${repo:?}/.agents/high-risk-paths"
+    done
 
     repo=$(risk_repo)
     mkdir -p "$repo/.agents" "$repo/lib"
