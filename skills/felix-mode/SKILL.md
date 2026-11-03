@@ -141,11 +141,18 @@ siendo obligatorios.
 
 ## Revisión
 
-- **Riesgo.** Antes de cada ronda, clasifica el diff completo como normal o
-  alto con las señales de **Alto riesgo** y las rutas de alto riesgo del
-  repositorio, que su `AGENTS.md` dice dónde encontrar. Un diff que crece
-  puede subir de nivel. El brief de cada ronda abre con `Nivel: <normal o
-  alto> por <señal o ruta>`, y tu respuesta repite el nivel y su motivo.
+- **Riesgo.** Antes de cada ronda, trae la rama de entrega y corre
+  `scripts/risk-classify` de esta skill desde el checkout del cambio.
+  Compara con las pathspec `:(glob)` de `.agents/high-risk-paths`, una por
+  línea, lo que cambiaron desde el merge-base HEAD, el stage, el working
+  tree y esa rama, y marca `rename de directorio` cuando git podría mover un
+  archivo; su `--help` da la sintaxis. Si imprime `Nivel: alto`, el nivel es
+  alto. Si sólo lista archivos que la rama no tocó, o un `rename de
+  directorio`, actualiza la rama con el destino y vuelve a correrlo. Si imprime `Rutas:`, clasifica
+  el diff completo con las demás señales de **Alto riesgo**. Si sale con 2,
+  corrige lo que dice antes de la ronda; un error no cuenta como normal. Un diff que crece puede subir de
+  nivel. El brief de cada ronda abre con `Nivel: <normal o alto> por <señal
+  o ruta>`, y tu respuesta repite el nivel y su motivo.
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
@@ -157,7 +164,7 @@ siendo obligatorios.
   señales: escrituras a producción o a un sistema de cliente (ICG, ERP,
   pagos, CFDI, nómina), migraciones o borrado de datos, autenticación y
   permisos, cálculos de dinero o impuestos, contratos entre paquetes o
-  servicios, y las rutas de alto riesgo del repositorio.
+  servicios, y las rutas de `.agents/high-risk-paths`.
 - **Prueba.** El brief de todo revisor pide que cada critical o warning
   traiga el comando que corrió, la salida que imprimió y la salida que exige
   la intención, como el brief de `interrogate`. En un hallazgo de

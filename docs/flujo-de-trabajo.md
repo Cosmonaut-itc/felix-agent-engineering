@@ -96,7 +96,7 @@ tocan CI, dependencias o la gobernanza de agentes.
 | Nivel | Cuándo | Cómo |
 |-------|--------|------|
 | Normal | Toda review de cambios. | Un revisor gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. |
-| Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o lo que el `AGENTS.md` marque. | `interrogate` con sol en `high` como Reviewer A y opus-5.5 en `high`. |
+| Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o una ruta de `.agents/high-risk-paths`, que `risk-classify` detecta. | `interrogate` con sol en `high` como Reviewer A y opus-5.5 en `high`. |
 | Diseño | Decisiones de forma antes de implementar. | `architect` con un runner opus-5.5 y dos candidatos. Sin juez cruzado. |
 | Diseño disputado | Alto riesgo, o dos candidatos empatados. | `arena` con opus-5.5 y gpt-6.1-sol, juzgado por astra, y dos implementaciones completas. |
 
@@ -191,6 +191,11 @@ Superpowers no se usa. Tampoco `setup-pstack`, que reescribe la hoja
 Cada repositorio de trabajo aporta lo que el flujo no puede saber:
 
 - su `AGENTS.md`, con gates, tracker y señales de alto riesgo;
+- `.agents/high-risk-paths`, con las rutas que `risk-classify` marca como
+  alto riesgo. Cada línea es una pathspec `:(glob)` de git relativa a la
+  raíz. `*` no cruza `/`, y `**` cruza directorios sólo como segmento
+  entero, como en `convex/payments/**` o `**/*.icg.ts`. `#` abre un
+  comentario;
 - la skill `verify` en `.agents/skills/verify/`, enlazada en
   `.claude/skills/verify`, que maneja la app real y devuelve evidencia;
 - project playbooks opcionales en `.agents/playbooks/`, que extienden los de

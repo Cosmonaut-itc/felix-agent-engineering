@@ -1,0 +1,123 @@
+#!/bin/bash
+# Marca un cambio como alto riesgo cuando toca una ruta de
+# .agents/high-risk-paths. Cuenta la ruta si, desde el merge-base con el
+# destino, la cambió HEAD, el stage, el working tree con sus archivos sin
+# trackear o el destino. También marca alto si un lado quitó un directorio
+# entero y el otro cambió algo dentro, porque git puede moverlo. Con la rama
+# al día con el destino es exacto; si no, un cambio del destino también marca
+# alto, y actualizar la rama lo quita. Puede marcar alto de más, nunca de menos.
+# Cada línea es una pathspec :(glob) de git relativa a la raíz: * no cruza /,
+# y ** sólo vale como segmento entero (**/x, x/**, x/**/y).
+# El destino por defecto es origin/HEAD, u origin/main; tráelo antes.
+set -u
+# Con esta variable git lee :(glob) como texto literal.
+unset GIT_LITERAL_PATHSPECS
+
+LIST=.agents/high-risk-paths
+fail() { printf 'risk-classify: %s\n' "$1" >&2; exit 2; }
+
+case "${1:-}" in
+    -h|--help) sed -n '2,11s/^# //p' "$0"; printf 'Uso: risk-classify [DESTINO]\n'; exit 0 ;;
+esac
+[ "$#" -le 1 ] || fail 'uso: risk-classify [DESTINO]'
+
+root=$(git rev-parse --show-toplevel 2>/dev/null) || fail 'no estás en un repositorio git'
+cd "$root" || exit 2
+
+if [ ! -e "$LIST" ] && [ ! -L "$LIST" ]; then
+    printf 'Rutas: el repositorio no declara %s\n' "$LIST"
+    exit 0
+fi
+[ -f "$LIST" ] && [ -r "$LIST" ] || fail "no puedo leer $LIST"
+
+target=${1:-}
+if [ -z "$target" ]; then
+    target=$(git rev-parse origin/HEAD 2>/dev/null) || target=origin/main
+fi
+git rev-parse --verify --quiet "$target^{commit}" >/dev/null || fail "destino inválido: $target"
+
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/risk-classify.XXXXXX") || exit 2
+trap 'rm -rf "$scratch"' EXIT
+head=$(git rev-parse --verify --quiet HEAD) || fail 'el repositorio no tiene commits'
+index=$(git rev-parse --git-path index)
+cp "$index" "$scratch/staged" || exit 2
+staged=$(GIT_INDEX_FILE=$scratch/staged git write-tree 2>/dev/null) || fail 'el stage tiene conflictos sin resolver'
+# assume-unchanged se quita siempre. skip-worktree sólo si el archivo está en
+# disco: uno fuera del cono sparse que no está sigue sin cambios.
+cp "$index" "$scratch/worktree" || exit 2
+export GIT_INDEX_FILE=$scratch/worktree
+while IFS= read -r -d '' entry; do
+    path=${entry#??}
+    case "$entry" in [hs]' '*) printf '%s\0' "$path" >&3 ;; esac
+    case "$entry" in [Ss]' '*) if [ -e "$path" ] || [ -L "$path" ]; then printf '%s\0' "$path" >&4; fi ;; esac
+done < <(git ls-files -z -v) 3> "$scratch/assumed" 4> "$scratch/skipped" || fail 'no puedo leer el índice'
+# update-index aplica un solo flag de marca por llamada.
+git update-index --no-assume-unchanged -z --stdin < "$scratch/assumed" || fail 'no puedo leer el índice'
+git update-index --no-skip-worktree -z --stdin < "$scratch/skipped" || fail 'no puedo leer el índice'
+git add --sparse -A >/dev/null 2>&1 || fail 'no puedo leer el working tree'
+worktree=$(git write-tree) || exit 2
+
+bases=$(git merge-base --all "$target" "$head") || fail 'la rama no comparte historia con el destino'
+from=() to=() moved=''
+for base in $bases; do
+    for tree in "$target" "$head" "$staged" "$worktree"; do
+        from+=("$base") to+=("$tree")
+        # Git sólo aplica un rename de directorio si un lado quitó el
+        # directorio entero; lo que el otro lado cambió dentro puede aterrizar
+        # en una ruta que ningún diff muestra.
+        removed=()
+        while IFS= read -r -d '' path; do
+            while case "$path" in */*) ;; *) false ;; esac; do
+                path=${path%/*}
+                [ "$(git cat-file -t "$tree:$path" 2>/dev/null)" != tree ] || break
+                removed+=("$path")
+            done
+        done < <(git diff -z --name-only --no-renames --ignore-submodules=none \
+            --diff-filter=D "$base" "$tree")
+        [ "${#removed[@]}" -gt 0 ] || continue
+        if [ "$tree" = "$target" ]; then others=("$head" "$staged" "$worktree"); else others=("$target"); fi
+        for other in "${others[@]}"; do
+            while IFS= read -r -d '' path; do
+                for gone in "${removed[@]}"; do
+                    case "$path" in "$gone"/*) moved+="rename de directorio"$'\t'"$path"$'\n'; break ;; esac
+                done
+            done < <(git diff -z --name-only --no-renames --ignore-submodules=none "$base" "$other")
+        done
+    done
+done
+
+matched=() report=''
+number=0
+while IFS= read -r line || [ -n "$line" ]; do
+    number=$((number + 1))
+    pattern=${line#"${line%%[![:space:]]*}"}
+    pattern=${pattern%"${pattern##*[![:space:]]}"}
+    case "$pattern" in ''|'#'*) continue ;; esac
+    IFS=/ read -r -a segments <<< "$pattern"
+    for segment in "${segments[@]}"; do
+        case "$segment" in '**') ;; *'**'*) fail "$LIST:$number: patrón inválido: $pattern" ;; esac
+    done
+    files=''
+    for i in "${!from[@]}"; do
+        files+=$(git diff --name-only --ignore-submodules=none "${from[$i]}" "${to[$i]}" \
+            -- ":(glob)$pattern" 2>/dev/null) || fail "$LIST:$number: patrón inválido: $pattern"
+        files+=$'\n'
+    done
+    files=$(printf '%s' "$files" | sed '/^$/d' | sort -u)
+    [ -n "$files" ] || continue
+    matched+=("$pattern")
+    while IFS= read -r file; do
+        report+=$(printf '%s\t%s' "$pattern" "$file")$'\n'
+    done <<< "$files"
+done < "$LIST"
+
+if [ -n "$moved" ]; then
+    matched+=('rename de directorio')
+    report+=$(printf '%s' "$moved" | sort -u)$'\n'
+fi
+if [ "${#matched[@]}" = 0 ]; then
+    printf 'Rutas: el cambio frente a %s no toca ninguna ruta de %s\n' "$(git rev-parse --short "$target")" "$LIST"
+    exit 0
+fi
+joined=$(printf ', %s' "${matched[@]}")
+printf 'Nivel: alto por %s\n%s' "${joined#, }" "$report"
