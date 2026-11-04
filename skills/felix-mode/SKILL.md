@@ -105,6 +105,7 @@ cerrar una sesión o un programa que tomó tickets, sigue
 | Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
 | Implementar tickets acoplados | [Acumulador](references/acumulador.md) | `implement-spec` de Matt Pocock |
 | Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |
+| Tres modelos, cuando el usuario pide «consejo» | [Consejo](references/consejo.md) | `council` de tstack |
 | Pausar o retomar | playbooks Pause safely y Session pickup; `handoff` de Matt Pocock cuando pides un documento de traspaso | — |
 | Escribir skills o `AGENTS.md` | playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
 
@@ -153,6 +154,9 @@ siendo obligatorios.
   corrige lo que dice antes de la ronda; un error no cuenta como normal. Un diff que crece puede subir de
   nivel. El brief de cada ronda abre con `Nivel: <normal o alto> por <señal
   o ruta>`, y tu respuesta repite el nivel y su motivo.
+- **Pre-vuelo.** Antes de cada ronda, atiende los comentarios abiertos del
+  PR, corrige lo que ya sabes que falla y corre los checks que cubren el
+  cambio. El brief nombra los checks que faltan o que ya fallaban.
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
@@ -186,6 +190,12 @@ siendo obligatorios.
   Declina todos los nits, también los de comentarios, documentación o
   estilo. No impiden APTO, y cada cambio de head exige otra ronda. Un critical o warning nunca
   es un nit, aunque trate de documentación.
+- **Registro.** Lleva cada hallazgo en `hallazgos.tsv`, junto a los
+  encargos de la unidad o en el store del programa, con las columnas
+  `id	ronda	severidad	estado	evidencia`. El `id` no cambia entre rondas.
+  El estado es `abierto`, `corregido`, `rebatido` o `declinado`. Desde la
+  ronda 2, el brief suma el registro y el diff desde la ronda anterior, y
+  el revisor marca cada id como `resuelto` o `sigue abierto: <motivo>`.
 - **Regla por hallazgo.** Si un hallazgo aceptado es mecánico, como un
   patrón de sintaxis, una API prohibida, una forma de import o una regla de
   ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
@@ -222,7 +232,8 @@ siendo obligatorios.
   nivel vigente. Quien abre el PR la escribe, el orquestador la actualiza
   tras cada ronda y cambio de head, y quien edita el cuerpo la conserva.
   Esta línea sustituye la exclusión de veredictos «CLEAN» del cuerpo en
-  «Opening a PR».
+  «Opening a PR». Con [Consejo](references/consejo.md), cada miembro lleva
+  su línea, y la tabla del consejo va antes de esas líneas.
 
 ## Merge
 
