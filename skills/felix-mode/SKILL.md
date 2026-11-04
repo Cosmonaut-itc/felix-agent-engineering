@@ -232,8 +232,8 @@ siendo obligatorios.
   nivel vigente. Quien abre el PR la escribe, el orquestador la actualiza
   tras cada ronda y cambio de head, y quien edita el cuerpo la conserva.
   Esta línea sustituye la exclusión de veredictos «CLEAN» del cuerpo en
-  «Opening a PR». Con [Consejo](references/consejo.md), cada miembro lleva
-  su línea, y la tabla del consejo va antes de esas líneas.
+  «Opening a PR». En una review con [Consejo](references/consejo.md), cada
+  miembro lleva su línea, y la tabla del consejo va antes de esas líneas.
 
 ## Merge
 

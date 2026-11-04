@@ -58,12 +58,14 @@ Envía la pregunta, las rutas de contexto, las restricciones y la condición
 de terminado. Pide a cada miembro una recomendación, los riesgos que ve y
 su evidencia. Resume los acuerdos, los desacuerdos y tu recomendación. Un
 desacuerdo que cambia la decisión va a Felix como pregunta con opciones.
+La consulta no da veredicto sobre un head, así que no deja tabla ni líneas
+`Revisión:`. Su resumen va en tu respuesta.
 
 ## Constancia
 
-En un PR, pon esta sección en el cuerpo, antes de las líneas `Revisión:`
-de **Constancia**. Edita la descripción después de cada ronda, sin publicar
-un comentario:
+En una review de un cambio con PR, pon esta sección en el cuerpo, antes
+de las líneas `Revisión:` de **Constancia**. Edita la descripción después
+de cada ronda, sin publicar un comentario:
 
 ```markdown
 ## Consejo
