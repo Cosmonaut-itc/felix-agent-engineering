@@ -15,6 +15,8 @@ from dataclasses import dataclass
 
 from .model import BOOT, CPUS, Invalid, UTC, require, strict_json
 
+RECEIPT_DIR_MODES = (0o700, 0o755, 0o775)
+
 
 @dataclass(frozen=True)
 class Sample:
@@ -65,12 +67,12 @@ class Runtime:
         return directory / run_id / "pao-admission.json"
 
 
-def secure_dir(path, create=False):
+def secure_dir(path, create=False, modes=(0o700,)):
     if create:
         path.mkdir(mode=0o700, parents=False, exist_ok=True)
     info = path.lstat()
     require(stat.S_ISDIR(info.st_mode) and info.st_uid == os.getuid()
-            and stat.S_IMODE(info.st_mode) == 0o700, "directory-security")
+            and stat.S_IMODE(info.st_mode) in modes, "directory-security")
     require(path.resolve() == path.absolute(), "directory-symlink")
 
 
@@ -78,10 +80,10 @@ def account_home():
     return Path(pwd.getpwuid(os.getuid()).pw_dir)
 
 
-def secure_fd(fd, path=None):
+def secure_fd(fd, path=None, modes=(0o600,)):
     info = os.fstat(fd)
     require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-            and stat.S_IMODE(info.st_mode) == 0o600 and info.st_nlink == 1,
+            and (modes is None or stat.S_IMODE(info.st_mode) in modes) and info.st_nlink == 1,
             "file-security")
     if path is not None:
         require(os.stat(path, follow_symlinks=False).st_ino == info.st_ino
@@ -89,20 +91,20 @@ def secure_fd(fd, path=None):
                 "descriptor-path")
 
 
-def open_file(path, create=False):
-    secure_dir(path.parent)
-    fd = os.open(path, os.O_RDWR | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
+def open_file(path, create=False, *, directory_modes=(0o700,), file_modes=(0o600,), readonly=False):
+    secure_dir(path.parent, modes=directory_modes)
+    fd = os.open(path, (os.O_RDONLY if readonly else os.O_RDWR) | os.O_NOFOLLOW | os.O_CLOEXEC | os.O_NONBLOCK
                  | (os.O_CREAT if create else 0), 0o600)
     try:
-        secure_fd(fd, path)
+        secure_fd(fd, path, modes=file_modes)
         return fd
     except BaseException:
         os.close(fd)
         raise
 
 
-def read_json(path):
-    fd = open_file(path)
+def read_json(path, *, directory_modes=(0o700,), file_modes=(0o600,)):
+    fd = open_file(path, directory_modes=directory_modes, file_modes=file_modes, readonly=True)
     try:
         data = bytearray()
         while len(data) < 65537:
@@ -115,8 +117,8 @@ def read_json(path):
         os.close(fd)
 
 
-def atomic_json(path, value):
-    secure_dir(path.parent)
+def atomic_json(path, value, *, directory_modes=(0o700,)):
+    secure_dir(path.parent, modes=directory_modes)
     data = (json.dumps(value, sort_keys=True, allow_nan=False) + "\n").encode()
     require(len(data) <= 65536, "json-size")
     fd, tmp = tempfile.mkstemp(prefix=".pao-", dir=str(path.parent))

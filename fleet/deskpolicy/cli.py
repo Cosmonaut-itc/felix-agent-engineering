@@ -17,7 +17,7 @@ if __package__ in (None, ""):
 from deskpolicy import VERSION
 from deskpolicy.engine import DeskPolicy, admission_receipt
 from deskpolicy.model import Invalid, require
-from deskpolicy.store import atomic_json, mutex, open_file, read_json
+from deskpolicy.store import RECEIPT_DIR_MODES, atomic_json, mutex, open_file, read_json, secure_dir
 
 
 def output(value):
@@ -85,21 +85,25 @@ def execute(engine, args):
     record = read_json(engine.record_path(args.request_id))
     path = engine.life_path(record["project"], args.lane)
     receipt_path = engine.runtime.receipt_path(args.run_id)
+    if args.recibo:
+        secure_dir(receipt_path.parent, modes=RECEIPT_DIR_MODES)
     life = open_file(path, create=True)
     try:
         with mutex(engine.root) as lock:
+            previous = None
+            if args.recibo:
+                try:
+                    previous = read_json(receipt_path, directory_modes=RECEIPT_DIR_MODES)
+                except FileNotFoundError:
+                    pass
+                if previous is not None:
+                    require(previous["request_id"] == args.request_id and previous["run_id"] == args.run_id,
+                            "receipt-conflict")
             receipt = engine.admit(args.request_id, args.run_id, args.lane, os.getpid(),
                                    life, lock, args.local_limit)
         if args.recibo:
-            try:
-                previous = read_json(receipt_path)
-            except FileNotFoundError:
-                previous = None
-            if previous is not None:
-                require(previous["request_id"] == args.request_id and previous["run_id"] == args.run_id,
-                        "receipt-conflict")
             if previous is None or previous["state"] != "admitted":
-                atomic_json(receipt_path, receipt)
+                atomic_json(receipt_path, receipt, directory_modes=RECEIPT_DIR_MODES)
         output(receipt)
         if not receipt["execute"]:
             return 75 if receipt["state"] == "denied" else 0
