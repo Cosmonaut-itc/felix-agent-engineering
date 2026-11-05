@@ -22,6 +22,9 @@ from deskpolicy.tests import test_r4 as r4
 def observed_sync_actor(harness, arguments, events, connection):
     """Observe the real wait/select; leave reads, deadlines and clocks intact."""
     real_wait, real_select = cli.wait_sync, cli.select.select
+    time_parameter = list(inspect.signature(real_wait).parameters)[1]
+    assert time_parameter in ('seconds', 'deadline'), 'sync fixture: unknown wait_sync time parameter'
+    timeout = float(arguments[arguments.index('--sync-timeout-s') + 1])
     admitted = [None]
     real_admit = DeskPolicy.admit
 
@@ -30,8 +33,11 @@ def observed_sync_actor(harness, arguments, events, connection):
         admitted[0] = time.monotonic()
         return receipt
 
-    def wait(fd, deadline, stopped):
+    def wait(fd, time_argument, stopped):
         entered = time.monotonic()
+        deadline = entered + time_argument if time_parameter == 'seconds' else time_argument
+        assert admitted[0] + timeout - 1 <= deadline <= entered + timeout + 1, \
+            'sync fixture: observed deadline does not match admission plus --sync-timeout-s'
         events.send(('entry', deadline, entered, entered - admitted[0]))
         first = True
         def select(*args, **kwargs):
@@ -41,7 +47,7 @@ def observed_sync_actor(harness, arguments, events, connection):
                 events.send(('select', deadline, time.monotonic()))
             return real_select(*args, **kwargs)
         with mock.patch.object(cli.select, 'select', side_effect=select):
-            result = real_wait(fd, deadline, stopped)
+            result = real_wait(fd, time_argument, stopped)
         events.send(('exit', deadline, entered, time.monotonic(), result))
         return result
 
