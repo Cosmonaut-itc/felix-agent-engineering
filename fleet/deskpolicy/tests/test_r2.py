@@ -94,6 +94,11 @@ class RegressionTest(unittest.TestCase):
                 self.publish()
                 receipt, worker, _ = self.launch(old)
                 self.assertTrue(receipt["execute"])
+                connection = self.children[-1][1]
+                connection.send(("child",))
+                self.assertTrue(connection.poll(10))
+                child_pid = connection.recv()
+                self.extra_pids.append((child_pid, process(child_pid)["start"]))
                 worker.kill()
                 worker.join(5)
                 self.advance(120)
@@ -118,6 +123,11 @@ class RegressionTest(unittest.TestCase):
                 self.publish()
                 receipt, worker, _ = self.launch(old)
                 self.assertTrue(receipt["execute"])
+                connection = self.children[-1][1]
+                connection.send(("child",))
+                self.assertTrue(connection.poll(10))
+                child_pid = connection.recv()
+                self.extra_pids.append((child_pid, process(child_pid)["start"]))
                 self.advance(120)
                 parent, child = mp.get_context("fork").Pipe()
                 contender = mp.get_context("fork").Process(target=death_during_admission,

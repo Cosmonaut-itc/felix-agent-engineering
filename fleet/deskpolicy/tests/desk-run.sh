@@ -9,15 +9,17 @@ from pathlib import Path
 import sys
 import time
 
-if os.getloadavg()[0] >= 12:
-    raise SystemExit("Gate: carga >= 12")
+if os.getloadavg()[0] >= 9:
+    raise SystemExit("Gate: carga >= 9")
 own = Path(sys.argv[1])
-starts = [entry.stat(follow_symlinks=False).st_mtime
+starts = [(Path(entry.path) / "started").stat().st_mtime
+          if (Path(entry.path) / "started").is_file() else entry.stat(follow_symlinks=False).st_mtime
           for entry in os.scandir(Path.home() / "remote-run/runs")
           if entry.is_dir(follow_symlinks=False) and Path(entry.path) != own]
 if starts and time.time() - max(starts) < 120:
     raise SystemExit("Gate: no pasaron 120 s desde el último arranque ajeno")
-print("Gates de carga y espaciado conformes", flush=True)
+print("GATE load1", os.getloadavg()[0], "since_last_other_start_s",
+      time.time() - max(starts, default=0), flush=True)
 PY
 exec /usr/bin/taskset -c 0-1 /bin/bash -c '
 set -euo pipefail

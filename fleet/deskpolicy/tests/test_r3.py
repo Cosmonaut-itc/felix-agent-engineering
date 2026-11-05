@@ -63,6 +63,25 @@ def failing_close_actor(harness, arguments, failure, connection):
     connection.send({'rc': code, 'output': stream.getvalue(), 'stderr': errors.getvalue()})
 
 
+def any_admit_actor(harness, connection):
+    from deskpolicy.store import open_file
+    os.setsid()
+    engine = DeskPolicy(Runtime(harness))
+    fds = {lane: open_file(engine.life_path('hasito', lane), create=True) for lane in (1, 2, 3, 4)}
+    try:
+        stream = io.StringIO()
+        with mutex(engine.root) as lock, mock.patch.object(cli, 'DeskPolicy', return_value=engine), \
+             contextlib.redirect_stdout(stream):
+            code = cli.main(['admitir', '--request-id', 'next', '--run-id', 'run-next',
+                '--lane', 'any', '--pid', str(os.getpid()), '--mutex-fd', str(lock),
+                '--life-fds', *['{}:{}'.format(n, fd) for n, fd in fds.items()]])
+        connection.send({'rc': code, 'receipt': json.loads(stream.getvalue())})
+        connection.recv()
+    finally:
+        for fd in fds.values():
+            os.close(fd)
+
+
 class RoundThreeTest(unittest.TestCase):
     setUp = fixtures.PolicyTest.setUp
     tearDown = fixtures.PolicyTest.tearDown
@@ -181,9 +200,12 @@ class RoundThreeTest(unittest.TestCase):
         self.assertTrue(admitted['execute'], admitted)
 
     def test_wa_reconcile_keeps_child_and_life_lock_then_closes(self):
-        self.pending('child')
+        self.pending('child', 'jale', 'verify')
         self.publish()
         _, worker, connection = self.launch('child')
+        metadata = self.h.root / 'slot-0'
+        metadata.mkdir(mode=0o700)
+        (metadata / 'kind').write_text('verify')
         connection.send(('child',))
         self.assertTrue(connection.poll(10))
         pid = connection.recv()
@@ -193,6 +215,7 @@ class RoundThreeTest(unittest.TestCase):
         worker.join(5)
         self.engine.reconcile()
         self.assertEqual(read_json(self.engine.record_path('child'))['claim']['state'], 'uncertain')
+        self.assertTrue(metadata.exists())
         os.kill(pid, 15)
         deadline = time.monotonic() + 10
         from deskpolicy.store import session_members
@@ -200,6 +223,9 @@ class RoundThreeTest(unittest.TestCase):
             time.sleep(.02)
         self.engine.reconcile()
         self.assertEqual(read_json(self.engine.record_path('child'))['claim']['state'], 'closed')
+        self.assertFalse(metadata.exists())
+        self.assertEqual((self.h.root / '.pao-reconciled-child/kind').read_text(), 'verify')
+        self.engine.publish()
 
     def test_wb_any_chooses_second_lane_after_uncertain_first(self):
         self.pending('old')
@@ -208,19 +234,44 @@ class RoundThreeTest(unittest.TestCase):
         _, worker, _ = self.launch('old')
         worker.kill()
         worker.join(5)
-        self.h.advance(120)
-        self.renew()
+        for _ in range(4):
+            self.h.advance(30)
+            self.renew()
         self.receipt_directory('next')
         args = self.execute_args('next', ['/bin/true'])
         args[args.index('--lane') + 1] = 'any'
         result = self.run_cli(args)
-        self.assertEqual(result['rc'], 0)
+        self.assertEqual(result['rc'], 0, result)
         receipt = read_json(self.h.directory / 'runs/run-next/pao-admission.json')
         self.assertEqual(receipt['lane'], 2)
+
+    def test_wb_admitir_any_inherited_candidates_retain_selected_flock(self):
+        self.pending('old')
+        self.pending('next')
+        self.publish()
+        _, worker, _ = self.launch('old')
+        worker.kill()
+        worker.join(5)
+        for _ in range(4):
+            self.h.advance(30)
+            self.renew()
+        # Refresh the night lease without reconciling the deliberately empty
+        # reservation: this test targets admission, not the writer tick.
+        with mock.patch.object(self.engine, 'reconcile', create=True):
+            self.publish()
+        candidate, pipe = self.spawn(any_admit_actor, self.h)
+        self.assertTrue(pipe.poll(10))
+        result = pipe.recv()
+        self.assertEqual((result['rc'], result['receipt']['lane']), (0, 2), result)
+        from deskpolicy.store import held
+        self.assertTrue(held(self.engine.life_path('hasito', 2)))
+        self.assertFalse(held(self.engine.life_path('hasito', 1)))
+        pipe.send('done')
+        candidate.join(5)
 
     def test_n1_contract_documents_status_bootstrap_and_u2_notes(self):
         from pathlib import Path
         contract = (Path(__file__).resolve().parents[2] / 'contracts/desk-politica-v1.md').read_text()
         for required in ('idempotente', 'no crea claims', '/proc/*/cwd',
                          '.claude/skills/verify', 'cola del mismo hilo', 'fd 8 antes de soltar fd 9'):
-            self.assertIn(required, contract)
+            self.assertTrue(required in contract, 'Missing contract rule: ' + required)
