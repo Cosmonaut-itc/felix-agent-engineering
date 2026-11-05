@@ -77,7 +77,7 @@ def parser():
             item.add_argument("--sync-ready-fd", type=int,
                               help="Pipe heredado: esperar byte 1 del transporte antes del guion")
             item.add_argument("--sync-timeout-s", type=float, default=900,
-                              help="Plazo de sync tras admitir, en segundos (omisión: 900, 15 min)")
+                              help="Plazo de sync tras admitir, en segundos (máximo y omisión: 900, 15 min)")
             item.add_argument("argv", nargs=argparse.REMAINDER)
     sub.add_parser("reconciliar")
     status = sub.add_parser("estado")
@@ -89,20 +89,18 @@ def parser():
     return result
 
 
-def wait_sync(fd, seconds, stopped):
-    deadline = time.monotonic() + seconds
-    eof = False
+def wait_sync(fd, deadline, stopped):
     while not stopped():
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             return False
-        ready, _, _ = select.select([] if eof else [fd], [], [], min(remaining, .2))
+        ready, _, _ = select.select([fd], [], [], min(remaining, .2))
         if ready:
             signal_byte = os.read(fd, 1)
             if signal_byte == b"1":
-                return True
+                return time.monotonic() < deadline and not stopped()
             require(signal_byte == b"", "sync-signal")
-            eof = True
+            return False
     return False
 
 
@@ -112,7 +110,7 @@ def execute(engine, args):
     if not args.argv:
         raise Invalid("command-required")
     require(not args.argv[0].startswith("-"), "command-executable")
-    require(finite_load(args.sync_timeout_s) and args.sync_timeout_s > 0, "sync-timeout")
+    require(finite_load(args.sync_timeout_s) and 0 < args.sync_timeout_s <= 900, "sync-timeout")
     if args.sync_ready_fd is not None:
         require(args.sync_ready_fd >= 0 and stat.S_ISFIFO(os.fstat(args.sync_ready_fd).st_mode),
                 "sync-pipe-required")
@@ -224,7 +222,7 @@ def execute(engine, args):
             previous_handlers[signum] = signal.signal(signum, stop)
         command = ["/usr/bin/taskset", "-c", ",".join(map(str, receipt["cpus"])), *args.argv]
         if args.sync_ready_fd is not None:
-            sync_timed_out = not wait_sync(args.sync_ready_fd, sync_deadline - time.monotonic(), lambda: stopped)
+            sync_timed_out = not wait_sync(args.sync_ready_fd, sync_deadline, lambda: stopped)
         if stopped is None and not sync_timed_out:
             child = subprocess.Popen(command, close_fds=True,
                                      preexec_fn=lambda: os.setpgid(0, runner_group))
