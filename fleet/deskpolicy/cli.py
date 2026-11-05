@@ -169,7 +169,8 @@ def main(argv=None):
             receipt["detail"] = str(exc)
             output(receipt)
             return 75
-        output({"schema": "pao/desk-error@1", "reason": "census-unknown",
+        reason = "weight-too-large" if str(exc) == "weight-too-large" else "census-unknown"
+        output({"schema": "pao/desk-error@1", "reason": reason,
                 "detail": str(exc), "exit_code": 75})
         return 75
 

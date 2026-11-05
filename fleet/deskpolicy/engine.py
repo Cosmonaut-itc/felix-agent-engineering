@@ -20,7 +20,7 @@ CLAIM_KEYS = set("run_id lane weight cpus boot_id process state admitted_boottim
 REASONS = set("policy-invalid policy-expired window-closed load-high quota-full "
               "budget-full weight-full cpu-full start-interval fifo census-unknown "
               "resource-busy legacy-freeze request-expired request-terminal "
-              "request-conflict weight-invalid local-limit already-admitted "
+              "request-conflict weight-invalid weight-too-large local-limit already-admitted "
               "close-unproven mutex-error internal-error".split())
 
 
@@ -186,12 +186,12 @@ class DeskPolicy:
             require(not held(path) or path in claimed, "untracked-life-lock")
         return live
 
-    def waiting(self, records, sample):
+    def waiting(self, records, sample, max_weight=12):
         result = {p: [] for p in PROJECTS}
         for record in records:
             if record["state"] == "pending" and record["boot_id"] == sample.boot:
                 require(record["renewed_boottime_s"] <= sample.bt, "wait-clock")
-                if sample.bt < record["expires_boottime_s"]:
+                if sample.bt < record["expires_boottime_s"] and record["weight"] <= max_weight:
                     result[record["project"]].append(record)
         for items in result.values():
             items.sort(key=lambda item: item["seq"])
@@ -217,12 +217,17 @@ class DeskPolicy:
             sample = self.runtime.sample()
             records = self.records()
             existing = next((r for r in records if r["request_id"] == request_id), None)
+            policy, _ = self.read_policy(sample)
             if existing:
                 require((project, kind, owner, weight, sample.boot) == (
                     existing["project"], existing["kind"], existing["owner"],
                     existing["weight"], existing["boot_id"]), "request-conflict")
                 if existing["state"] != "pending":
                     return existing
+                if not withdraw and weight > policy["max_run_weight"]:
+                    existing.update(state="expired", last_reason="weight-too-large")
+                    self.write_record(existing)
+                    raise Invalid("weight-too-large")
                 require(existing["renewed_boottime_s"] <= sample.bt, "wait-clock")
                 if sample.bt >= existing["expires_boottime_s"]:
                     existing["state"] = "expired"
@@ -234,6 +239,7 @@ class DeskPolicy:
                 self.write_record(existing)
                 return existing
             require(not withdraw, "request-terminal")
+            require(weight <= policy["max_run_weight"], "weight-too-large")
             record = {"schema": "pao/desk-wait@1", "request_id": request_id,
                       "project": project, "kind": kind, "owner": owner,
                       "weight": weight, "boot_id": sample.boot,
@@ -296,14 +302,15 @@ class DeskPolicy:
             if sample.bt >= record["expires_boottime_s"]:
                 record["state"] = "expired"
                 return deny("request-expired")
-            waiting = self.waiting(records, sample)
             project = record["project"]
             if any(r["project"] == project and r["claim"]["lane"] == lane for r in live):
                 return deny("resource-busy")
+            if record["weight"] > policy["max_run_weight"]:
+                record["state"] = "expired"
+                return deny("weight-too-large")
+            waiting = self.waiting(records, sample, policy["max_run_weight"])
             if waiting[project][0]["request_id"] != request_id:
                 return deny("fifo")
-            if record["weight"] > policy["max_run_weight"]:
-                return deny("weight-invalid")
             limit = policy["night_budget"] if policy["mode"] == "night" else 2
             if lane > limit:
                 return deny("resource-busy")
@@ -452,8 +459,12 @@ class DeskPolicy:
             sample = self.runtime.sample()
             records = self.records()
             live = self.census(records, sample, persist=True)
-            waiting = self.waiting(records, sample)
+            waiting = self.waiting(records, sample, configuration["max_run_weight"])
             for record in records:
+                if (record["state"] == "pending" and record["boot_id"] == sample.boot
+                        and record["weight"] > configuration["max_run_weight"]):
+                    record.update(state="expired", last_reason="weight-too-large")
+                    self.write_record(record)
                 if (record["state"] == "pending" and record["boot_id"] == sample.boot
                         and record["expires_boottime_s"] <= sample.bt):
                     record["state"] = "expired"
@@ -500,7 +511,7 @@ class DeskPolicy:
             policy, reason = self.read_policy(sample)
             records = self.records()
             live = self.census(records, sample)
-            waiting = self.waiting(records, sample)
+            waiting = self.waiting(records, sample, policy["max_run_weight"])
             claims = [{"request_id": r["request_id"], "project": r["project"], **r["claim"]} for r in live]
             last = max((r["claim"]["admitted_boottime_s"] for r in records
                         if r["claim"] is not None and r["boot_id"] == sample.boot), default=None)
