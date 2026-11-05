@@ -1,3 +1,146 @@
+# Entrega U1, corrección para ronda 6
+
+Felix quiere más corridas nocturnas en el desk con reservas conservadoras y
+una sola autoridad de orden local para Hasito. Tras `git fetch origin
+feat/desk-politica-v1`, el remoto y la rama local coincidieron con
+`5e9dd46b5ea62f94646dc0314362456dcb17067c`. Se cambió a esa rama siguiendo
+origin en esta worktree con `--ignore-other-worktrees`, sin editar las demás.
+Se leyeron completos el brief U1, las correcciones r2 a r6, Sol A, el veredicto
+y ambos informes r5, además de los repros citados.
+
+Nivel alto por contrato entre servicios. Se aplicó Bug fix de felix-mode como
+trabajador, sin descendientes, PR ni despliegue. Attack the Premise cambió el
+orden de Hasito: la premisa de que dos FIFO independientes conservan el orden
+queda refutada por el baseline `resource-busy / denied fifo`. Model the Domain
+se concretó en un `lane` de solicitud inmutable y una fusión monótona común
+para los recibos, sin añadir otra autoridad ni otro archivo de estado.
+La review independiente y el APTO siguen a cargo de PAO.
+
+## Cambios y regresiones
+
+Las regresiones se guardaron antes del runtime, desde `9c07e87`.
+`tests/test_r6.py` añade 14 casos. El baseline corregido de
+`20261105-130807-d8d7ab` usa `git archive 5e9dd46`, con sólo ese archivo
+superpuesto, y registra **14 pruebas, 13 fallos esperados, cero errores**.
+El control de ACK a tiempo pasa ya antes. Los cambios de fixtures `c0003d9`,
+`d13b69f` y `51c5d19` se distinguen de las correcciones del runtime.
+
+| Hallazgo / decisión | Commit | Prueba, fallo antes y resultado corregido |
+| --- | --- | --- |
+| W-r5a sol, ACK tardío | `479c754` | `test_late_ack_after_sigstop_never_executes`, más `r6-original-sync-late.py`, copia literal del revisor. Antes: ACK tras 3,3 s ejecuta, rc 0, cierre completed. Después: rc 75, closed/sync-timeout, salida null, marcador ausente, peso 0 y flock libre. `test_timely_ack_executes_exactly_once` comprueba una ejecución y replay sin otra. |
+| W-r5b sol, recibo conocido | `5fe6637` | `test_original_receipt_failure_reconcile_and_replay_recover_exit`, `test_both_final_publications_fail_then_reconcile_closed_claim` y `test_closed_receipt_unknown_fields_fill_without_replacing_known_values`, más `r6-original-receipt-recovery.py` literal. Antes: recibo closed/reconciled con salida null aunque claim y replay dicen 3; las claims ya cerradas no se recuperan en un tick. Después: salida 3, sin reejecución. También se preservan identidad, un código conocido 7 y causa stopped frente a datos durables distintos. |
+| W-r5a opus, orden de Hasito | `31fb668` | `test_local_first_sync_timeout_owner_advances` y `test_local_first_suspension_owner_advances` fallan antes por la ausencia de la obligación contractual local-first; su control funcional con el protocolo nuevo ya avanza en r5. `test_busy_lane_head_does_not_block_free_hasito_lane` falla funcionalmente antes con denied/fifo y después admite el carril 2 mientras A recibe resource-busy en el 1. `test_pending_lane_is_immutable_and_admission_matches` impide cambiar el N registrado. El script `r6-hasito-protocol.py` ejecuta los tres escenarios con la FIFO real de Hasito. |
+| Decisión 4, orden del keeper | `4dd10b5` | `test_original_c2_load_before_registration_rejected` y `test_original_cr3_load_before_registration_rejected` conservan la carga real close_fds de los escenarios C2/C-r3 y añaden la llamada de traspaso exigida ahora. Antes: accepted. Después: handoff-load-before-registration; launcher conserva flock, servidor sigue vivo, reconciliación no cierra y reemplazo recibe resource-busy. Los cuatro `test_c2_*` conformes permanecen en la suite. |
+| N-r5a opus, EOF | `479c754` | `test_eof_closes_immediately_with_long_deadline`: antes sigue reteniendo capacidad a los 4 s de un plazo de 8 s; después cierra inmediatamente con sync-timeout, salida null, peso 0 y flock libre. |
+| N-r5c opus, máximo 900 | `479c754` | `test_cli_rejects_sync_timeout_over_900_before_claim`: antes admite y ejecuta con 900,1; después devuelve 75 sin claim. El control de r5 conserva la omisión de 900. |
+| N-r5a sol / N-r5b opus, nombres y renovación; N-r5d opus, slot incierto | `31fb668` | `test_contract_names_turn_files_and_no_active_turn_renewal`: antes faltan turnos.json, turnos.lock, la regla de turno activo y la excepción de admitir; después están los tres archivos con su función, no hay renovación activa ni subcomando renovar y se añade «salvo que admitir la reconcilie». |
+
+La solicitud Hasito declara `pendiente --lane N` después de obtener el lock
+local N. Sólo su poseedor renueva espera remota; los sucesores sólo están en
+la FIFO local. Conserva lock y turno activo al reemitir con nuevos request y
+run id por vencimiento o sync-timeout. La cabeza PAO es por carril. Para
+mostrar más demanda nocturna se pueden usar hasta `estado.max_lane` locks,
+incluidos desk-3.lock y desk-4.lock. Los registros sin `lane` se mantienen
+legibles para Jale y clientes de bajo nivel; las pendientes antiguas de Hasito
+se drenan en el corte y, mientras existan, bloquean conservadoramente por seq.
+La CLI de Hasito exige el carril. El fixture histórico de peso excesivo ahora
+lo declara; no se altera su expectativa de `weight-too-large`.
+
+La reconciliación recupera también los recibos de claims ya cerradas y sólo
+escribe si cambió algún campo desconocido. El replay comparte la misma fusión.
+`claim_state` sólo avanza; `script_exit_code`, `close_cause` y el diagnóstico
+conocido no se borran ni reemplazan. El recibo conserva su identidad admitida.
+No se usa el TTL para liberar una claim ni se toca el algoritmo de presupuestos.
+
+## Corridas en el desk
+
+Todas las pruebas se ejecutaron con `REMOTE_RUN_HOST=desk remote-run`, una
+corrida propia a la vez, nombre fijo `desk-politica-u1-r6` y `taskset -c 0-1`.
+El gate previo y el interno exigen carga < 12 hasta 2026-11-05T22:00:00Z y
+< 9 después, además de 120 s desde el último arranque ajeno en remote-run.
+Los fixtures y locks Hasito de prueba viven dentro de sus mirrors privados.
+La MacBook sólo preparó archivos y leyó evidencia. No se escribió en
+`/tmp/sen-test-slots` ni en `~/.local/state/comprador` de ningún host.
+No se ejecutaron despliegue ni retirada. Hostgate no cambia.
+La primera aceptación arranca con carga 6,6294 y 135,24 s de espaciado;
+registra otras dos corridas activas. La segunda arranca con carga 2,8701 y
+413,62 s de espaciado. No se detuvo ni modificó ninguna corrida ajena.
+La comprobación focalizada
+arranca con carga 1,9292 y 124,58 s de espaciado. Los censos finales de
+`/proc` no encuentran procesos no zombies con cwd en los mirrors propios;
+se conservan en `r6-cleanup-first.log` y `r6-cleanup-final.log`.
+
+| RunId | rc | Resultado |
+| --- | --- | --- |
+| `20261105-130148-253b38` | 1 | Baseline inicial. Runtime exacto de 5e9dd46, hash 77a36960…200d. Los dos repros literales fallan como en r5. Los 13 casos propios dan 12 fallos; uno era un contador del fixture en memoria privada del fork y no acredita ese caso. |
+| `20261105-130429-761556` | 1 | Primera tanda focalizada corregida. Los dos repros literales pasan; 12 de 13 pruebas propias pasan. La restante exige tres publicaciones cuando el repro original sólo hace dos en total; se corrige el fixture y se añade el escenario separado de dos publicaciones finales fallidas. |
+| `20261105-130807-d8d7ab` | 0 | Baseline corregido con 14 pruebas, 13 fallos esperados y cero errores. Dos adversarios OK en 9,039 s y 103 pruebas OK en 389,102 s. Repros literales, tres casos Hasito reales, C3 y bin/pao check pasan. |
+| `20261105-131640-38ceae` | 0 | Segunda aceptación. Dos adversarios OK en 8,980 s y 103 pruebas OK en 409,955 s. Repros literales, tres casos Hasito reales, C3 y bin/pao check pasan. Su intento residual de baseline no se cuenta, como se explica abajo. |
+| `20261105-132503-6999ec` | 0 | Comprobación focalizada final del wrapper y la CLI. Cache-only se omite; importaciones fallidas del runtime o de las pruebas dan baseline rc 2 y rechazo. Registro y renovación de lane 2 pasan; cambiar a lane 1 devuelve 75 sin claim. |
+
+Los logs completos se guardan en `evidence/<runId>.log`, normalizando sólo
+espacios al final de línea. El baseline corregido está al principio del log
+de la primera aceptación; su rc 1 es esperado y comprobado por el wrapper.
+`r6-regressions.sh` ejecuta las regresiones focalizadas y ambos repros literales.
+`r6-harness-check.sh` valida por separado el wrapper final y la CLI pública
+de registro por carril, sin repetir la suite principal. Comprueba que una
+carpeta con sólo caché se omite y que errores de importación del runtime o
+de las pruebas se rechazan con rc 2 del baseline, en vez de aceptarlos como
+regresiones. También registra y renueva lane 2 y rechaza su cambio a lane 1,
+con cero claims nuevas.
+`r6-full.sh` ejecuta los adversarios W11/W12 de r5, la suite completa, los
+repros literales, C3 original y las tres sondas Hasito. Termina con
+`bin/pao check` y ShellCheck si está instalado. Un baseline opcional en
+`.audit/r6-baseline` permite repetir el fallo antes en la misma corrida,
+siempre con cwd y afinidad dentro del mirror. El wrapper final exige el hash
+exacto de 5e9dd46, 13 fallos y cero errores; un fallo de importación sale 2.
+En la segunda aceptación rsync dejó un directorio residual de __pycache__
+sin fuentes del baseline. El wrapper anterior lo detectaba sólo por ser
+directorio e intentó importar desde él. Ese ModuleNotFoundError no acredita
+un baseline; sólo se cuenta el de la primera aceptación. El guard final
+comprueba el archivo de prueba. No cambia runtime ni suite principal.
+
+Para reproducir las sondas Hasito se copia su `scripts/mini/estado.py` a
+`.audit/r6-hasito-estado.py`, antes de sincronizar el repo. Se usó la copia
+verificada en r5 de Hasito main `002c6ad5ceaa412c4fd125617c27db2c2d2436b0`,
+SHA-256 `2efcf5fc350965ec5bb0fee438e941d912d07b15679a2f7dca911090a17db006`.
+El script rechaza otra versión; no se modifica ese código ni se usan sus
+rutas reales de estado. No es una integración desplegada de U3.
+
+## Integridad y precisiones
+
+SHA-256 final de los siete archivos del módulo, calculado por `code_digest`:
+
+```text
+912e872a4a49c287b77f1753f010eafac4b941e6ef3727a45ee19ddd34c08cfd
+```
+
+`evidence/r6-inputs.sha256` identifica contrato, README, runtime, pruebas y
+programas de evidencia. Incluye el guard final del wrapper y su comprobación
+focalizada posterior a las suites. Ambas suites usan los mismos siete archivos
+del runtime y los mismos archivos de las 103 pruebas. ShellCheck no está
+instalado en el desk; su paso condicional se omite. La comprobación focalizada
+valida además la sintaxis del wrapper final con `bash -n`.
+Los commits posteriores de evidencia y DELIVERY no
+cambian el runtime probado.
+
+No se rebaten hallazgos ni decisiones aceptadas. Sí se precisa el conteo del
+repro original del recibo: con un hijo vivo, `cerrar` falla antes de llegar a
+su publicación final. Se intenta entonces una sola publicación de recuperación,
+además de la inicial. La regresión propia acredita exactamente dos llamadas
+a `cli.atomic_json`; el escenario adicional acredita tres llamadas, con las
+dos finales fallidas, y recuperación desde una claim ya cerrada. El primero
+concluye closed/reconciled/3 y el segundo conserva su causa durable completed.
+No se sustituye una causa conocida para hacer coincidir una expectativa.
+
+Archivos cambiados r6: contrato; README y DELIVERY; `cli.py`, `engine.py`;
+fixtures `tests/test_policy.py` y `test_r2.py`; nueva `tests/test_r6.py`;
+wrappers, repros, sondas, manifiesto y logs `r6` en `evidence/`.
+Sin preguntas de producto abiertas. Los gates de U2/U3, revisión y activación
+siguen siendo responsabilidad de sus unidades y de PAO.
+
+---
+
 # Entrega U1, corrección para ronda 5
 
 Felix quiere recuperar la capacidad del desk cuando una corrida terminó,
