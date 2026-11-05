@@ -1,3 +1,123 @@
+# Entrega U1, corrección para ronda 4
+
+Felix quiere más corridas nocturnas en el desk sin reutilizar recursos ni CPUs
+mientras pueda quedar carga viva. Se comprobó `origin/feat/desk-politica-v1`
+en `568ec764d6f1e47c7c43dbff977293ff3cdf7220` tras el fetch requerido.
+Se usó esa rama en esta worktree con `git switch --ignore-other-worktrees`,
+sin editar las otras worktrees. Se leyeron briefs U1 y r2/r3/r4, candidato
+Sol A, veredicto del juez, reviews r1/r2/r3 y los repros citados de r3.
+
+Nivel alto por contrato entre servicios. Se siguió Bug fix de felix-mode como
+trabajador, sin descendientes ni PR. Attack the Premise cambió la prueba de
+cierre. La premisa anterior, flock libre más sesión original vacía, se probó
+falsa con servidores de un keeper y con un fork durante el listado de `/proc`.
+Las regresiones quedaron primero en `85834db`, antes de tocar el runtime.
+No se desplegó ni se ejecutaron los guiones de instalación o retirada.
+No se escribió en `/tmp/sen-test-slots` ni en `~/.local/state/comprador`.
+La review independiente y el APTO operativo siguen a cargo de PAO.
+
+## Resultado y contrato
+
+`traspasar` registra bajo el mutex la identidad completa de cada keeper en
+`claim.keepers`, antes de ACK al launcher, liberación de su copia del fd de
+vida o carga en la sesión nueva. Repetir la identidad es idempotente.
+Los traspasos posteriores agregan identidades y nunca reemplazan el historial.
+`cerrar` ya no descubre ni registra keepers. Tanto cierre como reconciliación
+comprueban todas sus sesiones. Una verify sin registro conserva incertidumbre.
+
+La prueba de sesión distingue `[]`, una lista con miembros y `None` inconcluso.
+Exige dos barridos completos vacíos separados 20 ms. Cuenta zombies hasta
+reap. Una desaparición, lectura fallida o cambio de identidad hace inconclusa
+la prueba. El inicio del barrido también veta una identidad recién nacida,
+incluida reutilización de PID antes de su primera lectura. Ambos consumidores
+cierran sólo con vacío probado; el cierre incierto conserva la salida conocida.
+
+Hasito elige el menor lock local libre permitido y pasa `--lane N` y
+`--desk-lane N` explícitos. Ante `resource-busy` suelta ese lock sin sincronizar
+y prueba el siguiente. El contrato divide start en control/admisión, sync y
+carga. Exige reserva de mirror, lock local y admisión antes de rsync.
+`any` permanece para clientes sin reserva local previa y no es normativo para
+Hasito ni Jale. La implementación de esas fases corresponde a U3.
+
+Al reconciliar se actualiza el recibo fijo bajo el mutex con cierre y causa,
+sin modificar `script_exit_code` ni la identidad de admisión.
+El diagnóstico de cierre usa `pao/desk-close-diagnostic@1` sin `exit_code`.
+Con `--recibo`, el wrapper emite una sola línea JSON propia en stdout.
+W11 prepara ambos actores antes de disputar el mutex. W12 usa eventos de
+arranque, timeout real y liberación; ninguna depende de una pausa elegida.
+Los fixtures adoptan y recogen sus huérfanos, sin depender del reap de PID 1.
+En `898bd9d`, el caso SIGKILL confirma reap del runner con un evento antes
+de llamar cerrar. Los controles positivos de cierre/reconciliación repiten
+la operación real si el barrido es inconcluso; nunca sustituyen la prueba de
+`/proc` ni transforman una prueba inconclusa en vacío. `3276f67` aplica el
+mismo control positivo a W11 y comprueba posesión del mutex en cada escritura,
+para mantener la regresión del recibo fuera del mutex. El censo concurrente
+espera hasta 60 s a su señal de recibo final, en vez de 10 s.
+
+## Hallazgos, commits y regresiones
+
+Los nombres siguientes omiten `test_`. Las regresiones nuevas están en
+`tests/test_r4.py`. `evidence/r4-fixture-schedules.py` fuerza las dos demoras
+que daban falsos rojos en W11/W12, con eventos y una barrera antes del exec.
+
+| Hallazgo | Commit | Fallo sobre 568ec76 y resultado corregido |
+| --- | --- | --- |
+| C2 / C-r3 | `61ff909`, ACK idempotente `66c0d30`; fixtures `a3bdea9` | `c2_keeper_death_before_first_close`, `c2_missing_keeper_registration_never_reconciles`, `c2_second_handoff_tracks_every_session`: antes `closed=['handoff']` con servidor vivo; después `closed=[]`, uncertain y reemplazo `resource-busy`. El segundo caso registrado deja vacía la última sesión y carga sólo en la anterior. `c2_close_checks_previous_keeper_session` antes cierra con esa carga, después devuelve close-unproven y conserva salida 3. `c2_close_after_all_handoff_sessions_drained` conserva el control positivo. |
+| C3 | `61ff909` | `c3_fork_during_reconcile_snapshot` y `c3_fork_during_close_snapshot`: antes cierran con el hijo nuevo vivo; después conservan uncertain y salida 3 al cerrar. Se pausa el iterdir real, se hace fork, se recoge al padre y se entrega su lista original, sin inventar entradas de `/proc`. Se prueban por separado desaparición, lectura fallida, identidad cambiada, zombies, segundo barrido con miembros y dos barridos vacíos. |
+| W-r3 | `e6131d9` | `wr3_hasito_contract_requires_local_explicit_lane_before_sync`: antes exige any y rsync precede admisión; después exige índice explícito, salto ante busy y las tres reservas antes del sync. La prueba verifica el contrato, no acredita implementación U3. |
+| N-a | `61ff909` | `na_reconcile_updates_fixed_receipt_without_replay`: antes `(uncertain, 3, None)`; después `(closed, 3, reconciled)`, conservando execute/replay originales. |
+| N-b | `61ff909` | `nb_close_diagnostic_is_separate_and_stdout_single_line`: antes desk-error con exit_code 75 y dos líneas; después desk-close-diagnostic sin exit_code, salida 3 y una línea. Las regresiones W3 con hijo vivo siguen en la suite. |
+| N-c | `a3bdea9`, `3276f67` | `r4-fixture-schedules.py`: antes W11 falla en prepare por mutex-timeout y W12 falla por marca ready ausente; después ambos pasan con los mismos eventos de demora. La suite también ejecuta los dos tests de r3 sin ese adversario. |
+
+No se rebaten hallazgos aceptados. No se cambian presupuestos, hostgate ni
+adaptadores de consumidores. Los esquemas nuevos siguen pendientes de corte
+con drenado y consumidores coordinados; no se migran claims vivas antiguas.
+
+## Ejecuciones en el desk
+
+Todas usan `REMOTE_RUN_HOST=desk remote-run`, una corrida propia a la vez,
+`taskset -c 0-1` y fixtures dentro del mirror. Los gates previos y de destino
+comprueban 120 s desde `started`, con fallback al mtime del directorio.
+Se respeta carga menor de 12 hasta 2026-11-05T22:00:00Z y menor de 9 después,
+según Estado #58. La MacBook sólo preparó código, snapshots y hashes.
+
+| RunId | rc | Artefacto y resultado |
+| --- | --- | --- |
+| `20261105-093405-4e755e` | 1 | Primer fixture sobre 568ec76. 23 tests por importar también los 14 de r3, ocho fallos. Reprodujo C2, C3 y los nits; heredaba descriptores de multiprocessing que demoraban join. Se corrigió el fixture, sin modificar runtime baseline. |
+| `20261105-094012-8fd708` | 1 | Baseline exacto, 15 tests aislados, 13 fallos y un error por lectura fallida de stat. El control de cierre limpio pasa. |
+| `20261105-094229-937b07` | 0 | Primer runtime corregido, hash a24eb6b6, 15 regresiones OK. Incluye los dos consumidores de la prueba de vacío. |
+| `20261105-094619-ac776c` | 1 | Baseline exacto con las 16 regresiones finales, 14 fallos y un error; control limpio pasa. Además los dos escenarios N-c fallan por las mismas causas de la review. `RESULT r4=1 fixtures=1`. |
+| `20261105-094905-27d0a2` | 1 | Primera suite completa sobre 66c0d30. 76 tests, tres fallos de fixtures anteriores: SIGKILL sin recoger al runner zombie, reconciliación manual ante un barrido inconcluso y espera de 10 s del recibo final. Las 16 regresiones nuevas y W11/W12 pasan. |
+| `20261105-100358-2b17ec` | 1 | 76 tests, 75 pasan. Los tres fixtures corregidos pasan; W11 encuentra incertidumbre legítima durante el cierre de su guion vacío. `3276f67` reintenta sólo ese control positivo con la operación real y exige además que cada escritura posea el mutex. |
+| `20261105-101445-fb8398` | 0 | Aceptación sobre e9271df. Dos escenarios N-c OK, 76 tests OK en 529.924 s, Python 3.12.3, CPUs [0, 1], hash caac735a y `bin/pao check` correcto. |
+| `20261105-102402-4ac3c9` | 0 | Segunda aceptación con exactamente los mismos 22 archivos de entrada. Dos escenarios N-c OK, 76 tests OK en 410.703 s y `bin/pao check` correcto. |
+
+Los logs completos viven en `evidence/<runId>.log`. Sólo se quitan espacios al
+final de línea. El baseline se genera con `git archive 568ec76`; se copian
+encima únicamente `tests/test_r4.py` y el adversario de fixtures.
+`evidence/r4-before.sh` corre ambos y conserva sus rc separados.
+`evidence/r4-full.sh` corre la suite, el adversario, `bin/pao check` y
+ShellCheck si existe. No hace falta instalar el módulo para repetirlos.
+
+SHA-256 final de los siete archivos de `store.SOURCE_FILES`:
+`caac735af226b3bca4eff0cf8d297313b52e153ea4f00e58b6bc66745abf14d0`.
+El baseline imprime `0a7dd19b0967341e73e2319d43a98b4b628a4f3e232af5c42badd7e1b20304c2`.
+Ambas aceptaciones imprimen Python 3.12.3, CPUs `[0, 1]` y el mismo hash.
+Los gates internos midieron carga 3.7134 y 211.414 s, y carga 3.4766 y
+156.959 s desde el último arranque ajeno. ShellCheck no está instalado y
+su paso condicional se omite. La suite sí incluye sintaxis Python 3.9 y shell.
+Una inspección final de `/proc/*/stat` y `/proc/*/cwd` por SSH devolvió
+`LIVE_MIRROR_PROCESSES []` para ambos mirrors propios. `git diff --check`
+pasa. Los commits posteriores a e9271df sólo documentan ejecución y evidencia;
+no cambian runtime ni pruebas.
+
+Archivos r4: `fleet/contracts/desk-politica-v1.md`, `fleet/deskpolicy/{cli.py,
+engine.py,store.py,README.md,DELIVERY.md}`, `tests/{test_policy.py,test_r2.py,
+test_r3.py,test_r4.py,desk-run.sh}` y los scripts y logs r4 de `evidence/`.
+No hay preguntas de producto abiertas. El historial anterior se conserva abajo.
+
+---
+
 # Entrega U1, corrección para ronda 3
 
 Felix quiere más corridas nocturnas en el desk, con reparto variable entre
