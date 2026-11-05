@@ -60,9 +60,13 @@ No ejecutan `deploy-desk.sh` ni `withdraw-desk.sh`.
 | --- | --- | --- |
 | `20261104-234756-08ee37` | Runtime original, pruebas de `eacea1a` | 1. Las 28 originales pasan. Total 42; 10 fallos y 5 errores en las regresiones nuevas. |
 | `20261104-235729-570bad` | Runtime y pruebas de `f0713ca` | 0. 44 pruebas OK en 960.836 s y `bin/pao check` correcto. |
+| `20261105-001608-85e3f9` | Intento final sobre `937621c` | 1. Gate interno de espaciado, sin ejecutar pruebas. |
 
 El primer gate midió carga 11.0703 y 339.08 s. El segundo gate midió carga
-9.2910 y 153.22 s. Los logs completos están en `evidence/<runId>.log`.
+9.2910 y 153.22 s. Antes del intento final se midieron carga 8.6655 y
+149.05 s, pero el gate interno rechazó el espaciado respecto de otra carpeta
+de runs. Se conserva el intento fallido y se reintenta sin relajar el gate.
+Los logs completos están en `evidence/<runId>.log`.
 Los errores de la reproducción incluyen el helper de instalación y el API de
 token aún ausentes. La primera versión del fixture de carrera llamaba desde
 una sesión no válida; `5a93bd2` la ejecuta en una sesión real y cubre la muerte
