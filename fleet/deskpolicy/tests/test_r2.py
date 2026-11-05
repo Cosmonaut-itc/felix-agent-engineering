@@ -160,6 +160,7 @@ class RegressionTest(unittest.TestCase):
         path = self.receipt_directory("receipt", 0o775)
         result = self.run_cli(self.execute_args("receipt", ["/bin/true"]))
         self.assertEqual(result["rc"], 0, result)
+        self.assertIsNone(json.loads(result["output"])["claim_token"])
         self.assertEqual(json.loads((path / "pao-admission.json").read_text())["state"], "admitted")
 
     def test_w2_invalid_receipt_preconditions_never_commit_claim(self):

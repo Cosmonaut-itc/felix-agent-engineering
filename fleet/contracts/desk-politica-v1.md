@@ -11,7 +11,7 @@ Este contrato incorpora el candidato Sol A y los injertos del veredicto.
 Prevalecen las decisiones de Felix del brief U1 sobre presupuesto y afinidad.
 El canario inicial usa 4 corridas y 8 unidades CPU.
 Subir a 6 corridas y 10 unidades requiere una decisión registrada.
-Una cuota cuenta corridas vivas. El peso cuenta CPUs asignadas.
+Una cuota cuenta corridas vivas. El peso cuenta CPUs asignadas de noche.
 Ninguno de los dos presupuestos concede permisos fuera de una transacción.
 
 ## Rutas e instalación
@@ -37,6 +37,8 @@ obtenido de la base de cuentas del sistema, nunca de `HOME` ni de XDG.
 
 Directorios de estado y del módulo son reales, del uid actual y modo 0700.
 Los archivos son regulares, del mismo uid, modo 0600 y con un solo enlace.
+El recibo admite además la carpeta real de remote-run en 0755 o 0775.
+El lector histórico de `pao-window.json` no restringe el modo del archivo.
 Se rechazan symlinks, incluido cualquier componente del directorio.
 Los adaptadores usan `umask 077` antes de abrir descriptores o crear metadatos.
 Nunca truncan, borran ni reemplazan un inode de flock. Usan apertura sin truncar.
@@ -65,7 +67,7 @@ Todos los campos de este ejemplo son obligatorios. No se permiten otros.
   "mode": "night",
   "night_budget": 4,
   "cpu_weight_budget": 8,
-  "max_run_weight": 8,
+  "max_run_weight": 4,
   "min_start_interval_s": 120,
   "load1_lt": 12,
   "limits": {"jale": 1, "hasito": 3},
@@ -84,7 +86,7 @@ Todos los campos de este ejemplo son obligatorios. No se permiten otros.
 | `mode` | `day` o `night`. |
 | `night_budget` | Entero 1 a 12. El límite de validación no aprueba ampliar el canario. |
 | `cpu_weight_budget` | Entero 1 a 12, presupuesto nocturno global de pesos. |
-| `max_run_weight` | Entero 1 a `cpu_weight_budget`. Peso máximo admitido por corrida. |
+| `max_run_weight` | Entero 1 a `min(4, cpu_weight_budget)`. Peso máximo admitido por corrida. |
 | `min_start_interval_s` | Entero exactamente 120 en producción v1. |
 | `load1_lt` | Entero 12 de noche o 9 de día. No es un valor configurable por consumidor. |
 | `limits`, `pending` | Objetos con exactamente `jale` y `hasito`, enteros no negativos hasta 2^63−1. |
@@ -106,7 +108,7 @@ Archivo ausente, corrupto, inseguro, vencido o de versión desconocida seleccion
 día. Nunca se reutiliza la última noche válida. Esto no certifica un censo sano.
 Si el censo, el módulo o sus locks fallan, no se admite y se devuelve 75.
 
-## Día y afinidad
+## Peso, día y afinidad
 
 En día se admiten como máximo 4 corridas conjuntas y 2 por proyecto.
 Jale permite una `chain` y una `verify`. `exclusive`, incluido web-unit completo,
@@ -116,21 +118,43 @@ carga diurno nuevo. Los recursos locales de cada consumidor siguen vigentes.
 
 Las claims nocturnas, incluidas las inciertas, conservan CPUs, tipo y peso
 después del amanecer o de vencer la política. Siempre cuentan al admitir.
-De día se asignan también CPUs disjuntas. El presupuesto CPU efectivo es 12.
-El máximo por corrida es el del archivo válido. En fallback es 8.
+De día el peso no acopla a los proyectos ni limita su afinidad. Cada admisión
+diurna recibe las 12 CPUs, aunque se solapen con otras claims. No hay presupuesto
+CPU diurno. El máximo declarado es el del archivo válido; en fallback es 4.
+Al volver a noche, las claims diurnas todavía vivas conservan sus 12 CPUs
+y frenan nuevas asignaciones nocturnas hasta drenar. No se les cambia afinidad.
 El espaciado sólo frena noche, pero toda admisión diurna queda en el registro.
 
-Toda solicitud declara `weight`, entero de 1 a 12, sin valor por defecto.
-Al admitir se exige `weight <= max_run_weight` de la política efectiva.
-Se asignan las primeras `weight` CPUs libres, en orden numérico.
-No se reutiliza una CPU de una claim activa o incierta.
+Los consumidores declaran el peso mediante esta tabla normativa de PAO.
+
+| Consumidor y tipo de corrida | Peso |
+| --- | --- |
+| Jale `gates`, `api-gates`, `mobile-gates`, `types`, `lint`, `packages`, `packages-build`, `web-unit`, `e2e` | 4 |
+| Jale `contract` y verify mediante `host-session.sh launch` | 2 |
+| Jale `api-unit` y `host-tests` | 1 |
+| Hasito `script` | Entero de 1 a 4 declarado por el guion; por omisión, 4. |
+
+U2 fija Turbo `--concurrency=4` en `packages` y `packages-build`.
+Los tipos `chain`, `verify` y `exclusive` conservan su función de exclusividad.
+El adaptador Jale traduce el comando a peso antes de registrar la solicitud.
+La CLI exige `--weight`; el adaptador Hasito materializa la omisión como 4.
+No hay catálogo de perfiles ni certificación de guiones en v1.
+
+Al registrar se exige `weight <= max_run_weight` de la política efectiva.
+Un peso mayor devuelve 75 y `reason=weight-too-large`, sin crear solicitud.
+Una pendiente que supera un máximo reducido deja de participar en FIFO.
+El writer o su renovación la marca `expired`, con `last_reason=weight-too-large`.
+Una claim ya admitida conserva su peso y capacidad hasta cierre acreditado.
+
+De noche se asignan las primeras `weight` CPUs libres, en orden numérico.
+No se reutiliza una CPU de una claim activa o incierta para una entrada nocturna.
 La topología de producción exige CPUs online 0 a 11.
 
 Antes de ejecutar cualquier limpieza, preparación costosa o guion, el wrapper
 ejecuta `/usr/bin/taskset -c <lista-del-recibo> <comando>`. Todo su árbol hereda
 esa afinidad. Jale conserva el mismo requisito durante el handoff al keeper.
-El wrapper es un supervisor de una sola sesión Linux propia. No ejecuta carga
-antes de la admisión. Su propia lógica de control no es una corrida adicional.
+El supervisor y su carga pertenecen a una sesión Linux identificada.
+El wrapper no ejecuta carga antes de la admisión. Su propia lógica de control no es una corrida adicional.
 
 `taskset` limita CPUs ejecutables simultáneamente para el árbol cooperativo.
 No limita memoria ni los contenedores de Docker Desktop. Tampoco contiene
@@ -186,11 +210,14 @@ La transición a `admitted` guarda la solicitud y la claim en un único replace.
 
 | Campo de claim | Valor |
 | --- | --- |
-| `run_id`, `lane`, `weight`, `cpus`, `boot_id` | Identidad remota, carril lógico 1 a 12, peso declarado, lista de CPUs distintas 0 a 11 y boot de admisión. |
+| `run_id`, `lane`, `weight`, `cpus`, `boot_id` | Identidad remota, carril lógico 1 a 12, peso declarado, lista de CPUs distintas 0 a 11 y boot de admisión. Su ancho es el peso de noche o 12 de día. |
 | `process` | Objeto exacto `pid`, `start`, `pgid`, `sid`, `zombie`. Los primeros cuatro son enteros positivos. `start` es el campo 22 de `/proc/<pid>/stat`. `zombie` es false al admitir. |
 | `state` | `active`, `uncertain` o `closed`. |
 | `admitted_boottime_s` | BOOTTIME del commit de admisión, dentro del arriendo de espera. |
-| `closed_boottime_s`, `close_evidence` | Null hasta cierre. En cierre normal son BOOTTIME y `session-empty`. |
+| `closed_boottime_s`, `close_evidence` | Null hasta cierre. En cierre acreditado son BOOTTIME y `session-empty`. |
+| `claim_token` | 32 bytes aleatorios codificados como 64 hexadecimales minúsculos. El admisor lo entrega al supervisor para su handoff. |
+| `script_exit_code` | Null antes de terminar el guion, después entero 0 a 255. Se conserva aunque queden hijos y la claim esté incierta. |
+| `close_cause` | Null hasta cierre, después `completed` o `stopped`. |
 | `mode`, `revision` | Política realmente usada. `revision` es null en fallback. |
 
 El carril lógico Jale 1 se corresponde con el slot histórico 0. El 12 se
@@ -206,14 +233,14 @@ Nunca autorizan otra ejecución. Un run o lane diferente es conflicto.
 ## Censo y cierre conservador
 
 El censo lee todas las solicitudes y claims, sin recortar por la cuota actual.
-Suma activas e inciertas de ambos proyectos y comprueba CPUs disjuntas.
+Suma activas e inciertas de ambos proyectos y comprueba CPUs nocturnas disjuntas.
 Una claim no cerrada con flock libre pasa a `uncertain` y conserva corrida,
 peso, recurso y CPUs. La transición se persiste en admisión o publicación.
 `estado` la muestra sin escribir. Una claim incierta no se vuelve activa
 porque alguien vuelva a tomar el flock.
 
 Un flock ocupado sin claim conocida, un estado ilegible, un recurso duplicado,
-un BOOTTIME futuro, una claim de otro boot o CPUs solapadas hacen desconocido
+un BOOTTIME futuro, una claim de otro boot o CPUs nocturnas solapadas hacen desconocido
 el censo. Devuelven 75, sin vista parcial. Un slot legacy sin claim v1 también
 bloquea. Los flocks estables libres sin directorio de carga no consumen cupo.
 Los metadatos Jale sólo se mantienen para slots con claim conocida.
@@ -222,9 +249,18 @@ mutex, antes de liberar fd 9. Conserva siempre el archivo del flock estable.
 No se adopta carga legacy por PID ni por mtime durante la convivencia.
 
 `cerrar` se ejecuta bajo el mutex, conservando el flock de vida heredado.
-Comprueba run, boot, identidad de sesión y el mismo inode de flock.
-Sólo cierra si `/proc` no muestra procesos no zombies de esa sesión salvo
-el supervisor que cierra y el proceso Python de la operación.
+Comprueba run, boot, token de claim y el mismo inode de flock retenido.
+El token viaja con fd 8 desde el supervisor al keeper. La igualdad de sesión
+no acredita ese handoff. Un token incorrecto o ausente devuelve 75 sin cerrar.
+El keeper puede abrir su propia sesión mediante `setsid`, como hace Jale.
+El cierre exige que tanto la sesión original como la sesión del keeper estén
+vacías de procesos no zombies, salvo el supervisor original con PID e inicio
+comprobados, el keeper que cierra y el proceso Python de la operación.
+El PID declarado debe ser el del propio proceso o su padre directo.
+El token se guarda sólo en estado y recibos privados. No se pasa por entorno,
+argumentos del proceso ni logs de texto; `cerrar` lo lee de un fd heredado.
+Un segundo handoff que cambie de sesión requiere reconciliación, no se presume
+cubierto por la sesión original y la del primer keeper.
 Un cierre fallido conserva capacidad. Tras el commit de cierre, el supervisor
 cierra su descriptor. Un handoff sólo cierra la copia del descriptor, nunca
 ejecuta `flock -u`, porque comparte la descripción abierta con el keeper.
@@ -285,12 +321,12 @@ La transacción sigue este orden:
 1. Lee política y ambos relojes actuales. Una política inválida selecciona día.
 2. Valida todo el registro y censa todos los recursos. Persiste incertidumbre.
 3. Resuelve reintentos por request y run sin volver a ejecutar.
-4. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto.
+4. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto. Rechaza con `resource-busy` si cualquier claim no cerrada, activa o incierta, ya reserva ese proyecto y carril. Lo comprueba antes de tomar flock, incluso si el supervisor muere después del censo.
 5. Comprueba peso máximo, índice permitido, presupuesto total y cuota del proyecto.
 6. Aplica límites locales que sólo reducen capacidad y exclusividad Jale.
 7. Aplica el veto `pao-window.json`. Jale mantiene además su lector histórico.
 8. Comprueba carga finita bajo el umbral efectivo, cuando corresponde.
-9. Comprueba suma de pesos y asigna CPUs libres disjuntas.
+9. De noche comprueba suma de pesos y asigna CPUs libres disjuntas. De día entrega las 12 CPUs sin acoplar pesos.
 10. En noche exige al menos 120 s desde cualquier última admisión del boot.
 11. Verifica identidad del supervisor y toma el flock de vida ya abierto por él.
 12. Vuelve a validar relojes, política y solicitud justo antes del commit.
@@ -315,7 +351,13 @@ elude el presupuesto total ni el peso de los vivos.
 Una ventana activa permite como máximo una Jale no exclusive si `jale_slots=1`.
 Cualquier otro allowance efectivo es cero. Ventana ilegible veta Jale.
 Una ventana vencida y legible se ignora. Sus timestamps admiten fracciones UTC.
-El lector v1 es más estricto ante claves duplicadas y permisos inseguros.
+El lector abre sólo para lectura y acepta cualquier modo de archivo regular
+del uid actual, sin symlinks y con un enlace. Así una ventana vencida en 0644
+vuelve a ser inerte. Un error de lectura sigue vetando Jale.
+El escritor de ventanas debe usar un temporal hermano `.pao-window-*` en 0600,
+seguido de fsync, replace y fsync del directorio bajo el mutex. El censo ignora
+ese patrón por ser parte de `.pao-*`, incluso con JSON incompleto.
+El lector sigue rechazando claves duplicadas y JSON malformado.
 
 ## CLI y recibos
 
@@ -327,24 +369,43 @@ La llamada instalada es siempre:
 
 El lanzador debe fijar la ruta desde la cuenta del sistema. El ejemplo usa
 `HOME` sólo como abreviatura humana. No se usa `PYTHONPATH` del consumidor.
-La CLI no ofrece overrides de reloj, carga, boot, rutas ni presupuestos.
-El código rechaza una instalación de producción fuera de la ruta fija.
-Las únicas costuras están en `testing.Harness`, invocado explícitamente
-desde unittest con temporales privados dentro del mirror.
+Sin harness, la CLI no acepta overrides de reloj, carga, boot, rutas ni
+presupuestos y exige la instalación fija. Los valores ambientales de política
+se ignoran. Las pruebas pueden usar `testing.Harness` dentro de unittest.
+
+La CLI real bajo `RUN_SUITE_HARNESS` no vacío acepta estas costuras privadas.
+Todas las rutas son absolutas, sin symlinks y dentro del cwd del mirror.
+
+| Costura | Uso bajo el harness |
+| --- | --- |
+| `LOCK_ROOT` | Raíz de locks obligatoria. Nunca `/tmp/sen-test-slots`. |
+| `PAO_DESK_HARNESS` | Directorio privado 0700 que contiene `LOCK_ROOT`; por omisión es su padre. Configuración y recibos de prueba viven debajo. |
+| `PAO_DESK_CLOCK_FILE` | JSON 0600 exacto `{"utc":"2026-11-05T06:00:00Z","bt":1000,"boot":"00112233-4455-6677-8899-aabbccddeeff"}`. Se relee en cada muestra para probar reloj y boot. |
+| `LOADAVG_FILE` | Primer número de la primera línea como carga; ilegible o inválido no autoriza Jale ni noche. |
+| `PORT_LISTENERS` | Ejecutable privado de prueba utilizado por los probes Jale. El módulo valida la ruta y lo deja al adaptador; no ejecuta probes ni sustituye la evidencia externa del preflight. |
+
+Sin archivo de reloj se usan valores deterministas del harness. Las CPUs
+contables son 0 a 11; los guiones de prueba mantienen taskset 0 a 1.
+Sin `RUN_SUITE_HARNESS`, estas variables no cambian ninguna entrada del módulo.
+U2 propaga la llave de SEN-4644 y las rutas al proceso Python aislado con `-I`.
+Ninguna costura permite configurar presupuestos desde el entorno.
 
 | Operación | Argumentos y resultado |
 | --- | --- |
 | `publicar` | Bucle de 20 s con `writer.lock`. `--una-vez` publica un tick. `--desactivar-noche` persiste `night_enabled=false` y publica día. |
 | `pendiente` | `--request-id`, `--project`, `--kind`, `--owner`, `--weight`. `--retirar` retira sólo una pendiente. Devuelve el registro. |
 | `admitir` | `--request-id`, `--run-id`, `--lane`, `--pid`; fds heredados `--mutex-fd 9`, `--life-fd 8`. `--local-limit` sólo reduce cuota. Devuelve recibo. |
-| `cerrar` | `--request-id`, `--run-id`, `--pid`, mismos fds heredados. Devuelve el registro, o 75 conservando claim. |
+| `cerrar` | `--request-id`, `--run-id`, `--pid`, mismos fds heredados y `--claim-token-fd`. `--script-exit-code` y `--cause completed|stopped` registran fin. Devuelve el registro, o 75 conservando claim. |
 | `estado` | Vista coherente de sólo lectura bajo el mutex existente. `--request-id` añade el registro de esa identidad. No crea estado ni persiste incertidumbre. |
 | `preflight` | Comprueba instalación, topología, herramientas, censo y configuración. `--preparar` crea sólo directorios privados ausentes. `--armar --evidencia <archivo>` exige censo vacío y evidencia actual. |
-| `ejecutar` | Wrapper opcional, `--request-id`, `--run-id`, `--lane`, `--local-limit`, `-- <argv>`. Crea sesión, admite, aplica taskset y acredita cierre. No espera ni renueva una solicitud denegada. |
+| `ejecutar` | Wrapper opcional, `--request-id`, `--run-id`, `--lane`, `--local-limit`, `-- <argv>`. Usa la sesión del runner, admite, aplica taskset y acredita cierre. No espera ni renueva una solicitud denegada. |
 
 `ejecutar --recibo` escribe el recibo Hasito en la ruta fija de runs, cuyo
-directorio debe ser 0700 y del uid actual. No permite redirigirlo por entorno.
-También imprime el recibo JSON en la primera línea de stdout.
+directorio real debe ser 0700, 0755 o 0775 y del uid actual. El recibo es 0600.
+La carpeta y la identidad de cualquier recibo previo se validan bajo el mutex
+antes de guardar una claim. Un error de validación deja cero claims nuevas. No permite redirigirlo por entorno.
+También imprime el recibo JSON en la primera línea de stdout, con `claim_token=null`
+para evitar registrar el token privado en el log del guion.
 La salida posterior pertenece al comando y a su log.
 Un reintento con recibo ya admitido consulta el registro; jamás arranca otro guion.
 El cliente que integra este wrapper debe conservar el recibo admitido original.
@@ -367,13 +428,19 @@ en un rechazo normal y `detail` en un error de infraestructura:
   "weight": 2,
   "replay": false,
   "execute": true,
-  "claim_state": "active"
+  "claim_state": "active",
+  "claim_token": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+  "script_exit_code": null,
+  "close_cause": null
 }
 ```
 
 Una denegación lleva `state=denied`, `exit_code=75`, `execute=false`, CPUs
 vacías y peso null. Una admisión lleva `exit_code=null`, incluso si el guion
-termina con 75. `claim_state` de una repetición puede ser closed o uncertain.
+termina con 75. El recibo final separa `script_exit_code` de `claim_state`.
+Si queda un hijo vivo, el wrapper devuelve el código real del guion y conserva
+`claim_state=uncertain`, peso, CPUs y recurso. Un guion que sale 3 no se convierte
+en una denegación 75. `claim_state` de una repetición puede ser closed o uncertain.
 `admitir` retorna 0 en admisión o repetición y 75 en denegación.
 Sólo `execute=true` autoriza ejecutar una vez. Un JSON ausente o inválido no
 autoriza. Los comandos administrativos fallidos devuelven `pao/desk-error@1`
@@ -389,7 +456,7 @@ Los motivos de recibo y rechazo son un conjunto cerrado:
 | `start-interval`, `fifo` | Freno global nocturno o solicitud que no es cabeza. |
 | `resource-busy`, `local-limit`, `legacy-freeze` | Carril, exclusividad, límite local o veto manual. |
 | `census-unknown`, `mutex-error`, `internal-error` | Infraestructura sin garantía para admitir. |
-| `request-expired`, `request-terminal`, `request-conflict`, `weight-invalid` | Identidad, estado o peso no admisibles. |
+| `request-expired`, `request-terminal`, `request-conflict`, `weight-invalid`, `weight-too-large` | Identidad, estado o peso no admisibles. |
 | `already-admitted`, `close-unproven` | Identidad ya admitida o cierre sin prueba. La repetición normal usa `replay=true` con motivo null. |
 
 `estado` muestra modo, revisión, vencimiento, presupuesto efectivo, cuotas,
@@ -403,7 +470,7 @@ motivos históricos. Un error de censo no devuelve esta vista parcial.
 La configuración tiene exactamente los campos de este ejemplo:
 
 ```json
-{"schema":"pao/desk-config@1","night_enabled":false,"night_budget":4,"cpu_weight_budget":8,"max_run_weight":8,"min_start_interval_s":120}
+{"schema":"pao/desk-config@1","night_enabled":false,"night_budget":4,"cpu_weight_budget":8,"max_run_weight":4,"min_start_interval_s":120}
 ```
 
 Los presupuestos tienen las mismas restricciones del archivo efímero.
@@ -429,7 +496,7 @@ Los consumidores son SHAs de 40 caracteres hexadecimales minúsculos.
 Las dos comprobaciones verdaderas son evidencia administrativa aportada por PAO,
 no mediciones automáticas del módulo. PAO comprueba entradas migradas, puertos,
 servicios y recursos Docker Desktop antes de afirmarlas.
-El resultado incluye versión y hash determinista de los seis archivos Python
+El resultado incluye versión y hash determinista de los siete archivos Python
 del runtime. El armado guarda también configuración aprobada y hashes de
 configuración y evidencia. Presupuestos y peso máximo pueden reducirse sin
 rearmar. El writer publica esos límites reducidos con las claims vivas intactas.
@@ -446,7 +513,11 @@ PAO inicia explícitamente un único writer desacoplado de stdin y SSH, en sesi�
 propia, con stdout y stderr en un log privado. No se requiere sudo ni linger.
 No se promete reinicio automático ni supervivencia del user manager.
 PAO debe comprobar la supervivencia real al cerrar SSH antes de habilitar noche.
-Después de reiniciar WSL se requiere preflight y arranque explícito.
+Si faltan la raíz o sus subdirectorios después del reinicio, el módulo los
+crea idempotentemente en 0700 y abre `admission.lock` en 0600 sin truncarlo.
+Sin archivo de política rige día, sin intervención de PAO. Una raíz existente
+con modo incorrecto falla y exige el corte; el módulo no cambia sus permisos.
+La noche sigue exigiendo preflight y arranque explícito del writer de PAO.
 Un boot nuevo no adopta metadatos viejos. Si sobreviven claims antiguas en el
 filesystem, bloquean hasta reconciliación. Reiniciar no acredita limpieza Docker.
 
@@ -467,9 +538,14 @@ Un fallo de preparación requiere cierre acreditado, no borrar la claim.
 Los índices nuevos pasan los mismos guards de BD, puertos y worktrees.
 
 `host-session.sh` conserva el descriptor de vida sin intervalo libre al keeper.
-Los hijos de carga cierran fds 8 y 9 y heredan sólo la afinidad y la sesión.
+Los hijos de carga cierran fds 8, 9 y el fd del token. Heredan afinidad y la sesión del keeper.
 La pérdida del keeper sin cierre conserva incertidumbre.
-El keeper llama `cerrar` en su misma sesión antes de cerrar fd 8.
+El keeper conserva su `setsid` actual, el aislamiento de SIGHUP y stop por grupo.
+El launcher le transfiere fd 8 y el token de la admisión por un canal privado
+antes de cerrar su copia. El keeper conserva el token en un fd privado y lo
+pasa mediante `cerrar --claim-token-fd <fd>` antes de cerrar fd 8. No necesita
+pertenecer a la sesión original para acreditar identidad. Ambas sesiones se
+comprueban vacías según el cierre normativo.
 `verify.sh` prueba conectividad y deja la decisión desktop al desk.
 El ratio de carga en la laptop sólo puede ordenar preferencias `auto`.
 La ruta Mini no cambia.
@@ -499,8 +575,17 @@ El flock remoto conserva ejecución. No son intercambiables.
 
 `remote-run` recibe `--desk-request <id>` y `--desk-lane <n>`.
 El runner usa el entrypoint PAO instalado antes de limpiar reportes o ejecutar
-`cmd.sh`. Puede usar `ejecutar --recibo` para poseer sesión, claim y afinidad.
-La carpeta del run debe ser privada antes de escribir el recibo.
+`cmd.sh`. Puede usar `ejecutar --recibo` para poseer claim y afinidad.
+El runner ya debe ser líder de sesión y grupo; el wrapper es su hijo directo
+o es él mismo ese líder. El wrapper no llama `setsid`. Si es hijo del runner,
+pone sólo su proceso de control en otro grupo de la misma sesión. El guion
+y su árbol se unen al grupo original del runner antes del exec de taskset.
+Así TERM y KILL de `remote-run stop` llegan al guion y el control sobrevive
+para esperar el resultado, persistir 143 o 137 y cerrar con causa `stopped`
+cuando no quedan hijos. Un TERM dirigido al wrapper se reenvía al guion.
+Un SIGKILL dirigido al propio wrapper conserva la regla de incertidumbre;
+si queda carga viva, nunca se regala capacidad.
+La carpeta del run admite los modos históricos 0755 y 0775 además de 0700.
 Un runner que espera puede seguir figurando `corriendo` en la interfaz antigua.
 El consumidor escribe `ADMISSION_WAIT` y `ADMITTED request_id=... revision=... lane=...`
 en su log. El censo usa la claim, nunca cuenta el PID esperando como otra corrida.
@@ -517,9 +602,24 @@ Las sesiones viejas se drenan. No se inventa un FIFO histórico entre carriles.
 ## Corte, retirada y aceptación
 
 Los guiones `deploy-desk.sh` y `withdraw-desk.sh` se entregan sin ejecutar.
-Ambos exigen una referencia `--apto`. El primero instala una versión nueva
-sólo para día y no inicia el writer. No reemplaza binarios existentes.
-Rechaza la raíz histórica 0755. PAO prepara 0700 después del drenado.
+Ambos exigen una referencia `--apto`. El primero valida todas las precondiciones
+antes de instalar código o configuración. Sólo instala día y no inicia el writer.
+Una instalación idéntica con la misma referencia se puede repetir. Un runtime,
+manifiesto o referencia distintos se rechazan sin modificar los existentes.
+La configuración existente debe ser válida y tener noche desactivada.
+
+El orden de corte sobre el estado histórico del desk es obligatorio.
+
+1. Pausar nuevos emisores y el writer. Drenar corridas y pendientes con sus dueños, conservando evidencia y reservas locales hasta recuperar resultados.
+2. Conservar `admission.lock` existente y tomarlo sin truncar. Comprobar bajo ese mutex que todos los flocks de vida están libres y no quedan procesos ni recursos externos atribuidos. Un modo histórico 0644 no acredita libertad.
+3. Cambiar la raíz existente a 0700. Aplicar `chmod 600` al mismo inode de `admission.lock`, `writer.lock` si existe y cada `slot-*.lock` y `pao-hasito/lane-*.lock` existente. No truncar, reemplazar ni borrar locks. Registrar sus inodes antes y después.
+4. Archivar mediante rename los directorios históricos `slot-n/` ya drenados fuera de la raíz, en un directorio privado de evidencia de PAO. No borrar metadatos ni mover los archivos `.lock`. Si no se acredita drenado, detener el corte.
+5. Soltar el mutex y ejecutar el despliegue posterior al APTO. El instalador comprueba raíz 0700, todos los locks 0600, ausencia de flocks vivos, censo vacío, pendientes drenadas, política de día, destinos privados y contenido de cualquier instalación previa. Una precondición fallida no publica runtime ni configuración.
+6. La publicación usa staging privado y renames bajo el mismo mutex. Un error detectado revierte los nombres nuevos al staging y conserva evidencia. La reejecución recupera una publicación idéntica interrumpida; nunca sobrescribe contenido distinto. Los temporales propios conservados no son capacidad ni autorizan noche.
+7. Validar día con ambos consumidores. Preparar evidencia de recursos, armar y arrancar explícitamente el writer antes del canario nocturno.
+
+El instalador no hace los chmod ni archiva por su cuenta. Ante locks históricos
+0644 falla antes de instalar. El corte y su vuelta conservan todos los archivos.
 El segundo persiste noche desactivada y publica día sin borrar reservas,
 matar corridas ni retirar los binarios que los consumidores aún necesitan.
 

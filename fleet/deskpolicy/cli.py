@@ -115,7 +115,7 @@ def execute(engine, args):
         if args.recibo:
             if previous is None or previous["state"] != "admitted":
                 atomic_json(receipt_path, receipt, directory_modes=RECEIPT_DIR_MODES)
-        output(receipt)
+        output({**receipt, "claim_token": None})
         if not receipt["execute"]:
             return 75 if receipt["state"] == "denied" else 0
         stopped = None
