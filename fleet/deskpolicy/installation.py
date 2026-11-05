@@ -47,18 +47,7 @@ def check_state(engine):
     require(engine.read_policy(sample)[0]["mode"] == "day", "cutover-requires-day")
 
 
-def install(engine, source, destination, reference):
-    require(type(reference) is str and 0 < len(reference) <= 256 and "\n" not in reference,
-            "apto-reference")
-    require(source.resolve() == source and source.is_dir(), "installation-source")
-    payload = {}
-    for name in SOURCE_FILES:
-        path = source / name
-        info = path.lstat()
-        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid(), "installation-source")
-        payload[name] = path.read_bytes()
-    manifest = "".join(hashlib.sha256(payload[name]).hexdigest() + "  deskpolicy/" + name + "\n"
-                       for name in sorted(payload))
+def check_destination(engine, destination, reference, payload, manifest):
     destination_path(destination.parent, private=True)
     destination_path(destination, private=True)
     destination_path(engine.runtime.config.parent, private=True)
@@ -81,9 +70,26 @@ def install(engine, source, destination, reference):
                 require(os.read(fd, len(expected.encode()) + 1) == expected.encode(), "installation-conflict")
             finally:
                 os.close(fd)
+    return configuration
+
+
+def install(engine, source, destination, reference):
+    require(type(reference) is str and 0 < len(reference) <= 256 and "\n" not in reference,
+            "apto-reference")
+    require(source.resolve() == source and source.is_dir(), "installation-source")
+    payload = {}
+    for name in SOURCE_FILES:
+        path = source / name
+        info = path.lstat()
+        require(stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid(), "installation-source")
+        payload[name] = path.read_bytes()
+    manifest = "".join(hashlib.sha256(payload[name]).hexdigest() + "  deskpolicy/" + name + "\n"
+                       for name in sorted(payload))
+    check_destination(engine, destination, reference, payload, manifest)
     check_state(engine)
     secure_dir(engine.root, create=True)
     with mutex(engine.root):
+        configuration = check_destination(engine, destination, reference, payload, manifest)
         check_state(engine)
         engine.prepare_directories()
         destination.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

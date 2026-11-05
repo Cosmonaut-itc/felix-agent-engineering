@@ -1,3 +1,4 @@
+import contextlib
 import json
 import multiprocessing as mp
 import os
@@ -432,3 +433,24 @@ assert json.loads(close.stdout)["claim"]["state"]=="closed"
         with self.assertRaisesRegex(Invalid, "installation-conflict"):
             installation.install(self.engine, source, destination, "different-reference")
         self.assertEqual((destination / "SHA256SUMS").read_bytes(), manifest)
+
+    def test_w10_concurrent_destination_change_is_revalidated_under_mutex(self):
+        from deskpolicy import installation
+        self.h.config.unlink()
+        destination = self.h.directory / "installation"
+        source = Path(cli.__file__).resolve().parent
+        real_mutex = installation.mutex
+
+        @contextlib.contextmanager
+        def conflicting_destination(*args, **kwargs):
+            with real_mutex(*args, **kwargs) as lock:
+                destination.mkdir(mode=0o700)
+                (destination / "deskpolicy").mkdir(mode=0o700)
+                installation.write_private(destination / "deskpolicy/__init__.py", b"concurrent-version")
+                yield lock
+
+        with mock.patch.object(installation, "mutex", side_effect=conflicting_destination):
+            with self.assertRaisesRegex(Invalid, "installation-conflict"):
+                installation.install(self.engine, source, destination, "r2")
+        self.assertFalse(self.h.config.exists())
+        self.assertEqual((destination / "deskpolicy/__init__.py").read_bytes(), b"concurrent-version")
