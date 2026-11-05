@@ -17,8 +17,8 @@ raise SystemExit(0 if load < limit and age >= 120 else 75)
 PY
 exec /usr/bin/taskset -c 0-1 /bin/bash -c '
 set -euo pipefail
-/usr/bin/python3 -I fleet/deskpolicy/tests/run.py
 /usr/bin/python3 -I fleet/deskpolicy/evidence/r4-fixture-schedules.py
+/usr/bin/python3 -I fleet/deskpolicy/tests/run.py
 bin/pao check
 if command -v shellcheck >/dev/null; then
     shellcheck --severity=warning fleet/deskpolicy/deploy-desk.sh fleet/deskpolicy/withdraw-desk.sh fleet/deskpolicy/tests/desk-run.sh fleet/deskpolicy/evidence/r4-regressions.sh
