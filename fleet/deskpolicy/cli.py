@@ -85,8 +85,13 @@ def execute(engine, args):
         raise Invalid("command-required")
     require(not args.argv[0].startswith("-"), "command-executable")
     supervisor = os.getsid(0)
-    require(supervisor in (os.getpid(), os.getppid()) and os.getpgrp() == supervisor,
+    runner_group = os.getpgrp()
+    require(supervisor in (os.getpid(), os.getppid()) and runner_group == supervisor,
             "wrapper-session-required")
+    # remote-run kills its process group. Keep the control process alive to
+    # record the script's signal exit; only the script joins the runner group.
+    if supervisor != os.getpid():
+        os.setpgid(0, 0)
     record = read_json(engine.record_path(args.request_id))
     path = engine.life_path(record["project"], args.lane)
     receipt_path = engine.runtime.receipt_path(args.run_id)
@@ -127,7 +132,8 @@ def execute(engine, args):
             previous_handlers[signum] = signal.signal(signum, stop)
         command = ["/usr/bin/taskset", "-c", ",".join(map(str, receipt["cpus"])), *args.argv]
         if stopped is None:
-            child = subprocess.Popen(command, close_fds=True)
+            child = subprocess.Popen(command, close_fds=True,
+                                     preexec_fn=lambda: os.setpgid(0, runner_group))
             if stopped is not None:
                 stop(stopped, None)
             code = child.wait()
@@ -138,7 +144,7 @@ def execute(engine, args):
             code = 128 + stopped
         with mutex(engine.root) as lock:
             try:
-                record = engine.close(args.request_id, args.run_id, supervisor, life, lock,
+                record = engine.close(args.request_id, args.run_id, os.getpid(), life, lock,
                                       claim_token=receipt["claim_token"], script_exit_code=code,
                                       cause="stopped" if stopped else "completed")
             except Invalid as exc:

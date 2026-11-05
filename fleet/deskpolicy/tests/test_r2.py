@@ -190,7 +190,7 @@ class RegressionTest(unittest.TestCase):
                          ("admitted", 3, "uncertain"))
         self.assertEqual(self.engine.status()["weight"], 1)
 
-    def test_w4_remote_runner_group_stop_reaches_script_and_closes(self):
+    def group_stop(self, stop_signal):
         self.pending("stop")
         self.publish()
         directory = self.receipt_directory("stop")
@@ -217,14 +217,21 @@ class RegressionTest(unittest.TestCase):
         self.assertTrue(pid_file.exists())
         script = int(pid_file.read_text())
         self.extra_pids.append((script, process(script)["start"]))
-        os.killpg(worker.pid, signal.SIGTERM)
+        os.killpg(worker.pid, stop_signal)
         self.assertTrue(parent.poll(10), "wrapper survived remote-run stop")
         result = parent.recv()
         worker.join(5)
-        self.assertEqual(result["rc"], 143, result)
+        expected = 128 + stop_signal
+        self.assertEqual(result["rc"], expected, result)
         claim = read_json(self.engine.record_path("stop"))["claim"]
         self.assertEqual((claim["state"], claim["close_cause"]), ("closed", "stopped"))
-        self.assertEqual(read_json(directory / "pao-admission.json")["script_exit_code"], 143)
+        self.assertEqual(read_json(directory / "pao-admission.json")["script_exit_code"], expected)
+
+    def test_w4_remote_runner_group_term_reaches_script_and_closes(self):
+        self.group_stop(signal.SIGTERM)
+
+    def test_w4_remote_runner_group_kill_reaches_script_and_closes(self):
+        self.group_stop(signal.SIGKILL)
 
     def test_w5_keeper_closes_in_own_session_with_inherited_token(self):
         self.pending("keeper", "jale", "verify", 2)
