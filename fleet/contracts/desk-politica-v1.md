@@ -338,7 +338,9 @@ reemplaza un valor conocido ni modifica la identidad admitida. Un tick
 posterior reintenta también los recibos de claims ya cerradas. Un fallo del recibo no revierte
 el commit de cierre ni aborta el tick. Emite por stderr un diagnóstico JSON
 `pao/desk-reconcile-diagnostic@1` con `request_id`, `run_id`,
-`reason=receipt-error` y `detail`, sin `exit_code`. Continúa con las demás
+`reason=receipt-error` y `detail`, sin `exit_code`, una sola vez por proceso
+para cada combinación de claim y error. Sigue reintentando la reparación
+en cada tick; un error diferente tiene su propio diagnóstico. Continúa con las demás
 claims y la publicación. Un replay permite recuperar su publicación si el
 recibo sigue siendo legible y consistente; uno corrupto requiere reparación.
 Para Jale archiva los metadatos `slot-n/` por rename a

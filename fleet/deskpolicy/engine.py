@@ -26,6 +26,10 @@ REASONS = set("policy-invalid policy-expired window-closed load-high quota-full 
               "request-conflict weight-invalid weight-too-large local-limit already-admitted "
               "close-unproven mutex-error internal-error".split())
 
+# Tombstones live for the boot; retry their repair every tick, but report each
+# claim/error only once in this process, including across DeskPolicy instances.
+_RECEIPT_DIAGNOSTICS = set()
+
 
 def validate_record(value, name):
     keys(value, RECORD_KEYS | ({"lane"} if "lane" in value else set()))
@@ -587,6 +591,11 @@ class DeskPolicy:
         try:
             self.reconcile_receipt(record)
         except Exception as exc:
+            diagnostic = (os.getpid(), str(self.root), record["boot_id"], record["request_id"],
+                          record["claim"]["run_id"], type(exc), str(exc))
+            if diagnostic in _RECEIPT_DIAGNOSTICS:
+                return
+            _RECEIPT_DIAGNOSTICS.add(diagnostic)
             print(json.dumps({"schema": "pao/desk-reconcile-diagnostic@1",
                               "request_id": record["request_id"], "run_id": record["claim"]["run_id"],
                               "reason": "receipt-error", "detail": str(exc)}, sort_keys=True),
