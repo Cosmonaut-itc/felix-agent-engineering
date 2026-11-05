@@ -406,7 +406,7 @@ La transacción sigue este orden:
 2. Valida todo el registro y censa todos los recursos. Persiste incertidumbre.
 3. Resuelve reintentos por request y run sin volver a ejecutar.
 4. Con `--lane any`, elige bajo el mutex el menor carril permitido por el modo (1..2 de día, 1..N de noche) sin claim no cerrada de su proyecto. Devuelve el carril numérico en el recibo; si no hay ninguno, deniega `resource-busy`. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto para Jale, o de su carril para Hasito. Si una claim no cerrada reserva ese proyecto y carril, intenta reconciliar sólo esa claim si está incierta. Si no cierra, rechaza con `resource-busy`. Lo comprueba antes de tomar flock, incluso si el supervisor muere después del censo.
-5. Comprueba peso máximo, índice permitido, presupuesto total y cuota del proyecto.
+5. Comprueba peso máximo, presupuesto total y cuota del proyecto. Un índice mayor que `max_lane` devuelve `lane-closed` antes de comprobar ocupación o FIFO; no cierra claims vivas ni cambia replays admitidos.
 6. Aplica límites locales que sólo reducen capacidad y exclusividad Jale.
 7. Aplica el veto `pao-window.json`. Jale mantiene además su lector histórico.
 8. Comprueba carga finita bajo el umbral efectivo, cuando corresponde.
@@ -581,7 +581,8 @@ Los motivos de recibo y rechazo son un conjunto cerrado:
 | `load-high` | Carga ilegible, no finita o por encima del umbral efectivo. |
 | `quota-full`, `budget-full`, `weight-full`, `cpu-full` | Cuota, corridas globales, peso o CPUs disponibles insuficientes. |
 | `start-interval`, `fifo` | Freno global nocturno o solicitud que no es cabeza. |
-| `resource-busy`, `local-limit`, `legacy-freeze` | Carril, exclusividad, límite local o veto manual. |
+| `lane-closed` | Carril solicitado mayor que `max_lane` del modo vigente. El cliente Hasito sigue la regla de retirada y reselección inferior. |
+| `resource-busy`, `local-limit`, `legacy-freeze` | Carril ocupado, exclusividad, límite local o veto manual. |
 | `census-unknown`, `mutex-error`, `internal-error` | Infraestructura sin garantía para admitir. |
 | `request-expired`, `request-terminal`, `request-conflict`, `weight-invalid`, `weight-too-large` | Identidad, estado o peso no admisibles. |
 | `already-admitted`, `close-unproven` | Identidad ya admitida o cierre sin prueba. La repetición normal usa `replay=true` con motivo null. |
@@ -723,6 +724,17 @@ Mientras espera el lock, `tomar --fifo` renueva sólo el turno pendiente;
 un turno activo no se renueva y `estado.py` no tiene subcomando `renovar`.
 Ante `resource-busy`, conserva el lock y su turno activo, no salta de carril
 y reintenta sin sincronizar, renovando sólo su solicitud remota cada 30 s.
+Ante `lane-closed`, retira su solicitud remota pendiente, suelta el lock local
+y retira su turno de esa fila. No conserva ese lock ni reintenta en ese carril.
+Si lo eligió el cliente sin `--lock` ni `MINI_LOCK` explícitos, consulta el modo
+vigente y vuelve a elegir el menor lock libre permitido, respetando las FIFO
+existentes; toma su turno y registra nuevos request y run id para ese carril.
+Si el lock era explícito, termina con un error claro:
+«carril N cerrado en el modo vigente», sustituyendo N por el índice solicitado.
+No elige otro carril por su cuenta. Los sucesores de la fila alta que lleguen
+a la cabeza reciben el mismo `lane-closed` y siguen estas mismas reglas.
+La reserva del mirror se conserva durante la reselección; al terminar por
+error se retira cuando no quede despacho ni evidencia por recuperar.
 No retira ni reencola el turno local para adelantarse. Tras `sync-timeout`
 o una solicitud vencida conserva el lock, resuelve la claim anterior y
 pide admisión con nuevos request y run id. El sucesor local sigue esperando
@@ -732,7 +744,7 @@ Sólo sin lock explícito elige el menor lock local libre permitido, en orden
 `desk.lock`, `desk-2.lock`, hasta `estado.max_lane`. La elección respeta las
 filas existentes: no considera libre un lock con un turno anterior vigente.
 Toma su turno por la misma FIFO; si la elección pierde una carrera, reintenta
-la búsqueda sin adelantar a nadie. Tras elegir y encolarse fija ese carril.
+la búsqueda sin adelantar a nadie. Tras elegir y encolarse fija ese carril hasta soltarlo por `lane-closed` o finalizar.
 Sólo cuando posee el lock registra la solicitud remota para ese N.
 La lectura de `estado` sólo propone candidatos; la admisión bajo el mutex
 vuelve a validar política y recurso. Si agota candidatos espera en la FIFO local, sin registrar espera remota.
@@ -753,7 +765,9 @@ Los carriles de la MacBook son `~/.local/state/comprador/desk/desk.lock`,
 `desk-2.lock` hasta `desk-12.lock`. Un `--lock` explícito sólo acepta uno de
 esos nombres y rutas reales. De día sólo se crean nuevas reservas 1 o 2.
 De noche los índices candidatos llegan hasta N. Las reservas altas ya vivas
-siguen contando si baja N. Los locks locales conservan sync y recuperación.
+siguen contando si baja N. Los poseedores que aún esperan en carriles altos
+reciben `lane-closed` al amanecer, al reducir N o al vencer la política sin writer,
+y aplican la retirada y reselección indicadas arriba. Los locks locales conservan sync y recuperación.
 El flock remoto conserva ejecución. No son intercambiables.
 
 `remote-run` recibe `--desk-request <id>` y `--desk-lane N` explícito.
@@ -768,7 +782,8 @@ conservando las dos reservas locales, sincroniza. Después confirma el sync
 al control, que ejecuta limpieza y `cmd.sh` bajo la misma claim y afinidad.
 La claim y el fd de vida cubren desde antes del sync hasta el cierre final.
 No se mantiene el mutex durante sync ni espera. Una denegación termina sin
-rsync y conserva la cabeza de la FIFO del lock elegido; usa otro run id con
+rsync. Ante `lane-closed` aplica la retirada y reselección descritas arriba.
+Para los demás rechazos conserva la cabeza de la FIFO del lock elegido; usa otro run id con
 el mismo request mientras siga pendiente y vigente al reintentar ese carril.
 Si vence o cierra por `sync-timeout`, conserva el lock y pide nuevos request
 y run id; nadie más del mismo lock puede registrarse entre ambos intentos. Un fallo o ACK ambiguo conserva recuperación y reservas,

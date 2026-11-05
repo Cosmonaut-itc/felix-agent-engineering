@@ -22,7 +22,7 @@ CLAIM_KEYS = set("run_id lane weight cpus boot_id process state admitted_boottim
                  "closed_boottime_s close_evidence mode revision claim_token script_exit_code close_cause".split())
 REASONS = set("policy-invalid policy-expired window-closed load-high quota-full "
               "budget-full weight-full cpu-full start-interval fifo census-unknown "
-              "resource-busy legacy-freeze request-expired request-terminal "
+              "resource-busy lane-closed legacy-freeze request-expired request-terminal "
               "request-conflict weight-invalid weight-too-large local-limit already-admitted "
               "close-unproven mutex-error internal-error".split())
 
@@ -372,6 +372,8 @@ class DeskPolicy:
                 lane = next((n for n in range(1, limit + 1) if n not in occupied), None)
                 if lane is None:
                     return deny("resource-busy")
+            if lane > limit:
+                return deny("lane-closed")
             blocker = next((r for r in live if r["project"] == project and r["claim"]["lane"] == lane), None)
             if blocker is not None:
                 if not self.reconcile_claim(blocker, sample):
@@ -386,8 +388,6 @@ class DeskPolicy:
                 queue = [r for r in queue if r.get("lane") in (None, lane)]
             if queue[0]["request_id"] != request_id:
                 return deny("fifo")
-            if lane > limit:
-                return deny("resource-busy")
             project_live = [r for r in live if r["project"] == project]
             if len(live) >= (policy["night_budget"] if policy["mode"] == "night" else 4):
                 return deny("budget-full")
