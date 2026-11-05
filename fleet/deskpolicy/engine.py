@@ -247,7 +247,7 @@ class DeskPolicy:
     def legacy_veto(self, kind, sample, jale_live):
         path = self.root / "pao-window.json"
         try:
-            value = read_json(path)
+            value = read_json(path, file_modes=None)
         except FileNotFoundError:
             return False
         except (OSError, ValueError):
