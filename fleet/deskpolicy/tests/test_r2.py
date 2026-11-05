@@ -287,11 +287,12 @@ class RegressionTest(unittest.TestCase):
 
     def test_w7_oversize_rejected_before_fifo_and_reduction_expires_head(self):
         self.publish()
-        result = self.run_cli(["pendiente", "--request-id", "oversize", "--project", "hasito",
-                               "--kind", "script", "--owner", "test", "--weight", "10"])
-        self.assertEqual(result["rc"], 75)
-        self.assertEqual(json.loads(result["output"])["reason"], "weight-too-large")
-        self.assertFalse(self.engine.record_path("oversize").exists())
+        for weight in (10, 13):
+            result = self.run_cli(["pendiente", "--request-id", "oversize", "--project", "hasito",
+                                   "--kind", "script", "--owner", "test", "--weight", str(weight)])
+            self.assertEqual(result["rc"], 75)
+            self.assertEqual(json.loads(result["output"])["reason"], "weight-too-large")
+            self.assertFalse(self.engine.record_path("oversize").exists())
         self.pending("head", weight=4)
         self.pending("next")
         self.configuration["max_run_weight"] = 2

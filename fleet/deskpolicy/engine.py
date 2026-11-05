@@ -231,7 +231,7 @@ class DeskPolicy:
     def register(self, request_id, project, kind, owner, weight, withdraw=False):
         identifier(request_id)
         require(project in PROJECTS and kind in KINDS[project], "request-project-kind")
-        integer(weight, 1, 12)
+        integer(weight, 1)
         require(type(owner) is str and 0 < len(owner) <= 256, "request-owner")
         with mutex(self.root):
             sample = self.runtime.sample()
