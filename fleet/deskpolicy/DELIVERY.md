@@ -1,3 +1,167 @@
+# Entrega U1, corrección para ronda 5
+
+Felix quiere recuperar la capacidad del desk cuando una corrida terminó,
+conservarla mientras quede carga y dar a Hasito un protocolo de sync acotado.
+Se comprobó `origin/feat/desk-politica-v1` en
+`88bee0891d543010ddd79cf87f3a07b4314f6949` después del fetch requerido.
+Se cambió a la rama existente en este worktree con
+`git switch --ignore-other-worktrees`, sin editar los otros worktrees.
+Se leyeron el brief U1, los fixes r2 a r5, ambos informes r4, sus scripts
+y logs de evidencia, el candidato Sol A y el veredicto del juez.
+
+Nivel alto por contrato entre servicios. Se siguió Bug fix de felix-mode.
+La premisa de r4 de que cualquier PID desaparecido invalida el vacío quedó
+refutada por el baseline. Se aplicó la nueva decisión de PAO, tres barridos
+sin miembros separados al menos 50 ms, ignorando ENOENT y ESRCH.
+Las regresiones entraron primero en `788b376`. No hubo descendientes, PR,
+despliegue ni ejecución de los guiones de instalación o retirada. No se
+escribió en `/tmp/sen-test-slots` ni en `~/.local/state/comprador`.
+La revisión independiente y el APTO operativo siguen a cargo de PAO.
+
+## Cambios y prueba por hallazgo
+
+Las regresiones nuevas están en `tests/test_r5.py`. El baseline usa el runtime
+y los fixtures originales de `88bee08`, con sólo ese archivo superpuesto.
+`20261105-112754-50d388` registra el fallo antes. El run
+`20261105-113029-9da1d4` registra los 14 casos pasando después.
+
+| Hallazgo | Commit | Fallo antes y pase después |
+| --- | --- | --- |
+| W-r4b, vacío probado | `9090c8e` | ENOENT y ESRCH daban `None`; el tercer barrido no existía (`2 != 3`) y no veía su miembro. Después se ignoran sólo esas desapariciones, se exigen tres barridos separados 50 ms y se detecta al miembro del tercero. EIO, permisos, parseo, cambio de identidad y zombies conservan su resultado conservador. La medición de 20 cierres y C3 se detallan abajo. |
+| W-r4b, sin writer | `9090c8e` | `admit_reconciles_only_uncertain_claim_of_requested_resource` imprimió `denied uncertain uncertain`. Después imprime `admitted closed uncertain`: sólo cierra la claim vacía del mismo recurso. La otra claim sigue reservada. |
+| W-r4a, verify sin keeper | `9090c8e` | La preparación fallida dejaba la verify incierta después de terminar y recoger al hijo. Después cierra como reconciled, conserva salida 1 y admite otra verify. El keeper vivo sin registrar impide cerrar por su flock; al salir sin haber lanzado hijos, sí puede cerrar. |
+| W-r4c, FIFO de Hasito | `2821fb0` | Faltaban `MINI_LOCK`, FIFO por lock y la regla de no cambiar carril. El control documental falla antes y pasa después. Cada nombre fija un carril, el turno conserva su cabeza y renueva ambos registros. Sólo la elección sin lock explícito busca el menor lock libre sin adelantar a filas existentes. |
+| W-r4d, sync | `515a748` | El baseline no reconoce `--sync-ready-fd` ni tiene el plazo en la CLI. Después `--sync-timeout-s` vale 900 por omisión. Con un plazo real de 0,15 s, sin señal, devuelve 75, cierra con `sync-timeout`, deja salida null, libera peso y flock y no crea el marcador del guion. Un replay devuelve 0 sin ejecutarlo. Con señal `1` ejecuta una vez y cierra normalmente. |
+| N-r4a, N1, EMFILE | `33eaa5d`, `dcb6e50` | Con el límite privado de fds, el baseline reproduce `OSError: [Errno 24] Too many open files` en `worker.start()`. Después 30 llamadas a la CLI pasan dentro del mismo límite y quedan como máximo cuatro fds adicionales. Los controles positivos repiten una prueba real hasta 60 s, sin sustituir inconcluso por vacío. |
+| N2, adversario W11 | `33eaa5d`, `37f2162` | El informe r4 sol registra rc 1, W11 con `75 != 0`, sobre `88bee08`. Ahora el replay espera por evento a que termine el primer writer, fuera del mutex. El adversario inyecta un primer cierre inconcluso y comprueba su reintento, el mutex de cada escritura y el recibo terminal. W12 conserva la contención real de 5 s y su salida 3. Ambos pasan en las dos aceptaciones completas. |
+| N-r4b, recibo en el tick | `9090c8e` | JSON inválido en el recibo propagaba `Invalid` desde `publish()`. Después la claim queda cerrada, también cierra la otra claim y publica revisión 1. Registra `pao/desk-reconcile-diagnostic@1` por stderr con identidad y error, sin `exit_code`. |
+| N-r4c, estado | `9090c8e` | Antes muestra `('day', 4, None)`. Después muestra `budget=null`, `max_lane=2` y cuotas 2/2 de día. De noche muestra presupuesto 4 y `max_lane=4`. |
+
+El fallo anterior de N2 procede de la revisión sol del head `88bee08`, run
+`20261105-105440-fee4aa`. `evidence/r5-w11-before-review.log` conserva su log
+completo, copiado de `reviews/r4-sol-progress.log`. No se presenta como una
+corrida nueva de este trabajador.
+
+EMFILE pertenece al fixture, no a los archivos del módulo. `run_cli` retenía
+la conexión y el handle de cada `multiprocessing.Process` hasta tearDown,
+incluidos sus descriptores de notificación. El bucle de reconciliación de r3
+podía acumularlos durante 60 s. Ahora los recoge y cierra al consumir el
+resultado, y tearDown también cierra los handles restantes. El control de
+50 ciclos de registro, estado y reconciliación no aumenta los fds del módulo,
+tanto en el baseline como en el arreglo.
+
+## C3, traspasos y cambio explícito de contrato
+
+`evidence/r5-original-c3.py` conserva sin cambios el primer escenario de
+`reviews/sol-r3-snapshot/review-new.py` hasta su bloque de keeper. Sólo añade
+aserciones de sus resultados. El hijo nuevo no estaba en el listado original,
+pero sigue vivo después del fork. El resultado corregido es `closed=[]`,
+claim incierta, reemplazo denegado y `R5 ORIGINAL C3 PASS`.
+La suite también ejecuta C3 durante `cerrar`, donde conserva salida 3,
+además del caso de reconciliación con el padre ya recogido.
+
+Se mantienen las regresiones de r4 para keeper registrado muerto antes del
+primer cierre, segundo traspaso, servidor vivo en una sesión anterior y
+cierre positivo tras vaciar todas las sesiones. El caso antiguo
+`c2_missing_keeper_registration_never_reconciles` lanzaba un servidor desde
+un keeper sin registrar y luego mataba al keeper. Ese escenario viola ahora
+la obligación explícita de registrar el SID antes de lanzar cualquier hijo.
+Se sustituyó por el keeper vivo sin registrar que conserva el flock y por
+la preparación fallida sin traspaso. No se afirma proteger carga que viole
+ese orden. Tampoco se afirma eliminar la cadena de fork y salida que esquive
+tres barridos; ese riesgo aceptado está en el contrato.
+
+## Corridas y reproducción
+
+Todas las pruebas corren en el desk mediante `REMOTE_RUN_HOST=desk remote-run`,
+una propia a la vez, con el nombre fijo `desk-politica-u1-r5`. Los wrappers
+comprueban el mirror, carga y 120 s desde el último `started`, con fallback al
+mtime del directorio. Aplican carga menor de 12 hasta 2026-11-05T22:00:00Z y
+menor de 9 después. Ejecutan pruebas y generador bajo `taskset -c 0-1`.
+Los fixtures quedan dentro del mirror. La MacBook sólo prepara archivos.
+
+| RunId | rc | Resultado |
+| --- | --- | --- |
+| `20261105-112219-74d822` | 1 | Primer baseline, 14 casos en 138,747 s, ocho fallos y nueve errores. Dos mocks tenían una firma incorrecta; este run no acredita esas sondas. Se conserva completo y se sustituye por el siguiente. |
+| `20261105-112754-50d388` | 1 | Baseline corregido sobre `88bee08`. 14 casos en 136,224 s, nueve fallos y cuatro errores esperados: EMFILE, recibo inválido y dos por CLI de sync ausente. E/S inconclusa y ausencia de fuga del módulo pasan ya en este head. |
+| `20261105-113029-9da1d4` | 0 | Los 14 casos r5 pasan en 30,363 s. |
+| `20261105-113316-e830d6` | 0 | Primera aceptación completa, dos adversarios en 7,988 s y 89 pruebas en 505,921 s. C3 original pasa, 20 cierres y 40 admisiones sin writer pasan, y `bin/pao check` pasa. |
+| `20261105-115531-e80c57` | 1 | Churn sobre el runtime exacto de `88bee08`. De 20 cierres, 14 cierran directamente y seis tras un tick. Sin writer, 12 corridas cierran, dos quedan inciertas y las otras 26 reciben `resource-busy`. Falla la aserción de recuperación. Generador de 100 forks/s. |
+| `20261105-115822-07304d` | 0 | Segunda aceptación de los mismos 22 archivos. Dos adversarios en 8,887 s y 89 pruebas en 340,300 s. C3 original pasa, los 20 cierres son directos, las 40 admisiones sin writer cierran y `bin/pao check` pasa. |
+
+Las dos suites completas pasan. Incluyen sintaxis Python 3.9 y shell.
+ShellCheck no está instalado, por lo que su paso condicional se omite.
+La comprobación final de `/proc` devuelve `LIVE_OWN_MIRROR_PROCESSES []` en
+ambos mirrors propios. Se conserva en `evidence/r5-cleanup.log`.
+
+Los logs completos están en `evidence/<runId>.log`. Sólo se quitan espacios
+al final de las líneas. Los wrappers reproducibles son
+`evidence/r5-regressions.sh`, `evidence/r5-full.sh` y
+`evidence/r5-churn.sh`. El baseline se genera con `git archive 88bee08` y no
+se modifica su runtime. El hash que imprime es
+`caac735af226b3bca4eff0cf8d297313b52e153ea4f00e58b6bc66745abf14d0`.
+
+La primera suite coincide con las corridas ajenas `20261105-113037-3ccfb3`
+y `20261105-090720-94f8cc`. Además del censo inicial, la muestra de
+`evidence/r5-concurrent-desk.json` acredita un descendiente de la segunda
+con 101 ticks de CPU en un segundo, a 100 ticks/s. No se detuvo ni alteró
+ninguna corrida ajena. La carga inicial fue 2,4287 y el espaciado 136,16 s.
+Después de terminar la aceptación se rechazaron nuevos arranques por cargas
+15,26 y 18,53. No se relajó el límite.
+El baseline de churn arrancó con carga 10,5688 y espaciado 1.335,61 s.
+La segunda aceptación arrancó con carga 2,7295 y espaciado 170,52 s.
+
+## Medición de recuperación
+
+`evidence/r5-churn.py` usa un generador en otra sesión, con afinidad `[0, 1]`,
+que crea y recoge procesos a una tasa objetivo de 100 forks/s. La tasa se
+calcula con sus propios forks y tiempo monótono, sin contar otros procesos
+del desk. Se comprueba su rc, su afinidad y una tasa medida de 80 a 110/s.
+Los 20 cierres ejecutan `/bin/true` y verifican el estado durable; sólo cuentan
+0 ticks si ya está cerrado y 1 si cierra tras una reconciliación adicional.
+Si sigue abierta, registran null y fallan. No se convierten errores en cierres.
+
+En la primera aceptación el generador produjo 6.663 forks en 66,6301 s,
+99,9999/s. Los 20 cierres quedaron `closed` al primer intento, peor caso
+**0 ticks adicionales**. En el mismo generador, las 40 corridas de día sin
+writer entraron y cerraron. El censo final fue Jale 0, Hasito 0.
+Es una comprobación de recuperación bajo esta carga, no una garantía universal
+de latencia ni una medición de velocidad del desk.
+
+La segunda aceptación repite el resultado, con 4.701 forks en 47,0108 s,
+99,9982/s. Sus 20 cierres también son directos, peor caso **0 ticks
+adicionales**, y las 40 corridas sin writer cierran. No hubo rechazos ni
+salidas distintas de 0 en esos dos bloques de ninguna aceptación.
+
+El baseline de la misma medición produjo 8.735 forks en 87,3501 s,
+99,9999/s. Sus 20 cierres también cumplieron la cota de un tick en esta muestra,
+pero seis requirieron ese tick frente a cero en el arreglo. No se afirma que
+ese bloque haya fallado la cota. El fallo está en las 40 corridas sin writer,
+con dos claims retenidas y 26 rechazos. Ambos carriles quedan ocupados al
+terminar ese bloque. Las regresiones directas del tercer barrido y de los
+PIDs desaparecidos sí fallan contra `88bee08`.
+
+## Identidad del artefacto
+
+El código probado está en `dcb6e50`; los commits siguientes documentan evidencia.
+SHA-256 de los siete archivos de `store.SOURCE_FILES`:
+`77a369608532867e785aa7eff8f496e9a2480ff7a3b8d3b98a4d826901e7200d`.
+`evidence/r5-inputs.sha256` fija los 22 archivos de runtime, pruebas, contrato,
+README y scripts de aceptación. Su hash es
+`646578e5eaf827a99f7fe78f849cd87f1e067bce68e34efb8636e9915abc35a0`.
+Las dos copias remotas verifican los 22 hashes sin diferencias. Los resultados
+están en `evidence/r5-inputs-first.log` y `evidence/r5-inputs-second.log`.
+La suite imprime Python 3.12.3 y afinidad `[0, 1]`.
+
+Archivos cambiados r5: contrato; `cli.py`, `engine.py`, `store.py`; README y
+este DELIVERY; `tests/test_policy.py`, `test_r2.py`, `test_r3.py`, `test_r4.py`
+y `test_r5.py`; scripts, manifiesto y logs r5 de `evidence/`.
+No se rebaten hallazgos aceptados ni quedan preguntas de producto.
+El historial siguiente describe versiones anteriores, sustituidas por r5
+donde difieren las decisiones de vacío, verify y FIFO.
+
+---
+
 # Entrega U1, corrección para ronda 4
 
 Felix quiere más corridas nocturnas en el desk sin reutilizar recursos ni CPUs
