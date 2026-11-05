@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+case "$(pwd -P)" in "$HOME"/remote-run/work/*) ;; *) echo 'Se exige el mirror de remote-run' >&2; exit 75 ;; esac
+test_run_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
+/usr/bin/python3 -I - "$test_run_dir" <<'PY'
+import os
+from pathlib import Path
+import sys
+import time
+
+if os.getloadavg()[0] >= 12:
+    raise SystemExit("Gate: carga >= 12")
+own = Path(sys.argv[1])
+starts = [entry.stat(follow_symlinks=False).st_mtime
+          for entry in os.scandir(Path.home() / "remote-run/runs")
+          if entry.is_dir(follow_symlinks=False) and Path(entry.path) != own]
+if starts and time.time() - max(starts) < 120:
+    raise SystemExit("Gate: no pasaron 120 s desde el último arranque ajeno")
+print("Gates de carga y espaciado conformes", flush=True)
+PY
+exec /usr/bin/taskset -c 0-1 /usr/bin/python3 -I fleet/deskpolicy/tests/run.py
