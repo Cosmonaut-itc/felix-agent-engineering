@@ -303,6 +303,21 @@ class RegressionTest(unittest.TestCase):
         result = subprocess.run(arguments, env=environment, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertEqual(json.loads(result.stdout)["boot_id"], self.h.boot)
+        listeners = self.h.directory / "listeners"
+        listeners.write_text("#!/bin/sh\nexit 0\n")
+        listeners.chmod(0o700)
+        environment["PORT_LISTENERS"] = str(listeners)
+        command = [sys.executable, "-I", str(entrypoint)]
+        pending = ["pendiente", "--request-id", "harness", "--project", "jale", "--kind", "chain",
+                   "--owner", "test", "--weight", "4"]
+        result = subprocess.run(command + pending, env=environment, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        load.write_text("9.0 0.0 0.0 1/1 1\n")
+        result = subprocess.run(command + ["ejecutar", "--request-id", "harness", "--run-id", "run-harness",
+                                "--lane", "1", "--", "/bin/true"], env=environment,
+                                text=True, capture_output=True, start_new_session=True)
+        self.assertEqual((result.returncode, json.loads(result.stdout)["reason"]), (75, "load-high"))
+        self.assertIsNone(read_json(self.engine.record_path("harness"))["claim"])
         environment.pop("RUN_SUITE_HARNESS")
         result = subprocess.run(arguments, env=environment, text=True, capture_output=True)
         self.assertEqual(result.returncode, 75)
@@ -329,3 +344,27 @@ class RegressionTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(before, {p.name: p.stat().st_ino for p in self.h.root.glob("*.lock")})
         self.assertFalse(read_json(self.h.config)["night_enabled"])
+
+    def test_w10_failed_publication_rolls_back_and_retry_preserves_state(self):
+        from deskpolicy import installation
+        self.h.config.unlink()
+        destination = self.h.directory / "installation"
+        source = Path(cli.__file__).resolve().parent
+        real_sync = installation.sync_directory
+
+        def fail_after_config(path):
+            if path == self.h.config.parent and self.h.config.exists():
+                raise OSError("injected-after-config-commit")
+            real_sync(path)
+
+        with mock.patch.object(installation, "sync_directory", side_effect=fail_after_config):
+            with self.assertRaisesRegex(OSError, "injected-after-config-commit"):
+                installation.install(self.engine, source, destination, "r2")
+        self.assertFalse(destination.exists())
+        self.assertFalse(self.h.config.exists())
+        self.assertEqual(installation.install(self.engine, source, destination, "r2")["mode"], "day")
+        self.assertFalse(read_json(self.h.config)["night_enabled"])
+        manifest = (destination / "SHA256SUMS").read_bytes()
+        with self.assertRaisesRegex(Invalid, "installation-conflict"):
+            installation.install(self.engine, source, destination, "different-reference")
+        self.assertEqual((destination / "SHA256SUMS").read_bytes(), manifest)
