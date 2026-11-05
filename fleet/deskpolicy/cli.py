@@ -282,7 +282,8 @@ def main(argv=None):
             record = engine.handoff(args.request_id, args.run_id, args.pid, args.life_fd,
                                     args.mutex_fd, claim_token=token)
             output({"schema": "pao/desk-handoff@1", "request_id": args.request_id,
-                    "run_id": args.run_id, "keeper": record["claim"]["keepers"][-1]})
+                    "run_id": args.run_id, "keeper": next(p for p in reversed(record["claim"]["keepers"])
+                                                         if p["pid"] == args.pid)})
         elif args.command == "cerrar":
             token = os.read(args.claim_token_fd, 66).decode("ascii").strip()
             output(engine.close(args.request_id, args.run_id, args.pid, args.life_fd, args.mutex_fd,
