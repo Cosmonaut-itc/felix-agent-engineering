@@ -18,7 +18,7 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from deskpolicy import VERSION
-from deskpolicy.engine import DeskPolicy, admission_receipt, validate_record
+from deskpolicy.engine import DeskPolicy, admission_receipt, merge_receipt, validate_record
 from deskpolicy.model import Invalid, finite_load, require
 from deskpolicy.store import RECEIPT_DIR_MODES, atomic_json, mutex, open_file, read_json, secure_dir
 
@@ -160,13 +160,7 @@ def execute(engine, args):
         except FileNotFoundError:
             prior = None
         if prior and prior["state"] == "admitted":
-            merged = {**prior}
-            if prior.get("claim_state") != "closed":
-                merged.update({k: value[k] for k in ("claim_state", "script_exit_code", "close_cause")
-                               if value.get(k) is not None})
-            if value.get("close_error") is not None:
-                merged["close_error"] = value["close_error"]
-            value = merged
+            value = merge_receipt(prior, value)
         atomic_json(receipt_path, value, directory_modes=RECEIPT_DIR_MODES)
         return value
 

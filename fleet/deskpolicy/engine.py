@@ -112,6 +112,18 @@ def admission_receipt(request, run_id, policy, lane, reason=None, claim=None, re
             "close_cause": claim["close_cause"] if claim else None}
 
 
+def merge_receipt(prior, current):
+    """Keep admitted identity and advance only state or unknown terminal fields."""
+    merged = dict(prior)
+    states = {None: -1, "active": 0, "uncertain": 1, "closed": 2}
+    if states[current.get("claim_state")] > states[prior.get("claim_state")]:
+        merged["claim_state"] = current["claim_state"]
+    for field in ("script_exit_code", "close_cause", "close_error"):
+        if prior.get(field) is None and current.get(field) is not None:
+            merged[field] = current[field]
+    return merged
+
+
 class DeskPolicy:
     receipt = staticmethod(admission_receipt)
 
@@ -518,8 +530,11 @@ class DeskPolicy:
         require(receipt.get("schema") == "pao/desk-admission@1"
                 and receipt.get("state") == "admitted" and receipt.get("request_id") == record["request_id"]
                 and receipt.get("run_id") == record["claim"]["run_id"], "receipt-conflict")
-        receipt.update(claim_state="closed", close_cause=record["claim"]["close_cause"])
-        atomic_json(path, receipt, directory_modes=RECEIPT_DIR_MODES)
+        recovered = merge_receipt(receipt, {"claim_state": "closed",
+            "script_exit_code": record["claim"]["script_exit_code"],
+            "close_cause": record["claim"]["close_cause"]})
+        if recovered != receipt:
+            atomic_json(path, recovered, directory_modes=RECEIPT_DIR_MODES)
 
     def reconcile_claim(self, record, sample):
         """Caller owns the mutex and has validated the complete census."""
@@ -545,14 +560,17 @@ class DeskPolicy:
         claim.update(state="closed", closed_boottime_s=sample.bt,
                      close_evidence="session-empty", close_cause="reconciled")
         self.write_record(record)
+        self.recover_receipt(record)
+        return True
+
+    def recover_receipt(self, record):
         try:
             self.reconcile_receipt(record)
         except Exception as exc:
             print(json.dumps({"schema": "pao/desk-reconcile-diagnostic@1",
-                              "request_id": record["request_id"], "run_id": claim["run_id"],
+                              "request_id": record["request_id"], "run_id": record["claim"]["run_id"],
                               "reason": "receipt-error", "detail": str(exc)}, sort_keys=True),
                   file=sys.stderr, flush=True)
-        return True
 
     def reconcile(self, mutex_fd=None):
         """Close uncertain reservations only with an empty session and free life lock."""
@@ -561,6 +579,9 @@ class DeskPolicy:
             records = self.records()
             live = self.census(records, sample, persist=True)
             closed = []
+            for record in records:
+                if record["claim"] is not None and record["claim"]["state"] == "closed":
+                    self.recover_receipt(record)
             for record in live:
                 if self.reconcile_claim(record, sample):
                     closed.append(record["request_id"])
