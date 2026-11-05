@@ -79,6 +79,7 @@ def execute(engine, args):
         args.argv.pop(0)
     if not args.argv:
         raise Invalid("command-required")
+    require(not args.argv[0].startswith("-"), "command-executable")
     if os.getsid(0) != os.getpid():
         os.setsid()
     record = read_json(engine.record_path(args.request_id))
@@ -102,7 +103,7 @@ def execute(engine, args):
         output(receipt)
         if not receipt["execute"]:
             return 75 if receipt["state"] == "denied" else 0
-        command = ["/usr/bin/taskset", "-c", ",".join(map(str, receipt["cpus"])), "--", *args.argv]
+        command = ["/usr/bin/taskset", "-c", ",".join(map(str, receipt["cpus"])), *args.argv]
         child = subprocess.Popen(command, close_fds=True)
         code = child.wait()
         with mutex(engine.root) as lock:

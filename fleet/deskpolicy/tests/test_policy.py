@@ -1,5 +1,6 @@
 import ast
 import contextlib
+import fcntl
 import datetime as dt
 import io
 import json
@@ -29,14 +30,22 @@ def actor(harness, request, lane, connection, barrier=None):
     try:
         if barrier:
             barrier.wait(timeout=30)
-        try:
-            with mutex(engine.root) as lock:
-                receipt = engine.admit(request, "run-" + request, lane, os.getpid(), life, lock)
-        except Invalid as exc:
-            policy, _ = engine.read_policy(harness.sample())
-            receipt = engine.receipt(request, "run-" + request, policy, lane,
-                                     reason="mutex-error" if str(exc) == "mutex-timeout" else "census-unknown")
-            receipt["detail"] = str(exc)
+        deadline = time.monotonic() + 180
+        while True:
+            try:
+                with mutex(engine.root) as lock:
+                    receipt = engine.admit(request, "run-" + request, lane, os.getpid(), life, lock)
+            except Invalid as exc:
+                policy, _ = engine.read_policy(harness.sample())
+                receipt = engine.receipt(request, "run-" + request, policy, lane,
+                                         reason="mutex-error" if str(exc) == "mutex-timeout" else "census-unknown")
+                receipt["detail"] = str(exc)
+            retry = (barrier and receipt["reason"] in ("fifo", "mutex-error", "quota-full")
+                     and time.monotonic() < deadline)
+            if not retry:
+                break
+            fcntl.flock(life, fcntl.LOCK_UN)
+            time.sleep(0.05)
         connection.send(receipt)
         if not receipt["execute"]:
             return
@@ -201,7 +210,11 @@ class PolicyTest(unittest.TestCase):
         barrier.wait(timeout=30)
         receipts = []
         for _, connection in clients:
-            self.assertTrue(connection.poll(60))
+            for _ in range(4):
+                if connection.poll(60):
+                    break
+            else:
+                self.fail("Contendiente sin recibo tras reintentos acotados")
             receipts.append(connection.recv())
         self.assertTrue(all(r.get("state") in ("admitted", "denied") for r in receipts), receipts)
         self.assertEqual(sum(r.get("execute", False) for r in receipts), 1, receipts)
@@ -558,6 +571,30 @@ class PolicyTest(unittest.TestCase):
                 self.publish()
         self.assertEqual(read_json(self.h.root / "pao-policy-v1.json"), old)
         self.assertEqual(self.publish()["revision"], old["revision"] + 2)
+
+    def test_failure_after_claim_commit_never_executes_and_replay_retains_capacity(self):
+        self.pending("partial")
+        self.publish()
+        marker = self.h.directory / "must-not-execute"
+        replace = os.replace
+
+        def fail_after_claim(source, target):
+            replace(source, target)
+            if Path(target).name == "partial.json":
+                raise OSError("injected-after-claim-replace")
+
+        with mock.patch("deskpolicy.store.os.replace", side_effect=fail_after_claim):
+            result = self.run_cli(["ejecutar", "--request-id", "partial", "--run-id", "run-partial",
+                                   "--lane", "1", "--", "/usr/bin/touch", str(marker)])
+        self.assertEqual(result["rc"], 75)
+        self.assertFalse(marker.exists())
+        record = read_json(self.engine.record_path("partial"))
+        self.assertEqual(record["state"], "admitted")
+        state = self.engine.status()
+        self.assertEqual((state["uncertain"], state["weight"]), (1, 1))
+        replay, _, _ = self.launch("partial")
+        self.assertTrue(replay["replay"])
+        self.assertFalse(replay["execute"])
 
     def test_python39_syntax_and_shell_syntax(self):
         package = Path(__file__).resolve().parents[1]

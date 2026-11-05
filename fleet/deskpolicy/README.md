@@ -50,7 +50,8 @@ La instalación crea configuración de día y un manifiesto SHA-256.
 No sustituye instalaciones existentes y no inicia un writer.
 PAO verifica después los consumidores y recursos externos, registra evidencia,
 arma el preflight y arranca explícitamente `publicar` en una sesión desacoplada.
-El armado queda invalidado al editar configuración, código o boot.
+Ampliar presupuestos por encima de lo armado o cambiar código o boot exige
+un armado nuevo. Reducir presupuestos conserva el armado y frena entradas.
 
 Para retirada conservando cargas y evidencia:
 

@@ -217,6 +217,8 @@ un BOOTTIME futuro, una claim de otro boot o CPUs solapadas hacen desconocido
 el censo. Devuelven 75, sin vista parcial. Un slot legacy sin claim v1 también
 bloquea. Los flocks estables libres sin directorio de carga no consumen cupo.
 Los metadatos Jale sólo se mantienen para slots con claim conocida.
+Jale retira su directorio de metadatos tras `cerrar`, en la misma toma del
+mutex, antes de liberar fd 9. Conserva siempre el archivo del flock estable.
 No se adopta carga legacy por PID ni por mtime durante la convivencia.
 
 `cerrar` se ejecuta bajo el mutex, conservando el flock de vida heredado.
@@ -241,6 +243,7 @@ Una claim no reconciliada impide rearmar si pertenece a un boot anterior.
 ## Reparto nocturno
 
 El writer corre en WSL cada 20 s y recalcula al arrancar.
+Cada tick del bucle tiene un timeout de 10 s. Un tick fallido no renueva noche.
 `W` cuenta sólo solicitudes pendientes vigentes. No incluye admitidas ni
 vuelve a sumar las filas de la MacBook. `L` cuenta activas e inciertas.
 Cada proyecto conserva FIFO por `seq`. Una exclusive Jale en cabeza frena
@@ -274,6 +277,8 @@ No se promete una proporción instantánea ni utilización perfecta.
 No admite con una vista leída antes de tomarlo. La API verifica que el fd del
 mutex pertenece al inode correcto y a la descripción abierta que posee el flock.
 El supervisor es líder de su propia sesión y grupo, con `pid=pgid=sid`.
+La operación corre en esa misma sesión, en el supervisor o en su hijo directo.
+La identidad de `/proc` debe pertenecer al uid actual.
 
 La transacción sigue este orden:
 
@@ -425,8 +430,11 @@ Las dos comprobaciones verdaderas son evidencia administrativa aportada por PAO,
 no mediciones automáticas del módulo. PAO comprueba entradas migradas, puertos,
 servicios y recursos Docker Desktop antes de afirmarlas.
 El resultado incluye versión y hash determinista de los seis archivos Python
-del runtime. El armado guarda también el hash de configuración y evidencia.
-Un cambio de configuración, código o boot invalida el armado.
+del runtime. El armado guarda también configuración aprobada y hashes de
+configuración y evidencia. Presupuestos y peso máximo pueden reducirse sin
+rearmar. El writer publica esos límites reducidos con las claims vivas intactas.
+Una ampliación por encima de lo armado, activar noche desde un armado diurno,
+un cambio de código o un boot distinto exige preflight nuevo con drenado.
 
 Sin armado vigente el writer publica día aunque la configuración pida noche.
 La publicación nocturna exige además ventana UTC y censo sano.
