@@ -143,7 +143,8 @@ PIDs desaparecidos sí fallan contra `88bee08`.
 
 ## Identidad del artefacto
 
-El código probado está en `dcb6e50`; los commits siguientes documentan evidencia.
+El código probado está en `dcb6e50`. Los commits siguientes documentan evidencia
+y quitan una línea vacía al final de `tests/test_r5.py`.
 SHA-256 de los siete archivos de `store.SOURCE_FILES`:
 `77a369608532867e785aa7eff8f496e9a2480ff7a3b8d3b98a4d826901e7200d`.
 `evidence/r5-inputs.sha256` fija los 22 archivos de runtime, pruebas, contrato,
@@ -152,6 +153,15 @@ README y scripts de aceptación. Su hash es
 Las dos copias remotas verifican los 22 hashes sin diferencias. Los resultados
 están en `evidence/r5-inputs-first.log` y `evidence/r5-inputs-second.log`.
 La suite imprime Python 3.12.3 y afinidad `[0, 1]`.
+
+El ajuste final de formato no cambia el AST del test ni ningún archivo del
+runtime. La comparación está en `evidence/r5-format-only.log`. Se conserva
+el manifiesto original de los archivos que ejecutaron ambas aceptaciones.
+`evidence/r5-final-inputs.sha256` describe los archivos finales, con ese único
+salto de línea eliminado. Su hash es
+`5ad6a2521838c36b028d30cd5ddaf8e2b4cc7d190c70ec8cbb188dc98a3ef9e4`.
+`git diff --check 88bee08` pasa tras el ajuste. No se repiten las suites por
+un cambio que sólo quita una línea vacía.
 
 Archivos cambiados r5: contrato; `cli.py`, `engine.py`, `store.py`; README y
 este DELIVERY; `tests/test_policy.py`, `test_r2.py`, `test_r3.py`, `test_r4.py`

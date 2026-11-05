@@ -263,4 +263,3 @@ class RoundFiveTest(r4.RoundFourTest):
                      '`desk.lock` = carril 1', '15 min', 'sync-timeout', '--sync-ready-fd',
                      'tres barridos', '50 ms', 'cadena de fork y salida'):
             self.assertTrue(rule in contract, 'Missing contract rule: ' + rule)
-
