@@ -189,7 +189,9 @@ def tamano(ruta):
     return total
 
 
-def inventariar(raiz, ahora=None, tamanos=False):
+def inventariar(raiz, ahora=None, tamanos=False, copia_minutos=7 * 1440):
+    if copia_minutos not in (360, 7 * 1440):
+        raise ValueError('umbral de copia no admitido')
     raiz = Path(os.path.abspath(os.path.expanduser(str(raiz))))
     ahora = time.time() if ahora is None else ahora
     corridas = []
@@ -252,9 +254,10 @@ def inventariar(raiz, ahora=None, tamanos=False):
             else:
                 clase = 'lock-huerfano' if lock is not None else 'inactiva'
                 motivo = 'lock huérfano con corrida terminal' if lock is not None else 'sin lock ni corridas vivas o dudosas'
-                vieja = ahora - item['ultimoUso'] >= 7 * DIA
+                vieja = ahora - item['ultimoUso'] >= copia_minutos * 60
+                ventana = '7 días' if copia_minutos == 7 * 1440 else '6 horas'
                 item.update(clase=clase if vieja else 'reciente', borrable=vieja,
-                            motivo=motivo + ('; al menos 7 días sin uso' if vieja else '; menos de 7 días sin uso'))
+                            motivo=motivo + ('; al menos ' if vieja else '; menos de ') + ventana + ' sin uso')
         except (OSError, ValueError, UnicodeError) as exc:
             item.update(clase='protegida-dudosa', borrable=False, motivo=str(exc))
     if tamanos:
@@ -270,8 +273,11 @@ def inventariar(raiz, ahora=None, tamanos=False):
         totales[nombre] = {'cantidad': len(elementos), 'porClase': dict(Counter(x['clase'] for x in elementos)),
                            'borrables': sum(x['borrable'] for x in elementos),
                            'tamanoBorrableBytes': sum(x['tamanoBytes'] or 0 for x in elementos if x['borrable']) if tamanos else None}
+    reglas = dict(REGLAS)
+    if copia_minutos != 7 * 1440:
+        reglas['copiaDias'] = copia_minutos / 1440
     return {'schema': 'remote-run-inventario@1', 'host': socket.gethostname(), 'ts': ahora,
-            'raiz': str(raiz), 'reglas': dict(REGLAS), 'copias': copias,
+            'raiz': str(raiz), 'reglas': reglas, 'copias': copias,
             'corridas': corridas, 'totales': totales, 'proteccionCopias': proteccion_copias}
 
 
@@ -291,8 +297,9 @@ def main(argv=None):
     parser.add_argument('--raiz', default='~/remote-run')
     parser.add_argument('--resumen', action='store_true')
     parser.add_argument('--tamanos', action='store_true')
+    parser.add_argument('--copia-minutos', type=int, choices=(360, 7 * 1440), default=7 * 1440)
     args = parser.parse_args(argv)
-    datos = inventariar(args.raiz, tamanos=args.tamanos)
+    datos = inventariar(args.raiz, tamanos=args.tamanos, copia_minutos=args.copia_minutos)
     print(resumen(datos) if args.resumen else json.dumps(datos, ensure_ascii=False, indent=2, allow_nan=False))
     return 0
 
