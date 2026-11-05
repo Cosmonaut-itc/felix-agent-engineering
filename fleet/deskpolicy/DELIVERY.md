@@ -33,7 +33,7 @@ La documentación normativa común quedó en `adcc570`.
 | C1 | `99dac62`; fixtures en `5a93bd2` y `ddd3c9f` | `c1_uncertain_resource_stays_reserved_for_both_projects`, `c1_death_after_census_before_flock_keeps_active_reservation`, `c1_estado_reports_duplicate_without_changing_records`. Jale y Hasito conservan el recurso, sin claim nueva; otro carril sigue siendo admisible. El duplicado inyectado sigue visible como error 75 y no cambia archivos. |
 | W1 | `7700117`, `b4ae402` | `w1_empty_boot_creates_private_state_and_admits_day`; la prueba W9 admite por CLI heredando el mutex. Raíz y subdirectorios 0700, mutex 0600, día sin política. |
 | W2 | `30832a7`, `b3c54a6`, `6bf0695` | `w2_remote_run_0775_receipt_is_accepted`, `w2_invalid_receipt_preconditions_never_commit_claim`. Carpeta 0775 admitida; carpeta 0777 y recibos conflictivos o incompletos dejan cero claims. |
-| W3 | `f6b1c24` | `w3_script_exit_is_preserved_with_live_descendant`. Un guion sale 3 con hijo vivo; rc 3, recibo admitted, salida 3 y claim incierta con capacidad retenida. |
+| W3 | `f6b1c24`, `87778b5` | `w3_script_exit_is_preserved_with_live_descendant`, `w3_stdout_reports_final_receipt_without_receipt_file`. Un guion sale 3 con hijo vivo; rc 3, recibo admitted, salida 3 y claim incierta con capacidad retenida, tanto en archivo como en el recibo final de stdout. |
 | W4 | `8d7a53b`, `593cda9` | `w4_remote_runner_group_term_reaches_script_and_closes`, `w4_remote_runner_group_kill_reaches_script_and_closes`. TERM y KILL del grupo alcanzan al guion; salida 143 o 137 y cierre `stopped`. |
 | W5 | `24f7be5` | `w5_keeper_closes_in_own_session_with_inherited_token`. El token incorrecto falla; el keeper en otra sesión con fd de vida y token heredados cierra. La prueba W9 pasa el token por fd a la CLI real. |
 | W6 | `29367ec`, `adcc570` | `w6_expired_window_modes_and_documented_writer_temporary`. Ventanas vencidas legibles en 0600, 0644, 0664 y 0777 son inertes; un temporal `.pao-window-*` incompleto no invalida el censo. |
@@ -60,7 +60,8 @@ No ejecutan `deploy-desk.sh` ni `withdraw-desk.sh`.
 | --- | --- | --- |
 | `20261104-234756-08ee37` | Runtime original, pruebas de `eacea1a` | 1. Las 28 originales pasan. Total 42; 10 fallos y 5 errores en las regresiones nuevas. |
 | `20261104-235729-570bad` | Runtime y pruebas de `f0713ca` | 0. 44 pruebas OK en 960.836 s y `bin/pao check` correcto. |
-| `20261105-001608-85e3f9` | Intento final sobre `937621c` | 1. Gate interno de espaciado, sin ejecutar pruebas. |
+| `20261105-001608-85e3f9` | Intento sobre `937621c` | 1. Gate interno de espaciado, sin ejecutar pruebas. |
+| `20261105-002203-3da4ce` | Runtime y pruebas de `be5b12a` | Pendiente de terminar. |
 
 El primer gate midió carga 11.0703 y 339.08 s. El segundo gate midió carga
 9.2910 y 153.22 s. Antes del intento final se midieron carga 8.6655 y
