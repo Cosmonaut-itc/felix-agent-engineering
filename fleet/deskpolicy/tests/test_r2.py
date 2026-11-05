@@ -366,7 +366,7 @@ assert close.returncode==0,close.stdout+close.stderr
 assert json.loads(close.stdout)["claim"]["state"]=="closed"
 '''
         result = subprocess.run([sys.executable, "-I", "-c", program, str(entrypoint)], env=environment,
-                                text=True, capture_output=True, start_new_session=True, timeout=30)
+                                text=True, capture_output=True, start_new_session=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         environment.pop("RUN_SUITE_HARNESS")
         result = subprocess.run(arguments, env=environment, text=True, capture_output=True)

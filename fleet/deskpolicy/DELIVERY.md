@@ -1,104 +1,104 @@
-# Entrega U1 de desk-politica
+# Entrega U1, corrección de ronda 2
 
-Objetivo de Felix: usar el desk de noche para más corridas en paralelo,
-con reparto variable por pendientes entre Jale y Hasito y política PAO con TTL.
+Felix quiere usar el desk de noche para más corridas en paralelo. El reparto
+entre Jale y Hasito varía según los turnos en espera y lo gobierna un archivo
+de política PAO con vencimiento. El canario conserva 4 corridas y peso CPU 8.
 
-Nivel alto por contrato entre servicios y reserva común de capacidad.
-Rama `feat/desk-politica-v1`, creada desde `origin/main` en `f98d410`.
-No se abrió PR, no se ejecutaron guiones de despliegue y no se crearon descendientes.
-PAO conserva la review independiente sol high y opus high y la apertura del PR.
+Nivel alto por contrato entre servicios y reserva común. Se aplicó felix-mode
+con el playbook Bug fix. No hubo descendientes, PR ni despliegue. La revisión
+independiente posterior y la apertura del PR corresponden a PAO.
 
-## Flujo de trabajo
+## Base y alcance
 
-Se aplicó felix-mode con el playbook Feature para una unidad de implementación.
-El diseño base y el veredicto ya estaban fijados. No se reabrieron.
-La instrucción de no crear descendientes sustituye los pasos de delegación.
-La review y la publicación de PR quedan en PAO por instrucción del brief.
+Se leyeron completos el brief U1, el brief de corrección r2, ambos diseños
+normativos y las reviews sol y opus de ronda 1. El remoto y el checkout se
+comprobaron en `dca130f5a850f210be1c6d10a2880bdfb1631c8a` antes de editar.
+La rama local ya existía en la worktree anterior, por lo que el comando
+`switch -c` falló. Se usó `git switch --ignore-other-worktrees feat/desk-politica-v1`
+en esta worktree propia. No se editaron archivos de la worktree anterior.
 
-El checkpoint de ejecución tiene estos límites:
+La reserva sigue dentro del registro atómico de solicitud. El cambio de
+ciclo de vida añade token de handoff, salida del guion y causa de cierre.
+Model the Domain conservó separados la decisión de admisión y el resultado
+del guion. Una claim incierta conserva recurso, CPUs y peso.
 
-- Los primeros pasos bloqueantes fueron leer los dos diseños normativos y crear la rama desde el remoto.
-- Los archivos de contrato, módulo y pruebas pertenecen a una sola transacción de entrega. No hubo agentes paralelos.
-- El estado mutable del desk se serializa sólo para preservar presupuesto, FIFO, claim y CPUs. La carga queda fuera del mutex.
-- Una sola implementación mantiene el contrato común. Dividirla entre trabajadores habría duplicado decisiones ya tomadas y estaba fuera del encargo.
+## Hallazgos y regresiones
 
-Se aplicó Model the Domain mediante una máquina de estados por solicitud y
-una claim incluida en su escritura atómica. El recibo separa decisión de salida
-del guion y hace explícito que una repetición no ejecuta.
+Las pruebas nuevas están en `tests/test_r2.py`. Los nombres de la tabla
+omiten el prefijo `test_`. El commit `eacea1a` registra primero los repros.
+La documentación normativa común quedó en `adcc570`.
 
-## Precisiones y desviaciones
+| Hallazgo | Commits de corrección | Regresión |
+| --- | --- | --- |
+| C1 | `99dac62`; fixtures en `5a93bd2` y `ddd3c9f` | `c1_uncertain_resource_stays_reserved_for_both_projects`, `c1_death_after_census_before_flock_keeps_active_reservation`, `c1_estado_reports_duplicate_without_changing_records`. Jale y Hasito conservan el recurso, sin claim nueva; otro carril sigue siendo admisible. El duplicado inyectado sigue visible como error 75 y no cambia archivos. |
+| W1 | `7700117`, `b4ae402` | `w1_empty_boot_creates_private_state_and_admits_day`; la prueba W9 admite por CLI heredando el mutex. Raíz y subdirectorios 0700, mutex 0600, día sin política. |
+| W2 | `30832a7`, `b3c54a6`, `6bf0695` | `w2_remote_run_0775_receipt_is_accepted`, `w2_invalid_receipt_preconditions_never_commit_claim`. Carpeta 0775 admitida; carpeta 0777 y recibos conflictivos o incompletos dejan cero claims. |
+| W3 | `f6b1c24` | `w3_script_exit_is_preserved_with_live_descendant`. Un guion sale 3 con hijo vivo; rc 3, recibo admitted, salida 3 y claim incierta con capacidad retenida. |
+| W4 | `8d7a53b`, `593cda9` | `w4_remote_runner_group_term_reaches_script_and_closes`, `w4_remote_runner_group_kill_reaches_script_and_closes`. TERM y KILL del grupo alcanzan al guion; salida 143 o 137 y cierre `stopped`. |
+| W5 | `24f7be5` | `w5_keeper_closes_in_own_session_with_inherited_token`. El token incorrecto falla; el keeper en otra sesión con fd de vida y token heredados cierra. La prueba W9 pasa el token por fd a la CLI real. |
+| W6 | `29367ec`, `adcc570` | `w6_expired_window_modes_and_documented_writer_temporary`. Ventanas vencidas legibles en 0600, 0644, 0664 y 0777 son inertes; un temporal `.pao-window-*` incompleto no invalida el censo. |
+| W7 | `c07e4f8`, `9703c51` | `w7_oversize_rejected_before_fifo_and_reduction_expires_head`. Pesos 10 y 13 dan 75 `weight-too-large` sin solicitud. Reducir el máximo retira de FIFO una cabeza excesiva y permite al siguiente. |
+| W8 | `c7752c7`, `adcc570` | `w8_day_projects_are_independent_of_weight`. Dos Jale y dos Hasito con suma 14 entran de día y reciben 12 CPUs. La suite original conserva presupuesto y afinidad nocturnos. El contrato fija la tabla de comandos y Turbo concurrency 4 para U2. |
+| W9 | `aea1af2`, `b4ae402`, `f0713ca` | `w9_explicit_cli_harness_reaches_real_entrypoint`. CLI real con raíz, reloj, boot, loadavg y ruta de listeners privados; carga 9 rechaza Jale. Admisión y cierre con fds reales pasan. Sin la llave del harness no se aceptan costuras ni código fuera de instalación. |
+| W10 | `a0ca557`, `f0713ca` | `w10_cutover_prevalidates_historical_locks_and_is_idempotent`, `w10_failed_publication_rolls_back_and_retry_preserves_state`. Locks 0644 fallan antes de instalar. Tras chmod conservan inodes; instalación repetida idéntica, rollback de error inyectado y reintento sin reemplazar evidencia. |
 
-- La claim está dentro del registro de solicitud. El replace único acredita admisión y consumo de presupuesto a la vez. Evita una transacción parcial entre dos archivos.
-- `last_admitted_boottime_s` se deriva de todas las claims del boot, incluidas las cerradas. No hay un archivo separado que pueda perderse después del commit de una claim.
-- El censo legacy devuelve 75 cuando encuentra carga sin claim v1. No adopta por PID o mtime. El corte exige drenado y evita atribuir peso o CPUs inventadas.
-- Los locks de vida Jale conservan los inodes históricos `slot-0.lock` a `slot-11.lock`. La CLI comparte el índice lógico 1 a 12 con Hasito y documenta la conversión `slot+1`.
-- Se añadió `max_run_weight` para materializar el máximo por corrida que pide el brief. El fallback de día usa máximo 8 y 12 CPUs globales. El canario nocturno queda en 4 corridas y 8 unidades.
-- No hay liberación forzada ni recolección de inciertas. El cierre automático sólo acredita una sesión cooperativa vacía. La recuperación externa requiere evidencia y acción operativa bajo el mutex.
-- El gate de pruebas usa mtime de carpetas de runs como cota conservadora de arranque. También retrasa por cierres y evita leer archivos de estado ajenos que puedan bloquear.
-- El armado conserva la configuración aprobada. Permite reducir presupuestos con cargas vivas; ampliar por encima de lo aprobado o activar noche desde un armado diurno exige drenado y un nuevo preflight.
+No se rebaten C1 ni W1–W10. Los cuatro nits se declinan como manda el brief.
+No se añadió recolección de tombstones, liberación forzada de inciertas ni
+cambios a hostgate. Los cambios del wrapper resuelven W4.
 
-## Archivos entregados
+## Pruebas en el desk
 
-```text
-fleet/contracts/desk-politica-v1.md
-fleet/deskpolicy/README.md
-fleet/deskpolicy/DELIVERY.md
-fleet/deskpolicy/__init__.py
-fleet/deskpolicy/model.py
-fleet/deskpolicy/store.py
-fleet/deskpolicy/engine.py
-fleet/deskpolicy/cli.py
-fleet/deskpolicy/testing.py
-fleet/deskpolicy/deploy-desk.sh
-fleet/deskpolicy/withdraw-desk.sh
-fleet/deskpolicy/tests/__init__.py
-fleet/deskpolicy/tests/run.py
-fleet/deskpolicy/tests/desk-run.sh
-fleet/deskpolicy/tests/test_policy.py
-fleet/deskpolicy/evidence/20261104-232232-15378d.log
-```
+Todas las corridas usan `REMOTE_RUN_HOST=desk remote-run`, una a la vez,
+`taskset -c 0-1`, gate previo de carga menor de 12 y 120 s desde el último
+cambio de carpeta de runs. El guion repite los gates al arrancar.
+Todos los fixtures viven en el mirror. La MacBook sólo editó código.
+No se escribió en `/tmp/sen-test-slots` ni en estado comprador real.
+Las pruebas del instalador llaman al helper con destinos privados de fixture.
+No ejecutan `deploy-desk.sh` ni `withdraw-desk.sh`.
 
-## Evidencia
+| RunId | Artefacto | rc y resultado |
+| --- | --- | --- |
+| `20261104-234756-08ee37` | Runtime original, pruebas de `eacea1a` | 1. Las 28 originales pasan. Total 42; 10 fallos y 5 errores en las regresiones nuevas. |
+| `20261104-235729-570bad` | Runtime y pruebas de `f0713ca` | 0. 44 pruebas OK en 960.836 s y `bin/pao check` correcto. |
 
-Primera aceptación en el desk, runId `20261104-225823-305e6d`, rc 1.
-El gate remoto acreditó carga y espaciado antes de comenzar.
-Pasaron 20 de 21 pruebas. La carrera tuvo cero admisiones porque un solicitante
-que no era cabeza conservó el mutex durante un fsync lento al guardar `fifo`.
-Los otros 19 agotaron la espera de 5 s. No hubo exceso de capacidad.
-El fixture inicial trataba el timeout esperado como excepción del hijo y
-no reintentaba como un consumidor en espera. Se corrigió el fixture para
-recoger un recibo denied con 75 y reintentar de forma acotada sin ampliar
-el timeout de producción. La aceptación sigue exigiendo exactamente una
-admisión y cuatro claims totales.
+El primer gate midió carga 11.0703 y 339.08 s. El segundo gate midió carga
+9.2910 y 153.22 s. Los logs completos están en `evidence/<runId>.log`.
+Los errores de la reproducción incluyen el helper de instalación y el API de
+token aún ausentes. La primera versión del fixture de carrera llamaba desde
+una sesión no válida; `5a93bd2` la ejecuta en una sesión real y cubre la muerte
+entre censo y flock. No se presenta el error anterior de fixture como prueba
+de esa variante de C1. La reproducción de claim incierta sí mostró admisión
+indebida y `duplicate-resource` con el runtime original.
 
-La primera suite tardó 1242.562 s. Se observaron esperas de Linux en
-`jbd2_log_wait_commit` durante fsync. La duración no es una medida del costo
-de producción, donde el estado vive en `/tmp`, y no en el mirror del repo.
+La suite completa incluye además sintaxis Python 3.9, sintaxis de los tres
+guiones, `bin/pao check` y ShellCheck si está instalado.
+Los gates e integración final de Jale y Hasito siguen en sus unidades.
 
-La segunda aceptación usa runId `20261104-232232-15378d`, sobre código y pruebas
-de `688825a41442ad19157662953942f0b884cabf11`.
-Terminó con rc 0. Pasaron las 28 pruebas y `bin/pao check`.
-La sintaxis Python 3.9+ y la sintaxis de los tres guiones son parte de la suite.
-El log completo queda en `evidence/20261104-232232-15378d.log`.
-El gate previo midió carga 1.5161 y 137.8 s desde el último cambio de carpeta
-de runs. El script volvió a validar carga y espaciado en destino.
-El runner acredita Python 3.12.3 y afinidad `[0, 1]`.
-El hash del runtime probado es
-`3cd34445235f3478685d997cafbc6bfb23e3716a6e3fe2400694106da9c2b228`.
-Los cambios posteriores a ese head sólo agregan esta entrega y el log remoto.
+## Corte y regreso
 
-La ejecución final no acredita integración desplegada, regresiones completas
-de los consumidores ni review independiente. Esos gates corresponden a PAO.
+El contrato documenta el drenado, mutex histórico, chmod de los mismos inodes,
+archivo de metadatos sin borrar, instalación de día, evidencia, armado y canario.
+El instalador prevalida antes de publicar runtime o configuración. Una
+instalación idéntica es reejecutable y un error detectado devuelve los nombres
+nuevos al staging. Las pruebas inyectan un error después del commit de
+configuración y acreditan rollback y reintento. No simulan un corte eléctrico.
 
-## Prerrequisitos de integración
+El regreso publica día, conserva todas las reservas y drena antes de revertir
+consumidores o binarios. El módulo no recupera por TTL una claim incierta.
+`taskset` no limita Docker Desktop ni trabajo que escape deliberadamente.
+La noche requiere política válida de PAO, preflight ligado al boot y código,
+y arranque explícito del escritor. El día se recupera de una raíz ausente.
 
-Los cambios Jale y Hasito, su handoff, FIFO, protección de mirrors, transporte,
-recibos y evidencia de reportes se prueban en sus propios repos.
-El APTO de PAO, un censo inicial vacío y el inventario de consumidores migrados
-siguen pendientes antes de instalar o habilitar noche.
-`taskset` no limita Docker Desktop ni escapes deliberados del mismo uid.
-No se cambia CI ni se presume que esta entrega habilita admisiones actuales.
+Los esquemas r2 añaden campos obligatorios a la claim y al recibo. El corte
+exige drenado y consumidores coordinados. No hay migración automática de
+claims de ronda 1 ni adopción de carga legacy. No quedan preguntas de producto
+abiertas para esta corrección. PAO conserva el APTO operativo y la activación.
 
-No quedan preguntas de producto abiertas para implementar U1.
-PAO debe revisar las precisiones anteriores y aportar la evidencia operativa
-del corte junto con los heads definitivos de Jale y Hasito.
+## Archivos cambiados respecto de la ronda 1
+
+- `fleet/contracts/desk-politica-v1.md`.
+- `fleet/deskpolicy/README.md` y este `DELIVERY.md`.
+- `fleet/deskpolicy/cli.py`, `engine.py`, `model.py`, `store.py`, `testing.py`.
+- `fleet/deskpolicy/installation.py` y `deploy-desk.sh`.
+- `fleet/deskpolicy/tests/test_policy.py` y `tests/test_r2.py`.
+- Logs de las corridas de ronda 2 en `fleet/deskpolicy/evidence/`.

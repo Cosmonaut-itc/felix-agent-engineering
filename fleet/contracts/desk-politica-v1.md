@@ -46,7 +46,7 @@ Nunca truncan, borran ni reemplazan un inode de flock. Usan apertura sin truncar
 Cada JSON tiene hasta 65536 bytes UTF-8. Se rechazan NUL, claves duplicadas,
 NaN, Infinity, campos desconocidos y booleanos donde se exige un entero.
 Las excepciones son los campos históricos permitidos de `pao-window.json`.
-Las escrituras usan temporal hermano 0600, `fsync`, `os.replace` y `fsync`
+Las escrituras de estado usan temporal hermano 0600, `fsync`, `os.replace` y `fsync`
 del directorio, siempre bajo `admission.lock`. Un temporal `.pao-*` incompleto
 no es una solicitud ni una claim y se ignora. No se ejecuta texto de un JSON.
 
