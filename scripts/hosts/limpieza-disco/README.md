@@ -22,22 +22,39 @@ demás.
   repite el mtime directo con el mismo umbral. En modo normal pasa
   `--copia-minutos 10080` y mantiene `find -mtime -7`.
   Ordena las candidatas por `ultimoUso`, de más vieja a más nueva, y mide
-  espacio antes y después de cada copia: al alcanzar 60 GB para la regla 1.
+  espacio antes y después de cada copia. Para la regla 1 cuando `df` alcanza
+  60 GB o cuando el libre inicial más los bytes estimados de las copias ya
+  borradas alcanza 60 GB, lo que ocurra primero. No suma la estimación al
+  `df` actual: eso contaría dos veces los bloques que ya haya recuperado.
   Conserva bloqueo global, locks, corridas vivas/dudosas, preparación reciente,
   revalidación de corridas nuevas y rename exclusivo.
-  Consulta una sola vez `lsof -a -d cwd -Fn`, sin filtro de usuario, y compara
-  rutas físicas (`realpath`) con frontera de directorio: un cwd igual o dentro
-  de una copia la protege. Error, diagnóstico, captura vacía o ruta no
-  verificable impiden borrar copias en esa pasada. La captura es una
-  observación; no elimina la ventana de un proceso que cambie su cwd después.
+  La protección de cwd cubre **los procesos del usuario que ejecuta la
+  limpieza**, que crea y usa `~/remote-run`. Toma sus PID vivos con
+  `ps -U <uid> -o pid=,stat=` antes de consultar una sola vez
+  `lsof -a -d cwd -Fn`. Valida la captura entera antes de la primera candidata:
+  cada registro debe ser `p<pid>`, `fcwd`, `n<ruta absoluta>`, sin PID repetidos,
+  campos sueltos ni rutas vacías. Si un PID propio falta, vuelve a consultar
+  `ps`: si sigue vivo y falta, no borra ninguna copia. Excluye zombies, que ya
+  no tienen cwd. Error, diagnóstico, captura vacía o formato no verificable
+  también cierran la regla 1 con motivo en el log.
+  Compara rutas físicas (`realpath`) con frontera de directorio: un cwd igual
+  o dentro de una copia la protege. Los procesos de root y de otros usuarios
+  quedan fuera de esta cobertura; lo mitigan los permisos: en emergencia
+  exige que `~/remote-run` y `~/remote-run/work` sean directorios regulares
+  sin bits de lectura ni ejecución para group u other (`mode & 0055 == 0`).
+  Si no cumplen, no borra copias ni cambia sus permisos. Esos permisos no
+  impiden el acceso de root. La captura es una observación; no elimina la
+  ventana de un proceso que cambie su cwd después.
   Mide sólo el tamaño de la copia candidata con el lector del inventario,
   sin cambiar la clasificación de `runs/`. El log anota nombre, bytes asignados
   y último uso UTC por copia, y totales.
   `--dry-run` hace las mismas comprobaciones sin rename ni borrado y estima
-  el freno sumando esos tamaños al espacio libre. APFS puede compartir bloques,
-  así que esa suma no garantiza espacio recuperado: el borrado real siempre
-  frena por `df`. Las demás reglas y la emergencia de menos de 15 GB conservan
-  sus umbrales.
+  el freno sumando esos tamaños al espacio libre inicial, con los mismos dos
+  límites que el modo real. APFS puede compartir bloques o retenerlos en
+  snapshots, así que esa suma no garantiza espacio recuperado. El límite
+  estimado evita agotar las candidatas si `df` no sube. El log distingue
+  los bytes de las copias y el cambio de libre observado por `df`.
+  Las demás reglas y la emergencia de menos de 15 GB conservan sus umbrales.
 - **Regla 3.** Borra corridas de `runs/` que el inventario marca `borrable`
   con clase `terminal`, más de 30 días, y que tengan archivo `exit`.
 - **Orden de comprobación de una copia.** Desde el padre fijado con `cd -P`
@@ -97,6 +114,9 @@ demás.
   `USO_*`), se detienen también las reglas 2, 5, 6 y 7, que consultan
   `EN_USO`. Cada fallo deja su motivo en el log y ningún veto se revierte
   durante la pasada.
+  Si la lectura inicial de `df` no es un entero no negativo, toda la pasada
+  sale con código 1 antes de cualquier regla, también fuera de emergencia.
+  Es un cierre deliberado ante espacio libre no verificable.
 - **Captura de uso.** Los filtros de cwd, basetemp y archivos abiertos se
   ejecutan por separado y añaden a `EN_USO` todas las rutas recuperables.
   Se acumulan los errores de las fuentes (`id`, ambos `lsof` y `ps`), de la
@@ -115,8 +135,10 @@ copias `lock-huerfano` y las corridas `preparacion-abortada`, que el
 inventario sí admite.
 
 Las pruebas de `tests/test_emergencia_work.py` extraen sólo la regla 1 a un
-harness temporal, siempre con `--dry-run` y HOME de fixture. Simulan `df`
-reemplazando la función únicamente en esa copia temporal: el script de
+harness temporal con HOME de fixture. Cubren `--dry-run` y borrado real sólo
+dentro del fixture, con rename exclusivo y freno por `df` o estimación.
+Simulan `df` y, en los casos de decenas de GB, los tamaños estimados,
+reemplazando las funciones únicamente en esa copia temporal: el script de
 producción no admite variables ni flags para falsear el espacio. Los casos
 cwd lanzan un `sleep` real dentro del fixture. Para comparar las mismas
 pruebas contra main, `LIMPIEZA_TEST_SOURCE` puede señalar un `git archive`

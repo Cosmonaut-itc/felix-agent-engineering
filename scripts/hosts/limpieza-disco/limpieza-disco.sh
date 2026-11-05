@@ -135,7 +135,7 @@ borrar_en() {
       reciente=$(find "./$2" -maxdepth 2 "${COPIA_FIND[@]}" -print -quit 2> "$INV_ERR") || {
         log "no borro $1/$2: falló find de actividad de la copia"; exit 1;
       }
-      [ -z "$reciente" ] || { log "no borro $1/$2: algo cambió en los últimos $COPIA_MIN minutos"; exit 1; }
+      [ -z "$reciente" ] || { log "no borro $1/$2: algo cambió en los últimos $COPIA_VENTANA"; exit 1; }
       if [ "$WORK_EMERG" = 1 ]; then
         cwd_work_libre "$1/$2" || { log "no borro $1/$2: cwd visible dentro o consulta no verificable"; exit 1; }
       fi
@@ -170,7 +170,7 @@ borrar_en() {
         log "no borro $1/$2: mtime directo o fecha no válidos"; exit 1;
       }
       (( ahora - mtime >= COPIA_MIN * 60 )) || {
-        log "no borro $1/$2: el mtime directo tiene menos de $COPIA_MIN minutos"; exit 1;
+        log "no borro $1/$2: el mtime directo tiene menos de $COPIA_VENTANA"; exit 1;
       }
       if [ "$DRY" = 1 ]; then
         log "[dry-run] borraría $1/$2 ($3; rename previo a $destino)"; exit 0
@@ -230,11 +230,11 @@ trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
 antes=$(libre_gb)
 [[ "$antes" =~ ^[0-9]+$ ]] || { log "sin borrar: espacio libre no verificable"; exit 1; }
-WORK_EMERG=0 COPIA_MIN=10080
+WORK_EMERG=0 COPIA_MIN=10080 COPIA_VENTANA="7 días"
 COPIA_FIND=(-mtime -7)
 INV_ARGS=(--copia-minutos "$COPIA_MIN")
 if [ "$antes" -lt 40 ]; then
-  WORK_EMERG=1 COPIA_MIN=360
+  WORK_EMERG=1 COPIA_MIN=360 COPIA_VENTANA="360 minutos"
   COPIA_FIND=(-mmin -360)
   INV_ARGS=(--copia-minutos "$COPIA_MIN")
   log "EMERGENCIA work: libre ${antes} GB, sin cambios 6 h, objetivo 60 GB$([ "$DRY" = 1 ] && echo ', dry-run')"
@@ -414,40 +414,127 @@ libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes 
   return 1
 }
 
-# Captura adicional sólo para work en emergencia: todos los usuarios visibles.
+# Captura adicional sólo para work en emergencia: cobertura del propio uid.
+# Validar toda la estructura y cobertura antes de la primera candidata.
 # No cambia EN_USO ni las reglas restantes. Cualquier fallo veta toda la regla 1.
 WORK_CWD_OK=0
 if [ "$WORK_EMERG" = 1 ]; then
-  if CWD_WORK=$(mktemp "$STATE/CWD_WORK.XXXXXX") && [ -f "$CWD_WORK" ] && [ ! -L "$CWD_WORK" ] \
-      && lsof -a -d cwd -Fn > "$CWD_WORK" 2> "$INV_ERR" && [ ! -s "$INV_ERR" ]; then
-    WORK_CWD_OK=1
+  if CWD_WORK=$(mktemp "$STATE/CWD_WORK.XXXXXX") && [ -f "$CWD_WORK" ] && [ ! -L "$CWD_WORK" ]; then
+    if motivo_cwd=$(/usr/bin/python3 -B - "$CWD_WORK" "$RR" "$uid" 2>&1 <<'PY_CWD'
+import json
+import os
+import re
+import stat
+import subprocess
+import sys
+
+
+def consultar(args):
+    r = subprocess.run(args, capture_output=True, text=True, encoding='utf-8', timeout=30)
+    if r.returncode != 0 or r.stderr:
+        raise ValueError('falló consulta ' + args[0] + ' o emitió diagnósticos')
+    return r.stdout
+
+
+def pids_propios(uid):
+    salida = consultar(['ps', '-U', str(uid), '-o', 'pid=,stat='])
+    pids = set()
+    vistos = set()
+    for linea in salida.splitlines():
+        campos = linea.split()
+        if (len(campos) != 2 or not re.fullmatch(r'[1-9][0-9]*', campos[0])
+                or not re.fullmatch(r'[A-Z][A-Za-z0-9+<>-]*', campos[1])):
+            raise ValueError('captura ps no verificable')
+        pid = int(campos[0])
+        if pid in vistos:
+            raise ValueError('pid repetido en captura ps')
+        vistos.add(pid)
+        # Un zombie ya no tiene cwd; no es un proceso vivo que use una copia.
+        if not campos[1].startswith('Z'):
+            pids.add(pid)
+    if not vistos:
+        raise ValueError('captura ps vacía')
+    return pids
+
+
+try:
+    uid = int(sys.argv[3])
+    if uid < 0:
+        raise ValueError('uid no verificable')
+    for ruta in (sys.argv[2], os.path.join(sys.argv[2], 'work')):
+        info = os.lstat(ruta)
+        if not stat.S_ISDIR(info.st_mode) or info.st_mode & 0o055:
+            raise ValueError('permisos no privados (lectura/ejecución de group u other) o directorio no regular: ' + ruta)
+    # Antes de lsof: los procesos nacidos durante/después no son omisiones
+    # de esta captura. Los que terminan durante ella se vuelven a comprobar.
+    esperados = pids_propios(uid)
+    captura = consultar(['lsof', '-a', '-d', 'cwd', '-Fn']).splitlines()
+    if not captura or len(captura) % 3:
+        raise ValueError('captura de cwd incompleta o vacía')
+    pids = set()
+    rutas = []
+    for i in range(0, len(captura), 3):
+        proceso, descriptor, nombre = captura[i:i + 3]
+        if (not re.fullmatch(r'p[1-9][0-9]*', proceso)
+                or descriptor != 'fcwd' or not nombre.startswith('n/')):
+            raise ValueError('captura de cwd con registro incompleto o campos sueltos')
+        pid = int(proceso[1:])
+        ruta = nombre[1:]
+        # lsof escapa caracteres no imprimibles; no adivinar esas rutas.
+        if (pid in pids or '\\' in ruta or ruta.endswith(' (deleted)')
+                or any(ord(c) < 32 or ord(c) == 127 for c in ruta)):
+            raise ValueError('captura de cwd con pid repetido o ruta no verificable')
+        pids.add(pid)
+        rutas.append(os.path.realpath(ruta))
+    ausentes = esperados - pids
+    if ausentes:
+        vivos_ausentes = ausentes & pids_propios(uid)
+        if vivos_ausentes:
+            raise ValueError('cobertura de cwd incompleta para uid {}: pids vivos ausentes {}'.format(
+                uid, ','.join(map(str, sorted(vivos_ausentes)))))
+    # Sólo se publica una captura normalizada después de validar el conjunto.
+    with open(sys.argv[1], 'w', encoding='utf-8') as archivo:
+        json.dump(rutas, archivo)
+except (OSError, ValueError, UnicodeError, subprocess.SubprocessError) as exc:
+    sys.exit(str(exc))
+PY_CWD
+    ); then
+      WORK_CWD_OK=1
+    else
+      log "EMERGENCIA work sin borrar: ${motivo_cwd%%$'\n'*}"
+    fi
   else
-    log "EMERGENCIA work sin borrar: falló consulta de cwd de todos los usuarios visibles"
+    log "EMERGENCIA work sin borrar: falló temporal para captura de cwd"
   fi
 fi
 cwd_work_libre() {
   [ "$WORK_CWD_OK" = 1 ] || return 1
   /usr/bin/python3 -B - "$CWD_WORK" "$1" <<'PY'
+import json
 import os
 import sys
 
 try:
     copia = os.path.realpath(sys.argv[2])
-    rutas = []
     with open(sys.argv[1], encoding='utf-8') as captura:
-        for linea in captura.read().splitlines():
-            if linea.startswith('n'):
-                ruta = linea[1:]
-                # lsof escapa caracteres no imprimibles; no adivinar esas rutas.
-                if not ruta.startswith('/') or '\\' in ruta or ruta.endswith(' (deleted)'):
-                    raise ValueError('cwd no verificable')
-                rutas.append(os.path.realpath(ruta))
-    if not rutas:
-        raise ValueError('captura de cwd vacía')
+        rutas = json.load(captura)
+    if not isinstance(rutas, list) or not rutas or any(not isinstance(r, str) or not r.startswith('/') for r in rutas):
+        raise ValueError('captura de cwd normalizada no verificable')
     sys.exit(1 if any(r == copia or r.startswith(copia + os.sep) for r in rutas) else 0)
 except (OSError, ValueError, UnicodeError):
     sys.exit(2)
 PY
+}
+
+freno_work() {
+  work_estimado=$((antes + work_bytes / 1073741824))
+  if [ "$work_libre" -ge 60 ]; then
+    log "EMERGENCIA work: freno en ${work_libre} GB (df)"; return 0
+  fi
+  if [ "$work_estimado" -ge 60 ]; then
+    log "EMERGENCIA work: freno en ${work_estimado} GB estimados (libre inicial + bytes de copias); df ${work_libre} GB"; return 0
+  fi
+  return 1
 }
 
 # 1. remote-run/work: copias no ocultas que el inventario marca borrables
@@ -472,10 +559,7 @@ if [ "$INV_OK" = 1 ]; then
         [ "$WORK_CWD_OK" = 1 ] || break
         work_libre=$(libre_gb)
         [[ "$work_libre" =~ ^[0-9]+$ ]] || { log "EMERGENCIA work sin borrar: espacio libre no verificable"; break; }
-        if [ "$DRY" = 1 ]; then
-          work_libre=$((work_libre + work_bytes / 1073741824))
-        fi
-        [ "$work_libre" -lt 60 ] || { log "EMERGENCIA work: freno en ${work_libre} GB"; break; }
+        freno_work && break
         # Medir sólo esta copia: --tamanos en el inventario también recorrería
         # runs/ y podría alterar la clasificación de la regla 3 ante un error.
         tamano=$(/usr/bin/python3 -B - "$INVENTARIO" "$RR/work/$n" 2> "$INV_ERR" <<'PY'
@@ -492,11 +576,11 @@ PY
       fi
       if borrar_en "$RR/work" "$n" "$motivo" copia && [ "$WORK_EMERG" = 1 ]; then
         work_bytes=$((work_bytes + tamano)); work_cantidad=$((work_cantidad + 1))
-        # Medir tras cada borrado, incluso el último. Nunca estimar el freno real.
+        # Medir tras cada borrado, incluso el último. El límite estimado
+        # también frena si APFS retiene bloques y df no sube.
         work_libre=$(libre_gb)
         [[ "$work_libre" =~ ^[0-9]+$ ]] || { log "EMERGENCIA work: paro, espacio libre no verificable"; break; }
-        [ "$DRY" = 1 ] && work_libre=$((work_libre + work_bytes / 1073741824))
-        [ "$work_libre" -lt 60 ] || { log "EMERGENCIA work: freno en ${work_libre} GB"; break; }
+        freno_work && break
       fi
       [ "$INV_OK" = 1 ] || break
     done < "$INV_LISTA"
@@ -505,7 +589,7 @@ fi
 if [ "$WORK_EMERG" = 1 ]; then
   work_gb=$(awk -v bytes="$work_bytes" 'BEGIN {printf "%.3f", bytes / 1073741824}')
   if [ "$DRY" = 1 ]; then
-    log "EMERGENCIA work: $work_cantidad copias; total $work_bytes bytes (${work_gb} GB) liberables estimados, dry-run; libre estimado ${work_libre} GB (antes ${antes} GB)"
+    log "EMERGENCIA work: $work_cantidad copias; total $work_bytes bytes (${work_gb} GB) liberables estimados, dry-run; libre inicial + estimación $((antes + work_bytes / 1073741824)) GB; df ${work_libre} GB (antes ${antes} GB)"
   else
     log "EMERGENCIA work: $work_cantidad copias; total $work_bytes bytes (${work_gb} GB) de copias borradas; libre ${work_libre} GB (antes ${antes} GB)"
     if [[ "$work_libre" =~ ^[0-9]+$ ]]; then

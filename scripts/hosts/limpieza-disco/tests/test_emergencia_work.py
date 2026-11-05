@@ -1,4 +1,4 @@
-"""Harness aislado: sólo regla 1, siempre --dry-run, nunca ~/remote-run real.
+"""Harness aislado: sólo regla 1, HOME temporal, nunca ~/remote-run real.
 
 La costura de df existe únicamente en la copia temporal creada aquí. Para
 comparar con main: LIMPIEZA_TEST_SOURCE=/ruta/a/git-archive-origin-main.
@@ -32,6 +32,8 @@ class EmergenciaWorkTest(unittest.TestCase):
         self.rr = self.home / 'remote-run'
         (self.rr / 'work').mkdir(parents=True)
         (self.rr / 'runs').mkdir()
+        self.rr.chmod(0o700)
+        (self.rr / 'work').chmod(0o700)
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.now = time.time()
@@ -54,13 +56,16 @@ if args == ['-a', '-d', 'cwd', '-Fn']:
     if c['cwd'] == 'malformed':
         print('p123\\nnno-verificable')
         sys.exit(0)
+    if 'cwd_records' in c:
+        print(c['cwd_records'].replace('$FIXTURE', str(root)))
+        sys.exit(0)
     if 'pid' in c:
         r = subprocess.run(['/usr/sbin/lsof', '-a', '-p', str(c['pid']), '-d', 'cwd', '-Fn'],
                            capture_output=True, text=True)
         print(r.stdout, end='')
         print(r.stderr, end='', file=sys.stderr)
         sys.exit(r.returncode)
-    print('p123\\nn' + c.get('cwd_path', str(root)))
+    print('p123\\nfcwd\\nn' + c.get('cwd_path', str(root)))
 elif '+D' in args:
     if c['hook'] == 'lock':
         (Path(args[-1]) / '.remote-run.lock').write_text('nuevo')
@@ -68,9 +73,21 @@ elif '+D' in args:
 else:
     print('p123\\nn' + str(root))
 ''')
-        self.executable('ps', '''#!/bin/bash
-if [ "$1" = -axww ]; then exit 0; fi
-exec /bin/ps "$@"
+        self.executable('ps', '''#!/usr/bin/python3 -B
+import json, os, sys
+from pathlib import Path
+if sys.argv[1] == '-axww':
+    sys.exit(0)
+if sys.argv[1] == '-U':
+    root = Path(os.environ['HARNESS'])
+    c = json.loads((root / 'config.json').read_text())
+    p = root / 'ps.index'
+    i = int(p.read_text()) if p.exists() else 0
+    p.write_text(str(i + 1))
+    snapshots = c.get('ps_snapshots', [str(c.get('pid', 123)) + ' S'])
+    print(snapshots[min(i, len(snapshots) - 1)])
+    sys.exit(c.get('ps_rc', 0))
+os.execv('/bin/ps', ['ps'] + sys.argv[1:])
 ''')
         self.executable('find', '''#!/usr/bin/python3 -B
 import json, os, subprocess, sys, time
@@ -133,17 +150,140 @@ print(values[min(i, len(values) - 1)])
         self.edad(p, horas)
         return p
 
-    def ejecutar(self):
+    def ejecutar(self, dry=True, rc=0):
         (self.root / 'config.json').write_text(json.dumps(self.config))
-        result = subprocess.run(['bash', str(self.script), '--dry-run'],
+        result = subprocess.run(['bash', str(self.script)] + (['--dry-run'] if dry else []),
                                 env=dict(os.environ, HOME=str(self.home), HARNESS=str(self.root)),
                                 capture_output=True, text=True, timeout=45)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
         self.assertEqual(result.stderr, '', result.stderr)
         self.log = result.stdout
         self.seleccion = [line.split('/work/', 1)[1].split(' (', 1)[0]
                           for line in self.log.splitlines() if '[dry-run] borraría ' in line]
         return self.seleccion
+
+    def tamanos_simulados(self, tamanos):
+        # Sólo la copia temporal: nunca asignar decenas de GB para probar el freno.
+        with (self.root / 'pao-inventario.py').open('a') as f:
+            f.write('\n\ndef tamano(ruta):\n    return ' + repr(tamanos) + '[ruta.name]\n')
+
+    def test_captura_parcial_completa_seguida_de_incompleta_veta_todo(self):
+        p = self.copia()
+        process = subprocess.Popen(['/bin/sleep', '120'], cwd=p)
+        self.addCleanup(process.wait)
+        self.addCleanup(process.terminate)
+        real = subprocess.run(['/usr/sbin/lsof', '-a', '-p', str(process.pid), '-d', 'cwd', '-Fn'],
+                              capture_output=True, text=True, check=True)
+        self.assertIn(str(p), real.stdout)
+        self.config['cwd_records'] = 'p123\nfcwd\nn$FIXTURE\np456\nfcwd'
+        self.assertEqual(self.ejecutar(), [])
+        self.assertIn('EMERGENCIA work sin borrar', self.log)
+        self.assertIn('captura', self.log)
+        self.assertNotIn('[dry-run] borraría', self.log)
+
+    def test_captura_campos_sueltos_duplicados_y_rutas_invalidas_vetan(self):
+        self.copia()
+        for registro in ('n$FIXTURE', 'fcwd\nn$FIXTURE', 'p123', 'p123\nn$FIXTURE',
+                         'p123\nfcwd\nn', 'p123\nfcwd\nnrelativa',
+                         'p123\nfcwd\nn$FIXTURE\nn$FIXTURE',
+                         'p123\nfcwd\nn$FIXTURE\np123\nfcwd\nn$FIXTURE',
+                         'p123\nfcwd\nn$FIXTURE\np456\nfcwd\nn',
+                         'p123\nfcwd\nn$FIXTURE\nfotro', 'pno-pid\nfcwd\nn$FIXTURE'):
+            with self.subTest(registro=registro):
+                self.config['cwd_records'] = registro
+                self.assertEqual(self.ejecutar(), [])
+                self.assertIn('captura', self.log)
+
+    def test_pid_propio_ausente_y_aun_vivo_cierra(self):
+        self.copia()
+        self.config['ps_snapshots'] = ['123 S\n456 S']
+        self.assertEqual(self.ejecutar(), [])
+        self.assertIn('cobertura', self.log)
+        self.assertIn('456', self.log)
+        self.assertEqual((self.root / 'ps.index').read_text(), '2')
+
+    def test_pid_ausente_terminado_y_zombie_no_vetan(self):
+        self.copia()
+        self.config['ps_snapshots'] = ['123 S\n456 S\n789 Z', '123 S']
+        self.assertEqual(self.ejecutar(), ['copia'])
+        self.assertEqual((self.root / 'ps.index').read_text(), '2')
+
+    def test_ps_no_verificable_cierra(self):
+        self.copia()
+        for cambios in ({'ps_rc': 2}, {'ps_snapshots': ['no-pid S']},
+                        {'ps_snapshots': ['']}, {'ps_snapshots': ['123']},
+                        {'ps_snapshots': ['123 S\n456 S', 'salida parcial']}):
+            with self.subTest(cambios=cambios):
+                self.config = dict(free=[39], cwd='ok', hook='', **cambios)
+                (self.root / 'ps.index').unlink(missing_ok=True)
+                self.assertEqual(self.ejecutar(), [])
+                self.assertIn('EMERGENCIA work sin borrar', self.log)
+
+    def test_permisos_remote_run_y_work_cierran(self):
+        self.copia()
+        for ruta in (self.rr, self.rr / 'work'):
+            for bit in (0o040, 0o010, 0o004, 0o001):
+                with self.subTest(ruta=ruta.name, bit=oct(bit)):
+                    ruta.chmod(0o700 | bit)
+                    try:
+                        self.assertEqual(self.ejecutar(), [])
+                        self.assertIn('permisos', self.log)
+                    finally:
+                        ruta.chmod(0o700)
+
+    def test_freno_real_df_fijo_usa_estimacion_y_rename(self):
+        for nombre, horas in (('vieja', 9), ('intermedia', 8), ('nueva', 7)):
+            self.copia(nombre, horas)
+        self.tamanos_simulados(dict.fromkeys(('vieja', 'intermedia', 'nueva'), 11 * 1073741824))
+        self.config['free'] = [39]
+        self.ejecutar(dry=False)
+        self.assertEqual(sorted(p.name for p in (self.rr / 'work').iterdir()), ['nueva'])
+        self.assertEqual(self.log.count('renombrada '), 2)
+        self.assertEqual(self.log.count('borrado '), 2)
+        self.assertLess(self.log.index('/work/vieja a '), self.log.index('/work/intermedia a '))
+        self.assertIn('2 copias; total 23622320128 bytes', self.log)
+        self.assertIn('freno', self.log)
+        self.assertIn('61', self.log)
+        self.assertIn('libre 39 GB', self.log)
+        self.assertEqual((self.root / 'free.index').read_text(), '5')
+        state = self.home / 'Library/Application Support/limpieza-disco'
+        self.assertEqual(list(state.glob('borrando-*')), [])
+
+    def test_freno_real_df_llega_antes_que_estimacion(self):
+        for nombre, horas in (('vieja', 9), ('intermedia', 8), ('nueva', 7)):
+            self.copia(nombre, horas)
+        self.config['free'] = [39, 39, 60]
+        self.ejecutar(dry=False)
+        self.assertEqual(sorted(p.name for p in (self.rr / 'work').iterdir()), ['intermedia', 'nueva'])
+        self.assertEqual(self.log.count('renombrada '), 1)
+        self.assertIn('freno en 60 GB', self.log)
+        self.assertEqual((self.root / 'free.index').read_text(), '3')
+
+    def test_estimacion_no_suma_dos_veces_lo_que_df_ya_observa(self):
+        for nombre, horas in (('vieja', 9), ('intermedia', 8), ('nueva', 7)):
+            self.copia(nombre, horas)
+        self.tamanos_simulados(dict.fromkeys(('vieja', 'intermedia', 'nueva'), 11 * 1073741824))
+        self.config['free'] = [39, 39, 50, 50, 50]
+        self.assertEqual(self.ejecutar(), ['vieja', 'intermedia'])
+
+    def test_log_normal_conserva_7_dias(self):
+        self.config['free'] = [41]
+        p = self.copia(horas=8 * 24)
+        self.edad(p / 'dato', 48)
+        self.assertEqual(self.ejecutar(), [])
+        self.assertIn('algo cambió en los últimos 7 días', self.log)
+        self.edad(p / 'dato', 8 * 24)
+        self.config['hook'] = 'mtime'
+        self.assertEqual(self.ejecutar(), [])
+        self.assertIn('el mtime directo tiene menos de 7 días', self.log)
+
+    def test_df_inicial_no_numerico_sale_1_antes_de_reglas(self):
+        self.copia(horas=8 * 24)
+        self.config['free'] = ['desconocido']
+        self.assertEqual(self.ejecutar(rc=1), [])
+        self.assertIn('sin borrar: espacio libre no verificable', self.log)
+        self.assertNotIn('inicio (', self.log)
+        self.assertFalse((self.root / 'lsof.calls').exists())
 
     def test_normal_y_frontera_40_conservan_siete_dias(self):
         for gb in (41, 40):
