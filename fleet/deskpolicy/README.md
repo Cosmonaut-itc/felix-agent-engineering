@@ -114,6 +114,11 @@ Hasito elige el menor lock local libre permitido y pasa `--lane N` explícito.
 Cada lock fija un carril y conserva su FIFO. `MINI_LOCK` cuenta como lock
 explícito. Ante `resource-busy` conserva la cabeza y reintenta ese carril,
 renovando sólo la solicitud remota, sin sincronizar ni saltar de fila.
+Ante `lane-closed` retira la espera remota, suelta el lock y retira su turno.
+Sin `--lock` ni `MINI_LOCK` explícitos vuelve a elegir el menor lock libre
+permitido, respetando su FIFO, y usa nuevos request y run id. Con lock
+explícito termina con «carril N cerrado en el modo vigente», sin reselección.
+Los sucesores del carril cerrado siguen la misma regla al llegar a cabeza.
 Toma primero el lock local por la FIFO de #984. Sólo su poseedor registra
 `pendiente --lane N` y pide admisión para ese N. Los sucesores esperan
 localmente, sin solicitud en PAO. La cabeza remota de Hasito es por carril.
@@ -147,7 +152,8 @@ El control previo de Hasito usa `ejecutar --sync-ready-fd FD`, con un pipe
 heredado del transporte y un byte ASCII `1` cuando terminó el sync.
 `--sync-timeout-s` fija el plazo absoluto desde la admisión, 900 s (15 min)
 por omisión y como máximo. Tras leer el ACK vuelve a comprobar el reloj.
-EOF sin señal cierra de inmediato con `sync-timeout`.
+EOF sin señal o un byte distinto de `1` cierra de inmediato con
+`sync-timeout`, sin ejecución, peso ni flock retenidos.
 Al vencer no ejecuta el guion, cierra con `sync-timeout`, conserva
 `script_exit_code=null` y devuelve 75. Un replay no ejecuta nada.
 El cliente resuelve el recibo y pide otra admisión con nuevas identidades.
@@ -156,4 +162,14 @@ El cliente resuelve el recibo y pide otra admisión con nuevas identidades.
 nocturno de noche. `budget` es null de día; las cuotas diurnas están en
 `limits`. Un error al actualizar el recibo durante reconciliación se registra
 por stderr como `pao/desk-reconcile-diagnostic@1`; no revierte el cierre ni
-interrumpe el tick o las otras claims.
+interrumpe el tick o las otras claims. Cada combinación de claim y error
+se diagnostica una sola vez por proceso; la reparación se sigue reintentando.
+Las pendientes con carril mayor que `max_lane` no cuentan en demanda o cabezas.
+
+Las regresiones de ronda 7 y dos aceptaciones completas usan nombre fijo
+`desk-politica-u1-r7` y `evidence/r7-full.sh`, con los mismos gates.
+Ese wrapper requiere una copia verificada de `estado.py` de Hasito en
+`.audit/r7-hasito-estado.py` (SHA-256 `2efcf5fc350965ec5bb0fee438e941d912d07b15679a2f7dca911090a17db006`).
+Los probes usan sus FIFO reales en directorios privados del mirror.
+`r7-fixture-schedules.py` añade 5 s de demora a la primera publicación de
+cada recibo para reproducir el nit temporal sin cambiar el reloj ni el sync.
