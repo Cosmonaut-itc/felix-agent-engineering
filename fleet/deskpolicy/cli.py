@@ -100,7 +100,6 @@ def wait_sync(fd, deadline, stopped):
             signal_byte = os.read(fd, 1)
             if signal_byte == b"1":
                 return time.monotonic() < deadline and not stopped()
-            require(signal_byte == b"", "sync-signal")
             return False
     return False
 

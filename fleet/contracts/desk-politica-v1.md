@@ -498,7 +498,8 @@ con omisión 900 s (15 min). Tras admitir espera fuera del mutex un byte ASCII
 `1` de ese pipe antes de lanzar taskset o el guion. El plazo empieza en la
 admisión y conserva ese plazo absoluto con reloj monótono. Tras leer la
 señal vuelve a comprobar el reloj antes de autorizar el lanzamiento.
-EOF sin señal cierra de inmediato por `sync-timeout`, sin esperar el plazo.
+EOF sin señal o cualquier byte distinto de `1` cierra de inmediato por
+`sync-timeout`, sin esperar el plazo, sin ejecutar y sin conservar peso ni flock.
 Si el plazo ya venció, cierra con causa `sync-timeout`, devuelve 75 y deja
 `script_exit_code=null`, porque no ejecutó nada. El recibo conserva
 `state=admitted`, `claim_state=closed`. El cliente comprueba ese cierre y pide
