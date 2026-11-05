@@ -47,17 +47,27 @@ def listar(ruta):
         return sorted((Path(e.path) for e in entradas), key=lambda p: p.name)
 
 
-def leer(ruta):
+def leer_bytes(ruta):
     try:
         fd = os.open(str(ruta), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
+    except OSError as exc:
         if ruta.is_symlink():
             raise ValueError('symlink colgante: ' + str(ruta))
-        return None
-    with os.fdopen(fd, 'r', encoding='utf-8') as archivo:
+        if isinstance(exc, FileNotFoundError):
+            return None
+        raise
+    with os.fdopen(fd, 'rb') as archivo:
         if not stat.S_ISREG(os.fstat(archivo.fileno()).st_mode):
             raise ValueError('no es archivo regular: ' + str(ruta))
         return archivo.read()
+
+
+def leer(ruta):
+    datos = leer_bytes(ruta)
+    if datos is None:
+        return None
+    # Igual que el modo texto: CR y CRLF cuentan como salto de línea.
+    return datos.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
 
 
 def numero(texto):
@@ -67,16 +77,20 @@ def numero(texto):
     return valor
 
 
-def espejo(texto):
-    if texto is None:
+def espejo(ruta):
+    datos = leer_bytes(ruta)
+    if datos is None:
         return None
+    # cmd es opaco y puede contener bytes que no son UTF-8.
+    partes = re.split(rb'(?:^|(?<=[\r\n]))cmd=', datos, maxsplit=1)
+    if len(partes) != 2:
+        raise ValueError('meta sin línea cmd=')
+    texto = partes[0].decode('utf-8')
     campos = {}
     # cmd puede ser multilínea: remote-run lo escribe literalmente al final.
     for linea in texto.splitlines():
-        if 'cmd' in campos:
-            break
         clave, separador, valor = linea.partition('=')
-        if not separador or clave in campos or clave not in ('src', 'host', 'mirror', 'sub', 'cmd'):
+        if not separador or clave in campos or clave not in ('src', 'host', 'mirror', 'sub'):
             raise ValueError('meta mal formado')
         campos[clave] = valor
     mirror = campos.get('mirror', '')
@@ -117,7 +131,7 @@ def corrida(ruta, ahora):
     try:
         entradas = listar(ruta)
         item['ultimoUso'] = ruta.lstat().st_mtime
-        mirror = espejo(leer(ruta / 'meta'))
+        mirror = espejo(ruta / 'meta')
         for p in entradas:
             if p.is_symlink():
                 raise ValueError('symlink en registro: ' + p.name)

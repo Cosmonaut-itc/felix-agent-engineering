@@ -46,7 +46,7 @@ class BorrarCopiasTest(unittest.TestCase):
         ruta = self.raiz / 'runs' / nombre
         ruta.mkdir()
         if mirror is not None:
-            (ruta / 'meta').write_text('mirror=remote-run/work/' + mirror + '\n')
+            (ruta / 'meta').write_text('mirror=remote-run/work/' + mirror + '\ncmd=true\n')
         (ruta / 'started').write_text(str(self.ahora - 40 * inv.DIA))
         if clase == 'terminal':
             (ruta / 'exit').write_text('0')

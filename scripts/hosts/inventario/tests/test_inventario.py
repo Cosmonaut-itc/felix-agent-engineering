@@ -134,7 +134,7 @@ class InventarioTest(unittest.TestCase):
         data = self.inventario()
         self.assertEqual(data['corridas'][0]['clase'], 'dudosa')
         self.assertTrue(all(x['clase'] == 'protegida-dudosa' for x in data['copias']))
-        (r / 'meta').write_text('mirror=remote-run/work/copia\n')
+        (r / 'meta').write_text('mirror=remote-run/work/copia\ncmd=true\n')
         with patch.object(inv, 'consultar_inicio', side_effect=OSError('ps falló')):
             self.assertEqual(inv.inventariar(self.root, ahora=self.now)['corridas'][0]['clase'], 'dudosa')
 
@@ -143,6 +143,83 @@ class InventarioTest(unittest.TestCase):
         r = self.corrida(name='nan', pid=12)
         (r / 'started').write_text('nan')
         self.assertTrue(all(x['clase'] == 'dudosa' for x in self.inventario()['corridas']))
+
+    def test_meta_cmd_con_bytes_no_utf8(self):
+        r = self.corrida(fin=True)
+        (r / 'meta').write_bytes(b'src=/src\nhost=mini\nmirror=remote-run/work/copia\n'
+                                 b"sub=.\ncmd=$'l\xc3\\255\notra linea\xff'\n")
+        item, mirror, _ = inv.corrida(r, self.now)
+        self.assertEqual(mirror, 'copia')
+        self.assertEqual(item['clase'], 'terminal')
+        self.assertIn('existe exit', item['motivo'])
+        self.assertEqual(self.inventario()['proteccionCopias']['bloqueoGlobal'], [])
+
+    def test_lector_bytes_seguro(self):
+        ruta = self.root / 'dato'
+        self.assertIsNone(inv.leer_bytes(ruta))
+        ruta.write_bytes(b'\xff')
+        self.assertEqual(inv.leer_bytes(ruta), b'\xff')
+        with self.assertRaises(UnicodeError):
+            inv.leer(ruta)
+        enlace = self.root / 'enlace'
+        enlace.symlink_to(ruta)
+        with self.assertRaises(ValueError):
+            inv.leer_bytes(enlace)
+        ruta.unlink()
+        with self.assertRaisesRegex(ValueError, 'symlink colgante'):
+            inv.leer_bytes(enlace)
+        os.mkfifo(ruta)
+        with self.assertRaisesRegex(ValueError, 'no es archivo regular'):
+            inv.leer_bytes(ruta)
+        with self.assertRaises((OSError, ValueError)):
+            inv.leer_bytes(self.root)
+
+    def test_leer_normaliza_cr_como_el_modo_texto(self):
+        ruta = self.root / 'dato'
+        ruta.write_bytes(b'a\r\nb\rc\n')
+        self.assertEqual(inv.leer(ruta), 'a\nb\nc\n')
+        p = self.copia(dias=40)
+        r = self.corrida(name='r\r1', dias=40, fin=True, mirror='otra')
+        lock = p / '.remote-run.lock'
+        lock.write_bytes(os.fsencode(r.name))
+        self.vieja(lock, 40)
+        self.vieja(p, 40)
+        x = self.inventario()['copias'][0]
+        self.assertEqual((x['clase'], x['borrable']), ('protegida-dudosa', False))
+
+    def test_meta_mirror_con_byte_no_utf8_sigue_dudoso(self):
+        r = self.corrida(fin=True)
+        (r / 'meta').write_bytes(b'src=/src\nhost=mini\nmirror=remote-run/work/co\xc3pia\n'
+                                 b'sub=.\ncmd=true\n')
+        item, mirror, _ = inv.corrida(r, self.now)
+        self.assertIsNone(mirror)
+        self.assertEqual((item['clase'], item['borrable']), ('dudosa', False))
+        self.assertEqual(self.inventario()['proteccionCopias']['bloqueoGlobal'], [r.name])
+
+    def test_meta_sin_cmd(self):
+        r = self.corrida(fin=True)
+        for contenido in (
+                b'src=/src\nhost=mini\nmirror=remote-run/work/copia\nsub=.\n',
+                b'mirror=remote-run/work/co',
+                b'mirror=remote-run/work/copia\nsub=cmd=true\n'):
+            with self.subTest(contenido=contenido):
+                (r / 'meta').write_bytes(contenido)
+                with self.assertRaisesRegex(ValueError, 'meta sin línea cmd='):
+                    inv.espejo(r / 'meta')
+                item, mirror, _ = inv.corrida(r, self.now)
+                self.assertIsNone(mirror)
+                self.assertEqual((item['clase'], item['borrable']), ('dudosa', False))
+                self.assertEqual(self.inventario()['proteccionCopias']['bloqueoGlobal'], [r.name])
+
+    def test_meta_cmd_con_terminadores(self):
+        r = self.corrida(fin=True)
+        for fin in (b'\n', b'\r', b'\r\n'):
+            with self.subTest(fin=fin):
+                (r / 'meta').write_bytes(b'mirror=remote-run/work/copia' + fin + b'cmd=\xff')
+                self.assertEqual(inv.espejo(r / 'meta'), 'copia')
+        (r / 'meta').write_bytes(b'cmd=mirror=remote-run/work/copia')
+        with self.assertRaisesRegex(ValueError, 'meta sin mirror válido'):
+            inv.espejo(r / 'meta')
 
     def test_ilegible_y_symlink_corrida(self):
         self.copia()
@@ -356,7 +433,7 @@ class InventarioTest(unittest.TestCase):
         lock.unlink()
         self.vieja(a, 40)
         (r / 'runner.sh').write_text('runner')
-        (r / 'meta').write_text('mirror=remote-run/work/a\n')
+        (r / 'meta').write_text('mirror=remote-run/work/a\ncmd=true\n')
         items = copias()
         self.assertFalse(items['a']['borrable'])
         self.assertTrue(items['b']['borrable'])
