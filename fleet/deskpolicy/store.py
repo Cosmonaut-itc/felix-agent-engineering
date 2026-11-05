@@ -228,20 +228,21 @@ def session_members(sid, *, exclude=()):
     Zombies are members until reaped, including excluded control identities.
     """
     excluded = {(p["pid"], p["start"]) for p in exclude}
-    for sweep in range(2):
+    for sweep in range(3):
         members = []
         try:
-            started = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
             entries = list(Path("/proc").iterdir())
             for item in entries:
                 if not item.name.isdigit():
                     continue
-                before = item.stat()
-                identity = process(int(item.name), owned=False)
-                verified = process(int(item.name), owned=False)
-                after = item.stat()
-                if (identity["start"] >= started
-                        or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                try:
+                    before = item.stat()
+                    identity = process(int(item.name), owned=False)
+                    verified = process(int(item.name), owned=False)
+                    after = item.stat()
+                except (FileNotFoundError, ProcessLookupError):
+                    continue
+                if ((before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
                         or (identity["pid"], identity["start"], identity["sid"]) !=
                         (verified["pid"], verified["start"], verified["sid"])):
                     return None
@@ -252,6 +253,6 @@ def session_members(sid, *, exclude=()):
             return None
         if members:
             return members
-        if sweep == 0:
-            time.sleep(0.02)
+        if sweep < 2:
+            time.sleep(0.05)
     return []

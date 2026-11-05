@@ -2,9 +2,11 @@
 
 import datetime as dt
 import fcntl
+import json
 import os
 import re
 import secrets
+import sys
 
 from . import VERSION
 from .model import (BOOT, INTERVAL, KINDS, PROJECTS, TTL, WAIT_TTL,
@@ -87,7 +89,7 @@ def validate_record(value, name):
     if claim["state"] == "closed":
         require(integer(claim["closed_boottime_s"]) >= admitted
                 and claim["close_evidence"] == "session-empty"
-                and claim["close_cause"] in ("completed", "stopped", "reconciled"), "claim-close")
+                and claim["close_cause"] in ("completed", "stopped", "reconciled", "sync-timeout"), "claim-close")
     else:
         require(claim["closed_boottime_s"] is None and claim["close_evidence"] is None
                 and claim["close_cause"] is None,
@@ -346,8 +348,11 @@ class DeskPolicy:
                 lane = next((n for n in range(1, limit + 1) if n not in occupied), None)
                 if lane is None:
                     return deny("resource-busy")
-            if any(r["project"] == project and r["claim"]["lane"] == lane for r in live):
-                return deny("resource-busy")
+            blocker = next((r for r in live if r["project"] == project and r["claim"]["lane"] == lane), None)
+            if blocker is not None:
+                if not self.reconcile_claim(blocker, sample):
+                    return deny("resource-busy")
+                live.remove(blocker)
             if record["weight"] > policy["max_run_weight"]:
                 record["state"] = "expired"
                 return deny("weight-too-large")
@@ -488,7 +493,7 @@ class DeskPolicy:
                         claim["script_exit_code"] = integer(script_exit_code, 0, 255)
                     self.write_record(record)
                     raise Invalid("close-unproven")
-            require(cause in ("completed", "stopped"), "close-cause")
+            require(cause in ("completed", "stopped", "sync-timeout"), "close-cause")
             if script_exit_code is not None:
                 claim["script_exit_code"] = integer(script_exit_code, 0, 255)
             claim.update(state="closed", closed_boottime_s=sample.bt, close_evidence="session-empty",
@@ -516,6 +521,39 @@ class DeskPolicy:
         receipt.update(claim_state="closed", close_cause=record["claim"]["close_cause"])
         atomic_json(path, receipt, directory_modes=RECEIPT_DIR_MODES)
 
+    def reconcile_claim(self, record, sample):
+        """Caller owns the mutex and has validated the complete census."""
+        claim = record["claim"]
+        if claim["state"] != "uncertain":
+            return False
+        try:
+            free = not held(self.life_path(record["project"], claim["lane"]))
+            empty = free and all(session_members(sid) == [] for sid in self.claim_sessions(claim))
+        except (OSError, ValueError):
+            return False
+        if not empty:
+            return False
+        # The keeper must register before starting children. An unregistered
+        # live keeper retains life; a dead one cannot have started any load.
+        if record["project"] == "jale":
+            metadata = self.root / ("slot-" + str(claim["lane"] - 1))
+            if metadata.exists() or metadata.is_symlink():
+                secure_dir(metadata)
+                archive = self.root / (".pao-reconciled-" + record["request_id"])
+                require(not archive.exists() and not archive.is_symlink(), "reconcile-archive-conflict")
+                os.rename(metadata, archive)
+        claim.update(state="closed", closed_boottime_s=sample.bt,
+                     close_evidence="session-empty", close_cause="reconciled")
+        self.write_record(record)
+        try:
+            self.reconcile_receipt(record)
+        except Exception as exc:
+            print(json.dumps({"schema": "pao/desk-reconcile-diagnostic@1",
+                              "request_id": record["request_id"], "run_id": claim["run_id"],
+                              "reason": "receipt-error", "detail": str(exc)}, sort_keys=True),
+                  file=sys.stderr, flush=True)
+        return True
+
     def reconcile(self, mutex_fd=None):
         """Close uncertain reservations only with an empty session and free life lock."""
         with mutex(self.root, inherited=mutex_fd):
@@ -524,33 +562,8 @@ class DeskPolicy:
             live = self.census(records, sample, persist=True)
             closed = []
             for record in live:
-                claim = record["claim"]
-                if claim["state"] != "uncertain":
-                    continue
-                if record["project"] == "jale" and record["kind"] == "verify" and not claim.get("keepers"):
-                    continue
-                try:
-                    empty = all(session_members(sid) == [] for sid in self.claim_sessions(claim))
-                    free = not held(self.life_path(record["project"], claim["lane"]))
-                except (OSError, ValueError):
-                    continue
-                if not empty or not free:
-                    continue
-                # Jale leaves only metadata here. Preserve it outside the
-                # canonical slot name so the next census does not see legacy
-                # work after this reservation closes. Never move the flock.
-                if record["project"] == "jale":
-                    metadata = self.root / ("slot-" + str(claim["lane"] - 1))
-                    if metadata.exists() or metadata.is_symlink():
-                        secure_dir(metadata)
-                        archive = self.root / (".pao-reconciled-" + record["request_id"])
-                        require(not archive.exists() and not archive.is_symlink(), "reconcile-archive-conflict")
-                        os.rename(metadata, archive)
-                claim.update(state="closed", closed_boottime_s=sample.bt,
-                             close_evidence="session-empty", close_cause="reconciled")
-                self.write_record(record)
-                self.reconcile_receipt(record)
-                closed.append(record["request_id"])
+                if self.reconcile_claim(record, sample):
+                    closed.append(record["request_id"])
             return {"schema": "pao/desk-reconcile@1", "closed": closed}
 
     def arm_valid(self, configuration, sample):
@@ -674,7 +687,8 @@ class DeskPolicy:
             result = {"schema": "pao/desk-view@1", "version": VERSION, "boot_id": sample.boot,
                       "mode": policy["mode"], "revision": policy["revision"],
                       "expires_at": policy["expires_at"], "limits": policy["limits"],
-                      "budget": policy["night_budget"] if policy["mode"] == "night" else 4,
+                      "budget": policy["night_budget"] if policy["mode"] == "night" else None,
+                      "max_lane": policy["night_budget"] if policy["mode"] == "night" else 2,
                       "cpu_weight_budget": policy["cpu_weight_budget"] if policy["mode"] == "night" else None,
                       "pending": {p: len(waiting[p]) for p in PROJECTS},
                       "head": {p: waiting[p][0]["request_id"] if waiting[p] else None for p in PROJECTS},
