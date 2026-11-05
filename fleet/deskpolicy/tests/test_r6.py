@@ -81,12 +81,14 @@ class RoundSixTest(r4.RoundFourTest):
         marker = self.h.directory / (name + '.executed')
         reader, writer = os.pipe()
         worker = None
+        worker_pid = None
         try:
             args = self.execute_args(name, [sys.executable, '-I', '-c',
                 'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.open("a").write("once\\n")', str(marker)])
             at = args.index('--')
             args[at:at] = ['--sync-ready-fd', str(reader), '--sync-timeout-s', '3']
             worker, pipe = self.spawn(fixtures.cli_actor, self.h, args)
+            worker_pid = worker.pid
             def waiting():
                 if not (directory / 'pao-admission.json').exists():
                     return False
@@ -101,7 +103,7 @@ class RoundSixTest(r4.RoundFourTest):
             os.write(writer, b'1')
             if late:
                 os.kill(worker.pid, signal.SIGCONT)
-            result = self.result(worker, pipe)
+            result = self.result((worker, pipe))
             receipt = read_json(directory / 'pao-admission.json')
             print('R6 SYNC', late, result['rc'], receipt, 'ran', marker.exists(), flush=True)
             self.assertEqual(result['rc'], 75 if late else 0)
@@ -115,7 +117,7 @@ class RoundSixTest(r4.RoundFourTest):
         finally:
             if worker is not None:
                 with contextlib.suppress(ProcessLookupError):
-                    os.kill(worker.pid, signal.SIGCONT)
+                    os.kill(worker_pid, signal.SIGCONT)
             os.close(reader)
             os.close(writer)
 
@@ -136,7 +138,7 @@ class RoundSixTest(r4.RoundFourTest):
             args[at:at] = ['--sync-ready-fd', str(reader), '--sync-timeout-s', '8']
             worker, pipe = self.spawn(fixtures.cli_actor, self.h, args)
             self.assertTrue(pipe.poll(4), 'EOF retained capacity until the sync deadline')
-            result = self.result(worker, pipe)
+            result = self.result((worker, pipe))
             self.assertEqual(result['rc'], 75)
             self.assertEqual(self.claim('eof')['close_cause'], 'sync-timeout')
             self.assertIsNone(self.claim('eof')['script_exit_code'])
