@@ -1,4 +1,5 @@
 import contextlib
+import io
 import json
 import multiprocessing as mp
 import os
@@ -247,13 +248,32 @@ class RegressionTest(unittest.TestCase):
         directory = self.receipt_directory("stop")
         pid_file = self.h.directory / "script.pid"
         parent, child = mp.get_context("fork").Pipe()
+        reaped = mp.get_context("fork").Event()
 
         def runner():
             os.setsid()
             wrapper = os.fork()
             if wrapper == 0:
-                fixtures.cli_actor(self.h, self.execute_args("stop", ["/bin/bash", "-c",
-                                   'echo $$ > "$1"; exec sleep 45', "test", str(pid_file)]), child)
+                for entry in Path('/proc/self/fd').iterdir():
+                    fd = int(entry.name)
+                    if fd > 2 and fd != child.fileno():
+                        with contextlib.suppress(OSError):
+                            os.close(fd)
+                engine = DeskPolicy(Runtime(self.h))
+                close = engine.close
+
+                def after_reap(*args, **kwargs):
+                    assert reaped.wait(60)
+                    with mock.patch.object(engine, 'close', close):
+                        return fixtures.close_when_proven(engine, *args, **kwargs)
+
+                stream = io.StringIO()
+                with mock.patch.object(cli, 'DeskPolicy', return_value=engine), \
+                     mock.patch.object(engine, 'close', side_effect=after_reap), \
+                     contextlib.redirect_stdout(stream):
+                    code = cli.main(self.execute_args("stop", ["/bin/bash", "-c",
+                                    'echo $$ > "$1"; exec sleep 45', "test", str(pid_file)]))
+                child.send({'rc': code, 'output': stream.getvalue()})
                 os._exit(0)
             signal.signal(signal.SIGTERM, signal.SIG_IGN)
             os.waitpid(wrapper, 0)
@@ -269,7 +289,11 @@ class RegressionTest(unittest.TestCase):
         script = int(pid_file.read_text())
         self.extra_pids.append((script, process(script)["start"]))
         os.killpg(worker.pid, stop_signal)
-        self.assertTrue(parent.poll(10), "wrapper survived remote-run stop")
+        if stop_signal == signal.SIGKILL:
+            worker.join(60)
+            self.assertEqual(worker.exitcode, -signal.SIGKILL)
+        reaped.set()
+        self.assertTrue(parent.poll(60), "wrapper survived remote-run stop")
         result = parent.recv()
         worker.join(5)
         expected = 128 + stop_signal

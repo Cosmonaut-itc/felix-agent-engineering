@@ -384,7 +384,9 @@ sin recibo. Consulta el mismo request y run para resolver el resultado ambiguo.
 El registro durable puede conservar capacidad aunque el cliente no reciba ACK.
 
 El mutex tiene espera máxima de 5 s. No se mantiene durante SSH, git, rsync,
-sleep, ejecución del guion, preparación o limpieza de servicios.
+esperas del consumidor, ejecución del guion, preparación o limpieza de servicios.
+La separación interna de 20 ms entre barridos sí forma parte de la prueba
+de vacío bajo el mutex.
 Si se deniega después de tomar el fd de vida, el consumidor cierra ese fd
 antes de soltar el mutex y de esperar. Si se admite, lo conserva hasta cierre acreditado o handoff.
 Nunca libera el mutex ni sus locks mediante replace o borrado del archivo.

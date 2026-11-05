@@ -86,14 +86,27 @@ def timeout_actor(harness, arguments, ready, proceed, timed_out, released, conne
 
 
 def slow_final_actor(harness, arguments, closed, connection):
-    real_atomic = cli.atomic_json
+    engine = DeskPolicy(Runtime(harness))
+    real_atomic, real_close = cli.atomic_json, engine.close
+
+    def close_after_clean_probe(*args, **kwargs):
+        with mock.patch.object(engine, 'close', real_close):
+            return fixtures.close_when_proven(engine, *args, **kwargs)
+
     def controlled(path, value, **kwargs):
         if path.name == 'pao-admission.json' and value.get('claim_state') == 'closed':
             closed.set()
             time.sleep(1)
         real_atomic(path, value, **kwargs)
-    with mock.patch.object(cli, 'atomic_json', side_effect=controlled):
-        fixtures.cli_actor(harness, arguments, connection)
+
+    os.setsid()
+    stream = io.StringIO()
+    with mock.patch.object(cli, 'atomic_json', side_effect=controlled), \
+         mock.patch.object(cli, 'DeskPolicy', return_value=engine), \
+         mock.patch.object(engine, 'close', side_effect=close_after_clean_probe), \
+         contextlib.redirect_stdout(stream):
+        code = cli.main(arguments)
+    connection.send({'rc': code, 'output': stream.getvalue()})
 
 
 def census_actor(harness, action, connection):
@@ -230,7 +243,7 @@ class RoundThreeTest(unittest.TestCase):
         closed = mp.get_context('fork').Event()
         worker = self.spawn(slow_final_actor, self.h,
                             self.execute_args('concurrent', ['/bin/true']), closed)
-        self.assertTrue(closed.wait(10))
+        self.assertTrue(closed.wait(60))
         readers = [self.spawn(census_actor, self.h, action) for action in ('status', 'publish')]
         for reader in readers:
             result = self.result(reader)
@@ -349,9 +362,13 @@ class RoundThreeTest(unittest.TestCase):
             os.waitpid(pid, 0)
         while session_members(claim['keepers'][-1]['sid']) != [] and time.monotonic() < deadline:
             time.sleep(.02)
-        result = self.run_cli(['reconciliar'])
-        self.assertEqual(result['rc'], 0)
-        self.assertEqual(json.loads(result['output'])['closed'], ['keeper-child'])
+        deadline = time.monotonic() + 60
+        while True:
+            result = self.run_cli(['reconciliar'])
+            self.assertEqual(result['rc'], 0)
+            if json.loads(result['output'])['closed'] == ['keeper-child']:
+                break
+            self.assertLess(time.monotonic(), deadline, 'keeper sessions never proved empty')
         self.assertEqual(read_json(self.engine.record_path('keeper-child'))['claim']['script_exit_code'], 3)
 
     def test_wb_any_chooses_second_lane_after_uncertain_first(self):

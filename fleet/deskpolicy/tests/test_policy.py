@@ -85,6 +85,17 @@ def actor(harness, request, lane, connection, barrier=None):
         connection.close()
 
 
+def close_when_proven(engine, *args, **kwargs):
+    deadline = time.monotonic() + 60
+    while True:
+        try:
+            return engine.close(*args, **kwargs)
+        except Invalid as exc:
+            if str(exc) != 'close-unproven' or time.monotonic() >= deadline:
+                raise
+            time.sleep(.02)
+
+
 def cli_actor(harness, arguments, connection):
     if os.getsid(0) not in (os.getpid(), os.getppid()):
         os.setsid()
