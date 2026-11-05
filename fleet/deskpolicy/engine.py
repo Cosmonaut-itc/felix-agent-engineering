@@ -377,9 +377,11 @@ class DeskPolicy:
                 lane = next((n for n in range(1, limit + 1) if n not in occupied), None)
                 if lane is None:
                     return deny("resource-busy")
-            if lane > limit:
-                return deny("lane-closed")
             blocker = next((r for r in live if r["project"] == project and r["claim"]["lane"] == lane), None)
+            if lane > limit:
+                if blocker is not None:
+                    self.reconcile_claim(blocker, sample)
+                return deny("lane-closed")
             if blocker is not None:
                 if not self.reconcile_claim(blocker, sample):
                     return deny("resource-busy")
