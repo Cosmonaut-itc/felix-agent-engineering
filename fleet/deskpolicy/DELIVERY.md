@@ -1,3 +1,122 @@
+# Entrega U1, corrección para ronda 7
+
+Rama `feat/desk-politica-v1`, preparada con fetch y seguimiento de origin.
+El head inicial coincidió con `9567e18f3573ced8acea0aa6eec86c17ff5b627e`.
+Se leyeron completos U1, r7, las decisiones anteriores, Sol A, el veredicto
+y los dos informes r6. Nivel alto por contrato entre servicios. Trabajo
+acotado de implementación: sin descendientes, PR, despliegue ni cambios en
+los consumidores. La revisión independiente posterior corresponde a PAO.
+
+## Hallazgos, commits y regresiones
+
+Las ocho regresiones de `tests/test_r7.py` se registraron en `3ff15d3`.
+El baseline usa `git archive 9567e18`, superponiendo sólo esas pruebas y los
+programas de evidencia nuevos; conserva íntegros el runtime y `test_r6.py`
+antiguos. Su SHA-256 es `912e872a4a49c287b77f1753f010eafac4b941e6ef3727a45ee19ddd34c08cfd`.
+El primer baseline da ocho fallos esperados, cero errores. El segundo da
+dos fallos temporales y cuatro de protocolo de cliente, todos sin errores.
+Los rc 1 se conservan como evidencia roja, sin convertirlos en aceptación.
+
+| Hallazgo | Commit | Prueba y diferencia antes → después |
+| --- | --- | --- |
+| W-r6a opus, carril fuera del modo | `4b1afa3`; protocolo real local en `6e2110e` | `test_dawn_high_lane_is_closed`, `test_dead_writer_high_lane_is_closed`: ocho intentos por escenario devolvían `resource-busy`; ahora exigen `lane-closed`. `test_closed_lane_precedes_busy_claim_and_fifo` comprueba el motivo aun con claim viva y otros pendientes, sin liberar esa claim. Los cuatro casos de `r7-hasito-protocol.py` usan el `estado.py` real: auto reselecciona carril 2 porque el 1 tiene un turno previo, admite de día con ids nuevos; explícito termina con «carril 3 cerrado en el modo vigente»; ambos retiran el turno alto, igual que su sucesor. Antes, los cuatro fallan al recibir `resource-busy`. |
+| N-r6a opus, demanda imposible | `403e49f` | `test_closed_lanes_do_not_inflate_night_demand_or_take_jale_quota`: antes añadir carriles 5..8 cambiaba demanda Hasito 2→6 y cuota Jale 2→1; después conserva demanda 2 y cuota Jale 2. `test_day_and_expired_policy_views_ignore_closed_pending_lanes` comprueba publicación diurna y fallback, sin borrar solicitudes. |
+| N-r6b opus, byte inválido | `b544ca7` | `test_invalid_sync_byte_closes_without_execution_or_capacity`: antes rc 75/census-unknown, claim y recibo active/null; después rc 75, ambos closed/sync-timeout, salida null, marcador ausente, peso 0 y flock libre. |
+| N-r6c opus y nit de sol, tiempos compartidos | `8f7dc9a` | `r7-fixture-schedules.py` añade 5 s sólo a la primera publicación del recibo. Sobre los tests antiguos reproduce `EOF retained capacity until the sync deadline` y `control never reached production select`, dos fallos en 65,765 s. Los tests corregidos observan las operaciones reales y conservan la exigencia de EOF previo al plazo y ACK tardío sin ejecución; la preparación puede reintentarse con ids nuevos y plazos medidos. |
+| N-r6d opus, diagnóstico repetido | `c6cbf6b` | `test_closed_claim_diagnostic_once_per_process_claim_and_error`: antes seis mensajes para dos errores, incluidos los de otra instancia del motor; después exige exactamente dos y verifica que se sigue reparando el recibo hasta recuperar salida 0. La deduplicación es por proceso, raíz, boot, request/run y error, sin dejar de reintentar el recibo. |
+
+No se rebate ningún hallazgo. Se implementan las cinco decisiones de PAO.
+El módulo devuelve `lane-closed` antes de comprobar ocupación o FIFO para
+una pendiente válida fuera del modo. Los replays de claims admitidas y las
+claims altas vivas conservan sus garantías anteriores. El writer y `estado`
+filtran demanda según el modo efectivo; no usan una cuota como índice.
+
+## Pruebas temporales modificadas
+
+`test_eof_closes_immediately_with_long_deadline` ya no mide desde el fork
+con `pipe.poll(4)`. Un observador registra entrada y salida del `wait_sync`
+real, el plazo absoluto y la primera entrada en el `select` real. Exige que
+EOF devuelva false antes del plazo, además del cierre, peso cero y flock libre.
+Si la publicación inicial consumió el plazo, termina esa claim y reintenta,
+como máximo tres veces, con plazo derivado de la preparación medida.
+
+`test_late_ack_after_sigstop_never_executes` y su control positivo observan
+la entrada real en select, en vez de sondear `/proc/<pid>/wchan`. Si la
+publicación agotó el margen, reintentan hasta tres veces con ids nuevos y
+`max(plazo_anterior, 2*preparación_medida+1)`. El caso tardío acredita SIGSTOP,
+espera al plazo absoluto más 0,3 s, envía el ACK y luego SIGCONT. Conserva
+rc 75, salida null, una ejecución para el control y cero para el tardío,
+así como replay sin reejecución. No sustituye reloj, select ni lectura del pipe.
+
+El helper `RoundSixTest.run_cli/result` también permite tres esperas
+acotadas de 60 s para preparación/publicación, por el tercer timeout de sol
+en `test_both_final_publications_fail_then_reconcile_closed_claim`. Conserva
+las aserciones de salida, cierre, recibo, identidad y recuperación. Estos
+cambios no modifican ningún plazo ni comportamiento del runtime.
+
+## Corridas y gates
+
+Todas las pruebas se ejecutaron exclusivamente en el desk con
+`REMOTE_RUN_HOST=desk remote-run`, nombre fijo `desk-politica-u1-r7`, una
+corrida propia a la vez y `taskset -c 0-1`. El gate previo y el interno
+exigen 120 s desde el último arranque, carga <12 hasta 22:00Z y <9 después.
+El primer gate rechazó carga 24,71 sin lanzar nada; otros rechazaron el
+espaciado. Antes de la segunda aceptación se esperó unos ocho minutos
+por carga de 21–25; el arranque se hizo sólo cuando bajó de 12. Los fixtures y locks de Hasito viven sólo dentro del mirror.
+No se escribió en `/tmp/sen-test-slots` ni en estado comprador real.
+
+| RunId | rc | Resultado |
+| --- | --- | --- |
+| `20261105-144900-f59cac` | 1 esperado | Runtime exacto inicial; ocho pruebas, ocho fallos y cero errores en 22,788 s. Gate 9,9121 / 263,77 s. |
+| `20261105-145553-216226` | 1 esperado | Dos fallos temporales en 65,765 s y cuatro de cliente en 34,218 s, cero errores. Gate 3,0259 / 136,92 s. |
+| 20261105-145913-ebe578 | 0 | Primera aceptación compartida: dos temporales con demora OK en 32,139 s; 111 pruebas OK en 717,670 s; cuatro casos Hasito OK en 42,538 s; check y limpieza OK. Gate 3,0864 / 122,82 s. |
+| 20261105-152034-30dc6a | 0 | Segunda aceptación compartida: dos temporales con demora OK en 31,556 s; 111 pruebas OK en 471,640 s; cuatro casos Hasito OK en 42,847 s; check y limpieza OK. Gate 10,0083 / 546,80 s. |
+
+Los logs completos están en `evidence/<runId>.log`; sólo se eliminan espacios
+finales de línea. `r7-before.sh` y `r7-before-extra.sh` conservan los comandos
+rojos. Para prepararlos se extrae el head inicial en `.audit/r7-baseline`, se
+superpone el `test_r7.py` nuevo y se copian `r7-fixture-schedules.py` y
+`r7-hasito-protocol.py` a su directorio de evidencia. El segundo exige el
+hash exacto del runtime inicial; el primero lo imprime para contrastarlo.
+El `estado.py` verificado va como `hasito-estado.py` en ese baseline y como
+`.audit/r7-hasito-estado.py` para la aceptación.
+
+`r7-full.sh` verifica `r7-inputs.sha256`, ejecuta las dos pruebas con demora
+controlada, la suite completa, los cuatro casos de FIFO local real,
+`bin/pao check`, limpieza y ShellCheck si está instalado. ShellCheck no
+está instalado en el desk y su paso condicional se omitió. El primer gate de aceptación registró la corrida ajena `20261105-144401-065670`, con
+Bash, Python y Docker trabajando en `sen4198-r3-final-krkmbHVf`. El gate registra
+árboles de corridas ajenas para acreditar el desk compartido, descartando
+PIDs reutilizados. `r7-cleanup.py` comprueba que no quedan procesos propios
+no zombies fuera de los controles de la corrida.
+
+## Integridad y límites
+
+SHA-256 final de los siete archivos del runtime, con el algoritmo de
+`store.code_digest`:
+
+```text
+cfa7e47ab282c665f464545a78ad31bbd3ce33e18c2603e3b2355a15c69347bc
+```
+
+La MacBook sólo editó, preparó snapshots/hashes y leyó evidencia.
+El código y las pruebas de aceptación quedan fijados por
+`evidence/r7-inputs.sha256`; las actualizaciones posteriores de entrega y
+logs no los cambian. El protocolo Hasito se ejercita mediante un cliente de
+prueba y su `estado.py` real, SHA-256
+`2efcf5fc350965ec5bb0fee438e941d912d07b15679a2f7dca911090a17db006`.
+Eso valida el contrato de U1; el adaptador real de `run.py`/remote-run se
+implementa y verifica en U3. No se afirma una integración desplegada.
+Archivos modificados: `fleet/contracts/desk-politica-v1.md`,
+`fleet/deskpolicy/{engine.py,cli.py,README.md,DELIVERY.md}`,
+`tests/{test_r6.py,test_r7.py}` y los comandos, hashes y logs r7 en `evidence/`.
+`model.py`, `store.py`, `testing.py`, `installation.py`, instalación y retirada
+conservan sus bytes iniciales.
+No hay desviaciones ni preguntas de producto abiertas en esta corrección.
+PAO conserva la review independiente, el APTO y la activación.
+
+---
+
 # Entrega U1, corrección para ronda 6
 
 Felix quiere más corridas nocturnas en el desk con reservas conservadoras y
