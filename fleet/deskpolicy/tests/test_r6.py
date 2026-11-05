@@ -158,7 +158,7 @@ class RoundSixTest(r4.RoundFourTest):
         self.assertEqual(result['rc'], 75, result)
         self.assertIsNone(self.claim('long'))
 
-    def test_two_failed_receipt_writes_reconcile_and_replay_recover_exit(self):
+    def test_original_receipt_failure_reconcile_and_replay_recover_exit(self):
         self.pending('recovery')
         directory = self.receipt_directory('recovery')
         marker = self.h.directory / 'executions'
@@ -179,7 +179,7 @@ class RoundSixTest(r4.RoundFourTest):
         with mock.patch.object(cli, 'atomic_json', side_effect=transient):
             result = self.run_cli(args)
         self.assertEqual(result['rc'], 3, result)
-        self.assertEqual(writes.value, 3)
+        self.assertEqual(writes.value, 2)
         self.assertEqual((self.claim('recovery')['state'], self.claim('recovery')['script_exit_code']),
                          ('uncertain', 3))
         initial = read_json(directory / 'pao-admission.json')
@@ -199,6 +199,31 @@ class RoundSixTest(r4.RoundFourTest):
         self.assertEqual(marker.read_text(), 'once\n')
         for key in initial.keys() - {'claim_state', 'script_exit_code', 'close_cause', 'close_error'}:
             self.assertEqual(initial[key], final[key], key)
+
+    def test_both_final_publications_fail_then_reconcile_closed_claim(self):
+        self.pending('two-writes')
+        directory = self.receipt_directory('two-writes')
+        args = self.execute_args('two-writes', ['/bin/sh', '-c', 'exit 3'])
+        atomic = cli.atomic_json
+        writes = mp.get_context('fork').Value('i', 0)
+        def transient(path, value, **kwargs):
+            if path.name == 'pao-admission.json':
+                with writes.get_lock():
+                    writes.value += 1
+                if writes.value > 1:
+                    raise OSError('both-terminal-publications-unavailable')
+            return atomic(path, value, **kwargs)
+        with mock.patch.object(cli, 'atomic_json', side_effect=transient):
+            result = self.run_cli(args)
+        self.assertEqual(result['rc'], 3)
+        self.assertEqual(writes.value, 3)
+        self.assertEqual(self.claim('two-writes')['script_exit_code'], 3)
+        path = directory / 'pao-admission.json'
+        self.assertEqual((read_json(path)['claim_state'], read_json(path)['script_exit_code']), ('active', None))
+        self.engine.reconcile()
+        self.assertEqual((read_json(path)['claim_state'], read_json(path)['script_exit_code']), ('closed', 3))
+        self.assertEqual(self.run_cli(args)['rc'], 0)
+        self.assertEqual(read_json(path)['script_exit_code'], 3)
 
     def test_closed_receipt_unknown_fields_fill_without_replacing_known_values(self):
         self.pending('closed')
