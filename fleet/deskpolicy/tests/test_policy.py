@@ -130,8 +130,10 @@ class PolicyTest(unittest.TestCase):
         for child, connection in self.children:
             if child.is_alive():
                 child.kill()
-            child.join(timeout=5)
+            child.join(timeout=60)
             connection.close()
+            child.close()
+        self.children.clear()
         for pid, start in self.extra_pids:
             with contextlib.suppress(FileNotFoundError, ProcessLookupError):
                 if process(pid)["start"] == start:
@@ -176,10 +178,16 @@ class PolicyTest(unittest.TestCase):
         return receipt, worker, parent
 
     def close_actor(self, worker, connection):
-        connection.send(("close", self.h.bt, self.h.now))
-        self.assertTrue(connection.poll(10))
-        self.assertEqual(connection.recv(), "closed")
-        worker.join(5)
+        deadline = time.monotonic() + 60
+        while True:
+            connection.send(("close", self.h.bt, self.h.now))
+            self.assertTrue(connection.poll(60))
+            state = connection.recv()
+            if state == "closed":
+                break
+            self.assertEqual(state, "close-unproven")
+            self.assertLess(time.monotonic(), deadline, "session never proved empty")
+        worker.join(60)
         self.assertEqual(worker.exitcode, 0)
 
     def run_cli(self, arguments):
@@ -190,8 +198,11 @@ class PolicyTest(unittest.TestCase):
         self.children.append((worker, parent))
         self.assertTrue(parent.poll(60), "CLI timed out")
         result = parent.recv()
-        worker.join(5)
+        worker.join(60)
         self.assertEqual(worker.exitcode, 0)
+        self.children.remove((worker, parent))
+        parent.close()
+        worker.close()
         return result
 
     def test_distribution_tables_and_ties(self):

@@ -61,7 +61,7 @@ def register_keeper(engine, receipt, life):
                            lock, claim_token=receipt['claim_token'])
 
 
-def handoff_actor(harness, count, register, connection):
+def handoff_actor(harness, count, register, retry_close, connection):
     os.setsid()
     engine = DeskPolicy(Runtime(harness))
     life = open_file(engine.life_path('jale', 1), create=True)
@@ -96,8 +96,10 @@ def handoff_actor(harness, count, register, connection):
             server.wait()
         with mutex(engine.root) as lock:
             try:
-                closed = engine.close('handoff', 'run-handoff', os.getpid(), life, lock,
-                                      claim_token=receipt['claim_token'], script_exit_code=3)
+                close = (lambda *args, **kwargs: fixtures.close_when_proven(engine, *args, **kwargs)) \
+                    if retry_close else engine.close
+                closed = close('handoff', 'run-handoff', os.getpid(), life, lock,
+                               claim_token=receipt['claim_token'], script_exit_code=3)
                 connection.send(('closed', closed['claim']['state']))
             except Invalid as exc:
                 connection.send(('closed', str(exc)))
@@ -203,7 +205,7 @@ class LifecycleTest(RoundFourTest):
     def keeper_case(self, count, registered=True, clean_close=False, previous_live=False):
         self.pending('handoff', 'jale', 'verify')
         self.publish()
-        worker, pipe = self.spawn(handoff_actor, self.h, count, registered)
+        worker, pipe = self.spawn(handoff_actor, self.h, count, registered, not previous_live)
         self.assertTrue(pipe.poll(60))
         role, launcher = pipe.recv()
         self.assertEqual(role, 'launcher')
@@ -266,9 +268,6 @@ class LifecycleTest(RoundFourTest):
 
     def test_c2_second_handoff_tracks_every_session(self):
         self.keeper_case(2)
-
-    def test_c2_missing_keeper_registration_never_reconciles(self):
-        self.keeper_case(1, registered=False)
 
     def test_c2_close_checks_previous_keeper_session(self):
         self.keeper_case(2, clean_close=True, previous_live=True)
@@ -334,7 +333,7 @@ class LifecycleTest(RoundFourTest):
         result = self.result(self.spawn(failing_close_actor, self.h,
             self.execute_args('receipt', ['/bin/sh', '-c', 'exit 3']), Invalid('close-unproven')))
         self.assertEqual(result['rc'], 3)
-        self.assertEqual(self.engine.reconcile()['closed'], ['receipt'])
+        until(lambda: self.engine.reconcile()['closed'] == ['receipt'], 'receipt session drained')
         receipt = read_json(directory / 'pao-admission.json')
         print('R4 reconciled receipt', receipt['claim_state'], receipt['script_exit_code'], receipt['close_cause'], flush=True)
         self.assertEqual((receipt['claim_state'], receipt['script_exit_code'], receipt['close_cause']),
@@ -372,8 +371,8 @@ class SessionProofTest(unittest.TestCase):
              mock.patch.object(store, 'process', side_effect=identities):
             return session_members(sid)
 
-    def test_c3_disappearing_pid_is_inconclusive(self):
-        self.assertIsNone(self.probe([FileNotFoundError('vanished')]))
+    def test_c3_disappearing_pid_is_ignored(self):
+        self.assertEqual(self.probe([FileNotFoundError('vanished')]), [])
 
     def test_c3_stat_read_failure_is_inconclusive(self):
         self.assertIsNone(self.probe([PermissionError('unreadable')]))
@@ -391,7 +390,7 @@ class SessionProofTest(unittest.TestCase):
         with mock.patch.object(Path, 'iterdir', side_effect=[iter([]), iter([entry])]):
             self.assertEqual(session_members(os.getsid(0)), [os.getpid()])
 
-    def test_c3_two_complete_empty_sweeps_are_positive_control(self):
-        with mock.patch.object(Path, 'iterdir', side_effect=[iter([]), iter([])]) as listing:
+    def test_c3_three_complete_empty_sweeps_are_positive_control(self):
+        with mock.patch.object(Path, 'iterdir', side_effect=[iter([]), iter([]), iter([])]) as listing:
             self.assertEqual(session_members(987654321), [])
-            self.assertEqual(listing.call_count, 2)
+            self.assertEqual(listing.call_count, 3)

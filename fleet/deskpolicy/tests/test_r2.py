@@ -395,7 +395,7 @@ class RegressionTest(unittest.TestCase):
         self.assertEqual((result.returncode, json.loads(result.stdout)["reason"]), (75, "load-high"))
         self.assertIsNone(read_json(self.engine.record_path("harness"))["claim"])
         load.write_text("0.0 0.0 0.0 1/1 1\n")
-        program = '''import fcntl,json,os,pathlib,subprocess,sys
+        program = '''import fcntl,json,os,pathlib,subprocess,sys,time
 root=pathlib.Path(os.environ["LOCK_ROOT"])
 lock=os.open(root/"admission.lock",os.O_RDWR)
 life=os.open(root/"slot-0.lock",os.O_RDWR|os.O_CREAT,0o600)
@@ -407,11 +407,18 @@ admit=subprocess.run(base+["admitir",*identity,"--lane","1"],pass_fds=(lock,life
 assert admit.returncode==0,admit.stdout+admit.stderr
 receipt=json.loads(admit.stdout)
 assert receipt["execute"],receipt
-reader,writer=os.pipe()
-os.write(writer,receipt["claim_token"].encode())
-os.close(writer)
-close=subprocess.run(base+["cerrar",*identity,"--claim-token-fd",str(reader)],
-                     pass_fds=(lock,life,reader),capture_output=True,text=True)
+deadline=time.monotonic()+60
+while True:
+    token_r,token_w=os.pipe()
+    os.write(token_w,receipt["claim_token"].encode())
+    os.close(token_w)
+    close=subprocess.run(base+["cerrar",*identity,"--claim-token-fd",str(token_r)],
+                     pass_fds=(lock,life,token_r),capture_output=True,text=True)
+    os.close(token_r)
+    if close.returncode==0: break
+    assert json.loads(close.stdout).get("detail")=="close-unproven",close.stdout+close.stderr
+    assert time.monotonic()<deadline,"session never proved empty"
+    time.sleep(.02)
 assert close.returncode==0,close.stdout+close.stderr
 assert json.loads(close.stdout)["claim"]["state"]=="closed"
 '''

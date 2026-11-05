@@ -17,7 +17,7 @@ from deskpolicy.tests import test_policy as fixtures
 from deskpolicy.tests import test_r2 as r2
 
 
-def receipt_actor(harness, role, prepared, begin, paused, release, attempting, connection):
+def receipt_actor(harness, role, prepared, begin, paused, release, attempting, completed, connection):
     engine = DeskPolicy(Runtime(harness))
     prepared.set()
     assert begin.wait(60)
@@ -46,6 +46,7 @@ def receipt_actor(harness, role, prepared, begin, paused, release, attempting, c
         nonlocal active_lock
         if role == 'second':
             attempting.set()
+            assert completed.wait(60), 'first writer did not complete'
         with mutex(*args, **kwargs) as lock:
             active_lock = lock
             try:
@@ -62,6 +63,8 @@ def receipt_actor(harness, role, prepared, begin, paused, release, attempting, c
         code = cli.main(['ejecutar', '--request-id', 'race', '--run-id',
             'run-race', '--lane', '1', '--recibo', '--', '/bin/true'])
     connection.send({'rc': code, 'output': stream.getvalue()})
+    if role == 'first':
+        completed.set()
 
 
 def timeout_actor(harness, arguments, ready, proceed, timed_out, released, connection):
@@ -99,7 +102,7 @@ def timeout_actor(harness, arguments, ready, proceed, timed_out, released, conne
         fixtures.cli_actor(harness, arguments, connection)
 
 
-def slow_final_actor(harness, arguments, closed, connection):
+def slow_final_actor(harness, arguments, closed, release, connection):
     engine = DeskPolicy(Runtime(harness))
     real_atomic, real_close = cli.atomic_json, engine.close
 
@@ -110,7 +113,7 @@ def slow_final_actor(harness, arguments, closed, connection):
     def controlled(path, value, **kwargs):
         if path.name == 'pao-admission.json' and value.get('claim_state') == 'closed':
             closed.set()
-            time.sleep(1)
+            assert release.wait(60), 'readers never attempted the census'
         real_atomic(path, value, **kwargs)
 
     os.setsid()
@@ -123,8 +126,9 @@ def slow_final_actor(harness, arguments, closed, connection):
     connection.send({'rc': code, 'output': stream.getvalue()})
 
 
-def census_actor(harness, action, connection):
+def census_actor(harness, action, attempting, connection):
     engine = DeskPolicy(Runtime(harness), prepare=False)
+    attempting.set()
     try:
         connection.send({'rc': 0, 'view': getattr(engine, action)()})
     except (OSError, ValueError) as exc:
@@ -224,8 +228,11 @@ class RoundThreeTest(unittest.TestCase):
         worker, parent = pair
         self.assertTrue(parent.poll(30), 'wrapper timeout')
         value = parent.recv()
-        worker.join(5)
+        worker.join(60)
         self.assertEqual(worker.exitcode, 0)
+        self.children.remove((worker, parent))
+        parent.close()
+        worker.close()
         return value
 
     def test_w11_replay_never_overwrites_terminal_receipt(self):
@@ -234,9 +241,9 @@ class RoundThreeTest(unittest.TestCase):
         directory = self.receipt_directory('race')
         prepared = [mp.get_context('fork').Event() for _ in range(2)]
         begin = [mp.get_context('fork').Event() for _ in range(2)]
-        paused, release, attempting = [mp.get_context('fork').Event() for _ in range(3)]
+        paused, release, attempting, completed = [mp.get_context('fork').Event() for _ in range(4)]
         pairs = [self.spawn(receipt_actor, self.h, role, prepared[i], begin[i],
-                            paused, release, attempting) for i, role in enumerate(('first', 'second'))]
+                            paused, release, attempting, completed) for i, role in enumerate(('first', 'second'))]
         for event in prepared:
             self.assertTrue(event.wait(60))
         begin[0].set()
@@ -245,7 +252,8 @@ class RoundThreeTest(unittest.TestCase):
         self.assertTrue(attempting.wait(60))
         release.set()
         for pair in pairs:
-            self.assertEqual(self.result(pair)['rc'], 0)
+            result = self.result(pair)
+            self.assertEqual(result['rc'], 0, result)
         receipt = read_json(directory / 'pao-admission.json')
         self.assertEqual((receipt['claim_state'], receipt['script_exit_code'], receipt['close_cause']),
                          ('closed', 0, 'completed'))
@@ -254,11 +262,16 @@ class RoundThreeTest(unittest.TestCase):
         self.pending('concurrent')
         self.publish()
         self.receipt_directory('concurrent')
-        closed = mp.get_context('fork').Event()
+        closed, release = [mp.get_context('fork').Event() for _ in range(2)]
         worker = self.spawn(slow_final_actor, self.h,
-                            self.execute_args('concurrent', ['/bin/true']), closed)
+                            self.execute_args('concurrent', ['/bin/true']), closed, release)
         self.assertTrue(closed.wait(60))
-        readers = [self.spawn(census_actor, self.h, action) for action in ('status', 'publish')]
+        attempting = [mp.get_context('fork').Event() for _ in range(2)]
+        readers = [self.spawn(census_actor, self.h, action, attempting[i])
+                   for i, action in enumerate(('status', 'publish'))]
+        for event in attempting:
+            self.assertTrue(event.wait(60))
+        release.set()
         for reader in readers:
             result = self.result(reader)
             self.assertEqual(result['rc'], 0, result)
@@ -322,7 +335,12 @@ class RoundThreeTest(unittest.TestCase):
         self.h.advance(14 * 3600)
         self.pending('night')
         # Writer reconciles before publication, and does not change arm data.
-        self.engine.publish()
+        deadline = time.monotonic() + 60
+        while True:
+            self.engine.publish()
+            if read_json(self.engine.record_path('day'))['claim']['state'] == 'closed':
+                break
+            self.assertLess(time.monotonic(), deadline, 'day session never proved empty')
         self.assertEqual(read_json(self.engine.record_path('day'))['claim']['close_cause'], 'reconciled')
         admitted, _, _ = self.launch('night', 2)
         self.assertTrue(admitted['execute'], admitted)
@@ -351,8 +369,10 @@ class RoundThreeTest(unittest.TestCase):
             os.waitpid(pid, 0)
         while session_members(worker.pid) != [] and time.monotonic() < deadline:
             time.sleep(.02)
-        self.engine.reconcile()
-        self.assertEqual(read_json(self.engine.record_path('child'))['claim']['state'], 'closed')
+        deadline = time.monotonic() + 60
+        while read_json(self.engine.record_path('child'))['claim']['state'] != 'closed':
+            self.engine.reconcile()
+            self.assertLess(time.monotonic(), deadline, 'child session never proved empty')
         self.assertFalse(metadata.exists())
         self.assertEqual((self.h.root / '.pao-reconciled-child/kind').read_text(), 'verify')
         self.engine.publish()

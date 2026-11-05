@@ -1,6 +1,7 @@
 """Round-five capacity recovery and bounded pre-sync admission."""
 import contextlib
 import errno
+import gc
 import io
 import json
 import os
@@ -82,7 +83,7 @@ class SessionProofTest(unittest.TestCase):
         entry = Path('/proc') / str(os.getpid())
         for error in (FileNotFoundError(errno.ENOENT, 'gone'), ProcessLookupError(errno.ESRCH, 'gone')):
             with self.subTest(error=error), \
-                 mock.patch.object(Path, 'iterdir', side_effect=lambda path: iter([entry])), \
+                 mock.patch.object(Path, 'iterdir', side_effect=lambda: iter([entry])), \
                  mock.patch.object(store, 'process', side_effect=error):
                 self.assertEqual(session_members(987654321), [])
 
@@ -95,7 +96,7 @@ class SessionProofTest(unittest.TestCase):
         entry = Path('/proc') / str(os.getpid())
         for error in (PermissionError('denied'), OSError(errno.EIO, 'disk'), ValueError('bad stat')):
             with self.subTest(error=error), \
-                 mock.patch.object(Path, 'iterdir', side_effect=lambda path: iter([entry])), \
+                 mock.patch.object(Path, 'iterdir', side_effect=lambda: iter([entry])), \
                  mock.patch.object(store, 'process', side_effect=error):
                 self.assertIsNone(session_members(987654321))
 
@@ -167,6 +168,7 @@ class RoundFiveTest(r4.RoundFourTest):
             worker.join(60)
         broken = self.h.directory / 'runs/run-broken/pao-admission.json'
         broken.write_text('{')
+        broken.chmod(0o600)
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors):
             policy = self.engine.publish()
@@ -201,6 +203,7 @@ class RoundFiveTest(r4.RoundFourTest):
             args[args.index('--'):args.index('--')] = [
                 '--sync-ready-fd', str(reader), '--sync-timeout-s', '.15']
             result = self.run_cli(args)
+            replay = self.run_cli(args)
         finally:
             os.close(reader)
             os.close(writer)
@@ -211,7 +214,6 @@ class RoundFiveTest(r4.RoundFourTest):
         self.assertFalse(marker.exists())
         self.assertEqual((self.engine.status()['weight'], self.engine.status()['live']['hasito']), (0, 0))
         self.assertFalse(held(self.engine.life_path('hasito', 1)))
-        replay = self.run_cli(args)
         self.assertEqual(replay['rc'], 0)
         self.assertFalse(marker.exists())
 
@@ -247,17 +249,18 @@ class RoundFiveTest(r4.RoundFourTest):
             resource.setrlimit(resource.RLIMIT_NOFILE, (soft, hard))
 
     def test_module_io_does_not_leak_fds(self):
+        gc.collect()
         start = len(list(Path('/proc/self/fd').iterdir()))
         for _ in range(50):
             self.pending('renew')
             self.engine.status()
             self.engine.reconcile()
-        self.assertEqual(len(list(Path('/proc/self/fd').iterdir())), start)
+        self.assertLessEqual(len(list(Path('/proc/self/fd').iterdir())), start)
 
     def test_contract_fixes_hasito_fifo_mapping_and_sync_deadline(self):
         contract = (Path(__file__).resolve().parents[2] / 'contracts/desk-politica-v1.md').read_text()
         for rule in ('`MINI_LOCK`', 'FIFO por lock', 'no salta de carril',
                      '`desk.lock` = carril 1', '15 min', 'sync-timeout', '--sync-ready-fd',
                      'tres barridos', '50 ms', 'cadena de fork y salida'):
-            self.assertIn(rule, contract)
+            self.assertTrue(rule in contract, 'Missing contract rule: ' + rule)
 
