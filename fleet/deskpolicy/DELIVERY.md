@@ -66,7 +66,8 @@ El primer gate midió carga 11.0703 y 339.08 s. El segundo gate midió carga
 9.2910 y 153.22 s. Antes del intento final se midieron carga 8.6655 y
 149.05 s, pero el gate interno rechazó el espaciado respecto de otra carpeta
 de runs. Se conserva el intento fallido y se reintenta sin relajar el gate.
-Los logs completos están en `evidence/<runId>.log`.
+Los logs completos están en `evidence/<runId>.log`. Sólo se normalizan
+los espacios al final de líneas de progreso de unittest para `git diff --check`.
 Los errores de la reproducción incluyen el helper de instalación y el API de
 token aún ausentes. La primera versión del fixture de carrera llamaba desde
 una sesión no válida; `5a93bd2` la ejecuta en una sesión real y cubre la muerte
