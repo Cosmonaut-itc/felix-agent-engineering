@@ -64,7 +64,10 @@ def leer_bytes(ruta):
 
 def leer(ruta):
     datos = leer_bytes(ruta)
-    return None if datos is None else datos.decode('utf-8')
+    if datos is None:
+        return None
+    # Igual que el modo texto: CR y CRLF cuentan como salto de línea.
+    return datos.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
 
 
 def numero(texto):

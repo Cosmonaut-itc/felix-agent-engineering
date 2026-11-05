@@ -174,6 +174,19 @@ class InventarioTest(unittest.TestCase):
         with self.assertRaises((OSError, ValueError)):
             inv.leer_bytes(self.root)
 
+    def test_leer_normaliza_cr_como_el_modo_texto(self):
+        ruta = self.root / 'dato'
+        ruta.write_bytes(b'a\r\nb\rc\n')
+        self.assertEqual(inv.leer(ruta), 'a\nb\nc\n')
+        p = self.copia(dias=40)
+        r = self.corrida(name='r\r1', dias=40, fin=True, mirror='otra')
+        lock = p / '.remote-run.lock'
+        lock.write_bytes(os.fsencode(r.name))
+        self.vieja(lock, 40)
+        self.vieja(p, 40)
+        x = self.inventario()['copias'][0]
+        self.assertEqual((x['clase'], x['borrable']), ('protegida-dudosa', False))
+
     def test_meta_mirror_con_byte_no_utf8_sigue_dudoso(self):
         r = self.corrida(fin=True)
         (r / 'meta').write_bytes(b'src=/src\nhost=mini\nmirror=remote-run/work/co\xc3pia\n'
