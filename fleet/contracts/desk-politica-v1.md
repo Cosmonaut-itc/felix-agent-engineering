@@ -671,7 +671,10 @@ La información nocturna se lee de nuevo dentro de cada toma del mutex.
 
 Jale lee `estado` y prueba los carriles permitidos en orden. Ante
 `resource-busy`, pasa al siguiente en el mismo intento, volviendo a comprobar
-bajo el mutex. Un slot con flock libre y claim v1 incierta no se reutiliza,
+bajo el mutex. Ante `lane-closed`, suelta el slot que eligió el runner,
+vuelve a leer `estado` y elige entre los carriles permitidos por el modo vigente.
+Si no hay ninguno libre, espera y reintenta como ante `resource-busy`.
+Un slot con flock libre y claim v1 incierta no se reutiliza,
 salvo que `admitir` la reconcilie, ni se limpia antes de esa admisión: no se tocan su checkout, su base de datos ni sus puertos.
 El slot original `n` pasa como `--lane n+1`. Se conserva fd 8 sobre el inode
 `slot-n.lock`. El consumidor abre fd 8 sin truncar y aún sin tomar flock,
