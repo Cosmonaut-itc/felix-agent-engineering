@@ -303,6 +303,8 @@ class RegressionTest(unittest.TestCase):
 
     def test_w10_cutover_prevalidates_historical_locks_and_is_idempotent(self):
         from deskpolicy.installation import install
+        self.configuration["night_enabled"] = False
+        atomic_json(self.h.config, self.configuration)
         destination = self.h.directory / "installation"
         for name in ("admission.lock", "slot-0.lock", "slot-1.lock"):
             path = self.h.root / name

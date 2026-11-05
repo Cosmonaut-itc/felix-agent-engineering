@@ -97,10 +97,11 @@ def admission_receipt(request, run_id, policy, lane, reason=None, claim=None, re
 class DeskPolicy:
     receipt = staticmethod(admission_receipt)
 
-    def __init__(self, runtime=None):
+    def __init__(self, runtime=None, *, prepare=True):
         self.runtime = runtime or Runtime()
         self.root = self.runtime.root
-        self.prepare()
+        if prepare:
+            self.prepare()
 
     def record_path(self, request_id):
         return self.root / "pao-wait" / (identifier(request_id) + ".json")
@@ -115,11 +116,16 @@ class DeskPolicy:
     def prepare(self):
         secure_dir(self.root, create=True)
         with mutex(self.root):
-            for name in ("pao-wait", "pao-hasito"):
-                secure_dir(self.root / name, create=True)
+            self.prepare_directories()
 
-    def records(self):
+    def prepare_directories(self):
+        for name in ("pao-wait", "pao-hasito"):
+            secure_dir(self.root / name, create=True)
+
+    def records(self, missing_ok=False):
         directory = self.root / "pao-wait"
+        if missing_ok and not directory.exists() and not directory.is_symlink():
+            return []
         secure_dir(directory)
         records = []
         sequences = set()
@@ -138,7 +144,7 @@ class DeskPolicy:
         validate_record(record, record["request_id"])
         atomic_json(self.record_path(record["request_id"]), record)
 
-    def census(self, records, sample, persist=False):
+    def census(self, records, sample, persist=False, missing_ok=False):
         allowed = {"admission.lock", "writer.lock", "pao-policy-v1.json", "pao-window.json",
                    "pao-wait", "pao-hasito", "pao-arm.json", "pao-control.json"}
         secure_dir(self.root)
@@ -188,8 +194,10 @@ class DeskPolicy:
             secure_dir(directory)
             require(self.life_path("jale", lane) in claimed, "legacy-slot-unaccounted")
         directory = self.root / "pao-hasito"
-        secure_dir(directory)
-        for path in directory.iterdir():
+        missing = missing_ok and not directory.exists() and not directory.is_symlink()
+        if not missing:
+            secure_dir(directory)
+        for path in (() if missing else directory.iterdir()):
             match = re.fullmatch(r"lane-([0-9]+)\.lock", path.name)
             require(match is not None and self.life_path("hasito", int(match[1])) == path,
                     "noncanonical-resource")

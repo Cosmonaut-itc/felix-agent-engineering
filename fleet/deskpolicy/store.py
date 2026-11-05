@@ -26,7 +26,7 @@ class Sample:
 
 
 class Runtime:
-    def __init__(self, harness=None):
+    def __init__(self, harness=None, *, check_installation=True):
         if harness is None and os.environ.get("RUN_SUITE_HARNESS"):
             from .testing import Harness
             harness = Harness.from_environment()
@@ -37,7 +37,7 @@ class Runtime:
         self.harness = harness
         self.root = harness.root if harness else Path("/tmp/sen-test-slots")
         self.config = harness.config if harness else account_home() / ".config/pao/desk-policy.json"
-        if harness is None:
+        if harness is None and check_installation:
             installed = account_home() / ".local/lib/pao-deskpolicy/v1/deskpolicy"
             require(Path(__file__).absolute().parent == installed, "fixed-installation-required")
             secure_dir(installed)
@@ -145,7 +145,7 @@ def digest(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
 
-SOURCE_FILES = ("__init__.py", "cli.py", "engine.py", "model.py", "store.py", "testing.py")
+SOURCE_FILES = ("__init__.py", "cli.py", "engine.py", "model.py", "store.py", "testing.py", "installation.py")
 
 
 def code_digest():
