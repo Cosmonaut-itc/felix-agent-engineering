@@ -14,7 +14,7 @@ from unittest import mock
 from deskpolicy import cli
 from deskpolicy.engine import DeskPolicy
 from deskpolicy.model import Invalid, utc_text
-from deskpolicy.store import Runtime, atomic_json, mutex, open_file, process, read_json
+from deskpolicy.store import Runtime, atomic_json, held, mutex, open_file, process, read_json
 from . import test_policy as fixtures
 
 
@@ -49,6 +49,31 @@ def keeper_actor(harness, connection):
     finally:
         os.close(life)
         os._exit(0)
+
+
+def death_during_admission(harness, request, project, old_request, old_pid, connection):
+    os.setsid()
+    engine = DeskPolicy(Runtime(harness))
+    census = engine.census
+
+    def kill_after_census(*args, **kwargs):
+        live = census(*args, **kwargs)
+        old = next(r for r in live if r["request_id"] == old_request)
+        assert old["claim"]["state"] == "active"
+        os.kill(old_pid, signal.SIGKILL)
+        deadline = time.monotonic() + 10
+        while held(engine.life_path(project, 1)):
+            assert time.monotonic() < deadline, "old flock did not close"
+            time.sleep(0.01)
+        return live
+
+    life = open_file(engine.life_path(project, 1))
+    try:
+        with mutex(engine.root) as lock, mock.patch.object(engine, "census", side_effect=kill_after_census):
+            connection.send(engine.admit(request, "run-" + request, 1, os.getpid(), life, lock))
+    finally:
+        os.close(life)
+        connection.close()
 
 
 class RegressionTest(unittest.TestCase):
@@ -92,23 +117,18 @@ class RegressionTest(unittest.TestCase):
                 receipt, worker, _ = self.launch(old)
                 self.assertTrue(receipt["execute"])
                 self.advance(120)
-                census = self.engine.census
-
-                def kill_after_census(*args, **kwargs):
-                    live = census(*args, **kwargs)
-                    self.assertEqual(next(r for r in live if r["request_id"] == old)["claim"]["state"], "active")
-                    worker.kill()
-                    worker.join(5)
-                    return live
-
-                life = open_file(self.engine.life_path(project, 1))
-                try:
-                    with mutex(self.h.root) as lock, mock.patch.object(self.engine, "census", side_effect=kill_after_census):
-                        denied = self.engine.admit(new, "run-" + new, 1, os.getpid(), life, lock)
-                    self.assertEqual(denied["reason"], "resource-busy")
-                    self.assertIsNone(read_json(self.engine.record_path(new))["claim"])
-                finally:
-                    os.close(life)
+                parent, child = mp.get_context("fork").Pipe()
+                contender = mp.get_context("fork").Process(target=death_during_admission,
+                    args=(self.h, new, project, old, worker.pid, child))
+                contender.start()
+                child.close()
+                self.children.append((contender, parent))
+                self.assertTrue(parent.poll(30))
+                denied = parent.recv()
+                contender.join(5)
+                worker.join(5)
+                self.assertEqual(denied["reason"], "resource-busy")
+                self.assertIsNone(read_json(self.engine.record_path(new))["claim"])
                 self.assertEqual(self.engine.status()["live"][project], 1)
                 self.advance(120)
 
