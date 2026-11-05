@@ -85,6 +85,8 @@ def actor(harness, request, lane, connection, barrier=None):
 
 
 def cli_actor(harness, arguments, connection):
+    if os.getsid(0) not in (os.getpid(), os.getppid()):
+        os.setsid()
     engine = DeskPolicy(Runtime(harness))
     stream = io.StringIO()
     with mock.patch.object(cli, "DeskPolicy", return_value=engine), contextlib.redirect_stdout(stream):

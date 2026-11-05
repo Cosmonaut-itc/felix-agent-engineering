@@ -84,14 +84,16 @@ def execute(engine, args):
     if not args.argv:
         raise Invalid("command-required")
     require(not args.argv[0].startswith("-"), "command-executable")
-    if os.getsid(0) != os.getpid():
-        os.setsid()
+    supervisor = os.getsid(0)
+    require(supervisor in (os.getpid(), os.getppid()) and os.getpgrp() == supervisor,
+            "wrapper-session-required")
     record = read_json(engine.record_path(args.request_id))
     path = engine.life_path(record["project"], args.lane)
     receipt_path = engine.runtime.receipt_path(args.run_id)
     if args.recibo:
         secure_dir(receipt_path.parent, modes=RECEIPT_DIR_MODES)
     life = open_file(path, create=True)
+    previous_handlers = {}
     try:
         with mutex(engine.root) as lock:
             previous = None
@@ -103,7 +105,7 @@ def execute(engine, args):
                 if previous is not None:
                     require(previous["request_id"] == args.request_id and previous["run_id"] == args.run_id,
                             "receipt-conflict")
-            receipt = engine.admit(args.request_id, args.run_id, args.lane, os.getpid(),
+            receipt = engine.admit(args.request_id, args.run_id, args.lane, supervisor,
                                    life, lock, args.local_limit)
         if args.recibo:
             if previous is None or previous["state"] != "admitted":
@@ -111,14 +113,34 @@ def execute(engine, args):
         output(receipt)
         if not receipt["execute"]:
             return 75 if receipt["state"] == "denied" else 0
+        stopped = None
+        child = None
+
+        def stop(signum, frame):
+            nonlocal stopped
+            stopped = signum
+            if child is not None and child.poll() is None:
+                with contextlib.suppress(ProcessLookupError):
+                    child.send_signal(signum)
+
+        for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            previous_handlers[signum] = signal.signal(signum, stop)
         command = ["/usr/bin/taskset", "-c", ",".join(map(str, receipt["cpus"])), *args.argv]
-        child = subprocess.Popen(command, close_fds=True)
-        code = child.wait()
-        code = 128 - code if code < 0 else code
+        if stopped is None:
+            child = subprocess.Popen(command, close_fds=True)
+            if stopped is not None:
+                stop(stopped, None)
+            code = child.wait()
+            if code < 0:
+                stopped = stopped or -code
+                code = 128 - code
+        else:
+            code = 128 + stopped
         with mutex(engine.root) as lock:
             try:
-                record = engine.close(args.request_id, args.run_id, os.getpid(), life, lock,
-                                      claim_token=receipt["claim_token"], script_exit_code=code)
+                record = engine.close(args.request_id, args.run_id, supervisor, life, lock,
+                                      claim_token=receipt["claim_token"], script_exit_code=code,
+                                      cause="stopped" if stopped else "completed")
             except Invalid as exc:
                 if str(exc) != "close-unproven":
                     raise
@@ -129,6 +151,8 @@ def execute(engine, args):
             atomic_json(receipt_path, receipt, directory_modes=RECEIPT_DIR_MODES)
         return code
     finally:
+        for signum, handler in previous_handlers.items():
+            signal.signal(signum, handler)
         os.close(life)
 
 
