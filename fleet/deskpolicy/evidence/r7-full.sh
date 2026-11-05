@@ -18,8 +18,32 @@ for entry in sorted((Path.home()/'remote-run/runs').iterdir()):
         continue
     try:
         pid = int((entry/'pid').read_text().strip())
-        if Path('/proc', str(pid)).exists():
-            print('OTHER_RUN', entry.name, 'pid', pid, flush=True)
+        proc = Path('/proc', str(pid))
+        if (proc/'cwd').resolve() != entry:
+            continue  # Ignore an obsolete run file whose PID has been reused.
+        print('OTHER_RUN', entry.name, 'pid', pid, 'cwd', (proc/'cwd').resolve(), flush=True)
+        parents = {pid}
+        processes = {}
+        for candidate in Path('/proc').iterdir():
+            if not candidate.name.isdigit():
+                continue
+            try:
+                stat = (candidate/'stat').read_text().rsplit(')', 1)[1].split()
+                processes[int(candidate.name)] = (int(stat[1]), candidate)
+            except (OSError, ValueError):
+                pass
+        seen = set()
+        while parents:
+            children = {child for child, (parent, _) in processes.items() if parent in parents and child not in seen}
+            for child in sorted(children):
+                candidate = processes[child][1]
+                try:
+                    print('OTHER_WORK', entry.name, child, (candidate/'comm').read_text().strip(),
+                          (candidate/'cwd').resolve(), flush=True)
+                except OSError:
+                    pass
+            seen.update(children)
+            parents = children
     except (OSError, ValueError):
         pass
 raise SystemExit(0 if load < limit and age >= 120 else 75)
@@ -31,6 +55,7 @@ sha256sum --quiet -c fleet/deskpolicy/evidence/r7-inputs.sha256
 /usr/bin/python3 -I fleet/deskpolicy/tests/run.py
 /usr/bin/python3 -I fleet/deskpolicy/evidence/r7-hasito-protocol.py .audit/r7-hasito-estado.py
 bin/pao check
+/usr/bin/python3 -I fleet/deskpolicy/evidence/r7-cleanup.py
 if command -v shellcheck >/dev/null; then
     shellcheck --severity=warning fleet/deskpolicy/deploy-desk.sh fleet/deskpolicy/withdraw-desk.sh fleet/deskpolicy/tests/desk-run.sh fleet/deskpolicy/evidence/r7-full.sh fleet/deskpolicy/evidence/r7-regressions.sh
 fi
