@@ -12,7 +12,7 @@ from unittest import mock
 from deskpolicy import cli
 from deskpolicy.engine import DeskPolicy
 from deskpolicy.model import Invalid
-from deskpolicy.store import Runtime, mutex, read_json
+from deskpolicy.store import Runtime, assert_held, mutex, read_json
 from deskpolicy.tests import test_policy as fixtures
 from deskpolicy.tests import test_r2 as r2
 
@@ -22,11 +22,19 @@ def receipt_actor(harness, role, prepared, begin, paused, release, attempting, c
     prepared.set()
     assert begin.wait(60)
     real_atomic = cli.atomic_json
+    real_close = engine.close
     writes = 0
+    active_lock = None
+
+    def close_after_clean_probe(*args, **kwargs):
+        with mock.patch.object(engine, 'close', real_close):
+            return fixtures.close_when_proven(engine, *args, **kwargs)
 
     def controlled(path, value, **kwargs):
         nonlocal writes
         if path.name == 'pao-admission.json':
+            assert active_lock is not None, 'receipt outside admission mutex'
+            assert_held(active_lock, engine.root / 'admission.lock')
             writes += 1
             if role == 'first' and writes == 1:
                 paused.set()
@@ -35,15 +43,21 @@ def receipt_actor(harness, role, prepared, begin, paused, release, attempting, c
 
     @contextlib.contextmanager
     def attempting_mutex(*args, **kwargs):
+        nonlocal active_lock
         if role == 'second':
             attempting.set()
         with mutex(*args, **kwargs) as lock:
-            yield lock
+            active_lock = lock
+            try:
+                yield lock
+            finally:
+                active_lock = None
 
     os.setsid()
     stream = io.StringIO()
     with mock.patch.object(cli, 'atomic_json', side_effect=controlled), \
          mock.patch.object(cli, 'mutex', side_effect=attempting_mutex), \
+         mock.patch.object(engine, 'close', side_effect=close_after_clean_probe), \
          mock.patch.object(cli, 'DeskPolicy', return_value=engine), contextlib.redirect_stdout(stream):
         code = cli.main(['ejecutar', '--request-id', 'race', '--run-id',
             'run-race', '--lane', '1', '--recibo', '--', '/bin/true'])
