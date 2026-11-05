@@ -25,17 +25,26 @@ for entry in sorted((Path.home()/'remote-run/runs').iterdir()):
         pass
 raise SystemExit(0 if load < limit and age >= 120 else 75)
 PY
-if [ -d .audit/r6-baseline ]; then
+if [ -f .audit/r6-baseline/fleet/deskpolicy/tests/test_r6.py ]; then
     (
         cd .audit/r6-baseline
         /usr/bin/taskset -c 0-1 /usr/bin/python3 -I - <<'PYBASE'
 import sys, unittest
 from pathlib import Path
 sys.path.insert(0, str(Path.cwd()/'fleet'))
-from deskpolicy.store import code_digest
+try:
+    from deskpolicy.store import code_digest
+except Exception as exc:
+    print('R6 BASELINE FIXTURE ERROR', repr(exc), flush=True)
+    raise SystemExit(2)
 print('R6 BASELINE runtime', code_digest(), flush=True)
+if code_digest() != '77a369608532867e785aa7eff8f496e9a2480ff7a3b8d3b98a4d826901e7200d':
+    raise SystemExit(2)
 suite = unittest.defaultTestLoader.discover('fleet/deskpolicy/tests', pattern='test_r6.py', top_level_dir='fleet')
-raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
+result = unittest.TextTestRunner(verbosity=2).run(suite)
+if result.errors or len(result.failures) != 13:
+    raise SystemExit(2)
+raise SystemExit(1)
 PYBASE
     ) && r6_before=0 || r6_before=$?
     echo "R6 BASELINE RC=$r6_before (expected 1)"
