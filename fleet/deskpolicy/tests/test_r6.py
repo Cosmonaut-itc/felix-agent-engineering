@@ -2,6 +2,7 @@
 import contextlib
 import inspect
 import json
+import multiprocessing as mp
 import os
 from pathlib import Path
 import signal
@@ -167,17 +168,18 @@ class RoundSixTest(r4.RoundFourTest):
                    'pathlib.Path(sys.argv[2]).write_text(str(p.pid)); raise SystemExit(3)')
         args = self.execute_args('recovery', [sys.executable, '-I', '-c', program, str(marker), str(pidfile)])
         atomic = cli.atomic_json
-        writes = []
+        writes = mp.get_context('fork').Value('i', 0)
         def transient(path, value, **kwargs):
             if path.name == 'pao-admission.json':
-                writes.append(value.copy())
-                if len(writes) > 1:
+                with writes.get_lock():
+                    writes.value += 1
+                if writes.value > 1:
                     raise OSError('receipt-volume-unavailable')
             return atomic(path, value, **kwargs)
         with mock.patch.object(cli, 'atomic_json', side_effect=transient):
             result = self.run_cli(args)
         self.assertEqual(result['rc'], 3, result)
-        self.assertEqual(len(writes), 3)
+        self.assertEqual(writes.value, 3)
         self.assertEqual((self.claim('recovery')['state'], self.claim('recovery')['script_exit_code']),
                          ('uncertain', 3))
         initial = read_json(directory / 'pao-admission.json')
