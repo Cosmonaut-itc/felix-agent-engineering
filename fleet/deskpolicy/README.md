@@ -14,7 +14,7 @@ Todos los fixtures se crean bajo el cwd del mirror con `testing.Harness`.
 La CLI sólo acepta rutas, reloj, boot y carga de prueba bajo `RUN_SUITE_HARNESS`.
 El contrato documenta las costuras y las rutas privadas obligatorias.
 
-PAO comprueba carga menor de 12 y 120 s desde el último arranque antes de usar:
+PAO comprueba carga menor de 9 y 120 s desde el último arranque antes de usar:
 
 ```sh
 REMOTE_RUN_HOST=desk remote-run start --dir "$PWD" --name desk-politica-u1 \
@@ -31,10 +31,9 @@ REMOTE_RUN_HOST=desk remote-run wait -q <run-id>
 Después ejecuta `bin/pao check` y ShellCheck sobre los tres guiones si está
 disponible. Esas comprobaciones también permanecen bajo CPUs 0 y 1.
 
-El gate usa el mtime de directorios reales de runs como cota conservadora del
-último arranque. La creación de `started` cambia ese mtime. Un cierre posterior
-puede retrasar la prueba, pero nunca adelantarla. No abre archivos de corridas
-ajenas ni sigue enlaces simbólicos de sus directorios.
+El gate usa el mtime de `started`, con fallback al directorio para corridas
+sin ese archivo. Se excluye la propia corrida y se exigen 120 s desde el
+último arranque ajeno. La ronda 3 usa el umbral diurno de carga menor de 9.
 
 Las pruebas usan CPUs lógicas 0 a 11 para contabilización y carreras.
 Sólo la prueba de afinidad ejecuta carga hija, sobre la primera asignación,
@@ -99,3 +98,18 @@ Puede conservar su propia sesión y su stop por grupo.
 Los pesos normativos están en el contrato. Hasito declara 1 a 4, con omisión 4.
 Jale declara 4, 2 o 1 según el comando. El canario sigue en 4 corridas y peso 8.
 De día no se suman pesos para admitir y cada guion conserva las 12 CPUs.
+
+`reconciliar` cierra con causa `reconciled` sólo inciertas con sesiones vacías
+y flock libre, bajo el mutex. El writer lo llama antes de cada publicación;
+también puede ejecutarse a mano. Los metadatos Jale cerrados se archivan por
+rename, conservando el inode del flock. Un hijo vivo conserva la reserva.
+Hasito usa `ejecutar --lane any --recibo`: elige el menor carril permitido sin
+claim no cerrada y abre allí el flock dentro del mutex. La CLI `admitir`
+también acepta `any` con `--life-fds LANE:FD ...` heredados del supervisor.
+El contrato fija el protocolo de fds y la elección ordenada para Jale.
+
+Toda escritura del recibo se serializa bajo el mutex. Su resultado es monótono.
+Después de recoger la salida, cualquier error del cierre conserva ese código,
+emite un diagnóstico JSON por stderr y procura registrar la incertidumbre y
+`close_error` del recibo al recuperar el mutex. Nunca escribe la claim fuera
+de ese mutex. El fd de vida cierra antes de soltarlo tras el commit de cierre.
