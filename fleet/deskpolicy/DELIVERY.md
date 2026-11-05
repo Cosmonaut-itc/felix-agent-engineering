@@ -1,3 +1,113 @@
+# Entrega U1, corrección para ronda 8
+
+El objetivo sigue siendo ampliar las corridas nocturnas del desk con el
+archivo de política PAO y conservar capacidad segura al volver a día.
+Rama `feat/desk-politica-v1`, con fetch y seguimiento de origin. El head
+inicial coincidió con `8fc1f9161fdf762a799b53370987339a944e8866`.
+Se leyeron completos U1, r8, las correcciones r2 a r7, Sol A, el veredicto
+y los dos informes r7. Nivel alto por contrato entre servicios. Se aplicó
+Bug fix de felix-mode como trabajador. No hubo descendientes, PR,
+despliegue ni cambios en Jale, Hasito o hostgate. La review final es de PAO.
+
+## Hallazgos, commits y pruebas
+
+`3475b11` registra las tres regresiones antes de los arreglos.
+El baseline conserva el runtime y el contrato exactos de `8fc1f91` y
+superpone sólo `tests/test_r8.py`. Las tres fallan, sin errores.
+Para N-r7b se conserva el runtime exacto de r5 `5e9dd46` y se superpone
+sólo `tests/test_r6.py`, primero el de r7 y después el corregido.
+
+| Hallazgo | Commit de corrección | Prueba y fallo antes frente al pase después |
+| --- | --- | --- |
+| W-r7a | `4dac297` | `test_closed_high_lane_reconciles_then_h2_enters_first_attempt`: antes H3 uncertain, H3b lane-closed y H2 denied/quota-full. Después exige H3 closed/reconciled, H3b lane-closed y H2 admitted al primer intento. `test_closed_lane_reconciles_only_requested_project_and_lane` exige que H4 y J3 sigan inciertas al cerrar H3. Antes las tres quedan inciertas. |
+| N-r7a | `0a7e951` | `test_contract_defines_jale_lane_closed_reselection`: antes falta la conducta de Jale ante lane-closed. Después exige soltar slot, releer estado, reelegir según modo y esperar como ante resource-busy si no queda ninguno libre. Sólo cambia el contrato de U2. |
+| N-r7b | `e66c5c6` | Los tres casos reales de sync de `test_r6` contra r5 fallaban con preparación de 0,10 a 0,19 s, incluido el ACK a tiempo. El fixture corregido reconoce las firmas seconds y deadline, observa un plazo absoluto coherente y pasa el argumento original a wait_sync. La aceptación exige control puntual OK, dos fallos reales de r5 y cero errores de fixture. |
+
+No se rebate ningún hallazgo aceptado. Model the Domain mantuvo la
+separación existente entre estado de la claim y decisión de admisión.
+Reconciliar una claim cerrable no convierte lane-closed en permiso para
+usar ese carril. Se reutiliza la prueba de vacío existente bajo el mutex,
+sólo para el proyecto y carril solicitados. No cambia la firma del runtime.
+
+## Corridas y gates
+
+Todas las pruebas se ejecutaron exclusivamente en el desk mediante
+`REMOTE_RUN_HOST=desk remote-run`, nombre fijo `desk-politica-u1-r8`,
+una corrida propia a la vez y `taskset -c 0-1`.
+El gate previo y el interno siguen Estado #60. Exigen carga <12,
+120 s desde el último arranque en remote-run o slots Jale, MemAvailable
+al menos 6 GiB, C: libre al menos 60 GB y raíz WSL libre al menos 100 GB.
+Los sondeos y consultas SSH llevan ServerAliveInterval=5. Los fixtures viven
+dentro del mirror. La MacBook sólo edita y prepara snapshots y hashes.
+No se escribe en `/tmp/sen-test-slots` ni en estado comprador real.
+
+| RunId | rc | Resultado |
+| --- | --- | --- |
+| `20261105-162939-46640a` | 75 | Gate interno rechaza espaciado de 0,87 s por un arranque concurrente de Jale posterior al gate previo de 148,79 s. No ejecuta pruebas. |
+| `20261105-163202-e6865f` | 1 esperado | Tres regresiones r8, tres fallos y cero errores en 9,716 s. Fixture r7 contra r5, tres fallos y cero errores en 54,052 s por interpretar segundos relativos como plazo absoluto. Limpieza sin procesos propios. Gate 6,0801 de carga y 142,04 s. |
+| `20261105-163642-96e74e` | 0 | Primera aceptación, 114 pruebas OK en 445,961 s. Control r5 puntual OK y dos defectos reales detectados sin error de fixture. Dos pruebas con demora controlada OK en 35,982 s. Check y limpieza OK. Gate 8,4521 de carga y 135,85 s. |
+| `20261105-170029-68caa8` | 0 | Segunda aceptación, 114 pruebas OK en 425,916 s. Control r5 y sus dos negativos verificados. Dos pruebas con demora controlada OK en 31,305 s. Check y limpieza OK. Gate 6,6973 de carga y 131,37 s. |
+
+El gate previo rechazó varios intentos de lectura por espaciado entre
+arranques compartidos, sin crear corridas nuevas. `r8-shared-desk.log`
+conserva los arranques Jale visibles durante la primera suite y una
+muestra durante la segunda con procesos bun de otras worktrees.
+Las dos corridas imprimen Python 3.12.3, afinidad [0, 1] y el mismo hash
+del módulo. Los manifiestos de entrada pasan en ambas. ShellCheck no
+está instalado; se omite sólo su paso condicional.
+
+Salida de W-r7a en las dos aceptaciones:
+
+```text
+R8 STALE H3 closed H3b lane-closed H2 first attempt admitted None
+R8 SCOPE {'H3': 'closed', 'H4': 'uncertain', 'J3': 'uncertain'}
+```
+
+Las regresiones W-r6a de amanecer y writer caído pasan en ambas con ocho
+lane-closed por escenario. La r5 de alcance limitado también pasa en ambas,
+con `R5 no-writer recovery admitted closed uncertain`.
+El fixture sólo normaliza el tiempo observado. No sustituye reloj, select,
+lectura del pipe ni el argumento que recibe el wait_sync real. Conserva las
+aserciones y los reintentos acotados de r7. Contra r5, el control puntual
+pasa y sólo fallan `0 != 75` y `EOF waited until the sync deadline`.
+Esos dos fallos del runtime antiguo son resultados exigidos por la sonda,
+que termina con rc 0 únicamente si los detecta sin errores de fixture.
+
+## Reproducción e integridad
+
+Los logs completos quedan en `evidence/<runId>.log`. Sólo se retiran
+espacios finales. `r8-before.sh` conserva el comando rojo y `r8-full.sh`
+el de aceptación. Ambos ejecutan `r8-gate.py` en destino. Antes de cada
+start se ejecuta el mismo gate por SSH sin argumento para incluir todos
+los arranques. En destino recibe el directorio propio de la corrida para
+excluir sólo su arranque.
+
+Para preparar las copias privadas se extrae `git archive 8fc1f91` en
+`.audit/r8-base`, y `git archive 5e9dd46` en `.audit/r8-r5` y
+`.audit/r8-r5-fixed`. Se copia el test_r8 nuevo en la primera, el test_r6
+de `8fc1f91` en la segunda y el test_r6 corregido en la tercera. No se
+modifica ningún otro archivo de esas copias. El baseline r7 imprime
+`cfa7e47ab282c665f464545a78ad31bbd3ce33e18c2603e3b2355a15c69347bc`.
+`r8-r5-fixture.py` exige el hash r5
+`77a369608532867e785aa7eff8f496e9a2480ff7a3b8d3b98a4d826901e7200d`
+y verifica control positivo y defectos separados.
+
+SHA-256 final de los siete archivos de `store.SOURCE_FILES`:
+
+```text
+d8084346baa0275af09f6e353b02671240dbba7b65eab1a87e616f9873e2edd9
+```
+
+`r8-inputs.sha256` fija runtime, contrato, pruebas y comandos de aceptación.
+Los cambios posteriores de DELIVERY y logs no alteran esos bytes.
+No quedan preguntas de producto abiertas ni desviaciones de las decisiones
+de PAO. La revisión independiente y el APTO final siguen a cargo de PAO.
+Archivos de producto modificados desde r7: contrato y engine.py.
+Las pruebas cambian sólo test_r6.py y el nuevo test_r8.py. Se añaden los
+comandos, hashes y logs r8 en evidence, y esta entrega.
+
+---
+
 # Entrega U1, corrección para ronda 7
 
 Rama `feat/desk-politica-v1`, preparada con fetch y seguimiento de origin.
