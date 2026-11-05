@@ -45,7 +45,9 @@ def validate_record(value, name):
     if value["state"] != "admitted":
         require(claim is None and value["admitted_run_id"] is None, "request-claim")
         return value
-    keys(claim, CLAIM_KEYS)
+    keys(claim, CLAIM_KEYS | ({"keeper_sid"} if "keeper_sid" in claim else set()))
+    if "keeper_sid" in claim:
+        integer(claim["keeper_sid"], 1)
     identifier(claim["run_id"])
     require(claim["run_id"] == value["admitted_run_id"] and claim["boot_id"] == value["boot_id"]
             and claim["weight"] == value["weight"], "claim-identity")
@@ -72,7 +74,7 @@ def validate_record(value, name):
     if claim["state"] == "closed":
         require(integer(claim["closed_boottime_s"]) >= admitted
                 and claim["close_evidence"] == "session-empty"
-                and claim["close_cause"] in ("completed", "stopped"), "claim-close")
+                and claim["close_cause"] in ("completed", "stopped", "reconciled"), "claim-close")
     else:
         require(claim["closed_boottime_s"] is None and claim["close_evidence"] is None
                 and claim["close_cause"] is None,
@@ -83,7 +85,8 @@ def validate_record(value, name):
 def admission_receipt(request, run_id, policy, lane, reason=None, claim=None, replay=False):
     return {"schema": "pao/desk-admission@1", "request_id": request,
             "run_id": run_id, "state": "denied" if reason else "admitted",
-            "mode": policy["mode"], "revision": policy["revision"], "lane": lane,
+            "mode": policy["mode"], "revision": policy["revision"],
+            "lane": lane if type(lane) is int else None,
             "reason": reason, "exit_code": 75 if reason else None,
             "cpus": claim["cpus"] if claim else [],
             "weight": claim["weight"] if claim else None,
@@ -294,7 +297,8 @@ class DeskPolicy:
     def admit(self, request_id, run_id, lane, pid, life_fd, mutex_fd, local_limit=None):
         identifier(request_id)
         identifier(run_id)
-        integer(lane, 1, 12)
+        if lane != "any":
+            integer(lane, 1, 12)
         integer(pid, 1)
         with mutex(self.root, inherited=mutex_fd):
             sample = self.runtime.sample()
@@ -305,8 +309,8 @@ class DeskPolicy:
             require(record is not None, "request-terminal")
             if record["state"] == "admitted":
                 claim = record["claim"]
-                require(claim["run_id"] == run_id and claim["lane"] == lane, "request-conflict")
-                return self.receipt(request_id, run_id, claim, lane, claim=claim, replay=True)
+                require(claim["run_id"] == run_id and (lane == "any" or claim["lane"] == lane), "request-conflict")
+                return self.receipt(request_id, run_id, claim, claim["lane"], claim=claim, replay=True)
             require(not any(r["claim"] is not None and r["claim"]["run_id"] == run_id
                             for r in records), "request-conflict")
 
@@ -323,6 +327,12 @@ class DeskPolicy:
                 record["state"] = "expired"
                 return deny("request-expired")
             project = record["project"]
+            limit = policy["night_budget"] if policy["mode"] == "night" else 2
+            if lane == "any":
+                occupied = {r["claim"]["lane"] for r in live if r["project"] == project}
+                lane = next((n for n in range(1, limit + 1) if n not in occupied), None)
+                if lane is None:
+                    return deny("resource-busy")
             if any(r["project"] == project and r["claim"]["lane"] == lane for r in live):
                 return deny("resource-busy")
             if record["weight"] > policy["max_run_weight"]:
@@ -331,7 +341,6 @@ class DeskPolicy:
             waiting = self.waiting(records, sample, policy["max_run_weight"])
             if waiting[project][0]["request_id"] != request_id:
                 return deny("fifo")
-            limit = policy["night_budget"] if policy["mode"] == "night" else 2
             if lane > limit:
                 return deny("resource-busy")
             project_live = [r for r in live if r["project"] == project]
@@ -376,6 +385,11 @@ class DeskPolicy:
                     and not identity["zombie"] and os.getsid(0) == identity["sid"]
                     and pid in (os.getpid(), os.getppid()), "wrapper-session-required")
             path = self.life_path(project, lane)
+            if callable(life_fd):
+                life_fd = life_fd(path)
+            elif isinstance(life_fd, dict):
+                require(lane in life_fd, "life-fd-required")
+                life_fd = life_fd[lane]
             secure_fd(life_fd, path)
             try:
                 fcntl.flock(life_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -424,6 +438,11 @@ class DeskPolicy:
                     and pid in (os.getpid(), os.getppid()), "close-unproven")
             allowed = {pid, os.getpid()}
             original = claim["process"]
+            if identity["sid"] != original["sid"]:
+                require(claim.get("keeper_sid", identity["sid"]) == identity["sid"], "close-unproven")
+                claim["keeper_sid"] = identity["sid"]
+                # Retain both sessions if a keeper's first close finds children.
+                self.write_record(record)
             try:
                 if process(original["pid"])["start"] == original["start"]:
                     allowed.add(original["pid"])
@@ -442,6 +461,41 @@ class DeskPolicy:
                          close_cause=cause)
             self.write_record(record)
             return record
+
+    def reconcile(self):
+        """Close uncertain reservations only with an empty session and free life lock."""
+        with mutex(self.root):
+            sample = self.runtime.sample()
+            records = self.records()
+            live = self.census(records, sample, persist=True)
+            closed = []
+            for record in live:
+                claim = record["claim"]
+                if claim["state"] != "uncertain":
+                    continue
+                try:
+                    empty = all(not session_members(sid) for sid in
+                                {claim["process"]["sid"], claim.get("keeper_sid", claim["process"]["sid"])})
+                    free = not held(self.life_path(record["project"], claim["lane"]))
+                except (OSError, ValueError):
+                    continue
+                if not empty or not free:
+                    continue
+                # Jale leaves only metadata here. Preserve it outside the
+                # canonical slot name so the next census does not see legacy
+                # work after this reservation closes. Never move the flock.
+                if record["project"] == "jale":
+                    metadata = self.root / ("slot-" + str(claim["lane"] - 1))
+                    if metadata.exists() or metadata.is_symlink():
+                        secure_dir(metadata)
+                        archive = self.root / (".pao-reconciled-" + record["request_id"])
+                        require(not archive.exists() and not archive.is_symlink(), "reconcile-archive-conflict")
+                        os.rename(metadata, archive)
+                claim.update(state="closed", closed_boottime_s=sample.bt,
+                             close_evidence="session-empty", close_cause="reconciled")
+                self.write_record(record)
+                closed.append(record["request_id"])
+            return {"schema": "pao/desk-reconcile@1", "closed": closed}
 
     def arm_valid(self, configuration, sample):
         try:
@@ -492,6 +546,7 @@ class DeskPolicy:
                     "module_sha256": code_digest()}
 
     def publish(self, disable_night=False):
+        self.reconcile()
         with mutex(self.root):
             configuration = config(read_json(self.runtime.config))
             if disable_night:
