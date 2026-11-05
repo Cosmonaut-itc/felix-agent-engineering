@@ -165,7 +165,11 @@ def execute(engine, args):
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        engine = DeskPolicy()
+        if args.command in ("admitir", "cerrar"):
+            engine = DeskPolicy(prepare=False)
+            engine.prepare(inherited=args.mutex_fd)
+        else:
+            engine = DeskPolicy()
         if args.command == "pendiente":
             output(engine.register(args.request_id, args.project, args.kind, args.owner,
                                    args.weight, args.retirar))

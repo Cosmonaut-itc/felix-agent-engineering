@@ -319,6 +319,30 @@ class RegressionTest(unittest.TestCase):
                                 text=True, capture_output=True, start_new_session=True)
         self.assertEqual((result.returncode, json.loads(result.stdout)["reason"]), (75, "load-high"))
         self.assertIsNone(read_json(self.engine.record_path("harness"))["claim"])
+        load.write_text("0.0 0.0 0.0 1/1 1\n")
+        program = '''import fcntl,json,os,pathlib,subprocess,sys
+root=pathlib.Path(os.environ["LOCK_ROOT"])
+lock=os.open(root/"admission.lock",os.O_RDWR)
+life=os.open(root/"slot-0.lock",os.O_RDWR|os.O_CREAT,0o600)
+fcntl.flock(lock,fcntl.LOCK_EX)
+base=[sys.executable,"-I",sys.argv[1]]
+identity=["--request-id","harness","--run-id","run-harness","--pid",str(os.getpid()),
+          "--mutex-fd",str(lock),"--life-fd",str(life)]
+admit=subprocess.run(base+["admitir",*identity,"--lane","1"],pass_fds=(lock,life),capture_output=True,text=True)
+assert admit.returncode==0,admit.stdout+admit.stderr
+receipt=json.loads(admit.stdout)
+assert receipt["execute"],receipt
+reader,writer=os.pipe()
+os.write(writer,receipt["claim_token"].encode())
+os.close(writer)
+close=subprocess.run(base+["cerrar",*identity,"--claim-token-fd",str(reader)],
+                     pass_fds=(lock,life,reader),capture_output=True,text=True)
+assert close.returncode==0,close.stdout+close.stderr
+assert json.loads(close.stdout)["claim"]["state"]=="closed"
+'''
+        result = subprocess.run([sys.executable, "-I", "-c", program, str(entrypoint)], env=environment,
+                                text=True, capture_output=True, start_new_session=True, timeout=30)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         environment.pop("RUN_SUITE_HARNESS")
         result = subprocess.run(arguments, env=environment, text=True, capture_output=True)
         self.assertEqual(result.returncode, 75)

@@ -113,9 +113,9 @@ class DeskPolicy:
             return self.root / ("slot-" + str(lane - 1) + ".lock")
         return self.root / "pao-hasito" / ("lane-" + str(lane) + ".lock")
 
-    def prepare(self):
+    def prepare(self, inherited=None):
         secure_dir(self.root, create=True)
-        with mutex(self.root):
+        with mutex(self.root, inherited=inherited):
             self.prepare_directories()
 
     def prepare_directories(self):
