@@ -17,7 +17,7 @@ RECORD_KEYS = set("schema request_id project kind owner boot_id seq state "
                   "admitted_run_id renewed_boottime_s expires_boottime_s "
                   "weight claim last_reason".split())
 CLAIM_KEYS = set("run_id lane weight cpus boot_id process state admitted_boottime_s "
-                 "closed_boottime_s close_evidence mode revision claim_token".split())
+                 "closed_boottime_s close_evidence mode revision claim_token script_exit_code close_cause".split())
 REASONS = set("policy-invalid policy-expired window-closed load-high quota-full "
               "budget-full weight-full cpu-full start-interval fifo census-unknown "
               "resource-busy legacy-freeze request-expired request-terminal "
@@ -58,6 +58,8 @@ def validate_record(value, name):
         integer(cpu, 0, 11)
     require(len(set(claim["cpus"])) == len(claim["cpus"]), "claim-cpus-duplicate")
     require(claim["state"] in ("active", "uncertain", "closed"), "claim-state")
+    if claim["script_exit_code"] is not None:
+        integer(claim["script_exit_code"], 0, 255)
     require(claim["mode"] in ("day", "night"), "claim-mode")
     require(claim["revision"] is None or type(claim["revision"]) is int
             and claim["revision"] >= 1, "claim-revision")
@@ -69,9 +71,11 @@ def validate_record(value, name):
     require(claim["process"]["zombie"] is False, "claim-process")
     if claim["state"] == "closed":
         require(integer(claim["closed_boottime_s"]) >= admitted
-                and claim["close_evidence"] == "session-empty", "claim-close")
+                and claim["close_evidence"] == "session-empty"
+                and claim["close_cause"] in ("completed", "stopped"), "claim-close")
     else:
-        require(claim["closed_boottime_s"] is None and claim["close_evidence"] is None,
+        require(claim["closed_boottime_s"] is None and claim["close_evidence"] is None
+                and claim["close_cause"] is None,
                 "claim-live-close")
     return value
 
@@ -85,7 +89,9 @@ def admission_receipt(request, run_id, policy, lane, reason=None, claim=None, re
             "weight": claim["weight"] if claim else None,
             "replay": replay, "execute": not reason and not replay,
             "claim_state": claim["state"] if claim else None,
-            "claim_token": claim["claim_token"] if claim else None}
+            "claim_token": claim["claim_token"] if claim else None,
+            "script_exit_code": claim["script_exit_code"] if claim else None,
+            "close_cause": claim["close_cause"] if claim else None}
 
 
 class DeskPolicy:
@@ -385,12 +391,14 @@ class DeskPolicy:
                      "process": identity, "state": "active", "admitted_boottime_s": final.bt,
                      "claim_token": secrets.token_hex(32),
                      "closed_boottime_s": None, "close_evidence": None,
+                     "script_exit_code": None, "close_cause": None,
                      "mode": policy["mode"], "revision": policy["revision"]}
             record.update(state="admitted", admitted_run_id=run_id, claim=claim, last_reason=None)
             self.write_record(record)
             return self.receipt(request_id, run_id, policy, lane, claim=claim)
 
-    def close(self, request_id, run_id, pid, life_fd, mutex_fd, *, claim_token=None):
+    def close(self, request_id, run_id, pid, life_fd, mutex_fd, *, claim_token=None,
+              script_exit_code=None, cause="completed"):
         with mutex(self.root, inherited=mutex_fd):
             record = validate_record(read_json(self.record_path(request_id)), request_id)
             claim = record["claim"]
@@ -414,8 +422,16 @@ class DeskPolicy:
             except (FileNotFoundError, ProcessLookupError):
                 pass
             for sid in {original["sid"], identity["sid"]}:
-                require(set(session_members(sid)) <= allowed, "close-unproven")
-            claim.update(state="closed", closed_boottime_s=sample.bt, close_evidence="session-empty")
+                if not set(session_members(sid)) <= allowed:
+                    if script_exit_code is not None:
+                        claim.update(state="uncertain", script_exit_code=integer(script_exit_code, 0, 255))
+                        self.write_record(record)
+                    raise Invalid("close-unproven")
+            require(cause in ("completed", "stopped"), "close-cause")
+            if script_exit_code is not None:
+                claim["script_exit_code"] = integer(script_exit_code, 0, 255)
+            claim.update(state="closed", closed_boottime_s=sample.bt, close_evidence="session-empty",
+                         close_cause=cause)
             self.write_record(record)
             return record
 

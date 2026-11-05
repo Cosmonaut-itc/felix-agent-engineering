@@ -63,6 +63,8 @@ def parser():
             item.add_argument("--life-fd", type=int, default=8)
             if name == "cerrar":
                 item.add_argument("--claim-token-fd", type=int, required=True)
+                item.add_argument("--script-exit-code", type=int)
+                item.add_argument("--cause", choices=("completed", "stopped"), default="completed")
         else:
             item.add_argument("--recibo", action="store_true",
                               help="Guardar runs/<run-id>/pao-admission.json antes del guion")
@@ -112,10 +114,20 @@ def execute(engine, args):
         command = ["/usr/bin/taskset", "-c", ",".join(map(str, receipt["cpus"])), *args.argv]
         child = subprocess.Popen(command, close_fds=True)
         code = child.wait()
+        code = 128 - code if code < 0 else code
         with mutex(engine.root) as lock:
-            engine.close(args.request_id, args.run_id, os.getpid(), life, lock,
-                         claim_token=receipt["claim_token"])
-        return 128 - code if code < 0 else code
+            try:
+                record = engine.close(args.request_id, args.run_id, os.getpid(), life, lock,
+                                      claim_token=receipt["claim_token"], script_exit_code=code)
+            except Invalid as exc:
+                if str(exc) != "close-unproven":
+                    raise
+                record = read_json(engine.record_path(args.request_id))
+        receipt.update(claim_state=record["claim"]["state"], script_exit_code=code,
+                       close_cause=record["claim"]["close_cause"])
+        if args.recibo:
+            atomic_json(receipt_path, receipt, directory_modes=RECEIPT_DIR_MODES)
+        return code
     finally:
         os.close(life)
 
@@ -137,7 +149,7 @@ def main(argv=None):
         elif args.command == "cerrar":
             token = os.read(args.claim_token_fd, 66).decode("ascii").strip()
             output(engine.close(args.request_id, args.run_id, args.pid, args.life_fd, args.mutex_fd,
-                                claim_token=token))
+                                claim_token=token, script_exit_code=args.script_exit_code, cause=args.cause))
         elif args.command == "estado":
             output(engine.status(args.request_id))
         elif args.command == "preflight":
