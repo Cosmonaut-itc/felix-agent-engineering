@@ -14,7 +14,7 @@ from deskpolicy.engine import DeskPolicy
 from deskpolicy.model import Invalid
 from deskpolicy.store import Runtime, mutex, read_json
 from deskpolicy.tests import test_policy as fixtures
-from deskpolicy.tests.test_r2 import RegressionTest
+from deskpolicy.tests import test_r2 as r2
 
 
 def receipt_actor(harness, role, paused, replay_ready, finished, connection):
@@ -72,8 +72,8 @@ class RoundThreeTest(unittest.TestCase):
     advance = fixtures.PolicyTest.advance
     launch = fixtures.PolicyTest.launch
     run_cli = fixtures.PolicyTest.run_cli
-    receipt_directory = RegressionTest.receipt_directory
-    execute_args = RegressionTest.execute_args
+    receipt_directory = r2.RegressionTest.receipt_directory
+    execute_args = r2.RegressionTest.execute_args
 
     def spawn(self, target, *args):
         parent, child = mp.get_context('fork').Pipe()
@@ -142,25 +142,28 @@ class RoundThreeTest(unittest.TestCase):
         self.assertEqual(receipt['claim_state'], 'uncertain')
         self.assertEqual(self.engine.status()['weight'], 1)
 
-    def test_n2_other_close_failures_preserve_exit_and_diagnostic(self):
-        for index, failure in enumerate((Invalid('process-owner'), OSError('disk-error'),
-                                         RuntimeError('unexpected-close'))):
-            name = 'failure' + str(index)
-            with self.subTest(failure=str(failure)):
-                self.pending(name)
-                self.publish()
-                directory = self.receipt_directory(name)
-                args = self.execute_args(name, ['/bin/sh', '-c', 'exit 3'])
-                args[args.index('--lane') + 1] = str(index + 1)
-                result = self.result(self.spawn(failing_close_actor, self.h, args, failure))
-                self.assertEqual(result['rc'], 3)
-                receipt = read_json(directory / 'pao-admission.json')
-                self.assertEqual((receipt['script_exit_code'], receipt['claim_state']), (3, 'uncertain'))
-                diagnostic = json.loads(result['stderr'])
-                self.assertEqual((diagnostic['schema'], diagnostic['detail']),
-                                 ('pao/desk-error@1', str(failure)))
-                self.h.advance(120)
-                self.renew()
+    def check_close_failure(self, failure):
+        name = 'failure'
+        self.pending(name)
+        self.publish()
+        directory = self.receipt_directory(name)
+        args = self.execute_args(name, ['/bin/sh', '-c', 'exit 3'])
+        result = self.result(self.spawn(failing_close_actor, self.h, args, failure))
+        self.assertEqual(result['rc'], 3)
+        receipt = read_json(directory / 'pao-admission.json')
+        self.assertEqual((receipt['script_exit_code'], receipt['claim_state']), (3, 'uncertain'))
+        diagnostic = json.loads(result['stderr'])
+        self.assertEqual((diagnostic['schema'], diagnostic['detail']),
+                         ('pao/desk-error@1', str(failure)))
+
+    def test_n2_process_owner_preserves_exit(self):
+        self.check_close_failure(Invalid('process-owner'))
+
+    def test_n2_oserror_preserves_exit(self):
+        self.check_close_failure(OSError('disk-error'))
+
+    def test_n2_unexpected_close_preserves_exit(self):
+        self.check_close_failure(RuntimeError('unexpected-close'))
 
     def test_wa_reconcile_dead_day_claim_restores_night_cpus(self):
         self.h.now = self.h.now.replace(hour=16)
