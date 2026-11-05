@@ -240,12 +240,13 @@ class DeskPolicy:
             require(not held(path) or path in claimed, "untracked-life-lock")
         return live
 
-    def waiting(self, records, sample, max_weight=12):
+    def waiting(self, records, sample, max_weight=12, max_lane=12):
         result = {p: [] for p in PROJECTS}
         for record in records:
             if record["state"] == "pending" and record["boot_id"] == sample.boot:
                 require(record["renewed_boottime_s"] <= sample.bt, "wait-clock")
-                if sample.bt < record["expires_boottime_s"] and record["weight"] <= max_weight:
+                if (sample.bt < record["expires_boottime_s"] and record["weight"] <= max_weight
+                        and record.get("lane", 1) <= max_lane):
                     result[record["project"]].append(record)
         for items in result.values():
             items.sort(key=lambda item: item["seq"])
@@ -382,7 +383,8 @@ class DeskPolicy:
             if record["weight"] > policy["max_run_weight"]:
                 record["state"] = "expired"
                 return deny("weight-too-large")
-            waiting = self.waiting(records, sample, policy["max_run_weight"])
+            waiting = self.waiting(records, sample, policy["max_run_weight"],
+                                   policy["night_budget"] if policy["mode"] == "night" else 2)
             queue = waiting[project]
             if project == "hasito" and record.get("lane") is not None:
                 queue = [r for r in queue if r.get("lane") in (None, lane)]
@@ -663,7 +665,10 @@ class DeskPolicy:
             sample = self.runtime.sample()
             records = self.records()
             live = self.census(records, sample, persist=True)
-            waiting = self.waiting(records, sample, configuration["max_run_weight"])
+            mode = "night" if (configuration["night_enabled"] and night(sample.utc)
+                               and self.arm_valid(configuration, sample)) else "day"
+            waiting = self.waiting(records, sample, configuration["max_run_weight"],
+                                   configuration["night_budget"] if mode == "night" else 2)
             for record in records:
                 if (record["state"] == "pending" and record["boot_id"] == sample.boot
                         and record["weight"] > configuration["max_run_weight"]):
@@ -673,8 +678,6 @@ class DeskPolicy:
                         and record["expires_boottime_s"] <= sample.bt):
                     record["state"] = "expired"
                     self.write_record(record)
-            mode = "night" if (configuration["night_enabled"] and night(sample.utc)
-                               and self.arm_valid(configuration, sample)) else "day"
             pending = {p: len(waiting[p]) for p in PROJECTS}
             quota = allocate(configuration["night_budget"], pending,
                              {p: sum(r["project"] == p for r in live) for p in PROJECTS},
@@ -715,7 +718,8 @@ class DeskPolicy:
             policy, reason = self.read_policy(sample)
             records = self.records()
             live = self.census(records, sample)
-            waiting = self.waiting(records, sample, policy["max_run_weight"])
+            waiting = self.waiting(records, sample, policy["max_run_weight"],
+                                   policy["night_budget"] if policy["mode"] == "night" else 2)
             claims = [{"request_id": r["request_id"], "project": r["project"], **r["claim"]} for r in live]
             last = max((r["claim"]["admitted_boottime_s"] for r in records
                         if r["claim"] is not None and r["boot_id"] == sample.boot), default=None)

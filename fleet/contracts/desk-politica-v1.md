@@ -359,7 +359,10 @@ Una claim de otro boot sigue bloqueando hasta esa reconciliación operativa.
 
 El writer corre en WSL cada 20 s y recalcula al arrancar.
 Cada tick del bucle tiene un timeout de 10 s. Un tick fallido no renueva noche.
-`W` cuenta sólo solicitudes pendientes vigentes. No incluye admitidas ni
+`W` cuenta sólo solicitudes pendientes vigentes, con peso admisible y,
+si declaran `lane`, índice no mayor que `max_lane` del modo vigente. Las
+pendientes de carriles cerrados se ignoran en demanda y cabezas, sin borrarlas.
+No incluye admitidas ni
 vuelve a sumar las filas de la MacBook. `L` cuenta activas e inciertas.
 Jale conserva FIFO por `seq` del proyecto. Una exclusive Jale en cabeza frena
 adelantamientos Jale. Para Hasito, la cabeza FIFO se calcula por carril,
@@ -405,8 +408,8 @@ La transacción sigue este orden:
 1. Lee política y ambos relojes actuales. Una política inválida selecciona día.
 2. Valida todo el registro y censa todos los recursos. Persiste incertidumbre.
 3. Resuelve reintentos por request y run sin volver a ejecutar.
-4. Con `--lane any`, elige bajo el mutex el menor carril permitido por el modo (1..2 de día, 1..N de noche) sin claim no cerrada de su proyecto. Devuelve el carril numérico en el recibo; si no hay ninguno, deniega `resource-busy`. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto para Jale, o de su carril para Hasito. Si una claim no cerrada reserva ese proyecto y carril, intenta reconciliar sólo esa claim si está incierta. Si no cierra, rechaza con `resource-busy`. Lo comprueba antes de tomar flock, incluso si el supervisor muere después del censo.
-5. Comprueba peso máximo, presupuesto total y cuota del proyecto. Un índice mayor que `max_lane` devuelve `lane-closed` antes de comprobar ocupación o FIFO; no cierra claims vivas ni cambia replays admitidos.
+4. Un carril explícito mayor que `max_lane` devuelve `lane-closed` antes de comprobar ocupación o FIFO; no cierra claims vivas ni cambia replays admitidos. Con `--lane any`, elige bajo el mutex el menor carril permitido por el modo (1..2 de día, 1..N de noche) sin claim no cerrada de su proyecto. Devuelve el carril numérico en el recibo; si no hay ninguno, deniega `resource-busy`. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto para Jale, o de su carril para Hasito. Si una claim no cerrada reserva ese proyecto y carril, intenta reconciliar sólo esa claim si está incierta. Si no cierra, rechaza con `resource-busy`. Lo comprueba antes de tomar flock, incluso si el supervisor muere después del censo.
+5. Comprueba peso máximo, presupuesto total y cuota del proyecto.
 6. Aplica límites locales que sólo reducen capacidad y exclusividad Jale.
 7. Aplica el veto `pao-window.json`. Jale mantiene además su lector histórico.
 8. Comprueba carga finita bajo el umbral efectivo, cuando corresponde.
