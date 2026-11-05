@@ -13,7 +13,7 @@ import tempfile
 import time
 from dataclasses import dataclass
 
-from .model import BOOT, CPUS, Invalid, UTC, require, strict_json
+from .model import BOOT, CPUS, Invalid, UTC, identifier, require, strict_json
 
 RECEIPT_DIR_MODES = (0o700, 0o755, 0o775)
 
@@ -66,6 +66,7 @@ class Runtime:
         return CPUS
 
     def receipt_path(self, run_id):
+        identifier(run_id)
         directory = self.harness.directory / "runs" if self.harness else account_home() / "remote-run/runs"
         return directory / run_id / "pao-admission.json"
 
