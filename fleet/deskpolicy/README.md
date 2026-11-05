@@ -104,17 +104,24 @@ De día no se suman pesos para admitir y cada guion conserva las 12 CPUs.
 
 `reconciliar` cierra con causa `reconciled` sólo inciertas con sesiones vacías
 y flock libre, bajo el mutex. El writer lo llama antes de cada publicación;
-también puede ejecutarse a mano. Los metadatos Jale cerrados se archivan por
+también puede ejecutarse a mano. Antes de denegar `resource-busy`, `admitir`
+intenta reconciliar sólo la claim incierta del mismo recurso, incluso sin writer. Los metadatos Jale cerrados se archivan por
 rename, conservando el inode del flock. Un hijo vivo conserva la reserva.
 Hasito elige el menor lock local libre permitido y pasa `--lane N` explícito.
-Ante `resource-busy` suelta el lock local y prueba el siguiente sin sincronizar.
+Cada lock fija un carril y conserva su FIFO. `MINI_LOCK` cuenta como lock
+explícito. Ante `resource-busy` conserva la cabeza y reintenta ese carril,
+renovando la espera sin sincronizar ni saltar de fila.
 El transporte admite antes del sync, conservando mirror y lock local.
 `any` queda para clientes sin reserva local previa; no es normativo para
 Hasito ni Jale. El contrato fija las fases del transporte y el protocolo de fds.
 
-La prueba de vacío devuelve vacío, miembros o inconcluso. Exige dos barridos
-completos vacíos separados, cuenta zombies y retiene capacidad ante cambios
-o fallos de lectura. Una verify sin keeper registrado no se reconcilia.
+La prueba de vacío devuelve vacío, miembros o inconcluso. Exige tres barridos
+completos vacíos separados al menos 50 ms. Ignora PIDs terminados con
+ENOENT/ESRCH, cuenta zombies y conserva incertidumbre ante otros errores
+o cambios de identidad. Se acepta el riesgo de una cadena de fork y salida
+que esquive los tres barridos. Una verify sin keeper registrado puede cerrar
+si la sesión del launcher acredita vacío y el flock está libre. Un keeper
+vivo sin registrar conserva el flock y no puede lanzar hijos antes del registro.
 Al reconciliar también se actualiza el recibo fijo sin perder su salida.
 
 Toda escritura del recibo se serializa bajo el mutex. Su resultado es monótono.
@@ -123,3 +130,16 @@ emite `pao/desk-close-diagnostic@1` sin `exit_code` por stderr y procura registr
 `close_error` del recibo al recuperar el mutex. Nunca escribe la claim fuera
 de ese mutex. Con `--recibo`, stdout tiene una sola línea JSON del wrapper.
 El fd de vida cierra antes de soltarlo tras el commit de cierre.
+
+El control previo de Hasito usa `ejecutar --sync-ready-fd FD`, con un pipe
+heredado del transporte y un byte ASCII `1` cuando terminó el sync.
+`--sync-timeout-s` fija el plazo desde la admisión, 900 s (15 min) por omisión.
+Al vencer no ejecuta el guion, cierra con `sync-timeout`, conserva
+`script_exit_code=null` y devuelve 75. Un replay no ejecuta nada.
+El cliente resuelve el recibo y pide otra admisión con nuevas identidades.
+
+`estado.max_lane` indica el mayor índice permitido, 2 de día y el presupuesto
+nocturno de noche. `budget` es null de día; las cuotas diurnas están en
+`limits`. Un error al actualizar el recibo durante reconciliación se registra
+por stderr como `pao/desk-reconcile-diagnostic@1`; no revierte el cierre ni
+interrumpe el tick o las otras claims.

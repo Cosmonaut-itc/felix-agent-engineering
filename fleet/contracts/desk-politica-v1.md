@@ -218,7 +218,7 @@ La transición a `admitted` guarda la solicitud y la claim en un único replace.
 | `closed_boottime_s`, `close_evidence` | Null hasta cierre. En cierre acreditado son BOOTTIME y `session-empty`. |
 | `claim_token` | 32 bytes aleatorios codificados como 64 hexadecimales minúsculos. El admisor lo entrega al supervisor para su handoff. |
 | `script_exit_code` | Null antes de terminar el guion, después entero 0 a 255. Se conserva aunque queden hijos y la claim esté incierta. |
-| `close_cause` | Null hasta cierre, después `completed`, `stopped` o `reconciled`. |
+| `close_cause` | Null hasta cierre, después `completed`, `stopped`, `reconciled` o `sync-timeout`. |
 | `mode`, `revision` | Política realmente usada. `revision` es null en fallback. |
 
 El carril lógico Jale 1 se corresponde con el slot histórico 0. El 12 se
@@ -262,7 +262,8 @@ El SID, PID y hora de inicio quedan durables como **primer paso del traspaso**.
 Un replay de la misma identidad no duplica el registro. La respuesta
 `pao/desk-handoff@1` contiene request, run e identidad del keeper, sin token.
 El launcher espera ese ACK antes de cerrar su copia del fd de vida; el keeper
-no arranca carga hasta confirmar el registro. Si falla o se pierde el ACK,
+registra su SID antes de lanzar cualquier hijo. Lanzar un hijo antes del
+registro viola el contrato. No arranca carga hasta confirmar el registro. Si falla o se pierde el ACK,
 se conserva el fd y se reconsulta/reintenta; no se arranca carga por intuición.
 Cada traspaso posterior repite exactamente este orden y agrega otra identidad,
 sin reemplazar ni olvidar las sesiones anteriores.
@@ -280,10 +281,13 @@ y cierra el escritor. Cada operación recibe un canal nuevo con el mismo token.
 
 La prueba de sesión devuelve tres resultados, vacío probado, miembros
 hallados o inconcluso. Los zombies cuentan como miembros mientras existan.
-Una desaparición, cambio de identidad entre listado y lecturas de `stat`,
-o fallo de lectura hace inconcluso todo el barrido, aunque el PID sea de otra
-sesión. Vacío probado exige dos barridos completos consecutivos, separados
-20 ms, ambos vacíos y sin desapariciones ni cambios de identidad.
+Un PID que desaparece entre listado y lectura de `stat` con ENOENT o ESRCH
+se ignora, porque terminó. Un cambio de identidad, cualquier otro error de
+lectura o un `stat` que no se pueda interpretar hace inconcluso el barrido.
+Vacío probado exige tres barridos completos y consecutivos sin miembros de
+la sesión, separados por al menos 50 ms. Un hijo nacido durante un barrido
+aparece en el siguiente. Se acepta el riesgo residual de una cadena de fork y salida
+que esquive tres barridos seguidos. No se afirma una prueba atómica del kernel.
 Al cerrar sólo se excluyen controles vivos con PID e inicio comprobados,
 el supervisor original, el keeper que cierra y el Python de la operación.
 Esas exclusiones no ocultan zombies. Una prueba inconclusa nunca cierra.
@@ -303,21 +307,33 @@ abrir cupo. `reconciliar` toma el mutex, censa y persiste incertidumbre; sólo
 cierra claims inciertas del boot actual si **todas** sus sesiones registradas
 acreditan vacío con la misma prueba y su flock de vida está libre. No exime
 al supervisor original. Una claim Jale `kind=verify`, incluidos los `contract`
-de `host-session.sh launch`, sin registro `keepers` no vacío conserva
-incertidumbre y no se reconcilia. Esto cubre una caída antes de registrar el
-primer keeper. El registro de cada traspaso precede carga y liberación del
-launcher; la pérdida del keeper nunca elimina una sesión del historial.
+de `host-session.sh launch`, sin keeper registrado se puede reconciliar sólo
+si su flock de vida está libre, la sesión del launcher acredita vacío y no hay
+keeper registrado. Un keeper vivo sin registrar retiene el fd heredado y su
+flock, así que impide el cierre. Si murió sin registrarse, no pudo lanzar hijos
+conforme al contrato. Si hay keepers registrados, deben vaciarse todas sus
+sesiones además de la del launcher. La pérdida de un keeper nunca elimina
+una sesión del historial.
 Si la prueba es inconclusa o falla, `reconciliar` deja esa claim igual.
 El cierre registra `close_cause=reconciled` y conserva identidad, CPUs, peso
 y salida conocida. Bajo el mismo mutex actualiza el recibo fijo existente,
 con `claim_state=closed` y `close_cause=reconciled`, sin tocar
 `script_exit_code` ni la identidad admitida. Un fallo del recibo no revierte
-el commit de cierre; un replay permite recuperar su publicación.
+el commit de cierre ni aborta el tick. Emite por stderr un diagnóstico JSON
+`pao/desk-reconcile-diagnostic@1` con `request_id`, `run_id`,
+`reason=receipt-error` y `detail`, sin `exit_code`. Continúa con las demás
+claims y la publicación. Un replay permite recuperar su publicación si el
+recibo sigue siendo legible y consistente; uno corrupto requiere reparación.
 Para Jale archiva los metadatos `slot-n/` por rename a
 `.pao-reconciled-<request_id>` bajo la raíz, antes del commit de cierre; nunca
 mueve el archivo estable `slot-n.lock` ni borra evidencia.
 PAO lo ejecuta en cada tick del writer, antes de publicar, también al arrancar
 con `--una-vez` o desactivar noche. PAO puede ejecutar `reconciliar` a mano.
+Incluso sin writer, `admitir` intenta bajo el mutex reconciliar sólo la claim
+incierta del mismo proyecto y carril solicitado antes de denegar por
+`resource-busy`. Usa exactamente la prueba de `reconciliar`; si cierra,
+continúa la admisión con el censo actualizado. No recorre otras claims ni
+elude las demás comprobaciones de cuota, FIFO, carga o espaciado.
 No hay liberación forzada ni recuperación por TTL. Trabajo que haya escapado
 de las sesiones requiere acreditación operativa de árbol y recursos externos.
 Una claim de otro boot sigue bloqueando hasta esa reconciliación operativa.
@@ -367,7 +383,7 @@ La transacción sigue este orden:
 1. Lee política y ambos relojes actuales. Una política inválida selecciona día.
 2. Valida todo el registro y censa todos los recursos. Persiste incertidumbre.
 3. Resuelve reintentos por request y run sin volver a ejecutar.
-4. Con `--lane any`, elige bajo el mutex el menor carril permitido por el modo (1..2 de día, 1..N de noche) sin claim no cerrada de su proyecto. Devuelve el carril numérico en el recibo; si no hay ninguno, deniega `resource-busy`. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto. Rechaza con `resource-busy` si cualquier claim no cerrada, activa o incierta, ya reserva ese proyecto y carril. Lo comprueba antes de tomar flock, incluso si el supervisor muere después del censo.
+4. Con `--lane any`, elige bajo el mutex el menor carril permitido por el modo (1..2 de día, 1..N de noche) sin claim no cerrada de su proyecto. Devuelve el carril numérico en el recibo; si no hay ninguno, deniega `resource-busy`. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto. Si una claim no cerrada reserva ese proyecto y carril, intenta reconciliar sólo esa claim si está incierta. Si no cierra, rechaza con `resource-busy`. Lo comprueba antes de tomar flock, incluso si el supervisor muere después del censo.
 5. Comprueba peso máximo, índice permitido, presupuesto total y cuota del proyecto.
 6. Aplica límites locales que sólo reducen capacidad y exclusividad Jale.
 7. Aplica el veto `pao-window.json`. Jale mantiene además su lector histórico.
@@ -385,7 +401,7 @@ El registro durable puede conservar capacidad aunque el cliente no reciba ACK.
 
 El mutex tiene espera máxima de 5 s. No se mantiene durante SSH, git, rsync,
 esperas del consumidor, ejecución del guion, preparación o limpieza de servicios.
-La separación interna de 20 ms entre barridos sí forma parte de la prueba
+La separación interna de al menos 50 ms entre los tres barridos sí forma parte de la prueba
 de vacío bajo el mutex.
 Si se deniega después de tomar el fd de vida, el consumidor cierra ese fd
 antes de soltar el mutex y de esperar. Si se admite, lo conserva hasta cierre acreditado o handoff.
@@ -444,11 +460,23 @@ Ninguna costura permite configurar presupuestos desde el entorno.
 | `pendiente` | `--request-id`, `--project`, `--kind`, `--owner`, `--weight`. `--retirar` retira sólo una pendiente. Devuelve el registro. |
 | `admitir` | `--request-id`, `--run-id`, `--lane <1..12|any>`, `--pid`; fds heredados `--mutex-fd 9`, `--life-fd 8`. `--local-limit` sólo reduce cuota. Devuelve recibo. |
 | `traspasar` | `--request-id`, `--run-id`, `--pid`, `--mutex-fd 9`, `--life-fd 8`, `--claim-token-fd`. Registra la identidad del keeper bajo el mutex antes de ACK, carga y liberación del launcher. Devuelve `pao/desk-handoff@1`. |
-| `cerrar` | `--request-id`, `--run-id`, `--pid`, mismos fds heredados y `--claim-token-fd`. `--script-exit-code` y `--cause completed|stopped` registran fin. Devuelve el registro, o 75 conservando claim. |
+| `cerrar` | `--request-id`, `--run-id`, `--pid`, mismos fds heredados y `--claim-token-fd`. `--script-exit-code` y `--cause completed|stopped|sync-timeout` registran fin. Devuelve el registro, o 75 conservando claim. |
 | `reconciliar` | Bajo el mutex, cierra las inciertas con prueba limpia de vacío y flock libre; devuelve `pao/desk-reconcile@1` con la lista `closed` de request ids. |
 | `estado` | Vista coherente bajo el mutex. Puede crear de forma idempotente la raíz privada y sus locks tras un reinicio, igual que el resto del módulo; no crea claims, solicitudes ni políticas ni persiste incertidumbre. `--request-id` añade el registro de esa identidad. |
 | `preflight` | Comprueba instalación, topología, herramientas, censo y configuración. `--preparar` crea sólo directorios privados ausentes. `--armar --evidencia <archivo>` exige censo vacío y evidencia actual. |
 | `ejecutar` | Wrapper opcional, `--request-id`, `--run-id`, `--lane`, `--local-limit`, `-- <argv>`. Usa la sesión del runner, admite, aplica taskset y acredita cierre. No espera ni renueva una solicitud denegada. |
+
+Para el sync previo de Hasito, `ejecutar` acepta `--sync-ready-fd FD`, un pipe
+heredado del transporte, y `--sync-timeout-s SEGUNDOS`, positivo y finito,
+con omisión 900 s (15 min). Tras admitir espera fuera del mutex un byte ASCII
+`1` de ese pipe antes de lanzar taskset o el guion. El plazo empieza en la
+admisión y usa reloj monótono. EOF sin señal no autoriza ejecución.
+Si vence, cierra con causa `sync-timeout`, devuelve 75 y deja
+`script_exit_code=null`, porque no ejecutó nada. El recibo conserva
+`state=admitted`, `claim_state=closed`. El cliente comprueba ese cierre y pide
+otra admisión con nuevos request y run id. Un ACK tardío o un replay del run
+cerrado no ejecutan el guion ni autorizan sincronizar. El transporte conserva
+la reserva local mientras termina o cancela un sync iniciado antes del plazo.
 
 `ejecutar --recibo` escribe el recibo Hasito en la ruta fija de runs, cuyo
 directorio real debe ser 0700, 0755 o 0775 y del uid actual. El recibo es 0600.
@@ -534,6 +562,10 @@ pendientes, cabezas, vivos por proyecto, activas, inciertas, peso y CPUs por cla
 carga, última admisión y último rechazo de cada solicitud.
 Los rechazos son persistidos en la propia solicitud. La vista puede contener
 motivos históricos. Un error de censo no devuelve esta vista parcial.
+`budget` es `night_budget` en noche y null en día, donde rigen por separado
+los límites de cada proyecto (`limits`, 2/2). `max_lane` es el mayor índice
+admisible para nuevas reservas, 2 de día y `night_budget` de noche. Los
+consumidores usan `max_lane` para enumerar carriles; una cuota no es un índice.
 
 ## Configuración, arranque y reinicio
 
@@ -649,14 +681,23 @@ Registra una solicitud remota antes de buscar carril o mirror y la renueva
 durante toda espera, incluso mientras un start tarda en responder.
 Sólo la cabeza Hasito prepara un despacho.
 Primero toma una reserva local duradera por SHA-256 de `realpath(worktree)`.
-Después elige el menor lock local libre permitido, en orden `desk.lock`,
-`desk-2.lock`, hasta el índice que permita la política leída con `estado`.
-Ese índice N corresponde exactamente al carril remoto N. Pasa `--lane N`
-explícito al módulo. Ante `resource-busy`, suelta ese lock local sin sincronizar
-y prueba el siguiente en el mismo intento, conservando la reserva del mirror.
+Cada lock local representa un carril fijo. `desk.lock` = carril 1,
+`desk-2.lock` = carril 2 y `desk-N.lock` = carril N. `--lock` y `MINI_LOCK`
+cuentan como lock explícito y fijan ese índice, sin ampliar la política.
+La FIFO por lock de #984 sigue vigente en el desk, con su registro
+`<lock>.cola.md`. Con lock explícito, el turno usa `encolar` y `tomar --fifo`
+en esa fila, conserva su posición y pasa `--lane N` de ese mismo lock.
+Ante `resource-busy`, se queda en la cabeza de su fila, no salta de carril
+y reintenta sin sincronizar, renovando tanto el registro local de espera
+como su solicitud remota. No retira ni reencola el turno para adelantarse.
+Sólo sin lock explícito elige el menor lock local libre permitido, en orden
+`desk.lock`, `desk-2.lock`, hasta `estado.max_lane`. La elección respeta las
+filas existentes: no considera libre un lock con un turno anterior vigente.
+Toma su turno por la misma FIFO; si la elección pierde una carrera, reintenta
+la búsqueda sin adelantar a nadie. Tras elegir y encolarse fija ese carril;
+ante `resource-busy` conserva la cabeza y renueva, igual que un lock explícito.
 La lectura de `estado` sólo propone candidatos; la admisión bajo el mutex
 vuelve a validar política y recurso. Si agota candidatos espera y renueva.
-Un `--lock` explícito limita los candidatos al índice elegido, sin ampliarlos.
 No sincroniza ni limpia checkout, reportes, BD o puertos hasta tener juntas
 reserva del mirror, lock local N y admisión remota para ese mismo N.
 La reserva del mirror vive fuera del mirror y dura hasta recuperar evidencia.
@@ -681,14 +722,16 @@ El flock remoto conserva ejecución. No son intercambiables.
 Su start de desk debe dividirse en fases, sin el rsync previo del transporte
 actual. Primero crea el run y su control fuera del mirror; arranca un supervisor
 con el entrypoint PAO fijo y `ejecutar --lane N --recibo`. Su comando de control
-espera una señal de sync terminado, sin leer ni modificar el mirror.
-El transporte consulta el recibo fijo. Sólo con `state=admitted` y carril N,
+espera una señal de sync terminado, sin leer ni modificar el mirror, mediante
+`--sync-ready-fd FD --sync-timeout-s 900`, plazo por omisión de 15 min.
+El transporte consulta el recibo fijo. Sólo con `state=admitted`,
+`claim_state=active` y carril N,
 conservando las dos reservas locales, sincroniza. Después confirma el sync
 al control, que ejecuta limpieza y `cmd.sh` bajo la misma claim y afinidad.
 La claim y el fd de vida cubren desde antes del sync hasta el cierre final.
 No se mantiene el mutex durante sync ni espera. Una denegación termina sin
-rsync y permite probar el siguiente carril; usa otro run id con el mismo
-request pendiente. Un fallo o ACK ambiguo conserva recuperación y reservas,
+rsync y conserva la cabeza de la FIFO del lock elegido; usa otro run id con
+el mismo request pendiente al reintentar ese carril. Un fallo o ACK ambiguo conserva recuperación y reservas,
 sin lanzar otro run ni sincronizar hasta resolver su recibo. Un sync fallido
 ordena terminar al control y acredita cierre antes de soltar reservas locales.
 No puede implementarse como un runner que admite después del rsync.
@@ -712,7 +755,9 @@ Un denied remoto conserva logs y recibo, devuelve 75 y omite reportes inexistent
 Un guion admitted que devuelve 75 sigue el camino normal de evidencia fallida.
 Un 255, ACK perdido, ID ausente o recibo inconsistente conserva recuperación.
 Los ids de request, run, lane y mirror quedan enlazados en las reservas locales.
-La rama Mini y su FIFO por candado no cambian.
+La rama Mini y su FIFO por candado no cambian. En el desk se conservan las
+filas por lock y el orden de los turnos ya encolados durante la transición;
+la reemisión remota tras el drenado no cambia ese orden local.
 Las sesiones viejas se drenan. No se inventa un FIFO histórico entre carriles.
 
 ## Corte, retirada y aceptación
