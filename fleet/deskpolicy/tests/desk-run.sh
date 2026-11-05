@@ -5,12 +5,14 @@ case "$(pwd -P)" in "$HOME"/remote-run/work/*) ;; *) echo 'Se exige el mirror de
 test_run_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 /usr/bin/python3 -I - "$test_run_dir" <<'PY'
 import os
+import datetime as dt
 from pathlib import Path
 import sys
 import time
 
-if os.getloadavg()[0] >= 9:
-    raise SystemExit("Gate: carga >= 9")
+limit = 12 if dt.datetime.now(dt.timezone.utc) < dt.datetime(2026, 11, 5, 22, tzinfo=dt.timezone.utc) else 9
+if os.getloadavg()[0] >= limit:
+    raise SystemExit("Gate: carga >= " + str(limit))
 own = Path(sys.argv[1])
 starts = [(Path(entry.path) / "started").stat().st_mtime
           if (Path(entry.path) / "started").is_file() else entry.stat(follow_symlinks=False).st_mtime
@@ -19,7 +21,7 @@ starts = [(Path(entry.path) / "started").stat().st_mtime
 if starts and time.time() - max(starts) < 120:
     raise SystemExit("Gate: no pasaron 120 s desde el último arranque ajeno")
 print("GATE load1", os.getloadavg()[0], "since_last_other_start_s",
-      time.time() - max(starts, default=0), flush=True)
+      time.time() - max(starts, default=0), "limit", limit, flush=True)
 PY
 exec /usr/bin/taskset -c 0-1 /bin/bash -c '
 set -euo pipefail

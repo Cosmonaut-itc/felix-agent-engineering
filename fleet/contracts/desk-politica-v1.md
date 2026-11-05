@@ -212,6 +212,7 @@ La transición a `admitted` guarda la solicitud y la claim en un único replace.
 | --- | --- |
 | `run_id`, `lane`, `weight`, `cpus`, `boot_id` | Identidad remota, carril lógico 1 a 12, peso declarado, lista de CPUs distintas 0 a 11 y boot de admisión. Su ancho es el peso de noche o 12 de día. |
 | `process` | Objeto exacto `pid`, `start`, `pgid`, `sid`, `zombie`. Los primeros cuatro son enteros positivos. `start` es el campo 22 de `/proc/<pid>/stat`. `zombie` es false al admitir. |
+| `keepers` | Lista ordenada de identidades completas `pid`, `start`, `pgid`, `sid`, `zombie=false`, una por keeper registrado. Inicialmente vacía. Cada keeper es líder con `pid=pgid=sid`. Se conserva todo el historial. |
 | `state` | `active`, `uncertain` o `closed`. |
 | `admitted_boottime_s` | BOOTTIME del commit de admisión, dentro del arriendo de espera. |
 | `closed_boottime_s`, `close_evidence` | Null hasta cierre. En cierre acreditado son BOOTTIME y `session-empty`. |
@@ -253,19 +254,40 @@ Comprueba run, boot, token de claim y el mismo inode de flock retenido.
 El token viaja con fd 8 desde el supervisor al keeper. La igualdad de sesión
 no acredita ese handoff. Un token incorrecto o ausente devuelve 75 sin cerrar.
 El keeper puede abrir su propia sesión mediante `setsid`, como hace Jale.
-La claim admite el campo opcional `keeper_sid` positivo, persistido bajo el
-mutex al primer cierre desde otra sesión. Los reintentos conservan esa sesión.
-El cierre exige que tanto la sesión original como la sesión del keeper estén
-vacías de procesos no zombies, salvo el supervisor original con PID e inicio
-comprobados, el keeper que cierra y el proceso Python de la operación.
+Cada traspaso llama `traspasar --request-id ID --run-id RUN --pid PID
+--mutex-fd 9 --life-fd 8 --claim-token-fd FD`, desde el keeper o su hijo
+directo en la nueva sesión. Bajo el mutex valida boot, claim no cerrada,
+identidad del keeper, token y flock heredado, y agrega su identidad a `keepers`.
+El SID, PID y hora de inicio quedan durables como **primer paso del traspaso**.
+Un replay de la misma identidad no duplica el registro. La respuesta
+`pao/desk-handoff@1` contiene request, run e identidad del keeper, sin token.
+El launcher espera ese ACK antes de cerrar su copia del fd de vida; el keeper
+no arranca carga hasta confirmar el registro. Si falla o se pierde el ACK,
+se conserva el fd y se reconsulta/reintenta; no se arranca carga por intuición.
+Cada traspaso posterior repite exactamente este orden y agrega otra identidad,
+sin reemplazar ni olvidar las sesiones anteriores.
+
+`cerrar` no registra sesiones. Un keeper que llama desde otra sesión debe
+coincidir con una identidad ya registrada. Comprueba **todas** las sesiones,
+la original y cada keeper, incluida cualquier `keeper_sid` legacy conservada.
+Los registros antiguos con sólo `keeper_sid` siguen siendo visibles, pero ese
+campo no reemplaza el registro de identidad requerido para un traspaso nuevo.
 El PID declarado debe ser el del propio proceso o su padre directo.
 El token se guarda sólo en estado y recibos privados. No se pasa por entorno,
-argumentos del proceso ni logs de texto; `cerrar` lo lee de un fd heredado.
-El cliente escribe los 64 caracteres ASCII del token en una sola escritura
-al canal y cierra su extremo escritor. Cada intento de cierre recibe un canal
-nuevo con el mismo token. Un intento fallido no requiere otro token de claim.
-Un segundo handoff que cambie de sesión requiere reconciliación, no se presume
-cubierto por la sesión original y la del primer keeper.
+argumentos del proceso ni logs de texto; `traspasar` y `cerrar` lo leen de
+un fd heredado. El cliente escribe los 64 caracteres ASCII en una escritura
+y cierra el escritor. Cada operación recibe un canal nuevo con el mismo token.
+
+La prueba de sesión devuelve tres resultados, vacío probado, miembros
+hallados o inconcluso. Los zombies cuentan como miembros mientras existan.
+Una desaparición, cambio de identidad entre listado y lecturas de `stat`,
+o fallo de lectura hace inconcluso todo el barrido, aunque el PID sea de otra
+sesión. Vacío probado exige dos barridos completos consecutivos, separados
+20 ms, ambos vacíos y sin desapariciones ni cambios de identidad.
+Al cerrar sólo se excluyen controles vivos con PID e inicio comprobados,
+el supervisor original, el keeper que cierra y el Python de la operación.
+Esas exclusiones no ocultan zombies. Una prueba inconclusa nunca cierra.
+`cerrar` conserva la claim incierta y `script_exit_code` si se conoce.
 Un cierre fallido conserva capacidad. Tras el commit de cierre, el supervisor
 cierra su descriptor dentro de esa misma toma del mutex. Jale cierra
 fd 8 antes de soltar fd 9. Un handoff sólo cierra la copia del descriptor, nunca
@@ -278,12 +300,19 @@ desacoplado. El kernel no permite probar desde esta sesión la ausencia de
 trabajo que haya escapado. Tal caso requiere reconciliación operativa.
 La recuperación de una incierta no mata procesos ni borra una reserva para
 abrir cupo. `reconciliar` toma el mutex, censa y persiste incertidumbre; sólo
-cierra claims inciertas del boot actual si su sesión está vacía de procesos
-no zombies y su flock de vida está libre. No exime al supervisor original.
-Un keeper vivo conserva su flock, incluso en otra sesión. Si ya intentó
-cerrar, su `keeper_sid` queda en la claim y también debe estar vacío. Si la prueba de
-vacío o la lectura falla, no modifica esa claim. El cierre registra
-`close_cause=reconciled` y conserva identidad, CPUs, peso y salida conocida.
+cierra claims inciertas del boot actual si **todas** sus sesiones registradas
+acreditan vacío con la misma prueba y su flock de vida está libre. No exime
+al supervisor original. Una claim Jale `kind=verify`, incluidos los `contract`
+de `host-session.sh launch`, sin registro `keepers` no vacío conserva
+incertidumbre y no se reconcilia. Esto cubre una caída antes de registrar el
+primer keeper. El registro de cada traspaso precede carga y liberación del
+launcher; la pérdida del keeper nunca elimina una sesión del historial.
+Si la prueba es inconclusa o falla, `reconciliar` deja esa claim igual.
+El cierre registra `close_cause=reconciled` y conserva identidad, CPUs, peso
+y salida conocida. Bajo el mismo mutex actualiza el recibo fijo existente,
+con `claim_state=closed` y `close_cause=reconciled`, sin tocar
+`script_exit_code` ni la identidad admitida. Un fallo del recibo no revierte
+el commit de cierre; un replay permite recuperar su publicación.
 Para Jale archiva los metadatos `slot-n/` por rename a
 `.pao-reconciled-<request_id>` bajo la raíz, antes del commit de cierre; nunca
 mueve el archivo estable `slot-n.lock` ni borra evidencia.
@@ -412,6 +441,7 @@ Ninguna costura permite configurar presupuestos desde el entorno.
 | `publicar` | Bucle de 20 s con `writer.lock`. `--una-vez` publica un tick. `--desactivar-noche` persiste `night_enabled=false` y publica día. |
 | `pendiente` | `--request-id`, `--project`, `--kind`, `--owner`, `--weight`. `--retirar` retira sólo una pendiente. Devuelve el registro. |
 | `admitir` | `--request-id`, `--run-id`, `--lane <1..12|any>`, `--pid`; fds heredados `--mutex-fd 9`, `--life-fd 8`. `--local-limit` sólo reduce cuota. Devuelve recibo. |
+| `traspasar` | `--request-id`, `--run-id`, `--pid`, `--mutex-fd 9`, `--life-fd 8`, `--claim-token-fd`. Registra la identidad del keeper bajo el mutex antes de ACK, carga y liberación del launcher. Devuelve `pao/desk-handoff@1`. |
 | `cerrar` | `--request-id`, `--run-id`, `--pid`, mismos fds heredados y `--claim-token-fd`. `--script-exit-code` y `--cause completed|stopped` registran fin. Devuelve el registro, o 75 conservando claim. |
 | `reconciliar` | Bajo el mutex, cierra las inciertas con prueba limpia de vacío y flock libre; devuelve `pao/desk-reconcile@1` con la lista `closed` de request ids. |
 | `estado` | Vista coherente bajo el mutex. Puede crear de forma idempotente la raíz privada y sus locks tras un reinicio, igual que el resto del módulo; no crea claims, solicitudes ni políticas ni persiste incertidumbre. `--request-id` añade el registro de esa identidad. |
@@ -469,12 +499,16 @@ Si queda un hijo vivo, el wrapper devuelve el código real del guion y conserva
 en una denegación 75. Una vez recogido el código del guion, el wrapper lo
 devuelve ante cualquier fallo posterior de cierre, incluido timeout del mutex,
 identidad de proceso, E/S o excepción inesperada. Emite siempre un diagnóstico
-JSON `pao/desk-error@1` por stderr, con `script_exit_code` y el error aparte.
+JSON `pao/desk-close-diagnostic@1` por stderr, sin campo `exit_code`.
+Contiene `script_exit_code`, `detail` y `reason=close-unproven` si no se
+acredita vacío, o `reason=close-error` para otro fallo. No es un rechazo de
+admisión. Con `--recibo` el wrapper emite una sola línea JSON en stdout,
+incluso si el cierre queda incierto.
 Si puede tomar de nuevo el mutex, persiste la claim incierta conservando peso,
 CPUs y recurso y guarda el diagnóstico en `close_error` del recibo. Si el
 commit ya cerró, conserva ese cierre. Nunca escribe claim ni recibo fuera del
-mutex; si tampoco puede escribir, stderr y el recibo final de stdout conservan
-el resultado conocido. `claim_state` de una repetición puede ser closed o uncertain.
+mutex; si tampoco puede escribir, stderr conserva el resultado conocido.
+Sin `--recibo`, también lo conserva el recibo final de stdout. `claim_state` de una repetición puede ser closed o uncertain.
 `admitir` retorna 0 en admisión o repetición y 75 en denegación.
 Sólo `execute=true` autoriza ejecutar una vez. Un JSON ausente o inválido no
 autoriza. Los comandos administrativos fallidos devuelven `pao/desk-error@1`
@@ -579,11 +613,13 @@ Los índices nuevos pasan los mismos guards de BD, puertos y worktrees.
 Los hijos de carga cierran fds 8, 9 y el fd del token. Heredan afinidad y la sesión del keeper.
 La pérdida del keeper sin cierre conserva incertidumbre.
 El keeper conserva su `setsid` actual, el aislamiento de SIGHUP y stop por grupo.
-El launcher le transfiere fd 8 y el token de la admisión por un canal privado
-antes de cerrar su copia. El keeper conserva el token en un fd privado y lo
-pasa mediante `cerrar --claim-token-fd <fd>` antes de cerrar fd 8. No necesita
-pertenecer a la sesión original para acreditar identidad. Ambas sesiones se
-comprueban vacías según el cierre normativo.
+El launcher le transfiere fd 8 y el token por un canal privado. Como primer
+paso, el keeper llama `traspasar` bajo fd 9 y espera su commit. Sólo después
+confirma al launcher que puede cerrar su copia de fd 8, y arranca servidores.
+Conserva el token en un fd privado y lo pasa mediante `cerrar
+--claim-token-fd <fd>` antes de cerrar fd 8. Cada nuevo keeper registra
+primero su propia identidad con `traspasar`, incluso si ya hubo otro keeper.
+Al cerrar se comprueban todas las sesiones del historial.
 `verify.sh` prueba conectividad y deja la decisión desktop al desk.
 El ratio de carga en la laptop sólo puede ordenar preferencias `auto`.
 La ruta Mini no cambia.
@@ -611,21 +647,26 @@ Registra una solicitud remota antes de buscar carril o mirror y la renueva
 durante toda espera, incluso mientras un start tarda en responder.
 Sólo la cabeza Hasito prepara un despacho.
 Primero toma una reserva local duradera por SHA-256 de `realpath(worktree)`.
-La admisión Hasito usa normativamente `--lane any`, también en
-`ejecutar --lane any --recibo`: el módulo elige y abre el flock bajo el mutex.
-El carril devuelto enlaza la reserva remota con la reserva local; antes de
-sincronizar el consumidor debe tener la reserva del mirror y del carril local
-correspondiente. Si éste está reservado localmente, espera sin sincronizar.
-La CLI de bajo nivel `admitir --lane any` acepta `--life-fds 1:10 2:11 ...`:
-el supervisor abre sin truncar los flocks canónicos candidatos y hereda esos
-fds, sin tomarlos. Bajo el mutex el módulo toma sólo el fd del carril elegido;
-el supervisor conserva ese fd y cierra los demás antes de ejecutar. Si el mapa
-omite el carril elegido, falla con 75 sin claim. También acepta `--life-fd`
-si ya corresponde al carril elegido. No se transfiere un fd nuevo al padre.
-Jale sigue usando un carril concreto y su fd 8. El wrapper abre únicamente
-el carril elegido en su propio proceso, sin necesidad de un mapa de fds. El mirror se protege antes de
-cualquier `rsync --delete`. La reserva vive fuera del mirror y dura hasta
-recuperar la evidencia. Dos carriles no sincronizan el mismo mirror a la vez.
+Después elige el menor lock local libre permitido, en orden `desk.lock`,
+`desk-2.lock`, hasta el índice que permita la política leída con `estado`.
+Ese índice N corresponde exactamente al carril remoto N. Pasa `--lane N`
+explícito al módulo. Ante `resource-busy`, suelta ese lock local sin sincronizar
+y prueba el siguiente en el mismo intento, conservando la reserva del mirror.
+La lectura de `estado` sólo propone candidatos; la admisión bajo el mutex
+vuelve a validar política y recurso. Si agota candidatos espera y renueva.
+Un `--lock` explícito limita los candidatos al índice elegido, sin ampliarlos.
+No sincroniza ni limpia checkout, reportes, BD o puertos hasta tener juntas
+reserva del mirror, lock local N y admisión remota para ese mismo N.
+La reserva del mirror vive fuera del mirror y dura hasta recuperar evidencia.
+Dos carriles no sincronizan el mismo mirror a la vez.
+
+`--lane any` queda disponible para clientes **sin reserva local previa**.
+No es normativo para Hasito ni para Jale. En la CLI de bajo nivel acepta
+`--life-fds 1:10 2:11 ...`: el supervisor abre los flocks canónicos candidatos
+sin truncar ni tomarlos, hereda esos fds y el módulo toma sólo el elegido bajo
+el mutex. El supervisor conserva ese fd y cierra los demás antes de ejecutar.
+Si el mapa omite el elegido, falla con 75 sin claim. También acepta
+`--life-fd` si corresponde al elegido. El wrapper abre el elegido en su proceso.
 
 Los carriles de la MacBook son `~/.local/state/comprador/desk/desk.lock`,
 `desk-2.lock` hasta `desk-12.lock`. Un `--lock` explícito sólo acepta uno de
@@ -634,9 +675,21 @@ De noche los índices candidatos llegan hasta N. Las reservas altas ya vivas
 siguen contando si baja N. Los locks locales conservan sync y recuperación.
 El flock remoto conserva ejecución. No son intercambiables.
 
-`remote-run` recibe `--desk-request <id>` y `--desk-lane any`.
-El runner usa el entrypoint PAO instalado antes de limpiar reportes o ejecutar
-`cmd.sh`. Puede usar `ejecutar --recibo` para poseer claim y afinidad.
+`remote-run` recibe `--desk-request <id>` y `--desk-lane N` explícito.
+Su start de desk debe dividirse en fases, sin el rsync previo del transporte
+actual. Primero crea el run y su control fuera del mirror; arranca un supervisor
+con el entrypoint PAO fijo y `ejecutar --lane N --recibo`. Su comando de control
+espera una señal de sync terminado, sin leer ni modificar el mirror.
+El transporte consulta el recibo fijo. Sólo con `state=admitted` y carril N,
+conservando las dos reservas locales, sincroniza. Después confirma el sync
+al control, que ejecuta limpieza y `cmd.sh` bajo la misma claim y afinidad.
+La claim y el fd de vida cubren desde antes del sync hasta el cierre final.
+No se mantiene el mutex durante sync ni espera. Una denegación termina sin
+rsync y permite probar el siguiente carril; usa otro run id con el mismo
+request pendiente. Un fallo o ACK ambiguo conserva recuperación y reservas,
+sin lanzar otro run ni sincronizar hasta resolver su recibo. Un sync fallido
+ordena terminar al control y acredita cierre antes de soltar reservas locales.
+No puede implementarse como un runner que admite después del rsync.
 El runner ya debe ser líder de sesión y grupo; el wrapper es su hijo directo
 o es él mismo ese líder. El wrapper no llama `setsid`. Si es hijo del runner,
 pone sólo su proceso de control en otro grupo de la misma sesión. El guion
@@ -694,7 +747,8 @@ El rollback baja a día y drena antes de revertir consumidores o índices altos.
 
 Las pruebas PAO están en `fleet/deskpolicy/tests/`. Se ejecutan en un mirror
 temporal propio de remote-run, una corrida a la vez, bajo `taskset -c 0-1`.
-El arranque de las pruebas de ronda 3 exige carga menor de 9 y al menos 120 s desde el último arranque
+El arranque de las pruebas de ronda 4 exige carga menor de 12 hasta
+2026-11-05T22:00:00Z y menor de 9 después, y al menos 120 s desde el último arranque
 en `~/remote-run/runs`. El script vuelve a comprobar ambos gates en destino.
 No toca `/tmp/sen-test-slots` ni estado comprador real.
 
