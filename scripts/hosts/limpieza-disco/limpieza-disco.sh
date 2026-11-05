@@ -5,6 +5,7 @@
 #
 # Modo emergencia: si al empezar quedan menos de 15 GB libres, los umbrales de
 # antigüedad se acortan (entre paréntesis, el valor en emergencia).
+# Sólo work tiene otra emergencia: <40 GB, ventana de 6 h y freno en 60 GB.
 #
 # Qué borra:
 #   1. ~/remote-run/work/*   sólo las copias no ocultas que ~/bin/pao-inventario.py
@@ -131,10 +132,13 @@ borrar_en() {
       log "no borro $1/$2: el padre no es $1 o la entrada cambió"; exit 1;
     }
     if [ "${4:-}" = copia ]; then
-      reciente=$(find "./$2" -maxdepth 2 -mtime -7 -print -quit 2> "$INV_ERR") || {
+      reciente=$(find "./$2" -maxdepth 2 "${COPIA_FIND[@]}" -print -quit 2> "$INV_ERR") || {
         log "no borro $1/$2: falló find de actividad de la copia"; exit 1;
       }
-      [ -z "$reciente" ] || { log "no borro $1/$2: algo cambió en los últimos 7 días"; exit 1; }
+      [ -z "$reciente" ] || { log "no borro $1/$2: algo cambió en los últimos $COPIA_MIN minutos"; exit 1; }
+      if [ "$WORK_EMERG" = 1 ]; then
+        cwd_work_libre "$1/$2" || { log "no borro $1/$2: cwd visible dentro o consulta no verificable"; exit 1; }
+      fi
       corrida_nueva "$2"; estado_corridas=$?
       [ "$estado_corridas" = 2 ] && exit 2
       [ "$estado_corridas" = 1 ] || exit 1
@@ -165,8 +169,8 @@ borrar_en() {
       [[ "$mtime" =~ ^[0-9]+$ ]] && [[ "$ahora" =~ ^[0-9]+$ ]] || {
         log "no borro $1/$2: mtime directo o fecha no válidos"; exit 1;
       }
-      (( ahora - mtime >= 7 * 86400 )) || {
-        log "no borro $1/$2: el mtime directo tiene menos de 7 días"; exit 1;
+      (( ahora - mtime >= COPIA_MIN * 60 )) || {
+        log "no borro $1/$2: el mtime directo tiene menos de $COPIA_MIN minutos"; exit 1;
       }
       if [ "$DRY" = 1 ]; then
         log "[dry-run] borraría $1/$2 ($3; rename previo a $destino)"; exit 0
@@ -225,6 +229,16 @@ fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
 antes=$(libre_gb)
+[[ "$antes" =~ ^[0-9]+$ ]] || { log "sin borrar: espacio libre no verificable"; exit 1; }
+WORK_EMERG=0 COPIA_MIN=10080
+COPIA_FIND=(-mtime -7)
+INV_ARGS=(--copia-minutos "$COPIA_MIN")
+if [ "$antes" -lt 40 ]; then
+  WORK_EMERG=1 COPIA_MIN=360
+  COPIA_FIND=(-mmin -360)
+  INV_ARGS=(--copia-minutos "$COPIA_MIN")
+  log "EMERGENCIA work: libre ${antes} GB, sin cambios 6 h, objetivo 60 GB$([ "$DRY" = 1 ] && echo ', dry-run')"
+fi
 
 # Umbrales en minutos: normales y en emergencia (<15 GB libres).
 if [ "$antes" -lt 15 ]; then
@@ -236,7 +250,7 @@ log "inicio (libre: ${antes} GB$([ "$EMERG" = 1 ] && echo ", EMERGENCIA")$([ "$D
 
 # Reglas 1 y 3: el inventario decide qué es borrable en ~/remote-run.
 # Instalado junto a este script; desde un temporal permite una pasada en seco previa.
-MARCA= INV_JSON= INV_LISTA= INV_ERR= EN_USO= USO_CWD= USO_ABIERTOS= USO_PS= USO_BASETEMP= RUNS_NUEVAS=
+MARCA= INV_JSON= INV_LISTA= INV_ERR= EN_USO= USO_CWD= USO_ABIERTOS= USO_PS= USO_BASETEMP= RUNS_NUEVAS= CWD_WORK=
 INV_OK=1 USO_OK=1 INV_MOTIVO=
 sin_uso() {
   log "reglas 1, 2, 3, 5, 6 y 7 sin borrar: $1"
@@ -245,7 +259,7 @@ sin_uso() {
 limpiar_temporales() {
   rmdir "$LOCK" 2>/dev/null
   for temporal in "$MARCA" "$INV_JSON" "$INV_LISTA" "$INV_ERR" "$EN_USO" \
-      "$USO_CWD" "$USO_ABIERTOS" "$USO_PS" "$USO_BASETEMP" "$RUNS_NUEVAS"; do
+      "$USO_CWD" "$USO_ABIERTOS" "$USO_PS" "$USO_BASETEMP" "$RUNS_NUEVAS" "$CWD_WORK"; do
     [ -z "$temporal" ] || rm -f -- "$temporal"
   done
 }
@@ -277,10 +291,12 @@ elif [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; then
   INV_MOTIVO="MARCA no existe o no es regular"
 elif [ ! -d "$RR" ]; then
   INV_MOTIVO="no existe $RR"
-elif ! /usr/bin/python3 -B "$inventario_dir/pao-inventario.py" --raiz "$RR" > "$INV_JSON" 2> "$INV_ERR"; then
+elif ! /usr/bin/python3 -B "$inventario_dir/pao-inventario.py" --raiz "$RR" "${INV_ARGS[@]}" > "$INV_JSON" 2> "$INV_ERR"; then
   INV_MOTIVO="el inventario falló: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
-elif ! /usr/bin/python3 -B - "$INV_JSON" "$RR" > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
+elif ! /usr/bin/python3 -B - "$INV_JSON" "$RR" "$WORK_EMERG" "$COPIA_MIN" > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
+from datetime import datetime, timezone
 import json
+import math
 import os
 import sys
 
@@ -288,6 +304,11 @@ datos = json.load(open(sys.argv[1]))
 raiz = os.path.abspath(sys.argv[2])
 if datos.get('schema') != 'remote-run-inventario@1' or os.path.abspath(datos.get('raiz', '')) != raiz:
     sys.exit('esquema o raíz inesperados')
+emergencia = sys.argv[3] == '1'
+if datos['reglas']['copiaDias'] * 1440 != int(sys.argv[4]):
+    sys.exit('umbral de copias inesperado')
+if datos['proteccionCopias']['bloqueoGlobal']:
+    sys.exit('bloqueo global del inventario: ' + repr(datos['proteccionCopias']['bloqueoGlobal']))
 work, runs = os.path.join(raiz, 'work'), os.path.join(raiz, 'runs')
 bloqueos = [c['motivo'] for c in datos['copias']
             if c['motivo'].startswith('ejecución no descartable; corridas de dueño desconocido')]
@@ -317,9 +338,18 @@ def visible(c):
 for c in datos['corridas']:
     if c['clase'] == 'preparacion-abortada' and datos['ts'] - (c['ultimoUso'] or 0) < 3600:
         print('sin-copias\t' + nombre(c['ruta'], runs))
-for c in datos['copias']:
+copias = datos['copias']
+if emergencia:
+    copias = sorted(copias, key=lambda c: (c['ultimoUso'] or 0, c['ruta']))
+for c in copias:
     if c['borrable'] is True and c['clase'] == 'inactiva' and visible(c):
-        print('work\t' + nombre(c['ruta'], work))
+        fila = 'work\t' + nombre(c['ruta'], work)
+        if emergencia:
+            ultimo = c['ultimoUso']
+            if not math.isfinite(ultimo):
+                sys.exit('último uso de copia no verificable')
+            fila += '\t' + datetime.fromtimestamp(ultimo, timezone.utc).isoformat()
+        print(fila)
 for c in datos['corridas']:
     if c['borrable'] is True and c['clase'] == 'terminal' and visible(c):
         print('runs\t' + nombre(c['ruta'], runs))
@@ -384,7 +414,44 @@ libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes 
   return 1
 }
 
+# Captura adicional sólo para work en emergencia: todos los usuarios visibles.
+# No cambia EN_USO ni las reglas restantes. Cualquier fallo veta toda la regla 1.
+WORK_CWD_OK=0
+if [ "$WORK_EMERG" = 1 ]; then
+  if CWD_WORK=$(mktemp "$STATE/CWD_WORK.XXXXXX") && [ -f "$CWD_WORK" ] && [ ! -L "$CWD_WORK" ] \
+      && lsof -a -d cwd -Fn > "$CWD_WORK" 2> "$INV_ERR" && [ ! -s "$INV_ERR" ]; then
+    WORK_CWD_OK=1
+  else
+    log "EMERGENCIA work sin borrar: falló consulta de cwd de todos los usuarios visibles"
+  fi
+fi
+cwd_work_libre() {
+  [ "$WORK_CWD_OK" = 1 ] || return 1
+  /usr/bin/python3 -B - "$CWD_WORK" "$1" <<'PY'
+import os
+import sys
+
+try:
+    copia = os.path.realpath(sys.argv[2])
+    rutas = []
+    with open(sys.argv[1], encoding='utf-8') as captura:
+        for linea in captura.read().splitlines():
+            if linea.startswith('n'):
+                ruta = linea[1:]
+                # lsof escapa caracteres no imprimibles; no adivinar esas rutas.
+                if not ruta.startswith('/') or '\\' in ruta or ruta.endswith(' (deleted)'):
+                    raise ValueError('cwd no verificable')
+                rutas.append(os.path.realpath(ruta))
+    if not rutas:
+        raise ValueError('captura de cwd vacía')
+    sys.exit(1 if any(r == copia or r.startswith(copia + os.sep) for r in rutas) else 0)
+except (OSError, ValueError, UnicodeError):
+    sys.exit(2)
+PY
+}
+
 # 1. remote-run/work: copias no ocultas que el inventario marca borrables
+work_bytes=0 work_cantidad=0 work_libre=$antes
 if [ "$INV_OK" = 1 ] && { [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; }; then
   INV_OK=0
   log "reglas 1 y 3 sin borrar: MARCA no existe o no es regular"
@@ -397,12 +464,53 @@ if [ "$INV_OK" = 1 ]; then
   elif [ "$estado_preparacion" = 0 ]; then
     log "regla 1 sin borrar: preparación de menos de 1 h en runs/${preparacion#*$'\t'}"
   else
-    while IFS=$'\t' read -r tipo n; do
+    while IFS=$'\t' read -r tipo n ultimo; do
       [ "$tipo" = work ] || continue
       case "$n" in ""|.*|*/*) continue ;; esac
-      borrar_en "$RR/work" "$n" "inventario: inactiva y borrable" copia
+      motivo="inventario: inactiva y borrable"
+      if [ "$WORK_EMERG" = 1 ]; then
+        [ "$WORK_CWD_OK" = 1 ] || break
+        work_libre=$(libre_gb)
+        [[ "$work_libre" =~ ^[0-9]+$ ]] || { log "EMERGENCIA work sin borrar: espacio libre no verificable"; break; }
+        if [ "$DRY" = 1 ]; then
+          work_libre=$((work_libre + work_bytes / 1073741824))
+        fi
+        [ "$work_libre" -lt 60 ] || { log "EMERGENCIA work: freno en ${work_libre} GB"; break; }
+        # Medir sólo esta copia: --tamanos en el inventario también recorrería
+        # runs/ y podría alterar la clasificación de la regla 3 ante un error.
+        tamano=$(/usr/bin/python3 -B - "$INVENTARIO" "$RR/work/$n" 2> "$INV_ERR" <<'PY'
+from pathlib import Path
+import runpy
+import sys
+
+print(runpy.run_path(sys.argv[1])['tamano'](Path(sys.argv[2])))
+PY
+        ) && [[ "$tamano" =~ ^[0-9]+$ ]] && [ ! -s "$INV_ERR" ] || {
+          log "no borro $RR/work/$n: tamaño no verificable"; continue;
+        }
+        motivo="EMERGENCIA work; tamaño $tamano bytes; último uso $ultimo"
+      fi
+      if borrar_en "$RR/work" "$n" "$motivo" copia && [ "$WORK_EMERG" = 1 ]; then
+        work_bytes=$((work_bytes + tamano)); work_cantidad=$((work_cantidad + 1))
+        # Medir tras cada borrado, incluso el último. Nunca estimar el freno real.
+        work_libre=$(libre_gb)
+        [[ "$work_libre" =~ ^[0-9]+$ ]] || { log "EMERGENCIA work: paro, espacio libre no verificable"; break; }
+        [ "$DRY" = 1 ] && work_libre=$((work_libre + work_bytes / 1073741824))
+        [ "$work_libre" -lt 60 ] || { log "EMERGENCIA work: freno en ${work_libre} GB"; break; }
+      fi
       [ "$INV_OK" = 1 ] || break
     done < "$INV_LISTA"
+  fi
+fi
+if [ "$WORK_EMERG" = 1 ]; then
+  work_gb=$(awk -v bytes="$work_bytes" 'BEGIN {printf "%.3f", bytes / 1073741824}')
+  if [ "$DRY" = 1 ]; then
+    log "EMERGENCIA work: $work_cantidad copias; total $work_bytes bytes (${work_gb} GB) liberables estimados, dry-run; libre estimado ${work_libre} GB (antes ${antes} GB)"
+  else
+    log "EMERGENCIA work: $work_cantidad copias; total $work_bytes bytes (${work_gb} GB) de copias borradas; libre ${work_libre} GB (antes ${antes} GB)"
+    if [[ "$work_libre" =~ ^[0-9]+$ ]]; then
+      log "EMERGENCIA work: total liberado observado $((work_libre - antes)) GB (df, resolución 1 GB; incluye actividad concurrente)"
+    fi
   fi
 fi
 

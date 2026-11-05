@@ -16,6 +16,28 @@ demás.
 - **Regla 1.** Borra copias de `work/` que el inventario marca `borrable` con
   clase `inactiva`: siete días sin uso, sin lock y sin corridas vivas o
   dudosas.
+- **EMERGENCIA work.** Sólo si al iniciar quedan menos de 40 GB libres,
+  la regla 1 usa seis horas sin uso. El shell pasa explícitamente
+  `--copia-minutos 360` al inventario, usa `find -mmin -360` y
+  repite el mtime directo con el mismo umbral. En modo normal pasa
+  `--copia-minutos 10080` y mantiene `find -mtime -7`.
+  Ordena las candidatas por `ultimoUso`, de más vieja a más nueva, y mide
+  espacio antes y después de cada copia: al alcanzar 60 GB para la regla 1.
+  Conserva bloqueo global, locks, corridas vivas/dudosas, preparación reciente,
+  revalidación de corridas nuevas y rename exclusivo.
+  Consulta una sola vez `lsof -a -d cwd -Fn`, sin filtro de usuario, y compara
+  rutas físicas (`realpath`) con frontera de directorio: un cwd igual o dentro
+  de una copia la protege. Error, diagnóstico, captura vacía o ruta no
+  verificable impiden borrar copias en esa pasada. La captura es una
+  observación; no elimina la ventana de un proceso que cambie su cwd después.
+  Mide sólo el tamaño de la copia candidata con el lector del inventario,
+  sin cambiar la clasificación de `runs/`. El log anota nombre, bytes asignados
+  y último uso UTC por copia, y totales.
+  `--dry-run` hace las mismas comprobaciones sin rename ni borrado y estima
+  el freno sumando esos tamaños al espacio libre. APFS puede compartir bloques,
+  así que esa suma no garantiza espacio recuperado: el borrado real siempre
+  frena por `df`. Las demás reglas y la emergencia de menos de 15 GB conservan
+  sus umbrales.
 - **Regla 3.** Borra corridas de `runs/` que el inventario marca `borrable`
   con clase `terminal`, más de 30 días, y que tengan archivo `exit`.
 - **Orden de comprobación de una copia.** Desde el padre fijado con `cd -P`
@@ -91,6 +113,16 @@ demás.
 El script borra un subconjunto del que el inventario llama borrable. Deja las
 copias `lock-huerfano` y las corridas `preparacion-abortada`, que el
 inventario sí admite.
+
+Las pruebas de `tests/test_emergencia_work.py` extraen sólo la regla 1 a un
+harness temporal, siempre con `--dry-run` y HOME de fixture. Simulan `df`
+reemplazando la función únicamente en esa copia temporal: el script de
+producción no admite variables ni flags para falsear el espacio. Los casos
+cwd lanzan un `sleep` real dentro del fixture. Para comparar las mismas
+pruebas contra main, `LIMPIEZA_TEST_SOURCE` puede señalar un `git archive`
+temporal de `origin/main`; sólo el harness interpreta esa variable.
+Ejecutar las suites exclusivamente en la Mini por
+`REMOTE_RUN_HOST=mini remote-run start --name limpieza-emergencia`.
 
 **Premisa y ventanas residuales.** El productor `remote-run` sincroniza
 con `rsync --delete` sin tomar el lock de la copia. El lock lo escribe
