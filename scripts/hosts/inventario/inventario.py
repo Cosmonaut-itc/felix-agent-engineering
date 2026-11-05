@@ -47,17 +47,24 @@ def listar(ruta):
         return sorted((Path(e.path) for e in entradas), key=lambda p: p.name)
 
 
-def leer(ruta):
+def leer_bytes(ruta):
     try:
         fd = os.open(str(ruta), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
+    except OSError as exc:
         if ruta.is_symlink():
             raise ValueError('symlink colgante: ' + str(ruta))
-        return None
-    with os.fdopen(fd, 'r', encoding='utf-8') as archivo:
+        if isinstance(exc, FileNotFoundError):
+            return None
+        raise
+    with os.fdopen(fd, 'rb') as archivo:
         if not stat.S_ISREG(os.fstat(archivo.fileno()).st_mode):
             raise ValueError('no es archivo regular: ' + str(ruta))
         return archivo.read()
+
+
+def leer(ruta):
+    datos = leer_bytes(ruta)
+    return None if datos is None else datos.decode('utf-8')
 
 
 def numero(texto):
@@ -68,24 +75,19 @@ def numero(texto):
 
 
 def espejo(ruta):
-    try:
-        fd = os.open(str(ruta), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
-        if ruta.is_symlink():
-            raise ValueError('symlink colgante: ' + str(ruta))
+    datos = leer_bytes(ruta)
+    if datos is None:
         return None
-    with os.fdopen(fd, 'rb') as archivo:
-        if not stat.S_ISREG(os.fstat(archivo.fileno()).st_mode):
-            raise ValueError('no es archivo regular: ' + str(ruta))
-        # cmd es opaco y puede contener bytes que no son UTF-8.
-        texto = re.split(rb'(?:^|(?<=[\r\n]))cmd=', archivo.read(), maxsplit=1)[0].decode('utf-8')
+    # cmd es opaco y puede contener bytes que no son UTF-8.
+    partes = re.split(rb'(?:^|(?<=[\r\n]))cmd=', datos, maxsplit=1)
+    if len(partes) != 2:
+        raise ValueError('meta sin línea cmd=')
+    texto = partes[0].decode('utf-8')
     campos = {}
     # cmd puede ser multilínea: remote-run lo escribe literalmente al final.
     for linea in texto.splitlines():
-        if 'cmd' in campos:
-            break
         clave, separador, valor = linea.partition('=')
-        if not separador or clave in campos or clave not in ('src', 'host', 'mirror', 'sub', 'cmd'):
+        if not separador or clave in campos or clave not in ('src', 'host', 'mirror', 'sub'):
             raise ValueError('meta mal formado')
         campos[clave] = valor
     mirror = campos.get('mirror', '')

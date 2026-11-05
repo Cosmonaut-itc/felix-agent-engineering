@@ -101,7 +101,7 @@ except Exception as exc:
 for entrada in listado.split(b'\0')[:-1]:
     ruta = Path(os.fsdecode(entrada))
     try:
-        mirror = inventario['espejo'](inventario['leer'](ruta / 'meta'))
+        mirror = inventario['espejo'](ruta / 'meta')
     except (OSError, ValueError, UnicodeError) as exc:
         sys.exit('lectura o formato de meta no válido en {}: {}'.format(ruta, exc))
     if mirror is None:
