@@ -465,6 +465,9 @@ class DeskPolicy:
             require(not identity["zombie"] and identity["pid"] == identity["sid"] == identity["pgid"]
                     and os.getsid(0) == identity["sid"] and pid in (os.getpid(), os.getppid())
                     and identity["sid"] != claim["process"]["sid"], "handoff-unproven")
+            controls = [identity, process(os.getpid())]
+            require(session_members(identity["sid"], exclude=controls) == [],
+                    "handoff-load-before-registration")
             keepers = claim.setdefault("keepers", [])
             if identity not in keepers:
                 keepers.append(identity)
