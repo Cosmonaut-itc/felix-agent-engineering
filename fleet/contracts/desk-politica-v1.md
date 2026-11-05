@@ -259,6 +259,9 @@ comprobados, el keeper que cierra y el proceso Python de la operación.
 El PID declarado debe ser el del propio proceso o su padre directo.
 El token se guarda sólo en estado y recibos privados. No se pasa por entorno,
 argumentos del proceso ni logs de texto; `cerrar` lo lee de un fd heredado.
+El cliente escribe los 64 caracteres ASCII del token en una sola escritura
+al canal y cierra su extremo escritor. Cada intento de cierre recibe un canal
+nuevo con el mismo token. Un intento fallido no requiere otro token de claim.
 Un segundo handoff que cambie de sesión requiere reconciliación, no se presume
 cubierto por la sesión original y la del primer keeper.
 Un cierre fallido conserva capacidad. Tras el commit de cierre, el supervisor
