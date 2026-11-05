@@ -144,6 +144,34 @@ class InventarioTest(unittest.TestCase):
         (r / 'started').write_text('nan')
         self.assertTrue(all(x['clase'] == 'dudosa' for x in self.inventario()['corridas']))
 
+    def test_meta_cmd_con_bytes_no_utf8(self):
+        r = self.corrida(fin=True)
+        (r / 'meta').write_bytes(b'src=/src\nhost=mini\nmirror=remote-run/work/copia\n'
+                                 b"sub=.\ncmd=$'l\xc3\\255\notra linea\xff'\n")
+        item, mirror, _ = inv.corrida(r, self.now)
+        self.assertEqual(mirror, 'copia')
+        self.assertEqual(item['clase'], 'terminal')
+        self.assertIn('existe exit', item['motivo'])
+        self.assertEqual(self.inventario()['proteccionCopias']['bloqueoGlobal'], [])
+
+    def test_meta_mirror_con_byte_no_utf8_sigue_dudoso(self):
+        r = self.corrida(fin=True)
+        (r / 'meta').write_bytes(b'src=/src\nhost=mini\nmirror=remote-run/work/co\xc3pia\n'
+                                 b'sub=.\ncmd=true\n')
+        item, mirror, _ = inv.corrida(r, self.now)
+        self.assertIsNone(mirror)
+        self.assertEqual((item['clase'], item['borrable']), ('dudosa', False))
+        self.assertEqual(self.inventario()['proteccionCopias']['bloqueoGlobal'], [r.name])
+
+    def test_meta_sin_cmd(self):
+        r = self.corrida(fin=True)
+        (r / 'meta').write_bytes(b'src=/src\nhost=mini\nmirror=remote-run/work/copia\nsub=.\n')
+        item, mirror, _ = inv.corrida(r, self.now)
+        self.assertEqual(mirror, 'copia')
+        self.assertEqual(item['clase'], 'terminal')
+        self.assertIn('existe exit', item['motivo'])
+        self.assertEqual(self.inventario()['proteccionCopias']['bloqueoGlobal'], [])
+
     def test_ilegible_y_symlink_corrida(self):
         self.copia()
         (self.root / 'runs/enlace').symlink_to('/no-existe')
