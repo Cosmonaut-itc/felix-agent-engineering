@@ -89,6 +89,7 @@ class DeskPolicy:
     def __init__(self, runtime=None):
         self.runtime = runtime or Runtime()
         self.root = self.runtime.root
+        self.prepare()
 
     def record_path(self, request_id):
         return self.root / "pao-wait" / (identifier(request_id) + ".json")
