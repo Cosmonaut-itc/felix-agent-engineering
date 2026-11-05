@@ -3,11 +3,14 @@
 
 import argparse
 import contextlib
+import fcntl
 import json
 import os
 from pathlib import Path
+import select
 import subprocess
 import signal
+import stat
 import sys
 import time
 
@@ -16,7 +19,7 @@ if __package__ in (None, ""):
 
 from deskpolicy import VERSION
 from deskpolicy.engine import DeskPolicy, admission_receipt, validate_record
-from deskpolicy.model import Invalid, require
+from deskpolicy.model import Invalid, finite_load, require
 from deskpolicy.store import RECEIPT_DIR_MODES, atomic_json, mutex, open_file, read_json, secure_dir
 
 
@@ -67,10 +70,14 @@ def parser():
                 item.add_argument("--claim-token-fd", type=int, required=True)
             if name == "cerrar":
                 item.add_argument("--script-exit-code", type=int)
-                item.add_argument("--cause", choices=("completed", "stopped"), default="completed")
+                item.add_argument("--cause", choices=("completed", "stopped", "sync-timeout"), default="completed")
         else:
             item.add_argument("--recibo", action="store_true",
                               help="Guardar runs/<run-id>/pao-admission.json antes del guion")
+            item.add_argument("--sync-ready-fd", type=int,
+                              help="Pipe heredado: esperar byte 1 del transporte antes del guion")
+            item.add_argument("--sync-timeout-s", type=float, default=900,
+                              help="Plazo de sync tras admitir, en segundos (omisión: 900, 15 min)")
             item.add_argument("argv", nargs=argparse.REMAINDER)
     sub.add_parser("reconciliar")
     status = sub.add_parser("estado")
@@ -82,12 +89,35 @@ def parser():
     return result
 
 
+def wait_sync(fd, seconds, stopped):
+    deadline = time.monotonic() + seconds
+    eof = False
+    while not stopped():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        ready, _, _ = select.select([] if eof else [fd], [], [], min(remaining, .2))
+        if ready:
+            signal_byte = os.read(fd, 1)
+            if signal_byte == b"1":
+                return True
+            require(signal_byte == b"", "sync-signal")
+            eof = True
+    return False
+
+
 def execute(engine, args):
     if args.argv and args.argv[0] == "--":
         args.argv.pop(0)
     if not args.argv:
         raise Invalid("command-required")
     require(not args.argv[0].startswith("-"), "command-executable")
+    require(finite_load(args.sync_timeout_s) and args.sync_timeout_s > 0, "sync-timeout")
+    if args.sync_ready_fd is not None:
+        require(args.sync_ready_fd >= 0 and stat.S_ISFIFO(os.fstat(args.sync_ready_fd).st_mode),
+                "sync-pipe-required")
+        require(fcntl.fcntl(args.sync_ready_fd, fcntl.F_GETFL) & os.O_ACCMODE != os.O_WRONLY,
+                "sync-pipe-readable")
     supervisor = os.getsid(0)
     runner_group = os.getpgrp()
     require(supervisor in (os.getpid(), os.getppid()) and runner_group == supervisor,
@@ -101,6 +131,7 @@ def execute(engine, args):
         secure_dir(receipt_path.parent, modes=RECEIPT_DIR_MODES)
     life = None
     code = None
+    sync_timed_out = False
     previous_handlers = {}
 
     def bind_life(path):
@@ -172,6 +203,7 @@ def execute(engine, args):
                                 "receipt-conflict")
             receipt = engine.admit(args.request_id, args.run_id, args.lane, supervisor,
                                    bind_life, lock, args.local_limit)
+            sync_deadline = time.monotonic() + args.sync_timeout_s
             publish_receipt(receipt)
             if not receipt["execute"]:
                 release_life()
@@ -191,7 +223,9 @@ def execute(engine, args):
         for signum in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
             previous_handlers[signum] = signal.signal(signum, stop)
         command = ["/usr/bin/taskset", "-c", ",".join(map(str, receipt["cpus"])), *args.argv]
-        if stopped is None:
+        if args.sync_ready_fd is not None:
+            sync_timed_out = not wait_sync(args.sync_ready_fd, sync_deadline - time.monotonic(), lambda: stopped)
+        if stopped is None and not sync_timed_out:
             child = subprocess.Popen(command, close_fds=True,
                                      preexec_fn=lambda: os.setpgid(0, runner_group))
             if stopped is not None:
@@ -200,7 +234,7 @@ def execute(engine, args):
             if code < 0:
                 stopped = stopped or -code
                 code = 128 - code
-        else:
+        elif stopped is not None:
             code = 128 + stopped
         close_error = None
         try:
@@ -208,7 +242,8 @@ def execute(engine, args):
                 try:
                     record = engine.close(args.request_id, args.run_id, os.getpid(), life, lock,
                                           claim_token=receipt["claim_token"], script_exit_code=code,
-                                          cause="stopped" if stopped else "completed")
+                                          cause="stopped" if stopped else
+                                          "sync-timeout" if sync_timed_out else "completed")
                     receipt.update(claim_state=record["claim"]["state"], script_exit_code=code,
                                    close_cause=record["claim"]["close_cause"])
                 finally:
@@ -236,7 +271,7 @@ def execute(engine, args):
                 output({**receipt, "claim_token": None})
             except Exception as exc:
                 diagnostic(exc)
-        return code
+        return 75 if sync_timed_out and stopped is None else code
     finally:
         for signum, handler in previous_handlers.items():
             try:
