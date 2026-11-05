@@ -95,7 +95,7 @@ class RegressionTest(unittest.TestCase):
                 receipt, worker, _ = self.launch(old)
                 self.assertTrue(receipt["execute"])
                 connection = self.children[-1][1]
-                connection.send(("child",))
+                connection.send(("child", [0]))
                 self.assertTrue(connection.poll(10))
                 child_pid = connection.recv()
                 self.extra_pids.append((child_pid, process(child_pid)["start"]))
@@ -124,7 +124,7 @@ class RegressionTest(unittest.TestCase):
                 receipt, worker, _ = self.launch(old)
                 self.assertTrue(receipt["execute"])
                 connection = self.children[-1][1]
-                connection.send(("child",))
+                connection.send(("child", [0]))
                 self.assertTrue(connection.poll(10))
                 child_pid = connection.recv()
                 self.extra_pids.append((child_pid, process(child_pid)["start"]))

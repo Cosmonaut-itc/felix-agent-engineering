@@ -62,7 +62,8 @@ def actor(harness, request, lane, connection, barrier=None):
                 except Invalid as exc:
                     connection.send(str(exc))
             elif message[0] == "child":
-                child = subprocess.Popen(["/usr/bin/taskset", "-c", ",".join(map(str, receipt["cpus"])),
+                child_cpus = message[1] if len(message) > 1 else receipt["cpus"]
+                child = subprocess.Popen(["/usr/bin/taskset", "-c", ",".join(map(str, child_cpus)),
                                           sys.executable, "-I", "-c", "import time; time.sleep(60)"],
                                          close_fds=True)
                 connection.send(child.pid)
