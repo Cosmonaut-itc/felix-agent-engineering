@@ -1,0 +1,210 @@
+GATE load1 0.8955078125 since_last_other_start_s 166.38133096694946
+test_disable_night_persists_before_a_failed_reconciliation (deskpolicy.tests.test_r3.RoundThreeTest.test_disable_night_persists_before_a_failed_reconciliation) ... ok
+test_n1_contract_documents_status_bootstrap_and_u2_notes (deskpolicy.tests.test_r3.RoundThreeTest.test_n1_contract_documents_status_bootstrap_and_u2_notes) ... FAIL
+test_n2_oserror_preserves_exit (deskpolicy.tests.test_r3.RoundThreeTest.test_n2_oserror_preserves_exit) ... FAIL
+test_n2_process_owner_preserves_exit (deskpolicy.tests.test_r3.RoundThreeTest.test_n2_process_owner_preserves_exit) ... FAIL
+test_n2_receipt_survives_failure_to_persist_uncertainty (deskpolicy.tests.test_r3.RoundThreeTest.test_n2_receipt_survives_failure_to_persist_uncertainty) ... FAIL
+test_n2_unexpected_close_preserves_exit (deskpolicy.tests.test_r3.RoundThreeTest.test_n2_unexpected_close_preserves_exit) ... Process ForkProcess-4:
+Traceback (most recent call last):
+  File "/usr/lib/python3.12/multiprocessing/process.py", line 314, in _bootstrap
+    self.run()
+  File "/usr/lib/python3.12/multiprocessing/process.py", line 108, in run
+    self._target(*self._args, **self._kwargs)
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 75, in failing_close_actor
+    code = cli.main(arguments)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/cli.py", line 190, in main
+    return execute(engine, args)
+           ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/cli.py", line 153, in execute
+    record = engine.close(args.request_id, args.run_id, os.getpid(), life, lock,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/unittest/mock.py", line 1134, in __call__
+    return self._mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/unittest/mock.py", line 1138, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/unittest/mock.py", line 1199, in _execute_mock_call
+    result = effect(*args, **kwargs)
+             ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 70, in fail_close
+    raise failure
+RuntimeError: unexpected-close
+ERROR
+test_w11_replay_never_overwrites_terminal_receipt (deskpolicy.tests.test_r3.RoundThreeTest.test_w11_replay_never_overwrites_terminal_receipt) ... FAIL
+test_w12_real_close_mutex_timeout_preserves_exit (deskpolicy.tests.test_r3.RoundThreeTest.test_w12_real_close_mutex_timeout_preserves_exit) ... R3 timeout {'script_exit_code': None, 'claim_state': 'active', 'close_error': None} wrapper_rc 75
+FAIL
+test_wa_reconcile_checks_the_recorded_keeper_session (deskpolicy.tests.test_r3.RoundThreeTest.test_wa_reconcile_checks_the_recorded_keeper_session) ... ERROR
+test_wa_reconcile_dead_day_claim_restores_night_cpus (deskpolicy.tests.test_r3.RoundThreeTest.test_wa_reconcile_dead_day_claim_restores_night_cpus) ... FAIL
+test_wa_reconcile_keeps_child_and_life_lock_then_closes (deskpolicy.tests.test_r3.RoundThreeTest.test_wa_reconcile_keeps_child_and_life_lock_then_closes) ... ERROR
+test_wb_admitir_any_inherited_candidates_retain_selected_flock (deskpolicy.tests.test_r3.RoundThreeTest.test_wb_admitir_any_inherited_candidates_retain_selected_flock) ... usage: - admitir [-h] --request-id REQUEST_ID --run-id RUN_ID --lane LANE
+                 [--local-limit LOCAL_LIMIT] --pid PID [--mutex-fd MUTEX_FD]
+                 [--life-fd LIFE_FD]
+- admitir: error: argument --lane: invalid int value: 'any'
+ERROR
+test_wb_any_chooses_second_lane_after_uncertain_first (deskpolicy.tests.test_r3.RoundThreeTest.test_wb_any_chooses_second_lane_after_uncertain_first) ... usage: - ejecutar [-h] --request-id REQUEST_ID --run-id RUN_ID --lane LANE
+                  [--local-limit LOCAL_LIMIT] [--recibo]
+                  ...
+- ejecutar: error: argument --lane: invalid int value: 'any'
+ERROR
+test_wc_census_during_final_receipt_has_no_untracked_lock (deskpolicy.tests.test_r3.RoundThreeTest.test_wc_census_during_final_receipt_has_no_untracked_lock) ... FAIL
+
+======================================================================
+ERROR: test_n2_unexpected_close_preserves_exit (deskpolicy.tests.test_r3.RoundThreeTest.test_n2_unexpected_close_preserves_exit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 232, in test_n2_unexpected_close_preserves_exit
+    self.check_close_failure(RuntimeError('unexpected-close'))
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 217, in check_close_failure
+    result = self.result(self.spawn(target, self.h, args, failure))
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 152, in result
+    value = parent.recv()
+            ^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+EOFError
+
+======================================================================
+ERROR: test_wa_reconcile_checks_the_recorded_keeper_session (deskpolicy.tests.test_r3.RoundThreeTest.test_wa_reconcile_checks_the_recorded_keeper_session)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 291, in test_wa_reconcile_checks_the_recorded_keeper_session
+    self.engine.reconcile()
+    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeskPolicy' object has no attribute 'reconcile'
+
+======================================================================
+ERROR: test_wa_reconcile_keeps_child_and_life_lock_then_closes (deskpolicy.tests.test_r3.RoundThreeTest.test_wa_reconcile_keeps_child_and_life_lock_then_closes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 267, in test_wa_reconcile_keeps_child_and_life_lock_then_closes
+    self.engine.reconcile()
+    ^^^^^^^^^^^^^^^^^^^^^
+AttributeError: 'DeskPolicy' object has no attribute 'reconcile'
+
+======================================================================
+ERROR: test_wb_admitir_any_inherited_candidates_retain_selected_flock (deskpolicy.tests.test_r3.RoundThreeTest.test_wb_admitir_any_inherited_candidates_retain_selected_flock)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 337, in test_wb_admitir_any_inherited_candidates_retain_selected_flock
+    result = pipe.recv()
+             ^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+EOFError
+
+======================================================================
+ERROR: test_wb_any_chooses_second_lane_after_uncertain_first (deskpolicy.tests.test_r3.RoundThreeTest.test_wb_any_chooses_second_lane_after_uncertain_first)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 316, in test_wb_any_chooses_second_lane_after_uncertain_first
+    result = self.run_cli(args)
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_policy.py", line 175, in run_cli
+    result = parent.recv()
+             ^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+EOFError
+
+======================================================================
+FAIL: test_n1_contract_documents_status_bootstrap_and_u2_notes (deskpolicy.tests.test_r3.RoundThreeTest.test_n1_contract_documents_status_bootstrap_and_u2_notes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 357, in test_n1_contract_documents_status_bootstrap_and_u2_notes
+    self.assertTrue(required in contract, 'Missing contract rule: ' + required)
+AssertionError: False is not true : Missing contract rule: no crea claims
+
+======================================================================
+FAIL: test_n2_oserror_preserves_exit (deskpolicy.tests.test_r3.RoundThreeTest.test_n2_oserror_preserves_exit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 229, in test_n2_oserror_preserves_exit
+    self.check_close_failure(OSError('disk-error'))
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 218, in check_close_failure
+    self.assertEqual(result['rc'], 3)
+AssertionError: 75 != 3
+
+======================================================================
+FAIL: test_n2_process_owner_preserves_exit (deskpolicy.tests.test_r3.RoundThreeTest.test_n2_process_owner_preserves_exit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 226, in test_n2_process_owner_preserves_exit
+    self.check_close_failure(Invalid('process-owner'))
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 218, in check_close_failure
+    self.assertEqual(result['rc'], 3)
+AssertionError: 75 != 3
+
+======================================================================
+FAIL: test_n2_receipt_survives_failure_to_persist_uncertainty (deskpolicy.tests.test_r3.RoundThreeTest.test_n2_receipt_survives_failure_to_persist_uncertainty)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 235, in test_n2_receipt_survives_failure_to_persist_uncertainty
+    self.check_close_failure(OSError('close-disk'), failed_journal_actor)
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 218, in check_close_failure
+    self.assertEqual(result['rc'], 3)
+AssertionError: 75 != 3
+
+======================================================================
+FAIL: test_w11_replay_never_overwrites_terminal_receipt (deskpolicy.tests.test_r3.RoundThreeTest.test_w11_replay_never_overwrites_terminal_receipt)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 168, in test_w11_replay_never_overwrites_terminal_receipt
+    self.assertEqual((receipt['claim_state'], receipt['script_exit_code'], receipt['close_cause']),
+AssertionError: Tuples differ: ('active', None, None) != ('closed', 0, 'completed')
+
+First differing element 0:
+'active'
+'closed'
+
+- ('active', None, None)
++ ('closed', 0, 'completed')
+
+======================================================================
+FAIL: test_w12_real_close_mutex_timeout_preserves_exit (deskpolicy.tests.test_r3.RoundThreeTest.test_w12_real_close_mutex_timeout_preserves_exit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 206, in test_w12_real_close_mutex_timeout_preserves_exit
+    self.assertEqual(result['rc'], 3)
+AssertionError: 75 != 3
+
+======================================================================
+FAIL: test_wa_reconcile_dead_day_claim_restores_night_cpus (deskpolicy.tests.test_r3.RoundThreeTest.test_wa_reconcile_dead_day_claim_restores_night_cpus)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 249, in test_wa_reconcile_dead_day_claim_restores_night_cpus
+    self.assertEqual(read_json(self.engine.record_path('day'))['claim']['close_cause'], 'reconciled')
+AssertionError: None != 'reconciled'
+
+======================================================================
+FAIL: test_wc_census_during_final_receipt_has_no_untracked_lock (deskpolicy.tests.test_r3.RoundThreeTest.test_wc_census_during_final_receipt_has_no_untracked_lock)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r3-baseline-final-acb3b2fa/fleet/deskpolicy/tests/test_r3.py", line 182, in test_wc_census_during_final_receipt_has_no_untracked_lock
+    self.assertEqual(result['rc'], 0, result)
+AssertionError: 75 != 0 : {'rc': 75, 'detail': 'untracked-life-lock'}
+
+----------------------------------------------------------------------
+Ran 14 tests in 21.138s
+
+FAILED (failures=8, errors=5)
