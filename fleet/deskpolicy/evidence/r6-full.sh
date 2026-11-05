@@ -34,15 +34,15 @@ from pathlib import Path
 sys.path.insert(0, str(Path.cwd()/'fleet'))
 try:
     from deskpolicy.store import code_digest
+    print('R6 BASELINE runtime', code_digest(), flush=True)
+    if code_digest() != '77a369608532867e785aa7eff8f496e9a2480ff7a3b8d3b98a4d826901e7200d':
+        raise ValueError('baseline-runtime-mismatch')
+    suite = unittest.defaultTestLoader.discover('fleet/deskpolicy/tests', pattern='test_r6.py', top_level_dir='fleet')
+    result = unittest.TextTestRunner(verbosity=2).run(suite)
+    if result.errors or len(result.failures) != 13:
+        raise ValueError('baseline-requires-thirteen-failures-and-no-errors')
 except Exception as exc:
     print('R6 BASELINE FIXTURE ERROR', repr(exc), flush=True)
-    raise SystemExit(2)
-print('R6 BASELINE runtime', code_digest(), flush=True)
-if code_digest() != '77a369608532867e785aa7eff8f496e9a2480ff7a3b8d3b98a4d826901e7200d':
-    raise SystemExit(2)
-suite = unittest.defaultTestLoader.discover('fleet/deskpolicy/tests', pattern='test_r6.py', top_level_dir='fleet')
-result = unittest.TextTestRunner(verbosity=2).run(suite)
-if result.errors or len(result.failures) != 13:
     raise SystemExit(2)
 raise SystemExit(1)
 PYBASE
