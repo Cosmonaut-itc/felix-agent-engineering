@@ -297,6 +297,8 @@ class DeskPolicy:
                 return deny("request-expired")
             waiting = self.waiting(records, sample)
             project = record["project"]
+            if any(r["project"] == project and r["claim"]["lane"] == lane for r in live):
+                return deny("resource-busy")
             if waiting[project][0]["request_id"] != request_id:
                 return deny("fifo")
             if record["weight"] > policy["max_run_weight"]:
