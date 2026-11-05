@@ -462,9 +462,9 @@ class DeskPolicy:
             self.write_record(record)
             return record
 
-    def reconcile(self):
+    def reconcile(self, mutex_fd=None):
         """Close uncertain reservations only with an empty session and free life lock."""
-        with mutex(self.root):
+        with mutex(self.root, inherited=mutex_fd):
             sample = self.runtime.sample()
             records = self.records()
             live = self.census(records, sample, persist=True)
@@ -546,12 +546,12 @@ class DeskPolicy:
                     "module_sha256": code_digest()}
 
     def publish(self, disable_night=False):
-        self.reconcile()
-        with mutex(self.root):
+        with mutex(self.root) as lock:
             configuration = config(read_json(self.runtime.config))
             if disable_night:
                 configuration["night_enabled"] = False
                 atomic_json(self.runtime.config, configuration)
+            self.reconcile(mutex_fd=lock)
             sample = self.runtime.sample()
             records = self.records()
             live = self.census(records, sample, persist=True)

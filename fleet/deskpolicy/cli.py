@@ -222,6 +222,8 @@ def execute(engine, args):
                 with mutex(engine.root):
                     try:
                         record_result(close_error)
+                    except Exception as journal_error:
+                        diagnostic(journal_error)
                     finally:
                         release_life()
                     publish_receipt(receipt)
