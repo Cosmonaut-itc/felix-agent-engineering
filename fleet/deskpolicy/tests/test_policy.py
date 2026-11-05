@@ -570,6 +570,10 @@ class PolicyTest(unittest.TestCase):
                      "--", sys.executable, "-I", "-c", command]
         first = self.run_cli(arguments)
         self.assertEqual(first["rc"], 75)
+        deadline = time.monotonic() + 60
+        while read_json(self.engine.record_path("cli"))["claim"]["state"] != "closed":
+            self.engine.reconcile()
+            self.assertLess(time.monotonic(), deadline, "CLI session never proved empty")
         receipt = read_json(directory / "pao-admission.json")
         self.assertEqual((receipt["state"], receipt["exit_code"]), ("admitted", None))
         self.assertEqual(read_json(self.engine.record_path("cli"))["claim"]["state"], "closed")

@@ -42,8 +42,8 @@ def keeper_actor(harness, connection):
             else:
                 connection.send(("wrong-token", "accepted"))
             try:
-                result = engine.close("keeper", "run-keeper", os.getpid(), life, lock,
-                                      claim_token=token)
+                result = fixtures.close_when_proven(engine, "keeper", "run-keeper", os.getpid(), life, lock,
+                                                    claim_token=token)
                 connection.send(("close", result["claim"]["state"]))
             except (Invalid, TypeError) as exc:
                 connection.send(("close", str(exc)))
