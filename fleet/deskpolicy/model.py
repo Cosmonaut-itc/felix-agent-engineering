@@ -17,7 +17,7 @@ WAIT_TTL = 120
 INTERVAL = 120
 CONFIG = {"schema": "pao/desk-config@1", "night_enabled": False,
           "night_budget": 4, "cpu_weight_budget": 8,
-          "max_run_weight": 8, "min_start_interval_s": INTERVAL}
+          "max_run_weight": 4, "min_start_interval_s": INTERVAL}
 POLICY_KEYS = set("schema revision writer boot_id issued_at expires_at "
                   "issued_boottime_s expires_boottime_s mode night_budget "
                   "cpu_weight_budget max_run_weight min_start_interval_s "
@@ -113,7 +113,7 @@ def config(value):
 def budgets(value):
     integer(value["night_budget"], 1, 12)
     integer(value["cpu_weight_budget"], 1, 12)
-    integer(value["max_run_weight"], 1, value["cpu_weight_budget"])
+    integer(value["max_run_weight"], 1, min(4, value["cpu_weight_budget"]))
     require(type(value["min_start_interval_s"]) is int
             and value["min_start_interval_s"] == INTERVAL, "start-interval")
 

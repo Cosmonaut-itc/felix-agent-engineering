@@ -49,7 +49,8 @@ def validate_record(value, name):
     require(claim["run_id"] == value["admitted_run_id"] and claim["boot_id"] == value["boot_id"]
             and claim["weight"] == value["weight"], "claim-identity")
     integer(claim["lane"], 1, 12)
-    require(type(claim["cpus"]) is list and len(claim["cpus"]) == value["weight"], "claim-cpus")
+    width = value["weight"] if claim["mode"] == "night" else 12
+    require(type(claim["cpus"]) is list and len(claim["cpus"]) == width, "claim-cpus")
     for cpu in claim["cpus"]:
         integer(cpu, 0, 11)
     require(len(set(claim["cpus"])) == len(claim["cpus"]), "claim-cpus-duplicate")
@@ -165,8 +166,9 @@ class DeskPolicy:
             path = self.life_path(record["project"], claim["lane"])
             require(path not in claimed, "duplicate-resource")
             claimed[path] = record
-            require(not cpus.intersection(claim["cpus"]), "overlapping-cpus")
-            cpus.update(claim["cpus"])
+            if claim["mode"] == "night":
+                require(not cpus.intersection(claim["cpus"]), "overlapping-cpus")
+                cpus.update(claim["cpus"])
             if not held(path) and claim["state"] == "active":
                 claim["state"] = "uncertain"
                 if persist:
@@ -205,7 +207,7 @@ class DeskPolicy:
             reason = str(exc)
             reason = reason if reason in ("policy-expired", "window-closed") else "policy-invalid"
             return {"mode": "day", "revision": None, "limits": dict.fromkeys(PROJECTS, 2),
-                    "night_budget": 4, "cpu_weight_budget": 12, "max_run_weight": 8,
+                    "night_budget": 4, "cpu_weight_budget": None, "max_run_weight": 4,
                     "min_start_interval_s": INTERVAL, "expires_at": None}, reason
 
     def register(self, request_id, project, kind, owner, weight, withdraw=False):
@@ -339,7 +341,7 @@ class DeskPolicy:
                 if not finite_load(load) or load >= (12 if policy["mode"] == "night" else 9):
                     return deny("load-high")
             weight = sum(r["weight"] for r in live)
-            if weight + record["weight"] > (policy["cpu_weight_budget"] if policy["mode"] == "night" else 12):
+            if policy["mode"] == "night" and weight + record["weight"] > policy["cpu_weight_budget"]:
                 return deny("weight-full")
             last = max((r["claim"]["admitted_boottime_s"] for r in records
                         if r["claim"] is not None and r["boot_id"] == sample.boot), default=None)
@@ -348,8 +350,8 @@ class DeskPolicy:
                 if policy["mode"] == "night" and sample.bt - last < policy["min_start_interval_s"]:
                     return deny("start-interval")
             used = {cpu for r in live for cpu in r["claim"]["cpus"]}
-            available = sorted(set(self.runtime.cpus()) - used)
-            if len(available) < record["weight"]:
+            available = sorted(set(self.runtime.cpus()) - used) if policy["mode"] == "night" else list(self.runtime.cpus())
+            if policy["mode"] == "night" and len(available) < record["weight"]:
                 return deny("cpu-full")
             identity = process(pid)
             require(identity["pid"] == identity["pgid"] == identity["sid"]
@@ -374,7 +376,8 @@ class DeskPolicy:
                 record["state"] = "expired"
                 return deny("request-expired")
             claim = {"run_id": run_id, "lane": lane, "weight": record["weight"],
-                     "cpus": available[:record["weight"]], "boot_id": sample.boot,
+                     "cpus": available[:record["weight"]] if policy["mode"] == "night" else available,
+                     "boot_id": sample.boot,
                      "process": identity, "state": "active", "admitted_boottime_s": final.bt,
                      "closed_boottime_s": None, "close_evidence": None,
                      "mode": policy["mode"], "revision": policy["revision"]}
@@ -523,7 +526,7 @@ class DeskPolicy:
                       "mode": policy["mode"], "revision": policy["revision"],
                       "expires_at": policy["expires_at"], "limits": policy["limits"],
                       "budget": policy["night_budget"] if policy["mode"] == "night" else 4,
-                      "cpu_weight_budget": policy["cpu_weight_budget"] if policy["mode"] == "night" else 12,
+                      "cpu_weight_budget": policy["cpu_weight_budget"] if policy["mode"] == "night" else None,
                       "pending": {p: len(waiting[p]) for p in PROJECTS},
                       "head": {p: waiting[p][0]["request_id"] if waiting[p] else None for p in PROJECTS},
                       "live": {p: sum(r["project"] == p for r in live) for p in PROJECTS},

@@ -223,9 +223,13 @@ class PolicyTest(unittest.TestCase):
         self.assertEqual(len({c for claim in state["claims"] for c in claim["cpus"]}), 4)
 
     def test_weight_budget_exhausted(self):
-        self.pending("heavy", weight=8)
+        self.pending("heavy", weight=4)
         self.publish()
         receipt, _, _ = self.launch("heavy")
+        self.assertTrue(receipt["execute"])
+        self.pending("heavy2", weight=4)
+        self.advance(120)
+        receipt, _, _ = self.launch("heavy2", 2)
         self.assertTrue(receipt["execute"])
         self.pending("next", "jale", "chain")
         self.advance(120)
