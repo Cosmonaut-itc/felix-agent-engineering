@@ -184,11 +184,14 @@ class RegressionTest(unittest.TestCase):
         self.assertEqual(json.loads((path / "pao-admission.json").read_text())["state"], "admitted")
 
     def test_w2_invalid_receipt_preconditions_never_commit_claim(self):
-        for name, mode in (("unsafe", 0o777), ("conflict", 0o700)):
+        for name, mode in (("unsafe", 0o777), ("conflict", 0o700), ("malformed", 0o700)):
             self.pending(name)
             path = self.receipt_directory(name, mode)
             if name == "conflict":
                 atomic_json(path / "pao-admission.json", {"request_id": "other", "run_id": "other", "state": "admitted"})
+            elif name == "malformed":
+                atomic_json(path / "pao-admission.json", {"schema": "pao/desk-admission@1",
+                            "request_id": name, "run_id": "run-" + name})
             self.publish()
             result = self.run_cli(self.execute_args(name, ["/bin/true"]))
             self.assertEqual(result["rc"], 75)

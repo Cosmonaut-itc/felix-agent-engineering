@@ -108,8 +108,14 @@ def execute(engine, args):
                 except FileNotFoundError:
                     pass
                 if previous is not None:
+                    require(type(previous) is dict and previous.get("schema") == "pao/desk-admission@1"
+                            and previous.get("state") in ("admitted", "denied"), "receipt-conflict")
                     require(previous["request_id"] == args.request_id and previous["run_id"] == args.run_id,
                             "receipt-conflict")
+                    if previous["state"] == "admitted":
+                        current = read_json(engine.record_path(args.request_id))
+                        require(current["state"] == "admitted" and current["admitted_run_id"] == args.run_id,
+                                "receipt-conflict")
             receipt = engine.admit(args.request_id, args.run_id, args.lane, supervisor,
                                    life, lock, args.local_limit)
         if args.recibo:
