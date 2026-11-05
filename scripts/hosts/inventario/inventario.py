@@ -67,9 +67,18 @@ def numero(texto):
     return valor
 
 
-def espejo(texto):
-    if texto is None:
+def espejo(ruta):
+    try:
+        fd = os.open(str(ruta), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    except FileNotFoundError:
+        if ruta.is_symlink():
+            raise ValueError('symlink colgante: ' + str(ruta))
         return None
+    with os.fdopen(fd, 'rb') as archivo:
+        if not stat.S_ISREG(os.fstat(archivo.fileno()).st_mode):
+            raise ValueError('no es archivo regular: ' + str(ruta))
+        # cmd es opaco y puede contener bytes que no son UTF-8.
+        texto = re.split(rb'(?:^|(?<=[\r\n]))cmd=', archivo.read(), maxsplit=1)[0].decode('utf-8')
     campos = {}
     # cmd puede ser multilínea: remote-run lo escribe literalmente al final.
     for linea in texto.splitlines():
@@ -117,7 +126,7 @@ def corrida(ruta, ahora):
     try:
         entradas = listar(ruta)
         item['ultimoUso'] = ruta.lstat().st_mtime
-        mirror = espejo(leer(ruta / 'meta'))
+        mirror = espejo(ruta / 'meta')
         for p in entradas:
             if p.is_symlink():
                 raise ValueError('symlink en registro: ' + p.name)
