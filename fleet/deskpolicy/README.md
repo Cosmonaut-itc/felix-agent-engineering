@@ -21,11 +21,14 @@ REMOTE_RUN_HOST=desk remote-run start --dir "$PWD" --name desk-politica-u1 \
 REMOTE_RUN_HOST=desk remote-run wait -q <run-id>
 ```
 
-`desk-run.sh` vuelve a comprobar los gates y ejecuta:
+`desk-run.sh` vuelve a comprobar los gates y ejecuta la suite bajo afinidad:
 
 ```sh
 /usr/bin/taskset -c 0-1 /usr/bin/python3 -I fleet/deskpolicy/tests/run.py
 ```
+
+Después ejecuta `bin/pao check` y ShellCheck sobre los tres guiones si está
+disponible. Esas comprobaciones también permanecen bajo CPUs 0 y 1.
 
 El gate usa el mtime de directorios reales de runs como cota conservadora del
 último arranque. La creación de `started` cambia ese mtime. Un cierre posterior

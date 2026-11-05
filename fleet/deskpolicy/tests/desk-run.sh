@@ -19,4 +19,11 @@ if starts and time.time() - max(starts) < 120:
     raise SystemExit("Gate: no pasaron 120 s desde el último arranque ajeno")
 print("Gates de carga y espaciado conformes", flush=True)
 PY
-exec /usr/bin/taskset -c 0-1 /usr/bin/python3 -I fleet/deskpolicy/tests/run.py
+exec /usr/bin/taskset -c 0-1 /bin/bash -c '
+set -euo pipefail
+/usr/bin/python3 -I fleet/deskpolicy/tests/run.py
+bin/pao check
+if command -v shellcheck >/dev/null; then
+    shellcheck --severity=warning fleet/deskpolicy/deploy-desk.sh fleet/deskpolicy/withdraw-desk.sh fleet/deskpolicy/tests/desk-run.sh
+fi
+'
