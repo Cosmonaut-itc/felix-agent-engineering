@@ -4,6 +4,7 @@ import datetime as dt
 import fcntl
 import os
 import re
+import secrets
 
 from . import VERSION
 from .model import (BOOT, INTERVAL, KINDS, PROJECTS, TTL, WAIT_TTL,
@@ -16,7 +17,7 @@ RECORD_KEYS = set("schema request_id project kind owner boot_id seq state "
                   "admitted_run_id renewed_boottime_s expires_boottime_s "
                   "weight claim last_reason".split())
 CLAIM_KEYS = set("run_id lane weight cpus boot_id process state admitted_boottime_s "
-                 "closed_boottime_s close_evidence mode revision".split())
+                 "closed_boottime_s close_evidence mode revision claim_token".split())
 REASONS = set("policy-invalid policy-expired window-closed load-high quota-full "
               "budget-full weight-full cpu-full start-interval fifo census-unknown "
               "resource-busy legacy-freeze request-expired request-terminal "
@@ -49,6 +50,8 @@ def validate_record(value, name):
     require(claim["run_id"] == value["admitted_run_id"] and claim["boot_id"] == value["boot_id"]
             and claim["weight"] == value["weight"], "claim-identity")
     integer(claim["lane"], 1, 12)
+    require(type(claim["claim_token"]) is str
+            and re.fullmatch(r"[0-9a-f]{64}", claim["claim_token"]), "claim-token")
     width = value["weight"] if claim["mode"] == "night" else 12
     require(type(claim["cpus"]) is list and len(claim["cpus"]) == width, "claim-cpus")
     for cpu in claim["cpus"]:
@@ -81,7 +84,8 @@ def admission_receipt(request, run_id, policy, lane, reason=None, claim=None, re
             "cpus": claim["cpus"] if claim else [],
             "weight": claim["weight"] if claim else None,
             "replay": replay, "execute": not reason and not replay,
-            "claim_state": claim["state"] if claim else None}
+            "claim_state": claim["state"] if claim else None,
+            "claim_token": claim["claim_token"] if claim else None}
 
 
 class DeskPolicy:
@@ -379,17 +383,20 @@ class DeskPolicy:
                      "cpus": available[:record["weight"]] if policy["mode"] == "night" else available,
                      "boot_id": sample.boot,
                      "process": identity, "state": "active", "admitted_boottime_s": final.bt,
+                     "claim_token": secrets.token_hex(32),
                      "closed_boottime_s": None, "close_evidence": None,
                      "mode": policy["mode"], "revision": policy["revision"]}
             record.update(state="admitted", admitted_run_id=run_id, claim=claim, last_reason=None)
             self.write_record(record)
             return self.receipt(request_id, run_id, policy, lane, claim=claim)
 
-    def close(self, request_id, run_id, pid, life_fd, mutex_fd):
+    def close(self, request_id, run_id, pid, life_fd, mutex_fd, *, claim_token=None):
         with mutex(self.root, inherited=mutex_fd):
             record = validate_record(read_json(self.record_path(request_id)), request_id)
             claim = record["claim"]
             require(claim is not None and claim["run_id"] == run_id, "request-conflict")
+            require(type(claim_token) is str and secrets.compare_digest(claim_token, claim["claim_token"]),
+                    "claim-token")
             if claim["state"] == "closed":
                 return record
             sample = self.runtime.sample()
@@ -397,10 +404,17 @@ class DeskPolicy:
                     "close-unproven")
             assert_held(life_fd, self.life_path(record["project"], claim["lane"]))
             identity = process(pid)
-            require(identity["sid"] == claim["process"]["sid"]
-                    and not identity["zombie"] and os.getsid(0) == identity["sid"]
+            require(not identity["zombie"] and os.getsid(0) == identity["sid"]
                     and pid in (os.getpid(), os.getppid()), "close-unproven")
-            require(set(session_members(identity["sid"])) <= {pid, os.getpid()}, "close-unproven")
+            allowed = {pid, os.getpid()}
+            original = claim["process"]
+            try:
+                if process(original["pid"])["start"] == original["start"]:
+                    allowed.add(original["pid"])
+            except (FileNotFoundError, ProcessLookupError):
+                pass
+            for sid in {original["sid"], identity["sid"]}:
+                require(set(session_members(sid)) <= allowed, "close-unproven")
             claim.update(state="closed", closed_boottime_s=sample.bt, close_evidence="session-empty")
             self.write_record(record)
             return record

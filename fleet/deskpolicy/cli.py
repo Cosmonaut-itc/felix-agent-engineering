@@ -61,6 +61,8 @@ def parser():
             item.add_argument("--pid", type=int, required=True)
             item.add_argument("--mutex-fd", type=int, default=9)
             item.add_argument("--life-fd", type=int, default=8)
+            if name == "cerrar":
+                item.add_argument("--claim-token-fd", type=int, required=True)
         else:
             item.add_argument("--recibo", action="store_true",
                               help="Guardar runs/<run-id>/pao-admission.json antes del guion")
@@ -111,7 +113,8 @@ def execute(engine, args):
         child = subprocess.Popen(command, close_fds=True)
         code = child.wait()
         with mutex(engine.root) as lock:
-            engine.close(args.request_id, args.run_id, os.getpid(), life, lock)
+            engine.close(args.request_id, args.run_id, os.getpid(), life, lock,
+                         claim_token=receipt["claim_token"])
         return 128 - code if code < 0 else code
     finally:
         os.close(life)
@@ -132,7 +135,9 @@ def main(argv=None):
         elif args.command == "ejecutar":
             return execute(engine, args)
         elif args.command == "cerrar":
-            output(engine.close(args.request_id, args.run_id, args.pid, args.life_fd, args.mutex_fd))
+            token = os.read(args.claim_token_fd, 66).decode("ascii").strip()
+            output(engine.close(args.request_id, args.run_id, args.pid, args.life_fd, args.mutex_fd,
+                                claim_token=token))
         elif args.command == "estado":
             output(engine.status(args.request_id))
         elif args.command == "preflight":

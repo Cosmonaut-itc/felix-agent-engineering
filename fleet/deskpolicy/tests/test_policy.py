@@ -55,7 +55,8 @@ def actor(harness, request, lane, connection, barrier=None):
                 harness.bt, harness.now = message[1:]
                 try:
                     with mutex(engine.root) as lock:
-                        result = engine.close(request, "run-" + request, os.getpid(), life, lock)
+                        result = engine.close(request, "run-" + request, os.getpid(), life, lock,
+                                              claim_token=receipt["claim_token"])
                     connection.send(result["claim"]["state"])
                     return
                 except Invalid as exc:
