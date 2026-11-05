@@ -62,12 +62,19 @@ No ejecutan `deploy-desk.sh` ni `withdraw-desk.sh`.
 | `20261104-235729-570bad` | Runtime y pruebas de `f0713ca` | 0. 44 pruebas OK en 960.836 s y `bin/pao check` correcto. |
 | `20261105-001608-85e3f9` | Intento sobre `937621c` | 1. Gate interno de espaciado, sin ejecutar pruebas. |
 | `20261105-002203-3da4ce` | Runtime y pruebas de `be5b12a` | 0. 44 pruebas OK en 431.592 s y `bin/pao check` correcto. |
+| `20261105-003127-75c302` | Runtime y pruebas finales de `a9de766` | 0. 46 pruebas OK en 449.386 s y `bin/pao check` correcto. |
 
 El primer gate midió carga 11.0703 y 339.08 s. El segundo gate midió carga
 9.2910 y 153.22 s. Antes del intento final se midieron carga 8.6655 y
 149.05 s, pero el gate interno rechazó el espaciado respecto de otra carpeta
 de runs. Se conserva el intento fallido y se reintenta sin relajar el gate.
 El gate de la segunda corrida corregida midió carga 5.7480 y 145.18 s.
+El gate final midió carga 4.8789 y 131.03 s. La corrida final acreditó Python
+3.12.3 y afinidad `[0, 1]`. Su hash de los siete archivos del runtime es
+`92b0957b76e2c33b63dcd49f49b73193d26566c4978423a78cd28bfc35b60bae`.
+Los commits posteriores sólo registran documentación y evidencia, sin cambiar
+ese runtime ni las 46 pruebas. Una consulta final de `/proc` no encontró
+procesos no zombies con cwd en el mirror de esta corrida.
 Los logs completos están en `evidence/<runId>.log`. Sólo se normalizan
 los espacios al final de líneas de progreso de unittest para `git diff --check`.
 Los errores de la reproducción incluyen el helper de instalación y el API de
