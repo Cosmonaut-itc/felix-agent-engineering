@@ -1,5 +1,3 @@
-import contextlib
-import io
 import json
 import multiprocessing as mp
 import os
@@ -105,6 +103,9 @@ class RegressionTest(unittest.TestCase):
                 view = self.engine.status()
                 self.assertEqual(view["live"][project], 1)
                 self.assertNotEqual(view.get("detail"), "duplicate-resource")
+                alternative, _, _ = self.launch(new, 2)
+                self.assertTrue(alternative["execute"], alternative)
+                self.assertEqual(self.engine.status()["live"][project], 2)
                 self.advance(120)
 
     def test_c1_death_after_census_before_flock_keeps_active_reservation(self):
