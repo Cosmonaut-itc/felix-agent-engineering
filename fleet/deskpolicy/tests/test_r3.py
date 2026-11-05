@@ -46,21 +46,38 @@ def slow_final_actor(harness, arguments, closed, connection):
     def controlled(path, value, **kwargs):
         if path.name == 'pao-admission.json' and value.get('claim_state') == 'closed':
             closed.set()
-            time.sleep(.5)
+            time.sleep(1)
         real_atomic(path, value, **kwargs)
     with mock.patch.object(cli, 'atomic_json', side_effect=controlled):
         fixtures.cli_actor(harness, arguments, connection)
 
 
-def failing_close_actor(harness, arguments, failure, connection):
+def census_actor(harness, action, connection):
+    engine = DeskPolicy(Runtime(harness), prepare=False)
+    try:
+        connection.send({'rc': 0, 'view': getattr(engine, action)()})
+    except (OSError, ValueError) as exc:
+        connection.send({'rc': 75, 'detail': str(exc)})
+
+
+def failing_close_actor(harness, arguments, failure, connection, *, journal_failure=False):
     engine = DeskPolicy(Runtime(harness))
     stream, errors = io.StringIO(), io.StringIO()
     os.setsid()
+    def fail_close(*args, **kwargs):
+        if journal_failure:
+            engine.write_record = mock.Mock(side_effect=OSError('journal-disk'))
+        raise failure
+
     with mock.patch.object(cli, 'DeskPolicy', return_value=engine), \
-         mock.patch.object(engine, 'close', side_effect=failure), \
+         mock.patch.object(engine, 'close', side_effect=fail_close), \
          contextlib.redirect_stdout(stream), contextlib.redirect_stderr(errors):
         code = cli.main(arguments)
     connection.send({'rc': code, 'output': stream.getvalue(), 'stderr': errors.getvalue()})
+
+
+def failed_journal_actor(harness, arguments, failure, connection):
+    failing_close_actor(harness, arguments, failure, connection, journal_failure=True)
 
 
 def any_admit_actor(harness, connection):
@@ -80,6 +97,33 @@ def any_admit_actor(harness, connection):
     finally:
         for fd in fds.values():
             os.close(fd)
+
+
+def keeper_child_actor(harness, connection):
+    import subprocess
+    from deskpolicy.store import open_file
+    os.setsid()
+    engine = DeskPolicy(Runtime(harness))
+    life = open_file(engine.life_path('jale', 1), create=True)
+    with mutex(engine.root) as lock:
+        receipt = engine.admit('keeper-child', 'run-keeper-child', 1, os.getpid(), life, lock)
+    keeper = os.fork()
+    if keeper:
+        os.close(life)
+        os.waitpid(keeper, 0)
+        return
+    try:
+        os.setsid()
+        child = subprocess.Popen(['/usr/bin/taskset', '-c', '0', '/bin/sleep', '60'], close_fds=True)
+        with mutex(engine.root) as lock:
+            try:
+                engine.close('keeper-child', 'run-keeper-child', os.getpid(), life, lock,
+                             claim_token=receipt['claim_token'], script_exit_code=3)
+            except Invalid as exc:
+                connection.send((child.pid, str(exc)))
+    finally:
+        os.close(life)
+        os._exit(0)
 
 
 class RoundThreeTest(unittest.TestCase):
@@ -132,8 +176,10 @@ class RoundThreeTest(unittest.TestCase):
         worker = self.spawn(slow_final_actor, self.h,
                             self.execute_args('concurrent', ['/bin/true']), closed)
         self.assertTrue(closed.wait(10))
-        self.engine.status()
-        self.engine.publish()
+        readers = [self.spawn(census_actor, self.h, action) for action in ('status', 'publish')]
+        for reader in readers:
+            result = self.result(reader)
+            self.assertEqual(result['rc'], 0, result)
         self.assertEqual(self.result(worker)['rc'], 0)
 
     def test_w12_real_close_mutex_timeout_preserves_exit(self):
@@ -155,23 +201,24 @@ class RoundThreeTest(unittest.TestCase):
             time.sleep(6)
         result = self.result(worker)
         receipt = read_json(directory / 'pao-admission.json')
-        print('R3 timeout', result['rc'], receipt, flush=True)
+        print('R3 timeout', {k: receipt.get(k) for k in
+              ('script_exit_code', 'claim_state', 'close_error')}, 'wrapper_rc', result['rc'], flush=True)
         self.assertEqual(result['rc'], 3)
         self.assertEqual(receipt['script_exit_code'], 3)
         self.assertEqual(receipt['claim_state'], 'uncertain')
         self.assertEqual(self.engine.status()['weight'], 1)
 
-    def check_close_failure(self, failure):
+    def check_close_failure(self, failure, target=failing_close_actor):
         name = 'failure'
         self.pending(name)
         self.publish()
         directory = self.receipt_directory(name)
         args = self.execute_args(name, ['/bin/sh', '-c', 'exit 3'])
-        result = self.result(self.spawn(failing_close_actor, self.h, args, failure))
+        result = self.result(self.spawn(target, self.h, args, failure))
         self.assertEqual(result['rc'], 3)
         receipt = read_json(directory / 'pao-admission.json')
         self.assertEqual((receipt['script_exit_code'], receipt['claim_state']), (3, 'uncertain'))
-        diagnostic = json.loads(result['stderr'])
+        diagnostic = json.loads(result['stderr'].splitlines()[0])
         self.assertEqual((diagnostic['schema'], diagnostic['detail']),
                          ('pao/desk-error@1', str(failure)))
 
@@ -183,6 +230,10 @@ class RoundThreeTest(unittest.TestCase):
 
     def test_n2_unexpected_close_preserves_exit(self):
         self.check_close_failure(RuntimeError('unexpected-close'))
+
+    def test_n2_receipt_survives_failure_to_persist_uncertainty(self):
+        self.check_close_failure(OSError('close-disk'), failed_journal_actor)
+        self.assertEqual(self.engine.status()['weight'], 1)
 
     def test_wa_reconcile_dead_day_claim_restores_night_cpus(self):
         self.h.now = self.h.now.replace(hour=16)
@@ -227,6 +278,28 @@ class RoundThreeTest(unittest.TestCase):
         self.assertEqual((self.h.root / '.pao-reconciled-child/kind').read_text(), 'verify')
         self.engine.publish()
 
+    def test_wa_reconcile_checks_the_recorded_keeper_session(self):
+        self.pending('keeper-child', 'jale', 'verify')
+        self.publish()
+        worker, pipe = self.spawn(keeper_child_actor, self.h)
+        self.assertTrue(pipe.poll(10))
+        pid, reason = pipe.recv()
+        self.assertEqual(reason, 'close-unproven')
+        from deskpolicy.store import process, session_members
+        self.extra_pids.append((pid, process(pid)['start']))
+        worker.join(5)
+        self.engine.reconcile()
+        claim = read_json(self.engine.record_path('keeper-child'))['claim']
+        self.assertEqual((claim['state'], claim['script_exit_code']), ('uncertain', 3))
+        os.kill(pid, 15)
+        deadline = time.monotonic() + 10
+        while session_members(claim['keeper_sid']) and time.monotonic() < deadline:
+            time.sleep(.02)
+        result = self.run_cli(['reconciliar'])
+        self.assertEqual(result['rc'], 0)
+        self.assertEqual(json.loads(result['output'])['closed'], ['keeper-child'])
+        self.assertEqual(read_json(self.engine.record_path('keeper-child'))['claim']['script_exit_code'], 3)
+
     def test_wb_any_chooses_second_lane_after_uncertain_first(self):
         self.pending('old')
         self.pending('next')
@@ -268,6 +341,13 @@ class RoundThreeTest(unittest.TestCase):
         self.assertFalse(held(self.engine.life_path('hasito', 1)))
         pipe.send('done')
         candidate.join(5)
+
+    def test_disable_night_persists_before_a_failed_reconciliation(self):
+        self.pending('broken')
+        self.engine.record_path('broken').write_bytes(b'{')
+        with self.assertRaises(ValueError):
+            self.engine.publish(disable_night=True)
+        self.assertFalse(read_json(self.h.config)['night_enabled'])
 
     def test_n1_contract_documents_status_bootstrap_and_u2_notes(self):
         from pathlib import Path
