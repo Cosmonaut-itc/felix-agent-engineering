@@ -10,8 +10,8 @@ from . import VERSION
 from .model import (BOOT, INTERVAL, KINDS, PROJECTS, TTL, WAIT_TTL,
                     Invalid, allocate, config, finite_load, identifier,
                     integer, keys, night, require, timestamp, utc_text, validate_policy)
-from .store import (Runtime, atomic_json, assert_held, code_digest, digest, held, mutex,
-                    process, read_json, secure_dir, secure_fd, session_members)
+from .store import (RECEIPT_DIR_MODES, Runtime, atomic_json, assert_held, code_digest,
+                    digest, held, mutex, process, read_json, secure_dir, secure_fd, session_members)
 
 RECORD_KEYS = set("schema request_id project kind owner boot_id seq state "
                   "admitted_run_id renewed_boottime_s expires_boottime_s "
@@ -45,9 +45,22 @@ def validate_record(value, name):
     if value["state"] != "admitted":
         require(claim is None and value["admitted_run_id"] is None, "request-claim")
         return value
-    keys(claim, CLAIM_KEYS | ({"keeper_sid"} if "keeper_sid" in claim else set()))
+    keys(claim, CLAIM_KEYS | ({"keeper_sid"} if "keeper_sid" in claim else set())
+         | ({"keepers"} if "keepers" in claim else set()))
     if "keeper_sid" in claim:
         integer(claim["keeper_sid"], 1)
+    if "keepers" in claim:
+        require(type(claim["keepers"]) is list, "claim-keepers")
+        seen = set()
+        for keeper in claim["keepers"]:
+            keys(keeper, ("pid", "start", "pgid", "sid", "zombie"))
+            for key in ("pid", "start", "pgid", "sid"):
+                integer(keeper[key], 1)
+            require(keeper["pid"] == keeper["sid"] == keeper["pgid"]
+                    and keeper["zombie"] is False, "claim-keeper")
+            identity = (keeper["pid"], keeper["start"])
+            require(identity not in seen, "claim-keeper-duplicate")
+            seen.add(identity)
     identifier(claim["run_id"])
     require(claim["run_id"] == value["admitted_run_id"] and claim["boot_id"] == value["boot_id"]
             and claim["weight"] == value["weight"], "claim-identity")
@@ -410,7 +423,7 @@ class DeskPolicy:
             claim = {"run_id": run_id, "lane": lane, "weight": record["weight"],
                      "cpus": available[:record["weight"]] if policy["mode"] == "night" else available,
                      "boot_id": sample.boot,
-                     "process": identity, "state": "active", "admitted_boottime_s": final.bt,
+                     "process": identity, "keepers": [], "state": "active", "admitted_boottime_s": final.bt,
                      "claim_token": secrets.token_hex(32),
                      "closed_boottime_s": None, "close_evidence": None,
                      "script_exit_code": None, "close_cause": None,
@@ -418,6 +431,28 @@ class DeskPolicy:
             record.update(state="admitted", admitted_run_id=run_id, claim=claim, last_reason=None)
             self.write_record(record)
             return self.receipt(request_id, run_id, policy, lane, claim=claim)
+
+    def handoff(self, request_id, run_id, pid, life_fd, mutex_fd, *, claim_token=None):
+        """Register each keeper before its launcher releases life or starts load."""
+        with mutex(self.root, inherited=mutex_fd):
+            record = validate_record(read_json(self.record_path(request_id)), request_id)
+            claim = record["claim"]
+            require(claim is not None and claim["run_id"] == run_id, "request-conflict")
+            require(type(claim_token) is str and secrets.compare_digest(claim_token, claim["claim_token"]),
+                    "claim-token")
+            sample = self.runtime.sample()
+            require(claim["state"] != "closed" and claim["boot_id"] == sample.boot
+                    and sample.bt >= claim["admitted_boottime_s"], "handoff-unproven")
+            assert_held(life_fd, self.life_path(record["project"], claim["lane"]))
+            identity = process(pid)
+            require(not identity["zombie"] and identity["pid"] == identity["sid"] == identity["pgid"]
+                    and os.getsid(0) == identity["sid"] and pid in (os.getpid(), os.getppid())
+                    and identity["sid"] != claim["process"]["sid"], "handoff-unproven")
+            keepers = claim.setdefault("keepers", [])
+            if identity not in keepers:
+                keepers.append(identity)
+                self.write_record(record)
+            return record
 
     def close(self, request_id, run_id, pid, life_fd, mutex_fd, *, claim_token=None,
               script_exit_code=None, cause="completed"):
@@ -436,23 +471,22 @@ class DeskPolicy:
             identity = process(pid)
             require(not identity["zombie"] and os.getsid(0) == identity["sid"]
                     and pid in (os.getpid(), os.getppid()), "close-unproven")
-            allowed = {pid, os.getpid()}
+            allowed = [identity, process(os.getpid())]
             original = claim["process"]
             if identity["sid"] != original["sid"]:
-                require(claim.get("keeper_sid", identity["sid"]) == identity["sid"], "close-unproven")
-                claim["keeper_sid"] = identity["sid"]
-                # Retain both sessions if a keeper's first close finds children.
-                self.write_record(record)
+                require(identity in claim.get("keepers", []), "close-unproven")
             try:
-                if process(original["pid"])["start"] == original["start"]:
-                    allowed.add(original["pid"])
+                current = process(original["pid"])
+                if current["start"] == original["start"]:
+                    allowed.append(current)
             except (FileNotFoundError, ProcessLookupError):
                 pass
-            for sid in {original["sid"], identity["sid"]}:
-                if not set(session_members(sid)) <= allowed:
+            for sid in self.claim_sessions(claim):
+                if session_members(sid, exclude=allowed) != []:
+                    claim["state"] = "uncertain"
                     if script_exit_code is not None:
-                        claim.update(state="uncertain", script_exit_code=integer(script_exit_code, 0, 255))
-                        self.write_record(record)
+                        claim["script_exit_code"] = integer(script_exit_code, 0, 255)
+                    self.write_record(record)
                     raise Invalid("close-unproven")
             require(cause in ("completed", "stopped"), "close-cause")
             if script_exit_code is not None:
@@ -461,6 +495,26 @@ class DeskPolicy:
                          close_cause=cause)
             self.write_record(record)
             return record
+
+    @staticmethod
+    def claim_sessions(claim):
+        sessions = {claim["process"]["sid"]}
+        sessions.update(p["sid"] for p in claim.get("keepers", []))
+        if "keeper_sid" in claim:
+            sessions.add(claim["keeper_sid"])
+        return sessions
+
+    def reconcile_receipt(self, record):
+        path = self.runtime.receipt_path(record["claim"]["run_id"])
+        try:
+            receipt = read_json(path, directory_modes=RECEIPT_DIR_MODES)
+        except FileNotFoundError:
+            return
+        require(receipt.get("schema") == "pao/desk-admission@1"
+                and receipt.get("state") == "admitted" and receipt.get("request_id") == record["request_id"]
+                and receipt.get("run_id") == record["claim"]["run_id"], "receipt-conflict")
+        receipt.update(claim_state="closed", close_cause=record["claim"]["close_cause"])
+        atomic_json(path, receipt, directory_modes=RECEIPT_DIR_MODES)
 
     def reconcile(self, mutex_fd=None):
         """Close uncertain reservations only with an empty session and free life lock."""
@@ -473,9 +527,10 @@ class DeskPolicy:
                 claim = record["claim"]
                 if claim["state"] != "uncertain":
                     continue
+                if record["project"] == "jale" and record["kind"] == "verify" and not claim.get("keepers"):
+                    continue
                 try:
-                    empty = all(not session_members(sid) for sid in
-                                {claim["process"]["sid"], claim.get("keeper_sid", claim["process"]["sid"])})
+                    empty = all(session_members(sid) == [] for sid in self.claim_sessions(claim))
                     free = not held(self.life_path(record["project"], claim["lane"]))
                 except (OSError, ValueError):
                     continue
@@ -494,6 +549,7 @@ class DeskPolicy:
                 claim.update(state="closed", closed_boottime_s=sample.bt,
                              close_evidence="session-empty", close_cause="reconciled")
                 self.write_record(record)
+                self.reconcile_receipt(record)
                 closed.append(record["request_id"])
             return {"schema": "pao/desk-reconcile@1", "closed": closed}
 

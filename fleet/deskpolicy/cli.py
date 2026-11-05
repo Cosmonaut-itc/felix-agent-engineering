@@ -50,11 +50,11 @@ def parser():
     pending.add_argument("--owner", required=True)
     pending.add_argument("--weight", type=int, required=True)
     pending.add_argument("--retirar", action="store_true")
-    for name in ("admitir", "cerrar", "ejecutar"):
+    for name in ("admitir", "traspasar", "cerrar", "ejecutar"):
         item = sub.add_parser(name)
         item.add_argument("--request-id", required=True)
         item.add_argument("--run-id", required=True)
-        if name != "cerrar":
+        if name in ("admitir", "ejecutar"):
             item.add_argument("--lane", type=lambda raw: "any" if raw == "any" else int(raw), required=True)
             item.add_argument("--local-limit", type=int)
         if name != "ejecutar":
@@ -63,8 +63,9 @@ def parser():
             item.add_argument("--life-fd", type=int, default=8)
             if name == "admitir":
                 item.add_argument("--life-fds", nargs="+", metavar="LANE:FD")
-            if name == "cerrar":
+            if name in ("traspasar", "cerrar"):
                 item.add_argument("--claim-token-fd", type=int, required=True)
+            if name == "cerrar":
                 item.add_argument("--script-exit-code", type=int)
                 item.add_argument("--cause", choices=("completed", "stopped"), default="completed")
         else:
@@ -114,8 +115,9 @@ def execute(engine, args):
             os.close(fd)
 
     def diagnostic(exc):
-        value = {"schema": "pao/desk-error@1", "reason": "census-unknown",
-                 "detail": str(exc), "exit_code": 75, "script_exit_code": code}
+        value = {"schema": "pao/desk-close-diagnostic@1", "reason": "close-unproven"
+                 if str(exc) == "close-unproven" else "close-error",
+                 "detail": str(exc), "script_exit_code": code}
         print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
         return value
 
@@ -229,7 +231,7 @@ def execute(engine, args):
                     publish_receipt(receipt)
             except Exception as recovery_error:
                 diagnostic(recovery_error)
-        if not args.recibo or close_error is not None:
+        if not args.recibo:
             try:
                 output({**receipt, "claim_token": None})
             except Exception as exc:
@@ -254,7 +256,7 @@ def execute(engine, args):
 def main(argv=None):
     args = parser().parse_args(argv)
     try:
-        if args.command in ("admitir", "cerrar"):
+        if args.command in ("admitir", "traspasar", "cerrar"):
             engine = DeskPolicy(prepare=False)
             engine.prepare(inherited=args.mutex_fd)
         else:
@@ -275,6 +277,12 @@ def main(argv=None):
             return 75 if receipt["state"] == "denied" else 0
         elif args.command == "ejecutar":
             return execute(engine, args)
+        elif args.command == "traspasar":
+            token = os.read(args.claim_token_fd, 66).decode("ascii").strip()
+            record = engine.handoff(args.request_id, args.run_id, args.pid, args.life_fd,
+                                    args.mutex_fd, claim_token=token)
+            output({"schema": "pao/desk-handoff@1", "request_id": args.request_id,
+                    "run_id": args.run_id, "keeper": record["claim"]["keepers"][-1]})
         elif args.command == "cerrar":
             token = os.read(args.claim_token_fd, 66).decode("ascii").strip()
             output(engine.close(args.request_id, args.run_id, args.pid, args.life_fd, args.mutex_fd,

@@ -221,15 +221,37 @@ def process(pid, owned=True):
             "sid": int(tail[3]), "zombie": tail[0] == "Z"}
 
 
-def session_members(sid):
-    members = []
-    for item in Path("/proc").iterdir():
-        if not item.name.isdigit():
-            continue
+def session_members(sid, *, exclude=()):
+    """[] proves empty; a nonempty list finds members; None is inconclusive.
+
+    Exclusions are exact live (pid, start) identities of closing controls.
+    Zombies are members until reaped, including excluded control identities.
+    """
+    excluded = {(p["pid"], p["start"]) for p in exclude}
+    for sweep in range(2):
+        members = []
         try:
-            identity = process(int(item.name), owned=False)
-        except (FileNotFoundError, ProcessLookupError):
-            continue
-        if identity["sid"] == sid and not identity["zombie"]:
-            members.append(identity["pid"])
-    return members
+            started = int(time.clock_gettime(time.CLOCK_BOOTTIME) * os.sysconf("SC_CLK_TCK"))
+            entries = list(Path("/proc").iterdir())
+            for item in entries:
+                if not item.name.isdigit():
+                    continue
+                before = item.stat()
+                identity = process(int(item.name), owned=False)
+                verified = process(int(item.name), owned=False)
+                after = item.stat()
+                if (identity["start"] >= started
+                        or (before.st_dev, before.st_ino) != (after.st_dev, after.st_ino)
+                        or (identity["pid"], identity["start"], identity["sid"]) !=
+                        (verified["pid"], verified["start"], verified["sid"])):
+                    return None
+                if verified["sid"] == sid and (verified["zombie"] or
+                        (verified["pid"], verified["start"]) not in excluded):
+                    members.append(verified["pid"])
+        except (OSError, ValueError, IndexError):
+            return None
+        if members:
+            return members
+        if sweep == 0:
+            time.sleep(0.02)
+    return []
