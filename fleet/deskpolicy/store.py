@@ -27,6 +27,9 @@ class Sample:
 
 class Runtime:
     def __init__(self, harness=None):
+        if harness is None and os.environ.get("RUN_SUITE_HARNESS"):
+            from .testing import Harness
+            harness = Harness.from_environment()
         if harness is not None:
             from .testing import Harness
             require(type(harness) is Harness, "explicit-harness-required")
@@ -50,7 +53,7 @@ class Runtime:
         return Sample(dt.datetime.now(UTC), int(time.clock_gettime(time.CLOCK_BOOTTIME)), boot)
 
     def load(self):
-        return self.harness.load if self.harness else os.getloadavg()[0]
+        return self.harness.load_sample() if self.harness else os.getloadavg()[0]
 
     def cpus(self):
         if self.harness:
