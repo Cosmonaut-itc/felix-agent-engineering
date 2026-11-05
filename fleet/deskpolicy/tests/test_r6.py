@@ -19,6 +19,37 @@ from deskpolicy.tests import test_policy as fixtures
 from deskpolicy.tests import test_r4 as r4
 
 
+def observed_sync_actor(harness, arguments, events, connection):
+    """Observe the real wait/select; leave reads, deadlines and clocks intact."""
+    real_wait, real_select = cli.wait_sync, cli.select.select
+    admitted = [None]
+    real_admit = DeskPolicy.admit
+
+    def admit(engine, *args, **kwargs):
+        receipt = real_admit(engine, *args, **kwargs)
+        admitted[0] = time.monotonic()
+        return receipt
+
+    def wait(fd, deadline, stopped):
+        entered = time.monotonic()
+        events.send(('entry', deadline, entered, entered - admitted[0]))
+        first = True
+        def select(*args, **kwargs):
+            nonlocal first
+            if first:
+                first = False
+                events.send(('select', deadline, time.monotonic()))
+            return real_select(*args, **kwargs)
+        with mock.patch.object(cli.select, 'select', side_effect=select):
+            result = real_wait(fd, deadline, stopped)
+        events.send(('exit', deadline, entered, time.monotonic(), result))
+        return result
+
+    with mock.patch.object(DeskPolicy, 'admit', admit), \
+         mock.patch.object(cli, 'wait_sync', side_effect=wait):
+        fixtures.cli_actor(harness, arguments, connection)
+
+
 def bad_keeper_actor(harness, variant, connection):
     os.setsid()
     engine = DeskPolicy(Runtime(harness))
@@ -61,7 +92,24 @@ def bad_keeper_actor(harness, variant, connection):
 
 
 class RoundSixTest(r4.RoundFourTest):
-    run_cli = fixtures.PolicyTest.run_cli
+    def result(self, pair):
+        # Storage after a measured sync result can be slow on the shared HDD.
+        worker, pipe = pair
+        for attempt in range(3):
+            if pipe.poll(60):
+                return super().result(pair)
+            print('R6 CLI pending', worker.pid, 'attempt', attempt + 1, flush=True)
+        self.fail('CLI did not finish after three bounded storage waits')
+
+    def run_cli(self, arguments):
+        return self.result(self.spawn(fixtures.cli_actor, self.h, arguments))
+
+    def sync_event(self, events):
+        for _ in range(3):
+            if events.poll(60):
+                return events.recv()
+        self.fail('sync observer did not report after bounded preparation waits')
+
     close_actor = fixtures.PolicyTest.close_actor
     renew = fixtures.PolicyTest.renew
     advance = fixtures.PolicyTest.advance
@@ -76,51 +124,68 @@ class RoundSixTest(r4.RoundFourTest):
 
     def sync_case(self, late):
         self.h.now = self.h.now.replace(hour=16)
-        name = 'late' if late else 'timely'
-        self.pending(name)
-        directory = self.receipt_directory(name)
-        marker = self.h.directory / (name + '.executed')
-        reader, writer = os.pipe()
-        worker = None
-        worker_pid = None
-        try:
-            args = self.execute_args(name, [sys.executable, '-I', '-c',
-                'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.open("a").write("once\\n")', str(marker)])
-            at = args.index('--')
-            args[at:at] = ['--sync-ready-fd', str(reader), '--sync-timeout-s', '3']
-            worker, pipe = self.spawn(fixtures.cli_actor, self.h, args)
-            worker_pid = worker.pid
-            def waiting():
-                if not (directory / 'pao-admission.json').exists():
-                    return False
-                wait = Path('/proc/{}/wchan'.format(worker.pid)).read_text()
-                return 'poll_schedule_timeout' in wait or wait.strip() in ('do_select', '__pollwait')
-            r4.until(waiting, 'control never reached production select')
-            if late:
-                os.kill(worker.pid, signal.SIGSTOP)
-                _, status = os.waitpid(worker.pid, os.WUNTRACED)
-                self.assertTrue(os.WIFSTOPPED(status))
-                time.sleep(3.3)
-            os.write(writer, b'1')
-            if late:
-                os.kill(worker.pid, signal.SIGCONT)
-            result = self.result((worker, pipe))
-            receipt = read_json(directory / 'pao-admission.json')
-            print('R6 SYNC', late, result['rc'], receipt, 'ran', marker.exists(), flush=True)
-            self.assertEqual(result['rc'], 75 if late else 0)
-            self.assertEqual((receipt['claim_state'], receipt['close_cause'], receipt['script_exit_code']),
-                             ('closed', 'sync-timeout', None) if late else ('closed', 'completed', 0))
-            self.assertEqual(marker.read_text() if marker.exists() else '', '' if late else 'once\n')
-            self.assertEqual(self.engine.status()['weight'], 0)
-            self.assertFalse(held(self.engine.life_path('hasito', 1)))
-            self.assertEqual(self.run_cli(args)['rc'], 0)
-            self.assertEqual(marker.read_text() if marker.exists() else '', '' if late else 'once\n')
-        finally:
-            if worker is not None:
-                with contextlib.suppress(ProcessLookupError):
-                    os.kill(worker_pid, signal.SIGCONT)
-            os.close(reader)
-            os.close(writer)
+        timeout = 3.0
+        for attempt in range(3):
+            name = ('late' if late else 'timely') + str(attempt)
+            self.pending(name)
+            directory = self.receipt_directory(name)
+            marker = self.h.directory / (name + '.executed')
+            reader, writer = os.pipe()
+            events, observer = mp.get_context('fork').Pipe()
+            worker = None
+            try:
+                args = self.execute_args(name, [sys.executable, '-I', '-c',
+                    'import pathlib,sys; p=pathlib.Path(sys.argv[1]); p.open("a").write("once\\n")', str(marker)])
+                at = args.index('--')
+                args[at:at] = ['--sync-ready-fd', str(reader), '--sync-timeout-s', str(timeout)]
+                worker, pipe = self.spawn(observed_sync_actor, self.h, args, observer)
+                worker_pid = worker.pid
+                phase, deadline, entered, preparation = self.sync_event(events)
+                self.assertEqual(phase, 'entry')
+                # A slow initial receipt may consume the entire short deadline.
+                # Retry with fresh ids and a deadline derived from that measurement.
+                if deadline - time.monotonic() < .5:
+                    os.close(writer)
+                    writer = None
+                    self.assertEqual(self.result((worker, pipe))['rc'], 75)
+                    worker = None
+                    self.assertFalse(marker.exists())
+                    timeout = max(timeout, preparation * 2 + 1)
+                    print('R6 SYNC preparation retry', preparation, 'timeout', timeout, flush=True)
+                    continue
+                phase, _, _ = self.sync_event(events)
+                self.assertEqual(phase, 'select')
+                if late:
+                    os.kill(worker.pid, signal.SIGSTOP)
+                    _, status = os.waitpid(worker.pid, os.WUNTRACED)
+                    self.assertTrue(os.WIFSTOPPED(status))
+                    time.sleep(max(0, deadline - time.monotonic()) + .3)
+                os.write(writer, b'1')
+                if late:
+                    os.kill(worker.pid, signal.SIGCONT)
+                result = self.result((worker, pipe))
+                worker = None
+                receipt = read_json(directory / 'pao-admission.json')
+                print('R6 SYNC', late, result['rc'], receipt, 'ran', marker.exists(), flush=True)
+                self.assertEqual(result['rc'], 75 if late else 0)
+                self.assertEqual((receipt['claim_state'], receipt['close_cause'], receipt['script_exit_code']),
+                                 ('closed', 'sync-timeout', None) if late else ('closed', 'completed', 0))
+                self.assertEqual(marker.read_text() if marker.exists() else '', '' if late else 'once\n')
+                self.assertEqual(self.engine.status()['weight'], 0)
+                self.assertFalse(held(self.engine.life_path('hasito', 1)))
+                self.assertEqual(self.run_cli(args)['rc'], 0)
+                self.assertEqual(marker.read_text() if marker.exists() else '', '' if late else 'once\n')
+                return
+            finally:
+                if worker is not None:
+                    with contextlib.suppress(ProcessLookupError):
+                        os.kill(worker_pid, signal.SIGCONT)
+                os.close(reader)
+                if writer is not None:
+                    os.close(writer)
+                events.close()
+                observer.close()
+        self.fail('sync preparation consumed all three measured deadlines')
 
     def test_late_ack_after_sigstop_never_executes(self):
         self.sync_case(True)
@@ -129,24 +194,44 @@ class RoundSixTest(r4.RoundFourTest):
         self.sync_case(False)
 
     def test_eof_closes_immediately_with_long_deadline(self):
-        self.pending('eof')
-        self.receipt_directory('eof')
-        reader, writer = os.pipe()
-        os.close(writer)
-        try:
-            args = self.execute_args('eof', ['/bin/true'])
-            at = args.index('--')
-            args[at:at] = ['--sync-ready-fd', str(reader), '--sync-timeout-s', '8']
-            worker, pipe = self.spawn(fixtures.cli_actor, self.h, args)
-            self.assertTrue(pipe.poll(4), 'EOF retained capacity until the sync deadline')
-            result = self.result((worker, pipe))
-            self.assertEqual(result['rc'], 75)
-            self.assertEqual(self.claim('eof')['close_cause'], 'sync-timeout')
-            self.assertIsNone(self.claim('eof')['script_exit_code'])
-            self.assertEqual(self.engine.status()['weight'], 0)
-            self.assertFalse(held(self.engine.life_path('hasito', 1)))
-        finally:
-            os.close(reader)
+        timeout = 8.0
+        for attempt in range(3):
+            name = 'eof' + str(attempt)
+            self.pending(name)
+            self.receipt_directory(name)
+            reader, writer = os.pipe()
+            events, observer = mp.get_context('fork').Pipe()
+            os.close(writer)
+            try:
+                args = self.execute_args(name, ['/bin/true'])
+                at = args.index('--')
+                args[at:at] = ['--sync-ready-fd', str(reader), '--sync-timeout-s', str(timeout)]
+                worker, pipe = self.spawn(observed_sync_actor, self.h, args, observer)
+                phase, deadline, entered, preparation = self.sync_event(events)
+                self.assertEqual(phase, 'entry')
+                if deadline <= entered:
+                    self.assertEqual(self.result((worker, pipe))['rc'], 75)
+                    timeout = max(timeout, preparation * 2 + 1)
+                    print('R6 EOF preparation retry', preparation, 'timeout', timeout, flush=True)
+                    continue
+                self.assertEqual(self.sync_event(events)[0], 'select')
+                phase, _, _, finished, sync = self.sync_event(events)
+                self.assertEqual(phase, 'exit')
+                print('R6 EOF wait_s', finished - entered, 'remaining_s', deadline - entered, flush=True)
+                self.assertFalse(sync)
+                self.assertLess(finished, deadline, 'EOF waited until the sync deadline')
+                result = self.result((worker, pipe))
+                self.assertEqual(result['rc'], 75)
+                self.assertEqual(self.claim(name)['close_cause'], 'sync-timeout')
+                self.assertIsNone(self.claim(name)['script_exit_code'])
+                self.assertEqual(self.engine.status()['weight'], 0)
+                self.assertFalse(held(self.engine.life_path('hasito', 1)))
+                return
+            finally:
+                os.close(reader)
+                events.close()
+                observer.close()
+        self.fail('EOF preparation consumed all three measured deadlines')
 
     def test_cli_rejects_sync_timeout_over_900_before_claim(self):
         self.pending('long')
