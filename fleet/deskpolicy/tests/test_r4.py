@@ -7,7 +7,6 @@ import os
 from pathlib import Path
 import signal
 import subprocess
-import sys
 import time
 import unittest
 from unittest import mock
@@ -28,7 +27,6 @@ def keep_fds(*descriptors):
         if fd > 2 and fd not in descriptors:
             with contextlib.suppress(OSError):
                 os.close(fd)
-
 
 
 def until(check, label):
@@ -117,32 +115,19 @@ def fork_load(connection):
     os._exit(0)
 
 
-def fork_actor(harness, closing, stage, ready, go, connection):
+def fork_actor(harness, stage, connection):
     os.setsid()
     engine = DeskPolicy(Runtime(harness))
     life = open_file(engine.life_path('hasito', 1), create=True)
     with mutex(engine.root) as lock:
-        receipt = engine.admit('fork', 'run-fork', 1, os.getpid(), life, lock)
+        engine.admit('fork', 'run-fork', 1, os.getpid(), life, lock)
     child = os.fork()
     if child == 0:
         os.close(life)
         keep_fds(stage.fileno())
         fork_load(stage)
-    os.close(stage.fileno())
-    if not closing:
-        os.close(life)
-        return
-    ready.set()
-    assert go.wait(60)
-    with mutex(engine.root) as lock:
-        try:
-            record = engine.close('fork', 'run-fork', os.getpid(), life, lock,
-                                  claim_token=receipt['claim_token'], script_exit_code=3)
-            connection.send(record['claim']['state'])
-        except Invalid as exc:
-            connection.send(str(exc))
-        finally:
-            os.close(life)
+    stage.close()
+    os.close(life)
 
 
 def close_race_actor(harness, connection):
@@ -192,6 +177,7 @@ def close_race_actor(harness, connection):
 class RoundFourTest(unittest.TestCase):
     def setUp(self):
         import ctypes
+        # Adopt orphaned test servers; PID 1 reaping must not drive the proof.
         self.assertEqual(ctypes.CDLL(None).prctl(36, 1, 0, 0, 0), 0)
         fixtures.PolicyTest.setUp(self)
 
@@ -214,7 +200,7 @@ class LifecycleTest(RoundFourTest):
     def claim(self, name):
         return read_json(self.engine.record_path(name))['claim']
 
-    def keeper_case(self, count, registered=True, clean_close=False):
+    def keeper_case(self, count, registered=True, clean_close=False, previous_live=False):
         self.pending('handoff', 'jale', 'verify')
         self.publish()
         worker, pipe = self.spawn(handoff_actor, self.h, count, registered)
@@ -234,12 +220,14 @@ class LifecycleTest(RoundFourTest):
         for identity in keepers[:-1]:
             os.waitpid(identity['pid'], 0)
         if clean_close:
-            for identity in servers[:-1]:
-                os.kill(identity['pid'], signal.SIGTERM)
-                os.waitpid(identity['pid'], 0)
+            if not previous_live:
+                for identity in servers[:-1]:
+                    os.kill(identity['pid'], signal.SIGTERM)
+                    os.waitpid(identity['pid'], 0)
             pipe.send('drain')
             self.assertTrue(pipe.poll(60))
-            self.assertEqual(pipe.recv(), ('closed', 'closed'))
+            self.assertEqual(pipe.recv(), ('closed', 'close-unproven' if previous_live else 'closed'))
+            self.assertEqual(self.claim('handoff')['state'], 'uncertain' if previous_live else 'closed')
             worker.join(60)
             self.assertEqual(self.claim('handoff')['script_exit_code'], 3)
             return
@@ -247,6 +235,9 @@ class LifecycleTest(RoundFourTest):
         # contain their own close_fds servers in a second handoff.
         os.kill(keepers[-1]['pid'], signal.SIGKILL)
         os.waitpid(keepers[-1]['pid'], 0)
+        if count > 1:
+            os.kill(servers[-1]['pid'], signal.SIGTERM)
+            os.waitpid(servers[-1]['pid'], 0)
         until(lambda: not held(self.engine.life_path('jale', 1)), 'life lock release')
         result = self.engine.reconcile()
         print('R4 keeper', count, registered, result, self.claim('handoff')['state'], flush=True)
@@ -261,7 +252,7 @@ class LifecycleTest(RoundFourTest):
             durable = self.claim('handoff')['keepers']
             self.assertEqual([(p['pid'], p['start'], p['sid']) for p in durable],
                              [(p['pid'], p['start'], p['sid']) for p in keepers])
-            for server in servers:
+            for server in (servers[:-1] if count > 1 else servers):
                 os.kill(server['pid'], signal.SIGTERM)
             # A zombie remains a member until reaped. Our fixture is a subreaper.
             for identity in keepers + servers:
@@ -279,6 +270,9 @@ class LifecycleTest(RoundFourTest):
     def test_c2_missing_keeper_registration_never_reconciles(self):
         self.keeper_case(1, registered=False)
 
+    def test_c2_close_checks_previous_keeper_session(self):
+        self.keeper_case(2, clean_close=True, previous_live=True)
+
     def test_c2_close_after_all_handoff_sessions_drained(self):
         self.keeper_case(2, clean_close=True)
 
@@ -286,7 +280,7 @@ class LifecycleTest(RoundFourTest):
         self.pending('fork')
         self.publish()
         stage_parent, stage_child = CTX.Pipe()
-        worker, _ = self.spawn(fork_actor, self.h, False, stage_child, CTX.Event(), CTX.Event())
+        worker, _ = self.spawn(fork_actor, self.h, stage_child)
         stage_child.close()
         self.assertTrue(stage_parent.poll(60))
         stage = stage_parent.recv()
@@ -365,9 +359,9 @@ class LifecycleTest(RoundFourTest):
 
     def test_wr3_hasito_contract_requires_local_explicit_lane_before_sync(self):
         contract = (Path(__file__).resolve().parents[2] / 'contracts/desk-politica-v1.md').read_text()
-        self.assertNotIn('La admisión Hasito usa normativamente `--lane any`', contract)
+        self.assertFalse('La admisión Hasito usa normativamente `--lane any`' in contract)
         for text in ('--desk-lane N', '--lane N', 'sin sincronizar', 'menor lock local libre'):
-            self.assertIn(text, contract)
+            self.assertTrue(text in contract, 'Missing contract rule: ' + text)
 
 
 class SessionProofTest(unittest.TestCase):

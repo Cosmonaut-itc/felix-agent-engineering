@@ -17,7 +17,10 @@ from deskpolicy.tests import test_policy as fixtures
 from deskpolicy.tests import test_r2 as r2
 
 
-def receipt_actor(harness, role, paused, replay_ready, finished, connection):
+def receipt_actor(harness, role, prepared, begin, paused, release, attempting, connection):
+    engine = DeskPolicy(Runtime(harness))
+    prepared.set()
+    assert begin.wait(60)
     real_atomic = cli.atomic_json
     writes = 0
 
@@ -27,18 +30,59 @@ def receipt_actor(harness, role, paused, replay_ready, finished, connection):
             writes += 1
             if role == 'first' and writes == 1:
                 paused.set()
-                # Old code lets the replay pass here. Correct code holds the
-                # mutex, so this bounded pause simply delays both callers.
-                replay_ready.wait(.5)
-            if role == 'second':
-                replay_ready.set()
-                finished.wait(2)
+                assert release.wait(60)
         real_atomic(path, value, **kwargs)
-        if role == 'first' and writes == 2:
-            finished.set()
-    with mock.patch.object(cli, 'atomic_json', side_effect=controlled):
-        fixtures.cli_actor(harness, ['ejecutar', '--request-id', 'race', '--run-id',
-            'run-race', '--lane', '1', '--recibo', '--', '/bin/true'], connection)
+
+    @contextlib.contextmanager
+    def attempting_mutex(*args, **kwargs):
+        if role == 'second':
+            attempting.set()
+        with mutex(*args, **kwargs) as lock:
+            yield lock
+
+    os.setsid()
+    stream = io.StringIO()
+    with mock.patch.object(cli, 'atomic_json', side_effect=controlled), \
+         mock.patch.object(cli, 'mutex', side_effect=attempting_mutex), \
+         mock.patch.object(cli, 'DeskPolicy', return_value=engine), contextlib.redirect_stdout(stream):
+        code = cli.main(['ejecutar', '--request-id', 'race', '--run-id',
+            'run-race', '--lane', '1', '--recibo', '--', '/bin/true'])
+    connection.send({'rc': code, 'output': stream.getvalue()})
+
+
+def timeout_actor(harness, arguments, ready, proceed, timed_out, released, connection):
+    real_popen = cli.subprocess.Popen
+    real_mutex = cli.mutex
+
+    class ControlledChild:
+        def __init__(self, *args, **kwargs):
+            self.child = real_popen(*args, **kwargs)
+
+        def wait(self):
+            ready.set()
+            assert proceed.wait(60)
+            return self.child.wait()
+
+        def poll(self):
+            return self.child.poll()
+
+        def send_signal(self, signum):
+            self.child.send_signal(signum)
+
+    @contextlib.contextmanager
+    def observe_timeout(*args, **kwargs):
+        try:
+            with real_mutex(*args, **kwargs) as lock:
+                yield lock
+        except Invalid as exc:
+            if str(exc) == 'mutex-timeout':
+                timed_out.set()
+                assert released.wait(60)
+            raise
+
+    with mock.patch.object(cli.subprocess, 'Popen', ControlledChild), \
+         mock.patch.object(cli, 'mutex', side_effect=observe_timeout):
+        fixtures.cli_actor(harness, arguments, connection)
 
 
 def slow_final_actor(harness, arguments, closed, connection):
@@ -114,6 +158,9 @@ def keeper_child_actor(harness, connection):
         return
     try:
         os.setsid()
+        with mutex(engine.root) as lock:
+            engine.handoff('keeper-child', 'run-keeper-child', os.getpid(), life, lock,
+                           claim_token=receipt['claim_token'])
         child = subprocess.Popen(['/usr/bin/taskset', '-c', '0', '/bin/sleep', '60'], close_fds=True)
         with mutex(engine.root) as lock:
             try:
@@ -158,12 +205,20 @@ class RoundThreeTest(unittest.TestCase):
         self.pending('race')
         self.publish()
         directory = self.receipt_directory('race')
-        paused, replay_ready, finished = [mp.get_context('fork').Event() for _ in range(3)]
-        first = self.spawn(receipt_actor, self.h, 'first', paused, replay_ready, finished)
-        self.assertTrue(paused.wait(10))
-        second = self.spawn(receipt_actor, self.h, 'second', paused, replay_ready, finished)
-        self.assertEqual(self.result(first)['rc'], 0)
-        self.assertEqual(self.result(second)['rc'], 0)
+        prepared = [mp.get_context('fork').Event() for _ in range(2)]
+        begin = [mp.get_context('fork').Event() for _ in range(2)]
+        paused, release, attempting = [mp.get_context('fork').Event() for _ in range(3)]
+        pairs = [self.spawn(receipt_actor, self.h, role, prepared[i], begin[i],
+                            paused, release, attempting) for i, role in enumerate(('first', 'second'))]
+        for event in prepared:
+            self.assertTrue(event.wait(60))
+        begin[0].set()
+        self.assertTrue(paused.wait(60))
+        begin[1].set()
+        self.assertTrue(attempting.wait(60))
+        release.set()
+        for pair in pairs:
+            self.assertEqual(self.result(pair)['rc'], 0)
         receipt = read_json(directory / 'pao-admission.json')
         self.assertEqual((receipt['claim_state'], receipt['script_exit_code'], receipt['close_cause']),
                          ('closed', 0, 'completed'))
@@ -186,19 +241,14 @@ class RoundThreeTest(unittest.TestCase):
         self.pending('timeout')
         self.publish()
         directory = self.receipt_directory('timeout')
-        ready, proceed = self.h.directory / 'ready', self.h.directory / 'proceed'
-        program = ('import pathlib,time; pathlib.Path({!r}).touch();\n'
-                   'while not pathlib.Path({!r}).exists(): time.sleep(.01)\n'
-                   'raise SystemExit(3)').format(str(ready), str(proceed))
-        worker = self.spawn(fixtures.cli_actor, self.h,
-            self.execute_args('timeout', [sys.executable, '-I', '-c', program]))
-        deadline = time.monotonic() + 10
-        while not ready.exists() and time.monotonic() < deadline:
-            time.sleep(.01)
-        self.assertTrue(ready.exists())
+        ready, proceed, timed_out, released = [mp.get_context('fork').Event() for _ in range(4)]
+        worker = self.spawn(timeout_actor, self.h,
+            self.execute_args('timeout', ['/bin/sh', '-c', 'exit 3']), ready, proceed, timed_out, released)
+        self.assertTrue(ready.wait(60))
         with mutex(self.h.root):
-            proceed.touch()
-            time.sleep(6)
+            proceed.set()
+            self.assertTrue(timed_out.wait(60), 'real mutex never timed out')
+        released.set()
         result = self.result(worker)
         receipt = read_json(directory / 'pao-admission.json')
         print('R3 timeout', {k: receipt.get(k) for k in
@@ -220,7 +270,7 @@ class RoundThreeTest(unittest.TestCase):
         self.assertEqual((receipt['script_exit_code'], receipt['claim_state']), (3, 'uncertain'))
         diagnostic = json.loads(result['stderr'].splitlines()[0])
         self.assertEqual((diagnostic['schema'], diagnostic['detail']),
-                         ('pao/desk-error@1', str(failure)))
+                         ('pao/desk-close-diagnostic@1', str(failure)))
 
     def test_n2_process_owner_preserves_exit(self):
         self.check_close_failure(Invalid('process-owner'))
@@ -251,7 +301,7 @@ class RoundThreeTest(unittest.TestCase):
         self.assertTrue(admitted['execute'], admitted)
 
     def test_wa_reconcile_keeps_child_and_life_lock_then_closes(self):
-        self.pending('child', 'jale', 'verify')
+        self.pending('child', 'jale', 'chain')
         self.publish()
         _, worker, connection = self.launch('child')
         metadata = self.h.root / 'slot-0'
@@ -270,7 +320,9 @@ class RoundThreeTest(unittest.TestCase):
         os.kill(pid, 15)
         deadline = time.monotonic() + 10
         from deskpolicy.store import session_members
-        while session_members(worker.pid) and time.monotonic() < deadline:
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(pid, 0)
+        while session_members(worker.pid) != [] and time.monotonic() < deadline:
             time.sleep(.02)
         self.engine.reconcile()
         self.assertEqual(read_json(self.engine.record_path('child'))['claim']['state'], 'closed')
@@ -293,7 +345,9 @@ class RoundThreeTest(unittest.TestCase):
         self.assertEqual((claim['state'], claim['script_exit_code']), ('uncertain', 3))
         os.kill(pid, 15)
         deadline = time.monotonic() + 10
-        while session_members(claim['keeper_sid']) and time.monotonic() < deadline:
+        with contextlib.suppress(ChildProcessError):
+            os.waitpid(pid, 0)
+        while session_members(claim['keepers'][-1]['sid']) != [] and time.monotonic() < deadline:
             time.sleep(.02)
         result = self.run_cli(['reconciliar'])
         self.assertEqual(result['rc'], 0)

@@ -98,6 +98,8 @@ def cli_actor(harness, arguments, connection):
 
 class PolicyTest(unittest.TestCase):
     def setUp(self):
+        import ctypes
+        self.assertEqual(ctypes.CDLL(None).prctl(36, 1, 0, 0, 0), 0)
         self.tmp = tempfile.TemporaryDirectory(prefix=".deskpolicy-", dir=str(Path.cwd()))
         self.h = Harness(self.tmp.name)
         self.h.cpus = tuple(range(12))
@@ -123,6 +125,9 @@ class PolicyTest(unittest.TestCase):
             with contextlib.suppress(FileNotFoundError, ProcessLookupError):
                 if process(pid)["start"] == start:
                     os.kill(pid, signal.SIGTERM)
+        for pid, _ in self.extra_pids:
+            with contextlib.suppress(ChildProcessError):
+                os.waitpid(pid, 0)
         self.tmp.cleanup()
 
     def pending(self, name, project="hasito", kind="script", weight=1):

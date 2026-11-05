@@ -32,6 +32,7 @@ def keeper_actor(harness, connection):
         os.setsid()
         token = receipt.get("claim_token", "0" * 64)
         with mutex(engine.root) as lock:
+            engine.handoff("keeper", "run-keeper", os.getpid(), life, lock, claim_token=token)
             try:
                 engine.close("keeper", "run-keeper", os.getpid(), life, lock,
                              claim_token="f" * 64)
