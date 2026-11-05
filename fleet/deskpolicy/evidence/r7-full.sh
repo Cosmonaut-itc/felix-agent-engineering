@@ -26,6 +26,7 @@ raise SystemExit(0 if load < limit and age >= 120 else 75)
 PY
 exec /usr/bin/taskset -c 0-1 /bin/bash -c '
 set -euo pipefail
+sha256sum --quiet -c fleet/deskpolicy/evidence/r7-inputs.sha256
 /usr/bin/python3 -I fleet/deskpolicy/evidence/r7-fixture-schedules.py
 /usr/bin/python3 -I fleet/deskpolicy/tests/run.py
 /usr/bin/python3 -I fleet/deskpolicy/evidence/r7-hasito-protocol.py .audit/r7-hasito-estado.py
