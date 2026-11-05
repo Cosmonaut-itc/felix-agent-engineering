@@ -215,6 +215,20 @@ class RegressionTest(unittest.TestCase):
                          ("admitted", 3, "uncertain"))
         self.assertEqual(self.engine.status()["weight"], 1)
 
+    def test_w3_stdout_reports_final_receipt_without_receipt_file(self):
+        self.pending("stdout")
+        self.publish()
+        pid_file = self.h.directory / "stdout-child.pid"
+        result = self.run_cli(["ejecutar", "--request-id", "stdout", "--run-id", "run-stdout",
+                              "--lane", "1", "--", "/bin/bash", "-c",
+                              'sleep 45 & echo $! > "$1"; exit 3', "test", str(pid_file)])
+        pid = int(pid_file.read_text())
+        self.extra_pids.append((pid, process(pid)["start"]))
+        receipt = json.loads(result["output"].splitlines()[-1])
+        self.assertEqual((result["rc"], receipt["state"], receipt["script_exit_code"], receipt["claim_state"]),
+                         (3, "admitted", 3, "uncertain"))
+        self.assertIsNone(receipt["claim_token"])
+
     def group_stop(self, stop_signal):
         self.pending("stop")
         self.publish()

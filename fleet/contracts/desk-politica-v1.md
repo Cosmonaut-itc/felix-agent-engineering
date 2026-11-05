@@ -409,7 +409,9 @@ La carpeta y la identidad de cualquier recibo previo se validan bajo el mutex
 antes de guardar una claim. Un error de validación deja cero claims nuevas. No permite redirigirlo por entorno.
 También imprime el recibo JSON en la primera línea de stdout, con `claim_token=null`
 para evitar registrar el token privado en el log del guion.
-La salida posterior pertenece al comando y a su log.
+La salida posterior pertenece al comando y a su log. Sin `--recibo`, el wrapper
+emite además el recibo final como última línea JSON de stdout. Con `--recibo`,
+actualiza el archivo fijo al terminar y conserva el recibo inicial en stdout.
 Un reintento con recibo ya admitido consulta el registro; jamás arranca otro guion.
 El cliente que integra este wrapper debe conservar el recibo admitido original.
 

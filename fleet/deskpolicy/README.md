@@ -85,6 +85,7 @@ Con `--recibo` guarda el JSON en el run remoto antes de ejecutar carga.
 Un guion admitido con salida 75 conserva un recibo admitted.
 Una repetición devuelve execute=false. No ejecuta de nuevo.
 Una sesión con hijos pendientes impide cerrar y conserva incertidumbre.
+Sin `--recibo`, la última línea JSON de stdout contiene el recibo final.
 El recibo guarda `script_exit_code` por separado y el wrapper devuelve ese
 código aunque el cierre no se pueda acreditar. Los recibos admitidos no pierden
 su identidad ni se convierten en una denegación.

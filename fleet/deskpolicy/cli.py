@@ -161,6 +161,8 @@ def execute(engine, args):
                        close_cause=record["claim"]["close_cause"])
         if args.recibo:
             atomic_json(receipt_path, receipt, directory_modes=RECEIPT_DIR_MODES)
+        else:
+            output({**receipt, "claim_token": None})
         return code
     finally:
         for signum, handler in previous_handlers.items():
