@@ -340,7 +340,7 @@ class RegressionTest(unittest.TestCase):
         self.publish()
         for weight in (10, 13):
             result = self.run_cli(["pendiente", "--request-id", "oversize", "--project", "hasito",
-                                   "--kind", "script", "--owner", "test", "--weight", str(weight)])
+                                   "--kind", "script", "--owner", "test", "--lane", "1", "--weight", str(weight)])
             self.assertEqual(result["rc"], 75)
             self.assertEqual(json.loads(result["output"])["reason"], "weight-too-large")
             self.assertFalse(self.engine.record_path("oversize").exists())

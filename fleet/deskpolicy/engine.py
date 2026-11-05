@@ -28,7 +28,10 @@ REASONS = set("policy-invalid policy-expired window-closed load-high quota-full 
 
 
 def validate_record(value, name):
-    keys(value, RECORD_KEYS)
+    keys(value, RECORD_KEYS | ({"lane"} if "lane" in value else set()))
+    if "lane" in value:
+        integer(value["lane"], 1, 12)
+        require(value["project"] == "hasito", "request-lane")
     require(value["schema"] == "pao/desk-wait@1" and value["request_id"] == name,
             "request-schema")
     identifier(name)
@@ -67,6 +70,7 @@ def validate_record(value, name):
     require(claim["run_id"] == value["admitted_run_id"] and claim["boot_id"] == value["boot_id"]
             and claim["weight"] == value["weight"], "claim-identity")
     integer(claim["lane"], 1, 12)
+    require(value.get("lane", claim["lane"]) == claim["lane"], "claim-lane")
     require(type(claim["claim_token"]) is str
             and re.fullmatch(r"[0-9a-f]{64}", claim["claim_token"]), "claim-token")
     width = value["weight"] if claim["mode"] == "night" else 12
@@ -258,10 +262,13 @@ class DeskPolicy:
                     "night_budget": 4, "cpu_weight_budget": None, "max_run_weight": 4,
                     "min_start_interval_s": INTERVAL, "expires_at": None}, reason
 
-    def register(self, request_id, project, kind, owner, weight, withdraw=False):
+    def register(self, request_id, project, kind, owner, weight, withdraw=False, *, lane=None):
         identifier(request_id)
         require(project in PROJECTS and kind in KINDS[project], "request-project-kind")
         integer(weight, 1)
+        if lane is not None:
+            integer(lane, 1, 12)
+            require(project == "hasito", "request-lane")
         require(type(owner) is str and 0 < len(owner) <= 256, "request-owner")
         with mutex(self.root):
             sample = self.runtime.sample()
@@ -269,6 +276,7 @@ class DeskPolicy:
             existing = next((r for r in records if r["request_id"] == request_id), None)
             policy, _ = self.read_policy(sample)
             if existing:
+                require(existing.get("lane") == lane, "request-conflict")
                 require((project, kind, owner, weight, sample.boot) == (
                     existing["project"], existing["kind"], existing["owner"],
                     existing["weight"], existing["boot_id"]), "request-conflict")
@@ -297,6 +305,8 @@ class DeskPolicy:
                       "state": "pending", "admitted_run_id": None,
                       "renewed_boottime_s": sample.bt, "expires_boottime_s": sample.bt + WAIT_TTL,
                       "claim": None, "last_reason": None}
+            if lane is not None:
+                record["lane"] = lane
             self.write_record(record)
             return record
 
@@ -334,6 +344,8 @@ class DeskPolicy:
             live = self.census(records, sample, persist=True)
             record = next((r for r in records if r["request_id"] == request_id), None)
             require(record is not None, "request-terminal")
+            if record.get("lane") is not None:
+                require(lane == record["lane"], "request-conflict")
             if record["state"] == "admitted":
                 claim = record["claim"]
                 require(claim["run_id"] == run_id and (lane == "any" or claim["lane"] == lane), "request-conflict")
@@ -369,7 +381,10 @@ class DeskPolicy:
                 record["state"] = "expired"
                 return deny("weight-too-large")
             waiting = self.waiting(records, sample, policy["max_run_weight"])
-            if waiting[project][0]["request_id"] != request_id:
+            queue = waiting[project]
+            if project == "hasito" and record.get("lane") is not None:
+                queue = [r for r in queue if r.get("lane") in (None, lane)]
+            if queue[0]["request_id"] != request_id:
                 return deny("fifo")
             if lane > limit:
                 return deny("resource-busy")

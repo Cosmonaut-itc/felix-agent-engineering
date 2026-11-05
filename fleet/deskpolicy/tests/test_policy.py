@@ -153,7 +153,7 @@ class PolicyTest(unittest.TestCase):
         for record in self.engine.records():
             if record["state"] == "pending":
                 self.engine.register(record["request_id"], record["project"], record["kind"],
-                                     record["owner"], record["weight"])
+                                     record["owner"], record["weight"], lane=record.get("lane"))
 
     def advance(self, seconds):
         # A waiting consumer pulses every 30 s, including during preparation.

@@ -95,7 +95,10 @@ permanece en el grupo que mata `remote-run stop`, con TERM o KILL. Después de
 recoger al guion cierra con causa `stopped` si ambas sesiones están vacías.
 El keeper Jale registra primero su PID, inicio y SID con `traspasar`, bajo
 el mutex, fd 8 y token por fd heredado. El launcher espera el ACK antes de
-soltar su copia; la carga espera ese registro. Cada keeper posterior repite
+soltar su copia; la carga espera ese registro. Bajo el mutex el traspaso
+comprueba que sólo están el keeper y su propio control en la nueva sesión.
+Ante carga previa o prueba inconclusa falla con
+`handoff-load-before-registration` y el launcher conserva su fd de vida. Cada keeper posterior repite
 el protocolo. El cierre comprueba todas las sesiones registradas.
 
 Los pesos normativos están en el contrato. Hasito declara 1 a 4, con omisión 4.
@@ -110,7 +113,14 @@ rename, conservando el inode del flock. Un hijo vivo conserva la reserva.
 Hasito elige el menor lock local libre permitido y pasa `--lane N` explícito.
 Cada lock fija un carril y conserva su FIFO. `MINI_LOCK` cuenta como lock
 explícito. Ante `resource-busy` conserva la cabeza y reintenta ese carril,
-renovando la espera sin sincronizar ni saltar de fila.
+renovando sólo la solicitud remota, sin sincronizar ni saltar de fila.
+Toma primero el lock local por la FIFO de #984. Sólo su poseedor registra
+`pendiente --lane N` y pide admisión para ese N. Los sucesores esperan
+localmente, sin solicitud en PAO. La cabeza remota de Hasito es por carril.
+Los turnos están en `<lock>.turnos.json`, el mutex en `<lock>.turnos.lock`
+y la bitácora en `<lock>.cola.md`. Un turno activo no se renueva.
+Tras sync-timeout o vencimiento, conserva el lock y pide nuevos request y run
+id. Puede usar hasta `estado.max_lane` locks para mostrar más demanda nocturna.
 El transporte admite antes del sync, conservando mirror y lock local.
 `any` queda para clientes sin reserva local previa; no es normativo para
 Hasito ni Jale. El contrato fija las fases del transporte y el protocolo de fds.
@@ -122,7 +132,9 @@ o cambios de identidad. Se acepta el riesgo de una cadena de fork y salida
 que esquive los tres barridos. Una verify sin keeper registrado puede cerrar
 si la sesión del launcher acredita vacío y el flock está libre. Un keeper
 vivo sin registrar conserva el flock y no puede lanzar hijos antes del registro.
-Al reconciliar también se actualiza el recibo fijo sin perder su salida.
+Al reconciliar o hacer replay se completan desde la claim los campos terminales
+null del recibo, incluso si está closed. Nunca se reemplaza un valor conocido
+ni la identidad admitida. Cada tick reintenta también recibos de claims cerradas.
 
 Toda escritura del recibo se serializa bajo el mutex. Su resultado es monótono.
 Después de recoger la salida, cualquier error del cierre conserva ese código,
@@ -133,7 +145,9 @@ El fd de vida cierra antes de soltarlo tras el commit de cierre.
 
 El control previo de Hasito usa `ejecutar --sync-ready-fd FD`, con un pipe
 heredado del transporte y un byte ASCII `1` cuando terminó el sync.
-`--sync-timeout-s` fija el plazo desde la admisión, 900 s (15 min) por omisión.
+`--sync-timeout-s` fija el plazo absoluto desde la admisión, 900 s (15 min)
+por omisión y como máximo. Tras leer el ACK vuelve a comprobar el reloj.
+EOF sin señal cierra de inmediato con `sync-timeout`.
 Al vencer no ejecuta el guion, cierra con `sync-timeout`, conserva
 `script_exit_code=null` y devuelve 75. Un replay no ejecuta nada.
 El cliente resuelve el recibo y pide otra admisión con nuevas identidades.

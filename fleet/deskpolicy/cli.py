@@ -53,6 +53,7 @@ def parser():
     pending.add_argument("--owner", required=True)
     pending.add_argument("--weight", type=int, required=True)
     pending.add_argument("--retirar", action="store_true")
+    pending.add_argument("--lane", type=int, help="Carril fijo del lock local Hasito ya tomado")
     for name in ("admitir", "traspasar", "cerrar", "ejecutar"):
         item = sub.add_parser(name)
         item.add_argument("--request-id", required=True)
@@ -289,8 +290,9 @@ def main(argv=None):
         else:
             engine = DeskPolicy()
         if args.command == "pendiente":
+            require(args.project != "hasito" or args.lane is not None, "hasito-lane-required")
             output(engine.register(args.request_id, args.project, args.kind, args.owner,
-                                   args.weight, args.retirar))
+                                   args.weight, args.retirar, lane=args.lane))
         elif args.command == "admitir":
             life_fds = args.life_fd
             if args.life_fds:
