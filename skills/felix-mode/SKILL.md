@@ -121,6 +121,28 @@ docs de verificación del repositorio (gates, `remote-run`, QA) y propón una
 vez generarla con `create-verification-skill`. Los gates del `AGENTS.md` siguen
 siendo obligatorios.
 
+Los hosts de pruebas son compartidos y hacen fila. Elige cada corrida por lo
+que demuestra:
+
+- **Prueba dirigida.** Mientras implementas, en cada ronda de corrección y
+  en cada candidato de `arena`, corre sólo lo que toca el cambio: los tests
+  de los archivos y paquetes modificados, el typecheck y el lint de esos
+  paquetes, y la reproducción de cada hallazgo.
+- **Suite completa.** Los gates del `AGENTS.md` corren sobre el head que
+  recibió APTO, antes del merge. En `arena` corren sólo sobre la base
+  elegida después del injerto, y en el acumulador en su paso 8. Si fallan,
+  corrige con prueba dirigida; el head nuevo pasa por una ronda delta y
+  la suite vuelve a correr sobre él.
+- **Evidencia por SHA.** Una corrida verde acredita su SHA. Revisores y
+  verificadores leen esa evidencia y corren sólo los comandos de sus
+  hallazgos o de su verificación del artefacto. Repetir una suite sobre el
+  mismo SHA sólo sirve para diagnosticar un fallo intermitente, y el brief
+  lo declara.
+- **Fail-fast por etapa.** Ordena las etapas de la más barata a la más
+  cara. Detén la corrida al terminar la primera etapa con fallos que la
+  rama de entrega no trae. Dentro de cada etapa conserva la lista completa
+  de fallos para compararla con la de esa rama.
+
 ## Modelos y transporte
 
 - El modelo de cada rol de pstack sale de `~/.agents/docs/agent-routing.md`,
@@ -155,7 +177,7 @@ siendo obligatorios.
   nivel. El brief de cada ronda abre con `Nivel: <normal o alto> por <señal
   o ruta>`, y tu respuesta repite el nivel y su motivo.
 - **Pre-vuelo.** Antes de cada ronda, atiende los comentarios abiertos del
-  PR, corrige lo que ya sabes que falla y corre los checks que cubren el
+  PR, corrige lo que ya sabes que falla y corre la prueba dirigida del
   cambio. El brief nombra los checks que faltan o que ya fallaban.
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
