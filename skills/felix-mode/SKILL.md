@@ -138,9 +138,10 @@ que demuestra:
   hallazgos o de su verificación del artefacto. Repetir una suite sobre el
   mismo SHA sólo sirve para diagnosticar un fallo intermitente, y el brief
   lo declara.
-- **Fail-fast.** Ordena las etapas de la más barata a la más cara y detén
-  la corrida en la primera que falla, con `set -e` entre etapas y `--bail`
-  o `-x` donde el runner lo admita.
+- **Fail-fast por etapa.** Ordena las etapas de la más barata a la más
+  cara. Detén la corrida al terminar la primera etapa con fallos que la
+  rama de entrega no trae. Dentro de cada etapa conserva la lista completa
+  de fallos para compararla con la de esa rama.
 
 ## Modelos y transporte
 
