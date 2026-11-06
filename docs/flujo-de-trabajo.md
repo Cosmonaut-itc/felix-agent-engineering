@@ -99,6 +99,7 @@ tocan CI, dependencias o la gobernanza de agentes.
 | Alto riesgo | Producción o sistemas de cliente, migraciones o borrado de datos, autenticación y permisos, dinero o impuestos, contratos entre servicios, o una ruta de `.agents/high-risk-paths`, que `risk-classify` detecta. | `interrogate` con sol en `high` como Reviewer A y opus-5.5 en `high`. |
 | Diseño | Decisiones de forma antes de implementar. | `architect` con un runner opus-5.5 y dos candidatos. Sin juez cruzado. |
 | Diseño disputado | Alto riesgo, o dos candidatos empatados. | `arena` con opus-5.5 y gpt-6.1-sol, juzgado por astra, y dos implementaciones completas. |
+| Consejo | Sólo cuando pides «consejo», para un cambio o una decisión. | [Consejo](../skills/felix-mode/references/consejo.md): gpt-6.1-sol y opus-5.5 en `high`, y gpt-6-astra en `low`, con nota por ronda en el PR. |
 
 Cada critical o warning trae el comando que lo prueba y su salida. El
 orquestador vuelve a correr ese comando y sólo deja abierto el hallazgo que
