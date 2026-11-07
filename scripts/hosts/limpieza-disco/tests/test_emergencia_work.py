@@ -331,6 +331,26 @@ print(values[min(i, len(values) - 1)])
         self.assertTrue(p.exists(), self.log)
         self.assertIn('algo cambió', self.log)
 
+    def test_r3_nombre_con_glob_no_oculta_git_anidado(self):
+        p = self.copia('copia*')
+        git = p / 'src' / '.git'
+        git.mkdir(parents=True)
+        (git / 'index').write_text('cambio fuera del .git de la copia')
+        for ruta in (git, git.parent, p):
+            self.edad(ruta, 7)
+        self.ejecutar(dry=False)
+        self.assertTrue(p.exists(), self.log)
+        self.assertIn('algo cambió', self.log)
+
+    def test_r3_nombre_con_metacaracteres_admite_index_reciente(self):
+        p = self.copia('copia*[x]?')
+        git = p / '.git'
+        git.mkdir()
+        (git / 'index').write_text('refresco de metadatos')
+        self.edad(p, 7)
+        self.ejecutar(dry=False)
+        self.assertFalse(p.exists(), self.log)
+
     def test_r3_lock_en_subdirectorio_git_sigue_vetando(self):
         p = self.copia()
         refs = p / '.git' / 'refs'

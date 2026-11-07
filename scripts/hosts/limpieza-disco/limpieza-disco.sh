@@ -134,10 +134,16 @@ borrar_en() {
     if [ "${4:-}" = copia ]; then
       actividad_find=("${COPIA_FIND[@]}")
       if [ "$WORK_EMERG" = 1 ]; then
-        actividad_find+=(! \( -type d -path "./$2/.git" \)
-          ! \( -type f \( -path "./$2/.git/index"
-            -o -path "./$2/.git/FETCH_HEAD" -o -path "./$2/.git/ORIG_HEAD"
-            -o \( -path "./$2/.git/*.lock" ! -path "./$2/.git/*/*" \) \) \))
+        # -path interpreta globs aunque su argumento vaya entre comillas.
+        # El nombre de la copia es literal; sólo *.lock es un patrón.
+        patron_copia=${2//\\/\\\\}
+        patron_copia=${patron_copia//\*/\\*}
+        patron_copia=${patron_copia//\?/\\?}
+        patron_copia=${patron_copia//\[/\\[}
+        actividad_find+=(! \( -type d -path "./$patron_copia/.git" \)
+          ! \( -type f \( -path "./$patron_copia/.git/index"
+            -o -path "./$patron_copia/.git/FETCH_HEAD" -o -path "./$patron_copia/.git/ORIG_HEAD"
+            -o \( -path "./$patron_copia/.git/*.lock" ! -path "./$patron_copia/.git/*/*" \) \) \))
       fi
       reciente=$(find "./$2" "${actividad_find[@]}" -print -quit 2> "$INV_ERR") || {
         log "no borro $1/$2: falló find de actividad de la copia"; exit 1;

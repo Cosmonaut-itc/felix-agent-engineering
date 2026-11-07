@@ -26,6 +26,8 @@ demás.
   Sigue recorriendo los demás hijos de `.git`: por ejemplo, un `HEAD`
   reciente veta la copia. Las exclusiones exigen archivos regulares y que
   `.git` sea directorio para ignorar su mtime: un enlace reciente se conserva.
+  El nombre de la copia se escapa como literal en los patrones de `find`;
+  sus metacaracteres no amplían las exclusiones a directorios anidados.
   Un cambio reciente fuera de `.git`, incluso
   profundo, también la veta. El limpiador legado de la Mini ejecuta
   `git status --porcelain` periódicamente sobre copias viejas: ese comando
