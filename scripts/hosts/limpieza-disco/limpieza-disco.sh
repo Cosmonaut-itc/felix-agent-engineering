@@ -132,7 +132,20 @@ borrar_en() {
       log "no borro $1/$2: el padre no es $1 o la entrada cambió"; exit 1;
     }
     if [ "${4:-}" = copia ]; then
-      reciente=$(find "./$2" -maxdepth 2 "${COPIA_FIND[@]}" -print -quit 2> "$INV_ERR") || {
+      actividad_find=("${COPIA_FIND[@]}")
+      if [ "$WORK_EMERG" = 1 ]; then
+        # -path interpreta globs aunque su argumento vaya entre comillas.
+        # El nombre de la copia es literal; sólo *.lock es un patrón.
+        patron_copia=${2//\\/\\\\}
+        patron_copia=${patron_copia//\*/\\*}
+        patron_copia=${patron_copia//\?/\\?}
+        patron_copia=${patron_copia//\[/\\[}
+        actividad_find+=(! \( -type d -path "./$patron_copia/.git" \)
+          ! \( -type f \( -path "./$patron_copia/.git/index"
+            -o -path "./$patron_copia/.git/FETCH_HEAD" -o -path "./$patron_copia/.git/ORIG_HEAD"
+            -o \( -path "./$patron_copia/.git/*.lock" ! -path "./$patron_copia/.git/*/*" \) \) \))
+      fi
+      reciente=$(find "./$2" "${actividad_find[@]}" -print -quit 2> "$INV_ERR") || {
         log "no borro $1/$2: falló find de actividad de la copia"; exit 1;
       }
       [ -z "$reciente" ] || { log "no borro $1/$2: algo cambió en los últimos $COPIA_VENTANA"; exit 1; }
@@ -231,10 +244,13 @@ trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 antes=$(libre_gb)
 [[ "$antes" =~ ^[0-9]+$ ]] || { log "sin borrar: espacio libre no verificable"; exit 1; }
 WORK_EMERG=0 COPIA_MIN=10080 COPIA_VENTANA="7 días"
-COPIA_FIND=(-mtime -7)
+COPIA_FIND=(-maxdepth 2 -mtime -7)
 INV_ARGS=(--copia-minutos "$COPIA_MIN")
 if [ "$antes" -lt 40 ]; then
   WORK_EMERG=1 COPIA_MIN=360 COPIA_VENTANA="360 minutos"
+  # git status puede refrescar index mediante rename y con ello el mtime de
+  # .git. No son uso. Sí recorremos sus otros hijos y todo el árbol de trabajo.
+  # Los patrones relativos no excluyen archivos homónimos fuera de .git.
   COPIA_FIND=(-mmin -360)
   INV_ARGS=(--copia-minutos "$COPIA_MIN")
   log "EMERGENCIA work: libre ${antes} GB, sin cambios 6 h, objetivo 60 GB$([ "$DRY" = 1 ] && echo ', dry-run')"
@@ -527,12 +543,8 @@ PY
 }
 
 freno_work() {
-  work_estimado=$((antes + work_bytes / 1073741824))
   if [ "$work_libre" -ge 60 ]; then
     log "EMERGENCIA work: freno en ${work_libre} GB (df)"; return 0
-  fi
-  if [ "$work_estimado" -ge 60 ]; then
-    log "EMERGENCIA work: freno en ${work_estimado} GB estimados (libre inicial + bytes de copias); df ${work_libre} GB"; return 0
   fi
   return 1
 }
@@ -576,8 +588,8 @@ PY
       fi
       if borrar_en "$RR/work" "$n" "$motivo" copia && [ "$WORK_EMERG" = 1 ]; then
         work_bytes=$((work_bytes + tamano)); work_cantidad=$((work_cantidad + 1))
-        # Medir tras cada borrado, incluso el último. El límite estimado
-        # también frena si APFS retiene bloques y df no sube.
+        # Medir tras cada borrado, incluso el último. Los bloques de clones
+        # APFS no predicen espacio recuperado: sólo df decide el objetivo.
         work_libre=$(libre_gb)
         [[ "$work_libre" =~ ^[0-9]+$ ]] || { log "EMERGENCIA work: paro, espacio libre no verificable"; break; }
         freno_work && break
@@ -589,7 +601,7 @@ fi
 if [ "$WORK_EMERG" = 1 ]; then
   work_gb=$(awk -v bytes="$work_bytes" 'BEGIN {printf "%.3f", bytes / 1073741824}')
   if [ "$DRY" = 1 ]; then
-    log "EMERGENCIA work: $work_cantidad copias; total $work_bytes bytes (${work_gb} GB) liberables estimados, dry-run; libre inicial + estimación $((antes + work_bytes / 1073741824)) GB; df ${work_libre} GB (antes ${antes} GB)"
+    log "EMERGENCIA work: $work_cantidad copias; total $work_bytes bytes (${work_gb} GB) de copias candidatas, dry-run; recuperación real no predecible; df ${work_libre} GB (antes ${antes} GB)"
   else
     log "EMERGENCIA work: $work_cantidad copias; total $work_bytes bytes (${work_gb} GB) de copias borradas; libre ${work_libre} GB (antes ${antes} GB)"
     if [[ "$work_libre" =~ ^[0-9]+$ ]]; then

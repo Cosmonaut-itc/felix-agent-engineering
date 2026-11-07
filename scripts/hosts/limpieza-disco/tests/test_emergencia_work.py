@@ -158,7 +158,7 @@ print(values[min(i, len(values) - 1)])
         self.assertEqual(result.returncode, rc, result.stdout + result.stderr)
         self.assertEqual(result.stderr, '', result.stderr)
         self.log = result.stdout
-        self.seleccion = [line.split('/work/', 1)[1].split(' (', 1)[0]
+        self.seleccion = [line.split(' (', 1)[0].rsplit('/work/', 1)[1]
                           for line in self.log.splitlines() if '[dry-run] borraría ' in line]
         return self.seleccion
 
@@ -231,21 +231,20 @@ print(values[min(i, len(values) - 1)])
                     finally:
                         ruta.chmod(0o700)
 
-    def test_freno_real_df_fijo_usa_estimacion_y_rename(self):
+    def test_r3_df_fijo_no_frena_por_estimacion_y_rename(self):
         for nombre, horas in (('vieja', 9), ('intermedia', 8), ('nueva', 7)):
             self.copia(nombre, horas)
         self.tamanos_simulados(dict.fromkeys(('vieja', 'intermedia', 'nueva'), 11 * 1073741824))
         self.config['free'] = [39]
         self.ejecutar(dry=False)
-        self.assertEqual(sorted(p.name for p in (self.rr / 'work').iterdir()), ['nueva'])
-        self.assertEqual(self.log.count('renombrada '), 2)
-        self.assertEqual(self.log.count('borrado '), 2)
+        self.assertEqual(list((self.rr / 'work').iterdir()), [])
+        self.assertEqual(self.log.count('renombrada '), 3)
+        self.assertEqual(self.log.count('borrado '), 3)
         self.assertLess(self.log.index('/work/vieja a '), self.log.index('/work/intermedia a '))
-        self.assertIn('2 copias; total 23622320128 bytes', self.log)
-        self.assertIn('freno', self.log)
-        self.assertIn('61', self.log)
+        self.assertIn('3 copias; total 35433480192 bytes', self.log)
+        self.assertNotIn('freno', self.log)
         self.assertIn('libre 39 GB', self.log)
-        self.assertEqual((self.root / 'free.index').read_text(), '5')
+        self.assertEqual((self.root / 'free.index').read_text(), '7')
         state = self.home / 'Library/Application Support/limpieza-disco'
         self.assertEqual(list(state.glob('borrando-*')), [])
 
@@ -259,12 +258,110 @@ print(values[min(i, len(values) - 1)])
         self.assertIn('freno en 60 GB', self.log)
         self.assertEqual((self.root / 'free.index').read_text(), '3')
 
-    def test_estimacion_no_suma_dos_veces_lo_que_df_ya_observa(self):
+    def test_r3_estimacion_supera_objetivo_pero_sigue_hasta_df_60(self):
         for nombre, horas in (('vieja', 9), ('intermedia', 8), ('nueva', 7)):
             self.copia(nombre, horas)
         self.tamanos_simulados(dict.fromkeys(('vieja', 'intermedia', 'nueva'), 11 * 1073741824))
-        self.config['free'] = [39, 39, 50, 50, 50]
-        self.assertEqual(self.ejecutar(), ['vieja', 'intermedia'])
+        self.config['free'] = [39, 39, 41, 41, 41, 41, 60]
+        self.ejecutar(dry=False)
+        self.assertEqual(list((self.rr / 'work').iterdir()), [])
+        self.assertEqual(self.log.count('borrado '), 3)
+        self.assertIn('freno en 60 GB (df)', self.log)
+        self.assertEqual((self.root / 'free.index').read_text(), '7')
+
+    def test_r3_dry_run_enumera_todo_sin_promesa_de_recuperacion(self):
+        for nombre, horas in (('vieja', 9), ('intermedia', 8), ('nueva', 7)):
+            self.copia(nombre, horas)
+        self.tamanos_simulados(dict.fromkeys(('vieja', 'intermedia', 'nueva'), 11 * 1073741824))
+        self.assertEqual(self.ejecutar(), ['vieja', 'intermedia', 'nueva'])
+        self.assertEqual(len(list((self.rr / 'work').iterdir())), 3)
+        self.assertNotIn('freno', self.log)
+
+    def test_r3_solo_index_reciente_se_borra_en_emergencia(self):
+        p = self.copia()
+        git = p / '.git'
+        git.mkdir()
+        (git / 'index').write_text('refresco de stat')
+        # Crear/reemplazar index también cambia el directorio .git.
+        self.edad(p, 7)
+        self.ejecutar(dry=False)
+        self.assertFalse(p.exists(), self.log)
+        self.assertIn('borrado ', self.log)
+
+    def test_r3_metadatos_git_ignorados_sin_cambiar_modo_normal(self):
+        p = self.copia(horas=8 * 24)
+        git = p / '.git'
+        git.mkdir()
+        for nombre in ('index', 'FETCH_HEAD', 'ORIG_HEAD', 'index.lock'):
+            (git / nombre).write_text('metadatos')
+        self.edad(p, 8 * 24)
+        self.assertEqual(self.ejecutar(), ['copia'])
+        self.config['free'] = [40]
+        (self.root / 'free.index').unlink()
+        self.assertEqual(self.ejecutar(), [])
+
+    def test_r3_cambio_reciente_fuera_de_git_incluso_profundo_se_conserva(self):
+        p = self.copia()
+        sub = p / 'src' / 'profundo'
+        sub.mkdir(parents=True)
+        for nombre in ('index', 'FETCH_HEAD', 'ORIG_HEAD', 'index.lock'):
+            (sub / nombre).write_text('trabajo real')
+        self.edad(sub, 7)
+        self.edad(sub.parent, 7)
+        self.edad(p, 7)
+        self.ejecutar(dry=False)
+        self.assertTrue(p.exists(), self.log)
+        self.assertIn('algo cambió', self.log)
+
+    def test_r3_git_head_reciente_sigue_vetando(self):
+        p = self.copia()
+        git = p / '.git'
+        git.mkdir()
+        (git / 'HEAD').write_text('ref: refs/heads/main')
+        self.edad(p, 7)
+        self.ejecutar(dry=False)
+        self.assertTrue(p.exists(), self.log)
+        self.assertIn('algo cambió', self.log)
+
+    def test_r3_git_symlink_reciente_no_es_refresco_de_metadatos(self):
+        p = self.copia()
+        (p / '.git').symlink_to(self.root / 'git-externo')
+        self.edad(p, 7)
+        self.ejecutar(dry=False)
+        self.assertTrue(p.exists(), self.log)
+        self.assertIn('algo cambió', self.log)
+
+    def test_r3_nombre_con_glob_no_oculta_git_anidado(self):
+        p = self.copia('copia*')
+        git = p / 'src' / '.git'
+        git.mkdir(parents=True)
+        (git / 'index').write_text('cambio fuera del .git de la copia')
+        for ruta in (git, git.parent, p):
+            self.edad(ruta, 7)
+        self.ejecutar(dry=False)
+        self.assertTrue(p.exists(), self.log)
+        self.assertIn('algo cambió', self.log)
+
+    def test_r3_nombre_con_metacaracteres_admite_index_reciente(self):
+        p = self.copia('copia*[x]?')
+        git = p / '.git'
+        git.mkdir()
+        (git / 'index').write_text('refresco de metadatos')
+        self.edad(p, 7)
+        self.ejecutar(dry=False)
+        self.assertFalse(p.exists(), self.log)
+
+    def test_r3_lock_en_subdirectorio_git_sigue_vetando(self):
+        p = self.copia()
+        refs = p / '.git' / 'refs'
+        refs.mkdir(parents=True)
+        (refs / 'main.lock').write_text('actualizando refs')
+        self.edad(refs, 7)
+        self.edad(refs.parent, 7)
+        self.edad(p, 7)
+        self.ejecutar(dry=False)
+        self.assertTrue(p.exists(), self.log)
+        self.assertIn('algo cambió', self.log)
 
     def test_log_normal_conserva_7_dias(self):
         self.config['free'] = [41]
