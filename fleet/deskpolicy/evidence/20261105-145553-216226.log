@@ -1,0 +1,181 @@
+GATE load1 3.02587890625 since_last_other_start_s 136.9154188632965 limit 12
+OTHER_RUN 20261022-152342-db21bc pid 1127
+OTHER_RUN 20261105-144401-065670 pid 1484766
+BASELINE sha256 912e872a4a49c287b77f1753f010eafac4b941e6ef3727a45ee19ddd34c08cfd
+test_eof_closes_immediately_with_long_deadline (deskpolicy.tests.test_r6.RoundSixTest.test_eof_closes_immediately_with_long_deadline) ... FAIL
+test_late_ack_after_sigstop_never_executes (deskpolicy.tests.test_r6.RoundSixTest.test_late_ack_after_sigstop_never_executes) ... FAIL
+
+======================================================================
+FAIL: test_eof_closes_immediately_with_long_deadline (deskpolicy.tests.test_r6.RoundSixTest.test_eof_closes_immediately_with_long_deadline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/tests/test_r6.py", line 141, in test_eof_closes_immediately_with_long_deadline
+    self.assertTrue(pipe.poll(4), 'EOF retained capacity until the sync deadline')
+AssertionError: False is not true : EOF retained capacity until the sync deadline
+
+======================================================================
+FAIL: test_late_ack_after_sigstop_never_executes (deskpolicy.tests.test_r6.RoundSixTest.test_late_ack_after_sigstop_never_executes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/tests/test_r6.py", line 126, in test_late_ack_after_sigstop_never_executes
+    self.sync_case(True)
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/tests/test_r6.py", line 98, in sync_case
+    r4.until(waiting, 'control never reached production select')
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/tests/test_r4.py", line 36, in until
+    raise AssertionError(label)
+AssertionError: control never reached production select
+
+----------------------------------------------------------------------
+Ran 2 tests in 65.765s
+
+FAILED (failures=2)
+test_auto_dawn (__main__.ClientProtocolTest.test_auto_dawn) ... R7 DAWN dawn ['resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy']
+FAIL
+test_auto_writer_dead (__main__.ClientProtocolTest.test_auto_writer_dead) ... R7 DAWN writer-dead ['resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy']
+FAIL
+test_explicit_lock_dawn (__main__.ClientProtocolTest.test_explicit_lock_dawn) ... R7 DAWN dawn ['resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy']
+FAIL
+test_explicit_mini_lock_writer_dead (__main__.ClientProtocolTest.test_explicit_mini_lock_writer_dead) ... R7 DAWN writer-dead ['resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy', 'resource-busy']
+FAIL
+
+======================================================================
+FAIL: test_auto_dawn (__main__.ClientProtocolTest.test_auto_dawn)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/evidence/r7-hasito-protocol.py", line 107, in test_auto_dawn
+    self.client_case(False, False)
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/evidence/r7-hasito-protocol.py", line 51, in client_case
+    receipt = self.dawn(writer_dies)
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/tests/test_r7.py", line 58, in dawn
+    self.assertEqual(reasons, ['lane-closed'] * 8)
+AssertionError: Lists differ: ['resource-busy', 'resource-busy', 'resourc[88 chars]usy'] != ['lane-closed', 'lane-closed', 'lane-closed[72 chars]sed']
+
+First differing element 0:
+'resource-busy'
+'lane-closed'
+
+- ['resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy']
++ ['lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed']
+
+======================================================================
+FAIL: test_auto_writer_dead (__main__.ClientProtocolTest.test_auto_writer_dead)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/evidence/r7-hasito-protocol.py", line 110, in test_auto_writer_dead
+    self.client_case(False, True)
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/evidence/r7-hasito-protocol.py", line 51, in client_case
+    receipt = self.dawn(writer_dies)
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/tests/test_r7.py", line 58, in dawn
+    self.assertEqual(reasons, ['lane-closed'] * 8)
+AssertionError: Lists differ: ['resource-busy', 'resource-busy', 'resourc[88 chars]usy'] != ['lane-closed', 'lane-closed', 'lane-closed[72 chars]sed']
+
+First differing element 0:
+'resource-busy'
+'lane-closed'
+
+- ['resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy']
++ ['lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed']
+
+======================================================================
+FAIL: test_explicit_lock_dawn (__main__.ClientProtocolTest.test_explicit_lock_dawn)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/evidence/r7-hasito-protocol.py", line 113, in test_explicit_lock_dawn
+    self.client_case(True, False)
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/evidence/r7-hasito-protocol.py", line 51, in client_case
+    receipt = self.dawn(writer_dies)
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/tests/test_r7.py", line 58, in dawn
+    self.assertEqual(reasons, ['lane-closed'] * 8)
+AssertionError: Lists differ: ['resource-busy', 'resource-busy', 'resourc[88 chars]usy'] != ['lane-closed', 'lane-closed', 'lane-closed[72 chars]sed']
+
+First differing element 0:
+'resource-busy'
+'lane-closed'
+
+- ['resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy']
++ ['lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed']
+
+======================================================================
+FAIL: test_explicit_mini_lock_writer_dead (__main__.ClientProtocolTest.test_explicit_mini_lock_writer_dead)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/evidence/r7-hasito-protocol.py", line 116, in test_explicit_mini_lock_writer_dead
+    self.client_case(True, True)
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/evidence/r7-hasito-protocol.py", line 51, in client_case
+    receipt = self.dawn(writer_dies)
+              ^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r7-705f080b/.audit/r7-baseline/fleet/deskpolicy/tests/test_r7.py", line 58, in dawn
+    self.assertEqual(reasons, ['lane-closed'] * 8)
+AssertionError: Lists differ: ['resource-busy', 'resource-busy', 'resourc[88 chars]usy'] != ['lane-closed', 'lane-closed', 'lane-closed[72 chars]sed']
+
+First differing element 0:
+'resource-busy'
+'lane-closed'
+
+- ['resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy',
+-  'resource-busy']
++ ['lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed',
++  'lane-closed']
+
+----------------------------------------------------------------------
+Ran 4 tests in 34.218s
+
+FAILED (failures=4)
+BASELINE timing=1 client=1

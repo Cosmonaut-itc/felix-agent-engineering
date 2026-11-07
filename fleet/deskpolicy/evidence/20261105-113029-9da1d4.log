@@ -1,0 +1,23 @@
+GATE load1 2.69140625 since_last_other_start_s 155.30100202560425 limit 12
+R5 module_sha256 77a369608532867e785aa7eff8f496e9a2480ff7a3b8d3b98a4d826901e7200d
+test_admit_reconciles_only_uncertain_claim_of_requested_resource (deskpolicy.tests.test_r5.RoundFiveTest.test_admit_reconciles_only_uncertain_claim_of_requested_resource) ... R5 no-writer recovery admitted closed uncertain
+ok
+test_alive_unregistered_keeper_holds_life_until_registration (deskpolicy.tests.test_r5.RoundFiveTest.test_alive_unregistered_keeper_holds_life_until_registration) ... ok
+test_contract_fixes_hasito_fifo_mapping_and_sync_deadline (deskpolicy.tests.test_r5.RoundFiveTest.test_contract_fixes_hasito_fifo_mapping_and_sync_deadline) ... ok
+test_failed_verify_preparation_reconciles_after_child_finishes (deskpolicy.tests.test_r5.RoundFiveTest.test_failed_verify_preparation_reconciles_after_child_finishes) ... ok
+test_fixture_reaps_process_handles_under_fd_limit (deskpolicy.tests.test_r5.RoundFiveTest.test_fixture_reaps_process_handles_under_fd_limit) ... ok
+test_module_io_does_not_leak_fds (deskpolicy.tests.test_r5.RoundFiveTest.test_module_io_does_not_leak_fds) ... ok
+test_receipt_failure_does_not_abort_writer_or_other_claims (deskpolicy.tests.test_r5.RoundFiveTest.test_receipt_failure_does_not_abort_writer_or_other_claims) ... ok
+test_status_reports_effective_day_and_night_lanes (deskpolicy.tests.test_r5.RoundFiveTest.test_status_reports_effective_day_and_night_lanes) ... ok
+test_sync_ack_executes_once_and_default_is_fifteen_minutes (deskpolicy.tests.test_r5.RoundFiveTest.test_sync_ack_executes_once_and_default_is_fifteen_minutes) ... ok
+test_sync_deadline_closes_without_script_and_releases_capacity (deskpolicy.tests.test_r5.RoundFiveTest.test_sync_deadline_closes_without_script_and_releases_capacity) ... ok
+test_disappearing_unrelated_pids_are_ignored_in_every_sweep (deskpolicy.tests.test_r5.SessionProofTest.test_disappearing_unrelated_pids_are_ignored_in_every_sweep) ... ok
+test_member_in_third_sweep_prevents_close (deskpolicy.tests.test_r5.SessionProofTest.test_member_in_third_sweep_prevents_close) ... ok
+test_read_and_parse_errors_remain_inconclusive (deskpolicy.tests.test_r5.SessionProofTest.test_read_and_parse_errors_remain_inconclusive) ... ok
+test_three_empty_sweeps_spaced_at_least_fifty_ms (deskpolicy.tests.test_r5.SessionProofTest.test_three_empty_sweeps_spaced_at_least_fifty_ms) ... ok
+
+----------------------------------------------------------------------
+Ran 14 tests in 30.363s
+
+OK
+RESULT r5=0

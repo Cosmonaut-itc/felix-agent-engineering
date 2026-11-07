@@ -1,0 +1,216 @@
+GATE load1 3.67138671875 since_last_other_start_s 334.3173999786377 limit 12
+R5 module_sha256 caac735af226b3bca4eff0cf8d297313b52e153ea4f00e58b6bc66745abf14d0
+test_admit_reconciles_only_uncertain_claim_of_requested_resource (deskpolicy.tests.test_r5.RoundFiveTest.test_admit_reconciles_only_uncertain_claim_of_requested_resource) ... R5 no-writer recovery denied uncertain uncertain
+FAIL
+test_alive_unregistered_keeper_holds_life_until_registration (deskpolicy.tests.test_r5.RoundFiveTest.test_alive_unregistered_keeper_holds_life_until_registration) ... FAIL
+test_contract_fixes_hasito_fifo_mapping_and_sync_deadline (deskpolicy.tests.test_r5.RoundFiveTest.test_contract_fixes_hasito_fifo_mapping_and_sync_deadline) ... FAIL
+test_failed_verify_preparation_reconciles_after_child_finishes (deskpolicy.tests.test_r5.RoundFiveTest.test_failed_verify_preparation_reconciles_after_child_finishes) ... FAIL
+test_fixture_reaps_process_handles_under_fd_limit (deskpolicy.tests.test_r5.RoundFiveTest.test_fixture_reaps_process_handles_under_fd_limit) ... ERROR
+test_module_io_does_not_leak_fds (deskpolicy.tests.test_r5.RoundFiveTest.test_module_io_does_not_leak_fds) ... ok
+test_receipt_failure_does_not_abort_writer_or_other_claims (deskpolicy.tests.test_r5.RoundFiveTest.test_receipt_failure_does_not_abort_writer_or_other_claims) ... ERROR
+test_status_reports_effective_day_and_night_lanes (deskpolicy.tests.test_r5.RoundFiveTest.test_status_reports_effective_day_and_night_lanes) ... FAIL
+test_sync_ack_executes_once_and_default_is_fifteen_minutes (deskpolicy.tests.test_r5.RoundFiveTest.test_sync_ack_executes_once_and_default_is_fifteen_minutes) ... ERROR
+test_sync_deadline_closes_without_script_and_releases_capacity (deskpolicy.tests.test_r5.RoundFiveTest.test_sync_deadline_closes_without_script_and_releases_capacity) ... usage: - [-h]
+         {publicar,pendiente,admitir,traspasar,cerrar,ejecutar,reconciliar,estado,preflight}
+         ...
+-: error: unrecognized arguments: --sync-ready-fd
+ERROR
+test_disappearing_unrelated_pids_are_ignored_in_every_sweep (deskpolicy.tests.test_r5.SessionProofTest.test_disappearing_unrelated_pids_are_ignored_in_every_sweep) ...
+  test_disappearing_unrelated_pids_are_ignored_in_every_sweep (deskpolicy.tests.test_r5.SessionProofTest.test_disappearing_unrelated_pids_are_ignored_in_every_sweep) (error=FileNotFoundError(2, 'gone')) ... FAIL
+  test_disappearing_unrelated_pids_are_ignored_in_every_sweep (deskpolicy.tests.test_r5.SessionProofTest.test_disappearing_unrelated_pids_are_ignored_in_every_sweep) (error=ProcessLookupError(3, 'gone')) ... FAIL
+test_member_in_third_sweep_prevents_close (deskpolicy.tests.test_r5.SessionProofTest.test_member_in_third_sweep_prevents_close) ... FAIL
+test_read_and_parse_errors_remain_inconclusive (deskpolicy.tests.test_r5.SessionProofTest.test_read_and_parse_errors_remain_inconclusive) ... ok
+test_three_empty_sweeps_spaced_at_least_fifty_ms (deskpolicy.tests.test_r5.SessionProofTest.test_three_empty_sweeps_spaced_at_least_fifty_ms) ... FAIL
+
+======================================================================
+ERROR: test_fixture_reaps_process_handles_under_fd_limit (deskpolicy.tests.test_r5.RoundFiveTest.test_fixture_reaps_process_handles_under_fd_limit)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 246, in test_fixture_reaps_process_handles_under_fd_limit
+    self.assertEqual(self.run_cli(['estado'])['rc'], 0)
+                     ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_policy.py", line 188, in run_cli
+    worker.start()
+  File "/usr/lib/python3.12/multiprocessing/process.py", line 121, in start
+    self._popen = self._Popen(self)
+                  ^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/context.py", line 282, in _Popen
+    return Popen(process_obj)
+           ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/popen_fork.py", line 19, in __init__
+    self._launch(process_obj)
+  File "/usr/lib/python3.12/multiprocessing/popen_fork.py", line 65, in _launch
+    child_r, parent_w = os.pipe()
+                        ^^^^^^^^^
+OSError: [Errno 24] Too many open files
+
+======================================================================
+ERROR: test_receipt_failure_does_not_abort_writer_or_other_claims (deskpolicy.tests.test_r5.RoundFiveTest.test_receipt_failure_does_not_abort_writer_or_other_claims)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/model.py", line 97, in strict_json
+    result = json.loads(data.decode("utf-8"), object_pairs_hook=pairs,
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/__init__.py", line 359, in loads
+    return cls(**kw).decode(s)
+           ^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 337, in decode
+    obj, end = self.raw_decode(s, idx=_w(s, 0).end())
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/json/decoder.py", line 353, in raw_decode
+    obj, end = self.scan_once(s, idx)
+               ^^^^^^^^^^^^^^^^^^^^^^
+json.decoder.JSONDecodeError: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 174, in test_receipt_failure_does_not_abort_writer_or_other_claims
+    policy = self.engine.publish()
+             ^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/engine.py", line 610, in publish
+    self.reconcile(mutex_fd=lock)
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/engine.py", line 552, in reconcile
+    self.reconcile_receipt(record)
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/engine.py", line 510, in reconcile_receipt
+    receipt = read_json(path, directory_modes=RECEIPT_DIR_MODES)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/store.py", line 119, in read_json
+    return strict_json(bytes(data))
+           ^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/model.py", line 102, in strict_json
+    raise Invalid(str(exc)) from exc
+deskpolicy.model.Invalid: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+
+======================================================================
+ERROR: test_sync_ack_executes_once_and_default_is_fifteen_minutes (deskpolicy.tests.test_r5.RoundFiveTest.test_sync_ack_executes_once_and_default_is_fifteen_minutes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 222, in test_sync_ack_executes_once_and_default_is_fifteen_minutes
+    '--run-id', 'run-sync', '--lane', '1', '--', '/bin/true']).sync_timeout_s, 900)
+                                                               ^^^^^^^^^^^^^^
+AttributeError: 'Namespace' object has no attribute 'sync_timeout_s'
+
+======================================================================
+ERROR: test_sync_deadline_closes_without_script_and_releases_capacity (deskpolicy.tests.test_r5.RoundFiveTest.test_sync_deadline_closes_without_script_and_releases_capacity)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 205, in test_sync_deadline_closes_without_script_and_releases_capacity
+    result = self.run_cli(args)
+             ^^^^^^^^^^^^^^^^^^
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_policy.py", line 192, in run_cli
+    result = parent.recv()
+             ^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 250, in recv
+    buf = self._recv_bytes()
+          ^^^^^^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 430, in _recv_bytes
+    buf = self._recv(4)
+          ^^^^^^^^^^^^^
+  File "/usr/lib/python3.12/multiprocessing/connection.py", line 399, in _recv
+    raise EOFError
+EOFError
+
+======================================================================
+FAIL: test_admit_reconciles_only_uncertain_claim_of_requested_resource (deskpolicy.tests.test_r5.RoundFiveTest.test_admit_reconciles_only_uncertain_claim_of_requested_resource)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 124, in test_admit_reconciles_only_uncertain_claim_of_requested_resource
+    self.assertTrue(receipt['execute'], receipt)
+AssertionError: False is not true : {'schema': 'pao/desk-admission@1', 'request_id': 'next', 'run_id': 'run-next', 'state': 'denied', 'mode': 'day', 'revision': None, 'lane': 1, 'reason': 'resource-busy', 'exit_code': 75, 'cpus': [], 'weight': None, 'replay': False, 'execute': False, 'claim_state': None, 'claim_token': None, 'script_exit_code': None, 'close_cause': None, 'policy_reason': 'policy-invalid'}
+
+======================================================================
+FAIL: test_alive_unregistered_keeper_holds_life_until_registration (deskpolicy.tests.test_r5.RoundFiveTest.test_alive_unregistered_keeper_holds_life_until_registration)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 159, in test_alive_unregistered_keeper_holds_life_until_registration
+    self.reconcile_until_closed('keeper')
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 109, in reconcile_until_closed
+    r4.until(lambda: (self.engine.reconcile(), self.claim(name)['state'])[1] == 'closed',
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r4.py", line 36, in until
+    raise AssertionError(label)
+AssertionError: empty sessions never reconciled: keeper
+
+======================================================================
+FAIL: test_contract_fixes_hasito_fifo_mapping_and_sync_deadline (deskpolicy.tests.test_r5.RoundFiveTest.test_contract_fixes_hasito_fifo_mapping_and_sync_deadline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 265, in test_contract_fixes_hasito_fifo_mapping_and_sync_deadline
+    self.assertTrue(rule in contract, 'Missing contract rule: ' + rule)
+AssertionError: False is not true : Missing contract rule: `MINI_LOCK`
+
+======================================================================
+FAIL: test_failed_verify_preparation_reconciles_after_child_finishes (deskpolicy.tests.test_r5.RoundFiveTest.test_failed_verify_preparation_reconciles_after_child_finishes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 140, in test_failed_verify_preparation_reconciles_after_child_finishes
+    self.reconcile_until_closed('prepare')
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 109, in reconcile_until_closed
+    r4.until(lambda: (self.engine.reconcile(), self.claim(name)['state'])[1] == 'closed',
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r4.py", line 36, in until
+    raise AssertionError(label)
+AssertionError: empty sessions never reconciled: prepare
+
+======================================================================
+FAIL: test_status_reports_effective_day_and_night_lanes (deskpolicy.tests.test_r5.RoundFiveTest.test_status_reports_effective_day_and_night_lanes)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 188, in test_status_reports_effective_day_and_night_lanes
+    self.assertEqual((view['mode'], view['budget'], view.get('max_lane')), ('day', None, 2))
+AssertionError: Tuples differ: ('day', 4, None) != ('day', None, 2)
+
+First differing element 1:
+4
+None
+
+- ('day', 4, None)
+?         ---
+
++ ('day', None, 2)
+?             +++
+
+
+======================================================================
+FAIL: test_disappearing_unrelated_pids_are_ignored_in_every_sweep (deskpolicy.tests.test_r5.SessionProofTest.test_disappearing_unrelated_pids_are_ignored_in_every_sweep) (error=FileNotFoundError(2, 'gone'))
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 88, in test_disappearing_unrelated_pids_are_ignored_in_every_sweep
+    self.assertEqual(session_members(987654321), [])
+AssertionError: None != []
+
+======================================================================
+FAIL: test_disappearing_unrelated_pids_are_ignored_in_every_sweep (deskpolicy.tests.test_r5.SessionProofTest.test_disappearing_unrelated_pids_are_ignored_in_every_sweep) (error=ProcessLookupError(3, 'gone'))
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 88, in test_disappearing_unrelated_pids_are_ignored_in_every_sweep
+    self.assertEqual(session_members(987654321), [])
+AssertionError: None != []
+
+======================================================================
+FAIL: test_member_in_third_sweep_prevents_close (deskpolicy.tests.test_r5.SessionProofTest.test_member_in_third_sweep_prevents_close)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 93, in test_member_in_third_sweep_prevents_close
+    self.assertEqual(session_members(os.getsid(0)), [os.getpid()])
+AssertionError: Lists differ: [] != [1128610]
+
+Second list contains 1 additional elements.
+First extra element 0:
+1128610
+
+- []
++ [1128610]
+
+======================================================================
+FAIL: test_three_empty_sweeps_spaced_at_least_fifty_ms (deskpolicy.tests.test_r5.SessionProofTest.test_three_empty_sweeps_spaced_at_least_fifty_ms)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-u1-r5-7f8f87c0/fleet/deskpolicy/tests/test_r5.py", line 79, in test_three_empty_sweeps_spaced_at_least_fifty_ms
+    self.assertEqual(len(stamps), 3)
+AssertionError: 2 != 3
+
+----------------------------------------------------------------------
+Ran 14 tests in 136.224s
+
+FAILED (failures=9, errors=4)
+RESULT r5=1

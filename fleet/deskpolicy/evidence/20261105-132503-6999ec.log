@@ -1,0 +1,5 @@
+GATE load1 1.92919921875 since_last_other_start_s 124.5787091255188 limit 12
+HARNESS cache-only baseline skipped, rc 0
+HARNESS missing runtime rejected as baseline rc 2
+HARNESS test import error rejected as baseline rc 2
+CLI lane 2 registered and renewed; change to lane 1 rejected without claim
