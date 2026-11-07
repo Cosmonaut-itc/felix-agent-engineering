@@ -18,14 +18,27 @@ demás.
   dudosas.
 - **EMERGENCIA work.** Sólo si al iniciar quedan menos de 40 GB libres,
   la regla 1 usa seis horas sin uso. El shell pasa explícitamente
-  `--copia-minutos 360` al inventario, usa `find -mmin -360` y
-  repite el mtime directo con el mismo umbral. En modo normal pasa
+  `--copia-minutos 360` al inventario y recorre el árbol completo con
+  `find -mmin -360`. Excluye de esa comprobación `.git/index`,
+  `.git/FETCH_HEAD`, `.git/ORIG_HEAD`, los archivos `.git/*.lock` del primer
+  nivel y el mtime
+  del directorio `.git` (el reemplazo de `index` también lo modifica).
+  Sigue recorriendo los demás hijos de `.git`: por ejemplo, un `HEAD`
+  reciente veta la copia. Las exclusiones exigen archivos regulares y que
+  `.git` sea directorio para ignorar su mtime: un enlace reciente se conserva.
+  Un cambio reciente fuera de `.git`, incluso
+  profundo, también la veta. El limpiador legado de la Mini ejecuta
+  `git status --porcelain` periódicamente sobre copias viejas: ese comando
+  puede refrescar el índice sin usar la copia para una corrida.
+  Repite el mtime directo de la copia con el mismo umbral. En modo normal pasa
   `--copia-minutos 10080` y mantiene `find -mtime -7`.
   Ordena las candidatas por `ultimoUso`, de más vieja a más nueva, y mide
   espacio antes y después de cada copia. Para la regla 1 cuando `df` alcanza
-  60 GB o cuando el libre inicial más los bytes estimados de las copias ya
-  borradas alcanza 60 GB, lo que ocurra primero. No suma la estimación al
-  `df` actual: eso contaría dos veces los bloques que ya haya recuperado.
+  60 GB reales. Los tamaños estimados sólo se registran: no frenan.
+  No hay otro tope: si no se alcanza el objetivo, agota las candidatas que
+  superan todas las protecciones. En la primera pasada de la Mini,
+  23.125 GB contabilizados sólo produjeron 3 GB observados; un límite
+  basado en esa suma interrumpiría la emergencia prematuramente.
   Conserva bloqueo global, locks, corridas vivas/dudosas, preparación reciente,
   revalidación de corridas nuevas y rename exclusivo.
   La protección de cwd cubre **los procesos del usuario que ejecuta la
@@ -48,11 +61,10 @@ demás.
   Mide sólo el tamaño de la copia candidata con el lector del inventario,
   sin cambiar la clasificación de `runs/`. El log anota nombre, bytes asignados
   y último uso UTC por copia, y totales.
-  `--dry-run` hace las mismas comprobaciones sin rename ni borrado y estima
-  el freno sumando esos tamaños al espacio libre inicial, con los mismos dos
-  límites que el modo real. APFS puede compartir bloques o retenerlos en
-  snapshots, así que esa suma no garantiza espacio recuperado. El límite
-  estimado evita agotar las candidatas si `df` no sube. El log distingue
+  `--dry-run` hace las mismas comprobaciones sin rename ni borrado y enumera
+  todas las candidatas mientras `df` siga por debajo de 60 GB. La suma
+  registrada no predice cuántas borraría una pasada real: APFS puede
+  compartir bloques o retenerlos en snapshots. El log distingue
   los bytes de las copias y el cambio de libre observado por `df`.
   Las demás reglas y la emergencia de menos de 15 GB conservan sus umbrales.
 - **Regla 3.** Borra corridas de `runs/` que el inventario marca `borrable`
@@ -136,7 +148,7 @@ inventario sí admite.
 
 Las pruebas de `tests/test_emergencia_work.py` extraen sólo la regla 1 a un
 harness temporal con HOME de fixture. Cubren `--dry-run` y borrado real sólo
-dentro del fixture, con rename exclusivo y freno por `df` o estimación.
+dentro del fixture, con rename exclusivo y freno sólo por `df`.
 Simulan `df` y, en los casos de decenas de GB, los tamaños estimados,
 reemplazando las funciones únicamente en esa copia temporal: el script de
 producción no admite variables ni flags para falsear el espacio. Los casos
