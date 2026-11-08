@@ -402,6 +402,49 @@ class ExternalFixtureEvidenceTests(unittest.TestCase):
             with self.subTest(stderr_failure=channel): self.exercise_failure("removal-result.json", "absent", True, channel)
 
 
+class NativeIdentityTests(unittest.TestCase):
+    def test_unreaped_child_keeps_identity_without_confirming_live_owner(self):
+        sys.path.insert(0, str(CLI.parents[1]))
+        from fleet import native
+
+        child = subprocess.Popen([sys.executable, "-B", "-c", "import sys; sys.stdin.read()"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        events = None
+        try:
+            original = native.identity(child.pid)
+            self.assertTrue(native.confirmed(original))
+            if sys.platform == "darwin":
+                events = select.kqueue()
+                events.control([select.kevent(child.pid, filter=select.KQ_FILTER_PROC,
+                                              flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                              fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            child.stdin.close()
+            if events is not None:
+                exited = events.control(None, 1, 5)
+                self.assertEqual(len(exited), 1, "child exit was not observed")
+                self.assertEqual(exited[0].ident, child.pid)
+                self.assertTrue(exited[0].fflags & select.KQ_NOTE_EXIT)
+            else:
+                os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+            zombie = native.identity(child.pid)
+            self.assertTrue(native.verifiable(zombie))
+            self.assertEqual(dict(zombie, alive=True), original)
+            self.assertFalse(zombie["alive"])
+            self.assertFalse(native.confirmed(zombie))
+            self.assertFalse(native.confirmed(original))
+            self.assertEqual(child.wait(timeout=5), 0)
+            self.assertNotEqual(native.identity(child.pid)["birth"], original["birth"])
+        finally:
+            if events is not None:
+                events.close()
+            if not child.stdin.closed:
+                child.stdin.close()
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+
 class Admission:
     def __init__(self, state, exclusive, receipt):
         self.state, self.exclusive, self.receipt = state, exclusive, receipt

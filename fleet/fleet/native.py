@@ -41,7 +41,9 @@ def identity(pid):
             query.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
                               ctypes.c_void_p, ctypes.c_int]
             query.restype = ctypes.c_int
-            if query(pid, 3, 0, ctypes.byref(info), ctypes.sizeof(info)) == ctypes.sizeof(info):
+            # PROC_PIDTBSDINFO arg=1 includes unreaped zombies. Their birth
+            # still attributes our original Popen child, but never a live owner.
+            if query(pid, 3, 1, ctypes.byref(info), ctypes.sizeof(info)) == ctypes.sizeof(info):
                 result["birth"] = "{}:{}".format(info.start_sec, info.start_usec)
                 result["uid"] = info.prefix[5]
                 result["alive"] = info.prefix[1] != 5
