@@ -12,6 +12,11 @@ from review_r2_cases import ReviewR2Cases
 from core3820_cases import Core3820Cases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
+JOB_ENV_BOOTSTRAP = ("import json,os,runpy,sys\n"
+                     "entry,updates=sys.argv[1],json.loads(sys.argv[2])\n"
+                     "sys.argv=sys.argv[3:]\n"
+                     "os.environ.update(updates)\n"
+                     "runpy.run_path(entry,run_name='__main__')\n")
 BARRIER = """
 import pathlib, sys, time
 ready, gate, done = map(pathlib.Path, sys.argv[1:])
@@ -122,6 +127,8 @@ class ExternalFixture:
         self.write("cli-{}.json".format(self.cli_count), (json.dumps(value, ensure_ascii=True) + "\n").encode())
         try:
             observed = json.loads(result.stdout)
+            if isinstance(observed, dict) and isinstance(observed.get("observation"), dict):
+                observed = dict(observed, **observed["observation"])
             if isinstance(observed, dict) and "state" in observed:
                 self.observations[observed["job"], observed["attempt"]] = observed
         except (ValueError, TypeError, KeyError): pass
@@ -407,8 +414,8 @@ class Admission:
         self.response = response
         self.record()
     def refute_if_absent(self, result):
-        if (result.returncode is not None and self.database_absent_before
-                and not (self.state / "state.db").exists()):
+        if (self.exclusive and result.returncode is not None and self.database_absent_before
+                and not os.path.lexists(self.state / "state.db")):
             self.refuted = True
             self.record()
     def refute_if_unchanged_exclusive(self, result, lock_fd, before, after):
@@ -480,6 +487,7 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
             return
         if self.diagnostics:
             print("retained fixture diagnostics: " + str(self.root), flush=True)
+            return
         snapshots = []
         for admission in self.admissions:
             if admission.job is None:
@@ -739,12 +747,14 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
 
     def test_literal_argv_cwd_stdin_and_logs(self):
         literal = "$(touch SHOULD_NOT_EXIST); * ' spaces"
-        script = "import os,sys; print(os.getcwd()); print(repr(sys.stdin.read())); print(sys.argv[1]); print('err',file=sys.stderr)"
+        (self.project / "identity.txt").write_text("materialized-content")
+        script = "import os,sys,pathlib; print(os.getcwd()); print(repr(sys.stdin.read())); print(sys.argv[1]); print(pathlib.Path('identity.txt').read_text()); print('err',file=sys.stderr)"
         job = self.submit([sys.executable, "-c", script, literal])["job"]
         final = self.wait(job)
         lines = Path(final["stdout_log"]).read_text().splitlines()
-        self.assertEqual(Path(lines[0]).name, "workspace")
-        self.assertEqual(lines[1:], ["''", literal])
+        self.assertNotEqual(lines[0], str(self.project))
+        self.assertEqual(lines[1:], ["''", literal, "materialized-content"])
+        self.assertEqual(final["input"], self.value("status", job)["input"])
         self.assertEqual(Path(final["stderr_log"]).read_text(), "err\n")
         self.assertFalse((self.project / "SHOULD_NOT_EXIST").exists())
 
@@ -962,7 +972,8 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
                                    start_new_session=True, env=self.env, cwd=self.project,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.processes.append(process)
-        line = process.stdout.readline()
+        self.client_groups.append(process.pid)
+        line = self.response_line(process)
         submitted = json.loads(line)
         admission.attribute(submitted)
         self.running(submitted["job"], ready)
