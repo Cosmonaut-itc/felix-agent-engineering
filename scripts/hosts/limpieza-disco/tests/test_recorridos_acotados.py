@@ -53,6 +53,8 @@ root = Path(os.environ['HARNESS'])
 c = json.loads((root / 'config.json').read_text())
 a = sys.argv[1:]
 home = os.environ['HOME']
+with (root / 'find-roots').open('a') as f: f.write(a[0] + '\\n')
+if Path(a[0]).name in c.get('find_tcc_block', []): time.sleep(30)
 block = ((c['block'] == 'home' and a[0] in (home, home + '/app'))
          or (c['block'] == 'raiz' and a[0] in (home, home + '/aaa-bloqueada'))
          or (c['block'] == 'copia' and a[0] == './copia')
@@ -105,7 +107,7 @@ c = json.loads((root / 'config.json').read_text())
 name = Path(sys.argv[-1]).name
 with (root / 'xattr-roots').open('a') as f: f.write(name + '\\n')
 if name == c.get('xattr_error'): sys.exit(1)
-if name == c.get('xattr_block'): time.sleep(30)
+if name == c.get('xattr_block') or name in c.get('xattr_tcc_block', []): time.sleep(30)
 print(c.get('xattrs', {}).get(name, ''))
 """)
         self.executable('stat', """#!/usr/bin/python3 -B
@@ -185,6 +187,30 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
         (cache / 'dato').write_text('fixture borrable')
         self.envejecer(self.home / nombre)
         return cache
+
+    def test_r6_podas_tcc_antes_de_stat_xattr_y_find(self):
+        podas = ('Downloads', 'Movies', 'Music', 'Pictures')
+        protegidas = [self.cache_r5(p) for p in podas]
+        self.config['find_tcc_block'] = podas
+        for bloqueo in ('xattr', 'find'):
+            with self.subTest(bloqueo=bloqueo):
+                self.config['xattr_tcc_block'] = podas if bloqueo == 'xattr' else []
+                posterior = self.cache_r5('zzz-posterior')
+                out = self.ejecutar(poda_fixture=True)
+                self.assertIn('fin (libre:', out)
+                self.assertNotIn('tope ', out)
+                for cache in protegidas:
+                    self.assertTrue(cache.exists(), str(cache) + out)
+                self.assertFalse(posterior.exists(), out)
+                atributos = (self.root / 'xattr-roots').read_text().splitlines()
+                stats = (self.root / 'stat-roots').read_text().splitlines()
+                recorridas = (self.root / 'find-roots').read_text().splitlines()
+                for nombre in podas:
+                    self.assertNotIn(nombre, atributos)
+                    self.assertNotIn(str(self.home / nombre), stats)
+                    self.assertFalse(any(
+                        p == str(self.home / nombre) or p.startswith(str(self.home / nombre) + '/')
+                        for p in recorridas), recorridas)
 
     def test_r5_raiz_colgada_no_impide_podar_la_siguiente(self):
         bloqueada = self.cache_r5('aaa-bloqueada')

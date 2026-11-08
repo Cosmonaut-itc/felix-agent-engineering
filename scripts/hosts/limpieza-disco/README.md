@@ -29,9 +29,13 @@ La regla 7 es el único recorrido que parte del home. Recorre cada entrada
 de primer nivel por separado, oculta o no, con su propio tope, así que una
 raíz que bloquea sólo pierde su propio contenido. Salta estas raíces:
 
-- las rutas podadas por nombre, sin línea en el log: Documents y Desktop,
-  que en la Mini tienen `com.apple.file-provider-domain-id`; OrbStack,
-  montado por NFS; y Library, que cubre CloudStorage y Mobile Documents;
+- las rutas podadas por nombre, sin línea en el log: `Documents`, `Desktop`,
+  `Downloads`, `Movies`, `Music`, `Pictures`, `OrbStack`, `Library`, `.Trash`,
+  `.cache`, `.bun`, `.rustup`, `.android`, `.cargo` y `remote-run`. Se saltan
+  antes de consultar `stat`, `xattr` o `find`: TCC bloquea incluso la lectura
+  de xattrs de esas carpetas del usuario bajo launchd. Documents y Desktop
+  tienen `com.apple.file-provider-domain-id` en la Mini; OrbStack está
+  montado por NFS; Library cubre CloudStorage y Mobile Documents;
 - las raíces en otro dispositivo que el home, porque `-xdev` no excluye la
   raíz desde la que arranca el `find`, y lo anota en el log;
 - las raíces con `com.apple.macl` o `com.apple.file-provider-domain-id`,
