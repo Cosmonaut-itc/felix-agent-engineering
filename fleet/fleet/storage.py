@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import sqlite3
 import stat
+import struct
 import tempfile
 import time
 import uuid
@@ -119,6 +120,68 @@ def snapshot(state):
         raise
 
 
+def writer_header(state):
+    """Inspect committed page one before SQLite can mutate an existing ledger.
+
+    Writers must not depend on the reader's full disk copy (e.g. RLIMIT_FSIZE).
+    The directory EX lock excludes Fleet writers/checkpoints. Validate WAL
+    checksums/salts and use only committed frames, including a fresh ledger
+    whose schema still lives entirely in WAL. SQLite validates the actual
+    schema and authority again after opening, before any transaction or pragma
+    that changes journal mode.
+    """
+    with inputs.directory(state) as fd:
+        with inputs.open_file(fd, "state.db") as source:
+            main, _ = inputs.read_stable(source, limit=MAX_DATABASE)
+        wal = b""
+        if os.path.lexists(state / "state.db-wal"):
+            with inputs.open_file(fd, "state.db-wal") as source:
+                wal, _ = inputs.read_stable(source, limit=MAX_DATABASE)
+    header = main[:100]
+    if wal:
+        if len(wal) < 32:
+            raise Fault("state_unreadable")
+        magic, version, page_size = struct.unpack(">III", wal[:12])
+        if magic not in (0x377f0682, 0x377f0683) or version != 3007000:
+            raise Fault("state_unreadable")
+        if page_size < 512 or page_size > 65536 or page_size & (page_size - 1):
+            raise Fault("state_unreadable")
+        order = "<" if magic == 0x377f0682 else ">"
+
+        def checksum(data, sums=(0, 0)):
+            words = struct.unpack(order + str(len(data) // 4) + "I", data)
+            first, second = sums
+            for index in range(0, len(words), 2):
+                first = (first + words[index] + second) & 0xffffffff
+                second = (second + words[index + 1] + first) & 0xffffffff
+            return first, second
+
+        sums = checksum(wal[:24])
+        if sums != struct.unpack(">II", wal[24:32]):
+            raise Fault("state_unreadable")
+        candidate = header
+        for offset in range(32, len(wal) - page_size - 23, page_size + 24):
+            frame = wal[offset:offset + 24]
+            page = wal[offset + 24:offset + 24 + page_size]
+            if frame[8:16] != wal[16:24]:
+                break  # Stale tail after a WAL restart is outside this epoch.
+            next_sums = checksum(page, checksum(frame[:8], sums))
+            if next_sums != struct.unpack(">II", frame[16:24]):
+                break  # SQLite also stops recovery at the first invalid frame.
+            sums = next_sums
+            number, commit = struct.unpack(">II", frame[:8])
+            if number == 0:
+                raise Fault("state_unreadable")
+            if number == 1:
+                candidate = page[:100]
+            if commit:
+                header = candidate
+    if (len(header) < 100 or header[:16] != b"SQLite format 3\x00"
+            or int.from_bytes(header[68:72], "big") != APP_ID
+            or int.from_bytes(header[60:64], "big") != SCHEMA_VERSION):
+        raise Fault("unsupported_schema")
+
+
 def compatible(conn):
     if (conn.execute("PRAGMA application_id").fetchone()[0] != APP_ID or
             conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION):
@@ -152,22 +215,22 @@ class Ledger:
             check_files(state, privacy=False)
             exists = os.path.lexists(state / "state.db")
             if exists:
-                copied, temporary = snapshot(state)
-                try:
-                    compatible(copied)
+                if create:
+                    writer_header(state)
                     check_files(state)
-                    authority = copied.execute("SELECT * FROM authority").fetchone()
-                    if authority is None or authority["uid"] != os.getuid():
-                        raise Fault("operator_unauthorized")
-                except BaseException:
-                    copied.close()
-                    temporary.cleanup()
-                    raise
-                if not create:
-                    self.conn, self.copy = copied, temporary
                 else:
-                    copied.close()
-                    temporary.cleanup()
+                    copied, temporary = snapshot(state)
+                    try:
+                        compatible(copied)
+                        check_files(state)
+                        authority = copied.execute("SELECT * FROM authority").fetchone()
+                        if authority is None or authority["uid"] != os.getuid():
+                            raise Fault("operator_unauthorized")
+                    except BaseException:
+                        copied.close()
+                        temporary.cleanup()
+                        raise
+                    self.conn, self.copy = copied, temporary
             elif not create or not initialize:
                 raise Fault("state_not_found")
             elif any(state.iterdir()):
@@ -179,6 +242,11 @@ class Ledger:
                 self.conn = sqlite3.connect(str(state / "state.db"), timeout=10,
                                              isolation_level=None)
                 self.conn.row_factory = sqlite3.Row
+                if exists:
+                    compatible(self.conn)
+                    authority = self.execute("SELECT * FROM authority").fetchone()
+                    if authority is None or authority["uid"] != os.getuid():
+                        raise Fault("operator_unauthorized")
                 if self.conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
                     raise Fault("wal_required")
                 self.conn.execute("PRAGMA synchronous=FULL")

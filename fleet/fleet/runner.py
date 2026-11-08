@@ -215,18 +215,34 @@ def dispatch(db):
     identity = native.identity(os.getpid())
     if not native.verifiable(identity):
         raise Fault("launcher_identity_unverifiable", 3, "unknown")
+    first = None
     with native.dispatch_boundary():
-        with db.transaction():
-            assignment = claim(db, identity)
-        if assignment:
+        while True:
+            with db.transaction():
+                assignment = claim(db, identity)
+            if not assignment:
+                break
+            first = first or assignment
             launch(db, *assignment, identity)
-    return assignment
+            # Only our confirmed never-created closure plus valid publication
+            # can release here. An uncertain launch or retained slot stops.
+            if attempt_row(db, assignment[0])["disposition"] != "released":
+                break
+    return first
 
 
 def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), credentials=(),
            idempotency_key=None, enqueue_only=False):
     if os.name != "posix":
         raise Fault("unsupported_execution_context")
+    try:
+        for ancestor in inputs._ancestors(state):
+            if os.path.lexists(ancestor):
+                with inputs.directory(ancestor):
+                    pass
+                break
+    except OSError:
+        raise Fault("unsafe_state") from None
     prepared = admission.prepare(state, argv, cwd, client, includes, private, artifacts,
                                  credentials, idempotency_key, enqueue_only)
     with Ledger(state, create=True) as db:
@@ -409,15 +425,17 @@ def reconcile(db, result):
                 confirmed = {"job": row["job"], "attempt": row["id"],
                              "decision_revision": db.authority["revision"], "reason": "terminal_reconciled"}
             result["confirmed_actions"].append(confirmed)
-    assignment = dispatch(db)
-    if assignment:
-        row = attempt_row(db, assignment[0])
-        claim_revision = db.execute("SELECT revision FROM transitions WHERE attempt=? AND cause='claim' "
-                                    "ORDER BY seq LIMIT 1", (row["id"],)).fetchone()[0]
+    dispatch_revision = db.authority["revision"]
+    dispatch(db)
+    claims = db.execute("SELECT attempt,generation,revision FROM transitions "
+                        "WHERE cause='claim' AND revision>? ORDER BY seq", (dispatch_revision,)).fetchall()
+    for claim_record in claims:
+        row = attempt_row(db, claim_record["attempt"])
         result["dispatch_claimed"].append({"job": row["job"], "attempt": row["id"],
-                                           "generation": assignment[1], "reason": "claim",
-                                           "disposition": "retained", "work_remaining": ["execution", "closure"],
-                                           "decision_revision": claim_revision})
+                                           "generation": claim_record["generation"], "reason": "claim",
+                                           "disposition": row["disposition"],
+                                           "work_remaining": ["execution", "closure"] if row["state"] != "finished" else [],
+                                           "decision_revision": claim_record["revision"]})
     for item in rows:
         with db.transaction():
             row = attempt_row(db, item[0])

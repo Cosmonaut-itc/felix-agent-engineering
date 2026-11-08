@@ -213,7 +213,7 @@ class ContentCases:
             submitted = self.artifact_job(script)
             final = self.wait(submitted["job"], 3)
             self.assertEqual(final["command"]["exit_code"], 0)
-            self.assertTrue(final["evidence"]["valid"])
+            self.assertFalse(final["evidence"]["valid"])
             self.assertEqual(final["collection"]["state"], "incomplete")
             self.assertIn("artifact_collection_failed", final["collection"]["errors"])
         self.state = self.root / "secret-artifact-state"

@@ -21,6 +21,11 @@ class CorrectionCases:
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
         self.assertTrue(self.admissions[-1].refuted)
         self.assertFalse((state / "state.db").exists())
+        value = json.loads(result.stdout)
+        self.assertEqual(value["api"], "fleet-job-api@1")
+        self.assertEqual(value["operation"], "submit")
+        self.assertFalse(value["accepted"])
+        self.assertEqual(value["error"]["effects"], "not_admitted")
         if error:
             self.assertEqual(json.loads(result.stdout)["error"]["code"], error)
         return result
@@ -543,6 +548,14 @@ class CorrectionCases:
                     self.assertEqual(json.loads(result.stdout)["error"]["code"],
                                      "unsupported_schema")
             self.assertEqual(self.state_image(state), before)
+        before = self.state_image(incompatible)
+        rejected = self.call("submit", "--", sys.executable, "-c", "pass",
+                             state=incompatible, check=False)
+        self.assertEqual(rejected.returncode, 2, (rejected.stdout, rejected.stderr))
+        self.assertEqual(json.loads(rejected.stdout)["error"],
+                         {"code": "unsupported_schema", "effects": "not_admitted"})
+        self.assertEqual(self.state_image(incompatible), before)
+        self.assertTrue(self.admissions[-1].refuted)
 
     def test_missing_payload_and_truncated_manifest_degrade_only_the_view(self):
         for missing in (True, False):

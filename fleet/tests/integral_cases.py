@@ -169,7 +169,7 @@ class IntegralCases:
         return result
 
     def test_durable_admission_receipt_survives_unavailable_reader_copy(self):
-        limit = 256 * 1024
+        limit = 512 * 1024
         for index in range(8):
             seed = self.submit([sys.executable, "-c", "pass"],
                                env=dict(self.env, FIXTURE_PADDING=str(index) + "P" * 49152))
