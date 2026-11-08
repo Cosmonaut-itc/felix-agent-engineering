@@ -167,7 +167,8 @@ os.execv('/bin/ps', ['ps'] + sys.argv[1:])
             os.killpg(p.pid, signal.SIGKILL)
             p.wait()
         self.addCleanup(cerrar)
-        inicio = subprocess.check_output(['ps', '-p', str(p.pid), '-o', 'lstart='], text=True).rstrip('\n')
+        inicio = subprocess.check_output(['ps', '-p', str(p.pid), '-o', 'lstart='],
+                                         env=dict(os.environ, LC_ALL='C', TZ='UTC0'), text=True).rstrip('\n')
         comando = subprocess.check_output(['ps', '-p', str(p.pid), '-o', 'command='], text=True).rstrip('\n')
         return p.pid, inicio, comando
 
@@ -202,6 +203,81 @@ os.execv('/bin/ps', ['ps'] + sys.argv[1:])
         out = self.ejecutar()
         self.assertIn('recuperado lock', out)
         self.assertIn('fin (libre:', out)
+
+    def programa_lock(self, env, permiso_denegado=False):
+        script = self.script.read_text()
+        programa = script.split("<<'PY_LOCK'\n", 1)[1].split('\nPY_LOCK', 1)[0]
+        if permiso_denegado:
+            # Fuerza EPERM sin depender de ejecutar los tests como usuario sin root.
+            programa = ("from unittest.mock import Mock\nimport os\n"
+                        "os.kill = Mock(side_effect=PermissionError)\n" + programa)
+        return subprocess.run(['/usr/bin/python3', '-B', '-', str(self.lock), str(os.getpid())],
+                              input=programa, capture_output=True, text=True,
+                              env=dict(os.environ, **env), timeout=8)
+
+    def test_lock_locale_distinto_conserva_dueno_vivo(self):
+        self.lock_viejo(*self.dueno())  # identidad C / UTC0
+        owner = (self.lock / 'owner').read_text()
+        p = self.programa_lock({'LC_ALL': 'es_MX.UTF-8', 'TZ': 'America/Mexico_City'})
+        self.assertEqual(p.returncode, 10, p.stdout + p.stderr)
+        self.assertEqual((self.lock / 'owner').read_text(), owner)
+        self.assertIn('más de 120 min con dueño vivo', p.stdout)
+
+    def test_lock_registro_normaliza_locale_y_zona(self):
+        p = self.programa_lock({'LC_ALL': 'es_MX.UTF-8', 'TZ': 'America/Mexico_City'})
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        inicio = subprocess.check_output(['ps', '-p', str(os.getpid()), '-o', 'lstart='],
+                                         env=dict(os.environ, LC_ALL='C', TZ='UTC0'), text=True)
+        self.assertEqual((self.lock / 'owner').read_text().splitlines()[1], inicio.rstrip('\n'))
+
+    def test_lock_permission_error_pid_ajeno_recupera(self):
+        campos = [subprocess.check_output(['ps', '-p', '1', '-o', campo + '='],
+                                         env=dict(os.environ, LC_ALL='C', TZ='UTC0'),
+                                         text=True).rstrip('\n') for campo in ('lstart', 'command')]
+        self.assertNotIn('limpieza-disco.sh', campos[1])
+        self.lock_viejo(1, *campos)
+        p = self.programa_lock({'LC_ALL': 'C', 'TZ': 'UTC0'}, permiso_denegado=True)
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        self.assertIn('recuperado lock', p.stdout)
+        self.assertEqual((self.lock / 'owner').read_text().splitlines()[0], str(os.getpid()))
+
+    def soltar_fixture(self, caso):
+        self.lock.mkdir()
+        Path(str(self.lock) + '.guard').touch()
+        funcion = self.script.read_text().split('soltar_lock() {', 1)[1].split('\n}', 1)[0]
+        # Ejecuta la función real, sin ejecutar las reglas de limpieza.
+        shell = r"""
+log() { echo "$*"; }
+pid=$$
+inicio=$(LC_ALL=C TZ=UTC0 ps -p $$ -o lstart=)
+comando=$(LC_ALL=C TZ=UTC0 ps -p $$ -o command=)
+case "$1" in
+  pid) pid=1 ;;
+  inicio) inicio='inicio de otra pasada' ;;
+  comando) comando='comando de otra pasada' ;;
+esac
+printf '%s\n%s\n%s\n' "$pid" "$inicio" "$comando" > "$LOCK/owner"
+soltar_lock
+"""
+        p = subprocess.run(['bash', '-c', 'soltar_lock() {' + funcion + '\n}\n' + shell,
+                            'fixture', caso], capture_output=True, text=True, timeout=8,
+                           env=dict(os.environ, LOCK=str(self.lock), LC_ALL='es_MX.UTF-8',
+                                    TZ='America/Mexico_City'))
+        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
+        return p.stdout
+
+    def test_soltar_lock_conserva_ajeno(self):
+        for caso in ('pid', 'inicio', 'comando'):
+            with self.subTest(caso=caso):
+                out = self.soltar_fixture(caso)
+                self.assertTrue((self.lock / 'owner').exists(), out)
+                self.assertIn('no suelto lock', out)
+                (self.lock / 'owner').unlink()
+                self.lock.rmdir()
+
+    def test_soltar_lock_propio_con_locale_distinto(self):
+        self.soltar_fixture('propio')
+        self.assertFalse(self.lock.exists())
 
     def test_home_poda_icloud_y_orbstack(self):
         self.ejecutar()

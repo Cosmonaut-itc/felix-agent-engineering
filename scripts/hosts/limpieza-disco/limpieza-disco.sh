@@ -277,8 +277,34 @@ PY
 
 # El dueño se identifica por pid, inicio y comando, no sólo por antigüedad.
 soltar_lock() {
-  rm -f -- "$LOCK/owner"
-  rmdir "$LOCK" 2>/dev/null
+  /usr/bin/python3 -B - "$LOCK" "$$" <<'PY_UNLOCK'
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+
+lock, propio = sys.argv[1:]
+try:
+    guard = os.open(lock + '.guard', os.O_RDWR | os.O_NOFOLLOW)
+    fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    if not stat.S_ISREG(os.lstat(lock + '/owner').st_mode):
+        raise ValueError('dueño no regular')
+    with open(lock + '/owner') as archivo:
+        pid, inicio, comando = archivo.read(16384).splitlines()
+    if pid != propio:
+        raise ValueError('pid de otra pasada')
+    def ps(campo):
+        return subprocess.check_output(['ps', '-p', propio, '-o', campo + '='],
+                                       env=dict(os.environ, LC_ALL='C', TZ='UTC0'),
+                                       stderr=subprocess.PIPE, text=True, timeout=5).rstrip('\n')
+    if not inicio or not comando or inicio != ps('lstart') or comando != ps('command'):
+        raise ValueError('identidad de otra pasada')
+    os.unlink(lock + '/owner')
+    os.rmdir(lock)
+except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    print('no suelto lock: ' + str(exc), flush=True)
+PY_UNLOCK
 }
 # flock sólo serializa adquirir/recuperar y publicar owner; se libera incluso
 # si el recuperador muere. El mkdir sigue siendo compatible con instalar.sh.
@@ -301,6 +327,7 @@ def log(mensaje):
 
 def ps(pid, campo):
     return subprocess.check_output(['ps', '-p', str(pid), '-o', campo + '='],
+                                   env=dict(os.environ, LC_ALL='C', TZ='UTC0'),
                                    stderr=subprocess.PIPE, text=True, timeout=5).rstrip('\n')
 
 
@@ -323,7 +350,7 @@ def dueno_vivo():
     except ProcessLookupError:
         return False
     except PermissionError:
-        return True
+        pass  # EPERM no acredita identidad: comprobar inicio y comando por ps.
     # Una consulta fallida sube al cierre conservador de abajo.
     return (ps(pid, 'lstart') == inicio and ps(pid, 'command') == comando
             and 'limpieza-disco.sh' in comando)
