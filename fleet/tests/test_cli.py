@@ -12,6 +12,17 @@ from review_r2_cases import ReviewR2Cases
 from core3820_cases import Core3820Cases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
+def capsule_path(state, job):
+    # Schema 4 separates a preparation's capsule from the public job identity.
+    sys.path.insert(0, str(CLI.parents[1]))
+    from fleet.storage import Ledger
+    with Ledger(state) as db:
+        row = db.execute("SELECT capsule FROM jobs WHERE id=?", (job,)).fetchone()
+        if row is None or not re.fullmatch(r"j_[0-9a-f]{32}", row[0]):
+            raise ValueError("job has no attributable capsule")
+        return state / "capsules" / row[0]
+
+
 JOB_ENV_BOOTSTRAP = ("import json,os,runpy,sys\n"
                      "entry,updates=sys.argv[1],json.loads(sys.argv[2])\n"
                      "sys.argv=sys.argv[3:]\n"
@@ -175,7 +186,7 @@ class ExternalFixture:
                 if bundle in children(attempt): paths.update(tree(bundle))
                 else: absent.append(str(bundle.relative_to(self.root)))
             for admission in attributed:
-                capsule = state / "capsules" / admission.job
+                capsule = admission.capsule or capsule_path(state, admission.job)
                 attempt = state / "attempts" / admission.attempt
                 required = {capsule: stat.S_ISDIR, capsule / "payload": stat.S_ISDIR,
                             capsule / "manifest.json": stat.S_ISREG, attempt: stat.S_ISDIR}
@@ -268,6 +279,7 @@ class ExternalFixtureEvidenceTests(unittest.TestCase):
             for directory in (capsule / "payload", bundle): directory.mkdir(mode=0o700, parents=True)
             admission = Admission(state, True, external.root / "admission.json")
             admission.job, admission.attempt = capsule.name, attempt.name
+            admission.capsule = capsule
             self.admissions = [admission]
             # Metadata of owned helper resources; no Fleet call/response is substituted.
             external.observations[admission.job, admission.attempt] = {"state": "finished", "collection": {"errors": []}}
@@ -395,7 +407,7 @@ class Admission:
         self.state, self.exclusive, self.receipt = state, exclusive, receipt
         self.receipt_lock = threading.Lock()
         self.database_absent_before = not os.path.lexists(state / "state.db")
-        self.job = self.attempt = None
+        self.job = self.attempt = self.capsule = None
         self.refuted, self.response = False, None
     def record(self):
         with self.receipt_lock:
@@ -421,7 +433,7 @@ class Admission:
     def refute_if_unchanged_exclusive(self, result, lock_fd, before, after):
         if (result.returncode != 2 or self.database_absent_before or before != after
                 or "state.db" not in before
-                or json.loads(result.stdout) != {"error": "path_identity_unavailable"}):
+                or json.loads(result.stdout).get("error") != {"code": "path_identity_unavailable", "effects": "not_admitted"}):
             return
         held, current = os.fstat(lock_fd), self.state.stat()
         if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
@@ -644,6 +656,8 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
     def projection(self, value):
         # Test-only projection of actual versioned JSON; raw output is preserved.
         if not isinstance(value.get("observation"), dict):
+            if value.get("accepted") is True and value.get("observation") is None:
+                return dict(value, state=value["admission"]["state"])
             return value
         result = dict(value, **value["observation"])
         result.update(exit_code=result["command"]["exit_code"], signal=result["command"]["signal"],
@@ -651,6 +665,18 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
         result["transitions"] = [dict(t, to=t["to_state"], **{"from": t["from_state"]})
                                  for t in result["transitions"] if t["from_state"] != t["to_state"]]
         return result
+
+    def capsule(self, job, state=None):
+        path = capsule_path(state or self.state, job)
+        self.assertTrue(path.is_dir())
+        return path
+
+    def capsule_job(self, capsule):
+        sys.path.insert(0, str(CLI.parents[1]))
+        from fleet.storage import Ledger
+        with Ledger(self.state) as db:
+            row = db.execute("SELECT id FROM jobs WHERE capsule=?", (capsule,)).fetchone()
+        return row[0] if row else None
 
     def submit(self, argv, state=None, client=None, env=None):
         options = ["submit"] + (["--client", client] if client is not None else [])

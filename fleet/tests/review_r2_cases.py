@@ -39,14 +39,14 @@ class ReviewR2Cases:
             final = self.wait(submitted["job"])
             identities.append(submitted["input"])
             self.assertEqual(self.output(final), "False\nFalse\n")
-            for tree in (self.state / "capsules" / submitted["job"] / "payload",
+            for tree in (self.capsule(submitted["job"]) / "payload",
                          self.state / "attempts" / submitted["attempt"] / "workspace"):
                 for path in private_paths:
                     self.assertFalse((tree / path.name).exists())
                 for path in tree.rglob("*"):
                     if path.is_file():
                         self.assertNotIn(marker.encode(), path.read_bytes())
-            manifest = self.state / "capsules" / submitted["job"] / "manifest.json"
+            manifest = self.capsule(submitted["job"]) / "manifest.json"
             self.assertNotIn(marker.encode(), manifest.read_bytes())
         self.assertEqual(*identities)
 
@@ -210,12 +210,12 @@ class ReviewR2Cases:
             final = self.wait(submitted["job"])
             self.assertEqual(self.output(final), "external-tool-ok\n")
             parent = self.state / "input-diagnostics"
-            report = parent / (submitted["job"] + ".json")
+            report = parent / (self.capsule(submitted["job"]).name + ".json")
             self.assertEqual(parent.stat().st_mode & 0o777, 0o700)
             self.assertEqual(report.stat().st_mode & 0o777, 0o600)
             diagnostic = json.loads(report.read_text())
             self.assertEqual((diagnostic["version"], diagnostic["job"]),
-                             ("fleet-input-diagnostics@1", submitted["job"]))
+                             ("fleet-input-diagnostics@1", self.capsule(submitted["job"]).name))
             self.assertIn({"variable": "PATH", "entry": str(alias), "path": str(target), "errno": expected},
                           diagnostic["unselected_aliases"])
             self.assertEqual(diagnostic["omitted"], 0)
@@ -283,7 +283,7 @@ class ReviewR2Cases:
         self.assertEqual(failure.exception.errno, errno.ENOENT)
         submitted = self.submit([tool.name], env=dict(self.env, PATH=str(first) + ":" + str(tool.parent)))
         self.assertEqual(self.output(self.wait(submitted["job"])), "external-tool-ok\n")
-        report = self.state / "input-diagnostics" / (submitted["job"] + ".json")
+        report = self.state / "input-diagnostics" / (self.capsule(submitted["job"]).name + ".json")
         self.assertIn({"variable": "PATH", "entry": str(alias), "path": str(target), "errno": errno.ENOENT},
                       json.loads(report.read_text())["unselected_aliases"])
 
@@ -304,7 +304,7 @@ class ReviewR2Cases:
             self.assertEqual(failure.exception.errno, errno.EACCES)
             submitted = self.submit([tool.name], env=dict(self.env, PATH=str(first) + ":" + str(tool.parent)))
             self.assertEqual(self.output(self.wait(submitted["job"])), "external-tool-ok\n")
-            report = self.state / "input-diagnostics" / (submitted["job"] + ".json")
+            report = self.state / "input-diagnostics" / (self.capsule(submitted["job"]).name + ".json")
             self.assertIn({"variable": "PATH", "entry": str(alias), "path": str(target), "errno": errno.EACCES},
                           json.loads(report.read_text())["unselected_aliases"])
         finally:
@@ -362,7 +362,7 @@ class ReviewR2Cases:
             after = self.state_image(self.state)
             admission.refute_if_unchanged_exclusive(result, fd, before, after)
             self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
-            self.assertEqual(json.loads(result.stdout), {"error": "path_identity_unavailable"})
+            self.assertEqual(json.loads(result.stdout)["error"], {"code": "path_identity_unavailable", "effects": "not_admitted"})
             self.assertEqual(after, before)
             self.assertTrue(admission.refuted, "unchanged exclusive state did not refute this admission")
         finally:
@@ -416,12 +416,15 @@ class ReviewR2Cases:
                     return False
                 name = next(iter(names))
                 self.assertTrue(re.fullmatch(r"j_[0-9a-f]{32}", name))
-                result = self.call("status", name, check=False)
+                job = self.capsule_job(name)
+                if job is None:
+                    return False
+                result = self.call("status", job, check=False)
                 if result.returncode != 0:
                     return False
-                value = json.loads(result.stdout)
-                if value.get("registered") and value["state"] == "starting" and value["supervisor"] is None:
-                    self.assertEqual(value["job"], name)
+                value = self.projection(json.loads(result.stdout))
+                if value["accepted"] and value["state"] == "starting" and value["supervisor"] is None:
+                    self.assertEqual(value["job"], job)
                     candidate = value
                     return True
                 return False
@@ -430,16 +433,18 @@ class ReviewR2Cases:
             queued = self.call("submit", "--client", "fixture-client", "--credential-env", "HOST_VALUE",
                                "--", sys.executable, "-c", "print('must-not-run')",
                                env=dict(self.env, HOST_VALUE=host), check=False)
-            self.assertEqual(queued.returncode, 3, (queued.stdout, queued.stderr))
+            self.assertEqual(queued.returncode, 0, (queued.stdout, queued.stderr))
             second = json.loads(queued.stdout)
-            self.assertTrue(second["registered"] and second["accepted"])
-            self.assertEqual((second["observation"], second["state"], second["view"]),
-                             ("durable_admission", "queued", "uncertain"))
+            self.assertTrue(second["accepted"])
+            self.assertIsNone(second["observation"])
+            self.assertEqual(second["admission"]["state"], "queued")
+            queued_view = self.value("status", second["job"])
+            self.assertEqual((queued_view["state"], queued_view["view"]), ("queued", "uncertain"))
             reader = os.open(log, os.O_RDONLY | os.O_NONBLOCK)
             stdout, stderr = process.communicate(timeout=15)
             first = json.loads(stdout)
             admission.attribute(first)
-            self.assertEqual(process.returncode, 1, (stdout, stderr))
+            self.assertEqual(process.returncode, 0, (stdout, stderr))
             self.assertEqual((first["job"], first["attempt"]), (candidate["job"], candidate["attempt"]))
             final = self.wait(second["job"], 1)
             status = self.value("status", second["job"], env=dict(self.env, HOST_VALUE="different-reader"))
@@ -447,11 +452,10 @@ class ReviewR2Cases:
             self.assertEqual(final["command"]["kind"], "never_created")
             self.assertTrue(proof["evidence"]["valid"])
             self.assertEqual([item["to"] for item in status["transitions"]], ["queued", "starting", "finished"])
-            expected_actor = "client:" + first["client"].replace(host, "[REDACTED]")
             self.assertIn(host, first["client"], "source emitter must not declare the destination secret")
             for transition in status["transitions"][1:]:
                 self.assertEqual((transition["job"], transition["attempt"], transition["actor"]),
-                                 (second["job"], second["attempt"], expected_actor))
+                                 (second["job"], second["attempt"], "dispatcher" if transition["to"] == "starting" else "launcher"))
             for response in (second, final, status, proof):
                 self.assertNotIn(host, json.dumps(response))
         finally:
@@ -482,7 +486,8 @@ class ReviewR2Cases:
         value = json.loads(result.stdout)
         self.assertLess(time.monotonic() - started, 15)
         self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
-        self.assertEqual(value, {"error": "source_reference_limit"})
+        self.assertEqual(value["error"], {"code": "source_reference_limit", "effects": "not_admitted"})
+        self.assertFalse(value["accepted"])
         self.assertTrue(self.admissions[-1].refuted)
         self.assertFalse(os.path.lexists(state / "state.db"))
 
@@ -533,12 +538,15 @@ class ReviewR2Cases:
                     return False
                 name = next(iter(names))
                 self.assertTrue(re.fullmatch(r"j_[0-9a-f]{32}", name))
-                result = self.call("status", name, check=False)
+                job = self.capsule_job(name)
+                if job is None:
+                    return False
+                result = self.call("status", job, check=False)
                 if result.returncode != 0:
                     return False
-                value = json.loads(result.stdout)
-                if value.get("registered") and value["state"] == "starting" and value["supervisor"] is None:
-                    self.assertEqual(value["job"], name)
+                value = self.projection(json.loads(result.stdout))
+                if value["accepted"] and value["state"] == "starting" and value["supervisor"] is None:
+                    self.assertEqual(value["job"], job)
                     self.assertRegex(value["attempt"], r"^a_[0-9a-f]{32}$")
                     self.assertIsNone(value["child_pid"])
                     candidate = value
@@ -556,10 +564,11 @@ class ReviewR2Cases:
                                            "stdout": stdout, "stderr": stderr}) + "\n")
             value = json.loads(stdout)
             admission.attribute(value)
-            self.assertEqual(process.returncode, 1, (stdout, stderr))
+            self.assertEqual(process.returncode, 0, (stdout, stderr))
             self.assertEqual((value["job"], value["attempt"]), (candidate["job"], candidate["attempt"]))
-            self.assertTrue(value["registered"])
-            self.assertFalse(value["accepted"])
+            self.assertTrue(value["accepted"])
+            self.assertIsNone(value["observation"])
+            self.assertEqual(value["admission"]["state"], "queued")
             self.assertNotIn("outcome", value)
             self.assertEqual(bundle.read_bytes(), b"owned bundle-seal obstruction")
             status = self.value("status", value["job"])

@@ -1,5 +1,5 @@
 """Read-only projections and total completion precedence for fleet-job-api@1."""
-from . import evidence, inputs, native
+from . import admission, evidence, inputs, native
 from .model import Fault, envelope, identifier, key, load, now, safe_queued
 from .storage import Ledger
 
@@ -184,5 +184,6 @@ def view(state, operation, job=None, idempotency_key=None, attempt=None):
         row = db.execute("SELECT * FROM attempts WHERE id=?", (selected["attempt"],)).fetchone()
         result = envelope(operation, db.authority, job=selected["id"], attempt=selected["attempt"],
                           accepted=True, admission=load(selected["admission"]), input=load(selected["input"]),
+                          input_policy=admission.public_policy(selected),
                           observation=observe(db, row))
         return result

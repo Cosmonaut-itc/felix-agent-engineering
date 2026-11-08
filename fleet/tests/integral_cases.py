@@ -71,7 +71,7 @@ class IntegralCases:
             result = self.call("submit", "--cwd", str(cwd), "--", sys.executable, "-c", "pass",
                                state=alias, check=False, refute_if_absent=True)
             self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
-            self.assertEqual(json.loads(result.stdout)["error"], "source_in_state")
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], "source_in_state")
             self.assertTrue(self.admissions[-1].refuted)
         self.assertEqual(list(state.iterdir()), [source])
 
@@ -90,7 +90,7 @@ class IntegralCases:
         self.assertEqual(self.output(self.wait(second["job"], state=state)), "False\n")
         self.assertEqual(first["input"], second["input"])
         for submitted in (first, second):
-            payload = state / "capsules" / submitted["job"] / "payload"
+            payload = self.capsule(submitted["job"], state=state) / "payload"
             self.assertFalse((payload / "LedgerState").exists())
             self.assertNotIn(b"must-not-be-captured", (payload.parent / "manifest.json").read_bytes())
 
@@ -184,10 +184,10 @@ class IntegralCases:
             response = self.limited_file_cli(limit, "submit", "--", sys.executable, "-c", "print('once')")
             self.assertEqual(response.returncode, 0, (response.stdout, response.stderr))
             submitted = json.loads(response.stdout)
-            self.assertTrue(submitted["registered"])
             self.assertTrue(submitted["accepted"])
-            self.assertEqual((submitted["observation"], submitted["state"], submitted["view"]),
-                             ("durable_admission", "queued", "queued"))
+            self.assertIsNone(submitted["observation"])
+            self.assertEqual(submitted["admission"]["state"], "queued")
+            self.assertEqual(submitted["binding"], "unkeyed")
             before = self.state_image(self.state)
             unavailable = self.limited_file_cli(limit, "status", submitted["job"])
             self.assertEqual(unavailable.returncode, 2, (unavailable.stdout, unavailable.stderr))

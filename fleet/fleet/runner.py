@@ -227,9 +227,11 @@ def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), cred
            idempotency_key=None, enqueue_only=False):
     if os.name != "posix":
         raise Fault("unsupported_execution_context")
+    prepared = admission.prepare(state, argv, cwd, client, includes, private, artifacts,
+                                 credentials, idempotency_key, enqueue_only)
     with Ledger(state, create=True) as db:
         receipt = admission.admit(db, argv, cwd, client, includes, private, artifacts,
-                                  credentials, idempotency_key, enqueue_only)
+                                  credentials, idempotency_key, enqueue_only, prepared)
         authority = db.authority
         # The historical receipt already exists. Dispatch failure cannot revoke it.
         if receipt["binding"] != "replay" and not enqueue_only:

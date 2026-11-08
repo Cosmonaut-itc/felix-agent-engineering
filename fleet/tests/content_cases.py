@@ -105,7 +105,7 @@ class ContentCases:
         (self.project / "public.txt").write_text("public-input")
         first = self.value("submit", "--private", custom.name, "--", sys.executable, "-c", script)
         self.assertEqual(self.output(self.wait(first["job"])), "False\nFalse\npublic-input\n")
-        payload = self.state / "capsules" / first["job"] / "payload"
+        payload = self.capsule(first["job"]) / "payload"
         self.assertFalse((payload / ".env").exists())
         self.assertFalse((payload / custom.name).exists())
         (self.project / ".env").write_text("fictitious-default-private-b")
@@ -154,7 +154,7 @@ class ContentCases:
                            env=dict(self.env, SERVICE_TOKEN=secret), refute_if_absent=True)
         self.assertEqual(result.returncode, 2)
         self.assertNotIn(secret, result.stdout + result.stderr)
-        self.assertIn("credential", json.loads(result.stdout)["error"])
+        self.assertIn("credential", json.loads(result.stdout)["error"]["code"])
         self.assertTrue(self.admissions[-1].refuted)
 
     def test_undeclared_secret_in_normal_file_is_outside_the_guarantee(self):
@@ -190,9 +190,9 @@ class ContentCases:
         self.assertNotEqual(finals[0]["attempt"], finals[1]["attempt"])
         missing = self.artifact_job("pass")
         final = self.wait(missing["job"], 3)
-        self.assertEqual(final["command"], {"kind": "exited", "exit_code": 0})
+        self.assertEqual(final["command"], {"kind": "exited", "exit_code": 0, "signal": None, "reason": None})
         self.assertEqual(final["outcome"], "incomplete")
-        self.assertIn("artifact_collection_failed", final["evidence"]["errors"])
+        self.assertIn("artifact_collection_failed", final["collection"]["errors"])
 
     def test_preexisting_artifact_is_not_deleted_or_admitted(self):
         report = self.project / "report.txt"
@@ -206,13 +206,17 @@ class ContentCases:
     def test_artifact_collection_rejects_special_symlink_and_declared_secret(self):
         outside = self.root / "own-external-report"
         outside.write_text("outside")
-        for script in ("from pathlib import Path; Path('report.txt').mkdir()",
+        for index, script in enumerate(("from pathlib import Path; Path('report.txt').mkdir()",
                        "import os; os.mkfifo('report.txt')",
-                       f"import os; os.symlink({str(outside)!r},'report.txt')"):
+                       f"import os; os.symlink({str(outside)!r},'report.txt')")):
+            self.state = self.root / ("invalid-artifact-state-" + str(index))
             submitted = self.artifact_job(script)
             final = self.wait(submitted["job"], 3)
             self.assertEqual(final["command"]["exit_code"], 0)
-            self.assertFalse(final["evidence"]["valid"])
+            self.assertTrue(final["evidence"]["valid"])
+            self.assertEqual(final["collection"]["state"], "incomplete")
+            self.assertIn("artifact_collection_failed", final["collection"]["errors"])
+        self.state = self.root / "secret-artifact-state"
         secret = "fictitious-artifact-credential-3821"
         submitted = self.artifact_job(
             "import os,pathlib; pathlib.Path('report.txt').write_text(os.environ['ARTIFACT_TOKEN'])",
@@ -288,8 +292,8 @@ class ContentCases:
         admission.attribute(value)
         self.assertEqual(process.returncode, 0, process.stderr)
         final = self.wait(value["job"], 3)
-        self.assertEqual(final["command"], {"kind": "exited", "exit_code": 0})
-        self.assertIn("stream_write_failed", final["evidence"]["errors"])
+        self.assertEqual(final["command"], {"kind": "exited", "exit_code": 0, "signal": None, "reason": None})
+        self.assertIn("stream_write_failed", final["collection"]["errors"])
 
     def test_first_admissions_on_nonexistent_state_are_serialized(self):
         start = threading.Barrier(4)

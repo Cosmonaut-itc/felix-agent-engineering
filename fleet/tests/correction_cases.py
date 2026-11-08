@@ -22,7 +22,7 @@ class CorrectionCases:
         self.assertTrue(self.admissions[-1].refuted)
         self.assertFalse((state / "state.db").exists())
         if error:
-            self.assertEqual(json.loads(result.stdout)["error"], error)
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], error)
         return result
 
     def blocked_queue(self):
@@ -183,7 +183,7 @@ class CorrectionCases:
         for cwd in (state, source):
             result = self.call("submit", "--cwd", str(cwd), "--", sys.executable, "-c", "pass",
                                state=state, check=False, refute_if_absent=True)
-            self.assertEqual(json.loads(result.stdout)["error"], "source_in_state")
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], "source_in_state")
             self.assertTrue(self.admissions[-1].refuted)
         self.assertEqual(list(state.iterdir()), [source])
         nested = self.project / "nested-state"
@@ -317,7 +317,7 @@ class CorrectionCases:
         fd = None
         try:
             result = self.call("status", submitted["job"], check=False)
-            observed = json.loads(result.stdout)
+            observed = self.projection(json.loads(result.stdout))
             if (result.returncode != 0
                     or (observed.get("job"), observed.get("attempt"), observed.get("state"))
                     != (submitted["job"], submitted["attempt"], "finished")):
@@ -342,7 +342,7 @@ class CorrectionCases:
             if hashlib.sha256(data).hexdigest() != before["state.db"][-1]:
                 raise ValueError("closed main file bytes changed during reading")
             if (len(data) < 100 or data[:16] != b"SQLite format 3\x00"
-                    or int.from_bytes(data[60:64], "big") != 3
+                    or int.from_bytes(data[60:64], "big") != 4
                     or data[68:72] != b"FLT1"):
                 raise ValueError("closed main file does not contain the expected public Fleet schema header")
             # Sidecar shape is not checkpoint/integrity proof. Validate only a
@@ -355,17 +355,17 @@ class CorrectionCases:
             try:
                 self.assertEqual(conn.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
                 self.assertEqual(conn.execute("PRAGMA application_id").fetchone(), (0x464C5431,))
-                self.assertEqual(conn.execute("PRAGMA user_version").fetchone(), (3,))
-                row = conn.execute("SELECT j.id,a.id,a.state,a.outcome FROM jobs j "
-                                   "JOIN attempts a ON a.job_id=j.id WHERE j.id=? AND a.id=?",
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone(), (4,))
+                row = conn.execute("SELECT j.id,a.id,a.state,a.recorded_outcome FROM jobs j "
+                                   "JOIN attempts a ON a.job=j.id WHERE j.id=? AND a.id=?",
                                    (submitted["job"], submitted["attempt"])).fetchone()
                 self.assertEqual(row, (submitted["job"], submitted["attempt"], "finished",
                                        observed["recorded_outcome"]))
-                transitions = conn.execute("SELECT seq,job_id,attempt_id,from_state,to_state,at "
-                                           "FROM transitions WHERE job_id=? ORDER BY seq",
+                transitions = conn.execute("SELECT seq,job,attempt,from_state,to_state,at "
+                                           "FROM transitions WHERE job=? ORDER BY seq",
                                            (submitted["job"],)).fetchall()
-                self.assertEqual(transitions, [(t["seq"], t["job"], t["attempt"], t["from"], t["to"], t["at"])
-                                                for t in observed["transitions"]])
+                self.assertEqual(transitions, [(t["seq"], t["job"], t["attempt"], t["from_state"], t["to_state"], t["at"])
+                                                for t in observed["observation"]["transitions"]])
                 self.assertTrue(transitions, "closed main file has no terminal history")
                 self.assertEqual(transitions[-1][4], "finished")
             finally:
@@ -463,9 +463,9 @@ class CorrectionCases:
             data = copy.read_bytes()
             self.assertTrue(len(data) >= 100 and data[:16] == b"SQLite format 3\x00"
                             and data[18:20] == b"\x01\x01" and data[68:72] == b"FLT1"
-                            and int.from_bytes(data[60:64], "big") == 3,
-                            "converted main must have SQLite/FLT1/schema3 and rollback header 1/1")
-            for version in (3, 999):
+                            and int.from_bytes(data[60:64], "big") == 4,
+                            "converted main must have SQLite/FLT1/schema4 and rollback header 1/1")
+            for version in (4, 999):
                 if version == 999:
                     # Derive only after the closed rollback main passed all
                     # integrity, identity, outcome and history checks below.
@@ -480,16 +480,16 @@ class CorrectionCases:
                     self.assertEqual(conn.execute("PRAGMA user_version").fetchall(), [(version,)])
                     self.assertEqual(conn.execute("PRAGMA journal_mode").fetchall(), [("delete",)])
                     self.assertEqual(conn.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
-                    row = conn.execute("SELECT j.id,a.id,a.state,a.outcome FROM jobs j "
-                                       "JOIN attempts a ON a.job_id=j.id WHERE j.id=? AND a.id=?",
+                    row = conn.execute("SELECT j.id,a.id,a.state,a.recorded_outcome FROM jobs j "
+                                       "JOIN attempts a ON a.job=j.id WHERE j.id=? AND a.id=?",
                                        (submitted["job"], submitted["attempt"])).fetchone()
                     self.assertEqual(row, (submitted["job"], submitted["attempt"], "finished",
                                            observed["recorded_outcome"]))
-                    transitions = conn.execute("SELECT seq,job_id,attempt_id,from_state,to_state,at "
-                                               "FROM transitions WHERE job_id=? ORDER BY seq",
+                    transitions = conn.execute("SELECT seq,job,attempt,from_state,to_state,at "
+                                               "FROM transitions WHERE job=? ORDER BY seq",
                                                (submitted["job"],)).fetchall()
-                    self.assertEqual(transitions, [(t["seq"], t["job"], t["attempt"], t["from"], t["to"], t["at"])
-                                                    for t in observed["transitions"]])
+                    self.assertEqual(transitions, [(t["seq"], t["job"], t["attempt"], t["from_state"], t["to_state"], t["at"])
+                                                    for t in observed["observation"]["transitions"]])
                     self.assertTrue(transitions, "rollback main has no terminal history")
                     self.assertEqual(transitions[-1][4], "finished")
                 self.assertEqual(self.state_image(validation), before)
@@ -540,8 +540,8 @@ class CorrectionCases:
                 result = self.call(*args, state=state, check=False)
                 self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
                 if state == incompatible:
-                    self.assertEqual(json.loads(result.stdout)["error"],
-                                     "unsupported Fleet pilot schema; no migration")
+                    self.assertEqual(json.loads(result.stdout)["error"]["code"],
+                                     "unsupported_schema")
             self.assertEqual(self.state_image(state), before)
 
     def test_missing_payload_and_truncated_manifest_degrade_only_the_view(self):
@@ -576,8 +576,8 @@ class CorrectionCases:
         try:
             result = self.call("submit", "--", sys.executable, "-c", "print('must-not-run')",
                                check=False, refute_if_absent=True)
-            self.assertEqual(result.returncode, 2)
-            self.assertEqual(json.loads(result.stdout)["error"], "invalid_request_or_state")
+            self.assertEqual(result.returncode, 3)
+            self.assertEqual(json.loads(result.stdout)["error"]["code"], "state_lock_timeout")
             self.assertTrue(self.admissions[-1].refuted)
             self.assertEqual(list(self.state.iterdir()), [])
         finally:

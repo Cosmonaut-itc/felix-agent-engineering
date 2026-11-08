@@ -87,7 +87,14 @@ def equal(db, existing, candidate, content, identity):
 def receipt(db, row, binding):
     return {"job": row["id"], "attempt": row["attempt"], "accepted": True,
             "binding": binding, "admission": load(row["admission"]),
-            "input": load(row["input"]), "observation": None}
+            "input": load(row["input"]), "observation": None,
+            "client": row["client"], "input_policy": public_policy(row)}
+
+
+def public_policy(row):
+    execution, content = load(row["execution"]), load(row["content"])
+    secrets = inputs.credential_values(execution["environment"], execution["credential_names"])
+    return inputs.policy_summary(content["private"], secrets)
 
 
 def retire_preparation(db, preparation, owner):
@@ -128,7 +135,7 @@ def retire_preparation(db, preparation, owner):
         pass
 
 
-def admit(db, argv, cwd, client, includes, private, artifacts, credentials, idempotency_key,
+def prepare(state, argv, cwd, client, includes, private, artifacts, credentials, idempotency_key,
           enqueue_only):
     if idempotency_key is not None:
         key(idempotency_key)
@@ -140,12 +147,20 @@ def admit(db, argv, cwd, client, includes, private, artifacts, credentials, idem
     # A dot selects all bytes, but does not erase other contractual selections
     # or their validation. Only automatic selection and a lone dot are equivalent.
     try:
-        plan = inputs.Plan(cwd, db.state, includes, private, artifacts, argv, environment, credentials)
-    except OSError:
+        plan = inputs.Plan(cwd, state, includes, private, artifacts, argv, environment, credentials)
+    except inputs.InputError:
+        raise
+    except (OSError, RuntimeError):
         raise Fault("input_unavailable") from None
     if idempotency_key and any(secret in idempotency_key.encode() for secret in plan.secrets):
         raise Fault("credential_in_key")
     content = describe(plan, argv, environment, client, credentials)
+    return plan, content, environment, credentials
+
+
+def admit(db, argv, cwd, client, includes, private, artifacts, credentials, idempotency_key,
+          enqueue_only, prepared):
+    plan, content, environment, credentials = prepared
     preparation = opaque("j")
     owner = native.identity(os.getpid())
     if not native.verifiable(owner):

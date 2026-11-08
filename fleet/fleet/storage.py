@@ -46,14 +46,14 @@ SCHEMA = (
 )
 
 
-def lock(fd, mode=fcntl.LOCK_EX):
-    deadline = time.monotonic() + 10
+def lock(fd, mode=fcntl.LOCK_EX, timeout=10):
+    deadline = None if timeout is None else time.monotonic() + timeout
     while True:
         try:
             fcntl.flock(fd, mode | fcntl.LOCK_NB)
             return
         except BlockingIOError:
-            if time.monotonic() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 raise Fault("state_lock_timeout", 3, "unknown") from None
             time.sleep(0.02)
 
@@ -266,8 +266,8 @@ class Ledger:
     def close(self):
         # Reader SQLite handles belong only to the detached copy. In particular,
         # an incompatible reader must not upgrade its shared preflight lock.
-        if self.fd is not None and self.writer:
-            lock(self.fd)
+        if self.fd is not None and self.writer and self.conn is not None:
+            lock(self.fd, timeout=None)
         try:
             if self.conn is not None:
                 self.conn.close()
