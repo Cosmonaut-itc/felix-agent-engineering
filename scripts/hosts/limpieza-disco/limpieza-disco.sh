@@ -867,10 +867,23 @@ for s in /private/tmp/claude-"$(id -u)"/-*/*/; do
 done
 
 # 7. Cachés de Next.js (.next/cache y .next/dev) de apps sin servidor vivo
-acotado "regla 7: candidatas" "$HOME" find "$HOME" -xdev \( -path "$HOME/Documents" -o -path "$HOME/Desktop" -o -path "$HOME/OrbStack" \
-    -o -path "$HOME/Library" -o -path "$HOME/.Trash" -o -name node_modules -o -name .git \
-    -o -path "$HOME/.cache" -o -path "$HOME/.bun" -o -path "$HOME/.rustup" -o -path "$HOME/.android" \
-    -o -path "$HOME/.cargo" -o -path "$HOME/remote-run" -o -path "$HOME/.local/state" \) -prune -o -type d -name .next -print -prune 2>/dev/null |
+# Glob de primer nivel, incluidas ocultas: ninguna raíz bloquea a las demás.
+for raiz in "$HOME"/* "$HOME"/.[!.]* "$HOME"/..?*; do
+  [ ! -L "$raiz" ] && [ -d "$raiz" ] || continue
+  case "$raiz" in
+    "$HOME/Documents"|"$HOME/Desktop"|"$HOME/OrbStack"|"$HOME/Library"|"$HOME/.Trash"|\
+    "$HOME/.cache"|"$HOME/.bun"|"$HOME/.rustup"|"$HOME/.android"|"$HOME/.cargo"|"$HOME/remote-run") continue ;;
+  esac
+  # Listar xattrs también puede bloquear: el mismo tope y fallo cerrado que find.
+  atributos=$(acotado "regla 7: xattr" "$raiz" xattr "$raiz" 2>/dev/null) || {
+    log "regla 7: salto raíz $raiz: falló xattr"; continue;
+  }
+  case $'\n'"$atributos"$'\n' in
+    *$'\ncom.apple.macl\n'*) log "regla 7: salto raíz $raiz: com.apple.macl"; continue ;;
+    *$'\ncom.apple.file-provider-domain-id\n'*) log "regla 7: salto raíz $raiz: com.apple.file-provider-domain-id"; continue ;;
+  esac
+  acotado "regla 7: candidatas" "$raiz" find "$raiz" -xdev \( -name node_modules -o -name .git \
+      -o -path "$HOME/.local/state" \) -prune -o -type d -name .next -print -prune 2>/dev/null |
 while IFS= read -r nx; do
   app=$(dirname "$nx")
   # Un proceso con cwd en la app (p. ej. next dev) la protege entera.
@@ -889,6 +902,7 @@ while IFS= read -r nx; do
     fi
     borrar "$c" "caché de Next.js, $((kb / 1024)) MB"
   done
+done
 done
 
 # 8. Simuladores de Xcode no disponibles: semanal
