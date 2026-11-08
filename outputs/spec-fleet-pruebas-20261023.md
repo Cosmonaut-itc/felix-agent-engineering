@@ -23,6 +23,14 @@ Felix necesita que todos los agentes y proyectos entren casi sin configuración,
 que las tareas importantes puedan adelantar pendientes y que los equipos
 compartan capacidad sin invadir recursos o procesos de otras corridas.
 
+El recurso más escaso es el tiempo de máquina. Cada agente que termina un
+cambio tiende a correr la suite completa, también en cada ronda de review, y
+repite corridas que ya acreditaron el mismo código. Desde el 6 de noviembre de
+2026 la regla de Verificación de `felix-mode` pide prueba dirigida al iterar,
+una sola suite completa sobre el head con APTO, evidencia reutilizable y corte
+temprano por etapa. Hoy esa regla depende de que cada agente la cumpla y de
+medir a mano las corridas por el nombre de su ruta.
+
 ## Solution
 
 Crear Fleet como módulo de Felix Agent Engineering, con una interfaz pública,
@@ -44,6 +52,14 @@ pausa, cuándo ocurrió y qué recursos quedaron disponibles.
 Las mejoras se distribuyen mediante PAO con versiones inmutables y activación
 gradual. Las corridas activas conservan su ejecutor y los proyectos mantienen
 sus gates y reglas de validación.
+
+Fleet no decide qué pruebas pide un cambio; eso sigue en la política de los
+agentes. Sí hace que el camino barato sea el de por defecto y que se pueda
+medir. Un envío cuya identidad ya tiene evidencia verde acreditada recibe esa
+evidencia en vez de volver a la cola. Un perfil ordena sus etapas de la más
+barata a la más cara y la corrida se detiene en la primera etapa con fallos
+que la base no tiene. Cada envío declara su alcance, y la cola y los recibos
+lo usan para contar y explicar el gasto de máquina.
 
 ## User Stories
 
@@ -95,6 +111,11 @@ sus gates y reglas de validación.
 46. Como mantenedor, quiero migrar los lanzadores existentes sin colas que compitan para conservar exclusión mientras conviven clientes viejos y nuevos.
 47. Como responsable de un proyecto, quiero conservar sus pruebas y evidencia durante la migración para cambiar el transporte sin debilitar su definición de terminado.
 48. Como Felix, quiero que los cambios de estado y prioridad queden auditados para entender quién pidió una interrupción y qué ocurrió después.
+49. Como agente, quiero que un envío con la misma identidad que una corrida verde ya acreditada me devuelva esa evidencia para no gastar máquina en repetirla.
+50. Como agente que diagnostica un fallo intermitente, quiero pedir de forma explícita y con motivo una repetición sobre la misma identidad para que el reuso no oculte un test inestable.
+51. Como responsable de un proyecto, quiero que la corrida se detenga al terminar la primera etapa con fallos nuevos respecto de la base para no pagar las etapas caras de un candidato que ya falló.
+52. Como agente, quiero saber qué fallos ya trae la rama base en cada etapa sin volver a correrla para distinguir un fallo mío de uno preexistente.
+53. Como Felix, quiero que cada envío declare su alcance (prueba dirigida, suite completa, reproducción de un hallazgo o diagnóstico) para medir el gasto de máquina por tipo sin deducirlo del nombre de la ruta.
 
 ## Implementation Decisions
 
@@ -124,6 +145,11 @@ sus gates y reglas de validación.
 - La salud proviene de snapshots versionados con fecha y boot verificables. Dato desconocido no equivale a cero carga. Se preserva la distinción entre captura válida sin actividad, historial con tope y fallo de captura o persistencia.
 - Observación y activación de un nodo son operaciones diferentes. Un nodo drenado no admite cargas y una consulta de salud no lo reactiva. La ejecución degradada requiere política visible y nunca ignora mantenimiento, incompatibilidad o identidad inválida.
 - Los recibos conservan identidad de entradas, nodo, ejecutor, intentos, tiempos, cambios de estado, resultado y artefactos. Una interrupción parcial no se presenta como éxito del gate completo.
+- La evidencia se reutiliza por identidad de instantánea, no por SHA. La identidad incluye la huella del contenido efectivo, el perfil y las etapas pedidas, la versión del ejecutor y las herramientas que el perfil declara. Un envío cuya identidad coincide con una corrida verde acreditada termina sin entrar a la cola y su recibo apunta a esa corrida. Un fallo, una corrida parcial o una evidencia incompleta nunca se reutilizan.
+- Repetir una identidad ya acreditada exige una petición explícita con motivo, como diagnosticar un intermitente. La petición queda en el recibo y en la auditoría.
+- Un perfil ordena sus etapas de la más barata a la más cara. Dentro de una etapa se conserva la lista completa de fallos. La corrida se detiene al terminar la primera etapa con fallos que la base no tiene; las etapas restantes quedan como no ejecutadas, no como aprobadas.
+- Fleet conserva por proyecto y perfil el último resultado acreditado de cada etapa sobre la rama base. Un fallo es nuevo cuando no aparece en ese resultado. Si la base no tiene resultado acreditado para la etapa, todo fallo cuenta como nuevo y el recibo lo dice.
+- Cada envío declara su alcance: prueba dirigida, suite completa, reproducción de un hallazgo o diagnóstico. Fleet valida el valor y lo usa en los recibos, la explicación de la cola y las cuentas de horas de máquina. Fleet no comprueba si el alcance era el que pedía la política del agente, como un APTO previo a la suite; eso sigue fuera de Fleet.
 - La distribución usa instalaciones de versión inmutable. Cada corrida conserva su versión. La activación gradual comprueba compatibilidad de protocolo, drena admisiones y respeta corridas activas. El rollback incluye compatibilidad del estado persistido.
 - Los lanzadores actuales se migran mediante adaptadores. Se preservan los mejores contratos existentes de instantánea, guion literal, aislamiento y evidencia. La transición garantiza una única autoridad para cada recurso y retira las copias editables del scheduler después de migrar sus consumidores.
 
@@ -140,6 +166,7 @@ sus gates y reglas de validación.
 - Pausa: solicitarla no libera capacidad; alcanzar un punto seguro conserva avance y libera únicamente lo confirmado. La reanudación vuelve a admisión. Un ejecutor sin soporte lo informa y continúa. Un intento reiniciable se repite sólo después de acreditar el cierre del anterior.
 - Recuperación: interrumpir clientes y supervisores de prueba, reiniciar el coordinador y simular heartbeat vencido conserva trabajos y evidencia. Una carga dudosa bloquea la reasignación. Un dueño anterior no modifica una reserva de generación posterior.
 - Evidencia: cambios locales y staged forman parte de la instantánea acreditada. Se detectan artefactos viejos, salida remota ausente, logs incompletos e incompatibilidad del entorno al reanudar. Un wait interrumpido no convierte la corrida en éxito ni la cancela por sí solo.
+- Costo: un segundo envío con la misma identidad que una corrida verde no arranca carga y devuelve su evidencia. Cambiar el contenido, el perfil, la versión del ejecutor o una herramienta declarada sí arranca una corrida nueva. Un fallo o una corrida parcial nunca se reutilizan. Una repetición con motivo corre y queda auditada. Una etapa barata con un fallo nuevo impide arrancar las siguientes; un fallo que ya tiene la base no la detiene. El alcance declarado aparece en recibos y cuentas, y un valor inválido se rechaza.
 - Salvaguardas: se verifican identidades reutilizadas, separación de namespaces, recursos ajenos, nodos drenados y estados de salud inválidos. Los procesos usados para probar cleanup pertenecen exclusivamente al entorno de la prueba.
 - Distribución: una actualización canary deja las corridas activas en su versión; un nodo incompatible no se activa; un fallo conserva la versión funcional; el rollback compatible conserva el estado. Una migración no permite que los clientes viejo y nuevo admitan el mismo recurso independientemente.
 - Verificación sobre artefactos reales: antes de habilitar cada adaptador, realizar un smoke acotado en los nodos de prueba y comprobar comandos, aislamiento, recibos, pausa soportada y limpieza propia. Los contratos simulados no acreditan por sí solos interoperabilidad macOS, WSL o Windows nativo.
@@ -159,6 +186,15 @@ sus gates y reglas de validación.
 - Abrir un repositorio nuevo para Fleet en esta entrega.
 
 ## Further Notes
+
+El reuso de evidencia, el corte temprano por etapa y el alcance declarado se
+añadieron el 8 de noviembre de 2026. Llevan a Fleet la regla de Verificación
+de `felix-mode` del PR #57. La primera medición tras ese cambio, de 4,6 horas,
+mostró menos horas de máquina, pero la fila de la Mini creció de 11 a 17
+turnos. Un carril rápido para corridas dirigidas cortas queda fuera hasta que
+la remedición programada para el 13 de noviembre diga si la fila sigue siendo
+el cuello de botella. El alcance declarado es el dato que ese carril
+necesitaría.
 
 La base es la investigación y propuesta de esta conversación. Se revisaron los
 lanzadores de comprador y apotheca, los slots de SEN-CheckIn, el instalador PAO,
