@@ -25,12 +25,24 @@ corridas nuevas cierra las reglas 1 y 3. Un corte del listado de cachés no
 publica candidatas. El log de topes usa un descriptor separado para seguir
 visible aunque la consulta capture stdout y stderr.
 
-El único recorrido que parte del home (regla 7) poda Documents y Desktop,
-que en la Mini tienen `com.apple.file-provider-domain-id`, y OrbStack, que
-está montado por NFS. Library ya estaba podado y cubre CloudStorage y Mobile
-Documents. Se fijan las rutas conocidas: no hace falta consultar proveedores
-durante la limpieza. `-xdev` sigue presente, pero por sí solo no excluye
-iCloud en el mismo volumen. No se siguen enlaces simbólicos.
+La regla 7 es el único recorrido que parte del home. Recorre cada entrada
+de primer nivel por separado, oculta o no, con su propio tope, así que una
+raíz que bloquea sólo pierde su propio contenido. Salta estas raíces:
+
+- las rutas podadas por nombre, sin línea en el log: Documents y Desktop,
+  que en la Mini tienen `com.apple.file-provider-domain-id`; OrbStack,
+  montado por NFS; y Library, que cubre CloudStorage y Mobile Documents;
+- las raíces en otro dispositivo que el home, porque `-xdev` no excluye la
+  raíz desde la que arranca el `find`, y lo anota en el log;
+- las raíces con `com.apple.macl` o `com.apple.file-provider-domain-id`,
+  con o sin sufijo `#…`, y lo anota en el log.
+
+Bajo launchd, `/bin/bash` no tiene Acceso total al disco. Abrir un
+directorio con `com.apple.macl` (en la Mini, `Codex`, `Downloads` y un
+instalador descargado) dispara una aprobación de `sandboxd` que nadie
+contesta, y `open` se bloquea. Por ssh no pasa, porque sshd sí tiene ese
+acceso, así que una sonda por ssh no reproduce el bloqueo. Si `stat` o
+`xattr` fallan, la raíz se salta. No se siguen enlaces simbólicos.
 
 El lock registra pid, inicio del proceso y comando. Pasados 120 minutos
 sólo se recupera si el dueño murió, cambió su identidad o dejó de ejecutar
@@ -177,8 +189,8 @@ demás.
   fallo, o diagnóstico de `lsof` o `ps`, deja sin borrar las reglas 1, 2, 3,
   5, 6 y 7 durante esa pasada. Las reglas 4 y 8, que no consultan `EN_USO`,
   siguen.
-- **Regla 7.** Busca cachés de Next.js en el home con las exclusiones
-  de iCloud y NFS descritas arriba, y poda
+- **Regla 7.** Busca cachés de Next.js en el home, raíz por raíz, con las
+  exclusiones descritas arriba, y poda
   `~/remote-run` y `~/.local/state`, así que no entra en las copias, el
   registro de propietarios de Fleet ni el estado de comprador.
 
