@@ -873,7 +873,8 @@ if [[ "$dev_home" =~ ^[0-9]+$ ]]; then
 for raiz in "$HOME"/* "$HOME"/.[!.]* "$HOME"/..?*; do
   [ ! -L "$raiz" ] && [ -d "$raiz" ] || continue
   case "$raiz" in
-    "$HOME/Documents"|"$HOME/Desktop"|"$HOME/OrbStack"|"$HOME/Library"|"$HOME/.Trash"|\
+    "$HOME/Documents"|"$HOME/Desktop"|"$HOME/Downloads"|"$HOME/Movies"|"$HOME/Music"|"$HOME/Pictures"|\
+    "$HOME/OrbStack"|"$HOME/Library"|"$HOME/.Trash"|\
     "$HOME/.cache"|"$HOME/.bun"|"$HOME/.rustup"|"$HOME/.android"|"$HOME/.cargo"|"$HOME/remote-run") continue ;;
   esac
   dev_raiz=$(stat -f %d "$raiz" 2>/dev/null) || dev_raiz=
