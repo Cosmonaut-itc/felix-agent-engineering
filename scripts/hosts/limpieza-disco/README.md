@@ -5,6 +5,43 @@
 E/S de baja prioridad. Escribe en `~/Library/Logs/limpieza-disco.log`. La
 cabecera del script lista las ocho reglas y sus umbrales.
 
+## Recorridos y exclusión mutua
+
+Cada `find`, `du` y `lsof` del shell tiene un tope de 600 segundos, sin
+coreutils. También lo tienen el inventario, su medición recursiva de una
+copia y la captura adicional de cwd. Diez minutos dan margen sobre la
+pasada normal de 1–3 minutos y cortan la espera indefinida de File Provider
+o NFS. El supervisor Python inicia un grupo de procesos separado y, al
+vencer el plazo, envía SIGKILL al grupo, registra regla y ruta y devuelve
+124. Espera como máximo un segundo adicional: un proceso retenido por el
+kernel puede tardar en morir. Sus salidas van a archivos temporales, de
+modo que ese proceso tampoco puede retener un pipe y bloquear la pasada.
+
+Sólo se publica stdout tras completar el recorrido con éxito. La excepción
+es `lsof` con código 1: conserva su salida para que una captura parcial no
+se confunda con ausencia de uso. Un error o corte de actividad conserva la
+candidata; uno de tamaño tampoco autoriza borrado; uno de inventario o
+corridas nuevas cierra las reglas 1 y 3. Un corte del listado de cachés no
+publica candidatas. El log de topes usa un descriptor separado para seguir
+visible aunque la consulta capture stdout y stderr.
+
+El único recorrido que parte del home (regla 7) poda Documents y Desktop,
+que en la Mini tienen `com.apple.file-provider-domain-id`, y OrbStack, que
+está montado por NFS. Library ya estaba podado y cubre CloudStorage y Mobile
+Documents. Se fijan las rutas conocidas: no hace falta consultar proveedores
+durante la limpieza. `-xdev` sigue presente, pero por sí solo no excluye
+iCloud en el mismo volumen. No se siguen enlaces simbólicos.
+
+El lock registra pid, inicio del proceso y comando. Pasados 120 minutos
+sólo se recupera si el dueño murió, cambió su identidad o dejó de ejecutar
+la limpieza. Un dueño vivo o una consulta no verificable conserva el lock y
+queda registrado. Para locks legados sin dueño se comprueba que no haya
+otra limpieza viva. La adquisición y recuperación se serializan con
+`flock` de Python sobre `lock.guard`; el sistema suelta ese cerrojo si muere
+el recuperador. El archivo puede permanecer sin bloquear. No hay un límite
+global de pasada: muchas candidatas pueden sumar más de 120 minutos; en
+ese caso una invocación posterior registra el dueño vivo y sale.
+
 ## ~/remote-run
 
 Sobre `~/remote-run` sólo actúan las reglas 1 y 3. Las dos dependen de
@@ -140,7 +177,8 @@ demás.
   fallo, o diagnóstico de `lsof` o `ps`, deja sin borrar las reglas 1, 2, 3,
   5, 6 y 7 durante esa pasada. Las reglas 4 y 8, que no consultan `EN_USO`,
   siguen.
-- **Regla 7.** Busca cachés de Next.js en todo el home, pero poda
+- **Regla 7.** Busca cachés de Next.js en el home con las exclusiones
+  de iCloud y NFS descritas arriba, y poda
   `~/remote-run` y `~/.local/state`, así que no entra en las copias, el
   registro de propietarios de Fleet ni el estado de comprador.
 
@@ -159,6 +197,11 @@ pruebas contra main, `LIMPIEZA_TEST_SOURCE` puede señalar un `git archive`
 temporal de `origin/main`; sólo el harness interpreta esa variable.
 Ejecutar las suites exclusivamente en la Mini por
 `REMOTE_RUN_HOST=mini remote-run start --name limpieza-emergencia`.
+`tests/test_recorridos_acotados.py` ejecuta la pasada completa con HOME y
+temporales de fixture, comandos falsos en PATH y un tope de 0,5 segundos
+inyectados sólo en la copia temporal. Comprueba cortes de find/du/lsof,
+salidas parciales, continuidad hasta `fin`, podas y recuperación del lock.
+También admite `LIMPIEZA_TEST_SOURCE` para comparar contra main.
 
 **Premisa y ventanas residuales.** El productor `remote-run` sincroniza
 con `rsync --delete` sin tomar el lock de la copia. El lock lo escribe
@@ -199,7 +242,9 @@ bash scripts/hosts/limpieza-disco/instalar.sh
   sumas y ejecuta allí `limpieza-disco.sh --dry-run` con el inventario del
   temporal. No cambia `~/bin` ni el LaunchAgent. Usa el lock y el directorio
   de estado reales, así que sale sin evaluar si hay una pasada en curso, y
-  recupera un lock de más de 2 h, como haría la pasada horaria.
+  sólo recupera un lock de más de 2 h si descarta que su dueño siga vivo,
+  como haría la pasada horaria. Un lock legado con limpieza viva también
+  impide evaluar: el dry-run lo informa y sale.
 - **Sin argumentos.** Hace lo siguiente, en orden:
   1. Comprueba las sumas.
   2. Toma el lock de la limpieza; si está ocupado, aborta.

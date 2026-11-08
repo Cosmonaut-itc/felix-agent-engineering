@@ -55,6 +55,53 @@ RR="$HOME/remote-run"
 STATE="$HOME/Library/Application Support/limpieza-disco"
 LOCK="$STATE/lock"
 log() { echo "$(date '+%F %T') $*"; }
+# Canal de log separado: ni las sustituciones de comando ni INV_ERR ocultan
+# un timeout. El hijo no hereda este descriptor ni los pipes del llamador.
+exec 3>&1
+RECORRIDO_SEGUNDOS=600
+acotado() { # regla, ruta, comando...; descarta stdout de recorridos fallidos
+  /usr/bin/python3 -B -c '
+import datetime, os, signal, subprocess, sys, tempfile
+regla, ruta, limite = sys.argv[1:4]
+with tempfile.TemporaryFile() as salida, tempfile.TemporaryFile() as errores:
+    try:
+        p = subprocess.Popen(sys.argv[4:], stdout=salida, stderr=errores,
+                             start_new_session=True, close_fds=True)
+        try:
+            rc = p.wait(timeout=float(limite))
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(p.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            # Un hijo en espera de E/S del kernel puede tardar en morir. No
+            # esperamos sin límite ni dejamos que retenga un pipe de la pasada.
+            try:
+                p.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+            os.write(3, (str(datetime.datetime.now().replace(microsecond=0)) +
+                         " tope " + limite + " s: " + regla + " ruta " + ruta + "\n").encode())
+            rc = 124
+    except OSError as exc:
+        print(str(exc), file=sys.stderr)
+        sys.exit(125)
+    # lsof usa 1 para ausencia de archivos. Conservar su stdout permite
+    # rechazar una captura parcial incluso si devuelve ese código.
+    if rc == 0 or (sys.argv[4] == "lsof" and rc == 1):
+        salida.seek(0)
+        while True:
+            bloque = salida.read(65536)
+            if not bloque: break
+            sys.stdout.buffer.write(bloque)
+    errores.seek(0)
+    while True:
+        bloque = errores.read(65536)
+        if not bloque: break
+        sys.stderr.buffer.write(bloque)
+    sys.exit(rc if rc >= 0 else 128 - rc)
+' "$1" "$2" "$RECORRIDO_SEGUNDOS" "${@:3}"
+}
 mkdir -p "$STATE" || { log "sin borrar: no pude crear STATE ($STATE)"; exit 1; }
 libre_gb() { df -g /System/Volumes/Data | awk 'NR==2{print $4}'; }
 
@@ -74,7 +121,7 @@ corrida_nueva() {
   if [ ! -d "$RR/runs" ] || [ -L "$RR/runs" ]; then
     log "reglas 1 y 3 sin borrar: runs/ no es un directorio regular"; return 2
   fi
-  if ! find "$RR/runs" -mindepth 1 -maxdepth 1 -newer "$MARCA" -print0 > "$RUNS_NUEVAS" 2> "$INV_ERR"; then
+  if ! acotado "reglas 1 y 3: corridas nuevas" "$RR/runs" find "$RR/runs" -mindepth 1 -maxdepth 1 -newer "$MARCA" -print0 > "$RUNS_NUEVAS" 2> "$INV_ERR"; then
     log "reglas 1 y 3 sin borrar: falló find de corridas nuevas en runs/"; return 2
   fi
   if [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; then
@@ -145,7 +192,7 @@ borrar_en() {
             -o -path "./$patron_copia/.git/FETCH_HEAD" -o -path "./$patron_copia/.git/ORIG_HEAD"
             -o \( -path "./$patron_copia/.git/*.lock" ! -path "./$patron_copia/.git/*/*" \) \) \))
       fi
-      reciente=$(find "./$2" "${actividad_find[@]}" -print -quit 2> "$INV_ERR") || {
+      reciente=$(acotado "regla 1: actividad" "$1/$2" find "./$2" "${actividad_find[@]}" -print -quit 2> "$INV_ERR") || {
         log "no borro $1/$2: falló find de actividad de la copia"; exit 1;
       }
       [ -z "$reciente" ] || { log "no borro $1/$2: algo cambió en los últimos $COPIA_VENTANA"; exit 1; }
@@ -228,18 +275,138 @@ PY
   return "$estado"
 }
 
-# Evita dos ejecuciones simultáneas; un lock de más de 2 h se considera huérfano.
-if ! mkdir "$LOCK" 2>/dev/null; then
-  lock_viejo=$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null) || {
-    log "sin borrar: falló find de antigüedad del lock de limpieza"; exit 1;
-  }
-  if [ -n "$lock_viejo" ]; then
-    rmdir "$LOCK" && mkdir "$LOCK" || exit 0
-  else
-    log "otra limpieza en curso; salgo"; exit 0
-  fi
-fi
-trap 'rmdir "$LOCK" 2>/dev/null' EXIT
+# Al soltar basta el pid propio; la recuperación sí verifica inicio y comando.
+soltar_lock() {
+  /usr/bin/python3 -B - "$LOCK" "$$" <<'PY_UNLOCK'
+import datetime
+import fcntl
+import os
+import stat
+import sys
+import time
+
+lock, propio = sys.argv[1:]
+try:
+    guard = os.open(lock + '.guard', os.O_RDWR | os.O_NOFOLLOW)
+    plazo = time.monotonic() + 10
+    while True:
+        try:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            restante = plazo - time.monotonic()
+            if restante <= 0:
+                raise TimeoutError('guard ocupado durante 10 s')
+            time.sleep(min(0.1, restante))
+    if not stat.S_ISREG(os.lstat(lock + '/owner').st_mode):
+        raise ValueError('dueño no regular')
+    with open(lock + '/owner') as archivo:
+        pid, inicio, comando = archivo.read(16384).splitlines()
+    if pid != propio:
+        raise ValueError('pid de otra pasada')
+    os.unlink(lock + '/owner')
+    os.rmdir(lock)
+except (OSError, ValueError) as exc:
+    print(str(datetime.datetime.now().replace(microsecond=0)) + ' no suelto lock: ' + str(exc),
+          flush=True)
+PY_UNLOCK
+}
+# flock sólo serializa adquirir/recuperar y publicar owner; se libera incluso
+# si el recuperador muere. El mkdir sigue siendo compatible con instalar.sh.
+/usr/bin/python3 -B - "$LOCK" "$$" <<'PY_LOCK'
+import datetime
+import fcntl
+import os
+import stat
+import subprocess
+import sys
+import time
+
+lock, propio = sys.argv[1:]
+adquirido = False
+
+
+def log(mensaje):
+    print(str(datetime.datetime.now().replace(microsecond=0)) + ' ' + mensaje, flush=True)
+
+
+def ps(pid, campo):
+    return subprocess.check_output(['ps', '-p', str(pid), '-o', campo + '='],
+                                   env=dict(os.environ, LC_ALL='C', TZ='UTC0'),
+                                   stderr=subprocess.PIPE, text=True, timeout=5).rstrip('\n')
+
+
+def dueno_vivo():
+    try:
+        if not stat.S_ISREG(os.lstat(lock + '/owner').st_mode):
+            raise ValueError('dueño no regular')
+        with open(lock + '/owner') as archivo:
+            pid, inicio, comando = archivo.read(16384).splitlines()
+        if not pid.isdigit() or int(pid) <= 0 or not inicio or not comando:
+            raise ValueError('dueño incompleto')
+    except (OSError, ValueError):
+        # El lock legado no tiene dueño. Nunca robar una limpieza anterior.
+        captura = subprocess.check_output(['ps', '-axww', '-o', 'pid=,command='],
+                                          stderr=subprocess.PIPE, text=True, timeout=5)
+        return any(len(c) == 2 and c[0] != propio and 'limpieza-disco.sh' in c[1]
+                   for c in (linea.split(None, 1) for linea in captura.splitlines()))
+    try:
+        os.kill(int(pid), 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        pass  # EPERM no acredita identidad: comprobar inicio y comando por ps.
+    # Una consulta fallida sube al cierre conservador de abajo.
+    return (ps(pid, 'lstart') == inicio and ps(pid, 'command') == comando
+            and 'limpieza-disco.sh' in comando)
+
+
+try:
+    guard = os.open(lock + '.guard', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
+    try:
+        fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log('otra adquisición de lock en curso; salgo sin borrar')
+        sys.exit(10)
+    try:
+        os.mkdir(lock)
+    except FileExistsError:
+        info = os.lstat(lock)
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError('lock no es un directorio regular')
+        if time.time() - info.st_mtime <= 7200:
+            log('otra limpieza en curso; salgo')
+            sys.exit(10)
+        if dueno_vivo():
+            log('lock de más de 120 min con dueño vivo o no descartable; salgo sin borrar')
+            sys.exit(10)
+        try:
+            os.unlink(lock + '/owner')
+        except FileNotFoundError:
+            pass
+        os.rmdir(lock)
+        os.mkdir(lock)
+        log('recuperado lock de más de 120 min sin dueño vivo')
+    adquirido = True
+    inicio, comando = ps(propio, 'lstart'), ps(propio, 'command')
+    if not inicio or not comando:
+        raise ValueError('identidad de la limpieza no verificable')
+    with open(lock + '/owner', 'x') as archivo:
+        archivo.write(propio + '\n' + inicio + '\n' + comando + '\n')
+except (OSError, ValueError, subprocess.SubprocessError) as exc:
+    log('sin borrar: no pude verificar/adquirir el lock de limpieza: ' + str(exc))
+    if adquirido:
+        try:
+            os.unlink(lock + '/owner')
+        except FileNotFoundError:
+            pass
+        os.rmdir(lock)
+    sys.exit(1)
+PY_LOCK
+estado_lock=$?
+[ "$estado_lock" = 10 ] && exit 0
+[ "$estado_lock" = 0 ] || exit "$estado_lock"
+trap soltar_lock EXIT
 
 antes=$(libre_gb)
 [[ "$antes" =~ ^[0-9]+$ ]] || { log "sin borrar: espacio libre no verificable"; exit 1; }
@@ -273,7 +440,7 @@ sin_uso() {
   INV_OK=0; USO_OK=0
 }
 limpiar_temporales() {
-  rmdir "$LOCK" 2>/dev/null
+  soltar_lock
   for temporal in "$MARCA" "$INV_JSON" "$INV_LISTA" "$INV_ERR" "$EN_USO" \
       "$USO_CWD" "$USO_ABIERTOS" "$USO_PS" "$USO_BASETEMP" "$RUNS_NUEVAS" "$CWD_WORK"; do
     [ -z "$temporal" ] || rm -f -- "$temporal"
@@ -290,7 +457,7 @@ for variable in MARCA INV_JSON INV_LISTA INV_ERR EN_USO USO_CWD USO_ABIERTOS USO
   }
   printf -v "$variable" '%s' "$temporal"
 done
-restos=$(find "$STATE" -mindepth 1 -maxdepth 1 -name 'borrando-*' -print 2> "${INV_ERR:-/dev/null}") || {
+restos=$(acotado "reglas 1 y 3: restos" "$STATE" find "$STATE" -mindepth 1 -maxdepth 1 -name 'borrando-*' -print 2> "${INV_ERR:-/dev/null}") || {
   log "reglas 1 y 3 sin borrar: falló find de restos borrando-* en STATE"; INV_OK=0;
 }
 if [ -n "$restos" ]; then
@@ -307,7 +474,7 @@ elif [ ! -f "$MARCA" ] || [ -L "$MARCA" ]; then
   INV_MOTIVO="MARCA no existe o no es regular"
 elif [ ! -d "$RR" ]; then
   INV_MOTIVO="no existe $RR"
-elif ! /usr/bin/python3 -B "$inventario_dir/pao-inventario.py" --raiz "$RR" "${INV_ARGS[@]}" > "$INV_JSON" 2> "$INV_ERR"; then
+elif ! acotado "reglas 1 y 3: inventario" "$RR" /usr/bin/python3 -B "$inventario_dir/pao-inventario.py" --raiz "$RR" "${INV_ARGS[@]}" > "$INV_JSON" 2> "$INV_ERR"; then
   INV_MOTIVO="el inventario falló: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
 elif ! /usr/bin/python3 -B - "$INV_JSON" "$RR" "$WORK_EMERG" "$COPIA_MIN" > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
 from datetime import datetime, timezone
@@ -385,13 +552,13 @@ fi
 if ! uid=$(id -u); then
   sin_uso "falló id para EN_USO"; uid=-1
 fi
-if ! lsof -a -u "$uid" -d cwd -Fn > "$USO_CWD" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
+if ! acotado "captura cwd" "$HOME" lsof -a -u "$uid" -d cwd -Fn > "$USO_CWD" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló lsof de cwd para EN_USO o emitió diagnósticos"
 fi
 if ! ps -axww -o command= > "$USO_PS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló ps para EN_USO o emitió diagnósticos"
 fi
-if ! lsof -u "$uid" -Fn > "$USO_ABIERTOS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
+if ! acotado "captura abiertos" "$HOME" lsof -u "$uid" -Fn > "$USO_ABIERTOS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló lsof de archivos para EN_USO o emitió diagnósticos"
 fi
 if ! { grep -o -- '--basetemp[= ][^ ]*' "$USO_PS"; e=$?; [ "$e" -le 1 ]; } > "$USO_BASETEMP"; then
@@ -424,7 +591,7 @@ libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes 
     log "no borro $1: tiene lock"; return 1
   fi
   local salida estado
-  salida=$(lsof -nP +D "$1" 2>&1); estado=$?
+  salida=$(acotado "reglas 1 y 3: lsof previo" "$1" lsof -nP +D "$1" 2>&1); estado=$?
   [ "$estado" = 1 ] && [ -z "$salida" ] && return 0
   log "no borro $1: lsof salió $estado: $(printf '%s\n' "$salida" | head -1 | cut -c1-200)"
   return 1
@@ -436,7 +603,7 @@ libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes 
 WORK_CWD_OK=0
 if [ "$WORK_EMERG" = 1 ]; then
   if CWD_WORK=$(mktemp "$STATE/CWD_WORK.XXXXXX") && [ -f "$CWD_WORK" ] && [ ! -L "$CWD_WORK" ]; then
-    if motivo_cwd=$(/usr/bin/python3 -B - "$CWD_WORK" "$RR" "$uid" 2>&1 <<'PY_CWD'
+    if motivo_cwd=$(acotado "regla 1: captura cwd completa" "$RR" /usr/bin/python3 -B - "$CWD_WORK" "$RR" "$uid" 2>&1 <<'PY_CWD'
 import json
 import os
 import re
@@ -574,7 +741,7 @@ if [ "$INV_OK" = 1 ]; then
         freno_work && break
         # Medir sólo esta copia: --tamanos en el inventario también recorrería
         # runs/ y podría alterar la clasificación de la regla 3 ante un error.
-        tamano=$(/usr/bin/python3 -B - "$INVENTARIO" "$RR/work/$n" 2> "$INV_ERR" <<'PY'
+        tamano=$(acotado "regla 1: tamaño" "$RR/work/$n" /usr/bin/python3 -B - "$INVENTARIO" "$RR/work/$n" 2> "$INV_ERR" <<'PY'
 from pathlib import Path
 import runpy
 import sys
@@ -632,7 +799,9 @@ for d in /private/tmp/* "$HOME"/pytest-bt-*; do
   case "$d" in
     /private/tmp/bt-*|/private/tmp/gold*|"$HOME"/pytest-bt-*) motivo="temporal de pytest" ;;
     *)
-      if [ -n "$(find "$d" -mindepth 1 -maxdepth 1 -type d -name 'popen-gw*' -print -quit 2>/dev/null)" ]; then
+      if ! popen=$(acotado "regla 2: basetemp" "$d" find "$d" -mindepth 1 -maxdepth 1 -type d -name 'popen-gw*' -print -quit 2>/dev/null); then
+        continue
+      elif [ -n "$popen" ]; then
         motivo="basetemp de pytest-xdist"
       elif [[ "$d" == /private/tmp/wt-* ]] && [ -z "$(ls -A "$d" 2>/dev/null | grep -vx '.DS_Store')" ]; then
         motivo="carpeta wt-* vacía"
@@ -640,7 +809,8 @@ for d in /private/tmp/* "$HOME"/pytest-bt-*; do
         continue
       fi ;;
   esac
-  [ -n "$(find "$d" -maxdepth 3 -mmin -"$PYTEST_MIN" -print -quit 2>/dev/null)" ] && continue
+  reciente=$(acotado "regla 2: actividad" "$d" find "$d" -maxdepth 3 -mmin -"$PYTEST_MIN" -print -quit 2>/dev/null) || continue
+  [ -n "$reciente" ] && continue
   en_uso "$d" && continue
   borrar "$d" "$motivo"
 done
@@ -648,8 +818,9 @@ done
 # 4. Caché de Bun: semanal y sólo si pasa de 10 GB
 BUN_CACHE="$HOME/.bun/install/cache"
 STAMP="$STATE/bun-cache-stamp"
-if [ -d "$BUN_CACHE" ] && { [ ! -e "$STAMP" ] || [ -n "$(find "$STAMP" -mtime +6)" ]; }; then
-  kb=$(du -skx "$BUN_CACHE" 2>/dev/null | cut -f1)
+if [ -d "$BUN_CACHE" ] && { [ ! -e "$STAMP" ] || [ -n "$(acotado "regla 4: sello" "$STAMP" find "$STAMP" -mtime +6)" ]; }; then
+  medida=$(acotado "regla 4: tamaño" "$BUN_CACHE" du -skx "$BUN_CACHE" 2>/dev/null) || medida=
+  kb=${medida%%$'\t'*}
   if [ "${kb:-0}" -gt $((10 * 1024 * 1024)) ]; then
     if [ "$DRY" = 1 ]; then
       log "[dry-run] vaciaría la caché de Bun ($((kb / 1048576)) GB)"
@@ -663,7 +834,8 @@ fi
 # 5. Worktrees de Codex con más de 3 días, limpios, con HEAD en el remoto y sin procesos dentro
 for wt in "$HOME"/.codex/worktrees/*/; do
   wt=${wt%/}
-  [ -n "$(find "$wt" -maxdepth 0 -mmin -"$CODEX_MIN")" ] && continue
+  reciente=$(acotado "regla 5: actividad" "$wt" find "$wt" -maxdepth 0 -mmin -"$CODEX_MIN") || continue
+  [ -n "$reciente" ] && continue
   en_uso "$wt" && continue
   repo=$(ls -d "$wt"/*/.git 2>/dev/null | head -1); repo=${repo%/.git}
   if [ -z "$repo" ]; then
@@ -688,27 +860,32 @@ done
 for s in /private/tmp/claude-"$(id -u)"/-*/*/; do
   s=${s%/}
   [ -d "$s" ] && [ -O "$s" ] || continue
-  [ -n "$(find "$s" -mmin -"$CLAUDE_MIN" -print -quit 2>/dev/null)" ] && continue
+  reciente=$(acotado "regla 6: actividad" "$s" find "$s" -mmin -"$CLAUDE_MIN" -print -quit 2>/dev/null) || continue
+  [ -n "$reciente" ] && continue
   en_uso "$s" && continue
   borrar "$s" "scratchpad de Claude inactivo"
 done
 
 # 7. Cachés de Next.js (.next/cache y .next/dev) de apps sin servidor vivo
-find "$HOME" -xdev \( -path "$HOME/Library" -o -path "$HOME/.Trash" -o -name node_modules -o -name .git \
+acotado "regla 7: candidatas" "$HOME" find "$HOME" -xdev \( -path "$HOME/Documents" -o -path "$HOME/Desktop" -o -path "$HOME/OrbStack" \
+    -o -path "$HOME/Library" -o -path "$HOME/.Trash" -o -name node_modules -o -name .git \
     -o -path "$HOME/.cache" -o -path "$HOME/.bun" -o -path "$HOME/.rustup" -o -path "$HOME/.android" \
     -o -path "$HOME/.cargo" -o -path "$HOME/remote-run" -o -path "$HOME/.local/state" \) -prune -o -type d -name .next -print -prune 2>/dev/null |
-while read -r nx; do
+while IFS= read -r nx; do
   app=$(dirname "$nx")
   # Un proceso con cwd en la app (p. ej. next dev) la protege entera.
   grep -qxF -- "$app" "$EN_USO" && continue
   for c in "$nx/cache" "$nx/dev"; do
     [ -d "$c" ] || continue
     en_uso "$c" && continue
-    [ -n "$(find "$c" -mmin -30 -print -quit 2>/dev/null)" ] && continue
-    kb=$(du -skx "$c" 2>/dev/null | cut -f1)
-    if [ "$EMERG" = 0 ] && [ "${kb:-0}" -le $((1024 * 1024)) ] \
-       && [ -n "$(find "$c" -mmin -1440 -print -quit 2>/dev/null)" ]; then
-      continue
+    reciente=$(acotado "regla 7: actividad 30 min" "$c" find "$c" -mmin -30 -print -quit 2>/dev/null) || continue
+    [ -n "$reciente" ] && continue
+    medida=$(acotado "regla 7: tamaño" "$c" du -skx "$c" 2>/dev/null) || continue
+    kb=${medida%%$'\t'*}
+    [[ "$kb" =~ ^[0-9]+$ ]] || continue
+    if [ "$EMERG" = 0 ] && [ "$kb" -le $((1024 * 1024)) ]; then
+      reciente=$(acotado "regla 7: actividad 1 día" "$c" find "$c" -mmin -1440 -print -quit 2>/dev/null) || continue
+      [ -n "$reciente" ] && continue
     fi
     borrar "$c" "caché de Next.js, $((kb / 1024)) MB"
   done
@@ -716,7 +893,7 @@ done
 
 # 8. Simuladores de Xcode no disponibles: semanal
 STAMP_SIM="$STATE/simctl-stamp"
-if command -v xcrun >/dev/null && { [ ! -e "$STAMP_SIM" ] || [ -n "$(find "$STAMP_SIM" -mtime +6)" ]; }; then
+if command -v xcrun >/dev/null && { [ ! -e "$STAMP_SIM" ] || [ -n "$(acotado "regla 8: sello" "$STAMP_SIM" find "$STAMP_SIM" -mtime +6)" ]; }; then
   if [ "$DRY" = 1 ]; then
     log "[dry-run] ejecutaría xcrun simctl delete unavailable"
   else
