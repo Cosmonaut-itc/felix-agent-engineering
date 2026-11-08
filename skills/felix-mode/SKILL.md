@@ -133,11 +133,25 @@ que demuestra:
   elegida después del injerto, y en el acumulador en su paso 8. Si fallan,
   corrige con prueba dirigida; el head nuevo pasa por una ronda delta y
   la suite vuelve a correr sobre él.
-- **Evidencia por SHA.** Una corrida verde acredita su SHA. Revisores y
-  verificadores leen esa evidencia y corren sólo los comandos de sus
-  hallazgos o de su verificación del artefacto. Repetir una suite sobre el
-  mismo SHA sólo sirve para diagnosticar un fallo intermitente, y el brief
-  lo declara.
+- **Evidencia por instantánea.** Una corrida verde acredita lo que corrió:
+  su SHA con el árbol limpio, sin cambios sin commitear, y las versiones de
+  runtime, lockfiles y variables que leen los gates. Si cambió alguna de
+  esas entradas, la evidencia ya no vale y la corrida se repite. Una
+  corrida con cambios sin commitear sirve para iterar, pero no acredita
+  nada; para acreditar un head, commitea y corre con el árbol limpio. Revisores
+  y verificadores leen esa evidencia y corren sólo los comandos de sus
+  hallazgos o de su verificación del artefacto. Repetir una suite sobre la
+  misma instantánea sólo sirve para diagnosticar un fallo intermitente, y
+  el brief lo declara.
+- **Alcance en el nombre.** Cada corrida en un host de pruebas empieza su
+  nombre con su alcance: `dirigida-`, `suite-`, `repro-` o `diag-`, seguido
+  del ticket. Con `remote-run`, va en `--name`, como
+  `--name suite-sen-5194`. Si una corrida mezcla alcances, toma el primero
+  que cumpla: `suite-` si corre los gates completos; `diag-` si repite una
+  instantánea ya acreditada para diagnosticar un intermitente; `repro-` si
+  sólo corre los comandos de hallazgos de review; y `dirigida-` en los
+  demás casos, incluida una ronda de corrección que reproduce sus
+  hallazgos.
 - **Fail-fast por etapa.** Ordena las etapas de la más barata a la más
   cara. Detén la corrida al terminar la primera etapa con fallos que la
   rama de entrega no trae. Dentro de cada etapa conserva la lista completa
