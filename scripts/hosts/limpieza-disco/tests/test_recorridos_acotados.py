@@ -108,6 +108,20 @@ if name == c.get('xattr_error'): sys.exit(1)
 if name == c.get('xattr_block'): time.sleep(30)
 print(c.get('xattrs', {}).get(name, ''))
 """)
+        self.executable('stat', """#!/usr/bin/python3 -B
+import json, os, sys
+from pathlib import Path
+root = Path(os.environ['HARNESS'])
+c = json.loads((root / 'config.json').read_text())
+if sys.argv[1:3] == ['-f', '%d']:
+    path = sys.argv[-1]
+    with (root / 'stat-roots').open('a') as f: f.write(path + '\\n')
+    if Path(path).name == c.get('stat_error'): sys.exit(1)
+    if Path(path).name == c.get('otro_dispositivo'):
+        print(os.stat(path).st_dev + 1)
+        sys.exit(0)
+os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
+""")
         script = (HOSTS / 'limpieza-disco/limpieza-disco.sh').read_text()
         script = script.replace(
             'export PATH="$HOME/.bun/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
@@ -182,6 +196,62 @@ print(c.get('xattrs', {}).get(name, ''))
         self.assertFalse(posterior.exists(), out)
         self.assertIn('borrado ' + str(posterior), out)
         self.assertIn('fin (libre:', out)
+
+    def test_r5b_otro_dispositivo_conserva_raiz_y_sigue(self):
+        cache = self.cache_r5('montada')
+        posterior = self.cache_r5('zzz-posterior')
+        self.config['otro_dispositivo'] = 'montada'
+        out = self.ejecutar(poda_fixture=True)
+        self.assertIn('regla 7: salto raíz ' + str(self.home / 'montada') + ': dispositivo distinto del home', out)
+        self.assertTrue(cache.exists(), out)
+        self.assertFalse(posterior.exists(), out)
+        self.assertNotIn('montada', (self.root / 'xattr-roots').read_text().splitlines())
+        consultadas = (self.root / 'stat-roots').read_text().splitlines()
+        self.assertEqual(consultadas.count(str(self.home)), 1)
+        self.assertIn('fin (libre:', out)
+
+    def test_r5b_stat_raiz_fallido_conserva_raiz_y_sigue(self):
+        cache = self.cache_r5('sin-stat')
+        posterior = self.cache_r5('zzz-posterior')
+        self.config['stat_error'] = 'sin-stat'
+        out = self.ejecutar(poda_fixture=True)
+        self.assertIn('regla 7: salto raíz ' + str(self.home / 'sin-stat') + ': falló stat del dispositivo', out)
+        self.assertTrue(cache.exists(), out)
+        self.assertFalse(posterior.exists(), out)
+        self.assertNotIn('sin-stat', (self.root / 'xattr-roots').read_text().splitlines())
+
+    def test_r5b_stat_home_fallido_salta_regla_entera(self):
+        cache = self.cache_r5('zzz-posterior')
+        self.config['stat_error'] = 'home'
+        out = self.ejecutar(poda_fixture=True)
+        self.assertIn('regla 7: salto regla: falló stat del dispositivo del home', out)
+        self.assertTrue(cache.exists(), out)
+        self.assertFalse((self.root / 'xattr-roots').exists())
+        self.assertFalse((self.root / 'visited').exists())
+        self.assertIn('fin (libre:', out)
+
+    def test_r5b_macl_con_flags_conserva_raiz(self):
+        cache = self.cache_r5('macl-flags')
+        self.config['xattrs'] = {'macl-flags': 'com.apple.provenance\ncom.apple.macl#S'}
+        out = self.ejecutar(poda_fixture=True)
+        self.assertIn('regla 7: salto raíz ' + str(self.home / 'macl-flags') + ': com.apple.macl', out)
+        self.assertTrue(cache.exists(), out)
+        self.assertNotIn(str(cache.parent), (self.root / 'visited').read_text())
+
+    def test_r5b_file_provider_con_flags_conserva_raiz(self):
+        cache = self.cache_r5('proveedor-flags')
+        self.config['xattrs'] = {'proveedor-flags': 'com.apple.file-provider-domain-id#B'}
+        out = self.ejecutar(poda_fixture=True)
+        self.assertIn('regla 7: salto raíz ' + str(self.home / 'proveedor-flags') + ': com.apple.file-provider-domain-id', out)
+        self.assertTrue(cache.exists(), out)
+        self.assertNotIn(str(cache.parent), (self.root / 'visited').read_text())
+
+    def test_r5b_detached_con_flags_permite_podar(self):
+        cache = self.cache_r5('detached-flags')
+        self.config['xattrs'] = {'detached-flags': 'com.apple.fileprovider.detached#B'}
+        out = self.ejecutar(poda_fixture=True)
+        self.assertFalse(cache.exists(), out)
+        self.assertIn('borrado ' + str(cache), out)
 
     def test_r5_macl_se_salta_con_motivo(self):
         cache = self.cache_r5('macl')

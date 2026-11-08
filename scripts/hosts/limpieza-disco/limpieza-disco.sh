@@ -867,6 +867,8 @@ for s in /private/tmp/claude-"$(id -u)"/-*/*/; do
 done
 
 # 7. Cachés de Next.js (.next/cache y .next/dev) de apps sin servidor vivo
+dev_home=$(stat -f %d "$HOME" 2>/dev/null) || dev_home=
+if [[ "$dev_home" =~ ^[0-9]+$ ]]; then
 # Glob de primer nivel, incluidas ocultas: ninguna raíz bloquea a las demás.
 for raiz in "$HOME"/* "$HOME"/.[!.]* "$HOME"/..?*; do
   [ ! -L "$raiz" ] && [ -d "$raiz" ] || continue
@@ -874,10 +876,17 @@ for raiz in "$HOME"/* "$HOME"/.[!.]* "$HOME"/..?*; do
     "$HOME/Documents"|"$HOME/Desktop"|"$HOME/OrbStack"|"$HOME/Library"|"$HOME/.Trash"|\
     "$HOME/.cache"|"$HOME/.bun"|"$HOME/.rustup"|"$HOME/.android"|"$HOME/.cargo"|"$HOME/remote-run") continue ;;
   esac
+  dev_raiz=$(stat -f %d "$raiz" 2>/dev/null) || dev_raiz=
+  if ! [[ "$dev_raiz" =~ ^[0-9]+$ ]]; then
+    log "regla 7: salto raíz $raiz: falló stat del dispositivo"; continue
+  elif [ "$dev_raiz" != "$dev_home" ]; then
+    log "regla 7: salto raíz $raiz: dispositivo distinto del home"; continue
+  fi
   # Listar xattrs también puede bloquear: el mismo tope y fallo cerrado que find.
   atributos=$(acotado "regla 7: xattr" "$raiz" xattr "$raiz" 2>/dev/null) || {
     log "regla 7: salto raíz $raiz: falló xattr"; continue;
   }
+  atributos=$(printf '%s\n' "$atributos" | sed 's/#.*//')
   case $'\n'"$atributos"$'\n' in
     *$'\ncom.apple.macl\n'*) log "regla 7: salto raíz $raiz: com.apple.macl"; continue ;;
     *$'\ncom.apple.file-provider-domain-id\n'*) log "regla 7: salto raíz $raiz: com.apple.file-provider-domain-id"; continue ;;
@@ -904,6 +913,9 @@ while IFS= read -r nx; do
   done
 done
 done
+else
+  log "regla 7: salto regla: falló stat del dispositivo del home"
+fi
 
 # 8. Simuladores de Xcode no disponibles: semanal
 STAMP_SIM="$STATE/simctl-stamp"
