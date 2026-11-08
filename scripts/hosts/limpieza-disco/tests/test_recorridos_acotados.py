@@ -3,6 +3,7 @@
 LIMPIEZA_TEST_SOURCE permite ejecutar estos mismos tests contra origin/main.
 Nunca consulta /private/tmp ni HOME reales, y siempre usa --dry-run.
 """
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -241,7 +242,7 @@ os.execv('/bin/ps', ['ps'] + sys.argv[1:])
         self.assertIn('recuperado lock', p.stdout)
         self.assertEqual((self.lock / 'owner').read_text().splitlines()[0], str(os.getpid()))
 
-    def soltar_fixture(self, caso):
+    def soltar_fixture(self, caso, guard_ocupado=False):
         self.lock.mkdir()
         Path(str(self.lock) + '.guard').touch()
         funcion = self.script.read_text().split('soltar_lock() {', 1)[1].split('\n}', 1)[0]
@@ -257,27 +258,72 @@ case "$1" in
   comando) comando='comando de otra pasada' ;;
 esac
 printf '%s\n%s\n%s\n' "$pid" "$inicio" "$comando" > "$LOCK/owner"
+case "$1" in
+  ps-ausente) export PATH=/ruta-inexistente ;;
+  ps-falla) export PATH="$PS_FALLA" ;;
+esac
 soltar_lock
 """
-        p = subprocess.run(['bash', '-c', 'soltar_lock() {' + funcion + '\n}\n' + shell,
-                            'fixture', caso], capture_output=True, text=True, timeout=8,
-                           env=dict(os.environ, LOCK=str(self.lock), LC_ALL='es_MX.UTF-8',
-                                    TZ='America/Mexico_City'))
-        self.assertEqual(p.returncode, 0, p.stdout + p.stderr)
-        return p.stdout
+        self.executable('ps', '#!/bin/sh\nexit 1\n')
+        with open(str(self.lock) + '.guard', 'r+') as guard:
+            if guard_ocupado:
+                fcntl.flock(guard, fcntl.LOCK_EX)
+            p = subprocess.Popen(['bash', '-c', 'soltar_lock() {' + funcion + '\n}\n' + shell,
+                                  'fixture', caso], stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, env=dict(os.environ, LOCK=str(self.lock),
+                                                     PS_FALLA=str(self.bin), LC_ALL='es_MX.UTF-8',
+                                                     TZ='America/Mexico_City'))
+            try:
+                if guard_ocupado:
+                    plazo = time.monotonic() + 5
+                    while not (self.lock / 'owner').exists() and p.poll() is None:
+                        self.assertLess(time.monotonic(), plazo, 'fixture no publicó owner')
+                        time.sleep(0.01)
+                    # El guard sigue ocupado al entrar en soltar_lock.
+                    time.sleep(0.3)
+                    fcntl.flock(guard, fcntl.LOCK_UN)
+                out, err = p.communicate(timeout=13)
+            finally:
+                if p.poll() is None:
+                    p.kill()
+                    p.communicate()
+        self.assertEqual(p.returncode, 0, out + err)
+        self.assertEqual(err, '', out + err)
+        return out
 
     def test_soltar_lock_conserva_ajeno(self):
-        for caso in ('pid', 'inicio', 'comando'):
-            with self.subTest(caso=caso):
-                out = self.soltar_fixture(caso)
-                self.assertTrue((self.lock / 'owner').exists(), out)
-                self.assertIn('no suelto lock', out)
-                (self.lock / 'owner').unlink()
-                self.lock.rmdir()
+        out = self.soltar_fixture('pid')
+        self.assertTrue((self.lock / 'owner').exists(), out)
+        self.assertEqual((self.lock / 'owner').read_text().splitlines()[0], '1')
+        self.assertRegex(out, r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} no suelto lock:')
 
     def test_soltar_lock_propio_con_locale_distinto(self):
         self.soltar_fixture('propio')
         self.assertFalse(self.lock.exists())
+
+    def test_soltar_lock_guard_ocupado_brevemente(self):
+        self.soltar_fixture('propio', guard_ocupado=True)
+        self.assertFalse(self.lock.exists())
+
+    def test_soltar_lock_sin_ps(self):
+        for caso in ('ps-ausente', 'ps-falla'):
+            with self.subTest(caso=caso):
+                try:
+                    self.soltar_fixture(caso)
+                    self.assertFalse(self.lock.exists())
+                finally:
+                    # Un fallo contra la base no debe impedir el siguiente subcaso.
+                    shutil.rmtree(self.lock, ignore_errors=True)
+
+    def test_soltar_lock_propio_no_revalida_identidad(self):
+        for caso in ('inicio', 'comando'):
+            with self.subTest(caso=caso):
+                try:
+                    self.soltar_fixture(caso)
+                    self.assertFalse(self.lock.exists())
+                finally:
+                    # Un fallo contra la base no debe impedir el siguiente subcaso.
+                    shutil.rmtree(self.lock, ignore_errors=True)
 
     def test_home_poda_icloud_y_orbstack(self):
         self.ejecutar()

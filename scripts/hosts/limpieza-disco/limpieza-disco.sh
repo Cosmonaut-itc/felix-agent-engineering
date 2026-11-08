@@ -275,35 +275,40 @@ PY
   return "$estado"
 }
 
-# El dueño se identifica por pid, inicio y comando, no sólo por antigüedad.
+# Al soltar basta el pid propio; la recuperación sí verifica inicio y comando.
 soltar_lock() {
   /usr/bin/python3 -B - "$LOCK" "$$" <<'PY_UNLOCK'
+import datetime
 import fcntl
 import os
 import stat
-import subprocess
 import sys
+import time
 
 lock, propio = sys.argv[1:]
 try:
     guard = os.open(lock + '.guard', os.O_RDWR | os.O_NOFOLLOW)
-    fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    plazo = time.monotonic() + 10
+    while True:
+        try:
+            fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            break
+        except BlockingIOError:
+            restante = plazo - time.monotonic()
+            if restante <= 0:
+                raise TimeoutError('guard ocupado durante 10 s')
+            time.sleep(min(0.1, restante))
     if not stat.S_ISREG(os.lstat(lock + '/owner').st_mode):
         raise ValueError('dueño no regular')
     with open(lock + '/owner') as archivo:
         pid, inicio, comando = archivo.read(16384).splitlines()
     if pid != propio:
         raise ValueError('pid de otra pasada')
-    def ps(campo):
-        return subprocess.check_output(['ps', '-p', propio, '-o', campo + '='],
-                                       env=dict(os.environ, LC_ALL='C', TZ='UTC0'),
-                                       stderr=subprocess.PIPE, text=True, timeout=5).rstrip('\n')
-    if not inicio or not comando or inicio != ps('lstart') or comando != ps('command'):
-        raise ValueError('identidad de otra pasada')
     os.unlink(lock + '/owner')
     os.rmdir(lock)
-except (OSError, ValueError, subprocess.SubprocessError) as exc:
-    print('no suelto lock: ' + str(exc), flush=True)
+except (OSError, ValueError) as exc:
+    print(str(datetime.datetime.now().replace(microsecond=0)) + ' no suelto lock: ' + str(exc),
+          flush=True)
 PY_UNLOCK
 }
 # flock sólo serializa adquirir/recuperar y publicar owner; se libera incluso
