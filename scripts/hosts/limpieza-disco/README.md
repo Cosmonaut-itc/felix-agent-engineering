@@ -27,16 +27,15 @@ visible aunque la consulta capture stdout y stderr.
 
 La regla 7 es el único recorrido que parte del home. Recorre cada entrada
 de primer nivel por separado, oculta o no, con su propio tope, así que una
-raíz que bloquea sólo pierde su propio contenido. Salta estas raíces y las
-deja en el log:
+raíz que bloquea sólo pierde su propio contenido. Salta estas raíces:
 
-- las rutas podadas por nombre: Documents y Desktop, que en la Mini tienen
-  `com.apple.file-provider-domain-id`; OrbStack, montado por NFS; y
-  Library, que cubre CloudStorage y Mobile Documents;
+- las rutas podadas por nombre, sin línea en el log: Documents y Desktop,
+  que en la Mini tienen `com.apple.file-provider-domain-id`; OrbStack,
+  montado por NFS; y Library, que cubre CloudStorage y Mobile Documents;
 - las raíces en otro dispositivo que el home, porque `-xdev` no excluye la
-  raíz desde la que arranca el `find`;
+  raíz desde la que arranca el `find`, y lo anota en el log;
 - las raíces con `com.apple.macl` o `com.apple.file-provider-domain-id`,
-  con o sin sufijo `#…`.
+  con o sin sufijo `#…`, y lo anota en el log.
 
 Bajo launchd, `/bin/bash` no tiene Acceso total al disco. Abrir un
 directorio con `com.apple.macl` (en la Mini, `Codex`, `Downloads` y un
