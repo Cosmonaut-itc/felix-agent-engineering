@@ -5,6 +5,46 @@ implementación de sombra, simulación con harness y aceptación futura. No acre
 activación, integración de consumidores, aislamiento hostil ni corte real del runner.
 Rutas relativas a `fleet/hostgate/`.
 
+SEN-3822, corte 2a: `tests/test_admin.py` añade 9 escenarios compuestos P02/P03
+y la porción administrativa de P10, sin endpoint ni cambios al CLI/Fleet:
+
+| Garantía | Prueba de Administration |
+| --- | --- |
+| Digest del documento cargado, mapas profundamente inmutables y compatibilidad JSON/validadores | `test_load_revision_immutable_maps_and_existing_serializers` |
+| Política modificada sin cambiar operatorRevision; lease vivo cierra | `test_policy_content_digest_and_live_revision_guard` |
+| Locator fijo y rechazo de autoridad en payload; mínimos y volúmenes/recursos desconocidos por el core existente | `test_p02_fixed_locator_and_wire_stays_closed`, `test_loaded_minima_unknown_volume_and_resource_use_existing_core` |
+| Schema estricto, bool/NaN/duplicados, permisos, ACL reales en archivo/ancestro, symlink/hardlink, owner/hardware ajenos y FS remoto/fallo de observación simulados | `test_strict_document_and_catalogs`, `test_real_permissions_links_acl_and_failed_observations` |
+| B válido o con storeId clonado rechaza antes de SQLite; reducción en A conserva claves/débitos/exclusivos y proyecta duda | `test_anchor_other_store_and_reduced_budget_preserve_debits` |
+| Competidor en proceso propio no toma lock; ancla/config/directorio/BD/lock sustituidos cierran; ausencia no recrea | `test_lease_competition_replacement_and_missing_ledger`, `test_live_config_anchor_and_directory_replacement_are_detected` |
+
+Los negativos comparan inventario de archivos/directorios, inode, modos, tamaño,
+mtime y contenido; no basta un código de salida. `comparison(base)` es un inspector
+privado: main recibe JSON válido por su CLI y falla en `None != cfg_<digest>`;
+el candidato carga archivos y verifica su lease antes de comparar revisión/host/store/
+capacidad. No usa ImportError ni acredita un exploit de main. Fixtures dentro de la
+copia de corrida, con política de owner y ruta explícita; separación root/cliente real,
+IPC, observación de peers y activación quedan fuera. SEN-5625 de lectura/WAL en 3.14
+se mantiene visible; este corte no lo corrige.
+`tests/support/world.config` instala la seam privada de rutas en los procesos hijos
+históricos: la copia remote-run está dentro de un checkout y no hereda mocks del padre.
+
+R1-C1: `tests/test_admin_observation.py` reproduce una ACL real de 17 entradas y
+ENOMEM sólo en realloc dentro de fstatx nativo (interposición C en un hijo propio).
+Exige rechazo pese a rc=0, conserva archivo/metadata/ACL y acepta el control sin ACL.
+También cubre metadatos filesec ausentes/incoherentes, entradas sin datos, errno
+residual de éxito y salidas vacías de fstatfs64/sysctlbyname/gethostuuid.
+
+SEN-3952 amplía la guarda de SEN-3900 a la serialización de la vista, el resultado/audit
+y el contexto que se escribirá, todavía en sombra. El store usa los textos ya preparados:
+
+| Garantía | Prueba en `tests/test_provider_failure.py` / alcance |
+| --- | --- |
+| La duda observada sobre A y su audit sobreviven al valor no serializable de B; C sigue rechazado al recuperarse A. Se retienen todos los débitos/exclusivos, sin cambios parciales ni `operations(B)`; el id puede reintentarse. | `ProviderFailure.test_sen3952_unserializable_provider_keeps_doubt_after_owner_recovers`: `nan`/`inf` del reloj y `bytes` del boot, tras una proyección válida, por `reservar` y `prepare` (6 subcasos). Exit 6 público; `prepare` relanza la excepción de serialización después del audit. |
+| Confirmación fallida o ACK perdido tienen prioridad sobre el fallo del proveedor; no se consume el id de B. | `ProviderFailure.test_sen3952_unserializable_provider_confirmation_failure_is_uncertain`: mismos valores/rutas, con cortes antes y después del commit (12 subcasos). Exit 3 público; `prepare` propaga el fallo de persistencia. El corte posterior conserva duda/audit durables. |
+| R1-W1: el contexto inválido conserva duda, audit y débitos/exclusivos; C sigue rechazado tras recuperarse A. | `ProviderFailure.test_sen3952_r1_context_keeps_doubt_after_owner_recovers`: anchor con `nan`/`inf`/`bytes`, por `latido`, `soltar`, `dudosa`, `reservar` y `prepare` (15 subcasos), con reintento del id de B. |
+| Un resultado inválido tampoco pierde la duda, incluso sin operación registrada o al rechazar un dueño ajeno. | `ProviderFailure.test_sen3952_r1_result_keeps_doubt_after_owner_recovers`: los mismos valores sólo en el resultado, por tres mutaciones, conflicto de preparación y rechazo ajeno (15 subcasos). Se serializa el resultado real, después de quitar el envoltorio interno. |
+| Los fallos de persistencia conservan su prioridad ante contexto o resultado inválidos. | `ProviderFailure.test_sen3952_r1_confirmation_failure_is_uncertain`: 48 subcasos, antes/después del commit; exit 3 público y excepción de persistencia en `prepare`. |
+
 | Línea S del sketch | Archivo | Prueba / límite |
 | --- | --- | --- |
 | 02 | `__init__.py`, `cli.py`, `README.md` | `CLI.test_owner_payload_cannot_construct_auth`, `Contract.test_desk_no_transport_even_degraded`; Python 3.9 stdlib. |
@@ -257,3 +297,54 @@ Suite verde no equivale a aceptación técnica de Fleet ni activación. Siguen F
 ABI/IPC, supervisor, perfiles reales, consumidor U1, corte de run.sh/mini.lock,
 DefaultShell, SEN-3853, recuperación/reconciliación explícitas y medición del coste
 con historial largo. A-M1 de Desktop ya está resuelto por la adopción autorizada.
+
+SEN-3822 · corte 2b (2026-11-09), `tests/test_darwin_peer.py`:
+
+| Diseño | Evidencia cubierta / límite |
+| --- | --- |
+| P07/P08 | Fuentes individuales divergentes, efectivos distintos de reales, errores y diez huecos en cada una de tres capturas; registro/reto/dispatch y PID con inicio/uniqueid/pidversion distinto. La misma implementación sirve a H←R, H←S y cliente←H. Barreras deterministas, sin PID wrap ni reboot real. |
+| P09 | Conexiones propias después de exec, reto simétrico (entrada válida de 64 KiB), NOTE_EXIT, EOF y escritor heredado sin adopción del peer autenticado; hijos reapeados. EOF con dueño vivo también cierra el watch. |
+| P13 / D1-W2 | Muestra generada por el productor real con sysctls fixture, lector Mini real y `Hostgate._health`; otro boot fresco, cada hueco del bracket UUID, boottime alterado sin UUID y fallos de lectura. Reserva previa conserva demanda/exclusivos y queda dudosa al cambiar UUID. |
+
+R1-W1: `Health.test_observed_component_latches_before_following_failure` combina
+UUID/boottime cambiado y fallo posterior en ambos extremos; restaura las fuentes
+y exige salud cerrada con lector real e identidad cerrada si cambió UUID.
+
+La comparación administrativa hardware UUID corresponde a 2a; saludo con
+serviceUid/host/store/revisión, pairing, bindings de reservas y matriz IPC integrada
+pertenecen a 2c. No se atribuye un ataque aceptado a main, que no tiene endpoint.
+
+Ejecución Mini sobre `79bd8fcb7b86249b0a903260a6dc0dbd1bb14020`: dirigida
+`20261109-130330-a263f5`, 17/17 por stack y comparación semántica de la nueva
+representación frente a main. Suite única `20261109-130502-da97bc`: Apple 3.9.6,
+227/227 (rc 0); Python 3.14.7, 226/227 (rc 1), sólo
+`Storage.test_queries_never_mutate_sqlite_or_wal` por SEN-5625; cero errores/omitidas.
+El commit posterior sólo registra esta evidencia; no se afirma ejecutado.
+
+SEN-3822, 2c: `tests/test_ipc.py` añade procesos externos R/S/H, entorno distinto,
+presupuesto conjunto de ejecutores, replay/digest, ACL de consulta, ofertas rechazadas,
+segundo servicio, entrada máxima y límites, respuesta fragmentada e interrupciones.
+P14 genera historial terminal mediante core/cierre sintético y compara el mapping
+íntegro (>100 KiB), conservando inventario durable; SEN-5625 sigue declarado.
+El saludo cliente contrasta uid/host/store/revisión/identidad antes de enviar intención.
+La matriz nativa de 2b se repite dirigida; no acredita aún todas las ventanas
+inyectadas a través del endpoint integrado ni PID wrap/reboot reales.
+Mini `20261109-135305-fbd46e`, producto `75d52d11dedc02bf803bb20c4410131e55f5b668`:
+34/34 por stack (Apple 3.9.6 y 3.14.7), P14 169.902 bytes sin cambio durable.
+El head posterior sólo registra evidencia. Campaña integrada completa pendiente.
+
+SEN-3822, **2c-I**, correcciones de la review de PR #67, ronda 1:
+
+| Hallazgo | Regresión dirigida y aserción |
+| --- | --- |
+| R1-W1 | `IPC.test_r1_cancel_after_commit`: R/S/H y commit reales; cancelar tras DATA y antes de END exige TransportError/outcome_unknown, fd cerrado, una reserva y un slot retenido. |
+| R1-W1 | `IPCQueryCancellation.test_r1_cli_cancel_before_end`: cancelación en connect/call y TransportError; exit 6, stderr y stdout vacío. El caso histórico inyectado sigue exigiendo 130. |
+| R1-W1 | `ClientCancellation`: cancelación de open/connect/request_supervisor/approve cierra socket/watches o sesión y conserva outcome_unknown. Controles de handshake aislados, sin atribuirles un commit. |
+| R1-W2 | `IPC.test_r1_query_only_second_executor`: configuración validada, catálogo other/unix y ACL sólo unix; consulta pública exit 0, control explícito unix exit 0. |
+| R1-W2 | `IPC.test_r1_query_without_permitted_executor`: ACL vacía válida, rechazo explícito sin fallback al primer ejecutor. |
+
+Las seis pruebas nuevas se suman a las 34 dirigidas anteriores. El guion conserva
+TMPDIR/cache dentro de la copia y acorta la raíz temporal para los sockets nativos
+Darwin. Evidencia rojo/verde por stack en el `evidence-2/report.md` del encargo.
+La campaña integrada de autoridad y fallos sigue en **2c-II**; no se ejecuta aquí
+la suite completa ni se habilitan cargas, Fleet efectivo o la Mini.

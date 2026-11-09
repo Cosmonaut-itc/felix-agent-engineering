@@ -105,6 +105,7 @@ cerrar una sesión o un programa que tomó tickets, sigue
 | Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
 | Implementar tickets acoplados | [Acumulador](references/acumulador.md) | `implement-spec` de Matt Pocock |
 | Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |
+| Tres modelos, cuando el usuario pide «consejo» | [Consejo](references/consejo.md) | `council` de tstack |
 | Pausar o retomar | playbooks Pause safely y Session pickup; `handoff` de Matt Pocock cuando pides un documento de traspaso | — |
 | Escribir skills o `AGENTS.md` | playbook Authoring a skill con `writing-for-agents` de Matt Pocock y `unslop` | `writing-skills` |
 
@@ -119,6 +120,42 @@ Codex, o con la del paquete que tocas en un monorepo. Si no existe, sigue los
 docs de verificación del repositorio (gates, `remote-run`, QA) y propón una
 vez generarla con `create-verification-skill`. Los gates del `AGENTS.md` siguen
 siendo obligatorios.
+
+Los hosts de pruebas son compartidos y hacen fila. Elige cada corrida por lo
+que demuestra:
+
+- **Prueba dirigida.** Mientras implementas, en cada ronda de corrección y
+  en cada candidato de `arena`, corre sólo lo que toca el cambio: los tests
+  de los archivos y paquetes modificados, el typecheck y el lint de esos
+  paquetes, y la reproducción de cada hallazgo.
+- **Suite completa.** Los gates del `AGENTS.md` corren sobre el head que
+  recibió APTO, antes del merge. En `arena` corren sólo sobre la base
+  elegida después del injerto, y en el acumulador en su paso 8. Si fallan,
+  corrige con prueba dirigida; el head nuevo pasa por una ronda delta y
+  la suite vuelve a correr sobre él.
+- **Evidencia por instantánea.** Una corrida verde acredita lo que corrió:
+  su SHA con el árbol limpio, sin cambios sin commitear, y las versiones de
+  runtime, lockfiles y variables que leen los gates. Si cambió alguna de
+  esas entradas, la evidencia ya no vale y la corrida se repite. Una
+  corrida con cambios sin commitear sirve para iterar, pero no acredita
+  nada; para acreditar un head, commitea y corre con el árbol limpio. Revisores
+  y verificadores leen esa evidencia y corren sólo los comandos de sus
+  hallazgos o de su verificación del artefacto. Repetir una suite sobre la
+  misma instantánea sólo sirve para diagnosticar un fallo intermitente, y
+  el brief lo declara.
+- **Alcance en el nombre.** Cada corrida en un host de pruebas empieza su
+  nombre con su alcance: `dirigida-`, `suite-`, `repro-` o `diag-`, seguido
+  del ticket. Con `remote-run`, va en `--name`, como
+  `--name suite-sen-5194`. Si una corrida mezcla alcances, toma el primero
+  que cumpla: `suite-` si corre los gates completos; `diag-` si repite una
+  instantánea ya acreditada para diagnosticar un intermitente; `repro-` si
+  sólo corre los comandos de hallazgos de review; y `dirigida-` en los
+  demás casos, incluida una ronda de corrección que reproduce sus
+  hallazgos.
+- **Fail-fast por etapa.** Ordena las etapas de la más barata a la más
+  cara. Detén la corrida al terminar la primera etapa con fallos que la
+  rama de entrega no trae. Dentro de cada etapa conserva la lista completa
+  de fallos para compararla con la de esa rama.
 
 ## Modelos y transporte
 
@@ -153,6 +190,9 @@ siendo obligatorios.
   corrige lo que dice antes de la ronda; un error no cuenta como normal. Un diff que crece puede subir de
   nivel. El brief de cada ronda abre con `Nivel: <normal o alto> por <señal
   o ruta>`, y tu respuesta repite el nivel y su motivo.
+- **Pre-vuelo.** Antes de cada ronda, atiende los comentarios abiertos del
+  PR, corrige lo que ya sabes que falla y corre la prueba dirigida del
+  cambio. El brief nombra los checks que faltan o que ya fallaban.
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
@@ -186,6 +226,12 @@ siendo obligatorios.
   Declina todos los nits, también los de comentarios, documentación o
   estilo. No impiden APTO, y cada cambio de head exige otra ronda. Un critical o warning nunca
   es un nit, aunque trate de documentación.
+- **Registro.** Lleva cada hallazgo en `hallazgos.tsv`, junto a los
+  encargos de la unidad o en el store del programa, con las columnas
+  `id	ronda	severidad	estado	evidencia`. El `id` no cambia entre rondas.
+  El estado es `abierto`, `corregido`, `rebatido` o `declinado`. Desde la
+  ronda 2, el brief suma el registro y el diff desde la ronda anterior, y
+  el revisor marca cada id como `resuelto` o `sigue abierto: <motivo>`.
 - **Regla por hallazgo.** Si un hallazgo aceptado es mecánico, como un
   patrón de sintaxis, una API prohibida, una forma de import o una regla de
   ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
@@ -222,7 +268,8 @@ siendo obligatorios.
   nivel vigente. Quien abre el PR la escribe, el orquestador la actualiza
   tras cada ronda y cambio de head, y quien edita el cuerpo la conserva.
   Esta línea sustituye la exclusión de veredictos «CLEAN» del cuerpo en
-  «Opening a PR».
+  «Opening a PR». En una review con [Consejo](references/consejo.md), cada
+  miembro lleva su línea, y la tabla del consejo va antes de esas líneas.
 
 ## Merge
 

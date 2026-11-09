@@ -55,7 +55,7 @@ class World:
     def profile_verified(self, profile):
         return profile in self.profiles
 
-    def channel_alive(self, binding):
+    def channel_alive(self, binding, *, pending=False):
         return self.channel and binding == 'fixture-channel'
 
     def closure(self, evidence_ids, reservation):
@@ -80,6 +80,14 @@ class World:
 
 
 def config(path):
+    # Cada hijo del harness instala su política privada; los mocks del padre
+    # no cruzan exec. No es una flag ni un bypass del cargador productivo.
+    from hostgate.tests.test_admin import fixture_policy
+    with fixture_policy(Path(path).resolve().parent):
+        return _config(path)
+
+
+def _config(path):
     return NodeConfig('node', 'shadow-store', ('unix', 'other', 'windows'),
                       {'cpuMilli': 2000, 'memoryBytes': 2000,
                        'diskBytes': {'data': 2000}, 'slots': 2},
@@ -117,7 +125,7 @@ class SharedWorld(World):
     def executor_boot(self, executor):
         return self.state()['executorBoots'].get(executor)
 
-    def channel_alive(self, binding):
+    def channel_alive(self, binding, *, pending=False):
         state = self.state()
         parent = state.get('channelParents', {}).get(binding)
         if parent is not None:

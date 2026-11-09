@@ -39,13 +39,15 @@ class ReaderTempCases:
                                 continue
                             self.assertEqual(result.returncode, 4 if active and operation == "wait" else 0,
                                              (result.stdout, result.stderr))
-                            value = json.loads(result.stdout)
+                            value = self.projection(json.loads(result.stdout))
                             self.assertEqual(value["job"], job)
                             self.assertEqual(value["attempt"], submitted["attempt"])
                             if active:
                                 if operation != "evidence":
                                     self.assertEqual((value["state"], value["view"]), ("running", "running"))
-                                self.assertEqual(value["evidence"]["errors"], ["attempt_not_finished"])
+                                self.assertEqual(value["evidence"], {"valid": None, "errors": [], "files": []})
+                                self.assertEqual(value["collection"], {"state": "pending", "errors": []})
+                                self.assertEqual(value["completion"], "pending")
                             else:
                                 self.assertEqual(value["outcome"], "succeeded")
                                 self.assertTrue(value["evidence"]["valid"])

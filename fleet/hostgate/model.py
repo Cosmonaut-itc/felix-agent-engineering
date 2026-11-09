@@ -44,19 +44,23 @@ class NodeConfig:
         for ttl in (self.pending_ttl, self.heartbeat_ttl):
             if type(ttl) not in (int, float) or not 0 < ttl <= sys.float_info.max:
                 raise ValueError('TTL del host invalido')
-        path = self.state_dir
-        if not isinstance(path, Path) or not path.is_absolute() or '..' in path.parts:
-            raise ValueError('stateDir debe ser absoluto')
-        if str(path).startswith('/mnt/c') or any(p in path.parts for p in ('.t3', '.git', 'fleet-pilot', 'pao', 'remote-run')):
-            raise ValueError('stateDir reservado')
-        for parent in (path,) + tuple(path.parents):
-            if parent.is_symlink() or (parent / '.git').exists():
-                raise ValueError('stateDir debe ser local y separado del checkout')
+        _validate_state_path(self.state_dir)
         if any(e not in self.executors or kind not in ('unix', 'windows')
                for e, kind in self.executor_scope_kinds.items()):
             raise ValueError('plataforma no acreditada')
         for minimum in self.profile_minima.values(): demand(dict(minimum))
         if len(set(self.resources)) != len(self.resources): raise ValueError('alias de recurso')
+
+
+def _validate_state_path(path):
+    """Seam privada del harness: producción siempre excluye copias/estado efímero."""
+    if not isinstance(path, Path) or not path.is_absolute() or '..' in path.parts:
+        raise ValueError('stateDir debe ser absoluto')
+    if str(path).startswith('/mnt/c') or any(p in path.parts for p in ('.t3', '.git', 'fleet-pilot', 'pao', 'remote-run')):
+        raise ValueError('stateDir reservado')
+    for parent in (path,) + tuple(path.parents):
+        if parent.is_symlink() or (parent / '.git').exists():
+            raise ValueError('stateDir debe ser local y separado del checkout')
 
 
 def identity_json(identity):

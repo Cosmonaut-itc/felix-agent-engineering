@@ -6,7 +6,7 @@ import selectors
 
 from . import inputs
 
-VERSION = "fleet-evidence@1"
+VERSION = "fleet-job-evidence@1"
 MAX_STREAM = 256 * 1024 * 1024
 
 
@@ -37,12 +37,13 @@ class Redactor:
 
 
 class Capture:
-    def __init__(self, directory, cwd, artifacts, secrets):
+    def __init__(self, directory, cwd, artifacts, secrets, on_error=None):
         self.directory = directory
         self.cwd = cwd
         self.artifacts = artifacts
         self.secrets = secrets
         self.errors = []
+        self.on_error = on_error
         self.logs = {}
         self.written = {name: {"size": 0, "hash": hashlib.sha256()} for name in ("stdout", "stderr")}
         self.closed = {}
@@ -65,6 +66,8 @@ class Capture:
     def error(self, code):
         if code not in self.errors:
             self.errors.append(code)
+        if self.on_error:
+            self.on_error(list(self.errors))
 
     def write(self, name, chunk):
         self.stream_bytes[name] += len(chunk)
@@ -130,7 +133,7 @@ class Capture:
             del self.logs[name]
 
 
-def seal(directory, job, attempt, identity, command, capture=None, errors=()):
+def seal(directory, job, attempt, identity, command, closure, capture=None, errors=()):
     errors = list(errors) + (list(capture.errors) if capture else [])
     bundle = directory / "bundle"
     entries = []
@@ -166,7 +169,10 @@ def seal(directory, job, attempt, identity, command, capture=None, errors=()):
             except (OSError, ValueError):
                 errors.append("artifact_collection_failed" if kind == "artifact" else "log_collection_failed")
         manifest = {"contract": VERSION, "job": job, "attempt": attempt, "input": identity,
-                    "command": command, "collection": "valid" if not errors else "incomplete",
+                    "command": command, "closure": closure,
+                    "not_applicable": ["stdout", "stderr", "command-artifacts"]
+                    if command["kind"] == "never_created" else [],
+                    "collection": "valid" if not errors else "incomplete",
                     "errors": sorted(set(errors)), "entries": entries}
         data = inputs.canonical(manifest)
         inputs.write_new(bundle / "manifest.json", data)
@@ -177,7 +183,7 @@ def seal(directory, job, attempt, identity, command, capture=None, errors=()):
         return None, {"collection": "incomplete", "errors": sorted(set(errors + ["bundle_seal_failed"]))}
 
 
-def verify(directory, root_hash, job, attempt, identity, command):
+def verify(directory, root_hash, job, attempt, identity, command, closure):
     result = {"valid": False, "manifest": str(directory / "bundle/manifest.json"),
               "root_sha256": root_hash, "files": [], "errors": []}
     if root_hash is None:
@@ -191,7 +197,8 @@ def verify(directory, root_hash, job, attempt, identity, command):
                 raise ValueError("manifest_mismatch")
             manifest = json.loads(data)
             if (manifest["contract"], manifest["job"], manifest["attempt"], manifest["input"],
-                    manifest["command"]) != (VERSION, job, attempt, identity, command):
+                    manifest["command"], manifest["closure"]) != (
+                        VERSION, job, attempt, identity, command, closure):
                 raise ValueError("evidence_identity_mismatch")
             errors = list(manifest["errors"])
             for entry in manifest["entries"]:

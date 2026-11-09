@@ -49,7 +49,8 @@ exigida por `AGENTS.md` mantiene sus controles y su precedencia.
 6. El único integrador incorpora un ticket a la vez. Si integración sigue
    en la base verificada, incorpora el SHA aprobado sin modificarlo. Si
    avanzó, prepara en una rama de candidato el resultado de combinar la
-   integración actual con el ticket. Verifica ese resultado y consigue
+   integración actual con el ticket. Verifica ese resultado con la prueba
+   dirigida del ticket y de lo que comparte con integración, y consigue
    APTO para su SHA, con todos los revisores del nivel vigente. Una review
    delta usa las reviews previas y examina conflictos e interacciones.
    Toda corrección de código o conflicto se delega. El integrador publica

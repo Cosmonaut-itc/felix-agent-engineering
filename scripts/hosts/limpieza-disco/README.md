@@ -5,6 +5,59 @@
 E/S de baja prioridad. Escribe en `~/Library/Logs/limpieza-disco.log`. La
 cabecera del script lista las ocho reglas y sus umbrales.
 
+## Recorridos y exclusión mutua
+
+Cada `find`, `du` y `lsof` del shell tiene un tope de 600 segundos, sin
+coreutils. También lo tienen el inventario, su medición recursiva de una
+copia y la captura adicional de cwd. Diez minutos dan margen sobre la
+pasada normal de 1–3 minutos y cortan la espera indefinida de File Provider
+o NFS. El supervisor Python inicia un grupo de procesos separado y, al
+vencer el plazo, envía SIGKILL al grupo, registra regla y ruta y devuelve
+124. Espera como máximo un segundo adicional: un proceso retenido por el
+kernel puede tardar en morir. Sus salidas van a archivos temporales, de
+modo que ese proceso tampoco puede retener un pipe y bloquear la pasada.
+
+Sólo se publica stdout tras completar el recorrido con éxito. La excepción
+es `lsof` con código 1: conserva su salida para que una captura parcial no
+se confunda con ausencia de uso. Un error o corte de actividad conserva la
+candidata; uno de tamaño tampoco autoriza borrado; uno de inventario o
+corridas nuevas cierra las reglas 1 y 3. Un corte del listado de cachés no
+publica candidatas. El log de topes usa un descriptor separado para seguir
+visible aunque la consulta capture stdout y stderr.
+
+La regla 7 es el único recorrido que parte del home. Recorre cada entrada
+de primer nivel por separado, oculta o no, con su propio tope, así que una
+raíz que bloquea sólo pierde su propio contenido. Salta estas raíces:
+
+- las rutas podadas por nombre, sin línea en el log: `Documents`, `Desktop`,
+  `Downloads`, `Movies`, `Music`, `Pictures`, `OrbStack`, `Library`, `.Trash`,
+  `.cache`, `.bun`, `.rustup`, `.android`, `.cargo` y `remote-run`. Se saltan
+  antes de consultar `stat`, `xattr` o `find`: TCC bloquea incluso la lectura
+  de xattrs de esas carpetas del usuario bajo launchd. Documents y Desktop
+  tienen `com.apple.file-provider-domain-id` en la Mini; OrbStack está
+  montado por NFS; Library cubre CloudStorage y Mobile Documents;
+- las raíces en otro dispositivo que el home, porque `-xdev` no excluye la
+  raíz desde la que arranca el `find`, y lo anota en el log;
+- las raíces con `com.apple.macl` o `com.apple.file-provider-domain-id`,
+  con o sin sufijo `#…`, y lo anota en el log.
+
+Bajo launchd, `/bin/bash` no tiene Acceso total al disco. Abrir un
+directorio con `com.apple.macl` (en la Mini, `Codex`, `Downloads` y un
+instalador descargado) dispara una aprobación de `sandboxd` que nadie
+contesta, y `open` se bloquea. Por ssh no pasa, porque sshd sí tiene ese
+acceso, así que una sonda por ssh no reproduce el bloqueo. Si `stat` o
+`xattr` fallan, la raíz se salta. No se siguen enlaces simbólicos.
+
+El lock registra pid, inicio del proceso y comando. Pasados 120 minutos
+sólo se recupera si el dueño murió, cambió su identidad o dejó de ejecutar
+la limpieza. Un dueño vivo o una consulta no verificable conserva el lock y
+queda registrado. Para locks legados sin dueño se comprueba que no haya
+otra limpieza viva. La adquisición y recuperación se serializan con
+`flock` de Python sobre `lock.guard`; el sistema suelta ese cerrojo si muere
+el recuperador. El archivo puede permanecer sin bloquear. No hay un límite
+global de pasada: muchas candidatas pueden sumar más de 120 minutos; en
+ese caso una invocación posterior registra el dueño vivo y sale.
+
 ## ~/remote-run
 
 Sobre `~/remote-run` sólo actúan las reglas 1 y 3. Las dos dependen de
@@ -16,6 +69,59 @@ demás.
 - **Regla 1.** Borra copias de `work/` que el inventario marca `borrable` con
   clase `inactiva`: siete días sin uso, sin lock y sin corridas vivas o
   dudosas.
+- **EMERGENCIA work.** Sólo si al iniciar quedan menos de 40 GB libres,
+  la regla 1 usa seis horas sin uso. El shell pasa explícitamente
+  `--copia-minutos 360` al inventario y recorre el árbol completo con
+  `find -mmin -360`. Excluye de esa comprobación `.git/index`,
+  `.git/FETCH_HEAD`, `.git/ORIG_HEAD`, los archivos `.git/*.lock` del primer
+  nivel y el mtime
+  del directorio `.git` (el reemplazo de `index` también lo modifica).
+  Sigue recorriendo los demás hijos de `.git`: por ejemplo, un `HEAD`
+  reciente veta la copia. Las exclusiones exigen archivos regulares y que
+  `.git` sea directorio para ignorar su mtime: un enlace reciente se conserva.
+  El nombre de la copia se escapa como literal en los patrones de `find`;
+  sus metacaracteres no amplían las exclusiones a directorios anidados.
+  Un cambio reciente fuera de `.git`, incluso
+  profundo, también la veta. El limpiador legado de la Mini ejecuta
+  `git status --porcelain` periódicamente sobre copias viejas: ese comando
+  puede refrescar el índice sin usar la copia para una corrida.
+  Repite el mtime directo de la copia con el mismo umbral. En modo normal pasa
+  `--copia-minutos 10080` y mantiene `find -mtime -7`.
+  Ordena las candidatas por `ultimoUso`, de más vieja a más nueva, y mide
+  espacio antes y después de cada copia. Para la regla 1 cuando `df` alcanza
+  60 GB reales. Los tamaños estimados sólo se registran: no frenan.
+  No hay otro tope: si no se alcanza el objetivo, agota las candidatas que
+  superan todas las protecciones. En la primera pasada de la Mini,
+  23.125 GB contabilizados sólo produjeron 3 GB observados; un límite
+  basado en esa suma interrumpiría la emergencia prematuramente.
+  Conserva bloqueo global, locks, corridas vivas/dudosas, preparación reciente,
+  revalidación de corridas nuevas y rename exclusivo.
+  La protección de cwd cubre **los procesos del usuario que ejecuta la
+  limpieza**, que crea y usa `~/remote-run`. Toma sus PID vivos con
+  `ps -U <uid> -o pid=,stat=` antes de consultar una sola vez
+  `lsof -a -d cwd -Fn`. Valida la captura entera antes de la primera candidata:
+  cada registro debe ser `p<pid>`, `fcwd`, `n<ruta absoluta>`, sin PID repetidos,
+  campos sueltos ni rutas vacías. Si un PID propio falta, vuelve a consultar
+  `ps`: si sigue vivo y falta, no borra ninguna copia. Excluye zombies, que ya
+  no tienen cwd. Error, diagnóstico, captura vacía o formato no verificable
+  también cierran la regla 1 con motivo en el log.
+  Compara rutas físicas (`realpath`) con frontera de directorio: un cwd igual
+  o dentro de una copia la protege. Los procesos de root y de otros usuarios
+  quedan fuera de esta cobertura; lo mitigan los permisos: en emergencia
+  exige que `~/remote-run` y `~/remote-run/work` sean directorios regulares
+  sin bits de lectura ni ejecución para group u other (`mode & 0055 == 0`).
+  Si no cumplen, no borra copias ni cambia sus permisos. Esos permisos no
+  impiden el acceso de root. La captura es una observación; no elimina la
+  ventana de un proceso que cambie su cwd después.
+  Mide sólo el tamaño de la copia candidata con el lector del inventario,
+  sin cambiar la clasificación de `runs/`. El log anota nombre, bytes asignados
+  y último uso UTC por copia, y totales.
+  `--dry-run` hace las mismas comprobaciones sin rename ni borrado y enumera
+  todas las candidatas mientras `df` siga por debajo de 60 GB. La suma
+  registrada no predice cuántas borraría una pasada real: APFS puede
+  compartir bloques o retenerlos en snapshots. El log distingue
+  los bytes de las copias y el cambio de libre observado por `df`.
+  Las demás reglas y la emergencia de menos de 15 GB conservan sus umbrales.
 - **Regla 3.** Borra corridas de `runs/` que el inventario marca `borrable`
   con clase `terminal`, más de 30 días, y que tengan archivo `exit`.
 - **Orden de comprobación de una copia.** Desde el padre fijado con `cd -P`
@@ -75,6 +181,9 @@ demás.
   `USO_*`), se detienen también las reglas 2, 5, 6 y 7, que consultan
   `EN_USO`. Cada fallo deja su motivo en el log y ningún veto se revierte
   durante la pasada.
+  Si la lectura inicial de `df` no es un entero no negativo, toda la pasada
+  sale con código 1 antes de cualquier regla, también fuera de emergencia.
+  Es un cierre deliberado ante espacio libre no verificable.
 - **Captura de uso.** Los filtros de cwd, basetemp y archivos abiertos se
   ejecutan por separado y añaden a `EN_USO` todas las rutas recuperables.
   Se acumulan los errores de las fuentes (`id`, ambos `lsof` y `ps`), de la
@@ -84,13 +193,31 @@ demás.
   fallo, o diagnóstico de `lsof` o `ps`, deja sin borrar las reglas 1, 2, 3,
   5, 6 y 7 durante esa pasada. Las reglas 4 y 8, que no consultan `EN_USO`,
   siguen.
-- **Regla 7.** Busca cachés de Next.js en todo el home, pero poda
+- **Regla 7.** Busca cachés de Next.js en el home, raíz por raíz, con las
+  exclusiones descritas arriba, y poda
   `~/remote-run` y `~/.local/state`, así que no entra en las copias, el
   registro de propietarios de Fleet ni el estado de comprador.
 
 El script borra un subconjunto del que el inventario llama borrable. Deja las
 copias `lock-huerfano` y las corridas `preparacion-abortada`, que el
 inventario sí admite.
+
+Las pruebas de `tests/test_emergencia_work.py` extraen sólo la regla 1 a un
+harness temporal con HOME de fixture. Cubren `--dry-run` y borrado real sólo
+dentro del fixture, con rename exclusivo y freno sólo por `df`.
+Simulan `df` y, en los casos de decenas de GB, los tamaños estimados,
+reemplazando las funciones únicamente en esa copia temporal: el script de
+producción no admite variables ni flags para falsear el espacio. Los casos
+cwd lanzan un `sleep` real dentro del fixture. Para comparar las mismas
+pruebas contra main, `LIMPIEZA_TEST_SOURCE` puede señalar un `git archive`
+temporal de `origin/main`; sólo el harness interpreta esa variable.
+Ejecutar las suites exclusivamente en la Mini por
+`REMOTE_RUN_HOST=mini remote-run start --name limpieza-emergencia`.
+`tests/test_recorridos_acotados.py` ejecuta la pasada completa con HOME y
+temporales de fixture, comandos falsos en PATH y un tope de 0,5 segundos
+inyectados sólo en la copia temporal. Comprueba cortes de find/du/lsof,
+salidas parciales, continuidad hasta `fin`, podas y recuperación del lock.
+También admite `LIMPIEZA_TEST_SOURCE` para comparar contra main.
 
 **Premisa y ventanas residuales.** El productor `remote-run` sincroniza
 con `rsync --delete` sin tomar el lock de la copia. El lock lo escribe
@@ -131,7 +258,9 @@ bash scripts/hosts/limpieza-disco/instalar.sh
   sumas y ejecuta allí `limpieza-disco.sh --dry-run` con el inventario del
   temporal. No cambia `~/bin` ni el LaunchAgent. Usa el lock y el directorio
   de estado reales, así que sale sin evaluar si hay una pasada en curso, y
-  recupera un lock de más de 2 h, como haría la pasada horaria.
+  sólo recupera un lock de más de 2 h si descarta que su dueño siga vivo,
+  como haría la pasada horaria. Un lock legado con limpieza viva también
+  impide evaluar: el dry-run lo informa y sale.
 - **Sin argumentos.** Hace lo siguiente, en orden:
   1. Comprueba las sumas.
   2. Toma el lock de la limpieza; si está ocupado, aborta.

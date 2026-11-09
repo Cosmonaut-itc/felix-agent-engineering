@@ -4,8 +4,50 @@ Implementación local Python 3.9 stdlib de `fleet/host-reservation@1`, autoridad
 `f6dea9a7afd182dff9742d52784dc4e98aeb451f`, merge del PR #17
 (contenido idéntico al aceptado `a1f00fa`). Mini ya aceptó la semántica.
 Fleet revisará wire/IPC/PR; PAO solicita el OK concreto de Felix para activar.
-Este paquete no instala, conecta, ejecuta cargas ni añade daemon o polling.
+Este paquete no instala ni ejecuta cargas; el endpoint sombra es manual.
 `nativos=[]`. No modifica el runner, los slots ni los consumidores.
+
+## Configuración administrativa preparatoria · SEN-3822, corte 2a
+
+`admin.py` ofrece `local_authority()`, `load_config(locator)`, `load_anchor(locator)`
+y `AuthorityLease(locator, config)`. El locator productivo es fijo: `node.json`,
+`authority.json` y `authority.lock` bajo `/Library/Application Support/Fleet/hostgate`;
+el socket es `/private/var/run/fleet-hostgate/ipc/control.sock`. No consulta
+HOME, cwd ni variables de entorno. El CLI de consulta carga esa autoridad.
+
+`fleet/hostgate-node@1` tiene campos cerrados y revisión `cfg_` + SHA-256 del JSON
+canónico validado, incluido `operatorRevision`. Declara presupuesto contable,
+volúmenes (`id -> ruta absoluta`), ejecutores Darwin/unix, uids permitidos,
+principals (`uid decimal -> {roles, executors}`), perfiles y plazos. Los roles son
+requester/supervisor/query; la ACL interna usa `uid:<n>`. Los perfiles contienen
+`minimumDemand`; su presencia no acredita ejecución. Los mapas y listas se copian
+a dicts inmutables compatibles con JSON y tuplas, sin cambiar demanda ni mínimos.
+`hw.ncpu` y gethostuuid contrastan el físico; no calculan el presupuesto.
+
+El cargador recorre componentes por `dir_fd` con `O_NOFOLLOW`, comprueba propietario,
+modos, link único de archivos, ACL nativa y APFS local, también en los volúmenes.
+Rechaza conservadoramente cualquier ACL ALLOW de escritura/borrado/cambio de permisos.
+La ausencia de ACL exige que fstatx/filesec aporte owner, group y mode iguales a
+fstat del mismo fd: fstatx puede devolver éxito con filesec vacío al fallar realloc.
+No se interpreta errno tras un éxito; propiedades/entradas sin datos cierran.
+Configuración/ancla tienen límites de 64 KiB/4 KiB y parser JSON estricto.
+
+`fleet/hostgate-authority@1` fija hardware/host/store/stateDir/modo, separado de la
+política. El lease compara esa vinculación antes de abrir SQLite, toma flock no
+bloqueante sobre el lock preexistente y valida `stateDir/shadow.db` existente sin
+inicializarlo. Conserva fds y vigila dev/inode de la cadena, lock y ledger; `check()`
+rechaza revisión, permisos o pathnames alterados. El dispatch llama `check()` antes de cada operación. Fallos administrativos llevan exit 6; lock ocupado usa
+`Busy` (exit 4). B, incluso con storeId clonado, no sustituye a A mediante node.json.
+Reducir presupuesto sobre A conserva reservas/exclusivos y permite disponible negativo.
+El servicio no provisiona ancla/lock/store ni habilita Fleet o cargas.
+
+Las pruebas privadas usan archivos propios dentro de la copia remote-run. Sustituyen
+explícitamente owner/grupo y la exclusión de rutas de checkout en una seam privada;
+la validación productiva de `NodeConfig` conserva esa exclusión. No acreditan separación
+root/cliente instalada ni defensa frente a un actor hostil con escritura al ledger.
+`tests/support/world.config` aplica esa política también en cada hijo del harness;
+los mocks del proceso padre no sobreviven a exec.
+Los valores operativos de la Mini siguen pendientes de confirmación de Felix.
 
 Toda respuesta pública lleva `result: shadow`, `wouldGrant`, `operationId`,
 `configRevision`, `exitCode` y `reasons: [{code,detail,retryable}]`. No hay permiso
@@ -92,10 +134,15 @@ persistencia si la confirmación falla.
 Un conflicto de payload en `prepare` confirma la proyección y el audit con
 `operation-conflict`, exit 2, y después relanza `ValueError('operation-conflict')`;
 conserva la operación original sin crear otra preparación.
-Límite conocido: si un proveedor devuelve `nan` o `inf` y falla la serialización
-de la vista, la salida es exit 6 y no se conserva la duda observada. Este límite
-queda pendiente hasta que haya proveedores reales y se sigue en
-[SEN-3952](https://linear.app/mdr/issue/SEN-3952).
+La vista, el resultado/audit y el contexto de una operación nueva se serializan
+dentro de la guarda conservadora; el store escribe esos mismos textos JSON
+sin volver a serializar. El contexto de autenticación se captura una sola vez
+por llamada, también para comparar un replay
+([SEN-3952](https://linear.app/mdr/issue/SEN-3952)): valores de proveedor como
+`nan`, `inf` o `bytes` conservan la duda y el audit, sin normalizar esos valores
+ni aplicar la operación fallida. Rigen exit 6 y exit 3, y el contrato de excepción
+de `prepare`, descritos arriba. La protección incluye `reservar`, `prepare`,
+`latido`, `dudosa` y `soltar`, y resultados sin operación registrada o de rechazo ajeno.
 Un fallo al confirmar un rechazo ajeno sigue la tabla de errores
 del almacén; nunca se informa exit 5 con esa escritura en duda. Un rechazo histórico no se vuelve admisible al mejorar
 salud; un cambio de payload da `operation-conflict`. Fencing usa la terna completa.
@@ -310,3 +357,45 @@ Suite verde no equivale a aceptación técnica de Fleet ni activación. Siguen F
 ABI/IPC, supervisor, perfiles reales, consumidor U1, corte de run.sh/mini.lock,
 DefaultShell, SEN-3853, recuperación/reconciliación explícitas y medición del coste
 con historial largo. A-M1 de Desktop ya está resuelto por la adopción autorizada.
+
+SEN-3822, corte 2b: `darwin_peer.DarwinPeers` añade observación local optativa,
+con `getpeereid`, audit token, PID/nacimiento/uniqueid/pidversion y bootsession UUID.
+`authenticate` realiza tres capturas, registro confirmado de NOTE_EXIT y reto
+simétrico fresco de 256 bits (frames privados de hasta 64 KiB; deadline total 5 s).
+`alive` exige el objeto de socket original, recaptura y comprueba salida/EOF;
+`verify` entiende exclusivamente el token extendido de cuatro enteros. El llamador
+posee los sockets; `close` cierra los watches. No se cablea al CLI ni al runtime.
+El supervisor debe conectar personalmente después de exec: Darwin puede actualizar
+last_pid al escribir por un fd heredado; una identidad ya autenticada no se adopta
+como otro escritor. No se acredita aislamiento ante transferencia hostil del fd.
+
+`DarwinHealth` fija UUID/boottime y rodea cada lectura única de snapshot con ambas
+observaciones. Produce `snapshotHost/fecha-UTC` por aritmética entera para el lector
+Mini actual; cada cambio se enclava antes de la siguiente operación que pueda fallar
+y cierra salud hasta reinicio, sin aprender el boot del snapshot.
+La primitiva hardware UUID/configuración/ancla/lease pertenece a 2a. Pairing,
+saludo de autoridad, revisión/ACL y servicio sombra quedan para 2c. No hay RPC de
+reservas, servicio instalado, permisos efectivos ni cambios al productor/lector.
+
+SEN-3822, corte 2c: arranque manual `python3 -B -m hostgate.service`, únicamente
+con configuración/ancla/ledger ya provisionados. `HostgateClient.connect()` consulta;
+`request_supervisor` ofrece una solicitud y exige aprobación recíproca R↔S antes
+conectar un supervisor mutador. Cada reservar queda ligado al digest original;
+EOF de R después del grant permite latidos de S; perder S conserva capacidad.
+El CLI `estado` usa el endpoint fijo; fallo de transporte sale 6 sin stdout parcial.
+`wire.py` limita entradas a 64 KiB y transmite respuestas completas mediante DATA,
+END (uint64/SHA-256) o ERROR. Spool privado hasta 1 MiB en memoria, límite local
+ampliable de 256 MiB; no hay truncado, compensación ni reconexión de propietario.
+No instala launchd ni activa Fleet, perfiles, cargas, U1 o el legado. Pruebas:
+`tests/mini-ipc.sh`, sólo con remote-run en Mini y fixtures privadas dentro de la copia.
+
+El corte aceptado de este PR es **2c-I: endpoint, pairing, framing y cliente**;
+la campaña integrada de autoridad y fallos corresponde a **2c-II**.
+La consulta elige un ejecutor de la ACL del uid efectivo local, a partir de la
+configuración validada; si no hay ninguno, rechaza explícitamente antes de conectar.
+H conserva la autorización del peer. Cancelar la llamada o el pairing cierra la
+sesión y produce `TransportError(outcome_unknown=True)`, sin compensar reservas.
+El CLI `estado` por IPC sale 6, con diagnóstico en stderr y stdout vacío al cancelar;
+el harness histórico con `gate/auth` inyectados conserva su salida 130.
+Las regresiones de R1-W1/R1-W2 están en `test_ipc.py` y `test_cli.py`;
+`mini-ipc.sh` las ejecuta junto a las tres familias dirigidas en ambos stacks.

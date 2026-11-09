@@ -47,17 +47,27 @@ def listar(ruta):
         return sorted((Path(e.path) for e in entradas), key=lambda p: p.name)
 
 
-def leer(ruta):
+def leer_bytes(ruta):
     try:
         fd = os.open(str(ruta), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-    except FileNotFoundError:
+    except OSError as exc:
         if ruta.is_symlink():
             raise ValueError('symlink colgante: ' + str(ruta))
-        return None
-    with os.fdopen(fd, 'r', encoding='utf-8') as archivo:
+        if isinstance(exc, FileNotFoundError):
+            return None
+        raise
+    with os.fdopen(fd, 'rb') as archivo:
         if not stat.S_ISREG(os.fstat(archivo.fileno()).st_mode):
             raise ValueError('no es archivo regular: ' + str(ruta))
         return archivo.read()
+
+
+def leer(ruta):
+    datos = leer_bytes(ruta)
+    if datos is None:
+        return None
+    # Igual que el modo texto: CR y CRLF cuentan como salto de línea.
+    return datos.decode('utf-8').replace('\r\n', '\n').replace('\r', '\n')
 
 
 def numero(texto):
@@ -67,16 +77,20 @@ def numero(texto):
     return valor
 
 
-def espejo(texto):
-    if texto is None:
+def espejo(ruta):
+    datos = leer_bytes(ruta)
+    if datos is None:
         return None
+    # cmd es opaco y puede contener bytes que no son UTF-8.
+    partes = re.split(rb'(?:^|(?<=[\r\n]))cmd=', datos, maxsplit=1)
+    if len(partes) != 2:
+        raise ValueError('meta sin línea cmd=')
+    texto = partes[0].decode('utf-8')
     campos = {}
     # cmd puede ser multilínea: remote-run lo escribe literalmente al final.
     for linea in texto.splitlines():
-        if 'cmd' in campos:
-            break
         clave, separador, valor = linea.partition('=')
-        if not separador or clave in campos or clave not in ('src', 'host', 'mirror', 'sub', 'cmd'):
+        if not separador or clave in campos or clave not in ('src', 'host', 'mirror', 'sub'):
             raise ValueError('meta mal formado')
         campos[clave] = valor
     mirror = campos.get('mirror', '')
@@ -117,7 +131,7 @@ def corrida(ruta, ahora):
     try:
         entradas = listar(ruta)
         item['ultimoUso'] = ruta.lstat().st_mtime
-        mirror = espejo(leer(ruta / 'meta'))
+        mirror = espejo(ruta / 'meta')
         for p in entradas:
             if p.is_symlink():
                 raise ValueError('symlink en registro: ' + p.name)
@@ -175,7 +189,9 @@ def tamano(ruta):
     return total
 
 
-def inventariar(raiz, ahora=None, tamanos=False):
+def inventariar(raiz, ahora=None, tamanos=False, copia_minutos=7 * 1440):
+    if copia_minutos not in (360, 7 * 1440):
+        raise ValueError('umbral de copia no admitido')
     raiz = Path(os.path.abspath(os.path.expanduser(str(raiz))))
     ahora = time.time() if ahora is None else ahora
     corridas = []
@@ -238,9 +254,10 @@ def inventariar(raiz, ahora=None, tamanos=False):
             else:
                 clase = 'lock-huerfano' if lock is not None else 'inactiva'
                 motivo = 'lock huérfano con corrida terminal' if lock is not None else 'sin lock ni corridas vivas o dudosas'
-                vieja = ahora - item['ultimoUso'] >= 7 * DIA
+                vieja = ahora - item['ultimoUso'] >= copia_minutos * 60
+                ventana = '7 días' if copia_minutos == 7 * 1440 else '6 horas'
                 item.update(clase=clase if vieja else 'reciente', borrable=vieja,
-                            motivo=motivo + ('; al menos 7 días sin uso' if vieja else '; menos de 7 días sin uso'))
+                            motivo=motivo + ('; al menos ' if vieja else '; menos de ') + ventana + ' sin uso')
         except (OSError, ValueError, UnicodeError) as exc:
             item.update(clase='protegida-dudosa', borrable=False, motivo=str(exc))
     if tamanos:
@@ -256,8 +273,11 @@ def inventariar(raiz, ahora=None, tamanos=False):
         totales[nombre] = {'cantidad': len(elementos), 'porClase': dict(Counter(x['clase'] for x in elementos)),
                            'borrables': sum(x['borrable'] for x in elementos),
                            'tamanoBorrableBytes': sum(x['tamanoBytes'] or 0 for x in elementos if x['borrable']) if tamanos else None}
+    reglas = dict(REGLAS)
+    if copia_minutos != 7 * 1440:
+        reglas['copiaDias'] = copia_minutos / 1440
     return {'schema': 'remote-run-inventario@1', 'host': socket.gethostname(), 'ts': ahora,
-            'raiz': str(raiz), 'reglas': dict(REGLAS), 'copias': copias,
+            'raiz': str(raiz), 'reglas': reglas, 'copias': copias,
             'corridas': corridas, 'totales': totales, 'proteccionCopias': proteccion_copias}
 
 
@@ -277,8 +297,9 @@ def main(argv=None):
     parser.add_argument('--raiz', default='~/remote-run')
     parser.add_argument('--resumen', action='store_true')
     parser.add_argument('--tamanos', action='store_true')
+    parser.add_argument('--copia-minutos', type=int, choices=(360, 7 * 1440), default=7 * 1440)
     args = parser.parse_args(argv)
-    datos = inventariar(args.raiz, tamanos=args.tamanos)
+    datos = inventariar(args.raiz, tamanos=args.tamanos, copia_minutos=args.copia_minutos)
     print(resumen(datos) if args.resumen else json.dumps(datos, ensure_ascii=False, indent=2, allow_nan=False))
     return 0
 

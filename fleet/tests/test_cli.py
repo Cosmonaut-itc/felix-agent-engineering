@@ -9,8 +9,20 @@ from correction_cases import CorrectionCases
 from integral_cases import IntegralCases
 from reader_temp_cases import ReaderTempCases
 from review_r2_cases import ReviewR2Cases
+from core3820_cases import Core3820Cases
 
 CLI = Path(__file__).resolve().parents[1] / "bin/fleet"
+def capsule_path(state, job):
+    # Schema 4 separates a preparation's capsule from the public job identity.
+    sys.path.insert(0, str(CLI.parents[1]))
+    from fleet.storage import Ledger
+    with Ledger(state) as db:
+        row = db.execute("SELECT capsule FROM jobs WHERE id=?", (job,)).fetchone()
+        if row is None or not re.fullmatch(r"j_[0-9a-f]{32}", row[0]):
+            raise ValueError("job has no attributable capsule")
+        return state / "capsules" / row[0]
+
+
 JOB_ENV_BOOTSTRAP = ("import json,os,runpy,sys\n"
                      "entry,updates=sys.argv[1],json.loads(sys.argv[2])\n"
                      "sys.argv=sys.argv[3:]\n"
@@ -20,13 +32,10 @@ BARRIER = """
 import pathlib, sys, time
 ready, gate, done = map(pathlib.Path, sys.argv[1:])
 ready.write_text('ready')
-deadline = time.monotonic() + 6
+deadline = time.monotonic() + 30
 while not gate.exists() and time.monotonic() < deadline:
     time.sleep(0.02)
-try:
-    print('ok', flush=True)
-except BrokenPipeError:
-    pass
+print('ok', flush=True)
 done.write_text('done')
 sys.exit(0 if gate.exists() else 90)
 """
@@ -129,6 +138,8 @@ class ExternalFixture:
         self.write("cli-{}.json".format(self.cli_count), (json.dumps(value, ensure_ascii=True) + "\n").encode())
         try:
             observed = json.loads(result.stdout)
+            if isinstance(observed, dict) and isinstance(observed.get("observation"), dict):
+                observed = dict(observed, **observed["observation"])
             if isinstance(observed, dict) and "state" in observed:
                 self.observations[observed["job"], observed["attempt"]] = observed
         except (ValueError, TypeError, KeyError): pass
@@ -175,7 +186,7 @@ class ExternalFixture:
                 if bundle in children(attempt): paths.update(tree(bundle))
                 else: absent.append(str(bundle.relative_to(self.root)))
             for admission in attributed:
-                capsule = state / "capsules" / admission.job
+                capsule = admission.capsule or capsule_path(state, admission.job)
                 attempt = state / "attempts" / admission.attempt
                 required = {capsule: stat.S_ISDIR, capsule / "payload": stat.S_ISDIR,
                             capsule / "manifest.json": stat.S_ISREG, attempt: stat.S_ISDIR}
@@ -268,6 +279,7 @@ class ExternalFixtureEvidenceTests(unittest.TestCase):
             for directory in (capsule / "payload", bundle): directory.mkdir(mode=0o700, parents=True)
             admission = Admission(state, True, external.root / "admission.json")
             admission.job, admission.attempt = capsule.name, attempt.name
+            admission.capsule = capsule
             self.admissions = [admission]
             # Metadata of owned helper resources; no Fleet call/response is substituted.
             external.observations[admission.job, admission.attempt] = {"state": "finished", "collection": {"errors": []}}
@@ -390,12 +402,132 @@ class ExternalFixtureEvidenceTests(unittest.TestCase):
             with self.subTest(stderr_failure=channel): self.exercise_failure("removal-result.json", "absent", True, channel)
 
 
+class NativeIdentityTests(unittest.TestCase):
+    def test_unreaped_child_keeps_identity_without_confirming_live_owner(self):
+        sys.path.insert(0, str(CLI.parents[1]))
+        from fleet import native
+
+        child = subprocess.Popen([sys.executable, "-B", "-c", "import sys; sys.stdin.read()"],
+                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                 stderr=subprocess.DEVNULL)
+        events = None
+        try:
+            original = native.identity(child.pid)
+            self.assertTrue(native.confirmed(original))
+            if sys.platform == "darwin":
+                events = select.kqueue()
+                events.control([select.kevent(child.pid, filter=select.KQ_FILTER_PROC,
+                                              flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                              fflags=select.KQ_NOTE_EXIT)], 0, 0)
+            child.stdin.close()
+            if events is not None:
+                exited = events.control(None, 1, 5)
+                self.assertEqual(len(exited), 1, "child exit was not observed")
+                self.assertEqual(exited[0].ident, child.pid)
+                self.assertTrue(exited[0].fflags & select.KQ_NOTE_EXIT)
+            else:
+                os.waitid(os.P_PID, child.pid, os.WEXITED | os.WNOWAIT)
+            zombie = native.identity(child.pid)
+            self.assertTrue(native.verifiable(zombie))
+            self.assertEqual(dict(zombie, alive=True), original)
+            self.assertFalse(zombie["alive"])
+            self.assertFalse(native.confirmed(zombie))
+            self.assertFalse(native.confirmed(original))
+            self.assertEqual(child.wait(timeout=5), 0)
+            self.assertNotEqual(native.identity(child.pid)["birth"], original["birth"])
+        finally:
+            if events is not None:
+                events.close()
+            if not child.stdin.closed:
+                child.stdin.close()
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+
+
+class WriterPreflightTests(unittest.TestCase):
+    def test_authorized_preflight_accepts_sqlite_page_sizes_and_schema_overflow(self):
+        sys.path.insert(0, str(CLI.parents[1]))
+        import sqlite3
+        from fleet.storage import Ledger
+
+        with tempfile.TemporaryDirectory(prefix="writer-pages-", dir=fixture_base()) as directory:
+            for page_size in (512, 4096, 65536):
+                with self.subTest(page_size=page_size):
+                    state = Path(directory) / str(page_size)
+                    with Ledger(state, create=True):
+                        pass
+                    conn = sqlite3.connect(str(state / "state.db"), isolation_level=None)
+                    try:
+                        conn.execute("PRAGMA journal_mode=DELETE")
+                        conn.execute("PRAGMA page_size={}".format(page_size))
+                        conn.execute("VACUUM")
+                        conn.execute("PRAGMA journal_mode=WAL")
+                    finally:
+                        conn.close()
+                    with Ledger(state, create=True) as db:
+                        self.assertEqual(db.authority["uid"], os.getuid())
+                        self.assertEqual(db.execute("PRAGMA page_size").fetchone()[0], page_size)
+
+    def test_unauthorized_wal_rejects_submit_and_recover_without_changes(self):
+        sys.path.insert(0, str(CLI.parents[1]))
+        from fleet.storage import Ledger
+
+        with tempfile.TemporaryDirectory(prefix="writer-preflight-", dir=fixture_base()) as directory:
+            root = Path(directory)
+            seed = root / "seed"
+            with Ledger(seed, create=True):
+                pass
+            # Crash after commit leaves the unauthorized UID only in pending WAL.
+            writer = ("import sqlite3,os,sys; c=sqlite3.connect(sys.argv[1]); "
+                      "c.execute('UPDATE authority SET uid=?',(os.getuid()+1,)); "
+                      "c.commit(); os._exit(0)")
+            subprocess.run([sys.executable, "-B", "-c", writer, str(seed / "state.db")],
+                           check=True, timeout=5)
+
+            def image(state):
+                return {name: hashlib.sha256((state / name).read_bytes()).hexdigest()
+                        if (state / name).exists() else None
+                        for name in ("state.db", "state.db-wal", "state.db-shm")}
+
+            for operation in ("submit", "recover"):
+                with self.subTest(operation=operation):
+                    state = root / operation
+                    state.mkdir(mode=0o700)
+                    for name in ("state.db", "state.db-wal", "state.db-shm"):
+                        shutil.copy2(seed / name, state / name)
+                    for name in ("attempts", "capsules"):
+                        (state / name).mkdir(mode=0o700)
+                    before = image(state)
+                    self.assertTrue(all(before.values()))
+                    self.assertGreater((state / "state.db-wal").stat().st_size, 32)
+                    # The main image still authorizes us; the committed WAL must win.
+                    import sqlite3
+                    conn = sqlite3.connect((state / "state.db").as_uri() + "?immutable=1", uri=True)
+                    try:
+                        self.assertEqual(conn.execute("SELECT uid FROM authority").fetchone()[0], os.getuid())
+                    finally:
+                        conn.close()
+                    args = [operation]
+                    if operation == "submit":
+                        args += ["--", sys.executable, "-c", "raise SystemExit('must not run')"]
+                    result = subprocess.run([sys.executable, "-B", str(CLI), "--state-dir", str(state), *args],
+                                            cwd=root, capture_output=True, text=True, timeout=15)
+                    value = json.loads(result.stdout)
+                    self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+                    self.assertEqual(value["error"]["code"], "operator_unauthorized")
+                    after = image(state)
+                    print("UNAUTHORIZED_WAL", json.dumps({"operation": operation, "before": before,
+                                                          "after": after}), flush=True)
+                    self.assertEqual(after, before)
+
+
 class Admission:
     def __init__(self, state, exclusive, receipt):
         self.state, self.exclusive, self.receipt = state, exclusive, receipt
         self.receipt_lock = threading.Lock()
         self.database_absent_before = not os.path.lexists(state / "state.db")
-        self.job = self.attempt = None
+        self.job = self.attempt = self.capsule = None
         self.refuted, self.response = False, None
     def record(self):
         with self.receipt_lock:
@@ -421,7 +553,7 @@ class Admission:
     def refute_if_unchanged_exclusive(self, result, lock_fd, before, after):
         if (result.returncode != 2 or self.database_absent_before or before != after
                 or "state.db" not in before
-                or json.loads(result.stdout) != {"error": "path_identity_unavailable"}):
+                or json.loads(result.stdout).get("error") != {"code": "path_identity_unavailable", "effects": "not_admitted"}):
             return
         held, current = os.fstat(lock_fd), self.state.stat()
         if (held.st_dev, held.st_ino) != (current.st_dev, current.st_ino):
@@ -437,8 +569,7 @@ class Admission:
             os.close(probe)
 
 
-@unittest.skipUnless(os.name == "posix", "local pilot requires POSIX")
-class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, ReviewR2Cases, unittest.TestCase):
+class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, CorrectionCases, ContentCases, unittest.TestCase):
     def setUp(self):
         self.gates, self.admissions = [], []
         self.admission_lock = threading.Lock()
@@ -461,6 +592,11 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         self.env.pop("FLEET_CLIENT", None)
         self.env.update(HOME=str(self.home), XDG_STATE_HOME=str(self.root / "xdg"),
                         TMPDIR=str(self.root), PYTHONDONTWRITEBYTECODE="1")
+        self.owned_bases = [self.root]
+        self.external_evidence = []
+        self.legacy_admissions = []
+        self.quota_roots = []
+        self.retain_administrative_root = False
         self.setup_complete = True
     def cleanup_incomplete_setup(self):
         if not self.setup_complete: self.cleanup()
@@ -484,10 +620,68 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         if self.diagnostics:
             print("retained fixture diagnostics: " + str(self.root), flush=True)
             return
+        snapshots = []
+        for admission in self.admissions:
+            if admission.job is None:
+                continue
+            result = self.call("status", admission.job, state=admission.state, check=False)
+            self.assertEqual(result.returncode, 0, "public snapshot failed; retained " + str(self.root))
+            snapshots.append(json.loads(result.stdout))
+        retained = self.retain_administrative_root or bool(self.quota_roots) or any(
+            s["observation"]["completion"] != "complete" for s in snapshots)
+        report = self.root.parent / ("evidence-" + self.root.name)
+        report.mkdir(mode=0o700)
+        public_files = []
+        if not retained:
+            for snapshot in snapshots:
+                proof = snapshot["observation"]["evidence"]
+                entries = [*proof["files"], {"path": proof["manifest"], "sha256": proof["root_sha256"]}]
+                for entry in entries:
+                    path = Path(entry["path"])
+                    self.assertTrue(any(base in path.parents for base in self.owned_bases))
+                    before = path.lstat()
+                    self.assertTrue(stat.S_ISREG(before.st_mode))
+                    data = path.read_bytes()
+                    after = path.lstat()
+                    fields = ("st_dev", "st_ino", "st_mode", "st_size", "st_mtime_ns", "st_ctime_ns")
+                    self.assertEqual(tuple(getattr(before, name) for name in fields),
+                                     tuple(getattr(after, name) for name in fields),
+                                     "public evidence changed before retirement")
+                    self.assertEqual(hashlib.sha256(data).hexdigest(), entry["sha256"])
+                    public_files.append({"original_path": str(path), "sha256": entry["sha256"],
+                                         "bytes_hex": data.hex()})
+        counters = []
+        for gate, done in self.gates:
+            path = gate.parent / "counter"
+            if path.exists():
+                counters.append({"path": str(path), "entries": path.read_text().splitlines()})
+        payload = {"test": self.id(), "retained": retained, "root": str(self.root) if retained else None,
+                   "owned_bases": [str(base) for base in self.owned_bases], "snapshots": snapshots,
+                   "external_evidence": self.external_evidence, "public_files": public_files,
+                   "fixture_counters": counters}
+        with (report / "public-snapshots.json").open("x") as output:
+            json.dump(payload, output)
+            output.flush()
+            os.fsync(output.fileno())
+        descriptor = os.open(report, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        descriptor = os.open(report.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        if retained:
+            return
         shutil.rmtree(self.root)
     def guard_admissions(self):
         unresolved = [str(a.state) for a in self.admissions if a.job is None and not a.refuted]
-        if unresolved: self.fail("unattributed admission; retained {}: {}".format(self.root, unresolved))
+        unresolved += [record["state"] for record in self.legacy_admissions if not record["closure_confirmed"]]
+        if unresolved:
+            self.fail("unattributed admission; retained {}: {}".format(self.root, unresolved))
+
     def settle(self):
         for gate, done in self.gates: gate.touch()
         for process in self.processes:
@@ -505,7 +699,7 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
                 if result.returncode != 0:
                     pending.append((job, result.stdout, result.stderr))
                     continue
-                value = json.loads(result.stdout)
+                value = self.projection(json.loads(result.stdout))
                 if (value["job"], value["attempt"]) != (job, admission.attempt):
                     pending.append((job, "public identity mismatch"))
                     continue
@@ -528,7 +722,7 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
                     self.root, pending))
             time.sleep(0.05)
     def admit(self, state):
-        self.assertIn(self.root, state.parents)
+        self.assertTrue(any(base in state.parents for base in self.owned_bases))
         fd, path = tempfile.mkstemp(prefix="admission-", suffix=".json", dir=self.root)
         os.close(fd)
         receipt = Path(path)
@@ -569,21 +763,66 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
                 result.returncode, result.stdout, result.stderr, path))
         if admission is not None:
             if "job" in value: admission.attribute(value)
+            elif (value.get("candidate", {}).get("accepted") is False or
+                  value.get("error", {}).get("effects") == "no_new_admission"):
+                admission.refuted = True
+                admission.record()
             elif refute_if_absent: admission.refute_if_absent(result)
         if check: self.assertEqual(result.returncode, 0, (result.stdout, result.stderr))
         return result
-    def value(self, *args, **kwargs): return json.loads(self.call(*args, **kwargs).stdout)
+    def value(self, *args, **kwargs):
+        return self.projection(json.loads(self.call(*args, **kwargs).stdout))
+
+    def projection(self, value):
+        # Test-only projection of actual versioned JSON; raw output is preserved.
+        if not isinstance(value.get("observation"), dict):
+            if value.get("accepted") is True and value.get("observation") is None:
+                return dict(value, state=value["admission"]["state"])
+            return value
+        result = dict(value, **value["observation"])
+        result.update(exit_code=result["command"]["exit_code"], signal=result["command"]["signal"],
+                      detail=result["command"]["reason"])
+        result["transitions"] = [dict(t, to=t["to_state"], **{"from": t["from_state"]})
+                                 for t in result["transitions"] if t["from_state"] != t["to_state"]]
+        return result
+
+    def capsule(self, job, state=None):
+        path = capsule_path(state or self.state, job)
+        self.assertTrue(path.is_dir())
+        return path
+
+    def capsule_job(self, capsule):
+        sys.path.insert(0, str(CLI.parents[1]))
+        from fleet.storage import Ledger
+        with Ledger(self.state) as db:
+            row = db.execute("SELECT id FROM jobs WHERE capsule=?", (capsule,)).fetchone()
+        return row[0] if row else None
+
     def submit(self, argv, state=None, client=None, env=None):
         options = ["submit"] + (["--client", client] if client is not None else [])
-        response = self.call(*options, "--", *argv, state=state, env=env, check=False)
-        self.assertIn(response.returncode, (0, 3), (response.stdout, response.stderr))
-        value = json.loads(response.stdout)
+        value = self.value(*options, "--", *argv, state=state, env=env)
         self.assertTrue(value["accepted"])
         return value
     def wait(self, job, code=0, state=None):
-        result = self.call("wait", job, "--timeout", "9", state=state, check=False)
+        deadline = time.monotonic() + 9
+        while True:
+            result = self.call("wait", job, "--timeout", "9", state=state, check=False)
+            value = json.loads(result.stdout)
+            observation = value.get("observation", {})
+            # Completion is a conjunction. A genuine terminal/publication window
+            # returns 3 immediately; this baseline helper retries only that window.
+            if (code in (0, 1) and result.returncode == 3 and
+                    observation.get("state") == "finished" and
+                    observation.get("collection", {}).get("state") != "incomplete" and
+                    observation.get("publication", {}).get("state") == "pending" and
+                    time.monotonic() < deadline):
+                self.external_evidence.append({"case": "baseline-wait-publication", "response": value})
+                time.sleep(0.02)
+                continue
+            break
         self.assertEqual(result.returncode, code, (result.stdout, result.stderr))
-        return json.loads(result.stdout)
+        return self.projection(value)
+
     def until(self, predicate):
         deadline = time.monotonic() + 5
         while time.monotonic() < deadline:
@@ -643,13 +882,13 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
     def test_client_precedence_and_default(self):
         env = dict(self.env, FLEET_CLIENT="environment-label")
         first = self.submit([sys.executable, "-c", "pass"], env=env)
-        self.assertEqual(first["client"], "environment-label")
+        self.assertEqual(self.value("status", first["job"])["client"], "environment-label")
         self.wait(first["job"])
         second = self.submit([sys.executable, "-c", "pass"], client="explicit", env=env)
-        self.assertEqual(second["client"], "explicit")
+        self.assertEqual(self.value("status", second["job"])["client"], "explicit")
         self.wait(second["job"])
         third = self.submit([sys.executable, "-c", "pass"])
-        self.assertEqual(third["client"], "{}@{}".format(getpass.getuser(), socket.gethostname()))
+        self.assertEqual(self.value("status", third["job"])["client"], "{}@{}".format(getpass.getuser(), socket.gethostname()))
         self.wait(third["job"])
 
     def test_literal_argv_cwd_stdin_and_logs(self):
@@ -672,7 +911,7 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         missing = self.submit([str(self.root / "no-such-command")])
         result = self.wait(missing["job"], 1)
         self.assertEqual(result["outcome"], "failed")
-        self.assertIn("command spawn failed", result["detail"])
+        self.assertEqual("command_spawn_failed", result["detail"])
         killed = self.submit([sys.executable, "-c", "import os,signal; os.kill(os.getpid(),signal.SIGKILL)"])
         result = self.wait(killed["job"], 3)
         self.assertEqual((result["outcome"], result["signal"]), ("incomplete", signal.SIGKILL))
@@ -703,7 +942,7 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
             control_output.extend((result.stdout, result.stderr))
             value = json.loads(result.stdout)
             responses.append(value)
-            return value
+            return self.projection(value)
 
         script = ("import json, os\n"
                   "print(json.dumps([os.environ['FLEET_TEST_MARK'], os.environ['PATH']]), "
@@ -777,7 +1016,7 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         os.killpg(root_pid, 0)
         next_argv, next_ready, next_gate, _ = self.barrier()
         second = self.submit(next_argv)
-        self.assertEqual(second["state"], "queued")
+        self.assertEqual(self.value("status", second["job"])["state"], "queued")
         queued = self.wait(second["job"], 3)
         self.assertEqual((queued["state"], queued["view"]), ("queued", "uncertain"))
         self.assertFalse(next_ready.exists())
@@ -824,7 +1063,7 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         result = self.call("submit", "--", sys.executable, "-c", "pass", state=public,
                            check=False, refute_if_absent=True)
         self.assertEqual(result.returncode, 2)
-        self.assertIn("private", json.loads(result.stdout)["error"])
+        self.assertEqual("state_directory_not_private", json.loads(result.stdout)["error"]["code"])
         self.assertFalse((public / "state.db").exists())
         self.assertEqual(public.stat().st_mode, mode)
         self.assertEqual(list(public.iterdir()), [])
@@ -865,7 +1104,7 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         stdout, stderr = process.communicate(timeout=3)
         stderr = import_trace.decode(errors="replace") + stderr
         self.assertEqual(process.returncode, 130, (stdout, stderr))
-        self.assertIn("interrupted", json.loads(stdout)["error"])
+        self.assertEqual("client_interrupted", json.loads(stdout)["error"]["code"])
         self.assertEqual(self.value("status", job)["transitions"], before)
         gate.touch()
         self.assertEqual(self.wait(job)["outcome"], "succeeded")
@@ -897,6 +1136,9 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
 
     def test_lost_supervisor_retains_slot_without_duplicate(self):
         argv, ready, gate, done = self.barrier()
+        # Only this command loses its pipe reader by design. Its own completion
+        # marker must not depend on stdout; all other BARRIER users keep 'ok'.
+        argv[3] = BARRIER.replace("print('ok', flush=True)\n", "")
         job = self.submit(argv)["job"]
         self.running(job, ready)
         current = self.value("status", job)
@@ -905,10 +1147,8 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         self.assertTrue(uncertain)
         self.assertEqual(self.wait(job, 3)["state"], "running")
         next_argv, next_ready, next_gate, next_done = self.barrier()
-        response = self.call("submit", "--", *next_argv, check=False)
-        self.assertEqual(response.returncode, 3, response.stdout)
-        queued = json.loads(response.stdout)
-        self.assertEqual(queued["state"], "queued")
+        queued = self.submit(next_argv)
+        self.assertEqual(self.value("status", queued["job"])["state"], "queued")
         self.assertEqual(self.wait(queued["job"], 3)["view"], "uncertain")
         gate.touch()
         self.until(done.exists)
@@ -917,23 +1157,56 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         self.assertFalse(next_ready.exists())
         self.assertEqual([t["to"] for t in current["transitions"]], ["queued"])
 
-    def test_supervisor_launch_failure_is_not_accepted(self):
+    def test_supervisor_launch_failure_preserves_historical_admission(self):
         first = self.submit([sys.executable, "-c", "pass"])
         self.wait(first["job"])
         log = self.state / "supervisor.log"
         log.unlink()
         log.mkdir()
         result = self.call("submit", "--", sys.executable, "-c", "print('must not run')", check=False)
-        self.assertEqual(result.returncode, 1)
+        self.assertEqual(result.returncode, 0)
         value = json.loads(result.stdout)
-        self.assertFalse(value["accepted"])
-        self.assertEqual(value["state"], "finished")
+        self.assertTrue(value["accepted"])
+        self.assertIsNone(value["observation"])
         final = self.wait(value["job"], 1)
         self.assertEqual(final["outcome"], "failed")
-        self.assertIn("supervisor spawn failed", final["detail"])
+        self.assertEqual("supervisor_spawn_failed", final["detail"])
         log.rmdir()
         next_job = self.submit([sys.executable, "-c", "pass"])
         self.wait(next_job["job"])
+
+    def test_recover_claim_reports_retained_terminal_work_at_observed_revision(self):
+        submitted = self.value("submit", "--enqueue-only", "--", sys.executable, "-c",
+                               "raise SystemExit('must not run')")
+        log = self.state / "supervisor.log"
+        log.mkdir(mode=0o700)  # Opening the supervisor log prevents Popen.
+        bundle = self.state / "attempts" / submitted["attempt"] / "bundle"
+        bundle.write_bytes(b"owned obstruction")  # Sealing cannot publish evidence.
+        try:
+            recovered = json.loads(self.call("recover", check=False).stdout)
+            current = json.loads(self.call("status", submitted["job"]).stdout)["observation"]
+            self.assertEqual(current["state"], "finished")
+            self.assertEqual(current["command"]["kind"], "never_created")
+            self.assertIsNone(current["supervisor"])
+            self.assertIsNone(current["child_pid"])
+            self.assertEqual(current["reservation"]["disposition"], "retained")
+            self.assertEqual(current["work_remaining"], ["release", "operator_decision"])
+            self.assertFalse(recovered["recovery_complete"])
+            self.assertEqual(len(recovered["dispatch_claimed"]), 1)
+            self.assertEqual(len(recovered["finished_confirmed"]), 1)
+            print("RECOVER_REMAINING", json.dumps({"dispatch_claimed": recovered["dispatch_claimed"],
+                                                  "finished_confirmed": recovered["finished_confirmed"]}), flush=True)
+            for entry in (recovered["dispatch_claimed"][0], recovered["finished_confirmed"][0]):
+                self.assertEqual(entry["job"], submitted["job"])
+                self.assertEqual(entry["attempt"], submitted["attempt"])
+                self.assertEqual(entry["generation"], current["reservation"]["generation"])
+                self.assertEqual(entry["disposition"], "retained")
+                self.assertEqual(entry["work_remaining"], current["work_remaining"])
+                self.assertEqual(entry["decision_revision"], current["revision"])
+            self.assertEqual(bundle.read_bytes(), b"owned obstruction")
+        finally:
+            bundle.unlink()
+            log.rmdir()
 
     def test_two_private_states_can_run_together(self):
         other = self.root / "other-state"
@@ -992,7 +1265,7 @@ class FleetCLI(ContentCases, CorrectionCases, ReaderTempCases, IntegralCases, Re
         refused = self.call("submit", "--", sys.executable, "-c", "pass",
                             state=reserved, check=False, refute_if_absent=True)
         self.assertEqual(refused.returncode, 2)
-        self.assertIn("reserved", json.loads(refused.stdout)["error"])
+        self.assertEqual("reserved_state_directory", json.loads(refused.stdout)["error"]["code"])
         self.assertFalse(reserved.exists())
 
 
