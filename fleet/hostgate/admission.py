@@ -83,7 +83,11 @@ class Hostgate:
             return projection
 
         try:
-            return apply(view, original, project)
+            result = apply(view, original, project)
+            # Detectar datos no serializables antes de salir de la guarda:
+            # el rollback del store perdería también la duda ya observada.
+            canonical(view)
+            return result
         except ForeignOwner:
             raise
         except Exception as exc:
