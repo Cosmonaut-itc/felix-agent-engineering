@@ -1,6 +1,5 @@
 """IPC privado: procesos Darwin reales; perfiles/cierres sólo de fixture."""
 import copy
-import hashlib
 import json
 import os
 import select
@@ -15,6 +14,7 @@ from unittest.mock import patch
 from hostgate.protocol import canonical
 from hostgate.tests.test_admin import Fixture, fixture_policy
 from hostgate.tests.support.world import World, request
+from hostgate.tests.support.durable import durable_inventory
 
 
 def query(op='query'):
@@ -120,8 +120,7 @@ class IPCHarness(unittest.TestCase):
         return r, s, call
 
     def inventory(self):
-        return {p.name: (p.stat().st_size, p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
-                for p in (self.root / 'A').glob('*') if not p.name.endswith('-shm')}
+        return durable_inventory((self.root / 'A').glob('*'), metadata=True)
 
 
 class IPC(IPCHarness):
@@ -214,7 +213,7 @@ class IPC(IPCHarness):
         p = self.spawn('query'); out, err = p.communicate(timeout=20)
         self.assertEqual(p.returncode, 0, err); self.assertEqual(json.loads(out), expected)
         print('P14 bytes', len(out), 'sidecars', sorted(x.name for x in (self.root / 'A').iterdir()), flush=True)
-        self.assertEqual(self.inventory(), before, 'SEN-5625: consulta alteró ledger/WAL durable')
+        self.assertEqual(self.inventory(), before, 'consulta alteró ledger/WAL durable')
 
     def test_input_limits_and_no_ledger_changes(self):
         from hostgate.wire import send_json, receive_response
