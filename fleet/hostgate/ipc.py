@@ -77,7 +77,7 @@ class Sessions:
     def close_connection(self, stream):
         connection = self.connections.pop(stream, None)
         for key, offer in list(self.offers.items()):
-            if offer['requester'] is connection or offer.get('supervisor') is connection: self.offers.pop(key)
+            if connection is not None and (offer['requester'] is connection or offer.get('supervisor') is connection): self.offers.pop(key)
         stream.close()
         # alive retira el watch por descriptor cerrado, conservando el binding muerto.
         if connection: self.peers.alive(stream, connection['peer'])
