@@ -5,12 +5,16 @@ implementación de sombra, simulación con harness y aceptación futura. No acre
 activación, integración de consumidores, aislamiento hostil ni corte real del runner.
 Rutas relativas a `fleet/hostgate/`.
 
-SEN-3952 amplía la guarda de SEN-3900 a la serialización de la vista, todavía en sombra:
+SEN-3952 amplía la guarda de SEN-3900 a la serialización de la vista, el resultado/audit
+y el contexto que se escribirá, todavía en sombra. El store usa los textos ya preparados:
 
 | Garantía | Prueba en `tests/test_provider_failure.py` / alcance |
 | --- | --- |
 | La duda observada sobre A y su audit sobreviven al valor no serializable de B; C sigue rechazado al recuperarse A. Se retienen todos los débitos/exclusivos, sin cambios parciales ni `operations(B)`; el id puede reintentarse. | `ProviderFailure.test_sen3952_unserializable_provider_keeps_doubt_after_owner_recovers`: `nan`/`inf` del reloj y `bytes` del boot, tras una proyección válida, por `reservar` y `prepare` (6 subcasos). Exit 6 público; `prepare` relanza la excepción de serialización después del audit. |
 | Confirmación fallida o ACK perdido tienen prioridad sobre el fallo del proveedor; no se consume el id de B. | `ProviderFailure.test_sen3952_unserializable_provider_confirmation_failure_is_uncertain`: mismos valores/rutas, con cortes antes y después del commit (12 subcasos). Exit 3 público; `prepare` propaga el fallo de persistencia. El corte posterior conserva duda/audit durables. |
+| R1-W1: el contexto inválido conserva duda, audit y débitos/exclusivos; C sigue rechazado tras recuperarse A. | `ProviderFailure.test_sen3952_r1_context_keeps_doubt_after_owner_recovers`: anchor con `nan`/`inf`/`bytes`, por `latido`, `soltar`, `dudosa`, `reservar` y `prepare` (15 subcasos), con reintento del id de B. |
+| Un resultado inválido tampoco pierde la duda, incluso sin operación registrada o al rechazar un dueño ajeno. | `ProviderFailure.test_sen3952_r1_result_keeps_doubt_after_owner_recovers`: los mismos valores sólo en el resultado, por tres mutaciones, conflicto de preparación y rechazo ajeno (15 subcasos). Se serializa el resultado real, después de quitar el envoltorio interno. |
+| Los fallos de persistencia conservan su prioridad ante contexto o resultado inválidos. | `ProviderFailure.test_sen3952_r1_confirmation_failure_is_uncertain`: 48 subcasos, antes/después del commit; exit 3 público y excepción de persistencia en `prepare`. |
 
 | Línea S del sketch | Archivo | Prueba / límite |
 | --- | --- | --- |

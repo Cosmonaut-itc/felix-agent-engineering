@@ -8,7 +8,7 @@ from .model import AuthContext, budget_view, effective, identity_json
 from .protocol import SCHEMA, canonical, digest, reason, reply, validate
 from .salud import lector_desk, lector_mini
 from .scope import closure_reasons
-from .store import Busy, ForeignOwner, ShadowStore, StoreError, UnrecordedResult, WriteUncertain
+from .store import Busy, ForeignOwner, SerializedMutation, ShadowStore, StoreError, UnrecordedResult, WriteUncertain
 
 THRESHOLDS = frozenset(('cpuRootPct', 'commitRatio', 'eLatencyMs', 'C: libre', 'E: libre',
                        'memLevelPct', 'memPressure', 'data libre'))
@@ -73,7 +73,7 @@ class Hostgate:
         self._copy_projection(view, projection)
         return projection
 
-    def _guarded_apply(self, op_id, view, original, apply, failures=None):
+    def _guarded_apply(self, op_id, view, original, apply, context, failures=None):
         conservative = copy.deepcopy(view)
 
         def project(candidate):
@@ -83,21 +83,22 @@ class Hostgate:
             return projection
 
         try:
-            result = apply(view, original, project)
-            # Detectar datos no serializables antes de salir de la guarda:
-            # el rollback del store perdería también la duda ya observada.
-            canonical(view)
-            return result
-        except ForeignOwner:
-            raise
+            try:
+                result = apply(view, original, project)
+            except ForeignOwner as exc:
+                result = exc
+            # Serializar exactamente lo que escribirá el store, incluidos rechazos
+            # sin operación y su audit. Fuera de esta guarda sólo queda la E/S.
+            return SerializedMutation.build(view, result, context, original)
         except Exception as exc:
             # El fallo conserva observaciones, sin confirmar cambios parciales de la acción.
             view.clear()
             view.update(conservative)
             if failures is not None:
                 failures.append(exc)
-            return UnrecordedResult(self._reply(
+            result = UnrecordedResult(self._reply(
                 op_id, [reason('store-unavailable', 'proveedor interno no disponible')], exit_code=6))
+            return SerializedMutation.build(view, result, context, original)
 
     def _health(self):
         try:
@@ -173,10 +174,11 @@ class Hostgate:
         if not self._authorized(auth, 'reservar'): raise self._foreign_owner(request['operationId'])
         op_id = request['operationId']
         failures = []
+        context = self._auth_context(auth)
         def apply(view, original, project):
             project(view)
             if original:
-                if original[2] != canonical(self._auth_context(auth)):
+                if original[2] != canonical(context):
                     raise self._foreign_owner(op_id)
                 if original[0] != digest(request):
                     failures.append(ValueError('operation-conflict'))
@@ -187,8 +189,8 @@ class Hostgate:
             view['pending'].append(pending)
             return {'pendingId': pending['id']}
         def guarded_apply(view, original):
-            return self._guarded_apply(op_id, view, original, apply, failures)
-        result = self.store.mutate(auth.principal + '\x00preparation', op_id, digest(request), guarded_apply, self.world, self._auth_context(auth))
+            return self._guarded_apply(op_id, view, original, apply, context, failures)
+        result = self.store.mutate(auth.principal + '\x00preparation', op_id, digest(request), guarded_apply, self.world, context)
         # El harness espera la excepción original, pero sólo tras confirmar la observación.
         if failures:
             raise failures[0]
@@ -238,7 +240,7 @@ class Hostgate:
         def apply(view, original, project):
             projection = project(view)
             if original:
-                if original[2] != canonical(self._auth_context(auth)):
+                if original[2] != canonical(context):
                     raise self._foreign_owner(op_id)
                 if original[0] != operation_digest:
                     return self._reply(op_id, [reason('operation-conflict', 'operationId ya tiene otro payload')], exit_code=2)
@@ -262,7 +264,7 @@ class Hostgate:
                         op_id, [reason('operation-conflict', 'operationId reservado por preparacion')], exit_code=2))
             return action(view, project)
         def guarded_apply(view, original):
-            return self._guarded_apply(op_id, view, original, apply)
+            return self._guarded_apply(op_id, view, original, apply, context)
         try:
             if not self._authorized(auth, request['operation']):
                 return self._reply(op_id, [reason('identity-unverifiable', 'endpoint/rol no autorizado')], exit_code=5)

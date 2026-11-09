@@ -92,11 +92,15 @@ persistencia si la confirmación falla.
 Un conflicto de payload en `prepare` confirma la proyección y el audit con
 `operation-conflict`, exit 2, y después relanza `ValueError('operation-conflict')`;
 conserva la operación original sin crear otra preparación.
-La serialización de la vista se comprueba dentro de la guarda conservadora
+La vista, el resultado/audit y el contexto de una operación nueva se serializan
+dentro de la guarda conservadora; el store escribe esos mismos textos JSON
+sin volver a serializar. El contexto de autenticación se captura una sola vez
+por llamada, también para comparar un replay
 ([SEN-3952](https://linear.app/mdr/issue/SEN-3952)): valores de proveedor como
 `nan`, `inf` o `bytes` conservan la duda y el audit, sin normalizar esos valores
 ni aplicar la operación fallida. Rigen exit 6 y exit 3, y el contrato de excepción
-de `prepare`, descritos arriba.
+de `prepare`, descritos arriba. La protección incluye `reservar`, `prepare`,
+`latido`, `dudosa` y `soltar`, y resultados sin operación registrada o de rechazo ajeno.
 Un fallo al confirmar un rechazo ajeno sigue la tabla de errores
 del almacén; nunca se informa exit 5 con esa escritura en duda. Un rechazo histórico no se vuelve admisible al mejorar
 salud; un cambio de payload da `operation-conflict`. Fencing usa la terna completa.
