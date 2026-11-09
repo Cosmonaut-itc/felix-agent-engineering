@@ -430,12 +430,14 @@ def reconcile(db, result):
     claims = db.execute("SELECT attempt,generation,revision FROM transitions "
                         "WHERE cause='claim' AND revision>? ORDER BY seq", (dispatch_revision,)).fetchall()
     for claim_record in claims:
-        row = attempt_row(db, claim_record["attempt"])
-        result["dispatch_claimed"].append({"job": row["job"], "attempt": row["id"],
-                                           "generation": claim_record["generation"], "reason": "claim",
-                                           "disposition": row["disposition"],
-                                           "work_remaining": ["execution", "closure"] if row["state"] != "finished" else [],
-                                           "decision_revision": claim_record["revision"]})
+        with db.transaction():
+            row = attempt_row(db, claim_record["attempt"])
+            view = observe(db, row)
+            result["dispatch_claimed"].append({"job": row["job"], "attempt": row["id"],
+                                               "generation": row["generation"], "reason": "claim",
+                                               "disposition": row["disposition"],
+                                               "work_remaining": view["work_remaining"],
+                                               "decision_revision": view["revision"]})
     for item in rows:
         with db.transaction():
             row = attempt_row(db, item[0])

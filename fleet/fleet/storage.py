@@ -127,8 +127,8 @@ def writer_header(state):
     The directory EX lock excludes Fleet writers/checkpoints. Validate WAL
     checksums/salts and use only committed frames, including a fresh ledger
     whose schema still lives entirely in WAL. SQLite validates the actual
-    schema and authority again after opening, before any transaction or pragma
-    that changes journal mode.
+    schema and authority again after opening. Authority is checked from the
+    committed pages first, without a disk copy or opening SQLite on the source.
     """
     with inputs.directory(state) as fd:
         with inputs.open_file(fd, "state.db") as source:
@@ -138,6 +138,7 @@ def writer_header(state):
             with inputs.open_file(fd, "state.db-wal") as source:
                 wal, _ = inputs.read_stable(source, limit=MAX_DATABASE)
     header = main[:100]
+    committed, pending = {}, {}
     if wal:
         if len(wal) < 32:
             raise Fault("state_unreadable")
@@ -172,14 +173,129 @@ def writer_header(state):
             number, commit = struct.unpack(">II", frame[:8])
             if number == 0:
                 raise Fault("state_unreadable")
+            pending[number] = page
             if number == 1:
                 candidate = page[:100]
             if commit:
                 header = candidate
+                committed.update(pending)
+                pending.clear()
     if (len(header) < 100 or header[:16] != b"SQLite format 3\x00"
             or int.from_bytes(header[68:72], "big") != APP_ID
             or int.from_bytes(header[60:64], "big") != SCHEMA_VERSION):
         raise Fault("unsupported_schema")
+    writer_authority(main, committed, header)
+
+
+def writer_authority(main, committed, header):
+    """Read only schema/authority b-trees from the validated committed image.
+
+    A writer must reject another UID before SQLite can recover/checkpoint WAL.
+    Do not require a full temporary file: admitted writes must still work when
+    RLIMIT_FSIZE prevents the reader snapshot. SQLite revalidates after preflight.
+    No overflow payload is needed for Fleet's schema and singleton authority;
+    unsupported/corrupt layouts fail closed before opening the original.
+    """
+    page_size = int.from_bytes(header[16:18], "big")
+    if page_size == 1:
+        page_size = 65536
+    count = int.from_bytes(header[28:32], "big")
+    encoding = {1: "utf-8", 2: "utf-16le", 3: "utf-16be"}.get(
+        int.from_bytes(header[56:60], "big"))
+    if (page_size < 512 or page_size > 65536 or page_size & (page_size - 1)
+            or not encoding or not 0 < count <= MAX_DATABASE // page_size):
+        raise Fault("state_unreadable")
+
+    def page(number):
+        if not 0 < number <= count:
+            raise ValueError("invalid page")
+        data = committed.get(number, main[(number - 1) * page_size:number * page_size])
+        if len(data) != page_size:
+            raise ValueError("truncated page")
+        return data
+
+    def varint(data, offset):
+        value = 0
+        for index in range(9):
+            byte = data[offset]
+            offset += 1
+            value = (value << (8 if index == 8 else 7)) | (byte if index == 8 else byte & 127)
+            if index == 8 or byte < 128:
+                return value, offset
+        raise ValueError("invalid varint")
+
+    def records(root):
+        todo, seen = [root], set()
+        while todo:
+            number = todo.pop()
+            if number in seen:
+                raise ValueError("cyclic b-tree")
+            seen.add(number)
+            data = page(number)
+            offset = 100 if number == 1 else 0
+            kind, cells = data[offset], int.from_bytes(data[offset + 3:offset + 5], "big")
+            if kind not in (5, 13):
+                raise ValueError("not a table b-tree")
+            pointers = offset + (12 if kind == 5 else 8)
+            if pointers + 2 * cells > page_size:
+                raise ValueError("invalid cell count")
+            if kind == 5:
+                todo.append(int.from_bytes(data[offset + 8:offset + 12], "big"))
+            for index in range(cells):
+                start = int.from_bytes(data[pointers + 2 * index:pointers + 2 * index + 2], "big")
+                if start < pointers + 2 * cells or start >= page_size:
+                    raise ValueError("invalid cell")
+                if kind == 5:
+                    todo.append(int.from_bytes(data[start:start + 4], "big"))
+                    continue
+                size, start = varint(data, start)
+                rowid, start = varint(data, start)
+                if size > page_size - header[20] - 35 or start + size > page_size:
+                    raise ValueError("unsupported overflowing preflight record")
+                payload = data[start:start + size]
+                end, cursor = varint(payload, 0)
+                types = []
+                while cursor < end:
+                    serial, cursor = varint(payload, cursor)
+                    types.append(serial)
+                if cursor != end:
+                    raise ValueError("invalid record header")
+                values = []
+                for serial in types:
+                    width = ((0, 1, 2, 3, 4, 6, 8, 8, 0, 0)[serial] if serial < 10
+                             else (serial - 12) // 2)
+                    if width < 0 or cursor + width > len(payload):
+                        raise ValueError("invalid record field")
+                    field = payload[cursor:cursor + width]
+                    cursor += width
+                    if serial == 0:
+                        value = None
+                    elif 1 <= serial <= 6:
+                        value = int.from_bytes(field, "big", signed=True)
+                    elif serial in (8, 9):
+                        value = serial - 8
+                    elif serial >= 12:
+                        value = field.decode(encoding) if serial % 2 else field
+                    else:
+                        raise ValueError("unsupported preflight field")
+                    values.append(value)
+                if cursor != len(payload):
+                    raise ValueError("invalid record size")
+                yield rowid, values
+
+    try:
+        roots = [values[3] for _, values in records(1)
+                 if len(values) == 5 and values[:3] == ["table", "authority", "authority"]]
+        if len(roots) != 1 or type(roots[0]) is not int:
+            raise ValueError("missing authority table")
+        authority = list(records(roots[0]))
+        if (len(authority) != 1 or authority[0][0] != 1 or len(authority[0][1]) != 4
+                or type(authority[0][1][2]) is not int or authority[0][1][2] != os.getuid()):
+            raise Fault("operator_unauthorized")
+    except (IndexError, UnicodeError, ValueError, TypeError) as exc:
+        if isinstance(exc, Fault):
+            raise
+        raise Fault("state_unreadable") from None
 
 
 def compatible(conn):
