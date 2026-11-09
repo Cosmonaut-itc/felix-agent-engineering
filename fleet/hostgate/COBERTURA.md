@@ -297,3 +297,26 @@ Suite verde no equivale a aceptación técnica de Fleet ni activación. Siguen F
 ABI/IPC, supervisor, perfiles reales, consumidor U1, corte de run.sh/mini.lock,
 DefaultShell, SEN-3853, recuperación/reconciliación explícitas y medición del coste
 con historial largo. A-M1 de Desktop ya está resuelto por la adopción autorizada.
+
+SEN-3822 · corte 2b (2026-11-09), `tests/test_darwin_peer.py`:
+
+| Diseño | Evidencia cubierta / límite |
+| --- | --- |
+| P07/P08 | Fuentes individuales divergentes, efectivos distintos de reales, errores y diez huecos en cada una de tres capturas; registro/reto/dispatch y PID con inicio/uniqueid/pidversion distinto. La misma implementación sirve a H←R, H←S y cliente←H. Barreras deterministas, sin PID wrap ni reboot real. |
+| P09 | Conexiones propias después de exec, reto simétrico (entrada válida de 64 KiB), NOTE_EXIT, EOF y escritor heredado sin adopción del peer autenticado; hijos reapeados. EOF con dueño vivo también cierra el watch. |
+| P13 / D1-W2 | Muestra generada por el productor real con sysctls fixture, lector Mini real y `Hostgate._health`; otro boot fresco, cada hueco del bracket UUID, boottime alterado sin UUID y fallos de lectura. Reserva previa conserva demanda/exclusivos y queda dudosa al cambiar UUID. |
+
+R1-W1: `Health.test_observed_component_latches_before_following_failure` combina
+UUID/boottime cambiado y fallo posterior en ambos extremos; restaura las fuentes
+y exige salud cerrada con lector real e identidad cerrada si cambió UUID.
+
+La comparación administrativa hardware UUID corresponde a 2a; saludo con
+serviceUid/host/store/revisión, pairing, bindings de reservas y matriz IPC integrada
+pertenecen a 2c. No se atribuye un ataque aceptado a main, que no tiene endpoint.
+
+Ejecución Mini sobre `79bd8fcb7b86249b0a903260a6dc0dbd1bb14020`: dirigida
+`20261109-130330-a263f5`, 17/17 por stack y comparación semántica de la nueva
+representación frente a main. Suite única `20261109-130502-da97bc`: Apple 3.9.6,
+227/227 (rc 0); Python 3.14.7, 226/227 (rc 1), sólo
+`Storage.test_queries_never_mutate_sqlite_or_wal` por SEN-5625; cero errores/omitidas.
+El commit posterior sólo registra esta evidencia; no se afirma ejecutado.

@@ -358,3 +358,22 @@ Suite verde no equivale a aceptación técnica de Fleet ni activación. Siguen F
 ABI/IPC, supervisor, perfiles reales, consumidor U1, corte de run.sh/mini.lock,
 DefaultShell, SEN-3853, recuperación/reconciliación explícitas y medición del coste
 con historial largo. A-M1 de Desktop ya está resuelto por la adopción autorizada.
+
+SEN-3822, corte 2b: `darwin_peer.DarwinPeers` añade observación local optativa,
+con `getpeereid`, audit token, PID/nacimiento/uniqueid/pidversion y bootsession UUID.
+`authenticate` realiza tres capturas, registro confirmado de NOTE_EXIT y reto
+simétrico fresco de 256 bits (frames privados de hasta 64 KiB; deadline total 5 s).
+`alive` exige el objeto de socket original, recaptura y comprueba salida/EOF;
+`verify` entiende exclusivamente el token extendido de cuatro enteros. El llamador
+posee los sockets; `close` cierra los watches. No se cablea al CLI ni al runtime.
+El supervisor debe conectar personalmente después de exec: Darwin puede actualizar
+last_pid al escribir por un fd heredado; una identidad ya autenticada no se adopta
+como otro escritor. No se acredita aislamiento ante transferencia hostil del fd.
+
+`DarwinHealth` fija UUID/boottime y rodea cada lectura única de snapshot con ambas
+observaciones. Produce `snapshotHost/fecha-UTC` por aritmética entera para el lector
+Mini actual; cada cambio se enclava antes de la siguiente operación que pueda fallar
+y cierra salud hasta reinicio, sin aprender el boot del snapshot.
+La primitiva hardware UUID/configuración/ancla/lease pertenece a 2a. Pairing,
+saludo de autoridad, revisión/ACL y servicio sombra quedan para 2c. No hay RPC de
+reservas, servicio instalado, permisos efectivos ni cambios al productor/lector.
