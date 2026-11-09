@@ -47,10 +47,11 @@ Estas condiciones deben cumplirse juntas:
 
 - La unidad cumple su condición de terminado. En un acumulador, todos los
   tickets están integrados y existe la review final del conjunto.
-- **APTO.** Todos los revisores exigidos por **Revisión** dieron APTO para
-  el head actual y la base evaluada. En alto riesgo son A y B. El veto del
-  orquestador deja cero critical y cero warning abiertos. Los nits sin
-  aplicar permiten APTO. Un APTO condicionado a cambios no basta.
+- **APTO.** La última ronda de **Revisión** dio APTO para el head actual y
+  la base evaluada, o ese APTO sigue vigente por el paso 3. En una ronda
+  completa lo dan todos los revisores del nivel, que en alto riesgo son A y
+  B. En una ronda delta lo da su revisor. El veto del orquestador deja cero
+  critical y cero warning abiertos. Un APTO condicionado a cambios no basta.
 - **Verde.** La **Verificación** y los gates del repositorio pasaron sobre
   ese head. Todos los checks exigidos terminaron con éxito, sin pendientes
   ni gates omitidos. Babysit confirma merge-ready en el forge activo, sin
@@ -86,15 +87,21 @@ restantes y la separación entre propietario, verificador y stacker.
    Si hace falta rebase, lo ejecuta el propietario de la topología, fuera
    de Babysit. Si exige un tercer rebase desde merge prep, detén ese PR y
    avisa para secuenciar el trabajo que colisiona.
-3. **Renovar APTO.** Cualquier cambio de head o de rama destino exige
-   checks y APTO nuevos. La review puede centrarse en el delta con la
-   evidencia anterior, pero todos los revisores del nivel vigente reciben
-   el diff completo y emiten su veredicto sobre el head nuevo. Cuenta como
-   ronda del mismo cambio, con el límite de **Rondas**. Un patch-id idéntico
-   puede conservar pruebas aplicables según Shipping 3, pero no sustituye
-   ese APTO. Si sólo avanza el SHA base, documenta la aplicabilidad de la
-   review y las pruebas del paso 2. Ante duda, renueva ambos. Un veredicto
-   de **Verificado** sobrevive a un head nuevo sólo según Shipping 3.
+3. **Renovar APTO.** Un head nuevo o una rama destino que avanzó exigen
+   checks nuevos. Para saber si el APTO sigue vigente, corre desde el
+   checkout `scripts/apto-vigente <rama destino> <head revisado> <head nuevo>`
+   de esta skill y sigue su primera línea:
+   - `APTO vigente`: el head nuevo es sólo la mezcla sin conflictos del head
+     revisado con la rama destino, y esa rama no cambió archivos del parche.
+     El APTO sigue vigente sin ronda nueva. Guarda esa línea con la prueba
+     del paso 2.
+   - `Ronda delta`: la mezcla es exacta, pero la rama destino cambió los
+     archivos del parche que lista. Corre una ronda delta sobre esa
+     interacción.
+   - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
+
+   Cada ronda cuenta para el límite de **Rondas**. Un veredicto de
+   **Verificado** sobrevive a un head nuevo sólo según Shipping 3.
 4. **Merge protegido.** Sigue Shipping 4 y su referencia `merge-safety.md`,
    con inspección y cancelación de solicitudes pendientes antes de cambiar
    topología. Mergea un PR a la vez, de abajo arriba. En GitHub usa

@@ -348,3 +348,19 @@ TMPDIR/cache dentro de la copia y acorta la raíz temporal para los sockets nati
 Darwin. Evidencia rojo/verde por stack en el `evidence-2/report.md` del encargo.
 La campaña integrada de autoridad y fallos sigue en **2c-II**; no se ejecuta aquí
 la suite completa ni se habilitan cargas, Fleet efectivo o la Mini.
+
+SEN-3822, **2c-II**, campaña por el endpoint y cliente productivos:
+
+| Caso | Aserción nueva |
+| --- | --- |
+| CX-2, `Progress` | Entrada parcial, lector saturado con historial real y reto incompleto, cada uno detenido >=15 s; TTL=10 s, latidos <2 s, estado reserved, secuencia creciente, dueño/key/binding/debito/exclusivo conservados. Control sin Q y después del cierre; vencimiento real conserva duda. |
+| Nativo, `Campaign` | H de R, H de S y cliente de H: fallos de una lectura, diez huecos por captura, tres capturas, registro/reto/dispatch y discrepancias entre fuentes. Cada negativo tiene control positivo, ledger/operations/audit sin cambios. Los huecos inyectan fallo de la siguiente lectura; no acreditan PID wrap ni reboot real. |
+| Commit/canal | Cortes before_write/before_commit/after_commit y socket cortado después de DATA; replay original con un débito, outcome_unknown sin mapping parcial, canal nuevo del mismo PID y reinicio sin adopción. Fallo nativo durante revalidación no concede; cambio tras grant retiene. |
+| Framing | END duplicado/tráfico sobrante no satisface otra llamada; JSON inválido/duplicado/no finito, contador extremo/overflow, ERROR, timeout y ENOSPC de escritura del spool cierran sin mapping. UTF-8 real y entradas de 65.535/65.536/65.537 bytes. |
+| Ancla/ACL/P16 | B válido y B con storeId repetido rechazan sin cambiar inventario; reducción de A conserva key/exclusivos/débito y disponible negativo. UID/rol declarados y handoff alterado rechazan; cambios al segundo reservar conservan SQL operations/audit. |
+
+Las seams de fallo son privadas del harness: ni disco lleno físico ni cuentas
+adicionales, root, instalación, cargas o desk. Se conservan las regresiones de
+pairing/replay/segunda instancia y vecinas de persistencia/contrato seleccionadas;
+repetir 2b no se cuenta como evidencia nueva integrada. La suite completa queda
+para el orquestador sobre el head con APTO. SEN-5625 sigue declarado.
