@@ -372,7 +372,8 @@ como otro escritor. No se acredita aislamiento ante transferencia hostil del fd.
 
 `DarwinHealth` fija UUID/boottime y rodea cada lectura única de snapshot con ambas
 observaciones. Produce `snapshotHost/fecha-UTC` por aritmética entera para el lector
-Mini actual; cambios cierran salud hasta reinicio, sin aprender el boot del snapshot.
+Mini actual; cada cambio se enclava antes de la siguiente operación que pueda fallar
+y cierra salud hasta reinicio, sin aprender el boot del snapshot.
 La primitiva hardware UUID/configuración/ancla/lease pertenece a 2a. Pairing,
 saludo de autoridad, revisión/ACL y servicio sombra quedan para 2c. No hay RPC de
 reservas, servicio instalado, permisos efectivos ni cambios al productor/lector.

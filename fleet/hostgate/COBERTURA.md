@@ -306,6 +306,10 @@ SEN-3822 · corte 2b (2026-11-09), `tests/test_darwin_peer.py`:
 | P09 | Conexiones propias después de exec, reto simétrico (entrada válida de 64 KiB), NOTE_EXIT, EOF y escritor heredado sin adopción del peer autenticado; hijos reapeados. EOF con dueño vivo también cierra el watch. |
 | P13 / D1-W2 | Muestra generada por el productor real con sysctls fixture, lector Mini real y `Hostgate._health`; otro boot fresco, cada hueco del bracket UUID, boottime alterado sin UUID y fallos de lectura. Reserva previa conserva demanda/exclusivos y queda dudosa al cambiar UUID. |
 
+R1-W1: `Health.test_observed_component_latches_before_following_failure` combina
+UUID/boottime cambiado y fallo posterior en ambos extremos; restaura las fuentes
+y exige salud cerrada con lector real e identidad cerrada si cambió UUID.
+
 La comparación administrativa hardware UUID corresponde a 2a; saludo con
 serviceUid/host/store/revisión, pairing, bindings de reservas y matriz IPC integrada
 pertenecen a 2c. No se atribuye un ataque aceptado a main, que no tiene endpoint.

@@ -285,7 +285,10 @@ class DarwinHealth:
             before = self.peers.boot(), self.peers._native.boottime()
             self._invalid = self._invalid or before != self._pair
             sample = strict_json(self.path.read_bytes().decode('utf-8'))
-            after_time, after_uuid = self.peers._native.boottime(), self.peers.boot()
+            after_time = self.peers._native.boottime()
+            # Enclavar la observación antes de que la siguiente lectura pueda fallar.
+            self._invalid = self._invalid or after_time != self._pair[1]
+            after_uuid = self.peers.boot()
             if before != self._pair or (after_uuid, after_time) != self._pair:
                 self._invalid = True
             if self._invalid: raise PeerError('par UUID/boottime cambió')
