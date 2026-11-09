@@ -445,6 +445,60 @@ class NativeIdentityTests(unittest.TestCase):
             child.wait(timeout=5)
 
 
+class WriterPreflightTests(unittest.TestCase):
+    def test_unauthorized_wal_rejects_submit_and_recover_without_changes(self):
+        sys.path.insert(0, str(CLI.parents[1]))
+        from fleet.storage import Ledger
+
+        with tempfile.TemporaryDirectory(prefix="writer-preflight-", dir=fixture_base()) as directory:
+            root = Path(directory)
+            seed = root / "seed"
+            with Ledger(seed, create=True):
+                pass
+            # Crash after commit leaves the unauthorized UID only in pending WAL.
+            writer = ("import sqlite3,os,sys; c=sqlite3.connect(sys.argv[1]); "
+                      "c.execute('UPDATE authority SET uid=?',(os.getuid()+1,)); "
+                      "c.commit(); os._exit(0)")
+            subprocess.run([sys.executable, "-B", "-c", writer, str(seed / "state.db")],
+                           check=True, timeout=5)
+
+            def image(state):
+                return {name: hashlib.sha256((state / name).read_bytes()).hexdigest()
+                        if (state / name).exists() else None
+                        for name in ("state.db", "state.db-wal", "state.db-shm")}
+
+            for operation in ("submit", "recover"):
+                with self.subTest(operation=operation):
+                    state = root / operation
+                    state.mkdir(mode=0o700)
+                    for name in ("state.db", "state.db-wal", "state.db-shm"):
+                        shutil.copy2(seed / name, state / name)
+                    for name in ("attempts", "capsules"):
+                        (state / name).mkdir(mode=0o700)
+                    before = image(state)
+                    self.assertTrue(all(before.values()))
+                    self.assertGreater((state / "state.db-wal").stat().st_size, 32)
+                    # The main image still authorizes us; the committed WAL must win.
+                    import sqlite3
+                    conn = sqlite3.connect((state / "state.db").as_uri() + "?immutable=1", uri=True)
+                    try:
+                        self.assertEqual(conn.execute("SELECT uid FROM authority").fetchone()[0], os.getuid())
+                    finally:
+                        conn.close()
+                    args = [operation]
+                    if operation == "submit":
+                        args += ["--", sys.executable, "-c", "raise SystemExit('must not run')"]
+                    result = subprocess.run([sys.executable, "-B", str(CLI), "--state-dir", str(state), *args],
+                                            cwd=root, capture_output=True, text=True, timeout=15)
+                    value = json.loads(result.stdout)
+                    self.assertEqual(result.returncode, 2, (result.stdout, result.stderr))
+                    self.assertEqual(value["error"]["code"], "operator_unauthorized")
+                    after = image(state)
+                    print("UNAUTHORIZED_WAL", json.dumps({"operation": operation, "before": before,
+                                                          "after": after}), flush=True)
+                    self.assertEqual(after, before)
+
+
 class Admission:
     def __init__(self, state, exclusive, receipt):
         self.state, self.exclusive, self.receipt = state, exclusive, receipt
@@ -1097,6 +1151,39 @@ class FleetCLI(Core3820Cases, ReviewR2Cases, ReaderTempCases, IntegralCases, Cor
         log.rmdir()
         next_job = self.submit([sys.executable, "-c", "pass"])
         self.wait(next_job["job"])
+
+    def test_recover_claim_reports_retained_terminal_work_at_observed_revision(self):
+        submitted = self.value("submit", "--enqueue-only", "--", sys.executable, "-c",
+                               "raise SystemExit('must not run')")
+        log = self.state / "supervisor.log"
+        log.mkdir(mode=0o700)  # Opening the supervisor log prevents Popen.
+        bundle = self.state / "attempts" / submitted["attempt"] / "bundle"
+        bundle.write_bytes(b"owned obstruction")  # Sealing cannot publish evidence.
+        try:
+            recovered = json.loads(self.call("recover", check=False).stdout)
+            current = json.loads(self.call("status", submitted["job"]).stdout)["observation"]
+            self.assertEqual(current["state"], "finished")
+            self.assertEqual(current["command"]["kind"], "never_created")
+            self.assertIsNone(current["supervisor"])
+            self.assertIsNone(current["child_pid"])
+            self.assertEqual(current["reservation"]["disposition"], "retained")
+            self.assertEqual(current["work_remaining"], ["release", "operator_decision"])
+            self.assertFalse(recovered["recovery_complete"])
+            self.assertEqual(len(recovered["dispatch_claimed"]), 1)
+            self.assertEqual(len(recovered["finished_confirmed"]), 1)
+            print("RECOVER_REMAINING", json.dumps({"dispatch_claimed": recovered["dispatch_claimed"],
+                                                  "finished_confirmed": recovered["finished_confirmed"]}), flush=True)
+            for entry in (recovered["dispatch_claimed"][0], recovered["finished_confirmed"][0]):
+                self.assertEqual(entry["job"], submitted["job"])
+                self.assertEqual(entry["attempt"], submitted["attempt"])
+                self.assertEqual(entry["generation"], current["reservation"]["generation"])
+                self.assertEqual(entry["disposition"], "retained")
+                self.assertEqual(entry["work_remaining"], current["work_remaining"])
+                self.assertEqual(entry["decision_revision"], current["revision"])
+            self.assertEqual(bundle.read_bytes(), b"owned obstruction")
+        finally:
+            bundle.unlink()
+            log.rmdir()
 
     def test_two_private_states_can_run_together(self):
         other = self.root / "other-state"

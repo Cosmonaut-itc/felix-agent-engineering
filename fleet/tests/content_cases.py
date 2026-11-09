@@ -43,7 +43,10 @@ class ContentCases:
         blocker = self.submit(argv)
         self.running(blocker["job"], ready)
         captured = self.submit([sys.executable, "check.py"])
-        self.assertEqual(captured["state"], "queued")
+        self.assertFalse(gate.exists())
+        current = json.loads(self.call("status", captured["job"]).stdout)["observation"]
+        self.assertEqual(current["state"], "queued")
+        self.assertEqual(current["blocked_by"]["job"], blocker["job"])
         self.assertIsNone(captured["input"]["commit_sha"])
         script.write_text("print('changed-after-submit')\n")
         shutil.rmtree(self.project)

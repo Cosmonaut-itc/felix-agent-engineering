@@ -62,7 +62,10 @@ class CorrectionCases:
         (self.project / "run.py").write_text("import modulo\nprint(modulo.VALUE)\n")
         blocker, gate = self.blocked_queue()
         captured = self.submit([sys.executable, "-B", "run.py"], env=dict(self.env, PYTHONPATH="lib"))
-        self.assertEqual(captured["state"], "queued")
+        self.assertFalse(gate.exists())
+        current = json.loads(self.call("status", captured["job"]).stdout)["observation"]
+        self.assertEqual(current["state"], "queued")
+        self.assertEqual(current["blocked_by"]["job"], blocker["job"])
         module.write_text("VALUE = 'mutated-origin'\n")
         gate.touch()
         self.wait(blocker["job"])
@@ -78,7 +81,10 @@ class CorrectionCases:
                   "print((pathlib.Path(os.environ['PWD']) / 'data.txt').read_text())\n")
         blocker, gate = self.blocked_queue()
         submitted = self.submit([sys.executable, "-c", script], env=dict(self.env, PWD=str(self.project)))
-        self.assertEqual(submitted["state"], "queued")
+        self.assertFalse(gate.exists())
+        current = json.loads(self.call("status", submitted["job"]).stdout)["observation"]
+        self.assertEqual(current["state"], "queued")
+        self.assertEqual(current["blocked_by"]["job"], blocker["job"])
         data.write_text("mutated-pwd-origin")
         gate.touch()
         self.wait(blocker["job"])
@@ -100,7 +106,10 @@ class CorrectionCases:
                                 "import external_modulo,pathlib; print(external_modulo.VALUE); "
                                 "print(pathlib.Path('data.txt').read_text())"],
                                env=dict(self.env, PYTHONPATH=str(library)))
-        self.assertEqual(captured["state"], "queued")
+        self.assertFalse(gate.exists())
+        current = json.loads(self.call("status", captured["job"]).stdout)["observation"]
+        self.assertEqual(current["state"], "queued")
+        self.assertEqual(current["blocked_by"]["job"], blocker["job"])
         data.write_text("mutated-input")
         gate.touch()
         self.wait(blocker["job"])
@@ -140,7 +149,10 @@ class CorrectionCases:
         captured = self.value("submit", "--cwd", str(package), "--", sys.executable, "-c",
                               "import subprocess; subprocess.run(['secondary'],check=True)",
                               env=dict(self.env, PATH="../tools:" + os.defpath))
-        self.assertEqual(captured["state"], "queued")
+        self.assertFalse(gate.exists())
+        current = json.loads(self.call("status", captured["job"]).stdout)["observation"]
+        self.assertEqual(current["state"], "queued")
+        self.assertEqual(current["blocked_by"]["job"], blocker["job"])
         secondary.write_text(f"#!{sys.executable}\nprint('mutated-secondary')\n")
         gate.touch()
         self.wait(blocker["job"])
@@ -154,7 +166,10 @@ class CorrectionCases:
         captured = self.submit([sys.executable, "-c",
                                 "import subprocess; subprocess.run(['secondary'],check=True)"],
                                env=dict(self.env, PATH=""))
-        self.assertEqual(captured["state"], "queued")
+        self.assertFalse(gate.exists())
+        current = json.loads(self.call("status", captured["job"]).stdout)["observation"]
+        self.assertEqual(current["state"], "queued")
+        self.assertEqual(current["blocked_by"]["job"], blocker["job"])
         secondary.unlink()
         gate.touch()
         self.wait(blocker["job"])
@@ -213,7 +228,10 @@ class CorrectionCases:
         submitted = self.value("submit", "--cwd", str(package), "--input", "package",
                                "--private", "package/private.data", "--artifact", "reports/result", "--",
                                sys.executable, "run.py")
-        self.assertEqual(submitted["state"], "queued")
+        self.assertFalse(gate.exists())
+        current = json.loads(self.call("status", submitted["job"]).stdout)["observation"]
+        self.assertEqual(current["state"], "queued")
+        self.assertEqual(current["blocked_by"]["job"], blocker["job"])
         (package / "data").write_text("mutated")
         gate.touch()
         self.wait(blocker["job"])
