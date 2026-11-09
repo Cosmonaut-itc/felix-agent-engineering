@@ -1,5 +1,6 @@
 """P07/P08/P09/P13: controles nativos y fallos de una sola observación."""
 import ctypes as C
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -7,15 +8,17 @@ import socket
 import subprocess
 import sys
 import tempfile
-import time
 import unittest
 from dataclasses import replace
+from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import patch
 from hostgate import darwin_peer as d
 from hostgate.admission import Hostgate
+from hostgate.model import AuthContext
+from hostgate.store import ShadowStore
 from hostgate.salud.lector_mini import evaluar
-from hostgate.tests.support.world import World, config, FIXTURES
+from hostgate.tests.support.world import World, config, request
 
 U = '11111111-2222-3333-4444-555555555555'
 T = (1792738812, 550262)
@@ -57,6 +60,7 @@ class Native:
 
 class PeerMatrix(unittest.TestCase):
     def fresh(self):
+        self.doCleanups()  # Cada barrera cierra sus sockets antes de la siguiente.
         native = Native()
         peers = d.DarwinPeers(_native=native)
         self.addCleanup(peers.close)
@@ -98,21 +102,22 @@ class PeerMatrix(unittest.TestCase):
 
     def test_every_read_error_and_every_native_gap(self):
         for role in ROLES:
-            for bad in range(1, 12):
-                with self.subTest(role=role, failed_read=bad, source=ORDER[bad - 1]):
-                    n, p, s = self.fresh(); n.bad = bad
-                    with self.assertRaises(d.PeerError): p.capture(s, 'unix')
-            for gap in range(1, 11):
-                with self.subTest(role=role, gap=(ORDER[gap - 1], ORDER[gap])):
-                    n, p, s = self.fresh()
-                    def change(index, name):
-                        if index == gap:
-                            n.generation += 1
-                            n.watch_object.exited = True
-                    n.after = change
-                    with patch.object(p, '_challenge'), self.assertRaises(d.PeerError):
-                        p.authenticate(s, 'unix')
-                    self.assertFalse(p.alive(s, p.capture(s, 'unix')))
+            for phase in (0, 12, 23):  # captura inicial, tras NOTE_EXIT y tras reto.
+                for bad in range(1, 12):
+                    with self.subTest(role=role, phase=phase, failed_read=bad, source=ORDER[bad - 1]):
+                        n, p, s = self.fresh(); n.bad = phase + bad
+                        with patch.object(p, '_challenge'), self.assertRaises(d.PeerError): p.authenticate(s, 'unix')
+                for gap in range(1, 11):
+                    with self.subTest(role=role, phase=phase, gap=(ORDER[gap - 1], ORDER[gap])):
+                        n, p, s = self.fresh()
+                        def change(index, name):
+                            if index == phase + gap:
+                                n.generation += 1
+                                n.watch_object.exited = True
+                        n.after = change
+                        with patch.object(p, '_challenge'), self.assertRaises(d.PeerError):
+                            p.authenticate(s, 'unix')
+                        self.assertFalse(p.alive(s, p.capture(s, 'unix')))
 
     def test_uuid_and_one_sided_reads_change(self):
         for index in range(1, 12):
@@ -174,6 +179,14 @@ class PeerMatrix(unittest.TestCase):
         self.assertFalse(p.alive(a, peer)); self.assertFalse(p.alive(s, peer))
         self.assertTrue(n.watch_object.closed)
 
+    def test_eof_while_process_is_live_closes_only_known_watch(self):
+        n, p, s = self.fresh()
+        with patch.object(p, '_challenge'): peer = p.authenticate(s, 'unix')
+        self.assertEqual(p.verify(peer.identity).status, 'same')
+        n.remote.close()
+        self.assertFalse(n.watch_object.exited)
+        self.assertFalse(p.alive(s, peer)); self.assertTrue(n.watch_object.closed)
+
     def test_challenge_rejects_buffered_proof_and_bounded_frames(self):
         import struct
         def frame(raw): return struct.pack('!I', len(raw)) + raw
@@ -200,7 +213,16 @@ class NativeProcesses(unittest.TestCase):
                 code = '''import os,socket,sys
 from hostgate.darwin_peer import DarwinPeers
 with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as s, DarwinPeers() as p:
- s.connect(sys.argv[1]); peer=p.authenticate(s,'unix')
+ s.connect(sys.argv[1])
+ original=p._frame
+ def maximum(stream,deadline,message=None):
+  if message is not None and message['kind']=='challenge':
+   import json,struct
+   raw=json.dumps(message).encode().ljust(65536,b' ')
+   stream.sendall(struct.pack('!I',len(raw))+raw)
+  else: return original(stream,deadline,message)
+ p._frame=maximum
+ peer=p.authenticate(s,'unix')
  assert peer.identity.pid == int(sys.argv[2])
  assert p.verify(peer.identity).status == 'same'
  s.sendall(b'K'); assert s.recv(1)==b'Q'
@@ -257,6 +279,7 @@ with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as s, DarwinPeers() as p:
         n = d._Native()
         self.assertEqual([C.sizeof(t) for t in (d._Audit, d._Unique, d.DarwinBSDInfo)], [32, 56, 136])
         self.assertGreater(n.unique(os.getpid())[1], 0)
+        with d.DarwinPeers() as p: self.assertEqual(p.health_boot(), (p.boot(), n.boottime()))
         with patch.object(n.libc, 'sysctlbyname', return_value=-1):
             for fn in (n.boot, n.boottime):
                 with self.assertRaises(d.PeerError): fn()
@@ -283,14 +306,21 @@ class Health(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(); self.addCleanup(self.tmp.cleanup)
         self.path = Path(self.tmp.name) / 'sample.json'
         self.n = Native(); self.p = d.DarwinPeers(_native=self.n); self.addCleanup(self.p.close)
-        self.sample = json.loads((FIXTURES / 'health/mini.json').read_text())
-        self.sample['host'] = 'mini-prueba'
-        self.sample['boot'] = dict(bootId='mini-prueba/2026-10-23T07:00:12.550262Z',
-                                   lastBootUtc='2026-10-23T07:00:12.550262Z', error=None)
+        producer = Path(__file__).resolve().parents[3] / 'scripts/hosts/mini-vigilante/muestra.py'
+        spec = importlib.util.spec_from_file_location('producer_pr2b', producer)
+        m = importlib.util.module_from_spec(spec); spec.loader.exec_module(m)
+        raw = {'LocalHostName': 'mini-prueba', 'kern.boottime': '{ sec = 1792738812, usec = 550262 }',
+               'kern.memorystatus_level': '77', 'kern.memorystatus_vm_pressure_level': '1',
+               'vm.swapusage': 'total = 1024.00M used = 0.00M free = 1024.00M',
+               'vm.loadavg': '{ 2.79 3.1 4.0 }', 'hw.ncpu': '10'}
+        self.sample = m.capturar(m.leer_umbrales(producer.with_name('umbrales.json')),
+            comando=lambda argv: raw[argv[-1]],
+            reloj=lambda: datetime(2026, 10, 24, 0, 40, tzinfo=timezone.utc),
+            statvfs=lambda path: SimpleNamespace(f_blocks=500 * 1024**3, f_bavail=100 * 1024**3, f_frsize=1))
         self.path.write_text(json.dumps(self.sample))
         self.health = d.DarwinHealth(self.p, 'mini-prueba', self.path)
         self.world = World(); self.world.health = self.health.read
-        self.cfg = replace(config(Path.home() / '.local/state/pr2b-health-unused'), snapshot_host='mini-prueba')
+        self.cfg = replace(config(Path(self.tmp.name) / 'state'), snapshot_host='mini-prueba')
         self.gate = Hostgate(self.cfg, self.world)
         self.n.calls.clear()
 
@@ -308,6 +338,28 @@ class Health(unittest.TestCase):
         self.path.write_text(json.dumps(self.sample))
         self.assertIn('boot', evaluar(self.sample, self.world.wall(), self.health.read()[2]))
         self.assertTrue(self.gate._health())
+
+    def test_bad_boot_never_grants_or_releases_retained_capacity(self):
+        from hostgate.identity import Identity
+        self.world.physical_boot = self.p.boot
+        self.world.executor_boot = lambda executor: self.p.boot()
+        self.world.verify = self.p.verify
+        identity = Identity('unix', 501, 123, (100, 2, 41, 7), U, U)
+        auth = AuthContext('fixture', 'supervisor', identity, identity, 'fixture-channel')
+        ShadowStore.initialize(self.cfg)
+        first = self.gate.reservar(request(exclusiveResources=['sen-slot:1']), auth)
+        self.assertTrue(first['wouldGrant'])
+        before = self.gate.store.read()['reservations'][0]
+        self.sample['boot']['bootId'] = 'mini-prueba/2026-10-22T00:00:00.000000Z'
+        self.sample['boot']['lastBootUtc'] = '2026-10-22T00:00:00.000000Z'
+        self.path.write_text(json.dumps(self.sample))
+        self.assertFalse(self.gate.reservar(request('next', 'next'), auth)['wouldGrant'])
+        self.n.uuid = 'aaaaaaaa-2222-3333-4444-555555555555'
+        self.assertFalse(self.gate.reservar(request('boot-change', 'boot-change'), auth)['wouldGrant'])
+        after = self.gate.store.read()['reservations'][0]
+        self.assertEqual(after['demand'], before['demand'])
+        self.assertEqual(after['exclusiveResources'], before['exclusiveResources'])
+        self.assertEqual(after['state'], 'uncertain')
 
     def test_each_health_read_fault_and_boot_change_latches_closed(self):
         original = Path.read_bytes
