@@ -200,38 +200,50 @@ que demuestra:
 - **Alto riesgo.** Corre `interrogate` con dos revisores independientes:
   gpt-6.1-sol en `high` por Transporte, siempre como Reviewer A, y opus-5.5
   en `high`, el asiento Claude que trae la hoja. Ese asiento corre sólo en
-  alto riesgo. Vetas sus hallazgos con **Prueba**. Cuentan como
-  señales: escrituras a producción o a un sistema de cliente (ICG, ERP,
-  pagos, CFDI, nómina), migraciones o borrado de datos, autenticación y
-  permisos, cálculos de dinero o impuestos, contratos entre paquetes o
-  servicios, y las rutas de `.agents/high-risk-paths`.
+  las rondas completas de alto riesgo. Vetas sus hallazgos con **Prueba**.
+  Cuentan como señales: escrituras a producción o a un sistema de cliente
+  (ICG, ERP, pagos, CFDI, nómina), migraciones o borrado de datos,
+  autenticación y permisos, cálculos de dinero o impuestos, contratos entre
+  paquetes o servicios, y las rutas de `.agents/high-risk-paths`.
 - **Prueba.** El brief de todo revisor pide que cada critical o warning
   traiga el comando que corrió, la salida que imprimió y la salida que exige
   la intención, como el brief de `interrogate`. En un hallazgo de
   documentación, el comando muestra las líneas que se contradicen. En el
   veto vuelves a correr cada comando. Un critical o warning sin comando, o
   cuyo comando no reproduce el fallo, no queda abierto.
-- **Rondas.** Una review converge cuando cada ronda trae menos hallazgos y
-  ninguno abre un caso nuevo en reglas que una ronda anterior ya corrigió.
-  Si una ronda no converge, o la ronda 3 no da APTO, lee y aplica
-  `principle-attack-the-premise` de pstack y **Autonomía** antes de la
-  siguiente corrección. Un mismo cambio tiene hasta ocho rondas sin
-  autorización adicional, contando las reviews delta y las renovaciones
-  por cambio de head. Antes de la ronda 9 pausa, aunque la ronda 8 haya
-  dado APTO. Entrega al usuario lo que sigue abierto y el replanteamiento
-  realizado.
-- **Hallazgos.** Corrige cada hallazgo aceptado con el cambio mínimo y
-  rebate con evidencia el que esté mal. Lo que pide trabajo fuera del
-  objetivo sigue **Unidades** y el [procedimiento de merge](references/merge.md).
-  Declina todos los nits, también los de comentarios, documentación o
-  estilo. No impiden APTO, y cada cambio de head exige otra ronda. Un critical o warning nunca
-  es un nit, aunque trate de documentación.
-- **Registro.** Lleva cada hallazgo en `hallazgos.tsv`, junto a los
+- **Rondas.** La ronda 1 es completa, y cada revisor del nivel recibe el
+  diff completo. Las siguientes siguen **Ronda delta**. Una review converge
+  cuando cada ronda trae menos hallazgos y ninguno abre un caso nuevo en
+  reglas que una ronda anterior ya corrigió. Si una ronda no converge, o la
+  ronda 3 no da APTO, lee y aplica `principle-attack-the-premise` de pstack
+  y **Autonomía** antes de la siguiente corrección. Un mismo cambio tiene
+  hasta ocho rondas sin autorización adicional, entre completas y delta.
+  Antes de la ronda 9 pausa, aunque la ronda 8 haya dado APTO. Entrega al
+  usuario lo que sigue abierto y el replanteamiento realizado.
+- **Ronda delta.** La hace un solo revisor gpt-6.1-sol en `high` con
+  contexto nuevo, también en alto riesgo. Su brief lleva el brief original,
+  el registro, el head ya revisado y el diff desde ese head, con
+  `git range-diff` si hubo rebase. El revisor marca cada id del registro
+  como `resuelto` o `sigue abierto: <motivo>` y busca critical y warning en
+  lo que el delta cambió. Fuera del delta reporta sólo un critical. Da APTO
+  sobre el head nuevo cuando ningún id sigue abierto y no trae hallazgo
+  nuevo, y ese APTO vale por todo el nivel. La ronda vuelve a ser completa si la corrección cambia de enfoque según
+  **Autonomía**, si el nivel sube a alto, o si el delta añade comportamiento
+  que ningún hallazgo pidió o toca archivos de producción que la ronda
+  completa no vio. Un head nuevo con el mismo parche conserva su APTO sin
+  ronda, como fija el paso 3 del
+  [procedimiento de merge](references/merge.md).
+- **Hallazgos.** El brief de todo revisor pide sólo critical y warning. Un
+  nit que llegue se descarta sin registrarlo. Un critical o warning nunca es
+  un nit, aunque trate de documentación. Corrige cada hallazgo aceptado con
+  el cambio mínimo y rebate con evidencia el que esté mal. Escribe tú la
+  corrección de la ronda si cabe en el umbral de «Delegación» del routing.
+  Si lo supera, despáchala. Lo que pide trabajo fuera del objetivo sigue
+  **Unidades** y el [procedimiento de merge](references/merge.md).
+- **Registro.** Lleva cada critical y warning en `hallazgos.tsv`, junto a los
   encargos de la unidad o en el store del programa, con las columnas
   `id	ronda	severidad	estado	evidencia`. El `id` no cambia entre rondas.
-  El estado es `abierto`, `corregido`, `rebatido` o `declinado`. Desde la
-  ronda 2, el brief suma el registro y el diff desde la ronda anterior, y
-  el revisor marca cada id como `resuelto` o `sigue abierto: <motivo>`.
+  El estado es `abierto`, `corregido`, `rebatido` o `declinado`.
 - **Regla por hallazgo.** Si un hallazgo aceptado es mecánico, como un
   patrón de sintaxis, una API prohibida, una forma de import o una regla de
   ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
@@ -263,7 +275,11 @@ que demuestra:
   `Revisión: <modelo> <esfuerzo>, ronda <n>, <veredicto> sobre <head>`.
   Copia el veredicto literal, también NO APTO o SIN DICTAMEN. Mientras el
   head del PR no tiene veredicto, `<veredicto>` es `pendiente` y `<n>` es
-  la ronda que lo juzgará. En un acumulador sólo cuenta la review final del
+  la ronda que lo juzgará. Una ronda delta se escribe `ronda <n> delta`. Un
+  revisor que sólo corre en rondas completas conserva la línea de su última
+  ronda, y la línea del revisor delta acredita el head actual. Un APTO que
+  sigue vigente por el paso 3 del procedimiento de merge añade
+  `, vigente en <head nuevo>`. En un acumulador sólo cuenta la review final del
   conjunto. Hasta entonces la línea dice `pendiente`, con los revisores del
   nivel vigente. Quien abre el PR la escribe, el orquestador la actualiza
   tras cada ronda y cambio de head, y quien edita el cuerpo la conserva.

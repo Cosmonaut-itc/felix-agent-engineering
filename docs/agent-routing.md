@@ -59,7 +59,8 @@ El orquestador escribe él mismo sólo cambios pequeños: hasta unas 150 líneas
 de código de producción en hasta 2 archivos, sin contar las pruebas. Por
 encima de ese umbral, un trabajador de la tabla de Modelos implementa, y el
 orquestador diseña, despacha y veta. El umbral cuenta el cambio completo de la
-tarea, no cada edición.
+tarea, no cada edición. Las correcciones de una ronda de review se miden
+aparte, por ronda.
 
 ## Esfuerzo
 
@@ -120,10 +121,10 @@ pendiente.
 
 Las reviews de cambios las hace un revisor independiente con gpt-6.1-sol en
 esfuerzo `high`. En un cambio de alto riesgo, según lo juzgue el orquestador,
-se suma opus-5.5 en `high` como segundo revisor independiente. Cuando el
-usuario pide consejo, revisan juntos gpt-6.1-sol en `high`, opus-5.5 en
-`high` y gpt-6-astra en `low`, como define `felix-mode`. Ningún otro modelo
-revisa cambios. El orquestador veta el cambio y los hallazgos.
+se suma opus-5.5 en `high` como segundo revisor independiente de las rondas
+completas. Cuando el usuario pide consejo, revisan juntos gpt-6.1-sol en
+`high`, opus-5.5 en `high` y gpt-6-astra en `low`, como define `felix-mode`.
+Ningún otro modelo revisa cambios. El orquestador veta el cambio y los hallazgos.
 
 UI/UX: primero un prototipo de fidelidad baja o media aprobado por el dueño.
 Si faltan prototipo y guía, diseña opus-5.5. Implementa con los criterios
