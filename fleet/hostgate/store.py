@@ -1,4 +1,5 @@
 """Ledger SQLite exclusivamente de sombra; creación sólo administrativa explícita."""
+import hashlib
 import json
 import os
 import sqlite3
@@ -32,6 +33,29 @@ class ForeignOwner(Exception):
 @dataclass(frozen=True)
 class UnrecordedResult:
     result: dict
+
+
+@dataclass(frozen=True)
+class SerializedMutation:
+    """Textos de escritura preparados dentro de la guarda, sin reserializarlos."""
+    result: dict
+    view_payload: str
+    view_checksum: str
+    result_payload: str
+    context_payload: object
+    record_operation: bool
+    foreign: object
+
+    @classmethod
+    def build(cls, view, result, auth_context, original):
+        foreign = result if isinstance(result, ForeignOwner) else None
+        record = not isinstance(result, (UnrecordedResult, ForeignOwner))
+        if not record:
+            result = result.result
+        payload = canonical(view)
+        return cls(result, payload, hashlib.sha256(payload.encode('ascii')).hexdigest(),
+                   canonical(result), canonical(auth_context) if original is None and record else None,
+                   record, foreign)
 
 
 class ShadowStore:
@@ -166,20 +190,18 @@ class ShadowStore:
             original = conn.execute('SELECT digest, result, auth_context FROM operations WHERE principal=? AND operation_id=?', (principal, op_id)).fetchone()
             self._validate_operation(original, principal, op_id, view)
             world.checkpoint('before_write')
-            foreign = None
             try:
                 result = apply(view, original)
             except ForeignOwner as exc:
-                foreign = exc
-                result = UnrecordedResult(exc.result)
-            record_operation = not isinstance(result, UnrecordedResult)
-            if not record_operation:
-                result = result.result
+                result = exc
+            if not isinstance(result, SerializedMutation):
+                result = SerializedMutation.build(view, result, auth_context, original)
+            foreign = result.foreign
             write_started = True
-            conn.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (canonical(view), digest(view)))
-            if original is None and record_operation:
-                conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?, ?)', (principal, op_id, operation_digest, canonical(result), canonical(auth_context)))
-            conn.execute('INSERT INTO audit(principal, operation_id, payload) VALUES (?, ?, ?)', (principal, op_id, canonical(result)))
+            conn.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (result.view_payload, result.view_checksum))
+            if original is None and result.record_operation:
+                conn.execute('INSERT INTO operations VALUES (?, ?, ?, ?, ?)', (principal, op_id, operation_digest, result.result_payload, result.context_payload))
+            conn.execute('INSERT INTO audit(principal, operation_id, payload) VALUES (?, ?, ?)', (principal, op_id, result.result_payload))
             world.checkpoint('before_commit')
             commit_attempted = True
             try:
@@ -189,7 +211,7 @@ class ShadowStore:
                 raise WriteUncertain('commit/ACK incierto; releer misma operacion') from exc
             if foreign is not None:
                 raise foreign
-            return result
+            return result.result
         except sqlite3.OperationalError as exc:
             if not write_started and ('locked' in str(exc).lower() or 'busy' in str(exc).lower()):
                 raise Busy('escritor ocupado') from exc
