@@ -1,6 +1,7 @@
 import io
 import json
 import sqlite3
+from dataclasses import replace
 from unittest.mock import patch
 
 from hostgate.cli import main
@@ -11,6 +12,119 @@ from hostgate.tests.test_contract import Harness
 
 
 class ProviderFailure(Harness):
+    def serialization_case(self, route, kind, source, stage=None):
+        self.setUp()
+        granted = self.reserve('reserve-a', 'job-a',
+            exclusiveResources=['sen-slot:1', 'postgres:5434'])
+        self.assertTrue(granted['wouldGrant'])
+        other = self.world.auth(pid=222)
+        payload = request('invalid-b', 'job-b')
+        key = dict(granted['simulationKey'], reservationId='missing')
+        if route == 'pending-conflict':
+            self.gate.prepare(payload, other)
+        if route == 'foreign':
+            key = granted['simulationKey']
+        before = self.gate.store.read()
+        invalid = b'physical-1' if kind == 'bytes' else float(kind)
+        healthy = other
+        if source == 'context':
+            other = replace(other, anchor=replace(other.anchor, physical_boot=invalid))
+        self.world.processes[self.auth.peer.pid] = 'EPERM'
+        observed = []
+        project = self.gate._persist_effective
+        reply = self.gate._reply
+        contaminated = []
+
+        def capture(view):
+            projection = project(view)
+            observed.append(projection['reservations'][0]['effectiveState'])
+            return projection
+
+        def provider_reply(*args, **kwargs):
+            result = reply(*args, **kwargs)
+            if source == 'result' and not contaminated:
+                # Sólo el resultado (no la vista); el siguiente reply es el del fallo.
+                result['providerDetail'] = invalid
+                contaminated.append(True)
+            return result
+
+        self.world.fault = stage
+        with patch.object(self.gate, '_persist_effective', side_effect=capture), \
+                patch.object(self.gate, '_reply', side_effect=provider_reply):
+            if route == 'prepare':
+                expected_error = ((WriteUncertain if stage == 'after_commit' else OSError)
+                                  if stage else (TypeError if kind == 'bytes' else ValueError))
+                with self.assertRaises(expected_error):
+                    self.gate.prepare(payload, other)
+                failed = None
+            else:
+                if route == 'reservar':
+                    failed = self.gate.reservar(payload, other)
+                elif route == 'soltar':
+                    failed = self.gate.soltar('invalid-b', key, [], other)
+                elif route == 'dudosa':
+                    failed = self.gate.dudosa('invalid-b', key, 'fixture', [], other)
+                else:
+                    failed = self.gate.latido('invalid-b', key, 1, other)
+                self.assertEqual(failed['exitCode'], 3 if stage else 6,
+                                 'SEN3952_R1_CONFIRMACION' if stage else 'SEN3952_R1_PROVEEDOR')
+        self.world.fault = None
+        stored = self.gate.store.read()
+        operations, audit = self.records('invalid-b', preparation=route == 'prepare')
+        self.assertTrue(observed)
+        self.assertEqual(set(observed), {'uncertain'})
+        self.assertEqual(operations, 0)
+        if stage == 'before_commit':
+            self.assertEqual(stored, before)
+            self.assertEqual(audit, [])
+            return
+
+        self.world.processes[self.auth.peer.pid] = self.auth.peer
+        follower = self.gate.reservar(request('follower-c', 'job-c'), healthy)
+        self.assertFalse(follower['wouldGrant'], 'SEN3952_R1_SEGUIDOR_SIN_RECONCILIACION')
+        self.assertEqual(self.codes(follower), {'reservation-uncertain'})
+        expected = dict(before['reservations'][0], state='uncertain', reasons=[
+            reason('identity-unverifiable', 'supervisor no verificable o ausente')])
+        self.assertEqual(stored, dict(before, reservations=[expected]))
+        self.assertEqual(len(audit), 1)
+        self.assertEqual(audit[0]['exitCode'], 6)
+        self.assertFalse(audit[0]['wouldGrant'])
+        self.assertEqual(self.codes(audit[0]), {'store-unavailable'})
+        if failed is not None and not stage:
+            self.assertEqual(audit, [failed])
+        recovered = self.gate.estado({}, healthy)
+        self.assertEqual(recovered['budget']['retained'], expected['demand'])
+        self.assertEqual(recovered['budget']['retainedByState'], {'uncertain': 1})
+        self.assertEqual(recovered['resources'], [
+            dict(name=name, holder=granted['simulationKey'], state='uncertain')
+            for name in expected['exclusiveResources']])
+        # El id de B sigue disponible con un proveedor sano.
+        retry = self.gate.latido('invalid-b', key, 1, healthy)
+        self.assertNotIn('replayed', retry)
+        self.assertEqual(retry['exitCode'], 5 if route == 'foreign' else
+                         2 if route == 'pending-conflict' else 1)
+
+    def test_sen3952_r1_context_keeps_doubt_after_owner_recovers(self):
+        for route in ('latido', 'soltar', 'dudosa', 'reservar', 'prepare'):
+            for kind in ('nan', 'inf', 'bytes'):
+                with self.subTest(route=route, value=kind):
+                    self.serialization_case(route, kind, 'context')
+
+    def test_sen3952_r1_result_keeps_doubt_after_owner_recovers(self):
+        for route in ('latido', 'soltar', 'dudosa', 'pending-conflict', 'foreign'):
+            for kind in ('nan', 'inf', 'bytes'):
+                with self.subTest(route=route, value=kind):
+                    self.serialization_case(route, kind, 'result')
+
+    def test_sen3952_r1_confirmation_failure_is_uncertain(self):
+        for source, routes in (('context', ('latido', 'soltar', 'dudosa', 'reservar', 'prepare')),
+                               ('result', ('latido', 'pending-conflict', 'foreign'))):
+            for route in routes:
+                for kind in ('nan', 'inf', 'bytes'):
+                    for stage in ('before_commit', 'after_commit'):
+                        with self.subTest(source=source, route=route, value=kind, stage=stage):
+                            self.serialization_case(route, kind, source, stage)
+
     def invalid_provider(self, kind):
         # La primera lectura proyecta A válidamente; la segunda contamina sólo B.
         attribute = 'physical_boot' if kind == 'bytes' else 'monotonic'
