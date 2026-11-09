@@ -133,6 +133,21 @@ class Administration(unittest.TestCase):
             with self.assertRaises(ValueError):
                 validate(dict(schema='fleet/host-reservation@1', operationId='q', operation='estado', **{field: 1}))
 
+    def test_loaded_minima_unknown_volume_and_resource_use_existing_core(self):
+        from hostgate.admission import Hostgate
+        from hostgate.tests.support.world import World, request
+        cfg = self.load(); world = World(); auth = world.auth(principal='uid:' + str(os.getuid()))
+        gate = Hostgate(cfg.node, world)
+        for changes in ({'demand': dict(cpuMilli=1, memoryBytes=1, diskBytes={'unknown': 1}, slots=0)},
+                        {'exclusiveResources': ['unknown']}):
+            denied = gate.reservar(request('bad-' + str(len(gate.store.read()['pending'])),
+                                          physicalHostId='fixture-host', **changes), auth)
+            self.assertFalse(denied['wouldGrant']); self.assertEqual(gate.store.read()['reservations'], [])
+        result = gate.reservar(request('minimum', physicalHostId='fixture-host',
+                              demand=dict(cpuMilli=1, memoryBytes=1, diskBytes={'data': 1}, slots=0)), auth)
+        self.assertTrue(result['wouldGrant'], result)
+        self.assertEqual(gate.store.read()['reservations'][0]['demand'], self.f.doc['profiles']['fixture']['minimumDemand'])
+
     def test_strict_document_and_catalogs(self):
         original = copy.deepcopy(self.f.doc)
         changes = [('extra', 1), ('mode', 'enforcing'), ('ncpu', True), ('budget', dict(original['budget'], slots=True)),
@@ -150,6 +165,7 @@ class Administration(unittest.TestCase):
     def test_real_permissions_links_acl_and_failed_observations(self):
         path = self.f.locator.config_path
         path.chmod(0o664); self.rejected(); path.chmod(0o644)
+        self.root.chmod(0o720); self.rejected(); self.root.chmod(0o700)
         other = self.root / 'hardlink'; os.link(str(path), str(other))
         self.rejected(); other.unlink()
         path.rename(other); path.symlink_to(other)
@@ -166,6 +182,11 @@ class Administration(unittest.TestCase):
             with patch.object(self.admin, name, value): self.rejected()
         for name in ('_check_filesystem', '_check_acl'):
             with patch.object(self.admin, name, side_effect=OSError('observation unavailable/remote FS')): self.rejected()
+        native = self.admin._call
+        def remote(name, result, types, *args):
+            if name == 'fstatfs64': return 0  # buffer vacío: no MNT_LOCAL ni APFS
+            return native(name, result, types, *args)
+        with patch.object(self.admin, '_call', side_effect=remote): self.rejected()
 
     def test_anchor_other_store_and_reduced_budget_preserve_debits(self):
         from hostgate.admission import Hostgate
@@ -188,10 +209,12 @@ class Administration(unittest.TestCase):
         self.f.publish(); reduced = self.load()
         with self.admin.AuthorityLease(self.f.locator, reduced):
             self.assertEqual(gate.store.read(), held)
+            world.channel = False
             result = Hostgate(reduced.node, world).estado({}, auth)
             self.assertEqual(result['budget']['available']['cpuMilli'], -900)
             self.assertEqual(result['budget']['retained']['slots'], 1)
             self.assertEqual(result['resources'][0]['name'], 'sen-slot:1')
+            self.assertEqual(result['reservations'][0]['effectiveState'], 'uncertain')
         self.f.locator.anchor_path.unlink(); self.rejected()
         self.f.locator.anchor_path.write_text('{}'); self.f.locator.anchor_path.chmod(0o444); self.rejected()
 
@@ -203,6 +226,21 @@ class Administration(unittest.TestCase):
             with self.assertRaises(Busy):
                 with self.admin.AuthorityLease(self.f.locator, cfg): pass
             self.assertEqual(before, self.inventory()); first.check()
+            probe = """
+import sys
+from pathlib import Path
+from hostgate.tests.test_admin import Fixture, fixture_policy
+from hostgate import admin
+from hostgate.store import Busy
+with fixture_policy(Path(sys.argv[1])):
+    f = Fixture(Path(sys.argv[1]))
+    try:
+        with admin.AuthorityLease(f.locator, admin.load_config(f.locator)): pass
+    except Busy: sys.exit(4)
+"""
+            child = subprocess.run([sys.executable, '-B', '-c', probe, str(self.root)], capture_output=True, timeout=20)
+            self.assertEqual(child.returncode, 4, child.stderr)
+            self.assertEqual(before, self.inventory()); first.check()
             lock = self.f.locator.lock_path
             lock.rename(self.root / 'old-lock'); lock.touch(mode=0o440)
             with self.assertRaises(self.admin.AdminError): first.check()
@@ -211,6 +249,16 @@ class Administration(unittest.TestCase):
             db.rename(db.with_name('old.db')); db.write_bytes(db.with_name('old.db').read_bytes()); db.chmod(0o600)
             with self.assertRaises(self.admin.AdminError): lease.check()
         db.unlink(); self.rejected()
+
+    def test_live_config_anchor_and_directory_replacement_are_detected(self):
+        for path in (self.f.locator.config_path, self.f.locator.anchor_path, self.root / 'A'):
+            with self.subTest(path=path):
+                with self.admin.AuthorityLease(self.f.locator, self.load()) as lease:
+                    moved = path.with_name(path.name + '-old'); path.rename(moved)
+                    try:
+                        path.symlink_to(moved, target_is_directory=moved.is_dir())
+                        with self.assertRaises(self.admin.AdminError): lease.check()
+                    finally: path.unlink(); moved.rename(path)
 
 
 def comparison(base):

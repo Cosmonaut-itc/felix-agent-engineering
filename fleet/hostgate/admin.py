@@ -112,9 +112,27 @@ def _check_filesystem(fd):
         raise AdminError('se requiere APFS local persistente')
 
 
+def _read_acl(fd):
+    # acl_get_fd_np devuelve NULL también sin ACL. Consultar FILESEC_ACL
+    # explícitamente distingue ausencia acreditada de un error de observación.
+    security = _call('filesec_init', C.c_void_p, [])
+    if not security: raise AdminError('filesec no disponible')
+    try:
+        data, present, acl = C.create_string_buffer(512), C.c_int(), C.c_void_p()
+        if (_call('fstatx_np', C.c_int, [C.c_int, C.c_void_p, C.c_void_p], fd, data, security) or
+                _call('filesec_query_property', C.c_int, [C.c_void_p, C.c_int, C.c_void_p], security, 5, C.byref(present))):
+            raise AdminError('ACL no observable')
+        if not present.value: return None
+        if (_call('filesec_get_property', C.c_int, [C.c_void_p, C.c_int, C.c_void_p], security, 5, C.byref(acl)) or
+                not acl.value): raise AdminError('ACL no observable')
+        return acl.value
+    finally:
+        _call('filesec_free', None, [C.c_void_p], security)
+
+
 def _check_acl(fd):
-    acl = _call('acl_get_fd_np', C.c_void_p, [C.c_int, C.c_int], fd, 0x100)
-    if not acl: raise AdminError('ACL no observable')
+    acl = _read_acl(fd)
+    if acl is None: return
     try:
         if _call('acl_valid', C.c_int, [C.c_void_p], acl): raise AdminError('ACL invalida')
         entry, tag, mask = C.c_void_p(), C.c_int(), C.c_uint64()
