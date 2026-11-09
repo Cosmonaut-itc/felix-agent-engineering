@@ -309,3 +309,10 @@ SEN-3822 · corte 2b (2026-11-09), `tests/test_darwin_peer.py`:
 La comparación administrativa hardware UUID corresponde a 2a; saludo con
 serviceUid/host/store/revisión, pairing, bindings de reservas y matriz IPC integrada
 pertenecen a 2c. No se atribuye un ataque aceptado a main, que no tiene endpoint.
+
+Ejecución Mini sobre `79bd8fcb7b86249b0a903260a6dc0dbd1bb14020`: dirigida
+`20261109-130330-a263f5`, 17/17 por stack y comparación semántica de la nueva
+representación frente a main. Suite única `20261109-130502-da97bc`: Apple 3.9.6,
+227/227 (rc 0); Python 3.14.7, 226/227 (rc 1), sólo
+`Storage.test_queries_never_mutate_sqlite_or_wal` por SEN-5625; cero errores/omitidas.
+El commit posterior sólo registra esta evidencia; no se afirma ejecutado.
