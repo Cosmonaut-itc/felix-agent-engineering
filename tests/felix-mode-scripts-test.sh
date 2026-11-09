@@ -1775,7 +1775,7 @@ apto_repo() {
     local repo="$TEST_TMP/apto repo"
     rm -rf "$repo"
     mkdir -p "$repo/origen"
-    git -C "$repo" init -q -b destino
+    git -C "$repo" init -q -b destino --object-format="${1:-sha1}"
     git -C "$repo" config user.email test@example.com
     git -C "$repo" config user.name test
     printf 'const m = "a b";\n' > "$repo/cadena.js"
@@ -2044,6 +2044,30 @@ apto_vigente_local_state() {
     git -C "$repo" worktree remove --force "$TEST_TMP/apto worktree"
 }
 
+# El repositorio temporal lee el mismo almacén de objetos que el local: su
+# formato y los almacenes alternos que nombra el entorno.
+apto_vigente_object_store() {
+    local repo objects other ref output
+    repo=$(apto_repo sha256)
+    printf 'y\n' >> "$repo/otro.txt"
+    git -C "$repo" commit -q -am destino
+    git -C "$repo" checkout -q -b candidato revisado
+    git -C "$repo" merge -q --no-edit destino
+    output=$(apto "$repo" destino revisado candidato)
+    assert test "sha256: ${output%%:*}" = 'sha256: APTO vigente'
+
+    # Los commits viven sólo en el almacén que nombra la variable de entorno.
+    objects=$(git -C "$repo" rev-parse --path-format=absolute --git-path objects)
+    other="$TEST_TMP/apto alterno"
+    rm -rf "$other"
+    git init -q --object-format=sha256 "$other"
+    for ref in destino revisado candidato; do
+        GIT_ALTERNATE_OBJECT_DIRECTORIES=$objects git -C "$other" update-ref "refs/heads/$ref" "$(git -C "$repo" rev-parse "$ref")"
+    done
+    output=$(GIT_ALTERNATE_OBJECT_DIRECTORIES=$objects apto "$other" destino revisado candidato)
+    assert test "alterno: ${output%%:*}" = 'alterno: APTO vigente'
+}
+
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -2051,7 +2075,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_config apto_vigente_local_state laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

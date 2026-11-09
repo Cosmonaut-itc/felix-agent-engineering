@@ -21,16 +21,20 @@ done
 target=${commits[0]} reviewed=${commits[1]} new=${commits[2]}
 
 # Desde aquí git corre en un repositorio vacío sobre el mismo almacén de
-# objetos, sin variables GIT_ heredadas. Un objeto no cambia de contenido sin
-# cambiar de SHA. La configuración, refs/replace, info/grafts y shallow del
-# repositorio local sí cambian lo que git lee de un SHA, y un push no los
-# publica. Si falta un objeto, el script sale con 2.
+# objetos, con su formato y sus almacenes alternos, y sin las demás variables
+# GIT_ heredadas. Un objeto no cambia de contenido sin cambiar de SHA. La
+# configuración, refs/replace, info/grafts y shallow del repositorio local sí
+# cambian lo que git lee de un SHA, y un push no los publica. Si falta un
+# objeto, como en un clon parcial, el script sale con 2.
 objects=$(git rev-parse --path-format=absolute --git-path objects) || fail 'no encuentro el almacén de objetos'
+format=$(git rev-parse --show-object-format) || fail 'no puedo leer el formato de objetos'
 scratch=$(mktemp -d "${TMPDIR:-/tmp}/apto-vigente.XXXXXX") || fail 'no puedo crear un directorio temporal'
 trap 'rm -rf "$scratch"' EXIT
-for name in $(compgen -v GIT_); do unset "$name"; done
+for name in $(compgen -v GIT_); do
+    [ "$name" = GIT_ALTERNATE_OBJECT_DIRECTORIES ] || unset "$name"
+done
 export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
-git init --quiet --bare --template= "$scratch" || fail 'no puedo crear el repositorio temporal'
+git init --quiet --bare --template= --object-format="$format" "$scratch" || fail 'no puedo crear el repositorio temporal'
 export GIT_DIR=$scratch GIT_OBJECT_DIRECTORY=$objects
 
 reviewed_base=$(git merge-base "$target" "$reviewed") || fail 'el head revisado no comparte historia con el destino'
