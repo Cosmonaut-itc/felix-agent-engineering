@@ -1,612 +1,364 @@
-import ctypes
-import enum
-import fcntl
-import json
+"""Single-slot execution authority; a claim never grants a replacement launcher."""
 import os
 from pathlib import Path
-import pwd
 import select
 import signal
-import socket
 import sqlite3
 import stat
 import subprocess
 import sys
-import tempfile
 import time
-import uuid
 
 if __package__:
-    from . import evidence, inputs
+    from . import admission, evidence, inputs, native
+    from .model import Fault, dump, envelope, load, now, opaque, safe_queued
+    from .storage import Ledger, state_path
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from fleet import evidence, inputs
+    from fleet import admission, evidence, inputs, native
+    from fleet.model import Fault, dump, envelope, load, now, opaque, safe_queued
+    from fleet.storage import Ledger, state_path
 
-APP_ID = 0x464C5431
-SCHEMA_VERSION = 3
-GROUP_DRAINING = "waiting for process group to empty"
 StateError = sqlite3.Error
-LEGAL = {(None, "queued"), ("queued", "starting"),
-         ("starting", "running"), ("starting", "finished"),
-         ("running", "finished")}
-SCHEMA = (
-    "CREATE TABLE IF NOT EXISTS jobs (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
-    "id TEXT UNIQUE NOT NULL, execution TEXT NOT NULL, input TEXT NOT NULL, policy TEXT NOT NULL, "
-    "client TEXT NOT NULL, "
-    "submitted_by TEXT NOT NULL, submitted_at REAL NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS attempts (id TEXT PRIMARY KEY, job_id TEXT UNIQUE NOT NULL "
-    "REFERENCES jobs(id), n INTEGER NOT NULL DEFAULT 1, state TEXT, outcome TEXT, "
-    "exit_code INTEGER, signal INTEGER, supervisor TEXT, child_pid INTEGER, "
-    "started_at REAL, ended_at REAL, detail TEXT, generation INTEGER, "
-    "gate_consumed INTEGER NOT NULL DEFAULT 0, command TEXT, collection TEXT, evidence_root TEXT)",
-    "CREATE TABLE IF NOT EXISTS transitions (seq INTEGER PRIMARY KEY AUTOINCREMENT, "
-    "job_id TEXT NOT NULL, attempt_id TEXT NOT NULL, from_state TEXT, to_state TEXT NOT NULL, "
-    "actor TEXT NOT NULL, at REAL NOT NULL)",
-    "CREATE TABLE IF NOT EXISTS slot (id INTEGER PRIMARY KEY CHECK(id=1), "
-    "holder_attempt TEXT, generation INTEGER NOT NULL)",
-    "INSERT OR IGNORE INTO slot VALUES (1, NULL, 0)",
-)
+GROUP_DRAINING = "closure_unconfirmed"
 
 
-def _lock(fd, operation=fcntl.LOCK_EX):
-    deadline = time.monotonic() + 10
-    while True:
-        try:
-            fcntl.flock(fd, operation | fcntl.LOCK_NB)
-            return
-        except BlockingIOError:
-            if time.monotonic() >= deadline:
-                raise ValueError("state_lock_timeout") from None
-            time.sleep(0.02)
+def attempt_row(db, attempt):
+    row = db.execute("SELECT * FROM attempts WHERE id=?", (attempt,)).fetchone()
+    if row is None:
+        raise Fault("unknown_attempt")
+    return row
 
 
-class Ledger(sqlite3.Connection):
-    lock_fd = None
-    locked = False
-    snapshot = None
-
-    def execute(self, sql, parameters=()):
-        if self.lock_fd is not None and sql.startswith("BEGIN"):
-            _lock(self.lock_fd)
-            self.locked = True
-            if (super().execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION
-                    or super().execute("PRAGMA application_id").fetchone()[0] != APP_ID):
-                raise ValueError("unsupported Fleet pilot schema; no migration")
-        return super().execute(sql, parameters)
-
-    def commit(self):
-        super().commit()
-        if self.locked:
-            fcntl.flock(self.lock_fd, fcntl.LOCK_UN)
-            self.locked = False
-
-    def close(self):
-        if self.lock_fd is not None and not self.locked:
-            fcntl.flock(self.lock_fd, fcntl.LOCK_EX)
-            self.locked = True
-        super().close()
-        if self.snapshot is not None:
-            self.snapshot.cleanup()
-            self.snapshot = None
-        if self.lock_fd is not None:
-            os.close(self.lock_fd)
-            self.lock_fd = None
-            self.locked = False
+def owned(db, attempt, generation, identity, launcher=False):
+    row = attempt_row(db, attempt)
+    slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
+    owner = load(row["dispatcher"] if launcher else row["supervisor"])
+    if (tuple(slot) != (attempt, generation) or row["generation"] != generation
+            or owner != identity or not native.confirmed(identity)):
+        raise Fault("execution_owner_mismatch", 3, "unknown")
+    return row
 
 
-def state_path(explicit=None):
-    base = Path(os.environ.get("XDG_STATE_HOME") or Path.home() / ".local/state")
-    raw = Path(explicit or os.environ.get("FLEET_STATE_DIR") or base / "fleet-pilot").expanduser()
-    path = Path(os.path.abspath(raw))
-    inputs._path_limit(path)
-    for root in (base, Path.home() / ".local/state"):
-        inputs._path_limit(root)
-        root = root.resolve()
-        inputs._path_limit(root)
-        for name in ("pao", "mini-carga", "u3"):
-            reserved = root / name
-            if path == reserved or reserved in path.parents:
-                raise ValueError("reserved_state_directory")
-    return path
+def claim(db, dispatcher, supervisor=None):
+    """Caller holds the sole transaction shared with operator drain/release."""
+    if db.control["drained"]:
+        return None
+    slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
+    if slot["attempt"] is not None:
+        return None
+    row = db.execute("SELECT a.* FROM attempts a JOIN jobs j ON j.id=a.job "
+                     "WHERE a.state='queued' ORDER BY j.seq LIMIT 1").fetchone()
+    if row is None:
+        return None
+    if not safe_queued(row):
+        raise Fault("observation_inconsistent", 3, "unknown")
+    generation, reservation = slot["generation"] + 1, opaque("r")
+    db.execute("UPDATE slot SET attempt=?,generation=?", (row["id"], generation))
+    db.execute("UPDATE attempts SET generation=?,reservation=?,dispatcher=?,supervisor=?,"
+               "disposition='retained' WHERE id=?",
+               (generation, reservation, dump(dispatcher), dump(supervisor) if supervisor else None, row["id"]))
+    db.event(row["id"], "starting", "dispatcher", "claim")
+    return row["id"], generation
 
 
-def _connect(state, create=False):
+def closure_valid(db, row):
+    """Trust the committed original producer chain, never user-provided proof JSON."""
     try:
-        with inputs.directory(state, create=create) as lock_fd:
-            directory = os.fstat(lock_fd)
-            if (directory.st_uid != os.getuid() or stat.S_IMODE(directory.st_mode) & 0o077):
-                raise ValueError("state directory must be private to the current user")
-            if create:
-                _lock(lock_fd)
-                with inputs.directory(state) as probe:
-                    if (os.fstat(probe).st_dev, os.fstat(probe).st_ino) != (directory.st_dev, directory.st_ino):
-                        raise ValueError("state_directory_changed")
-                    try:
-                        fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    except BlockingIOError:
-                        pass
-                    else:
-                        raise ValueError("state_lock_not_exclusive")
-            else:
-                _lock(lock_fd, fcntl.LOCK_SH)
-            writer_fd = os.open(state, os.O_RDONLY | os.O_DIRECTORY | inputs.NOFOLLOW) if create else None
-            try:
-                conn = _connect_locked(state, create)
-            except BaseException:
-                if writer_fd is not None:
-                    os.close(writer_fd)
-                raise
-            conn.lock_fd = writer_fd
-            return conn
-    except FileNotFoundError:
-        raise ValueError("state_not_found") from None
-
-
-def _read_temp_base(state):
-    base = Path("/tmp").resolve(strict=True)
-    state_info = state.stat()
-    state_id = (state_info.st_dev, state_info.st_ino)
-    for path in inputs._ancestors(base):
-        with inputs.directory(path) as fd:
-            info = os.fstat(fd)
-        if (info.st_dev, info.st_ino) == state_id:
-            raise ValueError("unsafe_reader_temp_base")
-        if info.st_uid != 0 or (info.st_mode & 0o022 and
-                                (path != base or not info.st_mode & stat.S_ISVTX)):
-            raise ValueError("unsafe_reader_temp_base")
-    return base
-
-
-def _connect_locked(state, create):
-    database = state / "state.db"
-    for name in ("state.db", "state.db-wal", "state.db-shm", "attempts", "capsules"):
-        path = state / name
-        if os.path.lexists(path):
-            info = path.lstat()
-            expected = stat.S_ISDIR if name in ("attempts", "capsules") else stat.S_ISREG
-            if not expected(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
-                raise ValueError("state files must be private, owned and without symlinks")
-    fresh = not database.exists()
-    if create and fresh:
-        if any(state.iterdir()):
-            raise ValueError("state directory must be empty or belong to Fleet")
-        inputs.write_new(database, b"")
-        inputs.fsync_dir(state)
-    if create:
-        conn = sqlite3.connect(str(database), timeout=10, isolation_level=None, factory=Ledger)
-    else:
-        # SQLite's readonly WAL readers can update shared memory. Copy under the
-        # transaction lock so public reads never create or repair ledger files.
-        snapshot = tempfile.TemporaryDirectory(prefix="fleet-read-", dir=_read_temp_base(state))
-        try:
-            with inputs.directory(state) as fd:
-                for name in ("state.db", "state.db-wal"):
-                    if name.endswith("-wal") and not os.path.lexists(state / name):
-                        continue
-                    with inputs.open_file(fd, name) as source:
-                        data, _ = inputs.read_stable(source, limit=inputs.MAX_BYTES)
-                    inputs.write_new(Path(snapshot.name) / name, data)
-            copied = Path(snapshot.name) / "state.db"
-            conn = sqlite3.connect(copied.as_uri() + "?mode=ro", uri=True,
-                                   timeout=10, isolation_level=None, factory=Ledger)
-            conn.snapshot = snapshot
-        except BaseException:
-            snapshot.cleanup()
-            raise
-    conn.row_factory = sqlite3.Row
-    try:
-        conn.execute("PRAGMA foreign_keys=ON")
-        app = conn.execute("PRAGMA application_id").fetchone()[0]
-        version = conn.execute("PRAGMA user_version").fetchone()[0]
-        if not (create and fresh) and (app != APP_ID or version != SCHEMA_VERSION):
-            raise ValueError("unsupported Fleet pilot schema; no migration")
-        if create:
-            if conn.execute("PRAGMA journal_mode=WAL").fetchone()[0] != "wal":
-                raise ValueError("wal_required")
-            conn.execute("PRAGMA synchronous=FULL")
-            if conn.execute("PRAGMA synchronous").fetchone()[0] != 2:
-                raise ValueError("full_sync_required")
-            conn.execute("BEGIN IMMEDIATE")
-            conn.execute("PRAGMA application_id={}".format(APP_ID))
-            for statement in SCHEMA:
-                conn.execute(statement)
-            conn.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
-            conn.commit()
-            for name in ("attempts", "capsules"):
-                (state / name).mkdir(mode=0o700, exist_ok=True)
-            inputs.fsync_dir(state)
-        else:
-            conn.execute("PRAGMA query_only=ON")
-        return conn
-    except BaseException:
-        conn.close()
-        raise
-
-
-def _transition(conn, attempt, target, actor):
-    row = conn.execute("SELECT state, job_id FROM attempts WHERE id=?", (attempt,)).fetchone()
-    if row is None or (row["state"], target) not in LEGAL:
-        raise RuntimeError("illegal attempt transition to {}".format(target))
-    conn.execute("UPDATE attempts SET state=? WHERE id=?", (target, attempt))
-    conn.execute("INSERT INTO transitions (job_id,attempt_id,from_state,to_state,actor,at) "
-                 "VALUES (?,?,?,?,?,?)",
-                 (row["job_id"], attempt, row["state"], target, actor, time.time()))
-
-
-def _claim(conn, attempt, actor, supervisor=None):
-    changed = conn.execute("UPDATE slot SET holder_attempt=?,generation=generation+1 "
-                           "WHERE id=1 AND holder_attempt IS NULL", (attempt,)).rowcount
-    if not changed:
+        body = load(row["closure_body"])
+        closure = load(row["closure"])
+        command = load(row["command"])
+        job = db.execute("SELECT input FROM jobs WHERE id=?", (row["job"],)).fetchone()
+        if not body or not closure or not command or job is None:
+            return False
+        producer = load(row["supervisor"] or row["dispatcher"])
+        return (row["state"] == "finished" and row["gate"] == "closed"
+                and closure["status"] in ("confirmed", "never_created")
+                and closure["coverage"] == "pilot-compatible-posix"
+                and closure["generation"] == row["generation"]
+                and closure["proof_id"] == body["proof_id"]
+                and closure["proof_sha256"] == inputs.digest(dump(body).encode())
+                and body["authority_id"] == db.authority["id"]
+                and body["principal_uid"] == db.authority["uid"]
+                and (body["job"], body["attempt"], body["reservation_id"], body["generation"]) ==
+                    (row["job"], row["id"], row["reservation"], row["generation"])
+                and body["producer"] == producer and native.verifiable(producer)
+                and body["input"] == load(job["input"]) and body["command"] == command
+                and body["permission_closed"] is True and body["resources_closed"] is True
+                and body["coverage"] == "pilot-compatible-posix"
+                and (command["kind"] == "never_created" or body["original_child"] == load(row["child"])))
+    except (ValueError, KeyError, TypeError):
         return False
-    _transition(conn, attempt, "starting", actor)
-    generation = conn.execute("SELECT generation FROM slot WHERE id=1").fetchone()[0]
-    conn.execute("UPDATE attempts SET generation=?,supervisor=? WHERE id=?",
-                 (generation, json.dumps(supervisor) if supervisor else None, attempt))
-    return generation
 
 
-def _finish_and_next(conn, attempt, generation, actor, command, root, collection,
-                     detail, supervisor=None):
-    holder = conn.execute("SELECT holder_attempt,generation FROM slot WHERE id=1").fetchone()
-    row = conn.execute("SELECT supervisor FROM attempts WHERE id=?", (attempt,)).fetchone()
-    owner = json.dumps(supervisor) if supervisor else None
-    if tuple(holder) != (attempt, generation) or row[0] != owner:
-        raise RuntimeError("attempt does not own slot")
-    kind = command["kind"]
-    code, sig = command.get("exit_code"), command.get("signal")
+def record_terminal(db, attempt, generation, identity, command, launcher=False):
+    with db.transaction():
+        row = owned(db, attempt, generation, identity, launcher)
+        if row["gate"] == "closed":
+            raise Fault("execution_permission_closed", 3)
+        if launcher and (row["supervisor"] is not None or row["gate"] != "available"):
+            raise Fault("dispatch_unconfirmed", 3)
+        input_identity = load(db.execute("SELECT input FROM jobs WHERE id=?", (row["job"],)).fetchone()[0])
+        proof_id = opaque("p")
+        body = {"contract": "fleet-original-closure@1", "authority_id": db.authority["id"],
+                "principal_uid": db.authority["uid"], "proof_id": proof_id,
+                "job": row["job"], "attempt": attempt, "reservation_id": row["reservation"],
+                "generation": generation, "producer": identity, "input": input_identity,
+                "command": command, "original_child": load(row["child"]),
+                "coverage": "pilot-compatible-posix", "permission_closed": True,
+                "resources_closed": True, "observed_at": now(),
+                "basis": "original-launcher-popen-error" if launcher else
+                         "original-supervisor-no-command" if command["kind"] == "never_created" else
+                         "original-popen-wait-and-compatible-group-empty"}
+        closure = {"status": "never_created" if command["kind"] == "never_created" else "confirmed",
+                   "coverage": "pilot-compatible-posix", "generation": generation,
+                   "reason": command["reason"], "proof_id": proof_id,
+                   "proof_sha256": inputs.digest(dump(body).encode())}
+        db.execute("UPDATE attempts SET gate='closed',command=?,closure=?,closure_body=?,ended_at=? "
+                   "WHERE id=?", (dump(command), dump(closure), dump(body), now(), attempt))
+        db.event(attempt, "finished", "launcher" if launcher else "supervisor:" + str(identity["pid"]),
+                 command["reason"] or "command_terminal")
+    return closure
+
+
+def release_ordinary(db, row):
+    slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
+    if row["disposition"] == "released":
+        return True
+    if tuple(slot) != (row["id"], row["generation"]) or not closure_valid(db, row):
+        return False
+    collection, publication = load(row["collection"]), load(row["publication"])
+    if collection["state"] != "valid" or publication["state"] != "committed":
+        return False
+    job = db.execute("SELECT input FROM jobs WHERE id=?", (row["job"],)).fetchone()
+    verified = evidence.verify(db.state / "attempts" / row["id"], row["evidence_root"], row["job"],
+                               row["id"], load(job[0]), load(row["command"]), load(row["closure"]))
+    if not verified["valid"]:
+        return False
+    db.execute("UPDATE slot SET attempt=NULL WHERE attempt=? AND generation=?",
+               (row["id"], row["generation"]))
+    db.execute("UPDATE attempts SET disposition='released' WHERE id=?", (row["id"],))
+    db.event(row["id"], "finished", "authority", "ordinary_release")
+    return True
+
+
+def publish_terminal(db, attempt, capture=None):
+    row = attempt_row(db, attempt)
+    job = db.execute("SELECT input FROM jobs WHERE id=?", (row["job"],)).fetchone()
+    command, closure = load(row["command"]), load(row["closure"])
+    # Preparation failure is a command result, not a missing command stream.
+    root, manifest = evidence.seal(db.state / "attempts" / attempt, row["job"], attempt,
+                                   load(job[0]), command, closure, capture)
+    collection = {"state": manifest["collection"], "errors": manifest["errors"]}
     outcome = "incomplete"
-    if root and collection["collection"] == "valid":
-        if kind == "exited":
-            outcome = "succeeded" if code == 0 else "failed"
-        elif kind == "never_created":
+    if collection["state"] == "valid" and root:
+        if command["kind"] == "never_created":
             outcome = "failed"
-    _transition(conn, attempt, "finished", actor)
-    conn.execute("UPDATE attempts SET outcome=?,exit_code=?,signal=?,ended_at=?,detail=?,"
-                 "command=?,collection=?,evidence_root=? WHERE id=?",
-                 (outcome, code, sig, time.time(), detail, json.dumps(command),
-                  json.dumps({"state": collection["collection"], "errors": collection["errors"]}), root, attempt))
-    conn.execute("UPDATE slot SET holder_attempt=NULL WHERE id=1")
-    row = conn.execute("SELECT a.id FROM attempts a JOIN jobs j ON j.id=a.job_id "
-                       "WHERE a.state='queued' ORDER BY j.seq LIMIT 1").fetchone()
-    if row:
-        return row[0], _claim(conn, row[0], actor, supervisor)
-    return None
+        elif command["kind"] == "exited":
+            outcome = "succeeded" if command["exit_code"] == 0 else "failed"
+    with db.transaction():
+        current = attempt_row(db, attempt)
+        if not closure_valid(db, current):
+            raise Fault("closure_unconfirmed", 3)
+        db.execute("UPDATE attempts SET collection=?,publication=?,evidence_root=?,recorded_outcome=? "
+                   "WHERE id=?", (dump(collection), dump({"state": "pending" if root else "incomplete",
+                                                        "root_sha256": root}), root, outcome, attempt))
+        db.event(attempt, "finished", "authority", "publication_prepared" if root else "publication_failed")
+    with db.transaction():
+        row = attempt_row(db, attempt)
+        if root:
+            db.execute("UPDATE attempts SET publication=? WHERE id=?",
+                       (dump({"state": "committed", "root_sha256": root}), attempt))
+            db.event(attempt, "finished", "authority", "publication_committed")
+        release_ordinary(db, attempt_row(db, attempt))
 
 
-def _observe_identity(pid):
-    result = {"pid": pid, "host": socket.gethostname(), "boot_id": None, "started_at": None}
-    try:
-        if sys.platform.startswith("linux"):
-            result["boot_id"] = Path("/proc/sys/kernel/random/boot_id").read_text().strip()
-            fields = Path("/proc/{}/stat".format(pid)).read_text().rsplit(")", 1)[1].split()
-            if fields[0] in ("Z", "X"):
-                return result
-            result["started_at"] = fields[19]
-        elif sys.platform == "darwin":
-            result["boot_id"] = subprocess.check_output(
-                ["/usr/sbin/sysctl", "-n", "kern.boottime"], timeout=2,
-                stderr=subprocess.DEVNULL, text=True).strip()
-            # libproc's BSD info includes microseconds; ps lstart truncates to
-            # seconds and is insufficient to rule out rapid PID reuse.
-            class BSDInfo(ctypes.Structure):
-                _fields_ = [("prefix", ctypes.c_uint32 * 12),
-                            ("comm", ctypes.c_char * 16), ("name", ctypes.c_char * 32),
-                            ("suffix", ctypes.c_uint32 * 6),
-                            ("start_sec", ctypes.c_uint64), ("start_usec", ctypes.c_uint64)]
-            info = BSDInfo()
-            lib = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-            query = lib.proc_pidinfo
-            query.argtypes = [ctypes.c_int, ctypes.c_int, ctypes.c_uint64,
-                              ctypes.c_void_p, ctypes.c_int]
-            query.restype = ctypes.c_int
-            size = ctypes.sizeof(info)
-            if query(pid, 3, 0, ctypes.byref(info), size) == size and info.prefix[1] != 5:
-                result["started_at"] = "{}:{}".format(info.start_sec, info.start_usec)
-    except (OSError, ValueError, IndexError, AttributeError, subprocess.SubprocessError):
-        pass
-    return result
-
-
-def _identity_confirmed(identity):
-    if not identity or not identity.get("boot_id") or not identity.get("started_at"):
-        return False
-    return identity == _observe_identity(identity["pid"])
-
-
-class Launch(enum.Enum):
-    READY = "ready"
-    NOT_CREATED = "not created"
-    UNCONFIRMED = "unconfirmed"
-
-
-def _reserve(conn, job, attempt, execution, identity, policy, client, submitted_by):
-    actor = "client:" + client
-    conn.execute("BEGIN IMMEDIATE")
-    conn.execute("INSERT INTO jobs (id,execution,input,policy,client,submitted_by,submitted_at) "
-                 "VALUES (?,?,?,?,?,?,?)", (job, json.dumps(execution), json.dumps(identity),
-                 json.dumps(policy), client, json.dumps(submitted_by), time.time()))
-    conn.execute("INSERT INTO attempts (id,job_id) VALUES (?,?)", (attempt, job))
-    _transition(conn, attempt, "queued", actor)
-    claimed = _claim(conn, attempt, actor)
-    uncertain = False
-    if not claimed:
-        owner = conn.execute("SELECT a.supervisor,a.detail FROM slot s LEFT JOIN attempts a "
-                             "ON a.id=s.holder_attempt WHERE s.id=1").fetchone()
-        supervisor = json.loads(owner[0]) if owner and owner[0] else None
-        uncertain = not _identity_confirmed(supervisor) or owner[1] == GROUP_DRAINING
-    conn.commit()
-    return job, attempt, claimed, uncertain
-
-
-def _launch_supervisor(state, attempt, generation):
+def launch(db, attempt, generation, identity):
     read_fd = write_fd = None
     created = False
-    launch, error = Launch.NOT_CREATED, None
     try:
         read_fd, write_fd = os.pipe()
-        # Popen's exec-error pipe proves exec succeeded; readiness below also
-        # proves Python imported the runner and persisted the supervisor.
-        log_fd = os.open(state / "supervisor.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT | inputs.NOFOLLOW, 0o600)
-        with os.fdopen(log_fd, "ab", buffering=0) as log:
+        fd = os.open(db.state / "supervisor.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT | inputs.NOFOLLOW, 0o600)
+        with os.fdopen(fd, "ab", buffering=0) as log:
             info = os.fstat(log.fileno())
-            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or
+                    info.st_mode & 0o077 or info.st_nlink != 1):
                 raise OSError("invalid_supervisor_log")
-            subprocess.Popen(
-                [sys.executable, "-I", "-B", str(Path(__file__).resolve()),
-                 "supervise", str(state), attempt, str(generation), str(write_fd)],
-                stdin=subprocess.DEVNULL, stdout=log, stderr=log,
-                start_new_session=True, close_fds=True, pass_fds=(write_fd,),
-                env={"PATH": os.defpath, "LANG": "C"})
+            subprocess.Popen([sys.executable, "-I", "-B", str(Path(__file__).resolve()), "supervise",
+                              str(db.state), attempt, str(generation), str(write_fd)],
+                             stdin=subprocess.DEVNULL, stdout=log, stderr=log,
+                             start_new_session=True, close_fds=True, pass_fds=(write_fd,),
+                             env={"PATH": os.defpath, "LANG": "C"})
             created = True
-        fd, write_fd = write_fd, None
-        os.close(fd)
-        try:
-            readable, _, _ = select.select([read_fd], [], [], 10)
-            ready = bool(readable) and os.read(read_fd, 1) == b"R"
-        except ValueError:
-            launch, error = Launch.UNCONFIRMED, "supervisor_readiness_unconfirmed"
-        else:
-            launch = Launch.READY if ready else Launch.UNCONFIRMED
-            if not ready:
-                error = "supervisor readiness unconfirmed; slot retained; do not retry"
+        os.close(write_fd)
+        write_fd = None
+        readable, _, _ = select.select([read_fd], [], [], 10)
+        if readable:
+            os.read(read_fd, 1)
+        # EOF/readiness timeout never proves that the supervisor was not created.
     except OSError:
-        launch = Launch.UNCONFIRMED if created else Launch.NOT_CREATED
-        error = "supervisor spawn failed" if not created else "supervisor_readiness_unconfirmed"
+        if not created:
+            command = {"kind": "never_created", "exit_code": None, "signal": None,
+                       "reason": "supervisor_spawn_failed"}
+            record_terminal(db, attempt, generation, identity, command, launcher=True)
+            publish_terminal(db, attempt)
     finally:
         for fd in (read_fd, write_fd):
             if fd is not None:
                 try:
                     os.close(fd)
                 except OSError:
-                    if created:
-                        launch, error = Launch.UNCONFIRMED, "supervisor_pipe_close_failed"
-    return launch, error
+                    pass
 
 
-def _fail_and_hand_off(conn, state, attempt, generation, actor, error):
-    while attempt:
-        row = conn.execute("SELECT j.id,j.input FROM jobs j JOIN attempts a ON a.job_id=j.id "
-                           "WHERE a.id=?", (attempt,)).fetchone()
-        command = {"kind": "never_created", "reason": "supervisor_spawn_failed"}
-        root, collection = evidence.seal(state / "attempts" / attempt, row[0], attempt,
-                                         json.loads(row[1]), command)
-        conn.execute("BEGIN IMMEDIATE")
-        dispatch = _finish_and_next(conn, attempt, generation, actor, command, root, collection, error)
-        conn.commit()
-        if dispatch is None:
-            return
-        attempt, generation = dispatch
-        launch, error = _launch_supervisor(state, attempt, generation)
-        if launch is not Launch.NOT_CREATED:
-            return
+def dispatch(db):
+    identity = native.identity(os.getpid())
+    if not native.verifiable(identity):
+        raise Fault("launcher_identity_unverifiable", 3, "unknown")
+    first = None
+    with native.dispatch_boundary():
+        while True:
+            with db.transaction():
+                assignment = claim(db, identity)
+            if not assignment:
+                break
+            first = first or assignment
+            launch(db, *assignment, identity)
+            # Only our confirmed never-created closure plus valid publication
+            # can release here. An uncertain launch or retained slot stops.
+            if attempt_row(db, assignment[0])["disposition"] != "released":
+                break
+    return first
 
 
-def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), credentials=()):
+def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), credentials=(),
+           idempotency_key=None, enqueue_only=False):
     if os.name != "posix":
-        raise ValueError("pilot supports POSIX hosts only")
-    env = dict(os.environ)
-    plan = inputs.Plan(cwd, state, includes, private, artifacts, argv, env, credentials)
-    client = inputs.redact(client, plan.secrets)
-    submitted_by = {"user": inputs.redact(pwd.getpwuid(os.getuid()).pw_name, plan.secrets),
-                    "uid": os.getuid(), "host": inputs.redact(socket.gethostname(), plan.secrets),
-                    "pid": os.getpid()}
-    conn = _connect(state, create=True)
-    result = None
+        raise Fault("unsupported_execution_context")
     try:
-        try:
-            job, attempt = "j_" + uuid.uuid4().hex, "a_" + uuid.uuid4().hex
-            identity = plan.capture(state / "capsules" / job)
-            (state / "attempts" / attempt).mkdir(mode=0o700)
-            inputs.fsync_dir(state / "attempts")
-            execution = {"contract": "fleet-execution@1", "input": identity, "argv": argv,
-                         "environment": env, "outputs": {"contract": "fleet-outputs@1", "required": plan.artifacts},
-                         "context_version": inputs.CONTEXT_VERSION, "context": inputs.CONTEXT,
-                         "credential_names": list(credentials)}
-            job, attempt, claimed, uncertain = _reserve(
-                conn, job, attempt, execution, identity, plan.policy, client, submitted_by)
-            result = {"job": job, "attempt": attempt, "client": client, "registered": True,
-                      "accepted": not claimed, "input": identity, "input_policy": plan.policy}
-            if not claimed:
-                return dict(result, observation="durable_admission", state="queued",
-                            view="uncertain" if uncertain else "queued"), 3 if uncertain else 0
-            launch, error = _launch_supervisor(state, attempt, claimed)
-            if launch is Launch.READY:
-                result["accepted"] = True
-                return dict(result, state="starting"), 0
-            if launch is Launch.UNCONFIRMED:
-                return dict(result, state="starting", view="uncertain", error=error), 3
-            _fail_and_hand_off(conn, state, attempt, claimed, "client:" + client, error)
-            return dict(result, state="finished", error=error), 1
-        finally:
-            conn.close()
-    except (OSError, ValueError, KeyError, StateError, RuntimeError):
-        if result is None:
-            raise
-        return dict(result, observation="durable_admission", state="starting" if claimed else "queued",
-                    view="uncertain", error="post_registration_unconfirmed"), 3
-
-
-def view(state, job):
-    conn = _connect(state)
-    try:
-        conn.execute("BEGIN")
-        row = conn.execute("SELECT j.seq,j.id,j.input,j.policy,j.client,j.submitted_by,j.submitted_at,j.execution,"
-                           "a.id AS attempt,a.state,a.outcome,a.exit_code,a.signal,"
-                           "a.supervisor,a.child_pid,a.started_at,a.ended_at,a.detail,a.command,a.collection,a.evidence_root "
-                           "FROM jobs j JOIN attempts a ON a.job_id=j.id WHERE j.id=?", (job,)).fetchone()
-        if row is None:
-            raise ValueError("unknown_job")
-        result = dict(row)
-        execution = json.loads(result.pop("execution"))
-        secrets = inputs.credential_values(execution["environment"], execution["credential_names"])
-        result.pop("id")
-        result["job"] = job
-        for key in ("input", "policy", "submitted_by", "supervisor", "command", "collection"):
-            result[key] = json.loads(result[key]) if result[key] else None
-        for key, names in (("submitted_by", ("user", "host")), ("supervisor", ("host",))):
-            if result[key]:
-                for name in names:
-                    result[key][name] = inputs.redact(result[key][name], secrets)
-        for key in ("client", "detail"):
-            if result[key] is not None:
-                result[key] = inputs.redact(result[key], secrets)
-        for key in ("git_bytes", "redaction", "limit"):
-            result["policy"][key] = inputs.redact(result["policy"][key], secrets)
-        result["policy"]["consumer_private"] = [
-            inputs.redact(value, secrets) for value in result["policy"]["consumer_private"]]
-        result["input_policy"] = result.pop("policy")
-        result["registered"] = True
-        result["interruptible"] = False
-        result["view"] = result["state"]
-        owner = conn.execute("SELECT a.supervisor,a.detail FROM slot s LEFT JOIN attempts a "
-                             "ON a.id=s.holder_attempt WHERE s.id=1").fetchone()
-        if result["state"] != "finished":
-            identity = json.loads(owner[0]) if owner and owner[0] else None
-            if not _identity_confirmed(identity) or (owner and owner[1] == GROUP_DRAINING):
-                result["view"] = "uncertain"
-        result["transitions"] = [
-            {"seq": t["seq"], "job": t["job_id"], "attempt": t["attempt_id"],
-             "from": t["from_state"], "to": t["to_state"],
-             "actor": inputs.redact(t["actor"], secrets), "at": t["at"]}
-            for t in conn.execute("SELECT * FROM transitions WHERE job_id=? ORDER BY seq", (job,))]
-        result.update(stdout_log=None, stderr_log=None)
-        if result["state"] == "finished":
-            result["recorded_outcome"] = result["outcome"]
-            proof = evidence.verify(state / "attempts" / result["attempt"], result.pop("evidence_root"),
-                                    job, result["attempt"], result["input"], result["command"])
-            result["evidence"] = proof
-            paths = {Path(f["path"]).name: f["path"] for f in proof["files"] if f["kind"] == "log"}
-            result.update(stdout_log=paths.get("stdout"), stderr_log=paths.get("stderr"))
-            if not proof["valid"]:
-                result.update(outcome="incomplete", detail="evidence_invalid")
-        else:
-            result.pop("evidence_root")
-            result["evidence"] = {"valid": False, "errors": ["attempt_not_finished"], "files": []}
-        return result
-    finally:
-        conn.close()
-
-
-def _group_may_be_occupied(pgid):
-    try:
-        os.killpg(pgid, 0)
-        return True
-    except ProcessLookupError:
-        return False
+        for ancestor in inputs._ancestors(state):
+            if os.path.lexists(ancestor):
+                with inputs.directory(ancestor):
+                    pass
+                break
     except OSError:
-        return True
+        raise Fault("unsafe_state") from None
+    prepared = admission.prepare(state, argv, cwd, client, includes, private, artifacts,
+                                 credentials, idempotency_key, enqueue_only)
+    with Ledger(state, create=True) as db:
+        receipt = admission.admit(db, argv, cwd, client, includes, private, artifacts,
+                                  credentials, idempotency_key, enqueue_only, prepared)
+        authority = db.authority
+        # The historical receipt already exists. Dispatch failure cannot revoke it.
+        if receipt["binding"] != "replay" and not enqueue_only:
+            try:
+                dispatch(db)
+            except (OSError, ValueError, sqlite3.Error, RuntimeError):
+                pass
+        return envelope("submit", authority, **receipt), 0
 
 
-def _owned(conn, attempt, generation, identity):
-    row = conn.execute("SELECT a.supervisor,a.generation,s.holder_attempt,s.generation "
-                       "FROM attempts a CROSS JOIN slot s WHERE a.id=? AND s.id=1", (attempt,)).fetchone()
-    if row is None or tuple(row) != (json.dumps(identity), generation, attempt, generation):
-        raise RuntimeError("execution_owner_mismatch")
-
-
-def _execute(conn, state, attempt, generation, actor, identity):
-    row = conn.execute("SELECT j.id,j.input,j.execution FROM jobs j JOIN attempts a ON a.job_id=j.id "
-                       "WHERE a.id=?", (attempt,)).fetchone()
-    job, input_identity, execution = row[0], json.loads(row[1]), json.loads(row[2])
-    directory = state / "attempts" / attempt
-    command = {"kind": "never_created", "reason": "preparation_failed"}
+def execute(db, attempt, generation, identity):
+    row = attempt_row(db, attempt)
+    job = db.execute("SELECT * FROM jobs WHERE id=?", (row["job"],)).fetchone()
+    execution, input_identity = load(job["execution"]), load(job["input"])
+    directory = db.state / "attempts" / attempt
     capture = None
-    detail = "content_mismatch"
+    reason = "content_mismatch"
+
+    def collection_error(errors):
+        # A known irreversible stream loss is observable before command exit.
+        # A storage failure cannot stop draining/reaping our original child.
+        try:
+            with db.transaction():
+                current = owned(db, attempt, generation, identity)
+                previous = load(current["collection"])
+                errors = sorted(set(previous["errors"] + errors))
+                if previous != {"state": "incomplete", "errors": errors}:
+                    db.execute("UPDATE attempts SET collection=? WHERE id=?",
+                               (dump({"state": "incomplete", "errors": errors}), attempt))
+                    db.event(attempt, current["state"], "supervisor:" + str(identity["pid"]),
+                             "collection_loss_observed")
+        except (OSError, ValueError, sqlite3.Error, RuntimeError):
+            pass
+
     try:
-        cwd = inputs.materialize(state / "capsules" / job, directory / "workspace", input_identity)
-        detail = "unsupported_execution_context"
+        cwd = inputs.materialize(db.state / "capsules" / job["capsule"], directory / "workspace", input_identity)
+        reason = "unsupported_execution_context"
         environment = inputs.execution_environment(execution, cwd)
-        detail = "preparation_failed"
+        reason = "preparation_failed"
         secrets = inputs.credential_values(execution["environment"], execution["credential_names"])
         capture = evidence.Capture(directory, cwd, execution["outputs"]["required"], secrets)
     except (OSError, ValueError, KeyError):
-        command["reason"] = detail
         if capture:
             capture.close()
-        root, collection = evidence.seal(directory, job, attempt, input_identity, command, capture,
-                                         errors=(detail,))
-        return command, root, collection, detail
-    conn.execute("BEGIN IMMEDIATE")
-    _owned(conn, attempt, generation, identity)
-    changed = conn.execute("UPDATE attempts SET gate_consumed=1 WHERE id=? AND gate_consumed=0",
-                           (attempt,)).rowcount
-    if changed != 1:
-        raise RuntimeError("execution_gate_consumed")
-    conn.commit()
+        command = {"kind": "never_created", "exit_code": None, "signal": None, "reason": reason}
+        return command, None
+    with db.transaction():
+        owned(db, attempt, generation, identity)
+        changed = db.execute("UPDATE attempts SET gate='consumed' WHERE id=? AND gate='available'",
+                             (attempt,)).rowcount
+        if changed != 1:
+            raise Fault("execution_permission_closed", 3)
+        db.event(attempt, "starting", "supervisor:" + str(identity["pid"]), "execution_permit_consumed")
     try:
-        child = subprocess.Popen(execution["argv"], cwd=cwd, env=environment,
-                                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        child = subprocess.Popen(execution["argv"], cwd=cwd, env=environment, stdin=subprocess.DEVNULL,
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                                  close_fds=True, start_new_session=True)
     except OSError:
         capture.close()
-        command = {"kind": "never_created", "reason": "command_spawn_failed"}
-        detail = "command spawn failed"
-    else:
-        conn.execute("BEGIN IMMEDIATE")
-        _owned(conn, attempt, generation, identity)
-        _transition(conn, attempt, "running", actor)
-        conn.execute("UPDATE attempts SET child_pid=?,started_at=? WHERE id=?",
-                     (child.pid, time.time(), attempt))
-        conn.commit()
+        return {"kind": "never_created", "exit_code": None, "signal": None,
+                "reason": "command_spawn_failed"}, None
+    capture.on_error = collection_error
+    child_identity = native.identity(child.pid)
+    # Popen's original, unreaped child reference supplies creation provenance;
+    # birth is captured before observe() can reap it. No later PID adoption.
+    if not native.verifiable(child_identity):
+        # Still drain streams and reap our child; inability to attribute preserves uncertainty.
+        capture.observe(child, lambda: None)
+        child.wait()
+        raise Fault("execution_unconfirmed", 3)
+    with db.transaction():
+        owned(db, attempt, generation, identity)
+        db.execute("UPDATE attempts SET child=?,started_at=? WHERE id=?",
+                   (dump(child_identity), now(), attempt))
+        db.event(attempt, "running", "supervisor:" + str(identity["pid"]), "original_popen_child")
 
-        def draining():
-            if _group_may_be_occupied(child.pid):
-                conn.execute("BEGIN IMMEDIATE")
-                _owned(conn, attempt, generation, identity)
-                conn.execute("UPDATE attempts SET detail=? WHERE id=?", (GROUP_DRAINING, attempt))
-                conn.commit()
+    def draining():
+        if native.group_occupied(child.pid):
+            with db.transaction():
+                owned(db, attempt, generation, identity)
+                db.execute("UPDATE attempts SET detail=? WHERE id=?", (GROUP_DRAINING, attempt))
+                db.event(attempt, "running", "supervisor:" + str(identity["pid"]), GROUP_DRAINING)
 
-        capture.observe(child, draining)
-        returncode = child.wait()
-        draining()
-        while _group_may_be_occupied(child.pid):
-            time.sleep(0.2)
-        command = ({"kind": "signalled", "signal": -returncode} if returncode < 0 else
-                   {"kind": "exited", "exit_code": returncode})
-        detail = None
-    root, collection = evidence.seal(directory, job, attempt, input_identity, command, capture)
-    if collection["collection"] != "valid":
-        detail = "evidence_collection_incomplete"
-    return command, root, collection, detail
+    capture.observe(child, draining)
+    code = child.wait()
+    draining()
+    while native.group_occupied(child.pid):
+        time.sleep(0.2)
+    command = {"kind": "signalled" if code < 0 else "exited", "exit_code": code if code >= 0 else None,
+               "signal": -code if code < 0 else None, "reason": None}
+    return command, capture
 
 
 def supervise(state, attempt, generation, ready_fd):
     signal.signal(signal.SIGINT, signal.SIG_IGN)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
-    identity = _observe_identity(os.getpid())
-    actor = "supervisor:{}".format(os.getpid())
-    conn = _connect(state, create=True)
-    try:
-        conn.execute("BEGIN IMMEDIATE")
-        holder = conn.execute("SELECT holder_attempt,generation FROM slot WHERE id=1").fetchone()
-        if tuple(holder) != (attempt, generation):
-            raise RuntimeError("supervisor does not own slot")
-        changed = conn.execute("UPDATE attempts SET supervisor=? WHERE id=? AND generation=? "
-                               "AND supervisor IS NULL AND gate_consumed=0",
-                               (json.dumps(identity), attempt, generation)).rowcount
-        if changed != 1:
-            raise RuntimeError("supervisor_already_bound")
-        conn.commit()
+    identity = native.identity(os.getpid())
+    if not native.verifiable(identity):
+        raise Fault("supervisor_identity_unverifiable", 3)
+    with Ledger(state, create=True, initialize=False) as db:
+        with db.transaction():
+            row = attempt_row(db, attempt)
+            slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
+            if tuple(slot) != (attempt, generation):
+                raise Fault("generation_mismatch", 5)
+            changed = db.execute("UPDATE attempts SET supervisor=? WHERE id=? AND generation=? "
+                                 "AND supervisor IS NULL AND gate='available' AND state='starting'",
+                                 (dump(identity), attempt, generation)).rowcount
+            if changed != 1:
+                raise Fault("supervisor_already_bound", 3)
+            db.event(attempt, "starting", "supervisor:" + str(identity["pid"]), "original_supervisor_bound")
         try:
             os.write(ready_fd, b"R")
         except BrokenPipeError:
@@ -614,15 +366,99 @@ def supervise(state, attempt, generation, ready_fd):
         finally:
             os.close(ready_fd)
         while attempt:
-            command, root, collection, detail = _execute(conn, state, attempt, generation, actor, identity)
-            conn.execute("BEGIN IMMEDIATE")
-            dispatch = _finish_and_next(conn, attempt, generation, actor, command, root, collection, detail, identity)
-            conn.commit()
-            if dispatch is None:
+            command, capture = execute(db, attempt, generation, identity)
+            record_terminal(db, attempt, generation, identity, command)
+            publish_terminal(db, attempt, capture)
+            with db.transaction():
+                # drain is checked here as well as in submit/recover.
+                assignment = claim(db, identity, identity)
+            if not assignment:
                 break
-            attempt, generation = dispatch
-    finally:
-        conn.close()
+            attempt, generation = assignment
+
+
+def recover(state):
+    with Ledger(state, create=True, initialize=False) as db:
+        result = envelope("recover", db.authority, examined_revision=db.authority["revision"],
+                          recovery_complete=True, dispatch_claimed=[], live_confirmed=[], finished_confirmed=[],
+                          still_uncertain=[], pending=[], operator_pending=[], confirmed_actions=[])
+        try:
+            return reconcile(db, result)
+        except (OSError, ValueError, sqlite3.Error, RuntimeError) as exc:
+            result["recovery_complete"] = False
+            result["error"] = {"code": exc.code if isinstance(exc, Fault) else "reconciliation_unconfirmed",
+                               "effects": "unknown"}
+            return result, 3
+
+
+def reconcile(db, result):
+    from .query import observe
+    rows = db.execute("SELECT id FROM attempts ORDER BY rowid").fetchall()
+    for item in rows:
+        row = attempt_row(db, item[0])
+        if row["state"] == "finished" and row["disposition"] != "released":
+            with db.transaction():
+                row = attempt_row(db, item[0])
+                publication = load(row["publication"])
+                if closure_valid(db, row) and publication["state"] == "pending":
+                    if row["evidence_root"]:
+                        job = db.execute("SELECT input FROM jobs WHERE id=?", (row["job"],)).fetchone()
+                        proof = evidence.verify(db.state / "attempts" / row["id"], row["evidence_root"],
+                                                row["job"], row["id"], load(job[0]),
+                                                load(row["command"]), load(row["closure"]))
+                        if proof["valid"]:
+                            db.execute("UPDATE attempts SET publication=? WHERE id=?",
+                                       (dump(dict(publication, state="committed")), row["id"]))
+                            db.event(row["id"], "finished", "recover", "publication_committed")
+                        else:
+                            db.execute("UPDATE attempts SET publication=? WHERE id=?",
+                                       (dump(dict(publication, state="incomplete")), row["id"]))
+                            db.event(row["id"], "finished", "recover", "original_publication_unavailable")
+                    elif not native.confirmed(load(row["supervisor"] or row["dispatcher"])):
+                        db.execute("UPDATE attempts SET publication=?,collection=?,recorded_outcome="
+                                   "COALESCE(recorded_outcome,'incomplete') WHERE id=?",
+                                   (dump(dict(publication, state="incomplete")),
+                                    dump({"state": "incomplete", "errors": ["original_publication_unavailable"]}),
+                                    row["id"]))
+                        db.event(row["id"], "finished", "recover", "original_publication_unavailable")
+                release_ordinary(db, attempt_row(db, item[0]))
+                confirmed = {"job": row["job"], "attempt": row["id"],
+                             "decision_revision": db.authority["revision"], "reason": "terminal_reconciled"}
+            result["confirmed_actions"].append(confirmed)
+    dispatch_revision = db.authority["revision"]
+    dispatch(db)
+    claims = db.execute("SELECT attempt,generation,revision FROM transitions "
+                        "WHERE cause='claim' AND revision>? ORDER BY seq", (dispatch_revision,)).fetchall()
+    for claim_record in claims:
+        with db.transaction():
+            row = attempt_row(db, claim_record["attempt"])
+            view = observe(db, row)
+            result["dispatch_claimed"].append({"job": row["job"], "attempt": row["id"],
+                                               "generation": row["generation"], "reason": "claim",
+                                               "disposition": row["disposition"],
+                                               "work_remaining": view["work_remaining"],
+                                               "decision_revision": view["revision"]})
+    for item in rows:
+        with db.transaction():
+            row = attempt_row(db, item[0])
+            view = observe(db, row)
+            entry = {"job": row["job"], "attempt": row["id"], "generation": row["generation"],
+                     "decision_revision": view["revision"], "reason": view["reasons"],
+                     "disposition": row["disposition"], "work_remaining": view["work_remaining"]}
+            if view["view"] == "uncertain":
+                result["still_uncertain"].append(entry)
+                result["recovery_complete"] = False
+            elif row["state"] == "finished":
+                result["finished_confirmed"].append(entry)
+                if row["disposition"] != "released":
+                    result["recovery_complete"] = False
+            elif row["state"] == "queued":
+                result["pending"].append(entry)
+            else:
+                result["live_confirmed"].append(entry)
+                if view["completion"] == "incomplete":
+                    result["recovery_complete"] = False
+    return result, 0 if result["recovery_complete"] else 3
 
 
 if __name__ == "__main__":

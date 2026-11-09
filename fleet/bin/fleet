@@ -7,10 +7,9 @@ sys.dont_write_bytecode = True
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 try:
     from fleet import cli
-
     code = cli.main()
 except KeyboardInterrupt:
-    print(json.dumps({"error": "interrupted; execution was not changed"}), flush=True)
+    print(json.dumps({"api": "fleet-job-api@1", "operation": "unknown",
+                      "error": {"code": "client_interrupted", "effects": "unknown"}}), flush=True)
     code = 130
-
 sys.exit(code)
