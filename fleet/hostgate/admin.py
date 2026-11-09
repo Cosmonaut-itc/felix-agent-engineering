@@ -131,7 +131,7 @@ def _read_acl(fd):
                       security, prop, C.byref(value)) or value.value != expected):
                 raise AdminError('metadatos filesec incompletos/incoherentes')
         if (_call('filesec_query_property', C.c_int, [C.c_void_p, C.c_int, C.c_void_p], security, 5, C.byref(present)) or
-                present.value not in (0, 1)):
+                present.value == -1):  # Darwin devuelve una máscara no nula, no necesariamente 1.
             raise AdminError('ACL no observable')
         if not present.value: return None
         if (_call('filesec_get_property', C.c_int, [C.c_void_p, C.c_int, C.c_void_p], security, 5, C.byref(acl)) or
