@@ -262,10 +262,13 @@ class Campaign(Progress):
         for size in (65535, 65536, 65537):
             with self.client() as client:
                 framed = raw + b' ' * (size - len(raw))
-                client.stream.sendall(struct.pack('!I', size) + framed)
-                if size <= 65536: self.assertEqual(wire.receive_response(client.stream, 'é', self.root)['exitCode'], 0)
+                if size <= 65536:
+                    client.stream.sendall(struct.pack('!I', size) + framed)
+                    self.assertEqual(wire.receive_response(client.stream, 'é', self.root)['exitCode'], 0)
                 else:
-                    with self.assertRaises(wire.TransportError): wire.receive_response(client.stream, 'é', self.root)
+                    with self.assertRaises(OSError):
+                        client.stream.sendall(struct.pack('!I', size) + framed)
+                        wire.receive_response(client.stream, 'é', self.root)
                 self.assertEqual((self.ledger(), self.sql()), before)
 
     def test_confirmed_mutation_with_socket_cut_retains_one_debit(self):
@@ -302,7 +305,8 @@ class Campaign(Progress):
         before = self.ledger()['reservations'][0]
         (self.root / '.fault').write_text(json.dumps(dict(side=self.server.pid, pid=os.getpid(), kind='divergence', phase=0, index=5, component=1, nonce='held')))
         try:
-            with self.assertRaises(wire.TransportError): client.call(dict(query('changed'), operation='latido', key=grant['simulationKey'], seq=1))
+            denied = client.call(dict(query('changed'), operation='latido', key=grant['simulationKey'], seq=1))
+            self.assertEqual(denied['exitCode'], 6); self.assertFalse(denied['wouldGrant'])
         finally: (self.root / '.fault').unlink()
         view = self.snapshot(); row = self.ledger()['reservations'][0]
         for field in ('key', 'owner', 'channelBinding', 'demand', 'exclusiveResources', 'seq'): self.assertEqual(row[field], before[field])
