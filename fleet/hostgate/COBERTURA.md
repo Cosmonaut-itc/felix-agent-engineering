@@ -5,6 +5,35 @@ implementación de sombra, simulación con harness y aceptación futura. No acre
 activación, integración de consumidores, aislamiento hostil ni corte real del runner.
 Rutas relativas a `fleet/hostgate/`.
 
+SEN-3822, corte 2a: `tests/test_admin.py` añade 9 escenarios compuestos P02/P03
+y la porción administrativa de P10, sin endpoint ni cambios al CLI/Fleet:
+
+| Garantía | Prueba de Administration |
+| --- | --- |
+| Digest del documento cargado, mapas profundamente inmutables y compatibilidad JSON/validadores | `test_load_revision_immutable_maps_and_existing_serializers` |
+| Política modificada sin cambiar operatorRevision; lease vivo cierra | `test_policy_content_digest_and_live_revision_guard` |
+| Locator fijo y rechazo de autoridad en payload; mínimos y volúmenes/recursos desconocidos por el core existente | `test_p02_fixed_locator_and_wire_stays_closed`, `test_loaded_minima_unknown_volume_and_resource_use_existing_core` |
+| Schema estricto, bool/NaN/duplicados, permisos, ACL reales en archivo/ancestro, symlink/hardlink, owner/hardware ajenos y FS remoto/fallo de observación simulados | `test_strict_document_and_catalogs`, `test_real_permissions_links_acl_and_failed_observations` |
+| B válido o con storeId clonado rechaza antes de SQLite; reducción en A conserva claves/débitos/exclusivos y proyecta duda | `test_anchor_other_store_and_reduced_budget_preserve_debits` |
+| Competidor en proceso propio no toma lock; ancla/config/directorio/BD/lock sustituidos cierran; ausencia no recrea | `test_lease_competition_replacement_and_missing_ledger`, `test_live_config_anchor_and_directory_replacement_are_detected` |
+
+Los negativos comparan inventario de archivos/directorios, inode, modos, tamaño,
+mtime y contenido; no basta un código de salida. `comparison(base)` es un inspector
+privado: main recibe JSON válido por su CLI y falla en `None != cfg_<digest>`;
+el candidato carga archivos y verifica su lease antes de comparar revisión/host/store/
+capacidad. No usa ImportError ni acredita un exploit de main. Fixtures dentro de la
+copia de corrida, con política de owner y ruta explícita; separación root/cliente real,
+IPC, observación de peers y activación quedan fuera. SEN-5625 de lectura/WAL en 3.14
+se mantiene visible; este corte no lo corrige.
+`tests/support/world.config` instala la seam privada de rutas en los procesos hijos
+históricos: la copia remote-run está dentro de un checkout y no hereda mocks del padre.
+
+R1-C1: `tests/test_admin_observation.py` reproduce una ACL real de 17 entradas y
+ENOMEM sólo en realloc dentro de fstatx nativo (interposición C en un hijo propio).
+Exige rechazo pese a rc=0, conserva archivo/metadata/ACL y acepta el control sin ACL.
+También cubre metadatos filesec ausentes/incoherentes, entradas sin datos, errno
+residual de éxito y salidas vacías de fstatfs64/sysctlbyname/gethostuuid.
+
 SEN-3952 amplía la guarda de SEN-3900 a la serialización de la vista, el resultado/audit
 y el contexto que se escribirá, todavía en sombra. El store usa los textos ya preparados:
 

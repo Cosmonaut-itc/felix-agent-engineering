@@ -80,6 +80,14 @@ class World:
 
 
 def config(path):
+    # Cada hijo del harness instala su política privada; los mocks del padre
+    # no cruzan exec. No es una flag ni un bypass del cargador productivo.
+    from hostgate.tests.test_admin import fixture_policy
+    with fixture_policy(Path(path).resolve().parent):
+        return _config(path)
+
+
+def _config(path):
     return NodeConfig('node', 'shadow-store', ('unix', 'other', 'windows'),
                       {'cpuMilli': 2000, 'memoryBytes': 2000,
                        'diskBytes': {'data': 2000}, 'slots': 2},
