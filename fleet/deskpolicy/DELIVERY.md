@@ -1,3 +1,141 @@
+# Entrega U1, corrección para ronda 9 — NO APTO: validación remota pendiente
+
+El objetivo de Felix se conserva: usar el desk para más corridas de noche
+con el archivo de política PAO. Se ejecutó este encargo como trabajador,
+sin felix-mode como orquestador, descendientes ni collab.
+
+El head inicial remoto coincidió exactamente con
+`f03aaa4a7ec59955596cba5129693d5c6fa24f0c`. Se creó la rama
+`t3/desk-politica-u1-r9` y se incorporó `origin/main` (`66a4999`) mediante
+el merge `6b32ae4`, sin conflictos. Los cambios de otros módulos de ese merge
+son heredados de main; no se hicieron ediciones propias en hostgate.
+
+## Commits y cambio
+
+- `d366f20`: sólo `tests/test_r9.py`, antes del arreglo.
+- `981b5a4`: sólo el mismo archivo; evita depender de stdin en la sonda de cerrar.
+- `6545f59`: excepción `WriterCycleTimeout(BaseException)` y captura por nombre
+  exclusivamente en el bucle del writer; una frase en la línea 366 del contrato.
+
+El resto del runtime no cambia. Se conserva la línea observable de error
+`pao/desk-error@1`, `reason=census-unknown`, `detail=writer-cycle-timeout`,
+`exit_code=75`. El bucle conserva su espera de 20 s y arma un plazo nuevo.
+No cambia la ruta de `publicar --una-vez`, `admitir`, `cerrar`, `reconciliar`
+ni `estado`. Esta última afirmación describe el diff; su comprobación
+mediante ejecución sigue pendiente.
+
+## Manejador → commit → prueba
+
+Líneas de engine/model/store iguales en f03aaa4a y en el arreglo.
+Las líneas CLI indican primero f03aaa4a y después el arreglo.
+Todos los casos pertenecen a `tests/test_r9.py::RoundNineTest`.
+**Antes y después: SIN EJECUTAR en todas las filas. No hay salida roja ni
+verde acreditada.** El commit de corrección de todas las filas es `6545f59`.
+
+| Manejador alcanzable desde el tick | Commit | Prueba (prefijo `test_` omitido) | Salida antes → después |
+| --- | --- | --- | --- |
+| `engine.py:573`, reconcile_claim, OSError/ValueError | `6545f59` | `reconcile_claim_oserror` | pendiente → pendiente |
+| `store.py:252`, session_members, OSError/ValueError/IndexError | `6545f59` | `session_members_outer_oserror` | pendiente → pendiente |
+| `store.py:243`, session_members, FileNotFoundError/ProcessLookupError | `6545f59` | `session_members_inner_missing_process` | pendiente → pendiente |
+| `engine.py:595`, recover_receipt, Exception | `6545f59` | `recover_receipt_exception` | pendiente → pendiente |
+| `engine.py:554`, reconcile_receipt, FileNotFoundError | `6545f59` | `reconcile_receipt_missing_file` | pendiente → pendiente |
+| `engine.py:634`, arm_valid, OSError/ValueError | `6545f59` | `arm_valid_oserror` | pendiente → pendiente |
+| `engine.py:702`, publish, FileNotFoundError | `6545f59` | `publish_missing_control` | pendiente → pendiente |
+| `store.py:105`, open_file, BaseException con limpieza y raise | `6545f59` | `open_file_baseexception_cleanup` | pendiente → pendiente |
+| `store.py:173`, mutex, BlockingIOError | `6545f59` | `mutex_blocking_io` | pendiente → pendiente |
+| `store.py:188`, assert_held, BlockingIOError del probe | `6545f59` | `assert_held_probe_blocking_io` | pendiente → pendiente |
+| `store.py:196`, assert_held, BlockingIOError del fd heredado | `6545f59` | `assert_held_owner_blocking_io` | pendiente → pendiente |
+| `store.py:208`, held, BlockingIOError | `6545f59` | `held_blocking_io` | pendiente → pendiente |
+| `model.py:101`, strict_json, ValueError/UnicodeError/RecursionError | `6545f59` | `strict_json_valueerror` | pendiente → pendiente |
+| `model.py:55`, timestamp, ValueError | `6545f59` | `timestamp_valueerror` | pendiente → pendiente |
+| `cli.py:341→345`, frontera del tick; `346→350`, frontera exterior de main | `6545f59` | `public_cli_loop_aborts_then_publishes_with_new_deadline` | pendiente → pendiente |
+
+La inyección usa `sys.settrace` para enviar SIGALRM al proceso justo dentro
+del bloque protegido elegido, con `cycle_timeout()` real armado. No cambia
+funciones del runtime ni añade costuras de entorno. Exige que publish no
+regrese normalmente y que el plazo llegue al llamador como BaseException,
+fuera de Exception. En los manejadores estrechos donde TimeoutError ya se
+propaga, la aserción de jerarquía es la que debe fallar contra la base;
+no se atribuye a esos manejadores una absorción que no tienen.
+
+Cada caso comprueba también política idéntica en bytes, timer desarmado,
+restauración del handler y mutex libre mediante otro proceso con flock no
+bloqueante. Después intenta publicar y recuperar el recibo para comprobar
+convergencia. El caso público ejecuta el script CLI real con `publicar`,
+sin `--una-vez`, espera realmente 20 s y exige error seguido de publicación
+nocturna con revisión 2 y temporizador nuevo. Al terminar comprueba que los
+otros comandos no llaman a setitimer. Son aserciones escritas, no resultados.
+
+`read_policy` (`engine.py:263`), `legacy_veto` (`322/324/336`), las ramas de
+admit (`418/449/456`), close (`525`) y status (`739`) no son alcanzables
+desde publish. Tampoco lo son execute, installation ni load_sample del harness.
+No se les asignan casos ficticios del tick. El handler exterior de main
+se incluye como frontera; el caso de CLI exige que el bucle continúe, por
+lo que una salida por esa frontera no satisface la prueba.
+
+## Limpieza y revisión estática
+
+La búsqueda `rg -n 'except:|except BaseException|except Exception|finally:'
+fleet/deskpolicy/*.py` no encontró ningún except desnudo. Hay dos
+`except BaseException`: `store.py:105` cierra fd y relanza; `installation.py:124`
+hace rollback y relanza (fuera del tick). En el tick, `engine.py:595` sólo
+registra diagnóstico de recibo, sin limpieza. Los otros except Exception
+están en execute, fuera del tick. Los fds, temporales y mutex del camino
+usan finally o with. No se encontró limpieza del tick que dependa de
+except Exception. Es evidencia de lectura, no una ejecución en el desk.
+
+## Corridas, bloqueo y trabajo pendiente
+
+El primer sondeo SSH al desk falló antes de obtener carga, espaciado o memoria:
+
+```text
+Connection closed by UNKNOWN port 65535
+ssh rc=255
+```
+
+Evidencia: `evidence/r9-blocked.log`. Se respetó la instrucción de r9:
+«Si ssh desk falla [...] no arranques nada más». No se reintentó SSH ni se
+arrancó remote-run. **RunIds: ninguno; rc de remote-run: no aplica.**
+La MacBook sólo editó archivos y calculó hashes; no ejecutó pruebas.
+
+Quedan pendientes las dos corridas dirigidas con los nombres autorizados:
+`dirigida-desk-politica-u1-r9-base` y `dirigida-desk-politica-u1-r9-fix`.
+Antes de cada arranque deben acreditarse carga <9, al menos 120 s desde el
+último arranque visible en remote-run/runs y MemAvailable >=6 GiB. Una a la
+vez mediante remote-run al desk y taskset -c 0-1, con fixtures dentro del mirror.
+La base debe extraerse de f03aaa4a conservando exactamente runtime y contrato,
+superponiendo únicamente el test_r9 final. Deben fallar las 15 pruebas por
+aserción y sin errores. La corrida corregida debe ejecutar test_r9 y las
+pruebas existentes dirigidas de CLI/publicación (test_policy.py y test_r2.py),
+además de bin/pao check. No se ejecutó ni se reclama la suite completa;
+ese gate pertenece al orquestador sobre un head APTO.
+
+No hay desviación del diseño elegido. La desviación del proceso es la falta
+de validación, causada por el fallo SSH documentado. No se afirma terminado
+el criterio de aceptación ni se autoriza merge/despliegue con esta entrega.
+No hay reproducción acreditada de un estado sin convergencia; su búsqueda
+por los casos de interrupción escritos sigue pendiente de ejecución.
+
+SHA-256 de los siete archivos de `store.SOURCE_FILES` del runtime corregido:
+
+```text
+290239201ad899b06a60dea7a20e7f2c97e129a0ffb8e81da84cc7dd38b15324
+```
+
+El manifiesto de entradas de r9 es `evidence/r9-inputs.sha256`. El hash r8
+que se conserva más abajo es histórico. No se sustituyen sus logs ni manifiestos.
+
+## Fuera de alcance
+
+No se desplegó, no se ejecutó deploy-desk.sh ni withdraw-desk.sh y no se
+escribió en /tmp/sen-test-slots ni en estado comprador de ninguna máquina.
+No se tocaron los consumidores Jale/Hasito, no se respondió el comentario
+de Codex, no se abrió otro PR ni se editó el cuerpo del #56. No se intentó
+reparar SSH, reiniciar infraestructura ni matar procesos ajenos.
+No se encontraron otros defectos mediante ejecución porque no pudo arrancar.
+
+---
+
 # Entrega U1, corrección para ronda 8
 
 El objetivo sigue siendo ampliar las corridas nocturnas del desk con el
