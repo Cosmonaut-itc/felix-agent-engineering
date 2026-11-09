@@ -77,6 +77,8 @@ def altered_frames(root, value):
     mode = (root / '.wire').read_text() if (root / '.wire').exists() else ''
     if not mode:
         yield from wire.response_frames(value); return
+    if mode in ('overflow', 'serialization-error'):
+        yield from wire.response_frames(dict(value, x=float('nan')) if mode == 'serialization-error' else value, _maximum=1 if mode == 'overflow' else 2**64 - 1); return
     raw = canonical(value).encode('utf-8')
     if mode == 'invalid-json': raw = b'{'
     if mode == 'nonfinite': raw = b'{"schema":"fleet/host-reservation@1","operationId":"query","result":"shadow","x":1e999}'
@@ -93,7 +95,12 @@ def altered_frames(root, value):
 
 
 def server(root):
-    checkpoint = lambda world, name: (_ for _ in ()).throw(OSError('injected ' + name)) if (root / '.cut').exists() and (root / '.cut').read_text() == name else None
+    def checkpoint(world, name):
+        cut = (root / '.cut').read_text() if (root / '.cut').exists() else ''
+        if cut == 'native-revalidate' and name == 'before_revalidate':
+            pid = next(iter(world.sessions.bindings.values()))[1]['peer'].identity.pid
+            (root / '.fault').write_text(json.dumps(dict(side=os.getpid(), pid=pid, kind='read', phase=0, index=1, nonce='revalidate')))
+        if cut == name: raise OSError('injected ' + name)
     from hostgate.service import Runtime
     with faults(root), patch.object(Runtime, 'checkpoint', checkpoint), patch.object(ipc_io, 'response_frames', lambda value: altered_frames(root, value)):
         return progress_server(root)
@@ -153,7 +160,7 @@ class Campaign(Progress):
                         self.server = self.spawn('server'); self.assertEqual(self.line(self.server).strip(), 'listening')
                     self.assertEqual((self.ledger(), self.sql()), before)
                     self.assertEqual(self.snapshot()['budget']['retained']['slots'], 0)
-                    print('NATIVE role={} kind={} capture={} index={} positive=ok rejected ledger/operations/audit=unchanged'.format(role, kind, phase, index), flush=True)
+                    print('NATIVE role={} kind={} capture={} index={} component={} positive=ok rejected ledger/operations/audit=unchanged'.format(role, kind, phase, index, component), flush=True)
 
     def test_commit_cuts_replay_and_restart_cannot_adopt_binding(self):
         _, _, call = self.pair()
@@ -170,7 +177,7 @@ class Campaign(Progress):
         before = self.sql()
         for field, value in (('operationId', 'new'), ('executorId', 'other'), ('jobId', 'new'), ('attemptId', 'new'),
                              ('physicalHostId', 'other'), ('profileId', 'other'), ('demand', dict(original['demand'], slots=0)),
-                             ('exclusiveResources', []), ('operation', 'estado'), ('auth', 1)):
+                             ('exclusiveResources', []), ('operation', 'estado'), ('budget', 999), ('auth', 1)):
             self.assertEqual(call(dict(original, **{field: value}))['exitCode'], 2)
             self.assertEqual(self.sql(), before)
         key = replay['simulationKey']
@@ -218,11 +225,11 @@ class Campaign(Progress):
             spool = spool_factory(*args, **kwargs)
             spool.write = lambda raw: (_ for _ in ()).throw(OSError('ENOSPC on spool write'))
             return spool
-        for mode in ('invalid-json', 'nonfinite', 'duplicate-key', 'counter-extreme', 'cut', 'duplicate-end', 'extra', 'utf8', 'spool-full', 'timeout'):
+        for mode in ('invalid-json', 'nonfinite', 'duplicate-key', 'counter-extreme', 'cut', 'duplicate-end', 'extra', 'utf8', 'spool-full', 'timeout', 'overflow', 'serialization-error'):
             with self.subTest(mode=mode):
                 with self.client() as client:
                     self.assertEqual(client.call(query())['exitCode'], 0)  # mismo canal, sin fallo
-                    if mode not in ('spool-full', 'timeout'): (self.root / '.wire').write_text(mode)
+                    if mode not in ('spool-full', 'timeout', 'overflow', 'serialization-error'): (self.root / '.wire').write_text(mode)
                     try:
                         if mode == 'utf8':
                             self.assertEqual(client.call(query())['text'], 'é' * 32768)
@@ -274,6 +281,19 @@ class Campaign(Progress):
         self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
         self.assertEqual(view['reservations'][0]['exclusiveResources'], ['sen-slot:1'])
 
+
+    def test_native_failure_during_core_revalidation(self):
+        client = self.bound_client()
+        (self.root / '.cut').write_text('native-revalidate')
+        try:
+            denied = client.call(request(physicalHostId='fixture-host', exclusiveResources=['sen-slot:1']))
+        finally:
+            (self.root / '.cut').unlink()
+            if (self.root / '.fault').exists(): (self.root / '.fault').unlink()
+        self.assertFalse(denied['wouldGrant'])
+        self.assertEqual(self.snapshot()['budget']['retained']['slots'], 0)
+        _, _, positive = self.pair('after-fault')
+        self.assertTrue(positive(request('after-fault', physicalHostId='fixture-host', exclusiveResources=['sen-slot:1']))['wouldGrant'])
 
     def test_native_change_after_grant_retains_binding_and_budget(self):
         client = self.bound_client()

@@ -399,3 +399,14 @@ El CLI `estado` por IPC sale 6, con diagnóstico en stderr y stdout vacío al ca
 el harness histórico con `gate/auth` inyectados conserva su salida 130.
 Las regresiones de R1-W1/R1-W2 están en `test_ipc.py` y `test_cli.py`;
 `mini-ipc.sh` las ejecuta junto a las tres familias dirigidas en ambos stacks.
+
+SEN-3822, 2c-II: el endpoint usa I/O no bloqueante y buffers de entrada/salida por
+conexión (`ipc_io.Channel`). `select` avanza como máximo una lectura/escritura por
+canal listo; un frame parcial o lector detenido no monopoliza el servicio.
+Capturas, watches, sesiones, `_decision`, proyección, replay y store se ejecutan
+serialmente en el mismo hilo. El handshake conserva 5 s; las operaciones conservan
+30 s de inactividad y 300 s totales. Cerrar un canal nunca compensa su reserva.
+La dirigida Mini es `tests/mini-ipc-progress.sh` (CX-2, TTL real de 10 s) y
+`tests/mini-ipc-campaign.sh` (campaña integrada y vecinas seleccionadas), ambos
+con Apple Python 3.9.6 y Python 3.14.7, temporales privados y sin instalar servicio.
+El estado sigue en sombra; PR 3 espera la revisión APTO y la suite del orquestador.
