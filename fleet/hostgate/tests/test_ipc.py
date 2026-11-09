@@ -215,6 +215,88 @@ class IPC(unittest.TestCase):
             with self.assertRaises(OSError): receive_response(c.stream, 'query', self.root)
         self.assertEqual(before, self.inventory())
 
+    def test_r1_cancel_after_commit(self):
+        from hostgate import admin, wire
+        from hostgate.client import HostgateClient, SupervisorHandoff
+        from hostgate.darwin_peer import DarwinPeers
+        from hostgate.model import identity_json
+        r = self.spawn('requester')
+        handoff = SupervisorHandoff(**json.loads(self.line(r)))
+        with DarwinPeers() as peers:
+            own = identity_json(peers._observe('unix', pid=os.getpid()).identity)
+        r.stdin.write(canonical(own) + '\n'); r.stdin.flush()
+        with patch.object(admin, 'local_authority', return_value=self.f.locator):
+            client = HostgateClient.connect(handoff)
+        self.addCleanup(client.close)
+        self.assertEqual(self.line(r).strip(), 'approved')
+        def cancel_before_end(stream, operation_id, spool_dir, maximum, *, _deadline):
+            size, = struct.unpack('!I', wire._read(stream, 4, _deadline))
+            kind = wire._read(stream, 1, _deadline)
+            self.assertEqual(kind, b'\x01')
+            data = wire._read(stream, size - 1, _deadline)
+            self.assertTrue(json.loads(data)['wouldGrant'])
+            raise KeyboardInterrupt('cancel before END')
+        caught = None
+        with patch('hostgate.client.receive_response', side_effect=cancel_before_end):
+            try:
+                client.call(request(physicalHostId='fixture-host', exclusiveResources=['sen-slot:1']))
+            except BaseException as exc:
+                caught = exc
+        state = self.client().call(query('after-cancel'))
+        print('R1_CANCEL exception={} outcome_unknown={} fd={} retained={} reservations={}'.format(
+            type(caught).__name__, getattr(caught, 'outcome_unknown', None), client.stream.fileno(),
+            state['budget']['retained']['slots'], len(state['reservations'])), flush=True)
+        self.assertEqual(client.stream.fileno(), -1)
+        self.assertEqual(state['budget']['retained']['slots'], 1)
+        self.assertEqual(len(state['reservations']), 1)
+        self.assertIsInstance(caught, wire.TransportError)
+        self.assertIs(caught.outcome_unknown, True)
+
+    def test_r1_query_only_second_executor(self):
+        from hostgate import admin, wire
+        from hostgate.client import HostgateClient
+        from hostgate.ipc import check, message
+        self.server.terminate(); self.server.communicate(timeout=8)
+        self.f.doc['principals'][str(os.getuid())]['executors'] = ['unix']
+        self.f.publish()
+        cfg = admin.load_config(self.f.locator)
+        self.server = self.spawn('server')
+        self.assertEqual(self.line(self.server).strip(), 'listening')
+        failure, default_result = None, None
+        with patch.object(admin, 'local_authority', return_value=self.f.locator):
+            try:
+                with HostgateClient.connect() as client:
+                    default_result = client.call(query('default'))
+            except Exception as exc:
+                failure = type(exc).__name__ + ': ' + str(exc)
+            control = HostgateClient._open('unix')
+        self.addCleanup(control.close)
+        wire.send_json(control.stream, message('query'), control.deadline)
+        check(wire.receive_json(control.stream, control.deadline), 'ready')
+        positive = control.call(query('positive'))
+        print('R1_EXECUTOR catalog={} permitted={} default={} explicit_unix_exit={}'.format(
+            cfg.node.executors, cfg.principals[str(os.getuid())]['executors'], failure,
+            positive['exitCode']), flush=True)
+        self.assertEqual(positive['exitCode'], 0)
+        self.assertIsNotNone(default_result, 'authorized query must choose an allowed executor')
+        self.assertEqual(default_result['exitCode'], 0)
+
+    def test_r1_query_without_permitted_executor(self):
+        from hostgate import admin
+        from hostgate.client import HostgateClient
+        from hostgate.wire import TransportError
+        self.server.terminate(); self.server.communicate(timeout=8)
+        self.f.doc['principals'][str(os.geteuid())]['executors'] = []
+        self.f.publish()
+        cfg = admin.load_config(self.f.locator)
+        self.assertEqual(cfg.principals[str(os.geteuid())]['executors'], ())
+        self.server = self.spawn('server')
+        self.assertEqual(self.line(self.server).strip(), 'listening')
+        with patch.object(admin, 'local_authority', return_value=self.f.locator):
+            with self.assertRaisesRegex(TransportError, 'ningún ejecutor permitido') as caught:
+                HostgateClient.connect()
+        print('R1_NO_EXECUTOR', str(caught.exception), flush=True)
+
 
 class Framing(unittest.TestCase):
     def test_complete_fragmented_response_and_interruptions(self):
@@ -258,7 +340,7 @@ class ClientHandshake(unittest.TestCase):
         from hostgate.model import identity_json
         from hostgate.wire import TransportError
         identity = Identity('unix', 501, 123, (1, 2, 3, 4), 'boot', 'boot')
-        cfg = SimpleNamespace(service_uid=501, service_gid=20, node=SimpleNamespace(executors=['unix'], host_id='host', store_id='store', revision='cfg'))
+        cfg = SimpleNamespace(principals={str(os.geteuid()): {'executors': ('unix',)}}, service_uid=501, service_gid=20, node=SimpleNamespace(executors=['unix'], host_id='host', store_id='store', revision='cfg'))
         hello = message('hello', physicalHostId='host', storeId='store', configRevision='cfg', mode='shadow', identity=identity_json(identity))
         variants = [hello] + [dict(hello, **{key: value}) for key, value in
             [('physicalHostId', 'fake'), ('storeId', 'fake'), ('configRevision', 'fake'), ('mode', 'enforcing'),
@@ -274,6 +356,44 @@ class ClientHandshake(unittest.TestCase):
                     with self.assertRaises(TransportError): HostgateClient._open()
                 self.assertEqual(stream.sendall.call_count, 1)  # sólo open; ninguna intención/aprobación/RPC
                 peers.close.assert_called_once()
+
+
+class ClientCancellation(unittest.TestCase):
+    def test_r1_pairing_cancellation_closes_and_reports_unknown(self):
+        from unittest.mock import Mock
+        from hostgate import client as api
+        from hostgate.wire import TransportError
+        for entry in ('connect', 'request_supervisor', 'approve'):
+            with self.subTest(entry=entry):
+                client = Mock()
+                with patch.object(api.HostgateClient, '_open', return_value=client), \
+                        patch.object(api, 'send_json'), \
+                        patch.object(api, 'receive_json', side_effect=KeyboardInterrupt('cancel handshake')):
+                    try:
+                        if entry == 'connect': api.HostgateClient.connect()
+                        elif entry == 'request_supervisor': api.request_supervisor(request())
+                        else: api.RequesterSession(client, None).approve(None)
+                    except BaseException as exc:
+                        caught = exc
+                    else: self.fail('cancelled handshake returned a session')
+                client.close.assert_called_once()
+                self.assertIsInstance(caught, TransportError)
+                self.assertIs(caught.outcome_unknown, True)
+
+    def test_r1_open_cancellation_closes_and_reports_unknown(self):
+        from unittest.mock import Mock
+        from hostgate import client as api
+        from hostgate.wire import TransportError
+        stream, peers = Mock(), Mock()
+        with patch.object(api.socket, 'socket', return_value=stream), \
+                patch.object(api, 'DarwinPeers', return_value=peers), \
+                patch.object(api.admin, 'load_config', side_effect=KeyboardInterrupt('cancel open')):
+            try: api.HostgateClient._open()
+            except BaseException as exc: caught = exc
+            else: self.fail('cancelled open returned a session')
+        stream.close.assert_called_once(); peers.close.assert_called_once()
+        self.assertIsInstance(caught, TransportError)
+        self.assertIs(caught.outcome_unknown, True)
 
 
 if __name__ == '__main__':
