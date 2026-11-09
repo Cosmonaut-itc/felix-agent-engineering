@@ -1,7 +1,8 @@
 #!/bin/bash
 set -eu
-mkdir -p "$PWD/.ipc-fixtures" "$PWD/.ipc-pycache" "$PWD/.ipc-base"
-export TMPDIR="$PWD/.ipc-fixtures" PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$PWD/.ipc-pycache"
+# Keep native AF_UNIX fixtures below Darwin sun_path even with long run names.
+mkdir -p "$PWD/.t" "$PWD/.ipc-pycache" "$PWD/.ipc-base"
+export TMPDIR="$PWD/.t" PYTHONDONTWRITEBYTECODE=1 PYTHONPYCACHEPREFIX="$PWD/.ipc-pycache"
 git archive 039fab9 fleet/hostgate | tar -x -C "$PWD/.ipc-base"
 result=0
 for python in /usr/bin/python3 /opt/homebrew/bin/python3.14; do
