@@ -91,6 +91,7 @@ class Progress(IPC):
             response = json.loads(supervisor.stdout.readline())
             latencies.append(time.monotonic() - start); states.append(response['simulationState'])
             self.assertEqual(response['exitCode'], 0)
+            self.assertEqual(response['simulationKey'], grant['simulationKey'])
             return True
         self.assertTrue(beat(), 'control sin Q'); self.assertEqual(states[-1], 'reserved')
         if mode == 'handshake':
@@ -112,11 +113,12 @@ class Progress(IPC):
                 while not (self.root / '.queried').exists() and time.monotonic() < deadline: time.sleep(0.01)
                 self.assertTrue((self.root / '.queried').exists(), 'Q llegó al core antes del bloqueo de envío')
                 print('CX2 reader responseBytes={} socketBuffers={}'.format(size, buffers), flush=True)
-        start = time.monotonic(); pending = False
+        start = time.monotonic(); next_beat = start; pending = False
         while time.monotonic() - start < 15:
             if not pending: pending = not beat()
             # Mantener Q detenido >=15 s también en el rojo, sin acumular solicitudes.
-            time.sleep(max(0, min(1, 15 - (time.monotonic() - start))))
+            next_beat += 1
+            time.sleep(max(0, min(next_beat, start + 15) - time.monotonic()))
         held = time.monotonic() - start
         slow.close()
         if pending:
