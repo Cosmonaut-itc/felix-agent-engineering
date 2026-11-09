@@ -187,6 +187,16 @@ class PeerMatrix(unittest.TestCase):
         self.assertFalse(n.watch_object.exited)
         self.assertFalse(p.alive(s, peer)); self.assertTrue(n.watch_object.closed)
 
+    def test_total_deadline_and_cancellation_close_uncommitted_watch(self):
+        n, p, s = self.fresh(); s.settimeout(2)
+        with patch.object(p, '_challenge'), patch.object(d.time, 'monotonic', side_effect=(100, 106)):
+            with self.assertRaises(d.PeerError): p.authenticate(s, 'unix')
+        self.assertTrue(n.watch_object.closed); self.assertEqual(s.gettimeout(), 2)
+        n, p, s = self.fresh()
+        with patch.object(p, '_challenge', side_effect=KeyboardInterrupt), self.assertRaises(KeyboardInterrupt):
+            p.authenticate(s, 'unix')
+        self.assertTrue(n.watch_object.closed); self.assertFalse(p._streams)
+
     def test_challenge_rejects_buffered_proof_and_bounded_frames(self):
         import struct
         def frame(raw): return struct.pack('!I', len(raw)) + raw
@@ -279,6 +289,8 @@ with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as s, DarwinPeers() as p:
         n = d._Native()
         self.assertEqual([C.sizeof(t) for t in (d._Audit, d._Unique, d.DarwinBSDInfo)], [32, 56, 136])
         self.assertGreater(n.unique(os.getpid())[1], 0)
+        value = SimpleNamespace(uuid=b'x' * 16, unique=42, version=-1)
+        with patch.object(n, '_proc', return_value=value): self.assertEqual(n.unique(123)[2], 0xffffffff)
         with d.DarwinPeers() as p: self.assertEqual(p.health_boot(), (p.boot(), n.boottime()))
         with patch.object(n.libc, 'sysctlbyname', return_value=-1):
             for fn in (n.boot, n.boottime):
@@ -341,8 +353,11 @@ class Health(unittest.TestCase):
 
     def test_bad_boot_never_grants_or_releases_retained_capacity(self):
         from hostgate.identity import Identity
-        self.world.physical_boot = self.p.boot
-        self.world.executor_boot = lambda executor: self.p.boot()
+        def boot():
+            try: return self.p.boot()
+            except d.PeerError: return None
+        self.world.physical_boot = boot
+        self.world.executor_boot = lambda executor: boot()
         self.world.verify = self.p.verify
         identity = Identity('unix', 501, 123, (100, 2, 41, 7), U, U)
         auth = AuthContext('fixture', 'supervisor', identity, identity, 'fixture-channel')
@@ -359,7 +374,24 @@ class Health(unittest.TestCase):
         after = self.gate.store.read()['reservations'][0]
         self.assertEqual(after['demand'], before['demand'])
         self.assertEqual(after['exclusiveResources'], before['exclusiveResources'])
-        self.assertEqual(after['state'], 'uncertain')
+        projected = self.gate._observe(self.gate.store.read())['reservations'][0]
+        self.assertEqual(projected['effectiveState'], 'uncertain')
+
+    def test_initial_uuid_bracket_and_time_mismatch_with_parse_failure(self):
+        for fault in range(1, 4):
+            n = Native(); p = d.DarwinPeers(_native=n); self.addCleanup(p.close)
+            n.calls.clear(); n.bad = fault
+            with self.assertRaises(OSError): d.DarwinHealth(p, 'mini-prueba', self.path)
+        for gap in (1, 2):
+            n = Native(); p = d.DarwinPeers(_native=n); self.addCleanup(p.close); n.calls.clear()
+            def change(index, name):
+                if index == gap: n.uuid = 'aaaaaaaa-2222-3333-4444-555555555555'
+            n.after = change
+            with self.assertRaises(d.PeerError): d.DarwinHealth(p, 'mini-prueba', self.path)
+        self.n.time = (T[0] + 1, T[1]); self.path.write_text('{bad')
+        self.assertIsNone(self.health.read()[2])
+        self.n.time = T; self.path.write_text(json.dumps(self.sample))
+        self.assertIsNone(self.health.read()[2])
 
     def test_each_health_read_fault_and_boot_change_latches_closed(self):
         original = Path.read_bytes

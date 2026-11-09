@@ -241,6 +241,7 @@ class DarwinPeers:
             self._challenge(stream, deadline)
             if self.capture(stream, executor) != candidate: raise PeerError('peer cambió tras el reto')
             watch.check(); self._open(stream)
+            self._timeout(stream, deadline)
             self._streams[stream] = (candidate, watch)
             return candidate
         except BaseException as exc:
@@ -282,6 +283,7 @@ class DarwinHealth:
         sample = None
         try:
             before = self.peers.boot(), self.peers._native.boottime()
+            self._invalid = self._invalid or before != self._pair
             sample = strict_json(self.path.read_bytes().decode('utf-8'))
             after_time, after_uuid = self.peers._native.boottime(), self.peers.boot()
             if before != self._pair or (after_uuid, after_time) != self._pair:
