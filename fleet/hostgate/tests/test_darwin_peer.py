@@ -151,18 +151,23 @@ class PeerMatrix(unittest.TestCase):
                             (gap == 'register' and name == 'register') or
                             (gap == 'after-register' and index == 12) or
                             (gap == 'before-challenge' and index == 23)):
-                            n.generation += 1; n.watch_object.exited = True
+                            n.generation += 1
+                            if gap not in ('before-register', 'register', 'after-register'):
+                                n.watch_object.exited = True
                     n.after = change
                     def challenge(*args):
                         if gap in ('during-challenge', 'after-challenge'):
                             n.generation += 1; n.watch_object.exited = True
-                    with patch.object(p, '_challenge', side_effect=challenge):
+                    with patch.object(p, '_challenge', side_effect=challenge) as exchange:
                         if gap == 'dispatch':
                             peer = p.authenticate(s, 'unix')
                             n.generation += 1; n.watch_object.exited = True
                             self.assertFalse(p.alive(s, peer))
                         else:
                             with self.assertRaises(d.PeerError): p.authenticate(s, 'unix')
+                            if gap in ('before-register', 'register', 'after-register'):
+                                self.assertFalse(n.watch_object.exited)
+                                exchange.assert_not_called()  # La recaptura, sin NOTE_EXIT, impide el reto.
             n, p, s = self.fresh()
             with patch.object(n, 'watch', side_effect=ProcessLookupError('ESRCH')):
                 with self.assertRaises(d.PeerError): p.authenticate(s, 'unix')
