@@ -143,6 +143,10 @@ class DarwinPeers:
         if self._invalid: raise PeerError('boot del runtime cambió')
         return current
 
+    def hardware_uuid(self):
+        from .admin import _hardware_uuid
+        return _hardware_uuid()
+
     def health_boot(self):
         before = self.boot()
         value = self._native.boottime()

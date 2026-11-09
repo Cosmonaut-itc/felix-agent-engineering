@@ -1,4 +1,4 @@
-"""CLI JSON; el endpoint autenticado pertenece al servicio futuro."""
+"""CLI JSON: consulta por IPC; mutaciones sólo en sesión de supervisor."""
 import json
 import sys
 from .protocol import MAX_BYTES, reply, strict_json, validate, reason
@@ -27,9 +27,12 @@ def main(argv=None, *, gate=None, auth=None, stdin=None, stdout=None, stderr=Non
         result = reply(operation_id, revision, [reason('store-unavailable', 'entrada no disponible')], exit_code=6)
     else:
         try:
-            if gate is None or auth is None:
+            if gate is None and args[0] == 'estado':
+                from .client import HostgateClient
+                with HostgateClient.connect() as client: result = client.call(request)
+            elif gate is None or auth is None:
                 result = reply(operation_id, revision,
-                               [reason('enforcement-unavailable', 'endpoint autenticado no implementado')], exit_code=5)
+                               [reason('enforcement-unavailable', 'mutación requiere sesión persistente de supervisor')], exit_code=5)
             elif args[0] == 'reservar': result = gate.reservar(request, auth)
             elif args[0] == 'latido': result = gate.latido(operation_id, request['key'], request['seq'], auth)
             elif args[0] == 'dudosa': result = gate.dudosa(operation_id, request['key'], request['reason'], request['evidenceIds'], auth)
@@ -37,6 +40,10 @@ def main(argv=None, *, gate=None, auth=None, stdin=None, stdout=None, stderr=Non
             else:
                 result = gate.estado({}, auth)
                 result['operationId'] = operation_id
+        except OSError:
+            print('transporte no disponible; resultado desconocido', file=stderr)
+            if gate is None and args[0] == 'estado': return 6
+            result = reply(operation_id, revision, [reason('store-unavailable')], exit_code=6)
         except Busy:
             result = reply(operation_id, revision, [reason('busy', 'escritor ocupado', True)], exit_code=4)
         except Exception:
