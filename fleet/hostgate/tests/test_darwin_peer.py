@@ -421,5 +421,35 @@ class Health(unittest.TestCase):
             self.path.write_text(raw)
             self.assertTrue(self.gate._health())
 
+    def test_observed_component_latches_before_following_failure(self):
+        original = Path.read_bytes
+        for observed, component, following in ((1, 'uuid', 2), (2, 'time', 3),
+                                                (4, 'time', 5), (5, 'uuid', 6)):
+            with self.subTest(observed=observed, component=component, following=following):
+                n = Native(); p = d.DarwinPeers(_native=n); self.addCleanup(p.close)
+                h = d.DarwinHealth(p, 'mini-prueba', self.path)
+                world = World(); world.health = h.read; gate = Hostgate(self.cfg, world)
+                self.assertEqual(gate._health(), [])  # Control positivo con lector real.
+                expected = p._observe('unix', pid=123).identity
+                n.calls.clear(); n.bad = following
+                def change(index, name):
+                    if index == observed - 1:
+                        setattr(n, component, 'aaaaaaaa-2222-3333-4444-555555555555'
+                                if component == 'uuid' else (T[0] + 1, T[1]))
+                if observed == 1: n.uuid = 'aaaaaaaa-2222-3333-4444-555555555555'
+                n.after = change
+                def read_snapshot(path): return n.read('snapshot', original(path))
+                with patch.object(Path, 'read_bytes', read_snapshot):
+                    self.assertIsNone(h.read()[2])
+                if observed == 5:  # U final: la siguiente operación nativa también falla.
+                    with self.assertRaises(OSError): p.boot()
+                n.after = None; n.bad = None; n.uuid, n.time = U, T
+                recovered = h.read()[2]
+                print('LATCH observed=%s/%s following=%s restored_witness=%r identity=%s' %
+                      (observed, component, following, recovered, p.verify(expected).status), flush=True)
+                self.assertIsNone(recovered, 'cambio observado debe cerrar salud hasta reinicio')
+                self.assertTrue(gate._health())
+                self.assertEqual(p.verify(expected).status, 'unverifiable' if component == 'uuid' else 'same')
+
 
 if __name__ == '__main__': unittest.main()
