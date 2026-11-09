@@ -18,11 +18,17 @@ from hostgate.tests.support.world import World, request
 
 def server(root):
     from hostgate.service import run
+    from hostgate.admission import Hostgate
+    original_estado = Hostgate.estado
+    def observed_estado(gate, *args, **kwargs):
+        result = original_estado(gate, *args, **kwargs)
+        (root / '.queried').touch()
+        return result
     os.chdir(root)
     class ClockWorld(World):
         def monotonic(self): return time.monotonic()
         def profile_verified(self, profile): return profile == 'fixture'
-    with fixture_policy(root), patch.object(socket, 'socket', FixtureSocket):
+    with fixture_policy(root), patch.object(socket, 'socket', FixtureSocket), patch.object(Hostgate, 'estado', observed_estado):
         return run(_locator=Fixture(root).locator, _synthetic=ClockWorld(),
                    _ready=lambda: print('listening', flush=True))
 
@@ -39,7 +45,13 @@ class Progress(IPC):
         self.addCleanup(cleanup)
         return proc
 
-    def snapshot(self): return self.client().call(query())
+    def snapshot(self):
+        with self.client() as client: return client.call(query())
+
+    def ledger(self):
+        from hostgate import admin
+        from hostgate.store import ShadowStore
+        return ShadowStore(admin.load_config(self.f.locator).node).read()
 
     def history(self):
         from hostgate import admin
@@ -62,7 +74,7 @@ class Progress(IPC):
         _, supervisor, call = self.pair()
         grant = call(request(physicalHostId='fixture-host', exclusiveResources=['sen-slot:1']))
         self.assertTrue(grant['wouldGrant'], grant)
-        original = self.snapshot()['reservations'][-1]
+        original = self.ledger()['reservations'][-1]
         seq, latencies, states = 0, [], []
         def beat():
             nonlocal seq
@@ -93,8 +105,11 @@ class Progress(IPC):
                 size = len(canonical(self.snapshot()).encode())
                 buffers = slow.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF) + slow.getsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF)
                 self.assertGreater(size, buffers * 2, 'respuesta real mayor que los buffers Unix')
+                (self.root / '.queried').unlink()
                 send_json(slow, query('stopped-reader'))
-                self.assertTrue(select.select([slow], [], [], 2)[0], 'H inició DATA')
+                deadline = time.monotonic() + 2
+                while not (self.root / '.queried').exists() and time.monotonic() < deadline: time.sleep(0.01)
+                self.assertTrue((self.root / '.queried').exists(), 'Q llegó al core antes del bloqueo de envío')
                 print('CX2 reader responseBytes={} socketBuffers={}'.format(size, buffers), flush=True)
         start = time.monotonic(); pending = False
         while time.monotonic() - start < 15:
@@ -110,9 +125,10 @@ class Progress(IPC):
         snapshot = self.snapshot(); held_rows = [r for r in snapshot['reservations'] if r['effectiveState'] != 'released']
         self.assertEqual(len(held_rows), 1)
         row = held_rows[0]
+        durable = self.ledger()['reservations'][-1]
         for field in ('key', 'owner', 'channelBinding', 'demand', 'exclusiveResources'):
-            self.assertEqual(row[field], original[field])
-        self.assertEqual(row['seq'], seq)
+            self.assertEqual(durable[field], original[field])
+        self.assertEqual(durable['seq'], seq)
         self.assertEqual(snapshot['budget']['retained']['slots'], 1)
         self.assertEqual(snapshot['budget']['available']['slots'], 0)
         self.assertEqual(row['exclusiveResources'], ['sen-slot:1'])
