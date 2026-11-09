@@ -220,41 +220,63 @@ class DarwinPeers:
         if not 1 <= size <= 65536: raise PeerError('límite del reto')
         return strict_json(self._recv(stream, size, deadline).decode('utf-8'))
 
-    def _challenge(self, stream, deadline):
+    def challenge_steps(self):
+        """Un yield por frame saliente; send recibe el frame remoto completo."""
         nonce = secrets.token_hex(32)
-        self._frame(stream, deadline, {'kind': 'challenge', 'nonce': nonce})
-        remote = self._frame(stream, deadline)
+        remote = yield {'kind': 'challenge', 'nonce': nonce}
         if (not isinstance(remote, dict) or set(remote) != {'kind', 'nonce'} or remote['kind'] != 'challenge' or
                 not isinstance(remote['nonce'], str) or len(remote['nonce']) != 64 or
                 any(c not in '0123456789abcdef' for c in remote['nonce'])):
             raise PeerError('reto inválido')
-        self._frame(stream, deadline, {'kind': 'proof', 'nonce': remote['nonce']})
-        if self._frame(stream, deadline) != {'kind': 'proof', 'nonce': nonce}:
+        proof = yield {'kind': 'proof', 'nonce': remote['nonce']}
+        if proof != {'kind': 'proof', 'nonce': nonce}:
             raise PeerError('prueba no corresponde al reto fresco')
 
-    def authenticate(self, stream, executor, *, _deadline=None):
+    def _challenge(self, stream, deadline):
+        steps = self.challenge_steps()
+        outgoing = next(steps)
+        try:
+            while True:
+                self._frame(stream, deadline, outgoing)
+                outgoing = steps.send(self._frame(stream, deadline))
+        except StopIteration:
+            pass
+        finally:
+            steps.close()
+
+    def authentication_steps(self, stream, executor, deadline):
+        """Suspende sólo durante el reto; el dueño debe cerrar el generador al abortar."""
         if stream in self._streams: raise PeerError('canal ya autenticado')
         watch, previous_timeout = None, stream.gettimeout()
-        deadline = _deadline if _deadline is not None else time.monotonic() + 5
         try:
             os.set_inheritable(stream.fileno(), False)
             candidate = self.capture(stream, executor)
             watch = self._native.watch(candidate.identity.pid)
             watch.check()
             if self.capture(stream, executor) != candidate: raise PeerError('peer cambió antes del reto')
-            self._challenge(stream, deadline)
+            yield
             if self.capture(stream, executor) != candidate: raise PeerError('peer cambió tras el reto')
             watch.check(); self._open(stream)
             self._timeout(stream, deadline)
             self._streams[stream] = (candidate, watch)
+            watch = None  # El registro es ahora dueño del watch.
             return candidate
-        except BaseException as exc:
-            if watch is not None: watch.close()
-            if isinstance(exc, (OSError, ValueError, OverflowError)):
-                raise PeerError('autenticación no verificable') from exc
-            raise
+        except (OSError, ValueError, OverflowError) as exc:
+            raise PeerError('autenticación no verificable') from exc
         finally:
+            if watch is not None: watch.close()
             if stream.fileno() >= 0: stream.settimeout(previous_timeout)
+
+    def authenticate(self, stream, executor, *, _deadline=None):
+        deadline = _deadline if _deadline is not None else time.monotonic() + 5
+        steps = self.authentication_steps(stream, executor, deadline)
+        try:
+            next(steps)
+            self._challenge(stream, deadline)
+            try: next(steps)
+            except StopIteration as done: return done.value
+        finally:
+            steps.close()
 
     def alive(self, stream, expected):
         known = self._streams.get(stream)

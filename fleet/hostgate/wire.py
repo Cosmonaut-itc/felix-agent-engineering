@@ -50,8 +50,9 @@ def receive_json(stream, deadline=None):
     return strict_json(_read(stream, size, deadline).decode('utf-8'))
 
 
-def send_response(stream, value, *, _maximum=2**64 - 1, _deadline=None):
-    deadline, count, checksum, buffer = _deadline or time.monotonic() + 300, 0, hashlib.sha256(), bytearray()
+def response_frames(value, *, _maximum=2**64 - 1):
+    """Serializa una sola respuesta; memoria de transporte limitada a un chunk."""
+    count, checksum, buffer = 0, hashlib.sha256(), bytearray()
     try:
         encoder = json.JSONEncoder(sort_keys=True, separators=(',', ':'), allow_nan=False, ensure_ascii=True)
         for piece in encoder.iterencode(value):
@@ -63,15 +64,20 @@ def send_response(stream, value, *, _maximum=2**64 - 1, _deadline=None):
                 if len(buffer) == 65536:
                     chunk = bytes(buffer[:65536]); del buffer[:65536]
                     if count + len(chunk) > _maximum: raise ResponseLimitError('contador uint64')
-                    _send(stream, b'\x01' + chunk, deadline); checksum.update(chunk); count += len(chunk)
+                    yield b'\x01' + chunk; checksum.update(chunk); count += len(chunk)
         if buffer:
             if count + len(buffer) > _maximum: raise ResponseLimitError('contador uint64')
-            _send(stream, b'\x01' + buffer, deadline); checksum.update(buffer); count += len(buffer)
+            yield b'\x01' + buffer; checksum.update(buffer); count += len(buffer)
     except (ValueError, TypeError, OverflowError, RecursionError, MemoryError, ResponseLimitError) as exc:
         code = 'response-limit' if isinstance(exc, ResponseLimitError) else 'serialization-failed'
-        _send(stream, b'\x03' + canonical(dict(code=code, operationId=value.get('operationId'), outcomeUnknown=True)).encode('ascii'), deadline)
+        yield b'\x03' + canonical(dict(code=code, operationId=value.get('operationId'), outcomeUnknown=True)).encode('ascii')
         raise TransportError(code) from exc
-    _send(stream, b'\x02' + struct.pack('!Q', count) + checksum.digest(), deadline)
+    yield b'\x02' + struct.pack('!Q', count) + checksum.digest()
+
+
+def send_response(stream, value, *, _maximum=2**64 - 1, _deadline=None):
+    deadline = _deadline or time.monotonic() + 300
+    for frame in response_frames(value, _maximum=_maximum): _send(stream, frame, deadline)
 
 
 def _pairs(items):
