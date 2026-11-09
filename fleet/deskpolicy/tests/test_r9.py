@@ -222,7 +222,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                     (['admitir', '--request-id', 'absent', '--run-id', 'absent', '--lane', '1',
                       '--pid', str(os.getpid())], 75),
                     (['cerrar', '--request-id', 'absent', '--run-id', 'absent',
-                      '--pid', str(os.getpid()), '--claim-token-fd', '0'], 75)]
+                      '--pid', str(os.getpid()), '--claim-token-fd', '-1'], 75)]
         for arguments, expected in commands:
             with mock.patch.object(cli, 'DeskPolicy', return_value=self.engine), \
                     mock.patch.object(cli.signal, 'setitimer', side_effect=AssertionError('unexpected alarm')), \
