@@ -34,9 +34,10 @@ def server(root):
 
 
 class Progress(IPC):
+    server_module = 'hostgate.tests.test_ipc_progress'
     def spawn(self, role, env=None):
         if role != 'server': return super().spawn(role, env)
-        proc = subprocess.Popen([sys.executable, '-B', '-m', 'hostgate.tests.test_ipc_progress', 'server', str(self.root)],
+        proc = subprocess.Popen([sys.executable, '-B', '-m', self.server_module, 'server', str(self.root)],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
         def cleanup():
             if proc.poll() is None: proc.terminate()
