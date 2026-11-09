@@ -21,6 +21,7 @@ def native_acl_regression(library):
     with tempfile.TemporaryDirectory() as td, fixtures.fixture_policy(Path(td).resolve()):
         fixture = fixtures.Fixture(Path(td).resolve()); fixture.provision()
         path = fixture.locator.config_path
+        subprocess.run(['/bin/chmod', '-N', str(path)], check=True)
         assert admin.load_config(fixture.locator).node.revision.startswith('cfg_')
         print('NO_ACL_ACCEPTED', flush=True)
         subprocess.run(['/bin/chmod', '+a', 'everyone allow write,delete', str(path)], check=True)
@@ -114,7 +115,7 @@ class NativeObservations(unittest.TestCase):
             native = admin._call
             def stale_errno(name, result, types, *args):
                 rc = native(name, result, types, *args)
-                C.set_errno(errno.ENOMEM)
+                if rc == 0: C.set_errno(errno.ENOMEM)
                 return rc
             with patch.object(admin, '_call', side_effect=stale_errno):
                 self.assertTrue(admin.load_config(fixture.locator).node.revision.startswith('cfg_'))
