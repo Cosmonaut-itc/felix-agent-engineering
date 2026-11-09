@@ -5,11 +5,25 @@ from unittest.mock import patch
 
 from hostgate.cli import main
 from hostgate.protocol import reason
+from hostgate.store import WriteUncertain
 from hostgate.tests.support.world import request
 from hostgate.tests.test_contract import Harness
 
 
 class ProviderFailure(Harness):
+    def invalid_provider(self, kind):
+        # La primera lectura proyecta A válidamente; la segunda contamina sólo B.
+        attribute = 'physical_boot' if kind == 'bytes' else 'monotonic'
+        valid = self.world.boot if kind == 'bytes' else self.world.now
+        invalid = b'physical-1' if kind == 'bytes' else float(kind)
+        reads = []
+
+        def provider():
+            reads.append(None)
+            return invalid if len(reads) == 2 else valid
+
+        return patch.object(self.world, attribute, side_effect=provider)
+
     def call(self, payload, auth, msg=None):
         output = io.StringIO()
         code = main([payload['operation']], gate=self.gate, auth=auth,
@@ -80,6 +94,110 @@ class ProviderFailure(Harness):
         self.assertNotIn('replayed', retried)
         self.assertEqual(self.records('reserve-b'), (1, [failed, retried]))
         self.assertEqual(self.gate.store.read()['reservations'], [expected])
+
+    def test_sen3952_unserializable_provider_keeps_doubt_after_owner_recovers(self):
+        for route in ('reservar', 'prepare'):
+            for kind in ('nan', 'inf', 'bytes'):
+                with self.subTest(route=route, value=kind):
+                    self.setUp()
+                    granted = self.reserve('reserve-a', 'job-a',
+                        exclusiveResources=['sen-slot:1', 'postgres:5434'])
+                    self.assertTrue(granted['wouldGrant'])
+                    before = self.gate.store.read()
+                    other = self.world.auth(pid=222)
+                    payload = request('invalid-b', 'job-b',
+                        exclusiveResources=['sen-slot:2', 'postgres:5435'])
+                    self.world.processes[self.auth.peer.pid] = 'EPERM'
+                    with self.invalid_provider(kind) as provider:
+                        if route == 'prepare':
+                            with self.assertRaises(TypeError if kind == 'bytes' else ValueError) as caught:
+                                self.gate.prepare(payload, other)
+                            self.assertIn('JSON', str(caught.exception))
+                        else:
+                            code, failed = self.call(payload, other)
+                            self.assertEqual(code, 6)
+                            self.assertFalse(failed['wouldGrant'])
+                            self.assertEqual(self.codes(failed), {'store-unavailable'})
+                    self.assertGreaterEqual(provider.call_count, 2)
+                    stored = self.gate.store.read()
+                    operations, audit = self.records('invalid-b', preparation=route == 'prepare')
+
+                    self.world.processes[self.auth.peer.pid] = self.auth.peer
+                    recovered = self.gate.estado({}, other)
+                    follower_code, follower = self.call(request('follower-c', 'job-c',
+                        exclusiveResources=['sen-slot:2', 'postgres:5435']), other)
+                    self.assertFalse(follower['wouldGrant'], 'SEN3952_SEGUIDOR_SIN_RECONCILIACION')
+                    self.assertEqual(follower_code, 1)
+                    self.assertEqual(self.codes(follower), {'reservation-uncertain'})
+                    expected = dict(before['reservations'][0], state='uncertain', reasons=[
+                        reason('identity-unverifiable', 'supervisor no verificable o ausente')])
+                    self.assertEqual(stored, dict(before, reservations=[expected]))
+                    self.assertEqual(operations, 0)
+                    self.assertEqual(len(audit), 1)
+                    self.assertEqual(audit[0]['operationId'], 'invalid-b')
+                    self.assertEqual(audit[0]['exitCode'], 6)
+                    self.assertFalse(audit[0]['wouldGrant'])
+                    self.assertEqual(self.codes(audit[0]), {'store-unavailable'})
+                    if route == 'reservar':
+                        self.assertEqual(audit, [failed])
+                    else:
+                        self.assertEqual(self.records('invalid-b'), (0, []))
+                    retained = before['reservations'][0]['demand']
+                    for observed in (recovered, self.gate.estado({}, other)):
+                        self.assertEqual(observed['budget'], dict(
+                            capacity=dict(self.config.budget), retained=retained, available=retained,
+                            retainedByState={'uncertain': 1}))
+                        self.assertEqual(observed['resources'], [
+                            dict(name=name, holder=granted['simulationKey'], state='uncertain')
+                            for name in ('sen-slot:1', 'postgres:5434')])
+                        self.assertEqual(len(observed['reservations']), 1)
+                        self.assertEqual(observed['reservations'][0]['state'], 'uncertain')
+                    if route == 'prepare':
+                        pending_id = self.gate.prepare(payload, other)
+                        self.assertEqual(self.records('invalid-b', preparation=True),
+                                         (1, audit + [{'pendingId': pending_id}]))
+                    else:
+                        retry_code, retried = self.call(payload, other)
+                        self.assertEqual(retry_code, 1)
+                        self.assertEqual(self.codes(retried), {'reservation-uncertain'})
+                        self.assertNotIn('replayed', retried)
+                        self.assertEqual(self.records('invalid-b'), (1, audit + [retried]))
+                    self.assertEqual(self.gate.store.read()['reservations'], [expected])
+
+    def test_sen3952_unserializable_provider_confirmation_failure_is_uncertain(self):
+        for route in ('reservar', 'prepare'):
+            for kind in ('nan', 'inf', 'bytes'):
+                for stage in ('before_commit', 'after_commit'):
+                    with self.subTest(route=route, value=kind, stage=stage):
+                        self.setUp()
+                        self.reserve('reserve-a', 'job-a',
+                                     exclusiveResources=['sen-slot:1', 'postgres:5434'])
+                        before = self.gate.store.read()
+                        other = self.world.auth(pid=222)
+                        self.world.processes[self.auth.peer.pid] = 'EPERM'
+                        self.world.fault = stage
+                        with self.invalid_provider(kind):
+                            if route == 'prepare':
+                                with self.assertRaises(WriteUncertain if stage == 'after_commit' else OSError):
+                                    self.gate.prepare(request('invalid-b', 'job-b'), other)
+                            else:
+                                code, failed = self.call(request('invalid-b', 'job-b'), other)
+                                self.assertEqual(code, 3, 'SEN3952_CONFIRMACION_INCIERTA')
+                                self.assertFalse(failed['wouldGrant'])
+                        self.world.fault = None
+                        operations, audit = self.records('invalid-b', preparation=route == 'prepare')
+                        self.assertEqual(operations, 0)
+                        stored = self.gate.store.read()
+                        if stage == 'before_commit':
+                            self.assertEqual(stored, before)
+                            self.assertEqual(audit, [])
+                        else:
+                            expected = dict(before['reservations'][0], state='uncertain', reasons=[
+                                reason('identity-unverifiable', 'supervisor no verificable o ausente')])
+                            self.assertEqual(stored, dict(before, reservations=[expected]))
+                            self.assertEqual(len(audit), 1)
+                            self.assertEqual(audit[0]['exitCode'], 6)
+                            self.assertFalse(audit[0]['wouldGrant'])
 
     def test_sen3900_closure_failure_keeps_projection_without_releasing(self):
         self.reserve('reserve-a', 'job-a', exclusiveResources=['sen-slot:1'])
