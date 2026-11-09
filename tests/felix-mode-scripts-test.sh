@@ -1916,6 +1916,74 @@ apto_vigente_interactions() {
     assert test "$output" = 'Ronda: la mezcla del head revisado con el destino tiene conflictos'
 }
 
+# Corre apto-vigente con una clave de configuración de git del usuario, sin
+# escribirla en el repositorio.
+apto_with() {
+    local pair=$1
+    shift
+    GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=${pair%%=*} GIT_CONFIG_VALUE_0=${pair#*=} apto "$@"
+}
+APTO_CONFIGS=(diff.relative=true diff.ignoreSubmodules=all diff.renames=copies diff.noPrefix=true color.ui=always core.quotePath=false merge.renames=false merge.directoryRenames=true merge.renormalize=true)
+
+apto_vigente_config() {
+    local repo output pair expected tree base other
+    # Los dos lados cambian zonas distintas del mismo archivo. Ni la
+    # configuración ni el directorio desde el que corre esconden ese archivo.
+    repo=$(apto_repo)
+    git -C "$repo" checkout -q revisado
+    printf 'x\n\n\n\n\n\n\n\nfin parche\n' > "$repo/otro.txt"
+    git -C "$repo" commit -q -am cola
+    git -C "$repo" checkout -q destino
+    printf 'inicio destino\nx\n' > "$repo/otro.txt"
+    git -C "$repo" commit -q -am cabeza
+    git -C "$repo" checkout -q -b rebasado revisado
+    git -C "$repo" rebase -q destino
+    expected=$(printf 'Ronda delta: el destino cambió archivos del parche\notro.txt')
+    for pair in "${APTO_CONFIGS[@]}"; do
+        output=$(apto_with "$pair" "$repo" destino revisado rebasado)
+        assert test "$pair: $output" = "$pair: $expected"
+        output=$(apto_with "$pair" "$repo/origen" destino revisado rebasado)
+        assert test "$pair desde origen/: $output" = "$pair desde origen/: $expected"
+    done
+
+    # Los dos lados mueven el mismo submódulo, y `.gitmodules` pide ignorarlo.
+    repo=$(apto_repo)
+    base=$(git -C "$repo" rev-parse destino)
+    other=$(git -C "$repo" rev-parse revisado)
+    printf '[submodule "sub"]\n\tpath = sub\n\turl = ./sub\n\tignore = all\n' > "$repo/.gitmodules"
+    git -C "$repo" add .gitmodules
+    git -C "$repo" update-index --add --cacheinfo "160000,$base,sub"
+    git -C "$repo" commit -q -m submodulo
+    git -C "$repo" checkout -q -B revisado
+    printf 'parche\n' > "$repo/parche.js"
+    git -C "$repo" add parche.js
+    git -C "$repo" update-index --cacheinfo "160000,$other,sub"
+    git -C "$repo" commit -q -m parche-y-sub
+    git -C "$repo" checkout -q destino
+    printf 'y\n' >> "$repo/otro.txt"
+    git -C "$repo" add otro.txt
+    git -C "$repo" update-index --cacheinfo "160000,$other,sub"
+    git -C "$repo" commit -q -m destino-y-sub
+    tree=$(git -C "$repo" merge-tree --write-tree destino revisado)
+    git -C "$repo" branch candidato "$(git -C "$repo" commit-tree "$tree" -p destino -m candidato)"
+    expected=$(printf 'Ronda delta: el destino cambió archivos del parche\nsub')
+    for pair in "${APTO_CONFIGS[@]}"; do
+        output=$(apto_with "$pair" "$repo" destino revisado candidato)
+        assert test "$pair: $output" = "$pair: $expected"
+    done
+
+    # Un rebase limpio sobre archivos distintos conserva el APTO con cualquiera de ellas.
+    repo=$(apto_repo)
+    printf 'y\n' >> "$repo/otro.txt"
+    git -C "$repo" commit -q -am destino
+    git -C "$repo" checkout -q -b rebasado revisado
+    git -C "$repo" rebase -q destino
+    for pair in "${APTO_CONFIGS[@]}"; do
+        output=$(apto_with "$pair" "$repo/origen" destino revisado rebasado)
+        assert test "$pair: ${output%%:*}" = "$pair: APTO vigente"
+    done
+}
+
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -1923,7 +1991,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_config laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

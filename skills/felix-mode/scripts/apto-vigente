@@ -6,7 +6,7 @@
 # el destino cambió archivos del parche. En los demás casos imprime `Ronda` y
 # el motivo. Sale con 2 cuando no puede decidir; eso tampoco conserva el APTO.
 # Necesita git 2.38 o posterior.
-set -u
+set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
 
 case "${1:-}" in
@@ -35,8 +35,15 @@ if [ "$merged" != "$tree" ]; then
     exit 0
 fi
 
-patch=$(git diff --no-renames --name-only "$reviewed_base" "$reviewed") || fail 'no puedo listar el parche revisado'
-incoming=$(git diff --no-renames --name-only "$reviewed_base" "$new_base") || fail 'no puedo listar los cambios del destino'
+# Rutas cuya entrada difiere entre dos árboles. Salen de `git ls-tree` y no de
+# `git diff`, porque diff.relative, diff.ignoreSubmodules y `.gitmodules`
+# cambian lo que lista `git diff` y ninguna configuración cambia un árbol.
+changed() (
+    export LC_ALL=C
+    { git ls-tree -r --full-tree "$1" && git ls-tree -r --full-tree "$2"; } | sort | uniq -u | cut -f2- | sort -u
+)
+patch=$(changed "$reviewed_base" "$reviewed") || fail 'no puedo listar el parche revisado'
+incoming=$(changed "$reviewed_base" "$new_base") || fail 'no puedo listar los cambios del destino'
 shared=''
 while IFS= read -r file; do
     [ -n "$file" ] || continue
