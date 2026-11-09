@@ -229,7 +229,7 @@ class Campaign(Progress):
             with self.subTest(mode=mode):
                 with self.client() as client:
                     self.assertEqual(client.call(query())['exitCode'], 0)  # mismo canal, sin fallo
-                    if mode not in ('spool-full', 'timeout', 'overflow', 'serialization-error'): (self.root / '.wire').write_text(mode)
+                    if mode not in ('spool-full', 'timeout'): (self.root / '.wire').write_text(mode)
                     try:
                         if mode == 'utf8':
                             self.assertEqual(client.call(query())['text'], 'é' * 32768)
