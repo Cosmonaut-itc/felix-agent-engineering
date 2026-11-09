@@ -166,7 +166,9 @@ import os, runpy, signal, sys
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from deskpolicy.engine import DeskPolicy
+engine_module = sys.modules[DeskPolicy.__module__]
 original = DeskPolicy.arm_valid
+real_read_json = engine_module.read_json
 calls = 0
 def slow_once(self, *args):
     global calls
@@ -174,9 +176,18 @@ def slow_once(self, *args):
     remaining = signal.getitimer(signal.ITIMER_REAL)[0]
     assert 0 < remaining <= 10, remaining
     print('R9 CLI tick=%s deadline=%s' % (calls, remaining), file=sys.stderr, flush=True)
-    if calls == 1:
+    if calls != 1:
+        return original(self, *args)
+    def slow_read(*arguments, **options):
+        # The deadline fires inside arm_valid's OSError/ValueError handler.
+        engine_module.read_json = real_read_json
         os.kill(os.getpid(), signal.SIGALRM)
-    return original(self, *args)
+        return real_read_json(*arguments, **options)
+    engine_module.read_json = slow_read
+    try:
+        return original(self, *args)
+    finally:
+        engine_module.read_json = real_read_json
 DeskPolicy.arm_valid = slow_once
 sys.argv = [str(Path(sys.argv[1]) / 'deskpolicy/cli.py'), 'publicar']
 runpy.run_path(sys.argv[0], run_name='__main__')
