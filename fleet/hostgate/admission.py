@@ -50,7 +50,7 @@ class Hostgate:
             if pending['state'] != 'validating': continue
             pending['requesterObservation'] = self.world.verify(from_json(pending['requester'])).status
             pending['anchorObservation'] = self.world.verify(from_json(pending['anchor'])).status if pending['anchor'] else 'unverifiable'
-            pending['channelAlive'] = self.world.channel_alive(pending['channelBinding'])
+            pending['channelAlive'] = self.world.channel_alive(pending['channelBinding'], pending=True)
         for reservation in result['reservations']:
             if reservation['state'] == 'released': continue
             reservation['ownerObservation'] = self.world.verify(from_json(reservation['owner'])).status
@@ -142,7 +142,7 @@ class Hostgate:
             observation = self.world.verify(from_json(identity)).status if identity else 'unverifiable'
             if observation != 'same':
                 reasons.append(reason(code if observation == 'confirmed_absent_or_different' else 'identity-unverifiable', field))
-        if not self.world.channel_alive(pending['channelBinding']):
+        if not self.world.channel_alive(pending['channelBinding'], pending=True):
             reasons.append(reason('requester-dead', 'canal de vida cerrado'))
         now = self.world.monotonic()
         if now < pending['created'] or now >= pending['deadline'] or now - pending['heartbeat'] >= self.config.heartbeat_ttl:

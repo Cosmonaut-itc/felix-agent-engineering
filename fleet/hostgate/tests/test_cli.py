@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import unittest
 from hostgate.cli import main
 from hostgate.tests.test_contract import Harness
 from hostgate.tests.support.world import request
@@ -161,3 +162,24 @@ class CLI(Harness):
             elif isinstance(value, list):
                 for item in value: check(item)
         check(result)
+
+
+class IPCQueryCancellation(unittest.TestCase):
+    def test_r1_cli_cancel_before_end(self):
+        from unittest.mock import MagicMock, patch
+        from hostgate.client import HostgateClient
+        from hostgate.tests.test_ipc import query
+        from hostgate.wire import TransportError
+        for stage in ('connect', 'call'):
+            for error in (KeyboardInterrupt('cancel before END'), TransportError('cancel before END')):
+                with self.subTest(stage=stage, error=type(error).__name__):
+                    out, err = io.StringIO(), io.StringIO()
+                    context = MagicMock()
+                    if stage == 'call': context.__enter__.return_value.call.side_effect = error
+                    with patch.object(HostgateClient, 'connect', **({'side_effect': error} if stage == 'connect' else {'return_value': context})):
+                        code = main(['estado'], stdin=io.StringIO(json.dumps(query())), stdout=out, stderr=err)
+                    print('R1_CLI_CANCEL stage={} exception={} code={} stdout={!r} stderr={!r}'.format(
+                        stage, type(error).__name__, code, out.getvalue(), err.getvalue()), flush=True)
+                    self.assertEqual(out.getvalue(), '', 'no synthetic response before valid END')
+                    self.assertEqual(code, 6)
+                    self.assertIn('resultado desconocido', err.getvalue())

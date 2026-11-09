@@ -4,7 +4,7 @@ Implementación local Python 3.9 stdlib de `fleet/host-reservation@1`, autoridad
 `f6dea9a7afd182dff9742d52784dc4e98aeb451f`, merge del PR #17
 (contenido idéntico al aceptado `a1f00fa`). Mini ya aceptó la semántica.
 Fleet revisará wire/IPC/PR; PAO solicita el OK concreto de Felix para activar.
-Este paquete no instala, conecta, ejecuta cargas ni añade daemon o polling.
+Este paquete no instala ni ejecuta cargas; el endpoint sombra es manual.
 `nativos=[]`. No modifica el runner, los slots ni los consumidores.
 
 ## Configuración administrativa preparatoria · SEN-3822, corte 2a
@@ -12,8 +12,8 @@ Este paquete no instala, conecta, ejecuta cargas ni añade daemon o polling.
 `admin.py` ofrece `local_authority()`, `load_config(locator)`, `load_anchor(locator)`
 y `AuthorityLease(locator, config)`. El locator productivo es fijo: `node.json`,
 `authority.json` y `authority.lock` bajo `/Library/Application Support/Fleet/hostgate`;
-el socket futuro es `/private/var/run/fleet-hostgate/ipc/control.sock`. No consulta
-HOME, cwd ni variables de entorno. El CLI público todavía no llama al cargador.
+el socket es `/private/var/run/fleet-hostgate/ipc/control.sock`. No consulta
+HOME, cwd ni variables de entorno. El CLI de consulta carga esa autoridad.
 
 `fleet/hostgate-node@1` tiene campos cerrados y revisión `cfg_` + SHA-256 del JSON
 canónico validado, incluido `operatorRevision`. Declara presupuesto contable,
@@ -36,11 +36,10 @@ Configuración/ancla tienen límites de 64 KiB/4 KiB y parser JSON estricto.
 política. El lease compara esa vinculación antes de abrir SQLite, toma flock no
 bloqueante sobre el lock preexistente y valida `stateDir/shadow.db` existente sin
 inicializarlo. Conserva fds y vigila dev/inode de la cadena, lock y ledger; `check()`
-rechaza revisión, permisos o pathnames alterados. El futuro dispatch deberá llamar
-`check()` antes de mutar. Fallos administrativos llevan exit 6; lock ocupado usa
+rechaza revisión, permisos o pathnames alterados. El dispatch llama `check()` antes de cada operación. Fallos administrativos llevan exit 6; lock ocupado usa
 `Busy` (exit 4). B, incluso con storeId clonado, no sustituye a A mediante node.json.
 Reducir presupuesto sobre A conserva reservas/exclusivos y permite disponible negativo.
-No se crean ancla/lock/store, socket ni instalación; no se habilitan IPC, Fleet o cargas.
+El servicio no provisiona ancla/lock/store ni habilita Fleet o cargas.
 
 Las pruebas privadas usan archivos propios dentro de la copia remote-run. Sustituyen
 explícitamente owner/grupo y la exclusión de rutas de checkout en una seam privada;
@@ -377,3 +376,26 @@ y cierra salud hasta reinicio, sin aprender el boot del snapshot.
 La primitiva hardware UUID/configuración/ancla/lease pertenece a 2a. Pairing,
 saludo de autoridad, revisión/ACL y servicio sombra quedan para 2c. No hay RPC de
 reservas, servicio instalado, permisos efectivos ni cambios al productor/lector.
+
+SEN-3822, corte 2c: arranque manual `python3 -B -m hostgate.service`, únicamente
+con configuración/ancla/ledger ya provisionados. `HostgateClient.connect()` consulta;
+`request_supervisor` ofrece una solicitud y exige aprobación recíproca R↔S antes
+conectar un supervisor mutador. Cada reservar queda ligado al digest original;
+EOF de R después del grant permite latidos de S; perder S conserva capacidad.
+El CLI `estado` usa el endpoint fijo; fallo de transporte sale 6 sin stdout parcial.
+`wire.py` limita entradas a 64 KiB y transmite respuestas completas mediante DATA,
+END (uint64/SHA-256) o ERROR. Spool privado hasta 1 MiB en memoria, límite local
+ampliable de 256 MiB; no hay truncado, compensación ni reconexión de propietario.
+No instala launchd ni activa Fleet, perfiles, cargas, U1 o el legado. Pruebas:
+`tests/mini-ipc.sh`, sólo con remote-run en Mini y fixtures privadas dentro de la copia.
+
+El corte aceptado de este PR es **2c-I: endpoint, pairing, framing y cliente**;
+la campaña integrada de autoridad y fallos corresponde a **2c-II**.
+La consulta elige un ejecutor de la ACL del uid efectivo local, a partir de la
+configuración validada; si no hay ninguno, rechaza explícitamente antes de conectar.
+H conserva la autorización del peer. Cancelar la llamada o el pairing cierra la
+sesión y produce `TransportError(outcome_unknown=True)`, sin compensar reservas.
+El CLI `estado` por IPC sale 6, con diagnóstico en stderr y stdout vacío al cancelar;
+el harness histórico con `gate/auth` inyectados conserva su salida 130.
+Las regresiones de R1-W1/R1-W2 están en `test_ipc.py` y `test_cli.py`;
+`mini-ipc.sh` las ejecuta junto a las tres familias dirigidas en ambos stacks.
