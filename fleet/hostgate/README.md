@@ -44,6 +44,8 @@ Las pruebas privadas usan archivos propios dentro de la copia remote-run. Sustit
 explícitamente owner/grupo y la exclusión de rutas de checkout en una seam privada;
 la validación productiva de `NodeConfig` conserva esa exclusión. No acreditan separación
 root/cliente instalada ni defensa frente a un actor hostil con escritura al ledger.
+`tests/support/world.config` aplica esa política también en cada hijo del harness;
+los mocks del proceso padre no sobreviven a exec.
 Los valores operativos de la Mini siguen pendientes de confirmación de Felix.
 
 Toda respuesta pública lleva `result: shadow`, `wouldGrant`, `operationId`,

@@ -25,6 +25,8 @@ capacidad. No usa ImportError ni acredita un exploit de main. Fixtures dentro de
 copia de corrida, con política de owner y ruta explícita; separación root/cliente real,
 IPC, observación de peers y activación quedan fuera. SEN-5625 de lectura/WAL en 3.14
 se mantiene visible; este corte no lo corrige.
+`tests/support/world.config` instala la seam privada de rutas en los procesos hijos
+históricos: la copia remote-run está dentro de un checkout y no hereda mocks del padre.
 
 SEN-3952 amplía la guarda de SEN-3900 a la serialización de la vista, el resultado/audit
 y el contexto que se escribirá, todavía en sombra. El store usa los textos ya preparados:
