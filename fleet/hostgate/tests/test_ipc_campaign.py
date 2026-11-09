@@ -17,7 +17,7 @@ from hostgate.client import HostgateClient, SupervisorHandoff, request_superviso
 from hostgate.model import identity_json
 from hostgate.protocol import canonical
 from hostgate.tests.test_ipc import query
-from hostgate.tests.test_ipc_progress import Progress, server as progress_server
+from hostgate.tests.test_ipc_progress import ProgressHarness, server as progress_server
 from hostgate.tests.support.world import request
 
 
@@ -106,7 +106,7 @@ def server(root):
         return progress_server(root)
 
 
-class Campaign(Progress):
+class Campaign(ProgressHarness):
     server_module = 'hostgate.tests.test_ipc_campaign'
 
     def bound_client(self):

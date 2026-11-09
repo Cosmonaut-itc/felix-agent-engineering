@@ -12,7 +12,7 @@ from unittest.mock import patch
 
 from hostgate.protocol import canonical
 from hostgate.tests.test_admin import Fixture, fixture_policy
-from hostgate.tests.test_ipc import IPC, FixtureSocket, query
+from hostgate.tests.test_ipc import IPCHarness, FixtureSocket, query
 from hostgate.tests.support.world import World, request
 
 
@@ -33,7 +33,7 @@ def server(root):
                    _ready=lambda: print('listening', flush=True))
 
 
-class Progress(IPC):
+class ProgressHarness(IPCHarness):
     server_module = 'hostgate.tests.test_ipc_progress'
     def spawn(self, role, env=None):
         if role != 'server': return super().spawn(role, env)
@@ -141,6 +141,8 @@ class Progress(IPC):
         self.assertEqual(set(states), {'reserved'})
         self.assertEqual(row['effectiveState'], 'reserved')
 
+
+class Progress(ProgressHarness):
     def test_partial_input_progress(self): self.stalled('input')
     def test_stopped_reader_progress(self): self.stalled('reader')
     def test_incomplete_handshake_progress(self): self.stalled('handshake')
