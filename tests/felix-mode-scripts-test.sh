@@ -1984,6 +1984,66 @@ apto_vigente_config() {
     done
 }
 
+# Un head que mezcla el destino y descarta lo que trajo no conserva el APTO, y
+# el que lo mezcla limpio sí, con cualquier estado local.
+apto_local_state() {
+    local label=$1 repo=$2 output
+    output=$(apto "$repo" destino revisado candidato 2>/dev/null)
+    assert test "$label: $output" = "$label: Ronda: el head nuevo no es la mezcla del head revisado con el destino"
+    output=$(apto "$repo" destino revisado limpio 2>/dev/null)
+    assert test "$label: ${output%%:*}" = "$label: APTO vigente"
+}
+
+apto_vigente_local_state() {
+    local repo base incorporated later
+    repo=$(apto_repo)
+    base=$(git -C "$repo" rev-parse destino)
+    printf 'y\n' >> "$repo/otro.txt"
+    git -C "$repo" commit -q -am destino
+    incorporated=$(git -C "$repo" rev-parse destino)
+    printf 'tarde\n' > "$repo/tarde.txt"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m tarde
+    later=$(git -C "$repo" rev-parse destino)
+    git -C "$repo" checkout -q -b lado "$base"
+    printf 'lado\n' > "$repo/lado.txt"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m lado
+    git -C "$repo" checkout -q destino
+    git -C "$repo" merge -q --no-edit lado
+    git -C "$repo" checkout -q -b limpio revisado
+    git -C "$repo" merge -q --no-edit "$incorporated"
+    git -C "$repo" checkout -q -b candidato revisado
+    git -C "$repo" merge -q --no-edit -s ours "$incorporated"
+    apto_local_state 'sin estado local' "$repo"
+
+    # `git replace` muestra el commit limpio en lugar del candidato.
+    git -C "$repo" replace candidato limpio
+    apto_local_state 'refs/replace' "$repo"
+    git -C "$repo" replace -d candidato > /dev/null
+
+    # Un injerto pone al head revisado encima del destino que el candidato descartó.
+    printf '%s %s\n' "$(git -C "$repo" rev-parse revisado)" "$incorporated" > "$repo/injertos"
+    cp "$repo/injertos" "$repo/.git/info/grafts"
+    apto_local_state 'info/grafts' "$repo"
+    rm "$repo/.git/info/grafts"
+    GIT_GRAFT_FILE=$repo/injertos apto_local_state 'GIT_GRAFT_FILE' "$repo"
+
+    # Un corte de historia esconde que el destino ya contiene lo que el candidato descartó.
+    printf '%s\n' "$later" > "$repo/corte"
+    cp "$repo/corte" "$repo/.git/shallow"
+    apto_local_state 'shallow' "$repo"
+    rm "$repo/.git/shallow"
+    GIT_SHALLOW_FILE=$repo/corte apto_local_state 'GIT_SHALLOW_FILE' "$repo"
+
+    # La configuración del repositorio tampoco entra, ni el checkout desde el que corre.
+    git -C "$repo" config merge.directoryRenames true
+    git -C "$repo" config diff.relative true
+    git -C "$repo" worktree add -q --detach "$TEST_TMP/apto worktree" candidato
+    apto_local_state 'worktree' "$TEST_TMP/apto worktree"
+    git -C "$repo" worktree remove --force "$TEST_TMP/apto worktree"
+}
+
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -1991,7 +2051,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_config laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_config apto_vigente_local_state laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
