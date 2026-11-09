@@ -1,7 +1,8 @@
 import concurrent.futures
-import hashlib
+from contextlib import closing, ExitStack
 import sqlite3
 from hostgate.tests.test_contract import Harness
+from hostgate.tests.support.durable import durable_inventory
 from hostgate.tests.support.world import request, retry_busy
 from hostgate.admission import Hostgate
 from hostgate.store import ShadowStore, StoreError
@@ -125,12 +126,23 @@ class Storage(Harness):
     def test_queries_never_mutate_sqlite_or_wal(self):
         self.reserve()
         self.world.now += 40
-        def hashes():
-            return {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
-                    for p in self.config.state_dir.glob('shadow.db*') if not p.name.endswith('-shm')}
-        before = hashes()
-        for _ in range(10): self.view()
-        self.assertEqual(before, hashes())
+        store = self.gate.store
+        wal = self.config.state_dir / 'shadow.db-wal'
+        def durable(): return durable_inventory(self.config.state_dir.glob('shadow.db*'))
+        for with_frames in (False, True):
+            with self.subTest(with_frames=with_frames), ExitStack() as stack:
+                writer = stack.enter_context(closing(store.connect(writable=True)))
+                logical = store.load(writer)
+                if with_frames:
+                    writer.execute("UPDATE host_view SET payload=payload || ' ' WHERE id=1")
+                    self.assertGreater(wal.stat().st_size, 32, 'fixture exige WAL con frames')
+                else:
+                    writer.close()
+                    self.assertFalse(wal.exists() and wal.stat().st_size, 'el escritor cerrado no deja frames')
+                before = durable()
+                for _ in range(10): self.view()
+                self.assertEqual(before, durable(), 'consulta alteró ledger/WAL durable')
+                self.assertEqual(logical, store.read())
         self.reserve('persist-expiry', 'persist-expiry')
         self.assertEqual(self.view()['reservations'][0]['state'], 'uncertain')
 
