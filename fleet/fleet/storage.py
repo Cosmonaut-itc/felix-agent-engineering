@@ -193,8 +193,8 @@ def writer_authority(main, committed, header):
     A writer must reject another UID before SQLite can recover/checkpoint WAL.
     Do not require a full temporary file: admitted writes must still work when
     RLIMIT_FSIZE prevents the reader snapshot. SQLite revalidates after preflight.
-    No overflow payload is needed for Fleet's schema and singleton authority;
-    unsupported/corrupt layouts fail closed before opening the original.
+    Only schema and authority pages are decoded; malformed layouts fail closed
+    before opening the original.
     """
     page_size = int.from_bytes(header[16:18], "big")
     if page_size == 1:
@@ -250,9 +250,25 @@ def writer_authority(main, committed, header):
                     continue
                 size, start = varint(data, start)
                 rowid, start = varint(data, start)
-                if size > page_size - header[20] - 35 or start + size > page_size:
-                    raise ValueError("unsupported overflowing preflight record")
-                payload = data[start:start + size]
+                usable = page_size - header[20]
+                local = size
+                if size > usable - 35:
+                    minimum = (usable - 12) * 32 // 255 - 23
+                    local = minimum + (size - minimum) % (usable - 4)
+                    if local > usable - 35:
+                        local = minimum
+                if size > MAX_DATABASE or start + local > usable:
+                    raise ValueError("invalid payload size")
+                payload = data[start:start + local]
+                overflow = int.from_bytes(data[start + local:start + local + 4], "big") if local < size else 0
+                chain = set()
+                while len(payload) < size:
+                    if overflow in chain:
+                        raise ValueError("cyclic overflow")
+                    chain.add(overflow)
+                    extra = page(overflow)
+                    payload += extra[4:4 + min(size - len(payload), usable - 4)]
+                    overflow = int.from_bytes(extra[:4], "big")
                 end, cursor = varint(payload, 0)
                 types = []
                 while cursor < end:
@@ -284,11 +300,12 @@ def writer_authority(main, committed, header):
                 yield rowid, values
 
     try:
-        roots = [values[3] for _, values in records(1)
-                 if len(values) == 5 and values[:3] == ["table", "authority", "authority"]]
-        if len(roots) != 1 or type(roots[0]) is not int:
-            raise ValueError("missing authority table")
-        authority = list(records(roots[0]))
+        tables = [values for _, values in records(1)
+                  if len(values) == 5 and values[:3] == ["table", "authority", "authority"]]
+        if (len(tables) != 1 or type(tables[0][3]) is not int
+                or tables[0][4] != SCHEMA[0]):
+            raise ValueError("invalid authority schema")
+        authority = list(records(tables[0][3]))
         if (len(authority) != 1 or authority[0][0] != 1 or len(authority[0][1]) != 4
                 or type(authority[0][1][2]) is not int or authority[0][1][2] != os.getuid()):
             raise Fault("operator_unauthorized")

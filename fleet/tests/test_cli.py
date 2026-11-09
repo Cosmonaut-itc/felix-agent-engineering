@@ -446,6 +446,29 @@ class NativeIdentityTests(unittest.TestCase):
 
 
 class WriterPreflightTests(unittest.TestCase):
+    def test_authorized_preflight_accepts_sqlite_page_sizes_and_schema_overflow(self):
+        sys.path.insert(0, str(CLI.parents[1]))
+        import sqlite3
+        from fleet.storage import Ledger
+
+        with tempfile.TemporaryDirectory(prefix="writer-pages-", dir=fixture_base()) as directory:
+            for page_size in (512, 4096, 65536):
+                with self.subTest(page_size=page_size):
+                    state = Path(directory) / str(page_size)
+                    with Ledger(state, create=True):
+                        pass
+                    conn = sqlite3.connect(str(state / "state.db"), isolation_level=None)
+                    try:
+                        conn.execute("PRAGMA journal_mode=DELETE")
+                        conn.execute("PRAGMA page_size={}".format(page_size))
+                        conn.execute("VACUUM")
+                        conn.execute("PRAGMA journal_mode=WAL")
+                    finally:
+                        conn.close()
+                    with Ledger(state, create=True) as db:
+                        self.assertEqual(db.authority["uid"], os.getuid())
+                        self.assertEqual(db.execute("PRAGMA page_size").fetchone()[0], page_size)
+
     def test_unauthorized_wal_rejects_submit_and_recover_without_changes(self):
         sys.path.insert(0, str(CLI.parents[1]))
         from fleet.storage import Ledger
