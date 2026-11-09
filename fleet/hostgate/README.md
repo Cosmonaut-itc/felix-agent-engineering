@@ -151,6 +151,9 @@ salud; un cambio de payload da `operation-conflict`. Fencing usa la terna comple
 por estado/dimensión, recursos, ancla, identidad y edad del latido. No escribe, renueva,
 libera o reabre. La próxima mutación, incluida `prepare`, persiste expiraciones/dudas
 antes de decidir.
+El contenido durable (BD, WAL con cabecera o frames y vista lógica) debe conservarse;
+un WAL ausente equivale a uno de cero bytes creado por SQLite al abrir sólo lectura.
+El archivo auxiliar `shadow.db-shm` queda fuera de esa comparación.
 Preparaciones con EOF, muerte, plazo o identidad desconocida terminan con lápida; no
 reviven por una operación nueva del mismo huérfano. Reserva retiene desde commit,
 incluso si el dueño muere inmediatamente después de revalidación. Boot/reloj/latido/

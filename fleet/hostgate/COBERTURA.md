@@ -23,8 +23,8 @@ privado: main recibe JSON válido por su CLI y falla en `None != cfg_<digest>`;
 el candidato carga archivos y verifica su lease antes de comparar revisión/host/store/
 capacidad. No usa ImportError ni acredita un exploit de main. Fixtures dentro de la
 copia de corrida, con política de owner y ruta explícita; separación root/cliente real,
-IPC, observación de peers y activación quedan fuera. SEN-5625 de lectura/WAL en 3.14
-se mantiene visible; este corte no lo corrige.
+IPC, observación de peers y activación quedan fuera de aquel corte. La investigación
+posterior de SEN-5625 de lectura/WAL en 3.14 se documenta al final.
 `tests/support/world.config` instala la seam privada de rutas en los procesos hijos
 históricos: la copia remote-run está dentro de un checkout y no hereda mocks del padre.
 
@@ -325,7 +325,7 @@ SEN-3822, 2c: `tests/test_ipc.py` añade procesos externos R/S/H, entorno distin
 presupuesto conjunto de ejecutores, replay/digest, ACL de consulta, ofertas rechazadas,
 segundo servicio, entrada máxima y límites, respuesta fragmentada e interrupciones.
 P14 genera historial terminal mediante core/cierre sintético y compara el mapping
-íntegro (>100 KiB), conservando inventario durable; SEN-5625 sigue declarado.
+íntegro (>100 KiB), conservando inventario durable; SEN-5625 estaba declarado en aquel corte.
 El saludo cliente contrasta uid/host/store/revisión/identidad antes de enviar intención.
 La matriz nativa de 2b se repite dirigida; no acredita aún todas las ventanas
 inyectadas a través del endpoint integrado ni PID wrap/reboot reales.
@@ -363,4 +363,34 @@ Las seams de fallo son privadas del harness: ni disco lleno físico ni cuentas
 adicionales, root, instalación, cargas o desk. Se conservan las regresiones de
 pairing/replay/segunda instancia y vecinas de persistencia/contrato seleccionadas;
 repetir 2b no se cuenta como evidencia nueva integrada. La suite completa queda
-para el orquestador sobre el head con APTO. SEN-5625 sigue declarado.
+para el orquestador sobre el head con APTO. SEN-5625 estaba declarado en aquel corte.
+
+SEN-5625, cierre del 2026-11-09:
+
+Causa. La reproducción `20261109-170304-dd2ec6` sobre main
+`e7244b5288740fd3389a258b5ef0ffe7c268b43e` da rc 0 con Apple Python 3.9.6 /
+SQLite 3.54.0 y rc 1 con Python 3.14.7 / SQLite 3.53.4. La BD conserva sus 24.576
+bytes y su SHA-256 tras diez consultas. Al cerrar el escritor, el SQLite de Apple
+conserva un WAL de cero bytes y el de Homebrew lo elimina; la apertura de sólo
+lectura lo vuelve a crear vacío. El test comparaba el conjunto de archivos y
+fallaba por esa clave nueva.
+
+Criterio. Una consulta muta cuando cambia contenido durable: los bytes de
+`shadow.db`, los frames de `shadow.db-wal` o la vista lógica. Un WAL ausente y uno
+de cero bytes son el mismo estado, y `shadow.db-shm` queda fuera.
+`tests/support/durable.py` lo define una vez para Storage e IPC, que conserva además
+tamaño y mtime.
+
+Cobertura. `Storage.test_queries_never_mutate_sqlite_or_wal` parte de dos estados:
+el que deja cada build al cerrar el escritor, y un WAL con frames que sostiene un
+escritor abierto. En ambos exige inventario durable idéntico y la misma vista
+lógica tras diez consultas. La sonda de la dirigida hace que la lectura escriba un
+UPDATE con commit y exige el fallo por esa aserción en los dos stacks. Sus ids
+constan en el PR.
+
+No acredita. Apple SQLite 3.54.0 no abre `mode=ro` si faltan WAL y SHM
+(`20261109-171155-e5a4ec`, también con una tabla mínima). Un store cerrado por el
+build de Homebrew no se puede consultar con Apple Python: `estado` falla cerrado con
+`StoreError` y no escribe. Queda en SEN-5678. Los ResourceWarning de la suite nacen
+en conexiones de `tests/test_store.py` abiertas con `with sqlite3.connect(...)`, que
+no cierra; no participan en este fallo y no se corrigen aquí.
