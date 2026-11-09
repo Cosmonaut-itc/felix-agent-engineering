@@ -363,6 +363,7 @@ Una claim de otro boot sigue bloqueando hasta esa reconciliación operativa.
 
 El writer corre en WSL cada 20 s y recalcula al arrancar.
 Cada tick del bucle tiene un timeout de 10 s. Un tick fallido no renueva noche.
+Al vencer el plazo se aborta el tick en cualquier paso y se libera el mutex de admisión.
 `W` cuenta sólo solicitudes pendientes vigentes, con peso admisible y,
 si declaran `lane`, índice no mayor que `max_lane` del modo vigente. Las
 pendientes de carriles cerrados se ignoran en demanda y cabezas, sin borrarlas.

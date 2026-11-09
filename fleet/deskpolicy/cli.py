@@ -27,10 +27,14 @@ def output(value):
     print(json.dumps(value, sort_keys=True, allow_nan=False), flush=True)
 
 
+class WriterCycleTimeout(BaseException):
+    """Abort a tick through recoverable I/O and receipt error handlers."""
+
+
 @contextlib.contextmanager
 def cycle_timeout():
     def expired(signum, frame):
-        raise TimeoutError("writer-cycle-timeout")
+        raise WriterCycleTimeout("writer-cycle-timeout")
     previous = signal.signal(signal.SIGALRM, expired)
     signal.setitimer(signal.ITIMER_REAL, 10)
     try:
@@ -338,7 +342,7 @@ def main(argv=None):
                         try:
                             with cycle_timeout():
                                 output(engine.publish())
-                        except (OSError, ValueError, TypeError) as exc:
+                        except (WriterCycleTimeout, OSError, ValueError, TypeError) as exc:
                             output({"schema": "pao/desk-error@1", "reason": "census-unknown",
                                     "detail": str(exc), "exit_code": 75})
                         time.sleep(max(0, 20 - (time.monotonic() - started)))
