@@ -40,8 +40,8 @@ class _Unique(C.Structure):
 class _Watch:
     def __init__(self, pid):
         self.queue = select.kqueue()
-        os.set_inheritable(self.queue.fileno(), False)
         try:
+            os.set_inheritable(self.queue.fileno(), False)
             event = select.kevent(pid, filter=select.KQ_FILTER_PROC,
                                   flags=select.KQ_EV_ADD | select.KQ_EV_ONESHOT | 0x40,
                                   fflags=select.KQ_NOTE_EXIT)  # EV_RECEIPT=0x40
@@ -243,9 +243,11 @@ class DarwinPeers:
             watch.check(); self._open(stream)
             self._streams[stream] = (candidate, watch)
             return candidate
-        except (OSError, ValueError, OverflowError) as exc:
+        except BaseException as exc:
             if watch is not None: watch.close()
-            raise PeerError('autenticación no verificable') from exc
+            if isinstance(exc, (OSError, ValueError, OverflowError)):
+                raise PeerError('autenticación no verificable') from exc
+            raise
         finally:
             if stream.fileno() >= 0: stream.settimeout(previous_timeout)
 

@@ -185,7 +185,8 @@ class PeerMatrix(unittest.TestCase):
             with self.subTest(raw=raw):
                 n, p, s = self.fresh()
                 n.remote.sendall(raw); n.remote.shutdown(socket.SHUT_WR)
-                with self.assertRaises(d.PeerError): p._challenge(s, time.monotonic() + .1)
+                with self.assertRaises(d.PeerError): p.authenticate(s, 'unix')
+                self.assertFalse(p._streams); self.assertTrue(n.watch_object.closed)
 
 
 
@@ -212,33 +213,69 @@ with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as s, DarwinPeers() as p:
                         self.assertEqual(len(peer.identity.start_token), 4)
                         self.assertEqual(peers.verify(peer.identity).status, 'same')
                         self.assertEqual(stream.recv(1), b'K'); self.assertTrue(peers.alive(stream, peer))
+                        watch = peers._streams[stream][1]
                         stream.sendall(b'Q'); self.assertEqual(child.wait(timeout=5), 0)
+                        with self.assertRaises(d.PeerError): watch.check()
+                        self.assertEqual(stream.recv(1), b'')
                         self.assertFalse(peers.alive(stream, peer))
                         self.assertNotEqual(peers.verify(peer.identity).status, 'same')
                 finally:
                     if child.poll() is None: child.kill()
                     child.wait(timeout=5)
 
-    def test_inherited_connection_observes_parent_not_exec_child(self):
+    def test_inherited_writer_cannot_replace_authenticated_parent(self):
         with tempfile.TemporaryDirectory() as root:
             endpoint = str(Path(root) / 'p.sock')
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener, d.DarwinPeers() as peers:
-                listener.bind(endpoint); listener.listen(1)
-                with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as inherited:
-                    inherited.connect(endpoint)
-                    code = 'import socket,sys; s=socket.socket(fileno=int(sys.argv[1])); s.sendall(b"X")'
-                    child = subprocess.Popen([sys.executable, '-B', '-c', code, str(inherited.fileno())],
-                                             pass_fds=(inherited.fileno(),))
-                    try:
-                        with listener.accept()[0] as stream:
-                            stream.settimeout(5); self.assertEqual(stream.recv(1), b'X')
-                            peer = peers.capture(stream, 'unix')
-                            self.assertEqual(peer.identity.pid, os.getpid())
-                            self.assertNotEqual(peer.identity.pid, child.pid)
-                        self.assertEqual(child.wait(timeout=5), 0)
-                    finally:
-                        if child.poll() is None: child.kill()
-                        child.wait(timeout=5)
+                listener.bind(endpoint); listener.listen(1); listener.settimeout(5)
+                code = '''import socket,subprocess,sys
+from hostgate.darwin_peer import DarwinPeers
+with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as s, DarwinPeers() as p:
+ s.connect(sys.argv[1]); p.authenticate(s,'unix'); s.sendall(b'K'); assert s.recv(1)==b'Q'
+ inner="import socket,sys; s=socket.socket(fileno=int(sys.argv[1])); s.sendall(b'X'); assert s.recv(1)==b'D'"
+ child=subprocess.Popen([sys.executable,'-B','-c',inner,str(s.fileno())],pass_fds=(s.fileno(),))
+ try: assert child.wait(timeout=5)==0
+ finally:
+  if child.poll() is None: child.kill()
+  child.wait(timeout=5)
+'''
+                child = subprocess.Popen([sys.executable, '-B', '-c', code, endpoint])
+                try:
+                    with listener.accept()[0] as stream:
+                        stream.settimeout(5); peer = peers.authenticate(stream, 'unix')
+                        self.assertEqual(stream.recv(1), b'K'); self.assertEqual(peer.identity.pid, child.pid)
+                        stream.sendall(b'Q'); self.assertEqual(stream.recv(1), b'X')
+                        self.assertIsNone(child.poll())  # S original todavía vive.
+                        self.assertNotEqual(peers.capture(stream, 'unix'), peer)
+                        self.assertFalse(peers.alive(stream, peer))
+                        stream.sendall(b'D'); self.assertEqual(child.wait(timeout=5), 0)
+                finally:
+                    if child.poll() is None: child.kill()
+                    child.wait(timeout=5)
+
+    def test_exact_native_sizes_return_codes_and_timeval(self):
+        n = d._Native()
+        self.assertEqual([C.sizeof(t) for t in (d._Audit, d._Unique, d.DarwinBSDInfo)], [32, 56, 136])
+        self.assertGreater(n.unique(os.getpid())[1], 0)
+        with patch.object(n.libc, 'sysctlbyname', return_value=-1):
+            for fn in (n.boot, n.boottime):
+                with self.assertRaises(d.PeerError): fn()
+        for length in (0, 1, 15):
+            with patch.object(n, '_sysctl', return_value=length):
+                for fn in (n.boot, n.boottime):
+                    with self.assertRaises(d.PeerError): fn()
+        for sec, usec in ((0, 0), (1, -1), (1, 1000000)):
+            def clock(name, value): value.sec, value.usec = sec, usec; return C.sizeof(value)
+            with patch.object(n, '_sysctl', side_effect=clock), self.assertRaises(d.PeerError): n.boottime()
+        for size in (0, 1, 55, 135):
+            with patch.object(n, 'proc', return_value=size):
+                for fn in (n.unique, n.bsd):
+                    with self.assertRaises(d.PeerError): fn(os.getpid())
+        stream = SimpleNamespace(getsockopt=lambda *args: b'x', fileno=lambda: 0)
+        for fn in (n.peerpid, n.token):
+            with self.assertRaises(d.PeerError): fn(stream)
+        with patch.object(n.libc, 'getpeereid', return_value=-1), self.assertRaises(d.PeerError): n.peercred(stream)
+
 
 
 class Health(unittest.TestCase):
@@ -253,7 +290,7 @@ class Health(unittest.TestCase):
         self.path.write_text(json.dumps(self.sample))
         self.health = d.DarwinHealth(self.p, 'mini-prueba', self.path)
         self.world = World(); self.world.health = self.health.read
-        self.cfg = replace(config(Path(self.tmp.name) / 'state'), snapshot_host='mini-prueba')
+        self.cfg = replace(config(Path.home() / '.local/state/pr2b-health-unused'), snapshot_host='mini-prueba')
         self.gate = Hostgate(self.cfg, self.world)
         self.n.calls.clear()
 
@@ -275,7 +312,7 @@ class Health(unittest.TestCase):
     def test_each_health_read_fault_and_boot_change_latches_closed(self):
         original = Path.read_bytes
         for fault in ('error', 'uuid', 'time'):
-            for index in range(1, 6 if fault == 'error' else 5):
+            for index in range(1, 6 if fault == 'error' else 4 if fault == 'time' else 5):
                 with self.subTest(read_or_gap=index, fault=fault):
                     n = Native(); p = d.DarwinPeers(_native=n); self.addCleanup(p.close)
                     h = d.DarwinHealth(p, 'mini-prueba', self.path); n.calls.clear()
