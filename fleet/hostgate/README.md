@@ -7,6 +7,45 @@ Fleet revisará wire/IPC/PR; PAO solicita el OK concreto de Felix para activar.
 Este paquete no instala, conecta, ejecuta cargas ni añade daemon o polling.
 `nativos=[]`. No modifica el runner, los slots ni los consumidores.
 
+## Configuración administrativa preparatoria · SEN-3822, corte 2a
+
+`admin.py` ofrece `local_authority()`, `load_config(locator)`, `load_anchor(locator)`
+y `AuthorityLease(locator, config)`. El locator productivo es fijo: `node.json`,
+`authority.json` y `authority.lock` bajo `/Library/Application Support/Fleet/hostgate`;
+el socket futuro es `/private/var/run/fleet-hostgate/ipc/control.sock`. No consulta
+HOME, cwd ni variables de entorno. El CLI público todavía no llama al cargador.
+
+`fleet/hostgate-node@1` tiene campos cerrados y revisión `cfg_` + SHA-256 del JSON
+canónico validado, incluido `operatorRevision`. Declara presupuesto contable,
+volúmenes (`id -> ruta absoluta`), ejecutores Darwin/unix, uids permitidos,
+principals (`uid decimal -> {roles, executors}`), perfiles y plazos. Los roles son
+requester/supervisor/query; la ACL interna usa `uid:<n>`. Los perfiles contienen
+`minimumDemand`; su presencia no acredita ejecución. Los mapas y listas se copian
+a dicts inmutables compatibles con JSON y tuplas, sin cambiar demanda ni mínimos.
+`hw.ncpu` y gethostuuid contrastan el físico; no calculan el presupuesto.
+
+El cargador recorre componentes por `dir_fd` con `O_NOFOLLOW`, comprueba propietario,
+modos, link único de archivos, ACL nativa y APFS local, también en los volúmenes.
+Rechaza conservadoramente cualquier ACL ALLOW de escritura/borrado/cambio de permisos.
+La ausencia de ACL se acredita con fstatx/filesec; errores de observación cierran.
+Configuración/ancla tienen límites de 64 KiB/4 KiB y parser JSON estricto.
+
+`fleet/hostgate-authority@1` fija hardware/host/store/stateDir/modo, separado de la
+política. El lease compara esa vinculación antes de abrir SQLite, toma flock no
+bloqueante sobre el lock preexistente y valida `stateDir/shadow.db` existente sin
+inicializarlo. Conserva fds y vigila dev/inode de la cadena, lock y ledger; `check()`
+rechaza revisión, permisos o pathnames alterados. El futuro dispatch deberá llamar
+`check()` antes de mutar. Fallos administrativos llevan exit 6; lock ocupado usa
+`Busy` (exit 4). B, incluso con storeId clonado, no sustituye a A mediante node.json.
+Reducir presupuesto sobre A conserva reservas/exclusivos y permite disponible negativo.
+No se crean ancla/lock/store, socket ni instalación; no se habilitan IPC, Fleet o cargas.
+
+Las pruebas privadas usan archivos propios dentro de la copia remote-run. Sustituyen
+explícitamente owner/grupo y la exclusión de rutas de checkout en una seam privada;
+la validación productiva de `NodeConfig` conserva esa exclusión. No acreditan separación
+root/cliente instalada ni defensa frente a un actor hostil con escritura al ledger.
+Los valores operativos de la Mini siguen pendientes de confirmación de Felix.
+
 Toda respuesta pública lleva `result: shadow`, `wouldGrant`, `operationId`,
 `configRevision`, `exitCode` y `reasons: [{code,detail,retryable}]`. No hay permiso
 ni `granted` efectivo. `simulationKey` es exclusivamente diagnóstico de la BD

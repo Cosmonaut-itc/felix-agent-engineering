@@ -71,7 +71,10 @@ def fixture_policy(root):
     stack.enter_context(patch.object(admin, '_ADMIN_GID', os.getgid()))
     from hostgate.model import _validate_state_path
     def path_check(path):
-        if root in path.parents and path.is_absolute(): return
+        if root in path.parents and path.is_absolute() and '..' not in path.parts:
+            if any(p.is_symlink() for p in (path,) + tuple(path.parents)):
+                raise ValueError('symlink de fixture')
+            return
         _validate_state_path(path)
     stack.enter_context(patch('hostgate.model._validate_state_path', side_effect=path_check))
     return stack
@@ -93,9 +96,13 @@ class Administration(unittest.TestCase):
         return self.admin.load_config(self.f.locator)
 
     def inventory(self):
-        return {str(p.relative_to(self.root)): (p.lstat().st_mode, p.lstat().st_ino,
-                p.stat().st_size, p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
-                for p in self.root.rglob('*') if p.is_file() and not p.is_symlink()}
+        result = {}
+        for path in [self.root] + list(self.root.rglob('*')):
+            info = path.lstat()
+            data = (os.readlink(str(path)) if path.is_symlink() else
+                    hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else None)
+            result[str(path.relative_to(self.root))] = (info.st_mode, info.st_ino, info.st_size, info.st_mtime_ns, data)
+        return result
 
     def rejected(self):
         before = self.inventory()
@@ -132,6 +139,8 @@ class Administration(unittest.TestCase):
         for field in ('budget', 'ncpu', 'acl', 'stateDir', 'mode', 'configRevision'):
             with self.assertRaises(ValueError):
                 validate(dict(schema='fleet/host-reservation@1', operationId='q', operation='estado', **{field: 1}))
+            from hostgate.tests.support.world import request
+            with self.assertRaises(ValueError): validate(dict(request(), **{field: 1}))
 
     def test_loaded_minima_unknown_volume_and_resource_use_existing_core(self):
         from hostgate.admission import Hostgate
@@ -178,6 +187,9 @@ class Administration(unittest.TestCase):
         subprocess.run(['/bin/chmod', '+a', 'everyone allow write,delete', str(path)], check=True)
         try: self.rejected()
         finally: subprocess.run(['/bin/chmod', '-N', str(path)], check=True)
+        subprocess.run(['/bin/chmod', '+a', 'everyone allow add_file,delete_child', str(self.root)], check=True)
+        try: self.rejected()
+        finally: subprocess.run(['/bin/chmod', '-N', str(self.root)], check=True)
         for name, value in (('_ADMIN_UID', os.getuid() + 1),):
             with patch.object(self.admin, name, value): self.rejected()
         for name in ('_check_filesystem', '_check_acl'):
@@ -283,6 +295,7 @@ def comparison(base):
                 with admin.AuthorityLease(f.locator, cfg):
                     revision = cfg.node.revision
                     facts = dict(physicalHostId=cfg.node.host_id, storeId=cfg.node.store_id, capacity=dict(cfg.node.budget))
+                    print('LOADED_FACTS', canonical(facts), flush=True)
         expected = 'cfg_' + hashlib.sha256(canonical(doc).encode('ascii')).hexdigest()
         print('REVISION_OPERANDS', revision, expected, flush=True)
         assert revision == expected, (revision, expected)

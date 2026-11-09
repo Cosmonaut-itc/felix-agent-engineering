@@ -240,7 +240,8 @@ def _load_config(locator, paths):
     demand(doc['budget']); _ids(doc['exclusiveResources'])
     for field in ('volumes', 'executors', 'principals', 'profiles'):
         if not isinstance(doc[field], dict) or not doc[field]: raise AdminError('catalogo requerido')
-    for volume, location in doc['volumes'].items(): identifier(volume); _path(location)
+    for volume, location in doc['volumes'].items():
+        identifier(volume); paths.open(_path(location), 'dir')
     if not set(doc['budget']['diskBytes']) <= set(doc['volumes']): raise AdminError('volumen no declarado')
     for executor, spec in doc['executors'].items():
         identifier(executor); _fields(spec, 'platform scopeKind allowedUids')
