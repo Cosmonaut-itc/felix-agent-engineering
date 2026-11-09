@@ -1,4 +1,5 @@
 """Arranque manual sombra; sin instalación, provisión o procesos de cargas."""
+import sys
 import signal
 import time
 from . import admin
@@ -36,7 +37,8 @@ def run(*, _locator=None, _synthetic=None, _ready=None):
             return serve(config, lease, peers, Runtime(config, peers, _synthetic), _ready=_ready)
     except Busy: return 4
     except KeyboardInterrupt: return 0
-    except (OSError, ValueError): return 6
+    except (OSError, ValueError) as exc:
+        print('hostgate: ' + str(exc), file=sys.stderr); return 6
     finally: signal.signal(signal.SIGTERM, previous)
 
 

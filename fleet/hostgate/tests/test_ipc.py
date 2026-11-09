@@ -3,6 +3,7 @@ import copy
 import hashlib
 import json
 import os
+import select
 from pathlib import Path
 import socket
 import struct
@@ -20,13 +21,20 @@ def query(op='query'):
     return dict(schema='fleet/host-reservation@1', operationId=op, operation='estado')
 
 
+class FixtureSocket(socket.socket):
+    """Darwin limita sun_path a 104 bytes; cwd está fijado por este lanzador."""
+    def bind(self, address): return super().bind(Path(address).name if isinstance(address, str) else address)
+    def connect(self, address): return super().connect(Path(address).name if isinstance(address, str) else address)
+
+
 def child(role, root):
     from hostgate import admin
     from hostgate.client import HostgateClient, request_supervisor, SupervisorHandoff
     from hostgate.darwin_peer import DarwinPeers
     from hostgate.identity import from_json
     from hostgate.model import identity_json
-    with fixture_policy(root), patch.object(admin, 'local_authority', return_value=Fixture(root).locator):
+    os.chdir(root)
+    with fixture_policy(root), patch.object(admin, 'local_authority', return_value=Fixture(root).locator), patch.object(socket, 'socket', FixtureSocket):
         if role == 'server':
             from hostgate.service import run
             class Synthetic(World):
@@ -41,7 +49,8 @@ def child(role, root):
                 for line in sys.stdin:
                     print(canonical(client.call(json.loads(line))), flush=True)
             return 0
-        with request_supervisor(request(physicalHostId='fixture-host', exclusiveResources=['sen-slot:1'])) as requester:
+        with request_supervisor(request(os.environ.get('IPC_OPERATION', 'op'), executorId=os.environ.get('IPC_EXECUTOR', 'unix'),
+                                        physicalHostId='fixture-host', exclusiveResources=['sen-slot:1'])) as requester:
             print(canonical(requester.handoff.__dict__), flush=True)
             expected = from_json(json.loads(sys.stdin.readline()))
             requester.approve(expected)
@@ -55,6 +64,8 @@ class IPC(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name).resolve()
+        previous = Path.cwd(); os.chdir(self.root); self.addCleanup(os.chdir, previous)
+        sockets = patch.object(socket, 'socket', FixtureSocket); sockets.start(); self.addCleanup(sockets.stop)
         policy = fixture_policy(self.root); self.addCleanup(policy.close)
         self.f = Fixture(self.root)
         self.f.doc['principals'][str(os.getuid())]['roles'].append('requester')
@@ -63,7 +74,7 @@ class IPC(unittest.TestCase):
         self.f.provision()
         self.server = self.spawn('server')
         # Readiness uses an inherited pipe, never a probe with a false positive.
-        self.assertEqual(self.server.stdout.readline().strip(), 'listening')
+        self.assertEqual(self.serveself.line(r).strip(), 'listening')
 
     def spawn(self, role, env=None):
         proc = subprocess.Popen([sys.executable, '-B', '-m', 'hostgate.tests.test_ipc', role, str(self.root)],
@@ -84,19 +95,25 @@ class IPC(unittest.TestCase):
         self.addCleanup(client.close)
         return client
 
-    def pair(self):
+    def line(self, proc):
+        self.assertTrue(select.select([proc.stdout], [], [], 12)[0], 'hijo sin respuesta dentro del deadline')
+        value = proc.stdout.readline()
+        if not value: self.fail('hijo terminó: ' + proc.stderr.read())
+        return value
+
+    def pair(self, op='op', executor='unix'):
         from hostgate.darwin_peer import DarwinPeers
         from hostgate.model import identity_json
-        r = self.spawn('requester'); handoff = r.stdout.readline()
+        r = self.spawn('requester', dict(os.environ, IPC_OPERATION=op, IPC_EXECUTOR=executor)); handoff = self.line(r)
         self.assertIn('offer_id', handoff)
         s = self.spawn('supervisor')
-        with DarwinPeers() as peers: expected = identity_json(peers._observe('unix', pid=s.pid).identity)
+        with DarwinPeers() as peers: expected = identity_json(peers._observe(executor, pid=s.pid).identity)
         s.stdin.write(handoff); s.stdin.flush()
         r.stdin.write(canonical(expected) + '\n'); r.stdin.flush()
-        self.assertEqual(r.stdout.readline().strip(), 'approved')
+        self.assertEqual(self.line(r).strip(), 'approved')
         def call(value):
             s.stdin.write(canonical(value) + '\n'); s.stdin.flush()
-            return json.loads(s.stdout.readline())
+            return json.loads(self.line(s))
         return r, s, call
 
     def inventory(self):
@@ -128,12 +145,42 @@ class IPC(unittest.TestCase):
         heartbeat = dict(query('beat'), operation='latido', key=granted['simulationKey'], seq=1)
         self.assertEqual(call(heartbeat)['exitCode'], 0)
         self.assertEqual(self.client().call(heartbeat)['exitCode'], 5)
-        r2, s2, call2 = self.pair()
-        denied = call2(original); self.assertFalse(denied['wouldGrant'])
+        r2, s2, call2 = self.pair('second', 'other')
+        denied = call2(dict(original, operationId='second', executorId='other')); self.assertFalse(denied['wouldGrant']); self.assertIn('budget-exceeded', {x['code'] for x in denied['reasons']})
         self.assertEqual(self.client().call(query())['budget']['retained']['slots'], 1)
         second = self.spawn('server'); out, err = second.communicate(timeout=15)
         self.assertEqual(second.returncode, 4, (out, err))
         self.assertEqual(call(dict(heartbeat, operationId='beat2', seq=2))['exitCode'], 0)
+
+    def test_large_core_snapshot_survives_transport_without_ledger_write(self):
+        from types import SimpleNamespace
+        from hostgate import admin
+        from hostgate.admission import Hostgate
+        from hostgate.darwin_peer import DarwinPeers
+        from hostgate.model import AuthContext
+        from hostgate.scope import ClosureEvidence
+        from hostgate.service import Runtime
+        self.server.terminate(); self.server.communicate(timeout=8)
+        cfg = admin.load_config(self.f.locator); world = World(); gate = Hostgate(cfg.node, world)
+        auth = world.auth(principal='uid:' + str(os.getuid()))
+        for number in range(80):
+            granted = gate.reservar(request('history-' + str(number), physicalHostId='fixture-host'), auth)
+            self.assertTrue(granted['wouldGrant'], granted)
+            key = granted['simulationKey']; world.closures[('proof',)] = ClosureEvidence.fixture(key, world.boot)
+            self.assertEqual(gate.soltar('release-' + str(number), key, ['proof'], auth)['exitCode'], 0)
+        self.assertTrue(gate.reservar(request('held', physicalHostId='fixture-host', exclusiveResources=['sen-slot:1']), auth)['wouldGrant'])
+        with DarwinPeers() as peers:
+            runtime = Runtime(cfg, peers, World()); runtime.sessions = SimpleNamespace(alive=lambda *args, **kw: False)
+            own = peers._observe('unix', pid=os.getpid()).identity
+            expected = Hostgate(cfg.node, runtime).estado({}, AuthContext('uid:' + str(os.getuid()), 'query', own, None, None))
+        expected['operationId'] = 'query'
+        self.assertGreater(len(canonical(expected).encode('ascii')), 100 * 1024)
+        self.server = self.spawn('server'); self.assertEqual(self.line(self.server).strip(), 'listening')
+        before = self.inventory()
+        p = self.spawn('query'); out, err = p.communicate(timeout=20)
+        self.assertEqual(p.returncode, 0, err); self.assertEqual(json.loads(out), expected)
+        print('P14 bytes', len(out), 'sidecars', sorted(x.name for x in (self.root / 'A').iterdir()), flush=True)
+        self.assertEqual(self.inventory(), before, 'SEN-5625: consulta alteró ledger/WAL durable')
 
     def test_input_limits_and_no_ledger_changes(self):
         from hostgate.wire import send_json, receive_response
@@ -145,7 +192,7 @@ class IPC(unittest.TestCase):
         raw = canonical(query('maximum')).encode() + b' ' * (65536 - len(canonical(query('maximum'))))
         client.stream.sendall(struct.pack('!I', len(raw)) + raw)
         self.assertEqual(receive_response(client.stream, 'maximum', self.root)['exitCode'], 0)
-        for raw, length in ((b'', 0), (b'', 65537), (b'{', 2), (b'{"a":1,"a":2}', 13), (b'NaN', 3)):
+        for raw, length in ((b'', 0), (b'', 65537), (b'{', 2), (b'{"a":1,"a":2}', 13), (b'NaN', 3), (b'\xef\xbb\xbf{}', 5), ('é'.encode(), 2)):
             c = self.client(); c.stream.sendall(struct.pack('!I', length) + raw); c.stream.shutdown(socket.SHUT_WR)
             with self.assertRaises(OSError): receive_response(c.stream, 'query', self.root)
         self.assertEqual(before, self.inventory())
