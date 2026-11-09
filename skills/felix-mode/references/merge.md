@@ -88,18 +88,21 @@ restantes y la separación entre propietario, verificador y stacker.
    de Babysit. Si exige un tercer rebase desde merge prep, detén ese PR y
    avisa para secuenciar el trabajo que colisiona.
 3. **Renovar APTO.** Un head nuevo o una rama destino que avanzó exigen
-   checks nuevos. El APTO depende de si cambió el parche. Calcula el id del
-   parche sobre el head revisado y sobre el nuevo, y compara la primera
-   columna:
-   `git diff "$(git merge-base <rama destino> <head>)" <head> | git patch-id --stable`
-   Lo que la rama destino cambió desde esa review sale de
-   `git diff --name-only <merge-base del head revisado> <rama destino>`.
-   - Si el id coincide y la rama destino no cambió archivos que el parche
-     toca, el APTO sigue vigente sin ronda nueva. Guarda los dos ids con la
+   checks nuevos. El APTO depende de si el head nuevo es sólo la mezcla del
+   head revisado con la rama destino. Lo es cuando estos dos comandos
+   imprimen el mismo árbol:
+   `git merge-tree --write-tree "$(git merge-base <rama destino> <head nuevo>)" <head revisado> | head -1`
+   `git rev-parse '<head nuevo>^{tree}'`
+   Lista los archivos del parche revisado y los que la rama destino cambió
+   desde esa review con
+   `git diff --no-renames --name-only "$(git merge-base <rama destino> <head revisado>)" <ref>`,
+   donde `<ref>` es primero el head revisado y después la rama destino.
+   - Si el árbol coincide y las dos listas no comparten archivos, el APTO
+     sigue vigente sin ronda nueva. Guarda el árbol y las dos listas con la
      prueba del paso 2.
-   - Si el id coincide y la rama destino cambió archivos que el parche
-     toca, corre una ronda delta sobre esa interacción.
-   - Si el id cambió, corre la ronda que fija **Rondas**.
+   - Si el árbol coincide y las listas comparten algún archivo, corre una
+     ronda delta sobre esa interacción.
+   - Si el árbol difiere, corre la ronda que fija **Rondas**.
 
    Cada ronda cuenta para el límite de **Rondas**. Ante duda, corre la ronda
    delta. Un veredicto de **Verificado** sobrevive a un head nuevo sólo

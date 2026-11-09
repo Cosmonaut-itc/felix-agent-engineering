@@ -44,7 +44,8 @@ sustituyas. Esa ronda no da APTO de consejo. La puerta del nivel sigue
 3. Veta los hallazgos con **Prueba** y atiéndelos con **Hallazgos**. Un
    hallazgo que amplía el objetivo es otra unidad.
 4. Repite dentro del límite de **Rondas**. Cada ronda la juzgan los tres.
-   Desde la ronda 2 reciben el brief de **Ronda delta**. El consejo da APTO
+   Desde la ronda 2 reciben el brief de **Ronda delta**, o el diff completo
+   cuando esa regla pide una ronda completa. El consejo da APTO
    cuando los tres dan APTO sobre el mismo head, sin critical ni warning
    abierto.
 5. Si un hallazgo sigue disputado después de dos respuestas del miembro,

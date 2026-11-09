@@ -230,16 +230,18 @@ que demuestra:
   nuevo, y ese APTO vale por todo el nivel. La ronda vuelve a ser completa si la corrección cambia de enfoque según
   **Autonomía**, si el nivel sube a alto, o si el delta añade comportamiento
   que ningún hallazgo pidió o toca archivos de producción que la ronda
-  completa no vio. Un head nuevo con el mismo parche conserva su APTO sin
-  ronda, como fija el paso 3 del
+  completa no vio. Un head nuevo que sólo incorpora la rama destino conserva
+  su APTO sin ronda cuando lo permite el paso 3 del
   [procedimiento de merge](references/merge.md).
 - **Hallazgos.** El brief de todo revisor pide sólo critical y warning. Un
   nit que llegue se descarta sin registrarlo. Un critical o warning nunca es
   un nit, aunque trate de documentación. Corrige cada hallazgo aceptado con
   el cambio mínimo y rebate con evidencia el que esté mal. Escribe tú la
   corrección de la ronda si cabe en el umbral de «Delegación» del routing.
-  Si lo supera, despáchala. Lo que pide trabajo fuera del objetivo sigue
-  **Unidades** y el [procedimiento de merge](references/merge.md).
+  Si lo supera, o si corrige un candidato del
+  [acumulador](references/acumulador.md), despáchala. Lo que pide trabajo
+  fuera del objetivo sigue **Unidades** y el
+  [procedimiento de merge](references/merge.md).
 - **Registro.** Lleva cada critical y warning en `hallazgos.tsv`, junto a los
   encargos de la unidad o en el store del programa, con las columnas
   `id	ronda	severidad	estado	evidencia`. El `id` no cambia entre rondas.
