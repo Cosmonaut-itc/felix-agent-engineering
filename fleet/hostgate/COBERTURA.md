@@ -320,3 +320,31 @@ representación frente a main. Suite única `20261109-130502-da97bc`: Apple 3.9.
 227/227 (rc 0); Python 3.14.7, 226/227 (rc 1), sólo
 `Storage.test_queries_never_mutate_sqlite_or_wal` por SEN-5625; cero errores/omitidas.
 El commit posterior sólo registra esta evidencia; no se afirma ejecutado.
+
+SEN-3822, 2c: `tests/test_ipc.py` añade procesos externos R/S/H, entorno distinto,
+presupuesto conjunto de ejecutores, replay/digest, ACL de consulta, ofertas rechazadas,
+segundo servicio, entrada máxima y límites, respuesta fragmentada e interrupciones.
+P14 genera historial terminal mediante core/cierre sintético y compara el mapping
+íntegro (>100 KiB), conservando inventario durable; SEN-5625 sigue declarado.
+El saludo cliente contrasta uid/host/store/revisión/identidad antes de enviar intención.
+La matriz nativa de 2b se repite dirigida; no acredita aún todas las ventanas
+inyectadas a través del endpoint integrado ni PID wrap/reboot reales.
+Mini `20261109-135305-fbd46e`, producto `75d52d11dedc02bf803bb20c4410131e55f5b668`:
+34/34 por stack (Apple 3.9.6 y 3.14.7), P14 169.902 bytes sin cambio durable.
+El head posterior sólo registra evidencia. Campaña integrada completa pendiente.
+
+SEN-3822, **2c-I**, correcciones de la review de PR #67, ronda 1:
+
+| Hallazgo | Regresión dirigida y aserción |
+| --- | --- |
+| R1-W1 | `IPC.test_r1_cancel_after_commit`: R/S/H y commit reales; cancelar tras DATA y antes de END exige TransportError/outcome_unknown, fd cerrado, una reserva y un slot retenido. |
+| R1-W1 | `IPCQueryCancellation.test_r1_cli_cancel_before_end`: cancelación en connect/call y TransportError; exit 6, stderr y stdout vacío. El caso histórico inyectado sigue exigiendo 130. |
+| R1-W1 | `ClientCancellation`: cancelación de open/connect/request_supervisor/approve cierra socket/watches o sesión y conserva outcome_unknown. Controles de handshake aislados, sin atribuirles un commit. |
+| R1-W2 | `IPC.test_r1_query_only_second_executor`: configuración validada, catálogo other/unix y ACL sólo unix; consulta pública exit 0, control explícito unix exit 0. |
+| R1-W2 | `IPC.test_r1_query_without_permitted_executor`: ACL vacía válida, rechazo explícito sin fallback al primer ejecutor. |
+
+Las seis pruebas nuevas se suman a las 34 dirigidas anteriores. El guion conserva
+TMPDIR/cache dentro de la copia y acorta la raíz temporal para los sockets nativos
+Darwin. Evidencia rojo/verde por stack en el `evidence-2/report.md` del encargo.
+La campaña integrada de autoridad y fallos sigue en **2c-II**; no se ejecuta aquí
+la suite completa ni se habilitan cargas, Fleet efectivo o la Mini.
