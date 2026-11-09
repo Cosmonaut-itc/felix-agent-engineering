@@ -13,7 +13,7 @@ skill.
 ## Antes de empezar
 
 1. Corre en la máquina que diga el `AGENTS.md` del repositorio. Si no dice
-   nada, corre en la Mac Mini.
+   nada, sigue «Máquinas» del entrypoint global.
 2. Comprueba la versión con `android -V`. Esta skill necesita 1.1.16717390
    o posterior, la que añade `android device hub`. `android input` llegó
    antes, en 1.0.16625370. Si la versión es anterior, `android update`
