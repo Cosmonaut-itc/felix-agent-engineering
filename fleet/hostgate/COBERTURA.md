@@ -320,3 +320,12 @@ representación frente a main. Suite única `20261109-130502-da97bc`: Apple 3.9.
 227/227 (rc 0); Python 3.14.7, 226/227 (rc 1), sólo
 `Storage.test_queries_never_mutate_sqlite_or_wal` por SEN-5625; cero errores/omitidas.
 El commit posterior sólo registra esta evidencia; no se afirma ejecutado.
+
+SEN-3822, 2c: `tests/test_ipc.py` añade procesos externos R/S/H, entorno distinto,
+presupuesto conjunto de ejecutores, replay/digest, ACL de consulta, ofertas rechazadas,
+segundo servicio, entrada máxima y límites, respuesta fragmentada e interrupciones.
+P14 genera historial terminal mediante core/cierre sintético y compara el mapping
+íntegro (>100 KiB), conservando inventario durable; SEN-5625 sigue declarado.
+El saludo cliente contrasta uid/host/store/revisión/identidad antes de enviar intención.
+La matriz nativa de 2b se repite dirigida; no acredita aún todas las ventanas
+inyectadas a través del endpoint integrado ni PID wrap/reboot reales.

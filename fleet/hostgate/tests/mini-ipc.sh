@@ -11,7 +11,11 @@ for python in /usr/bin/python3 /opt/homebrew/bin/python3.14; do
   code=$?
   set -e
   cat "$PWD/.ipc-base/reply.json"
-  "$python" -B -c 'import json,sys; r=json.load(open(sys.argv[1])); assert int(sys.argv[2]) == 5 and r["configRevision"] is None and r["result"] == "shadow"; print("RED semantic: expected exit 0 and administrative revision; got exit 5 / None")' "$PWD/.ipc-base/reply.json" "$code"
+  set +e
+  "$python" -B -c 'import json,sys; r=json.load(open(sys.argv[1])); assert int(sys.argv[2]) == 5 and r["result"] == "shadow"; assert r["exitCode"] == 0 and r["configRevision"] is not None, ("authority observable", r["exitCode"], r["configRevision"])' "$PWD/.ipc-base/reply.json" "$code"
+  red=$?
+  set -e
+  test "$red" = 1
   PYTHONPATH="$PWD/fleet" "$python" -B -c 'import os,unittest; from pathlib import Path; from hostgate.tests.test_admin import fixture_policy
 with fixture_policy(Path(os.environ["TMPDIR"])):
     suite=unittest.defaultTestLoader.loadTestsFromNames(["hostgate.tests.test_ipc", "hostgate.tests.test_darwin_peer", "hostgate.tests.test_cli"])

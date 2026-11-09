@@ -44,6 +44,7 @@ def child(role, root):
             with HostgateClient.connect() as client: print(canonical(client.call(query())), flush=True)
             return 0
         if role == 'supervisor':
+            print('ready', flush=True)
             handoff = SupervisorHandoff(**json.loads(sys.stdin.readline()))
             with HostgateClient.connect(handoff) as client:
                 for line in sys.stdin:
@@ -106,7 +107,7 @@ class IPC(unittest.TestCase):
         from hostgate.model import identity_json
         r = self.spawn('requester', dict(os.environ, IPC_OPERATION=op, IPC_EXECUTOR=executor)); handoff = self.line(r)
         self.assertIn('offer_id', handoff)
-        s = self.spawn('supervisor')
+        s = self.spawn('supervisor'); self.assertEqual(self.line(s).strip(), 'ready')
         with DarwinPeers() as peers: expected = identity_json(peers._observe(executor, pid=s.pid).identity)
         s.stdin.write(handoff); s.stdin.flush()
         r.stdin.write(canonical(expected) + '\n'); r.stdin.flush()
@@ -158,7 +159,7 @@ class IPC(unittest.TestCase):
         for dead in (False, True):
             r = self.spawn('requester'); handoff = self.line(r)
             if dead: r.terminate(); r.communicate(timeout=8)
-            s = self.spawn('supervisor'); s.stdin.write(handoff); s.stdin.flush()
+            s = self.spawn('supervisor'); self.assertEqual(self.line(s).strip(), 'ready'); s.stdin.write(handoff); s.stdin.flush()
             if not dead:
                 from hostgate.darwin_peer import DarwinPeers
                 from hostgate.model import identity_json

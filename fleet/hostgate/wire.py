@@ -1,6 +1,7 @@
 """Frames acotados de entrada; DATA/END conserva la respuesta lógica completa."""
 import hashlib
 import json
+import math
 import struct
 import tempfile
 import time
@@ -66,7 +67,7 @@ def send_response(stream, value, *, _maximum=2**64 - 1, _deadline=None):
         if buffer:
             if count + len(buffer) > _maximum: raise ResponseLimitError('contador uint64')
             _send(stream, b'\x01' + buffer, deadline); checksum.update(buffer); count += len(buffer)
-    except (ValueError, TypeError, OverflowError, RecursionError, ResponseLimitError) as exc:
+    except (ValueError, TypeError, OverflowError, RecursionError, MemoryError, ResponseLimitError) as exc:
         code = 'response-limit' if isinstance(exc, ResponseLimitError) else 'serialization-failed'
         _send(stream, b'\x03' + canonical(dict(code=code, operationId=value.get('operationId'), outcomeUnknown=True)).encode('ascii'), deadline)
         raise TransportError(code) from exc
@@ -78,6 +79,12 @@ def _pairs(items):
     for key, value in items:
         if key in result: raise ValueError('clave duplicada')
         result[key] = value
+    return result
+
+
+def _float(value):
+    result = float(value)
+    if not math.isfinite(result): raise ValueError('número no finito')
     return result
 
 
@@ -101,7 +108,7 @@ def receive_response(stream, operation_id, spool_dir, maximum=256 * 1024**2, *, 
                     end = _read(stream, 40, deadline)
                     if not count or end != struct.pack('!Q', count) + checksum.digest(): raise TransportError('END no coincide')
                     spool.seek(0)
-                    value = json.loads(spool.read().decode('utf-8'), object_pairs_hook=_pairs, parse_constant=_nonfinite)
+                    value = json.loads(spool.read().decode('utf-8'), object_pairs_hook=_pairs, parse_constant=_nonfinite, parse_float=_float)
                     if (not isinstance(value, dict) or value.get('schema') != SCHEMA or
                             value.get('operationId') != operation_id or value.get('result') != 'shadow'):
                         raise TransportError('respuesta ajena')

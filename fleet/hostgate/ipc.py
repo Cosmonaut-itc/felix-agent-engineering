@@ -94,19 +94,20 @@ def serve(config, lease, peers, world, *, _ready=None):
     def send(connection, value): send_json(connection['stream'], value, connection['deadline'])
     def dispatch(connection, request):
         operation_id = request.get('operationId') if isinstance(request, dict) else None
+        called_core = False
         try:
             validate(request); lease.check()
             auth = sessions.context(connection, request)
-            op = request['operation']
+            called_core = True; op = request['operation']
             if op == 'reservar': return gate.reservar(request, auth)
             if op == 'latido': return gate.latido(operation_id, request['key'], request['seq'], auth)
             if op == 'dudosa': return gate.dudosa(operation_id, request['key'], request['reason'], request['evidenceIds'], auth)
             if op == 'soltar': return gate.soltar(operation_id, request['key'], request['evidenceIds'], auth)
             result = gate.estado({}, auth); result['operationId'] = operation_id; return result
         except Busy: code, detail = 4, 'busy'
-        except PermissionError: code, detail = 5, 'identity-unverifiable'
+        except PermissionError: code, detail = (6, 'store-unavailable') if called_core else (5, 'identity-unverifiable')
         except admin.AdminError: code, detail = 6, 'store-unavailable'
-        except (ValueError, TypeError, KeyError): code, detail = 2, 'operation-conflict'
+        except (ValueError, TypeError, KeyError): code, detail = (6, 'store-unavailable') if called_core else (2, 'operation-conflict')
         except Exception: code, detail = 6, 'store-unavailable'
         return reply(operation_id, config.node.revision, [reason(detail)], exit_code=code)
     try:
