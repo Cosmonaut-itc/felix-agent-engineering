@@ -28,6 +28,12 @@ se mantiene visible; este corte no lo corrige.
 `tests/support/world.config` instala la seam privada de rutas en los procesos hijos
 históricos: la copia remote-run está dentro de un checkout y no hereda mocks del padre.
 
+R1-C1: `tests/test_admin_observation.py` reproduce una ACL real de 17 entradas y
+ENOMEM sólo en realloc dentro de fstatx nativo (interposición C en un hijo propio).
+Exige rechazo pese a rc=0, conserva archivo/metadata/ACL y acepta el control sin ACL.
+También cubre metadatos filesec ausentes/incoherentes, entradas sin datos, errno
+residual de éxito y salidas vacías de fstatfs64/sysctlbyname/gethostuuid.
+
 SEN-3952 amplía la guarda de SEN-3900 a la serialización de la vista, el resultado/audit
 y el contexto que se escribirá, todavía en sombra. El store usa los textos ya preparados:
 

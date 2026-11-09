@@ -27,7 +27,9 @@ a dicts inmutables compatibles con JSON y tuplas, sin cambiar demanda ni mínimo
 El cargador recorre componentes por `dir_fd` con `O_NOFOLLOW`, comprueba propietario,
 modos, link único de archivos, ACL nativa y APFS local, también en los volúmenes.
 Rechaza conservadoramente cualquier ACL ALLOW de escritura/borrado/cambio de permisos.
-La ausencia de ACL se acredita con fstatx/filesec; errores de observación cierran.
+La ausencia de ACL exige que fstatx/filesec aporte owner, group y mode iguales a
+fstat del mismo fd: fstatx puede devolver éxito con filesec vacío al fallar realloc.
+No se interpreta errno tras un éxito; propiedades/entradas sin datos cierran.
 Configuración/ancla tienen límites de 64 KiB/4 KiB y parser JSON estricto.
 
 `fleet/hostgate-authority@1` fija hardware/host/store/stateDir/modo, separado de la

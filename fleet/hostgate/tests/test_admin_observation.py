@@ -91,6 +91,43 @@ class NativeObservations(unittest.TestCase):
                         with self.assertRaises(admin.AdminError): admin.load_config(fixture.locator)
                     self.assertEqual(fixture.locator.config_path.read_bytes(), before)
 
+    def test_filesec_metadata_must_match_same_fd(self):
+        with tempfile.TemporaryDirectory() as td, fixtures.fixture_policy(Path(td).resolve()):
+            fixture = fixtures.Fixture(Path(td).resolve()); fixture.provision()
+            native = admin._call
+            for prop, ctype in ((1, C.c_uint32), (2, C.c_uint32), (4, C.c_uint16)):
+                for missing in (False, True):
+                    with self.subTest(property=prop, missing=missing):
+                        def incoherent(name, result, types, *args):
+                            if name == 'filesec_get_property' and args[1] == prop:
+                                if missing: return 0
+                                rc = native(name, result, types, *args)
+                                C.cast(args[2], C.POINTER(ctype)).contents.value ^= 1
+                                return rc
+                            return native(name, result, types, *args)
+                        with patch.object(admin, '_call', side_effect=incoherent):
+                            with self.assertRaises(admin.AdminError): admin.load_config(fixture.locator)
+
+    def test_acl_entry_outputs_and_stale_errno(self):
+        with tempfile.TemporaryDirectory() as td, fixtures.fixture_policy(Path(td).resolve()):
+            fixture = fixtures.Fixture(Path(td).resolve()); fixture.provision()
+            native = admin._call
+            def stale_errno(name, result, types, *args):
+                rc = native(name, result, types, *args)
+                C.set_errno(errno.ENOMEM)
+                return rc
+            with patch.object(admin, '_call', side_effect=stale_errno):
+                self.assertTrue(admin.load_config(fixture.locator).node.revision.startswith('cfg_'))
+            path = fixture.locator.config_path
+            subprocess.run(['/bin/chmod', '+a', 'everyone allow read', str(path)], check=True)
+            self.assertTrue(admin.load_config(fixture.locator).node.revision.startswith('cfg_'))
+            for missing in ('acl_get_entry', 'acl_get_tag_type', 'acl_get_permset_mask_np'):
+                with self.subTest(missing=missing):
+                    def empty(name, result, types, *args):
+                        return 0 if name == missing else native(name, result, types, *args)
+                    with patch.object(admin, '_call', side_effect=empty):
+                        with self.assertRaises(admin.AdminError): admin.load_config(fixture.locator)
+
 
 if __name__ == '__main__':
     native_acl_regression(sys.argv[1])

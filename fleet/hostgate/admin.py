@@ -114,13 +114,24 @@ def _check_filesystem(fd):
 
 def _read_acl(fd):
     # acl_get_fd_np devuelve NULL también sin ACL. Consultar FILESEC_ACL
-    # explícitamente distingue ausencia acreditada de un error de observación.
+    # sólo tras acreditar que fstatx completó filesec: puede retornar 0 cuando
+    # falla su realloc interno, sin poblar propiedades (errno no es contrato).
     security = _call('filesec_init', C.c_void_p, [])
     if not security: raise AdminError('filesec no disponible')
     try:
-        data, present, acl = C.create_string_buffer(512), C.c_int(), C.c_void_p()
-        if (_call('fstatx_np', C.c_int, [C.c_int, C.c_void_p, C.c_void_p], fd, data, security) or
-                _call('filesec_query_property', C.c_int, [C.c_void_p, C.c_int, C.c_void_p], security, 5, C.byref(present))):
+        data, present, acl = C.create_string_buffer(512), C.c_int(-1), C.c_void_p()
+        if _call('fstatx_np', C.c_int, [C.c_int, C.c_void_p, C.c_void_p], fd, data, security):
+            raise AdminError('ACL no observable')
+        info = os.fstat(fd)
+        # FILESEC_OWNER/GROUP/MODE, con tipos uid_t/gid_t/mode_t de Darwin.
+        for prop, ctype, expected in ((1, C.c_uint32, info.st_uid), (2, C.c_uint32, info.st_gid),
+                                      (4, C.c_uint16, info.st_mode)):
+            value = ctype(~expected)
+            if (_call('filesec_get_property', C.c_int, [C.c_void_p, C.c_int, C.c_void_p],
+                      security, prop, C.byref(value)) or value.value != expected):
+                raise AdminError('metadatos filesec incompletos/incoherentes')
+        if (_call('filesec_query_property', C.c_int, [C.c_void_p, C.c_int, C.c_void_p], security, 5, C.byref(present)) or
+                present.value not in (0, 1)):
             raise AdminError('ACL no observable')
         if not present.value: return None
         if (_call('filesec_get_property', C.c_int, [C.c_void_p, C.c_int, C.c_void_p], security, 5, C.byref(acl)) or
@@ -135,13 +146,14 @@ def _check_acl(fd):
     if acl is None: return
     try:
         if _call('acl_valid', C.c_int, [C.c_void_p], acl): raise AdminError('ACL invalida')
-        entry, tag, mask = C.c_void_p(), C.c_int(), C.c_uint64()
         for index in range(129):
+            entry, tag, mask = C.c_void_p(), C.c_int(-1), C.c_uint64(2**64 - 1)
             rc = _call('acl_get_entry', C.c_int, [C.c_void_p, C.c_int, C.c_void_p], acl, index, C.byref(entry))
             if rc == -1 and C.get_errno() == errno.EINVAL: return
-            if rc or index == 128: raise AdminError('ACL no observable/acotada')
+            if rc or not entry.value or index == 128: raise AdminError('ACL no observable/acotada')
             if (_call('acl_get_tag_type', C.c_int, [C.c_void_p, C.c_void_p], entry, C.byref(tag)) or
-                    _call('acl_get_permset_mask_np', C.c_int, [C.c_void_p, C.c_void_p], entry, C.byref(mask))):
+                    _call('acl_get_permset_mask_np', C.c_int, [C.c_void_p, C.c_void_p], entry, C.byref(mask)) or
+                    mask.value == 2**64 - 1):
                 raise AdminError('entrada ACL no observable')
             # Conservador: ningún ALLOW de escritura, borrado o cambio de permisos.
             if tag.value not in (1, 2) or (tag.value == 1 and mask.value & 0x3574):
