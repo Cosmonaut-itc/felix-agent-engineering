@@ -329,3 +329,6 @@ P14 genera historial terminal mediante core/cierre sintético y compara el mappi
 El saludo cliente contrasta uid/host/store/revisión/identidad antes de enviar intención.
 La matriz nativa de 2b se repite dirigida; no acredita aún todas las ventanas
 inyectadas a través del endpoint integrado ni PID wrap/reboot reales.
+Mini `20261109-135305-fbd46e`, producto `75d52d11dedc02bf803bb20c4410131e55f5b668`:
+34/34 por stack (Apple 3.9.6 y 3.14.7), P14 169.902 bytes sin cambio durable.
+El head posterior sólo registra evidencia. Campaña integrada completa pendiente.
