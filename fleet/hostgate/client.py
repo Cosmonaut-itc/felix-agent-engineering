@@ -1,4 +1,5 @@
 """Única entrada de consumidor: locator fijo, servidor nativo y sesión persistente."""
+import os
 import select
 import socket
 import time
@@ -26,7 +27,10 @@ class HostgateClient:
         try:
             locator = admin.local_authority(); config = admin.load_config(locator)
             self.spool_dir, self.deadline = locator.socket_path.parent, time.monotonic() + 5
-            executor = executor or config.node.executors[0]
+            if executor is None:
+                permitted = config.principals.get(str(os.geteuid()), {}).get('executors', ())
+                executor = next((e for e in config.node.executors if e in permitted), None)
+                if executor is None: raise TransportError('ningún ejecutor permitido para uid local')
             self.stream.settimeout(5); self.stream.connect(str(locator.socket_path))
             send_json(self.stream, message('open', executorId=executor), self.deadline)
             self.peer = self.peers.authenticate(self.stream, executor, _deadline=self.deadline)
@@ -37,8 +41,10 @@ class HostgateClient:
                     not self.peers.alive(self.stream, self.peer)):
                 raise TransportError('servidor contradice autoridad administrativa/kernel')
             return self
-        except BaseException:
-            self.close(); raise
+        except BaseException as exc:
+            self.close()
+            if isinstance(exc, KeyboardInterrupt): raise TransportError('sesión cancelada; resultado desconocido') from exc
+            raise
 
     @classmethod
     def connect(cls, handoff=None):
@@ -52,8 +58,10 @@ class HostgateClient:
                 send_json(self.stream, message('approve', identity=remote['identity']), self.deadline)
             check(receive_json(self.stream, self.deadline), 'ready')
             return self
-        except BaseException:
-            self.close(); raise
+        except BaseException as exc:
+            self.close()
+            if isinstance(exc, KeyboardInterrupt): raise TransportError('sesión cancelada; resultado desconocido') from exc
+            raise
 
     def call(self, request, *, max_response_bytes=256 * 1024**2):
         try:
@@ -66,7 +74,7 @@ class HostgateClient:
             return result
         except BaseException as exc:
             self.close()
-            if isinstance(exc, (OSError, ValueError, TypeError, KeyError, MemoryError)) and not isinstance(exc, TransportError):
+            if isinstance(exc, (OSError, ValueError, TypeError, KeyError, MemoryError, KeyboardInterrupt)) and not isinstance(exc, TransportError):
                 raise TransportError('operación sin respuesta íntegra; resultado desconocido') from exc
             raise
 
@@ -86,8 +94,10 @@ class RequesterSession:
             if remote['identity'] != identity_json(original_supervisor): raise TransportError('supervisor no es el original')
             send_json(self.client.stream, message('approve', identity=remote['identity']), self.client.deadline)
             check(receive_json(self.client.stream, self.client.deadline), 'ready')
-        except BaseException:
-            self.close(); raise
+        except BaseException as exc:
+            self.close()
+            if isinstance(exc, KeyboardInterrupt): raise TransportError('sesión cancelada; resultado desconocido') from exc
+            raise
 
     def close(self): self.client.close()
     def __enter__(self): return self
@@ -101,5 +111,7 @@ def request_supervisor(request):
         send_json(client.stream, message('offer', request=request), client.deadline)
         offer = check(receive_json(client.stream, client.deadline), 'offer', 'offer_id requester request_digest config_revision')
         return RequesterSession(client, SupervisorHandoff(**{k: v for k, v in offer.items() if k not in ('schema', 'kind')}))
-    except BaseException:
-        client.close(); raise
+    except BaseException as exc:
+        client.close()
+        if isinstance(exc, KeyboardInterrupt): raise TransportError('sesión cancelada; resultado desconocido') from exc
+        raise

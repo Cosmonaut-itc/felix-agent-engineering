@@ -332,3 +332,19 @@ inyectadas a través del endpoint integrado ni PID wrap/reboot reales.
 Mini `20261109-135305-fbd46e`, producto `75d52d11dedc02bf803bb20c4410131e55f5b668`:
 34/34 por stack (Apple 3.9.6 y 3.14.7), P14 169.902 bytes sin cambio durable.
 El head posterior sólo registra evidencia. Campaña integrada completa pendiente.
+
+SEN-3822, **2c-I**, correcciones de la review de PR #67, ronda 1:
+
+| Hallazgo | Regresión dirigida y aserción |
+| --- | --- |
+| R1-W1 | `IPC.test_r1_cancel_after_commit`: R/S/H y commit reales; cancelar tras DATA y antes de END exige TransportError/outcome_unknown, fd cerrado, una reserva y un slot retenido. |
+| R1-W1 | `IPCQueryCancellation.test_r1_cli_cancel_before_end`: cancelación en connect/call y TransportError; exit 6, stderr y stdout vacío. El caso histórico inyectado sigue exigiendo 130. |
+| R1-W1 | `ClientCancellation`: cancelación de open/connect/request_supervisor/approve cierra socket/watches o sesión y conserva outcome_unknown. Controles de handshake aislados, sin atribuirles un commit. |
+| R1-W2 | `IPC.test_r1_query_only_second_executor`: configuración validada, catálogo other/unix y ACL sólo unix; consulta pública exit 0, control explícito unix exit 0. |
+| R1-W2 | `IPC.test_r1_query_without_permitted_executor`: ACL vacía válida, rechazo explícito sin fallback al primer ejecutor. |
+
+Las seis pruebas nuevas se suman a las 34 dirigidas anteriores. El guion conserva
+TMPDIR/cache dentro de la copia y acorta la raíz temporal para los sockets nativos
+Darwin. Evidencia rojo/verde por stack en el `evidence-2/report.md` del encargo.
+La campaña integrada de autoridad y fallos sigue en **2c-II**; no se ejecuta aquí
+la suite completa ni se habilitan cargas, Fleet efectivo o la Mini.

@@ -49,6 +49,9 @@ def main(argv=None, *, gate=None, auth=None, stdin=None, stdout=None, stderr=Non
         except Exception:
             result = reply(operation_id, revision, [reason('store-unavailable', 'estado/entorno inutilizable')], exit_code=6)
         except KeyboardInterrupt:
+            if gate is None and args[0] == 'estado':
+                print('transporte cancelado; resultado desconocido', file=stderr)
+                return 6
             result = reply(operation_id, revision, [reason('reservation-uncertain', 'interrupcion sin prueba de fin')], exit_code=130)
     print(json.dumps(result, ensure_ascii=True, allow_nan=False, separators=(',', ':')), file=stdout, flush=True)
     return result['exitCode']

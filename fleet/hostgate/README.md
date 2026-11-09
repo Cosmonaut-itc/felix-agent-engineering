@@ -388,3 +388,14 @@ END (uint64/SHA-256) o ERROR. Spool privado hasta 1 MiB en memoria, límite loca
 ampliable de 256 MiB; no hay truncado, compensación ni reconexión de propietario.
 No instala launchd ni activa Fleet, perfiles, cargas, U1 o el legado. Pruebas:
 `tests/mini-ipc.sh`, sólo con remote-run en Mini y fixtures privadas dentro de la copia.
+
+El corte aceptado de este PR es **2c-I: endpoint, pairing, framing y cliente**;
+la campaña integrada de autoridad y fallos corresponde a **2c-II**.
+La consulta elige un ejecutor de la ACL del uid efectivo local, a partir de la
+configuración validada; si no hay ninguno, rechaza explícitamente antes de conectar.
+H conserva la autorización del peer. Cancelar la llamada o el pairing cierra la
+sesión y produce `TransportError(outcome_unknown=True)`, sin compensar reservas.
+El CLI `estado` por IPC sale 6, con diagnóstico en stderr y stdout vacío al cancelar;
+el harness histórico con `gate/auth` inyectados conserva su salida 130.
+Las regresiones de R1-W1/R1-W2 están en `test_ipc.py` y `test_cli.py`;
+`mini-ipc.sh` las ejecuta junto a las tres familias dirigidas en ambos stacks.
