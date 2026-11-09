@@ -102,11 +102,12 @@ class IPC(unittest.TestCase):
         if not value: self.fail('hijo terminó: ' + proc.stderr.read())
         return value
 
-    def pair(self, op='op', executor='unix'):
+    def pair(self, op='op', executor='unix', before_attach=None):
         from hostgate.darwin_peer import DarwinPeers
         from hostgate.model import identity_json
         r = self.spawn('requester', dict(os.environ, IPC_OPERATION=op, IPC_EXECUTOR=executor)); handoff = self.line(r)
         self.assertIn('offer_id', handoff)
+        if before_attach: before_attach()
         s = self.spawn('supervisor'); self.assertEqual(self.line(s).strip(), 'ready')
         with DarwinPeers() as peers: expected = identity_json(peers._observe(executor, pid=s.pid).identity)
         s.stdin.write(handoff); s.stdin.flush()
@@ -169,6 +170,18 @@ class IPC(unittest.TestCase):
             out, err = s.communicate(timeout=8)
             self.assertNotEqual(s.returncode, 0); self.assertEqual(out, '')
         self.assertEqual(self.inventory(), before)
+
+    def test_unregistered_connection_failure_keeps_pending_offers(self):
+        from hostgate.ipc import message
+        from hostgate.wire import send_json
+        def rejected_open():
+            stray = socket.socket(socket.AF_UNIX); self.addCleanup(stray.close)
+            stray.connect(str(self.f.locator.socket_path))
+            send_json(stray, message('open', executorId='desconocido'))
+            self.assertTrue(select.select([stray], [], [], 12)[0], 'servidor no cerró el canal no registrado')
+            self.assertEqual(stray.recv(1), b'')
+        r, s, call = self.pair(before_attach=rejected_open)
+        self.assertTrue(call(request(physicalHostId='fixture-host', exclusiveResources=['sen-slot:1']))['wouldGrant'])
 
     def test_large_core_snapshot_survives_transport_without_ledger_write(self):
         from types import SimpleNamespace
