@@ -134,7 +134,7 @@ class Contract(Harness):
         self.world.now += 1
         for auth in (other, replace(self.auth, channel_binding='other-channel')):
             with self.subTest(auth=auth):
-                self.world.channel_alive = lambda binding: True
+                self.world.channel_alive = lambda binding, **kwargs: True
                 result = self.gate.latido('heartbeat', key, 1, auth)
                 self.assertEqual(result['exitCode'], 5)
                 self.assertNotIn('originalResult', result)
@@ -148,7 +148,7 @@ class Contract(Harness):
         from dataclasses import replace
         self.gate.prepare(request(), self.auth)
         other = self.world.auth(pid=222)
-        self.world.channel_alive = lambda binding: True
+        self.world.channel_alive = lambda binding, **kwargs: True
         for auth in (other, replace(self.auth, channel_binding='foreign-channel')):
             denied = self.reserve(auth=auth)
             self.assertEqual(denied['exitCode'], 5)
@@ -165,7 +165,7 @@ class Contract(Harness):
         from dataclasses import replace
         key = self.key(self.reserve())
         other = self.world.auth(pid=222)
-        self.world.channel_alive = lambda binding: True
+        self.world.channel_alive = lambda binding, **kwargs: True
         self.world.now += 2
         before = self.gate.store.read()['reservations'][0]['heartbeat']
         for auth in (other, replace(self.auth, channel_binding='foreign-channel')):

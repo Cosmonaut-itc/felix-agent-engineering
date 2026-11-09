@@ -49,15 +49,17 @@ def receive_json(stream, deadline=None):
     return strict_json(_read(stream, size, deadline).decode('utf-8'))
 
 
-def send_response(stream, value, *, _maximum=2**64 - 1):
-    deadline, count, checksum, buffer = time.monotonic() + 300, 0, hashlib.sha256(), bytearray()
+def send_response(stream, value, *, _maximum=2**64 - 1, _deadline=None):
+    deadline, count, checksum, buffer = _deadline or time.monotonic() + 300, 0, hashlib.sha256(), bytearray()
     try:
         encoder = json.JSONEncoder(sort_keys=True, separators=(',', ':'), allow_nan=False, ensure_ascii=True)
         for piece in encoder.iterencode(value):
             raw = piece.encode('ascii')
-            for offset in range(0, len(raw), 65536):
-                buffer.extend(raw[offset:offset + 65536])
-                while len(buffer) >= 65536:
+            offset = 0
+            while offset < len(raw):
+                take = min(65536 - len(buffer), len(raw) - offset)
+                buffer.extend(raw[offset:offset + take]); offset += take
+                if len(buffer) == 65536:
                     chunk = bytes(buffer[:65536]); del buffer[:65536]
                     if count + len(chunk) > _maximum: raise ResponseLimitError('contador uint64')
                     _send(stream, b'\x01' + chunk, deadline); checksum.update(chunk); count += len(chunk)
@@ -82,8 +84,8 @@ def _pairs(items):
 def _nonfinite(value): raise ValueError('número no finito')
 
 
-def receive_response(stream, operation_id, spool_dir, maximum=256 * 1024**2):
-    deadline, count, checksum = time.monotonic() + 300, 0, hashlib.sha256()
+def receive_response(stream, operation_id, spool_dir, maximum=256 * 1024**2, *, _deadline=None):
+    deadline, count, checksum = _deadline or time.monotonic() + 300, 0, hashlib.sha256()
     try:
         if type(maximum) is not int or maximum < 1: raise ResponseLimitError('límite local inválido')
         with tempfile.SpooledTemporaryFile(max_size=1024**2, dir=spool_dir) as spool:

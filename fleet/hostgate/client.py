@@ -29,7 +29,7 @@ class HostgateClient:
             executor = executor or config.node.executors[0]
             self.stream.settimeout(5); self.stream.connect(str(locator.socket_path))
             send_json(self.stream, message('open', executorId=executor), self.deadline)
-            self.peer = self.peers.authenticate(self.stream, executor)
+            self.peer = self.peers.authenticate(self.stream, executor, _deadline=self.deadline)
             hello = check(receive_json(self.stream, self.deadline), 'hello', 'physicalHostId storeId configRevision mode identity')
             if (self.peer.identity.uid != config.service_uid or self.peer.egid != config.service_gid or
                     hello != message('hello', physicalHostId=config.node.host_id, storeId=config.node.store_id,
@@ -59,8 +59,9 @@ class HostgateClient:
         try:
             if not self.peers.alive(self.stream, self.peer): raise TransportError('servidor/canal perdió identidad')
             if select.select([self.stream], [], [], 0)[0]: raise TransportError('tráfico no solicitado')
-            send_json(self.stream, request)
-            result = receive_response(self.stream, request['operationId'], self.spool_dir, max_response_bytes)
+            deadline = time.monotonic() + 300
+            send_json(self.stream, request, deadline)
+            result = receive_response(self.stream, request['operationId'], self.spool_dir, max_response_bytes, _deadline=deadline)
             if select.select([self.stream], [], [], 0)[0]: self.close()
             return result
         except BaseException as exc:

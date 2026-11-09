@@ -74,7 +74,7 @@ class IPC(unittest.TestCase):
         self.f.provision()
         self.server = self.spawn('server')
         # Readiness uses an inherited pipe, never a probe with a false positive.
-        self.assertEqual(self.serveself.line(r).strip(), 'listening')
+        self.assertEqual(self.line(self.server).strip(), 'listening')
 
     def spawn(self, role, env=None):
         proc = subprocess.Popen([sys.executable, '-B', '-m', 'hostgate.tests.test_ipc', role, str(self.root)],
@@ -152,6 +152,23 @@ class IPC(unittest.TestCase):
         self.assertEqual(second.returncode, 4, (out, err))
         self.assertEqual(call(dict(heartbeat, operationId='beat2', seq=2))['exitCode'], 0)
 
+    def test_pairing_rejects_wrong_supervisor_approval_and_dead_requester(self):
+        r, s, call = self.pair(); self.assertTrue(call(request(physicalHostId='fixture-host', exclusiveResources=['sen-slot:1']))['wouldGrant'])
+        before = self.inventory()
+        for dead in (False, True):
+            r = self.spawn('requester'); handoff = self.line(r)
+            if dead: r.terminate(); r.communicate(timeout=8)
+            s = self.spawn('supervisor'); s.stdin.write(handoff); s.stdin.flush()
+            if not dead:
+                from hostgate.darwin_peer import DarwinPeers
+                from hostgate.model import identity_json
+                with DarwinPeers() as peers: wrong = identity_json(peers._observe('unix', pid=os.getpid()).identity)
+                r.stdin.write(canonical(wrong) + '\n'); r.stdin.flush()
+                out, err = r.communicate(timeout=8); self.assertNotEqual(r.returncode, 0)
+            out, err = s.communicate(timeout=8)
+            self.assertNotEqual(s.returncode, 0); self.assertEqual(out, '')
+        self.assertEqual(self.inventory(), before)
+
     def test_large_core_snapshot_survives_transport_without_ledger_write(self):
         from types import SimpleNamespace
         from hostgate import admin
@@ -223,6 +240,39 @@ class Framing(unittest.TestCase):
                 with self.assertRaises(TransportError): receive_response(Stream(altered), 'large', Path(root))
             with self.assertRaises(ResponseLimitError): receive_response(Stream(raw), 'large', Path(root), 20)
             self.assertEqual(receive_response(Stream(raw), 'large', Path(root), 1000000), value)
+            for invalid, maximum in ((dict(value, rows=[float('nan')]), 2**64 - 1), (value, 65536)):
+                output = Capture()
+                with self.assertRaises(TransportError): send_response(output, invalid, _maximum=maximum)
+                with self.assertRaises(TransportError): receive_response(Stream(bytes(output.data)), 'large', Path(root))
+
+
+class ClientHandshake(unittest.TestCase):
+    def test_server_facts_must_match_kernel_and_config_before_intent(self):
+        from types import SimpleNamespace
+        from unittest.mock import Mock
+        from hostgate import admin
+        from hostgate.client import HostgateClient
+        from hostgate.identity import Identity
+        from hostgate.ipc import message
+        from hostgate.model import identity_json
+        from hostgate.wire import TransportError
+        identity = Identity('unix', 501, 123, (1, 2, 3, 4), 'boot', 'boot')
+        cfg = SimpleNamespace(service_uid=501, service_gid=20, node=SimpleNamespace(executors=['unix'], host_id='host', store_id='store', revision='cfg'))
+        hello = message('hello', physicalHostId='host', storeId='store', configRevision='cfg', mode='shadow', identity=identity_json(identity))
+        variants = [hello] + [dict(hello, **{key: value}) for key, value in
+            [('physicalHostId', 'fake'), ('storeId', 'fake'), ('configRevision', 'fake'), ('mode', 'enforcing'),
+             ('identity', dict(hello['identity'], pid=124))]]
+        for response, uid in [(v, 501) for v in variants] + [(hello, 502)]:
+            stream, peers = Mock(), Mock()
+            peers.authenticate.return_value = SimpleNamespace(identity=identity, egid=20)
+            peers.alive.return_value = True; cfg.service_uid = uid
+            with patch.object(admin, 'load_config', return_value=cfg), patch('hostgate.client.socket.socket', return_value=stream), \
+                    patch('hostgate.client.DarwinPeers', return_value=peers), patch('hostgate.client.receive_json', return_value=response):
+                if response == hello and uid == 501: HostgateClient._open().close()
+                else:
+                    with self.assertRaises(TransportError): HostgateClient._open()
+                self.assertEqual(stream.sendall.call_count, 1)  # sólo open; ninguna intención/aprobación/RPC
+                peers.close.assert_called_once()
 
 
 if __name__ == '__main__':

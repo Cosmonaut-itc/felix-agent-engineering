@@ -232,10 +232,10 @@ class DarwinPeers:
         if self._frame(stream, deadline) != {'kind': 'proof', 'nonce': nonce}:
             raise PeerError('prueba no corresponde al reto fresco')
 
-    def authenticate(self, stream, executor):
+    def authenticate(self, stream, executor, *, _deadline=None):
         if stream in self._streams: raise PeerError('canal ya autenticado')
         watch, previous_timeout = None, stream.gettimeout()
-        deadline = time.monotonic() + 5
+        deadline = _deadline if _deadline is not None else time.monotonic() + 5
         try:
             os.set_inheritable(stream.fileno(), False)
             candidate = self.capture(stream, executor)

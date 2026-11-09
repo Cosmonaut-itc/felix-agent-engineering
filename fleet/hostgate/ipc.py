@@ -107,6 +107,7 @@ def serve(config, lease, peers, world, *, _ready=None):
         except PermissionError: code, detail = 5, 'identity-unverifiable'
         except admin.AdminError: code, detail = 6, 'store-unavailable'
         except (ValueError, TypeError, KeyError): code, detail = 2, 'operation-conflict'
+        except Exception: code, detail = 6, 'store-unavailable'
         return reply(operation_id, config.node.revision, [reason(detail)], exit_code=code)
     try:
         lease.check()
@@ -131,7 +132,7 @@ def serve(config, lease, peers, world, *, _ready=None):
                             opening = check(receive_json(stream, deadline), 'open', 'executorId')
                             executor = opening['executorId']
                             if executor not in config.node.executors: raise TransportError('ejecutor desconocido')
-                            peer = peers.authenticate(stream, executor)
+                            peer = peers.authenticate(stream, executor, _deadline=deadline)
                             connection = dict(stream=stream, peer=peer, state='intent', deadline=deadline)
                             sessions.connections[stream] = connection
                             own = peers._observe(executor, pid=os.getpid()).identity
@@ -140,10 +141,11 @@ def serve(config, lease, peers, world, *, _ready=None):
                             continue
                         connection = sessions.connections[stream]
                         state = connection['state']
-                        value = receive_json(stream, connection['deadline'] if state != 'active' else None)
+                        deadline = connection['deadline'] if state != 'active' else time.monotonic() + 300
+                        value = receive_json(stream, deadline)
                         paths.check()
                         if state == 'active':
-                            send_response(stream, dispatch(connection, value)); continue
+                            send_response(stream, dispatch(connection, value), _deadline=deadline); continue
                         if not sessions.live(connection): raise TransportError('peer no verificable')
                         lease.check()
                         if state == 'intent':
