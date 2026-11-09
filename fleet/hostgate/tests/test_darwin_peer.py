@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 from dataclasses import replace
 from types import SimpleNamespace
@@ -33,14 +34,15 @@ class Native:
     """Una barrera después de cada lectura, sin sustituir el peer entero."""
     def __init__(self):
         self.calls, self.after, self.bad, self.generation = [], None, None, 0
+        self.uuid, self.time = U, T
         self.watch_object = Watch()
     def read(self, name, value):
         self.calls.append(name)
         if self.bad == len(self.calls): raise PermissionError('EPERM ' + name)
         if self.after: self.after(len(self.calls), name)
         return value
-    def boot(self): return self.read('U', U)
-    def boottime(self): return self.read('T', T)
+    def boot(self): return self.read('U', self.uuid)
+    def boottime(self): return self.read('T', self.time)
     def peercred(self, s): return self.read('cred', (501, 20))
     def peerpid(self, s): return self.read('pid', 123)
     def token(self, s): return self.read('token', (123, 501, 20, 7 + self.generation))
@@ -61,6 +63,7 @@ class PeerMatrix(unittest.TestCase):
         native.calls.clear()
         a, b = socket.socketpair()
         self.addCleanup(a.close); self.addCleanup(b.close)
+        native.remote = b
         return native, peers, a
 
     def test_positive_capture_verify_and_all_observer_roles(self):
@@ -173,16 +176,17 @@ class PeerMatrix(unittest.TestCase):
 
     def test_challenge_rejects_buffered_proof_and_bounded_frames(self):
         import struct
-        for raw in (struct.pack('!I', 0), struct.pack('!I', 65537), b'\0\0',
-                    struct.pack('!I', 2) + b'{}',
-                    struct.pack('!I', 8) + b'{"x":NaN}',
-                    struct.pack('!I', 32) + b'{"kind":"proof","nonce":"stale"}'):
-            n, p, s = self.fresh()
-            # socketpair peer queda registrado por fresh; duplicado sólo para escribir fixture.
-            other = socket.socket(fileno=os.dup(s.fileno()))
-            other.close()
-            with patch.object(p, '_recv', return_value=raw):
-                with self.assertRaises(d.PeerError): p._challenge(s, 0)
+        def frame(raw): return struct.pack('!I', len(raw)) + raw
+        for raw in (struct.pack('!I', 0), struct.pack('!I', 65537), b'\0\0', frame(b'{}'),
+                    frame(b'{"x":NaN}'), frame(b'\xef\xbb\xbf{}'), frame(b'{"x":1,"x":2}'),
+                    frame(b'{"kind":"proof","nonce":"stale"}'),
+                    frame(b'{"kind":"challenge","nonce":"' + b'0' * 64 + b'"}') +
+                    frame(b'{"kind":"proof","nonce":"' + b'0' * 64 + b'"}')):
+            with self.subTest(raw=raw):
+                n, p, s = self.fresh()
+                n.remote.sendall(raw); n.remote.shutdown(socket.SHUT_WR)
+                with self.assertRaises(d.PeerError): p._challenge(s, time.monotonic() + .1)
+
 
 
 @unittest.skipUnless(sys.platform == 'darwin', 'ABI exclusivo de Darwin')
@@ -269,23 +273,27 @@ class Health(unittest.TestCase):
         self.assertTrue(self.gate._health())
 
     def test_each_health_read_fault_and_boot_change_latches_closed(self):
-        for index in range(1, 5):
-            for fault in ('error', 'uuid', 'time'):
-                with self.subTest(read=index, fault=fault):
-                    self.n.calls.clear()
-                    if fault == 'error': self.n.bad = index
-                    method = 'boot' if fault == 'uuid' else 'boottime'
-                    original = getattr(self.n, method)
-                    def altered():
-                        value = original()
-                        if len(self.n.calls) >= index:
-                            return 'aaaaaaaa-2222-3333-4444-555555555555' if fault == 'uuid' else (T[0] + 1, T[1])
-                        return value
-                    with patch.object(self.n, method, side_effect=altered) if fault != 'error' else patch.object(self.n, 'bad', index):
-                        self.assertIsNone(self.health.read()[2])
-                    self.n.bad = None
-        self.path.write_text('{bad')
-        self.assertTrue(self.gate._health())
+        original = Path.read_bytes
+        for fault in ('error', 'uuid', 'time'):
+            for index in range(1, 6 if fault == 'error' else 5):
+                with self.subTest(read_or_gap=index, fault=fault):
+                    n = Native(); p = d.DarwinPeers(_native=n); self.addCleanup(p.close)
+                    h = d.DarwinHealth(p, 'mini-prueba', self.path); n.calls.clear()
+                    def read_snapshot(path): return n.read('snapshot', original(path))
+                    def after(count, name):
+                        if count == index:
+                            if fault == 'uuid': n.uuid = 'aaaaaaaa-2222-3333-4444-555555555555'
+                            if fault == 'time': n.time = (T[0] + 1, T[1])
+                    n.after = after
+                    if fault == 'error': n.bad = index
+                    with patch.object(Path, 'read_bytes', read_snapshot):
+                        self.assertIsNone(h.read()[2])
+                    if fault != 'error':
+                        n.after = None; n.uuid, n.time = U, T
+                        self.assertIsNone(h.read()[2])  # No aprende otro boot ni se reabre.
+        for raw in ('{bad', '{"x":NaN}', '{"x":1,"x":2}'):
+            self.path.write_text(raw)
+            self.assertTrue(self.gate._health())
 
 
 if __name__ == '__main__': unittest.main()
