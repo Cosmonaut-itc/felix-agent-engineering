@@ -10,7 +10,8 @@ from . import admin
 from .model import AuthContext, identity_json
 from .protocol import digest, validate, reply, reason
 from .store import Busy
-from .wire import receive_json, send_json, send_response, TransportError
+from .wire import TransportError
+from .ipc_io import Channel, INCOMPLETE
 
 SCHEMA = 'fleet/hostgate-ipc@1'
 
@@ -91,7 +92,11 @@ def serve(config, lease, peers, world, *, _ready=None):
     sessions = Sessions(config, peers); world.sessions = sessions
     gate, listener, owned = Hostgate(config.node, world), socket.socket(socket.AF_UNIX), None
     path = lease.locator.socket_path
-    def send(connection, value): send_json(connection['stream'], value, connection['deadline'])
+    channels = {}
+    def send(connection, value): channels[connection['stream']].queue(value)
+    def close(stream):
+        channels.pop(stream).close()
+        sessions.close_connection(stream)
     def dispatch(connection, request):
         operation_id = request.get('operationId') if isinstance(request, dict) else None
         called_core = False
@@ -120,33 +125,52 @@ def serve(config, lease, peers, world, *, _ready=None):
                     raise admin.AdminError('socket residual inseguro')
                 path.unlink()
             listener.bind(str(path)); path.chmod(0o600); owned = path.lstat().st_ino
-            listener.listen(64); listener.settimeout(0.2)
+            listener.listen(64); listener.setblocking(False)
             if _ready: _ready()
             while True:
-                readable = select.select([listener] + list(sessions.connections), [], [], 0.2)[0]
-                for stream in readable:
+                readable, writable, _ = select.select(
+                    [listener] + [s for s, c in channels.items() if not c.output and not c.pending],
+                    [s for s, c in channels.items() if c.output or c.pending], [], 0.2)
+                for stream in readable + writable:
                     try:
                         if stream is listener:
                             stream, _ = listener.accept()
-                            if len(sessions.connections) >= 64: stream.close(); continue
-                            deadline = time.monotonic() + 5
-                            opening = check(receive_json(stream, deadline), 'open', 'executorId')
-                            executor = opening['executorId']
-                            if executor not in config.node.executors: raise TransportError('ejecutor desconocido')
-                            peer = peers.authenticate(stream, executor, _deadline=deadline)
-                            connection = dict(stream=stream, peer=peer, state='intent', deadline=deadline)
+                            if len(channels) >= 64: stream.close(); continue
+                            channels[stream] = Channel(stream)
+                            continue
+                        channel = channels[stream]
+                        if stream in writable:
+                            channel.write(); continue
+                        value = channel.read()
+                        if value is INCOMPLETE: continue
+                        if channel.connection is None:
+                            if channel.auth is None:
+                                opening = check(value, 'open', 'executorId')
+                                executor = opening['executorId']
+                                if executor not in config.node.executors: raise TransportError('ejecutor desconocido')
+                                channel.executor = executor
+                                channel.auth = peers.authentication_steps(stream, executor, channel.deadline)
+                                next(channel.auth)
+                                channel.challenge = peers.challenge_steps()
+                                channel.queue(next(channel.challenge))
+                                continue
+                            try:
+                                channel.queue(channel.challenge.send(value)); continue
+                            except StopIteration:
+                                try: next(channel.auth)
+                                except StopIteration as done: peer = done.value
+                            connection = dict(stream=stream, peer=peer, state='intent', deadline=channel.deadline)
+                            channel.connection = connection
                             sessions.connections[stream] = connection
-                            own = peers._observe(executor, pid=os.getpid()).identity
+                            own = peers._observe(channel.executor, pid=os.getpid()).identity
                             send(connection, message('hello', physicalHostId=config.node.host_id, storeId=config.node.store_id,
                                  configRevision=config.node.revision, mode='shadow', identity=identity_json(own)))
                             continue
-                        connection = sessions.connections[stream]
+                        connection = channel.connection
                         state = connection['state']
-                        deadline = connection['deadline'] if state != 'active' else time.monotonic() + 300
-                        value = receive_json(stream, deadline)
                         paths.check()
                         if state == 'active':
-                            send_response(stream, dispatch(connection, value), _deadline=deadline); continue
+                            channel.queue(dispatch(connection, value), response=True); continue
                         if not sessions.live(connection): raise TransportError('peer no verificable')
                         lease.check()
                         if state == 'intent':
@@ -189,10 +213,10 @@ def serve(config, lease, peers, world, *, _ready=None):
                         else: raise TransportError('tráfico no solicitado')
                     except (OSError, ValueError, TypeError, KeyError, OverflowError, RecursionError):
                         if stream is listener: raise
-                        sessions.close_connection(stream)
-                for stream, connection in list(sessions.connections.items()):
-                    if connection['state'] not in ('active', 'requester') and time.monotonic() >= connection['deadline']:
-                        sessions.close_connection(stream)
+                        close(stream)
+                for stream, channel in list(channels.items()):
+                    if channel.expired(time.monotonic()): close(stream)
     finally:
-        sessions.close(); listener.close()
+        for stream in list(channels): close(stream)
+        listener.close()
         if owned is not None and path.exists() and path.lstat().st_ino == owned: path.unlink()

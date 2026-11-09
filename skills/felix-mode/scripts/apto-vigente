@@ -1,0 +1,75 @@
+#!/bin/bash
+# Dice si un APTO sigue vigente cuando el head cambió por incorporar el destino.
+# Imprime `APTO vigente` si el head nuevo es la mezcla sin conflictos del head
+# revisado con el destino y el destino no cambió ningún archivo del parche.
+# Imprime `Ronda delta` y los archivos compartidos si la mezcla es exacta pero
+# el destino cambió archivos del parche. En los demás casos imprime `Ronda` y
+# el motivo. Sale con 2 cuando no puede decidir; eso tampoco conserva el APTO.
+# Necesita git 2.38 o posterior.
+set -uo pipefail
+fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
+
+case "${1:-}" in
+    -h|--help) sed -n '2,8s/^# //p' "$0"; printf 'Uso: apto-vigente DESTINO HEAD_REVISADO HEAD_NUEVO\n'; exit 0 ;;
+esac
+[ "$#" = 3 ] || fail 'uso: apto-vigente DESTINO HEAD_REVISADO HEAD_NUEVO'
+commits=()
+for ref in "$@"; do
+    commit=$(GIT_NO_REPLACE_OBJECTS=1 git rev-parse --verify --quiet "$ref^{commit}") || fail "commit inválido: $ref"
+    commits+=("$commit")
+done
+target=${commits[0]} reviewed=${commits[1]} new=${commits[2]}
+
+# Desde aquí git corre en un repositorio vacío sobre el mismo almacén de
+# objetos, con su formato y sus almacenes alternos, y sin las demás variables
+# GIT_ heredadas. Un objeto no cambia de contenido sin cambiar de SHA. La
+# configuración, refs/replace, info/grafts y shallow del repositorio local sí
+# cambian lo que git lee de un SHA, y un push no los publica. Si falta un
+# objeto, como en un clon parcial, el script sale con 2.
+objects=$(git rev-parse --path-format=absolute --git-path objects) || fail 'no encuentro el almacén de objetos'
+format=$(git rev-parse --show-object-format) || fail 'no puedo leer el formato de objetos'
+scratch=$(mktemp -d "${TMPDIR:-/tmp}/apto-vigente.XXXXXX") || fail 'no puedo crear un directorio temporal'
+trap 'rm -rf "$scratch"' EXIT
+for name in $(compgen -v GIT_); do
+    [ "$name" = GIT_ALTERNATE_OBJECT_DIRECTORIES ] || unset "$name"
+done
+export GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_NOSYSTEM=1
+git init --quiet --bare --template= --object-format="$format" "$scratch" || fail 'no puedo crear el repositorio temporal'
+export GIT_DIR=$scratch GIT_OBJECT_DIRECTORY=$objects
+
+reviewed_base=$(git merge-base "$target" "$reviewed") || fail 'el head revisado no comparte historia con el destino'
+new_base=$(git merge-base "$target" "$new") || fail 'el head nuevo no comparte historia con el destino'
+
+# Con directoryRenames=true git mueve sin conflicto un archivo del parche al
+# directorio que el destino renombró, y ninguna de las dos listas lo muestra.
+merged=$(git -c merge.directoryRenames=conflict merge-tree --write-tree "$new_base" "$reviewed" 2>/dev/null)
+case $? in
+    0) ;;
+    1) printf 'Ronda: la mezcla del head revisado con el destino tiene conflictos\n'; exit 0 ;;
+    *) fail 'git merge-tree --write-tree falló' ;;
+esac
+tree=$(git rev-parse --verify --quiet "$new^{tree}") || fail "no puedo leer el árbol de $new"
+if [ "$merged" != "$tree" ]; then
+    printf 'Ronda: el head nuevo no es la mezcla del head revisado con el destino\n'
+    exit 0
+fi
+
+# Rutas cuya entrada difiere entre dos árboles. Salen de `git ls-tree`, que
+# lista entradas y no tiene opciones de diff que escondan una.
+changed() (
+    export LC_ALL=C
+    { git ls-tree -r --full-tree "$1" && git ls-tree -r --full-tree "$2"; } | sort | uniq -u | cut -f2- | sort -u
+)
+patch=$(changed "$reviewed_base" "$reviewed") || fail 'no puedo listar el parche revisado'
+incoming=$(changed "$reviewed_base" "$new_base") || fail 'no puedo listar los cambios del destino'
+shared=''
+while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    case $'\n'"$incoming"$'\n' in *$'\n'"$file"$'\n'*) shared+=$file$'\n' ;; esac
+done <<< "$patch"
+if [ -n "$shared" ]; then
+    printf 'Ronda delta: el destino cambió archivos del parche\n%s' "$shared"
+    exit 0
+fi
+printf 'APTO vigente: %s es %s más %s, árbol %s\n' \
+    "$(git rev-parse --short "$new")" "$(git rev-parse --short "$reviewed")" "$(git rev-parse --short "$new_base")" "$tree"

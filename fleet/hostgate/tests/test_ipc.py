@@ -60,7 +60,8 @@ def child(role, root):
     return 0
 
 
-class IPC(unittest.TestCase):
+class IPCHarness(unittest.TestCase):
+    """Montaje y ayudas sin pruebas: las subclases no heredan los casos de IPC."""
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
@@ -122,6 +123,8 @@ class IPC(unittest.TestCase):
         return {p.name: (p.stat().st_size, p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
                 for p in (self.root / 'A').glob('*') if not p.name.endswith('-shm')}
 
+
+class IPC(IPCHarness):
     def test_common_authority_capacity_pairing_replay_and_second_reserve(self):
         from hostgate import admin
         from hostgate.store import ShadowStore

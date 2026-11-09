@@ -50,9 +50,10 @@ exigida por `AGENTS.md` mantiene sus controles y su precedencia.
    en la base verificada, incorpora el SHA aprobado sin modificarlo. Si
    avanzó, prepara en una rama de candidato el resultado de combinar la
    integración actual con el ticket. Verifica ese resultado con la prueba
-   dirigida del ticket y de lo que comparte con integración, y consigue
-   APTO para su SHA, con todos los revisores del nivel vigente. Una review
-   delta usa las reviews previas y examina conflictos e interacciones.
+   dirigida del ticket y de lo que comparte con integración, y renueva el
+   APTO de su SHA como pide el paso 3 del
+   [procedimiento de merge](merge.md). Una ronda delta examina ahí
+   conflictos e interacciones.
    Toda corrección de código o conflicto se delega. El integrador publica
    sólo el candidato APTO y verde, sin reescribir integración.
 7. Avanza integración sólo si todavía apunta al SHA usado para preparar el
