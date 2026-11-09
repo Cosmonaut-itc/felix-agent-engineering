@@ -1,0 +1,50 @@
+#!/bin/bash
+# Dice si un APTO sigue vigente cuando el head cambió por incorporar el destino.
+# Imprime `APTO vigente` si el head nuevo es la mezcla sin conflictos del head
+# revisado con el destino y el destino no cambió ningún archivo del parche.
+# Imprime `Ronda delta` y los archivos compartidos si la mezcla es exacta pero
+# el destino cambió archivos del parche. En los demás casos imprime `Ronda` y
+# el motivo. Sale con 2 cuando no puede decidir; eso tampoco conserva el APTO.
+# Necesita git 2.38 o posterior.
+set -u
+fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
+
+case "${1:-}" in
+    -h|--help) sed -n '2,8s/^# //p' "$0"; printf 'Uso: apto-vigente DESTINO HEAD_REVISADO HEAD_NUEVO\n'; exit 0 ;;
+esac
+[ "$#" = 3 ] || fail 'uso: apto-vigente DESTINO HEAD_REVISADO HEAD_NUEVO'
+for ref in "$@"; do
+    git rev-parse --verify --quiet "$ref^{commit}" >/dev/null || fail "commit inválido: $ref"
+done
+target=$1 reviewed=$2 new=$3
+
+reviewed_base=$(git merge-base "$target" "$reviewed") || fail 'el head revisado no comparte historia con el destino'
+new_base=$(git merge-base "$target" "$new") || fail 'el head nuevo no comparte historia con el destino'
+
+# Con directoryRenames=true git mueve sin conflicto un archivo del parche al
+# directorio que el destino renombró, y ninguna de las dos listas lo muestra.
+merged=$(git -c merge.directoryRenames=conflict merge-tree --write-tree "$new_base" "$reviewed" 2>/dev/null)
+case $? in
+    0) ;;
+    1) printf 'Ronda: la mezcla del head revisado con el destino tiene conflictos\n'; exit 0 ;;
+    *) fail 'git merge-tree --write-tree falló' ;;
+esac
+tree=$(git rev-parse --verify --quiet "$new^{tree}") || fail "no puedo leer el árbol de $new"
+if [ "$merged" != "$tree" ]; then
+    printf 'Ronda: el head nuevo no es la mezcla del head revisado con el destino\n'
+    exit 0
+fi
+
+patch=$(git diff --no-renames --name-only "$reviewed_base" "$reviewed") || fail 'no puedo listar el parche revisado'
+incoming=$(git diff --no-renames --name-only "$reviewed_base" "$new_base") || fail 'no puedo listar los cambios del destino'
+shared=''
+while IFS= read -r file; do
+    [ -n "$file" ] || continue
+    case $'\n'"$incoming"$'\n' in *$'\n'"$file"$'\n'*) shared+=$file$'\n' ;; esac
+done <<< "$patch"
+if [ -n "$shared" ]; then
+    printf 'Ronda delta: el destino cambió archivos del parche\n%s' "$shared"
+    exit 0
+fi
+printf 'APTO vigente: %s es %s más %s, árbol %s\n' \
+    "$(git rev-parse --short "$new")" "$(git rev-parse --short "$reviewed")" "$(git rev-parse --short "$new_base")" "$tree"

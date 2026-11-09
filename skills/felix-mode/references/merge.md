@@ -88,25 +88,20 @@ restantes y la separación entre propietario, verificador y stacker.
    de Babysit. Si exige un tercer rebase desde merge prep, detén ese PR y
    avisa para secuenciar el trabajo que colisiona.
 3. **Renovar APTO.** Un head nuevo o una rama destino que avanzó exigen
-   checks nuevos. El APTO depende de si el head nuevo es sólo la mezcla del
-   head revisado con la rama destino. Lo es cuando estos dos comandos
-   imprimen el mismo árbol:
-   `git merge-tree --write-tree "$(git merge-base <rama destino> <head nuevo>)" <head revisado> | head -1`
-   `git rev-parse '<head nuevo>^{tree}'`
-   Lista los archivos del parche revisado y los que la rama destino cambió
-   desde esa review con
-   `git diff --no-renames --name-only "$(git merge-base <rama destino> <head revisado>)" <ref>`,
-   donde `<ref>` es primero el head revisado y después la rama destino.
-   - Si el árbol coincide y las dos listas no comparten archivos, el APTO
-     sigue vigente sin ronda nueva. Guarda el árbol y las dos listas con la
-     prueba del paso 2.
-   - Si el árbol coincide y las listas comparten algún archivo, corre una
-     ronda delta sobre esa interacción.
-   - Si el árbol difiere, corre la ronda que fija **Rondas**.
+   checks nuevos. Para saber si el APTO sigue vigente, corre desde el
+   checkout `scripts/apto-vigente <rama destino> <head revisado> <head nuevo>`
+   de esta skill y sigue su primera línea:
+   - `APTO vigente`: el head nuevo es sólo la mezcla sin conflictos del head
+     revisado con la rama destino, y esa rama no cambió archivos del parche.
+     El APTO sigue vigente sin ronda nueva. Guarda esa línea con la prueba
+     del paso 2.
+   - `Ronda delta`: la mezcla es exacta, pero la rama destino cambió los
+     archivos del parche que lista. Corre una ronda delta sobre esa
+     interacción.
+   - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
 
-   Cada ronda cuenta para el límite de **Rondas**. Ante duda, corre la ronda
-   delta. Un veredicto de **Verificado** sobrevive a un head nuevo sólo
-   según Shipping 3.
+   Cada ronda cuenta para el límite de **Rondas**. Un veredicto de
+   **Verificado** sobrevive a un head nuevo sólo según Shipping 3.
 4. **Merge protegido.** Sigue Shipping 4 y su referencia `merge-safety.md`,
    con inspección y cancelación de solicitudes pendientes antes de cambiar
    topología. Mergea un PR a la vez, de abajo arriba. En GitHub usa

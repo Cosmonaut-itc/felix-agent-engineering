@@ -1771,6 +1771,151 @@ risk_classify_edges() {
     assert grep -qxF "$(printf '%s\t%s' 'rename de directorio' 'o\ld/nuevo.txt')" <<< "$output"
 }
 
+apto_repo() {
+    local repo="$TEST_TMP/apto repo"
+    rm -rf "$repo"
+    mkdir -p "$repo/origen"
+    git -C "$repo" init -q -b destino
+    git -C "$repo" config user.email test@example.com
+    git -C "$repo" config user.name test
+    printf 'const m = "a b";\n' > "$repo/cadena.js"
+    printf 'x\n' > "$repo/otro.txt"
+    printf 'x\n' > "$repo/origen/existente.js"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m base
+    git -C "$repo" checkout -q -b revisado
+    printf 'parche\n' > "$repo/parche.js"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m parche
+    git -C "$repo" checkout -q destino
+    printf '%s' "$repo"
+}
+apto() { (cd "$1" && shift && "$SCRIPTS/apto-vigente" "$@"); }
+apto_short() { git -C "$1" rev-parse --short "$2"; }
+
+apto_vigente() {
+    local repo output tree status
+    repo=$(apto_repo)
+    printf 'y\n' >> "$repo/otro.txt"
+    git -C "$repo" commit -q -am destino
+    git -C "$repo" checkout -q -b rebasado revisado
+    git -C "$repo" rebase -q destino
+    tree=$(git -C "$repo" rev-parse 'rebasado^{tree}')
+    output=$(apto "$repo" destino revisado rebasado)
+    assert test "$output" = "APTO vigente: $(apto_short "$repo" rebasado) es $(apto_short "$repo" revisado) más $(apto_short "$repo" destino), árbol $tree"
+    git -C "$repo" checkout -q -b mezclado revisado
+    git -C "$repo" merge -q --no-edit destino
+    output=$(apto "$repo" destino revisado mezclado)
+    assert test "$output" = "APTO vigente: $(apto_short "$repo" mezclado) es $(apto_short "$repo" revisado) más $(apto_short "$repo" destino), árbol $tree"
+    output=$(apto "$repo" destino revisado revisado)
+    assert test "${output%%:*}" = 'APTO vigente'
+
+    # El destino avanza después del rebase: el veredicto habla de lo que el head incorporó.
+    git -C "$repo" checkout -q destino
+    printf 'tarde\n' > "$repo/tarde.txt"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m tarde
+    output=$(apto "$repo" destino revisado rebasado)
+    assert test "$output" = "APTO vigente: $(apto_short "$repo" rebasado) es $(apto_short "$repo" revisado) más $(apto_short "$repo" 'destino~1'), árbol $tree"
+
+    git -C "$repo" checkout -q -b editado rebasado
+    printf 'extra\n' >> "$repo/parche.js"
+    git -C "$repo" commit -q -am extra
+    output=$(apto "$repo" destino revisado editado)
+    assert test "$output" = 'Ronda: el head nuevo no es la mezcla del head revisado con el destino'
+
+    status=0
+    output=$(apto "$repo" destino revisado noexiste 2>&1) || status=$?
+    assert test "$status" = 2
+    assert test "$output" = 'apto-vigente: commit inválido: noexiste'
+    status=0
+    output=$(apto "$repo" destino revisado 2>&1) || status=$?
+    assert test "$status" = 2
+    assert test "$output" = 'apto-vigente: uso: apto-vigente DESTINO HEAD_REVISADO HEAD_NUEVO'
+    output=$("$SCRIPTS/apto-vigente" --help)
+    assert test "$(tail -n 1 <<< "$output")" = 'Uso: apto-vigente DESTINO HEAD_REVISADO HEAD_NUEVO'
+    assert test "$(wc -l <<< "$output" | tr -d ' ')" = 8
+}
+
+apto_vigente_interactions() {
+    local repo output tree mode
+    # Un espacio dentro de una cadena cambia el árbol aunque el parche se parezca.
+    repo=$(apto_repo)
+    git -C "$repo" checkout -q revisado
+    printf 'const m = "a b";\nconst n = "c d";\n' > "$repo/cadena.js"
+    git -C "$repo" commit -q -am cadena
+    git -C "$repo" checkout -q destino
+    printf 'y\n' >> "$repo/otro.txt"
+    git -C "$repo" commit -q -am destino
+    git -C "$repo" checkout -q -b rebasado revisado
+    git -C "$repo" rebase -q destino
+    printf 'const m = "a b";\nconst n = "cd";\n' > "$repo/cadena.js"
+    git -C "$repo" commit -q --amend -a --no-edit
+    output=$(apto "$repo" destino revisado rebasado)
+    assert test "$output" = 'Ronda: el head nuevo no es la mezcla del head revisado con el destino'
+
+    # El destino renombra un archivo del parche: el rebase es limpio y el origen del rename cuenta.
+    repo=$(apto_repo)
+    git -C "$repo" checkout -q revisado
+    printf 'x\nparche\n' > "$repo/otro.txt"
+    git -C "$repo" commit -q -am toca-otro
+    git -C "$repo" checkout -q destino
+    git -C "$repo" mv otro.txt movido.txt
+    git -C "$repo" commit -q -m rename
+    git -C "$repo" checkout -q -b rebasado revisado
+    git -C "$repo" rebase -q destino
+    output=$(apto "$repo" destino revisado rebasado)
+    assert test "$output" = "$(printf 'Ronda delta: el destino cambió archivos del parche\notro.txt')"
+
+    # Los dos lados cambian zonas distintas del mismo archivo y git los mezcla sin conflicto.
+    repo=$(apto_repo)
+    git -C "$repo" checkout -q revisado
+    printf 'x\n\n\n\n\n\n\n\nfin parche\n' > "$repo/otro.txt"
+    git -C "$repo" commit -q -am cola
+    git -C "$repo" checkout -q destino
+    printf 'inicio destino\nx\n' > "$repo/otro.txt"
+    git -C "$repo" commit -q -am cabeza
+    git -C "$repo" checkout -q -b rebasado revisado
+    git -C "$repo" rebase -q destino
+    output=$(apto "$repo" destino revisado rebasado)
+    assert test "$output" = "$(printf 'Ronda delta: el destino cambió archivos del parche\notro.txt')"
+
+    # El destino renombra un directorio donde el parche añade un archivo. Con
+    # directoryRenames=true git lo mueve sin avisar y las listas no lo comparten.
+    for mode in conflict true; do
+        repo=$(apto_repo)
+        git -C "$repo" config merge.directoryRenames "$mode"
+        git -C "$repo" checkout -q revisado
+        printf 'reviewed\n' > "$repo/origen/nuevo.js"
+        git -C "$repo" add -A
+        git -C "$repo" commit -q -m en-origen
+        git -C "$repo" checkout -q destino
+        git -C "$repo" mv origen nuevo
+        git -C "$repo" commit -q -m dir-rename
+        tree=$(git -C "$repo" merge-tree --write-tree destino revisado | head -n 1) || true
+        git -C "$repo" branch candidato "$(git -C "$repo" commit-tree "$tree" -p destino -m candidato)"
+        output=$(apto "$repo" destino revisado candidato)
+        assert test "$output" = 'Ronda: la mezcla del head revisado con el destino tiene conflictos'
+    done
+
+    # Un merge con conflictos también escribe un árbol, con los marcadores dentro.
+    repo=$(apto_repo)
+    git -C "$repo" checkout -q revisado
+    printf 'reviewed\n' > "$repo/origen/nuevo.js"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m en-origen
+    git -C "$repo" checkout -q destino
+    git -C "$repo" mv origen nuevo
+    printf 'target\n' > "$repo/nuevo/nuevo.js"
+    git -C "$repo" add -A
+    git -C "$repo" commit -q -m dir-rename-y-add
+    tree=$(git -C "$repo" merge-tree --write-tree destino revisado | head -n 1) || true
+    git -C "$repo" branch candidato "$(git -C "$repo" commit-tree "$tree" -p destino -m candidato)"
+    assert grep -q '^<<<<<<<' <(git -C "$repo" show candidato:nuevo/nuevo.js)
+    output=$(apto "$repo" destino revisado candidato)
+    assert test "$output" = 'Ronda: la mezcla del head revisado con el destino tiene conflictos'
+}
+
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
@@ -1778,7 +1923,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
