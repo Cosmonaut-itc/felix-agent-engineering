@@ -10,15 +10,12 @@ import select
 import sqlite3
 import struct
 import sys
-import time
 from unittest.mock import patch
 
 from hostgate import admin, darwin_peer as native, ipc_io, wire
-from hostgate.admission import Hostgate
 from hostgate.client import HostgateClient, SupervisorHandoff, request_supervisor
 from hostgate.model import identity_json
 from hostgate.protocol import canonical
-from hostgate.store import ShadowStore
 from hostgate.tests.test_ipc import query
 from hostgate.tests.test_ipc_progress import Progress, server as progress_server
 from hostgate.tests.support.world import request
@@ -50,8 +47,15 @@ def faults(root):
                 nonlocal index
                 index += 1
                 failed = value['index'] + int(value['kind'] == 'gap')
-                if phase == value['phase'] and index == failed: raise native.PeerError('injected single native read/gap')
-                return fn(*args)
+                if value['kind'] in ('read', 'gap') and phase == value['phase'] and index == failed: raise native.PeerError('injected single native read/gap')
+                result = fn(*args)
+                if value['kind'] == 'divergence' and phase == value['phase'] and index == value['index']:
+                    component = value['component']
+                    if index == 11: return '00000000-0000-0000-0000-000000000001'
+                    if index == 3: return result + 1
+                    if index == 6: setattr(result, component, getattr(result, component) + 1); return result
+                    result = list(result); result[component] += 1; return tuple(result)
+                return result
             return read
         with ExitStack() as stack:
             for name in ('boot', 'peercred', 'peerpid', 'token', 'unique', 'bsd'):
@@ -130,18 +134,23 @@ class Campaign(Progress):
                         r.communicate(timeout=8)
         cases = [(kind, phase, index) for phase in range(3) for kind, limit in (('read', 11), ('gap', 10)) for index in range(1, limit + 1)]
         cases += [('register', 0, 99), ('challenge', 0, 99), ('read', 3, 1)]
+        variants = [(2, 0), (2, 1), (3, 0)] + [(4, c) for c in range(4)] + [(5, 1), (5, 2)] + [(6, c) for c in ('pid', 'uid', 'gid', 'start_sec', 'start_usec')] + [(11, 0)]
+        cases = [(k, p, i, None) for k, p, i in cases] + [('divergence', 0, i, c) for i, c in variants]
         for role in ('H<-R', 'H<-S', 'client<-H'):
-            for kind, phase, index in cases:
-                with self.subTest(role=role, kind=kind, phase=phase, index=index):
+            for kind, phase, index, component in cases:
+                with self.subTest(role=role, kind=kind, phase=phase, index=index, component=component):
                     attempt(role); before = (self.ledger(), self.sql())
                     counter += 1
                     value = dict(side=os.getpid() if role == 'client<-H' else self.server.pid,
                                  pid=self.server.pid if role == 'client<-H' else os.getpid(),
-                                 kind=kind, phase=phase, index=index, nonce=counter)
+                                 kind=kind, phase=phase, index=index, nonce=counter, component=component)
                     (self.root / '.fault').write_text(json.dumps(value))
                     try:
                         with self.assertRaises(OSError): attempt(role)
                     finally: (self.root / '.fault').unlink()
+                    if kind == 'divergence' and index == 11 and role != 'client<-H':
+                        self.server.terminate(); self.server.communicate(timeout=8)
+                        self.server = self.spawn('server'); self.assertEqual(self.line(self.server).strip(), 'listening')
                     self.assertEqual((self.ledger(), self.sql()), before)
                     self.assertEqual(self.snapshot()['budget']['retained']['slots'], 0)
                     print('NATIVE role={} kind={} capture={} index={} positive=ok rejected ledger/operations/audit=unchanged'.format(role, kind, phase, index), flush=True)
@@ -204,6 +213,11 @@ class Campaign(Progress):
 
     def test_response_faults_and_complete_result_required(self):
         before = (self.ledger(), self.sql())
+        spool_factory, read_frame = wire.tempfile.SpooledTemporaryFile, wire._read
+        def full_spool(*args, **kwargs):
+            spool = spool_factory(*args, **kwargs)
+            spool.write = lambda raw: (_ for _ in ()).throw(OSError('ENOSPC on spool write'))
+            return spool
         for mode in ('invalid-json', 'nonfinite', 'duplicate-key', 'counter-extreme', 'cut', 'duplicate-end', 'extra', 'utf8', 'spool-full', 'timeout'):
             with self.subTest(mode=mode):
                 with self.client() as client:
@@ -218,8 +232,14 @@ class Campaign(Progress):
                             with self.assertRaises(wire.TransportError): client.call(query('next'))
                         else:
                             with ExitStack() as stack:
-                                if mode == 'spool-full': stack.enter_context(patch.object(wire.tempfile, 'SpooledTemporaryFile', side_effect=OSError('ENOSPC')))
-                                if mode == 'timeout': stack.enter_context(patch.object(wire, '_read', side_effect=socket.timeout('injected inactivity')))
+                                if mode == 'spool-full': stack.enter_context(patch.object(wire.tempfile, 'SpooledTemporaryFile', side_effect=full_spool))
+                                if mode == 'timeout':
+                                    reads = []
+                                    def timed_read(*args):
+                                        reads.append(1)
+                                        if len(reads) == 4: raise socket.timeout('injected after DATA before END')
+                                        return read_frame(*args)
+                                    stack.enter_context(patch.object(wire, '_read', side_effect=timed_read))
                                 with self.assertRaises(wire.TransportError) as caught: client.call(query())
                             self.assertTrue(caught.exception.outcome_unknown)
                             self.assertEqual(client.stream.fileno(), -1)
@@ -227,6 +247,19 @@ class Campaign(Progress):
                         if (self.root / '.wire').exists(): (self.root / '.wire').unlink()
                 self.assertEqual((self.ledger(), self.sql()), before)
                 self.assertEqual(self.snapshot()['exitCode'], 0)
+
+    def test_utf8_input_exact_byte_limit(self):
+        before = (self.ledger(), self.sql())
+        value = query('é')
+        raw = json.dumps(value, ensure_ascii=False).encode('utf-8')
+        for size in (65535, 65536, 65537):
+            with self.client() as client:
+                framed = raw + b' ' * (size - len(raw))
+                client.stream.sendall(struct.pack('!I', size) + framed)
+                if size <= 65536: self.assertEqual(wire.receive_response(client.stream, 'é', self.root)['exitCode'], 0)
+                else:
+                    with self.assertRaises(wire.TransportError): wire.receive_response(client.stream, 'é', self.root)
+                self.assertEqual((self.ledger(), self.sql()), before)
 
     def test_confirmed_mutation_with_socket_cut_retains_one_debit(self):
         client = self.bound_client()
@@ -241,6 +274,21 @@ class Campaign(Progress):
         self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
         self.assertEqual(view['reservations'][0]['exclusiveResources'], ['sen-slot:1'])
 
+
+    def test_native_change_after_grant_retains_binding_and_budget(self):
+        client = self.bound_client()
+        grant = client.call(request(physicalHostId='fixture-host', exclusiveResources=['sen-slot:1']))
+        self.assertTrue(grant['wouldGrant'])
+        before = self.ledger()['reservations'][0]
+        (self.root / '.fault').write_text(json.dumps(dict(side=self.server.pid, pid=os.getpid(), kind='divergence', phase=0, index=5, component=1, nonce='held')))
+        try:
+            with self.assertRaises(wire.TransportError): client.call(dict(query('changed'), operation='latido', key=grant['simulationKey'], seq=1))
+        finally: (self.root / '.fault').unlink()
+        view = self.snapshot(); row = self.ledger()['reservations'][0]
+        for field in ('key', 'owner', 'channelBinding', 'demand', 'exclusiveResources', 'seq'): self.assertEqual(row[field], before[field])
+        self.assertEqual(view['reservations'][0]['effectiveState'], 'uncertain')
+        self.assertEqual(view['budget']['retained']['slots'], 1)
+        self.assertEqual(self.client().call(dict(query('adopt'), operation='latido', key=grant['simulationKey'], seq=1))['exitCode'], 5)
 
     def test_acl_handoff_and_same_pid_other_channel(self):
         from hostgate.ipc import message

@@ -275,6 +275,8 @@ class DarwinPeers:
             self._challenge(stream, deadline)
             try: next(steps)
             except StopIteration as done: return done.value
+        except (OSError, ValueError, OverflowError) as exc:
+            raise PeerError('autenticación no verificable') from exc
         finally:
             steps.close()
 
