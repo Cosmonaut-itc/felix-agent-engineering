@@ -1168,3 +1168,14 @@ rechazo de incoherencias como la aceptación de alteraciones legítimas. Puede u
 `FLEET_ROUND_SWEEP=view` sólo si su medición CLI excede 120 s por stack.
 Esto acredita lectura; escritura/transiciones, despacho host y C21 positivo siguen
 abiertos. Los resultados históricos anteriores no cambian.
+
+
+SEN-5649 3b-3: el adaptador escribe y `status` lee `prepared`, `outcome_unknown`,
+`confirmed`, `rejected`, `retired` y `held` con/sin key y recibo. Las pruebas CLI
+contra hostgate privado cubren CAS antes del envío, confirmación antes de creación,
+ACK perdido con la misma operación, canal cortado y reinicio sin adopción, dos
+ledgers con un presupuesto, drenaje tras grant, recibo real alterado, simulación,
+cercos del piloto y migración aplazada. Los cortes usan barreras observables,
+no demoras para ganar carreras. El arranque permanece cerrado: C21 positivo sigue
+abierto, al igual que latido de fondo, resolución de `held` y liberación (PR 4).
+Los resultados históricos anteriores no cambian.

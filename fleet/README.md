@@ -161,16 +161,26 @@ sin filas posteriores conserva el cursor y deja vacío su stream, sin agotar el 
 autoridad hostgate efectiva (`admin.local_authority()`); sin ella responde
 2/backend_unavailable sin crear estado, y un replay conserva su recibo. El ledger v5
 añade `host_rounds`; un lector deja un v4 intacto y un escritor lo migra con el slot
-libre. Un trabajo host admitido queda `queued`: todavía no hay adaptador que pida la
-reserva, y el claim del piloto no lo toma ni lo salta.
+libre. El intento sigue `queued` mientras un supervisor autenticado pide la reserva:
+Fleet persiste la intención antes de enviar y confirma junto con el claim del intento
+exacto en cabeza del FIFO. El piloto no toma ni salta una cabeza host.
 `status` lee las rondas con forma estricta por estado, JSON canónico y correlación
 con el trabajo del intento y con el recibo efectivo. Una fila incoherente da
 `host_correlation_invalid`. Una
 ronda `held`, o `outcome_unknown`/`confirmed` sin supervisor verificado, se observa
 `uncertain`, nunca completa.
-Sin rondas conserva la observación de cola. Este runtime no escribe rondas:
-transiciones, adaptador, supervisor y recuperación host siguen pendientes.
-Evidencia: `tests/test_host_reservation_cli.py` y `tests/test_host_rounds_cli.py`.
+Sin rondas conserva la observación de cola. `recover` retira por CAS las rondas
+`prepared`, conserva el dueño vivo y retiene resultados desconocidos tras perderlo;
+nunca adopta otro canal ni abre una ronda sobre una abierta. Un ACK perdido se
+reintenta sólo por el mismo canal y con la misma operación.
+El arranque sigue cerrado: la barrera termina localmente con `never_created`,
+completion incompleta y permiso cerrado sin consumir. `wait` devuelve
+3/`enforcement_unavailable`; `recover` devuelve 3 si queda una ronda `held`.
+La reserva de hostgate y, si hubo claim, el slot local quedan retenidos. No hay
+latido de fondo, resolución de `held` ni liberación en este corte.
+Evidencia por CLI contra fixtures privadas: `tests/test_host_reservation_cli.py`,
+`tests/test_host_reservation_crash.py` y `tests/test_host_rounds_cli.py`; cada estado
+escrito se lee con `status`, incluido el recibo efectivo/replay y su alteración.
 **C21 positivo (ejecutar un trabajo host) permanece abierto; O10 positivo está fuera
 de SEN-3820.**
 
