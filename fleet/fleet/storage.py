@@ -16,7 +16,7 @@ import time
 import uuid
 
 from . import inputs
-from .model import APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, HostConfirmation, HostHeld, HostIntent, dump, load, now
+from .model import APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, HostConfirmation, HostHeld, HostIntent, dump, load, now, opaque, safe_queued
 
 MAX_DATABASE = 256 * 1024 * 1024
 SCHEMA = (
@@ -669,3 +669,66 @@ def host_rounds(db, attempt):
         if intent.ordinal != position or (position < len(rounds) and intent.state not in HOST_TERMINAL):
             raise Fault("host_correlation_invalid", 3, "unknown")
     return rounds
+
+
+def put_host_intent(db, intent):
+    db.execute("INSERT INTO host_rounds (attempt,ordinal,operation_id,request_json,request_sha256,"
+               "physical_host_id,executor_id,store_id,config_revision,requester_identity,state) "
+               "VALUES (?,?,?,?,?,?,?,?,?,?,'prepared')",
+               (intent.attempt, intent.ordinal, intent.operation_id, dump(intent.request),
+                request_sha256(intent.request), intent.physical_host_id, intent.executor_id,
+                intent.store_id, intent.config_revision, dump(intent.requester)))
+    host_rounds(db, intent.attempt)
+    db.revision()
+
+
+def _cas(db, intent, sources, target, assignments="", parameters=()):
+    changed = db.execute("UPDATE host_rounds SET state=?" + assignments + " WHERE attempt=? AND ordinal=? "
+                         "AND state IN (" + ",".join("?" * len(sources)) + ")",
+                         (target,) + tuple(parameters) + (intent.attempt, intent.ordinal) + tuple(sources)).rowcount
+    if changed:
+        host_rounds(db, intent.attempt)
+        db.revision()
+    return changed == 1
+
+
+def mark_host_unknown(db, intent, supervisor):
+    """The only path to sending: whoever loses this CAS must not call reservar."""
+    return _cas(db, intent, ("prepared",), "outcome_unknown", ",supervisor_identity=?", (dump(supervisor),))
+
+
+def retire_host_round(db, intent, reason):
+    return _cas(db, intent, ("prepared",), "retired", ",reason=?", (reason,))
+
+
+def reject_host_round(db, intent, receipt):
+    return _cas(db, intent, ("outcome_unknown",), "rejected", ",receipt_json=?", (dump(receipt),))
+
+
+def hold_host(db, intent, reason, key=None, receipt=None, source=None):
+    return _cas(db, intent, ("outcome_unknown", "confirmed"), "held",
+                ",reason=?,key_json=COALESCE(?,key_json),receipt_json=COALESCE(?,receipt_json),"
+                "confirmation_source=COALESCE(?,confirmation_source)",
+                (reason, None if key is None else dump(key), None if receipt is None else dump(receipt), source))
+
+
+def confirm_host_and_claim(db, intent, key, receipt, source, dispatcher, supervisor):
+    """One transaction: the round is confirmed and this exact attempt claimed, or the round is held."""
+    row = db.execute("SELECT a.* FROM attempts a JOIN jobs j ON j.id=a.job "
+                     "WHERE a.state='queued' ORDER BY j.seq LIMIT 1").fetchone()
+    slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
+    if (db.control["drained"] or slot["attempt"] is not None or row is None
+            or row["id"] != intent.attempt or not safe_queued(row)):
+        if not hold_host(db, intent, "claim_unavailable", key, receipt, source):
+            raise Fault("host_round_changed", 3, "unknown")
+        return None
+    if not _cas(db, intent, ("outcome_unknown",), "confirmed",
+                ",key_json=?,receipt_json=?,confirmation_source=?", (dump(key), dump(receipt), source)):
+        raise Fault("host_round_changed", 3, "unknown")
+    generation = slot["generation"] + 1
+    db.execute("UPDATE slot SET attempt=?,generation=?", (intent.attempt, generation))
+    db.execute("UPDATE attempts SET generation=?,reservation=?,dispatcher=?,supervisor=?,"
+               "disposition='retained' WHERE id=?",
+               (generation, opaque("r"), dump(dispatcher), dump(supervisor), intent.attempt))
+    db.event(intent.attempt, "starting", "dispatcher", "claim")
+    return generation
