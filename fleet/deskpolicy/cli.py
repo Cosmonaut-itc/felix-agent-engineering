@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import ctypes
 import fcntl
+import gc
 import json
 import os
 from pathlib import Path
@@ -61,6 +62,9 @@ def _writer_send(fd, kind, **payload):
 
 def _writer_child(engine, writer_fd, channel, parent, deadline, mask, prctl):
     try:
+        # A collected file object from the supervisor's heap would close a
+        # descriptor number that this child may reuse for admission.lock.
+        gc.disable()
         if prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
             code = ctypes.get_errno()
             raise OSError(code, os.strerror(code))
@@ -174,9 +178,19 @@ class _WriterMessages:
         elif self.error is not None:
             detail = "writer-cycle-error" + suffix + ": " + self.error if unknown else self.error
         else:
-            detail = "writer-cycle-worker-exit" + suffix + ": " + str(status)
+            detail = "writer-cycle-worker-exit" + suffix + ": " + _worker_status(status)
         return {"schema": "pao/desk-error@1", "reason": "census-unknown",
                 "detail": detail, "exit_code": 75}
+
+
+def _worker_status(status):
+    code = os.waitstatus_to_exitcode(status)
+    if code >= 0:
+        return "exit-" + str(code)
+    try:
+        return "signal-" + signal.Signals(-code).name
+    except ValueError:
+        return "signal-" + str(-code)
 
 
 def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
