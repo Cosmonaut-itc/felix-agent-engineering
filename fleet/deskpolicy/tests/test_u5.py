@@ -1,4 +1,3 @@
-"""Observable publication, process and lock guarantees of the Linux writer."""
 import contextlib
 import ctypes
 import fcntl
@@ -615,7 +614,6 @@ class WriterProcessTest(unittest.TestCase):
                 else:
                     self.assertIn('publication-unknown', value['detail'])
                 self.assert_mutex_free()
-        # Lost integrity before commit must also report uncertainty.
         def corrupt(fd, kind, **payload):
             if kind == 'commit-start':
                 os.write(fd, b'{"kind":')
@@ -642,7 +640,6 @@ class WriterProcessTest(unittest.TestCase):
                 self.assertEqual(self.tick(diagnostics=seen)['mode'], 'night')
         self.assertEqual(attempts.read_text().count('attempt'), 3)
         self.assertEqual(len(log.getvalue().splitlines()), 1)
-        # Same text with a different exception class remains a distinct error.
         with mock.patch.object(self.engine, 'reconcile_receipt', side_effect=ValueError('receipt-fixture')), \
                 contextlib.redirect_stderr(io.StringIO()) as log:
             self.tick(diagnostics=seen)
@@ -699,7 +696,6 @@ class WriterProcessTest(unittest.TestCase):
         self.assertFalse(metadata.exists())
         self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'uncertain')
         self.assertTrue((self.h.root / '.pao-reconciled-stale/evidence').exists())
-        # A second cut leaves the tombstone but not its receipt.
         with mock.patch.object(self.engine, 'recover_receipt', side_effect=lambda record: time.sleep(60)):
             self.assertEqual(self.tick(5)['detail'], 'writer-cycle-timeout')
         self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'closed')
@@ -795,7 +791,7 @@ class WriterProcessTest(unittest.TestCase):
             signal.signal(signal.SIGALRM, previous)
 
     def test_equivalent_state_cost(self):
-        self.engine.publish()  # Remove reconciliation from both measured paths.
+        self.engine.publish()
         rows = {'direct': [], 'supervised': []}
         initial_fds = len(os.listdir('/proc/self/fd'))
 
@@ -868,7 +864,6 @@ assert result['mode'] == 'night', result
         def publish(**kw):
             with store.mutex(self.h.root):
                 reached.write_text(str(os.getpid()))
-                # Make the parent's select readable without a valid confirmation.
                 self.engine.receipt_diagnostic(('root', 'boot', 'request', 'run', 'module', 'type', 'detail'),
                     {'schema': 'pao/desk-reconcile-diagnostic@1', 'request_id': 'fixture',
                      'run_id': 'fixture', 'reason': 'receipt-error', 'detail': 'fixture'})
