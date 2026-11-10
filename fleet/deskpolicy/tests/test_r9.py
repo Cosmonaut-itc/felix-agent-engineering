@@ -1,4 +1,4 @@
-"""Real SIGALRM at each protected step of a writer tick; Linux fixtures only."""
+"""A process deadline at each protected step of a tick; Linux fixtures only."""
 import contextlib
 import inspect
 import io
@@ -66,48 +66,36 @@ class RoundNineTest(unittest.TestCase):
         lines, first = inspect.getsourcelines(function)
         targets = [first + i for i, line in enumerate(lines) if marker in line]
         self.assertEqual(len(targets), 1, (function.__name__, marker, targets))
-        fired = []
+        reached = self.h.directory / 'reached'
+        parent_pid = os.getpid()
         before = (self.h.root / 'pao-policy-v1.json').read_bytes()
-        previous_handler = signal.getsignal(signal.SIGALRM)
         previous_trace = sys.gettrace()
-        caught = None
-        returned = False
 
         def trace(frame, event, arg):
-            if event == 'line' and frame.f_code is function.__code__ and frame.f_lineno == targets[0] and not fired:
+            if (os.getpid() != parent_pid and event == 'line'
+                    and frame.f_code is function.__code__ and frame.f_lineno == targets[0]):
                 if ancestor:
                     parent = frame.f_back
                     while parent and parent.f_code.co_name != ancestor:
                         parent = parent.f_back
                     if parent is None:
                         return trace
-                fired.append(signal.getitimer(signal.ITIMER_REAL)[0])
-                os.kill(os.getpid(), signal.SIGALRM)
+                reached.write_text(str(os.getpid()))
+                time.sleep(60)
             return trace
 
         try:
             sys.settrace(trace)
-            try:
-                with cli.cycle_timeout():
-                    self.engine.publish()
-                returned = True
-            except BaseException as exc:
-                caught = exc
+            with store.mutex(self.h.root, name='writer.lock') as writer:
+                result = cli.writer_tick(self.engine, writer, _timeout=5)
         finally:
             sys.settrace(previous_trace)
         changed = before != (self.h.root / 'pao-policy-v1.json').read_bytes()
-        print('R9', function.__name__, marker, 'fired', len(fired),
-              'returned', returned, 'exception', type(caught).__name__,
-              'policy_changed', changed, flush=True)
-        self.assertEqual(len(fired), 1, 'injection point was not reached')
-        self.assertGreater(fired[0], 0)
-        self.assertLessEqual(fired[0], 10)
-        self.assertFalse(returned, 'engine.publish() returned normally after SIGALRM')
-        self.assertIsNotNone(caught)
-        self.assertEqual(str(caught), 'writer-cycle-timeout')
-        self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
-        self.assertEqual(signal.getitimer(signal.ITIMER_REAL), (0.0, 0.0))
-        self.assertEqual(signal.getsignal(signal.SIGALRM), previous_handler)
+        print('R9', function.__name__, marker, result, 'policy_changed', changed, flush=True)
+        self.assertTrue(reached.exists(), 'blocking point was not reached')
+        self.assertEqual(result['detail'], 'writer-cycle-timeout')
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(reached.read_text()), 0)
         self.assertFalse(changed, 'failed tick renewed policy')
         self.assert_mutex_free()
         # Partial reconciliation (including a closed tombstone) must converge.
@@ -162,32 +150,30 @@ class RoundNineTest(unittest.TestCase):
         # Invoke the actual script/parser with publicar (no --una-vez), a real
         # 20 s wait and real timer. Only the one-shot slow point is injected.
         program = r'''
-import os, runpy, signal, sys
+import os, runpy, signal, sys, time
 from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from deskpolicy.engine import DeskPolicy
 engine_module = sys.modules[DeskPolicy.__module__]
 original = DeskPolicy.arm_valid
-real_read_json = engine_module.read_json
-calls = 0
+prepare = DeskPolicy.prepare
+def protected_prepare(self, *args, **kwargs):
+    remaining = signal.getitimer(signal.ITIMER_REAL)[0]
+    assert 0 < remaining <= 10, ('unprotected preparation', remaining)
+    return prepare(self, *args, **kwargs)
+DeskPolicy.prepare = protected_prepare
 def slow_once(self, *args):
-    global calls
-    calls += 1
     remaining = signal.getitimer(signal.ITIMER_REAL)[0]
     assert 0 < remaining <= 10, remaining
-    print('R9 CLI tick=%s deadline=%s' % (calls, remaining), file=sys.stderr, flush=True)
-    if calls != 1:
-        return original(self, *args)
-    def slow_read(*arguments, **options):
-        # The deadline fires inside arm_valid's OSError/ValueError handler.
-        engine_module.read_json = real_read_json
-        os.kill(os.getpid(), signal.SIGALRM)
-        return real_read_json(*arguments, **options)
-    engine_module.read_json = slow_read
+    marker = self.root.parent / 'cli-first-tick'
     try:
+        fd = os.open(marker, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        print('R9 CLI tick=2 deadline=%s pid=%s' % (remaining, os.getpid()), file=sys.stderr, flush=True)
         return original(self, *args)
-    finally:
-        engine_module.read_json = real_read_json
+    os.close(fd)
+    print('R9 CLI tick=1 deadline=%s pid=%s' % (remaining, os.getpid()), file=sys.stderr, flush=True)
+    time.sleep(60)
 DeskPolicy.arm_valid = slow_once
 sys.argv = [str(Path(sys.argv[1]) / 'deskpolicy/cli.py'), 'publicar']
 runpy.run_path(sys.argv[0], run_name='__main__')
@@ -227,6 +213,9 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                 print(text, end='', flush=True)
             self.assertIn('tick=1 deadline=', text)
             self.assertIn('tick=2 deadline=', text)
+            pids = [int(line.rsplit('pid=', 1)[1]) for line in text.splitlines() if 'R9 CLI tick=' in line]
+            self.assertEqual(len(set(pids)), 2)
+            self.assertEqual(child.returncode, 143)
         # The other public commands must never arm a cycle alarm. Their
         # existing argument/descriptor behavior is exercised by test_policy/r2.
         commands = [(['publicar', '--una-vez'], 0), (['reconciliar'], 0), (['estado'], 0),
@@ -236,6 +225,7 @@ runpy.run_path(sys.argv[0], run_name='__main__')
                       '--pid', str(os.getpid()), '--claim-token-fd', '-1'], 75)]
         for arguments, expected in commands:
             with mock.patch.object(cli, 'DeskPolicy', return_value=self.engine), \
+                    mock.patch.object(cli.os, 'fork', side_effect=AssertionError('unexpected fork')), \
                     mock.patch.object(cli.signal, 'setitimer', side_effect=AssertionError('unexpected alarm')), \
                     contextlib.redirect_stdout(io.StringIO()):
                 self.assertEqual(cli.main(arguments), expected, arguments)

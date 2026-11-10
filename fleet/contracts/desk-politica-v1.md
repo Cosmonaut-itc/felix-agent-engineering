@@ -339,7 +339,8 @@ posterior reintenta también los recibos de claims ya cerradas. Un fallo del rec
 el commit de cierre ni aborta el tick. Emite por stderr un diagnóstico JSON
 `pao/desk-reconcile-diagnostic@1` con `request_id`, `run_id`,
 `reason=receipt-error` y `detail`, sin `exit_code`, una sola vez por proceso
-para cada combinación de claim y error. Sigue reintentando la reparación
+para cada combinación de claim y error. En el bucle del writer, esa deduplicación
+vive en el supervisor y se conserva entre hijos de ticks distintos. Sigue reintentando la reparación
 en cada tick; un error diferente tiene su propio diagnóstico. Continúa con las demás
 claims y la publicación. Un replay permite recuperar su publicación si el
 recibo sigue siendo legible y consistente; uno corrupto requiere reparación.
@@ -361,9 +362,15 @@ Una claim de otro boot sigue bloqueando hasta esa reconciliación operativa.
 
 ## Reparto nocturno
 
-El writer corre en WSL cada 20 s y recalcula al arrancar.
-Cada tick del bucle tiene un timeout de 10 s. Un tick fallido no renueva noche.
-Al vencer el plazo se aborta el tick en cualquier paso y se libera el mutex de admisión.
+El writer recalcula al arrancar y programa ticks cada 20 s en WSL, sin superponerlos.
+Cada tick del bucle se ejecuta en un hijo con un plazo de 10 s desde antes de crearlo.
+Al vencer el plazo se ordena terminar al hijo; el kernel libera sus descriptores y el mutex de admisión al completar su terminación.
+El plazo incluye preparación y publicación, pero no promete tiempo real frente a desprogramación ni a una syscall no interrumpible.
+El punto de publicación es el replace atómico de `pao-policy-v1.json`; el fsync posterior del directorio acredita su durabilidad.
+Un tick cortado antes de iniciar la escritura final de política no renueva noche.
+Un corte durante o después de esa escritura puede dejar la política nueva publicada; no se revierte.
+Sin confirmación completa, si la escritura final pudo comenzar o el canal perdió integridad, el bucle informa publicación incierta y no afirma que siga vigente el archivo anterior. Con un canal íntegro que acredita que esa escritura no comenzó, informa un fallo previo a publicar.
+Una confirmación completa se informa como política publicada aunque el hijo termine después por señal.
 `W` cuenta sólo solicitudes pendientes vigentes, con peso admisible y,
 si declaran `lane`, índice no mayor que `max_lane` del modo vigente. Las
 pendientes de carriles cerrados se ignoran en demanda y cabezas, sin borrarlas.
@@ -486,7 +493,7 @@ Ninguna costura permite configurar presupuestos desde el entorno.
 
 | Operación | Argumentos y resultado |
 | --- | --- |
-| `publicar` | Bucle de 20 s con `writer.lock`. `--una-vez` publica un tick. `--desactivar-noche` persiste `night_enabled=false` y publica día. |
+| `publicar` | Bucle de 20 s con `writer.lock`. `--una-vez` publica un tick. `--desactivar-noche` persiste `night_enabled=false` y publica día. El plazo por hijo se aplica sólo al bucle; `--una-vez` y `--desactivar-noche` conservan la publicación directa sin ese plazo. |
 | `pendiente` | `--request-id`, `--project`, `--kind`, `--owner`, `--weight`; Hasito añade `--lane N` del lock local que ya posee. `--retirar` retira sólo una pendiente. Devuelve el registro. |
 | `admitir` | `--request-id`, `--run-id`, `--lane <1..12|any>`, `--pid`; fds heredados `--mutex-fd 9`, `--life-fd 8`. `--local-limit` sólo reduce cuota. Devuelve recibo. |
 | `traspasar` | `--request-id`, `--run-id`, `--pid`, `--mutex-fd 9`, `--life-fd 8`, `--claim-token-fd`. Registra la identidad del keeper bajo el mutex antes de ACK, carga y liberación del launcher. Devuelve `pao/desk-handoff@1`. |
@@ -582,6 +589,12 @@ Sólo `execute=true` autoriza ejecutar una vez. Un JSON ausente o inválido no
 autoriza. Los comandos administrativos fallidos devuelven `pao/desk-error@1`
 con `reason=census-unknown`, `detail` y `exit_code=75`.
 
+En el bucle del writer, un vencimiento anterior a la escritura final de política usa `detail=writer-cycle-timeout`.
+Si esa escritura pudo comenzar o el canal perdió integridad y no se recibió confirmación completa, usa `detail=writer-cycle-timeout-publication-unknown`.
+Otros errores sin confirmación en esa fase usan un detalle que contiene `publication-unknown` y conserva la causa.
+Estos errores de ejecución no certifican ausencia de publicación y mantienen `reason=census-unknown` y `exit_code=75`.
+El bucle emite una sola línea de resultado por tick y continúa después de un fallo del hijo; un resultado confirmado no se acompaña de otro error de plazo.
+
 Los motivos de recibo y rechazo son un conjunto cerrado:
 
 | Motivo | Significado |
@@ -646,14 +659,31 @@ un cambio de código o un boot distinto exige preflight nuevo con drenado.
 
 Sin armado vigente el writer publica día aunque la configuración pida noche.
 La publicación nocturna exige además ventana UTC y censo sano.
-Si falla un tick, no renueva el arriendo previo. Su vencimiento devuelve día.
-El control de revisión se guarda antes de publicar, por lo que un fallo puede
-saltar una revisión pero no reutilizarla en el siguiente tick.
+Un tick que no llega a publicar conserva el arriendo previo, cuyo vencimiento devuelve día.
+Un tick de resultado incierto puede haber publicado un arriendo nuevo; los consumidores resuelven siempre el archivo vigente con sus validaciones y vencimientos habituales.
+Un corte no recalcula ni prolonga los tiempos de la política que haya quedado publicada.
+El control de revisión se guarda antes de publicar; un corte posterior a ese guardado puede saltar una revisión, pero no la reutiliza mientras no se pierda el estado.
 
 PAO inicia explícitamente un único writer desacoplado de stdin y SSH, en sesión
 propia, con stdout y stderr en un log privado. No se requiere sudo ni linger.
 No se promete reinicio automático ni supervivencia del user manager.
 PAO debe comprobar la supervivencia real al cerrar SSH antes de habilitar noche.
+El supervisor mantiene `writer.lock` durante el bucle; el hijo conserva una copia de esa misma descripción abierta hasta terminar.
+Sólo el hijo abre el mutex de admisión y los descriptores de trabajo de su tick.
+El hijo configura SIGKILL ante muerte del supervisor y comprueba después que sigue siendo su hijo directo antes de tomar admisión.
+SIGTERM al supervisor cancela el hijo activo, espera su terminación y detiene el bucle; no inicia otro tick.
+El supervisor recoge cada hijo antes de informar su resultado o iniciar otro.
+El cierre de descriptores no libera flocks de otras descripciones abiertas pertenecientes a cargas vivas.
+Los logs privados y stdin desacoplado no deben conservar flocks de consumidores.
+Si se detiene al hijo antes de configurar `prctl` y muere el padre, puede conservar
+`writer.lock`, pero nunca admisión. Reanudarlo permite comprobar el parentesco y
+salir; si no se reanuda, requiere terminación operativa. Después de `prctl`,
+la muerte del padre termina incluso un hijo detenido, sin SIGCONT.
+La suspensión simultánea de padre e hijo no promete progreso hasta reanudación
+o muerte del padre. No se inicia otro hijo hasta completar la muerte del anterior.
+Los temporales hermanos abandonados se ignoran y conservan; no hay recolector.
+Una terminación de proceso no demuestra recuperación transaccional ante pérdida
+de energía o del estado instalado entre escrituras y fsync.
 Si faltan la raíz o sus subdirectorios después del reinicio, el módulo los
 crea idempotentemente en 0700 y abre `admission.lock` en 0600 sin truncarlo.
 Sin archivo de política rige día, sin intervención de PAO. Una raíz existente
