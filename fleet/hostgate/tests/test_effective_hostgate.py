@@ -66,7 +66,7 @@ class EffectiveHostgate(test_ipc.IPCHarness):
         from hostgate.protocol import validate_result
         self.assertEqual(self.empty, dict(pending=[], reservations=[], generations={}, drained=False))
         self.assertEqual(self.writer.execute('SELECT * FROM metadata').fetchall(),
-                         [(self.cfg.node.store_id, 1, 'effective')])
+                         [(self.cfg.node.store_id, 2, 'effective')])
         for field in ('wouldGrant', 'simulationKey', 'simulationState'):
             self.assertNotIn(field, self.grant)
             with self.assertRaises(ValueError):
