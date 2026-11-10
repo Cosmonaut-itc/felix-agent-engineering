@@ -1,7 +1,7 @@
 """Read-only projections and total completion precedence for fleet-job-api@1."""
 from . import admission, evidence, inputs, native
-from .model import HOST, Fault, backend, envelope, identifier, key, load, now, safe_queued
-from .storage import Ledger
+from .model import HOST, Fault, HostConfirmation, HostHeld, HostIntent, backend, envelope, identifier, key, load, now, safe_queued
+from .storage import Ledger, host_rounds
 
 
 def select_job(db, job=None, idempotency_key=None, attempt=None):
@@ -39,6 +39,29 @@ def owner_reason(db, row):
     if not native.confirmed(load(row["supervisor"])) or row["detail"]:
         return "owner_uncertain"
     return "slot_" + row["state"]
+
+
+def host_view(db, row):
+    """host-reservation@1 projection, apart from the ledger's local slot coordination."""
+    empty = dict(kind=HOST, round=None, error=None, storeId=None, reservationId=None,
+                 generation=None, physicalHostId=None, executorId=None)
+    try:
+        rounds = host_rounds(db, row["id"])
+    except Fault as fault:
+        return dict(empty, error=fault.code)
+    if not rounds:
+        return empty
+    last = rounds[-1]
+    intent = last if isinstance(last, HostIntent) else last.intent
+    key = None if isinstance(last, HostIntent) else last.key
+    state = ("confirmed" if isinstance(last, HostConfirmation) else "held" if isinstance(last, HostHeld)
+             else intent.state)
+    return {"kind": HOST, "error": None, "storeId": intent.store_id,
+            "reservationId": key and key["reservationId"], "generation": key and key["generation"],
+            "physicalHostId": intent.physical_host_id, "executorId": intent.executor_id,
+            "round": {"ordinal": intent.ordinal, "operation_id": intent.operation_id,
+                      "state": state, "reason": intent.reason,
+                      "supervisor_alive": native.confirmed(intent.supervisor)}}
 
 
 def observe(db, row):
@@ -113,7 +136,7 @@ def observe(db, row):
     reservation = None if row["reservation"] is None else {
         "kind": "pilot_slot", "id": row["reservation"], "generation": row["generation"],
         "disposition": row["disposition"]}
-    host = {"kind": HOST} if backend(load(job["content"])) == HOST else None
+    host = host_view(db, row) if backend(load(job["content"])) == HOST else None
     proof = {"valid": None, "errors": [], "files": []}
     outcome = row["recorded_outcome"] if state == "finished" else None
     remaining = []
@@ -152,6 +175,17 @@ def observe(db, row):
         completion = "incomplete" if view == "uncertain" or collection["state"] == "incomplete" else "pending"
         if collection["state"] == "incomplete":
             reasons.append("evidence_incomplete")
+    if host is not None:
+        current = host["round"] or {}
+        if host["error"] or current.get("state") == "held" or (
+                current.get("state") in ("outcome_unknown", "confirmed") and not current["supervisor_alive"]):
+            view, scope = "uncertain", "self"
+            reasons = [host["error"] or current.get("reason") or "host_owner_unverified"]
+            completion = "incomplete"
+        if state == "queued" and current:
+            dispatch["reasons"].append("host_round_" + current["state"])
+            if current.get("reason"):
+                dispatch["reasons"].append(current["reason"])
     supervisor = load(row["supervisor"])
     if supervisor:
         supervisor = dict(supervisor, host=inputs.redact(supervisor["host"], secrets))
@@ -188,4 +222,7 @@ def view(state, operation, job=None, idempotency_key=None, attempt=None):
                           accepted=True, admission=load(selected["admission"]), input=load(selected["input"]),
                           input_policy=admission.public_policy(selected),
                           observation=observe(db, row))
+        host = result["observation"]["reservation"] or {}
+        if host.get("kind") == HOST and result["observation"]["view"] == "uncertain":
+            result["execution_error"] = {"code": result["observation"]["reasons"][0]}
         return result

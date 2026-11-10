@@ -1159,3 +1159,12 @@ N1 rótulos r6 no motiva barrido; N2 KeyboardInterrupt secundario de finally de 
 se declara sin modificar operator ni orden de la primaria. Replace/tamaño/refactor
 y nits anteriores siguen diferidos. Retención/inventarios/primaria r7, C08,
 lost_supervisor, replay r4 y condicionalidad C20/O06/C23 permanecen intactos.
+
+SEN-5649 3b-2: `test_host_rounds_cli` admite por CLI y planta offline cada forma
+válida de `host_rounds`. Lee por `status` concesión/replay, rechazo, retención,
+identidades vivas/muertas y los negativos de R1-1, siempre con control positivo.
+Un barrido con oráculo explícito altera una columna por vez y exige tanto el
+rechazo de incoherencias como la aceptación de alteraciones legítimas. Puede usar
+`FLEET_ROUND_SWEEP=view` sólo si su medición CLI excede 120 s por stack.
+Esto acredita lectura; escritura/transiciones, despacho host y C21 positivo siguen
+abiertos. Los resultados históricos anteriores no cambian.

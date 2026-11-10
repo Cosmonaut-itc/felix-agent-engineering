@@ -163,7 +163,14 @@ autoridad hostgate efectiva (`admin.local_authority()`); sin ella responde
 añade `host_rounds`; un lector deja un v4 intacto y un escritor lo migra con el slot
 libre. Un trabajo host admitido queda `queued`: todavía no hay adaptador que pida la
 reserva, y el claim del piloto no lo toma ni lo salta.
-Evidencia: `tests/test_host_reservation_cli.py`.
+`status` lee las rondas con forma estricta por estado, JSON canónico y correlación
+con el trabajo del intento y con el recibo efectivo. Una fila incoherente da
+`host_correlation_invalid`. Una
+ronda `held`, o `outcome_unknown`/`confirmed` sin supervisor verificado, se observa
+`uncertain`, nunca completa.
+Sin rondas conserva la observación de cola. Este runtime no escribe rondas:
+transiciones, adaptador, supervisor y recuperación host siguen pendientes.
+Evidencia: `tests/test_host_reservation_cli.py` y `tests/test_host_rounds_cli.py`.
 **C21 positivo (ejecutar un trabajo host) permanece abierto; O10 positivo está fuera
 de SEN-3820.**
 

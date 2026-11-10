@@ -5,6 +5,7 @@ Transactions serialize keys, claims, drain epochs, and operator audit decisions.
 """
 import contextlib
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -15,7 +16,7 @@ import time
 import uuid
 
 from . import inputs
-from .model import APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, dump, load, now
+from .model import APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, HostConfirmation, HostHeld, HostIntent, dump, load, now
 
 MAX_DATABASE = 256 * 1024 * 1024
 SCHEMA = (
@@ -45,8 +46,9 @@ SCHEMA = (
     "CREATE TABLE proofs (id TEXT PRIMARY KEY, body TEXT NOT NULL, sha256 TEXT NOT NULL)",
     "CREATE TABLE audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)",
 )
-# Schema 5 adds only host rounds. The CHECKs fix nullability per state; the
-# partial index allows one non-terminal round (held retains) per attempt.
+# Schema 5 adds only host rounds. SQL constrains part of the state shape;
+# every read enforces the complete shape. The partial index allows one
+# non-terminal round (held retains) per attempt.
 HOST_SCHEMA = (
     "CREATE TABLE host_rounds (attempt TEXT NOT NULL REFERENCES attempts(id), "
     "ordinal INTEGER NOT NULL CHECK(ordinal>=1), operation_id TEXT UNIQUE NOT NULL "
@@ -529,3 +531,141 @@ class Ledger:
 
     def __exit__(self, *exc):
         self.close()
+
+
+HOST_TERMINAL = ("rejected", "retired")
+
+
+def request_sha256(request):
+    return hashlib.sha256(dump(request).encode("utf-8")).hexdigest()
+
+
+# Presence of supervisor, key, receipt, source, reason, in that order.
+HOST_SHAPES = {
+    "prepared": {(False, False, False, False, False)},
+    "outcome_unknown": {(True, False, False, False, False)},
+    "confirmed": {(True, True, True, True, False)},
+    "rejected": {(True, False, True, False, False)},
+    "held": {(True, False, False, False, True), (True, False, True, False, True),
+             (True, True, True, True, True)},
+    "retired": {(False, False, False, False, False), (False, False, False, False, True)},
+}
+
+
+def host_json(raw):
+    if raw is None:
+        return None
+    value = load(raw)
+    if value is None or dump(value) != raw:
+        raise ValueError("absent or noncanonical JSON")
+    return value
+
+
+def host_identity(value):
+    if (not isinstance(value, dict) or set(value) !=
+            {"pid", "uid", "host", "namespace", "boot_id", "birth", "alive"}
+            or type(value["pid"]) is not int or value["pid"] < 1
+            or type(value["uid"]) is not int or value["uid"] < 0
+            or not isinstance(value["host"], str) or not value["host"]
+            or type(value["alive"]) is not bool
+            or any(value[k] is not None and (not isinstance(value[k], str) or not value[k])
+                   for k in ("namespace", "boot_id", "birth"))):
+        raise ValueError("native identity")
+
+
+def decode_host(row, job):
+    """Interpret columns, require the complete state shape, then correlate every read."""
+    from hostgate.protocol import key as validate_key, validate, validate_result
+    try:
+        request, requester, supervisor, key, receipt = (
+            host_json(row[column]) for column in
+            ("request_json", "requester_identity", "supervisor_identity", "key_json", "receipt_json"))
+        validate(request, "reservar")
+        host_identity(requester)
+        if supervisor is not None:
+            host_identity(supervisor)
+        for column in ("store_id", "config_revision", "physical_host_id", "executor_id"):
+            if not isinstance(row[column], str) or not row[column]:
+                raise ValueError("empty host text")
+        for column, minimum in (("ordinal", 1), ("heartbeat_seq", 0)):
+            if type(row[column]) is not int or row[column] < minimum:
+                raise ValueError("host integer")
+        if key is not None:
+            validate_key(key)
+            if key["storeId"] != row["store_id"] or not key["reservationId"].startswith("e_"):
+                raise ValueError("host key")
+        if receipt is not None:
+            validate_result(receipt, "effective", row["store_id"])
+        source, reason = row["confirmation_source"], row["reason"]
+        if ((source is not None and source not in ("reply", "same-channel-replay"))
+                or (reason is not None and (not isinstance(reason, str) or not reason))):
+            raise ValueError("source or reason")
+        presence = tuple(value is not None for value in (supervisor, key, receipt, source, reason))
+        if presence not in HOST_SHAPES.get(row["state"], set()):
+            raise ValueError("host state shape")
+        if (request_sha256(request) != row["request_sha256"]
+                or row["operation_id"] != host_operation_id(row["attempt"], row["ordinal"])
+                or (request["operationId"], request["attemptId"], request["executorId"],
+                    request["physicalHostId"]) != (row["operation_id"], row["attempt"], row["executor_id"],
+                                                    row["physical_host_id"])
+                # No column repeats these two: only the attempt's job can contradict them.
+                or request["jobId"] != job["id"]
+                or request["profileId"] != load(job["content"])["execution"]["hostSpec"]["profileId"]):
+            raise ValueError("host request correlation")
+        if receipt is not None:
+            host_receipt(row, key, receipt)
+        intent = HostIntent(row["attempt"], row["ordinal"], row["operation_id"], request,
+                            row["physical_host_id"], row["executor_id"], row["store_id"],
+                            row["config_revision"], requester, row["state"], supervisor, receipt, reason)
+        if row["state"] == "confirmed":
+            return HostConfirmation(intent, key, receipt, source, supervisor)
+        if row["state"] == "held":
+            return HostHeld(intent, reason, supervisor, key, receipt, source)
+        return intent
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError, RecursionError, OverflowError):
+        raise Fault("host_correlation_invalid", 3, "unknown") from None
+
+
+def host_receipt(row, key, receipt):
+    """Wire validation alone does not establish the durable state's meaning."""
+    replayed = "replayed" in receipt
+    original = receipt["originalResult"] if replayed else receipt
+    if (receipt["operationId"] != row["operation_id"]
+            or receipt["configRevision"] != row["config_revision"]
+            or original["configRevision"] != row["config_revision"]):
+        raise ValueError("host receipt correlation")
+    if not replayed and {"originalResult", "currentState"} & set(receipt):
+        raise ValueError("unmarked replay")
+    expected = receipt.get("reservationKey")
+    source = ("same-channel-replay" if replayed else "reply") if expected is not None else None
+    if key != expected or row["confirmation_source"] != source:
+        raise ValueError("host receipt key/source")
+    if row["state"] == "confirmed":
+        current = receipt["currentState"] if replayed else receipt
+        if (not original["granted"] or original["exitCode"] != 0 or original["reasons"]
+                or original.get("state") != "reserved" or original.get("reservationKey") != key
+                or receipt["exitCode"] != 0 or receipt["reasons"] or current is None
+                or current["state"] != "reserved" or current["reasons"]):
+            raise ValueError("not an integral grant")
+    if row["state"] == "rejected":
+        if (replayed or receipt["granted"] or receipt["exitCode"] != 1 or not receipt["reasons"]
+                or "reservationKey" in receipt or "state" in receipt):
+            raise ValueError("not an integral rejection")
+
+
+def host_operation_id(attempt, ordinal):
+    # Stable per (attempt, ordinal): a retry repeats it, a new round never reuses it.
+    return "fleet:{}:{}".format(attempt, ordinal)
+
+
+def host_rounds(db, attempt):
+    job = db.execute("SELECT jobs.id, jobs.content FROM jobs JOIN attempts ON attempts.job=jobs.id "
+                     "WHERE attempts.id=?", (attempt,)).fetchone()
+    rounds = [decode_host(row, job) for row in
+              db.execute("SELECT * FROM host_rounds WHERE attempt=? ORDER BY ordinal", (attempt,))]
+    # The index allows one open round at any ordinal: a later round must not hide a retained one.
+    for position, item in enumerate(rounds, 1):
+        intent = item if isinstance(item, HostIntent) else item.intent
+        if intent.ordinal != position or (position < len(rounds) and intent.state not in HOST_TERMINAL):
+            raise Fault("host_correlation_invalid", 3, "unknown")
+    return rounds
