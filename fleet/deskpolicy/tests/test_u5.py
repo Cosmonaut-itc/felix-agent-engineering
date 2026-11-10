@@ -40,7 +40,7 @@ class WriterProcessTest(unittest.TestCase):
     def dead(self, pid):
         try:
             return Path('/proc/%s/stat' % pid).read_text().split(') ', 1)[1].split()[0] == 'Z'
-        except FileNotFoundError:
+        except (FileNotFoundError, ProcessLookupError):
             return True
 
     def wait_dead(self, pid, timeout=5):
@@ -365,6 +365,75 @@ class WriterProcessTest(unittest.TestCase):
                 self.assertNotIn('signal %s' % child, lines[reaped + 1:])
                 self.assert_mutex_free()
                 self.assertTrue(self.lock_free(self.h.root / 'writer.lock'))
+
+    def test_first_stop_at_any_tick_line_reaps_worker(self):
+        def nested(code):
+            yield code
+            for const in code.co_consts:
+                if inspect.iscode(const):
+                    yield from nested(const)
+
+        tick_codes = set(nested(cli.writer_tick.__code__))
+        targets = sorted({line for code in tick_codes for _, _, line in code.co_lines() if line})
+        diagnostic = (('root', 'boot', 'request', 'run', 'module', 'type', 'detail'),
+            {'schema': 'pao/desk-reconcile-diagnostic@1', 'request_id': 'fixture',
+             'run_id': 'fixture', 'reason': 'receipt-error', 'detail': 'fixture'})
+        log = self.h.directory / 'log-1'
+        for failure in ('channel', 'deadline'):
+            for target in targets:
+                with self.subTest(failure=failure, line=target):
+                    tag = '%s-%s' % (failure, target)
+                    reached = self.h.directory / ('stop-reached-' + tag)
+                    fired = self.h.directory / ('stop-fired-' + tag)
+                    left = self.h.directory / ('stop-left-' + tag)
+
+                    def publish(**kw):
+                        with store.mutex(self.h.root):
+                            self.engine.receipt_diagnostic(*diagnostic)
+                            reached.write_text(str(os.getpid()))
+                            time.sleep(60)
+
+                    def configure():
+                        supervisor = os.getpid()
+                        real_select, real_loop = cli.select.select, cli._writer_loop
+
+                        def select(*args):
+                            if os.getpid() == supervisor and failure == 'channel':
+                                self.wait_file(reached)
+                                raise OSError('reader-fixture')
+                            return real_select(*args)
+
+                        def loop(engine):
+                            try:
+                                real_loop(engine)
+                            finally:
+                                left.write_text(Path('/proc/self/task/%s/children' % supervisor).read_text())
+
+                        def trace(frame, event, arg):
+                            if frame.f_code not in tick_codes or os.getpid() != supervisor:
+                                return None
+                            if event == 'line' and frame.f_lineno == target and not fired.exists():
+                                fired.write_text('fired')
+                                os.kill(supervisor, signal.SIGTERM)
+                            return trace
+
+                        cli.select.select, cli._writer_loop = select, loop
+                        sys.settrace(trace)
+
+                    with mock.patch.object(self.engine, 'publish', publish):
+                        parent = self.supervisor(timeout=5 if failure == 'channel' else .2, configure=configure)
+                    deadline = time.monotonic() + 10
+                    while (not fired.exists() and not (log.exists() and log.stat().st_size)
+                            and time.monotonic() < deadline):
+                        time.sleep(.01)
+                    if not fired.exists():
+                        os.kill(parent, signal.SIGTERM)
+                    _, status = os.waitpid(parent, 0)
+                    self.assertEqual(os.waitstatus_to_exitcode(status), 143)
+                    self.assertEqual(left.read_text().strip(), '')
+                    self.assert_mutex_free()
+                    self.assertTrue(self.lock_free(self.h.root / 'writer.lock'))
+                    log.unlink(missing_ok=True)
 
     def test_cut_with_temporary_stream_directory_and_life_probe_open(self):
         original_record = store.read_json(self.engine.record_path('stale'))
