@@ -349,7 +349,7 @@ class DarwinCoalition:
         return cid
 
     def _scan(self, boot, cid, known):
-        """Algoritmo de §2: boot, contadores, lista, lecturas dobles, contadores y boot otra vez."""
+        """Orden del barrido: boot, contadores, lista, lecturas dobles, contadores y boot otra vez."""
         n, start = self._native, self._clock()
         try:
             if n.boot() != boot: return Invalid(BOOT_CHANGED)
