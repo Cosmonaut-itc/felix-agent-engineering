@@ -443,5 +443,5 @@ Variantes defectuosas que las pruebas matan por aserción: `mode_from_prefix`,
 `root_in_baseline`, `foreign_epoch`, `any_provider`, `scan_before_baseline`,
 `shadow_writes_observation`, `survivors_exceed_baseline`, `loose_key`,
 `loose_scan_after`, `permit_owner_unbound`, `extra_field_consumed`, `cardinality_unchecked`, las cuatro `unreadable_*_escapes` y, sólo en
-Python 3.9, `recursion_escapes`. Un triaje con una variante por cláusula de `scope.py` no deja ninguna que acepte una entrada rechazada sin que falle una prueba de hostgate. Los ids de las corridas en la Mini constan en el PR. No acredita la
+Python 3.9, `recursion_escapes`. En un triaje con una variante por cláusula de `scope.py`, ninguna acepta una entrada de su familia perturbada que el producto rechace sin que falle una prueba de hostgate. 56 variantes no tienen testigo en esa familia, y eso no acredita que sean redundantes fuera de ella. Los ids de las corridas en la Mini constan en el PR. No acredita la
 emisión ni el consumo del permiso, el supervisor ni el cierre real.
