@@ -130,6 +130,10 @@ def budget_view(config, reservations):
     return dict(capacity=dict(config.budget), retained=retained, available=available, retainedByState=by_state)
 
 
+ROW_FIELDS = ('key jobId attemptId executorId physicalHostId principal owner channelBinding demand exclusiveResources '
+              'profileId scopeKind scope launchPossible state heartbeat seq reasons physicalBoot executorBoot')
+
+
 def validate_view(view, config):
     """El checksum acredita bytes; esta validación acredita relaciones del ledger."""
     from .protocol import CODES, integer, key
@@ -158,13 +162,11 @@ def validate_view(view, config):
         identifier(job); integer(generation); require(generation > 0)
     reservations, generations, jobs, resources = {}, {}, set(), set()
     for row in view['reservations']:
-        fields(row, 'key jobId attemptId executorId physicalHostId principal owner channelBinding demand '
-                    'exclusiveResources profileId scopeKind scope launchPossible state heartbeat seq reasons physicalBoot executorBoot')
+        fields(row, ROW_FIELDS)
         key(row['key']); require(row['key']['storeId'] == config.store_id)
         rid = row['key']['reservationId']; require(rid not in reservations)
         if config.mode == 'effective':
-            require(rid.startswith('e_') and row['state'] in ('reserved', 'uncertain')
-                    and row['launchPossible'] is False)
+            require(rid.startswith('e_') and set(row) <= set(ROW_FIELDS.split()) | {'creation', 'closureEvidence'})
         reservations[rid] = row
         for name in ('jobId', 'attemptId', 'principal', 'channelBinding', 'profileId', 'physicalBoot', 'executorBoot'):
             identifier(row[name])
@@ -184,9 +186,8 @@ def validate_view(view, config):
             require(row['jobId'] not in jobs and not claimed & resources)
             jobs.add(row['jobId']); resources.update(claimed)
         generations[row['jobId']] = max(generations.get(row['jobId'], 0), row['key']['generation'])
-        if row['state'] == 'released':
-            from .scope import ClosureEvidence, closure_reasons
-            require(not closure_reasons(ClosureEvidence(**row['closureEvidence']), row))
+        from .scope import validate_reservation
+        validate_reservation(row, config.mode)
     require(generations == view['generations'])
     pending_ids, linked = set(), set()
     for row in view['pending']:
