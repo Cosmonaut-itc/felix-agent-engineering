@@ -384,7 +384,7 @@ class WriterProcessTest(unittest.TestCase):
                 if marker == 'stream.flush()':
                     self.assertTrue(any('/.pao-' in name for name in descriptors))
                 elif marker == 'os.fsync(directory)':
-                    self.assertIn(str(self.h.root), descriptors)
+                    self.assertIn(str(self.h.root / 'pao-wait'), descriptors)
                 else:
                     self.assertIn(str(self.engine.life_path('hasito', 1)), descriptors)
                 self.assert_mutex_free()
@@ -658,6 +658,7 @@ class WriterProcessTest(unittest.TestCase):
     def test_jale_archive_tombstone_receipt_and_revision_converge(self):
         record = store.read_json(self.engine.record_path('stale'))
         record.update(project='jale', kind='verify')
+        record.pop('lane')
         self.engine.write_record(record)
         os.close(store.open_file(self.engine.life_path('jale', 1), create=True))
         metadata = self.h.root / 'slot-0'
@@ -768,9 +769,10 @@ class WriterProcessTest(unittest.TestCase):
             return own.ru_utime + own.ru_stime, children.ru_utime + children.ru_stime
 
         for iteration in range(21):
-            for name, operation in (('direct', self.engine.publish), ('supervised', self.tick)):
+            for name, operation in (('direct', self.engine.publish), ('supervised', lambda: self.tick(10))):
                 start_cpu, start_wall = cpu(), time.monotonic()
-                self.assertEqual(operation()['mode'], 'night')
+                outcome = operation()
+                self.assertEqual(outcome.get('mode'), 'night', outcome)
                 elapsed = time.monotonic() - start_wall
                 end_cpu = cpu()
                 own, children = ((end_cpu[n] - start_cpu[n]) * 1000 for n in (0, 1))
