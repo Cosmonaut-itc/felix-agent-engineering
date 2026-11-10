@@ -453,11 +453,11 @@ SEN-5650, entrega **4b-2**, acreditación, store v2 y selfcheck:
 | --- | --- |
 | `test_creation_forms.py`, `Store` | Una vista ilegal no se escribe y, plantada a mano, no carga. Un store efectivo v1 creado en la prueba falla con `schema` en lectura y escritura y conserva inodo, mtime y bytes sin nombres nuevos (el SQLite de Apple ya deja `-wal`/`-shm` desde `initialize`). |
 | `test_profile_accreditation.py` | Configuración de hoy con su `content_digest`; bloque estricto (de más, de menos, tipos), congelado y en la revisión; sin bloque, build o uid distintos, selfcheck fallido o ausente dan `profile-unverified` con su detalle; el nombre del perfil no acredita. |
-| `test_coalition_selfcheck.py` | Kernel real en `remote-run`: el selfcheck pasa con el boot y el build observados. Con el acceso nativo envuelto, tamaño inesperado, error de lectura, huérfano ausente, zombi legible como vivo, proceso propio que sigue vivo, `exec` fallido, acceso nativo que no se construye y esperas interrumpidas, también en la limpieza, dan `SelfcheckFailed` con paso y motivo, sin dejar identidades propias vivas. Nada llama a `accredit` ni al selfcheck. |
+| `test_coalition_selfcheck.py` | Kernel real en `remote-run`: el selfcheck pasa con el boot y el build observados. Con el acceso nativo envuelto, tamaño inesperado, error de lectura, huérfano ausente, zombi legible como vivo, proceso propio que sigue vivo, `exec` fallido, acceso nativo que no se construye, una espera fallida en la limpieza y un huérfano detenido con la espera del intermedio interrumpida y otra identidad ilegible al revalidar dan `SelfcheckFailed` con paso y motivo, sin dejar identidades propias vivas. Nada llama a `accredit` ni al selfcheck. |
 
 Variantes defectuosas que las pruebas matan por aserción: `profile_id_is_certificate`,
 `reset_store`, `mutate_unvalidated`, `selfcheck_ignores_failure`,
-`exec_status_ignored`, `native_init_escapes`, `reap_forgets_child` y
-`cleanup_stops_on_failure`. Los ids de las
+`exec_status_ignored`, `native_init_escapes`, `cleanup_stops_on_failure`,
+`orphan_registered_late` y `revalidate_in_batch`. Los ids de las
 corridas en la Mini constan en el PR. No acredita la conexión de la acreditación ni
 del selfcheck al runtime.

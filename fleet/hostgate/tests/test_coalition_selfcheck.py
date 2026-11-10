@@ -78,6 +78,24 @@ class Faulty:
         return own
 
 
+def exists(pid):
+    try:
+        return _Native().unique(pid) is not None
+    except ReadError as exc:
+        if exc.errno == errno.ESRCH: return False
+        raise
+
+
+def end(native):
+    """Termina y recoge lo que un defecto deja vivo; sin defecto, sólo recoge un hijo que quedó zombi."""
+    for label, (pid, _) in native.births.items():
+        if label in native.alive(): os.kill(pid, signal.SIGKILL)
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
+
 @unittest.skipUnless(sys.platform == 'darwin', 'kernel Darwin real')
 class Kernel(unittest.TestCase):
     def test_selfcheck_passes_with_observed_boot_and_build(self):
@@ -124,27 +142,52 @@ class Kernel(unittest.TestCase):
         self.assertEqual(shape(verdict), ('SelfcheckFailed', 'release', 'exec sin exito: salida 127'))
         self.assertEqual(native.alive(), [])
 
-    def test_interrupted_reaps_still_end_every_child(self):
-        """Variante: reap_forgets_child. Variante: cleanup_stops_on_failure."""
-        waitpid, setsid, waits, native = os.waitpid, os.setsid, [], Faulty('none')
-        def stop(): os.kill(os.getpid(), signal.SIGSTOP); return setsid()  # El intermedio sigue vivo.
-        def wait(pid, flags):  # Falla la espera del intermedio y la primera de la limpieza.
+    def test_failed_wait_in_cleanup_still_ends_every_child(self):
+        """Variante: cleanup_stops_on_failure."""
+        waitpid, waits, native = os.waitpid, [], Faulty('read-error')
+        def wait(pid, flags):  # La primera espera recoge al intermedio; falla la primera de la limpieza.
             waits.append(pid)
-            if len(waits) <= 2: raise TimeoutError('inyectado')
+            if len(waits) == 2: raise TimeoutError('inyectado')
             return waitpid(pid, flags)
         try:
-            with patch.object(os, 'setsid', stop), patch.object(os, 'waitpid', wait):
+            with patch.object(os, 'waitpid', wait):
                 verdict = selfcheck(_native=native, _created=native.created)
             self.assertEqual(shape(verdict),
                              ('SelfcheckFailed', 'cleanup', 'limpieza incompleta: TimeoutError: inyectado'))
             self.assertEqual(native.alive(), [])
-        finally:  # Con un defecto quedan hijos vivos; sin él, uno queda sin recoger. La prueba no deja ninguno.
-            for label, (pid, _) in native.births.items():
-                if label in native.alive(): os.kill(pid, signal.SIGKILL)
-                try:
-                    waitpid(pid, 0)
-                except ChildProcessError:
-                    pass
+        finally:
+            end(native)
+
+    def test_orphan_ends_despite_failed_middle_wait_and_unreadable_identity(self):
+        """Variante: orphan_registered_late. Variante: revalidate_in_batch."""
+        waitpid, dup2, unique, sid = os.waitpid, os.dup2, _Native.unique, os.getsid(0)
+        native, waits, (report, sink) = Faulty('none'), [], os.pipe()
+        def stop(fd, target):  # Sólo el huérfano está en otra sesión: avisa su pid y se detiene.
+            if os.getsid(0) != sid: os.write(sink, b'%d\n' % os.getpid()); os.kill(os.getpid(), signal.SIGSTOP)
+            return dup2(fd, target)
+        def wait(pid, flags):  # Falla la espera del intermedio.
+            waits.append(pid)
+            if len(waits) == 1: raise TimeoutError('inyectado')
+            return waitpid(pid, flags)
+        def unreadable(self, pid):  # El hijo bloqueado, ya recogido, no se puede revalidar.
+            if pid in waits[1:] and pid == native.births['blocked'][0]: raise ReadError(errno.EIO, 'inyectado')
+            return unique(self, pid)
+        try:
+            with patch.object(os, 'dup2', stop), patch.object(os, 'waitpid', wait), \
+                    patch.object(_Native, 'unique', unreadable):
+                verdict = selfcheck(_native=native, _created=native.created)
+        finally:
+            os.close(sink)
+            orphans = [int(pid) for pid in os.read(report, 64).split()]
+            os.close(report)
+        try:
+            self.assertEqual(shape(verdict),
+                             ('SelfcheckFailed', 'cleanup', 'limpieza incompleta: ReadError: [Errno 5] inyectado'))
+            self.assertEqual((native.alive(), [pid for pid in orphans if exists(pid)]), ([], []))
+        finally:  # Con un defecto, el huérfano detenido sigue vivo: la prueba no lo deja.
+            for pid in orphans:
+                if exists(pid): os.kill(pid, signal.SIGKILL)
+            end(native)
 
 
 class NothingConnected(unittest.TestCase):

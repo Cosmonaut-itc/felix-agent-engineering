@@ -172,7 +172,7 @@ class _Run:
         middle = self.fork('middle', detach)
         self.close(r)
         self.close(report_w)
-        self.reap(middle)
+        _await_exit([middle])  # Con el informe completo, el huérfano se registra antes de recoger al intermedio.
         text = os.read(report_r, 32)
         self.close(report_r)
         if not text.endswith(b'\n'): raise _Failed('huerfano sin pid')
@@ -181,6 +181,7 @@ class _Run:
         self.pending.append(orphan)
         self.own('orphan', orphan)
         self.pending.remove(orphan)
+        self.reap(middle)
         try:
             self.gate.observe_root(owner, orphan)
             raise _Failed('huerfano aceptado como raiz')
@@ -240,7 +241,7 @@ class _Run:
     def cleanup(self):
         """Cierra tuberías, termina y recoge a los hijos y termina sólo identidades propias revalidadas.
 
-        Cada paso corre aunque falle otro; el primer fallo es el resultado."""
+        Cada paso y cada identidad corren aunque falle otro; el primer fallo es el resultado."""
         errors = []
 
         def attempt(action):
@@ -251,19 +252,18 @@ class _Run:
         for fd in list(self.fds): attempt(lambda: self.close(fd))
         for pid in self.children: attempt(lambda: _kill(pid))  # Hijo sin recoger: su pid no puede reciclarse.
         for pid in list(self.children): attempt(lambda: self.reap(pid))
-        alive = attempt(self.revalidate)
+        real = attempt(_Native)  # Revalida con el kernel, no con el acceso inyectado.
+        if real is None: return 'limpieza incompleta: %s' % errors[0]
+
+        def end(birth):
+            if _gone(real, birth): return False
+            _kill(birth.pid)
+            return True
+        awaited = self.pending + [b.pid for b in self.births.values() if attempt(lambda: end(b))]
+        attempt(lambda: _await_exit(awaited))
+        alive = sorted(label for label, b in self.births.items() if attempt(lambda: not _gone(real, b)))
         if errors: return 'limpieza incompleta: %s' % errors[0]
         return 'identidad propia viva: %s' % ', '.join(alive) if alive else None
-
-    def revalidate(self):
-        real = _Native()  # Revalida con el kernel, no con el acceso inyectado.
-        awaited = list(self.pending)
-        for birth in self.births.values():
-            if not _gone(real, birth):
-                _kill(birth.pid)
-                awaited.append(birth.pid)
-        _await_exit(awaited)
-        return sorted(label for label, birth in self.births.items() if not _gone(real, birth))
 
 
 def _kill(pid):
