@@ -3,6 +3,7 @@
 
 import argparse
 import contextlib
+import ctypes
 import fcntl
 import json
 import os
@@ -19,7 +20,7 @@ if __package__ in (None, ""):
 
 from deskpolicy import VERSION
 from deskpolicy.engine import DeskPolicy, admission_receipt, merge_receipt, validate_record
-from deskpolicy.model import Invalid, finite_load, require
+from deskpolicy.model import Invalid, finite_load, require, strict_json
 from deskpolicy.store import RECEIPT_DIR_MODES, atomic_json, mutex, open_file, read_json, secure_dir
 
 
@@ -27,21 +28,258 @@ def output(value):
     print(json.dumps(value, sort_keys=True, allow_nan=False), flush=True)
 
 
-class WriterCycleTimeout(BaseException):
-    """Abort a tick through recoverable I/O and receipt error handlers."""
+_WRITER_SIGNALS = {signal.SIGTERM, signal.SIGINT, signal.SIGHUP}
+_WORKER_SIGNALS = _WRITER_SIGNALS | {signal.SIGALRM}
+_FRAME_LIMIT = 128 * 1024
+_PRCTL = None
 
 
-@contextlib.contextmanager
-def cycle_timeout():
-    def expired(signum, frame):
-        raise WriterCycleTimeout("writer-cycle-timeout")
-    previous = signal.signal(signal.SIGALRM, expired)
-    signal.setitimer(signal.ITIMER_REAL, 10)
+class _WriterTransportError(BaseException):
+    pass
+
+
+def _parent_death_signal():
+    global _PRCTL
+    if _PRCTL is None:
+        _PRCTL = ctypes.CDLL(None, use_errno=True).prctl
+        _PRCTL.argtypes = [ctypes.c_int, *([ctypes.c_ulong] * 4)]
+        _PRCTL.restype = ctypes.c_int
+    return _PRCTL
+
+
+def _writer_send(fd, kind, **payload):
     try:
-        yield
-    finally:
+        data = (json.dumps(dict(kind=kind, **payload), allow_nan=False) + "\n").encode()
+        require(len(data) <= _FRAME_LIMIT, "writer-frame-size")
+        while data:
+            count = os.write(fd, data)
+            require(count > 0, "writer-pipe-closed")
+            data = data[count:]
+    except Exception as exc:
+        raise _WriterTransportError(str(exc)) from exc
+
+
+def _writer_child(engine, writer_fd, channel, parent, deadline, mask, prctl):
+    try:
+        if prctl(1, signal.SIGKILL, 0, 0, 0) != 0:
+            code = ctypes.get_errno()
+            raise OSError(code, os.strerror(code))
+        if os.getppid() != parent:
+            os._exit(75)
+        for signum in _WORKER_SIGNALS:
+            signal.signal(signum, signal.SIG_DFL)
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            os._exit(75)
+        signal.setitimer(signal.ITIMER_REAL, remaining)
+        signal.pthread_sigmask(signal.SIG_SETMASK, set(mask) - _WORKER_SIGNALS)
+        # CLOEXEC does not close forked copies of open file descriptions.
+        keep = {0, 1, 2, writer_fd, channel}
+        for entry in os.listdir("/proc/self/fd"):
+            fd = int(entry)
+            if fd not in keep:
+                with contextlib.suppress(OSError):
+                    os.close(fd)
+        engine.receipt_diagnostic = lambda key, value: _writer_send(
+            channel, "receipt-diagnostic", key=key, value=value)
+        engine.prepare()
+        value = engine.publish(before_commit=lambda: _writer_send(channel, "commit-start"))
+        _writer_send(channel, "result", value=value)
         signal.setitimer(signal.ITIMER_REAL, 0)
-        signal.signal(signal.SIGALRM, previous)
+        os._exit(0)
+    except Exception as exc:
+        try:
+            _writer_send(channel, "error", detail=str(exc))
+        except BaseException:
+            pass
+    except BaseException:
+        pass
+    os._exit(75)
+
+
+class _WriterMessages:
+    def __init__(self):
+        self.buffer = b""
+        self.invalid = False
+        self.committing = False
+        self.result = None
+        self.error = None
+        self.diagnostics = {}
+
+    def feed(self, data):
+        if self.invalid:
+            return
+        self.buffer += data
+        while b"\n" in self.buffer:
+            line, self.buffer = self.buffer.split(b"\n", 1)
+            try:
+                require(len(line) + 1 <= _FRAME_LIMIT, "writer-frame-size")
+                def pairs(items):
+                    value = {}
+                    for key, part in items:
+                        require(key not in value, "writer-frame-duplicate")
+                        value[key] = part
+                    return value
+                message = json.loads(line, object_pairs_hook=pairs)
+                strict_json(json.dumps(message.get("value", message), allow_nan=False).encode())
+                require(type(message) is dict, "writer-frame-type")
+                kind = message.get("kind")
+                if kind == "commit-start":
+                    require(set(message) == {"kind"} and not self.committing
+                            and self.result is None and self.error is None, "writer-frame-order")
+                    self.committing = True
+                elif kind == "result":
+                    require(set(message) == {"kind", "value"} and self.committing
+                            and self.result is None and self.error is None, "writer-frame-order")
+                    value = message["value"]
+                    require(type(value) is dict and value.get("schema") == "pao/desk-policy@1"
+                            and type(value.get("revision")) is int, "writer-result-type")
+                    self.result = value
+                elif kind == "error":
+                    require(set(message) == {"kind", "detail"}
+                            and type(message["detail"]) is str and self.error is None, "writer-error-type")
+                    self.error = message["detail"]
+                elif kind == "receipt-diagnostic":
+                    require(set(message) == {"kind", "key", "value"} and not self.committing
+                            and self.error is None and type(message["key"]) is list
+                            and len(message["key"]) == 7
+                            and all(type(part) is str for part in message["key"]), "writer-diagnostic-key")
+                    value = message["value"]
+                    require(type(value) is dict and set(value) == {
+                        "schema", "request_id", "run_id", "reason", "detail"}
+                        and all(type(part) is str for part in value.values())
+                        and value["schema"] == "pao/desk-reconcile-diagnostic@1"
+                        and value["reason"] == "receipt-error", "writer-diagnostic-type")
+                    self.diagnostics[tuple(message["key"])] = value
+                else:
+                    raise Invalid("writer-frame-kind")
+            except (ValueError, TypeError, KeyError, OverflowError, RecursionError):
+                self.invalid = True
+                self.buffer = b""
+                return
+        if len(self.buffer) >= _FRAME_LIMIT:
+            self.invalid = True
+            self.buffer = b""
+
+    def outcome(self, status, timed_out):
+        unknown = self.committing or self.invalid or bool(self.buffer)
+        if self.result is not None and not self.invalid and not self.buffer:
+            return self.result
+        suffix = "-publication-unknown" if unknown else ""
+        if timed_out or (os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGALRM):
+            detail = "writer-cycle-timeout" + suffix
+        elif self.error is not None:
+            detail = "writer-cycle-error" + suffix + ": " + self.error if unknown else self.error
+        else:
+            detail = "writer-cycle-worker-exit" + suffix + ": " + str(status)
+        return {"schema": "pao/desk-error@1", "reason": "census-unknown",
+                "detail": detail, "exit_code": 75}
+
+
+def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
+    deadline = time.monotonic() + _timeout
+    prctl = _parent_death_signal()
+    parent = os.getpid()
+    child = None
+    reader = writer = None
+    messages = _WriterMessages()
+    timed_out = False
+    eof = False
+    mask = signal.pthread_sigmask(signal.SIG_BLOCK, _WORKER_SIGNALS)
+    try:
+        try:
+            reader, writer = os.pipe()
+            child = os.fork()
+            if child == 0:
+                _writer_child(engine, writer_fd, writer, parent, deadline, mask, prctl)
+                os._exit(75)
+            os.close(writer)
+            writer = None
+            os.set_blocking(reader, False)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+
+        def reap(options):
+            nonlocal child
+            previous = signal.pthread_sigmask(signal.SIG_BLOCK, _WRITER_SIGNALS)
+            try:
+                pid, status = os.waitpid(child, options)
+                if pid:
+                    child = None
+                    return status
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            return None
+
+        status = None
+        while status is None:
+            status = reap(os.WNOHANG)
+            if status is not None:
+                break
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                timed_out = True
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(child, signal.SIGKILL)
+                status = reap(0)
+                break
+            ready, _, _ = select.select([] if eof else [reader], [], [], min(remaining, .05))
+            if ready:
+                data = os.read(reader, 65536)
+                if data:
+                    messages.feed(data)
+                else:
+                    eof = True
+        while not eof:
+            data = os.read(reader, 65536)
+            if not data:
+                eof = True
+            else:
+                messages.feed(data)
+        seen = _diagnostics if _diagnostics is not None else set()
+        for key, value in messages.diagnostics.items():
+            if key not in seen:
+                print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
+                seen.add(key)
+        return messages.outcome(status, timed_out)
+    finally:
+        previous = signal.pthread_sigmask(signal.SIG_BLOCK, _WRITER_SIGNALS)
+        try:
+            if child not in (None, 0):
+                with contextlib.suppress(ProcessLookupError):
+                    os.kill(child, signal.SIGKILL)
+                os.waitpid(child, 0)
+                child = None
+            for fd in (reader, writer):
+                if fd is not None:
+                    os.close(fd)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+
+
+def _writer_loop(engine):
+    def stop(signum, frame):
+        raise SystemExit(128 + signum)
+
+    handlers = {}
+    diagnostics = set()
+    try:
+        for signum in _WRITER_SIGNALS:
+            handlers[signum] = signal.signal(signum, stop)
+        secure_dir(engine.root, create=True)
+        with mutex(engine.root, name="writer.lock") as writer_fd:
+            while True:
+                started = time.monotonic()
+                try:
+                    value = writer_tick(engine, writer_fd, _diagnostics=diagnostics)
+                except (OSError, ValueError, TypeError) as exc:
+                    value = {"schema": "pao/desk-error@1", "reason": "census-unknown",
+                             "detail": str(exc), "exit_code": 75}
+                output(value)
+                time.sleep(max(0, 20 - (time.monotonic() - started)))
+    finally:
+        for signum, handler in handlers.items():
+            signal.signal(signum, handler)
 
 
 def parser():
@@ -290,6 +528,8 @@ def main(argv=None):
         if args.command in ("admitir", "traspasar", "cerrar"):
             engine = DeskPolicy(prepare=False)
             engine.prepare(inherited=args.mutex_fd)
+        elif args.command == "publicar" and not (args.una_vez or args.desactivar_noche):
+            engine = DeskPolicy(prepare=False)
         else:
             engine = DeskPolicy()
         if args.command == "pendiente":
@@ -336,16 +576,7 @@ def main(argv=None):
             if args.una_vez:
                 output(engine.publish())
             else:
-                with mutex(engine.root, name="writer.lock"):
-                    while True:
-                        started = time.monotonic()
-                        try:
-                            with cycle_timeout():
-                                output(engine.publish())
-                        except (WriterCycleTimeout, OSError, ValueError, TypeError) as exc:
-                            output({"schema": "pao/desk-error@1", "reason": "census-unknown",
-                                    "detail": str(exc), "exit_code": 75})
-                        time.sleep(max(0, 20 - (time.monotonic() - started)))
+                _writer_loop(engine)
         return 0
     except (OSError, ValueError, TypeError, KeyError, OverflowError) as exc:
         if args.command == "admitir":

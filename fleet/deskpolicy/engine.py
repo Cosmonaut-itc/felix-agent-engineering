@@ -135,9 +135,10 @@ def merge_receipt(prior, current):
 class DeskPolicy:
     receipt = staticmethod(admission_receipt)
 
-    def __init__(self, runtime=None, *, prepare=True):
+    def __init__(self, runtime=None, *, prepare=True, receipt_diagnostic=None):
         self.runtime = runtime or Runtime()
         self.root = self.runtime.root
+        self.receipt_diagnostic = receipt_diagnostic
         if prepare:
             self.prepare()
 
@@ -593,15 +594,19 @@ class DeskPolicy:
         try:
             self.reconcile_receipt(record)
         except Exception as exc:
+            value = {"schema": "pao/desk-reconcile-diagnostic@1",
+                     "request_id": record["request_id"], "run_id": record["claim"]["run_id"],
+                     "reason": "receipt-error", "detail": str(exc)}
+            if self.receipt_diagnostic is not None:
+                self.receipt_diagnostic((str(self.root), record["boot_id"], record["request_id"],
+                    record["claim"]["run_id"], type(exc).__module__, type(exc).__qualname__, str(exc)), value)
+                return
             diagnostic = (os.getpid(), str(self.root), record["boot_id"], record["request_id"],
                           record["claim"]["run_id"], type(exc), str(exc))
             if diagnostic in _RECEIPT_DIAGNOSTICS:
                 return
             _RECEIPT_DIAGNOSTICS.add(diagnostic)
-            print(json.dumps({"schema": "pao/desk-reconcile-diagnostic@1",
-                              "request_id": record["request_id"], "run_id": record["claim"]["run_id"],
-                              "reason": "receipt-error", "detail": str(exc)}, sort_keys=True),
-                  file=sys.stderr, flush=True)
+            print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
 
     def reconcile(self, mutex_fd=None):
         """Close uncertain reservations only with an empty session and free life lock."""
@@ -666,7 +671,7 @@ class DeskPolicy:
                     "night_enabled": configuration["night_enabled"], "version": VERSION,
                     "module_sha256": code_digest()}
 
-    def publish(self, disable_night=False):
+    def publish(self, disable_night=False, *, before_commit=None):
         with mutex(self.root) as lock:
             configuration = config(read_json(self.runtime.config))
             if disable_night:
@@ -720,6 +725,8 @@ class DeskPolicy:
                       "pending": pending, "algorithm": "pending-divisor-min1@1"}
             validate_policy(policy, sample)
             atomic_json(control_path, {"schema": "pao/desk-control@1", "revision": revision})
+            if before_commit is not None:
+                before_commit()
             atomic_json(self.root / "pao-policy-v1.json", policy)
             return policy
 
