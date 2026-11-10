@@ -445,3 +445,17 @@ Variantes defectuosas que las pruebas matan por aserción: `mode_from_prefix`,
 `loose_scan_after`, `permit_owner_unbound`, `extra_field_consumed`, `cardinality_unchecked`, las cuatro `unreadable_*_escapes` y, sólo en
 Python 3.9, `recursion_escapes`. En un triaje con una variante por cláusula de `scope.py`, ninguna acepta una entrada de su familia perturbada que el producto rechace sin que falle una prueba de hostgate. 56 variantes no tienen testigo en esa familia, y eso no acredita que sean redundantes fuera de ella. Los ids de las corridas en la Mini constan en el PR. No acredita la
 emisión ni el consumo del permiso, el supervisor ni el cierre real.
+
+
+SEN-5650, entrega **4b-2**, acreditación, store v2 y selfcheck:
+
+| Prueba | Cobertura y límite |
+| --- | --- |
+| `test_creation_forms.py`, `Store` | Una vista ilegal no se escribe y, plantada a mano, no carga. Un store efectivo v1 creado en la prueba falla con `schema` en lectura y escritura y conserva inodo, mtime y bytes sin nombres nuevos (el SQLite de Apple ya deja `-wal`/`-shm` desde `initialize`). |
+| `test_profile_accreditation.py` | Configuración de hoy con su `content_digest`; bloque estricto (de más, de menos, tipos), congelado y en la revisión; sin bloque, build o uid distintos, selfcheck fallido o ausente dan `profile-unverified` con su detalle; el nombre del perfil no acredita. |
+| `test_coalition_selfcheck.py` | Kernel real en `remote-run`: el selfcheck pasa con el boot y el build observados. Con el acceso nativo envuelto, tamaño inesperado, error de lectura, huérfano ausente, zombi legible como vivo y proceso propio que sigue vivo dan `SelfcheckFailed` con paso y motivo, sin dejar identidades propias vivas. Nada llama a `accredit` ni al selfcheck. |
+
+Variantes defectuosas que las pruebas matan por aserción: `profile_id_is_certificate`,
+`reset_store`, `mutate_unvalidated` y `selfcheck_ignores_failure`. Los ids de las
+corridas en la Mini constan en el PR. No acredita la conexión de la acreditación ni
+del selfcheck al runtime.
