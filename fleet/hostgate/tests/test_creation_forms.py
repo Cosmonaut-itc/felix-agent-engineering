@@ -137,7 +137,7 @@ class Planted(unittest.TestCase):
         from hostgate import scope
         try:
             return scope.closure_reasons(scope.evidence_from_json(proof), row, mode=mode)
-        except (AttributeError, TypeError, RecursionError) as exc:
+        except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
             return 'interfaz ausente: %s' % type(exc).__name__
 
     def retains(self, label, reasons):
@@ -292,7 +292,7 @@ class Forms(Planted):
                 ('miembro nuevo', dict(real, observation=dict(obs, new_members=[root_doc()]))),
                 ('contadores movidos', dict(real, observation=dict(obs, scan_after=[10, 7]))),
                 ('barrido posterior decimal', dict(real, observation=dict(obs, scan_after=[9.0, 7.0]))),
-                ('cardinalidad', dict(real, observation=dict(obs, member_count=4))),
+                ('cardinalidad', dict(real, observation=dict(obs, member_count=1))),
                 ('mas vivos que la linea base', dict(real, observation=dict(
                     obs, scan_before=[9, 6], scan_after=[9, 6], member_count=3, live_task_count=3))),
                 ('epoch del permiso', dict(real, issuer='hostgate:%s:2' % self.row['key']['storeId'],
@@ -304,8 +304,7 @@ class Forms(Planted):
                 ('procedencia', dict(real, provenance='simulation')),
                 ('sin observacion', {k: v for k, v in real.items() if k != 'observation'})):
             self.retains(label, self.reasons(redigest(values), running, 'effective'))
-        self.retains('digest viejo', self.reasons(dict(real, observation=dict(obs, permit_id='permit-2')),
-                                                  running, 'effective'))
+        self.retains('digest viejo', self.reasons(dict(real, observation=dict(obs, permit_id='permit-2')), running, 'effective'))
         self.illegal('liberada con permiso ajeno', self.released('closed', redigest(
             dict(real, observation=dict(obs, permit_id='permit-2')))))
         never, deep = evidence_doc(self.row, 'never-created'), []
@@ -316,8 +315,11 @@ class Forms(Planted):
                 ('never-created con registered', never, 'registered', {}),
                 ('permiso de otro dueno', real, 'registered', dict(owner=dict(self.row['owner'], pid=999))),
                 ('permiso sin fondo', real, 'registered', dict(owner=dict(self.row['owner'], deep=deep)))):
-            self.retains(label, self.reasons(proof, dict(running, creation=permit_doc(self.row, state, **changes)),
-                                             'effective'))
+            self.retains(label, self.reasons(proof, dict(running, creation=permit_doc(self.row, state, **changes)), 'effective'))
+        fake, key = asdict(ClosureEvidence.fixture(running['key'], BOOT)), running['key']
+        for mode, proof in (('effective', real), ('shadow', fake)):  # Una fila sin validar retiene; no lanza.
+            for i, bad in enumerate((dict(key, generation=float('nan')), dict(key, reservationId=None), None, {})):
+                self.retains('fila ilegible %d en %s' % (i, mode), self.reasons(proof, dict(running, key=bad), mode))
 
     def test_fixture_synthetic_evidence_no_longer_releases(self):
         key = self.reply['reservationKey']

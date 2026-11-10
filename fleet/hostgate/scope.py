@@ -263,11 +263,7 @@ def _pair(value):
 
 def _correlated(evidence, reservation):
     """Evidencia real ligada al registro `creation` de esta misma reserva; los booleanos solos no bastan."""
-    obs, key = evidence.observation, reservation['key']
-    try:
-        creation = creation_from_row(reservation)
-    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
-        return False
+    obs, key, creation = evidence.observation, reservation['key'], creation_from_row(reservation)
     if (evidence.provenance != REAL_PROVENANCE or type(obs.issuer_epoch) is not int or obs.issuer_epoch <= 0
             or evidence.issuer != 'hostgate:%s:%d' % (key['storeId'], obs.issuer_epoch)
             or not key['reservationId'].startswith('e_') or obs.boot != evidence.boot
@@ -305,7 +301,13 @@ def _correlated(evidence, reservation):
 
 
 def closure_reasons(evidence, reservation, *, mode):
-    """mode es el de la configuración validada; el prefijo s_/e_ de la key nunca lo decide."""
+    """mode es el de la configuración validada; el prefijo s_/e_ de la key nunca lo decide. Lo ilegible retiene."""
+    try: return _closure_reasons(evidence, reservation, mode)
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
+        return [reason('resource-cleanup-unconfirmed', 'reserva o evidencia ilegible')]
+
+
+def _closure_reasons(evidence, reservation, mode):
     if not isinstance(evidence, ClosureEvidence):
         return [reason('resource-cleanup-unconfirmed', 'proveedor de cierre no disponible')]
     strings = ('kind', 'issuer', 'boot', 'scope', 'provenance', 'evidence_digest')
