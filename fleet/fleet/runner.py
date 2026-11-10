@@ -10,13 +10,13 @@ import sys
 import time
 
 if __package__:
-    from . import admission, evidence, inputs, native
-    from .model import PILOT, Fault, backend, dump, envelope, load, now, opaque, safe_queued
+    from . import admission, evidence, host_reservation, inputs, native
+    from .model import HOST, PILOT, Fault, HostSpec, backend, dump, envelope, load, now, opaque, safe_queued
     from .storage import Ledger, state_path
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from fleet import admission, evidence, inputs, native
-    from fleet.model import PILOT, Fault, backend, dump, envelope, load, now, opaque, safe_queued
+    from fleet import admission, evidence, host_reservation, inputs, native
+    from fleet.model import HOST, PILOT, Fault, HostSpec, backend, dump, envelope, load, now, opaque, safe_queued
     from fleet.storage import Ledger, state_path
 
 StateError = sqlite3.Error
@@ -224,8 +224,18 @@ def dispatch(db):
     first = None
     with native.dispatch_boundary():
         while True:
+            intent = None
             with db.transaction():
                 assignment = claim(db, identity)
+                head = None if assignment else db.execute(
+                    "SELECT a.id,j.content FROM attempts a JOIN jobs j ON j.id=a.job "
+                    "WHERE a.state='queued' ORDER BY j.seq LIMIT 1").fetchone()
+                if head is not None and backend(load(head["content"])) == HOST:
+                    spec = HostSpec(load(head["content"])["execution"]["hostSpec"]["profileId"])
+                    intent = host_reservation.prepare(db, head["id"], spec, identity)
+            if intent is not None:
+                # Outside the Fleet lock: pairing and IPC belong to R and its own S.
+                host_reservation.launch(db, intent, identity)
             if not assignment:
                 break
             first = first or assignment
@@ -418,6 +428,10 @@ def reconcile(db, result):
     rows = db.execute("SELECT id FROM attempts ORDER BY rowid").fetchall()
     for item in rows:
         row = attempt_row(db, item[0])
+        if backend_of(db, row["job"]) == HOST:
+            if row["state"] != "finished":
+                host_reservation.reconcile(db, row)
+            continue
         if row["state"] == "finished" and row["disposition"] != "released":
             with db.transaction():
                 row = attempt_row(db, item[0])
