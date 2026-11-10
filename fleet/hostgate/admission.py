@@ -323,7 +323,11 @@ class Hostgate:
                                physicalBoot=pending['physicalBoot'], executorBoot=pending['executorBoot'])
             view['reservations'].append(reservation)
             pending.update(state='granted', reservationKey=key)
-            return self._reply(request['operationId'], would_grant=True, pendingId=pending['id'], **self._key_fields(key, 'reserved'))
+            if self.config.mode == 'shadow':
+                return self._reply(request['operationId'], would_grant=True, simulationKey=key,
+                                   pendingId=pending['id'], simulationState='reserved')
+            return self._reply(request['operationId'], would_grant=True, pendingId=pending['id'],
+                               **self._key_fields(key, 'reserved'))
         return self._run(request, auth, action)
 
     def _key_fields(self, key, state):
