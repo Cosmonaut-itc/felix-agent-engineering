@@ -1,8 +1,34 @@
 # deskpolicy v1
 
-Módulo stdlib Python 3.9+ para el contrato [desk-politica-v1](../contracts/desk-politica-v1.md).
+Módulo stdlib para CPython 3.12.3 en Linux/WSL, según el contrato [desk-politica-v1](../contracts/desk-politica-v1.md).
 Admite en WSL bajo el mutex compartido, conserva claims inciertas y asigna
 CPUs nocturnas disjuntas. No modifica ni importa hostgate.
+
+El bucle de publicación usa un hijo por tick, con plazo de 10 s y cierre de recursos por terminación del proceso.
+Requiere `fork`, `flock`, `/proc` y `prctl(PR_SET_PDEATHSIG)` de Linux, invocado mediante ctypes de stdlib.
+El corte no depende de excepciones de señal ni de los puntos de atención de señales de CPython.
+Sólo se declara soporte para el runtime aceptado, CPython 3.12.3 en Linux/WSL.
+Cambiar de intérprete exige repetir la aceptación.
+Un resultado `writer-cycle-timeout-publication-unknown` puede haber dejado publicada una política nueva; no implica rollback ni desactivación de noche.
+Los consumidores siguen leyendo y validando el archivo vigente; un corte no extiende sus tiempos.
+`publicar --una-vez` y `--desactivar-noche` conservan su ejecución directa sin el plazo del bucle.
+
+El supervisor debe tener un solo hilo. Introducir hilos exige revisar el lanzamiento
+por fork. Si falla `prctl`, el tick aborta antes de preparar admisión.
+El supervisor ordena SIGKILL al vencer; una syscall no interrumpible puede retrasar
+la muerte efectiva y la liberación de locks. No se promete tiempo real frente a
+desprogramación, kernel o almacenamiento detenido. No arranca otro tick mientras
+quede vivo el hijo anterior. Un log bloqueado puede detener el calendario o perder
+el informe, pero el supervisor no posee admisión y sólo escribe logs tras recoger
+al hijo. La muerte del supervisor también puede perder el informe.
+Si padre e hijo están detenidos, se requiere reanudación o muerte del padre.
+Antes de `prctl`, un hijo detenido cuyo padre muere puede conservar `writer.lock`
+hasta reanudación o terminación operativa; nunca llega a tomar admisión.
+Los cortes pueden conservar temporales `.pao-*`; se ignoran, ocupan disco e inodes
+y no se añade un recolector. No se promete una transacción multarchivo ni
+recuperación ante pérdida de energía o pérdida del estado instalado.
+Cambiar cli/engine invalida el armado anterior. Este cambio requiere preflight
+nuevo con drenado antes de habilitar noche; no despliega ni activa el writer.
 
 El contrato contiene los esquemas, rutas fijas y obligaciones de Jale y Hasito.
 Los adaptadores de esos repos se entregan por separado.
@@ -162,8 +188,10 @@ El cliente resuelve el recibo y pide otra admisión con nuevas identidades.
 nocturno de noche. `budget` es null de día; las cuotas diurnas están en
 `limits`. Un error al actualizar el recibo durante reconciliación se registra
 por stderr como `pao/desk-reconcile-diagnostic@1`; no revierte el cierre ni
-interrumpe el tick o las otras claims. Cada combinación de claim y error
-se diagnostica una sola vez por proceso; la reparación se sigue reintentando.
+interrumpe el tick o las otras claims. Cada combinación de claim y error se
+diagnostica una sola vez por proceso; en el bucle del writer se deduplica durante
+la vida del supervisor, aunque cambie el hijo. La reparación se sigue reintentando
+en cada tick.
 Las pendientes con carril mayor que `max_lane` no cuentan en demanda o cabezas.
 
 Las regresiones de ronda 7 y dos aceptaciones completas usan nombre fijo
