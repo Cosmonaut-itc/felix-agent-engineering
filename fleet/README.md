@@ -160,9 +160,9 @@ sin filas posteriores conserva el cursor y deja vacío su stream, sin agotar el 
 `--backend host-reservation@1 --profile <id>` admite un trabajo host sólo con una
 autoridad hostgate efectiva (`admin.local_authority()`); sin ella responde
 2/backend_unavailable sin crear estado, y un replay conserva su recibo. El ledger v5
-añade `host_rounds`; un lector deja un v4 intacto y el primer escritor lo migra. Un
-trabajo host admitido queda `queued`: todavía no hay adaptador que pida la reserva, y
-el claim del piloto no lo toma ni lo salta.
+añade `host_rounds`; un lector deja un v4 intacto y un escritor lo migra con el slot
+libre. Un trabajo host admitido queda `queued`: todavía no hay adaptador que pida la
+reserva, y el claim del piloto no lo toma ni lo salta.
 Evidencia: `tests/test_host_reservation_cli.py`.
 **C21 positivo (ejecutar un trabajo host) permanece abierto; O10 positivo está fuera
 de SEN-3820.**

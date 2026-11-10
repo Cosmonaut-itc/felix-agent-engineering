@@ -265,6 +265,9 @@ def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), cred
         from . import host_reservation
         host_reservation.authority()
     with Ledger(state, create=True) as db:
+        if host is not None and not db.execute("SELECT 1 FROM sqlite_master WHERE name='host_rounds'").fetchone():
+            # Migration waits for the slot owner; a host job needs the v5 ledger.
+            raise Fault("backend_unavailable")
         receipt = admission.admit(db, argv, cwd, client, includes, private, artifacts,
                                   credentials, idempotency_key, enqueue_only, prepared)
         authority = db.authority

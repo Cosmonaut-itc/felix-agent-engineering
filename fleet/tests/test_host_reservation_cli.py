@@ -74,6 +74,20 @@ class HostHarness(unittest.TestCase):
             conn.close()
             shutil.rmtree(str(copy))
 
+    def downgrade(self):
+        self.assertEqual(self.ledger("PRAGMA user_version"), [(5,)], "FACT: a new ledger is v5")
+        conn = sqlite3.connect(str(self.state / "state.db"))
+        try:
+            conn.execute("DROP INDEX host_rounds_open")
+            conn.execute("DROP TABLE host_rounds")
+            conn.execute("PRAGMA user_version=4")
+            conn.commit()
+        finally:
+            conn.close()
+        for name in ("state.db", "state.db-wal", "state.db-shm"):
+            if (self.state / name).exists():
+                (self.state / name).chmod(0o600)
+
 
 class HostAdmission(HostHarness):
     def test_new_admission_requires_effective_authority_and_replay_keeps_receipt(self):
@@ -115,18 +129,7 @@ class HostAdmission(HostHarness):
         self.assertEqual(code, 0, pilot)
         code, done = self.call("wait", pilot["job"], "--timeout", "30")
         self.assertEqual(code, 0, done)
-        self.assertEqual(self.ledger("PRAGMA user_version"), [(5,)], "FACT: a new ledger is v5")
-        conn = sqlite3.connect(str(self.state / "state.db"))
-        try:
-            conn.execute("DROP INDEX host_rounds_open")
-            conn.execute("DROP TABLE host_rounds")
-            conn.execute("PRAGMA user_version=4")
-            conn.commit()
-        finally:
-            conn.close()
-        for name in ("state.db", "state.db-wal", "state.db-shm"):
-            if (self.state / name).exists():
-                (self.state / name).chmod(0o600)
+        self.downgrade()
         jobs = self.ledger("SELECT * FROM jobs ORDER BY seq")
         self.assertEqual(self.ledger("PRAGMA user_version"), [(4,)])
         self.assertEqual(self.status(pilot["job"])["completion"], "complete")
@@ -137,6 +140,22 @@ class HostAdmission(HostHarness):
         self.assertEqual(self.ledger("SELECT name FROM sqlite_master WHERE name LIKE 'host_rounds%' ORDER BY name"),
                          [("host_rounds",), ("host_rounds_open",)])
         self.assertEqual(self.ledger("SELECT * FROM jobs ORDER BY seq"), jobs)
+
+    def test_v4_ledger_with_an_owned_slot_is_migrated_only_after_its_release(self):
+        (self.root / "hold").write_text("")  # removing the fixture root also lets the command end
+        code, pilot = self.call("submit", "--", sys.executable, "-c", "import os,sys,time\n"
+                                "while os.path.exists(sys.argv[1]): time.sleep(0.05)", str(self.root / "hold"))
+        self.assertEqual((code, pilot.get("accepted")), (0, True), pilot)
+        self.downgrade()
+        self.call("recover")
+        code, host = self.submit(key="k1", enqueue_only=True)
+        self.assertEqual((code, host.get("error", {}).get("code")), (2, "backend_unavailable"), host)
+        self.assertEqual(self.ledger("PRAGMA user_version"), [(4,)], "FACT: an owned slot defers the migration")
+        (self.root / "hold").unlink()
+        code, done = self.call("wait", pilot["job"], "--timeout", "30")
+        self.assertEqual((code, done["observation"]["completion"]), (0, "complete"), done)
+        self.call("recover")
+        self.assertEqual(self.ledger("PRAGMA user_version"), [(5,)])
 
 
 if __name__ == "__main__":

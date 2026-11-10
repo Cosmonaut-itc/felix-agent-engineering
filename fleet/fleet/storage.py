@@ -17,7 +17,7 @@ import uuid
 
 from . import inputs
 from .model import (APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, HostConfirmation, HostHeld,
-                    HostIntent, dump, load, now, opaque, safe_queued)
+                    HostIntent, dump, load, now)
 
 MAX_DATABASE = 256 * 1024 * 1024
 SCHEMA = (
@@ -340,17 +340,21 @@ def writer_authority(main, committed, header):
         raise Fault("state_unreadable") from None
 
 
-def compatible(conn, versions=(SCHEMA_VERSION,)):
+def compatible(conn):
     if (conn.execute("PRAGMA application_id").fetchone()[0] != APP_ID or
-            conn.execute("PRAGMA user_version").fetchone()[0] not in versions):
+            conn.execute("PRAGMA user_version").fetchone()[0] not in (PILOT_SCHEMA_VERSION, SCHEMA_VERSION)):
         raise Fault("unsupported_schema")
 
 
 def migrate(conn):
-    """Writer-only, under the exclusive directory lock: v4 gains host rounds, jobs stay byte-identical."""
+    """Writer-only, under the exclusive directory lock: v4 gains host rounds, jobs stay byte-identical.
+
+    An owned slot defers it: its supervisor may be a v4-only runtime that could not record its closure in v5.
+    """
     conn.execute("BEGIN IMMEDIATE")
     try:
-        if conn.execute("PRAGMA user_version").fetchone()[0] == PILOT_SCHEMA_VERSION:
+        if (conn.execute("PRAGMA user_version").fetchone()[0] == PILOT_SCHEMA_VERSION
+                and conn.execute("SELECT attempt FROM slot").fetchone()[0] is None):
             for statement in HOST_SCHEMA:
                 conn.execute(statement)
             conn.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
@@ -393,7 +397,7 @@ class Ledger:
                 else:
                     copied, temporary = snapshot(state)
                     try:
-                        compatible(copied, (PILOT_SCHEMA_VERSION, SCHEMA_VERSION))
+                        compatible(copied)
                         check_files(state)
                         authority = copied.execute("SELECT * FROM authority").fetchone()
                         if authority is None or authority["uid"] != os.getuid():
@@ -415,7 +419,7 @@ class Ledger:
                                              isolation_level=None)
                 self.conn.row_factory = sqlite3.Row
                 if exists:
-                    compatible(self.conn, (PILOT_SCHEMA_VERSION, SCHEMA_VERSION))
+                    compatible(self.conn)
                     authority = self.execute("SELECT * FROM authority").fetchone()
                     if authority is None or authority["uid"] != os.getuid():
                         raise Fault("operator_unauthorized")
@@ -630,25 +634,3 @@ def hold_host(db, intent, reason, key=None, receipt=None, source=None):
                 ",reason=?,key_json=COALESCE(?,key_json),receipt_json=COALESCE(?,receipt_json),"
                 "confirmation_source=COALESCE(?,confirmation_source)",
                 (reason, None if key is None else dump(key), None if receipt is None else dump(receipt), source))
-
-
-def confirm_host_and_claim(db, intent, key, receipt, source, dispatcher, supervisor):
-    """One transaction: the round is confirmed and this exact attempt claimed, or the round is held."""
-    row = db.execute("SELECT a.* FROM attempts a JOIN jobs j ON j.id=a.job "
-                     "WHERE a.state='queued' ORDER BY j.seq LIMIT 1").fetchone()
-    slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
-    if (db.control["drained"] or slot["attempt"] is not None or row is None
-            or row["id"] != intent.attempt or not safe_queued(row)):
-        if not hold_host(db, intent, "claim_unavailable", key, receipt, source):
-            raise Fault("host_round_changed", 3, "unknown")
-        return None
-    if not _cas(db, intent, ("outcome_unknown",), "confirmed",
-                ",key_json=?,receipt_json=?,confirmation_source=?", (dump(key), dump(receipt), source)):
-        raise Fault("host_round_changed", 3, "unknown")
-    generation = slot["generation"] + 1
-    db.execute("UPDATE slot SET attempt=?,generation=?", (intent.attempt, generation))
-    db.execute("UPDATE attempts SET generation=?,reservation=?,dispatcher=?,supervisor=?,"
-               "disposition='retained' WHERE id=?",
-               (generation, opaque("r"), dump(dispatcher), dump(supervisor), intent.attempt))
-    db.event(intent.attempt, "starting", "dispatcher", "claim")
-    return generation
