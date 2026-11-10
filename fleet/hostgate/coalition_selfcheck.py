@@ -238,26 +238,39 @@ class _Run:
         raise _Failed('certify: reintentos agotados: %s' % last)
 
     def cleanup(self):
-        """Cierra tuberías, recoge a los hijos y termina sólo identidades propias revalidadas."""
-        for fd in list(self.fds): self.close(fd)
-        for pid in list(self.children):
+        """Cierra tuberías, termina y recoge a los hijos y termina sólo identidades propias revalidadas.
+
+        Cada paso corre aunque falle otro; el primer fallo es el resultado."""
+        errors = []
+
+        def attempt(action):
             try:
-                os.kill(pid, signal.SIGKILL)  # Hijo sin recoger: su pid no puede reciclarse.
-            except ProcessLookupError:
-                pass
-            self.reap(pid)
-        try:
-            real = _Native()  # Revalida con el kernel, no con el acceso inyectado.
-            awaited = list(self.pending)
-            for birth in self.births.values():
-                if not _gone(real, birth):
-                    os.kill(birth.pid, signal.SIGKILL)
-                    awaited.append(birth.pid)
-            _await_exit(awaited)
-            alive = sorted(label for label, birth in self.births.items() if not _gone(real, birth))
-        except Exception as exc:
-            return 'limpieza sin revalidar: %s' % exc
+                return action()
+            except Exception as exc:
+                errors.append('%s: %s' % (type(exc).__name__, exc))
+        for fd in list(self.fds): attempt(lambda: self.close(fd))
+        for pid in self.children: attempt(lambda: _kill(pid))  # Hijo sin recoger: su pid no puede reciclarse.
+        for pid in list(self.children): attempt(lambda: self.reap(pid))
+        alive = attempt(self.revalidate)
+        if errors: return 'limpieza incompleta: %s' % errors[0]
         return 'identidad propia viva: %s' % ', '.join(alive) if alive else None
+
+    def revalidate(self):
+        real = _Native()  # Revalida con el kernel, no con el acceso inyectado.
+        awaited = list(self.pending)
+        for birth in self.births.values():
+            if not _gone(real, birth):
+                _kill(birth.pid)
+                awaited.append(birth.pid)
+        _await_exit(awaited)
+        return sorted(label for label, birth in self.births.items() if not _gone(real, birth))
+
+
+def _kill(pid):
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 def selfcheck(*, _native=None, _build=None, _created=None):

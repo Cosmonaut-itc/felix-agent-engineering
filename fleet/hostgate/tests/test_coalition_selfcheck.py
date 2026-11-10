@@ -124,23 +124,27 @@ class Kernel(unittest.TestCase):
         self.assertEqual(shape(verdict), ('SelfcheckFailed', 'release', 'exec sin exito: salida 127'))
         self.assertEqual(native.alive(), [])
 
-    def test_interrupted_reap_still_ends_the_child(self):
-        """Variante: reap_forgets_child."""
+    def test_interrupted_reaps_still_end_every_child(self):
+        """Variante: reap_forgets_child. Variante: cleanup_stops_on_failure."""
         waitpid, setsid, waits, native = os.waitpid, os.setsid, [], Faulty('none')
         def stop(): os.kill(os.getpid(), signal.SIGSTOP); return setsid()  # El intermedio sigue vivo.
-        def wait(pid, flags):
+        def wait(pid, flags):  # Falla la espera del intermedio y la primera de la limpieza.
             waits.append(pid)
-            if len(waits) == 1: raise TimeoutError('inyectado')
+            if len(waits) <= 2: raise TimeoutError('inyectado')
             return waitpid(pid, flags)
         try:
             with patch.object(os, 'setsid', stop), patch.object(os, 'waitpid', wait):
                 verdict = selfcheck(_native=native, _created=native.created)
-            self.assertEqual(shape(verdict), ('SelfcheckFailed', 'orphan', 'TimeoutError: inyectado'))
+            self.assertEqual(shape(verdict),
+                             ('SelfcheckFailed', 'cleanup', 'limpieza incompleta: TimeoutError: inyectado'))
             self.assertEqual(native.alive(), [])
-        finally:  # Con el defecto, el intermedio detenido sobrevive: la prueba no lo deja vivo.
-            for label in native.alive():
-                os.kill(native.births[label][0], signal.SIGKILL)
-                waitpid(native.births[label][0], 0)
+        finally:  # Con un defecto quedan hijos vivos; sin él, uno queda sin recoger. La prueba no deja ninguno.
+            for label, (pid, _) in native.births.items():
+                if label in native.alive(): os.kill(pid, signal.SIGKILL)
+                try:
+                    waitpid(pid, 0)
+                except ChildProcessError:
+                    pass
 
 
 class NothingConnected(unittest.TestCase):
