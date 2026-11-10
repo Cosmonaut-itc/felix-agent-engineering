@@ -370,9 +370,10 @@ class Hostgate:
     def soltar(self, op_id, key, evidence, auth):
         def mutate(reservation):
             if self.config.mode == 'effective':
-                reasons = [reason('enforcement-unavailable', 'cierre efectivo sin proveedor acreditado')]
-                reservation.update(state='uncertain', reasons=reservation['reasons'] + reasons)
-                return reasons
+                closed = reason('enforcement-unavailable', 'cierre efectivo sin proveedor acreditado')
+                reservation['state'] = 'uncertain'
+                if closed not in reservation['reasons']: reservation['reasons'].append(closed)
+                return [closed]
             if reservation['state'] == 'released': return []
             closure = self.world.closure(evidence, reservation)
             reasons = closure_reasons(closure, reservation)

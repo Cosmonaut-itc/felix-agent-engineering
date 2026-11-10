@@ -3,6 +3,7 @@ import copy
 from contextlib import closing
 from dataclasses import replace
 import hashlib
+import io
 import json
 import os
 from pathlib import Path
@@ -160,6 +161,16 @@ class EffectiveHostgate(test_ipc.IPCHarness):
             return value
         with patch.object(api, 'receive_json', side_effect=wrong_hello):
             with self.assertRaises(TransportError): self.client()
+        for poisoned in (dict(self.grant, simulationKey=self.key), dict(self.grant, configRevision='other')):
+            client = self.client()
+            with patch.object(api, 'receive_response', return_value=poisoned):
+                with self.assertRaises(TransportError): client.call(test_ipc.query('poisoned'))
+            self.assertEqual(client.stream.fileno(), -1)
+        # El CLI `estado` conecta en sombra: ante la autoridad efectiva falla cerrado.
+        from hostgate import cli
+        with patch.object(admin, 'local_authority', return_value=self.f.locator):
+            self.assertEqual(cli.main(['estado'], stdin=io.StringIO(canonical(test_ipc.query())),
+                                      stdout=io.StringIO(), stderr=io.StringIO()), 6)
         self.assertEqual(self.store.read()['reservations'][0]['key'], self.key)
 
     def test_release_fixture_retains_and_stale_keys_do_not_touch_owner(self):
@@ -169,13 +180,15 @@ class EffectiveHostgate(test_ipc.IPCHarness):
             result = self.call(dict(test_ipc.query('stale-' + digest(key)), operation='soltar', key=key, evidenceIds=['fixture']))
             self.assertEqual(result['reasons'][0]['code'], 'stale-generation')
             self.assertEqual(self.store.read()['reservations'][0], before)
-        result = self.call(dict(test_ipc.query('release'), operation='soltar', key=self.key, evidenceIds=['fixture']))
-        self.assertEqual(result['reasons'][0]['code'], 'enforcement-unavailable')
-        self.assertEqual(result['state'], 'uncertain')
+        for op in ('release', 'release-again'):
+            result = self.call(dict(test_ipc.query(op), operation='soltar', key=self.key, evidenceIds=['fixture']))
+            self.assertEqual([r['code'] for r in result['reasons']], ['enforcement-unavailable'])
+            self.assertEqual(result['state'], 'uncertain')
         raw = json.loads(self.writer.execute('SELECT payload FROM host_view WHERE id=1').fetchone()[0])
         self.assertEqual(raw['reservations'][0]['state'], 'uncertain')
         row = self.store.read()['reservations'][0]
         self.assertEqual(row['state'], 'uncertain')
+        self.assertEqual([r['code'] for r in row['reasons']], ['enforcement-unavailable'])
         self.assertEqual(row['key'], self.key)
         self.assertNotIn('closureEvidence', row)
         self.assertEqual(self.client().call(test_ipc.query())['budget']['retained']['slots'], 1)

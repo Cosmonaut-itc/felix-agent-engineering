@@ -434,7 +434,9 @@ otro store se rechazan con `stale-generation` sin cambiar la reserva vigente.
 
 Consumidor: `HostgateClient.connect(handoff=None, mode='shadow')` y
 `request_supervisor(request, mode='shadow')`; 3b debe pedir `mode='effective'`.
-El cliente contrasta modo, store y revisión con autoridad/hello/respuesta.
+El cliente contrasta modo, store y revisión con autoridad y hello; en efectivo valida
+además cada respuesta. La ruta de sombra del cliente no cambia. El CLI `estado`
+conecta en sombra: en un host efectivo falla cerrado con salida 6.
 `call(request, *, max_response_bytes=256 * 1024**2, timeout=300)` acepta sólo plazos
 numéricos `0 < timeout <= 300` segundos; un fallo cierra el canal y conserva duda.
 `DarwinPeers.observe_process(executor, pid)` devuelve la `Identity` nativa observada.
