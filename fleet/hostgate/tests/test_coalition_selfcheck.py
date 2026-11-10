@@ -5,6 +5,7 @@ import importlib
 import importlib.util
 import os
 import re
+import select
 import signal
 import subprocess
 import sys
@@ -86,6 +87,18 @@ def exists(pid):
         raise
 
 
+def exited(pid):
+    """NOTE_EXIT con plazo, sin recoger; ESRCH al registrar ya es salida."""
+    queue = select.kqueue()
+    try:
+        queue.control([select.kevent(pid, select.KQ_FILTER_PROC, select.KQ_EV_ADD | select.KQ_EV_ONESHOT,
+                                     select.KQ_NOTE_EXIT)], 1, 10)
+    except ProcessLookupError:
+        pass
+    finally:
+        queue.close()
+
+
 def end(native):
     """Termina y recoge lo que un defecto deja vivo; sin defecto, sólo recoge un hijo que quedó zombi."""
     for label, (pid, _) in native.births.items():
@@ -165,9 +178,9 @@ class Kernel(unittest.TestCase):
         def stop(fd, target):  # Sólo el huérfano está en otra sesión: avisa su pid y se detiene.
             if os.getsid(0) != sid: os.write(sink, b'%d\n' % os.getpid()); os.kill(os.getpid(), signal.SIGSTOP)
             return dup2(fd, target)
-        def wait(pid, flags):  # Falla la espera del intermedio.
+        def wait(pid, flags):  # La espera del intermedio falla cuando ya salió: el huérfano existe.
             waits.append(pid)
-            if len(waits) == 1: raise TimeoutError('inyectado')
+            if len(waits) == 1: exited(pid); raise TimeoutError('inyectado')
             return waitpid(pid, flags)
         def unreadable(self, pid):  # El hijo bloqueado, ya recogido, no se puede revalidar.
             if pid in waits[1:] and pid == native.births['blocked'][0]: raise ReadError(errno.EIO, 'inyectado')
