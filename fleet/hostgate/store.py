@@ -110,6 +110,11 @@ class ShadowStore:
             stat = self.config.state_dir.stat()
             if stat.st_uid != os.getuid() or stat.st_mode & 0o077: raise StoreError('directorio no privado')
             if self.path.stat().st_uid != os.getuid() or self.path.stat().st_mode & 0o077: raise StoreError('BD no privada')
+            if self.kind == 'effective':
+                # Rechazar copias de sombra antes de que SQLite cree sidecars.
+                with self.path.open('rb') as database: header = database.read(72)
+                if header[68:72] != self.application_id.to_bytes(4, 'big'):
+                    raise StoreError('application_id')
             mode = 'rw' if writable else 'ro'
             conn = sqlite3.connect('file:' + quote(str(self.path)) + '?mode=' + mode, uri=True, timeout=0.2, isolation_level=None)
             try:

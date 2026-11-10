@@ -38,8 +38,8 @@ class EffectiveHostgate(test_ipc.IPCHarness):
         self.assertEqual(self.key['generation'], 1)
         self.assertTrue(self.key['reservationId'].startswith('e_'))
 
-    def spawn(self, role, env=None):
-        proc = subprocess.Popen([sys.executable, '-B', '-m', 'hostgate.tests.support.effective', role, str(self.root)],
+    def spawn(self, role, env=None, root=None, module='hostgate.tests.support.effective'):
+        proc = subprocess.Popen([sys.executable, '-B', '-m', module, role, str(root or self.root)],
                                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
         def cleanup():
             if proc.poll() is None: proc.terminate()
@@ -84,6 +84,7 @@ class EffectiveHostgate(test_ipc.IPCHarness):
         self.assertIs(denied['granted'], False)
         self.assertIn('budget-exceeded', {r['code'] for r in denied['reasons']})
         self.assertNotIn('reservationKey', denied)
+        print('EFFECTIVE_EXAMPLES', canonical(dict(grant=self.grant, rejection=denied, replay=replay)), flush=True)
         state = self.client().call(test_ipc.query(), timeout=2)
         self.assertEqual(state['pending'][0]['state'], 'granted')
         self.assertEqual(state['budget']['retained']['slots'], 1)
@@ -114,6 +115,10 @@ class EffectiveHostgate(test_ipc.IPCHarness):
                     if attack == 'copy': shutil.copyfile(folder / 'shadow.db', folder / 'effective.db')
                     else: (folder / 'shadow.db').rename(folder / 'effective.db')
                 try:
+                    # Fija una lectura actual: otros lectores reutilizan el read-mark
+                    # de SHM, además del WAL vivo exigido por SEN-5678.
+                    writer.execute('BEGIN')
+                    writer.execute('SELECT * FROM metadata').fetchall()
                     before = self.snapshot(folder)
                     with self.assertRaises(StoreError):
                         with closing(EffectiveStore(cfg).connect()): pass
@@ -129,8 +134,17 @@ class EffectiveHostgate(test_ipc.IPCHarness):
         f = test_ipc.Fixture(other); f.provision()
         cfg = admin.load_config(f.locator)
         with closing(ShadowStore(cfg.node).connect(writable=True)):
-            with patch.object(admin, 'local_authority', return_value=f.locator):
-                with self.assertRaises(TransportError): HostgateClient.connect(mode='effective')
+            server = self.spawn('server', root=other, module='hostgate.tests.test_ipc')
+            self.assertEqual(self.line(server).strip(), 'listening')
+            previous = Path.cwd()
+            try:
+                os.chdir(other)
+                with patch.object(admin, 'local_authority', return_value=f.locator):
+                    with HostgateClient.connect(mode='shadow') as client:
+                        self.assertEqual(client.call(test_ipc.query())['result'], 'shadow')
+                    with self.assertRaises(TransportError): HostgateClient.connect(mode='effective')
+            finally: os.chdir(previous)
+            server.terminate(); server.communicate(timeout=8)
             f.doc['mode'] = 'effective'; f.publish()
             before = self.snapshot(other)
             with patch('hostgate.store.EffectiveStore.connect', side_effect=AssertionError('SQLite antes del ancla')):
