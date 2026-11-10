@@ -180,8 +180,8 @@ que demuestra:
 
 - **Riesgo.** Antes de cada ronda, trae la rama de entrega y corre
   `scripts/risk-classify` de esta skill desde el checkout del cambio.
-  Compara con las pathspec `:(glob)` de `.agents/high-risk-paths`, una por
-  línea, lo que cambiaron desde el merge-base HEAD, el stage, el working
+  Compara con los patrones de `.agents/high-risk-paths`, uno por línea y sin
+  prefijo, lo que cambiaron desde el merge-base HEAD, el stage, el working
   tree y esa rama, y marca `rename de directorio` cuando git podría mover un
   archivo; su `--help` da la sintaxis. Si imprime `Nivel: alto`, el nivel es
   alto. Si sólo lista archivos que la rama no tocó, o un `rename de

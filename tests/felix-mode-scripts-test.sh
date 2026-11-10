@@ -1448,6 +1448,18 @@ risk_classify_sources() {
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
     assert test "$status" = 2
     assert test "$output" = 'risk-classify: .agents/high-risk-paths:1: patrón inválido: ../fuera'
+    # Sin este rechazo, git lee :(glob):(glob)x como una ruta literal que no
+    # existe y el cambio sale como normal.
+    printf 'docs/**\n  :(glob)convex/payments/**\n' > "$repo/.agents/high-risk-paths"
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert test "$output" = 'risk-classify: .agents/high-risk-paths:2: quita el prefijo, risk-classify ya antepone :(glob): :(glob)convex/payments/**'
+    printf ':!docs/**\n' > "$repo/.agents/high-risk-paths"
+    status=0
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
+    assert test "$status" = 2
+    assert test "$output" = 'risk-classify: .agents/high-risk-paths:1: quita el prefijo, risk-classify ya antepone :(glob): :!docs/**'
 }
 
 risk_classify_target() {
