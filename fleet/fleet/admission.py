@@ -6,7 +6,7 @@ import shutil
 import stat
 
 from . import inputs, native
-from .model import CONTENT, Fault, canonical, dump, key, load, now, opaque
+from .model import CONTENT, HOST, Fault, canonical, dump, key, load, now, opaque
 
 MAX_METADATA = 1024 * 1024
 
@@ -15,7 +15,7 @@ def normalized(values, dot=False):
     return sorted({inputs.relative(value, dot) for value in values}, key=os.fsencode)
 
 
-def describe(plan, argv, environment, client, credentials):
+def describe(plan, argv, environment, client, credentials, host=None):
     env = dict(environment)
     raw_pwd_secret = environment.get("PWD") if "PWD" in credentials else None
     # Only a present PWD is transformed; absent is distinct from empty.
@@ -31,6 +31,9 @@ def describe(plan, argv, environment, client, credentials):
              "credential_names": credentials, "credential_policy": "known-and-declared@1",
              "outputs": {"contract": "fleet-outputs@1", "required": plan.artifacts},
              "client": client, "policy": {"slots": 1, "queue": "FIFO", "interruptible": False}}
+    if host is not None:
+        # Content equality decides replay: the same key with another backend conflicts.
+        value["execution"] = {"backend": HOST, "hostSpec": {"profileId": host.profile_id}}
     extra = {k: v for k, v in value.items() if k not in ("argv", "environment", "credential_pwd")}
     if len(canonical(extra)) > MAX_METADATA or len(canonical(
             {"argv": argv, "environment": env, "credential_pwd": raw_pwd_secret})) > MAX_METADATA:
@@ -136,7 +139,7 @@ def retire_preparation(db, preparation, owner):
 
 
 def prepare(state, argv, cwd, client, includes, private, artifacts, credentials, idempotency_key,
-          enqueue_only):
+          enqueue_only, host=None):
     if idempotency_key is not None:
         key(idempotency_key)
     environment = dict(os.environ)
@@ -154,7 +157,7 @@ def prepare(state, argv, cwd, client, includes, private, artifacts, credentials,
         raise Fault("input_unavailable") from None
     if idempotency_key and any(secret in idempotency_key.encode() for secret in plan.secrets):
         raise Fault("credential_in_key")
-    content = describe(plan, argv, environment, client, credentials)
+    content = describe(plan, argv, environment, client, credentials, host)
     return plan, content, environment, credentials
 
 
@@ -174,6 +177,8 @@ def admit(db, argv, cwd, client, includes, private, artifacts, credentials, idem
                  "environment": environment, "outputs": content["outputs"],
                  "context_version": inputs.CONTEXT_VERSION, "context": inputs.CONTEXT,
                  "credential_names": credentials}
+    if "execution" in content:
+        execution.update(content["execution"])
     conflict = None
     result = None
     with db.transaction():
