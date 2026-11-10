@@ -85,12 +85,15 @@ class Faulty:
         return own
 
 
-def exists(pid):
-    try:
-        return _Native().unique(pid) is not None
-    except ReadError as exc:
-        if exc.errno == errno.ESRCH: return False
-        raise
+def living(identities):
+    """Los pids cuya identidad (pid, uniqueid) sigue viva; un pid ya de otro no cuenta."""
+    native, alive = _Native(), []
+    for pid, unique in identities:
+        try:
+            if native.unique(pid)[0] == unique: alive.append(pid)
+        except ReadError as exc:
+            if exc.errno != errno.ESRCH: raise
+    return alive
 
 
 def exited(pid):
@@ -184,14 +187,16 @@ class Kernel(unittest.TestCase):
             end(native)
 
     def with_stopped_orphan(self, native, *patches):
-        """El veredicto y los pids del huérfano, detenido antes de exec; la prueba nunca lo deja vivo."""
-        dup2, sid, (report, sink), orphans = os.dup2, os.getsid(0), os.pipe(), []
-        def stop(fd, target):  # Sólo el huérfano está en otra sesión: avisa su pid y se detiene.
-            if os.getsid(0) != sid: os.write(sink, b'%d\n' % os.getpid()); os.kill(os.getpid(), signal.SIGSTOP)
+        """El veredicto y la identidad del huérfano, detenido antes de exec; la prueba nunca lo deja vivo."""
+        dup2, sid, (report, sink), orphans, real = os.dup2, os.getsid(0), os.pipe(), [], _Native()
+        def stop(fd, target):  # Sólo el huérfano está en otra sesión: avisa su identidad y se detiene.
+            if os.getsid(0) != sid:
+                me = os.getpid()
+                os.write(sink, b'%d %d\n' % (me, real.unique(me)[0]))
+                os.kill(me, signal.SIGSTOP)
             return dup2(fd, target)
-        def leftovers():  # Con un defecto, el huérfano detenido sigue vivo.
-            for pid in orphans:
-                if exists(pid): os.kill(pid, signal.SIGKILL)
+        def leftovers():  # Con un defecto, el huérfano detenido sigue vivo; sólo se termina si es él.
+            for pid in living(orphans): os.kill(pid, signal.SIGKILL)
             end(native)
         self.addCleanup(leftovers)
         try:
@@ -200,7 +205,7 @@ class Kernel(unittest.TestCase):
                 verdict = selfcheck(_native=native, _created=native.created)
         finally:
             os.close(sink)
-            orphans += [int(pid) for pid in os.read(report, 64).split()]
+            orphans += [tuple(map(int, line.split())) for line in os.read(report, 128).splitlines()]
             os.close(report)
         return verdict, orphans
 
@@ -217,7 +222,7 @@ class Kernel(unittest.TestCase):
                                                     patch.object(_Native, 'unique', unreadable))
         self.assertEqual(shape(verdict),
                          ('SelfcheckFailed', 'cleanup', 'limpieza incompleta: ReadError: [Errno 5] inyectado'))
-        self.assertEqual((native.alive(), [pid for pid in orphans if exists(pid)]), ([], []))
+        self.assertEqual((native.alive(), living(orphans)), ([], []))
 
     def test_cleanup_builds_nothing_that_can_fail(self):
         """Variante: native_built_in_cleanup."""
@@ -227,7 +232,7 @@ class Kernel(unittest.TestCase):
             init(self)
         verdict, orphans = self.with_stopped_orphan(native, patch.object(_Native, '__init__', late))
         self.assertEqual(shape(verdict), ('SelfcheckFailed', 'occupied', 'barrido invalido: read-error'))
-        self.assertEqual((len(orphans), native.alive(), [pid for pid in orphans if exists(pid)]), (1, [], []))
+        self.assertEqual((len(orphans), native.alive(), living(orphans)), (1, [], []))
 
     def test_orphan_whose_pid_was_never_read_ends_with_its_group(self):
         """Variante: group_not_ended."""
@@ -242,7 +247,7 @@ class Kernel(unittest.TestCase):
         verdict, orphans = self.with_stopped_orphan(native, patch.object(select, 'kqueue', Queue))
         self.assertEqual(shape(verdict), ('SelfcheckFailed', 'orphan', 'OSError: [Errno 5] inyectado'))
         self.assertEqual((len(orphans), 'orphan' in native.births, native.alive()), (1, False, []))
-        self.assertEqual([pid for pid in orphans if exists(pid)], [])
+        self.assertEqual(living(orphans), [])
 
 class NothingConnected(unittest.TestCase):
     def test_selfcheck_and_accreditation_exist_but_nothing_calls_them(self):

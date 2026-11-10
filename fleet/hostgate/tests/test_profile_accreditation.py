@@ -112,6 +112,7 @@ class Accreditation(unittest.TestCase):
                 ('selfcheck booleano', dict(selfcheck=True), 'selfcheck ausente'),
                 ('selfcheck de otro build', dict(selfcheck=self.passed('25H001')), 'build')):
             self.unverified(label, self.verdict(NAME, block(), **kwargs), detail)
+        self.unverified('uid booleano igual al configurado', self.verdict(NAME, block(workloadUid=1), uid=True), 'uid')
         verdict = self.verdict(NAME, block())
         self.assertEqual((type(verdict).__name__, getattr(verdict, 'boot', None), getattr(verdict, 'darwin_build', None)),
                          ('Accredited', BOOT, BUILD))
