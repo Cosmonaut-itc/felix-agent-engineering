@@ -27,8 +27,8 @@ obtenido de la base de cuentas del sistema, nunca de `HOME` ni de XDG.
 | `/tmp/sen-test-slots/slot-<n>.lock` | Flock de vida Jale, índice original 0 a 11. |
 | `/tmp/sen-test-slots/slot-<n>/` | Metadatos Jale opcionales. Sólo existen para una claim v1 contabilizada. |
 | `/tmp/sen-test-slots/pao-hasito/lane-<n>.lock` | Flock de vida remoto Hasito, índice 1 a 12. |
-| `/tmp/sen-test-slots/pao-control.json` | Revisión monotónica del escritor. |
-| `/tmp/sen-test-slots/pao-arm.json` | Preflight explícito, ligado a boot, configuración y hash del módulo. |
+| `/tmp/sen-test-slots/pao-control.json` | Revisión monotónica del escritor, `pao/desk-control@1`. |
+| `/tmp/sen-test-slots/pao-arm.json` | Preflight explícito, `pao/desk-arm@1`, ligado a boot, configuración y hash del módulo. |
 | `/tmp/sen-test-slots/writer.lock` | Instancia única del bucle de publicación. |
 | `/tmp/sen-test-slots/pao-window.json` | Veto manual independiente de Jale. No lo sustituye v1. |
 | `~/.config/pao/desk-policy.json` | Configuración administrativa persistente. |
@@ -596,7 +596,7 @@ Los motivos de recibo y rechazo son un conjunto cerrado:
 | `request-expired`, `request-terminal`, `request-conflict`, `weight-invalid`, `weight-too-large` | Identidad, estado o peso no admisibles. |
 | `already-admitted`, `close-unproven` | Identidad ya admitida o cierre sin prueba. La repetición normal usa `replay=true` con motivo null. |
 
-`estado` muestra modo, revisión, vencimiento, presupuesto efectivo, cuotas,
+`estado` devuelve `pao/desk-view@1`. Muestra modo, revisión, vencimiento, presupuesto efectivo, cuotas,
 pendientes, cabezas, vivos por proyecto, activas, inciertas, peso y CPUs por claim,
 carga, última admisión y último rechazo de cada solicitud.
 Los rechazos son persistidos en la propia solicitud. La vista puede contener
@@ -637,7 +637,7 @@ Los consumidores son SHAs de 40 caracteres hexadecimales minúsculos.
 Las dos comprobaciones verdaderas son evidencia administrativa aportada por PAO,
 no mediciones automáticas del módulo. PAO comprueba entradas migradas, puertos,
 servicios y recursos Docker Desktop antes de afirmarlas.
-El resultado incluye versión y hash determinista de los siete archivos Python
+El resultado, `pao/desk-preflight-result@1`, incluye versión y hash determinista de los siete archivos Python
 del runtime. El armado guarda también configuración aprobada y hashes de
 configuración y evidencia. Presupuestos y peso máximo pueden reducirse sin
 rearmar. El writer publica esos límites reducidos con las claims vivas intactas.
@@ -834,6 +834,7 @@ Las sesiones viejas se drenan. No se inventa un FIFO histórico entre carriles.
 Los guiones `deploy-desk.sh` y `withdraw-desk.sh` se entregan sin ejecutar.
 Ambos exigen una referencia `--apto`. El primero valida todas las precondiciones
 antes de instalar código o configuración. Sólo instala día y no inicia el writer.
+Su resultado lleva el esquema `pao/desk-install@1`, el modo instalado y el hash del módulo.
 Una instalación idéntica con la misma referencia se puede repetir. Un runtime,
 manifiesto o referencia distintos se rechazan sin modificar los existentes.
 La configuración existente debe ser válida y tener noche desactivada.
