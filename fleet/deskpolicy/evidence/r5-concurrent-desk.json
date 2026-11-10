@@ -1,0 +1,42 @@
+{
+  "clk_tck": 100,
+  "load1": 3.21337890625,
+  "observed_utc": "2026-11-05T17:34:28Z",
+  "other_processes": [
+    {
+      "cpu_ticks": 0,
+      "cpu_ticks_delta": 0,
+      "name": "bash",
+      "pid": 959462,
+      "ppid": 959461,
+      "state": "S"
+    },
+    {
+      "cpu_ticks": 0,
+      "cpu_ticks_delta": 0,
+      "name": "bash",
+      "pid": 959465,
+      "ppid": 959462,
+      "state": "S"
+    },
+    {
+      "cpu_ticks": 14,
+      "cpu_ticks_delta": 0,
+      "name": "python3",
+      "pid": 960422,
+      "ppid": 959465,
+      "state": "S"
+    },
+    {
+      "cpu_ticks": 19000,
+      "cpu_ticks_delta": 101,
+      "name": "python3",
+      "pid": 1130349,
+      "ppid": 960422,
+      "state": "R"
+    }
+  ],
+  "other_run": "20261105-090720-94f8cc",
+  "own_run": "20261105-113316-e830d6",
+  "sample_s": 1
+}
