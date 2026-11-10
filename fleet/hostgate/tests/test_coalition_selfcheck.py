@@ -1,0 +1,126 @@
+"""Selfcheck por boot contra el kernel real, y nada conectado todavía (SEN-5650, 4b)."""
+import errno
+import importlib
+import importlib.util
+import re
+import subprocess
+import sys
+import unittest
+from pathlib import Path
+from hostgate import admin
+from hostgate.darwin_coalition import ReadError, _Native
+from hostgate.scope import ClosureEvidence, authorize_creation, record_started
+from hostgate.service import Runtime
+
+FLEET = Path(__file__).resolve().parents[2]
+
+
+def selfcheck(**seams):
+    """El veredicto, o la excepción como valor: en la base falla por aserción."""
+    try:
+        return importlib.import_module('hostgate.coalition_selfcheck').selfcheck(**seams)
+    except Exception as exc:
+        return exc
+
+
+def shape(verdict):
+    return type(verdict).__name__, getattr(verdict, 'step', None), getattr(verdict, 'detail', None)
+
+
+class Faulty:
+    """Acceso nativo real con un fallo inyectado sólo sobre las identidades que crea el selfcheck."""
+    def __init__(self, fault):
+        self.real, self.fault, self.pids, self.births, self.cache = _Native(), fault, {}, {}, {}
+
+    def created(self, label, pid):
+        self.pids[pid] = label
+        try:
+            self.births[label] = (pid, self.real.unique(pid)[0])
+        except ReadError:
+            pass  # El intermedio puede haber salido ya; lo recoge el selfcheck.
+
+    def boot(self): return self.real.boot()
+    def listpids(self): return self.real.listpids()
+
+    def usage(self, cid):
+        if self.fault == 'read-error' and 'blocked' in self.births: raise ReadError(errno.EIO, 'inyectado')
+        return self.real.usage(cid)
+
+    def _read(self, name, pid):
+        label = self.pids.get(pid)
+        if label and self.fault == 'abi-size': raise ReadError(None, 'inyectado')
+        if label == 'orphan' and self.fault == 'orphan-missing': raise ReadError(errno.ESRCH, 'inyectado')
+        try:
+            value = getattr(self.real, name)(pid)
+        except ReadError as exc:
+            stale = {'zombie-alive': 'zombie', 'own-alive': 'exec'}.get(self.fault)
+            if exc.errno == errno.ESRCH and label == stale and (name, pid) in self.cache:
+                return self.cache[(name, pid)]  # Lectura vieja: la identidad parece seguir viva.
+            raise
+        self.cache[(name, pid)] = value
+        return value
+
+    def unique(self, pid): return self._read('unique', pid)
+    def coalition(self, pid): return self._read('coalition', pid)
+    def short(self, pid): return self._read('short', pid)
+
+    def alive(self):
+        own = []
+        for label, (pid, unique) in self.births.items():
+            try:
+                if self.real.unique(pid)[0] == unique: own.append(label)
+            except ReadError as exc:
+                if exc.errno != errno.ESRCH: raise
+        return own
+
+
+@unittest.skipUnless(sys.platform == 'darwin', 'kernel Darwin real')
+class Kernel(unittest.TestCase):
+    def test_selfcheck_passes_with_observed_boot_and_build(self):
+        build = subprocess.run(['/usr/sbin/sysctl', '-n', 'kern.osversion'], stdout=subprocess.PIPE,
+                               check=True, timeout=30).stdout.decode().strip()
+        verdict = selfcheck()
+        self.assertEqual(shape(verdict), ('SelfcheckPassed', None, None), verdict)
+        self.assertEqual((verdict.boot, verdict.darwin_build), (_Native().boot(), build))
+
+    def test_each_injected_fault_fails_with_its_reason_and_leaves_nothing_alive(self):
+        """Variante: selfcheck_ignores_failure."""
+        cases = {'abi-size': ('blocked-child', 'abi-size'),
+                 'read-error': ('occupied', 'barrido invalido: read-error'),
+                 'orphan-missing': ('orphan', 'orphan ausente'),
+                 'zombie-alive': ('zombie', 'zombi legible como vivo'),
+                 'own-alive': ('reaped', 'identidad propia viva: exec')}
+        for fault, (step, detail) in cases.items():
+            with self.subTest(fault=fault):
+                native = Faulty(fault)
+                verdict = selfcheck(_native=native, _created=native.created)
+                self.assertEqual(shape(verdict), ('SelfcheckFailed', step, detail), verdict)
+                self.assertEqual(native.alive(), [])
+
+    def test_unexpected_exception_and_build_failure_are_failed_results(self):
+        def broken(): raise OSError(errno.EIO, 'sysctl')
+        self.assertEqual(shape(selfcheck(_build=broken)), ('SelfcheckFailed', 'boot', 'OSError: [Errno 5] sysctl'))
+
+
+class NothingConnected(unittest.TestCase):
+    def test_selfcheck_and_accreditation_exist_but_nothing_calls_them(self):
+        module = importlib.util.find_spec('hostgate.coalition_selfcheck')
+        self.assertTrue(module is not None and callable(getattr(admin, 'accredit', None)))
+        calls = re.compile(r'(?<!def )\b(accredit|selfcheck)\(|coalition_selfcheck')
+        callers = []
+        for path in sorted(FLEET.rglob('*.py')):
+            if 'tests' in path.relative_to(FLEET).parts: continue
+            for number, line in enumerate(path.read_text(errors='replace').splitlines(), 1):
+                if calls.search(line) and path.name != 'coalition_selfcheck.py':
+                    callers.append('%s:%d' % (path.relative_to(FLEET), number))
+        self.assertEqual(callers, [])
+        runtime = Runtime.__new__(Runtime)
+        runtime.synthetic = None
+        self.assertIs(runtime.profile_verified('darwin-coalition-process@1'), False)
+        self.assertEqual(runtime.closure(['p'], {}), ClosureEvidence())
+        for call in (lambda: authorize_creation('k', None), lambda: record_started('k', None)):
+            with self.assertRaises(NotImplementedError): call()
+
+
+if __name__ == '__main__':
+    unittest.main()
