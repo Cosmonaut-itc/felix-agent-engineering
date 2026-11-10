@@ -190,8 +190,11 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
     timed_out = False
     eof = False
     mask = signal.pthread_sigmask(signal.SIG_BLOCK, _WORKER_SIGNALS)
+    previous_chld = signal.getsignal(signal.SIGCHLD)
     try:
         try:
+            # SIG_IGN auto-reaps on Linux, allowing PID reuse before our waitpid.
+            signal.signal(signal.SIGCHLD, signal.SIG_DFL)
             reader, writer = os.pipe()
             child = os.fork()
             if child == 0:
@@ -268,7 +271,10 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
                 if fd is not None:
                     os.close(fd)
         finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            try:
+                signal.signal(signal.SIGCHLD, previous_chld)
+            finally:
+                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
 
 
 def _writer_loop(engine):

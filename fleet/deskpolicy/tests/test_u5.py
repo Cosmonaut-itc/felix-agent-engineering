@@ -942,3 +942,17 @@ assert result['mode'] == 'night', result
         self.assertEqual(value['schema'], 'pao/desk-error@1')
         self.assertEqual((self.h.root / 'pao-policy-v1.json').read_bytes(), before)
         self.assert_mutex_free()
+
+    def test_ignored_sigchld_does_not_auto_reap_worker(self):
+        previous = signal.signal(signal.SIGCHLD, signal.SIG_IGN)
+        reached = self.h.directory / 'ignored-sigchld'
+        try:
+            published = self.tick()
+            with mock.patch.object(self.engine, 'publish', self.blocking_publish(reached, stop=True)):
+                cut = self.tick(.5)
+        finally:
+            signal.signal(signal.SIGCHLD, previous)
+        self.assertEqual(published.get('schema'), 'pao/desk-policy@1', published)
+        self.assertEqual(cut['detail'], 'writer-cycle-timeout')
+        self.assertTrue(self.dead(int(reached.read_text())))
+        self.assert_mutex_free()
