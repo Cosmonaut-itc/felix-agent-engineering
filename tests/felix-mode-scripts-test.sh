@@ -1459,7 +1459,9 @@ risk_classify_sources() {
         assert test "$status" = 2
         assert test "$output" = "risk-classify: .agents/high-risk-paths:2: quita el prefijo, risk-classify ya antepone :(glob); un nombre que empieza con : va como \\:nombre: $prefixed"
     done
-    # El escape no se rechaza: \:x es el nombre literal :x.
+    # El escape no se rechaza: \:x es el nombre literal :x. Windows no admite
+    # : en nombres de archivo y su git lee \ como separador.
+    case "$(uname)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
     printf '\\:reportes/**\n\\:(glob)raro/**\n' > "$repo/.agents/high-risk-paths"
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
     assert test "${output%% *}" = 'Rutas:'
