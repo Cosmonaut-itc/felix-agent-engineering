@@ -445,3 +445,7 @@ con `ClosureEvidence.fixture`. No se admiten filas `running`, `released` ni
 perfiles. No hay CLI de provisión efectiva, mantenimiento periódico, instalación
 ni activación de hosts. La espera autónoma y la integración Fleet pertenecen a
 entregas posteriores. Las pruebas nuevas usan sólo autoridades y procesos privados.
+
+El receptor DATA también fijaba `shadow`, aunque no figuraba entre los módulos del
+diseño 3a. `wire.receive_response(..., _mode='shadow')` ahora contrasta el modo
+verificado que le pasa el cliente; framing, checksum y END conservan su forma.

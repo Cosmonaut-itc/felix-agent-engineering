@@ -406,5 +406,12 @@ keys viejas, `soltar` con fixture que retiene, latido por el canal dueño, valid
 de estados futuros y recibos corruptos, y plazo acotado del cliente.
 `tests/support/effective.py` mantiene un escritor vivo y WAL/SHM para las lecturas
 `mode=ro` de Apple (SEN-5678); no salta ese límite ni acredita un store sin sidecars.
-Los resultados dirigidos se registran al terminar la verificación en la Mini.
+Evidencia Mini, Apple 3.9.6 y Homebrew 3.14.7: dirigida
+`20261109-181911-8121c1`, head `2b93558`, 114/114 por stack; rojo
+`20261109-182628-1426c7`, base `14264ea`, siete rechazos del producto al modo efectivo
+por stack, sin errores de importación; mutantes `20261109-182602-36efbf`, head
+`3624fcd`, control 7/7 y fallos por aserción al admitir simulationKey (dos), omitir
+kind (uno) y escribir released en el JSON durable de soltar (uno), en ambos stacks.
+Las lecturas de inventario fijan también un read-mark vivo: comparan todos los
+archivos, incluido SHM, sin debilitar la aserción ni saltar el límite de Apple.
 No acredita perfiles/creación/cierre reales, provisión, integración Fleet ni activación.
