@@ -248,7 +248,7 @@ class _Run:
         raise _Failed('certify: reintentos agotados: %s' % last)
 
     def cleanup(self):
-        """Cierra tuberías, termina y recoge a los hijos y termina sólo identidades propias revalidadas.
+        """Cierra tuberías, termina a los hijos y a sus grupos, los recoge y termina sólo identidades propias revalidadas.
 
         Cada paso y cada identidad corren aunque falle otro; el primer fallo es el resultado."""
         errors = []
@@ -260,8 +260,11 @@ class _Run:
                 errors.append('%s: %s' % (type(exc).__name__, exc))
         for fd in list(self.fds): attempt(lambda: self.close(fd))
         for pid in self.children: attempt(lambda: _kill(pid))  # Hijo sin recoger: su pid no puede reciclarse.
-        for pid in list(self.children): attempt(lambda: self.reap(pid))
+        attempt(lambda: _await_exit(self.children))  # Ya no crean; sin recoger, tampoco se recicla su grupo.
+        for pid in self.children: attempt(lambda: _kill(pid, os.killpg))  # Alcanza al huérfano aunque su pid no se leyera.
         real = attempt(_Native)  # Revalida con el kernel, no con el acceso inyectado.
+        if real is not None and self.children: attempt(lambda: _await_exit(_members(real, self.children)))
+        for pid in list(self.children): attempt(lambda: self.reap(pid))
         if real is None: return 'limpieza incompleta: %s' % errors[0]
 
         def end(birth):
@@ -275,11 +278,22 @@ class _Run:
         return 'identidad propia viva: %s' % ', '.join(alive) if alive else None
 
 
-def _kill(pid):
+def _kill(pid, send=os.kill):
     try:
-        os.kill(pid, signal.SIGKILL)
+        send(pid, signal.SIGKILL)
     except ProcessLookupError:
         pass
+
+
+def _members(native, leaders):
+    """Procesos de los grupos de los hijos sin recoger, ellos aparte."""
+    found = []
+    for pid in native.listpids()[0]:
+        try:
+            if pid not in leaders and os.getpgid(pid) in leaders: found.append(pid)
+        except ProcessLookupError:
+            pass
+    return found
 
 
 def selfcheck(*, _native=None, _build=None, _created=None):

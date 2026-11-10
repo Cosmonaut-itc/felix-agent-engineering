@@ -213,6 +213,36 @@ class Kernel(unittest.TestCase):
                 if exists(pid): os.kill(pid, signal.SIGKILL)
             end(native)
 
+    def test_orphan_whose_pid_was_never_read_ends_with_its_group(self):
+        """Variante: group_not_ended."""
+        kqueue, dup2, sid = select.kqueue, os.dup2, os.getsid(0)
+        native, lost, (report, sink) = Faulty('none'), [], os.pipe()
+        def stop(fd, target):
+            if os.getsid(0) != sid: os.write(sink, b'%d\n' % os.getpid()); os.kill(os.getpid(), signal.SIGSTOP)
+            return dup2(fd, target)
+        class Queue:  # Se pierde la primera salida observada, la del intermedio: el pid del huérfano no se lee.
+            def __init__(self): self.queue = kqueue()
+            def close(self): self.queue.close()
+            def control(self, changes, count, *timeout):
+                events = self.queue.control(changes, count, *timeout)
+                if events and not lost: lost.append(events); raise OSError(errno.EIO, 'inyectado')
+                return events
+        try:
+            with patch.object(os, 'dup2', stop), patch.object(select, 'kqueue', Queue):
+                verdict = selfcheck(_native=native, _created=native.created)
+        finally:
+            os.close(sink)
+            orphans = [int(pid) for pid in os.read(report, 64).split()]
+            os.close(report)
+        try:
+            self.assertEqual(shape(verdict), ('SelfcheckFailed', 'orphan', 'OSError: [Errno 5] inyectado'))
+            self.assertEqual((len(orphans), 'orphan' in native.births, native.alive()), (1, False, []))
+            self.assertEqual([pid for pid in orphans if exists(pid)], [])
+        finally:
+            for pid in orphans:
+                if exists(pid): os.kill(pid, signal.SIGKILL)
+            end(native)
+
 
 class NothingConnected(unittest.TestCase):
     def test_selfcheck_and_accreditation_exist_but_nothing_calls_them(self):
