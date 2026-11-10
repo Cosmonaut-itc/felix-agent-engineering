@@ -547,4 +547,6 @@ bloqueado como raíz, `fork`+`exec`, un huérfano con doble `fork` y `setsid` qu
 es raíz, un zombi que no cuenta como vivo, la coalición de launchd y, al final,
 ninguna identidad propia viva. Devuelve `SelfcheckPassed(boot, darwin_build)` o
 `SelfcheckFailed(step, detail)`; cualquier excepción o plazo agotado es un fallo, y
-todo proceso que crea termina con él.
+todo proceso que crea termina con él. La limpieza intenta cada paso aunque falle
+otro y nunca termina un pid sin revalidarlo. Si un paso o una identidad fallan,
+el resultado es `SelfcheckFailed('cleanup', 'limpieza incompleta: ...')`.

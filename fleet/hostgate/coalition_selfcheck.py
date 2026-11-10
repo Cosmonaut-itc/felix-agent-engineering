@@ -75,6 +75,7 @@ def _await_exit(pids):
 class _Run:
     def __init__(self, native, created):
         self.native, self.created = native, created
+        self.real = _Native()  # Antes de crear procesos: la limpieza revalida con el kernel sin construir nada.
         self.gate = DarwinCoalition(_native=native)
         self.children, self.births, self.fds = [], {}, []
         self.pending = []  # Pids propios sin identidad leída: sólo se esperan, nunca se terminan.
@@ -262,10 +263,9 @@ class _Run:
         for pid in self.children: attempt(lambda: _kill(pid))  # Hijo sin recoger: su pid no puede reciclarse.
         attempt(lambda: _await_exit(self.children))  # Ya no crean; sin recoger, tampoco se recicla su grupo.
         for pid in self.children: attempt(lambda: _kill(pid, os.killpg))  # Alcanza al huérfano aunque su pid no se leyera.
-        real = attempt(_Native)  # Revalida con el kernel, no con el acceso inyectado.
-        if real is not None and self.children: attempt(lambda: _await_exit(_members(real, self.children)))
+        real = self.real  # Revalida con el kernel, no con el acceso inyectado.
+        if self.children: attempt(lambda: _await_exit(_members(real, self.children)))
         for pid in list(self.children): attempt(lambda: self.reap(pid))
-        if real is None: return 'limpieza incompleta: %s' % errors[0]
 
         def end(birth):
             if _gone(real, birth): return False

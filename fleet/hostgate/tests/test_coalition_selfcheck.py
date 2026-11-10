@@ -1,4 +1,5 @@
 """Selfcheck por boot contra el kernel real, y nada conectado todavía (SEN-5650, 4b)."""
+import contextlib
 import ctypes
 import errno
 import importlib
@@ -182,43 +183,55 @@ class Kernel(unittest.TestCase):
         finally:
             end(native)
 
-    def test_registered_orphan_ends_despite_unreadable_identity(self):
-        """Variante: revalidate_in_batch."""
-        waitpid, dup2, unique, sid = os.waitpid, os.dup2, _Native.unique, os.getsid(0)
-        native, waits, (report, sink) = Faulty('read-error'), [], os.pipe()
+    def with_stopped_orphan(self, native, *patches):
+        """El veredicto y los pids del huérfano, detenido antes de exec; la prueba nunca lo deja vivo."""
+        dup2, sid, (report, sink), orphans = os.dup2, os.getsid(0), os.pipe(), []
         def stop(fd, target):  # Sólo el huérfano está en otra sesión: avisa su pid y se detiene.
             if os.getsid(0) != sid: os.write(sink, b'%d\n' % os.getpid()); os.kill(os.getpid(), signal.SIGSTOP)
             return dup2(fd, target)
+        def leftovers():  # Con un defecto, el huérfano detenido sigue vivo.
+            for pid in orphans:
+                if exists(pid): os.kill(pid, signal.SIGKILL)
+            end(native)
+        self.addCleanup(leftovers)
+        try:
+            with contextlib.ExitStack() as stack:
+                for each in (patch.object(os, 'dup2', stop),) + patches: stack.enter_context(each)
+                verdict = selfcheck(_native=native, _created=native.created)
+        finally:
+            os.close(sink)
+            orphans += [int(pid) for pid in os.read(report, 64).split()]
+            os.close(report)
+        return verdict, orphans
+
+    def test_registered_orphan_ends_despite_unreadable_identity(self):
+        """Variante: revalidate_in_batch."""
+        waitpid, unique, native, waits = os.waitpid, _Native.unique, Faulty('read-error'), []
         def wait(pid, flags):  # El intermedio ya está recogido cuando falla el barrido: su grupo no cuenta.
             waits.append(pid)
             return waitpid(pid, flags)
         def unreadable(self, pid):  # El hijo bloqueado, ya recogido, no se puede revalidar.
             if pid in waits and pid == native.births['blocked'][0]: raise ReadError(errno.EIO, 'inyectado')
             return unique(self, pid)
-        try:
-            with patch.object(os, 'dup2', stop), patch.object(os, 'waitpid', wait), \
-                    patch.object(_Native, 'unique', unreadable):
-                verdict = selfcheck(_native=native, _created=native.created)
-        finally:
-            os.close(sink)
-            orphans = [int(pid) for pid in os.read(report, 64).split()]
-            os.close(report)
-        try:
-            self.assertEqual(shape(verdict),
-                             ('SelfcheckFailed', 'cleanup', 'limpieza incompleta: ReadError: [Errno 5] inyectado'))
-            self.assertEqual((native.alive(), [pid for pid in orphans if exists(pid)]), ([], []))
-        finally:  # Con un defecto, el huérfano detenido sigue vivo: la prueba no lo deja.
-            for pid in orphans:
-                if exists(pid): os.kill(pid, signal.SIGKILL)
-            end(native)
+        verdict, orphans = self.with_stopped_orphan(native, patch.object(os, 'waitpid', wait),
+                                                    patch.object(_Native, 'unique', unreadable))
+        self.assertEqual(shape(verdict),
+                         ('SelfcheckFailed', 'cleanup', 'limpieza incompleta: ReadError: [Errno 5] inyectado'))
+        self.assertEqual((native.alive(), [pid for pid in orphans if exists(pid)]), ([], []))
+
+    def test_cleanup_builds_nothing_that_can_fail(self):
+        """Variante: native_built_in_cleanup."""
+        init, native = _Native.__init__, Faulty('read-error')
+        def late(self):  # Construir el acceso nativo con procesos propios vivos falla.
+            if native.births: raise OSError(errno.EIO, 'inyectado')
+            init(self)
+        verdict, orphans = self.with_stopped_orphan(native, patch.object(_Native, '__init__', late))
+        self.assertEqual(shape(verdict), ('SelfcheckFailed', 'occupied', 'barrido invalido: read-error'))
+        self.assertEqual((len(orphans), native.alive(), [pid for pid in orphans if exists(pid)]), (1, [], []))
 
     def test_orphan_whose_pid_was_never_read_ends_with_its_group(self):
         """Variante: group_not_ended."""
-        kqueue, dup2, sid = select.kqueue, os.dup2, os.getsid(0)
-        native, lost, (report, sink) = Faulty('none'), [], os.pipe()
-        def stop(fd, target):
-            if os.getsid(0) != sid: os.write(sink, b'%d\n' % os.getpid()); os.kill(os.getpid(), signal.SIGSTOP)
-            return dup2(fd, target)
+        kqueue, native, lost = select.kqueue, Faulty('none'), []
         class Queue:  # Se pierde la primera salida observada, la del intermedio: el pid del huérfano no se lee.
             def __init__(self): self.queue = kqueue()
             def close(self): self.queue.close()
@@ -226,22 +239,10 @@ class Kernel(unittest.TestCase):
                 events = self.queue.control(changes, count, *timeout)
                 if events and not lost: lost.append(events); raise OSError(errno.EIO, 'inyectado')
                 return events
-        try:
-            with patch.object(os, 'dup2', stop), patch.object(select, 'kqueue', Queue):
-                verdict = selfcheck(_native=native, _created=native.created)
-        finally:
-            os.close(sink)
-            orphans = [int(pid) for pid in os.read(report, 64).split()]
-            os.close(report)
-        try:
-            self.assertEqual(shape(verdict), ('SelfcheckFailed', 'orphan', 'OSError: [Errno 5] inyectado'))
-            self.assertEqual((len(orphans), 'orphan' in native.births, native.alive()), (1, False, []))
-            self.assertEqual([pid for pid in orphans if exists(pid)], [])
-        finally:
-            for pid in orphans:
-                if exists(pid): os.kill(pid, signal.SIGKILL)
-            end(native)
-
+        verdict, orphans = self.with_stopped_orphan(native, patch.object(select, 'kqueue', Queue))
+        self.assertEqual(shape(verdict), ('SelfcheckFailed', 'orphan', 'OSError: [Errno 5] inyectado'))
+        self.assertEqual((len(orphans), 'orphan' in native.births, native.alive()), (1, False, []))
+        self.assertEqual([pid for pid in orphans if exists(pid)], [])
 
 class NothingConnected(unittest.TestCase):
     def test_selfcheck_and_accreditation_exist_but_nothing_calls_them(self):
