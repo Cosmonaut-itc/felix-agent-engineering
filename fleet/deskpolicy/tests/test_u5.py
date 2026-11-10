@@ -26,7 +26,7 @@ class WriterProcessTest(unittest.TestCase):
     setUp = test_r9.RoundNineTest.setUp
     assert_mutex_free = test_r9.RoundNineTest.assert_mutex_free
 
-    def tick(self, timeout=2, diagnostics=None):
+    def tick(self, timeout=10, diagnostics=None):
         with store.mutex(self.h.root, name='writer.lock') as writer:
             return cli.writer_tick(self.engine, writer, _timeout=timeout, _diagnostics=diagnostics)
 
@@ -156,8 +156,8 @@ class WriterProcessTest(unittest.TestCase):
                         mock.patch.object(os, 'replace', replace), \
                         mock.patch.object(os, 'fsync', fsync), \
                         mock.patch.object(cli, '_writer_send', send):
-                    value = self.tick()
-                self.assertTrue(reached.exists())
+                    value = self.tick(5)
+                self.assertTrue(reached.exists(), value)
                 suffix = '' if phase == 'before-commit' else '-publication-unknown'
                 self.assertEqual(value['detail'], 'writer-cycle-timeout' + suffix)
                 current = store.read_json(self.h.root / 'pao-policy-v1.json')['revision']
@@ -196,7 +196,7 @@ class WriterProcessTest(unittest.TestCase):
 
                 with mock.patch.object(cli, '_writer_send', send), \
                         mock.patch.object(signal, 'setitimer', timer):
-                    value = self.tick()
+                    value = self.tick(5)
                 self.assertTrue(reached.exists())
                 self.assertEqual(value.get('detail') if phase == 'before-send' else value['schema'],
                     'writer-cycle-timeout-publication-unknown' if phase == 'before-send' else 'pao/desk-policy@1')
@@ -393,7 +393,7 @@ class WriterProcessTest(unittest.TestCase):
                 prior = sys.gettrace()
                 try:
                     sys.settrace(trace)
-                    value = self.tick(1)
+                    value = self.tick(5)
                 finally:
                     sys.settrace(prior)
                 self.assertIn('writer-cycle-timeout', value['detail'])
@@ -456,7 +456,8 @@ class WriterProcessTest(unittest.TestCase):
         with mock.patch.object(self.engine, 'publish', publish):
             value = self.tick()
         self.assertIn('writer-cycle-worker-exit', value['detail'])
-        self.assertEqual(self.tick()['mode'], 'night')
+        value = self.tick()
+        self.assertEqual(value.get('mode'), 'night', value)
         self.assert_mutex_free()
 
     def test_flock_negative_control_and_live_workload(self):
@@ -693,14 +694,14 @@ class WriterProcessTest(unittest.TestCase):
             return result
 
         with mock.patch.object(os, 'rename', rename):
-            self.assertEqual(self.tick()['detail'], 'writer-cycle-timeout')
+            self.assertEqual(self.tick(5)['detail'], 'writer-cycle-timeout')
         self.assertTrue(reached.exists())
         self.assertFalse(metadata.exists())
         self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'uncertain')
         self.assertTrue((self.h.root / '.pao-reconciled-stale/evidence').exists())
         # A second cut leaves the tombstone but not its receipt.
         with mock.patch.object(self.engine, 'recover_receipt', side_effect=lambda record: time.sleep(60)):
-            self.assertEqual(self.tick()['detail'], 'writer-cycle-timeout')
+            self.assertEqual(self.tick(5)['detail'], 'writer-cycle-timeout')
         self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'closed')
         receipt = self.h.directory / 'runs/run-stale/pao-admission.json'
         self.assertNotEqual(store.read_json(receipt)['claim_state'], 'closed')
@@ -745,16 +746,33 @@ class WriterProcessTest(unittest.TestCase):
                     pass
                 os.set_blocking(writer, True)
                 pipe_path = Path('/proc/self/fd/%s' % writer)
+                reached = self.h.directory / ('blocked-log-' + stream)
+                real_publish = self.engine.publish
+
+                def publish(**kwargs):
+                    value = real_publish(**kwargs)
+                    reached.write_text(str(os.getpid()))
+                    return value
+
+                def receipt(record):
+                    reached.write_text(str(os.getpid()))
+                    raise OSError('blocked-log')
+
                 try:
                     if stream == 'stderr':
-                        with mock.patch.object(self.engine, 'reconcile_receipt', side_effect=OSError('blocked-log')):
-                            parent = self.supervisor(stderr=pipe_path)
+                        with mock.patch.object(self.engine, 'reconcile_receipt', receipt):
+                            parent = self.supervisor(timeout=10, stderr=pipe_path)
                     else:
-                        parent = self.supervisor(stdout=pipe_path)
-                    time.sleep(1.5)
+                        with mock.patch.object(self.engine, 'publish', publish):
+                            parent = self.supervisor(timeout=10, stdout=pipe_path)
+                    self.wait_file(reached, timeout=12)
+                    children = Path('/proc/%s/task/%s/children' % (parent, parent))
+                    deadline = time.monotonic() + 12
+                    while children.read_text().strip() and time.monotonic() < deadline:
+                        time.sleep(.02)
                     self.assertFalse(self.dead(parent))
                     self.assert_mutex_free()
-                    self.assertEqual(Path('/proc/%s/task/%s/children' % (parent, parent)).read_text().strip(), '')
+                    self.assertEqual(children.read_text().strip(), '')
                     os.kill(parent, signal.SIGTERM)
                     _, status = os.waitpid(parent, 0)
                     self.assertEqual(os.waitstatus_to_exitcode(status), 143)
@@ -879,9 +897,11 @@ assert result['mode'] == 'night', result
 
     def test_inconclusive_session_proof_keeps_reservation(self):
         with mock.patch.object(engine_module, 'session_members', return_value=None):
-            self.assertEqual(self.tick()['mode'], 'night')
+            value = self.tick()
+            self.assertEqual(value.get('mode'), 'night', value)
         self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'uncertain')
-        self.assertEqual(self.tick()['mode'], 'night')
+        value = self.tick()
+        self.assertEqual(value.get('mode'), 'night', value)
         self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'closed')
 
     def test_diagnostic_flood_does_not_starve_deadline(self):

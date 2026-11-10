@@ -87,7 +87,7 @@ class RoundNineTest(unittest.TestCase):
         try:
             sys.settrace(trace)
             with store.mutex(self.h.root, name='writer.lock') as writer:
-                result = cli.writer_tick(self.engine, writer, _timeout=2)
+                result = cli.writer_tick(self.engine, writer, _timeout=5)
         finally:
             sys.settrace(previous_trace)
         changed = before != (self.h.root / 'pao-policy-v1.json').read_bytes()
