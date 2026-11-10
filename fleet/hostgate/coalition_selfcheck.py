@@ -111,8 +111,9 @@ class _Run:
         return unique
 
     def reap(self, pid):
-        self.children.remove(pid)
-        os.waitpid(pid, 0)
+        status = os.waitpid(pid, 0)[1]
+        self.children.remove(pid)  # Sólo ya recogido: si la espera falla, cleanup todavía lo termina.
+        return os.waitstatus_to_exitcode(status)
 
     def settle(self, baseline, accept):
         """Barridos hasta que accept da por buena una observación; Invalid falla."""
@@ -218,7 +219,8 @@ class _Run:
         self.step = 'release'
         for fd in (w_blocked, w_exec, w_orphan): self.close(fd)
         _await_exit([blocked, execd, orphan])
-        for pid in (blocked, execd, zombie): self.reap(pid)
+        codes = {pid: self.reap(pid) for pid in (blocked, execd, zombie)}
+        if codes[execd] != 0: raise _Failed('exec sin exito: salida %d' % codes[execd])
         self.step = 'reaped'
         self.settle(baseline, lambda obs: not own & _novel(obs))
         alive = sorted(label for label, birth in self.births.items() if not _gone(n, birth))
@@ -253,7 +255,7 @@ class _Run:
                     awaited.append(birth.pid)
             _await_exit(awaited)
             alive = sorted(label for label, birth in self.births.items() if not _gone(real, birth))
-        except (OSError, _Failed) as exc:
+        except Exception as exc:
             return 'limpieza sin revalidar: %s' % exc
         return 'identidad propia viva: %s' % ', '.join(alive) if alive else None
 
@@ -264,6 +266,8 @@ def selfcheck(*, _native=None, _build=None, _created=None):
         run = _Run(_native if _native is not None else _Native(), _created)
     except ReadError as exc:
         return SelfcheckFailed('abi', _read_error(exc))
+    except Exception as exc:
+        return SelfcheckFailed('abi', '%s: %s' % (type(exc).__name__, exc))
     run.build = _build or _darwin_build
     try:
         result = run.run()

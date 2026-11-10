@@ -1,12 +1,16 @@
 """Selfcheck por boot contra el kernel real, y nada conectado todavía (SEN-5650, 4b)."""
+import ctypes
 import errno
 import importlib
 import importlib.util
+import os
 import re
+import signal
 import subprocess
 import sys
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from hostgate import admin
 from hostgate.darwin_coalition import ReadError, _Native
 from hostgate.scope import ClosureEvidence, authorize_creation, record_started
@@ -100,6 +104,43 @@ class Kernel(unittest.TestCase):
     def test_unexpected_exception_and_build_failure_are_failed_results(self):
         def broken(): raise OSError(errno.EIO, 'sysctl')
         self.assertEqual(shape(selfcheck(_build=broken)), ('SelfcheckFailed', 'boot', 'OSError: [Errno 5] sysctl'))
+
+    def test_native_init_failure_is_a_failed_result(self):
+        """Variante: native_init_escapes."""
+        for exc in (OSError(errno.EIO, 'dlopen'), AttributeError('proc_pidinfo')):
+            with self.subTest(exc=type(exc).__name__), patch.object(ctypes, 'CDLL', side_effect=exc):
+                self.assertEqual(shape(selfcheck()), ('SelfcheckFailed', 'abi', '%s: %s' % (type(exc).__name__, exc)))
+
+    def test_failed_exec_fails(self):
+        """Variante: exec_status_ignored."""
+        execv = os.execv
+        def failed(path, argv):
+            os.closerange(3, 1024)  # Lo que exec cerraría; sin esto la tubería propia nunca da EOF.
+            os.read(0, 1)
+            execv('/nonexistent/cat', argv)
+        native = Faulty('none')
+        with patch.object(os, 'execv', failed):
+            verdict = selfcheck(_native=native, _created=native.created)
+        self.assertEqual(shape(verdict), ('SelfcheckFailed', 'release', 'exec sin exito: salida 127'))
+        self.assertEqual(native.alive(), [])
+
+    def test_interrupted_reap_still_ends_the_child(self):
+        """Variante: reap_forgets_child."""
+        waitpid, setsid, waits, native = os.waitpid, os.setsid, [], Faulty('none')
+        def stop(): os.kill(os.getpid(), signal.SIGSTOP); return setsid()  # El intermedio sigue vivo.
+        def wait(pid, flags):
+            waits.append(pid)
+            if len(waits) == 1: raise TimeoutError('inyectado')
+            return waitpid(pid, flags)
+        try:
+            with patch.object(os, 'setsid', stop), patch.object(os, 'waitpid', wait):
+                verdict = selfcheck(_native=native, _created=native.created)
+            self.assertEqual(shape(verdict), ('SelfcheckFailed', 'orphan', 'TimeoutError: inyectado'))
+            self.assertEqual(native.alive(), [])
+        finally:  # Con el defecto, el intermedio detenido sobrevive: la prueba no lo deja vivo.
+            for label in native.alive():
+                os.kill(native.births[label][0], signal.SIGKILL)
+                waitpid(native.births[label][0], 0)
 
 
 class NothingConnected(unittest.TestCase):
