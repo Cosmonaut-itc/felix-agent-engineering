@@ -118,9 +118,9 @@ def launch(db, intent, requester):
         return
     child, fds = None, []
     try:
-        handoff_r, handoff_w = os.pipe()
-        ready_r, ready_w = os.pipe()
-        fds = [handoff_r, handoff_w, ready_r, ready_w]
+        fds.extend(os.pipe())  # registered pair by pair: a failed second pipe still closes the first
+        fds.extend(os.pipe())
+        handoff_r, handoff_w, ready_r, ready_w = fds
         fd = os.open(db.state / "supervisor.log", os.O_WRONLY | os.O_APPEND | os.O_CREAT | inputs.NOFOLLOW, 0o600)
         with os.fdopen(fd, "ab", buffering=0) as log:
             info = os.fstat(log.fileno())
