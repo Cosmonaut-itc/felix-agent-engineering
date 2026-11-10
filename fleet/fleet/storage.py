@@ -656,5 +656,11 @@ def host_operation_id(attempt, ordinal):
 
 
 def host_rounds(db, attempt):
-    return [decode_host(row) for row in
-            db.execute("SELECT * FROM host_rounds WHERE attempt=? ORDER BY ordinal", (attempt,))]
+    rounds = [decode_host(row) for row in
+              db.execute("SELECT * FROM host_rounds WHERE attempt=? ORDER BY ordinal", (attempt,))]
+    # The index allows one open round at any ordinal: a later round must not hide a retained one.
+    for position, item in enumerate(rounds, 1):
+        intent = item if isinstance(item, HostIntent) else item.intent
+        if intent.ordinal != position or (position < len(rounds) and intent.state not in HOST_TERMINAL):
+            raise Fault("host_correlation_invalid", 3, "unknown")
+    return rounds

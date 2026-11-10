@@ -29,6 +29,7 @@ class HostRounds(HostHarness):
                        jobId=self.job, attemptId=self.attempt, executorId="executor-test",
                        physicalHostId="host-test", profileId="fixture", exclusiveResources=[],
                        demand=dict(cpuMilli=0, memoryBytes=0, diskBytes={}, slots=1))
+        self.request = request
         self.key = dict(storeId="store-test", reservationId="e_test", generation=1)
         self.grant = protocol.reply(op, "cfg_test", would_grant=True, mode="effective",
                                     store_id="store-test", state="reserved", reservationKey=self.key)
@@ -65,14 +66,22 @@ class HostRounds(HostHarness):
                     receipt_json=None if receipt is None else canonical(receipt),
                     confirmation_source=source, reason=reason)
 
-    def plant(self, row):
+    def second(self, name):
+        """The same attempt's next round; only for shapes without a receipt."""
+        op = "fleet:{}:2".format(self.attempt)
+        request = canonical(dict(self.request, operationId=op))
+        return dict(self.row(name), ordinal=2, operation_id=op, request_json=request,
+                    request_sha256=hashlib.sha256(request.encode()).hexdigest())
+
+    def plant(self, *rows):
         # enqueue-only has no Fleet owner. Close SQLite before starting any reader.
         conn = sqlite3.connect(str(self.state / "state.db"))
         try:
             with conn:
                 conn.execute("DELETE FROM host_rounds")
-                conn.execute("INSERT INTO host_rounds ({}) VALUES ({})".format(
-                    ",".join(row), ",".join("?" for _ in row)), tuple(row.values()))
+                for row in rows:
+                    conn.execute("INSERT INTO host_rounds ({}) VALUES ({})".format(
+                        ",".join(row), ",".join("?" for _ in row)), tuple(row.values()))
         finally:
             conn.close()
         for path in self.state.glob("state.db*"):
@@ -149,6 +158,17 @@ class HostRounds(HostHarness):
 
     def test_confirmed_dead_supervisor(self):
         self.dead_owner("confirmed_reply")
+
+    def test_invalid_open_round_behind_a_later_one(self):
+        later = self.second("retired")
+        self.plant(self.row("rejected"), later)
+        host = self.read()["observation"]["reservation"]
+        current = host.get("round") or {}
+        self.assertEqual((host.get("error"), current.get("ordinal"), current.get("state")), (None, 2, "retired"))
+        self.plant(self.row("held_key_receipt"), later)  # SQL admits it: one open round, at any ordinal.
+        self.invalid(self.read())
+        self.plant(later)  # Round 2 without its round 1.
+        self.invalid(self.read())
 
     def test_sweep_one_column_with_explicit_oracle(self):
         started = time.monotonic()
