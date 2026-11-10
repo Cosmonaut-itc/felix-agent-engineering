@@ -555,6 +555,8 @@ def decode_host(row):
                                          or not str(key["reservationId"]).startswith("e_")
                                          or type(key["generation"]) is not int or key["generation"] < 1))):
             raise ValueError("host_round")
+        if intent.receipt is not None:
+            host_receipt(row, key, intent.receipt)
     except (KeyError, TypeError, ValueError):
         raise Fault("host_correlation_invalid", 3, "unknown") from None
     if row["state"] == "confirmed":
@@ -562,6 +564,23 @@ def decode_host(row):
     if row["state"] == "held":
         return HostHeld(intent, row["reason"], intent.supervisor, key, intent.receipt, row["confirmation_source"])
     return intent
+
+
+def host_receipt(row, key, receipt):
+    """The stored reply is effective evidence of this operation and means what its state claims."""
+    from hostgate.protocol import validate_result
+    validate_result(receipt, "effective", row["store_id"])
+    replayed = "replayed" in receipt
+    original, current = (receipt["originalResult"], receipt["currentState"]) if replayed else (receipt, receipt)
+    grant = (original["granted"] and original["exitCode"] == 0 and not original["reasons"] and current is not None
+             and current["state"] == "reserved" and not current["reasons"]
+             and original["reservationKey"] == key == receipt.get("reservationKey")
+             and row["confirmation_source"] == ("same-channel-replay" if replayed else "reply"))
+    denial = (not replayed and not receipt["granted"] and receipt["exitCode"] == 1 and receipt["reasons"]
+              and "reservationKey" not in receipt)
+    ok = {"confirmed": grant, "rejected": denial}.get(row["state"], key in (None, receipt.get("reservationKey")))
+    if not ok or (receipt["operationId"], receipt["configRevision"]) != (row["operation_id"], row["config_revision"]):
+        raise ValueError("host_receipt")
 
 
 def host_operation_id(attempt, ordinal):
