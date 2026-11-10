@@ -94,13 +94,13 @@ class WriterProcessTest(unittest.TestCase):
         with contextlib.suppress(ChildProcessError):
             os.waitpid(pid, 0)
 
-    def cleanup_orphan(self, pid, start):
+    def cleanup_orphan(self, pidfd):
         try:
-            current = Path('/proc/%s/stat' % pid).read_text().split(') ', 1)[1].split()[19]
-            if current == start:
-                os.kill(pid, signal.SIGKILL)
-        except (FileNotFoundError, ProcessLookupError):
+            signal.pidfd_send_signal(pidfd, signal.SIGKILL)
+        except ProcessLookupError:
             pass
+        finally:
+            os.close(pidfd)
 
     def blocking_publish(self, reached, *, stop=False):
         def publish(*args, **kwargs):
@@ -282,8 +282,7 @@ class WriterProcessTest(unittest.TestCase):
                 mock.patch.object(self.engine, 'prepare', prepare):
             parent = self.supervisor(timeout=5)
         child = int(self.wait_file(reached))
-        start = Path('/proc/%s/stat' % child).read_text().split(') ', 1)[1].split()[19]
-        self.addCleanup(self.cleanup_orphan, child, start)
+        self.addCleanup(self.cleanup_orphan, os.pidfd_open(child))
         os.kill(parent, signal.SIGKILL)
         os.waitpid(parent, 0)
         self.assert_mutex_free()
