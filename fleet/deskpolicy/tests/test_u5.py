@@ -210,9 +210,10 @@ class WriterProcessTest(unittest.TestCase):
         reached = self.h.directory / 'stopped-child'
         with mock.patch.object(self.engine, 'publish', self.blocking_publish(reached, stop=True)):
             started = time.monotonic()
-            value = self.tick(.5)
+            value = self.tick(10)
         self.assertEqual(value['detail'], 'writer-cycle-timeout')
-        self.assertLess(time.monotonic() - started, 2)
+        self.assertGreaterEqual(time.monotonic() - started, 9.8)
+        self.assertLess(time.monotonic() - started, 13)
         self.assertTrue(self.dead(int(reached.read_text())))
         self.assert_mutex_free()
 
@@ -288,7 +289,7 @@ class WriterProcessTest(unittest.TestCase):
         self.assert_mutex_free()
 
     def test_stop_around_fork_masks_and_waitpid(self):
-        for phase in ('before-fork', 'after-fork', 'before-mask-restore', 'after-waitpid'):
+        for phase in ('before-fork', 'after-fork', 'before-mask-restore', 'after-waitpid', 'during-cleanup'):
             with self.subTest(phase=phase):
                 events = self.h.directory / ('stop-race-' + phase)
 
@@ -311,7 +312,7 @@ class WriterProcessTest(unittest.TestCase):
                         if pid > 0:
                             with events.open('a') as log:
                                 log.write('child %s\n' % pid)
-                            if phase == 'after-fork':
+                            if phase in ('after-fork', 'during-cleanup'):
                                 fire()
                         return pid
 
@@ -321,6 +322,9 @@ class WriterProcessTest(unittest.TestCase):
                         return real_mask(how, value)
 
                     def wait(pid, options):
+                        if options == 0 and phase == 'during-cleanup':
+                            real_kill(supervisor_pid, signal.SIGTERM)
+                            real_kill(supervisor_pid, signal.SIGTERM)
                         result = real_wait(pid, options)
                         if result[0]:
                             with events.open('a') as log:

@@ -70,6 +70,7 @@ def _writer_child(engine, writer_fd, channel, parent, deadline, mask, prctl):
             signal.signal(signum, signal.SIG_DFL)
         remaining = deadline - time.monotonic()
         if remaining <= 0:
+            _writer_send(channel, "error", detail="writer-cycle-timeout")
             os._exit(75)
         signal.setitimer(signal.ITIMER_REAL, remaining)
         signal.pthread_sigmask(signal.SIG_SETMASK, set(mask) - _WORKER_SIGNALS)
@@ -271,8 +272,13 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
 
 
 def _writer_loop(engine):
+    stopping = False
+
     def stop(signum, frame):
-        raise SystemExit(128 + signum)
+        nonlocal stopping
+        if not stopping:
+            stopping = True
+            raise SystemExit(128 + signum)
 
     handlers = {}
     diagnostics = set()
