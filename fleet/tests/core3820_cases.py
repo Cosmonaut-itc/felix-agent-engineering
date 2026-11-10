@@ -971,7 +971,7 @@ done.write_text('lock closed')
         self.quota_case("c20")
 
     def test_c21_host_backend_rejected_without_claiming_positive_generation_coverage(self):
-        result = self.send("c21", [sys.executable, "-c", "pass"], options=("--backend", "host-reservation@1"), code=2)
+        result = self.send("c21", [sys.executable, "-c", "pass"], options=("--backend", "unknown-backend@9"), code=2)
         self.assertEqual(result["error"]["code"], "backend_unsupported")
         self.assertEqual(result["key_binding"], "not_evaluated")
         self.assertFalse(self.state.exists())

@@ -5,6 +5,7 @@ Transactions serialize keys, claims, drain epochs, and operator audit decisions.
 """
 import contextlib
 import fcntl
+import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -15,7 +16,8 @@ import time
 import uuid
 
 from . import inputs
-from .model import APP_ID, SCHEMA_VERSION, Fault, dump, load, now
+from .model import (APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, HostConfirmation, HostHeld,
+                    HostIntent, dump, load, now, opaque, safe_queued)
 
 MAX_DATABASE = 256 * 1024 * 1024
 SCHEMA = (
@@ -44,6 +46,29 @@ SCHEMA = (
     "request TEXT NOT NULL, receipt TEXT NOT NULL, exit_code INTEGER NOT NULL, error TEXT)",
     "CREATE TABLE proofs (id TEXT PRIMARY KEY, body TEXT NOT NULL, sha256 TEXT NOT NULL)",
     "CREATE TABLE audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)",
+)
+# Schema 5 adds only host rounds. The CHECKs fix nullability per state; the
+# partial index allows one non-terminal round (held retains) per attempt.
+HOST_SCHEMA = (
+    "CREATE TABLE host_rounds (attempt TEXT NOT NULL REFERENCES attempts(id), "
+    "ordinal INTEGER NOT NULL CHECK(ordinal>=1), operation_id TEXT UNIQUE NOT NULL "
+    "CHECK(length(operation_id) BETWEEN 1 AND 256), request_json TEXT NOT NULL, "
+    "request_sha256 TEXT NOT NULL CHECK(length(request_sha256)=64), physical_host_id TEXT NOT NULL, "
+    "executor_id TEXT NOT NULL, store_id TEXT NOT NULL, config_revision TEXT NOT NULL, "
+    "requester_identity TEXT NOT NULL, supervisor_identity TEXT, state TEXT NOT NULL CHECK(state IN "
+    "('prepared','outcome_unknown','confirmed','held','rejected','retired')), key_json TEXT, "
+    "receipt_json TEXT, confirmation_source TEXT CHECK(confirmation_source IN ('reply','same-channel-replay')), "
+    "reason TEXT, heartbeat_seq INTEGER NOT NULL DEFAULT 0 CHECK(heartbeat_seq>=0), "
+    "PRIMARY KEY(attempt,ordinal), "
+    "CHECK((supervisor_identity IS NULL)=(state IN ('prepared','retired'))), "
+    "CHECK((key_json IS NULL)=(confirmation_source IS NULL)), "
+    "CHECK(state NOT IN ('prepared','outcome_unknown','retired') OR "
+    "(key_json IS NULL AND receipt_json IS NULL)), "
+    "CHECK(state<>'confirmed' OR (key_json IS NOT NULL AND receipt_json IS NOT NULL AND reason IS NULL)), "
+    "CHECK(state<>'rejected' OR (key_json IS NULL AND receipt_json IS NOT NULL)), "
+    "CHECK(state<>'held' OR reason IS NOT NULL))",
+    "CREATE UNIQUE INDEX host_rounds_open ON host_rounds(attempt) "
+    "WHERE state NOT IN ('rejected','retired')",
 )
 
 
@@ -182,7 +207,7 @@ def writer_header(state):
                 pending.clear()
     if (len(header) < 100 or header[:16] != b"SQLite format 3\x00"
             or int.from_bytes(header[68:72], "big") != APP_ID
-            or int.from_bytes(header[60:64], "big") != SCHEMA_VERSION):
+            or int.from_bytes(header[60:64], "big") not in (PILOT_SCHEMA_VERSION, SCHEMA_VERSION)):
         raise Fault("unsupported_schema")
     writer_authority(main, committed, header)
 
@@ -315,10 +340,24 @@ def writer_authority(main, committed, header):
         raise Fault("state_unreadable") from None
 
 
-def compatible(conn):
+def compatible(conn, versions=(SCHEMA_VERSION,)):
     if (conn.execute("PRAGMA application_id").fetchone()[0] != APP_ID or
-            conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION):
+            conn.execute("PRAGMA user_version").fetchone()[0] not in versions):
         raise Fault("unsupported_schema")
+
+
+def migrate(conn):
+    """Writer-only, under the exclusive directory lock: v4 gains host rounds, jobs stay byte-identical."""
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if conn.execute("PRAGMA user_version").fetchone()[0] == PILOT_SCHEMA_VERSION:
+            for statement in HOST_SCHEMA:
+                conn.execute(statement)
+            conn.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 class Ledger:
@@ -354,7 +393,7 @@ class Ledger:
                 else:
                     copied, temporary = snapshot(state)
                     try:
-                        compatible(copied)
+                        compatible(copied, (PILOT_SCHEMA_VERSION, SCHEMA_VERSION))
                         check_files(state)
                         authority = copied.execute("SELECT * FROM authority").fetchone()
                         if authority is None or authority["uid"] != os.getuid():
@@ -376,7 +415,7 @@ class Ledger:
                                              isolation_level=None)
                 self.conn.row_factory = sqlite3.Row
                 if exists:
-                    compatible(self.conn)
+                    compatible(self.conn, (PILOT_SCHEMA_VERSION, SCHEMA_VERSION))
                     authority = self.execute("SELECT * FROM authority").fetchone()
                     if authority is None or authority["uid"] != os.getuid():
                         raise Fault("operator_unauthorized")
@@ -386,11 +425,13 @@ class Ledger:
                 self.conn.execute("PRAGMA foreign_keys=ON")
                 if self.conn.execute("PRAGMA synchronous").fetchone()[0] != 2:
                     raise Fault("full_sync_required")
+                if exists:
+                    migrate(self.conn)
                 if not exists:
                     self.conn.execute("BEGIN IMMEDIATE")
                     self.conn.execute("PRAGMA application_id={}".format(APP_ID))
                     self.conn.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
-                    for statement in SCHEMA:
+                    for statement in SCHEMA + HOST_SCHEMA:
                         self.conn.execute(statement)
                     self.conn.execute("INSERT INTO authority VALUES (1,?,?,0)",
                                       (str(uuid.uuid4()), os.getuid()))
@@ -486,3 +527,109 @@ class Ledger:
 
     def __exit__(self, *exc):
         self.close()
+
+
+HOST_TERMINAL = ("rejected", "retired")
+
+
+def request_sha256(request):
+    return hashlib.sha256(dump(request).encode("utf-8")).hexdigest()
+
+
+def decode_host(row):
+    """Every read revalidates the intent and its correlation; incoherence retains, never dispatches."""
+    try:
+        request = load(row["request_json"])
+        intent = HostIntent(row["attempt"], row["ordinal"], row["operation_id"], request,
+                            row["physical_host_id"], row["executor_id"], row["store_id"],
+                            row["config_revision"], load(row["requester_identity"]), row["state"],
+                            load(row["supervisor_identity"]), load(row["receipt_json"]), row["reason"])
+        key = load(row["key_json"])
+        if (dump(request) != row["request_json"] or request_sha256(request) != row["request_sha256"]
+                or row["operation_id"] != host_operation_id(row["attempt"], row["ordinal"])
+                or (request["operationId"], request["attemptId"], request["executorId"],
+                    request["physicalHostId"]) != (row["operation_id"], row["attempt"], row["executor_id"],
+                                                    row["physical_host_id"])
+                or (key is not None and (set(key) != {"storeId", "reservationId", "generation"}
+                                         or key["storeId"] != row["store_id"]
+                                         or not str(key["reservationId"]).startswith("e_")
+                                         or type(key["generation"]) is not int or key["generation"] < 1))):
+            raise ValueError("host_round")
+    except (KeyError, TypeError, ValueError):
+        raise Fault("host_correlation_invalid", 3, "unknown") from None
+    if row["state"] == "confirmed":
+        return HostConfirmation(intent, key, intent.receipt, row["confirmation_source"], intent.supervisor)
+    if row["state"] == "held":
+        return HostHeld(intent, row["reason"], intent.supervisor, key, intent.receipt, row["confirmation_source"])
+    return intent
+
+
+def host_operation_id(attempt, ordinal):
+    # Stable per (attempt, ordinal): a retry repeats it, a new round never reuses it.
+    return "fleet:{}:{}".format(attempt, ordinal)
+
+
+def host_rounds(db, attempt):
+    return [decode_host(row) for row in
+            db.execute("SELECT * FROM host_rounds WHERE attempt=? ORDER BY ordinal", (attempt,))]
+
+
+def put_host_intent(db, intent):
+    db.execute("INSERT INTO host_rounds (attempt,ordinal,operation_id,request_json,request_sha256,"
+               "physical_host_id,executor_id,store_id,config_revision,requester_identity,state) "
+               "VALUES (?,?,?,?,?,?,?,?,?,?,'prepared')",
+               (intent.attempt, intent.ordinal, intent.operation_id, dump(intent.request),
+                request_sha256(intent.request), intent.physical_host_id, intent.executor_id,
+                intent.store_id, intent.config_revision, dump(intent.requester)))
+    db.revision()
+
+
+def _cas(db, intent, sources, target, assignments="", parameters=()):
+    changed = db.execute("UPDATE host_rounds SET state=?" + assignments + " WHERE attempt=? AND ordinal=? "
+                         "AND state IN (" + ",".join("?" * len(sources)) + ")",
+                         (target,) + tuple(parameters) + (intent.attempt, intent.ordinal) + tuple(sources)).rowcount
+    if changed:
+        db.revision()
+    return changed == 1
+
+
+def mark_host_unknown(db, intent, supervisor):
+    """The only path to sending: whoever loses this CAS must not call reservar."""
+    return _cas(db, intent, ("prepared",), "outcome_unknown", ",supervisor_identity=?", (dump(supervisor),))
+
+
+def retire_host_round(db, intent, reason):
+    return _cas(db, intent, ("prepared",), "retired", ",reason=?", (reason,))
+
+
+def reject_host_round(db, intent, receipt):
+    return _cas(db, intent, ("outcome_unknown",), "rejected", ",receipt_json=?", (dump(receipt),))
+
+
+def hold_host(db, intent, reason, key=None, receipt=None, source=None):
+    return _cas(db, intent, ("outcome_unknown", "confirmed"), "held",
+                ",reason=?,key_json=COALESCE(?,key_json),receipt_json=COALESCE(?,receipt_json),"
+                "confirmation_source=COALESCE(?,confirmation_source)",
+                (reason, None if key is None else dump(key), None if receipt is None else dump(receipt), source))
+
+
+def confirm_host_and_claim(db, intent, key, receipt, source, dispatcher, supervisor):
+    """One transaction: the round is confirmed and this exact attempt claimed, or the round is held."""
+    row = db.execute("SELECT a.* FROM attempts a JOIN jobs j ON j.id=a.job "
+                     "WHERE a.state='queued' ORDER BY j.seq LIMIT 1").fetchone()
+    slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
+    if (db.control["drained"] or slot["attempt"] is not None or row is None
+            or row["id"] != intent.attempt or not safe_queued(row)):
+        if not hold_host(db, intent, "claim_unavailable", key, receipt, source):
+            raise Fault("host_round_changed", 3, "unknown")
+        return None
+    if not _cas(db, intent, ("outcome_unknown",), "confirmed",
+                ",key_json=?,receipt_json=?,confirmation_source=?", (dump(key), dump(receipt), source)):
+        raise Fault("host_round_changed", 3, "unknown")
+    generation = slot["generation"] + 1
+    db.execute("UPDATE slot SET attempt=?,generation=?", (intent.attempt, generation))
+    db.execute("UPDATE attempts SET generation=?,reservation=?,dispatcher=?,supervisor=?,"
+               "disposition='retained' WHERE id=?",
+               (generation, opaque("r"), dump(dispatcher), dump(supervisor), intent.attempt))
+    db.event(intent.attempt, "starting", "dispatcher", "claim")
+    return generation

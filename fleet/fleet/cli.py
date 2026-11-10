@@ -9,7 +9,7 @@ import sqlite3
 import time
 
 from . import inputs, operator, query, runner
-from .model import Fault, envelope, error
+from .model import HOST, PILOT, Fault, HostSpec, envelope, error
 from .storage import state_path
 
 
@@ -33,7 +33,8 @@ def _parser():
     sub.add_argument("--cwd", default=".")
     sub.add_argument("--idempotency-key")
     sub.add_argument("--enqueue-only", action="store_true")
-    sub.add_argument("--backend", default="pilot_slot")
+    sub.add_argument("--backend", default=PILOT)
+    sub.add_argument("--profile")
     for flag in ("input", "private", "artifact", "credential-env"):
         sub.add_argument("--" + flag, action="append", default=[])
     sub.add_argument("argv", nargs=argparse.REMAINDER)
@@ -79,15 +80,22 @@ def _emit(value):
 
 def _run(args, state):
     if args.command == "submit":
-        if args.backend != "pilot_slot":
+        if args.backend not in (PILOT, HOST):
             raise Fault("backend_unsupported")
+        if (args.backend == HOST) != (args.profile is not None):
+            raise Fault("invalid_profile")
+        host = None
+        if args.backend == HOST:
+            if not args.profile or len(args.profile) > 256 or any(ord(c) < 32 for c in args.profile):
+                raise Fault("invalid_profile")
+            host = HostSpec(args.profile)
         argv = args.argv[1:] if args.argv[:1] == ["--"] else args.argv
         if not argv or not argv[0] or any("\x00" in arg for arg in argv):
             raise Fault("invalid_command")
         cwd = Path(os.path.abspath(Path(args.cwd).expanduser()))
         client = args.client or os.environ.get("FLEET_CLIENT") or "{}@{}".format(getpass.getuser(), socket.gethostname())
         return runner.submit(state, argv, cwd, client, args.input, args.private, args.artifact,
-                             args.credential_env, args.idempotency_key, args.enqueue_only)
+                             args.credential_env, args.idempotency_key, args.enqueue_only, host)
     if args.command == "recover":
         return runner.recover(state)
     if args.command == "operator":

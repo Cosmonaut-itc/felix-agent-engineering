@@ -99,7 +99,9 @@ def target(db, request):
         raise Fault("unknown_job")
     if row["id"] != request["attempt"]:
         raise Fault("attempt_mismatch")
-    if request["backend"] != "pilot_slot":
+    from .runner import backend_of
+    if request["backend"] != "pilot_slot" or backend_of(db, row["job"]) != request["backend"]:
+        # The persisted backend decides: a declared pilot never releases a host job.
         raise Fault("operator_backend_unsupported")
     slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
     if (row["reservation"], row["generation"]) != (request["reservation"], request["generation"]):

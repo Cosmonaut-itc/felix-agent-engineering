@@ -11,12 +11,12 @@ import time
 
 if __package__:
     from . import admission, evidence, inputs, native
-    from .model import Fault, dump, envelope, load, now, opaque, safe_queued
+    from .model import PILOT, Fault, backend, dump, envelope, load, now, opaque, safe_queued
     from .storage import Ledger, state_path
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from fleet import admission, evidence, inputs, native
-    from fleet.model import Fault, dump, envelope, load, now, opaque, safe_queued
+    from fleet.model import PILOT, Fault, backend, dump, envelope, load, now, opaque, safe_queued
     from fleet.storage import Ledger, state_path
 
 StateError = sqlite3.Error
@@ -40,6 +40,11 @@ def owned(db, attempt, generation, identity, launcher=False):
     return row
 
 
+def backend_of(db, job):
+    """The persisted admission content decides the backend, never a declared flag."""
+    return backend(load(db.execute("SELECT content FROM jobs WHERE id=?", (job,)).fetchone()[0]))
+
+
 def claim(db, dispatcher, supervisor=None):
     """Caller holds the sole transaction shared with operator drain/release."""
     if db.control["drained"]:
@@ -49,8 +54,8 @@ def claim(db, dispatcher, supervisor=None):
         return None
     row = db.execute("SELECT a.* FROM attempts a JOIN jobs j ON j.id=a.job "
                      "WHERE a.state='queued' ORDER BY j.seq LIMIT 1").fetchone()
-    if row is None:
-        return None
+    if row is None or backend_of(db, row["job"]) != PILOT:
+        return None  # FIFO: a host head never runs as pilot and is not skipped.
     if not safe_queued(row):
         raise Fault("observation_inconsistent", 3, "unknown")
     generation, reservation = slot["generation"] + 1, opaque("r")
@@ -69,7 +74,7 @@ def closure_valid(db, row):
         closure = load(row["closure"])
         command = load(row["command"])
         job = db.execute("SELECT input FROM jobs WHERE id=?", (row["job"],)).fetchone()
-        if not body or not closure or not command or job is None:
+        if not body or not closure or not command or job is None or backend_of(db, row["job"]) != PILOT:
             return False
         producer = load(row["supervisor"] or row["dispatcher"])
         return (row["state"] == "finished" and row["gate"] == "closed"
@@ -125,7 +130,8 @@ def release_ordinary(db, row):
     slot = db.execute("SELECT attempt,generation FROM slot").fetchone()
     if row["disposition"] == "released":
         return True
-    if tuple(slot) != (row["id"], row["generation"]) or not closure_valid(db, row):
+    if (tuple(slot) != (row["id"], row["generation"]) or backend_of(db, row["job"]) != PILOT
+            or not closure_valid(db, row)):
         return False
     collection, publication = load(row["collection"]), load(row["publication"])
     if collection["state"] != "valid" or publication["state"] != "committed":
@@ -231,8 +237,17 @@ def dispatch(db):
     return first
 
 
+def bound(state, idempotency_key):
+    """Whether this key already has a durable receipt; never creates state."""
+    if idempotency_key is None or not os.path.lexists(state / "state.db"):
+        return False
+    with Ledger(state, create=True, initialize=False) as db:
+        return db.execute("SELECT 1 FROM jobs WHERE uid=? AND key=?",
+                          (os.getuid(), idempotency_key)).fetchone() is not None
+
+
 def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), credentials=(),
-           idempotency_key=None, enqueue_only=False):
+           idempotency_key=None, enqueue_only=False, host=None):
     if os.name != "posix":
         raise Fault("unsupported_execution_context")
     try:
@@ -244,7 +259,11 @@ def submit(state, argv, cwd, client, includes=(), private=(), artifacts=(), cred
     except OSError:
         raise Fault("unsafe_state") from None
     prepared = admission.prepare(state, argv, cwd, client, includes, private, artifacts,
-                                 credentials, idempotency_key, enqueue_only)
+                                 credentials, idempotency_key, enqueue_only, host)
+    if host is not None and not bound(state, idempotency_key):
+        # A replay keeps its historical receipt without asking hostgate.
+        from . import host_reservation
+        host_reservation.authority()
     with Ledger(state, create=True) as db:
         receipt = admission.admit(db, argv, cwd, client, includes, private, artifacts,
                                   credentials, idempotency_key, enqueue_only, prepared)
