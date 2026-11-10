@@ -412,3 +412,19 @@ por aserción: el producto rechaza `mode: effective` al cargar la configuración
 Las lecturas de inventario fijan también un read-mark vivo: comparan todos los
 archivos, incluido SHM, sin debilitar la aserción ni saltar el límite de Apple.
 No acredita perfiles/creación/cierre reales, provisión, integración Fleet ni activación.
+
+
+SEN-5650, entrega **4a**, lector de coalición, `tests/test_darwin_coalition.py`:
+
+| Grupo | Cobertura y límite |
+| --- | --- |
+| `Rules`, kernel sustituido (`tests/support/coalition.py`) | Una prueba por regla con su positivo: `Complete` sin novedad; `Occupied` con un nacimiento nuevo, un hijo de un miembro ajeno de la línea base, un pid reutilizado con otro `uniqueid` y miembros elevados; `Retry` por contadores que cambian (C12 con el recuento vivo igual, y sólo `tasks_exited`), cardinalidad, lista saturada que omite un hijo vivo, identidad cambiante y tope de 50 ms; `Invalid` por boot, coalición movida o nula, contadores incoherentes, tamaño inesperado y errores distintos de `ESRCH`. Zombi con y sin concordancia. Línea base alterada de diecinueve formas y por encima de 256 miembros. `observe_root` con nieto, otra coalición, zombi, identidad y boot cambiantes. |
+| `SharedCoalition`, kernel real en `remote-run` | Línea base íntegra con la prueba como miembro; hijos por `fork`, `posix_spawn` y `fork`+`exec` y un nieto con doble `fork`, `setsid` y `exec` sin entorno aparecen con su identidad exacta y desaparecen al terminar; C12 con barrera da `Retry`; un zombi propio listado no cuenta; `observe_root` acepta el hijo directo y rechaza nieto y pid 1; `posix_spawnattr_setcoalition_np` da `EPERM` (K6). Cada novedad se clasifica contra lo creado por la prueba. No afirma `Complete`. |
+| `OwnCoalition`, sólo con `HOSTGATE_OWN_COALITION=1` | Desde una conexión ssh no multiplexada: shell con hijo y nieto huérfano da `Occupied` exacto y, al terminar, `Complete`. Pendiente de ejecución autorizada. |
+
+Variantes defectuosas que cada prueba de `Rules` mata por aserción:
+`compare_live_count_only`, `compare_started_only`, `esrch_means_empty`,
+`omit_new_birth`, `refresh_baseline`, `subtract_foreign_descendants`,
+`ignore_truncation`, `skip_member_count`, `unknown_abi_is_empty` y
+`pid_only_identity`. Los ids de la corrida en la Mini constan en el PR.
+No acredita IPC hacia servicios, privilegios, otra coalición ni builds futuros.

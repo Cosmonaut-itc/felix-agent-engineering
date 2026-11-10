@@ -451,3 +451,36 @@ entregas posteriores. Las pruebas nuevas usan sólo autoridades y procesos priva
 El receptor DATA también fijaba `shadow`, aunque no figuraba entre los módulos del
 diseño 3a. `wire.receive_response(..., _mode='shadow')` ahora contrasta el modo
 verificado que le pasa el cliente; framing, checksum y END conservan su forma.
+
+
+## Lector de coalición desconectado · SEN-5650, entrega 4a
+
+`darwin_coalition.DarwinCoalition` lee, sin privilegios, la coalición de recursos
+de Darwin (índice 0 del sabor 20 de `proc_pidinfo`). Nada del runtime de hostgate
+ni de Fleet lo importa todavía; una prueba lo comprueba.
+
+- `certify(owner: Birth) -> Baseline`: barrido aceptado de la coalición del dueño.
+  La línea base guarda boot, coalición, todos los miembros con `Birth`
+  `(boot, pid, uniqueid)`, uid, ruid, svuid, `parent_unique` y `pidversion`, los
+  contadores `(tasks_started, tasks_exited)` y un digest. Es inmutable y su JSON
+  canónico se relee estricto. Más de 256 miembros se rechaza, no se recorta.
+  Un barrido no aceptado sale como `CoalitionUnavailable` con `Retry` o `Invalid`.
+- `observe(baseline)` devuelve una de cuatro variantes. `Complete`: ningún miembro
+  vivo fuera de la línea base. `Occupied`: miembros nuevos, cada uno con
+  credenciales y `elevated` si euid o svuid difieren de ruid. `Retry`: contadores
+  distintos, cardinalidad discordante, lista saturada, identidad cambiante entre
+  dos lecturas o más de 50 ms. `Invalid`: boot o coalición perdidos, contadores
+  incoherentes, tamaño inesperado o un error de lectura distinto de `ESRCH`.
+- `observe_root(owner, pid) -> RootIdentity`: hija directa del dueño, en su
+  coalición, leída dos veces entre dos lecturas de boot; si no, `RootRejected`.
+
+Un barrido se acepta sólo con los dos contadores iguales antes y después, lista
+sin llenar el buffer, `uniqueid` igual antes y después de leer coalición y datos
+cortos (sabor 13), boot estable y tantos miembros legibles como started − exited.
+`ESRCH` omite un candidato sólo bajo esa concordancia. `observe` no amplía la
+línea base ni descuenta una novedad por su padre, nombre, uid o sesión.
+
+No cubre trabajo encargado a un servicio que ya existía (launchd, Docker,
+simulador), procesos con privilegios ni cambios de coalición con privilegios.
+Dentro de `remote-run` la coalición es compartida: el positivo `Complete` de una
+carga sólo se acredita desde una conexión ssh propia (`OwnCoalition`).
