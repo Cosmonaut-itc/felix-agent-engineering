@@ -36,6 +36,7 @@ class Faulty:
     """Acceso nativo real con un fallo inyectado sólo sobre las identidades que crea el selfcheck."""
     def __init__(self, fault):
         self.real, self.fault, self.pids, self.births, self.cache = _Native(), fault, {}, {}, {}
+        self.flickered = set()
 
     def created(self, label, pid):
         self.pids[pid] = label
@@ -63,6 +64,10 @@ class Faulty:
                 return self.cache[(name, pid)]  # Lectura vieja: la identidad parece seguir viva.
             raise
         self.cache[(name, pid)] = value
+        if self.fault == 'flicker' and name == 'short' and label in ('blocked', 'orphan') \
+                and label not in self.flickered:
+            self.flickered.add(label)
+            return tuple(value[:4]) + (value[4] % 4 + 1,)  # Otro estado válido, una sola vez: proceso que arranca.
         return value
 
     def unique(self, pid): return self._read('unique', pid)
@@ -131,6 +136,12 @@ class Kernel(unittest.TestCase):
                 verdict = selfcheck(_native=native, _created=native.created)
                 self.assertEqual(shape(verdict), ('SelfcheckFailed', step, detail), verdict)
                 self.assertEqual(native.alive(), [])
+
+    def test_identity_that_settles_is_retried(self):
+        """Variante: root_not_retried."""
+        native = Faulty('flicker')
+        self.assertEqual(shape(selfcheck(_native=native, _created=native.created)), ('SelfcheckPassed', None, None))
+        self.assertEqual((native.flickered, native.alive()), ({'blocked', 'orphan'}, []))
 
     def test_unexpected_exception_and_build_failure_are_failed_results(self):
         def broken(): raise OSError(errno.EIO, 'sysctl')

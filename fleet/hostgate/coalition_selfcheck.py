@@ -12,8 +12,8 @@ import select
 import signal
 import time
 from .admin import SelfcheckFailed, SelfcheckPassed
-from .darwin_coalition import (Birth, Complete, CoalitionUnavailable, DarwinCoalition, Invalid, NOT_DIRECT_CHILD,
-                               NOT_IN_COALITION, Occupied, ReadError, RootRejected, _Native)
+from .darwin_coalition import (Birth, Complete, CoalitionUnavailable, DarwinCoalition, IDENTITY_CHANGED, Invalid,
+                               NOT_DIRECT_CHILD, NOT_IN_COALITION, Occupied, ReadError, RootRejected, _Native)
 
 ATTEMPTS = 500
 WAIT = 10.0  # Plazo de cada espera de NOTE_EXIT, en segundos.
@@ -115,6 +115,15 @@ class _Run:
         self.children.remove(pid)  # Sólo ya recogido: si la espera falla, cleanup todavía lo termina.
         return os.waitstatus_to_exitcode(status)
 
+    def root(self, owner, pid):
+        """observe_root con reintentos acotados mientras el proceso, recién creado o en exec, cambia entre lecturas."""
+        for _ in range(ATTEMPTS):
+            try:
+                return self.gate.observe_root(owner, pid)
+            except RootRejected as exc:
+                if str(exc) != IDENTITY_CHANGED: raise
+        raise _Failed('reintentos agotados: %s' % IDENTITY_CHANGED)
+
     def settle(self, baseline, accept):
         """Barridos hasta que accept da por buena una observación; Invalid falla."""
         last = None
@@ -147,7 +156,7 @@ class _Run:
         blocked = self.fork('blocked', lambda: (os.close(w_blocked), os.read(r, 1)))
         self.close(r)
         self.own('blocked', blocked)
-        root = self.gate.observe_root(owner, blocked)
+        root = self.root(owner, blocked)
         if root.birth != self.births['blocked'] or root.coalition != baseline.coalition or root.birth in baseline.births:
             raise _Failed('raiz no es el hijo creado')
         self.step = 'fork-exec'
@@ -183,7 +192,7 @@ class _Run:
         self.pending.remove(orphan)
         self.reap(middle)
         try:
-            self.gate.observe_root(owner, orphan)
+            self.root(owner, orphan)
             raise _Failed('huerfano aceptado como raiz')
         except RootRejected as exc:
             if str(exc) != NOT_DIRECT_CHILD: raise _Failed('huerfano rechazado por %s' % exc)
