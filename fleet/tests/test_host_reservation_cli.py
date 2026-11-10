@@ -96,7 +96,8 @@ class HostAdmission(HostHarness):
         self.assertEqual((code, replay["binding"], replay["job"]), (0, "replay", first["job"]), replay)
         jobs = self.ledger("SELECT id,content,execution FROM jobs ORDER BY seq")
         code, missing = self.submit(key="k2", enqueue_only=True)
-        self.assertEqual((code, missing["error"]["code"], missing["accepted"]), (2, "backend_unavailable", False))
+        self.assertEqual((code, missing.get("error", {}).get("code"), missing.get("accepted")),
+                         (2, "backend_unavailable", False), missing)
         fresh = self.root / "fresh-state"
         code, missing = self.submit(state=fresh)
         self.assertEqual((code, missing["error"]["code"]), (2, "backend_unavailable"), missing)
