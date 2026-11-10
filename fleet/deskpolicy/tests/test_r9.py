@@ -156,6 +156,12 @@ sys.path.insert(0, sys.argv[1])
 from deskpolicy.engine import DeskPolicy
 engine_module = sys.modules[DeskPolicy.__module__]
 original = DeskPolicy.arm_valid
+prepare = DeskPolicy.prepare
+def protected_prepare(self, *args, **kwargs):
+    remaining = signal.getitimer(signal.ITIMER_REAL)[0]
+    assert 0 < remaining <= 10, ('unprotected preparation', remaining)
+    return prepare(self, *args, **kwargs)
+DeskPolicy.prepare = protected_prepare
 def slow_once(self, *args):
     remaining = signal.getitimer(signal.ITIMER_REAL)[0]
     assert 0 < remaining <= 10, remaining

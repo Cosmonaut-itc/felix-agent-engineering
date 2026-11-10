@@ -20,8 +20,8 @@ if __package__ in (None, ""):
 
 from deskpolicy import VERSION
 from deskpolicy.engine import DeskPolicy, admission_receipt, merge_receipt, validate_record
-from deskpolicy.model import Invalid, finite_load, require, strict_json
-from deskpolicy.store import RECEIPT_DIR_MODES, atomic_json, mutex, open_file, read_json, secure_dir
+from deskpolicy.model import Invalid, finite_load, require, strict_json, timestamp, validate_policy
+from deskpolicy.store import RECEIPT_DIR_MODES, Sample, atomic_json, mutex, open_file, read_json, secure_dir
 
 
 def output(value):
@@ -121,8 +121,8 @@ class _WriterMessages:
                         value[key] = part
                     return value
                 message = json.loads(line, object_pairs_hook=pairs)
-                strict_json(json.dumps(message.get("value", message), allow_nan=False).encode())
                 require(type(message) is dict, "writer-frame-type")
+                strict_json(json.dumps(message.get("value", message), allow_nan=False).encode())
                 kind = message.get("kind")
                 if kind == "commit-start":
                     require(set(message) == {"kind"} and not self.committing
@@ -134,6 +134,8 @@ class _WriterMessages:
                     value = message["value"]
                     require(type(value) is dict and value.get("schema") == "pao/desk-policy@1"
                             and type(value.get("revision")) is int, "writer-result-type")
+                    validate_policy(value, Sample(timestamp(value["issued_at"]),
+                        value["issued_boottime_s"], value["boot_id"]))
                     self.result = value
                 elif kind == "error":
                     require(set(message) == {"kind", "detail"}
@@ -181,6 +183,7 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
     prctl = _parent_death_signal()
     parent = os.getpid()
     child = None
+    spawned = False
     reader = writer = None
     messages = _WriterMessages()
     timed_out = False
@@ -193,6 +196,7 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
             if child == 0:
                 _writer_child(engine, writer_fd, writer, parent, deadline, mask, prctl)
                 os._exit(75)
+            spawned = True
             os.close(writer)
             writer = None
             os.set_blocking(reader, False)
@@ -239,9 +243,18 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
         seen = _diagnostics if _diagnostics is not None else set()
         for key, value in messages.diagnostics.items():
             if key not in seen:
-                print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
+                try:
+                    print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
+                except OSError:
+                    continue
                 seen.add(key)
         return messages.outcome(status, timed_out)
+    except (OSError, ValueError, TypeError) as exc:
+        if not spawned:
+            raise
+        messages.invalid = True
+        messages.error = str(exc)
+        return messages.outcome(0, timed_out)
     finally:
         previous = signal.pthread_sigmask(signal.SIG_BLOCK, _WRITER_SIGNALS)
         try:

@@ -455,10 +455,14 @@ class WriterProcessTest(unittest.TestCase):
         os.close(fd)
         try:
             self.assertFalse(self.lock_free(life), 'probe must detect the inherited flock')
+            self.assertEqual(self.tick()['mode'], 'night')
+            self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'uncertain')
             reached = self.h.directory / 'live-workload'
             with mock.patch.object(self.engine, 'publish', self.blocking_publish(reached)):
                 self.assertEqual(self.tick(.2)['detail'], 'writer-cycle-timeout')
             self.assertFalse(self.lock_free(life), 'writer death released a live workload')
+            self.assertEqual(self.tick()['mode'], 'night')
+            self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'uncertain')
             self.assert_mutex_free()
         finally:
             os.close(writer)
@@ -547,7 +551,8 @@ class WriterProcessTest(unittest.TestCase):
 
     def test_protocol_integrity_and_pipe_pressure(self):
         real_send = cli._writer_send
-        for mode in ('large-split', 'partial', 'duplicate', 'out-of-order', 'garbage', 'error-after-result'):
+        for mode in ('large-split', 'partial', 'duplicate', 'out-of-order', 'garbage', 'error-after-result',
+                     'non-dict', 'bad-policy', 'duplicate-key', 'oversize', 'non-finite'):
             with self.subTest(mode=mode):
                 def send(fd, kind, **payload):
                     if kind == 'result':
@@ -558,9 +563,21 @@ class WriterProcessTest(unittest.TestCase):
                         if mode == 'out-of-order':
                             real_send(fd, 'commit-start')
                         if mode == 'large-split':
-                            data = data[:-1] + b' ' * (65536 - len(data)) + b'}\n'
+                            policy = json.dumps(payload['value']).encode()
+                            policy = policy[:-1] + b' ' * (65536 - len(policy)) + b'}'
+                            data = b'{"kind":"result","value":' + policy + b'}\n'
                             for offset in range(0, len(data), 997):
                                 os.write(fd, data[offset:offset + 997])
+                            return
+                        if mode in ('non-dict', 'bad-policy', 'duplicate-key', 'oversize', 'non-finite'):
+                            malformed = {'non-dict': b'[]\n',
+                                'bad-policy': b'{"kind":"result","value":{"schema":"pao/desk-policy@1","revision":2}}\n',
+                                'duplicate-key': b'{"kind":"result","kind":"error"}\n',
+                                'oversize': b'x' * (128 * 1024 + 1),
+                                'non-finite': b'{"kind":"error","detail":NaN}\n'}[mode]
+                            while malformed:
+                                size = os.write(fd, malformed)
+                                malformed = malformed[size:]
                             return
                         real_send(fd, kind, **payload)
                         if mode == 'duplicate':
@@ -605,6 +622,13 @@ class WriterProcessTest(unittest.TestCase):
             for _ in range(3):
                 self.assertEqual(self.tick(diagnostics=seen)['mode'], 'night')
         self.assertEqual(attempts.read_text().count('attempt'), 3)
+        self.assertEqual(len(log.getvalue().splitlines()), 1)
+        record = store.read_json(self.engine.record_path('stale'))
+        record['boot_id'] = record['claim']['boot_id'] = '11223344-5566-7788-99aa-bbccddeeff00'
+        self.engine.write_record(record)
+        with mock.patch.object(self.engine, 'reconcile_receipt', side_effect=ValueError('receipt-fixture')), \
+                contextlib.redirect_stderr(io.StringIO()) as log:
+            self.tick(diagnostics=seen)
         self.assertEqual(len(log.getvalue().splitlines()), 1)
         # Same text, different exception class and boot remain distinct identities.
         with mock.patch.object(self.engine, 'reconcile_receipt', side_effect=ValueError('receipt-fixture')), \
@@ -702,7 +726,6 @@ class WriterProcessTest(unittest.TestCase):
                     pass
                 os.set_blocking(writer, True)
                 pipe_path = Path('/proc/self/fd/%s' % writer)
-                real_receipt = self.engine.reconcile_receipt
                 try:
                     if stream == 'stderr':
                         with mock.patch.object(self.engine, 'reconcile_receipt', side_effect=OSError('blocked-log')):
@@ -742,19 +765,101 @@ class WriterProcessTest(unittest.TestCase):
         def cpu():
             own = resource.getrusage(resource.RUSAGE_SELF)
             children = resource.getrusage(resource.RUSAGE_CHILDREN)
-            return own.ru_utime + own.ru_stime + children.ru_utime + children.ru_stime
+            return own.ru_utime + own.ru_stime, children.ru_utime + children.ru_stime
 
         for iteration in range(21):
             for name, operation in (('direct', self.engine.publish), ('supervised', self.tick)):
                 start_cpu, start_wall = cpu(), time.monotonic()
                 self.assertEqual(operation()['mode'], 'night')
-                rows[name].append(((time.monotonic() - start_wall) * 1000, (cpu() - start_cpu) * 1000))
+                elapsed = time.monotonic() - start_wall
+                end_cpu = cpu()
+                own, children = ((end_cpu[n] - start_cpu[n]) * 1000 for n in (0, 1))
+                rows[name].append((elapsed * 1000, own + children, own, children))
         for name, values in rows.items():
             print('U5 COST COLD', name, 'wall_ms', round(values[0][0], 3), 'cpu_ms', round(values[0][1], 3), flush=True)
-            for column, label in ((0, 'wall_ms'), (1, 'cpu_ms')):
+            for column, label in ((0, 'wall_ms'), (1, 'cpu_ms'), (2, 'cpu_self_ms'), (3, 'cpu_children_ms')):
                 ordered = sorted(row[column] for row in values[1:])
                 print('U5 COST', name, label, 'n', len(ordered), 'p50', round(ordered[9], 3),
                       'p95', round(ordered[18], 3), flush=True)
         self.assertEqual(len(os.listdir('/proc/self/fd')), initial_fds)
-        print('U5 COST fds', initial_fds, 'maxrss_child_kib', resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
+        for column, label in ((0, 'wall_ms'), (1, 'cpu_ms')):
+            overhead = sorted(rows['supervised'][n][column] - rows['direct'][n][column] for n in range(1, 21))
+            print('U5 COST overhead', label, 'n', len(overhead), 'p50', round(overhead[9], 3),
+                  'p95', round(overhead[18], 3), flush=True)
+        print('U5 COST fds', initial_fds, 'maxrss_child_lifetime_kib', resource.getrusage(resource.RUSAGE_CHILDREN).ru_maxrss,
               'affinity', sorted(os.sched_getaffinity(0)), flush=True)
+        program = r'''
+import datetime, json, sys, unittest
+from pathlib import Path
+sys.path.insert(0, str(Path('fleet').resolve()))
+from deskpolicy import cli, store
+from deskpolicy.engine import DeskPolicy
+from deskpolicy.testing import Harness
+h = Harness(sys.argv[1])
+h.cpus = tuple(range(12))
+h.now = datetime.datetime.fromisoformat(sys.argv[2])
+h.bt = int(sys.argv[3])
+engine = DeskPolicy(store.Runtime(h), prepare=sys.argv[4] == 'direct')
+if sys.argv[4] == 'direct':
+    result = engine.publish()
+else:
+    with store.mutex(engine.root, name='writer.lock') as writer:
+        result = cli.writer_tick(engine, writer)
+assert result['mode'] == 'night', result
+'''
+        for mode in rows:
+            start_cpu, started = cpu(), time.monotonic()
+            child = subprocess.run(['/usr/bin/python3', '-I', '-c', program, str(self.h.directory),
+                self.h.now.isoformat(), str(self.h.bt), mode], capture_output=True, text=True, timeout=15)
+            wall = (time.monotonic() - started) * 1000
+            self.assertEqual(child.returncode, 0, child.stderr)
+            own, children = cpu()
+            print('U5 COST PROCESS_START', mode, 'wall_ms', round(wall, 3),
+                  'cpu_ms', round((own - start_cpu[0] + children - start_cpu[1]) * 1000, 3), flush=True)
+
+    def test_parent_channel_failure_is_unknown_and_collects_worker(self):
+        reached = self.h.directory / 'channel-failure'
+        parent = os.getpid()
+        real_read = os.read
+
+        def read(fd, count):
+            if os.getpid() == parent and reached.exists():
+                raise OSError('reader-fixture')
+            return real_read(fd, count)
+
+        def publish(**kw):
+            with store.mutex(self.h.root):
+                reached.write_text(str(os.getpid()))
+                # Make the parent's select readable without a valid confirmation.
+                self.engine.receipt_diagnostic(('root', 'boot', 'request', 'run', 'module', 'type', 'detail'),
+                    {'schema': 'pao/desk-reconcile-diagnostic@1', 'request_id': 'fixture',
+                     'run_id': 'fixture', 'reason': 'receipt-error', 'detail': 'fixture'})
+                time.sleep(60)
+
+        with mock.patch.object(self.engine, 'publish', publish), mock.patch.object(os, 'read', read):
+            value = self.tick()
+        self.assertIn('publication-unknown', value['detail'])
+        self.assertIn('reader-fixture', value['detail'])
+        self.assertTrue(self.dead(int(reached.read_text())))
+        self.assert_mutex_free()
+
+    def test_failed_stderr_does_not_replace_confirmed_result(self):
+        class FailedLog:
+            def write(self, value):
+                raise OSError('stderr-fixture')
+
+            def flush(self):
+                pass
+
+        with mock.patch.object(self.engine, 'reconcile_receipt', side_effect=OSError('receipt-fixture')), \
+                contextlib.redirect_stderr(FailedLog()):
+            value = self.tick()
+        self.assertEqual(value['schema'], 'pao/desk-policy@1')
+        self.assert_mutex_free()
+
+    def test_inconclusive_session_proof_keeps_reservation(self):
+        with mock.patch.object(engine_module, 'session_members', return_value=None):
+            self.assertEqual(self.tick()['mode'], 'night')
+        self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'uncertain')
+        self.assertEqual(self.tick()['mode'], 'night')
+        self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'closed')
