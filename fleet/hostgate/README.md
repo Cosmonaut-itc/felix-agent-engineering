@@ -49,7 +49,7 @@ root/cliente instalada ni defensa frente a un actor hostil con escritura al ledg
 los mocks del proceso padre no sobreviven a exec.
 Los valores operativos de la Mini siguen pendientes de confirmación de Felix.
 
-Toda respuesta pública lleva `result: shadow`, `wouldGrant`, `operationId`,
+En modo sombra, toda respuesta pública lleva `result: shadow`, `wouldGrant`, `operationId`,
 `configRevision`, `exitCode` y `reasons: [{code,detail,retryable}]`. No hay permiso
 ni `granted` efectivo. `simulationKey` es exclusivamente diagnóstico de la BD
 `shadow.db`: nunca promoverla, copiar sus generaciones a un ledger efectivo ni

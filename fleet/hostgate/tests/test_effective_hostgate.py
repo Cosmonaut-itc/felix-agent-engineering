@@ -172,6 +172,8 @@ class EffectiveHostgate(test_ipc.IPCHarness):
         result = self.call(dict(test_ipc.query('release'), operation='soltar', key=self.key, evidenceIds=['fixture']))
         self.assertEqual(result['reasons'][0]['code'], 'enforcement-unavailable')
         self.assertEqual(result['state'], 'uncertain')
+        raw = json.loads(self.writer.execute('SELECT payload FROM host_view WHERE id=1').fetchone()[0])
+        self.assertEqual(raw['reservations'][0]['state'], 'uncertain')
         row = self.store.read()['reservations'][0]
         self.assertEqual(row['state'], 'uncertain')
         self.assertEqual(row['key'], self.key)
