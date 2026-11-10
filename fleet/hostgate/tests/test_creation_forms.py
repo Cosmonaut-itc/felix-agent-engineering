@@ -1,14 +1,12 @@
 """SEN-5650 4b: formas del permiso de creación, evidencia real y modo, sobre vistas y filas plantadas.
-
-Las filas se escriben a mano en su forma durable: la prueba fija el formato, no lo deriva del producto.
-"""
+Las filas se escriben a mano en su forma durable: la prueba fija el formato, no lo deriva del producto."""
 import copy
-from dataclasses import asdict
+from dataclasses import asdict, replace
 import itertools
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
+from hostgate import scope
 from hostgate.admission import Hostgate
 from hostgate.darwin_coalition import Baseline, Birth, Member
 from hostgate.model import validate_view
@@ -24,10 +22,8 @@ DROP = object()
 
 
 def root_doc(**changes):
-    value = dict(boot=BOOT, pid=300, unique=30, uid=501, ruid=501, svuid=501, parentUnique=10, pidversion=7,
-                 coalition=CID)
-    value.update(changes)
-    return value
+    return dict(dict(boot=BOOT, pid=300, unique=30, uid=501, ruid=501, svuid=501, parentUnique=10, pidversion=7,
+                     coalition=CID), **changes)
 
 
 def permit_doc(row, state, closed_by=None, **changes):
@@ -134,7 +130,6 @@ class Planted(unittest.TestCase):
 
     def reasons(self, proof, row, mode):
         """closure_reasons sobre la forma durable; una interfaz ausente no es una lista de motivos."""
-        from hostgate import scope
         try:
             return scope.closure_reasons(scope.evidence_from_json(proof), row, mode=mode)
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
@@ -159,35 +154,30 @@ class Forms(Planted):
                 ('issued con launchPossible', dict(creation=permit_doc(row, 'issued'), launchPossible=True)),
                 ('sin permiso con launchPossible', dict(launchPossible=True)),
                 ('unissued explicito', dict(creation=dict(protocol='darwin-coalition-creation@1', state='unissued'))),
-                ('registered en reserved', dict(creation=permit_doc(row, 'registered'), launchPossible=True)),
-                ('campo de mas', dict(creation=permit_doc(row, 'issued', extra=1))),
-                ('campo de menos', dict(creation=permit_doc(row, 'issued', launchDigest=DROP))),
-                ('protocolo ajeno', dict(creation=permit_doc(row, 'issued', protocol='other@1'))),
-                ('digest de linea base', dict(creation=permit_doc(row, 'issued', baselineDigest='0' * 64))),
-                ('contadores de linea base', dict(creation=permit_doc(row, 'issued', baselineCounters=[6, 4]))),
-                ('epoch booleano', dict(creation=permit_doc(row, 'issued', issuerEpoch=True))),
-                ('coalicion del registro', dict(creation=permit_doc(row, 'issued', coalitionId=OTHER))),
-                ('linea base no canonica', dict(creation=permit_doc(row, 'issued', baseline=BASE.to_json() + ' '))),
-                ('otro dueno', dict(creation=permit_doc(row, 'issued', owner=dict(row['owner'], pid=999)))),
-                ('otro canal', dict(creation=permit_doc(row, 'issued', channelBinding='other-channel'))),
                 ('campo de mas en la fila', dict(extra=1))):
             self.illegal(label, self.with_row(**changes))
+        for label, changes in (  # Un solo campo del permiso emitido, alterado.
+                ('campo de mas', dict(extra=1)), ('campo de menos', dict(launchDigest=DROP)),
+                ('protocolo ajeno', dict(protocol='other@1')), ('digest de linea base', dict(baselineDigest='0' * 64)),
+                ('contadores de linea base', dict(baselineCounters=[6, 4])), ('epoch booleano', dict(issuerEpoch=True)),
+                ('epoch cero', dict(issuerEpoch=0)), ('coalicion del registro', dict(coalitionId=OTHER)),
+                ('coalicion decimal', dict(coalitionId=float(CID))), ('confirmacion corta', dict(confirmationDigest='c' * 63)),
+                ('lanzamiento no hexadecimal', dict(launchDigest='g' * 64)),
+                ('linea base no canonica', dict(baseline=BASE.to_json() + ' ')),
+                ('otro dueno', dict(owner=dict(row['owner'], pid=999))), ('otro canal', dict(channelBinding='other-channel'))):
+            self.illegal(label, self.with_row(creation=permit_doc(row, 'issued', **changes)))
 
     def test_running_requires_registered_permit(self):
         """Variante: running_without_root."""
-        row = self.row
-        self.legal(self.with_row(state='running', launchPossible=True, creation=permit_doc(row, 'registered')))
+        row, base = self.row, dict(state='running', launchPossible=True)
+        self.legal(self.with_row(creation=permit_doc(row, 'registered'), **base))
+        self.illegal('consumed sin raiz', self.with_row(creation=permit_doc(row, 'consumed'), **base))
+        self.illegal('sin launchPossible', self.with_row(creation=permit_doc(row, 'registered'), **dict(base, launchPossible=False)))
         for label, changes in (
-                ('sin permiso', dict()),
-                ('consumed sin raiz', dict(creation=permit_doc(row, 'consumed'))),
-                ('sin raiz', dict(creation=permit_doc(row, 'registered', root=DROP))),
-                ('sin recibo', dict(creation=permit_doc(row, 'registered', scopeReceipt=DROP))),
-                ('sin linea base', dict(creation=permit_doc(row, 'registered', baseline=DROP))),
-                ('raiz con campo de mas', dict(creation=permit_doc(row, 'registered', root=root_doc(extra=1)))),
-                ('raiz con pid booleano', dict(creation=permit_doc(row, 'registered', root=root_doc(pid=True)))),
-                ('closed en running', dict(creation=permit_doc(row, 'closed'))),
-                ('registered sin launchPossible', dict(creation=permit_doc(row, 'registered'), launchPossible=False))):
-            self.illegal(label, self.with_row(**dict(dict(state='running', launchPossible=True), **changes)))
+                ('sin raiz', dict(root=DROP)), ('sin recibo', dict(scopeReceipt=DROP)), ('sin linea base', dict(baseline=DROP)),
+                ('raiz con campo de mas', dict(root=root_doc(extra=1))), ('raiz con pid booleano', dict(root=root_doc(pid=True))),
+                ('raiz con pid cero', dict(root=root_doc(pid=0))), ('raiz con uid desbordado', dict(root=root_doc(uid=2 ** 32)))):
+            self.illegal(label, self.with_row(creation=permit_doc(row, 'registered', **changes), **base))
 
     def test_root_outside_baseline_same_coalition(self):
         """Variante: root_in_baseline."""
@@ -200,24 +190,26 @@ class Forms(Planted):
             self.illegal(label, self.with_row(creation=permit_doc(self.row, 'registered', root=root), **running))
 
     def test_uncertain_keeps_its_permit_prefix(self):
-        row = self.row
         for state, launched in (('issued', False), ('consumed', True), ('registered', True)):
-            self.legal(self.with_row(state='uncertain', launchPossible=launched, creation=permit_doc(row, state)))
+            self.legal(self.with_row(state='uncertain', launchPossible=launched, creation=permit_doc(self.row, state)))
             self.illegal(state + ' con campo de mas', self.with_row(
-                state='uncertain', launchPossible=launched, creation=permit_doc(row, state, extra=1)))
+                state='uncertain', launchPossible=launched, creation=permit_doc(self.row, state, extra=1)))
         self.legal(self.with_row(state='uncertain'))
-        for state, launched in (('closed', True), ('sealed', False)):
-            self.illegal(state, self.with_row(state='uncertain', launchPossible=launched,
-                                              creation=permit_doc(row, state)))
 
+    def test_each_state_admits_only_its_permits(self):
+        legal = dict(reserved='unissued issued consumed', running='registered', uncertain='unissued issued consumed registered')
+        bare = dict(protocol='darwin-coalition-creation@1', state='sealed', closedBy='f' * 64)
+        for state, variant in itertools.product(legal, 'unissued issued consumed registered closed sealed bare'.split()):
+            creation = DROP if variant == 'unissued' else bare if variant == 'bare' else permit_doc(self.row, variant)
+            view = self.with_row(state=state, creation=creation, launchPossible=variant in ('consumed', 'registered', 'closed'))
+            with self.subTest(state=state, variant=variant): self.assertEqual(self.accepted(view), variant in legal[state].split())
 
     def test_released_requires_correlated_proof(self):
         """Variante: released_without_proof."""
         row, scoped = self.row, evidence_doc(self.row)
         never, unused = evidence_doc(row, 'never-created'), evidence_doc(row, 'never-created', issued=False)
         self.legal(self.released('closed', scoped))
-        self.legal(self.released('sealed', never))
-        self.legal(self.released('sealed', unused, issued=False))
+        for proof, issued in ((never, True), (unused, False)): self.legal(self.released('sealed', proof, issued=issued))
         alien = redigest(dict(scoped, key=dict(row['key'], reservationId='e_other'), scope='e_other'))
         for label, view in (
                 ('sin evidencia', self.released('closed', scoped, closureEvidence=DROP)),
@@ -228,6 +220,7 @@ class Forms(Planted):
                 for state in ('issued', 'consumed', 'registered')) + (
                 ('sin permiso', self.released('sealed', unused, issued=False, creation=DROP, launchPossible=False)),
                 ('closed con never-created', self.released('closed', never)),
+                ('prueba sin un campo', self.released('sealed', {k: v for k, v in never.items() if k != 'root_terminal'})),
                 ('sealed con unix-scope-empty', self.released('sealed', scoped)),
                 ('sellado sin emitir con linea base en la prueba', self.released('sealed', never, issued=False))):
             self.illegal(label, view)
@@ -235,16 +228,13 @@ class Forms(Planted):
     def test_sealed_has_no_root_and_closed_has_one(self):
         """Variante: sealed_with_root."""
         never, unused = evidence_doc(self.row, 'never-created'), evidence_doc(self.row, 'never-created', issued=False)
-        self.legal(self.released('sealed', never))
-        self.legal(self.released('sealed', unused, issued=False))
+        for proof, issued in ((never, True), (unused, False)): self.legal(self.released('sealed', proof, issued=issued))
         # Cada ilegal difiere de su legal sólo en la raíz (y el recibo, en el último).
         sealed = permit_doc(self.row, 'sealed', closed_by=never['evidence_digest'], root=root_doc())
         self.illegal('sealed con raiz', self.released('sealed', never, creation=sealed))
-        bare = dict(protocol='darwin-coalition-creation@1', state='sealed', closedBy=unused['evidence_digest'],
-                    root=root_doc())
+        bare = dict(protocol='darwin-coalition-creation@1', state='sealed', closedBy=unused['evidence_digest'], root=root_doc())
         self.illegal('sellado sin emitir con raiz', self.released('sealed', unused, issued=False, creation=bare))
-        self.illegal('sealed con raiz y recibo', self.released('sealed', never, creation=dict(
-            sealed, scopeReceipt='receipt-1')))
+        self.illegal('sealed con raiz y recibo', self.released('sealed', never, creation=dict(sealed, scopeReceipt='receipt-1')))
         scoped = evidence_doc(self.row)
         self.illegal('closed sin raiz', self.released('closed', scoped, creation=permit_doc(
             self.row, 'closed', closed_by=scoped['evidence_digest'], root=DROP, scopeReceipt=DROP)))
@@ -267,6 +257,7 @@ class Forms(Planted):
         self.assertEqual(self.reasons(real, running, 'effective'), [])
         self.retains('real con modo shadow', self.reasons(real, running, 'shadow'))
         self.retains('modo desconocido', self.reasons(real, running, 'enforcing'))
+        with self.subTest('fila con modo ajeno'), self.assertRaises(ValueError): scope.validate_reservation(self.row, 'enforcing')
         prefixed = dict(running, key=dict(running['key'], reservationId='s_1'), scope='s_1')
         synthetic = asdict(ClosureEvidence.fixture(prefixed['key'], BOOT))
         self.retains('simulation con prefijo s_', self.reasons(synthetic, prefixed, 'effective'))
@@ -275,47 +266,55 @@ class Forms(Planted):
         """Variante: trust_supervisor_clean."""
         running, real = self.running(), evidence_doc(self.row)
         self.assertEqual(self.reasons(real, running, 'effective'), [])
-        obs = real['observation']
-        other = '99999999-2222-3333-4444-555555555555'
+        obs, store, other = real['observation'], self.row['key']['storeId'], '99999999-2222-3333-4444-555555555555'
         for label, values in (
                 ('key', dict(real, key=dict(real['key'], generation=2))),
                 ('generacion booleana', dict(real, key=dict(real['key'], generation=True))),
                 ('store', dict(real, issuer='hostgate:other-store:1')),
                 ('boot', dict(real, boot=other, observation=dict(obs, boot=other))),
-                ('revision del perfil', dict(real, observation=dict(obs, profile_revision='prf_2'))),
-                ('permiso', dict(real, observation=dict(obs, permit_id='permit-2'))),
-                ('confirmacion', dict(real, observation=dict(obs, confirmation_digest='0' * 64))),
-                ('lanzamiento', dict(real, observation=dict(obs, launch_digest='0' * 64))),
-                ('coalicion', dict(real, observation=dict(obs, coalition_id=OTHER))),
-                ('digest de la linea base', dict(real, observation=dict(obs, baseline_digest='0' * 64))),
-                ('raiz', dict(real, observation=dict(obs, root=root_doc(unique=31)))),
-                ('miembro nuevo', dict(real, observation=dict(obs, new_members=[root_doc()]))),
-                ('contadores movidos', dict(real, observation=dict(obs, scan_after=[10, 7]))),
-                ('barrido posterior decimal', dict(real, observation=dict(obs, scan_after=[9.0, 7.0]))),
-                ('cardinalidad', dict(real, observation=dict(obs, member_count=1))),
-                ('mas vivos que la linea base', dict(real, observation=dict(
-                    obs, scan_before=[9, 6], scan_after=[9, 6], member_count=3, live_task_count=3))),
-                ('epoch del permiso', dict(real, issuer='hostgate:%s:2' % self.row['key']['storeId'],
-                                           observation=dict(obs, issuer_epoch=2))),
-                ('proveedor', dict(real, observation=dict(obs, provider_revision='other@1'))),
-                ('barrido anterior a la linea base', dict(real, observation=dict(obs, scan_before=[4, 2],
-                                                                                 scan_after=[4, 2]))),
-                ('emisor sin epoch', dict(real, issuer='hostgate:%s' % self.row['key']['storeId'])),
+                ('epoch del permiso', dict(real, issuer='hostgate:%s:2' % store, observation=dict(obs, issuer_epoch=2))),
+                ('emisor sin epoch', dict(real, issuer='hostgate:%s' % store)),
                 ('procedencia', dict(real, provenance='simulation')),
                 ('sin observacion', {k: v for k, v in real.items() if k != 'observation'})):
             self.retains(label, self.reasons(redigest(values), running, 'effective'))
+        near = dict(scan_before=[9, 8], scan_after=[9, 8])  # Un superviviente: legal con member_count y live_task_count en 1.
+        for label, changes in (  # Sólo cambia lo que el caso nombra en la observación; re-firmada, retiene.
+                ('revision del perfil', dict(profile_revision='prf_2')), ('permiso', dict(permit_id='permit-2')),
+                ('confirmacion', dict(confirmation_digest='0' * 64)), ('lanzamiento', dict(launch_digest='0' * 64)),
+                ('coalicion', dict(coalition_id=OTHER)), ('digest de la linea base', dict(baseline_digest='0' * 64)),
+                ('raiz', dict(root=root_doc(unique=31))), ('miembro nuevo', dict(new_members=[root_doc()])),
+                ('proveedor', dict(provider_revision='other@1')), ('epoch booleano', dict(issuer_epoch=True)),
+                ('politica vacia', dict(resource_policy='')), ('politica sin texto', dict(resource_policy=True)),
+                ('base terminal vacia', dict(root_terminal_basis='')), ('base terminal sin texto', dict(root_terminal_basis=True)),
+                ('supervivientes sin digest', dict(baseline_survivors_digest='e' * 63)),
+                ('contadores movidos', dict(scan_after=[10, 8])), ('barrido anterior decimal', dict(scan_before=[9.0, 7.0])),
+                ('barrido posterior decimal', dict(scan_after=[9.0, 7.0])),
+                ('barrido de tres', dict(scan_before=[9, 7, 1], scan_after=[9, 7, 1])),
+                ('barrido invertido', dict(scan_before=[7, 9], scan_after=[7, 9], member_count=-2, live_task_count=-2)),
+                ('barrido anterior a la linea base', dict(scan_before=[4, 2], scan_after=[4, 2])),
+                ('cardinalidad', dict(member_count=1)), ('vivos sin barrido', dict(member_count=1, live_task_count=1)),
+                ('miembros decimales', dict(member_count=2.0)), ('vivos decimales', dict(live_task_count=2.0)),
+                ('miembros booleanos', dict(near, member_count=True, live_task_count=1)),
+                ('vivos booleanos', dict(near, member_count=1, live_task_count=True)),
+                ('mas vivos que la linea base', dict(scan_before=[9, 6], scan_after=[9, 6], member_count=3, live_task_count=3))):
+            self.retains(label, self.reasons(redigest(dict(real, observation=dict(obs, **changes))), running, 'effective'))
+        self.assertEqual(self.reasons(evidence_doc(self.row, **dict(near, member_count=1, live_task_count=1)), running, 'effective'), [])
         self.retains('digest viejo', self.reasons(dict(real, observation=dict(obs, permit_id='permit-2')), running, 'effective'))
         self.illegal('liberada con permiso ajeno', self.released('closed', redigest(
             dict(real, observation=dict(obs, permit_id='permit-2')))))
-        never, deep = evidence_doc(self.row, 'never-created'), []
+        never, issued, deep = evidence_doc(self.row, 'never-created'), dict(running, creation=permit_doc(self.row, 'issued')), []
         for _ in range(2000): deep = [deep]
-        self.assertEqual(self.reasons(never, dict(running, creation=permit_doc(self.row, 'issued')), 'effective'), [])
+        self.assertEqual(self.reasons(never, issued, 'effective'), [])
+        for name, bad in dict(scan_before=[9, 7], scan_after=[9, 7], member_count=0, live_task_count=0,
+                              baseline_survivors_digest='e' * 64, root_terminal_basis='note-exit').items():
+            self.retains('sobra ' + name, self.reasons(evidence_doc(self.row, 'never-created', **{name: bad}), issued, 'effective'))
+        self.retains('boot observado', self.reasons(evidence_doc(self.row, 'never-created', False, boot=other), self.row, 'effective'))
         for label, proof, state, changes in (
-                ('never-created con consumed', never, 'consumed', {}),
-                ('never-created con registered', never, 'registered', {}),
+                ('never-created con consumed', never, 'consumed', {}), ('never-created con registered', never, 'registered', {}),
                 ('permiso de otro dueno', real, 'registered', dict(owner=dict(self.row['owner'], pid=999))),
                 ('permiso sin fondo', real, 'registered', dict(owner=dict(self.row['owner'], deep=deep)))):
             self.retains(label, self.reasons(proof, dict(running, creation=permit_doc(self.row, state, **changes)), 'effective'))
+        with self.subTest('otro boot'), self.assertRaises(ValueError): scope.creation_from_row(dict(running, physicalBoot=other))
         fake, key = asdict(ClosureEvidence.fixture(running['key'], BOOT)), running['key']
         for mode, proof in (('effective', real), ('shadow', fake)):  # Una fila sin validar retiene; no lanza.
             for i, bad in enumerate((dict(key, generation=float('nan')), dict(key, reservationId=None), None, {})):
@@ -325,8 +324,7 @@ class Forms(Planted):
         key = self.reply['reservationKey']
         self.world.closures[('proof',)] = ClosureEvidence.fixture(key, BOOT)
         result = self.gate.soltar('release', key, ['proof'], self.auth)
-        self.assertEqual(([r['code'] for r in result['reasons']], result['state']),
-                         (['enforcement-unavailable'], 'uncertain'))
+        self.assertEqual(([r['code'] for r in result['reasons']], result['state']), (['enforcement-unavailable'], 'uncertain'))
         stored = self.gate.store.read()['reservations'][0]
         self.assertEqual((stored['state'], stored['launchPossible']), ('uncertain', False))
         self.assertNotIn('closureEvidence', stored)
@@ -353,7 +351,8 @@ class ShadowForms(Planted):
         self.assertTrue(self.accepted(self.with_row(state='released', closureEvidence=today)))
         real = evidence_doc(self.row)
         self.illegal('real en shadow', self.with_row(state='released', closureEvidence=real))
+        mixed = redigest(dict(today, observation=real['observation']))
+        self.illegal('simulation con observacion', self.with_row(state='released', closureEvidence=mixed))
 
 
-if __name__ == '__main__':
-    unittest.main()
+if __name__ == '__main__': unittest.main()
