@@ -204,6 +204,7 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
     timed_out = False
     eof = False
     mask = signal.pthread_sigmask(signal.SIG_BLOCK, _WORKER_SIGNALS)
+    stops = _WRITER_SIGNALS - set(mask)
     previous_chld = signal.getsignal(signal.SIGCHLD)
     try:
         try:
@@ -219,18 +220,14 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
             writer = None
             os.set_blocking(reader, False)
         finally:
-            signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+            signal.pthread_sigmask(signal.SIG_SETMASK, set(mask) | _WRITER_SIGNALS)
 
         def reap(options):
             nonlocal child
-            previous = signal.pthread_sigmask(signal.SIG_BLOCK, _WRITER_SIGNALS)
-            try:
-                pid, status = os.waitpid(child, options)
-                if pid:
-                    child = None
-                    return status
-            finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+            pid, status = os.waitpid(child, options)
+            if pid:
+                child = None
+                return status
             return None
 
         status = None
@@ -239,8 +236,8 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
             if status is not None:
                 break
             remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                timed_out = True
+            if remaining <= 0 or signal.sigpending() & stops:
+                timed_out = remaining <= 0
                 with contextlib.suppress(ProcessLookupError):
                     os.kill(child, signal.SIGKILL)
                 status = reap(0)
@@ -258,23 +255,14 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
                 eof = True
             else:
                 messages.feed(data)
-        seen = _diagnostics if _diagnostics is not None else set()
-        for key, value in messages.diagnostics.items():
-            if key not in seen:
-                try:
-                    print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
-                except OSError:
-                    continue
-                seen.add(key)
-        return messages.outcome(status, timed_out)
+        result = messages.outcome(status, timed_out)
     except (OSError, ValueError, TypeError) as exc:
         if not spawned:
             raise
         messages.invalid = True
         messages.error = str(exc)
-        return messages.outcome(0, timed_out)
+        result = messages.outcome(0, timed_out)
     finally:
-        previous = signal.pthread_sigmask(signal.SIG_BLOCK, _WRITER_SIGNALS)
         try:
             if child not in (None, 0):
                 with contextlib.suppress(ProcessLookupError):
@@ -288,7 +276,16 @@ def writer_tick(engine, writer_fd, *, _timeout=10, _diagnostics=None):
             try:
                 signal.signal(signal.SIGCHLD, previous_chld)
             finally:
-                signal.pthread_sigmask(signal.SIG_SETMASK, previous)
+                signal.pthread_sigmask(signal.SIG_SETMASK, mask)
+    seen = _diagnostics if _diagnostics is not None else set()
+    for key, value in messages.diagnostics.items():
+        if key not in seen:
+            try:
+                print(json.dumps(value, sort_keys=True), file=sys.stderr, flush=True)
+            except (OSError, ValueError):
+                continue
+            seen.add(key)
+    return result
 
 
 def _writer_loop(engine):
