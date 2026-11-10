@@ -394,3 +394,17 @@ build de Homebrew no se puede consultar con Apple Python: `estado` falla cerrado
 `StoreError` y no escribe. Queda en SEN-5678. Los ResourceWarning de la suite nacen
 en conexiones de `tests/test_store.py` abiertas con `with sqlite3.connect(...)`, que
 no cierra; no participan en este fallo y no se corrigen aquí.
+
+
+SEN-5649, entrega **3a**, reserva efectiva preparatoria:
+
+`test_effective_hostgate.py` usa el endpoint real con R/S/H nativos privados y un
+grant efectivo previo a cada negativo. Cubre ledger vacío/generación 1, wire sin
+simulación, replay con un débito, rechazo de presupuesto, copia/rename/metadata de
+sombra, directorio existente, cambio de modo sin ancla, cliente/hello discordantes,
+keys viejas, `soltar` con fixture que retiene, latido por el canal dueño, validación
+de estados futuros y recibos corruptos, y plazo acotado del cliente.
+`tests/support/effective.py` mantiene un escritor vivo y WAL/SHM para las lecturas
+`mode=ro` de Apple (SEN-5678); no salta ese límite ni acredita un store sin sidecars.
+Los resultados dirigidos se registran al terminar la verificación en la Mini.
+No acredita perfiles/creación/cierre reales, provisión, integración Fleet ni activación.
