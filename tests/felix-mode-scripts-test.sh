@@ -1448,18 +1448,19 @@ risk_classify_sources() {
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
     assert test "$status" = 2
     assert test "$output" = 'risk-classify: .agents/high-risk-paths:1: patrón inválido: ../fuera'
-    # Sin este rechazo, git lee :(glob):(glob)x como una ruta literal que no
-    # existe y el cambio sale como normal.
+    # Para git toda línea que empieza con : lleva marca de pathspec. Sin este
+    # rechazo, :(glob) delante la vuelve un nombre literal que no existe y el
+    # cambio sale como normal.
     local prefixed
-    for prefixed in ':(glob)convex/payments/**' ':(top)docs/**' ':!docs/**' ':^docs/**' ':/docs/**'; do
+    for prefixed in ':(glob)convex/payments/**' ':(top)docs/**' ':!docs/**' ':^docs/**' ':/docs/**' '::docs/**' ':docs/**' ':#docs/**'; do
         printf 'docs/**\n  %s\r\n' "$prefixed" > "$repo/.agents/high-risk-paths"
         status=0
         output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
         assert test "$status" = 2
-        assert test "$output" = "risk-classify: .agents/high-risk-paths:2: quita el prefijo, risk-classify ya antepone :(glob); un nombre literal empieza con \\:: $prefixed"
+        assert test "$output" = "risk-classify: .agents/high-risk-paths:2: quita el prefijo, risk-classify ya antepone :(glob); un nombre que empieza con : va como \\:nombre: $prefixed"
     done
-    # Un nombre que empieza con dos puntos sigue siendo un patrón válido.
-    printf ':reportes/**\n\\:(glob)raro/**\n' > "$repo/.agents/high-risk-paths"
+    # El escape no se rechaza: \:x es el nombre literal :x.
+    printf '\\:reportes/**\n\\:(glob)raro/**\n' > "$repo/.agents/high-risk-paths"
     output=$(cd "$repo" && "$SCRIPTS/risk-classify")
     assert test "${output%% *}" = 'Rutas:'
 }

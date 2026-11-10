@@ -93,11 +93,10 @@ while IFS= read -r line || [ -n "$line" ]; do
     pattern=${line#"${line%%[![:space:]]*}"}
     pattern=${pattern%"${pattern##*[![:space:]]}"}
     case "$pattern" in ''|'#'*) continue ;; esac
-    # Git lee :(glob):(glob)x como una ruta literal y no avisa. Un nombre que
-    # de verdad empieza así se escribe con \: al inicio.
-    case "$pattern" in
-        ':('*|':!'*|':^'*|':/'*) fail "$LIST:$number: quita el prefijo, risk-classify ya antepone :(glob); un nombre literal empieza con \\:: $pattern" ;;
-    esac
+    # Para git toda línea que empieza con : lleva marca de pathspec, también
+    # :x, que significa x. Con :(glob) delante pasa a ser un nombre literal
+    # que casi nunca existe, y el cambio saldría como normal sin aviso.
+    case "$pattern" in :*) fail "$LIST:$number: quita el prefijo, risk-classify ya antepone :(glob); un nombre que empieza con : va como \\:nombre: $pattern" ;; esac
     IFS=/ read -r -a segments <<< "$pattern"
     for segment in "${segments[@]}"; do
         case "$segment" in '**') ;; *'**'*) fail "$LIST:$number: patrón inválido: $pattern" ;; esac
