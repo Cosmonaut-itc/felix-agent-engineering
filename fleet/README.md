@@ -164,7 +164,8 @@ añade `host_rounds`; un lector deja un v4 intacto y un escritor lo migra con el
 libre. Un trabajo host admitido queda `queued`: todavía no hay adaptador que pida la
 reserva, y el claim del piloto no lo toma ni lo salta.
 `status` lee las rondas con forma estricta por estado, JSON canónico y correlación
-con el recibo efectivo. Una fila incoherente da `host_correlation_invalid`. Una
+con el trabajo del intento y con el recibo efectivo. Una fila incoherente da
+`host_correlation_invalid`. Una
 ronda `held`, o `outcome_unknown`/`confirmed` sin supervisor verificado, se observa
 `uncertain`, nunca completa.
 Sin rondas conserva la observación de cola. Este runtime no escribe rondas:

@@ -128,7 +128,8 @@ class HostRounds(HostHarness):
     def negative(self, name, column, value):
         row = self.row(name)
         self.valid(row)  # The unaltered row must work in this same test.
-        self.plant(dict(row, **{column: value(self, row) if callable(value) else value}))
+        changed = value(self, row) if callable(value) else value
+        self.plant(dict(row, **(changed if column is None else {column: changed})))
         self.invalid(self.read())
 
     def dead_owner(self, name):
@@ -243,8 +244,18 @@ def changed_receipt(**changes):
     return lambda case, row: canonical(dict(json.loads(row["receipt_json"]), **changes))
 
 
+def rewritten_request(**changes):
+    """The request and its hash change together, so only the attempt's job can contradict them."""
+    def columns(case, row):
+        request = canonical(dict(json.loads(row["request_json"]), **changes))
+        return dict(request_json=request, request_sha256=hashlib.sha256(request.encode()).hexdigest())
+    return columns
+
+
 # Each table entry becomes a separately named CLI test with its own admission and positive control.
 NEGATIVES = {
+    "other_job": ("confirmed_reply", None, rewritten_request(jobId="j_" + "0" * 32)),
+    "other_profile": ("confirmed_reply", None, rewritten_request(profileId="other")),
     "empty_receipt": ("confirmed_reply", "receipt_json", "{}"),
     "other_operation": ("confirmed_reply", "receipt_json", changed_receipt(operationId="other")),
     "other_revision": ("confirmed_reply", "receipt_json", changed_receipt(configRevision="other")),

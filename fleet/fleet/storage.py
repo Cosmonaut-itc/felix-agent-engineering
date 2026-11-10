@@ -573,7 +573,7 @@ def host_identity(value):
         raise ValueError("native identity")
 
 
-def decode_host(row):
+def decode_host(row, job):
     """Interpret columns, require the complete state shape, then correlate every read."""
     from hostgate.protocol import key as validate_key, validate, validate_result
     try:
@@ -607,7 +607,10 @@ def decode_host(row):
                 or row["operation_id"] != host_operation_id(row["attempt"], row["ordinal"])
                 or (request["operationId"], request["attemptId"], request["executorId"],
                     request["physicalHostId"]) != (row["operation_id"], row["attempt"], row["executor_id"],
-                                                    row["physical_host_id"])):
+                                                    row["physical_host_id"])
+                # No column repeats these two: only the attempt's job can contradict them.
+                or request["jobId"] != job["id"]
+                or request["profileId"] != load(job["content"])["execution"]["hostSpec"]["profileId"]):
             raise ValueError("host request correlation")
         if receipt is not None:
             host_receipt(row, key, receipt)
@@ -656,7 +659,9 @@ def host_operation_id(attempt, ordinal):
 
 
 def host_rounds(db, attempt):
-    rounds = [decode_host(row) for row in
+    job = db.execute("SELECT jobs.id, jobs.content FROM jobs JOIN attempts ON attempts.job=jobs.id "
+                     "WHERE attempts.id=?", (attempt,)).fetchone()
+    rounds = [decode_host(row, job) for row in
               db.execute("SELECT * FROM host_rounds WHERE attempt=? ORDER BY ordinal", (attempt,))]
     # The index allows one open round at any ordinal: a later round must not hide a retained one.
     for position, item in enumerate(rounds, 1):
