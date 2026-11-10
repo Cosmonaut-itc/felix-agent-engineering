@@ -141,6 +141,8 @@ def creation_from_row(row):
     if not (state == 'sealed' and set(value) == {'protocol', 'state', 'closedBy'}):
         _require(set(value) == _PERMIT_KEYS | set(extra), 'campos del permiso')
         permit = _permit(value)
+        _require(canonical(permit.owner) == canonical(row['owner']) and permit.channel_binding == row['channelBinding']
+                 and permit.boot == row['physicalBoot'], 'permiso de otro dueno, canal o boot')
     root = None
     if 'root' in extra:
         root = root_from_json(value['root'])
@@ -168,10 +170,6 @@ def validate_reservation(row, mode):
         creation = creation_from_row(row)
         _require(type(creation) in _LEGAL[row['state']], 'estado y permiso incompatibles')
         _require(row['launchPossible'] is isinstance(creation, _LAUNCHED), 'launchPossible incoherente')
-        permit = getattr(creation, 'permit', None)
-        if permit is not None:
-            _require(canonical(permit.owner) == canonical(row['owner']) and permit.channel_binding == row['channelBinding']
-                     and permit.boot == row['physicalBoot'], 'permiso de otro dueno, canal o boot')
     if released:
         _require(not closure_reasons(evidence_from_json(row.get('closureEvidence')), row, mode=mode),
                  'liberada sin prueba correlacionada')
@@ -268,7 +266,7 @@ def _correlated(evidence, reservation):
     obs, key = evidence.observation, reservation['key']
     try:
         creation = creation_from_row(reservation)
-    except (ValueError, TypeError, KeyError, AttributeError):
+    except (ValueError, TypeError, KeyError, AttributeError, RecursionError):
         return False
     if (evidence.provenance != REAL_PROVENANCE or type(obs.issuer_epoch) is not int or obs.issuer_epoch <= 0
             or evidence.issuer != 'hostgate:%s:%d' % (key['storeId'], obs.issuer_epoch)
@@ -289,10 +287,12 @@ def _correlated(evidence, reservation):
     if evidence.kind == 'unix-scope-empty':
         if type(creation) not in (Registered, Closed): return False
         expected['root'] = root_json(creation.root)
-        if not (_pair(obs.scan_before) and obs.scan_before == obs.scan_after and _hex64(obs.baseline_survivors_digest)
+        if not (_pair(obs.scan_before) and _pair(obs.scan_after) and obs.scan_before == obs.scan_after
+                and _hex64(obs.baseline_survivors_digest)
                 and all(seen >= base for seen, base in zip(obs.scan_before, permit.baseline.counters))
                 and type(obs.member_count) is int and type(obs.live_task_count) is int
                 and obs.member_count == obs.live_task_count == obs.scan_after[0] - obs.scan_after[1]
+                and obs.member_count <= len(permit.baseline.members)  # Sin miembros nuevos, sólo sobrevive línea base.
                 and isinstance(obs.root_terminal_basis, str) and obs.root_terminal_basis):
             return False
     elif evidence.kind == 'never-created':
@@ -329,7 +329,7 @@ def closure_reasons(evidence, reservation, *, mode):
     else:
         provenance = mode == 'effective' and evidence.observation is not None and _correlated(evidence, reservation)
     if (not evidence.issuer or not provenance or not expected_digest
-            or computed_digest != expected_digest or evidence.key != reservation['key']
+            or computed_digest != expected_digest or canonical(evidence.key) != canonical(reservation['key'])
             or evidence.boot != reservation['physicalBoot'] or evidence.scope != reservation['scope']
             or not evidence.complete or not evidence.creators_sealed):
         reasons.append(reason(code, 'emisor/fencing/procedencia/completitud no acreditados'))

@@ -516,6 +516,6 @@ fila de sombra no lleva `creation`. En `effective` sólo vale `darwin-coalition@
 emisor `hostgate:<storeId>:<epoch>` y una observación del mismo proveedor,
 correlacionada campo a campo con la fila y su permiso: epoch, boot, revisión del
 perfil, permiso, digests, coalición y línea base. `unix-scope-empty` exige además la
-raíz registrada y un barrido concordante, no anterior a los contadores de la línea
-base; `never-created` exige raíz y barridos nulos. `closedBy` es el digest de la
+raíz registrada, un barrido concordante de enteros, no anterior a los contadores de la
+línea base, y no más vivos que miembros de ella; `never-created` exige raíz y barridos nulos. `closedBy` es el digest de la
 evidencia. Una fila `released` sólo valida con una evidencia así.
