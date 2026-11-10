@@ -5,7 +5,6 @@ Transactions serialize keys, claims, drain epochs, and operator audit decisions.
 """
 import contextlib
 import fcntl
-import hashlib
 import os
 from pathlib import Path
 import sqlite3
@@ -16,8 +15,7 @@ import time
 import uuid
 
 from . import inputs
-from .model import (APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, HostConfirmation, HostHeld,
-                    HostIntent, dump, load, now)
+from .model import APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, dump, load, now
 
 MAX_DATABASE = 256 * 1024 * 1024
 SCHEMA = (
@@ -531,106 +529,3 @@ class Ledger:
 
     def __exit__(self, *exc):
         self.close()
-
-
-HOST_TERMINAL = ("rejected", "retired")
-
-
-def request_sha256(request):
-    return hashlib.sha256(dump(request).encode("utf-8")).hexdigest()
-
-
-def decode_host(row):
-    """Every read revalidates the intent and its correlation; incoherence retains, never dispatches."""
-    try:
-        request = load(row["request_json"])
-        intent = HostIntent(row["attempt"], row["ordinal"], row["operation_id"], request,
-                            row["physical_host_id"], row["executor_id"], row["store_id"],
-                            row["config_revision"], load(row["requester_identity"]), row["state"],
-                            load(row["supervisor_identity"]), load(row["receipt_json"]), row["reason"])
-        key = load(row["key_json"])
-        if (dump(request) != row["request_json"] or request_sha256(request) != row["request_sha256"]
-                or row["operation_id"] != host_operation_id(row["attempt"], row["ordinal"])
-                or (request["operationId"], request["attemptId"], request["executorId"],
-                    request["physicalHostId"]) != (row["operation_id"], row["attempt"], row["executor_id"],
-                                                    row["physical_host_id"])
-                or (key is not None and (set(key) != {"storeId", "reservationId", "generation"}
-                                         or key["storeId"] != row["store_id"]
-                                         or not str(key["reservationId"]).startswith("e_")
-                                         or type(key["generation"]) is not int or key["generation"] < 1))):
-            raise ValueError("host_round")
-        if intent.receipt is not None:
-            host_receipt(row, key, intent.receipt)
-    except (KeyError, TypeError, ValueError):
-        raise Fault("host_correlation_invalid", 3, "unknown") from None
-    if row["state"] == "confirmed":
-        return HostConfirmation(intent, key, intent.receipt, row["confirmation_source"], intent.supervisor)
-    if row["state"] == "held":
-        return HostHeld(intent, row["reason"], intent.supervisor, key, intent.receipt, row["confirmation_source"])
-    return intent
-
-
-def host_receipt(row, key, receipt):
-    """The stored reply is effective evidence of this operation and means what its state claims."""
-    from hostgate.protocol import validate_result
-    validate_result(receipt, "effective", row["store_id"])
-    replayed = "replayed" in receipt
-    original, current = (receipt["originalResult"], receipt["currentState"]) if replayed else (receipt, receipt)
-    grant = (original["granted"] and original["exitCode"] == 0 and not original["reasons"] and current is not None
-             and current["state"] == "reserved" and not current["reasons"]
-             and original["reservationKey"] == key == receipt.get("reservationKey")
-             and row["confirmation_source"] == ("same-channel-replay" if replayed else "reply"))
-    denial = (not replayed and not receipt["granted"] and receipt["exitCode"] == 1 and receipt["reasons"]
-              and "reservationKey" not in receipt)
-    ok = {"confirmed": grant, "rejected": denial}.get(row["state"], key in (None, receipt.get("reservationKey")))
-    if not ok or (receipt["operationId"], receipt["configRevision"]) != (row["operation_id"], row["config_revision"]):
-        raise ValueError("host_receipt")
-
-
-def host_operation_id(attempt, ordinal):
-    # Stable per (attempt, ordinal): a retry repeats it, a new round never reuses it.
-    return "fleet:{}:{}".format(attempt, ordinal)
-
-
-def host_rounds(db, attempt):
-    return [decode_host(row) for row in
-            db.execute("SELECT * FROM host_rounds WHERE attempt=? ORDER BY ordinal", (attempt,))]
-
-
-def put_host_intent(db, intent):
-    db.execute("INSERT INTO host_rounds (attempt,ordinal,operation_id,request_json,request_sha256,"
-               "physical_host_id,executor_id,store_id,config_revision,requester_identity,state) "
-               "VALUES (?,?,?,?,?,?,?,?,?,?,'prepared')",
-               (intent.attempt, intent.ordinal, intent.operation_id, dump(intent.request),
-                request_sha256(intent.request), intent.physical_host_id, intent.executor_id,
-                intent.store_id, intent.config_revision, dump(intent.requester)))
-    db.revision()
-
-
-def _cas(db, intent, sources, target, assignments="", parameters=()):
-    changed = db.execute("UPDATE host_rounds SET state=?" + assignments + " WHERE attempt=? AND ordinal=? "
-                         "AND state IN (" + ",".join("?" * len(sources)) + ")",
-                         (target,) + tuple(parameters) + (intent.attempt, intent.ordinal) + tuple(sources)).rowcount
-    if changed:
-        db.revision()
-    return changed == 1
-
-
-def mark_host_unknown(db, intent, supervisor):
-    """The only path to sending: whoever loses this CAS must not call reservar."""
-    return _cas(db, intent, ("prepared",), "outcome_unknown", ",supervisor_identity=?", (dump(supervisor),))
-
-
-def retire_host_round(db, intent, reason):
-    return _cas(db, intent, ("prepared",), "retired", ",reason=?", (reason,))
-
-
-def reject_host_round(db, intent, receipt):
-    return _cas(db, intent, ("outcome_unknown",), "rejected", ",receipt_json=?", (dump(receipt),))
-
-
-def hold_host(db, intent, reason, key=None, receipt=None, source=None):
-    return _cas(db, intent, ("outcome_unknown", "confirmed"), "held",
-                ",reason=?,key_json=COALESCE(?,key_json),receipt_json=COALESCE(?,receipt_json),"
-                "confirmation_source=COALESCE(?,confirmation_source)",
-                (reason, None if key is None else dump(key), None if receipt is None else dump(receipt), source))
