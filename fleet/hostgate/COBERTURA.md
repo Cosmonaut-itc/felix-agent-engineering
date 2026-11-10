@@ -428,3 +428,17 @@ Variantes defectuosas que cada prueba de `Rules` mata por aserción:
 `ignore_truncation`, `skip_member_count`, `unknown_abi_is_empty` y
 `pid_only_identity`. Los ids de la corrida en la Mini constan en el PR.
 No acredita IPC hacia servicios, privilegios, otra coalición ni builds futuros.
+
+
+SEN-5650, entrega **4b-1**, formas del permiso y evidencia real:
+
+| Prueba | Cobertura y límite |
+| --- | --- |
+| `test_creation_forms.py`, `Forms` | Una fila efectiva por combinación legal de estado y permiso, escrita y releída por el store, con sus vecinas ilegales al lado: `running` sin raíz, línea base o recibo; raíz dentro de la línea base o de otra coalición; `released` sin evidencia, con la de otra reserva o con un permiso que no es `Closed` ni `Sealed`; `Sealed` con raíz; `Consumed` con `launchPossible` falso; digest o contadores de la línea base discordantes; campo de más en cada variante. `simulation` en efectivo retiene; la evidencia real re-firmada tras alterar key, store, boot, epoch, proveedor, perfil, permiso, línea base, raíz o barrido retiene campo por campo; la correlacionada no deja motivos. La evidencia del fixture efectivo no libera: `soltar` responde `enforcement-unavailable` y la reserva queda `uncertain`. |
+| `test_creation_forms.py`, `ShadowForms` | En sombra, una fila con permiso real o evidencia real es ilegal; la de hoy sigue valiendo y `soltar` escribe la misma forma que antes. |
+
+Variantes defectuosas que las pruebas matan por aserción: `mode_from_prefix`,
+`accept_synthetic`, `trust_supervisor_clean`, `running_without_root`,
+`sealed_with_root`, `released_without_proof`, `real_permit_in_shadow` y
+`root_in_baseline`. Los ids de la corrida en la Mini constan en el PR. No acredita la
+emisión ni el consumo del permiso, el supervisor ni el cierre real.

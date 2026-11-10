@@ -253,6 +253,11 @@ def _evidence_values(evidence):
     return values
 
 
+def evidence_json(evidence):
+    """Forma durable de closureEvidence; sin observation es la que la sombra escribe hoy."""
+    return dict(_evidence_values(evidence), evidence_digest=evidence.evidence_digest)
+
+
 def _pair(value):
     return type(value) is list and len(value) == 2 and all(type(x) is int and 0 <= x < 2 ** 64 for x in value) \
         and value[0] >= value[1]
@@ -268,14 +273,16 @@ def _correlated(evidence, reservation):
     if (evidence.provenance != REAL_PROVENANCE or type(obs.issuer_epoch) is not int or obs.issuer_epoch <= 0
             or evidence.issuer != 'hostgate:%s:%d' % (key['storeId'], obs.issuer_epoch)
             or not key['reservationId'].startswith('e_') or obs.boot != evidence.boot
-            or not all(isinstance(v, str) and v for v in (obs.provider_revision, obs.resource_policy))
+            or obs.provider_revision != REAL_PROVENANCE or not isinstance(obs.resource_policy, str)
+            or not obs.resource_policy
             or obs.new_members != [] or getattr(creation, 'closed_by', evidence.evidence_digest) != evidence.evidence_digest):
         return False
     permit = getattr(creation, 'permit', None)
     expected = dict.fromkeys(('profile_revision', 'permit_id', 'confirmation_digest', 'launch_digest',
                               'coalition_id', 'baseline_digest'))
     if permit is not None:
-        if permit.boot != obs.boot: return False
+        # Lo no liberado queda uncertain si hostgate muere: la prueba nace en el epoch del permiso.
+        if permit.boot != obs.boot or permit.issuer_epoch != obs.issuer_epoch: return False
         expected = dict(profile_revision=permit.profile_revision, permit_id=permit.permit_id,
                         confirmation_digest=permit.confirmation_digest, launch_digest=permit.launch_digest,
                         coalition_id=permit.baseline.coalition, baseline_digest=permit.baseline.digest)
@@ -283,6 +290,7 @@ def _correlated(evidence, reservation):
         if type(creation) not in (Registered, Closed): return False
         expected['root'] = root_json(creation.root)
         if not (_pair(obs.scan_before) and obs.scan_before == obs.scan_after and _hex64(obs.baseline_survivors_digest)
+                and all(seen >= base for seen, base in zip(obs.scan_before, permit.baseline.counters))
                 and type(obs.member_count) is int and type(obs.live_task_count) is int
                 and obs.member_count == obs.live_task_count == obs.scan_after[0] - obs.scan_after[1]
                 and isinstance(obs.root_terminal_basis, str) and obs.root_terminal_basis):

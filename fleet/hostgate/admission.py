@@ -2,12 +2,11 @@
 import copy
 import json
 import uuid
-from dataclasses import asdict
 from .identity import from_json
 from .model import AuthContext, budget_view, effective, identity_json
 from .protocol import SCHEMA, canonical, digest, reason, reply, validate
 from .salud import lector_desk, lector_mini
-from .scope import closure_reasons
+from .scope import closure_reasons, evidence_json
 from .store import Busy, ForeignOwner, SerializedMutation, store_for, StoreError, UnrecordedResult, WriteUncertain
 
 THRESHOLDS = frozenset(('cpuRootPct', 'commitRatio', 'eLatencyMs', 'C: libre', 'E: libre',
@@ -381,7 +380,7 @@ class Hostgate:
                 reservation['state'] = 'uncertain'
                 reservation['reasons'].extend(reasons)
             else:
-                reservation.update(state='released', reasons=[], closureEvidence=asdict(closure))
+                reservation.update(state='released', reasons=[], closureEvidence=evidence_json(closure))
             return reasons
         return self._owner_mutation(op_id, key, 'soltar', auth, dict(evidenceIds=list(evidence)), mutate)
 

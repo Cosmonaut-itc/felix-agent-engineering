@@ -43,7 +43,7 @@ def permit_doc(row, state, closed_by=None, **changes):
 
 def evidence_doc(row, kind='unix-scope-empty', issued=True, **observed):
     scoped = kind == 'unix-scope-empty'
-    obs = dict(provider_revision='darwin-coalition@1', issuer_epoch=2, profile_revision='prf_1', permit_id='permit-1',
+    obs = dict(provider_revision='darwin-coalition@1', issuer_epoch=1, profile_revision='prf_1', permit_id='permit-1',
                confirmation_digest='c' * 64, launch_digest='d' * 64, coalition_id=CID, baseline_digest=BASE.digest,
                root=root_doc(), boot=BOOT, scan_before=[9, 6], scan_after=[9, 6], member_count=3, live_task_count=3,
                new_members=[], baseline_survivors_digest='e' * 64, root_terminal_basis='note-exit',
@@ -55,7 +55,7 @@ def evidence_doc(row, kind='unix-scope-empty', issued=True, **observed):
         obs.update(profile_revision=None, permit_id=None, confirmation_digest=None, launch_digest=None,
                    coalition_id=None, baseline_digest=None)
     obs.update(observed)
-    values = dict(kind=kind, issuer='hostgate:%s:2' % row['key']['storeId'], key=row['key'], boot=BOOT,
+    values = dict(kind=kind, issuer='hostgate:%s:1' % row['key']['storeId'], key=row['key'], boot=BOOT,
                   scope=row['scope'], provenance='darwin-coalition@1', complete=True, creators_sealed=True,
                   root_terminal=scoped, scope_empty=scoped, lineage_complete=scoped, profile_verified=scoped,
                   resources_clean=True, permit_revoked=True, no_external_effects=True, observation=obs)
@@ -274,7 +274,7 @@ class Forms(Planted):
         other = '99999999-2222-3333-4444-555555555555'
         for label, values in (
                 ('key', dict(real, key=dict(real['key'], generation=2))),
-                ('store', dict(real, issuer='hostgate:other-store:2')),
+                ('store', dict(real, issuer='hostgate:other-store:1')),
                 ('boot', dict(real, boot=other, observation=dict(obs, boot=other))),
                 ('revision del perfil', dict(real, observation=dict(obs, profile_revision='prf_2'))),
                 ('permiso', dict(real, observation=dict(obs, permit_id='permit-2'))),
@@ -284,6 +284,11 @@ class Forms(Planted):
                 ('miembro nuevo', dict(real, observation=dict(obs, new_members=[root_doc()]))),
                 ('contadores movidos', dict(real, observation=dict(obs, scan_after=[10, 6]))),
                 ('cardinalidad', dict(real, observation=dict(obs, member_count=4))),
+                ('epoch del permiso', dict(real, issuer='hostgate:%s:2' % self.row['key']['storeId'],
+                                           observation=dict(obs, issuer_epoch=2))),
+                ('proveedor', dict(real, observation=dict(obs, provider_revision='other@1'))),
+                ('barrido anterior a la linea base', dict(real, observation=dict(obs, scan_before=[4, 1],
+                                                                                 scan_after=[4, 1]))),
                 ('emisor sin epoch', dict(real, issuer='hostgate:%s' % self.row['key']['storeId'])),
                 ('procedencia', dict(real, provenance='simulation')),
                 ('sin observacion', {k: v for k, v in real.items() if k != 'observation'})):
@@ -321,6 +326,7 @@ class ShadowForms(Planted):
         self.assertTrue(self.accepted(self.gate.store.read()))
         today = asdict(ClosureEvidence.fixture(key, BOOT))
         today.pop('observation', None)  # Forma escrita antes de 4b.
+        self.assertEqual(self.gate.store.read()['reservations'][0]['closureEvidence'], today)
         self.assertTrue(self.accepted(self.with_row(state='released', closureEvidence=today)))
         real = evidence_doc(self.row)
         self.illegal('real en shadow', self.with_row(state='released', closureEvidence=real))
