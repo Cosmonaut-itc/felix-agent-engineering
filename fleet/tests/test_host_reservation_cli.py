@@ -78,14 +78,14 @@ class HostHarness(unittest.TestCase):
 class HostAdmission(HostHarness):
     def test_new_admission_requires_effective_authority_and_replay_keeps_receipt(self):
         code, first = self.submit(key="k1", enqueue_only=True)
-        self.assertEqual((code, first["accepted"], first["binding"]), (0, True, "new"), first)
+        self.assertEqual((code, first.get("accepted"), first.get("binding")), (0, True, "new"), first)
         content = json.loads(self.ledger("SELECT content FROM jobs WHERE id=?", (first["job"],))[0][0])
         self.assertEqual(content["execution"], {"backend": HOST, "hostSpec": {"profileId": "fixture"}})
         observation = self.status(first["job"])
         self.assertEqual((observation["state"], observation["reservation"]["kind"]), ("queued", HOST))
         # FIFO fence: a pilot behind a host head is accepted, never claimed and never run.
         code, pilot = self.submit(counter=self.root / "pilot-ran", host=False)
-        self.assertEqual((code, pilot["accepted"]), (0, True), pilot)
+        self.assertEqual((code, pilot.get("accepted")), (0, True), pilot)
         self.assertEqual(self.status(pilot["job"])["state"], "queued")
         self.assertFalse((self.root / "pilot-ran").exists())
         self.assertEqual(self.ledger("SELECT attempt FROM slot"), [(None,)])
@@ -114,6 +114,7 @@ class HostAdmission(HostHarness):
         self.assertEqual(code, 0, pilot)
         code, done = self.call("wait", pilot["job"], "--timeout", "30")
         self.assertEqual(code, 0, done)
+        self.assertEqual(self.ledger("PRAGMA user_version"), [(5,)], "FACT: a new ledger is v5")
         conn = sqlite3.connect(str(self.state / "state.db"))
         try:
             conn.execute("DROP INDEX host_rounds_open")
