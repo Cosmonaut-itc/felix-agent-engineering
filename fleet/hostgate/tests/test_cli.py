@@ -65,7 +65,7 @@ class CLI(Harness):
         for field, value in (('kind', None), ('kind', []), ('complete', 'true'),
                              ('resources_clean', 1), ('issuer', []), ('key', [])):
             proof = replace(valid, **{field: value})
-            values = dict(proof.__dict__); values.pop('evidence_digest')
+            values = dict(proof.__dict__); values.pop('evidence_digest'); values.pop('observation')
             self.world.closures[('malformed',)] = replace(proof, evidence_digest=digest(values))
             payload = dict(schema=request()['schema'], operationId='malformed-' + field + str(value),
                            operation='soltar', key=key, evidenceIds=['malformed'])

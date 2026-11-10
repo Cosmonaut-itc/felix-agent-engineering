@@ -270,6 +270,8 @@ class Rules(unittest.TestCase):
         self.assertIn("'hostgate.service'", loaded)
         self.assertNotIn('darwin_coalition', loaded)
         mine = {Path(dc.__file__).resolve(), Path(__file__).resolve(), FLEET / 'hostgate/tests/support/coalition.py'}
+        # 4b: las formas del permiso releen Baseline/RootIdentity con import diferido, sus pruebas las plantan.
+        mine |= {FLEET / 'hostgate/scope.py', FLEET / 'hostgate/tests/test_creation_forms.py'}
         users = [str(p) for p in FLEET.rglob('*.py')
                  if p.resolve() not in mine and 'darwin_coalition' in p.read_text(errors='replace')]
         self.assertEqual(users, [])
