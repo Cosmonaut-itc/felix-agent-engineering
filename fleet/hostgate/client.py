@@ -74,7 +74,9 @@ class HostgateClient:
             if select.select([self.stream], [], [], 0)[0]: raise TransportError('tráfico no solicitado')
             deadline = time.monotonic() + timeout
             send_json(self.stream, request, deadline)
-            result = receive_response(self.stream, request['operationId'], self.spool_dir, max_response_bytes, _deadline=deadline)
+            mode_args = {'_mode': self.mode} if self.mode == 'effective' else {}
+            result = receive_response(self.stream, request['operationId'], self.spool_dir, max_response_bytes,
+                                      _deadline=deadline, **mode_args)
             validate_result(result, self.mode, self.store_id)
             if result['configRevision'] != self.revision: raise TransportError('revision de respuesta ajena')
             if select.select([self.stream], [], [], 0)[0]: self.close()

@@ -97,9 +97,10 @@ def _float(value):
 def _nonfinite(value): raise ValueError('número no finito')
 
 
-def receive_response(stream, operation_id, spool_dir, maximum=256 * 1024**2, *, _deadline=None):
+def receive_response(stream, operation_id, spool_dir, maximum=256 * 1024**2, *, _deadline=None, _mode='shadow'):
     deadline, count, checksum = _deadline or time.monotonic() + 300, 0, hashlib.sha256()
     try:
+        if _mode not in ('shadow', 'effective'): raise TransportError('modo de respuesta inválido')
         if type(maximum) is not int or maximum < 1: raise ResponseLimitError('límite local inválido')
         with tempfile.SpooledTemporaryFile(max_size=1024**2, dir=spool_dir) as spool:
             while True:
@@ -116,7 +117,7 @@ def receive_response(stream, operation_id, spool_dir, maximum=256 * 1024**2, *, 
                     spool.seek(0)
                     value = json.loads(spool.read().decode('utf-8'), object_pairs_hook=_pairs, parse_constant=_nonfinite, parse_float=_float)
                     if (not isinstance(value, dict) or value.get('schema') != SCHEMA or
-                            value.get('operationId') != operation_id or value.get('result') != 'shadow'):
+                            value.get('operationId') != operation_id or value.get('result') != _mode):
                         raise TransportError('respuesta ajena')
                     return value
                 elif kind == b'\x03' and size <= 4097:
