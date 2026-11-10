@@ -442,8 +442,9 @@ numéricos `0 < timeout <= 300` segundos; un fallo cierra el canal y conserva du
 `DarwinPeers.observe_process(executor, pid)` devuelve la `Identity` nativa observada.
 
 `soltar` efectivo responde `enforcement-unavailable` y marca `uncertain`, incluso
-con `ClosureEvidence.fixture`. No se admiten filas `running`, `released` ni
-`launchPossible=True`. Creación/started siguen cerrados; el runtime real no acredita
+con `ClosureEvidence.fixture`. Desde 4b-1 la validación admite filas `running`,
+`released` y `launchPossible=True` sólo con las formas de «Formas del permiso y
+evidencia real»; nada las escribe. Creación/started siguen cerrados; el runtime real no acredita
 perfiles. No hay CLI de provisión efectiva, mantenimiento periódico, instalación
 ni activación de hosts. La espera autónoma y la integración Fleet pertenecen a
 entregas posteriores. Las pruebas nuevas usan sólo autoridades y procesos privados.
@@ -484,3 +485,37 @@ No cubre trabajo encargado a un servicio que ya existía (launchd, Docker,
 simulador), procesos con privilegios ni cambios de coalición con privilegios.
 Dentro de `remote-run` la coalición es compartida: el positivo `Complete` de una
 carga sólo se acredita desde una conexión ssh propia (`OwnCoalition`).
+
+
+## Formas del permiso y evidencia real · SEN-5650, entrega 4b-1
+
+Nada de esta entrega está conectado: `Runtime.profile_verified` sigue en falso,
+`Runtime.closure` no confirma y `authorize_creation`/`record_started` siguen
+lanzando `NotImplementedError`. `soltar` efectivo sigue respondiendo
+`enforcement-unavailable` y deja la reserva `uncertain`. Ninguna operación escribe
+todavía estas formas. El store efectivo sigue en la versión 1; su paso a la
+versión 2 llega en la entrega 4b-2.
+
+Una fila efectiva lleva, opcional, el registro `creation`
+(`darwin-coalition-creation@1`); `scope.creation_from_row` lo lee como una variante:
+`Unissued` (sin registro), `Issued`, `Consumed`, `Registered` (con raíz y recibo),
+`Closed` (raíz, recibo y `closedBy`) o `Sealed` (`closedBy`, con o sin permiso).
+Combinaciones legales: `reserved` con `Unissued`, `Issued` o `Consumed`; `running` con
+`Registered`; `uncertain` con cualquiera de esas cuatro; `released` con `Closed` o
+`Sealed`. `launchPossible` es verdadero exactamente con `Consumed`, `Registered` y
+`Closed`. El permiso coincide con dueño, canal y boot físico de la fila; su línea base
+es la `Baseline` canónica de 4a, con digest, contadores y coalición repetidos. La raíz
+está en el mismo boot y coalición y fuera de la línea base. Cualquier campo de más, o un
+registro que no se relee idéntico, invalida la vista entera.
+
+`ClosureEvidence` gana `observation` (opcional; una ausente no entra en el digest ni
+en la fila, así que la sombra escribe la misma forma que antes).
+`closure_reasons(evidence, reservation, *, mode)` toma el modo de la configuración,
+nunca del prefijo de la key; ante una fila o una evidencia ilegible retiene y no lanza. En `shadow` sólo vale `simulation` sin observación, y una
+fila de sombra no lleva `creation`. En `effective` sólo vale `darwin-coalition@1` con
+emisor `hostgate:<storeId>:<epoch>` y una observación del mismo proveedor,
+correlacionada campo a campo con la fila y su permiso: epoch, boot, revisión del
+perfil, permiso, digests, coalición y línea base. `unix-scope-empty` exige además la
+raíz registrada, un barrido concordante de enteros, no anterior a los contadores de la
+línea base, y no más vivos que miembros de ella; `never-created` exige raíz y barridos nulos. `closedBy` es el digest de la
+evidencia. Una fila `released` sólo valida con una evidencia así.
