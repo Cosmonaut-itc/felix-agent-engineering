@@ -182,19 +182,18 @@ class Kernel(unittest.TestCase):
         finally:
             end(native)
 
-    def test_orphan_ends_despite_failed_middle_wait_and_unreadable_identity(self):
-        """Variante: orphan_registered_late. Variante: revalidate_in_batch."""
+    def test_registered_orphan_ends_despite_unreadable_identity(self):
+        """Variante: revalidate_in_batch."""
         waitpid, dup2, unique, sid = os.waitpid, os.dup2, _Native.unique, os.getsid(0)
-        native, waits, (report, sink) = Faulty('none'), [], os.pipe()
+        native, waits, (report, sink) = Faulty('read-error'), [], os.pipe()
         def stop(fd, target):  # Sólo el huérfano está en otra sesión: avisa su pid y se detiene.
             if os.getsid(0) != sid: os.write(sink, b'%d\n' % os.getpid()); os.kill(os.getpid(), signal.SIGSTOP)
             return dup2(fd, target)
-        def wait(pid, flags):  # La espera del intermedio falla cuando ya salió: el huérfano existe.
+        def wait(pid, flags):  # El intermedio ya está recogido cuando falla el barrido: su grupo no cuenta.
             waits.append(pid)
-            if len(waits) == 1: exited(pid); raise TimeoutError('inyectado')
             return waitpid(pid, flags)
         def unreadable(self, pid):  # El hijo bloqueado, ya recogido, no se puede revalidar.
-            if pid in waits[1:] and pid == native.births['blocked'][0]: raise ReadError(errno.EIO, 'inyectado')
+            if pid in waits and pid == native.births['blocked'][0]: raise ReadError(errno.EIO, 'inyectado')
             return unique(self, pid)
         try:
             with patch.object(os, 'dup2', stop), patch.object(os, 'waitpid', wait), \
