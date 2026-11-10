@@ -114,6 +114,52 @@ def validate(value, operation=None):
     return value
 
 
-def reply(op_id, revision, reasons=(), would_grant=False, exit_code=0, **fields):
-    return dict(schema=SCHEMA, operationId=op_id, result='shadow', wouldGrant=would_grant,
-                reasons=list(reasons), configRevision=revision, exitCode=exit_code, **fields)
+def reply(op_id, revision, reasons=(), would_grant=False, exit_code=0, *, mode='shadow', store_id=None, **fields):
+    if mode == 'shadow':
+        return dict(schema=SCHEMA, operationId=op_id, result='shadow', wouldGrant=would_grant,
+                    reasons=list(reasons), configRevision=revision, exitCode=exit_code, **fields)
+    common = dict(schema=SCHEMA, operationId=op_id, reasons=list(reasons),
+                  configRevision=revision, exitCode=exit_code)
+    if mode != 'effective': raise ValueError('modo desconocido')
+    identifier(store_id)
+    result = dict(common, result='effective', mode=mode, storeId=store_id, granted=would_grant, **fields)
+    return validate_result(result, mode, store_id)
+
+
+def validate_result(result, mode='shadow', store_id=None):
+    """Valida la variante del wire; correlación con el ledger vive en el store."""
+    if mode not in ('shadow', 'effective'): raise ValueError('modo desconocido')
+    grant_field = 'wouldGrant' if mode == 'shadow' else 'granted'
+    key_field = 'simulationKey' if mode == 'shadow' else 'reservationKey'
+    if (not isinstance(result, dict) or result['schema'] != SCHEMA or result['result'] != mode
+            or type(result[grant_field]) is not bool or type(result['exitCode']) is not int
+            or result['exitCode'] not in range(7) or not isinstance(result['reasons'], list)):
+        raise ValueError('resultado de operacion')
+    def reasons(values):
+        for item in values:
+            if item['code'] not in CODES or type(item['retryable']) is not bool or 'detail' not in item:
+                raise ValueError('motivos de operacion')
+    reasons(result['reasons'])
+    if key_field in result: key(result[key_field])
+    if result[grant_field] and key_field not in result: raise ValueError('admision sin reserva')
+    if mode == 'effective':
+        if {'wouldGrant', 'simulationKey', 'simulationState'} & set(result):
+            raise ValueError('campos de simulacion en resultado efectivo')
+        identifier(store_id)
+        identifier(result['configRevision'])
+        if result['mode'] != mode or result['storeId'] != store_id: raise ValueError('modo/storeId')
+        if key_field in result:
+            if result[key_field]['storeId'] != store_id or not result[key_field]['reservationId'].startswith('e_'):
+                raise ValueError('key efectiva invalida')
+            if result.get('state') not in ('reserved', 'uncertain'): raise ValueError('estado efectivo')
+        if 'replayed' in result:
+            if result['replayed'] is not True or result['granted']: raise ValueError('replay no admite')
+            original = validate_result(result['originalResult'], mode, store_id)
+            if 'replayed' in original or original['operationId'] != result['operationId']:
+                raise ValueError('historico de replay')
+            current = result['currentState']
+            if current is not None:
+                if current['state'] not in ('reserved', 'uncertain'): raise ValueError('estado de replay')
+                reasons(current['reasons'])
+    canonical(result)
+    return result

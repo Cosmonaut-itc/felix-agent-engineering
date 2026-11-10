@@ -8,7 +8,7 @@ from .model import AuthContext, budget_view, effective, identity_json
 from .protocol import SCHEMA, canonical, digest, reason, reply, validate
 from .salud import lector_desk, lector_mini
 from .scope import closure_reasons
-from .store import Busy, ForeignOwner, SerializedMutation, ShadowStore, StoreError, UnrecordedResult, WriteUncertain
+from .store import Busy, ForeignOwner, SerializedMutation, store_for, StoreError, UnrecordedResult, WriteUncertain
 
 THRESHOLDS = frozenset(('cpuRootPct', 'commitRatio', 'eLatencyMs', 'C: libre', 'E: libre',
                        'memLevelPct', 'memPressure', 'data libre'))
@@ -17,10 +17,11 @@ THRESHOLDS = frozenset(('cpuRootPct', 'commitRatio', 'eLatencyMs', 'C: libre', '
 class Hostgate:
     def __init__(self, config, world):
         self.config, self.world = config, world
-        self.store = ShadowStore(config)
+        self.store = store_for(config)
 
     def _reply(self, op_id, reasons=(), would_grant=False, exit_code=0, **fields):
-        return reply(op_id, self.config.revision, reasons, would_grant, exit_code, **fields)
+        return reply(op_id, self.config.revision, reasons, would_grant, exit_code, mode=self.config.mode,
+                     store_id=self.config.store_id, **fields)
 
     def _foreign_owner(self, op_id):
         return ForeignOwner(self._reply(
@@ -245,12 +246,13 @@ class Hostgate:
                 if original[0] != operation_digest:
                     return self._reply(op_id, [reason('operation-conflict', 'operationId ya tiene otro payload')], exit_code=2)
                 historic = json.loads(original[1])
-                key = historic.get('simulationKey')
+                key = historic.get('simulationKey' if self.config.mode == 'shadow' else 'reservationKey')
                 current = next((r for r in projection['reservations'] if r['key'] == key), None)
                 current_state = {'state': current['effectiveState'], 'reasons': current['reasons']} if current else None
                 # El histórico es diagnóstico; un replay nunca vuelve a admitir.
                 result = copy.deepcopy(historic)
-                result.update(replayed=True, originalResult=historic, currentState=current_state, wouldGrant=False)
+                result.update(replayed=True, originalResult=historic, currentState=current_state)
+                result['wouldGrant' if self.config.mode == 'shadow' else 'granted'] = False
                 return result
             pending = next((p for p in view['pending']
                             if p['principal'] == auth.principal and p['operationId'] == op_id), None)
@@ -310,7 +312,7 @@ class Hostgate:
                 return self._reply(request['operationId'], pending['reasons'], exit_code=1, pendingId=pending['id'])
             generation = view['generations'].get(request['jobId'], 0) + 1
             view['generations'][request['jobId']] = generation
-            key = dict(storeId=self.config.store_id, reservationId='s_' + uuid.uuid4().hex, generation=generation)
+            key = dict(storeId=self.config.store_id, reservationId=('s_' if self.config.mode == 'shadow' else 'e_') + uuid.uuid4().hex, generation=generation)
             reservation = dict(key=key, jobId=request['jobId'], attemptId=request['attemptId'],
                                executorId=request['executorId'], physicalHostId=request['physicalHostId'],
                                principal=auth.principal, owner=identity_json(auth.peer),
@@ -321,14 +323,19 @@ class Hostgate:
                                physicalBoot=pending['physicalBoot'], executorBoot=pending['executorBoot'])
             view['reservations'].append(reservation)
             pending.update(state='granted', reservationKey=key)
-            return self._reply(request['operationId'], would_grant=True, simulationKey=key, pendingId=pending['id'], simulationState='reserved')
+            return self._reply(request['operationId'], would_grant=True, pendingId=pending['id'], **self._key_fields(key, 'reserved'))
         return self._run(request, auth, action)
+
+    def _key_fields(self, key, state):
+        if self.config.mode == 'shadow': return dict(simulationKey=key, simulationState=state)
+        return dict(reservationKey=key, state=state)
 
     def _owner_mutation(self, op_id, key, operation, auth, extras, mutate):
         request = dict(schema=SCHEMA, operationId=op_id, operation=operation, key=key, **extras)
         def action(view, project):
             reservation = next((r for r in view['reservations'] if r['key'] == key), None)
-            if reservation is None or key['storeId'] != self.config.store_id:
+            if (reservation is None or key['storeId'] != self.config.store_id
+                    or (self.config.mode == 'effective' and not key['reservationId'].startswith('e_'))):
                 return self._reply(op_id, [reason('stale-generation', 'storeId/reservationId/generation no vigente')], exit_code=1)
             if reservation['principal'] != auth.principal or reservation['owner'] != identity_json(auth.peer):
                 raise self._foreign_owner(op_id)
@@ -336,8 +343,8 @@ class Hostgate:
                     or reservation['channelBinding'] != auth.channel_binding):
                 raise self._foreign_owner(op_id)
             reasons = mutate(reservation)
-            return self._reply(op_id, reasons, exit_code=1 if reasons else 0, simulationKey=key,
-                               simulationState=reservation['state'])
+            return self._reply(op_id, reasons, exit_code=1 if reasons else 0,
+                               **self._key_fields(key, reservation['state']))
         return self._run(request, auth, action)
 
     def latido(self, op_id, key, seq, auth):
@@ -358,6 +365,10 @@ class Hostgate:
 
     def soltar(self, op_id, key, evidence, auth):
         def mutate(reservation):
+            if self.config.mode == 'effective':
+                reasons = [reason('enforcement-unavailable', 'cierre efectivo sin proveedor acreditado')]
+                reservation.update(state='uncertain', reasons=reservation['reasons'] + reasons)
+                return reasons
             if reservation['state'] == 'released': return []
             closure = self.world.closure(evidence, reservation)
             reasons = closure_reasons(closure, reservation)
@@ -378,7 +389,7 @@ class Hostgate:
             for item in view[kind]:
                 item.pop('channelBinding', None)
                 for field in ('state', 'effectiveState'):
-                    if item[field] == 'granted': item[field] = 'simulated'
+                    if self.config.mode == 'shadow' and item[field] == 'granted': item[field] = 'simulated'
                 if 'heartbeat' in item: item['heartbeatAgeSeconds'] = self.world.monotonic() - item['heartbeat']
         resources = [dict(name=name, holder=r['key'], state=r['effectiveState'])
                      for r in view['reservations'] if r['effectiveState'] != 'released'

@@ -16,7 +16,7 @@ import uuid
 
 from .model import NodeConfig
 from .protocol import canonical, demand, digest, identifier, integer, strict_json
-from .store import Busy, ShadowStore, StoreError
+from .store import Busy, StoreError, store_for
 
 _ADMIN_UID, _ADMIN_GID = 0, 0
 _BINDING = 'hardwareUuid physicalHostId storeId stateDir mode'.split()
@@ -289,7 +289,7 @@ def _load_config(locator, paths):
 def _load_anchor(locator, paths):
     doc = paths.read(locator.anchor_path, 'anchor', 4096)
     _fields(doc, 'schema ' + ' '.join(_BINDING))
-    if doc['schema'] != 'fleet/hostgate-authority@1' or doc['mode'] != 'shadow': raise AdminError('ancla invalida')
+    if doc['schema'] != 'fleet/hostgate-authority@1' or doc['mode'] not in ('shadow', 'effective'): raise AdminError('ancla invalida')
     for key in ('physicalHostId', 'storeId'): identifier(doc[key])
     if str(uuid.UUID(doc['hardwareUuid'])) != doc['hardwareUuid']: raise AdminError('UUID no canonico')
     return AuthorityAnchor(doc['hardwareUuid'], doc['physicalHostId'], doc['storeId'], _path(doc['stateDir']), doc['mode'])
@@ -334,9 +334,10 @@ class AuthorityLease:
             except BlockingIOError as exc: raise Busy('autoridad ocupada') from exc
             self.check()
             self.paths.open(current.node.state_dir, 'state')
-            self.paths.open(current.node.state_dir / 'shadow.db', 'db')
+            store = store_for(current.node)
+            self.paths.open(store.path, 'db')
             self.check()
-            conn = ShadowStore(current.node).connect(writable=False)
+            conn = store.connect(writable=False)
             conn.close()
             self.check()
             return self
@@ -351,7 +352,7 @@ class AuthorityLease:
             if load_config(self.locator) != self.config or load_anchor(self.locator) != self.anchor:
                 raise AdminError('revision/ancla alterada; reinicio requerido')
             for suffix in ('-wal', '-shm'):
-                path = self.config.node.state_dir / ('shadow.db' + suffix)
+                path = store_for(self.config.node).path.with_name(store_for(self.config.node).filename + suffix)
                 # Los sidecars pueden recrearse; no se fijan inodes de WAL/SHM.
                 if path.is_symlink() or path.exists():
                     with _Paths(self.config) as sidecars: sidecars.open(path, 'db'); sidecars.check()

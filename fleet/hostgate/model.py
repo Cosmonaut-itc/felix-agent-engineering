@@ -39,7 +39,7 @@ class NodeConfig:
         for value in (self.host_id, self.store_id, self.revision, self.snapshot_host): identifier(value)
         demand(dict(self.budget))
         if type(self.drained) is not bool: raise ValueError('drenado invalido')
-        if self.mode != 'shadow' or not self.executors or type(self.ncpu) is not int or self.ncpu <= 0:
+        if self.mode not in ('shadow', 'effective') or not self.executors or type(self.ncpu) is not int or self.ncpu <= 0:
             raise ValueError('configuracion no acreditada')
         for ttl in (self.pending_ttl, self.heartbeat_ttl):
             if type(ttl) not in (int, float) or not 0 < ttl <= sys.float_info.max:
@@ -162,6 +162,9 @@ def validate_view(view, config):
                     'exclusiveResources profileId scopeKind scope launchPossible state heartbeat seq reasons physicalBoot executorBoot')
         key(row['key']); require(row['key']['storeId'] == config.store_id)
         rid = row['key']['reservationId']; require(rid not in reservations)
+        if config.mode == 'effective':
+            require(rid.startswith('e_') and row['state'] in ('reserved', 'uncertain')
+                    and row['launchPossible'] is False)
         reservations[rid] = row
         for name in ('jobId', 'attemptId', 'principal', 'channelBinding', 'profileId', 'physicalBoot', 'executorBoot'):
             identifier(row[name])

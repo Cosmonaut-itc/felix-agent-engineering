@@ -175,6 +175,10 @@ class DarwinPeers:
         identity = Identity(executor, bsd.uid, pid, (bsd.start_sec, bsd.start_usec, unique0[1], unique0[2]), before, before)
         return NativePeer(identity, bsd.gid, unique0[2], unique0[1])
 
+    def observe_process(self, executor, pid):
+        """Identidad nativa observada del hijo; no otorga autoridad ni binding."""
+        return self._observe(executor, pid=pid).identity
+
     def capture(self, stream, executor):
         try:
             return self._observe(executor, stream=stream)
