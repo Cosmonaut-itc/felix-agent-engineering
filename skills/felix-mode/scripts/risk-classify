@@ -6,8 +6,8 @@
 # entero y el otro cambió algo dentro, porque git puede moverlo. Con la rama
 # al día con el destino es exacto; si no, un cambio del destino también marca
 # alto, y actualizar la rama lo quita. Puede marcar alto de más, nunca de menos.
-# Cada línea es una pathspec :(glob) de git relativa a la raíz: * no cruza /,
-# y ** sólo vale como segmento entero (**/x, x/**, x/**/y).
+# Cada línea es un patrón relativo a la raíz, sin prefijo: el script antepone
+# :(glob). * no cruza /; ** sólo vale como segmento entero (**/x, x/**, x/**/y).
 # El destino por defecto es origin/HEAD, u origin/main; tráelo antes.
 set -u
 # Con esta variable git lee :(glob) como texto literal.
@@ -93,6 +93,10 @@ while IFS= read -r line || [ -n "$line" ]; do
     pattern=${line#"${line%%[![:space:]]*}"}
     pattern=${pattern%"${pattern##*[![:space:]]}"}
     case "$pattern" in ''|'#'*) continue ;; esac
+    # Para git toda línea que empieza con : lleva marca de pathspec, también
+    # :x, que significa x. Con :(glob) delante pasa a ser un nombre literal
+    # que casi nunca existe, y el cambio saldría como normal sin aviso.
+    case "$pattern" in :*) fail "$LIST:$number: quita el prefijo, risk-classify ya antepone :(glob); un nombre que empieza con : va como \\:nombre: $pattern" ;; esac
     IFS=/ read -r -a segments <<< "$pattern"
     for segment in "${segments[@]}"; do
         case "$segment" in '**') ;; *'**'*) fail "$LIST:$number: patrón inválido: $pattern" ;; esac

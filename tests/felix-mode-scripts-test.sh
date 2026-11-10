@@ -1448,6 +1448,23 @@ risk_classify_sources() {
     output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
     assert test "$status" = 2
     assert test "$output" = 'risk-classify: .agents/high-risk-paths:1: patrón inválido: ../fuera'
+    # Para git toda línea que empieza con : lleva marca de pathspec. Sin este
+    # rechazo, :(glob) delante la vuelve un nombre literal que no existe y el
+    # cambio sale como normal.
+    local prefixed
+    for prefixed in ':(glob)convex/payments/**' ':(top)docs/**' ':!docs/**' ':^docs/**' ':/docs/**' '::docs/**' ':docs/**' ':#docs/**'; do
+        printf 'docs/**\n  %s\r\n' "$prefixed" > "$repo/.agents/high-risk-paths"
+        status=0
+        output=$(cd "$repo" && "$SCRIPTS/risk-classify" 2>&1) || status=$?
+        assert test "$status" = 2
+        assert test "$output" = "risk-classify: .agents/high-risk-paths:2: quita el prefijo, risk-classify ya antepone :(glob); un nombre que empieza con : va como \\:nombre: $prefixed"
+    done
+    # El escape no se rechaza: \:x es el nombre literal :x. Windows no admite
+    # : en nombres de archivo y su git lee \ como separador.
+    case "$(uname)" in MINGW*|MSYS*|CYGWIN*) return 0 ;; esac
+    printf '\\:reportes/**\n\\:(glob)raro/**\n' > "$repo/.agents/high-risk-paths"
+    output=$(cd "$repo" && "$SCRIPTS/risk-classify")
+    assert test "${output%% *}" = 'Rutas:'
 }
 
 risk_classify_target() {
