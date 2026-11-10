@@ -511,7 +511,7 @@ registro que no se relee idéntico, invalida la vista entera.
 `ClosureEvidence` gana `observation` (opcional; una ausente no entra en el digest ni
 en la fila, así que la sombra escribe la misma forma que antes).
 `closure_reasons(evidence, reservation, *, mode)` toma el modo de la configuración,
-nunca del prefijo de la key. En `shadow` sólo vale `simulation` sin observación, y una
+nunca del prefijo de la key; ante una fila o una evidencia ilegible retiene y no lanza. En `shadow` sólo vale `simulation` sin observación, y una
 fila de sombra no lleva `creation`. En `effective` sólo vale `darwin-coalition@1` con
 emisor `hostgate:<storeId>:<epoch>` y una observación del mismo proveedor,
 correlacionada campo a campo con la fila y su permiso: epoch, boot, revisión del

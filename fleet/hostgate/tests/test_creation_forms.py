@@ -353,6 +353,7 @@ class ShadowForms(Planted):
         self.illegal('real en shadow', self.with_row(state='released', closureEvidence=real))
         mixed = redigest(dict(today, observation=real['observation']))
         self.illegal('simulation con observacion', self.with_row(state='released', closureEvidence=mixed))
+        self.illegal('emisor sin texto', self.with_row(state='released', closureEvidence=redigest(dict(today, issuer=True))))
 
 
 if __name__ == '__main__': unittest.main()
