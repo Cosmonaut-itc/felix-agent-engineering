@@ -5,6 +5,7 @@ from enum import Enum
 import json
 import re
 import uuid
+from typing import Optional, Union
 
 API = "fleet-job-api@1"
 CONTENT = "fleet-submission-content@1"
@@ -47,6 +48,47 @@ class Control:
 @dataclass(frozen=True)
 class HostSpec:
     profile_id: str
+
+
+@dataclass(frozen=True)
+class HostIntent:
+    """Durable intent of one round; an unknown outcome still retains uncertainty."""
+    attempt: str
+    ordinal: int
+    operation_id: str
+    request: dict
+    physical_host_id: str
+    executor_id: str
+    store_id: str
+    config_revision: str
+    requester: dict
+    state: str = "prepared"  # prepared, outcome_unknown, rejected or retired
+    supervisor: Optional[dict] = None
+    receipt: Optional[dict] = None
+    reason: Optional[str] = None
+
+
+@dataclass(frozen=True)
+class HostConfirmation:
+    intent: HostIntent
+    key: dict
+    receipt: dict
+    source: str  # reply or same-channel-replay
+    supervisor: dict
+
+
+@dataclass(frozen=True)
+class HostHeld:
+    """Retains its debit: nothing in this ledger resolves or releases it."""
+    intent: HostIntent
+    reason: str
+    supervisor: Optional[dict]
+    key: Optional[dict] = None
+    receipt: Optional[dict] = None
+    source: Optional[str] = None
+
+
+HostRound = Union[HostIntent, HostConfirmation, HostHeld]
 
 
 class Fault(ValueError):
