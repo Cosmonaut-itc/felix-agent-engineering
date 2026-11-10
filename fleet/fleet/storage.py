@@ -15,7 +15,7 @@ import time
 import uuid
 
 from . import inputs
-from .model import APP_ID, SCHEMA_VERSION, Fault, dump, load, now
+from .model import APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, dump, load, now
 
 MAX_DATABASE = 256 * 1024 * 1024
 SCHEMA = (
@@ -44,6 +44,29 @@ SCHEMA = (
     "request TEXT NOT NULL, receipt TEXT NOT NULL, exit_code INTEGER NOT NULL, error TEXT)",
     "CREATE TABLE proofs (id TEXT PRIMARY KEY, body TEXT NOT NULL, sha256 TEXT NOT NULL)",
     "CREATE TABLE audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)",
+)
+# Schema 5 adds only host rounds. The CHECKs fix nullability per state; the
+# partial index allows one non-terminal round (held retains) per attempt.
+HOST_SCHEMA = (
+    "CREATE TABLE host_rounds (attempt TEXT NOT NULL REFERENCES attempts(id), "
+    "ordinal INTEGER NOT NULL CHECK(ordinal>=1), operation_id TEXT UNIQUE NOT NULL "
+    "CHECK(length(operation_id) BETWEEN 1 AND 256), request_json TEXT NOT NULL, "
+    "request_sha256 TEXT NOT NULL CHECK(length(request_sha256)=64), physical_host_id TEXT NOT NULL, "
+    "executor_id TEXT NOT NULL, store_id TEXT NOT NULL, config_revision TEXT NOT NULL, "
+    "requester_identity TEXT NOT NULL, supervisor_identity TEXT, state TEXT NOT NULL CHECK(state IN "
+    "('prepared','outcome_unknown','confirmed','held','rejected','retired')), key_json TEXT, "
+    "receipt_json TEXT, confirmation_source TEXT CHECK(confirmation_source IN ('reply','same-channel-replay')), "
+    "reason TEXT, heartbeat_seq INTEGER NOT NULL DEFAULT 0 CHECK(heartbeat_seq>=0), "
+    "PRIMARY KEY(attempt,ordinal), "
+    "CHECK((supervisor_identity IS NULL)=(state IN ('prepared','retired'))), "
+    "CHECK((key_json IS NULL)=(confirmation_source IS NULL)), "
+    "CHECK(state NOT IN ('prepared','outcome_unknown','retired') OR "
+    "(key_json IS NULL AND receipt_json IS NULL)), "
+    "CHECK(state<>'confirmed' OR (key_json IS NOT NULL AND receipt_json IS NOT NULL AND reason IS NULL)), "
+    "CHECK(state<>'rejected' OR (key_json IS NULL AND receipt_json IS NOT NULL)), "
+    "CHECK(state<>'held' OR reason IS NOT NULL))",
+    "CREATE UNIQUE INDEX host_rounds_open ON host_rounds(attempt) "
+    "WHERE state NOT IN ('rejected','retired')",
 )
 
 
@@ -182,7 +205,7 @@ def writer_header(state):
                 pending.clear()
     if (len(header) < 100 or header[:16] != b"SQLite format 3\x00"
             or int.from_bytes(header[68:72], "big") != APP_ID
-            or int.from_bytes(header[60:64], "big") != SCHEMA_VERSION):
+            or int.from_bytes(header[60:64], "big") not in (PILOT_SCHEMA_VERSION, SCHEMA_VERSION)):
         raise Fault("unsupported_schema")
     writer_authority(main, committed, header)
 
@@ -317,8 +340,26 @@ def writer_authority(main, committed, header):
 
 def compatible(conn):
     if (conn.execute("PRAGMA application_id").fetchone()[0] != APP_ID or
-            conn.execute("PRAGMA user_version").fetchone()[0] != SCHEMA_VERSION):
+            conn.execute("PRAGMA user_version").fetchone()[0] not in (PILOT_SCHEMA_VERSION, SCHEMA_VERSION)):
         raise Fault("unsupported_schema")
+
+
+def migrate(conn):
+    """Writer-only, under the exclusive directory lock: v4 gains host rounds, jobs stay byte-identical.
+
+    An owned slot defers it: its supervisor may be a v4-only runtime that could not record its closure in v5.
+    """
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        if (conn.execute("PRAGMA user_version").fetchone()[0] == PILOT_SCHEMA_VERSION
+                and conn.execute("SELECT attempt FROM slot").fetchone()[0] is None):
+            for statement in HOST_SCHEMA:
+                conn.execute(statement)
+            conn.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
+        conn.commit()
+    except BaseException:
+        conn.rollback()
+        raise
 
 
 class Ledger:
@@ -386,11 +427,13 @@ class Ledger:
                 self.conn.execute("PRAGMA foreign_keys=ON")
                 if self.conn.execute("PRAGMA synchronous").fetchone()[0] != 2:
                     raise Fault("full_sync_required")
+                if exists:
+                    migrate(self.conn)
                 if not exists:
                     self.conn.execute("BEGIN IMMEDIATE")
                     self.conn.execute("PRAGMA application_id={}".format(APP_ID))
                     self.conn.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
-                    for statement in SCHEMA:
+                    for statement in SCHEMA + HOST_SCHEMA:
                         self.conn.execute(statement)
                     self.conn.execute("INSERT INTO authority VALUES (1,?,?,0)",
                                       (str(uuid.uuid4()), os.getuid()))

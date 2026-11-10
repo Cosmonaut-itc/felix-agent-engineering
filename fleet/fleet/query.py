@@ -1,6 +1,6 @@
 """Read-only projections and total completion precedence for fleet-job-api@1."""
 from . import admission, evidence, inputs, native
-from .model import Fault, envelope, identifier, key, load, now, safe_queued
+from .model import HOST, Fault, backend, envelope, identifier, key, load, now, safe_queued
 from .storage import Ledger
 
 
@@ -113,6 +113,7 @@ def observe(db, row):
     reservation = None if row["reservation"] is None else {
         "kind": "pilot_slot", "id": row["reservation"], "generation": row["generation"],
         "disposition": row["disposition"]}
+    host = {"kind": HOST} if backend(load(job["content"])) == HOST else None
     proof = {"valid": None, "errors": [], "files": []}
     outcome = row["recorded_outcome"] if state == "finished" else None
     remaining = []
@@ -173,8 +174,9 @@ def observe(db, row):
             "transitions": transitions, "command": command, "closure": closure,
             "recorded_outcome": row["recorded_outcome"], "outcome": outcome,
             "collection": collection, "publication": publication, "evidence": proof,
-            "reservation": reservation, "capacity_resolution": load(row["capacity_resolution"]),
-            "completion": completion, "work_remaining": remaining}
+            "reservation": host or reservation, "capacity_resolution": load(row["capacity_resolution"]),
+            "completion": completion, "work_remaining": remaining,
+            **({"local_slot": reservation} if host is not None else {})}
 
 
 def view(state, operation, job=None, idempotency_key=None, attempt=None):

@@ -8,7 +8,11 @@ import uuid
 
 API = "fleet-job-api@1"
 CONTENT = "fleet-submission-content@1"
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
+# A v4 ledger is pilot-only history: readers accept it, writers migrate it once.
+PILOT_SCHEMA_VERSION = 4
+PILOT = "pilot_slot"
+HOST = "host-reservation@1"
 APP_ID = 0x464C5431
 KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", re.ASCII)
 ID = re.compile(r"[jarpd]_[0-9a-f]{32}", re.ASCII)
@@ -38,6 +42,11 @@ class Control:
     drained: bool
     epoch: int
     drain_id: object
+
+
+@dataclass(frozen=True)
+class HostSpec:
+    profile_id: str
 
 
 class Fault(ValueError):
@@ -78,6 +87,11 @@ def safe_queued(row):
                      "evidence_root", "started_at", "ended_at"))
             and load(row["collection"]) == {"state": "pending", "errors": []}
             and load(row["publication"]) == {"state": "pending", "root_sha256": None})
+
+
+def backend(content):
+    """Absent execution means the historical pilot slot."""
+    return (content.get("execution") or {}).get("backend", PILOT)
 
 
 def key(value):
