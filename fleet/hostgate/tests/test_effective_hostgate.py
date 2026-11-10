@@ -112,7 +112,7 @@ class EffectiveHostgate(test_ipc.IPCHarness):
                     ShadowStore.initialize(shadow)
                     writer = ShadowStore(shadow).connect(writable=True)
                     if attack == 'metadata': writer.execute("UPDATE metadata SET kind='effective'")
-                    if attack == 'copy': shutil.copyfile(folder / 'shadow.db', folder / 'effective.db')
+                    if attack == 'copy': shutil.copy2(folder / 'shadow.db', folder / 'effective.db')
                     else: (folder / 'shadow.db').rename(folder / 'effective.db')
                 try:
                     # Fija una lectura actual: otros lectores reutilizan el read-mark
@@ -120,7 +120,7 @@ class EffectiveHostgate(test_ipc.IPCHarness):
                     writer.execute('BEGIN')
                     writer.execute('SELECT * FROM metadata').fetchall()
                     before = self.snapshot(folder)
-                    with self.assertRaises(StoreError):
+                    with self.assertRaisesRegex(StoreError, 'kind' if attack == 'kind' else 'application_id'):
                         with closing(EffectiveStore(cfg).connect()): pass
                     self.assertEqual(before, self.snapshot(folder))
                 finally: writer.close()
