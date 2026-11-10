@@ -355,7 +355,7 @@ class ClientHandshake(unittest.TestCase):
         from hostgate.model import identity_json
         from hostgate.wire import TransportError
         identity = Identity('unix', 501, 123, (1, 2, 3, 4), 'boot', 'boot')
-        cfg = SimpleNamespace(principals={str(os.geteuid()): {'executors': ('unix',)}}, service_uid=501, service_gid=20, node=SimpleNamespace(executors=['unix'], host_id='host', store_id='store', revision='cfg'))
+        cfg = SimpleNamespace(principals={str(os.geteuid()): {'executors': ('unix',)}}, service_uid=501, service_gid=20, node=SimpleNamespace(mode='shadow', executors=['unix'], host_id='host', store_id='store', revision='cfg'))
         hello = message('hello', physicalHostId='host', storeId='store', configRevision='cfg', mode='shadow', identity=identity_json(identity))
         variants = [hello] + [dict(hello, **{key: value}) for key, value in
             [('physicalHostId', 'fake'), ('storeId', 'fake'), ('configRevision', 'fake'), ('mode', 'enforcing'),

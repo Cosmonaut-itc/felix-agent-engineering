@@ -1,11 +1,11 @@
-"""Ledger SQLite exclusivamente de sombra; creación sólo administrativa explícita."""
+"""Ledger SQLite separado por modo; creación sólo administrativa explícita."""
 import hashlib
 import json
 import os
 import sqlite3
 from dataclasses import dataclass
 from urllib.parse import quote
-from .protocol import SCHEMA, CODES, canonical, digest, key
+from .protocol import canonical, digest, validate_result
 from .model import validate_view
 
 APPLICATION_ID = 1212633939
@@ -59,9 +59,13 @@ class SerializedMutation:
 
 
 class ShadowStore:
+    filename, kind = 'shadow.db', 'shadow'
+    application_id, schema_version = APPLICATION_ID, SCHEMA_VERSION
+
     def __init__(self, config):
         self.config = config
-        self.path = config.state_dir / 'shadow.db'
+        if config.mode != self.kind: raise StoreError('modo/store no coincide')
+        self.path = config.state_dir / self.filename
 
     @classmethod
     def initialize(cls, config):
@@ -75,10 +79,10 @@ class ShadowStore:
         try:
             conn.execute('PRAGMA journal_mode=WAL')
             store._durability(conn)
-            conn.execute('PRAGMA application_id=%d' % APPLICATION_ID)
-            conn.execute('PRAGMA user_version=2')
+            conn.execute('PRAGMA application_id=%d' % store.application_id)
+            conn.execute('PRAGMA user_version=%d' % store.schema_version)
             conn.execute('CREATE TABLE metadata (store_id TEXT NOT NULL, schema_version INTEGER NOT NULL, kind TEXT NOT NULL)')
-            conn.execute('INSERT INTO metadata VALUES (?, ?, ?)', (config.store_id, SCHEMA_VERSION, 'shadow'))
+            conn.execute('INSERT INTO metadata VALUES (?, ?, ?)', (config.store_id, store.schema_version, store.kind))
             conn.execute('CREATE TABLE host_view (id INTEGER PRIMARY KEY CHECK(id=1), payload TEXT NOT NULL, checksum TEXT NOT NULL)')
             conn.execute('CREATE TABLE operations (principal TEXT NOT NULL, operation_id TEXT NOT NULL, digest TEXT NOT NULL, result TEXT NOT NULL, auth_context TEXT NOT NULL, PRIMARY KEY(principal, operation_id))')
             conn.execute('CREATE TABLE audit (seq INTEGER PRIMARY KEY, principal TEXT NOT NULL, operation_id TEXT NOT NULL, payload TEXT NOT NULL)')
@@ -101,21 +105,26 @@ class ShadowStore:
     def connect(self, writable=False):
         try:
             for path in (self.config.state_dir, self.path,
-                         self.path.with_name('shadow.db-wal'), self.path.with_name('shadow.db-shm')):
+                         self.path.with_name(self.filename + '-wal'), self.path.with_name(self.filename + '-shm')):
                 if path.is_symlink(): raise StoreError('symlink de estado')
             stat = self.config.state_dir.stat()
             if stat.st_uid != os.getuid() or stat.st_mode & 0o077: raise StoreError('directorio no privado')
             if self.path.stat().st_uid != os.getuid() or self.path.stat().st_mode & 0o077: raise StoreError('BD no privada')
+            if self.kind == 'effective':
+                # Rechazar copias de sombra antes de que SQLite cree sidecars.
+                with self.path.open('rb') as database: header = database.read(72)
+                if header[68:72] != self.application_id.to_bytes(4, 'big'):
+                    raise StoreError('application_id')
             mode = 'rw' if writable else 'ro'
             conn = sqlite3.connect('file:' + quote(str(self.path)) + '?mode=' + mode, uri=True, timeout=0.2, isolation_level=None)
             try:
                 if writable: self._durability(conn)
-                if conn.execute('PRAGMA application_id').fetchone()[0] != APPLICATION_ID: raise StoreError('application_id')
-                if conn.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION: raise StoreError('schema')
+                if conn.execute('PRAGMA application_id').fetchone()[0] != self.application_id: raise StoreError('application_id')
+                if conn.execute('PRAGMA user_version').fetchone()[0] != self.schema_version: raise StoreError('schema')
                 if conn.execute('PRAGMA journal_mode').fetchone()[0] != 'wal': raise StoreError('WAL requerido')
                 if conn.execute('PRAGMA quick_check').fetchone()[0] != 'ok': raise StoreError('BD corrupta')
                 metadata = conn.execute('SELECT store_id, schema_version, kind FROM metadata').fetchall()
-                if metadata != [(self.config.store_id, SCHEMA_VERSION, 'shadow')]: raise StoreError('storeId/schema/sombra no coincide')
+                if metadata != [(self.config.store_id, self.schema_version, self.kind)]: raise StoreError('storeId/schema/kind no coincide')
                 self.load(conn)
                 return conn
             except BaseException:
@@ -138,8 +147,7 @@ class ShadowStore:
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
             raise StoreError('vista no integra') from exc
 
-    @staticmethod
-    def _validate_operation(original, principal, op_id, view):
+    def _validate_operation(self, original, principal, op_id, view):
         if original is None: return
         try:
             operation_digest, raw_result, raw_context = original
@@ -155,20 +163,11 @@ class ShadowStore:
                 if set(result) != {'pendingId'} or not any(p['id'] == result['pendingId'] for p in view['pending']):
                     raise ValueError('preparacion sin correlacion')
                 return
-            if (not isinstance(result, dict) or result['schema'] != SCHEMA or result['result'] != 'shadow'
-                    or result['operationId'] != op_id or type(result['wouldGrant']) is not bool
-                    or type(result['exitCode']) is not int or result['exitCode'] not in range(7)
-                    or not isinstance(result['reasons'], list)):
-                raise ValueError('resultado de operacion')
-            for reason in result['reasons']:
-                if reason['code'] not in CODES or type(reason['retryable']) is not bool or 'detail' not in reason:
-                    raise ValueError('motivos de operacion')
-            if 'simulationKey' in result:
-                key(result['simulationKey'])
-                if not any(r['key'] == result['simulationKey'] for r in view['reservations']):
-                    raise ValueError('operacion sin reserva')
-            if result['wouldGrant'] and 'simulationKey' not in result:
-                raise ValueError('admision sin reserva')
+            validate_result(result, self.kind, self.config.store_id)
+            if result['operationId'] != op_id: raise ValueError('operationId')
+            result_key = result.get('simulationKey' if self.kind == 'shadow' else 'reservationKey')
+            if result_key is not None and not any(r['key'] == result_key for r in view['reservations']):
+                raise ValueError('operacion sin reserva')
         except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
             raise StoreError('operacion no integra') from exc
 
@@ -227,3 +226,13 @@ class ShadowStore:
             except Exception as exc:
                 if commit_attempted:
                     raise WriteUncertain('cierre posterior al commit incierto') from exc
+
+
+class EffectiveStore(ShadowStore):
+    """Ledger nuevo: ninguna ruta de importación o promoción desde sombra."""
+    filename, kind = 'effective.db', 'effective'
+    application_id, schema_version = 1212633925, 1
+
+
+def store_for(config):
+    return (ShadowStore if config.mode == 'shadow' else EffectiveStore)(config)

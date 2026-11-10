@@ -8,7 +8,7 @@ from . import admin
 from .darwin_peer import DarwinPeers
 from .model import identity_json
 from .ipc import message, check
-from .protocol import validate
+from .protocol import validate, validate_result
 from .wire import send_json, receive_json, receive_response, TransportError, ResponseLimitError
 
 
@@ -22,10 +22,13 @@ class SupervisorHandoff:
 
 class HostgateClient:
     @classmethod
-    def _open(cls, executor=None):
+    def _open(cls, executor=None, mode='shadow'):
         self = cls(); self.stream, self.peers = socket.socket(socket.AF_UNIX), DarwinPeers()
         try:
             locator = admin.local_authority(); config = admin.load_config(locator)
+            if mode not in ('shadow', 'effective') or mode != config.node.mode:
+                raise TransportError('modo esperado contradice autoridad administrativa')
+            self.mode, self.store_id, self.revision = mode, config.node.store_id, config.node.revision
             self.spool_dir, self.deadline = locator.socket_path.parent, time.monotonic() + 5
             if executor is None:
                 permitted = config.principals.get(str(os.geteuid()), {}).get('executors', ())
@@ -37,7 +40,7 @@ class HostgateClient:
             hello = check(receive_json(self.stream, self.deadline), 'hello', 'physicalHostId storeId configRevision mode identity')
             if (self.peer.identity.uid != config.service_uid or self.peer.egid != config.service_gid or
                     hello != message('hello', physicalHostId=config.node.host_id, storeId=config.node.store_id,
-                                     configRevision=config.node.revision, mode='shadow', identity=identity_json(self.peer.identity)) or
+                                     configRevision=config.node.revision, mode=config.node.mode, identity=identity_json(self.peer.identity)) or
                     not self.peers.alive(self.stream, self.peer)):
                 raise TransportError('servidor contradice autoridad administrativa/kernel')
             return self
@@ -47,8 +50,8 @@ class HostgateClient:
             raise
 
     @classmethod
-    def connect(cls, handoff=None):
-        self = cls._open(None if handoff is None else handoff.requester['executorId'])
+    def connect(cls, handoff=None, mode='shadow'):
+        self = cls._open(None if handoff is None else handoff.requester['executorId'], mode)
         try:
             if handoff is None: send_json(self.stream, message('query'), self.deadline)
             else:
@@ -63,13 +66,20 @@ class HostgateClient:
             if isinstance(exc, KeyboardInterrupt): raise TransportError('sesión cancelada; resultado desconocido') from exc
             raise
 
-    def call(self, request, *, max_response_bytes=256 * 1024**2):
+    def call(self, request, *, max_response_bytes=256 * 1024**2, timeout=300):
         try:
+            if type(timeout) not in (int, float) or not 0 < timeout <= 300:
+                raise ValueError('timeout debe estar entre 0 y 300 segundos')
             if not self.peers.alive(self.stream, self.peer): raise TransportError('servidor/canal perdió identidad')
             if select.select([self.stream], [], [], 0)[0]: raise TransportError('tráfico no solicitado')
-            deadline = time.monotonic() + 300
+            deadline = time.monotonic() + timeout
             send_json(self.stream, request, deadline)
-            result = receive_response(self.stream, request['operationId'], self.spool_dir, max_response_bytes, _deadline=deadline)
+            mode_args = {'_mode': self.mode} if self.mode == 'effective' else {}
+            result = receive_response(self.stream, request['operationId'], self.spool_dir, max_response_bytes,
+                                      _deadline=deadline, **mode_args)
+            if self.mode == 'effective':
+                validate_result(result, self.mode, self.store_id)
+                if result['configRevision'] != self.revision: raise TransportError('revision de respuesta ajena')
             if select.select([self.stream], [], [], 0)[0]: self.close()
             return result
         except BaseException as exc:
@@ -104,9 +114,9 @@ class RequesterSession:
     def __exit__(self, *args): self.close()
 
 
-def request_supervisor(request):
+def request_supervisor(request, mode='shadow'):
     validate(request, 'reservar')
-    client = HostgateClient._open(request['executorId'])
+    client = HostgateClient._open(request['executorId'], mode)
     try:
         send_json(client.stream, message('offer', request=request), client.deadline)
         offer = check(receive_json(client.stream, client.deadline), 'offer', 'offer_id requester request_digest config_revision')

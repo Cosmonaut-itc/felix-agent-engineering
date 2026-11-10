@@ -114,7 +114,8 @@ def serve(config, lease, peers, world, *, _ready=None):
         except admin.AdminError: code, detail = 6, 'store-unavailable'
         except (ValueError, TypeError, KeyError): code, detail = (6, 'store-unavailable') if called_core else (2, 'operation-conflict')
         except Exception: code, detail = 6, 'store-unavailable'
-        return reply(operation_id, config.node.revision, [reason(detail)], exit_code=code)
+        return reply(operation_id, config.node.revision, [reason(detail)], exit_code=code,
+                     mode=config.node.mode, store_id=config.node.store_id)
     try:
         lease.check()
         with admin._Paths(config) as paths:
@@ -164,7 +165,7 @@ def serve(config, lease, peers, world, *, _ready=None):
                             sessions.connections[stream] = connection
                             own = peers._observe(channel.executor, pid=os.getpid()).identity
                             send(connection, message('hello', physicalHostId=config.node.host_id, storeId=config.node.store_id,
-                                 configRevision=config.node.revision, mode='shadow', identity=identity_json(own)))
+                                 configRevision=config.node.revision, mode=config.node.mode, identity=identity_json(own)))
                             continue
                         connection = channel.connection
                         state = connection['state']

@@ -49,7 +49,7 @@ root/cliente instalada ni defensa frente a un actor hostil con escritura al ledg
 los mocks del proceso padre no sobreviven a exec.
 Los valores operativos de la Mini siguen pendientes de confirmación de Felix.
 
-Toda respuesta pública lleva `result: shadow`, `wouldGrant`, `operationId`,
+En modo sombra, toda respuesta pública lleva `result: shadow`, `wouldGrant`, `operationId`,
 `configRevision`, `exitCode` y `reasons: [{code,detail,retryable}]`. No hay permiso
 ni `granted` efectivo. `simulationKey` es exclusivamente diagnóstico de la BD
 `shadow.db`: nunca promoverla, copiar sus generaciones a un ledger efectivo ni
@@ -413,3 +413,41 @@ La dirigida Mini es `tests/mini-ipc-progress.sh` (CX-2, TTL real de 10 s) y
 `tests/mini-ipc-campaign.sh` (campaña integrada y vecinas seleccionadas), ambos
 con Apple Python 3.9.6 y Python 3.14.7, temporales privados y sin instalar servicio.
 El estado sigue en sombra; PR 3 espera la revisión APTO y la suite del orquestador.
+
+
+## Reserva efectiva preparatoria · SEN-5649, entrega 3a
+
+`NodeConfig.mode` admite `shadow` y `effective`; el ancla debe coincidir exactamente.
+`store_for(config)` selecciona `ShadowStore` o `EffectiveStore`, que comparten el
+motor SQLite. El segundo nace vacío en un directorio inexistente con un storeId
+nuevo, archivo `effective.db`, application_id 1212633925 y metadata `(storeId,1,effective)`.
+No importa ni promueve sombra. El runtime sólo abre estado preexistente y valida
+cabecera, metadata y relaciones; ancla/configuración se comparan antes de SQLite.
+La sombra conserva su archivo, metadata y forma de respuesta anteriores.
+
+El wire efectivo conserva `fleet/host-reservation@1`: `result: effective`, `mode`,
+`storeId`, `granted`, y cuando hay reserva, `reservationKey` y `state`. Su id empieza
+con `e_`. No contiene campos de simulación. El replay devuelve `granted: false`,
+`replayed: true`, `originalResult` y `currentState`: nunca otra concesión ni generación.
+`estado` conserva `granted` en las preparaciones efectivas. Las keys de sombra o de
+otro store se rechazan con `stale-generation` sin cambiar la reserva vigente.
+
+Consumidor: `HostgateClient.connect(handoff=None, mode='shadow')` y
+`request_supervisor(request, mode='shadow')`; 3b debe pedir `mode='effective'`.
+El cliente contrasta modo, store y revisión con autoridad y hello; en efectivo valida
+además cada respuesta. La ruta de sombra del cliente no cambia. El CLI `estado`
+conecta en sombra: en un host efectivo falla cerrado con salida 6.
+`call(request, *, max_response_bytes=256 * 1024**2, timeout=300)` acepta sólo plazos
+numéricos `0 < timeout <= 300` segundos; un fallo cierra el canal y conserva duda.
+`DarwinPeers.observe_process(executor, pid)` devuelve la `Identity` nativa observada.
+
+`soltar` efectivo responde `enforcement-unavailable` y marca `uncertain`, incluso
+con `ClosureEvidence.fixture`. No se admiten filas `running`, `released` ni
+`launchPossible=True`. Creación/started siguen cerrados; el runtime real no acredita
+perfiles. No hay CLI de provisión efectiva, mantenimiento periódico, instalación
+ni activación de hosts. La espera autónoma y la integración Fleet pertenecen a
+entregas posteriores. Las pruebas nuevas usan sólo autoridades y procesos privados.
+
+El receptor DATA también fijaba `shadow`, aunque no figuraba entre los módulos del
+diseño 3a. `wire.receive_response(..., _mode='shadow')` ahora contrasta el modo
+verificado que le pasa el cliente; framing, checksum y END conservan su forma.
