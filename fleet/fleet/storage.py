@@ -46,8 +46,9 @@ SCHEMA = (
     "CREATE TABLE proofs (id TEXT PRIMARY KEY, body TEXT NOT NULL, sha256 TEXT NOT NULL)",
     "CREATE TABLE audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)",
 )
-# Schema 5 adds only host rounds. The CHECKs fix nullability per state; the
-# partial index allows one non-terminal round (held retains) per attempt.
+# Schema 5 adds only host rounds. SQL constrains part of the state shape;
+# every read enforces the complete shape. The partial index allows one
+# non-terminal round (held retains) per attempt.
 HOST_SCHEMA = (
     "CREATE TABLE host_rounds (attempt TEXT NOT NULL REFERENCES attempts(id), "
     "ordinal INTEGER NOT NULL CHECK(ordinal>=1), operation_id TEXT UNIQUE NOT NULL "
