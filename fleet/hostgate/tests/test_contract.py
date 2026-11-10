@@ -116,7 +116,7 @@ class Contract(Harness):
         key = self.key(self.reserve(exclusiveResources=['sen-slot:1', 'postgres:5434']))
         proof = replace(ClosureEvidence.fixture(key, self.world.boot, 'windows-tree-empty'),
                         profile_verified=False, lineage_complete=False)
-        values = dict(proof.__dict__); values.pop('evidence_digest')
+        values = dict(proof.__dict__); values.pop('evidence_digest'); values.pop('observation')
         proof = replace(proof, evidence_digest=digest(values))
         self.world.closures[('cross-platform',)] = proof
         result = self.gate.soltar('cross-platform', key, ['cross-platform'], self.auth)
@@ -338,7 +338,7 @@ class Contract(Harness):
                       'lineage_complete', 'profile_verified', 'resources_clean', 'scope'):
             with self.subTest(field=field):
                 proof = replace(valid, **{field: 'foreign-scope' if field == 'scope' else False})
-                values = dict(proof.__dict__); values.pop('evidence_digest')
+                values = dict(proof.__dict__); values.pop('evidence_digest'); values.pop('observation')
                 self.world.closures[(field,)] = replace(proof, evidence_digest=digest(values))
                 result = self.gate.soltar('close-' + field, key, [field], self.auth)
                 self.assertEqual(result['exitCode'], 1)
@@ -681,7 +681,7 @@ class Contract(Harness):
             for field, value in changes:
                 with self.subTest(kind=kind, field=field):
                     values = dict(valid.__dict__)
-                    values.pop('evidence_digest')
+                    values.pop('evidence_digest'); values.pop('observation')
                     values[field] = value
                     proof = ClosureEvidence(**values, evidence_digest=digest(values))
                     evidence_id = kind + '-' + field

@@ -3,11 +3,12 @@
 Las formas del permiso de creación (SEN-5650, 4b) existen pero nada las escribe todavía.
 darwin_coalition se importa dentro de las funciones: cargar el runtime no lo carga.
 """
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Mapping, Optional, Union
 from .protocol import canonical, digest, identifier, reason
 
 CREATION_PROTOCOL = 'darwin-coalition-creation@1'
+REAL_PROVENANCE = 'darwin-coalition@1'
 _PERMIT_KEYS = frozenset(('protocol state permitId owner channelBinding boot issuerEpoch confirmationDigest '
                           'launchDigest profileRevision coalitionId baseline baselineDigest baselineCounters').split())
 _EXTRA_KEYS = {'issued': (), 'consumed': (), 'registered': ('root', 'scopeReceipt'),
@@ -172,7 +173,36 @@ def validate_reservation(row, mode):
             _require(canonical(permit.owner) == canonical(row['owner']) and permit.channel_binding == row['channelBinding']
                      and permit.boot == row['physicalBoot'], 'permiso de otro dueno, canal o boot')
     if released:
-        _require(not closure_reasons(ClosureEvidence(**row['closureEvidence']), row), 'liberada sin prueba correlacionada')
+        _require(not closure_reasons(evidence_from_json(row.get('closureEvidence')), row, mode=mode),
+                 'liberada sin prueba correlacionada')
+
+
+@dataclass(frozen=True)
+class Observation:
+    """Lo que hostgate midió al cerrar. never-created: raíz y barridos nulos; permiso nulo si nunca se emitió."""
+    provider_revision: str
+    issuer_epoch: int
+    profile_revision: Optional[str]
+    permit_id: Optional[str]
+    confirmation_digest: Optional[str]
+    launch_digest: Optional[str]
+    coalition_id: Optional[int]
+    baseline_digest: Optional[str]
+    root: Optional[Mapping]  # root_json de la raíz registrada.
+    boot: str
+    scan_before: Optional[list]  # (tasks_started, tasks_exited)
+    scan_after: Optional[list]
+    member_count: Optional[int]
+    live_task_count: Optional[int]
+    new_members: list
+    baseline_survivors_digest: Optional[str]
+    root_terminal_basis: Optional[str]
+    resource_policy: str
+
+    @classmethod
+    def from_json(cls, value):
+        _require(type(value) is dict and set(value) == {f.name for f in fields(cls)}, 'observacion invalida')
+        return cls(**value)
 
 
 @dataclass(frozen=True)
@@ -193,10 +223,14 @@ class ClosureEvidence:
     permit_revoked: bool = False
     no_external_effects: bool = False
     evidence_digest: str = ''
+    observation: Optional[Observation] = None  # Sólo la evidencia real.
+
+    def signed(self):
+        return replace(self, evidence_digest=digest(_evidence_values(self)))
 
     @classmethod
     def fixture(cls, key, boot, kind='unix-scope-empty'):
-        """Evidencia sintética de harness; nunca acredita un perfil/launcher real."""
+        """Evidencia sintética de harness para la sombra; en efectivo no acredita nada."""
         values = dict(kind=kind, issuer='harness', key=key, boot=boot, scope=key['reservationId'],
                       provenance='simulation', complete=True, creators_sealed=True, root_terminal=True,
                       scope_empty=True, lineage_complete=True, profile_verified=True, resources_clean=True,
@@ -204,7 +238,66 @@ class ClosureEvidence:
         return cls(**values, evidence_digest=digest(values))
 
 
-def closure_reasons(evidence, reservation):
+def evidence_from_json(value):
+    """closureEvidence durable. Las filas de sombra anteriores a 4b no llevan observation."""
+    names = {f.name for f in fields(ClosureEvidence)}
+    _require(type(value) is dict and names - {'observation'} <= set(value) <= names, 'evidencia invalida')
+    observation = value.get('observation')
+    return ClosureEvidence(**dict(value, observation=None if observation is None else Observation.from_json(observation)))
+
+
+def _evidence_values(evidence):
+    values = {f.name: getattr(evidence, f.name) for f in fields(evidence) if f.name != 'evidence_digest'}
+    if values['observation'] is None: del values['observation']  # Digest de sombra de hoy.
+    else: values['observation'] = asdict(values['observation'])
+    return values
+
+
+def _pair(value):
+    return type(value) is list and len(value) == 2 and all(type(x) is int and 0 <= x < 2 ** 64 for x in value) \
+        and value[0] >= value[1]
+
+
+def _correlated(evidence, reservation):
+    """Evidencia real ligada al registro `creation` de esta misma reserva; los booleanos solos no bastan."""
+    obs, key = evidence.observation, reservation['key']
+    try:
+        creation = creation_from_row(reservation)
+    except (ValueError, TypeError, KeyError, AttributeError):
+        return False
+    if (evidence.provenance != REAL_PROVENANCE or type(obs.issuer_epoch) is not int or obs.issuer_epoch <= 0
+            or evidence.issuer != 'hostgate:%s:%d' % (key['storeId'], obs.issuer_epoch)
+            or not key['reservationId'].startswith('e_') or obs.boot != evidence.boot
+            or not all(isinstance(v, str) and v for v in (obs.provider_revision, obs.resource_policy))
+            or obs.new_members != [] or getattr(creation, 'closed_by', evidence.evidence_digest) != evidence.evidence_digest):
+        return False
+    permit = getattr(creation, 'permit', None)
+    expected = dict.fromkeys(('profile_revision', 'permit_id', 'confirmation_digest', 'launch_digest',
+                              'coalition_id', 'baseline_digest'))
+    if permit is not None:
+        if permit.boot != obs.boot: return False
+        expected = dict(profile_revision=permit.profile_revision, permit_id=permit.permit_id,
+                        confirmation_digest=permit.confirmation_digest, launch_digest=permit.launch_digest,
+                        coalition_id=permit.baseline.coalition, baseline_digest=permit.baseline.digest)
+    if evidence.kind == 'unix-scope-empty':
+        if type(creation) not in (Registered, Closed): return False
+        expected['root'] = root_json(creation.root)
+        if not (_pair(obs.scan_before) and obs.scan_before == obs.scan_after and _hex64(obs.baseline_survivors_digest)
+                and type(obs.member_count) is int and type(obs.live_task_count) is int
+                and obs.member_count == obs.live_task_count == obs.scan_after[0] - obs.scan_after[1]
+                and isinstance(obs.root_terminal_basis, str) and obs.root_terminal_basis):
+            return False
+    elif evidence.kind == 'never-created':
+        if type(creation) not in (Unissued, Issued, Sealed): return False
+        expected.update(dict.fromkeys(('root', 'scan_before', 'scan_after', 'member_count', 'live_task_count',
+                                       'baseline_survivors_digest', 'root_terminal_basis')))
+    else:
+        return False
+    return all(canonical(getattr(obs, name)) == canonical(value) for name, value in expected.items())
+
+
+def closure_reasons(evidence, reservation, *, mode):
+    """mode es el de la configuración validada; el prefijo s_/e_ de la key nunca lo decide."""
     if not isinstance(evidence, ClosureEvidence):
         return [reason('resource-cleanup-unconfirmed', 'proveedor de cierre no disponible')]
     strings = ('kind', 'issuer', 'boot', 'scope', 'provenance', 'evidence_digest')
@@ -212,17 +305,22 @@ def closure_reasons(evidence, reservation):
                 'profile_verified', 'resources_clean', 'permit_revoked', 'no_external_effects')
     if (any(type(getattr(evidence, name)) is not str for name in strings)
             or any(type(getattr(evidence, name)) is not bool for name in booleans)
-            or not isinstance(evidence.key, dict)):
+            or not isinstance(evidence.key, dict)
+            or (evidence.observation is not None and type(evidence.observation) is not Observation)):
         return [reason('resource-cleanup-unconfirmed', 'tipos de evidencia no acreditados')]
     windows = reservation['scopeKind'] == 'windows'
     code = 'windows-tree-unconfirmed' if windows else 'unix-scope-unconfirmed'
     reasons = []
-    values = dict(evidence.__dict__); expected_digest = values.pop('evidence_digest')
+    expected_digest = evidence.evidence_digest
     try:
-        computed_digest = digest(values)
+        computed_digest = digest(_evidence_values(evidence))
     except (ValueError, TypeError, RecursionError):
         return [reason(code, 'evidencia no serializable')]
-    if (not evidence.issuer or evidence.provenance != 'simulation' or not expected_digest
+    if mode == 'shadow':
+        provenance = evidence.provenance == 'simulation' and evidence.observation is None
+    else:
+        provenance = mode == 'effective' and evidence.observation is not None and _correlated(evidence, reservation)
+    if (not evidence.issuer or not provenance or not expected_digest
             or computed_digest != expected_digest or evidence.key != reservation['key']
             or evidence.boot != reservation['physicalBoot'] or evidence.scope != reservation['scope']
             or not evidence.complete or not evidence.creators_sealed):

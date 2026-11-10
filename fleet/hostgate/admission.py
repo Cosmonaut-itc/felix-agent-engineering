@@ -376,7 +376,7 @@ class Hostgate:
                 return [closed]
             if reservation['state'] == 'released': return []
             closure = self.world.closure(evidence, reservation)
-            reasons = closure_reasons(closure, reservation)
+            reasons = closure_reasons(closure, reservation, mode=self.config.mode)
             if reasons:
                 reservation['state'] = 'uncertain'
                 reservation['reasons'].extend(reasons)

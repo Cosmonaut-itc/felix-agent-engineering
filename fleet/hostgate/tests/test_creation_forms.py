@@ -3,6 +3,7 @@
 Las filas se escriben a mano en su forma durable: la prueba fija el formato, no lo deriva del producto.
 """
 import copy
+from dataclasses import asdict
 import itertools
 import tempfile
 import unittest
@@ -12,6 +13,7 @@ from hostgate.admission import Hostgate
 from hostgate.darwin_coalition import Baseline, Birth, Member
 from hostgate.model import validate_view
 from hostgate.protocol import digest
+from hostgate.scope import ClosureEvidence
 from hostgate.store import EffectiveStore, ShadowStore, StoreError, UnrecordedResult
 from hostgate.tests.support.coalition import BOOT, CID, OTHER
 from hostgate.tests.support.world import World, config, request
@@ -119,6 +121,31 @@ class Planted(unittest.TestCase):
         with self.subTest(label):
             self.assertFalse(self.accepted(view), label)
 
+    def released(self, state, proof, issued=True, **changes):
+        if state == 'sealed' and not issued:
+            creation = dict(protocol='darwin-coalition-creation@1', state='sealed', closedBy=proof['evidence_digest'])
+        else:
+            creation = permit_doc(self.row, state, closed_by=proof['evidence_digest'])
+        return self.with_row(**dict(dict(state='released', creation=creation, closureEvidence=proof,
+                                         launchPossible=state in ('consumed', 'registered', 'closed')), **changes))
+
+    def running(self):
+        return dict(self.row, state='running', launchPossible=True, creation=permit_doc(self.row, 'registered'))
+
+    def reasons(self, proof, row, mode):
+        """closure_reasons sobre la forma durable; una interfaz ausente no es una lista de motivos."""
+        from hostgate import scope
+        try:
+            return scope.closure_reasons(scope.evidence_from_json(proof), row, mode=mode)
+        except (AttributeError, TypeError) as exc:
+            return 'interfaz ausente: %r' % exc
+
+    def retains(self, label, reasons):
+        with self.subTest(label):
+            self.assertIsInstance(reasons, list, label)
+            self.assertTrue(reasons and all(r['code'] in ('unix-scope-unconfirmed', 'resource-cleanup-unconfirmed')
+                                            for r in reasons), (label, reasons))
+
 
 class Forms(Planted):
     def test_reserved_holds_unissued_issued_or_consumed(self):
@@ -182,6 +209,104 @@ class Forms(Planted):
                                               creation=permit_doc(row, state)))
 
 
+    def test_released_requires_correlated_proof(self):
+        """Variante: released_without_proof."""
+        row, scoped = self.row, evidence_doc(self.row)
+        never, unused = evidence_doc(row, 'never-created'), evidence_doc(row, 'never-created', issued=False)
+        self.legal(self.released('closed', scoped))
+        self.legal(self.released('sealed', never))
+        self.legal(self.released('sealed', unused, issued=False))
+        alien = redigest(dict(scoped, key=dict(row['key'], reservationId='e_other'), scope='e_other'))
+        for label, view in (
+                ('sin evidencia', self.released('closed', scoped, closureEvidence=DROP)),
+                ('evidencia de otra reserva', self.released('closed', alien)),
+                ('closedBy de otra prueba', self.with_row(state='released', launchPossible=True, closureEvidence=scoped,
+                                                         creation=permit_doc(row, 'closed')))) + tuple(
+                ('permiso %s' % state, self.released(state, never if state == 'issued' else scoped))
+                for state in ('issued', 'consumed', 'registered')) + (
+                ('sin permiso', self.released('sealed', unused, issued=False, creation=DROP, launchPossible=False)),
+                ('closed con never-created', self.released('closed', never)),
+                ('sealed con unix-scope-empty', self.released('sealed', scoped)),
+                ('sellado sin emitir con linea base en la prueba', self.released('sealed', never, issued=False))):
+            self.illegal(label, view)
+
+    def test_sealed_has_no_root_and_closed_has_one(self):
+        """Variante: sealed_with_root."""
+        never, unused = evidence_doc(self.row, 'never-created'), evidence_doc(self.row, 'never-created', issued=False)
+        self.legal(self.released('sealed', never))
+        self.legal(self.released('sealed', unused, issued=False))
+        # Cada ilegal difiere de su legal sólo en la raíz (y el recibo, en el último).
+        sealed = permit_doc(self.row, 'sealed', closed_by=never['evidence_digest'], root=root_doc())
+        self.illegal('sealed con raiz', self.released('sealed', never, creation=sealed))
+        bare = dict(protocol='darwin-coalition-creation@1', state='sealed', closedBy=unused['evidence_digest'],
+                    root=root_doc())
+        self.illegal('sellado sin emitir con raiz', self.released('sealed', unused, issued=False, creation=bare))
+        self.illegal('sealed con raiz y recibo', self.released('sealed', never, creation=dict(
+            sealed, scopeReceipt='receipt-1')))
+        scoped = evidence_doc(self.row)
+        self.illegal('closed sin raiz', self.released('closed', scoped, creation=permit_doc(
+            self.row, 'closed', closed_by=scoped['evidence_digest'], root=DROP, scopeReceipt=DROP)))
+
+    def test_effective_accepts_only_real_evidence(self):
+        """Variante: accept_synthetic."""
+        self.legal(self.released('closed', evidence_doc(self.row)))
+        synthetic = asdict(ClosureEvidence.fixture(self.row['key'], BOOT))
+        self.illegal('simulation en effective', self.released('closed', synthetic))
+        self.illegal('simulation sellada en effective', self.released('sealed', asdict(ClosureEvidence.fixture(
+            self.row['key'], BOOT, 'never-created')), issued=False))
+        self.retains('simulation en effective', self.reasons(synthetic, self.running(), 'effective'))
+
+    def test_mode_comes_from_configuration_not_prefix(self):
+        """Variante: mode_from_prefix."""
+        running, real = self.running(), evidence_doc(self.row)
+        self.assertEqual(self.reasons(real, running, 'effective'), [])
+        self.retains('real con modo shadow', self.reasons(real, running, 'shadow'))
+        self.retains('modo desconocido', self.reasons(real, running, 'enforcing'))
+        prefixed = dict(running, key=dict(running['key'], reservationId='s_1'), scope='s_1')
+        synthetic = asdict(ClosureEvidence.fixture(prefixed['key'], BOOT))
+        self.retains('simulation con prefijo s_', self.reasons(synthetic, prefixed, 'effective'))
+
+    def test_real_evidence_correlates_field_by_field(self):
+        """Variante: trust_supervisor_clean."""
+        running, real = self.running(), evidence_doc(self.row)
+        self.assertEqual(self.reasons(real, running, 'effective'), [])
+        obs = real['observation']
+        other = '99999999-2222-3333-4444-555555555555'
+        for label, values in (
+                ('key', dict(real, key=dict(real['key'], generation=2))),
+                ('store', dict(real, issuer='hostgate:other-store:2')),
+                ('boot', dict(real, boot=other, observation=dict(obs, boot=other))),
+                ('revision del perfil', dict(real, observation=dict(obs, profile_revision='prf_2'))),
+                ('permiso', dict(real, observation=dict(obs, permit_id='permit-2'))),
+                ('confirmacion', dict(real, observation=dict(obs, confirmation_digest='0' * 64))),
+                ('digest de la linea base', dict(real, observation=dict(obs, baseline_digest='0' * 64))),
+                ('raiz', dict(real, observation=dict(obs, root=root_doc(unique=31)))),
+                ('miembro nuevo', dict(real, observation=dict(obs, new_members=[root_doc()]))),
+                ('contadores movidos', dict(real, observation=dict(obs, scan_after=[10, 6]))),
+                ('cardinalidad', dict(real, observation=dict(obs, member_count=4))),
+                ('emisor sin epoch', dict(real, issuer='hostgate:%s' % self.row['key']['storeId'])),
+                ('procedencia', dict(real, provenance='simulation')),
+                ('sin observacion', {k: v for k, v in real.items() if k != 'observation'})):
+            self.retains(label, self.reasons(redigest(values), running, 'effective'))
+        self.retains('digest viejo', self.reasons(dict(real, observation=dict(obs, permit_id='permit-2')),
+                                                  running, 'effective'))
+        self.illegal('liberada con permiso ajeno', self.released('closed', redigest(
+            dict(real, observation=dict(obs, permit_id='permit-2')))))
+
+    def test_fixture_synthetic_evidence_no_longer_releases(self):
+        key = self.reply['reservationKey']
+        self.world.closures[('proof',)] = ClosureEvidence.fixture(key, BOOT)
+        result = self.gate.soltar('release', key, ['proof'], self.auth)
+        self.assertEqual(([r['code'] for r in result['reasons']], result['state']),
+                         (['enforcement-unavailable'], 'uncertain'))
+        stored = self.gate.store.read()['reservations'][0]
+        self.assertEqual((stored['state'], stored['launchPossible']), ('uncertain', False))
+        self.assertNotIn('closureEvidence', stored)
+        fixture = asdict(ClosureEvidence.fixture(key, BOOT))
+        self.illegal('fixture liberando', self.released('closed', fixture))
+        self.legal(self.released('closed', evidence_doc(self.row)))
+
+
 class ShadowForms(Planted):
     mode = 'shadow'
 
@@ -190,6 +315,15 @@ class ShadowForms(Planted):
         self.assertTrue(self.accepted(self.view))
         self.illegal('permiso real en sombra', self.with_row(creation=permit_doc(self.row, 'issued')))
         self.assertTrue(self.reply['wouldGrant'], self.reply)
+        key = self.reply['simulationKey']
+        self.world.closures[('proof',)] = ClosureEvidence.fixture(key, BOOT)
+        self.assertEqual(self.gate.soltar('release', key, ['proof'], self.auth)['reasons'], [])
+        self.assertTrue(self.accepted(self.gate.store.read()))
+        today = asdict(ClosureEvidence.fixture(key, BOOT))
+        today.pop('observation', None)  # Forma escrita antes de 4b.
+        self.assertTrue(self.accepted(self.with_row(state='released', closureEvidence=today)))
+        real = evidence_doc(self.row)
+        self.illegal('real en shadow', self.with_row(state='released', closureEvidence=real))
 
 
 if __name__ == '__main__':
