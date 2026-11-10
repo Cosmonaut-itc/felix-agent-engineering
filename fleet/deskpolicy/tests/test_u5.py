@@ -627,14 +627,14 @@ class WriterProcessTest(unittest.TestCase):
                 self.assertEqual(self.tick(diagnostics=seen)['mode'], 'night')
         self.assertEqual(attempts.read_text().count('attempt'), 3)
         self.assertEqual(len(log.getvalue().splitlines()), 1)
-        record = store.read_json(self.engine.record_path('stale'))
-        record['boot_id'] = record['claim']['boot_id'] = '11223344-5566-7788-99aa-bbccddeeff00'
-        self.engine.write_record(record)
+        # Same text with a different exception class remains a distinct error.
         with mock.patch.object(self.engine, 'reconcile_receipt', side_effect=ValueError('receipt-fixture')), \
                 contextlib.redirect_stderr(io.StringIO()) as log:
             self.tick(diagnostics=seen)
         self.assertEqual(len(log.getvalue().splitlines()), 1)
-        # Same text, different exception class and boot remain distinct identities.
+        record = store.read_json(self.engine.record_path('stale'))
+        record['boot_id'] = record['claim']['boot_id'] = '11223344-5566-7788-99aa-bbccddeeff00'
+        self.engine.write_record(record)
         with mock.patch.object(self.engine, 'reconcile_receipt', side_effect=ValueError('receipt-fixture')), \
                 contextlib.redirect_stderr(io.StringIO()) as log:
             self.tick(diagnostics=seen)
@@ -782,7 +782,7 @@ class WriterProcessTest(unittest.TestCase):
                 own, children = ((end_cpu[n] - start_cpu[n]) * 1000 for n in (0, 1))
                 rows[name].append((elapsed * 1000, own + children, own, children))
         for name, values in rows.items():
-            print('U5 COST COLD', name, 'wall_ms', round(values[0][0], 3), 'cpu_ms', round(values[0][1], 3), flush=True)
+            print('U5 COST FIRST', name, 'wall_ms', round(values[0][0], 3), 'cpu_ms', round(values[0][1], 3), flush=True)
             for column, label in ((0, 'wall_ms'), (1, 'cpu_ms'), (2, 'cpu_self_ms'), (3, 'cpu_children_ms')):
                 ordered = sorted(row[column] for row in values[1:])
                 print('U5 COST', name, label, 'n', len(ordered), 'p50', round(ordered[9], 3),
