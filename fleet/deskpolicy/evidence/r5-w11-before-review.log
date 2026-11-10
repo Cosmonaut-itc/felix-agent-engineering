@@ -1,0 +1,77 @@
+GATE load1 4.294921875 since_last_other_start_s 223.31470823287964
+PROGRESS affinity [0, 1] module_sha256 caac735af226b3bca4eff0cf8d297313b52e153ea4f00e58b6bc66745abf14d0
+NATURAL {"load1": 4.27099609375, "empty": 18, "inconclusive": 2, "probes": 20, "proc_count": 108}
+CHURN_TICK {"tick": 1, "elapsed_s": 0.751, "probe": null, "state": "uncertain", "load1": 4.27099609375}
+CHURN_TICK {"tick": 2, "elapsed_s": 42.967, "probe": null, "state": "closed", "load1": 4.23779296875}
+CHURN_TICK {"tick": 3, "elapsed_s": 51.176, "probe": null, "state": "closed", "load1": 4.21875}
+CHURN_TICK {"tick": 4, "elapsed_s": 72.219, "probe": null, "state": "closed", "load1": 4.09375}
+CHURN_TICK {"tick": 5, "elapsed_s": 90.648, "probe": [], "state": "closed", "load1": 4.14208984375}
+CHURN_TICK {"tick": 6, "elapsed_s": 102.67, "probe": null, "state": "closed", "load1": 4.1904296875}
+CHURN_REPLACEMENT {"state": "admitted", "reason": null, "execute": true}
+CHURN_STOPPED forks 19092 duration_s 102.909
+FINAL {"state": "closed", "load1": 4.1904296875}
+test_lost_ack_replay_never_executes_twice (deskpolicy.tests.test_policy.PolicyTest.test_lost_ack_replay_never_executes_twice) ... FAIL
+test_w9_explicit_cli_harness_reaches_real_entrypoint (deskpolicy.tests.test_r2.RegressionTest.test_w9_explicit_cli_harness_reaches_real_entrypoint) ... ok
+test_c2_close_after_all_handoff_sessions_drained (deskpolicy.tests.test_r4.LifecycleTest.test_c2_close_after_all_handoff_sessions_drained) ... ok
+
+======================================================================
+FAIL: test_lost_ack_replay_never_executes_twice (deskpolicy.tests.test_policy.PolicyTest.test_lost_ack_replay_never_executes_twice)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-review-sol-r4-efe7ea75/fleet/deskpolicy/tests/test_policy.py", line 460, in test_lost_ack_replay_never_executes_twice
+    self.close_actor(worker, connection)
+  File "/home/felix/remote-run/work/desk-politica-review-sol-r4-efe7ea75/fleet/deskpolicy/tests/test_policy.py", line 181, in close_actor
+    self.assertEqual(connection.recv(), "closed")
+AssertionError: 'close-unproven' != 'closed'
+- close-unproven
++ closed
+
+
+----------------------------------------------------------------------
+Ran 3 tests in 9.268s
+
+FAILED (failures=1)
+test_w11_preparation_may_stall_until_the_receipt_writer_releases (__main__.FixtureScheduleTest.test_w11_preparation_may_stall_until_the_receipt_writer_releases) ... FAIL
+test_w12_script_may_start_only_after_the_fixture_takes_mutex (__main__.FixtureScheduleTest.test_w12_script_may_start_only_after_the_fixture_takes_mutex) ... {"detail": "mutex-timeout", "reason": "close-error", "schema": "pao/desk-close-diagnostic@1", "script_exit_code": 3}
+R3 timeout {'script_exit_code': 3, 'claim_state': 'uncertain', 'close_error': {'detail': 'mutex-timeout', 'reason': 'close-error', 'schema': 'pao/desk-close-diagnostic@1', 'script_exit_code': 3}} wrapper_rc 3
+ok
+
+======================================================================
+FAIL: test_w11_preparation_may_stall_until_the_receipt_writer_releases (__main__.FixtureScheduleTest.test_w11_preparation_may_stall_until_the_receipt_writer_releases)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/desk-politica-review-sol-r4-efe7ea75/fleet/deskpolicy/evidence/r4-fixture-schedules.py", line 47, in test_w11_preparation_may_stall_until_the_receipt_writer_releases
+    r3.RoundThreeTest.test_w11_replay_never_overwrites_terminal_receipt(self)
+  File "/home/felix/remote-run/work/desk-politica-review-sol-r4-efe7ea75/fleet/deskpolicy/tests/test_r3.py", line 248, in test_w11_replay_never_overwrites_terminal_receipt
+    self.assertEqual(self.result(pair)['rc'], 0)
+AssertionError: 75 != 0
+
+----------------------------------------------------------------------
+Ran 2 tests in 21.398s
+
+FAILED (failures=1)
+test_new_keeper_killed_server_alive (opus_r3_repro.Repro3.test_new_keeper_killed_server_alive) ...
+== NEW-1: keeper Jale muere sin cerrar; su servidor sigue vivo en la sesión del keeper
+    admitida True launcher_sid 1077629 keeper_sid 1077720
+    sesión original vacía False | flock slot-0 tomado por keeper True
+    con keeper vivo -> claim active
+    keeper SIGKILL; keeper vivo False | servidor vivo True sid servidor 1077720 | miembros sesión keeper [1077720, 1077721]
+    tras un tick del writer -> claim uncertain None | slot-0 existe True | archivado False
+    nueva verify Jale carril 1 -> {'state': 'denied', 'reason': 'resource-busy', 'mode': 'night', 'lane': 1, 'execute': False, 'replay': False, 'claim_state': None, 'script_exit_code': None, 'close_cause': None} | servidor anterior vivo True
+ok
+test_monotone_receipt_after_reconcile (__main__.MonoCompatible.test_monotone_receipt_after_reconcile) ...
+== MONO: guion sale 3 con hijo; hijo termina; writer reconcilia; replay del mismo run
+{"detail": "close-unproven", "reason": "close-unproven", "schema": "pao/desk-close-diagnostic@1", "script_exit_code": 3}
+    rc 3 | líneas stdout 1
+    recibo tras cierre {'state': 'admitted', 'reason': None, 'mode': 'night', 'lane': 1, 'execute': True, 'replay': False, 'claim_state': 'uncertain', 'script_exit_code': 3, 'close_cause': None}
+    claim tras tick {'state': 'closed', 'close_cause': 'reconciled', 'script_exit_code': 3}
+    recibo tras tick (reconcile no lo toca) {'state': 'admitted', 'reason': None, 'mode': 'night', 'lane': 1, 'execute': True, 'replay': False, 'claim_state': 'closed', 'script_exit_code': 3, 'close_cause': 'reconciled'}
+    replay rc 0 stdout {'state': 'admitted', 'reason': None, 'mode': 'night', 'lane': 1, 'execute': False, 'replay': True, 'claim_state': 'closed', 'script_exit_code': 3, 'close_cause': 'reconciled'}
+    recibo tras replay {'state': 'admitted', 'reason': None, 'mode': 'night', 'lane': 1, 'execute': True, 'replay': False, 'claim_state': 'closed', 'script_exit_code': 3, 'close_cause': 'reconciled'}
+ok
+
+----------------------------------------------------------------------
+Ran 2 tests in 29.892s
+
+OK
+RESULT progress=0 fixtures=1 opus_original=0 rerun=1

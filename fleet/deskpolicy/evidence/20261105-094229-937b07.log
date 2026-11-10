@@ -1,0 +1,29 @@
+GATE load1 5.12060546875 since_last_other_start_s 137.25398182868958 limit 12
+R4 module_sha256 a24eb6b65447678649bce8ad1913da8b94de1e450a84a7d74e10f637eb005cc2
+test_c2_close_after_all_handoff_sessions_drained (deskpolicy.tests.test_r4.LifecycleTest.test_c2_close_after_all_handoff_sessions_drained) ... ok
+test_c2_keeper_death_before_first_close (deskpolicy.tests.test_r4.LifecycleTest.test_c2_keeper_death_before_first_close) ... R4 keeper 1 True {'schema': 'pao/desk-reconcile@1', 'closed': []} uncertain
+ok
+test_c2_missing_keeper_registration_never_reconciles (deskpolicy.tests.test_r4.LifecycleTest.test_c2_missing_keeper_registration_never_reconciles) ... R4 keeper 1 False {'schema': 'pao/desk-reconcile@1', 'closed': []} uncertain
+ok
+test_c2_second_handoff_tracks_every_session (deskpolicy.tests.test_r4.LifecycleTest.test_c2_second_handoff_tracks_every_session) ... R4 keeper 2 True {'schema': 'pao/desk-reconcile@1', 'closed': []} uncertain
+ok
+test_c3_fork_during_close_snapshot (deskpolicy.tests.test_r4.LifecycleTest.test_c3_fork_during_close_snapshot) ... R4 fork close {'state': 'uncertain', 'code': 3, 'children': [{'pid': 999363, 'start': 5577107, 'pgid': 999361, 'sid': 999361, 'zombie': False}]}
+ok
+test_c3_fork_during_reconcile_snapshot (deskpolicy.tests.test_r4.LifecycleTest.test_c3_fork_during_reconcile_snapshot) ... R4 fork reconcile {'schema': 'pao/desk-reconcile@1', 'closed': []} uncertain
+ok
+test_na_reconcile_updates_fixed_receipt_without_replay (deskpolicy.tests.test_r4.LifecycleTest.test_na_reconcile_updates_fixed_receipt_without_replay) ... R4 reconciled receipt closed 3 reconciled
+ok
+test_nb_close_diagnostic_is_separate_and_stdout_single_line (deskpolicy.tests.test_r4.LifecycleTest.test_nb_close_diagnostic_is_separate_and_stdout_single_line) ... R4 diagnostic {'detail': 'close-unproven', 'reason': 'close-unproven', 'schema': 'pao/desk-close-diagnostic@1', 'script_exit_code': 3} stdout_lines 1
+ok
+test_wr3_hasito_contract_requires_local_explicit_lane_before_sync (deskpolicy.tests.test_r4.LifecycleTest.test_wr3_hasito_contract_requires_local_explicit_lane_before_sync) ... ok
+test_c3_disappearing_pid_is_inconclusive (deskpolicy.tests.test_r4.SessionProofTest.test_c3_disappearing_pid_is_inconclusive) ... ok
+test_c3_empty_first_sweep_does_not_prove_empty (deskpolicy.tests.test_r4.SessionProofTest.test_c3_empty_first_sweep_does_not_prove_empty) ... ok
+test_c3_identity_change_is_inconclusive (deskpolicy.tests.test_r4.SessionProofTest.test_c3_identity_change_is_inconclusive) ... ok
+test_c3_stat_read_failure_is_inconclusive (deskpolicy.tests.test_r4.SessionProofTest.test_c3_stat_read_failure_is_inconclusive) ... ok
+test_c3_two_complete_empty_sweeps_are_positive_control (deskpolicy.tests.test_r4.SessionProofTest.test_c3_two_complete_empty_sweeps_are_positive_control) ... ok
+test_c3_zombie_counts_until_reaped (deskpolicy.tests.test_r4.SessionProofTest.test_c3_zombie_counts_until_reaped) ... ok
+
+----------------------------------------------------------------------
+Ran 15 tests in 31.807s
+
+OK

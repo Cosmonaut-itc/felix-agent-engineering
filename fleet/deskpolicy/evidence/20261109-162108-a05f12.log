@@ -1,0 +1,193 @@
+GATE load1 0.36669921875 since_last_other_start_s 178 MemAvailable_bytes 31971987456
+HEAD=87ac7a5c3ed9a9729b0a0413f0eb3203fd6e4395
+SUCIO ?? .remote-run.lock
+R9 BASE module_sha256 d8084346baa0275af09f6e353b02671240dbba7b65eab1a87e616f9873e2edd9 CPUs [0, 1]
+test_arm_valid_oserror (deskpolicy.tests.test_r9.RoundNineTest.test_arm_valid_oserror) ... R9 arm_valid arm = read_json fired 1 returned True exception NoneType policy_changed True
+FAIL
+test_assert_held_owner_blocking_io (deskpolicy.tests.test_r9.RoundNineTest.test_assert_held_owner_blocking_io) ... R9 assert_held fcntl.flock(fd, fired 1 returned False exception TimeoutError policy_changed False
+FAIL
+test_assert_held_probe_blocking_io (deskpolicy.tests.test_r9.RoundNineTest.test_assert_held_probe_blocking_io) ... R9 assert_held fcntl.flock(probe, fired 1 returned False exception TimeoutError policy_changed False
+FAIL
+test_held_blocking_io (deskpolicy.tests.test_r9.RoundNineTest.test_held_blocking_io) ... R9 held fcntl.flock(fd, fired 1 returned False exception TimeoutError policy_changed False
+FAIL
+test_mutex_blocking_io (deskpolicy.tests.test_r9.RoundNineTest.test_mutex_blocking_io) ... R9 mutex fcntl.flock(fd, fired 1 returned False exception TimeoutError policy_changed False
+FAIL
+test_open_file_baseexception_cleanup (deskpolicy.tests.test_r9.RoundNineTest.test_open_file_baseexception_cleanup) ... R9 open_file secure_fd(fd, path fired 1 returned False exception TimeoutError policy_changed False
+FAIL
+test_public_cli_loop_aborts_then_publishes_with_new_deadline (deskpolicy.tests.test_r9.RoundNineTest.test_public_cli_loop_aborts_then_publishes_with_new_deadline) ... R9 CLI first {'algorithm': 'pending-divisor-min1@1', 'boot_id': '00112233-4455-6677-8899-aabbccddeeff', 'cpu_weight_budget': 8, 'expires_at': '2026-11-05T06:01:00Z', 'expires_boottime_s': 1060, 'issued_at': '2026-11-05T06:00:00Z', 'issued_boottime_s': 1000, 'limits': {'hasito': 2, 'jale': 2}, 'load1_lt': 9, 'max_run_weight': 4, 'min_start_interval_s': 120, 'mode': 'day', 'night_budget': 4, 'pending': {'hasito': 0, 'jale': 0}, 'revision': 2, 'schema': 'pao/desk-policy@1', 'writer': 'pao'}
+R9 CLI tick=1 deadline=9.649528
+FAIL
+test_publish_missing_control (deskpolicy.tests.test_r9.RoundNineTest.test_publish_missing_control) ... R9 publish control = read_json fired 1 returned False exception TimeoutError policy_changed False
+FAIL
+test_reconcile_claim_oserror (deskpolicy.tests.test_r9.RoundNineTest.test_reconcile_claim_oserror) ... R9 reconcile_claim free = not held fired 1 returned True exception NoneType policy_changed True
+FAIL
+test_reconcile_receipt_missing_file (deskpolicy.tests.test_r9.RoundNineTest.test_reconcile_receipt_missing_file) ... {"detail": "writer-cycle-timeout", "reason": "receipt-error", "request_id": "stale", "run_id": "run-stale", "schema": "pao/desk-reconcile-diagnostic@1"}
+R9 reconcile_receipt receipt = read_json fired 1 returned True exception NoneType policy_changed True
+FAIL
+test_recover_receipt_exception (deskpolicy.tests.test_r9.RoundNineTest.test_recover_receipt_exception) ... {"detail": "writer-cycle-timeout", "reason": "receipt-error", "request_id": "stale", "run_id": "run-stale", "schema": "pao/desk-reconcile-diagnostic@1"}
+R9 recover_receipt self.reconcile_receipt(record) fired 1 returned True exception NoneType policy_changed True
+FAIL
+test_session_members_inner_missing_process (deskpolicy.tests.test_r9.RoundNineTest.test_session_members_inner_missing_process) ... R9 session_members before = item.stat() fired 1 returned True exception NoneType policy_changed True
+FAIL
+test_session_members_outer_oserror (deskpolicy.tests.test_r9.RoundNineTest.test_session_members_outer_oserror) ... R9 session_members entries = list fired 1 returned True exception NoneType policy_changed True
+FAIL
+test_strict_json_valueerror (deskpolicy.tests.test_r9.RoundNineTest.test_strict_json_valueerror) ... R9 strict_json result = json.loads fired 1 returned False exception TimeoutError policy_changed False
+FAIL
+test_timestamp_valueerror (deskpolicy.tests.test_r9.RoundNineTest.test_timestamp_valueerror) ... R9 timestamp return dt.datetime.strptime fired 1 returned False exception TimeoutError policy_changed False
+FAIL
+
+======================================================================
+FAIL: test_arm_valid_oserror (deskpolicy.tests.test_r9.RoundNineTest.test_arm_valid_oserror)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 135, in test_arm_valid_oserror
+    self.interrupt_publish(DeskPolicy.arm_valid, 'arm = read_json')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 105, in interrupt_publish
+    self.assertFalse(returned, 'engine.publish() returned normally after SIGALRM')
+AssertionError: True is not false : engine.publish() returned normally after SIGALRM
+
+======================================================================
+FAIL: test_assert_held_owner_blocking_io (deskpolicy.tests.test_r9.RoundNineTest.test_assert_held_owner_blocking_io)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 150, in test_assert_held_owner_blocking_io
+    self.interrupt_publish(store.assert_held, 'fcntl.flock(fd,')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 108, in interrupt_publish
+    self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
+AssertionError: TimeoutError('writer-cycle-timeout') is an instance of <class 'Exception'> : deadline must bypass Exception and OSError
+
+======================================================================
+FAIL: test_assert_held_probe_blocking_io (deskpolicy.tests.test_r9.RoundNineTest.test_assert_held_probe_blocking_io)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 147, in test_assert_held_probe_blocking_io
+    self.interrupt_publish(store.assert_held, 'fcntl.flock(probe,')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 108, in interrupt_publish
+    self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
+AssertionError: TimeoutError('writer-cycle-timeout') is an instance of <class 'Exception'> : deadline must bypass Exception and OSError
+
+======================================================================
+FAIL: test_held_blocking_io (deskpolicy.tests.test_r9.RoundNineTest.test_held_blocking_io)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 153, in test_held_blocking_io
+    self.interrupt_publish(store.held, 'fcntl.flock(fd,')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 108, in interrupt_publish
+    self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
+AssertionError: TimeoutError('writer-cycle-timeout') is an instance of <class 'Exception'> : deadline must bypass Exception and OSError
+
+======================================================================
+FAIL: test_mutex_blocking_io (deskpolicy.tests.test_r9.RoundNineTest.test_mutex_blocking_io)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 144, in test_mutex_blocking_io
+    self.interrupt_publish(store.mutex.__wrapped__, 'fcntl.flock(fd,')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 108, in interrupt_publish
+    self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
+AssertionError: TimeoutError('writer-cycle-timeout') is an instance of <class 'Exception'> : deadline must bypass Exception and OSError
+
+======================================================================
+FAIL: test_open_file_baseexception_cleanup (deskpolicy.tests.test_r9.RoundNineTest.test_open_file_baseexception_cleanup)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 141, in test_open_file_baseexception_cleanup
+    self.interrupt_publish(store.open_file, 'secure_fd(fd, path', ancestor='read_json')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 108, in interrupt_publish
+    self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
+AssertionError: TimeoutError('writer-cycle-timeout') is an instance of <class 'Exception'> : deadline must bypass Exception and OSError
+
+======================================================================
+FAIL: test_public_cli_loop_aborts_then_publishes_with_new_deadline (deskpolicy.tests.test_r9.RoundNineTest.test_public_cli_loop_aborts_then_publishes_with_new_deadline)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 207, in test_public_cli_loop_aborts_then_publishes_with_new_deadline
+    self.assertEqual(first, {'schema': 'pao/desk-error@1', 'reason': 'census-unknown',
+AssertionError: {'algorithm': 'pending-divisor-min1@1', 'bo[431 chars]pao'} != {'schema': 'pao/desk-error@1', 'reason': 'c[61 chars]: 75}
+Diff is 720 characters long. Set self.maxDiff to None to see it.
+
+======================================================================
+FAIL: test_publish_missing_control (deskpolicy.tests.test_r9.RoundNineTest.test_publish_missing_control)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 138, in test_publish_missing_control
+    self.interrupt_publish(DeskPolicy.publish, 'control = read_json')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 108, in interrupt_publish
+    self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
+AssertionError: TimeoutError('writer-cycle-timeout') is an instance of <class 'Exception'> : deadline must bypass Exception and OSError
+
+======================================================================
+FAIL: test_reconcile_claim_oserror (deskpolicy.tests.test_r9.RoundNineTest.test_reconcile_claim_oserror)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 120, in test_reconcile_claim_oserror
+    self.interrupt_publish(DeskPolicy.reconcile_claim, 'free = not held')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 105, in interrupt_publish
+    self.assertFalse(returned, 'engine.publish() returned normally after SIGALRM')
+AssertionError: True is not false : engine.publish() returned normally after SIGALRM
+
+======================================================================
+FAIL: test_reconcile_receipt_missing_file (deskpolicy.tests.test_r9.RoundNineTest.test_reconcile_receipt_missing_file)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 132, in test_reconcile_receipt_missing_file
+    self.interrupt_publish(DeskPolicy.reconcile_receipt, 'receipt = read_json')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 105, in interrupt_publish
+    self.assertFalse(returned, 'engine.publish() returned normally after SIGALRM')
+AssertionError: True is not false : engine.publish() returned normally after SIGALRM
+
+======================================================================
+FAIL: test_recover_receipt_exception (deskpolicy.tests.test_r9.RoundNineTest.test_recover_receipt_exception)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 129, in test_recover_receipt_exception
+    self.interrupt_publish(DeskPolicy.recover_receipt, 'self.reconcile_receipt(record)')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 105, in interrupt_publish
+    self.assertFalse(returned, 'engine.publish() returned normally after SIGALRM')
+AssertionError: True is not false : engine.publish() returned normally after SIGALRM
+
+======================================================================
+FAIL: test_session_members_inner_missing_process (deskpolicy.tests.test_r9.RoundNineTest.test_session_members_inner_missing_process)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 126, in test_session_members_inner_missing_process
+    self.interrupt_publish(store.session_members, 'before = item.stat()')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 105, in interrupt_publish
+    self.assertFalse(returned, 'engine.publish() returned normally after SIGALRM')
+AssertionError: True is not false : engine.publish() returned normally after SIGALRM
+
+======================================================================
+FAIL: test_session_members_outer_oserror (deskpolicy.tests.test_r9.RoundNineTest.test_session_members_outer_oserror)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 123, in test_session_members_outer_oserror
+    self.interrupt_publish(store.session_members, 'entries = list')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 105, in interrupt_publish
+    self.assertFalse(returned, 'engine.publish() returned normally after SIGALRM')
+AssertionError: True is not false : engine.publish() returned normally after SIGALRM
+
+======================================================================
+FAIL: test_strict_json_valueerror (deskpolicy.tests.test_r9.RoundNineTest.test_strict_json_valueerror)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 156, in test_strict_json_valueerror
+    self.interrupt_publish(model.strict_json, 'result = json.loads')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 108, in interrupt_publish
+    self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
+AssertionError: TimeoutError('writer-cycle-timeout') is an instance of <class 'Exception'> : deadline must bypass Exception and OSError
+
+======================================================================
+FAIL: test_timestamp_valueerror (deskpolicy.tests.test_r9.RoundNineTest.test_timestamp_valueerror)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 159, in test_timestamp_valueerror
+    self.interrupt_publish(model.timestamp, 'return dt.datetime.strptime')
+  File "/home/felix/remote-run/work/dirigida-desk-politica-u1-r9-base-4d6151a8/.audit/r9-base/fleet/deskpolicy/tests/test_r9.py", line 108, in interrupt_publish
+    self.assertNotIsInstance(caught, Exception, 'deadline must bypass Exception and OSError')
+AssertionError: TimeoutError('writer-cycle-timeout') is an instance of <class 'Exception'> : deadline must bypass Exception and OSError
+
+----------------------------------------------------------------------
+Ran 15 tests in 30.465s
+
+FAILED (failures=15)
+R9 BASE RESUMEN run 15 failures 15 errors 0 skipped 0
+R9 BASE rc=0 (0 = todas fallan por aserción)
