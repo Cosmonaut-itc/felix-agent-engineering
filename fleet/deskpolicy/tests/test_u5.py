@@ -869,3 +869,42 @@ assert result['mode'] == 'night', result
         self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'uncertain')
         self.assertEqual(self.tick()['mode'], 'night')
         self.assertEqual(store.read_json(self.engine.record_path('stale'))['claim']['state'], 'closed')
+
+    def test_diagnostic_flood_does_not_starve_deadline(self):
+        reached = self.h.directory / 'diagnostic-flood'
+
+        def publish(**kw):
+            with store.mutex(self.h.root):
+                value = {'schema': 'pao/desk-reconcile-diagnostic@1', 'request_id': 'stale',
+                         'run_id': 'run-stale', 'reason': 'receipt-error', 'detail': 'x' * 4096}
+                count = 0
+                while True:
+                    self.engine.receipt_diagnostic(('root', 'boot', 'stale', 'run-stale', 'module', 'type', 'detail'), value)
+                    count += 1
+                    if count == 100:
+                        reached.write_text(str(os.getpid()))
+
+        with mock.patch.object(self.engine, 'publish', publish), \
+                contextlib.redirect_stderr(io.StringIO()) as log:
+            started = time.monotonic()
+            value = self.tick(1)
+        self.assertTrue(reached.exists(), 'fixture must send more than a pipe buffer')
+        self.assertIn('writer-cycle-timeout', value['detail'])
+        self.assertLess(time.monotonic() - started, 3)
+        self.assertEqual(len(log.getvalue().splitlines()), 1)
+        self.assert_mutex_free()
+
+    def test_failed_commit_phase_transport_never_writes_policy(self):
+        before = (self.h.root / 'pao-policy-v1.json').read_bytes()
+        real_send = cli._writer_send
+
+        def send(fd, kind, **payload):
+            if kind == 'commit-start':
+                os.close(fd)
+            return real_send(fd, kind, **payload)
+
+        with mock.patch.object(cli, '_writer_send', send):
+            value = self.tick()
+        self.assertEqual(value['schema'], 'pao/desk-error@1')
+        self.assertEqual((self.h.root / 'pao-policy-v1.json').read_bytes(), before)
+        self.assert_mutex_free()
