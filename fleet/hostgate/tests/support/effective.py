@@ -32,7 +32,7 @@ class Coalition:
             self.kernel.add(owner.pid, owner.unique)
         return self._reader().certify(owner)
 
-    def observe(self, baseline): return self._reader().observe(baseline)
+    def observe(self, baseline, root=None): return self._reader().observe(baseline, root=root)
 
     def observe_root(self, owner, pid):
         if pid not in self.kernel.procs: self.kernel.add(pid, pid * 10, parent=owner.unique)
