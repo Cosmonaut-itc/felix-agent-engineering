@@ -448,6 +448,16 @@ de vacío bajo el mutex.
 Si se deniega después de tomar el fd de vida, el consumidor cierra ese fd
 antes de soltar el mutex y de esperar. Si se admite, lo conserva hasta cierre acreditado o handoff.
 Nunca libera el mutex ni sus locks mediante replace o borrado del archivo.
+Las escrituras de estado hacen sus `fsync` con el mutex tomado. Con el disco raíz
+del desk saturado, un `fsync` puede tardar más que la espera del mutex. El
+2026-11-11 uno de 617 bytes tardó 2 min 47 s, con `full avg10` de
+`/proc/pressure/io` entre 83 y 89. Quien espera el mutex en ese rato recibe 75
+con `reason=census-unknown` y `detail=mutex-timeout`. Ese 75 se reintenta como
+cualquier otro y no informa del censo.
+Antes de una operación administrativa que escribe bajo el mutex, PAO mide un
+`fsync` propio sin tomar el mutex. Si tarda más de 1 s, no empieza la operación.
+La presión de disco sola no predice esa latencia. Nadie lanza lecturas masivas,
+como `du` o `find`, sobre el home del desk.
 
 Una reducción de N con más vivos que el presupuesto produce cero admisiones
 hasta drenar por debajo del nuevo N. Aumentar la cuota del otro proyecto no
@@ -697,6 +707,16 @@ La noche sigue exigiendo preflight y arranque explícito del writer de PAO.
 Un boot nuevo no adopta metadatos viejos. Si sobreviven claims antiguas en el
 filesystem, bloquean hasta reconciliación. Reiniciar no acredita limpieza Docker.
 
+Windows Update reinicia el host dentro de la ventana de noche. Las horas activas
+de Windows van de 8 a 1, hora local (UTC-6), así que esos reinicios caen entre
+las 07:00Z y las 14:00Z. El 2026-11-11 a las 07:29Z uno cortó un armado.
+Tras el reinicio, la distro y sshd vuelven solos. Docker Desktop y el keepalive
+de WSL dependen de una sesión interactiva de Windows y no vuelven hasta que existe.
+Antes de armar noche, PAO comprueba tres cosas: hay sesión interactiva, Docker
+Desktop corre y Windows no tiene un reinicio pendiente. Si falta una, no arma.
+Un reinicio con noche activa devuelve día: el armado es del boot anterior y el
+writer no vuelve solo. Volver a noche exige preflight nuevo.
+
 ## Integración Jale
 
 `run-suite.sh` registra su RUN_ID antes de esperar admisión y renueva cada 30 s.
@@ -928,6 +948,12 @@ por sus dueños con nuevos ids y orden verificable.
 Las primeras observaciones se hacen de día. El canario nocturno se habilita
 tras APTO, gates y verificador. Hay que acreditar expiración, amanecer y caída
 del writer antes de dejarlo sin vigilancia.
+El armado exige censo vacío, y el desk rara vez lo está por sí solo. El
+2026-11-11 un armado esperó 22 minutos sin un instante limpio, con 3 claims
+vivas al empezar. Los últimos 12 corrió con una ventana `pao-window.json`.
+Esa ventana sólo frena admisiones nuevas de Jale. No frena a Hasito ni termina
+corridas vivas. El plazo de un armado se dimensiona con la corrida viva más
+larga, no con la duración de la ventana.
 El rollback baja a día y drena antes de revertir consumidores o índices altos.
 
 Las pruebas PAO están en `fleet/deskpolicy/tests/`. Se ejecutan en un mirror
