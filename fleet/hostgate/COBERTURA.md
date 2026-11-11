@@ -460,5 +460,6 @@ Variantes defectuosas que las pruebas matan por aserción: `profile_id_is_certif
 `exec_status_ignored`, `native_init_escapes`, `cleanup_stops_on_failure`,
 `revalidate_in_batch`, `root_not_retried`, `group_not_ended` y
 `native_built_in_cleanup`. Los ids de las
-corridas en la Mini constan en el PR. No acredita la conexión de la acreditación ni
-del selfcheck al runtime.
+corridas en la Mini constan en el PR. Desde 4c-2, `RuntimeAccreditation` cubre la conexión
+al runtime con el selfcheck y el build sustituidos. El selfcheck real en el arranque del
+servicio no está acreditado.

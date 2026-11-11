@@ -446,8 +446,8 @@ numéricos `0 < timeout <= 300` segundos; un fallo cierra el canal y conserva du
 Desde 4c-1, `soltar` efectivo sella lo nunca emitido y cierra lo registrado con prueba
 propia; `ClosureEvidence.fixture` ya no libera. Desde 4b-1 la validación admite filas `running`,
 `released` y `launchPossible=True` sólo con las formas de «Formas del permiso y
-evidencia real»; desde 4c-1 las escriben los métodos de creación. El runtime real aún no acredita
-perfiles. No hay CLI de provisión efectiva, mantenimiento periódico, instalación
+evidencia real»; desde 4c-1 las escriben los métodos de creación. Desde 4c-2 el runtime efectivo
+conecta la coalición y acredita perfiles. No hay CLI de provisión efectiva, mantenimiento periódico, instalación
 ni activación de hosts. La espera autónoma y la integración Fleet pertenecen a
 entregas posteriores. Las pruebas nuevas usan sólo autoridades y procesos privados.
 
@@ -521,8 +521,11 @@ evidencia. Una fila `released` sólo valida con una evidencia así.
 
 ## Acreditación, store v2 y selfcheck · SEN-5650, entrega 4b-2
 
-Nada de esta entrega está conectado: ningún módulo llama a `accredit` ni al
-selfcheck, y `Runtime.profile_verified` sigue en falso. Una prueba lo comprueba.
+En 4b-2 nada de esta entrega estaba conectado. Desde 4c-2, sólo `service.py` llama a
+`accredit` y al selfcheck: el runtime efectivo corre el selfcheck una vez por arranque
+si algún perfil trae bloque, y `Runtime.profile_verified` devuelve el `Accredited` de
+este boot. `authorize_creation` exige que el `launch` declare el `bootstrapDigest` y el
+`launcherDigest` de ese `Accredited`. Una prueba comprueba que sólo `service.py` los llama.
 
 `admin.load_config` acepta en cada perfil, junto a `minimumDemand`, un bloque de
 acreditación estricto: `scopeMechanism` (sólo `darwin-coalition@1`, el lector de

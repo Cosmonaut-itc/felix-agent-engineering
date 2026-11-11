@@ -122,7 +122,7 @@ def validate(value, operation=None):
         confirmation = _exact(value['confirmation'], 'operationId requestDigest attemptId source')
         identifier(confirmation['operationId']); identifier(confirmation['attemptId']); _hex64(confirmation['requestDigest'])
         if confirmation['source'] not in ('reply', 'same-channel-replay'): raise ValueError('origen de confirmacion')
-        for name in _exact(value['launch'], 'argvDigest inputDigest bootstrapDigest').values(): _hex64(name)
+        for name in _exact(value['launch'], 'argvDigest inputDigest bootstrapDigest launcherDigest').values(): _hex64(name)
     if op in ('consume_creation', 'record_started'): identifier(value['permitId'])
     if op == 'consume_creation': _hex64(value['launchDigest'])
     if op == 'record_started':

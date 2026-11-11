@@ -426,6 +426,8 @@ class Hostgate:
                 raise Refused(reason('operation-conflict', 'confirmacion distinta del grant original'))
             if type(creation_from_row(row)) is not scope.Unissued:
                 raise Refused(reason('operation-conflict', 'la reserva ya tiene permiso; nunca se emite otro'))
+            if (launch['bootstrapDigest'], launch['launcherDigest']) != (verdict.bootstrap_digest, verdict.launcher_digest):
+                raise Refused(reason('profile-unverified', 'launch distinto del perfil acreditado'))  # Design §2, pieza 2.
             from .darwin_coalition import CoalitionUnavailable, Retry
             try:
                 baseline = self.world.coalition.certify(scope.owner_birth(row))

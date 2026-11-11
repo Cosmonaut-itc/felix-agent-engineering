@@ -118,8 +118,9 @@ class Accreditation(Profiles):
             self.unverified(label, self.verdict(NAME, block(), **kwargs), detail)
         self.unverified('uid booleano igual al configurado', self.verdict(NAME, block(workloadUid=1), uid=True), 'uid')
         verdict = self.verdict(NAME, block())
-        self.assertEqual((type(verdict).__name__, getattr(verdict, 'boot', None), getattr(verdict, 'darwin_build', None)),
-                         ('Accredited', BOOT, BUILD))
+        self.assertEqual((type(verdict).__name__, getattr(verdict, 'boot', None), getattr(verdict, 'darwin_build', None),
+                          getattr(verdict, 'bootstrap_digest', None), getattr(verdict, 'launcher_digest', None)),
+                         ('Accredited', BOOT, BUILD, block()['bootstrapDigest'], block()['launcherDigest']))
 
 
 class Peers:
