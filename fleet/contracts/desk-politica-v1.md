@@ -134,6 +134,8 @@ Los consumidores declaran el peso mediante esta tabla normativa de PAO.
 | Jale `api-unit` y `host-tests` | 1 |
 | Hasito `script` | Entero de 1 a 4 declarado por el guion; por omisión, 4. |
 
+Un modo de Jale sin fila en la tabla no corre en el desk: el adaptador sale con 75
+antes de registrar. Hoy es el caso de `perf-panel`, que sólo corre en la Mini.
 U2 fija Turbo `--concurrency=4` en `packages` y `packages-build`.
 Los tipos `chain`, `verify` y `exclusive` conservan su función de exclusividad.
 El adaptador Jale traduce el comando a peso antes de registrar la solicitud.
@@ -292,6 +294,12 @@ El token se guarda sólo en estado y recibos privados. No se pasa por entorno,
 argumentos del proceso ni logs de texto; `traspasar` y `cerrar` lo leen de
 un fd heredado. El cliente escribe los 64 caracteres ASCII en una escritura
 y cierra el escritor. Cada operación recibe un canal nuevo con el mismo token.
+El supervisor puede conservarlo en la memoria de su proceso, sin exportarlo.
+Una salida de la CLI que incluye la claim lleva el token. Es un recibo privado.
+`estado` incluye las claims vivas de los dos proyectos con su token.
+Jale la captura y sólo imprime campos decodificados. Hasito la conserva en
+`lanzador.log`, dentro de la evidencia privada de la MacBook. Esa copia
+incumple la regla anterior sobre logs de texto. Corregirla pasa a SEN-5865.
 
 La prueba de sesión devuelve tres resultados, vacío probado, miembros
 hallados o inconcluso. Los zombies cuentan como miembros mientras existan.
@@ -443,6 +451,21 @@ de vacío bajo el mutex.
 Si se deniega después de tomar el fd de vida, el consumidor cierra ese fd
 antes de soltar el mutex y de esperar. Si se admite, lo conserva hasta cierre acreditado o handoff.
 Nunca libera el mutex ni sus locks mediante replace o borrado del archivo.
+Las escrituras de estado hacen sus `fsync` con el mutex tomado. Con el disco raíz
+del desk saturado, un `fsync` puede tardar más que la espera del mutex. El
+2026-11-11 uno de 617 bytes tardó 2 min 47 s, con `full avg10` de
+`/proc/pressure/io` entre 83 y 89. Una operación que toma el mutex por su
+cuenta, como un comando administrativo o la admisión de `ejecutar`, devuelve en
+ese rato `pao/desk-error@1` con `reason=census-unknown`, `detail=mutex-timeout`
+y 75. El cierre de `ejecutar` conserva su regla y devuelve el código del guion.
+Quien espera con su propio flock sobre el fd 9 recibe lo que decida su
+adaptador. Jale sale con 75 sin JSON.
+Ese 75 no informa del censo. Hasito lo reintenta al registrar y al renovar.
+Jale termina la corrida con 75.
+Antes de una operación administrativa que escribe bajo el mutex, PAO mide un
+`fsync` propio sin tomar el mutex. Si tarda más de 1 s, no empieza la operación.
+La presión de disco sola no predice esa latencia. Nadie lanza lecturas masivas,
+como `du` o `find`, sobre el home del desk.
 
 Una reducción de N con más vivos que el presupuesto produce cero admisiones
 hasta drenar por debajo del nuevo N. Aumentar la cuota del otro proyecto no
@@ -692,13 +715,26 @@ La noche sigue exigiendo preflight y arranque explícito del writer de PAO.
 Un boot nuevo no adopta metadatos viejos. Si sobreviven claims antiguas en el
 filesystem, bloquean hasta reconciliación. Reiniciar no acredita limpieza Docker.
 
+Windows Update reinicia el host dentro de la ventana de noche. Las horas activas
+de Windows van de 8 a 1, hora local (UTC-6), así que esos reinicios caen entre
+las 07:00Z y las 14:00Z. El 2026-11-11 a las 07:29Z uno cortó un armado.
+Tras el reinicio, la distro y sshd vuelven solos. Docker Desktop y el keepalive
+de WSL dependen de una sesión interactiva de Windows y no vuelven hasta que existe.
+Antes de armar noche, PAO comprueba tres cosas: hay sesión interactiva, Docker
+Desktop corre y Windows no tiene un reinicio pendiente. Si falta una, no arma.
+Un reinicio con noche activa devuelve día: el armado es del boot anterior y el
+writer no vuelve solo. Volver a noche exige preflight nuevo.
+
 ## Integración Jale
 
-`run-suite.sh` registra su RUN_ID antes de esperar y renueva cada 30 s.
+`run-suite.sh` registra su RUN_ID antes de esperar admisión y renueva cada 30 s.
+La espera de un verify a la cola de su hilo es anterior y no registra solicitud.
 Su límite `MAX_SLOTS` diurno y `DESK_LOAD_LIMIT=9` siguen readonly.
 Un `MAX_SLOTS` explícito válido 1 o 2 sólo reduce también noche.
 Un valor mayor nunca amplía cuota. SEN-4632 y el harness SEN-4644 se conservan.
 La información nocturna se lee de nuevo dentro de cada toma del mutex.
+Esa relectura la hace `admitir` con el fd 9 heredado. `estado` y `pendiente`
+toman el mutex por su cuenta, así que el adaptador las llama sin retener fd 9.
 
 Jale lee `estado` y prueba los carriles permitidos en orden. Ante
 `resource-busy`, pasa al siguiente en el mismo intento, volviendo a comprobar
@@ -739,10 +775,23 @@ Obligaciones adicionales de U2:
 
 - El verificador de una cadena espera a que termine la cola del mismo hilo antes
   de pedir admisión. El 2026-11-05 a las 09:10Z casi arrancó un verify con
-  2 contract vivos.
+  2 contract vivos. La cola del mismo hilo son las claims vivas de Jale con el
+  mismo `owner`, de cualquier tipo, y sus solicitudes `chain` pendientes y sin
+  vencer. Una `exclusive` pendiente no cuenta: el módulo ya impide que conviva
+  con otra claim de Jale.
+- Durante esa espera el verify no tiene solicitud pendiente. Si ya había
+  registrado una, la retira con `pendiente --retirar`. Al terminar la espera
+  registra con un `request_id` nuevo y puede conservar su `run_id`. Recibe un
+  `seq` nuevo. Su plazo de espera cuenta desde el inicio de la espera del hilo.
+- `estado` no muestra el `owner` de las pendientes. Un consumidor puede leer
+  los archivos `pao-wait/<request_id>.json` para conocerlo. Los lee bajo
+  `admission.lock`, sin escribir, y los valida con las reglas de «Rutas e
+  instalación» y con el conjunto exacto de campos de `pao/desk-wait@1`. Un
+  registro que no las cumple da 75.
 - `db:gen` acepta una lista explícita de symlinks versionados que apuntan dentro
   del clon. Hoy sólo incluye `.claude/skills/verify`; cualquier otro symlink
-  detiene la operación.
+  detiene la operación. `run-suite.sh` todavía no tiene ese modo. La obligación
+  pasa a la unidad que lo añada, SEN-4680, y no condiciona el corte.
 - Para comprobar que nadie usa un slot se consulta `/proc/*/cwd` y `/proc/*/fd`,
   o `fuser -m`. No se usa `lsof +D`, que tarda unos 15 min en el HDD del desk.
 
@@ -841,6 +890,15 @@ para esperar el resultado, persistir 143 o 137 y cerrar con causa `stopped`
 cuando no quedan hijos. Un TERM dirigido al wrapper se reenvía al guion.
 Un SIGKILL dirigido al propio wrapper conserva la regla de incertidumbre;
 si queda carga viva, nunca se regala capacidad.
+La carga viva es el guion y su árbol, dentro de la sesión del runner. El extremo
+remoto del sync corre fuera de esa sesión y el censo no lo ve. Lo protegen el
+lock local del carril y la reserva del mirror, no la claim. Un control que muere
+antes del ACK puede cerrarse como `stopped` o `reconciled` con ese sync aún vivo.
+Queda sin contar carga de transporte, acotada por `--sync-timeout-s`.
+En ese caso el transporte no ejecuta el guion ni vuelve a sincronizar. No suelta
+el lock local ni la reserva del mirror hasta que su sync terminó o fue cancelado.
+Nadie señala al control ni ejecuta `reconciliar` a mano durante un sync;
+la parada va por `remote-run stop`.
 La carpeta del run admite los modos históricos 0755 y 0775 además de 0700.
 Un runner que espera puede seguir figurando `corriendo` en la interfaz antigua.
 El consumidor escribe `ADMISSION_WAIT` y `ADMITTED request_id=... revision=... lane=...`
@@ -881,6 +939,14 @@ El orden de corte sobre el estado histórico del desk es obligatorio.
 
 El instalador no hace los chmod ni archiva por su cuenta. Ante locks históricos
 0644 falla antes de instalar. El corte y su vuelta conservan todos los archivos.
+La pausa del paso 1 para Jale es el veto `pao-window.json`. Lo respetan el lector
+histórico y el módulo. Se retira cuando los emisores de Jale ya usan el adaptador.
+Si la raíz no existe, por ejemplo tras un arranque que limpió `/tmp`, los pasos 2 a 4
+no tienen sobre qué actuar. El corte crea entonces la raíz en 0700 con el veto dentro.
+El paso 4 archiva también, por rename, cada entrada ad hoc de la raíz que el censo
+no admite. Antes comprueba que ningún proceso la tiene abierta ni tomada.
+El corte puede crear en 0600 los locks canónicos que falten, `admission.lock` y
+`slot-0.lock` a `slot-11.lock`. Así un emisor anterior al corte no los crea con otro modo.
 El segundo persiste noche desactivada y publica día sin borrar reservas,
 matar corridas ni retirar los binarios que los consumidores aún necesitan.
 
@@ -890,6 +956,12 @@ por sus dueños con nuevos ids y orden verificable.
 Las primeras observaciones se hacen de día. El canario nocturno se habilita
 tras APTO, gates y verificador. Hay que acreditar expiración, amanecer y caída
 del writer antes de dejarlo sin vigilancia.
+El armado exige censo vacío, y el desk rara vez lo está por sí solo. El
+2026-11-11 un armado esperó 22 minutos sin un instante limpio, con 3 claims
+vivas al empezar. Los últimos 12 corrió con una ventana `pao-window.json`.
+Esa ventana sólo frena admisiones nuevas de Jale. No frena a Hasito ni termina
+corridas vivas. El plazo de un armado se dimensiona con la corrida viva más
+larga, no con la duración de la ventana.
 El rollback baja a día y drena antes de revertir consumidores o índices altos.
 
 Las pruebas PAO están en `fleet/deskpolicy/tests/`. Se ejecutan en un mirror
