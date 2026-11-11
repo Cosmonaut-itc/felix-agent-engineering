@@ -11,15 +11,17 @@ import stat
 import struct
 import sys
 from dataclasses import dataclass
-from typing import Mapping
+from typing import Mapping, Optional
 import uuid
 
 from .model import NodeConfig
-from .protocol import canonical, demand, digest, identifier, integer, strict_json
+from .protocol import canonical, demand, digest, identifier, integer, reason, strict_json
 from .store import Busy, StoreError, store_for
 
 _ADMIN_UID, _ADMIN_GID = 0, 0
 _BINDING = 'hardwareUuid physicalHostId storeId stateDir mode'.split()
+_ACCREDITED = 'minimumDemand scopeMechanism darwinBuild bootstrapDigest workloadUid launcherDigest accreditation'
+SCOPE_MECHANISMS = ('darwin-coalition@1',)
 
 
 class AdminError(ValueError):
@@ -47,6 +49,60 @@ class AuthorityLocator:
 
 
 @dataclass(frozen=True)
+class ProfileAccreditation:
+    """Bloque del operador por host físico; sin él el perfil queda sin acreditar."""
+    scope_mechanism: str
+    darwin_build: str
+    bootstrap_digest: str
+    workload_uid: int
+    launcher_digest: str
+    campaign_run_id: str
+    campaign_sha: str
+    campaign_build: str
+
+
+@dataclass(frozen=True)
+class Profile:
+    profile_id: str
+    revision: str  # Derivada del contenido del perfil, bloque incluido.
+    accreditation: Optional[ProfileAccreditation]
+
+
+@dataclass(frozen=True)
+class SelfcheckPassed:
+    boot: str
+    darwin_build: str
+
+
+@dataclass(frozen=True)
+class SelfcheckFailed:
+    step: str
+    detail: str
+
+
+@dataclass(frozen=True)
+class Accredited:
+    profile_id: str
+    revision: str
+    boot: str
+    darwin_build: str
+
+
+def accredit(profile, *, darwin_build, workload_uid, selfcheck):
+    """Pura: Accredited para este arranque o el motivo profile-unverified. El nombre del perfil no acredita."""
+    def unverified(detail): return reason('profile-unverified', dict(profile=profile.profile_id, detail=detail))
+    block = profile.accreditation
+    if block is None: return unverified('perfil sin bloque de acreditacion')
+    if type(selfcheck) is SelfcheckFailed:
+        return unverified('selfcheck fallido: %s: %s' % (selfcheck.step, selfcheck.detail))
+    if type(selfcheck) is not SelfcheckPassed: return unverified('selfcheck ausente')
+    if block.darwin_build != darwin_build or selfcheck.darwin_build != darwin_build:
+        return unverified('build de Darwin distinto')
+    if type(workload_uid) is not int or block.workload_uid != workload_uid: return unverified('uid de la carga distinto')
+    return Accredited(profile.profile_id, profile.revision, selfcheck.boot, darwin_build)
+
+
+@dataclass(frozen=True)
 class AdminConfig:
     node: NodeConfig
     service_uid: int
@@ -57,6 +113,7 @@ class AdminConfig:
     volumes: Mapping
     health_snapshot_path: Path
     content_digest: str
+    profiles: Mapping  # profileId -> Profile
 
 
 @dataclass(frozen=True)
@@ -233,6 +290,26 @@ def _fields(doc, names):
     if not isinstance(doc, dict) or set(doc) != set(names.split()): raise AdminError('campos administrativos invalidos')
 
 
+def _hex(value, size):
+    return isinstance(value, str) and len(value) == size and set(value) <= set('0123456789abcdef')
+
+
+def _profile(profile, spec):
+    if not isinstance(spec, dict) or set(spec) != {'minimumDemand'}: _fields(spec, _ACCREDITED)
+    block = None
+    if 'accreditation' in spec:
+        campaign = spec['accreditation']; _fields(campaign, 'campaignRunId sha darwinBuild')
+        identifier(spec['darwinBuild']); identifier(campaign['campaignRunId']); integer(spec['workloadUid'])
+        if (spec['scopeMechanism'] not in SCOPE_MECHANISMS or not _hex(spec['bootstrapDigest'], 64)
+                or not _hex(spec['launcherDigest'], 64) or not _hex(campaign['sha'], 40)
+                or campaign['darwinBuild'] != spec['darwinBuild']):
+            raise AdminError('acreditacion de perfil invalida')
+        block = ProfileAccreditation(spec['scopeMechanism'], spec['darwinBuild'], spec['bootstrapDigest'],
+                                     spec['workloadUid'], spec['launcherDigest'], campaign['campaignRunId'],
+                                     campaign['sha'], campaign['darwinBuild'])
+    return Profile(profile, 'prf_' + digest(dict(profileId=profile, spec=spec)), block)
+
+
 def _ids(values):
     if not isinstance(values, list) or len(set(identifier(v) for v in values)) != len(values):
         raise AdminError('catalogo invalido/duplicado')
@@ -270,9 +347,9 @@ def _load_config(locator, paths):
             if executor not in doc['executors'] or int(uid) not in doc['executors'][executor]['allowedUids']:
                 raise AdminError('ejecutor no autorizado para uid')
         acl['uid:' + uid] = spec['roles']
-    minima = {}
+    minima, profiles = {}, {}
     for profile, spec in doc['profiles'].items():
-        identifier(profile); _fields(spec, 'minimumDemand'); demand(spec['minimumDemand'])
+        identifier(profile); profiles[profile] = _profile(profile, spec); demand(spec['minimumDemand'])
         if not set(spec['minimumDemand']['diskBytes']) <= set(doc['volumes']): raise AdminError('volumen no declarado')
         minima[profile] = spec['minimumDemand']
     content_digest = digest(doc)
@@ -283,7 +360,7 @@ def _load_config(locator, paths):
                       executor_scope_kinds=_freeze({e: s['scopeKind'] for e, s in doc['executors'].items()}), drained=doc['drained'])
     return AdminConfig(node, doc['serviceUid'], doc['serviceGid'], doc['hardwareUuid'], _freeze(doc['principals']),
                        _freeze({e: s['allowedUids'] for e, s in doc['executors'].items()}), _freeze(doc['volumes']),
-                       _path(doc['healthSnapshotPath']), content_digest)
+                       _path(doc['healthSnapshotPath']), content_digest, _FrozenDict(profiles))
 
 
 def _load_anchor(locator, paths):

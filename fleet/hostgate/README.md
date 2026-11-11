@@ -420,7 +420,8 @@ El estado sigue en sombra; PR 3 espera la revisión APTO y la suite del orquesta
 `NodeConfig.mode` admite `shadow` y `effective`; el ancla debe coincidir exactamente.
 `store_for(config)` selecciona `ShadowStore` o `EffectiveStore`, que comparten el
 motor SQLite. El segundo nace vacío en un directorio inexistente con un storeId
-nuevo, archivo `effective.db`, application_id 1212633925 y metadata `(storeId,1,effective)`.
+nuevo, archivo `effective.db`, application_id 1212633925 y metadata `(storeId,2,effective)`
+(versión 1 hasta 4b-1).
 No importa ni promueve sombra. El runtime sólo abre estado preexistente y valida
 cabecera, metadata y relaciones; ancla/configuración se comparan antes de SQLite.
 La sombra conserva su archivo, metadata y forma de respuesta anteriores.
@@ -493,8 +494,7 @@ Nada de esta entrega está conectado: `Runtime.profile_verified` sigue en falso,
 `Runtime.closure` no confirma y `authorize_creation`/`record_started` siguen
 lanzando `NotImplementedError`. `soltar` efectivo sigue respondiendo
 `enforcement-unavailable` y deja la reserva `uncertain`. Ninguna operación escribe
-todavía estas formas. El store efectivo sigue en la versión 1; su paso a la
-versión 2 llega en la entrega 4b-2.
+todavía estas formas.
 
 Una fila efectiva lleva, opcional, el registro `creation`
 (`darwin-coalition-creation@1`); `scope.creation_from_row` lo lee como una variante:
@@ -519,3 +519,34 @@ perfil, permiso, digests, coalición y línea base. `unix-scope-empty` exige ade
 raíz registrada, un barrido concordante de enteros, no anterior a los contadores de la
 línea base, y no más vivos que miembros de ella; `never-created` exige raíz y barridos nulos. `closedBy` es el digest de la
 evidencia. Una fila `released` sólo valida con una evidencia así.
+
+
+## Acreditación, store v2 y selfcheck · SEN-5650, entrega 4b-2
+
+Nada de esta entrega está conectado: ningún módulo llama a `accredit` ni al
+selfcheck, y `Runtime.profile_verified` sigue en falso. Una prueba lo comprueba.
+
+`admin.load_config` acepta en cada perfil, junto a `minimumDemand`, un bloque de
+acreditación estricto: `scopeMechanism` (sólo `darwin-coalition@1`, el lector de
+4a), `darwinBuild`, `bootstrapDigest`, `launcherDigest`, `workloadUid` y
+`accreditation = {campaignRunId, sha, darwinBuild}` con el mismo build. El bloque
+entra en la revisión del perfil (`AdminConfig.profiles`); un perfil sin bloque
+conserva el `content_digest` de hoy. `admin.accredit(profile, *, darwin_build,
+workload_uid, selfcheck)` es pura: devuelve `Accredited` o el motivo
+`profile-unverified` con su detalle (sin bloque, selfcheck fallido o ausente, build
+o uid distintos). El nombre del perfil no acredita nada.
+
+`EffectiveStore` está en la versión 2. Un store efectivo en versión 1 se rechaza
+con `schema` al leer la cabecera, antes de abrir SQLite: el archivo queda intacto y
+no aparecen archivos nuevos. No hay migración. `mutate` valida la vista nueva antes
+de escribirla, así que una fila inválida nunca se escribe.
+
+`coalition_selfcheck.selfcheck()` comprueba el lector contra el kernel real, sin
+privilegios ni launchd: boot y build, lecturas propias, línea base, un hijo
+bloqueado como raíz, `fork`+`exec`, un huérfano con doble `fork` y `setsid` que no
+es raíz, un zombi que no cuenta como vivo, la coalición de launchd y, al final,
+ninguna identidad propia viva. Devuelve `SelfcheckPassed(boot, darwin_build)` o
+`SelfcheckFailed(step, detail)`; cualquier excepción o plazo agotado es un fallo, y
+todo proceso que crea termina con él. La limpieza intenta cada paso aunque falle
+otro y nunca termina un pid sin revalidarlo. Si un paso o una identidad fallan,
+el resultado es `SelfcheckFailed('cleanup', 'limpieza incompleta: ...')`.

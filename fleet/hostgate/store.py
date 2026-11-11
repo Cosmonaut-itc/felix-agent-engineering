@@ -115,6 +115,8 @@ class ShadowStore:
                 with self.path.open('rb') as database: header = database.read(72)
                 if header[68:72] != self.application_id.to_bytes(4, 'big'):
                     raise StoreError('application_id')
+                # Sin migración: un store de otra versión se rechaza antes de abrirlo y queda intacto.
+                if header[60:64] != self.schema_version.to_bytes(4, 'big'): raise StoreError('schema')
             mode = 'rw' if writable else 'ro'
             conn = sqlite3.connect('file:' + quote(str(self.path)) + '?mode=' + mode, uri=True, timeout=0.2, isolation_level=None)
             try:
@@ -196,6 +198,10 @@ class ShadowStore:
             if not isinstance(result, SerializedMutation):
                 result = SerializedMutation.build(view, result, auth_context, original)
             foreign = result.foreign
+            try:
+                validate_view(json.loads(result.view_payload), self.config)
+            except (ValueError, TypeError, KeyError, AttributeError, RecursionError) as exc:
+                raise StoreError('vista no integra; no se escribe') from exc
             write_started = True
             conn.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (result.view_payload, result.view_checksum))
             if original is None and result.record_operation:
@@ -229,9 +235,12 @@ class ShadowStore:
 
 
 class EffectiveStore(ShadowStore):
-    """Ledger nuevo: ninguna ruta de importación o promoción desde sombra."""
+    """Ledger nuevo: ninguna ruta de importación o promoción desde sombra.
+
+    Versión 2 (SEN-5650, 4b): filas con permiso de creación y evidencia real. La versión 1 se rechaza.
+    """
     filename, kind = 'effective.db', 'effective'
-    application_id, schema_version = 1212633925, 1
+    application_id, schema_version = 1212633925, 2
 
 
 def store_for(config):

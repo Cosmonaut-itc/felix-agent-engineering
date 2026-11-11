@@ -1,16 +1,19 @@
 """SEN-5650 4b: formas del permiso de creación, evidencia real y modo, sobre vistas y filas plantadas.
 Las filas se escriben a mano en su forma durable: la prueba fija el formato, no lo deriva del producto."""
 import copy
+import hashlib
+import sqlite3
 from dataclasses import asdict, replace
 import itertools
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 from hostgate import scope
 from hostgate.admission import Hostgate
 from hostgate.darwin_coalition import Baseline, Birth, Member
 from hostgate.model import validate_view
-from hostgate.protocol import digest
+from hostgate.protocol import canonical, digest
 from hostgate.scope import ClosureEvidence
 from hostgate.store import EffectiveStore, ShadowStore, StoreError, UnrecordedResult
 from hostgate.tests.support.coalition import BOOT, CID, OTHER
@@ -331,6 +334,59 @@ class Forms(Planted):
         fixture = asdict(ClosureEvidence.fixture(key, BOOT))
         self.illegal('fixture liberando', self.released('closed', fixture))
         self.legal(self.released('closed', evidence_doc(self.row)))
+
+
+class Store(Planted):
+    def raw(self):
+        conn = sqlite3.connect(str(self.gate.store.path))
+        try: return conn.execute('SELECT payload FROM host_view WHERE id=1').fetchone()[0], conn.execute(
+            'SELECT count(*) FROM audit').fetchone()[0]
+        finally: conn.close()
+
+    def safe_read(self):
+        try: return self.gate.store.read()
+        except StoreError as exc: return exc
+
+    def test_illegal_row_is_never_written_and_fails_to_load(self):
+        before = self.raw()
+        rejected = self.roundtrip(self.with_row(state='running', launchPossible=True))
+        self.assertIsInstance(rejected, StoreError)
+        self.assertEqual(self.raw(), before)
+        self.assertEqual(self.safe_read(), self.view)
+        illegal = self.with_row(creation=permit_doc(self.row, 'sealed'))
+        writer = self.gate.store.connect(writable=True)
+        try:
+            writer.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (canonical(illegal), digest(illegal)))
+            self.assertIsInstance(self.safe_read(), StoreError)
+            writer.execute('UPDATE host_view SET payload=?, checksum=? WHERE id=1', (canonical(self.view), digest(self.view)))
+        finally: writer.close()
+        self.assertEqual(self.safe_read(), self.view)
+
+    def test_effective_v1_is_rejected_and_left_intact(self):
+        """Variante: reset_store."""
+        from hostgate.tests.test_admin import fixture_policy
+        folder = self.config.state_dir.parent / 'v1'
+        with fixture_policy(folder.parent):
+            v1 = replace(self.config, state_dir=folder, store_id='v1-store')
+        with patch.object(EffectiveStore, 'schema_version', 1): EffectiveStore.initialize(v1)
+        def snapshot():
+            return {p.name: (p.stat().st_ino, p.stat().st_mtime_ns, hashlib.sha256(p.read_bytes()).hexdigest())
+                    for p in folder.iterdir()}
+        before = snapshot()
+        for writable in (False, True):
+            with self.subTest(writable=writable):
+                with self.assertRaisesRegex(StoreError, 'schema'):
+                    EffectiveStore(v1).connect(writable=writable).close()
+                self.assertEqual(snapshot(), before)
+        denied = Hostgate(v1, self.world).reservar(request('v1'), self.auth)
+        self.assertEqual((denied['exitCode'], [r['code'] for r in denied['reasons']]), (6, ['store-unavailable']))
+        self.assertEqual(snapshot(), before)
+        self.assertLessEqual(set(snapshot()), set(before))  # El SQLite de Apple deja -wal/-shm desde initialize.
+        with open(str(self.gate.store.path), 'rb') as current: header = current.read(72)
+        self.assertEqual(int.from_bytes(header[60:64], 'big'), 2)
+        writer = self.gate.store.connect(writable=True)
+        try: self.assertEqual(writer.execute('SELECT schema_version, kind FROM metadata').fetchall(), [(2, 'effective')])
+        finally: writer.close()
 
 
 class ShadowForms(Planted):
