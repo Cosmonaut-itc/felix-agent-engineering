@@ -79,6 +79,17 @@ def key(value):
     return value
 
 
+def _hex64(value):
+    if not isinstance(value, str) or len(value) != 64 or set(value) - set('0123456789abcdef'):
+        raise ValueError('digest invalido')
+
+
+def _exact(value, names):
+    if not isinstance(value, dict) or set(value) != set(names.split()):
+        raise ValueError('campos no permitidos o ausentes')
+    return value
+
+
 def validate(value, operation=None):
     if not isinstance(value, dict):
         raise ValueError('solicitud no es objeto')
@@ -89,7 +100,8 @@ def validate(value, operation=None):
     fields = {
         'reservar': {'jobId', 'attemptId', 'executorId', 'physicalHostId', 'demand', 'exclusiveResources', 'profileId'},
         'latido': {'key', 'seq'}, 'dudosa': {'key', 'reason', 'evidenceIds'},
-        'soltar': {'key', 'evidenceIds'}, 'estado': set()}
+        'soltar': {'key', 'evidenceIds'}, 'estado': set(), 'authorize_creation': {'key', 'confirmation', 'launch'},
+        'consume_creation': {'key', 'permitId', 'launchDigest'}, 'record_started': {'key', 'permitId', 'root'}}
     if op not in fields or set(value) != base | fields[op]:
         raise ValueError('campos no permitidos o ausentes')
     identifier(value['operationId'])
@@ -106,6 +118,16 @@ def validate(value, operation=None):
     if 'key' in fields[op]: key(value['key'])
     if op == 'latido': integer(value['seq'])
     if op == 'dudosa': identifier(value['reason'])
+    if op == 'authorize_creation':
+        confirmation = _exact(value['confirmation'], 'operationId requestDigest attemptId source')
+        identifier(confirmation['operationId']); identifier(confirmation['attemptId']); _hex64(confirmation['requestDigest'])
+        if confirmation['source'] not in ('reply', 'same-channel-replay'): raise ValueError('origen de confirmacion')
+        for name in _exact(value['launch'], 'argvDigest inputDigest bootstrapDigest').values(): _hex64(name)
+    if op in ('consume_creation', 'record_started'): identifier(value['permitId'])
+    if op == 'consume_creation': _hex64(value['launchDigest'])
+    if op == 'record_started':
+        root = _exact(value['root'], 'pid unique')
+        if integer(root['pid']) == 0 or integer(root['unique']) == 0: raise ValueError('raiz invalida')
     if 'evidenceIds' in fields[op]:
         if not isinstance(value['evidenceIds'], list) or len(value['evidenceIds']) > 128:
             raise ValueError('evidencia invalida')
@@ -151,7 +173,7 @@ def validate_result(result, mode='shadow', store_id=None):
         if key_field in result:
             if result[key_field]['storeId'] != store_id or not result[key_field]['reservationId'].startswith('e_'):
                 raise ValueError('key efectiva invalida')
-            if result.get('state') not in ('reserved', 'uncertain'): raise ValueError('estado efectivo')
+            if result.get('state') not in ('reserved', 'running', 'uncertain', 'released'): raise ValueError('estado efectivo')
         if 'replayed' in result:
             if result['replayed'] is not True or result['granted']: raise ValueError('replay no admite')
             original = validate_result(result['originalResult'], mode, store_id)
@@ -159,7 +181,7 @@ def validate_result(result, mode='shadow', store_id=None):
                 raise ValueError('historico de replay')
             current = result['currentState']
             if current is not None:
-                if current['state'] not in ('reserved', 'uncertain'): raise ValueError('estado de replay')
+                if current['state'] not in ('reserved', 'running', 'uncertain', 'released'): raise ValueError('estado de replay')
                 reasons(current['reasons'])
     canonical(result)
     return result

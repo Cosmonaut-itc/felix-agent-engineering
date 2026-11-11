@@ -173,28 +173,28 @@ class EffectiveHostgate(test_ipc.IPCHarness):
                                       stdout=io.StringIO(), stderr=io.StringIO()), 6)
         self.assertEqual(self.store.read()['reservations'][0]['key'], self.key)
 
-    def test_release_fixture_retains_and_stale_keys_do_not_touch_owner(self):
+    def test_release_seals_unissued_and_stale_keys_do_not_touch_owner(self):
         for key in (dict(self.key, reservationId='s_old'), dict(self.key, storeId='other-store'),
                     dict(self.key, generation=2)):
             before = copy.deepcopy(self.store.read()['reservations'][0])
             result = self.call(dict(test_ipc.query('stale-' + digest(key)), operation='soltar', key=key, evidenceIds=['fixture']))
             self.assertEqual(result['reasons'][0]['code'], 'stale-generation')
             self.assertEqual(self.store.read()['reservations'][0], before)
-        for op in ('release', 'release-again'):
-            result = self.call(dict(test_ipc.query(op), operation='soltar', key=self.key, evidenceIds=['fixture']))
-            self.assertEqual([r['code'] for r in result['reasons']], ['enforcement-unavailable'])
-            self.assertEqual(result['state'], 'uncertain')
+        # 4c: una reserva sin permiso se sella con never-created propio; la evidencia del harness no cuenta.
+        results = [self.call(dict(test_ipc.query(op), operation='soltar', key=self.key, evidenceIds=['fixture']))
+                   for op in ('release', 'release-again')]
+        for result in results:
+            self.assertEqual((result['reasons'], result['state'], result.get('permit')), ([], 'released', results[0].get('permit')))
         raw = json.loads(self.writer.execute('SELECT payload FROM host_view WHERE id=1').fetchone()[0])
-        self.assertEqual(raw['reservations'][0]['state'], 'uncertain')
+        self.assertEqual(raw['reservations'][0]['state'], 'released')
         row = self.store.read()['reservations'][0]
-        self.assertEqual(row['state'], 'uncertain')
-        self.assertEqual([r['code'] for r in row['reasons']], ['enforcement-unavailable'])
-        self.assertEqual(row['key'], self.key)
-        self.assertNotIn('closureEvidence', row)
-        self.assertEqual(self.client().call(test_ipc.query())['budget']['retained']['slots'], 1)
+        self.assertEqual((row['state'], row['reasons'], row['key']), ('released', [], self.key))
+        self.assertEqual((row['closureEvidence']['kind'], row['closureEvidence']['provenance']),
+                         ('never-created', 'darwin-coalition@1'))
+        self.assertEqual(self.client().call(test_ipc.query())['budget']['retained']['slots'], 0)
         replay = self.call(self.original)
         self.assertFalse(replay['granted'])
-        self.assertEqual(replay['currentState']['state'], 'uncertain')
+        self.assertEqual((replay['currentState']['state'], replay['currentState']['permit']['state']), ('released', 'sealed'))
 
     def test_heartbeat_only_original_supervisor_channel(self):
         heartbeat = dict(test_ipc.query('beat'), operation='latido', key=self.key, seq=1)

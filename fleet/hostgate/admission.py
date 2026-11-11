@@ -1,4 +1,4 @@
-"""API de sombra en proceso: serialización, decisiones y transiciones simuladas."""
+"""API en proceso: serialización, decisiones y transiciones de sombra y de la autoridad efectiva."""
 import copy
 import json
 import uuid
@@ -6,7 +6,8 @@ from .identity import from_json
 from .model import AuthContext, budget_view, effective, identity_json
 from .protocol import SCHEMA, canonical, digest, reason, reply, validate
 from .salud import lector_desk, lector_mini
-from .scope import closure_reasons, evidence_json
+from . import scope
+from .scope import Refused, closure_reasons, creation_from_row, evidence_json, permit_view
 from .store import Busy, ForeignOwner, SerializedMutation, store_for, StoreError, UnrecordedResult, WriteUncertain
 
 THRESHOLDS = frozenset(('cpuRootPct', 'commitRatio', 'eLatencyMs', 'C: libre', 'E: libre',
@@ -17,6 +18,7 @@ class Hostgate:
     def __init__(self, config, world):
         self.config, self.world = config, world
         self.store = store_for(config)
+        self._epoch = None  # Epoch del emisor de este proceso; se fija en su primera operación de permiso.
 
     def _reply(self, op_id, reasons=(), would_grant=False, exit_code=0, **fields):
         return reply(op_id, self.config.revision, reasons, would_grant, exit_code, mode=self.config.mode,
@@ -248,10 +250,12 @@ class Hostgate:
                 key = historic.get('simulationKey' if self.config.mode == 'shadow' else 'reservationKey')
                 current = next((r for r in projection['reservations'] if r['key'] == key), None)
                 current_state = {'state': current['effectiveState'], 'reasons': current['reasons']} if current else None
-                # El histórico es diagnóstico; un replay nunca vuelve a admitir.
+                if current and 'creation' in current: current_state['permit'] = permit_view(creation_from_row(current))
+                # El histórico es diagnóstico; un replay nunca vuelve a admitir ni a habilitar una creación.
                 result = copy.deepcopy(historic)
                 result.update(replayed=True, originalResult=historic, currentState=current_state)
                 result['wouldGrant' if self.config.mode == 'shadow' else 'granted'] = False
+                if 'creationAllowed' in result: result['creationAllowed'] = False
                 return result
             pending = next((p for p in view['pending']
                             if p['principal'] == auth.principal and p['operationId'] == op_id), None)
@@ -329,11 +333,14 @@ class Hostgate:
                                **self._key_fields(key, 'reserved'))
         return self._run(request, auth, action)
 
-    def _key_fields(self, key, state):
+    def _key_fields(self, key, state, row=None):
         if self.config.mode == 'shadow': return dict(simulationKey=key, simulationState=state)
-        return dict(reservationKey=key, state=state)
+        fields = dict(reservationKey=key, state=state)
+        if row is not None and 'creation' in row: fields['permit'] = permit_view(creation_from_row(row))
+        return fields
 
-    def _owner_mutation(self, op_id, key, operation, auth, extras, mutate):
+    def _owner_mutation(self, op_id, key, operation, auth, extras, mutate, defaults=None):
+        """Dueño y canal antes de leer el permiso. mutate da motivos o (motivos, campos, exitCode)."""
         request = dict(schema=SCHEMA, operationId=op_id, operation=operation, key=key, **extras)
         def action(view, project):
             reservation = next((r for r in view['reservations'] if r['key'] == key), None)
@@ -345,13 +352,118 @@ class Hostgate:
             if (self.world.verify(auth.peer).status != 'same' or not self.world.channel_alive(auth.channel_binding)
                     or reservation['channelBinding'] != auth.channel_binding):
                 raise self._foreign_owner(op_id)
-            reasons = mutate(reservation)
-            return self._reply(op_id, reasons, exit_code=1 if reasons else 0,
-                               **self._key_fields(key, reservation['state']))
+            try:
+                outcome = mutate(reservation, view)
+            except Refused as refused:
+                if refused.doubt: self._doubt(reservation, refused.reason['detail'])
+                outcome = [refused.reason], {}, 2 if refused.reason['code'] == 'operation-conflict' else 1
+            if isinstance(outcome, list): outcome = outcome, {}, 1 if outcome else 0
+            reasons, fields, exit_code = outcome
+            return self._reply(op_id, reasons, exit_code=exit_code, **dict(defaults or {}, **fields),
+                               **self._key_fields(key, reservation['state'], reservation))
         return self._run(request, auth, action)
 
+    @staticmethod
+    def _doubt(row, detail):
+        """Duda durable: la reserva queda uncertain con su débito íntegro."""
+        row['state'] = 'uncertain'
+        doubt = reason('reservation-uncertain', detail)
+        if doubt not in row['reasons']: row['reasons'].append(doubt)
+        return doubt
+
+    def _issuer_epoch(self, view):
+        if self._epoch is None: self._epoch = scope.next_epoch(view)
+        return self._epoch
+
+    def _fence(self, row, view, auth, operation):
+        """Fencing de la autoridad tras dueño y canal; devuelve el veredicto del perfil o lanza Refused."""
+        if operation != 'soltar' and row['key']['generation'] != view['generations'].get(row['jobId']):
+            raise Refused(reason('stale-generation', 'autorizar, consumir y registrar exigen la generacion vigente'))
+        if row['state'] == 'released': return None
+        if row['physicalBoot'] != self.world.physical_boot():
+            raise Refused(reason('boot-unverified', 'boot del host distinto del de la reserva'))
+        permit = getattr(creation_from_row(row), 'permit', None)
+        if permit is not None and permit.issuer_epoch != self._issuer_epoch(view):
+            # Muerte de hostgate: una creación nunca sigue con otro epoch.
+            raise Refused(reason('reservation-uncertain', 'permiso de otro epoch del emisor'), doubt=True)
+        if row['state'] == 'uncertain':
+            raise Refused(reason('reservation-uncertain', 'reserva dudosa: no se crea ni se cierra'))
+        if permit is None and operation != 'authorize_creation': return None
+        verdict = self.world.profile_verified(row['profileId'], workload_uid=auth.peer.uid)
+        revision = getattr(verdict, 'revision', None)
+        if revision is None or (permit is not None and revision != permit.profile_revision):
+            raise Refused(reason('profile-unverified', 'perfil sin acreditar o de otra revision'), doubt=permit is not None)
+        return verdict
+
+    def _creation(self, op_id, key, operation, auth, extras, mutate, defaults=None):
+        if self.config.mode != 'effective':
+            validate(dict(schema=SCHEMA, operationId=op_id, operation=operation, key=key, **extras))
+            return self._reply(op_id, [reason('enforcement-unavailable', 'autoridad de creacion solo en modo efectivo')],
+                               exit_code=5)
+        return self._owner_mutation(op_id, key, operation, auth, extras, mutate, defaults)
+
+    @staticmethod
+    def _replace(row, moved):
+        row.clear(); row.update(moved[0])
+
+    def authorize_creation(self, op_id, key, confirmation, launch, auth):
+        """unissued -> issued: la línea base se toma una sola vez, aquí, del proveedor de coalición."""
+        def mutate(row, view):
+            verdict = self._fence(row, view, auth, 'authorize_creation')
+            grant = next((p for p in view['pending'] if p['reservationKey'] == row['key']), None)
+            if (grant is None or grant['state'] != 'granted' or grant['operationId'] != confirmation['operationId']
+                    or grant['requestDigest'] != confirmation['requestDigest']
+                    or row['attemptId'] != confirmation['attemptId']):
+                raise Refused(reason('operation-conflict', 'confirmacion distinta del grant original'))
+            if type(creation_from_row(row)) is not scope.Unissued:
+                raise Refused(reason('operation-conflict', 'la reserva ya tiene permiso; nunca se emite otro'))
+            from .darwin_coalition import CoalitionUnavailable, Retry
+            try:
+                baseline = self.world.coalition.certify(scope.owner_birth(row))
+            except CoalitionUnavailable as exc:
+                failed = exc.observation
+                return [reason('unix-scope-unconfirmed', 'linea base no certificada: ' + failed.reason,
+                               isinstance(failed, Retry))], {}, 1
+            self._replace(row, scope.authorize_creation(
+                row, permit_id='pmt_' + uuid.uuid4().hex, confirmation_digest=digest(confirmation),
+                launch_digest=digest(launch), baseline=baseline, issuer_epoch=self._issuer_epoch(view),
+                profile_revision=verdict.revision))
+            return [], dict(heartbeatTTL=self.config.heartbeat_ttl), 0
+        extras = dict(confirmation=confirmation, launch=launch)
+        return self._creation(op_id, key, 'authorize_creation', auth, extras, mutate)
+
+    def consume_creation(self, op_id, key, permit_id, launch_digest, auth):
+        """CAS issued -> consumed. Sólo este resultado original lleva creationAllowed verdadero."""
+        def mutate(row, view):
+            self._fence(row, view, auth, 'consume_creation')
+            self._replace(row, scope.consume_creation(row, permit_id=permit_id, launch_digest=launch_digest))
+            return [], dict(creationAllowed=True), 0
+        extras = dict(permitId=permit_id, launchDigest=launch_digest)
+        return self._creation(op_id, key, 'consume_creation', auth, extras, mutate, dict(creationAllowed=False))
+
+    def record_started(self, op_id, key, permit_id, root, auth):
+        """consumed -> registered con la raíz que hostgate observa; la reserva pasa a running."""
+        def mutate(row, view):
+            self._fence(row, view, auth, 'record_started')
+            creation = creation_from_row(row)
+            if type(creation) is scope.Registered:
+                same = [creation.root.birth.pid, creation.root.birth.unique] == [root['pid'], root['unique']]
+                raise Refused(reason('operation-conflict', 'raiz ya registrada' if same else 'otra raiz tras el registro'),
+                              doubt=not same)
+            from .darwin_coalition import RootRejected
+            owner = scope.owner_birth(row)
+            try:
+                observed = self.world.coalition.observe_root(owner, root['pid']) if type(creation) is scope.Consumed else None
+            except RootRejected as exc:
+                raise Refused(reason('identity-unverifiable', 'raiz rechazada: %s' % exc))
+            if observed is not None and observed.birth.unique != root['unique']:
+                raise Refused(reason('identity-unverifiable', 'uniqueid de la raiz distinto del observado'))
+            self._replace(row, scope.record_started(row, permit_id=permit_id, root=observed))
+            return []
+        return self._creation(op_id, key, 'record_started', auth, dict(permitId=permit_id, root=dict(root)), mutate)
+
     def latido(self, op_id, key, seq, auth):
-        def mutate(reservation):
+        def mutate(reservation, view):
             if reservation['state'] == 'released': return []
             if seq <= reservation['seq']: return [reason('operation-conflict', 'secuencia no creciente')]
             reservation.update(seq=seq, heartbeat=self.world.monotonic())
@@ -359,20 +471,45 @@ class Hostgate:
         return self._owner_mutation(op_id, key, 'latido', auth, dict(seq=seq), mutate)
 
     def dudosa(self, op_id, key, reason_text, evidence, auth):
-        def mutate(reservation):
+        def mutate(reservation, view):
             if reservation['state'] != 'released':
                 reservation['state'] = 'uncertain'
                 reservation['reasons'].append(reason('reservation-uncertain', dict(reason=reason_text, evidenceIds=list(evidence))))
             return []
         return self._owner_mutation(op_id, key, 'dudosa', auth, dict(reason=reason_text, evidenceIds=list(evidence)), mutate)
 
+    def _release(self, row, view, auth):
+        """soltar efectivo: sella lo nunca consumido, cierra con un barrido Complete propio o retiene."""
+        self._fence(row, view, auth, 'soltar')
+        creation = creation_from_row(row)
+        if row['state'] == 'released': return []  # Cierre original, sin crédito nuevo.
+        if type(creation) in (scope.Unissued, scope.Issued):
+            epoch = creation.permit.issuer_epoch if type(creation) is scope.Issued else self._issuer_epoch(view)
+            self._replace(row, scope.seal(row, store_id=self.config.store_id, issuer_epoch=epoch))
+            return []
+        if type(creation) is not scope.Registered:
+            return [reason('unix-scope-unconfirmed', 'permiso consumido sin raiz registrada: se retiene')]
+        observed = self.world.coalition.observe(creation.permit.baseline)
+        if observed.kind == 'complete':
+            self._replace(row, scope.close(row, observed, store_id=self.config.store_id))
+            return []
+        # occupied y scan-retry son resultado de esta observación, nunca motivos durables de la fila.
+        if observed.kind == 'occupied':
+            novel = observed.novel
+            reasons = [reason('unix-scope-unconfirmed', 'ambito ocupado por miembros nuevos', True)]
+            if any(m.elevated for m in novel): reasons.append(self._doubt(row, 'miembro nuevo elevado en el ambito'))
+            status = dict(status='occupied', novel=[[m.birth.pid, m.birth.unique] for m in novel[:64]],
+                          novelCount=len(novel))
+            return reasons, dict(scopeStatus=status), 1
+        if observed.kind == 'retry':
+            return ([reason('unix-scope-unconfirmed', 'barrido sin concordancia', True)],
+                    dict(scopeStatus=dict(status='scan-retry', reason=observed.reason)), 1)
+        reasons = [reason('unix-scope-unconfirmed', 'barrido invalido'), self._doubt(row, 'barrido invalido: ' + observed.reason)]
+        return reasons, dict(scopeStatus=dict(status='invalid', reason=observed.reason)), 1
+
     def soltar(self, op_id, key, evidence, auth):
-        def mutate(reservation):
-            if self.config.mode == 'effective':
-                closed = reason('enforcement-unavailable', 'cierre efectivo sin proveedor acreditado')
-                reservation['state'] = 'uncertain'
-                if closed not in reservation['reasons']: reservation['reasons'].append(closed)
-                return [closed]
+        def mutate(reservation, view):
+            if self.config.mode == 'effective': return self._release(reservation, view, auth)
             if reservation['state'] == 'released': return []
             closure = self.world.closure(evidence, reservation)
             reasons = closure_reasons(closure, reservation, mode=self.config.mode)
@@ -391,6 +528,9 @@ class Hostgate:
         view = self._observe(self.store.read())
         for kind in ('pending', 'reservations'):
             for item in view[kind]:
+                # El permiso se muestra sin dueño, canal ni línea base detallada.
+                if 'creation' in item: item['permit'] = permit_view(creation_from_row(item))
+                item.pop('creation', None)
                 item.pop('channelBinding', None)
                 for field in ('state', 'effectiveState'):
                     if self.config.mode == 'shadow' and item[field] == 'granted': item[field] = 'simulated'

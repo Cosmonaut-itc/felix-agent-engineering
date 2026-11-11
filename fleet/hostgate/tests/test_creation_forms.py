@@ -327,10 +327,12 @@ class Forms(Planted):
         key = self.reply['reservationKey']
         self.world.closures[('proof',)] = ClosureEvidence.fixture(key, BOOT)
         result = self.gate.soltar('release', key, ['proof'], self.auth)
-        self.assertEqual(([r['code'] for r in result['reasons']], result['state']), (['enforcement-unavailable'], 'uncertain'))
+        # 4c: lo nunca emitido se sella con la prueba propia de hostgate; la del harness no se lee.
+        self.assertEqual((result['reasons'], result['state'], result.get('permit', {}).get('state')), ([], 'released', 'sealed'))
         stored = self.gate.store.read()['reservations'][0]
-        self.assertEqual((stored['state'], stored['launchPossible']), ('uncertain', False))
-        self.assertNotIn('closureEvidence', stored)
+        self.assertEqual((stored['state'], stored['launchPossible']), ('released', False))
+        proof = scope.evidence_from_json(stored['closureEvidence'])
+        self.assertEqual((proof.kind, proof.provenance, proof.issuer), ('never-created', 'darwin-coalition@1', 'hostgate:effective-store:1'))
         fixture = asdict(ClosureEvidence.fixture(key, BOOT))
         self.illegal('fixture liberando', self.released('closed', fixture))
         self.legal(self.released('closed', evidence_doc(self.row)))
