@@ -339,6 +339,8 @@ class Hostgate:
         if row is not None and 'creation' in row: fields['permit'] = permit_view(creation_from_row(row))
         return fields
 
+    _AFTER_IO = ('authorize_creation', 'record_started', 'soltar')
+
     def _owner_mutation(self, op_id, key, operation, auth, extras, mutate, defaults=None):
         """Dueño y canal antes de leer el permiso. mutate da motivos o (motivos, campos, exitCode)."""
         request = dict(schema=SCHEMA, operationId=op_id, operation=operation, key=key, **extras)
@@ -352,11 +354,18 @@ class Hostgate:
             if (self.world.verify(auth.peer).status != 'same' or not self.world.channel_alive(auth.channel_binding)
                     or reservation['channelBinding'] != auth.channel_binding):
                 raise self._foreign_owner(op_id)
+            before = copy.deepcopy(reservation)
             try:
                 outcome = mutate(reservation, view)
             except Refused as refused:
                 if refused.doubt: self._doubt(reservation, refused.reason['detail'])
                 outcome = [refused.reason], {}, 2 if refused.reason['code'] == 'operation-conflict' else 1
+            if self.config.mode == 'effective' and operation in self._AFTER_IO and (
+                    self.world.verify(auth.peer).status != 'same' or not self.world.channel_alive(auth.channel_binding)):
+                # La E/S del proveedor no acredita el control: perderlo durante ella descarta el resultado y deja duda.
+                reservation.clear(); reservation.update(before)
+                if reservation['state'] != 'released': self._doubt(reservation, 'dueno o canal perdidos durante la operacion')
+                outcome = [reason('identity-unverifiable', 'dueno o canal perdidos durante la operacion')], {}, 5
             if isinstance(outcome, list): outcome = outcome, {}, 1 if outcome else 0
             reasons, fields, exit_code = outcome
             return self._reply(op_id, reasons, exit_code=exit_code, **dict(defaults or {}, **fields),
@@ -422,6 +431,7 @@ class Hostgate:
                 baseline = self.world.coalition.certify(scope.owner_birth(row))
             except CoalitionUnavailable as exc:
                 failed = exc.observation
+                if not isinstance(failed, Retry): self._doubt(row, 'linea base invalida: ' + failed.reason)  # §10.
                 return [reason('unix-scope-unconfirmed', 'linea base no certificada: ' + failed.reason,
                                isinstance(failed, Retry))], {}, 1
             self._replace(row, scope.authorize_creation(
@@ -489,7 +499,7 @@ class Hostgate:
             return []
         if type(creation) is not scope.Registered:
             return [reason('unix-scope-unconfirmed', 'permiso consumido sin raiz registrada: se retiene')]
-        observed = self.world.coalition.observe(creation.permit.baseline)
+        observed = self.world.coalition.observe(creation.permit.baseline, root=creation.root)
         if observed.kind == 'complete':
             self._replace(row, scope.close(row, observed, store_id=self.config.store_id))
             return []

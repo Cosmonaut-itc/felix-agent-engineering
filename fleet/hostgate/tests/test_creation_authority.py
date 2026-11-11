@@ -152,6 +152,15 @@ class SinglePermit(Authority):
         self.assertIs(consumed['creationAllowed'], True)
 
 
+    def test_pure_authorize_rejects_a_row_its_validator_rejects(self):
+        """Variante: unvalidated_move. R1-4: la transición pura valida antes de devolver la fila."""
+        row = self.row()
+        args = dict(permit_id='pmt_' + '1' * 32, confirmation_digest='c' * 64, launch_digest='d' * 64,
+                    baseline=self.world.coalition.certify(scope.owner_birth(row)), profile_revision='prf_fixture')
+        self.assertEqual(scope.authorize_creation(row, issuer_epoch=1, **args)[1].state, 'issued')
+        with self.assertRaises(ValueError): scope.authorize_creation(row, issuer_epoch=0, **args)
+
+
 class Seal(Authority):
     def test_unissued_and_issued_seal_never_created_and_consumed_retains(self):
         """Variante: seal_consumed."""
@@ -214,6 +223,15 @@ class Busy(Authority):
         self.assertIn('reservation-uncertain', [r['code'] for r in other['reasons']])
 
 
+    def test_invalid_baseline_on_authorize_leaves_uncertain(self):
+        """Variante: invalid_certify_without_doubt. R1-3, design §10: una ABI desconocida fija uncertain."""
+        self.kernel.errors['usage', coalition.CID] = None  # Lectura corta: Invalid(abi-size), no Retry.
+        refused = self.authorize('auth-1')
+        self.assertEqual(([r['code'] for r in refused['reasons']][:1], refused['state']), (['unix-scope-unconfirmed'], 'uncertain'))
+        self.kernel.errors.clear()
+        self.assertEqual((self.release('release-1')['state'], self.available_slots()), ('uncertain', 1))
+
+
 class Veto(Authority):
     def test_elevated_new_member_adds_durable_doubt(self):
         """Variante: ignore_elevated."""
@@ -232,6 +250,17 @@ class Veto(Authority):
         self.assertEqual([r['code'] for r in refused['reasons']][:1], ['identity-unverifiable'], refused)
         row = self.row()
         self.assertEqual((row['state'], type(scope.creation_from_row(row))), ('uncertain', scope.Unissued))
+
+
+    def test_reused_root_pid_outside_the_coalition_leaves_uncertain(self):
+        """Variante: ignore_root_reuse. R1-2, design §3 fila 4: el pid reutilizado de la raíz enclava uncertain."""
+        self.running()
+        self.kernel.exit(ROOT['pid'])
+        self.kernel.add(ROOT['pid'], 31, coalition=coalition.OTHER)
+        held = self.release('release-1')
+        self.assertEqual((held['state'], held['scopeStatus']), ('uncertain', dict(status='invalid', reason='root-reused')))
+        self.assertNotIn('closureEvidence', self.row())
+        self.assertEqual(self.available_slots(), 1)
 
 
 class Fencing(Authority):
@@ -295,6 +324,18 @@ class Fencing(Authority):
             result = self.authorize('auth-%d' % i, key)
             self.assertEqual([r['code'] for r in result['reasons']], ['stale-generation'], result)
         self.assertNotIn('creation', self.row())
+
+
+    def test_channel_lost_during_the_scan_never_closes(self):
+        """Variante: no_revalidate_after_io. R1-1, design §10: perder el control durante la E/S fija uncertain."""
+        self.running()
+        self.kernel.exit(ROOT['pid'])
+        self.kernel.once('usage', coalition.CID, lambda: setattr(self.world, 'channel', False))
+        lost = self.release('release-1')
+        self.assertEqual(([r['code'] for r in lost['reasons']][:1], lost['state']), (['identity-unverifiable'], 'uncertain'))
+        row = self.row()
+        self.assertEqual((row['state'], row['creation']['state'], 'closureEvidence' in row), ('uncertain', 'registered', False))
+        self.assertEqual(self.available_slots(), 1)
 
 
 class Shadow(Authority):

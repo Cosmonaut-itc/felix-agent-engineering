@@ -395,8 +395,10 @@ def permit_view(creation):
 
 
 def _moved(row, creation, **changes):
+    """Fila nueva ya validada: una transición nunca devuelve una forma que el store rechazaría."""
     new = copy.deepcopy(row)
     new.update(changes, creation=creation_json(creation))
+    validate_reservation(new, 'effective')
     return new, creation
 
 
