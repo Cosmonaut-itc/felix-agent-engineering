@@ -91,10 +91,9 @@ class Shapes(CreationHarness):
 
     def test_open_index_does_not_count_released_rounds(self):
         """Variantes: open_index_counts_released, open_index_skips_creation."""
-        for phase in storage.CREATION_PHASES:
-            with self.subTest(phase=phase):
-                self.plant(phase, self.phases[phase])
-                self.assertFalse(self.second_round(), "FACT: an open round admits no other")
+        for phase in storage.CREATION_PHASES:  # Stops at the first admitted round: it would stay in the ledger.
+            self.plant(phase, self.phases[phase])
+            self.assertFalse(self.second_round(), "FACT: an open {} round admits no other".format(phase))
         self.plant("released", self.phases["released"])
         self.assertTrue(self.second_round(), "FACT: released does not count as open")
         self.assertEqual([state for state, _ in self.raw()], ["released", "prepared"])
