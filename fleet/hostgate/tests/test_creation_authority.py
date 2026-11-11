@@ -258,7 +258,7 @@ class Veto(Authority):
         self.kernel.exit(ROOT['pid'])
         self.kernel.add(ROOT['pid'], 31, coalition=coalition.OTHER)
         held = self.release('release-1')
-        self.assertEqual((held['state'], held['scopeStatus']), ('uncertain', dict(status='invalid', reason='root-reused')))
+        self.assertEqual((held['state'], held.get('scopeStatus')), ('uncertain', dict(status='invalid', reason='root-reused')))
         self.assertNotIn('closureEvidence', self.row())
         self.assertEqual(self.available_slots(), 1)
 
