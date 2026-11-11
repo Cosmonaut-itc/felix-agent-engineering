@@ -478,14 +478,15 @@ SEN-5650, entregas **4c-1 a 4c-3**, autoridad de creación:
 | `Veto` | Un miembro nuevo elevado deja la reserva `uncertain`. `record_started` no registra una raíz elevada ni una de otro uid. |
 | `Fencing` | Otro dueño u otro canal no leen el permiso ni llegan a `closure_reasons`. Perfil de otra revisión y reinicio con otro epoch dejan la reserva `uncertain` sin tocar el permiso; otro boot físico rechaza la autorización. Generación vieja y key desconocida no buscan el trabajo más reciente. |
 | `Shadow` | En sombra, las tres operaciones responden `enforcement-unavailable`, el store no cambia y `soltar` responde como antes. |
-| `test_effective_hostgate.py` | Las tres operaciones viajan por `ipc` y por el cliente. Las peticiones con campos de más o de menos dan `operation-conflict`. El cliente rechaza un resultado con un campo de más, con el de otra operación, con un permiso incompleto o con un replay que habilita. El CLI no emparejado no muta. `estado` responde en efectivo. |
+| `test_effective_hostgate.py` | Las tres operaciones viajan por `ipc` y por el cliente. Las peticiones con campos de más o de menos dan `operation-conflict`. El cliente rechaza un resultado con un campo de más, con el de otra operación, con un permiso incompleto o con un replay que habilita. También uno sin key, con un campo de consulta, un éxito sin permiso, un consumo `uncertain` que habilita, un `currentState` `running` sin permiso y un `occupied` que omite su miembro; los resultados reales pasan por cada método del cliente. El CLI no emparejado no muta. `estado` responde en efectivo. |
 | `test_creation_kernel.py` | Kernel Darwin real en la coalición compartida: una raíz propia `/bin/sleep` retiene `soltar` hasta terminarla y después deja de figurar. Sólo se afirma sobre identidades propias. El cierre real con evidencia correlacionada (`OwnKernel`) sólo corre con `HOSTGATE_OWN_COALITION=1`. |
 
 Variantes defectuosas que las pruebas matan por aserción: `add_credit`, `regenerate_permit`,
 `refresh_baseline`, `replay_allows_spawn`, `unvalidated_move`, `seal_consumed`,
 `durable_busy`, `release_on_occupied`, `invalid_certify_without_doubt`, `ignore_elevated`,
 `allow_prior_child`, `ignore_root_reuse`, `allow_elevated_root`, `allow_foreign_root`,
-`foreign_permit_read`, `lookup_latest_job`, `no_revalidate_after_io`, `skip_launch_digests`
-y `unvalidated_wire`. Los ids de
+`foreign_permit_read`, `lookup_latest_job`, `no_revalidate_after_io`, `skip_launch_digests`,
+`unvalidated_wire`, `success_without_receipt`, `lenient_current_state`,
+`allowed_outside_reserved`, `query_fields_in_creation`, `short_novel` y `state_without_key`. Los ids de
 las corridas en la Mini constan en el PR. No acredita la integración de Fleet, el
 bootstrap del proveedor, el ledger ni la activación.

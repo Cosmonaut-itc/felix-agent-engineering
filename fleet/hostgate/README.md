@@ -615,4 +615,8 @@ bootstrap, ledger ni migración, y Fleet no emite ni consume permisos.
 
 `validate_result(result, mode, store_id, operation)` rechaza los campos de otra
 operación y valida la variante pública del permiso contra el estado, `scopeStatus`,
-`heartbeatTTL` y `creationAllowed`. El cliente lo aplica a cada respuesta.
+`heartbeatTTL` y `creationAllowed`. El cliente lo aplica a cada respuesta. Con operación, una
+respuesta de creación no admite campos de consulta, y su éxito exige el permiso de esa operación
+y su campo propio. `state` y `permit` sólo van con `reservationKey`, `running` y `released`
+llevan permiso, también en `currentState`, y `creationAllowed: true` exige la reserva
+`reserved`. `scopeStatus` `occupied` lleva exactamente `min(64, novelCount)` pares.

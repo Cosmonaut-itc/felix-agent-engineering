@@ -203,7 +203,7 @@ class EffectiveHostgate(test_ipc.IPCHarness):
         return dict(test_ipc.query(op), operation=operation, key=self.key, **fields)
 
     def test_creation_operations_travel_by_ipc_and_the_wire_is_exact(self):
-        """Variante: unvalidated_wire."""
+        """Variantes: unvalidated_wire, success_without_receipt, lenient_current_state, allowed_outside_reserved, query_fields_in_creation, short_novel, state_without_key."""
         from hostgate import cli, client as api
         launch = dict(argvDigest='a' * 64, inputDigest='b' * 64, bootstrapDigest='c' * 64, launcherDigest='e' * 64)
         confirmation = dict(operationId=self.original['operationId'], requestDigest=digest(self.original),
@@ -233,12 +233,35 @@ class EffectiveHostgate(test_ipc.IPCHarness):
         self.assertEqual((started['state'], started['permit']['state']), ('running', 'registered'), started)
         busy = self.call(dict(test_ipc.query('busy'), operation='soltar', key=self.key, evidenceIds=[]))
         self.assertEqual((busy['state'], busy['scopeStatus']['novel']), ('running', [[4242, 42420]]))
+        later = self.call(consume)  # Replay tras el registro: currentState running con su permiso.
         client = self.client()
         def received(result):
             return patch.object(api, 'receive_response', return_value=result)
         with received(consumed):  # Control: el resultado real pasa la validación de su operación.
             self.assertEqual(client.consume_creation('consume', self.key, permit, digest(launch)), consumed)
         thin = dict(consumed, permit={k: v for k, v in consumed['permit'].items() if k != 'baselineDigest'})
+        def without(result, field): return {k: v for k, v in result.items() if k != field}
+        release = dict(test_ipc.query('busy'), operation='soltar', key=self.key, evidenceIds=[])
+        # Control: cada resultado real pasa la validación de su operación por el cliente.
+        for call, result in ((lambda c: c.authorize_creation('auth', self.key, confirmation, launch), issued),
+                             (lambda c: c.record_started('start', self.key, permit, dict(pid=4242, unique=42420)), started),
+                             (lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), later),
+                             (lambda c: c.call(release), busy)):
+            with received(result):
+                self.assertEqual(call(self.client()), result)
+        # R1-1 a R1-3 de la review del 4c-3: un solo campo cambia respecto del resultado real.
+        current = dict(later, currentState=without(later['currentState'], 'permit'))
+        scope_short = dict(busy, scopeStatus=dict(busy['scopeStatus'], novel=[]))
+        for label, call, poisoned in (
+                ('consumo sin key', lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), without(consumed, 'reservationKey')),
+                ('consumo con campo de estado', lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), dict(consumed, reservations=[])),
+                ('autorizacion sin permiso', lambda c: c.authorize_creation('auth', self.key, confirmation, launch), without(issued, 'permit')),
+                ('registro sin permiso', lambda c: c.record_started('start', self.key, permit, dict(pid=4242, unique=42420)), without(started, 'permit')),
+                ('consumo uncertain que habilita', lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), dict(consumed, state='uncertain')),
+                ('replay con currentState sin permiso', lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), current),
+                ('ocupado sin su miembro', lambda c: c.call(release), scope_short)):
+            with self.subTest(label), received(poisoned), self.assertRaises(TransportError):
+                call(self.client())
         for label, poisoned in (('campo de mas', dict(consumed, extra=1)), ('campo de otra operacion', dict(consumed, scopeStatus=busy['scopeStatus'])),
                                 ('permiso sin baselineDigest', thin), ('replay que habilita', dict(self.call(consume), creationAllowed=True))):
             with self.subTest(label), received(poisoned), self.assertRaises(TransportError):
