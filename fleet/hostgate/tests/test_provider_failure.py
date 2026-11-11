@@ -170,7 +170,7 @@ class ProviderFailure(Harness):
         self.world.processes[self.auth.peer.pid] = 'EPERM'
         with patch.object(self.world, 'profile_verified', side_effect=PermissionError('profile')) as provider:
             code, failed = self.call(failed_request, other)
-        provider.assert_called_once_with('fixture')
+        provider.assert_called_once_with('fixture', workload_uid=other.peer.uid)  # 4c: uid del supervisor.
         self.assertEqual(code, 6)
         self.assertFalse(failed['wouldGrant'])
         self.assertEqual(self.codes(failed), {'store-unavailable'})
@@ -357,7 +357,7 @@ class ProviderFailure(Harness):
         verify = self.world.verify
         peer_checks = []
 
-        def profile(profile_id):
+        def profile(profile_id, workload_uid=None):
             self.world.processes[self.auth.peer.pid] = 'EPERM'
             self.world.boot = 'physical-2'
             return True

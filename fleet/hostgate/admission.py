@@ -199,7 +199,7 @@ class Hostgate:
         return result['pendingId']
 
     def _decision(self, request, view, pending, project):
-        profile_verified = self.world.profile_verified(request['profileId'])
+        profile_verified = self.world.profile_verified(request['profileId'], workload_uid=pending['requester']['uid'])
         health_reasons = self._health()
         # La E/S previa no puede acreditar la vida que se valida para el commit.
         project(view)

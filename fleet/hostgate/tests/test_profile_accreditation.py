@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from hostgate import admin
 from hostgate.protocol import digest
+from hostgate.scope import ClosureEvidence
 from hostgate.tests.test_admin import Fixture, fixture_policy
 
 BOOT = '11111111-2222-3333-4444-555555555555'
@@ -23,7 +24,8 @@ def block(**changes):
     return {k: v for k, v in value.items() if v is not None}
 
 
-class Accreditation(unittest.TestCase):
+class Profiles(unittest.TestCase):
+    """Configuración privada y veredictos de acreditación; sin pruebas propias."""
     def setUp(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -60,6 +62,8 @@ class Accreditation(unittest.TestCase):
             self.assertEqual(verdict['code'], 'profile-unverified')
             self.assertTrue(verdict['detail']['detail'].startswith(detail), verdict)
 
+
+class Accreditation(Profiles):
     def test_today_config_loads_unaccredited_with_same_digest(self):
         cfg = self.load()
         self.assertNotIsInstance(cfg, admin.AdminError)
@@ -116,6 +120,64 @@ class Accreditation(unittest.TestCase):
         verdict = self.verdict(NAME, block())
         self.assertEqual((type(verdict).__name__, getattr(verdict, 'boot', None), getattr(verdict, 'darwin_build', None)),
                          ('Accredited', BOOT, BUILD))
+
+
+class Peers:
+    """Boot del host como lo leería sysctl; health_boot basta para DarwinHealth."""
+    def __init__(self, boot): self.value = boot
+    def boot(self): return self.value
+    def health_boot(self): return self.value, (1, 0)
+
+
+class RuntimeAccreditation(Profiles):
+    """service.Runtime: selfcheck una vez antes de servir y accredit con build, uid y boot canónico."""
+    LOWER = 'abcdef01-2222-3333-4444-5555555555ab'  # Con letras: el selfcheck da minúsculas y sysctl mayúsculas.
+
+    def runtime(self, mode='effective', spec=None, selfcheck='passed', build=BUILD, boot=LOWER.upper()):
+        from hostgate.service import Runtime
+        self.f.doc = copy.deepcopy(self.today)
+        self.f.doc.update(mode=mode, storeId=mode + '-runtime-store')
+        if spec is not None: self.f.doc['profiles'][NAME] = spec
+        self.f.publish()
+        calls = []
+        def check():
+            calls.append(1)
+            return admin.SelfcheckPassed(self.LOWER, BUILD) if selfcheck == 'passed' else selfcheck
+        coalition = object()
+        runtime = Runtime(admin.load_config(self.f.locator), Peers(boot), _selfcheck=check, _build=lambda: build,
+                          _coalition=coalition)
+        self.assertIs(runtime.coalition, coalition)
+        return runtime, calls
+
+    def test_no_block_or_shadow_never_runs_selfcheck(self):
+        """Variante: selfcheck_in_shadow."""
+        for label, mode, spec in (('efectivo sin bloque', 'effective', None), ('sombra con bloque', 'shadow', block())):
+            with self.subTest(label):
+                runtime, calls = self.runtime(mode, spec)
+                self.assertEqual(calls, [])
+                self.assertIs(runtime.profile_verified(NAME, workload_uid=os.getuid()), False)
+                self.assertEqual(runtime.closure(['p'], {}), ClosureEvidence())
+
+    def test_failed_selfcheck_build_uid_or_boot_leave_unverified(self):
+        """Variante: ninguna; cada discrepancia deja el perfil sin acreditar."""
+        failed = admin.SelfcheckFailed('zombie', 'zombi contado como vivo')
+        for label, kwargs, uid in (('selfcheck fallido', dict(selfcheck=failed), os.getuid()),
+                                   ('build distinto', dict(build='25H001'), os.getuid()),
+                                   ('uid distinto', {}, os.getuid() + 1), ('sin uid', {}, None),
+                                   ('otro boot', dict(boot='99999999-2222-3333-4444-555555555555'), os.getuid())):
+            with self.subTest(label):
+                runtime, calls = self.runtime(spec=block(), **kwargs)
+                self.assertEqual(calls, [1])
+                self.assertIs(runtime.profile_verified(NAME, workload_uid=uid), False)
+
+    def test_lowercase_selfcheck_boot_matches_uppercase_sysctl(self):
+        """Variante: boot_raw_compare."""
+        runtime, calls = self.runtime(spec=block())
+        verdicts = [runtime.profile_verified(NAME, workload_uid=os.getuid()) for _ in range(3)]
+        self.assertEqual(calls, [1])
+        self.assertEqual({(type(v).__name__, getattr(v, 'boot', None), getattr(v, 'revision', None)) for v in verdicts},
+                         {('Accredited', self.LOWER, runtime.config.profiles[NAME].revision)})
+        self.assertEqual(runtime.closure(['p'], {}), ClosureEvidence())
 
 
 if __name__ == '__main__':
