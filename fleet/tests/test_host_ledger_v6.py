@@ -60,7 +60,7 @@ class Shapes(CreationHarness):
         self.assertEqual((view["error"], view["round"]), ("host_correlation_invalid", None), view)
 
     def test_each_phase_accepts_only_its_own_variant(self):
-        """Variantes: free_shape y spawning_takes_start_receipt."""
+        """Variantes: free_shape, spawning_takes_start_receipt."""
         for phase, creation in self.phases.items():
             with self.subTest(phase=phase):
                 self.accepted(phase, creation)
@@ -90,7 +90,7 @@ class Shapes(CreationHarness):
                 self.plant(state, creation)
 
     def test_open_index_does_not_count_released_rounds(self):
-        """Variantes: open_index_counts_released y open_index_skips_creation."""
+        """Variantes: open_index_counts_released, open_index_skips_creation."""
         for phase in storage.CREATION_PHASES:
             with self.subTest(phase=phase):
                 self.plant(phase, self.phases[phase])
