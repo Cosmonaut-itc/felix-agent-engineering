@@ -38,7 +38,7 @@ def child(role, root):
         if role == 'server':
             from hostgate.service import run
             class Synthetic(World):
-                def profile_verified(self, profile): return profile == 'fixture'
+                def profile_verified(self, profile, workload_uid=None): return profile == 'fixture'
             return run(_locator=Fixture(root).locator, _synthetic=Synthetic(), _ready=lambda: print('listening', flush=True))
         if role == 'query':
             with HostgateClient.connect() as client: print(canonical(client.call(query())), flush=True)

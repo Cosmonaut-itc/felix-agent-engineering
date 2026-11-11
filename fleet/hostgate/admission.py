@@ -199,7 +199,7 @@ class Hostgate:
         return result['pendingId']
 
     def _decision(self, request, view, pending, project):
-        profile_verified = self.world.profile_verified(request['profileId'])
+        profile_verified = self.world.profile_verified(request['profileId'], workload_uid=pending['requester']['uid'])
         health_reasons = self._health()
         # La E/S previa no puede acreditar la vida que se valida para el commit.
         project(view)
@@ -426,6 +426,8 @@ class Hostgate:
                 raise Refused(reason('operation-conflict', 'confirmacion distinta del grant original'))
             if type(creation_from_row(row)) is not scope.Unissued:
                 raise Refused(reason('operation-conflict', 'la reserva ya tiene permiso; nunca se emite otro'))
+            if (launch['bootstrapDigest'], launch['launcherDigest']) != (verdict.bootstrap_digest, verdict.launcher_digest):
+                raise Refused(reason('profile-unverified', 'launch distinto del perfil acreditado'))  # Design §2, pieza 2.
             from .darwin_coalition import CoalitionUnavailable, Retry
             try:
                 baseline = self.world.coalition.certify(scope.owner_birth(row))

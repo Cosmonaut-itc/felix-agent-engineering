@@ -82,10 +82,13 @@ class SelfcheckFailed:
 
 @dataclass(frozen=True)
 class Accredited:
+    """Lo que la acreditación fija para el permiso, incluidos los digests que el launch debe declarar."""
     profile_id: str
     revision: str
     boot: str
     darwin_build: str
+    bootstrap_digest: str
+    launcher_digest: str
 
 
 def accredit(profile, *, darwin_build, workload_uid, selfcheck):
@@ -99,7 +102,8 @@ def accredit(profile, *, darwin_build, workload_uid, selfcheck):
     if block.darwin_build != darwin_build or selfcheck.darwin_build != darwin_build:
         return unverified('build de Darwin distinto')
     if type(workload_uid) is not int or block.workload_uid != workload_uid: return unverified('uid de la carga distinto')
-    return Accredited(profile.profile_id, profile.revision, selfcheck.boot, darwin_build)
+    return Accredited(profile.profile_id, profile.revision, selfcheck.boot, darwin_build,
+                      block.bootstrap_digest, block.launcher_digest)
 
 
 @dataclass(frozen=True)

@@ -13,7 +13,7 @@ from hostgate.store import EffectiveStore, ShadowStore
 from hostgate.tests.support import coalition
 from hostgate.tests.support.world import World, config, request
 
-LAUNCH = dict(argvDigest='a' * 64, inputDigest='b' * 64, bootstrapDigest='c' * 64)
+LAUNCH = dict(argvDigest='a' * 64, inputDigest='b' * 64, bootstrapDigest='c' * 64, launcherDigest='e' * 64)
 ROOT = dict(pid=300, unique=30)
 
 
@@ -46,8 +46,8 @@ class Authority(unittest.TestCase):
     def confirmation(grant='op', job='job'):
         return dict(operationId=grant, requestDigest=digest(request(grant, job)), attemptId='a1', source='reply')
 
-    def authorize(self, op, key=None, gate=None, **conf):
-        return (gate or self.gate).authorize_creation(op, key or self.key, self.confirmation(**conf), LAUNCH, self.auth)
+    def authorize(self, op, key=None, gate=None, launch=LAUNCH, **conf):
+        return (gate or self.gate).authorize_creation(op, key or self.key, self.confirmation(**conf), launch, self.auth)
 
     def consume(self, op, permit_id, key=None, gate=None):
         return (gate or self.gate).consume_creation(op, key or self.key, permit_id, digest(LAUNCH), self.auth)
@@ -151,7 +151,6 @@ class SinglePermit(Authority):
         self.assertEqual((self.row()['creation']['permitId'], self.row()['creation']['baseline']), (permit, baseline))
         self.assertIs(consumed['creationAllowed'], True)
 
-
     def test_pure_authorize_rejects_a_row_its_validator_rejects(self):
         """Variante: unvalidated_move. R1-4: la transición pura valida antes de devolver la fila."""
         row = self.row()
@@ -222,7 +221,6 @@ class Busy(Authority):
         self.assertFalse(other['granted'])
         self.assertIn('reservation-uncertain', [r['code'] for r in other['reasons']])
 
-
     def test_invalid_baseline_on_authorize_leaves_uncertain(self):
         """Variante: invalid_certify_without_doubt. R1-3, design §10: una ABI desconocida fija uncertain."""
         self.kernel.errors['usage', coalition.CID] = None  # Lectura corta: Invalid(abi-size), no Retry.
@@ -251,7 +249,6 @@ class Veto(Authority):
         row = self.row()
         self.assertEqual((row['state'], type(scope.creation_from_row(row))), ('uncertain', scope.Unissued))
 
-
     def test_reused_root_pid_outside_the_coalition_leaves_uncertain(self):
         """Variante: ignore_root_reuse. R1-2, design §3 fila 4: el pid reutilizado de la raíz enclava uncertain."""
         self.running()
@@ -261,6 +258,23 @@ class Veto(Authority):
         self.assertEqual((held['state'], held.get('scopeStatus')), ('uncertain', dict(status='invalid', reason='root-reused')))
         self.assertNotIn('closureEvidence', self.row())
         self.assertEqual(self.available_slots(), 1)
+
+    def test_elevated_or_foreign_uid_root_is_not_registered(self):
+        """Variantes: allow_elevated_root, allow_foreign_root."""
+        other = self.reserve('op-b', 'job-b')
+        cases = ((self.key, dict(), 300, 30, dict(svuid=0)),  # uid y ruid del dueño con svuid 0: sólo elevada.
+                 (other, dict(grant='op-b', job='job-b'), 301, 31, dict(uid=502, ruid=502, svuid=502)))  # Sólo otro uid.
+        permits = []
+        for key, conf, pid, _, _ in cases:  # Los dos permisos antes de cualquier raíz: un hijo previo invalida autorizar.
+            permits.append(self.authorize('auth-%d' % pid, key, **conf)['permit']['permitId'])
+            self.assertTrue(self.consume('consume-%d' % pid, permits[-1], key)['creationAllowed'])
+        for (key, _, pid, unique, fields), permit in zip(cases, permits):
+            with self.subTest(pid=pid):
+                self.kernel.add(pid, unique, parent=10, **fields)
+                started = self.start('start-%d' % pid, permit, dict(pid=pid, unique=unique), key)
+                self.assertEqual([(r['code'], r['detail']) for r in started['reasons']][:1],
+                                 [('identity-unverifiable', 'raiz elevada o de otro uid')], started)
+                self.assertEqual(self.row(key)['creation']['state'], 'consumed')
 
 
 class Fencing(Authority):
@@ -325,7 +339,6 @@ class Fencing(Authority):
             self.assertEqual([r['code'] for r in result['reasons']], ['stale-generation'], result)
         self.assertNotIn('creation', self.row())
 
-
     def test_channel_lost_during_the_scan_never_closes(self):
         """Variante: no_revalidate_after_io. R1-1, design §10: perder el control durante la E/S fija uncertain."""
         self.running()
@@ -337,6 +350,15 @@ class Fencing(Authority):
         self.assertEqual((row['state'], row['creation']['state'], 'closureEvidence' in row), ('uncertain', 'registered', False))
         self.assertEqual(self.available_slots(), 1)
 
+
+    def test_launch_with_other_bootstrap_or_launcher_digest_is_profile_unverified(self):
+        """Variante: skip_launch_digests. Design §2, pieza 2: el launch declara los digests que el perfil acredita."""
+        for field in ('bootstrapDigest', 'launcherDigest'):
+            with self.subTest(field=field):
+                refused = self.authorize('auth-' + field, launch=dict(LAUNCH, **{field: 'f' * 64}))
+                self.assertEqual([r['code'] for r in refused['reasons']][:1], ['profile-unverified'], refused)
+                self.assertEqual((self.row()['state'], 'creation' in self.row()), ('reserved', False))
+        self.assertEqual(self.authorize('auth-ok')['permit']['state'], 'issued')
 
 class Shadow(Authority):
     mode = 'shadow'

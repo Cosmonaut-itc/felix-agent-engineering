@@ -441,6 +441,8 @@ def record_started(row, *, permit_id, root):
         raise Refused(reason('identity-unverifiable', 'raiz fuera de la coalicion de la linea base'))
     if root.parent_unique != owner_birth(row).unique:
         raise Refused(reason('identity-unverifiable', 'raiz no es hija directa del dueno'))
+    if root.member.elevated or root.member.uid != row['owner']['uid']:
+        raise Refused(reason('identity-unverifiable', 'raiz elevada o de otro uid'))
     receipt = 'scp_' + digest(dict(permitId=permit.permit_id, root=root_json(root)))
     return _moved(row, Registered(permit, root, receipt), state='running')
 

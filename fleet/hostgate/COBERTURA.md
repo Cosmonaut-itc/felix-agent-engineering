@@ -453,12 +453,15 @@ SEN-5650, entrega **4b-2**, acreditación, store v2 y selfcheck:
 | --- | --- |
 | `test_creation_forms.py`, `Store` | Una vista ilegal no se escribe y, plantada a mano, no carga. Un store efectivo v1 creado en la prueba falla con `schema` en lectura y escritura y conserva inodo, mtime y bytes sin nombres nuevos (el SQLite de Apple ya deja `-wal`/`-shm` desde `initialize`). |
 | `test_profile_accreditation.py` | Configuración de hoy con su `content_digest`; bloque estricto (de más, de menos, tipos), congelado y en la revisión; sin bloque, build o uid distintos, selfcheck fallido o ausente dan `profile-unverified` con su detalle; el nombre del perfil no acredita. |
-| `test_coalition_selfcheck.py` | Kernel real en `remote-run`: el selfcheck pasa con el boot y el build observados, también si la raíz o el huérfano cambian una vez entre lecturas. Con el acceso nativo envuelto, tamaño inesperado, error de lectura, huérfano ausente, zombi legible como vivo, proceso propio que sigue vivo, `exec` fallido, acceso nativo que no se construye, una espera fallida en la limpieza y un huérfano registrado y detenido con otra identidad ilegible al revalidar o con el acceso nativo imposible de construir tras crear procesos, y un huérfano detenido cuyo pid nunca se leyó porque se perdió la salida del intermedio, dan `SelfcheckFailed` con paso y motivo, sin dejar identidades propias vivas. Nada llama a `accredit` ni al selfcheck. |
+| `test_coalition_selfcheck.py` | Kernel real en `remote-run`: el selfcheck pasa con el boot y el build observados, también si la raíz o el huérfano cambian una vez entre lecturas. Con el acceso nativo envuelto, tamaño inesperado, error de lectura, huérfano ausente, zombi legible como vivo, proceso propio que sigue vivo, `exec` fallido, acceso nativo que no se construye, una espera fallida en la limpieza y un huérfano registrado y detenido con otra identidad ilegible al revalidar o con el acceso nativo imposible de construir tras crear procesos, y un huérfano detenido cuyo pid nunca se leyó porque se perdió la salida del intermedio, dan `SelfcheckFailed` con paso y motivo, sin dejar identidades propias vivas. En 4b-2 nada llamaba a `accredit` ni al selfcheck; desde 4c-2 sólo `service.py` los llama. |
 
 Variantes defectuosas que las pruebas matan por aserción: `profile_id_is_certificate`,
 `reset_store`, `mutate_unvalidated`, `selfcheck_ignores_failure`,
 `exec_status_ignored`, `native_init_escapes`, `cleanup_stops_on_failure`,
 `revalidate_in_batch`, `root_not_retried`, `group_not_ended` y
 `native_built_in_cleanup`. Los ids de las
-corridas en la Mini constan en el PR. No acredita la conexión de la acreditación ni
-del selfcheck al runtime.
+corridas en la Mini constan en el PR. Desde 4c-2, `RuntimeAccreditation` cubre la conexión
+al runtime con el selfcheck y el build sustituidos. También cubre que el runtime efectivo construye
+`DarwinCoalition`, que la sombra no la construye y que sólo la sombra toma pruebas de cierre de
+fuera. El selfcheck real en el arranque del
+servicio no está acreditado.

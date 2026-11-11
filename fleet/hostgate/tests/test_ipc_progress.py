@@ -27,7 +27,7 @@ def server(root):
     os.chdir(root)
     class ClockWorld(World):
         def monotonic(self): return time.monotonic()
-        def profile_verified(self, profile): return profile == 'fixture'
+        def profile_verified(self, profile, workload_uid=None): return profile == 'fixture'
     with fixture_policy(root), patch.object(socket, 'socket', FixtureSocket), patch.object(Hostgate, 'estado', observed_estado):
         return run(_locator=Fixture(root).locator, _synthetic=ClockWorld(),
                    _ready=lambda: print('listening', flush=True))

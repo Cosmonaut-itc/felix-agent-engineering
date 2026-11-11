@@ -15,8 +15,6 @@ from pathlib import Path
 from unittest.mock import patch
 from hostgate import admin
 from hostgate.darwin_coalition import ReadError, _Native
-from hostgate.scope import ClosureEvidence
-from hostgate.service import Runtime
 
 FLEET = Path(__file__).resolve().parents[2]
 
@@ -250,7 +248,8 @@ class Kernel(unittest.TestCase):
         self.assertEqual(living(orphans), [])
 
 class NothingConnected(unittest.TestCase):
-    def test_selfcheck_and_accreditation_exist_but_nothing_calls_them(self):
+    def test_only_the_runtime_calls_selfcheck_and_accreditation(self):
+        """4c: service.Runtime es el único que corre el selfcheck y acredita; Fleet y el resto no."""
         module = importlib.util.find_spec('hostgate.coalition_selfcheck')
         self.assertTrue(module is not None and callable(getattr(admin, 'accredit', None)))
         calls = re.compile(r'(?<!def )\b(accredit|selfcheck)\(|coalition_selfcheck')
@@ -260,11 +259,7 @@ class NothingConnected(unittest.TestCase):
             for number, line in enumerate(path.read_text(errors='replace').splitlines(), 1):
                 if calls.search(line) and path.name != 'coalition_selfcheck.py':
                     callers.append('%s:%d' % (path.relative_to(FLEET), number))
-        self.assertEqual(callers, [])
-        runtime = Runtime.__new__(Runtime)
-        runtime.synthetic = None
-        self.assertIs(runtime.profile_verified('darwin-coalition-process@1'), False)
-        self.assertEqual(runtime.closure(['p'], {}), ClosureEvidence())
+        self.assertEqual({c.split(':')[0] for c in callers}, {'hostgate/service.py'}, callers)
 
 
 if __name__ == '__main__':

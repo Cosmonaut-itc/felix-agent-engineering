@@ -20,6 +20,7 @@ class World:
         self.transport_calls = []
         self.profiles = {'fixture'}
         self.profile_revision = 'prf_fixture'
+        self.launch_digests = ('c' * 64, 'e' * 64)  # bootstrapDigest y launcherDigest acreditados.
         self.coalition = None  # Proveedor de coalición; las pruebas de la autoridad ponen uno sustituido.
         self.closures = {}
         self.fault = None
@@ -59,7 +60,7 @@ class World:
         if profile not in self.profiles: return False
         if workload_uid is None: return True
         from hostgate.admin import Accredited
-        return Accredited(profile, self.profile_revision, self.boot, 'fixture-build')
+        return Accredited(profile, self.profile_revision, self.boot, 'fixture-build', *self.launch_digests)
 
     def channel_alive(self, binding, *, pending=False):
         return self.channel and binding == 'fixture-channel'
