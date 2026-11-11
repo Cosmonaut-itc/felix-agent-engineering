@@ -295,8 +295,10 @@ argumentos del proceso ni logs de texto; `traspasar` y `cerrar` lo leen de
 un fd heredado. El cliente escribe los 64 caracteres ASCII en una escritura
 y cierra el escritor. Cada operación recibe un canal nuevo con el mismo token.
 El supervisor puede conservarlo en la memoria de su proceso, sin exportarlo.
-Una salida de la CLI que incluye la claim lleva el token. Es un recibo privado:
-el consumidor la captura y no la escribe en logs.
+Una salida de la CLI que incluye la claim lleva el token. Es un recibo privado.
+`estado` incluye las claims vivas de los dos proyectos con su token.
+Jale la captura y sólo imprime campos decodificados. Hasito la conserva en
+`lanzador.log`, dentro de la evidencia privada de la MacBook.
 
 La prueba de sesión devuelve tres resultados, vacío probado, miembros
 hallados o inconcluso. Los zombies cuentan como miembros mientras existan.
@@ -451,9 +453,14 @@ Nunca libera el mutex ni sus locks mediante replace o borrado del archivo.
 Las escrituras de estado hacen sus `fsync` con el mutex tomado. Con el disco raíz
 del desk saturado, un `fsync` puede tardar más que la espera del mutex. El
 2026-11-11 uno de 617 bytes tardó 2 min 47 s, con `full avg10` de
-`/proc/pressure/io` entre 83 y 89. Quien espera el mutex en ese rato recibe 75
-con `reason=census-unknown` y `detail=mutex-timeout`. Ese 75 se reintenta como
-cualquier otro y no informa del censo.
+`/proc/pressure/io` entre 83 y 89. Una operación que toma el mutex por su
+cuenta, como un comando administrativo o la admisión de `ejecutar`, devuelve en
+ese rato `pao/desk-error@1` con `reason=census-unknown`, `detail=mutex-timeout`
+y 75. El cierre de `ejecutar` conserva su regla y devuelve el código del guion.
+Quien espera con su propio flock sobre el fd 9 recibe lo que decida su
+adaptador. Jale sale con 75 sin JSON.
+Ese 75 no informa del censo. Hasito lo reintenta al registrar y al renovar.
+Jale termina la corrida con 75.
 Antes de una operación administrativa que escribe bajo el mutex, PAO mide un
 `fsync` propio sin tomar el mutex. Si tarda más de 1 s, no empieza la operación.
 La presión de disco sola no predice esa latencia. Nadie lanza lecturas masivas,
