@@ -4,7 +4,7 @@ import sys
 from .protocol import MAX_BYTES, reply, strict_json, validate, reason
 from .store import Busy
 
-OPERATIONS = ('reservar', 'latido', 'dudosa', 'soltar', 'estado')
+OPERATIONS = ('reservar', 'latido', 'dudosa', 'soltar', 'estado', 'authorize_creation', 'consume_creation', 'record_started')
 
 
 def main(argv=None, *, gate=None, auth=None, stdin=None, stdout=None, stderr=None):
@@ -14,7 +14,7 @@ def main(argv=None, *, gate=None, auth=None, stdin=None, stdout=None, stderr=Non
     revision = gate.config.revision if gate is not None else None
     try:
         if len(args) != 1 or args[0] not in OPERATIONS:
-            raise ValueError('uso: python3 -B -m hostgate {reservar|latido|dudosa|soltar|estado}')
+            raise ValueError('uso: python3 -B -m hostgate {%s}' % '|'.join(OPERATIONS))
         raw = stdin.read(MAX_BYTES + 1)
         request = validate(strict_json(raw), args[0])
         operation_id = request['operationId']
@@ -29,7 +29,8 @@ def main(argv=None, *, gate=None, auth=None, stdin=None, stdout=None, stderr=Non
         try:
             if gate is None and args[0] == 'estado':
                 from .client import HostgateClient
-                with HostgateClient.connect() as client: result = client.call(request)
+                # El modo sale de la configuración validada, nunca de flags ni de la key.
+                with HostgateClient.connect(mode=None) as client: result = client.call(request)
             elif gate is None or auth is None:
                 result = reply(operation_id, revision,
                                [reason('enforcement-unavailable', 'mutación requiere sesión persistente de supervisor')], exit_code=5)
@@ -37,6 +38,12 @@ def main(argv=None, *, gate=None, auth=None, stdin=None, stdout=None, stderr=Non
             elif args[0] == 'latido': result = gate.latido(operation_id, request['key'], request['seq'], auth)
             elif args[0] == 'dudosa': result = gate.dudosa(operation_id, request['key'], request['reason'], request['evidenceIds'], auth)
             elif args[0] == 'soltar': result = gate.soltar(operation_id, request['key'], request['evidenceIds'], auth)
+            elif args[0] == 'authorize_creation':
+                result = gate.authorize_creation(operation_id, request['key'], request['confirmation'], request['launch'], auth)
+            elif args[0] == 'consume_creation':
+                result = gate.consume_creation(operation_id, request['key'], request['permitId'], request['launchDigest'], auth)
+            elif args[0] == 'record_started':
+                result = gate.record_started(operation_id, request['key'], request['permitId'], request['root'], auth)
             else:
                 result = gate.estado({}, auth)
                 result['operationId'] = operation_id

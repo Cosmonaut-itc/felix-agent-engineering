@@ -8,7 +8,7 @@ from . import admin
 from .darwin_peer import DarwinPeers
 from .model import identity_json
 from .ipc import message, check
-from .protocol import validate, validate_result
+from .protocol import SCHEMA, validate, validate_result
 from .wire import send_json, receive_json, receive_response, TransportError, ResponseLimitError
 
 
@@ -26,6 +26,7 @@ class HostgateClient:
         self = cls(); self.stream, self.peers = socket.socket(socket.AF_UNIX), DarwinPeers()
         try:
             locator = admin.local_authority(); config = admin.load_config(locator)
+            if mode is None: mode = config.node.mode  # Sólo la consulta: el modo de la configuración validada.
             if mode not in ('shadow', 'effective') or mode != config.node.mode:
                 raise TransportError('modo esperado contradice autoridad administrativa')
             self.mode, self.store_id, self.revision = mode, config.node.store_id, config.node.revision
@@ -78,7 +79,7 @@ class HostgateClient:
             result = receive_response(self.stream, request['operationId'], self.spool_dir, max_response_bytes,
                                       _deadline=deadline, **mode_args)
             if self.mode == 'effective':
-                validate_result(result, self.mode, self.store_id)
+                validate_result(result, self.mode, self.store_id, request['operation'])
                 if result['configRevision'] != self.revision: raise TransportError('revision de respuesta ajena')
             if select.select([self.stream], [], [], 0)[0]: self.close()
             return result
@@ -87,6 +88,20 @@ class HostgateClient:
             if isinstance(exc, (OSError, ValueError, TypeError, KeyError, MemoryError, KeyboardInterrupt)) and not isinstance(exc, TransportError):
                 raise TransportError('operación sin respuesta íntegra; resultado desconocido') from exc
             raise
+
+    def _operation(self, operation, op_id, key, **fields):
+        return self.call(validate(dict(schema=SCHEMA, operationId=op_id, operation=operation, key=key, **fields), operation))
+
+    def authorize_creation(self, op_id, key, confirmation, launch):
+        """Permiso y línea base, una sola vez por reserva; el replay devuelve los mismos."""
+        return self._operation('authorize_creation', op_id, key, confirmation=confirmation, launch=launch)
+
+    def consume_creation(self, op_id, key, permit_id, launch_digest):
+        """Sólo creationAllowed verdadero en el resultado original habilita el único Popen."""
+        return self._operation('consume_creation', op_id, key, permitId=permit_id, launchDigest=launch_digest)
+
+    def record_started(self, op_id, key, permit_id, root):
+        return self._operation('record_started', op_id, key, permitId=permit_id, root=root)
 
     def close(self):
         self.stream.close(); self.peers.close()

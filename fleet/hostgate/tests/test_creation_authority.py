@@ -22,19 +22,22 @@ class Authority(unittest.TestCase):
     mode = 'effective'
 
     def setUp(self):
+        self.kernel = coalition.World()
+        # startToken Darwin: (seg, useg, uniqueid, versión); casa con el dueño del kernel sustituido.
+        self.prepare(coalition.BOOT, DarwinCoalition(_native=self.kernel), pid=100, start=(1, 2, 10, 7))
+
+    def prepare(self, boot, provider, *, pid, start):
         from hostgate.tests.test_admin import fixture_policy
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
         root = Path(tmp.name).resolve()
         self.world = World()
-        self.world.boot = coalition.BOOT
-        self.kernel = coalition.World()
-        self.world.coalition = DarwinCoalition(_native=self.kernel)
+        self.world.boot, self.world.coalition = boot, provider
         with fixture_policy(root):
             self.config = replace(config(root / 'state'), mode=self.mode, store_id=self.mode + '-store')
         (EffectiveStore if self.mode == 'effective' else ShadowStore).initialize(self.config)
         self.gate = Hostgate(self.config, self.world)
-        self.auth = self.world.auth(start=(1, 2, 10, 7))  # startToken Darwin: (seg, useg, uniqueid, versión).
+        self.auth = self.world.auth(pid=pid, start=start)
         self.key = self.reserve('op', 'job')
 
     def reserve(self, op, job):

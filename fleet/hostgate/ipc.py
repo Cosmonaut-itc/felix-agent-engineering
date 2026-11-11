@@ -108,6 +108,12 @@ def serve(config, lease, peers, world, *, _ready=None):
             if op == 'latido': return gate.latido(operation_id, request['key'], request['seq'], auth)
             if op == 'dudosa': return gate.dudosa(operation_id, request['key'], request['reason'], request['evidenceIds'], auth)
             if op == 'soltar': return gate.soltar(operation_id, request['key'], request['evidenceIds'], auth)
+            if op == 'authorize_creation':
+                return gate.authorize_creation(operation_id, request['key'], request['confirmation'], request['launch'], auth)
+            if op == 'consume_creation':
+                return gate.consume_creation(operation_id, request['key'], request['permitId'], request['launchDigest'], auth)
+            if op == 'record_started':
+                return gate.record_started(operation_id, request['key'], request['permitId'], request['root'], auth)
             result = gate.estado({}, auth); result['operationId'] = operation_id; return result
         except Busy: code, detail = 4, 'busy'
         except PermissionError: code, detail = (6, 'store-unavailable') if called_core else (5, 'identity-unverifiable')

@@ -278,6 +278,8 @@ class Rules(unittest.TestCase):
                  FLEET / 'hostgate/tests/test_creation_authority.py'}
         # 4c-2: la prueba del runtime comprueba que el efectivo construye el lector.
         mine |= {FLEET / 'hostgate/tests/test_profile_accreditation.py'}
+        # 4c-3: la prueba en el kernel real y su soporte construyen el lector.
+        mine |= {FLEET / 'hostgate/tests/test_creation_kernel.py', FLEET / 'hostgate/tests/support/effective.py'}
         users = [str(p) for p in FLEET.rglob('*.py')
                  if p.resolve() not in mine and 'darwin_coalition' in p.read_text(errors='replace')]
         self.assertEqual(users, [])

@@ -148,7 +148,7 @@ def reply(op_id, revision, reasons=(), would_grant=False, exit_code=0, *, mode='
     return validate_result(result, mode, store_id)
 
 
-def validate_result(result, mode='shadow', store_id=None):
+def validate_result(result, mode='shadow', store_id=None, operation=None):
     """Valida la variante del wire; correlación con el ledger vive en el store."""
     if mode not in ('shadow', 'effective'): raise ValueError('modo desconocido')
     grant_field = 'wouldGrant' if mode == 'shadow' else 'granted'
@@ -170,18 +170,84 @@ def validate_result(result, mode='shadow', store_id=None):
         identifier(store_id)
         identifier(result['configRevision'])
         if result['mode'] != mode or result['storeId'] != store_id: raise ValueError('modo/storeId')
+        if operation is not None and {'state', 'permit'} & set(result) and key_field not in result:
+            raise ValueError('estado sin reserva')
         if key_field in result:
             if result[key_field]['storeId'] != store_id or not result[key_field]['reservationId'].startswith('e_'):
                 raise ValueError('key efectiva invalida')
-            if result.get('state') not in ('reserved', 'running', 'uncertain', 'released'): raise ValueError('estado efectivo')
+            _state(result, strict=operation is not None)
+        # Sin operación (store, reply) valen los campos de cualquiera; con ella, sólo los suyos.
+        fields = _COMMON | _EFFECTIVE | (_OPERATION_FIELDS.get(operation, frozenset()) if operation else _ANY)
+        if set(result) - (fields - _QUERY if operation in _CREATION else fields):
+            raise ValueError('campos de resultado no permitidos')
+        if operation in _CREATION and result['exitCode'] == 0 and 'replayed' not in result:
+            permit_state, field = _CREATION[operation]
+            if result.get('permit', {}).get('state') != permit_state or (field and field not in result):
+                raise ValueError('exito sin recibo integro')
+        if 'heartbeatTTL' in result and (type(result['heartbeatTTL']) not in (int, float) or result['heartbeatTTL'] <= 0):
+            raise ValueError('TTL')
+        if 'scopeStatus' in result: _scope(result['scopeStatus'])
+        # creationAllowed ausente equivale a falso; verdadero sólo en el consumo original.
+        if 'creationAllowed' in result:
+            allowed = result['creationAllowed']
+            if type(allowed) is not bool or (allowed and ('replayed' in result or result['exitCode'] != 0
+                                                          or result.get('state') != 'reserved'
+                                                          or result['permit']['state'] != 'consumed')):
+                raise ValueError('creationAllowed sin consumo original')
         if 'replayed' in result:
             if result['replayed'] is not True or result['granted']: raise ValueError('replay no admite')
-            original = validate_result(result['originalResult'], mode, store_id)
+            original = validate_result(result['originalResult'], mode, store_id, operation)
             if 'replayed' in original or original['operationId'] != result['operationId']:
                 raise ValueError('historico de replay')
             current = result['currentState']
             if current is not None:
-                if current['state'] not in ('reserved', 'running', 'uncertain', 'released'): raise ValueError('estado de replay')
+                if set(current) - {'permit'} != {'state', 'reasons'}: raise ValueError('estado de replay')
+                _state(current, strict=operation is not None)
                 reasons(current['reasons'])
     canonical(result)
     return result
+
+
+_COMMON = frozenset('schema operationId reasons configRevision exitCode result mode storeId granted'.split())
+_EFFECTIVE = frozenset('pendingId reservationKey state permit replayed originalResult currentState pending '
+                       'reservations budget resources drained degraded physicalHostId'.split())
+_OPERATION_FIELDS = {'authorize_creation': frozenset(['heartbeatTTL']), 'consume_creation': frozenset(['creationAllowed']),
+                     'record_started': frozenset(), 'soltar': frozenset(['scopeStatus'])}
+_ANY = frozenset().union(*_OPERATION_FIELDS.values())
+_QUERY = frozenset('pendingId pending reservations budget resources drained degraded physicalHostId'.split())
+# Éxito de cada operación de creación: estado del permiso y campo propio obligatorio.
+_CREATION = {'authorize_creation': ('issued', 'heartbeatTTL'), 'consume_creation': ('consumed', 'creationAllowed'),
+             'record_started': ('registered', None)}
+_PERMIT_STATES = {'reserved': ('issued', 'consumed'), 'running': ('registered',),
+                  'uncertain': ('issued', 'consumed', 'registered'), 'released': ('closed', 'sealed')}
+_PERMIT_EXTRA = {'issued': '', 'consumed': '', 'registered': 'scopeReceipt', 'closed': 'scopeReceipt closedBy',
+                 'sealed': 'closedBy'}
+
+
+def _state(value, strict=False):
+    """state efectivo y, si hay permiso, su variante pública compatible. strict: running y released lo llevan."""
+    if value.get('state') not in _PERMIT_STATES: raise ValueError('estado efectivo')
+    if 'permit' not in value:
+        if strict and value['state'] in ('running', 'released'): raise ValueError('estado sin permiso')
+        return
+    permit = value['permit']
+    state = permit.get('state') if isinstance(permit, dict) else None
+    if state not in _PERMIT_STATES[value['state']]: raise ValueError('permiso incompatible con el estado')
+    if not (state == 'sealed' and set(permit) == {'state', 'closedBy'}):
+        _exact(permit, 'state permitId issuerEpoch profileRevision baselineDigest ' + _PERMIT_EXTRA[state])
+        identifier(permit['permitId']); identifier(permit['profileRevision']); _hex64(permit['baselineDigest'])
+        if integer(permit['issuerEpoch']) == 0: raise ValueError('epoch')
+        if 'scopeReceipt' in permit: identifier(permit['scopeReceipt'])
+    if 'closedBy' in permit: _hex64(permit['closedBy'])
+
+
+def _scope(value):
+    if not isinstance(value, dict) or value.get('status') not in ('occupied', 'scan-retry', 'invalid'):
+        raise ValueError('estado del ambito')
+    if value['status'] != 'occupied':
+        identifier(_exact(value, 'status reason')['reason']); return
+    _exact(value, 'status novel novelCount')
+    if not isinstance(value['novel'], list) or not 0 < integer(value['novelCount']) or len(value['novel']) != min(64, value['novelCount']):
+        raise ValueError('novedades')
+    for pair in value['novel']:
+        if not isinstance(pair, list) or len(pair) != 2 or not all(integer(x) > 0 for x in pair): raise ValueError('novedad')

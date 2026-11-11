@@ -166,11 +166,14 @@ class EffectiveHostgate(test_ipc.IPCHarness):
             with patch.object(api, 'receive_response', return_value=poisoned):
                 with self.assertRaises(TransportError): client.call(test_ipc.query('poisoned'))
             self.assertEqual(client.stream.fileno(), -1)
-        # El CLI `estado` conecta en sombra: ante la autoridad efectiva falla cerrado.
+        # 4c: el CLI `estado` toma el modo de la configuración validada, no de flags ni de la key.
         from hostgate import cli
+        out = io.StringIO()
         with patch.object(admin, 'local_authority', return_value=self.f.locator):
             self.assertEqual(cli.main(['estado'], stdin=io.StringIO(canonical(test_ipc.query())),
-                                      stdout=io.StringIO(), stderr=io.StringIO()), 6)
+                                      stdout=out, stderr=io.StringIO()), 0)
+        facts = json.loads(out.getvalue())
+        self.assertEqual((facts['mode'], facts['reservations'][0]['key']), ('effective', self.key))
         self.assertEqual(self.store.read()['reservations'][0]['key'], self.key)
 
     def test_release_seals_unissued_and_stale_keys_do_not_touch_owner(self):
@@ -195,6 +198,74 @@ class EffectiveHostgate(test_ipc.IPCHarness):
         replay = self.call(self.original)
         self.assertFalse(replay['granted'])
         self.assertEqual((replay['currentState']['state'], replay['currentState']['permit']['state']), ('released', 'sealed'))
+
+    def creation(self, op, operation, **fields):
+        return dict(test_ipc.query(op), operation=operation, key=self.key, **fields)
+
+    def test_creation_operations_travel_by_ipc_and_the_wire_is_exact(self):
+        """Variantes: unvalidated_wire, success_without_receipt, lenient_current_state, allowed_outside_reserved, query_fields_in_creation, short_novel, state_without_key."""
+        from hostgate import cli, client as api
+        launch = dict(argvDigest='a' * 64, inputDigest='b' * 64, bootstrapDigest='c' * 64, launcherDigest='e' * 64)
+        confirmation = dict(operationId=self.original['operationId'], requestDigest=digest(self.original),
+                            attemptId=self.original['attemptId'], source='reply')
+        authorize = self.creation('auth', 'authorize_creation', confirmation=confirmation, launch=launch)
+        for label, bad in (('campo de mas', dict(authorize, extra=1)), ('sin launch', {k: v for k, v in authorize.items() if k != 'launch'}),
+                           ('launch de mas', dict(authorize, launch=dict(launch, suite='x')))):
+            with self.subTest(label):
+                refused = self.call(dict(bad, operationId='bad-' + label.replace(' ', '-')))
+                self.assertEqual((refused['exitCode'], refused['reasons'][0]['code']), (2, 'operation-conflict'))
+        self.assertNotIn('creation', self.store.read()['reservations'][0])
+        issued = self.call(authorize)
+        self.assertEqual((issued['exitCode'], issued.get('permit', {}).get('state')), (0, 'issued'), issued)
+        permit = issued['permit']['permitId']
+        consume = self.creation('consume', 'consume_creation', permitId=permit, launchDigest=digest(launch))
+        before = self.snapshot()
+        with patch.object(admin, 'local_authority', return_value=self.f.locator):
+            out = io.StringIO()
+            self.assertEqual(cli.main(['consume_creation'], stdin=io.StringIO(canonical(consume)), stdout=out,
+                                      stderr=io.StringIO()), 5)
+        self.assertEqual(json.loads(out.getvalue())['reasons'][0]['code'], 'enforcement-unavailable')
+        self.assertEqual(self.snapshot(), before)  # El CLI no emparejado no abre escritor.
+        consumed = self.call(consume)
+        self.assertIs(consumed['creationAllowed'], True)
+        self.assertIs(self.call(consume)['creationAllowed'], False)
+        started = self.call(self.creation('start', 'record_started', permitId=permit, root=dict(pid=4242, unique=42420)))
+        self.assertEqual((started['state'], started['permit']['state']), ('running', 'registered'), started)
+        busy = self.call(dict(test_ipc.query('busy'), operation='soltar', key=self.key, evidenceIds=[]))
+        self.assertEqual((busy['state'], busy['scopeStatus']['novel']), ('running', [[4242, 42420]]))
+        later = self.call(consume)  # Replay tras el registro: currentState running con su permiso.
+        client = self.client()
+        def received(result):
+            return patch.object(api, 'receive_response', return_value=result)
+        with received(consumed):  # Control: el resultado real pasa la validación de su operación.
+            self.assertEqual(client.consume_creation('consume', self.key, permit, digest(launch)), consumed)
+        thin = dict(consumed, permit={k: v for k, v in consumed['permit'].items() if k != 'baselineDigest'})
+        def without(result, field): return {k: v for k, v in result.items() if k != field}
+        release = dict(test_ipc.query('busy'), operation='soltar', key=self.key, evidenceIds=[])
+        # Control: cada resultado real pasa la validación de su operación por el cliente.
+        for call, result in ((lambda c: c.authorize_creation('auth', self.key, confirmation, launch), issued),
+                             (lambda c: c.record_started('start', self.key, permit, dict(pid=4242, unique=42420)), started),
+                             (lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), later),
+                             (lambda c: c.call(release), busy)):
+            with received(result):
+                self.assertEqual(call(self.client()), result)
+        # R1-1 a R1-3 de la review del 4c-3: un solo campo cambia respecto del resultado real.
+        current = dict(later, currentState=without(later['currentState'], 'permit'))
+        scope_short = dict(busy, scopeStatus=dict(busy['scopeStatus'], novel=[]))
+        for label, call, poisoned in (
+                ('consumo sin key', lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), without(consumed, 'reservationKey')),
+                ('consumo con campo de estado', lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), dict(consumed, reservations=[])),
+                ('autorizacion sin permiso', lambda c: c.authorize_creation('auth', self.key, confirmation, launch), without(issued, 'permit')),
+                ('registro sin permiso', lambda c: c.record_started('start', self.key, permit, dict(pid=4242, unique=42420)), without(started, 'permit')),
+                ('consumo uncertain que habilita', lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), dict(consumed, state='uncertain')),
+                ('replay con currentState sin permiso', lambda c: c.consume_creation('consume', self.key, permit, digest(launch)), current),
+                ('ocupado sin su miembro', lambda c: c.call(release), scope_short)):
+            with self.subTest(label), received(poisoned), self.assertRaises(TransportError):
+                call(self.client())
+        for label, poisoned in (('campo de mas', dict(consumed, extra=1)), ('campo de otra operacion', dict(consumed, scopeStatus=busy['scopeStatus'])),
+                                ('permiso sin baselineDigest', thin), ('replay que habilita', dict(self.call(consume), creationAllowed=True))):
+            with self.subTest(label), received(poisoned), self.assertRaises(TransportError):
+                self.client().consume_creation('consume', self.key, permit, digest(launch))
 
     def test_heartbeat_only_original_supervisor_channel(self):
         heartbeat = dict(test_ipc.query('beat'), operation='latido', key=self.key, seq=1)

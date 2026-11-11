@@ -73,7 +73,7 @@ la estructura S. Se añade cobertura de las reglas ejecutables sin etiqueta:
 | 13–14, 22–27 | `model.py`, `admission.py` | `Contract.test_jale_real_helpers_bound_to_three_preparations`, `test_channel_eof_withdraws_without_reservation`, `test_commit_revalidation_pid_anchor_channel_heartbeat`. |
 | 15–18, 28–29 | `admission.py`, `scope.py` | `Contract.test_death_after_revalidation_retains_commit`, `test_budget_dimensions_and_exclusives`, `test_old_generation_never_alters_new`. |
 | 20, 84–85 | `owner_record.py`, `README.md` | `Boundaries.test_owner_record_partial_and_root_terminal_protect`, `test_owner_fsync_failure_preserves_protection`. No cubierta integración U1: consumidor actual aún no entiende Fleet. |
-| 30, 33, 40–42 | `scope.py`, `admission.py`, `README.md` | Desde 4c-1, `Hostgate` emite, consume y registra el permiso (`test_creation_authority.py`). No cubierto runtime de supervisor, permiso, publicación previa a efectos o reconciliación: F. |
+| 30, 33, 40–42 | `scope.py`, `admission.py`, `README.md` | Desde 4c-1, `Hostgate` emite, consume y registra el permiso (`test_creation_authority.py`); desde 4c-3, por el wire (`test_effective_hostgate.py`). No cubierto runtime de supervisor en Fleet, publicación previa a efectos o reconciliación: F. |
 | 31–32, 34–36 | `model.py`, `admission.py`, `scope.py` | `Contract.test_ttl_owner_lost_boot_and_heartbeat_cannot_release`, `test_scope_and_cleanup_all_or_nothing`, `Storage.test_queries_never_mutate_sqlite_or_wal`. |
 | 43–50 | `scope.py`, `README.md` | Cierre positivo sintético fenced y casos negativos; `Contract.test_windows_fixture_only_positive_evidence_fenced`. No cubierta contención/launcher/cierre nativo real: F. |
 | 51 | `README.md`, código sin control de procesos | Inspección y helpers propios con autoexit; no SIGSTOP ni terminación de procesos. |
@@ -465,3 +465,28 @@ al runtime con el selfcheck y el build sustituidos. También cubre que el runtim
 `DarwinCoalition`, que la sombra no la construye y que sólo la sombra toma pruebas de cierre de
 fuera. El selfcheck real en el arranque del
 servicio no está acreditado.
+
+
+SEN-5650, entregas **4c-1 a 4c-3**, autoridad de creación:
+
+| Prueba | Cobertura y límite |
+| --- | --- |
+| `test_creation_authority.py`, `HappyPath` | Kernel sustituido: reservar, autorizar, consumir y registrar una raíz hija del dueño, y `soltar` con `Complete`. Libera una sola vez con evidencia `unix-scope-empty` correlacionada (`closure_reasons` vacío, `closedBy` igual al digest). El replay devuelve el cierre original y no da crédito a otra reserva. |
+| `SinglePermit` | Segunda autorización, consumo repetido, permiso ajeno y segunda raíz rechazados. La línea base no se renueva y `creationAllowed` sólo es verdadero una vez. Los replays devuelven el permiso original y nunca habilitan. |
+| `Seal` | `Unissued` e `Issued` se sellan con evidencia propia, y un consumo tardío del sellado se rechaza. `Consumed` retiene sin evidencia y conserva el crédito. |
+| `Busy` | `Occupied` y `Retry` (lista saturada y plazo de 50 ms) retienen sin escribir motivos durables y la reserva sigue `running`. `Invalid` deja la reserva `uncertain` y la duda bloquea otra admisión. |
+| `Veto` | Un miembro nuevo elevado deja la reserva `uncertain`. `record_started` no registra una raíz elevada ni una de otro uid. |
+| `Fencing` | Otro dueño u otro canal no leen el permiso ni llegan a `closure_reasons`. Perfil de otra revisión y reinicio con otro epoch dejan la reserva `uncertain` sin tocar el permiso; otro boot físico rechaza la autorización. Generación vieja y key desconocida no buscan el trabajo más reciente. |
+| `Shadow` | En sombra, las tres operaciones responden `enforcement-unavailable`, el store no cambia y `soltar` responde como antes. |
+| `test_effective_hostgate.py` | Las tres operaciones viajan por `ipc` y por el cliente. Las peticiones con campos de más o de menos dan `operation-conflict`. El cliente rechaza un resultado con un campo de más, con el de otra operación, con un permiso incompleto o con un replay que habilita. También uno sin key, con un campo de consulta, un éxito sin permiso, un consumo `uncertain` que habilita, un `currentState` `running` sin permiso y un `occupied` que omite su miembro; los resultados reales pasan por cada método del cliente. El CLI no emparejado no muta. `estado` responde en efectivo. |
+| `test_creation_kernel.py` | Kernel Darwin real en la coalición compartida: una raíz propia `/bin/sleep` retiene `soltar` hasta terminarla y después deja de figurar. Sólo se afirma sobre identidades propias. El cierre real con evidencia correlacionada (`OwnKernel`) sólo corre con `HOSTGATE_OWN_COALITION=1`. |
+
+Variantes defectuosas que las pruebas matan por aserción: `add_credit`, `regenerate_permit`,
+`refresh_baseline`, `replay_allows_spawn`, `unvalidated_move`, `seal_consumed`,
+`durable_busy`, `release_on_occupied`, `invalid_certify_without_doubt`, `ignore_elevated`,
+`allow_prior_child`, `ignore_root_reuse`, `allow_elevated_root`, `allow_foreign_root`,
+`foreign_permit_read`, `lookup_latest_job`, `no_revalidate_after_io`, `skip_launch_digests`,
+`unvalidated_wire`, `success_without_receipt`, `lenient_current_state`,
+`allowed_outside_reserved`, `query_fields_in_creation`, `short_novel` y `state_without_key`. Los ids de
+las corridas en la Mini constan en el PR. No acredita la integración de Fleet, el
+bootstrap del proveedor, el ledger ni la activación.

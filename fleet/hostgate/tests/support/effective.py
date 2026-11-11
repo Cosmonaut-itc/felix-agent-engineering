@@ -7,9 +7,36 @@ import sys
 import uuid
 from unittest.mock import patch
 from hostgate.protocol import canonical
+from hostgate.tests.support import coalition
 from hostgate.tests.test_admin import Fixture, fixture_policy
 from hostgate.tests.test_ipc import FixtureSocket, query
 from hostgate.tests.support.world import World, request
+
+
+class Coalition:
+    """Proveedor de coalición del servidor de prueba: DarwinCoalition sobre el kernel sustituido.
+
+    El dueño es el supervisor real que autoriza; observe_root crea la raíz como su hija, con uniqueid pid*10.
+    """
+    def __init__(self): self.kernel = None
+
+    def _reader(self):
+        from hostgate.darwin_coalition import DarwinCoalition
+        return DarwinCoalition(_native=self.kernel)
+
+    def certify(self, owner):
+        if self.kernel is None:
+            self.kernel = coalition.World()
+            self.kernel.procs.clear(); self.kernel.counters = {coalition.CID: [0, 0], coalition.OTHER: [0, 0]}
+            self.kernel.boot_value = owner.boot
+            self.kernel.add(owner.pid, owner.unique)
+        return self._reader().certify(owner)
+
+    def observe(self, baseline, root=None): return self._reader().observe(baseline, root=root)
+
+    def observe_root(self, owner, pid):
+        if pid not in self.kernel.procs: self.kernel.add(pid, pid * 10, parent=owner.unique)
+        return self._reader().observe_root(owner, pid)
 
 
 class EffectiveFixture(Fixture):
@@ -43,6 +70,9 @@ def child(role, root):
         if role == 'server':
             from hostgate.service import run
             class Synthetic(World):
+                def __init__(self):
+                    super().__init__()
+                    self.coalition = Coalition()
                 def closure(self, ids, reservation):
                     return ClosureEvidence.fixture(reservation['key'], reservation['physicalBoot'])
             return run(_locator=EffectiveFixture(root).locator, _synthetic=Synthetic(),
