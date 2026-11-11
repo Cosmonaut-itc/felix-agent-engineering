@@ -60,10 +60,14 @@ class Shapes(CreationHarness):
         self.assertEqual((view["error"], view["round"]), ("host_correlation_invalid", None), view)
 
     def test_each_phase_accepts_only_its_own_variant(self):
-        """Variantes: free_shape, spawning_takes_start_receipt."""
+        """Variantes: free_shape, spawning_takes_start_receipt, closing_drops_closure."""
         for phase, creation in self.phases.items():
             with self.subTest(phase=phase):
                 self.accepted(phase, creation)
+        proven = replace(self.phases["released"], phase="closing")
+        for state, reason in (("closing", None), ("held", "supervisor_lost")):
+            with self.subTest(closure_under=state):
+                self.accepted(state, proven, reason)
         s, phases = self.steps, self.phases
         a, c, st = s["authorize"], s["consume"], s["start"]
         wrong = {

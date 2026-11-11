@@ -580,14 +580,15 @@ HOST_SHAPES = {
     **{phase: {GRANTED} for phase in CREATION_PHASES},
 }
 # Fields of creation_json per phase. Steps follow authorize, consume, start; release may
-# follow any prefix. Each prefix step but the last carries its receipt.
+# follow any prefix. Each prefix step but the last carries its receipt. closing may keep hostgate's
+# original closure while the local release is still pending.
 _PREFIXES = ((), ("authorize",), ("authorize", "consume"), ("authorize", "consume", "start"))
 CREATION_SHAPES = {
     "authorizing": {("authorize",)},
     "authorized": {("authorize",)},
     "spawning": {("authorize", "consume"), ("authorize", "consume", "start")},
     "running": {("authorize", "consume", "start")},
-    "closing": {prefix + ("release",) for prefix in _PREFIXES},
+    "closing": {prefix + ("release",) + proof for prefix in _PREFIXES for proof in ((), ("closure",))},
     "released": {prefix + ("release", "closure") for prefix in _PREFIXES},
     "closed_unused": {("closure",), ("release", "closure")},
     "rejected": {("discovered",)},
