@@ -1,7 +1,7 @@
 """Read-only projections and total completion precedence for fleet-job-api@1."""
 from . import admission, evidence, inputs, native
 from .model import HOST, Fault, HostConfirmation, HostHeld, HostIntent, backend, envelope, identifier, key, load, now, safe_queued
-from .storage import Ledger, host_rounds
+from .storage import CREATION_PHASES, Ledger, host_rounds
 
 
 def select_job(db, job=None, idempotency_key=None, attempt=None):
@@ -141,7 +141,8 @@ def observe(db, row):
     outcome = row["recorded_outcome"] if state == "finished" else None
     remaining = []
     if state == "finished":
-        if not closure_valid(db, row):
+        # A host attempt's closure is hostgate's, copied with the local release into the released round.
+        if not closure_valid(db, row) and (host is None or (host["round"] or {}).get("state") != "released"):
             view, reasons, scope = "uncertain", ["closure_unconfirmed"], "self"
         if publication["state"] == "committed":
             proof = evidence.verify(db.state / "attempts" / row["id"], row["evidence_root"], row["job"],
@@ -178,7 +179,8 @@ def observe(db, row):
     if host is not None:
         current = host["round"] or {}
         if host["error"] or current.get("state") == "held" or (
-                current.get("state") in ("outcome_unknown", "confirmed") and not current["supervisor_alive"]):
+                current.get("state") in ("outcome_unknown", "confirmed") + CREATION_PHASES
+                and not current["supervisor_alive"]):
             view, scope = "uncertain", "self"
             reasons = [host["error"] or current.get("reason") or "host_owner_unverified"]
             completion = "incomplete"

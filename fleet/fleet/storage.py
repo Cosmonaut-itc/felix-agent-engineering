@@ -920,10 +920,13 @@ def put_host_intent(db, intent):
     db.revision()
 
 
-def _cas(db, intent, sources, target, assignments="", parameters=()):
+def _cas(db, intent, sources, target, assignments="", parameters=(), creation=False):
+    """creation, when given, is the exact creation_json the caller read (None: absent)."""
+    guard = "" if creation is False else " AND creation_json IS ?"
     changed = db.execute("UPDATE host_rounds SET state=?" + assignments + " WHERE attempt=? AND ordinal=? "
-                         "AND state IN (" + ",".join("?" * len(sources)) + ")",
-                         (target,) + tuple(parameters) + (intent.attempt, intent.ordinal) + tuple(sources)).rowcount
+                         "AND state IN (" + ",".join("?" * len(sources)) + ")" + guard,
+                         (target,) + tuple(parameters) + (intent.attempt, intent.ordinal) + tuple(sources)
+                         + (() if creation is False else (creation,))).rowcount
     if changed:
         host_rounds(db, intent.attempt)
         db.revision()
@@ -971,3 +974,79 @@ def confirm_host_and_claim(db, intent, key, receipt, source, dispatcher, supervi
                (generation, opaque("r"), dump(dispatcher), dump(supervisor), intent.attempt))
     db.event(intent.attempt, "starting", "dispatcher", "claim")
     return generation
+
+
+# Creation steps, as the 4e supervisor will call them. Each CAS needs the same state and the same
+# creation_json the caller read; the decoder then re-validates the whole variant before commit.
+_BEGIN = {"authorize": (("confirmed",), "authorizing"), "consume": (("authorized",), "spawning"),
+          "start": (("spawning",), "spawning"), "release": (("confirmed",) + CREATION_PHASES, "closing")}
+_RECORD = {"authorize": ("authorizing", "authorized"), "consume": ("spawning", "spawning"),
+           "start": ("spawning", "running"), "release": ("closing", "closing")}
+
+
+def _creation_cas(db, current, sources, target, creation):
+    previous = getattr(current, "creation", None)
+    clear = ",reason=NULL" if target in ("released",) + CREATION_PHASES else ""  # a held source keeps no reason
+    return _cas(db, current.intent, sources, target, ",creation_json=?" + clear,
+                (creation_json(replace(creation, phase=target)),),
+                None if previous is None else creation_json(previous))
+
+
+def begin_step(db, current, name, request):
+    """Persist a step's request before sending it; consume also closes the local gate, once."""
+    sources, target = _BEGIN[name]
+    base = current.creation if isinstance(current, HostCreation) else Creation(target)
+    if not _creation_cas(db, current, sources, target, replace(base, **{name: Step(request, None)})):
+        return False
+    if name == "consume" and db.execute("UPDATE attempts SET gate='consumed' WHERE id=? AND gate='available' "
+                                        "AND state='starting'", (current.intent.attempt,)).rowcount != 1:
+        raise Fault("host_round_changed", 3, "unknown")
+    return True
+
+
+def record_step(db, current, name, receipt):
+    """Persist the original reply of the pending step: running needs the root and the scope receipt."""
+    source, target = _RECORD[name]
+    step = replace(getattr(current.creation, name), receipt=receipt)
+    return _creation_cas(db, current, (source,), target, replace(current.creation, **{name: step}))
+
+
+def release_host(db, current, closure):
+    """closing or held -> released: hostgate's original closure and the local release CAS together.
+
+    An attempt that never reached its terminal ends incomplete; a command already recorded stays.
+    """
+    intent = current.intent
+    row = db.execute("SELECT state,generation FROM attempts WHERE id=?", (intent.attempt,)).fetchone()
+    if current.creation is None or not _creation_cas(db, current, ("closing", "held"), "released",
+                                                     replace(current.creation, closure=closure)):
+        return False
+    if row["state"] != "finished":
+        db.execute("UPDATE attempts SET gate='closed',recorded_outcome=COALESCE(recorded_outcome,'incomplete'),"
+                   "collection=?,publication=?,ended_at=COALESCE(ended_at,?) WHERE id=?",
+                   (dump({"state": "incomplete", "errors": ["host_released_before_terminal"]}),
+                    dump({"state": "incomplete", "root_sha256": None}), now(), intent.attempt))
+        db.event(intent.attempt, "finished", "host", "host_released_before_terminal")
+    if db.execute("UPDATE slot SET attempt=NULL WHERE attempt=? AND generation=?",
+                  (intent.attempt, row["generation"])).rowcount != 1:
+        raise Fault("host_round_changed", 3, "unknown")
+    db.execute("UPDATE attempts SET disposition='released' WHERE id=?", (intent.attempt,))
+    db.event(intent.attempt, "finished", "host", "host_released")
+    return True
+
+
+def close_unused(db, current, closure, release=None):
+    """A grant never claimed: held -> closed_unused only with hostgate's original sealed release.
+
+    The attempt stays queued (queued -> finished is illegal) and a later round may compete.
+    """
+    row = db.execute("SELECT state FROM attempts WHERE id=?", (current.intent.attempt,)).fetchone()
+    if row["state"] != "queued" or current.creation is not None:
+        return False
+    return _creation_cas(db, current, ("held",), "closed_unused",
+                         Creation("closed_unused", release=release, closure=closure))
+
+
+def reject_discovered(db, current, pending):
+    """held without key -> rejected by estado's durable rejection of exactly this reservar."""
+    return _creation_cas(db, current, ("held",), "rejected", Creation("rejected", discovered=pending))

@@ -18,12 +18,12 @@ from typing import Optional
 
 if __package__:
     from . import inputs, native, storage
-    from .model import (Fault, HostConfirmation, HostHeld, HostIntent, HostRound, dump, now)
+    from .model import (Closure, Fault, HostConfirmation, HostHeld, HostIntent, HostRound, dump, now)
     from .storage import Ledger
 else:
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from fleet import inputs, native, storage
-    from fleet.model import (Fault, HostConfirmation, HostHeld, HostIntent, HostRound, dump, now)
+    from fleet.model import (Closure, Fault, HostConfirmation, HostHeld, HostIntent, HostRound, dump, now)
     from fleet.storage import Ledger
 
 SCHEMA = "fleet/host-reservation@1"
@@ -36,7 +36,7 @@ SENDS = 3
 @dataclass(frozen=True)
 class HostObservation:
     round: Optional[HostRound]
-    action: str  # none, retired or held
+    action: str  # none, retired, held, released, closed_unused or rejected
 
 
 def _checkpoint(name):
@@ -58,7 +58,7 @@ def authority():
 def state_of(round_):
     if isinstance(round_, HostConfirmation):
         return "confirmed"
-    return "held" if isinstance(round_, HostHeld) else round_.state
+    return "held" if isinstance(round_, HostHeld) else intent_of(round_).state
 
 
 def intent_of(round_):
@@ -309,7 +309,11 @@ def supervise(db, intent, handoff, ready_fd):
 
 
 def reconcile(db, row):
-    """recover: retire a round never sent, hold one whose S is gone. Never adopts S nor reopens."""
+    """recover: retire a round never sent, hold one whose S is gone, mirror hostgate's original closure.
+
+    Never adopts S nor reopens. Time, an empty list, uncertain, a new boot or a new
+    supervisor release nothing: only the closure hostgate already keeps leaves held or closing.
+    """
     with db.transaction():
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='host_rounds'").fetchone():
             raise Fault("backend_unavailable")
@@ -321,15 +325,83 @@ def reconcile(db, row):
             if state == "prepared":
                 storage.retire_host_round(db, intent, "recovered_before_send")
                 action = "retired"
-            elif state in ("outcome_unknown", "confirmed") and not native.confirmed(intent.supervisor):
+            elif (state in ("outcome_unknown", "confirmed") + storage.CREATION_PHASES
+                  and not native.confirmed(intent.supervisor)):
                 storage.hold_host(db, intent, "supervisor_lost")
                 if state == "confirmed":
                     db.execute("UPDATE attempts SET gate='closed',detail='host_supervisor_lost' "
                                "WHERE id=? AND gate='available'", (row["id"],))
                 action = "held"
+                state = "held"
     if action == "retired":
         _checkpoint("retired")  # after commit, without the Fleet lock
+    elif current is not None and state in ("held", "closing"):
+        estado = _estado(intent_of(current))  # without the Fleet lock
+        if estado is not None:
+            with db.transaction():
+                action = _mirror(db, intent_of(current), estado) or action
     return HostObservation(current, action)
+
+
+def _estado(intent):
+    """One estado over an effective query channel. Any failure, TransportError included, is an
+    unknown result: None, and the round keeps its doubt."""
+    from hostgate.client import HostgateClient
+    try:
+        with HostgateClient.connect(mode="effective") as client:
+            return client.call({"schema": SCHEMA, "operationId": intent.operation_id + ":estado",
+                                "operation": "estado"}, timeout=TIMEOUT)
+    except Exception as exc:
+        _log("recover", exc)
+        return None
+
+
+def _mirror(db, intent, estado):
+    """Copy hostgate's original outcome of this exact round, or nothing; the decoder re-checks it."""
+    from hostgate.protocol import validate_result
+    current = next((r for r in storage.host_rounds(db, intent.attempt) if intent_of(r).ordinal == intent.ordinal), None)
+    if current is None or state_of(current) not in ("held", "closing"):
+        return None
+    key = getattr(current, "key", None)
+    try:
+        validate_result(estado, "effective", intent.store_id)
+        grants = [p for p in estado["pending"] if p["operationId"] == intent.operation_id]
+        if (estado["configRevision"] != intent.config_revision or estado["physicalHostId"] != intent.physical_host_id
+                or len(grants) != 1 or grants[0]["requestDigest"] != storage.request_sha256(intent.request)
+                or (grants[0]["attemptId"], grants[0]["jobId"]) != (intent.attempt, intent.request["jobId"])):
+            return None
+        grant = grants[0]
+        if key is None:
+            if grant["state"] != "rejected" or grant["reservationKey"] is not None:
+                return None  # a grant discovered without its key keeps held
+            outcome, change = "rejected", lambda: storage.reject_discovered(db, current, grant)
+        else:
+            found = [r for r in estado["reservations"] if r["key"] == key]
+            if (grant["reservationKey"] != key or len(found) != 1
+                    or (found[0]["state"], found[0]["effectiveState"]) != ("released", "released")
+                    or (found[0]["jobId"], found[0]["attemptId"], found[0]["profileId"], found[0]["executorId"],
+                        found[0]["physicalHostId"]) != (intent.request["jobId"], intent.attempt,
+                                                        intent.request["profileId"], intent.executor_id,
+                                                        intent.physical_host_id)):
+                return None
+            closure = Closure(found[0]["permit"], found[0]["closureEvidence"])
+            if getattr(current, "creation", None) is None:
+                outcome, change = "closed_unused", lambda: storage.close_unused(db, current, closure)
+            else:
+                outcome, change = "released", lambda: storage.release_host(db, current, closure)
+    except (KeyError, IndexError, TypeError, ValueError, AttributeError):
+        return None
+    db.execute("SAVEPOINT mirror")
+    try:
+        done = change()
+    except Fault as fault:
+        if fault.code != "host_correlation_invalid":
+            raise
+        done = False  # the closure does not correlate with this round: nothing is copied
+    db.execute("RELEASE mirror" if done else "ROLLBACK TO mirror")
+    if not done:
+        db.execute("RELEASE mirror")
+    return outcome if done else None
 
 
 def main(argv):

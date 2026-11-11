@@ -429,8 +429,8 @@ def reconcile(db, result):
     for item in rows:
         row = attempt_row(db, item[0])
         if backend_of(db, row["job"]) == HOST:
-            if row["state"] != "finished":
-                host_reservation.reconcile(db, row)
+            # A finished attempt may still keep its round held or closing.
+            host_reservation.reconcile(db, row)
             continue
         if row["state"] == "finished" and row["disposition"] != "released":
             with db.transaction():
