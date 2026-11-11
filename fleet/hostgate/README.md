@@ -174,7 +174,8 @@ boot no acredita el de Windows. No hay integración WSL implementada. ABI/clock 
 aceptación específica de plataforma: el test de identidad puntual es evidencia acotada.
 
 Desde 4c-1, `authorize_creation`, `consume_creation` y `record_started` son métodos de
-`Hostgate` en modo efectivo. El wire llega en 4c-3 y Fleet no los llama.
+`Hostgate` en modo efectivo. Desde 4c-3 viajan por el wire (sección «Autoridad de
+creación»); Fleet sigue sin llamarlas.
 `ScopeVerifier` real nunca acredita un perfil/cierre. Para Unix futuro se exige sesión/
 pgid propio **más linaje con procedencia y completitud** bajo perfil auditado que impida
 setsid/cambio de grupo, doble fork o delegación no controlada. Registrar comandos,
@@ -437,8 +438,8 @@ otro store se rechazan con `stale-generation` sin cambiar la reserva vigente.
 Consumidor: `HostgateClient.connect(handoff=None, mode='shadow')` y
 `request_supervisor(request, mode='shadow')`; 3b debe pedir `mode='effective'`.
 El cliente contrasta modo, store y revisión con autoridad y hello; en efectivo valida
-además cada respuesta. La ruta de sombra del cliente no cambia. El CLI `estado`
-conecta en sombra: en un host efectivo falla cerrado con salida 6.
+además cada respuesta. La ruta de sombra del cliente no cambia. Desde 4c-3 el CLI `estado`
+toma el modo de la configuración validada.
 `call(request, *, max_response_bytes=256 * 1024**2, timeout=300)` acepta sólo plazos
 numéricos `0 < timeout <= 300` segundos; un fallo cierra el canal y conserva duda.
 `DarwinPeers.observe_process(executor, pid)` devuelve la `Identity` nativa observada.
@@ -552,3 +553,66 @@ ninguna identidad propia viva. Devuelve `SelfcheckPassed(boot, darwin_build)` o
 todo proceso que crea termina con él. La limpieza intenta cada paso aunque falle
 otro y nunca termina un pid sin revalidarlo. Si un paso o una identidad fallan,
 el resultado es `SelfcheckFailed('cleanup', 'limpieza incompleta: ...')`.
+
+
+## Autoridad de creación · SEN-5650, entregas 4c-1 a 4c-3
+
+Tres operaciones nuevas del wire, sólo del supervisor dueño en el canal de la reserva y
+sólo en modo efectivo. En sombra validan la petición y responden
+`enforcement-unavailable` con exit 5. El CLI las nombra, pero sin emparejar responde
+`enforcement-unavailable` sin escribir en el store. `estado` toma el modo de la configuración
+validada.
+
+- `authorize_creation {key, confirmation, launch}`. `confirmation =
+  {operationId, requestDigest, attemptId, source}` repite la admisión que dio la reserva
+  (`source` es `reply` o `same-channel-replay`). `launch = {argvDigest, inputDigest,
+  bootstrapDigest, launcherDigest}`. Exige el permiso `Unissued`, la generación vigente y el perfil
+  acreditado por el runtime para el uid del supervisor, con los dos últimos digests iguales a
+  los del bloque que lo acreditó. Certifica la línea base de la
+  coalición del dueño y emite el permiso `Issued` con `pmt_<hex>`, el epoch del emisor y
+  la revisión del perfil. Responde `permit` y `heartbeatTTL` con `granted: false`, porque `granted` es de la
+  reserva. El permiso emitido se lee en `permit.state`. Un barrido sin concordancia
+  responde `unix-scope-unconfirmed` reintentable, sin permiso.
+- `consume_creation {key, permitId, launchDigest}`. `launchDigest` es el digest canónico
+  de `launch`. Hace CAS de `Issued` a `Consumed`. `creationAllowed: true` sólo aparece en
+  esa respuesta original. Cualquier otra respuesta, incluido su replay, lleva `false` o
+  nada, y ausente equivale a falso.
+- `record_started {key, permitId, root: {pid, unique}}`. Lee la raíz con `observe_root`:
+  hija directa del dueño, en su coalición y su boot, y fuera de la línea base. Pasa a
+  `Registered` con el recibo `scp_<digest>`, y la reserva pasa a `running`. Repetir la
+  misma raíz con otro `operationId` da `operation-conflict`. Otra raíz deja la reserva
+  `uncertain`.
+
+`soltar` efectivo responde según el permiso:
+
+| Permiso | Respuesta |
+| --- | --- |
+| `Unissued`, `Issued` | Sello `never-created` propio. `released`, permiso `Sealed`, crédito devuelto. |
+| `Consumed` | Retiene con `unix-scope-unconfirmed`. Sin raíz no hay barrido que lo cierre. |
+| `Registered` | Observa la línea base. `Complete` cierra con evidencia `unix-scope-empty` correlacionada y pasa a `Closed`. `Occupied` retiene con `scopeStatus = {status: occupied, novel (hasta 64 pares [pid, unique]), novelCount}`, reintentable; un miembro nuevo elevado deja además la reserva `uncertain`. `Retry` responde `scopeStatus` `scan-retry`, reintentable. `Invalid` deja la reserva `uncertain`. |
+| `Closed`, `Sealed` | Devuelve el cierre original sin crédito nuevo. |
+
+`occupied` y `scan-retry` describen esa observación y nunca quedan en la fila. La
+evidencia sintética del fixture ya no libera nada: `soltar` sella con evidencia propia.
+Un replay devuelve el resultado original con `granted: false`. `currentState` lleva
+`permit` cuando la fila tiene registro de creación, y el replay de un consumo nunca
+habilita.
+
+Fencing, en este orden: generación vigente (salvo `soltar`), boot físico de la reserva,
+epoch del permiso igual al del proceso, reserva no `uncertain` y revisión del perfil
+igual a la del permiso. El epoch del emisor es `next_epoch` de lo persistido, calculado
+una vez por proceso. Así cambia tras cada reinicio de hostgate que tenga algo
+persistido. Un permiso de otro epoch, un perfil que ya no acredita la revisión del
+permiso u otra raíz tras el registro dejan la reserva `uncertain`, que nunca se crea ni
+se cierra.
+
+El `Runtime` efectivo conecta `DarwinCoalition` y, sólo si algún perfil trae bloque de
+acreditación, corre el selfcheck y lee el build una vez por arranque.
+`profile_verified(profile, workload_uid)` es `Accredited` sólo con un selfcheck pasado
+cuyo boot coincide con el de `sysctl` (comparados como UUID) y con build y uid
+iguales. En sombra no corre nada. `require_creation_provider` sigue lanzando: no hay
+bootstrap, ledger ni migración, y Fleet no emite ni consume permisos.
+
+`validate_result(result, mode, store_id, operation)` rechaza los campos de otra
+operación y valida la variante pública del permiso contra el estado, `scopeStatus`,
+`heartbeatTTL` y `creationAllowed`. El cliente lo aplica a cada respuesta.
