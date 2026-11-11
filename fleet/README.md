@@ -159,9 +159,13 @@ sin filas posteriores conserva el cursor y deja vacío su stream, sin agotar el 
 
 `--backend host-reservation@1 --profile <id>` admite un trabajo host sólo con una
 autoridad hostgate efectiva (`admin.local_authority()`); sin ella responde
-2/backend_unavailable sin crear estado, y un replay conserva su recibo. El ledger v5
-añade `host_rounds`; un lector deja un v4 intacto y un escritor lo migra con el slot
-libre. El intento sigue `queued` mientras un supervisor autenticado pide la reserva:
+2/backend_unavailable sin crear estado, y un replay conserva su recibo. El ledger v6
+tiene `host_rounds` con las fases de creación y la columna `creation_json`. Un lector
+acepta v4, v5 y v6 sin migrar. Sólo un escritor con el slot libre migra v4 o v5 a v6,
+bajo el lock, y conserva byte a byte trabajos, intentos, transiciones y cada columna
+v5. Un runtime anterior rechaza v6 con `unsupported_schema`. Cada fase se lee con la
+forma exacta de su variante; ningún código escribe todavía las fases de creación.
+El intento sigue `queued` mientras un supervisor autenticado pide la reserva:
 Fleet persiste la intención antes de enviar y confirma junto con el claim del intento
 exacto en cabeza del FIFO. El piloto no toma ni salta una cabeza host.
 `status` lee las rondas con forma estricta por estado, JSON canónico y correlación
