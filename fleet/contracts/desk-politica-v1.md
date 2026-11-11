@@ -298,7 +298,8 @@ El supervisor puede conservarlo en la memoria de su proceso, sin exportarlo.
 Una salida de la CLI que incluye la claim lleva el token. Es un recibo privado.
 `estado` incluye las claims vivas de los dos proyectos con su token.
 Jale la captura y sólo imprime campos decodificados. Hasito la conserva en
-`lanzador.log`, dentro de la evidencia privada de la MacBook.
+`lanzador.log`, dentro de la evidencia privada de la MacBook. Esa copia
+incumple la regla anterior sobre logs de texto. Corregirla pasa a SEN-5865.
 
 La prueba de sesión devuelve tres resultados, vacío probado, miembros
 hallados o inconcluso. Los zombies cuentan como miembros mientras existan.
