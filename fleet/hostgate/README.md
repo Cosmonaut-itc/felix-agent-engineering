@@ -456,11 +456,12 @@ diseño 3a. `wire.receive_response(..., _mode='shadow')` ahora contrasta el modo
 verificado que le pasa el cliente; framing, checksum y END conservan su forma.
 
 
-## Lector de coalición desconectado · SEN-5650, entrega 4a
+## Lector de coalición · SEN-5650, entrega 4a
 
 `darwin_coalition.DarwinCoalition` lee, sin privilegios, la coalición de recursos
-de Darwin (índice 0 del sabor 20 de `proc_pidinfo`). Nada del runtime de hostgate
-ni de Fleet lo importa todavía; una prueba lo comprueba.
+de Darwin (índice 0 del sabor 20 de `proc_pidinfo`). En 4a nada del runtime de hostgate
+ni de Fleet lo importaba. Desde 4c-2 `service.py` lo construye en modo efectivo con import
+diferido. Cargar el runtime no lo carga y Fleet no lo importa; una prueba lo comprueba.
 
 - `certify(owner: Birth) -> Baseline`: barrido aceptado de la coalición del dueño.
   La línea base guarda boot, coalición, todos los miembros con `Birth`

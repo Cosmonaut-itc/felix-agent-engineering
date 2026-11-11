@@ -260,10 +260,10 @@ class Veto(Authority):
         self.assertEqual(self.available_slots(), 1)
 
     def test_elevated_or_foreign_uid_root_is_not_registered(self):
-        """Variante: allow_elevated_root."""
+        """Variantes: allow_elevated_root, allow_foreign_root."""
         other = self.reserve('op-b', 'job-b')
-        cases = ((self.key, dict(), 300, 30, dict(uid=0, svuid=0)),  # euid 0 con ruid 501: elevada.
-                 (other, dict(grant='op-b', job='job-b'), 301, 31, dict(uid=502, ruid=502, svuid=502)))  # Otro uid.
+        cases = ((self.key, dict(), 300, 30, dict(svuid=0)),  # uid y ruid del dueño con svuid 0: sólo elevada.
+                 (other, dict(grant='op-b', job='job-b'), 301, 31, dict(uid=502, ruid=502, svuid=502)))  # Sólo otro uid.
         permits = []
         for key, conf, pid, _, _ in cases:  # Los dos permisos antes de cualquier raíz: un hijo previo invalida autorizar.
             permits.append(self.authorize('auth-%d' % pid, key, **conf)['permit']['permitId'])
@@ -272,7 +272,8 @@ class Veto(Authority):
             with self.subTest(pid=pid):
                 self.kernel.add(pid, unique, parent=10, **fields)
                 started = self.start('start-%d' % pid, permit, dict(pid=pid, unique=unique), key)
-                self.assertEqual([r['code'] for r in started['reasons']][:1], ['identity-unverifiable'], started)
+                self.assertEqual([(r['code'], r['detail']) for r in started['reasons']][:1],
+                                 [('identity-unverifiable', 'raiz elevada o de otro uid')], started)
                 self.assertEqual(self.row(key)['creation']['state'], 'consumed')
 
 

@@ -180,6 +180,28 @@ class RuntimeAccreditation(Profiles):
                          {('Accredited', self.LOWER, runtime.config.profiles[NAME].revision)})
         self.assertEqual(runtime.closure(['p'], {}), ClosureEvidence())
 
+    def test_effective_runtime_builds_its_coalition_and_shadow_does_not(self):
+        """Variante: no_default_coalition."""
+        from hostgate.darwin_coalition import DarwinCoalition
+        from hostgate.service import Runtime
+        for mode, kind in (('effective', DarwinCoalition), ('shadow', type(None))):
+            with self.subTest(mode):
+                config = self.runtime(mode, block())[0].config
+                runtime = Runtime(config, Peers(self.LOWER.upper()), _selfcheck=lambda: None, _build=lambda: BUILD)
+                self.assertIs(type(runtime.coalition), kind)
+
+    def test_only_shadow_takes_closure_evidence_from_outside(self):
+        """Variante: external_effective_closure."""
+        from hostgate.service import Runtime
+        outside = ClosureEvidence(kind='outside')
+
+        class Outside:
+            def closure(self, ids, reservation): return outside
+        for mode, expected in (('effective', ClosureEvidence()), ('shadow', outside)):
+            with self.subTest(mode):
+                config = self.runtime(mode, block())[0].config
+                self.assertEqual(Runtime(config, Peers(self.LOWER.upper()), Outside()).closure(['p'], {}), expected)
+
 
 if __name__ == '__main__':
     unittest.main()
