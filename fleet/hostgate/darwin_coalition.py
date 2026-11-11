@@ -23,6 +23,7 @@ COUNTERS_CHANGED, CARDINALITY = 'counters-changed', 'cardinality-mismatch'
 SATURATED, IDENTITY_CHANGED, DEADLINE = 'list-saturated', 'identity-changed', 'deadline'
 # Motivos de Invalid: la base de la prueba se perdió.
 BOOT_CHANGED, COALITION_NULL, COALITION_CHANGED = 'boot-changed', 'coalition-null', 'coalition-changed'
+ROOT_REUSED = 'root-reused'
 ABI_SIZE, READ_ERROR, OWNER_MISMATCH = 'abi-size', 'read-error', 'owner-mismatch'
 COUNTERS_INCOHERENT, TOO_LARGE = 'counters-incoherent', 'baseline-too-large'
 # Motivos de RootRejected además de los anteriores.
@@ -301,11 +302,13 @@ class DarwinCoalition:
         if len(scan.members) > MAX_MEMBERS: raise CoalitionUnavailable(Invalid(TOO_LARGE))
         return Baseline.build(boot, cid, scan.members, scan.after)
 
-    def observe(self, baseline) -> ScopeObservation:
-        """Nunca amplía la línea base ni descuenta una novedad por padre, nombre, uid o sesión."""
+    def observe(self, baseline, root=None) -> ScopeObservation:
+        """Nunca amplía la línea base ni descuenta una novedad por padre, nombre, uid o sesión.
+
+        Con la raíz registrada, su pid con otro uniqueid, dentro o fuera de C, es Invalid (design §3, fila 4)."""
         if type(baseline) is not Baseline: raise TypeError('baseline debe ser Baseline')
         known = {m.birth.pid: m.birth.unique for m in baseline.members}
-        scan = self._scan(baseline.boot, baseline.coalition, known)
+        scan = self._scan(baseline.boot, baseline.coalition, known, root.birth if root is not None else None)
         if not isinstance(scan, _Scan): return scan
         if scan.before[0] < baseline.counters[0] or scan.before[1] < baseline.counters[1]:
             return Invalid(COUNTERS_INCOHERENT)
@@ -348,7 +351,7 @@ class DarwinCoalition:
             raise CoalitionUnavailable(Invalid(OWNER_MISMATCH))
         return cid
 
-    def _scan(self, boot, cid, known):
+    def _scan(self, boot, cid, known, root=None):
         """Orden del barrido: boot, contadores, lista, lecturas dobles, contadores y boot otra vez."""
         n, start = self._native, self._clock()
         try:
@@ -362,7 +365,7 @@ class DarwinCoalition:
         for pid in dict.fromkeys(pids):
             if self._clock() - start > self._limit: return Retry(DEADLINE)
             try:
-                read = self._read(boot, cid, pid, known)
+                read = self._read(boot, cid, pid, known, root)
             except ReadError as exc:
                 if exc.errno == errno.ESRCH:
                     vanished += 1
@@ -381,9 +384,10 @@ class DarwinCoalition:
         if self._clock() - start > self._limit: return Retry(DEADLINE)
         return _Scan(tuple(members), before, after, vanished)
 
-    def _read(self, boot, cid, pid, known):
+    def _read(self, boot, cid, pid, known, root=None):
         n = self._native
         first = n.unique(pid)
+        if root is not None and pid == root.pid and first[0] != root.unique: return Invalid(ROOT_REUSED)
         coalition = n.coalition(pid)
         if coalition != cid:
             if known.get(pid) != first[0]: return None

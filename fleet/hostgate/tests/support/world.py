@@ -19,6 +19,8 @@ class World:
         self.channel = True
         self.transport_calls = []
         self.profiles = {'fixture'}
+        self.profile_revision = 'prf_fixture'
+        self.coalition = None  # Proveedor de coalición; las pruebas de la autoridad ponen uno sustituido.
         self.closures = {}
         self.fault = None
         self.hook = None
@@ -52,8 +54,12 @@ class World:
     def health(self):
         return self.health_kind, copy.deepcopy(self.sample), self.sample_boot
 
-    def profile_verified(self, profile):
-        return profile in self.profiles
+    def profile_verified(self, profile, workload_uid=None):
+        """Sin uid, la admisión de reservar; con uid, la acreditación que el permiso fija."""
+        if profile not in self.profiles: return False
+        if workload_uid is None: return True
+        from hostgate.admin import Accredited
+        return Accredited(profile, self.profile_revision, self.boot, 'fixture-build')
 
     def channel_alive(self, binding, *, pending=False):
         return self.channel and binding == 'fixture-channel'

@@ -273,6 +273,8 @@ class Rules(unittest.TestCase):
         # 4b: las formas del permiso releen Baseline/RootIdentity con import diferido, sus pruebas las plantan.
         mine |= {FLEET / 'hostgate/scope.py', FLEET / 'hostgate/tests/test_creation_forms.py'}
         mine |= {FLEET / 'hostgate/coalition_selfcheck.py', FLEET / 'hostgate/tests/test_coalition_selfcheck.py'}
+        # 4c: la autoridad usa el lector con import diferido; cargar el runtime sigue sin cargarlo.
+        mine |= {FLEET / 'hostgate/admission.py', FLEET / 'hostgate/tests/test_creation_authority.py'}
         users = [str(p) for p in FLEET.rglob('*.py')
                  if p.resolve() not in mine and 'darwin_coalition' in p.read_text(errors='replace')]
         self.assertEqual(users, [])

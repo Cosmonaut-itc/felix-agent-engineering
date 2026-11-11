@@ -1,14 +1,18 @@
-"""Frontera de cierre. La evidencia real y los perfiles no están acreditados.
+"""Frontera de cierre: formas del permiso de creación, su evidencia y sus transiciones puras.
 
-Las formas del permiso de creación (SEN-5650, 4b) existen pero nada las escribe todavía.
-darwin_coalition se importa dentro de las funciones: cargar el runtime no lo carga.
+Las transiciones (SEN-5650, 4c) reciben la fila y lo observado y devuelven la fila nueva;
+ninguna toca el store ni el kernel. darwin_coalition se importa dentro de las funciones:
+cargar el runtime no lo carga.
 """
+import copy
 from dataclasses import asdict, dataclass, field, fields, replace
 from typing import Mapping, Optional, Union
 from .protocol import canonical, digest, identifier, reason
 
 CREATION_PROTOCOL = 'darwin-coalition-creation@1'
 REAL_PROVENANCE = 'darwin-coalition@1'
+RESOURCE_POLICY = 'process-only@1'  # Sólo procesos en la coalición; ningún recurso externo acreditado.
+ROOT_TERMINAL_BASIS = 'absent-from-validated-scan@1'  # La raíz no es miembro vivo en un barrido aceptado.
 _PERMIT_KEYS = frozenset(('protocol state permitId owner channelBinding boot issuerEpoch confirmationDigest '
                           'launchDigest profileRevision coalitionId baseline baselineDigest baselineCounters').split())
 _EXTRA_KEYS = {'issued': (), 'consumed': (), 'registered': ('root', 'scopeReceipt'),
@@ -267,8 +271,7 @@ def _correlated(evidence, reservation):
     if (evidence.provenance != REAL_PROVENANCE or type(obs.issuer_epoch) is not int or obs.issuer_epoch <= 0
             or evidence.issuer != 'hostgate:%s:%d' % (key['storeId'], obs.issuer_epoch)
             or not key['reservationId'].startswith('e_') or obs.boot != evidence.boot
-            or obs.provider_revision != REAL_PROVENANCE or not isinstance(obs.resource_policy, str)
-            or not obs.resource_policy
+            or obs.provider_revision != REAL_PROVENANCE or obs.resource_policy != RESOURCE_POLICY
             or obs.new_members != [] or getattr(creation, 'closed_by', evidence.evidence_digest) != evidence.evidence_digest):
         return False
     permit = getattr(creation, 'permit', None)
@@ -289,7 +292,7 @@ def _correlated(evidence, reservation):
                 and type(obs.member_count) is int and type(obs.live_task_count) is int
                 and obs.member_count == obs.live_task_count == obs.scan_after[0] - obs.scan_after[1]
                 and obs.member_count <= len(permit.baseline.members)  # Sin miembros nuevos, sólo sobrevive línea base.
-                and isinstance(obs.root_terminal_basis, str) and obs.root_terminal_basis):
+                and obs.root_terminal_basis == ROOT_TERMINAL_BASIS):
             return False
     elif evidence.kind == 'never-created':
         if type(creation) not in (Unissued, Issued, Sealed): return False
@@ -350,12 +353,138 @@ def _closure_reasons(evidence, reservation, mode):
     return reasons
 
 
-def authorize_creation(key, auth):
-    raise NotImplementedError('enforcement-unavailable: permiso de creacion futuro')
+class Refused(Exception):
+    """Transición rechazada con su motivo; doubt pide además duda durable."""
+    def __init__(self, value, doubt=False):
+        super().__init__(value['detail'])
+        self.reason, self.doubt = value, doubt
 
 
-def record_started(key, scope, auth=None):
-    raise NotImplementedError('enforcement-unavailable: supervisor y registro previo futuros')
+def issuer(store_id, epoch):
+    return 'hostgate:%s:%d' % (store_id, epoch)
+
+
+def next_epoch(view):
+    """Epoch de un proceso de hostgate: mayor que todo epoch persistido en permisos y pruebas."""
+    seen = [0]
+    for row in view['reservations']:
+        seen.append((row.get('creation') or {}).get('issuerEpoch', 0))
+        seen.append(((row.get('closureEvidence') or {}).get('observation') or {}).get('issuer_epoch', 0))
+    return max(seen) + 1
+
+
+def owner_birth(row):
+    """Nacimiento Darwin del dueño: (boot, pid, uniqueid) del startToken de 4 piezas."""
+    from .darwin_coalition import Birth
+    token = row['owner']['startToken']
+    if len(token) != 4: raise Refused(reason('identity-unverifiable', 'dueno sin nacimiento Darwin'))
+    return Birth(row['physicalBoot'], row['owner']['pid'], token[2])
+
+
+def permit_view(creation):
+    """Lo que el wire muestra del permiso: sin dueño, canal ni miembros de la línea base."""
+    if type(creation) is Unissued: return None
+    value = dict(state=creation.state)
+    p = creation.permit
+    if p is not None:
+        value.update(permitId=p.permit_id, issuerEpoch=p.issuer_epoch, profileRevision=p.profile_revision,
+                     baselineDigest=p.baseline.digest)
+    if isinstance(creation, (Registered, Closed)): value['scopeReceipt'] = creation.scope_receipt
+    if isinstance(creation, (Closed, Sealed)): value['closedBy'] = creation.closed_by
+    return value
+
+
+def _moved(row, creation, **changes):
+    """Fila nueva ya validada: una transición nunca devuelve una forma que el store rechazaría."""
+    new = copy.deepcopy(row)
+    new.update(changes, creation=creation_json(creation))
+    validate_reservation(new, 'effective')
+    return new, creation
+
+
+def _conflict(detail):
+    return Refused(reason('operation-conflict', detail))
+
+
+def authorize_creation(row, *, permit_id, confirmation_digest, launch_digest, baseline, issuer_epoch, profile_revision):
+    """unissued -> issued: fija una sola vez la línea base, la confirmación, el launch, el boot y el epoch."""
+    if row['state'] != 'reserved' or type(creation_from_row(row)) is not Unissued:
+        raise _conflict('la reserva ya tiene permiso; nunca se emite otro')
+    if baseline.boot != row['physicalBoot']: raise Refused(reason('boot-unverified', 'linea base de otro boot'))
+    if any(m.parent_unique == owner_birth(row).unique for m in baseline.members):  # Design §2: invalida el orden.
+        raise Refused(reason('identity-unverifiable', 'hijo del dueno ya presente al autorizar'), doubt=True)
+    permit = Permit(permit_id, row['owner'], row['channelBinding'], baseline.boot, issuer_epoch,
+                    confirmation_digest, launch_digest, profile_revision, baseline)
+    return _moved(row, Issued(permit))
+
+
+def consume_creation(row, *, permit_id, launch_digest):
+    """CAS issued -> consumed con el mismo permitId y launchDigest; launchPossible ya no vuelve a falso."""
+    creation = creation_from_row(row)
+    if row['state'] != 'reserved' or type(creation) is not Issued:
+        raise _conflict('permiso %s: el consumo es unico' % creation.state)
+    if (permit_id, launch_digest) != (creation.permit.permit_id, creation.permit.launch_digest):
+        raise _conflict('permitId o launchDigest distintos del permiso emitido')
+    return _moved(row, Consumed(creation.permit), launchPossible=True)
+
+
+def record_started(row, *, permit_id, root):
+    """consumed -> registered con la raíz observada: fuera de la línea base, en su coalición, hija del dueño."""
+    creation = creation_from_row(row)
+    if row['state'] != 'reserved' or type(creation) is not Consumed:
+        raise _conflict('permiso %s: registro sin consumo previo' % creation.state)
+    permit = creation.permit
+    if permit_id != permit.permit_id: raise _conflict('permitId distinto del permiso consumido')
+    b = permit.baseline
+    if root.birth in b.births: raise Refused(reason('identity-unverifiable', 'raiz dentro de la linea base'))
+    if root.birth.boot != b.boot or root.coalition != b.coalition:
+        raise Refused(reason('identity-unverifiable', 'raiz fuera de la coalicion de la linea base'))
+    if root.parent_unique != owner_birth(row).unique:
+        raise Refused(reason('identity-unverifiable', 'raiz no es hija directa del dueno'))
+    receipt = 'scp_' + digest(dict(permitId=permit.permit_id, root=root_json(root)))
+    return _moved(row, Registered(permit, root, receipt), state='running')
+
+
+def _evidence(row, store_id, epoch, permit, root=None, complete=None):
+    scoped = complete is not None
+    def p(name): return getattr(permit, name) if permit is not None else None
+    b = p('baseline')
+    obs = Observation(REAL_PROVENANCE, epoch, p('profile_revision'), p('permit_id'), p('confirmation_digest'),
+                      p('launch_digest'), b and b.coalition, b and b.digest, root_json(root) if scoped else None,
+                      row['physicalBoot'], list(complete.before) if scoped else None,
+                      list(complete.after) if scoped else None, complete.members if scoped else None,
+                      complete.after[0] - complete.after[1] if scoped else None, [],
+                      complete.survivors if scoped else None, ROOT_TERMINAL_BASIS if scoped else None, RESOURCE_POLICY)
+    return ClosureEvidence('unix-scope-empty' if scoped else 'never-created', issuer(store_id, epoch),
+                           copy.deepcopy(row['key']), row['physicalBoot'], row['scope'], REAL_PROVENANCE, True, True,
+                           scoped, scoped, scoped, scoped, True, True, not scoped, observation=obs).signed()
+
+
+def _released(row, evidence, final):
+    """Valida la prueba con closure_reasons sobre la fila previa y sólo entonces libera."""
+    reasons = closure_reasons(evidence, row, mode='effective')
+    if reasons: raise Refused(reasons[0])
+    return _moved(row, final, state='released', reasons=[], closureEvidence=evidence_json(evidence))
+
+
+def seal(row, *, store_id, issuer_epoch):
+    """unissued|issued -> sealed con never-created. consumed nunca se sella."""
+    creation = creation_from_row(row)
+    if row['state'] != 'reserved' or type(creation) not in (Unissued, Issued):
+        raise _conflict('permiso %s: sin sello never-created' % creation.state)
+    permit = getattr(creation, 'permit', None)
+    evidence = _evidence(row, store_id, issuer_epoch, permit)
+    return _released(row, evidence, Sealed(permit, evidence.evidence_digest))
+
+
+def close(row, complete, *, store_id):
+    """registered -> closed con un barrido Complete del proveedor; la prueba nace en el epoch del permiso."""
+    creation = creation_from_row(row)
+    if row['state'] != 'running' or type(creation) is not Registered:
+        raise _conflict('permiso %s: cierre sin registro' % creation.state)
+    p = creation.permit
+    evidence = _evidence(row, store_id, p.issuer_epoch, p, creation.root, complete)
+    return _released(row, evidence, Closed(p, creation.root, creation.scope_receipt, evidence.evidence_digest))
 
 
 class ScopeVerifier:
