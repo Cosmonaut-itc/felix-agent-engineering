@@ -222,6 +222,42 @@ class Recover(MirrorHarness):
                          "FACT: the recorded outcome stays")
         self.assertEqual(self.slot()[0][0], None)
 
+    def foreign_rejection(self, operation_id):
+        """Another principal's reservar under `operation_id`, which hostgate rejects for good."""
+        from hostgate.admission import Hostgate
+        from hostgate.tests.test_admin import fixture_policy
+        from host_creation_cases import default_umask
+        authority, other = self.authority, self.me["uid"] + 1
+        with fixture_policy(authority.config.state_dir.parent):
+            config = replace(authority.config, acl={p: ("supervisor", "query")
+                                                    for p in (authority.principal, "uid:{}".format(other))})
+        authority.gate = Hostgate(config, authority.world)
+        auth = authority.world.auth(pid=200, principal="uid:{}".format(other), start=(1, 2, 20, 7))
+        auth = replace(auth, peer=replace(auth.peer, uid=other), anchor=replace(auth.anchor, uid=other))
+        authority.world.processes[auth.peer.pid] = auth.peer
+        authority.world.processes[auth.anchor.pid] = auth.anchor
+        request = dict(self.current().intent.request, operationId=operation_id,
+                       demand=dict(cpuMilli=99999, memoryBytes=0, diskBytes={}, slots=1))
+        with default_umask():
+            self.assertEqual(authority.gate.reservar(request, auth)["exitCode"], 1)
+
+    def converges_beside(self, same_id):
+        current, _ = self.closing()
+        self.foreign_rejection(current.intent.operation_id if same_id else "another-operation")
+        estado = self.authority.estado()
+        self.assertEqual(len([p for p in estado["pending"] if p["operationId"] == current.intent.operation_id]),
+                         2 if same_id else 1)
+        self.assertEqual((self.reconcile(estado).action, self.raw()[0][0], self.slot()[0][0]),
+                         ("released", "released", None),
+                         "FACT: another principal's operation does not hide this round's original closure")
+
+    def test_another_principals_other_operation_leaves_the_closure_alone(self):
+        self.converges_beside(False)
+
+    def test_another_principals_operation_with_this_id_leaves_the_closure_alone(self):
+        """Variante: mirror_any_principal."""
+        self.converges_beside(True)
+
 
 class UnusedAndSeal(MirrorHarness):
     def test_an_unclaimed_grant_closes_unused_only_with_the_original_release(self):

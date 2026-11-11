@@ -365,7 +365,9 @@ def _mirror(db, intent, estado):
     key = getattr(current, "key", None)
     try:
         validate_result(estado, "effective", intent.store_id)
-        grants = [p for p in estado["pending"] if p["operationId"] == intent.operation_id]
+        # hostgate keys an operation by (principal, operationId): another principal may reuse the id.
+        grants = [p for p in estado["pending"]
+                  if (p["principal"], p["operationId"]) == (storage.host_principal(intent), intent.operation_id)]
         if (estado["configRevision"] != intent.config_revision or estado["physicalHostId"] != intent.physical_host_id
                 or len(grants) != 1 or grants[0]["requestDigest"] != storage.request_sha256(intent.request)
                 or (grants[0]["attemptId"], grants[0]["jobId"]) != (intent.attempt, intent.request["jobId"])):

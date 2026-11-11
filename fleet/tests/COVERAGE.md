@@ -1191,7 +1191,8 @@ migración con el slot ocupado. Las transiciones que escriben esas fases, el esp
 SEN-5650 4d-2: transiciones y espejo. `test_host_creation_mirror` recorre por los CAS de
 `storage` authorize, consume, record_started y soltar hasta `released` con el slot
 libre en el mismo commit. Además prueba `recover` con el cierre original, con cierres
-re-firmados de otro permiso, raíz o línea base y con un intento ya terminado; el grant
+re-firmados de otro permiso, raíz o línea base, con un intento ya terminado y con una
+operación de otro principal con el mismo id o con otro; el grant
 sin claim hasta `closed_unused`, sin `queued`→`finished`, también descubierto sin su
 clave; el rechazo durable de este principal y no el de otro; un CAS desde un estado
 que no es el leído y dos escritores con la misma lectura; `consumed` sin raíz; y la

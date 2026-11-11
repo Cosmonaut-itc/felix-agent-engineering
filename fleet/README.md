@@ -204,7 +204,9 @@ termina así, y guarda la entrada descubierta. Un rechazo durable descubierto po
 petición, el intento y el principal. `released` y
 `closed_unused` no cuentan como ronda abierta. `recover` examina también intentos
 terminados y sólo copia un cierre positivo que correlaciona en autoridad, store,
-clave, trabajo, intento, grant, perfil, permiso, raíz y línea base. Ni el tiempo, ni
+clave, trabajo, intento, grant, perfil, permiso, raíz y línea base. Busca su operación
+por principal e id, como hostgate, así que otro principal con el mismo id no la
+oculta. Ni el tiempo, ni
 un supervisor o un boot nuevos, ni el operador liberan una ronda `held`, y un
 `TransportError` deja el resultado desconocido.
 Evidencia por CLI contra fixtures privadas: `tests/test_host_reservation_cli.py`,
