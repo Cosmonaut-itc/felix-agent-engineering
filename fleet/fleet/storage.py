@@ -654,6 +654,8 @@ def decode_creation(row, intent, key, raw):
             _creation_receipt(row, key, creation, name, receipt)
     if phase == "authorizing" and steps["authorize"].receipt is not None:
         raise ValueError("authorizing with its receipt")
+    if phase == "spawning" and "start" in steps and steps["start"].receipt is not None:
+        raise ValueError("spawning with its start receipt")
     if "release" in steps:
         _creation_request(row, intent, key, creation, "release")
         if steps["release"].receipt is not None:

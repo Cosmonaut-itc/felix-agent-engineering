@@ -60,7 +60,7 @@ class Shapes(CreationHarness):
         self.assertEqual((view["error"], view["round"]), ("host_correlation_invalid", None), view)
 
     def test_each_phase_accepts_only_its_own_variant(self):
-        """Variante: free_shape."""
+        """Variantes: free_shape y spawning_takes_start_receipt."""
         for phase, creation in self.phases.items():
             with self.subTest(phase=phase):
                 self.accepted(phase, creation)
@@ -77,6 +77,8 @@ class Shapes(CreationHarness):
             "another step's receipt": ("authorized", Creation("authorized", authorize=replace(a, receipt=c.receipt))),
             "a busy reply as closure": ("released", replace(phases["released"], release=s["busy"],
                                                            closure=replace(s["closure"], permit=s["busy"].receipt["permit"]))),
+            "running's receipts under spawning": ("spawning", replace(phases["running"], phase="spawning")),
+            "held from spawning with running's receipts": ("held", replace(phases["running"], phase="spawning")),
             "held from a final phase": ("held", phases["released"]),
         }
         for name, (state, creation) in wrong.items():
@@ -88,9 +90,11 @@ class Shapes(CreationHarness):
                 self.plant(state, creation)
 
     def test_open_index_does_not_count_released_rounds(self):
-        """Variante: open_index_counts_released."""
-        self.plant("running", self.phases["running"])
-        self.assertFalse(self.second_round(), "FACT: an open round admits no other")
+        """Variantes: open_index_counts_released y open_index_skips_creation."""
+        for phase in storage.CREATION_PHASES:
+            with self.subTest(phase=phase):
+                self.plant(phase, self.phases[phase])
+                self.assertFalse(self.second_round(), "FACT: an open round admits no other")
         self.plant("released", self.phases["released"])
         self.assertTrue(self.second_round(), "FACT: released does not count as open")
         self.assertEqual([state for state, _ in self.raw()], ["released", "prepared"])

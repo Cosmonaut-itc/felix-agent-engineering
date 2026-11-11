@@ -1182,8 +1182,8 @@ Los resultados históricos anteriores no cambian.
 
 SEN-5650 4d-1: ledger v6. `test_host_ledger_v6` planta cada fase con recibos reales de
 una autoridad hostgate efectiva en proceso y la lee por `status`: sólo se acepta la
-variante de su fase, `held` conserva el prefijo y el permiso, y `released` o
-`closed_unused` no ocupan el índice de ronda abierta. También migra v4 y v5 por el
+variante de su fase, `held` conserva el prefijo y el permiso, las cinco fases de
+creación ocupan el índice de ronda abierta y `released` o `closed_unused` no. También migra v4 y v5 por el
 CLI con historia byte a byte idéntica, sin migrar desde un lector, y aplaza la
 migración con el slot ocupado. Las transiciones que escriben esas fases, el espejo y
 `recover` no están en este corte.
