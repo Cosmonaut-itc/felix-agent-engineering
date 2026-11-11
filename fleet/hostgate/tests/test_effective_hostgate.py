@@ -205,7 +205,7 @@ class EffectiveHostgate(test_ipc.IPCHarness):
     def test_creation_operations_travel_by_ipc_and_the_wire_is_exact(self):
         """Variante: unvalidated_wire."""
         from hostgate import cli, client as api
-        launch = dict(argvDigest='a' * 64, inputDigest='b' * 64, bootstrapDigest='c' * 64)
+        launch = dict(argvDigest='a' * 64, inputDigest='b' * 64, bootstrapDigest='c' * 64, launcherDigest='e' * 64)
         confirmation = dict(operationId=self.original['operationId'], requestDigest=digest(self.original),
                             attemptId=self.original['attemptId'], source='reply')
         authorize = self.creation('auth', 'authorize_creation', confirmation=confirmation, launch=launch)
