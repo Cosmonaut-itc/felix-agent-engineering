@@ -225,6 +225,14 @@ class Veto(Authority):
         self.assertEqual((row['state'], row['creation']['state']), ('uncertain', 'registered'))
         self.assertIn('reservation-uncertain', [r['code'] for r in row['reasons']])
 
+    def test_owner_child_already_in_the_baseline_refuses_authorize_with_doubt(self):
+        """Variante: allow_prior_child. Design §2: un hijo propio ya presente al autorizar invalida el orden."""
+        self.kernel.add(200, 20, parent=10)
+        refused = self.authorize('auth-1')
+        self.assertEqual([r['code'] for r in refused['reasons']][:1], ['identity-unverifiable'], refused)
+        row = self.row()
+        self.assertEqual((row['state'], type(scope.creation_from_row(row))), ('uncertain', scope.Unissued))
+
 
 class Fencing(Authority):
     def assertUntouched(self, result, code, before):

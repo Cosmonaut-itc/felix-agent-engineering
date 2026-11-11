@@ -409,6 +409,8 @@ def authorize_creation(row, *, permit_id, confirmation_digest, launch_digest, ba
     if row['state'] != 'reserved' or type(creation_from_row(row)) is not Unissued:
         raise _conflict('la reserva ya tiene permiso; nunca se emite otro')
     if baseline.boot != row['physicalBoot']: raise Refused(reason('boot-unverified', 'linea base de otro boot'))
+    if any(m.parent_unique == owner_birth(row).unique for m in baseline.members):  # Design §2: invalida el orden.
+        raise Refused(reason('identity-unverifiable', 'hijo del dueno ya presente al autorizar'), doubt=True)
     permit = Permit(permit_id, row['owner'], row['channelBinding'], baseline.boot, issuer_epoch,
                     confirmation_digest, launch_digest, profile_revision, baseline)
     return _moved(row, Issued(permit))
