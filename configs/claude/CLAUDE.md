@@ -63,10 +63,11 @@ Roles de pstack con modelo Claude, generados desde el routing:
 La MacBook de Felix sólo edita código y sirve Metro. Gates, pruebas, builds,
 contenedores, bases de datos y servidores corren en la Mac Mini o en Felix
 DESKTOP, como diga el `AGENTS.md` del repositorio. Si no lo dice, una suite
-completa o una corrida de 15 minutos o más va a Felix DESKTOP
-(`REMOTE_RUN_HOST=desk`) cuando `remote-run hosts` da su ocupación por debajo
-de 0.75. Si el desk no responde o está por encima, va a la Mac Mini. Lo demás
-corre en la Mini, igual que lo que exige macOS o nunca ha pasado en Linux.
+completa o una corrida de 15 minutos o más va a Felix DESKTOP por el lanzador
+con admisión del repositorio (`scripts/mini/run.sh --entorno desk` en Hasito,
+`run-remote.sh desktop` en Jale). Si el repositorio no tiene ese lanzador, o la
+admisión sale con 75, va a la Mac Mini. Lo demás corre en la Mini, igual que lo
+que exige macOS o nunca ha pasado en Linux.
 
 ## Roles
 
