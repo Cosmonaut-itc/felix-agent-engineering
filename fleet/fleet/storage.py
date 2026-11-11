@@ -4,6 +4,7 @@ Existing ledgers are inspected through a copy before opening any SQLite writer.
 Transactions serialize keys, claims, drain epochs, and operator audit decisions.
 """
 import contextlib
+from dataclasses import replace
 import fcntl
 import hashlib
 import os
@@ -16,9 +17,12 @@ import time
 import uuid
 
 from . import inputs
-from .model import APP_ID, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Fault, HostConfirmation, HostHeld, HostIntent, dump, load, now, opaque, safe_queued
+from .model import (APP_ID, HOST_SCHEMA_VERSION, PILOT_SCHEMA_VERSION, SCHEMA_VERSION, Closure, Creation, Fault,
+                    HostConfirmation, HostCreation, HostHeld, HostIntent, Step, dump, load, now, opaque, safe_queued)
 
 MAX_DATABASE = 256 * 1024 * 1024
+# Readers accept every version a writer can still migrate; none of them migrates.
+VERSIONS = (PILOT_SCHEMA_VERSION, HOST_SCHEMA_VERSION, SCHEMA_VERSION)
 SCHEMA = (
     "CREATE TABLE authority (singleton INTEGER PRIMARY KEY CHECK(singleton=1), "
     "id TEXT NOT NULL, uid INTEGER NOT NULL, revision INTEGER NOT NULL)",
@@ -46,30 +50,39 @@ SCHEMA = (
     "CREATE TABLE proofs (id TEXT PRIMARY KEY, body TEXT NOT NULL, sha256 TEXT NOT NULL)",
     "CREATE TABLE audit (seq INTEGER PRIMARY KEY AUTOINCREMENT, event TEXT NOT NULL)",
 )
-# Schema 5 adds only host rounds. SQL constrains part of the state shape;
-# every read enforces the complete shape. The partial index allows one
-# non-terminal round (held retains) per attempt.
-HOST_SCHEMA = (
+# Schema 5 added host rounds; schema 6 rebuilds them with the creation phases and
+# creation_json. SQL constrains part of the state shape; every read enforces the
+# complete shape. The partial index allows one open round (held retains) per attempt.
+HOST_TABLE = (
     "CREATE TABLE host_rounds (attempt TEXT NOT NULL REFERENCES attempts(id), "
     "ordinal INTEGER NOT NULL CHECK(ordinal>=1), operation_id TEXT UNIQUE NOT NULL "
     "CHECK(length(operation_id) BETWEEN 1 AND 256), request_json TEXT NOT NULL, "
     "request_sha256 TEXT NOT NULL CHECK(length(request_sha256)=64), physical_host_id TEXT NOT NULL, "
     "executor_id TEXT NOT NULL, store_id TEXT NOT NULL, config_revision TEXT NOT NULL, "
     "requester_identity TEXT NOT NULL, supervisor_identity TEXT, state TEXT NOT NULL CHECK(state IN "
-    "('prepared','outcome_unknown','confirmed','held','rejected','retired')), key_json TEXT, "
+    "('prepared','outcome_unknown','confirmed','held','rejected','retired','authorizing','authorized',"
+    "'spawning','running','closing','released','closed_unused')), key_json TEXT, "
     "receipt_json TEXT, confirmation_source TEXT CHECK(confirmation_source IN ('reply','same-channel-replay')), "
-    "reason TEXT, heartbeat_seq INTEGER NOT NULL DEFAULT 0 CHECK(heartbeat_seq>=0), "
+    "reason TEXT, heartbeat_seq INTEGER NOT NULL DEFAULT 0 CHECK(heartbeat_seq>=0), creation_json TEXT, "
     "PRIMARY KEY(attempt,ordinal), "
     "CHECK((supervisor_identity IS NULL)=(state IN ('prepared','retired'))), "
     "CHECK((key_json IS NULL)=(confirmation_source IS NULL)), "
     "CHECK(state NOT IN ('prepared','outcome_unknown','retired') OR "
     "(key_json IS NULL AND receipt_json IS NULL)), "
     "CHECK(state<>'confirmed' OR (key_json IS NOT NULL AND receipt_json IS NOT NULL AND reason IS NULL)), "
-    "CHECK(state<>'rejected' OR (key_json IS NULL AND receipt_json IS NOT NULL)), "
-    "CHECK(state<>'held' OR reason IS NOT NULL))",
-    "CREATE UNIQUE INDEX host_rounds_open ON host_rounds(attempt) "
-    "WHERE state NOT IN ('rejected','retired')",
+    "CHECK(state<>'rejected' OR (key_json IS NULL AND (receipt_json IS NOT NULL OR creation_json IS NOT NULL))), "
+    "CHECK(state NOT IN ('held','closed_unused') OR reason IS NOT NULL), "
+    "CHECK(state IN ('held','rejected') OR "
+    "(creation_json IS NULL)=(state IN ('prepared','outcome_unknown','confirmed','retired'))), "
+    "CHECK(state NOT IN ('authorizing','authorized','spawning','running','closing','released') OR "
+    "(key_json IS NOT NULL AND receipt_json IS NOT NULL AND reason IS NULL)))"
 )
+HOST_INDEX = ("CREATE UNIQUE INDEX host_rounds_open ON host_rounds(attempt) "
+              "WHERE state NOT IN ('rejected','retired','released','closed_unused')")
+HOST_SCHEMA = (HOST_TABLE, HOST_INDEX)
+HOST_COLUMNS = ("attempt,ordinal,operation_id,request_json,request_sha256,physical_host_id,executor_id,"
+                "store_id,config_revision,requester_identity,supervisor_identity,state,key_json,receipt_json,"
+                "confirmation_source,reason,heartbeat_seq")
 
 
 def lock(fd, mode=fcntl.LOCK_EX, timeout=10):
@@ -207,7 +220,7 @@ def writer_header(state):
                 pending.clear()
     if (len(header) < 100 or header[:16] != b"SQLite format 3\x00"
             or int.from_bytes(header[68:72], "big") != APP_ID
-            or int.from_bytes(header[60:64], "big") not in (PILOT_SCHEMA_VERSION, SCHEMA_VERSION)):
+            or int.from_bytes(header[60:64], "big") not in VERSIONS):
         raise Fault("unsupported_schema")
     writer_authority(main, committed, header)
 
@@ -342,21 +355,31 @@ def writer_authority(main, committed, header):
 
 def compatible(conn):
     if (conn.execute("PRAGMA application_id").fetchone()[0] != APP_ID or
-            conn.execute("PRAGMA user_version").fetchone()[0] not in (PILOT_SCHEMA_VERSION, SCHEMA_VERSION)):
+            conn.execute("PRAGMA user_version").fetchone()[0] not in VERSIONS):
         raise Fault("unsupported_schema")
 
 
 def migrate(conn):
-    """Writer-only, under the exclusive directory lock: v4 gains host rounds, jobs stay byte-identical.
+    """Writer-only, under the exclusive directory lock: v4 gains host rounds, v5 rebuilds them for v6.
 
-    An owned slot defers it: its supervisor may be a v4-only runtime that could not record its closure in v5.
+    Jobs and every v5 round column stay byte-identical. An owned slot defers it: its
+    supervisor may be an older runtime that could not record its closure in v6.
     """
     conn.execute("BEGIN IMMEDIATE")
     try:
-        if (conn.execute("PRAGMA user_version").fetchone()[0] == PILOT_SCHEMA_VERSION
-                and conn.execute("SELECT attempt FROM slot").fetchone()[0] is None):
-            for statement in HOST_SCHEMA:
-                conn.execute(statement)
+        version = conn.execute("PRAGMA user_version").fetchone()[0]
+        if version != SCHEMA_VERSION and conn.execute("SELECT attempt FROM slot").fetchone()[0] is None:
+            if version == PILOT_SCHEMA_VERSION:
+                for statement in HOST_SCHEMA:
+                    conn.execute(statement)
+            elif version == HOST_SCHEMA_VERSION:
+                # The new table keeps the name and SQL of a fresh v6 ledger; the v5 one goes with its index.
+                conn.execute("ALTER TABLE host_rounds RENAME TO host_rounds_v5")
+                conn.execute(HOST_TABLE)
+                conn.execute("INSERT INTO host_rounds ({0}) SELECT {0} FROM host_rounds_v5 ORDER BY rowid"
+                             .format(HOST_COLUMNS))
+                conn.execute("DROP TABLE host_rounds_v5")
+                conn.execute(HOST_INDEX)
             conn.execute("PRAGMA user_version={}".format(SCHEMA_VERSION))
         conn.commit()
     except BaseException:
@@ -533,23 +556,231 @@ class Ledger:
         self.close()
 
 
-HOST_TERMINAL = ("rejected", "retired")
+HOST_TERMINAL = ("rejected", "retired", "released", "closed_unused")
+# Phases with a live creation; held keeps the one it was held from.
+CREATION_PHASES = ("authorizing", "authorized", "spawning", "running", "closing")
 
 
 def request_sha256(request):
     return hashlib.sha256(dump(request).encode("utf-8")).hexdigest()
 
 
-# Presence of supervisor, key, receipt, source, reason, in that order.
+# Presence of supervisor, key, receipt, source, reason, creation, in that order.
+GRANTED = (True, True, True, True, False, True)
 HOST_SHAPES = {
-    "prepared": {(False, False, False, False, False)},
-    "outcome_unknown": {(True, False, False, False, False)},
-    "confirmed": {(True, True, True, True, False)},
-    "rejected": {(True, False, True, False, False)},
-    "held": {(True, False, False, False, True), (True, False, True, False, True),
-             (True, True, True, True, True)},
-    "retired": {(False, False, False, False, False), (False, False, False, False, True)},
+    "prepared": {(False, False, False, False, False, False)},
+    "outcome_unknown": {(True, False, False, False, False, False)},
+    "confirmed": {(True, True, True, True, False, False)},
+    "rejected": {(True, False, True, False, False, False), (True, False, False, False, True, True)},
+    "held": {(True, False, False, False, True, False), (True, False, True, False, True, False),
+             (True, True, True, True, True, False), (True, True, True, True, True, True)},
+    "retired": {(False, False, False, False, False, False), (False, False, False, False, True, False)},
+    "released": {GRANTED},
+    "closed_unused": {(True, True, True, True, True, True)},
+    **{phase: {GRANTED} for phase in CREATION_PHASES},
 }
+# Fields of creation_json per phase. Steps follow authorize, consume, start; release may
+# follow any prefix. Each prefix step but the last carries its receipt. closing may keep hostgate's
+# original closure while the local release is still pending.
+_PREFIXES = ((), ("authorize",), ("authorize", "consume"), ("authorize", "consume", "start"))
+CREATION_SHAPES = {
+    "authorizing": {("authorize",)},
+    "authorized": {("authorize",)},
+    "spawning": {("authorize", "consume"), ("authorize", "consume", "start")},
+    "running": {("authorize", "consume", "start")},
+    "closing": {prefix + ("release",) + proof for prefix in _PREFIXES for proof in ((), ("closure",))},
+    "released": {prefix + ("release", "closure") for prefix in _PREFIXES},
+    "closed_unused": {("closure",), ("release", "closure")},
+    "rejected": {("discovered",)},
+}
+OPERATIONS = {"authorize": "authorize_creation", "consume": "consume_creation", "start": "record_started",
+              "release": "soltar"}
+STEPS = ("authorize", "consume", "start", "release")
+
+
+def creation_operation_id(attempt, ordinal, step, seq=1):
+    """One ID per step of a round; only soltar repeats with a new seq after a busy observation."""
+    return "{}:{}:{}".format(host_operation_id(attempt, ordinal), step, seq)
+
+
+def creation_confirmation(intent, source):
+    """The admission authorize_creation repeats: this round's grant, never another."""
+    return {"operationId": intent.operation_id, "requestDigest": request_sha256(intent.request),
+            "attemptId": intent.attempt, "source": source}
+
+
+def creation_json(creation):
+    value = {"phase": creation.phase}
+    for name in STEPS:
+        step = getattr(creation, name)
+        if step is not None:
+            value[name] = {"request": step.request, "receipt": step.receipt}
+    if creation.closure is not None:
+        value["closure"] = {"permit": creation.closure.permit, "evidence": creation.closure.evidence}
+    if creation.discovered is not None:
+        value["discovered"] = creation.discovered
+    return dump(value)
+
+
+def decode_creation(row, intent, key, raw):
+    """Exact variant of the row's phase: every request and receipt correlated with this round."""
+    value = host_json(raw)
+    state = row["state"]
+    phase = value["phase"]
+    if (state == "held" and phase not in CREATION_PHASES) or (state != "held" and phase != state):
+        raise ValueError("creation phase")
+    present = tuple(name for name in STEPS + ("closure", "discovered") if name in value)
+    if set(value) != {"phase"} | set(present) or present not in CREATION_SHAPES[phase]:
+        raise ValueError("creation variant")
+    steps = {}
+    for name in present:
+        if name in STEPS:
+            if set(value[name]) != {"request", "receipt"}:
+                raise ValueError("creation step")
+            steps[name] = Step(value[name]["request"], value[name]["receipt"])
+    creation = Creation(phase, closure=None if "closure" not in value else Closure(**value["closure"]),
+                        discovered=value.get("discovered"), **steps)
+    if phase == "rejected":
+        _discovered(row, intent, creation.discovered)
+        return creation
+    prefix = [name for name in ("authorize", "consume", "start") if name in steps]
+    for position, name in enumerate(prefix):
+        receipt = steps[name].receipt
+        last = position == len(prefix) - 1
+        _creation_request(row, intent, key, creation, name)
+        if receipt is None:
+            if not last or phase in ("authorized", "running") or (phase == "spawning" and name == "authorize"):
+                raise ValueError("missing creation receipt")
+        else:
+            _creation_receipt(row, key, creation, name, receipt)
+    if phase == "authorizing" and steps["authorize"].receipt is not None:
+        raise ValueError("authorizing with its receipt")
+    if phase == "spawning" and "start" in steps and steps["start"].receipt is not None:
+        raise ValueError("spawning with its start receipt")
+    if "release" in steps:
+        _creation_request(row, intent, key, creation, "release")
+        if steps["release"].receipt is not None:
+            positive = _creation_receipt(row, key, creation, "release", steps["release"].receipt)
+            if positive and creation.closure is not None and steps["release"].receipt["permit"] != creation.closure.permit:
+                raise ValueError("positive release of another closure")
+    if creation.closure is not None:
+        _closure(row, key, creation)
+    return creation
+
+
+def _permit(creation):
+    receipt = creation.authorize and creation.authorize.receipt
+    return None if receipt is None else (receipt.get("originalResult") or receipt)["permit"]
+
+
+def _creation_request(row, intent, key, creation, name):
+    from hostgate.protocol import digest, validate
+    request = getattr(creation, name).request
+    validate(request, OPERATIONS[name])
+    prefix = creation_operation_id(row["attempt"], row["ordinal"], name, "")
+    seq = request["operationId"][len(prefix):]
+    if (not request["operationId"].startswith(prefix) or not seq.isdigit() or seq != str(int(seq))
+            or (name != "release" and seq != "1") or int(seq) < 1 or request["key"] != key):
+        raise ValueError("creation request identity")
+    permit = _permit(creation)
+    if name == "authorize":
+        if request["confirmation"] != creation_confirmation(intent, row["confirmation_source"]):
+            raise ValueError("confirmation of another grant")
+    elif name == "release":
+        if request["evidenceIds"] != []:
+            raise ValueError("soltar names its own evidence")
+    elif (permit is None or request["permitId"] != permit["permitId"]
+          or (name == "consume" and request["launchDigest"] != digest(creation.authorize.request["launch"]))):
+        raise ValueError("creation request permit")
+
+
+def _creation_receipt(row, key, creation, name, receipt):
+    """Original reply of a step; for soltar, True when it is the positive closure."""
+    from hostgate.protocol import validate_result
+    validate_result(receipt, "effective", row["store_id"], OPERATIONS[name])
+    replayed = "replayed" in receipt
+    original = receipt["originalResult"] if replayed else receipt
+    request = getattr(creation, name).request
+    if (receipt["operationId"] != request["operationId"] or original["operationId"] != request["operationId"]
+            or receipt["configRevision"] != row["config_revision"] or receipt.get("reservationKey") != key
+            or original.get("reservationKey") != key or (not replayed and {"originalResult", "currentState"} & set(receipt))):
+        raise ValueError("creation receipt correlation")
+    permit, view = _permit(creation), original.get("permit") or {}
+    expected = {"authorize": ("reserved", "issued"), "consume": ("reserved", "consumed"),
+                "start": ("running", "registered")}
+    if name in expected:
+        if (original["exitCode"] != 0 or original["reasons"] or (original["state"], view.get("state")) != expected[name]
+                or receipt["exitCode"] != 0 or receipt["reasons"]):
+            raise ValueError("not an original creation success")
+        if name == "consume" and (replayed or receipt.get("creationAllowed") is not True):
+            raise ValueError("consume without its original creationAllowed")
+        if name == "start" and (not view["scopeReceipt"].startswith("scp_")
+                                or receipt.get("permit", {}).get("scopeReceipt") != view["scopeReceipt"]):
+            raise ValueError("record_started without its scope receipt")
+    elif original["exitCode"] == 0 and original["state"] == "released" and not original["reasons"]:
+        if view.get("state") not in ("closed", "sealed") or not receipt["exitCode"] == 0:
+            raise ValueError("not a positive closure")
+    elif (original["exitCode"] != 1 or receipt["exitCode"] != 1 or not original["reasons"]
+          or original["state"] not in ("reserved", "running")):
+        raise ValueError("soltar neither busy nor released")
+    elif creation.phase not in ("closing", "released"):
+        raise ValueError("busy soltar outside closing")
+    if view and permit is not None and any(view.get(field) != permit[field] for field in
+                                           ("permitId", "issuerEpoch", "profileRevision", "baselineDigest")):
+        raise ValueError("permit of another authorization")
+    return name == "release" and original["state"] == "released"
+
+
+def _closure(row, key, creation):
+    """hostgate's positive closure, correlated in permit, root and baseline before any copy."""
+    from hostgate import scope
+    from hostgate.protocol import digest
+    permit, evidence = creation.closure.permit, creation.closure.evidence
+    proof = scope.evidence_from_json(evidence)
+    obs = proof.observation
+    if (proof.signed().evidence_digest != evidence["evidence_digest"] or permit.get("closedBy") != proof.evidence_digest
+            or proof.provenance != scope.REAL_PROVENANCE or obs is None
+            or proof.issuer != scope.issuer(row["store_id"], obs.issuer_epoch) or proof.key != key
+            or proof.scope != key["reservationId"] or obs.boot != proof.boot
+            or not (proof.complete and proof.creators_sealed and proof.resources_clean)):
+        raise ValueError("closure not integral")
+    authorized, issued = _permit(creation), creation.authorize
+    if obs.permit_id is None:
+        if authorized is not None or set(permit) != {"state", "closedBy"}:
+            raise ValueError("closure without the authorized permit")
+    else:
+        if (issued is None or obs.confirmation_digest != digest(issued.request["confirmation"])
+                or obs.launch_digest != digest(issued.request["launch"])
+                or (obs.permit_id, obs.issuer_epoch, obs.profile_revision, obs.baseline_digest) !=
+                (permit.get("permitId"), permit.get("issuerEpoch"), permit.get("profileRevision"), permit.get("baselineDigest"))
+                or (authorized is not None and any(permit.get(field) != authorized[field] for field in
+                                                   ("permitId", "issuerEpoch", "profileRevision", "baselineDigest")))):
+            raise ValueError("closure of another permit or baseline")
+    started = creation.start
+    if proof.kind == "unix-scope-empty":
+        if (started is None or started.receipt is None or permit["state"] != "closed"
+                or permit.get("scopeReceipt") != started.receipt["permit"]["scopeReceipt"]
+                or obs.root is None or (obs.root["pid"], obs.root["unique"]) != (started.request["root"]["pid"],
+                                                                                started.request["root"]["unique"])
+                or not (proof.root_terminal and proof.scope_empty and proof.lineage_complete and proof.profile_verified)):
+            raise ValueError("closure of another root")
+    elif proof.kind == "never-created":
+        consumed = creation.consume is not None and creation.consume.receipt is not None
+        if (started is not None or consumed or permit["state"] != "sealed" or obs.root is not None
+                or not (proof.permit_revoked and proof.no_external_effects)):
+            raise ValueError("never-created after creation")
+    else:
+        raise ValueError("closure kind")
+
+
+def _discovered(row, intent, pending):
+    """estado's pending entry of this exact round: a durable rejection that never reserved."""
+    if (not isinstance(pending, dict) or pending.get("operationId") != row["operation_id"]
+            or pending.get("requestDigest") != row["request_sha256"] or pending.get("attemptId") != row["attempt"]
+            or pending.get("jobId") != intent.request["jobId"] or pending.get("state") != "rejected"
+            or pending.get("effectiveState") != "rejected" or pending.get("reservationKey") is not None
+            or not pending.get("reasons")):
+        raise ValueError("not this round's durable rejection")
 
 
 def host_json(raw):
@@ -600,7 +831,9 @@ def decode_host(row, job):
         if ((source is not None and source not in ("reply", "same-channel-replay"))
                 or (reason is not None and (not isinstance(reason, str) or not reason))):
             raise ValueError("source or reason")
-        presence = tuple(value is not None for value in (supervisor, key, receipt, source, reason))
+        # A v5 row read before its migration has no creation_json column.
+        raw = row["creation_json"] if "creation_json" in row.keys() else None
+        presence = tuple(value is not None for value in (supervisor, key, receipt, source, reason, raw))
         if presence not in HOST_SHAPES.get(row["state"], set()):
             raise ValueError("host state shape")
         if (request_sha256(request) != row["request_sha256"]
@@ -617,10 +850,15 @@ def decode_host(row, job):
         intent = HostIntent(row["attempt"], row["ordinal"], row["operation_id"], request,
                             row["physical_host_id"], row["executor_id"], row["store_id"],
                             row["config_revision"], requester, row["state"], supervisor, receipt, reason)
+        creation = None if raw is None else decode_creation(row, intent, key, raw)
         if row["state"] == "confirmed":
             return HostConfirmation(intent, key, receipt, source, supervisor)
         if row["state"] == "held":
-            return HostHeld(intent, reason, supervisor, key, receipt, source)
+            return HostHeld(intent, reason, supervisor, key, receipt, source, creation)
+        if row["state"] == "rejected":
+            return replace(intent, creation=creation)
+        if creation is not None:
+            return HostCreation(intent, key, receipt, source, supervisor, creation)
         return intent
     except (KeyError, IndexError, TypeError, ValueError, AttributeError, RecursionError, OverflowError):
         raise Fault("host_correlation_invalid", 3, "unknown") from None
@@ -640,7 +878,7 @@ def host_receipt(row, key, receipt):
     source = ("same-channel-replay" if replayed else "reply") if expected is not None else None
     if key != expected or row["confirmation_source"] != source:
         raise ValueError("host receipt key/source")
-    if row["state"] == "confirmed":
+    if row["state"] in ("confirmed", "released") + CREATION_PHASES:
         current = receipt["currentState"] if replayed else receipt
         if (not original["granted"] or original["exitCode"] != 0 or original["reasons"]
                 or original.get("state") != "reserved" or original.get("reservationKey") != key
@@ -706,7 +944,8 @@ def reject_host_round(db, intent, receipt):
 
 
 def hold_host(db, intent, reason, key=None, receipt=None, source=None):
-    return _cas(db, intent, ("outcome_unknown", "confirmed"), "held",
+    """Never writes creation_json: held keeps the exact prefix of phase, receipts and permit."""
+    return _cas(db, intent, ("outcome_unknown", "confirmed") + CREATION_PHASES, "held",
                 ",reason=?,key_json=COALESCE(?,key_json),receipt_json=COALESCE(?,receipt_json),"
                 "confirmation_source=COALESCE(?,confirmation_source)",
                 (reason, None if key is None else dump(key), None if receipt is None else dump(receipt), source))

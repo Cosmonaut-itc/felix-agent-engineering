@@ -365,7 +365,7 @@ class CorrectionCases:
             if hashlib.sha256(data).hexdigest() != before["state.db"][-1]:
                 raise ValueError("closed main file bytes changed during reading")
             if (len(data) < 100 or data[:16] != b"SQLite format 3\x00"
-                    or int.from_bytes(data[60:64], "big") != 5
+                    or int.from_bytes(data[60:64], "big") != 6
                     or data[68:72] != b"FLT1"):
                 raise ValueError("closed main file does not contain the expected public Fleet schema header")
             # Sidecar shape is not checkpoint/integrity proof. Validate only a
@@ -378,7 +378,7 @@ class CorrectionCases:
             try:
                 self.assertEqual(conn.execute("PRAGMA integrity_check").fetchall(), [("ok",)])
                 self.assertEqual(conn.execute("PRAGMA application_id").fetchone(), (0x464C5431,))
-                self.assertEqual(conn.execute("PRAGMA user_version").fetchone(), (5,))
+                self.assertEqual(conn.execute("PRAGMA user_version").fetchone(), (6,))
                 row = conn.execute("SELECT j.id,a.id,a.state,a.recorded_outcome FROM jobs j "
                                    "JOIN attempts a ON a.job=j.id WHERE j.id=? AND a.id=?",
                                    (submitted["job"], submitted["attempt"])).fetchone()
@@ -486,9 +486,9 @@ class CorrectionCases:
             data = copy.read_bytes()
             self.assertTrue(len(data) >= 100 and data[:16] == b"SQLite format 3\x00"
                             and data[18:20] == b"\x01\x01" and data[68:72] == b"FLT1"
-                            and int.from_bytes(data[60:64], "big") == 5,
-                            "converted main must have SQLite/FLT1/schema5 and rollback header 1/1")
-            for version in (5, 999):
+                            and int.from_bytes(data[60:64], "big") == 6,
+                            "converted main must have SQLite/FLT1/schema6 and rollback header 1/1")
+            for version in (6, 999):
                 if version == 999:
                     # Derive only after the closed rollback main passed all
                     # integrity, identity, outcome and history checks below.

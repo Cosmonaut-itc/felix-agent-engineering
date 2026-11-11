@@ -208,7 +208,7 @@ class HostHarness(unittest.TestCase):
 
 
     def downgrade(self):
-        self.assertEqual(self.ledger("PRAGMA user_version"), [(5,)], "FACT: a new ledger is v5")
+        self.assertEqual(self.ledger("PRAGMA user_version"), [(6,)], "FACT: a new ledger is v6")
         conn = sqlite3.connect(str(self.state / "state.db"))
         try:
             conn.execute("DROP INDEX host_rounds_open")
@@ -269,7 +269,7 @@ class HostAdmission(HostHarness):
         self.assertEqual(self.ledger("PRAGMA user_version"), [(4,)])
         code, recovered = self.call("recover")
         self.assertEqual(code, 0, recovered)
-        self.assertEqual(self.ledger("PRAGMA user_version"), [(5,)])
+        self.assertEqual(self.ledger("PRAGMA user_version"), [(6,)])
         self.assertEqual(self.ledger("SELECT name FROM sqlite_master WHERE name LIKE 'host_rounds%' ORDER BY name"),
                          [("host_rounds",), ("host_rounds_open",)])
         self.assertEqual(self.ledger("SELECT * FROM jobs ORDER BY seq"), jobs)
@@ -288,7 +288,7 @@ class HostAdmission(HostHarness):
         code, done = self.call("wait", pilot["job"], "--timeout", "30")
         self.assertEqual((code, done["observation"]["completion"]), (0, "complete"), done)
         self.call("recover")
-        self.assertEqual(self.ledger("PRAGMA user_version"), [(5,)])
+        self.assertEqual(self.ledger("PRAGMA user_version"), [(6,)])
 
 
 class HostReservation(HostHarness):

@@ -9,7 +9,9 @@ from typing import Optional, Union
 
 API = "fleet-job-api@1"
 CONTENT = "fleet-submission-content@1"
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
+# v5 is host-reservation history without creation phases: writers migrate it like v4.
+HOST_SCHEMA_VERSION = 5
 # A v4 ledger is pilot-only history: readers accept it, writers migrate it once.
 PILOT_SCHEMA_VERSION = 4
 PILOT = "pilot_slot"
@@ -66,6 +68,7 @@ class HostIntent:
     supervisor: Optional[dict] = None
     receipt: Optional[dict] = None
     reason: Optional[str] = None
+    creation: Optional["Creation"] = None  # rejected only: the durable rejection estado discovered
 
 
 @dataclass(frozen=True)
@@ -86,9 +89,47 @@ class HostHeld:
     key: Optional[dict] = None
     receipt: Optional[dict] = None
     source: Optional[str] = None
+    creation: Optional["Creation"] = None  # the exact prefix of the phase it was held from
 
 
-HostRound = Union[HostIntent, HostConfirmation, HostHeld]
+@dataclass(frozen=True)
+class Step:
+    """One hostgate operation: the request persisted before sending, then its original reply."""
+    request: dict
+    receipt: Optional[dict]  # None: sent, outcome unknown
+
+
+@dataclass(frozen=True)
+class Closure:
+    """hostgate's original positive closure as estado shows it: permit view and closureEvidence."""
+    permit: dict
+    evidence: dict
+
+
+@dataclass(frozen=True)
+class Creation:
+    """creation_json decoded; storage.CREATION_SHAPES fixes which fields each phase carries."""
+    phase: str
+    authorize: Optional[Step] = None
+    consume: Optional[Step] = None
+    start: Optional[Step] = None
+    release: Optional[Step] = None
+    closure: Optional[Closure] = None
+    discovered: Optional[dict] = None  # estado pending entry of a durable rejection
+
+
+@dataclass(frozen=True)
+class HostCreation:
+    """authorizing, authorized, spawning, running, closing, released or closed_unused."""
+    intent: HostIntent
+    key: dict
+    receipt: dict
+    source: str
+    supervisor: dict
+    creation: Creation
+
+
+HostRound = Union[HostIntent, HostConfirmation, HostHeld, HostCreation]
 
 
 class Fault(ValueError):
