@@ -159,6 +159,7 @@ class UnusedAndRejected(CreationHarness):
         self.assertEqual((view["error"], view["round"]["state"], view["round"]["reason"]),
                          (None, "rejected", "channel_lost"), view)
         for name, change in (("digest", dict(requestDigest="0" * 64)), ("attempt", dict(attemptId="a_other")),
+                             ("principal", dict(principal="uid:0")),
                              ("granted", dict(state="granted", effectiveState="granted"))):
             with self.subTest(case=name):
                 self.plant("rejected", Creation("rejected", discovered=dict(pending, **change)), "channel_lost")

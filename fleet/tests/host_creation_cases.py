@@ -36,6 +36,8 @@ class Authority:
     exists from the first authorize on, and tests add and end the root there.
     """
 
+    principal = "uid:{}".format(os.getuid())  # as hostgate/ipc.py names this process's channels
+
     def __init__(self, root):
         from hostgate.admission import Hostgate
         from hostgate.store import EffectiveStore
@@ -48,10 +50,11 @@ class Authority:
         self.world.boot, self.world.coalition = coalition.BOOT, self.provider
         with default_umask():
             with fixture_policy(root):
-                self.config = replace(config(root / "state"), mode="effective", store_id="effective-store")
+                self.config = replace(config(root / "state"), mode="effective", store_id="effective-store",
+                                      acl={self.principal: ("supervisor", "query", "operator")})
             EffectiveStore.initialize(self.config)
         self.gate = Hostgate(self.config, self.world)
-        self.auth = self.world.auth(pid=100, start=(1, 2, 10, 7))
+        self.auth = self.world.auth(pid=100, start=(1, 2, 10, 7), principal=self.principal)
 
     def send(self, request):
         op, key, name = request["operationId"], request.get("key"), request["operation"]

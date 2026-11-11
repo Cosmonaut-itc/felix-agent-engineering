@@ -185,7 +185,8 @@ latido de fondo ni arranque host en este corte.
 
 Las fases de creación las escribirá el supervisor de 4e; Fleet sigue cerrado y
 `require_creation_provider` sigue fallando. Cada paso guarda su petición antes de
-enviarla y su recibo original después:
+enviarla y su recibo original después. Cada CAS gana sólo desde el estado y el
+`creation_json` que leyó quien llama, y una escritura que no cambia nada no gana:
 - `authorizing`: la petición de `authorize_creation`. `authorized`: su recibo con el permiso.
 - `spawning`: la petición de `consume_creation`, que cierra la puerta local una sola vez,
   y su recibo; después, la de `record_started`.
@@ -197,8 +198,10 @@ enviarla y su recibo original después:
 
 `held` conserva el prefijo exacto de la fase de la que viene. Un grant sin claim
 termina `closed_unused` sólo con el sello original de hostgate, y el intento sigue
-`queued`. Un rechazo durable descubierto por `estado` cierra `held`→`rejected` sólo
-si coinciden la operación, el digest de la petición y el intento. `released` y
+`queued`. Un grant que `estado` descubre sin que su clave llegara al ledger también
+termina así, y guarda la entrada descubierta. Un rechazo durable descubierto por
+`estado` cierra `held`→`rejected` sólo si coinciden la operación, el digest de la
+petición, el intento y el principal. `released` y
 `closed_unused` no cuentan como ronda abierta. `recover` examina también intentos
 terminados y sólo copia un cierre positivo que correlaciona en autoridad, store,
 clave, trabajo, intento, grant, perfil, permiso, raíz y línea base. Ni el tiempo, ni

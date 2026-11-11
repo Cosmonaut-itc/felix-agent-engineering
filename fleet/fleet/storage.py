@@ -576,7 +576,7 @@ HOST_SHAPES = {
              (True, True, True, True, True, False), (True, True, True, True, True, True)},
     "retired": {(False, False, False, False, False, False), (False, False, False, False, True, False)},
     "released": {GRANTED},
-    "closed_unused": {(True, True, True, True, True, True)},
+    "closed_unused": {(True, True, True, True, True, True), (True, False, False, False, True, True)},
     **{phase: {GRANTED} for phase in CREATION_PHASES},
 }
 # Fields of creation_json per phase. Steps follow authorize, consume, start; release may
@@ -590,7 +590,7 @@ CREATION_SHAPES = {
     "running": {("authorize", "consume", "start")},
     "closing": {prefix + ("release",) + proof for prefix in _PREFIXES for proof in ((), ("closure",))},
     "released": {prefix + ("release", "closure") for prefix in _PREFIXES},
-    "closed_unused": {("closure",), ("release", "closure")},
+    "closed_unused": {("closure",), ("release", "closure"), ("closure", "discovered")},
     "rejected": {("discovered",)},
 }
 OPERATIONS = {"authorize": "authorize_creation", "consume": "consume_creation", "start": "record_started",
@@ -641,8 +641,13 @@ def decode_creation(row, intent, key, raw):
     creation = Creation(phase, closure=None if "closure" not in value else Closure(**value["closure"]),
                         discovered=value.get("discovered"), **steps)
     if phase == "rejected":
-        _discovered(row, intent, creation.discovered)
+        _discovered(row, intent, creation.discovered, "rejected")
         return creation
+    if creation.discovered is not None:  # closed_unused of a grant discovered without its local key
+        if key is not None:
+            raise ValueError("discovered grant with its local key")
+        _discovered(row, intent, creation.discovered, "granted")
+        key = creation.discovered["reservationKey"]
     prefix = [name for name in ("authorize", "consume", "start") if name in steps]
     for position, name in enumerate(prefix):
         receipt = steps[name].receipt
@@ -773,14 +778,24 @@ def _closure(row, key, creation):
         raise ValueError("closure kind")
 
 
-def _discovered(row, intent, pending):
-    """estado's pending entry of this exact round: a durable rejection that never reserved."""
+def _discovered(row, intent, pending, state):
+    """estado's pending entry of this exact round and principal: a durable rejection that never
+    reserved, or a grant whose key never reached this ledger."""
     if (not isinstance(pending, dict) or pending.get("operationId") != row["operation_id"]
             or pending.get("requestDigest") != row["request_sha256"] or pending.get("attemptId") != row["attempt"]
-            or pending.get("jobId") != intent.request["jobId"] or pending.get("state") != "rejected"
-            or pending.get("effectiveState") != "rejected" or pending.get("reservationKey") is not None
-            or not pending.get("reasons")):
+            or pending.get("jobId") != intent.request["jobId"] or pending.get("principal") != host_principal(intent)
+            or pending.get("state") != state or pending.get("effectiveState") != state):
+        raise ValueError("not this round's discovered entry")
+    if state == "rejected" and (pending.get("reservationKey") is not None or not pending.get("reasons")):
         raise ValueError("not this round's durable rejection")
+    if state == "granted" and (not isinstance(pending.get("reservationKey"), dict)
+                               or pending["reservationKey"].get("storeId") != row["store_id"]):
+        raise ValueError("grant of another store")
+
+
+def host_principal(intent):
+    """hostgate names a channel's principal by its peer uid (hostgate/ipc.py)."""
+    return "uid:{}".format(intent.requester["uid"])
 
 
 def host_json(raw):
@@ -985,11 +1000,13 @@ _RECORD = {"authorize": ("authorizing", "authorized"), "consume": ("spawning", "
 
 
 def _creation_cas(db, current, sources, target, creation):
-    previous = getattr(current, "creation", None)
+    """Wins only from the exact state and creation_json the caller read, and only by changing them."""
+    read, previous = current.intent.state, getattr(current, "creation", None)
+    before, after = None if previous is None else creation_json(previous), creation_json(replace(creation, phase=target))
+    if read not in sources or (read, before) == (target, after):
+        return False
     clear = ",reason=NULL" if target in ("released",) + CREATION_PHASES else ""  # a held source keeps no reason
-    return _cas(db, current.intent, sources, target, ",creation_json=?" + clear,
-                (creation_json(replace(creation, phase=target)),),
-                None if previous is None else creation_json(previous))
+    return _cas(db, current.intent, (read,), target, ",creation_json=?" + clear, (after,), before)
 
 
 def begin_step(db, current, name, request):
@@ -1035,16 +1052,17 @@ def release_host(db, current, closure):
     return True
 
 
-def close_unused(db, current, closure, release=None):
+def close_unused(db, current, closure, release=None, discovered=None):
     """A grant never claimed: held -> closed_unused only with hostgate's original sealed release.
 
-    The attempt stays queued (queued -> finished is illegal) and a later round may compete.
+    discovered is estado's entry of a grant whose key never reached this ledger. The attempt
+    stays queued (queued -> finished is illegal) and a later round may compete.
     """
     row = db.execute("SELECT state FROM attempts WHERE id=?", (current.intent.attempt,)).fetchone()
     if row["state"] != "queued" or current.creation is not None:
         return False
     return _creation_cas(db, current, ("held",), "closed_unused",
-                         Creation("closed_unused", release=release, closure=closure))
+                         Creation("closed_unused", release=release, closure=closure, discovered=discovered))
 
 
 def reject_discovered(db, current, pending):

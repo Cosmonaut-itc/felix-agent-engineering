@@ -124,6 +124,50 @@ class HappyMirror(MirrorHarness):
         self.assertTrue(self.second_round(), "FACT: a released round leaves the attempt's index free")
 
 
+class Cas(MirrorHarness):
+    def test_a_step_wins_only_from_the_state_it_read(self):
+        """Variante: cas_any_source."""
+        _, s = self.closing()
+        read = self.current()
+        with self.db() as db:
+            with db.transaction():
+                self.assertTrue(storage.hold_host(db, read.intent, "supervisor_lost"))
+            with db.transaction():
+                self.assertFalse(storage.release_host(db, read, s["closure"]), "FACT: closing was read, held is there")
+        self.assertEqual((self.raw()[0][0], self.slot()[0][0]), ("held", self.attempt_id))
+        with self.db() as db:
+            with db.transaction():
+                self.assertTrue(storage.release_host(db, self.current(db), s["closure"]))
+        self.assertEqual((self.raw()[0][0], self.slot()[0][0]), ("released", None))
+
+    def test_two_writers_with_one_read_have_one_winner(self):
+        """Variante: cas_noop_wins."""
+        current = self.grant()
+        authorize = self.requests(current)["authorize"]
+        with self.db() as db:
+            with db.transaction():
+                self.assertTrue(storage.begin_step(db, self.current(db), "authorize", authorize))
+            issued = self.authority.send(authorize)
+            with db.transaction():
+                self.assertTrue(storage.record_step(db, self.current(db), "authorize", issued))
+            steps = self.requests(current, issued["permit"]["permitId"])
+            with db.transaction():
+                self.assertTrue(storage.begin_step(db, self.current(db), "consume", steps["consume"]))
+            consumed = self.authority.send(steps["consume"])
+            with db.transaction():
+                self.assertTrue(storage.record_step(db, self.current(db), "consume", consumed))
+            for read in ("before start", "start pending"):
+                snapshot, winners = self.current(db), []
+                for _ in range(2):
+                    with db.transaction():
+                        winners.append(storage.begin_step(db, snapshot, "start", steps["start"]))
+                self.assertEqual(winners, [True, False] if read == "before start" else [False, False],
+                                 "FACT: {}: a write that changes nothing wins nothing".format(read))
+        self.assertEqual(self.raw()[0], ("spawning", json.loads(storage.creation_json(Creation(
+            "spawning", authorize=Step(authorize, issued), consume=Step(steps["consume"], consumed),
+            start=Step(steps["start"], None))))))
+
+
 class Recover(MirrorHarness):
     def test_closing_converges_only_with_the_correlated_original_closure(self):
         """Variante: mirror_without_correlation."""
@@ -202,6 +246,33 @@ class UnusedAndSeal(MirrorHarness):
         self.assertEqual((view["error"], view["round"]["state"]), (None, "closed_unused"), view)
         self.assertTrue(self.second_round(), "FACT: a later round may compete")
 
+    def test_a_grant_discovered_without_its_key_closes_unused_only_with_the_original_seal(self):
+        """Variante: discovered_grant_stays_held."""
+        intent = self.intent()
+        with self.db() as db:
+            with db.transaction():
+                storage.put_host_intent(db, intent)
+            with db.transaction():
+                self.assertTrue(storage.mark_host_unknown(db, intent, self.me))
+            receipt = self.authority.send(intent.request)
+            self.assertTrue(receipt["granted"], receipt)
+            with db.transaction():
+                self.assertTrue(storage.hold_host(db, intent, "channel_lost"))
+        self.assertEqual(self.reconcile().action, "none")
+        self.assertEqual(self.raw(), [("held", None)], "FACT: an open grant discovered without its key keeps held")
+        seal = dict(self.request(self.current(), "release", evidenceIds=[]), key=receipt["reservationKey"])
+        sealed = self.authority.send(seal)
+        self.assertEqual((sealed["exitCode"], sealed["state"]), (0, "released"), sealed)
+        self.assertEqual(self.reconcile().action, "closed_unused")
+        state, creation = self.raw()[0]
+        self.assertEqual((state, sorted(creation)), ("closed_unused", ["closure", "discovered", "phase"]))
+        self.assertEqual((creation["discovered"]["reservationKey"], creation["closure"]["evidence"]["kind"]),
+                         (receipt["reservationKey"], "never-created"))
+        self.assertEqual(self.attempt(self.job)["state"], "queued", "FACT: never queued->finished")
+        view = self.round_view()
+        self.assertEqual((view["error"], view["round"]["state"]), (None, "closed_unused"), view)
+        self.assertTrue(self.second_round(), "FACT: a later round may compete")
+
     def test_a_claimed_grant_sealed_by_hostgate_is_not_closed_unused(self):
         """The slot of a claimed attempt is never released through closed_unused."""
         current = self.grant()
@@ -229,6 +300,49 @@ class UnusedAndSeal(MirrorHarness):
         state, kept = self.raw()[0]
         self.assertEqual((state, kept), ("held", json.loads(storage.creation_json(creation))))
         self.assertEqual(self.slot()[0][0], self.attempt_id)
+
+
+class Rejection(MirrorHarness):
+    def rejected(self, principal):
+        """A reservar of `principal` that hostgate rejects for good, while this round keeps held without key."""
+        from hostgate.admission import Hostgate
+        from hostgate.tests.test_admin import fixture_policy
+        from host_creation_cases import default_umask
+        authority, auth = self.authority, self.authority.auth
+        with fixture_policy(authority.config.state_dir.parent):
+            config = replace(authority.config, acl={p: ("supervisor", "query") for p in (authority.principal, principal)})
+        authority.gate = Hostgate(config, authority.world)
+        if principal != authority.principal:
+            peer = replace(auth.peer, uid=auth.peer.uid + 1)
+            auth = replace(auth, principal=principal, peer=peer)
+            authority.world.processes[peer.pid] = peer
+        intent = self.intent()
+        intent = replace(intent, request=dict(intent.request, demand=dict(cpuMilli=99999, memoryBytes=0,
+                                                                          diskBytes={}, slots=1)))
+        with self.db() as db:
+            with db.transaction():
+                storage.put_host_intent(db, intent)
+            with db.transaction():
+                self.assertTrue(storage.mark_host_unknown(db, intent, self.me))
+            with default_umask():
+                self.assertEqual(authority.gate.reservar(intent.request, auth)["exitCode"], 1)
+            with db.transaction():
+                self.assertTrue(storage.hold_host(db, intent, "channel_lost"))
+        with default_umask():
+            estado = authority.gate.estado({}, auth)
+        return self.reconcile(estado)
+
+    def test_this_principals_durable_rejection_closes_held(self):
+        observation = self.rejected(self.authority.principal)
+        self.assertEqual((observation.action, self.raw()[0][0]), ("rejected", "rejected"))
+        view = self.round_view()
+        self.assertEqual((view["error"], view["round"]["state"]), (None, "rejected"), view)
+
+    def test_another_principals_rejection_keeps_held(self):
+        """Variante: rejection_any_principal."""
+        observation = self.rejected("uid:{}".format(self.me["uid"] + 1))
+        self.assertEqual((observation.action, self.raw()), ("none", [("held", None)]),
+                         "FACT: another principal's rejection proves nothing about this reservar")
 
 
 class Doubt(MirrorHarness):

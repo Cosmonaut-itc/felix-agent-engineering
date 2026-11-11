@@ -371,13 +371,14 @@ def _mirror(db, intent, estado):
                 or (grants[0]["attemptId"], grants[0]["jobId"]) != (intent.attempt, intent.request["jobId"])):
             return None
         grant = grants[0]
-        if key is None:
-            if grant["state"] != "rejected" or grant["reservationKey"] is not None:
-                return None  # a grant discovered without its key keeps held
+        if key is None and grant["state"] == "rejected":
             outcome, change = "rejected", lambda: storage.reject_discovered(db, current, grant)
         else:
+            # A grant discovered without its local key (held keeps no creation then) closes unused.
+            discovered = grant if key is None else None
+            key = key or grant["reservationKey"]
             found = [r for r in estado["reservations"] if r["key"] == key]
-            if (grant["reservationKey"] != key or len(found) != 1
+            if (key is None or grant["reservationKey"] != key or len(found) != 1
                     or (found[0]["state"], found[0]["effectiveState"]) != ("released", "released")
                     or (found[0]["jobId"], found[0]["attemptId"], found[0]["profileId"], found[0]["executorId"],
                         found[0]["physicalHostId"]) != (intent.request["jobId"], intent.attempt,
@@ -386,7 +387,8 @@ def _mirror(db, intent, estado):
                 return None
             closure = Closure(found[0]["permit"], found[0]["closureEvidence"])
             if getattr(current, "creation", None) is None:
-                outcome, change = "closed_unused", lambda: storage.close_unused(db, current, closure)
+                outcome, change = "closed_unused", lambda: storage.close_unused(db, current, closure,
+                                                                                discovered=discovered)
             else:
                 outcome, change = "released", lambda: storage.release_host(db, current, closure)
     except (KeyError, IndexError, TypeError, ValueError, AttributeError):
