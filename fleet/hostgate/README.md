@@ -173,7 +173,8 @@ físico al del ejecutor; esa limitación debe resolverse antes de cablear WSL, c
 boot no acredita el de Windows. No hay integración WSL implementada. ABI/clock en Mini aún requieren una
 aceptación específica de plataforma: el test de identidad puntual es evidencia acotada.
 
-Las interfaces `authorize_creation` y `record_started` lanzan `NotImplementedError`.
+Desde 4c-1, `authorize_creation`, `consume_creation` y `record_started` son métodos de
+`Hostgate` en modo efectivo. El wire llega en 4c-3 y Fleet no los llama.
 `ScopeVerifier` real nunca acredita un perfil/cierre. Para Unix futuro se exige sesión/
 pgid propio **más linaje con procedencia y completitud** bajo perfil auditado que impida
 setsid/cambio de grupo, doble fork o delegación no controlada. Registrar comandos,
@@ -442,10 +443,10 @@ conecta en sombra: en un host efectivo falla cerrado con salida 6.
 numéricos `0 < timeout <= 300` segundos; un fallo cierra el canal y conserva duda.
 `DarwinPeers.observe_process(executor, pid)` devuelve la `Identity` nativa observada.
 
-`soltar` efectivo responde `enforcement-unavailable` y marca `uncertain`, incluso
-con `ClosureEvidence.fixture`. Desde 4b-1 la validación admite filas `running`,
+Desde 4c-1, `soltar` efectivo sella lo nunca emitido y cierra lo registrado con prueba
+propia; `ClosureEvidence.fixture` ya no libera. Desde 4b-1 la validación admite filas `running`,
 `released` y `launchPossible=True` sólo con las formas de «Formas del permiso y
-evidencia real»; nada las escribe. Creación/started siguen cerrados; el runtime real no acredita
+evidencia real»; desde 4c-1 las escriben los métodos de creación. El runtime real aún no acredita
 perfiles. No hay CLI de provisión efectiva, mantenimiento periódico, instalación
 ni activación de hosts. La espera autónoma y la integración Fleet pertenecen a
 entregas posteriores. Las pruebas nuevas usan sólo autoridades y procesos privados.
@@ -490,11 +491,8 @@ carga sólo se acredita desde una conexión ssh propia (`OwnCoalition`).
 
 ## Formas del permiso y evidencia real · SEN-5650, entrega 4b-1
 
-Nada de esta entrega está conectado: `Runtime.profile_verified` sigue en falso,
-`Runtime.closure` no confirma y `authorize_creation`/`record_started` siguen
-lanzando `NotImplementedError`. `soltar` efectivo sigue respondiendo
-`enforcement-unavailable` y deja la reserva `uncertain`. Ninguna operación escribe
-todavía estas formas.
+En 4b-1 nada de esta entrega estaba conectado. Desde 4c-1 los métodos de creación de
+`Hostgate` escriben estas formas y `soltar` las sella o las cierra.
 
 Una fila efectiva lleva, opcional, el registro `creation`
 (`darwin-coalition-creation@1`); `scope.creation_from_row` lo lee como una variante:
