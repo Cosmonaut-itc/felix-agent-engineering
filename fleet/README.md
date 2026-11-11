@@ -164,7 +164,7 @@ tiene `host_rounds` con las fases de creación y la columna `creation_json`. Un 
 acepta v4, v5 y v6 sin migrar. Sólo un escritor con el slot libre migra v4 o v5 a v6,
 bajo el lock, y conserva byte a byte trabajos, intentos, transiciones y cada columna
 v5. Un runtime anterior rechaza v6 con `unsupported_schema`. Cada fase se lee con la
-forma exacta de su variante; ningún código escribe todavía las fases de creación.
+forma exacta de su variante.
 El intento sigue `queued` mientras un supervisor autenticado pide la reserva:
 Fleet persiste la intención antes de enviar y confirma junto con el claim del intento
 exacto en cabeza del FIFO. El piloto no toma ni salta una cabeza host.
@@ -181,10 +181,39 @@ El arranque sigue cerrado: la barrera termina localmente con `never_created`,
 completion incompleta y permiso cerrado sin consumir. `wait` devuelve
 3/`enforcement_unavailable`; `recover` devuelve 3 si queda una ronda `held`.
 La reserva de hostgate y, si hubo claim, el slot local quedan retenidos. No hay
-latido de fondo, resolución de `held` ni liberación en este corte.
+latido de fondo ni arranque host en este corte.
+
+Las fases de creación las escribirá el supervisor de 4e; Fleet sigue cerrado y
+`require_creation_provider` sigue fallando. Cada paso guarda su petición antes de
+enviarla y su recibo original después. Cada CAS gana sólo desde el estado y el
+`creation_json` que leyó quien llama, y una escritura que no cambia nada no gana:
+- `authorizing`: la petición de `authorize_creation`. `authorized`: su recibo con el permiso.
+- `spawning`: la petición de `consume_creation`, que cierra la puerta local una sola vez,
+  y su recibo; después, la de `record_started`.
+- `running`: el recibo de `record_started`, con la raíz y el `scopeReceipt`.
+- `closing`: el último `soltar`; uno ocupado se reemplaza por otro con secuencia nueva.
+  `status` acepta también el cierre original de hostgate mientras falta la liberación local.
+- `released`: el permiso y `closureEvidence` originales de `estado`, en la misma
+  transacción que el CAS que libera el slot local.
+
+`held` conserva el prefijo exacto de la fase de la que viene. Un grant sin claim
+termina `closed_unused` sólo con el sello original de hostgate, y el intento sigue
+`queued`. Un grant que `estado` descubre sin que su clave llegara al ledger también
+termina así, y guarda la entrada descubierta. Un rechazo durable descubierto por
+`estado` cierra `held`→`rejected` sólo si coinciden la operación, el digest de la
+petición, el intento y el principal. `released` y
+`closed_unused` no cuentan como ronda abierta. `recover` examina también intentos
+terminados y sólo copia un cierre positivo que correlaciona en autoridad, store,
+clave, trabajo, intento, grant, perfil, permiso, raíz y línea base. Busca su operación
+por principal e id, como hostgate, así que otro principal con el mismo id no la
+oculta. Ni el tiempo, ni
+un supervisor o un boot nuevos, ni el operador liberan una ronda `held`, y un
+`TransportError` deja el resultado desconocido.
 Evidencia por CLI contra fixtures privadas: `tests/test_host_reservation_cli.py`,
 `tests/test_host_reservation_crash.py` y `tests/test_host_rounds_cli.py`; cada estado
 escrito se lee con `status`, incluido el recibo efectivo/replay y su alteración.
+`tests/test_host_ledger_v6.py` y `tests/test_host_creation_mirror.py` usan recibos
+reales de una autoridad hostgate efectiva en proceso.
 **C21 positivo (ejecutar un trabajo host) permanece abierto; O10 positivo está fuera
 de SEN-3820.**
 
