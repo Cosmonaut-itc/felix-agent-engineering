@@ -45,8 +45,8 @@ def evidence_doc(row, kind='unix-scope-empty', issued=True, **observed):
     obs = dict(provider_revision='darwin-coalition@1', issuer_epoch=1, profile_revision='prf_1', permit_id='permit-1',
                confirmation_digest='c' * 64, launch_digest='d' * 64, coalition_id=CID, baseline_digest=BASE.digest,
                root=root_doc(), boot=BOOT, scan_before=[9, 7], scan_after=[9, 7], member_count=2, live_task_count=2,
-               new_members=[], baseline_survivors_digest='e' * 64, root_terminal_basis='note-exit',
-               resource_policy='process-only')
+               new_members=[], baseline_survivors_digest='e' * 64, root_terminal_basis='absent-from-validated-scan@1',
+               resource_policy='process-only@1')
     if not scoped:
         obs.update(root=None, scan_before=None, scan_after=None, member_count=None, live_task_count=None,
                    baseline_survivors_digest=None, root_terminal_basis=None)
@@ -309,7 +309,7 @@ class Forms(Planted):
         for _ in range(2000): deep = [deep]
         self.assertEqual(self.reasons(never, issued, 'effective'), [])
         for name, bad in dict(scan_before=[9, 7], scan_after=[9, 7], member_count=0, live_task_count=0,
-                              baseline_survivors_digest='e' * 64, root_terminal_basis='note-exit').items():
+                              baseline_survivors_digest='e' * 64, root_terminal_basis='absent-from-validated-scan@1').items():
             self.retains('sobra ' + name, self.reasons(evidence_doc(self.row, 'never-created', **{name: bad}), issued, 'effective'))
         self.retains('boot observado', self.reasons(evidence_doc(self.row, 'never-created', False, boot=other), self.row, 'effective'))
         for label, proof, state, changes in (

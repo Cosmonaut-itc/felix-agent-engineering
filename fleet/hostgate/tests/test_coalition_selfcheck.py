@@ -15,7 +15,7 @@ from pathlib import Path
 from unittest.mock import patch
 from hostgate import admin
 from hostgate.darwin_coalition import ReadError, _Native
-from hostgate.scope import ClosureEvidence, authorize_creation, record_started
+from hostgate.scope import ClosureEvidence
 from hostgate.service import Runtime
 
 FLEET = Path(__file__).resolve().parents[2]
@@ -265,8 +265,6 @@ class NothingConnected(unittest.TestCase):
         runtime.synthetic = None
         self.assertIs(runtime.profile_verified('darwin-coalition-process@1'), False)
         self.assertEqual(runtime.closure(['p'], {}), ClosureEvidence())
-        for call in (lambda: authorize_creation('k', None), lambda: record_started('k', None)):
-            with self.assertRaises(NotImplementedError): call()
 
 
 if __name__ == '__main__':

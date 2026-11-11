@@ -6,7 +6,7 @@ from pathlib import Path
 from hostgate.store import ShadowStore, StoreError
 from hostgate.admission import Hostgate
 from hostgate.model import AuthContext
-from hostgate.scope import ClosureEvidence, authorize_creation, record_started
+from hostgate.scope import ClosureEvidence
 from hostgate.tests.support.world import World, config, request, FIXTURES
 
 
@@ -225,9 +225,6 @@ class Contract(Harness):
         r = self.reserve()
         self.assertEqual((r['result'], r['wouldGrant']), ('shadow', True))
         self.assertNotIn('reservationId', r)
-        for fn in (authorize_creation, record_started):
-            with self.assertRaises(NotImplementedError):
-                fn(None, None)
 
     def test_budget_dimensions_and_exclusives(self):
         self.reserve(exclusiveResources=['postgres:5434'])

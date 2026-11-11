@@ -214,13 +214,10 @@ class EffectiveHostgate(test_ipc.IPCHarness):
 
     def test_effective_validators_reject_future_launch_and_corrupt_receipt(self):
         from hostgate.model import validate_view
-        from hostgate.scope import authorize_creation, record_started
         for changes in ({'state': 'running'}, {'state': 'released'}, {'launchPossible': True},
                         {'key': dict(self.key, reservationId='s_promoted')}):
             view = self.store.read(); view['reservations'][0].update(changes)
             with self.assertRaises(ValueError): validate_view(view, self.cfg.node)
-        for operation in (authorize_creation, record_started):
-            with self.assertRaises(NotImplementedError): operation(self.key, None)
         poisoned = dict(self.grant, simulationKey=self.key)
         self.writer.execute('UPDATE operations SET result=? WHERE operation_id=?', (canonical(poisoned), 'op'))
         denied = self.call(self.original)
