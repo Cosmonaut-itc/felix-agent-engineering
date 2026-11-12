@@ -137,10 +137,10 @@ def guard(pueue, proc, directory):
             save_owned(directory, owned)
             log(directory, "pausado", grupo=group)
         elif action == "reanudar" and group in owned and status == "Paused":
-            # Quitar propiedad antes de arrancar: un fallo nunca amplía el permiso.
+            # La propiedad se suelta sólo tras reanudar: si start falla, el siguiente ciclo reintenta.
+            pueue.call("start", "-g", group)
             owned.remove(group)
             save_owned(directory, owned)
-            pueue.call("start", "-g", group)
             log(directory, "reanudado", grupo=group)
 
 

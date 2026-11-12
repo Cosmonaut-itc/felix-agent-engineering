@@ -1,10 +1,14 @@
 """Instalador remoto: recibe CORE y FILES del transporte local."""
 import os
 import pwd
+import sys
 
 
 def run(*args, check=True):
-    result = subprocess.run(list(args), text=True, capture_output=True, check=check)
+    result = subprocess.run(list(args), text=True, capture_output=True)
+    if check and result.returncode != 0:
+        print(result.stderr.strip() or result.stdout.strip(), file=sys.stderr)
+        raise subprocess.CalledProcessError(result.returncode, list(args), result.stdout, result.stderr)
     if check and result.stdout.strip():
         print(result.stdout.strip())
     return result
@@ -40,6 +44,8 @@ def remote(action, dry):
             print("SECO: systemctl --user enable --now pueued.service pueue-desk-mode.timer pueue-desk-guard.timer")
             print("SECO: aplicar y comprobar cuotas vigentes; retirar suites sólo si vacío")
             return
+        # Linger antes de detener nada: si se rechaza, el daemon manual sigue vivo.
+        run("loginctl", "enable-linger", pwd.getpwuid(os.getuid()).pw_name)
         # Releer inmediatamente antes de detener; nunca matar tareas de usuarios.
         if manual:
             if live_tasks(pueue.status()):
@@ -51,28 +57,13 @@ def remote(action, dry):
                 time.sleep(0.1)
             else:
                 raise RuntimeError("pueued manual no terminó; no se reemplazó")
-        run("loginctl", "enable-linger", pwd.getpwuid(os.getuid()).pw_name)
-        units.mkdir(parents=True, exist_ok=True)
-        library.mkdir(parents=True, exist_ok=True)
-        for name, content in FILES.items():
-            target = library / name if name == "control.py" else units / name
-            rendered = content.replace("@HOME@", str(home))
-            temporary = target.with_suffix(target.suffix + ".tmp")
-            temporary.write_text(rendered)
-            temporary.replace(target)
-        run("systemctl", "--user", "daemon-reload")
-        run("systemctl", "--user", "enable", "--now", "pueued.service", *timers)
-        # Si ya estaba activo, ExecStartPost no vuelve a ejecutarse.
-        with locked(STATE_DIR):
-            apply_mode(pueue, datetime.now(timezone.utc))
-            state = pueue.status()
-            if "suites" in state["groups"]:
-                if any(task["group"] == "suites" for task in state["tasks"].values()):
-                    print("Aviso: suites tiene tareas; se conserva")
-                else:
-                    pueue.call("group", "remove", "suites")
-                    print("Grupo suites vacío retirado")
-        print("Servicio y timers habilitados; linger permite arrancar sin login interactivo")
+        try:
+            install(home, units, library, timers, pueue)
+        except Exception:
+            if manual:
+                print("ATENCIÓN: el pueued manual quedó detenido y el servicio no quedó instalado. "
+                      "Restáuralo con ~/.local/bin/pueued -d o vuelve a correr la instalación.", file=sys.stderr)
+            raise
     else:
         if dry:
             print("SECO: detener y deshabilitar timers y pueued.service; quitar unidades; daemon-reload")
@@ -88,3 +79,27 @@ def remote(action, dry):
             (units / name).unlink(missing_ok=True)
         run("systemctl", "--user", "daemon-reload")
         print("Retiro completo; cola y estado de Pueue conservados. Linger se conserva")
+
+
+def install(home, units, library, timers, pueue):
+    units.mkdir(parents=True, exist_ok=True)
+    library.mkdir(parents=True, exist_ok=True)
+    for name, content in FILES.items():
+        target = library / name if name == "control.py" else units / name
+        rendered = content.replace("@HOME@", str(home))
+        temporary = target.with_suffix(target.suffix + ".tmp")
+        temporary.write_text(rendered)
+        temporary.replace(target)
+    run("systemctl", "--user", "daemon-reload")
+    run("systemctl", "--user", "enable", "--now", "pueued.service", *timers)
+    # Si ya estaba activo, pueue-desk-mode no vuelve a arrancar solo.
+    with locked(STATE_DIR):
+        apply_mode(pueue, datetime.now(timezone.utc))
+        state = pueue.status()
+        if "suites" in state["groups"]:
+            if any(task["group"] == "suites" for task in state["tasks"].values()):
+                print("Aviso: suites tiene tareas; se conserva")
+            else:
+                pueue.call("group", "remove", "suites")
+                print("Grupo suites vacío retirado")
+    print("Servicio y timers habilitados; linger permite arrancar sin login interactivo")

@@ -6,7 +6,10 @@ tras U10 (NVMe). No instala binarios ni migra clientes de deskpolicy.
 Desde la MacBook: `fleet/pueue-desk/deploy-desk.sh --seco` comprueba sin escribir;
 `fleet/pueue-desk/deploy-desk.sh` instala por `ssh desk`. Requiere `pueue` y
 `pueued` en `/home/felix/.local/bin`, systemd de usuario y permiso para
-`loginctl enable-linger felix`. Si éste falla, el instalador termina con error.
+`loginctl enable-linger felix`. El instalador lo pide antes de detener un
+`pueued` manual: si se rechaza, termina con error y el daemon manual sigue vivo.
+Un fallo de `aplicar` no reinicia `pueued`: `pueue-desk-mode.service` reintenta
+cada 30 s y deja el error en `journalctl --user -u pueue-desk-mode`.
 Linger inicia el servicio al arrancar la distro; el arranque de Windows debe
 iniciar WSL por su mecanismo habitual (SSH despierta la distro).
 

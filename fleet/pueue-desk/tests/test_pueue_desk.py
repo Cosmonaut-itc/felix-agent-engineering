@@ -39,6 +39,9 @@ if name == "pueue":
     elif args[0] == "parallel":
         assert 1 <= int(args[1]) <= 8
         state["groups"][args[3]]["parallel_tasks"] = int(args[1])
+    elif args[0] == "start" and (root / "start-falla").exists():
+        (root / "start-falla").unlink()
+        sys.exit("start falló")
     elif args[0] in ("pause", "start"):
         state["groups"][args[-1]]["status"] = "Paused" if args[0] == "pause" else "Running"
     elif args == ["shutdown"]:
@@ -51,6 +54,8 @@ elif name == "pgrep":
 elif name == "systemctl":
     if "is-active" in args:
         sys.exit(0 if (root / "managed").exists() else 3)
+elif name == "loginctl" and (root / "linger-falla").exists():
+    sys.exit("Access denied")
 elif name not in ("loginctl", "pueued"):
     sys.exit("Ejecutable falso desconocido: " + name)
 '''
@@ -168,6 +173,27 @@ class ControlTests(Fixture):
         self.guard()
         self.assertEqual(self.pueue.status()["groups"]["hasito"]["status"], "Paused")
 
+    def test_failed_resume_keeps_ownership_and_retries(self):
+        self.metrics(io_value=41)
+        self.guard()
+        (self.root / "start-falla").touch()
+        self.metrics()
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.guard()
+        self.assertIn("hasito", json.loads((self.directory / "guardia-state.json").read_text()))
+        self.guard()
+        self.assertEqual({g["status"] for g in self.pueue.status()["groups"].values()}, {"Running"})
+        self.assertEqual(json.loads((self.directory / "guardia-state.json").read_text()), [])
+
+    def test_failed_apply_does_not_restart_daemon(self):
+        units = ROOT / "units"
+        daemon = (units / "pueued.service").read_text()
+        self.assertNotIn("ExecStartPost", daemon)
+        self.assertIn("Wants=pueue-desk-mode.service", daemon)
+        mode = (units / "pueue-desk-mode.service").read_text()
+        self.assertIn("Restart=on-failure", mode)
+        self.assertIn("After=pueued.service", mode)
+
     def test_invalid_readings_never_resume(self):
         self.metrics(io_value=41)
         self.guard()
@@ -211,6 +237,23 @@ class DeploymentTests(Fixture):
                     self.assertTrue((self.root / "manual").exists())
                     self.assertFalse((self.root / ".config").exists())
                     self.assertEqual([c[0] for c in self.calls()[before:]], ["systemctl", "pgrep", "pueue"])
+
+    def test_rejected_linger_keeps_manual_daemon(self):
+        (self.root / "manual").touch()
+        (self.root / "linger-falla").touch()
+        result = self.deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Access denied", result.stderr)
+        self.assertTrue((self.root / "manual").exists())
+        self.assertFalse(any(c == ["pueue", "shutdown"] for c in self.calls()))
+        self.assertFalse((self.root / ".config").exists())
+
+    def test_failure_after_shutdown_is_announced(self):
+        (self.root / "manual").touch()
+        (self.root / ".config").write_text("no es un directorio")
+        result = self.deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("el pueued manual quedó detenido", result.stderr)
 
     def test_install_twice_and_withdraw_preserves_queue(self):
         (self.root / "manual").touch()

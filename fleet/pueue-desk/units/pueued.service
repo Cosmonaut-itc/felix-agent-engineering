@@ -1,9 +1,10 @@
 [Unit]
 Description=Pueue del desk por proyecto
+# Las cuotas se aplican aparte: un fallo al aplicarlas no reinicia el daemon.
+Wants=pueue-desk-mode.service
 
 [Service]
 ExecStart=@HOME@/.local/bin/pueued
-ExecStartPost=/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py aplicar
 Restart=on-failure
 RestartSec=5
 
