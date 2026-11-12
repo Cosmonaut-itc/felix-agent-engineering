@@ -96,14 +96,11 @@ class Manager:
             if not target.exists() or target.read_text() != text:
                 self.put(target, text, 'copiar:' + label)
         # host.log ya no recibe append del daemon. Acota un archivo heredado.
-        for suffix in ('', '.1'):
-            path = self.directory / ('host.log' + suffix)
+        for name in ('host.log', 'host.log.1', 'guardia.log', 'guardia.log.1'):
+            path = self.directory / name
             if path.exists() and path.stat().st_size > control.LOG_MAX_BYTES:
-                with path.open('r+b') as stream:
-                    stream.truncate(control.LOG_MAX_BYTES)
-                    stream.flush()
-                    os.fsync(stream.fileno())
-                self.checkpoint('acotar:host.log' + suffix)
+                control.cap_log(path)
+                self.checkpoint('acotar:' + name)
         self.bootstrap(GUARD_LABEL)
 
     def change(self, action, dry, wait_minutes=0, preflight=True):

@@ -133,6 +133,14 @@ def save_owned(directory, owned):
     atomic_json(directory / "guardia-state.json", sorted(owned))
 
 
+def cap_log(path):
+    if path.exists() and path.stat().st_size > LOG_MAX_BYTES:
+        with path.open("r+b") as handle:
+            handle.truncate(LOG_MAX_BYTES)
+            handle.flush()
+            os.fsync(handle.fileno())
+
+
 def log(directory, event, **fields):
     # Una entrada enorme también tiene tope. Nunca registrar comandos ni entornos.
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -142,12 +150,11 @@ def log(directory, event, **fields):
     if len(encoded) > LOG_MAX_BYTES:
         encoded = (json.dumps({"utc": record["utc"], "evento": event,
                               "detalle": "Registro truncado por límite de tamaño"}) + "\n").encode()
+    archive = directory / "guardia.log.1"
+    cap_log(target)
+    cap_log(archive)
     if target.exists() and target.stat().st_size + len(encoded) > LOG_MAX_BYTES:
-        # También acota un archivo heredado que ya superara el límite.
-        if target.stat().st_size > LOG_MAX_BYTES:
-            with target.open("r+b") as handle:
-                handle.truncate(LOG_MAX_BYTES)
-        target.replace(directory / "guardia.log.1")
+        target.replace(archive)
     with target.open("ab") as handle:
         handle.write(encoded)
         handle.flush()

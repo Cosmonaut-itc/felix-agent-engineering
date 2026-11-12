@@ -103,6 +103,9 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(self.pueue.state['groups']['manual']['status'], 'Paused')
 
     def test_logs_are_bounded_even_with_large_errors(self):
+        (self.directory / 'guardia.log.1').write_bytes(b'x' * (control.LOG_MAX_BYTES * 2))
+        control.log(self.directory, 'nuevo')
+        self.assertEqual((self.directory / 'guardia.log.1').stat().st_size, control.LOG_MAX_BYTES)
         for _ in range(4):
             control.log(self.directory, 'error', detalle='x' * (control.LOG_MAX_BYTES * 2))
         for path in self.directory.glob('*.log*'):

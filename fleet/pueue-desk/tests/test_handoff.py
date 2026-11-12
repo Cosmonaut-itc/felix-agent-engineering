@@ -289,6 +289,17 @@ class HandoffTests(unittest.TestCase):
             self.assert_healthy(home)
             self.assertEqual(machine.read()['queue']['tasks'], value['queue']['tasks'])
 
+    def test_inherited_host_and_guard_logs_have_a_cap(self):
+        home = self.fresh('legacy-logs')
+        instance = manager(home)
+        instance.directory.mkdir(parents=True)
+        for name in ('host.log', 'host.log.1', 'guardia.log', 'guardia.log.1'):
+            (instance.directory / name).write_bytes(b'x' * (mini.control.LOG_MAX_BYTES * 2))
+        request(home, 'install')
+        for path in instance.directory.glob('*.log*'):
+            self.assertLessEqual(path.stat().st_size, mini.control.LOG_MAX_BYTES)
+        self.assert_healthy(home)
+
     def test_interval_and_daemon_output_are_bounded(self):
         import plistlib
         guard = plistlib.loads((ROOT / 'launchagents' / (mini.GUARD_LABEL + '.plist')).read_bytes())

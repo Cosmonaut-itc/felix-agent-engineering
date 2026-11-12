@@ -163,7 +163,7 @@ de aceptar otro.
 ## Logs y pruebas
 
 `guardia.log` rota a `.1`; cada archivo tiene máximo 1 MiB, incluso para
-errores enormes. Es el único registro propio con append. Los plists y las
+errores enormes o un archivo heredado que ya superara el límite. Es el único registro propio con append. Los plists y las
 unidades descartan stdout/stderr del daemon/control, por lo que `host.log`
 no se crea ni crece. La instalación acota `host.log` y `.1` heredados a
 1 MiB cada uno. No se altera la política global del journal. Los logs de
