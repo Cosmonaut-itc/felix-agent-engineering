@@ -26,6 +26,8 @@ TASK_STATES = ('Queued', 'Stashed', 'Locked', 'Running', 'Paused', 'Done')
 TASK_TEXT = ('name', 'scope', 'project', 'ticket', 'repo', 'sha', 'result', 'branch', 'subject')
 TASK_TIMES = ('enqueued', 'start', 'end')
 LOOKUP_BUDGET = 8
+REFRESH_TIMEOUT = 40
+CYCLE_SECONDS, CYCLE_MIN_GAP = 15, 3
 
 
 def atomic(path, text):
@@ -175,6 +177,10 @@ class Rack:
             logging.warning('Linear sin títulos: falta linear-key con modo 600')
         self.lock = threading.Lock()
         self.payload = dict(schema='rack@1', now=time.time(), hosts=[], tickets={})
+        # Cada ciclo toma un número al empezar; read_hosts publica su lectura de hosts.
+        self.started = self.read_hosts = 0
+        self.published = threading.Condition(self.lock)
+        self.wake = threading.Event()
 
     def refresh_tickets(self, tickets, now, deadline=math.inf):
         count = 0
@@ -278,6 +284,9 @@ class Rack:
 
     def cycle(self, fetch=fetch_host, now=None):
         now = time.time() if now is None else now
+        with self.lock:
+            self.started += 1
+            number = self.started
         with ThreadPoolExecutor(max_workers=len(self.hosts)) as pool:
             jobs = [(host, pool.submit(fetch, host)) for host in self.hosts]
             for host, job in jobs:
@@ -290,6 +299,9 @@ class Rack:
                 except Exception as error:
                     self.errors[ident] = 'No se pudo leer el host: ' + type(error).__name__
         self.publish(now)
+        with self.published:
+            self.read_hosts = number
+            self.published.notify_all()
         deadline = time.monotonic() + LOOKUP_BUDGET
         self.resolve_commits([t for data in self.good.values() for t in data['tasks'] if t['state'] != 'Done'], now, deadline)
         self.refresh_tickets({t['ticket'] for data in self.good.values() for t in data['tasks'] if re.fullmatch(r'SEN-\d+', t.get('ticket') or '')}, now, deadline)
@@ -297,6 +309,15 @@ class Rack:
 
     def read(self):
         with self.lock:
+            return copy.deepcopy(self.payload)
+
+    def refresh(self, timeout):
+        """Despierta al recolector y devuelve la primera lectura que empezó después de la petición."""
+        with self.published:
+            target = self.started + 1
+            self.wake.set()
+            if not self.published.wait_for(lambda: self.read_hosts >= target, timeout):
+                return None
             return copy.deepcopy(self.payload)
 
 
@@ -351,6 +372,15 @@ class Handler(BaseHTTPRequestHandler):
             self.reply(403, b'')
         elif not (self.client_address[0] == '127.0.0.1' and self.server.server_address[0] == '127.0.0.1') and not self.server.owner_check.allows(self.client_address[0]):
             self.reply(403, b'')
+        elif self.path == '/api/refresh' and self.command == 'POST':
+            # Un encabezado propio obliga al navegador a preguntar antes de enviarlo desde otro origen.
+            payload = self.server.rack.refresh(REFRESH_TIMEOUT) if self.headers.get('X-Rack-Refresh') == '1' else False
+            if payload is False:
+                self.reply(403, b'')
+            elif payload is None:
+                self.reply(504, b'')
+            else:
+                self.reply(200, json.dumps(payload, allow_nan=False).encode(), 'application/json; charset=utf-8')
         elif self.command != 'GET':
             self.reply(405, b'', allow=True)
         elif self.path == '/':
@@ -418,7 +448,9 @@ def main():
                 rack.cycle()
             except Exception:
                 logging.exception('Falló el ciclo del rack')
-            stop.wait(max(0, 15 - (time.monotonic() - started)))
+            rack.wake.wait(max(0, CYCLE_SECONDS - (time.monotonic() - started)))
+            rack.wake.clear()
+            stop.wait(max(0, CYCLE_MIN_GAP - (time.monotonic() - started)))
     worker = threading.Thread(target=collect, daemon=True)
     worker.start()
     try:
@@ -427,6 +459,7 @@ def main():
         pass
     finally:
         stop.set()
+        rack.wake.set()
         server.server_close()
 
 

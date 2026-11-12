@@ -300,6 +300,68 @@ class ServerTests(unittest.TestCase):
                 urllib.request.urlopen(request)
             self.assertEqual(error.exception.code, code)
 
+    def collector(self):
+        # Como main(): cada despertar corre un ciclo; los hosts fallan y `now` numera el ciclo.
+        stop = threading.Event()
+        def run():
+            while not stop.is_set():
+                if self.rack.wake.wait(0.05):
+                    self.rack.wake.clear()
+                    self.rack.cycle(fetch=lambda host: (_ for _ in ()).throw(OSError()), now=1000 + self.rack.started)
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+        self.addCleanup(lambda: (stop.set(), thread.join()))
+
+    def test_refresh_waits_for_a_read_started_after_the_request(self):
+        def publish(number):
+            with self.rack.published:
+                self.rack.read_hosts = number
+                self.rack.payload['now'] = number
+                self.rack.published.notify_all()
+        with self.rack.lock:
+            self.rack.started = 1  # una lectura empezada antes de la petición
+        result = []
+        waiter = threading.Thread(target=lambda: result.append(self.rack.refresh(5)))
+        waiter.start()
+        for _ in range(100):
+            if self.rack.wake.is_set(): break
+            time.sleep(0.01)
+        self.assertTrue(self.rack.wake.is_set())
+        publish(1)
+        waiter.join(0.2)
+        self.assertTrue(waiter.is_alive())
+        publish(2)
+        waiter.join(5)
+        self.assertEqual(result, [dict(self.rack.payload, now=2)])
+
+    def test_refresh_endpoint_needs_its_header_and_reports_timeout(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), serve.Handler)
+        server.rack = self.rack
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def cleanup():
+            server.shutdown()
+            server.server_close()
+            thread.join()
+        self.addCleanup(cleanup)
+        url = 'http://127.0.0.1:' + str(server.server_port) + '/api/refresh'
+        for headers, code in (({}, 403), ({'X-Rack-Refresh': '0'}, 403)):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(urllib.request.Request(url, data=b'', method='POST', headers=headers))
+            self.assertEqual(error.exception.code, code)
+        self.assertFalse(self.rack.wake.is_set())
+        with patch.object(serve, 'REFRESH_TIMEOUT', 0.1), self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(urllib.request.Request(url, data=b'', method='POST', headers={'X-Rack-Refresh': '1'}))
+        self.assertEqual(error.exception.code, 504)
+        self.collector()
+        request = urllib.request.Request(url, data=b'', method='POST', headers={'X-Rack-Refresh': '1'})
+        with urllib.request.urlopen(request, timeout=10) as response:
+            self.assertEqual(response.status, 200)
+            self.assertEqual(json.loads(response.read())['schema'], 'rack@1')
+        with self.assertRaises(urllib.error.HTTPError) as error:
+            urllib.request.urlopen(urllib.request.Request(url))
+        self.assertEqual(error.exception.code, 404)
+
     def request_as(self, ip, owner_result=None, funnel=False):
         handler = object.__new__(serve.Handler)
         handler.client_address = (ip, 1234)

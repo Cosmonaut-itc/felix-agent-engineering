@@ -19,6 +19,8 @@ header{display:flex;align-items:baseline;gap:16px;padding:20px 24px 8px;flex-wra
 h1{font-size:20px;margin:0;font-weight:600;letter-spacing:-.01em}
 .when{color:var(--muted);font-size:13px}
 .switch{margin-left:auto;display:flex;gap:4px}
+.refresh{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink2);padding:4px 10px;border-radius:6px;cursor:pointer}
+.refresh:disabled{color:var(--muted);cursor:default}
 .switch button{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink2);padding:4px 10px;border-radius:6px;cursor:pointer}
 .switch button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
 main{padding:8px 24px 40px}
@@ -82,7 +84,7 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .fila .l2 span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .fila .d{font-size:12px;color:var(--ink2);white-space:nowrap;font-variant-numeric:tabular-nums}
 .fila .more{display:block;width:100%;font:inherit;font-size:12px;color:var(--ink2);background:var(--bg);border:0;border-top:1px solid var(--line);padding:6px;cursor:pointer}
-</style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span></header><div id="connection" role="status"></div><main id="app"></main><script>
+</style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><script>
 let S, NOW;
 const GB = b => b == null ? NaN : (b/1024**3);
 const fmtMin = s => `${Math.floor(s/60)} min`;
@@ -182,22 +184,28 @@ function render(data){
       tasks:(s.tasks || []).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
   document.getElementById('app').innerHTML=view();
-  document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+  document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 document.getElementById('app').addEventListener('click', event=>{
   const button = event.target.closest('button[data-open]');
   if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); }
 });
 let last=null;
-async function refresh(){
+async function load(path, options, failure){
   try{
-    const response=await fetch('/api/rack.json',{cache:'no-store',signal:AbortSignal.timeout(10000)});
+    const response=await fetch(path,{cache:'no-store',...options});
     if(!response.ok) throw Error('HTTP');
     render(await response.json()); last=new Date();
     document.getElementById('connection').textContent='';
   }catch(error){
-    document.getElementById('connection').textContent=last ? 'Sin respuesta del servidor · último dato a las '+last.toLocaleTimeString('es-MX') : 'Sin respuesta del servidor';
+    document.getElementById('connection').textContent=last ? failure+' · último dato a las '+last.toLocaleTimeString('es-MX') : failure;
   }
 }
+const refresh = () => load('/api/rack.json', {signal:AbortSignal.timeout(10000)}, 'Sin respuesta del servidor');
+document.getElementById('refresh').addEventListener('click', async ({currentTarget: button}) => {
+  button.disabled = true; button.textContent = 'Actualizando…';
+  await load('/api/refresh', {method:'POST', headers:{'X-Rack-Refresh':'1'}, signal:AbortSignal.timeout(45000)}, 'No se pudo actualizar');
+  button.disabled = false; button.textContent = 'Actualizar';
+});
 refresh(); setInterval(refresh,15000);
 </script></body></html>
