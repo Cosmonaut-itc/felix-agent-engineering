@@ -47,7 +47,6 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .bar{height:6px;border-radius:3px;background:var(--accent-track);position:relative;overflow:hidden}
 .bar>i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:3px}
 .bar.over>i{background:var(--warn)}
-.bar.unknown{background:repeating-linear-gradient(-45deg,var(--accent-track) 0 6px,transparent 6px 12px)}
 .r-time{font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums;white-space:nowrap}
 .queue{list-style:none;margin:0;padding:0}
 .queue li{display:grid;grid-template-columns:22px 82px 1fr auto;gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:13px;align-items:baseline}
@@ -89,7 +88,9 @@ const GB = b => b == null ? NaN : (b/1024**3);
 const fmtMin = s => `${Math.floor(s/60)} min`;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const what = t => t.title || t.subject || t.branch || objective(t);
-const proj = t => { const p = t.linear_project || t.project || t.group; return p.charAt(0).toUpperCase() + p.slice(1); };
+// Nombre de producto por carpeta, repo o proyecto de Linear; igual con o sin ticket.
+const PRODUCT = {'comprador':'Hasito','hasito':'Hasito','sen-checkin':'Jale','jale':'Jale','personal-agent-orchestration':'PAO','felix-agent-engineering':'PAO','marhbe':'MARHBE'};
+const proj = t => { const p = t.project || t.linear_project || t.group || ''; return PRODUCT[p.toLowerCase()] || p.charAt(0).toUpperCase() + p.slice(1); };
 const OBJ = {contract:'Contrato',e2e:'E2E','api-unit':'Unitarias API','web-unit':'Unitarias web',types:'Tipos',gates:'Gates completos',launch:'Arranque',lint:'Lint'};
 const objective = t => {
   if (!t.name) return 'sin nombre';
@@ -137,10 +138,11 @@ function capacity(h){
 }
 const fmtDur = s => s < 5400 ? `${Math.max(1,Math.round(s/60))} min` : `${(s/3600).toFixed(1)} h`;
 const span = e => Math.round(e.low/60) === Math.round(e.high/60) ? fmtDur(e.typical) : `${fmtDur(e.low).replace(' min','')}–${fmtDur(e.high)}`;
-const known = t => t.est && t.est.n >= 5;
+// La barra sólo sale con base: 5 corridas o más y un rango que no pase del triple de la mediana.
+const known = t => t.est && t.est.n >= 5 && t.est.high <= 3 * t.est.typical;
 function progress(t){
   const el = Math.max(0, NOW - (t.start ?? t.enqueued ?? NOW)), e = t.est;
-  if (!known(t)) return {html:`<div class="bar unknown"></div>`, time:`${fmtMin(el)} · sin estimado`};
+  if (!known(t)) return {html:'', time: e ? `${fmtMin(el)} · suele tardar ${span(e)}` : fmtMin(el)};
   const over = el > e.high;
   return {html:`<div class="bar ${over?'over':''}"><i style="width:${Math.min(el/Math.max(1,e.high),1)*100}%"></i></div>`,
           time: over ? `${fmtMin(el)} · suele tardar ${span(e)}` : `${fmtMin(el)} de ~${fmtDur(e.typical)}`};

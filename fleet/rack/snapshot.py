@@ -170,7 +170,8 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                     result = 'exit ' + str(result['Failed']) if 'Failed' in result else next(iter(result))
                 row = dict(id=task['id'], group=task['group'], state=state, enqueued=epoch(details.get('enqueued_at')), start=epoch(details.get('start')), end=end, result=result,
                            name=None, scope=None, project=None, ticket=None, repo=None, sha=None, branch=None, subject=None, priority=task.get('priority', 0))
-                metadata = attempt('metadata', lambda: mini_metadata(task, home) if mode == 'macos' or task['group'] == 'hasito' else desk_metadata(task, home, cache))
+                jale = mode != 'macos' and re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
+                metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
                 output['tasks'].append(row)
         attempt('pueue', tasks)

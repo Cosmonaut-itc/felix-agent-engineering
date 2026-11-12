@@ -106,7 +106,8 @@ class SnapshotTests(unittest.TestCase):
         run = self.root / 'run'
         run.mkdir()
         (run / 'meta').write_text('src=/Users/test/REPOS/proyecto/work\nmirror=mirror\ncmd=GH_T=secreto-no-exportar\n')
-        raw = dict(id=8, group='hasito', priority=9, status='Queued', path=str(run))
+        # Un grupo cualquiera: la lectura depende del tipo de corrida, no del grupo.
+        raw = dict(id=8, group='otros', priority=9, status='Queued', path=str(run))
         for mode, host in (('macos', 'mini'), ('linux', 'desk')):
             data = snapshot.collect(mode, host, pueue=self.fake_pueue({'8': raw}), home=self.root)
             row = data['tasks'][0]
