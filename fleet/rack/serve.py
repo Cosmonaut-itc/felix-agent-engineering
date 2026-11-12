@@ -47,7 +47,7 @@ def read_cache(path, fields):
     def valid(entry):
         return isinstance(entry, dict) and all(
             k in fields and (v is None or (isinstance(v, fields[k]) and not isinstance(v, bool)
-                                           and (not isinstance(v, float) or math.isfinite(v))))
+                                           and (not isinstance(v, (int, float)) or 0 <= v < 1e11)))
             for k, v in entry.items())
     return {k: v for k, v in data.items() if valid(v)} if isinstance(data, dict) else {}
 

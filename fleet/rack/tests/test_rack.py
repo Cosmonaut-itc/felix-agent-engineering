@@ -280,7 +280,8 @@ class ServerTests(unittest.TestCase):
         (self.root / 'history.jsonl').write_text('{"host":"mini","id":1,"group":"g","name":"x","result":"Success","start":"a","end":null}\n')
         for tickets, commits in (('[]', '[]'),
                                  ('{"SEN-1": {"title": NaN}}', '{"Owner/R@' + sha + '": {"ticket": null, "checked": []}}'),
-                                 ('{"SEN-1": {"updated": []}}', '{"Owner/R@' + sha + '": "x"}')):
+                                 ('{"SEN-1": {"updated": []}}', '{"Owner/R@' + sha + '": "x"}'),
+                                 ('{"SEN-1": {"failed": 1' + '0' * 320 + '}}', '{"Owner/R@' + sha + '": {"checked": 1' + '0' * 320 + '}}')):
             (self.root / 'tickets.json').write_text(tickets)
             (self.root / 'commits.json').write_text(commits)
             rack = serve.Rack(self.hosts, self.root, self.root / 'absent-key', gh='/bin/false')
