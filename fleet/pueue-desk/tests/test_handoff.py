@@ -40,7 +40,7 @@ class FakeMachine:
 
     def status(self):
         value = self.read()
-        if not value['daemons']:
+        if not value['sockets']:
             raise subprocess.CalledProcessError(1, ['pueue', 'status'])
         assert len(value['daemons']) == 1, value
         return deepcopy(value['queue'])
@@ -53,7 +53,7 @@ class FakeMachine:
 
     def call(self, *args):
         value = self.read()
-        assert len(value['daemons']) == 1
+        assert len(value['daemons']) == 1 and value['sockets'] == value['daemons']
         if args[0] == 'pause':
             value['queue']['groups'][args[-1]]['status'] = 'Paused'
         elif args[0] == 'start':
@@ -80,6 +80,8 @@ class FakeMachine:
                 value['loaded'].remove(label)
                 if label in value['daemons']:
                     value['daemons'].remove(label)
+                if label in value['sockets']:
+                    value['sockets'].remove(label)
         elif op == 'kickstart':
             code = 0 if label in value['loaded'] else 113
         elif op == 'bootstrap':
@@ -87,9 +89,7 @@ class FakeMachine:
                 code = 5
             else:
                 value['loaded'].append(label)
-                if label in (mini.LABEL, mini.BREW_LABEL):
-                    assert not value['daemons'], 'dos daemons: ' + repr(value)
-                    value['daemons'].append(label)
+                # Cargar no implica proceso iniciado ni socket disponible.
         else:
             raise AssertionError(args)
         if len(value['daemons']) > value['maximum']:
@@ -98,6 +98,32 @@ class FakeMachine:
         if check and code:
             raise subprocess.CalledProcessError(code, ['launchctl', *args])
         return subprocess.CompletedProcess(args, code, '', '')
+
+
+    def advance(self):
+        """Un paso del gestor simulado, fuera de control.lock, nunca una RPC.
+
+        Mantiene separados servicio cargado, proceso arrancado y socket listo.
+        Si hubiera dos servicios habilitados, cuenta ambos procesos: no impone
+        exclusión por construcción. La CLI privada verifica el arranque real.
+        """
+        value = self.read()
+        starting = [label for label in value['loaded']
+                    if label in (mini.LABEL, mini.BREW_LABEL)
+                    and not value['disabled'].get(label, False)
+                    and label not in value['daemons']]
+        if starting:
+            value['daemons'].extend(starting)
+            value['maximum'] = max(value['maximum'], len(value['daemons']))
+            event = 'proceso_iniciado'
+        elif value['sockets'] != value['daemons']:
+            value['sockets'] = list(value['daemons'])
+            event = 'socket_disponible'
+        else:
+            return False
+        self.write(value)
+        self.checkpoint(event)
+        return True
 
 
 def manager(home, checkpoint=lambda _label: None):
@@ -124,6 +150,13 @@ def request(home, action=None, kill_at=None, record=None):
             instance.reconcile()
         else:
             instance.change(action, False, wait_minutes=0, preflight=False)
+        # Ticks independientes: bootstrap acaba sin proceso/socket. Se libera
+        # control.lock antes de que el gestor pueda ejecutar preparar.
+        for _ in range(4):
+            machine = FakeMachine(home, checkpoint)
+            if not machine.advance() and not instance.transaction.exists():
+                break
+            instance.reconcile()
 
 
 class HandoffTests(unittest.TestCase):
@@ -149,7 +182,7 @@ class HandoffTests(unittest.TestCase):
                 (library / name).write_text((ROOT / name).read_text())
             for label in (mini.LABEL, mini.GUARD_LABEL):
                 (agents / (label + '.plist')).write_text('own fixture')
-        FakeMachine(home).write({'loaded': loaded, 'disabled': {}, 'daemons': [source], 'maximum': 1,
+        FakeMachine(home).write({'loaded': loaded, 'disabled': {}, 'daemons': [source], 'sockets': [source], 'maximum': 1,
             'queue': {'tasks': {}, 'groups': {
                 'suites': {'status': 'Running', 'parallel_tasks': 3},
                 'default': {'status': 'Running', 'parallel_tasks': 1},
@@ -161,6 +194,7 @@ class HandoffTests(unittest.TestCase):
         value = machine.read()
         self.assertEqual(len(value['daemons']), 1, value)
         self.assertEqual(value['maximum'], 1)
+        self.assertEqual(value['sockets'], value['daemons'])
         self.assertEqual(value['queue']['groups']['suites']['status'], 'Running')
         self.assertEqual(value['queue']['groups']['manual']['status'], 'Paused')
         self.assertEqual(mini.control.load_owned(manager(home).directory), set())
@@ -188,13 +222,14 @@ class HandoffTests(unittest.TestCase):
                     machine = FakeMachine(home)
                     if mini.GUARD_LABEL in machine.read()['loaded']:
                         started = time.monotonic()
-                        job = self.context.Process(target=lambda: manager(home).reconcile())
+                        job = self.context.Process(target=request, args=(home,))
                         job.start()
                         job.join(10)
                         self.assertFalse(job.is_alive())
                         self.assertEqual(job.exitcode, 0)
-                        # Peor espera hasta StartInterval + tiempo real de reparación.
-                        self.assertLess(15 + time.monotonic() - started, 60)
+                        # Duración del arnés, no cota de launchd real: los ticks
+                        # y el arranque del doble no consumen tiempo de pared.
+                        self.assertLess(time.monotonic() - started, 30)
                     self.assert_healthy(home)
             print(f'W6 {action}: SIGKILL en {len(steps)} fronteras; un daemon, suites abierta, pausa manual intacta')
 
@@ -225,7 +260,7 @@ class HandoffTests(unittest.TestCase):
                     self.assertFalse(job.is_alive())
                     self.assertEqual(job.exitcode, -signal.SIGKILL)
                     if mini.GUARD_LABEL in FakeMachine(home).read()['loaded']:
-                        manager(home).reconcile()
+                        request(home)
                     self.assert_healthy(home)
             print(f'W6 job {action}: SIGKILL en {len(job_steps)} fronteras y reintento sano')
 
@@ -235,18 +270,9 @@ class HandoffTests(unittest.TestCase):
                 home = self.fresh('async-' + action, initial)
                 desired = mini.LABEL if action == 'install' else mini.BREW_LABEL
                 machine = FakeMachine(home)
-                # Bootstrap retorna antes de que preparar tome control.lock.
-                def launch(*args, check=True):
-                    result = machine.launch(*args, check=check)
-                    if args[0] == 'bootstrap' and Path(args[-1]).stem == desired:
-                        state = machine.read()
-                        state['daemons'] = []
-                        state['pending'] = desired
-                        machine.write(state)
-                    return result
+                # El doble ya devuelve bootstrap sin arrancar el proceso.
                 def interrupted():
                     instance = manager(home)
-                    instance.launch = launch
                     instance.change(action, False, preflight=False)
                     os.kill(os.getpid(), signal.SIGKILL)
                 child = self.context.Process(target=interrupted)
@@ -254,15 +280,23 @@ class HandoffTests(unittest.TestCase):
                 child.join(10)
                 self.assertFalse(child.is_alive())
                 self.assertEqual(child.exitcode, -signal.SIGKILL)
+                state = machine.read()
+                self.assertIn(desired, state['loaded'])
+                self.assertEqual(state['daemons'], [])
+                self.assertEqual(state['sockets'], [])
+                self.assertTrue(manager(home).transaction.exists())
+                # Servicio cargado sin proceso: el job no da el relevo por terminado.
+                manager(home).reconcile()
                 self.assertEqual(machine.read()['daemons'], [])
                 self.assertTrue(manager(home).transaction.exists())
-                # Otro tick mientras el destino sigue arrancando no pierde
-                # intención ni carga un segundo daemon.
+                machine.advance()
+                self.assertEqual(machine.read()['daemons'], [desired])
+                self.assertEqual(machine.read()['sockets'], [])
+                # Proceso iniciado sin socket: otro tick tampoco abre ni limpia.
                 manager(home).reconcile()
-                state = machine.read()
-                self.assertEqual(state['daemons'], [])
-                state['daemons'] = [state.pop('pending')]
-                machine.write(state)
+                self.assertTrue(manager(home).transaction.exists())
+                self.assertEqual(machine.read()['queue']['groups']['suites']['status'], 'Paused')
+                machine.advance()
                 manager(home).reconcile()
                 self.assert_healthy(home)
 

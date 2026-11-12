@@ -364,6 +364,24 @@ def prepare_queue(queue, logged_ids, owned, now, host):
     return queue, owned, events
 
 
+def clear_stale_pid(path, directory):
+    """Retirar PID muerto/reutilizado; nunca preparar sobre un pueued vivo."""
+    if not path.exists():
+        return
+    pid = int(path.read_text().strip())
+    if pid <= 0:
+        raise RuntimeError("PID de Pueue inválido; revisar antes de preparar")
+    process = subprocess.run(["/bin/ps", "-p", str(pid), "-o", "comm="],
+                             text=True, capture_output=True, timeout=10)
+    if process.returncode not in (0, 1) or (process.returncode == 0 and not process.stdout.strip()):
+        raise RuntimeError("No se pudo identificar el PID de Pueue; no se prepara la cola")
+    if process.returncode == 0 and Path(process.stdout.strip()).name == "pueued":
+        raise RuntimeError(f"pueued {pid} sigue vivo sin responder; no se prepara un estado en uso")
+    path.unlink()
+    sync_directory(path.parent)
+    log(directory, "pid_obsoleto", pid=pid, proceso=process.stdout.strip())
+
+
 def prepare_start(pueue, directory, queue_path, host, daemon):
     """Con control.lock tomado y el daemon detenido; jamás llama restart."""
     try:
@@ -375,6 +393,10 @@ def prepare_start(pueue, directory, queue_path, host, daemon):
     version = subprocess.check_output([str(daemon), "--version"], text=True, timeout=10).strip()
     if version != "pueued 4.0.4":
         raise RuntimeError("Se requiere pueued 4.0.4; arranque bloqueado")
+    # Configuración estándar ya validada por la CLI: macOS usa datos;
+    # Linux prefiere XDG_RUNTIME_DIR, igual que Shared::runtime_directory.
+    runtime = os.environ.get("XDG_RUNTIME_DIR") if sys.platform != "darwin" else None
+    clear_stale_pid((Path(runtime) if runtime else queue_path.parent) / "pueue.pid", directory)
     queue = read_queue(queue_path)
     if any(group["status"] == "Reset" for group in queue["groups"].values()):
         raise ValueError("Reset interrumpido: Pueue abriría el grupo sin admisión; revisar la cola antes de arrancar")

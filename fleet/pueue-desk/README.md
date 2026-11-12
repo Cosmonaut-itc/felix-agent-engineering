@@ -48,6 +48,10 @@ responda, estado comprimido, JSON truncado, tareas/grupos incompatibles y
 configuración ambigua. Ante un rechazo no sustituye la cola ni arranca el
 daemon; el motivo va al log acotado. Un archivo ausente es primer arranque.
 No genera configuración propia ni cambia el socket del cliente normal.
+Antes de modificar la cola inspecciona `pueue.pid`: retira un PID muerto o
+reutilizado por un proceso ajeno; si identifica un `pueued` vivo sin socket,
+rechaza sin alterar la cola, su propiedad ni ese PID. Usa el directorio de
+datos en macOS y `XDG_RUNTIME_DIR` en Linux cuando está definido.
 Rechaza variables XDG relativas para no preparar una ruta diferente a la
 que resolvería Pueue. Un grupo `Reset` valida y se conserva byte a byte,
 pero bloquea el arranque hasta revisión manual: el loop estándar lo abre
@@ -86,7 +90,8 @@ Desde la MacBook, `fleet/pueue-desk/deploy-desk.sh --seco` valida sin
 instalar; sin `--seco` transporta por `ssh desk`. Requiere binarios 4.0.4
 en `/home/felix/.local/bin`, systemd de usuario y permiso de linger. No
 instala binarios. Rechaza relevar un daemon manual con tareas vivas y pide
-linger antes de detenerlo. No se ejecutó ningún comando en el desk en este
+la versión exacta `pueued 4.0.4` antes de pedir linger o detenerlo, incluso
+con `--seco`. No se ejecutó ningún comando en el desk en este
 encargo.
 
 La unidad ejecuta `preparar` en `ExecStartPre`, `parada` en `ExecStop`, y usa
@@ -149,8 +154,12 @@ relevo de servicios, no de recuperación de tareas.
    limpieza, ya hay un daemon y no dejó una pausa propia sin dueño.
 
 Con servicios sanos, la reparación necesita como máximo dos ticks de 15 s
-más el arranque y las RPC acotadas. Las pruebas modelan cada frontera con
-SIGKILL real y un launchd falso. La cota de un minuto en launchd real sigue
+más el arranque y las RPC acotadas. El doble distingue servicio cargado,
+proceso iniciado y socket disponible: `bootstrap` sólo carga el servicio y
+los pasos posteriores del gestor simulado publican proceso y socket por
+separado. Las pruebas modelan cada frontera con SIGKILL real y un launchd
+falso. La duración de ese arnés no mide el tiempo de arranque real.
+La cota de **60 segundos en launchd real** sigue
 pendiente de validación de despliegue: este encargo prohíbe modificar los
 LaunchAgents o el daemon del usuario. Un error persistente del sistema,
 estado ilegible o Docker caído bloquean la admisión de forma visible.
@@ -209,6 +218,13 @@ pendientes con mismo id, grupos vacíos, log antiguo y 500 ciclos de
 se comprueba el fallo conservador y se solicita admisión del grupo antes
 del siguiente experimento, que usa un id nuevo. Las privadas sólo se habilitan en
 Mini con ese indicador; el resto usa dobles en directorios temporales.
+La regresión privada de los injertos ejecuta la CLI `preparar --host mini
+--exec /opt/homebrew/bin/pueued`, con las rutas estándar aisladas: PID ajeno
+vivo, rechazo por `pueued` vivo sin socket y espera de `control.lock` antes
+de arrancar. Comprueba que `exec` conserva el PID, la cola espera al guardia
+y una pendiente produce un único efecto. Usa `HOME=.` dentro de su cwd
+privado para mantener el socket Unix por debajo de 104 bytes; configuración,
+cola y socket permanecen dentro de la corrida sin rutas personalizadas.
 
 Pendiente fuera de este entorno: systemd/cgroup real, WSL/Windows Update,
 reboot físico, auto-login de Mini y launchd real; cortes de energía y
@@ -259,3 +275,28 @@ La entrega añade después sólo esta evidencia y documentación al código
 probado. No se ejecutó ninguna instalación ni se abrieron PR. Las reservas
 sobre launchd real, systemd/WSL, reinicio físico y clientes completos siguen
 siendo las indicadas arriba; los dobles no acreditan esos sistemas reales.
+
+## Injertos sobre la base B (`e70a2f43`)
+
+Se conserva B y su reconciliador. Los únicos cambios operativos son la
+limpieza/rechazo de PID antes de preparar y el preflight de versión antes
+de linger/shutdown. Se amplía su doble W6 y se añade el recorrido privado
+por CLI/exec; no se traslada el doble de A.
+
+Las tres regresiones nuevas fallaron con el código operativo original de
+B y pasaron con los injertos. Se añadieron primero las pruebas al árbol sin
+commit; por eso las iteraciones privadas muestran todavía el SHA de B.
+La corrida completa posterior acredita el código commiteado.
+
+| Regresión | Roja sobre B | Verde con injertos | Evidencia |
+|---|---|---|---|
+| B1: PID ajeno, muerto y pueued vivo; macOS/Linux/XDG | 9 fallos | OK | [rojo](evidence/injertos-rojo-dobles.txt), [verde](evidence/injertos-verde-dobles.txt) |
+| B2: versión 4.1.0, normal y seco, antes de linger/shutdown | 2 fallos | OK | mismos registros de dobles |
+| B3: CLI/exec, PID ajeno, rechazo sin escritura, arranque demorado | 3 fallos; Mini `20261112-104003-543b8e` | OK; Mini `20261112-104255-8963ca` | [rojo privado](evidence/injertos-rojo-privada.txt), [verde privado](evidence/injertos-verde-privada.txt) |
+
+Ambas corridas privadas usaron `--name dirigida-u17a-injertos` y
+`REMOTE_RUN_TURNO=directo`, siempre por `remote-run`. No se modificaron
+servicios del usuario. Las pruebas W6 ya existentes también pasan con los
+tres estados separados; sus fronteras ahora incluyen inicio de proceso y
+publicación de socket. Esa mejora del arnés no es una prueba de los 60 s
+de launchd real, que siguen pendientes del despliegue.

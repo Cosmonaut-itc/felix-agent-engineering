@@ -1,0 +1,98 @@
+test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) ... 
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='darwin', runtime=None, process='ajeno vivo')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 178, in test_pid_is_checked_before_mutating_queue
+    self.assertFalse(pid_path.exists())
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='darwin', runtime=None, process='muerto')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 178, in test_pid_is_checked_before_mutating_queue
+    self.assertFalse(pid_path.exists())
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='darwin', runtime=None, process='pueued vivo')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 172, in test_pid_is_checked_before_mutating_queue
+    control.prepare_start(self.dead(), self.directory, self.path, 'mini', '/fake/pueued')
+AssertionError: RuntimeError not raised
+
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='linux', runtime=None, process='ajeno vivo')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 178, in test_pid_is_checked_before_mutating_queue
+    self.assertFalse(pid_path.exists())
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='linux', runtime=None, process='muerto')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 178, in test_pid_is_checked_before_mutating_queue
+    self.assertFalse(pid_path.exists())
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='linux', runtime=None, process='pueued vivo')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 172, in test_pid_is_checked_before_mutating_queue
+    control.prepare_start(self.dead(), self.directory, self.path, 'mini', '/fake/pueued')
+AssertionError: RuntimeError not raised
+
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='linux', runtime='/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/tmpj13k5ytg/runtime', process='ajeno vivo')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 178, in test_pid_is_checked_before_mutating_queue
+    self.assertFalse(pid_path.exists())
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='linux', runtime='/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/tmpj13k5ytg/runtime', process='muerto')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 178, in test_pid_is_checked_before_mutating_queue
+    self.assertFalse(pid_path.exists())
+AssertionError: True is not false
+
+======================================================================
+FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='linux', runtime='/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/tmpj13k5ytg/runtime', process='pueued vivo')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_startup.py", line 172, in test_pid_is_checked_before_mutating_queue
+    control.prepare_start(self.dead(), self.directory, self.path, 'mini', '/fake/pueued')
+AssertionError: RuntimeError not raised
+
+----------------------------------------------------------------------
+Ran 1 test in 0.036s
+
+FAILED (failures=9)
+test_install_refuses_wrong_version_before_linger_or_shutdown (test_pueue_desk.DeploymentTests) ... 
+======================================================================
+FAIL: test_install_refuses_wrong_version_before_linger_or_shutdown (test_pueue_desk.DeploymentTests) (args=())
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_pueue_desk.py", line 264, in test_install_refuses_wrong_version_before_linger_or_shutdown
+    self.assertNotEqual(result.returncode, 0)
+AssertionError: 0 == 0
+
+======================================================================
+FAIL: test_install_refuses_wrong_version_before_linger_or_shutdown (test_pueue_desk.DeploymentTests) (args=('--seco',))
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/felixddhs/.t3/worktrees/personal-agent-orchestration/t3-9e30b59d-3f1db42bfa13eed5/fleet/pueue-desk/tests/test_pueue_desk.py", line 264, in test_install_refuses_wrong_version_before_linger_or_shutdown
+    self.assertNotEqual(result.returncode, 0)
+AssertionError: 0 == 0
+
+----------------------------------------------------------------------
+Ran 1 test in 4.515s
+
+FAILED (failures=2)

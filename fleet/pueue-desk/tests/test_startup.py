@@ -145,6 +145,40 @@ class OfflineTests(unittest.TestCase):
             self.assertEqual(self.path.read_bytes(), before)
             self.assertFalse((self.directory / 'guardia-state.json').exists())
 
+    @patch.object(subprocess, 'check_output', return_value='pueued 4.0.4\n')
+    def test_pid_is_checked_before_mutating_queue(self, _version):
+        value = queue()
+        del value['groups']['reset']
+        # Mini y Linux sin runtime usan el directorio de datos; Linux con
+        # XDG_RUNTIME_DIR debe inspeccionar ese PID, no uno junto a la cola.
+        for platform, runtime in (('darwin', None), ('linux', None),
+                                  ('linux', str(self.root / 'runtime'))):
+            for process in ('ajeno vivo', 'muerto', 'pueued vivo'):
+                with self.subTest(platform=platform, runtime=runtime, process=process):
+                    self.path.write_text(json.dumps(value))
+                    owned = self.directory / 'guardia-state.json'
+                    owned.unlink(missing_ok=True)
+                    pid_path = (Path(runtime) if runtime else self.path.parent) / 'pueue.pid'
+                    pid_path.parent.mkdir(exist_ok=True)
+                    pid_path.write_text(str(os.getpid()))
+                    before = self.path.read_bytes()
+                    result = subprocess.CompletedProcess([], 1 if process == 'muerto' else 0,
+                        '/opt/homebrew/bin/pueued\n' if process == 'pueued vivo' else '/usr/bin/python3\n', '')
+                    with patch.object(control.sys, 'platform', platform), \
+                         patch.dict(os.environ, {'XDG_RUNTIME_DIR': runtime} if runtime else {}, clear=True), \
+                         patch.object(subprocess, 'run', return_value=result):
+                        if process == 'pueued vivo':
+                            with self.assertRaisesRegex(RuntimeError, 'sigue vivo'):
+                                control.prepare_start(self.dead(), self.directory, self.path, 'mini', '/fake/pueued')
+                            self.assertEqual(self.path.read_bytes(), before)
+                            self.assertEqual(pid_path.read_text(), str(os.getpid()))
+                            self.assertFalse(owned.exists())
+                        else:
+                            control.prepare_start(self.dead(), self.directory, self.path, 'mini', '/fake/pueued')
+                            self.assertFalse(pid_path.exists())
+                            self.assertEqual(json.loads(self.path.read_text())['groups']['suites']['status'], 'Paused')
+                    pid_path.unlink(missing_ok=True)
+
     def test_responding_daemon_rejected_without_mutation(self):
         self.path.write_text(json.dumps(queue()))
         class Alive:

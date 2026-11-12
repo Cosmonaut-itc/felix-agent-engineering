@@ -1,0 +1,10 @@
+e70a2f439703b0fb28557e6b8fc21aa9d9bf398f
+test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) ... PRIVADA CLI: pid ajeno vivo OK
+PRIVADA CLI: pueued vivo sin socket OK
+PRIVADA CLI: arranque demorado OK
+ok
+
+----------------------------------------------------------------------
+Ran 1 test in 2.190s
+
+OK

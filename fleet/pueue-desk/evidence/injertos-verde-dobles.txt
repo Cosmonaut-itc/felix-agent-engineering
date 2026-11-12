@@ -1,0 +1,12 @@
+test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 0.024s
+
+OK
+test_install_refuses_wrong_version_before_linger_or_shutdown (test_pueue_desk.DeploymentTests) ... ok
+
+----------------------------------------------------------------------
+Ran 1 test in 2.463s
+
+OK

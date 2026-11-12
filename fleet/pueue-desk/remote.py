@@ -35,6 +35,9 @@ def remote(action, dry):
         for binary in ("pueue", "pueued"):
             if not os.access(home / ".local/bin" / binary, os.X_OK):
                 raise RuntimeError(f"Falta el binario ejecutable {binary}; no se instala automáticamente")
+        version = run(str(home / ".local/bin/pueued"), "--version", check=False)
+        if version.returncode != 0 or version.stdout.strip() != "pueued 4.0.4":
+            raise RuntimeError("Instalación abortada sin cambios: preparar exige pueued 4.0.4")
         print("Preflight: cola manual vacía" if manual else "Preflight: sin daemon manual")
         if dry:
             print("SECO: copiar control.py y unidades a ~/.local/lib/pao-pueue-desk y ~/.config/systemd/user")

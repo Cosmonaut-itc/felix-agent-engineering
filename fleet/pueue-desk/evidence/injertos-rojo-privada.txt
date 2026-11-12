@@ -1,0 +1,38 @@
+e70a2f439703b0fb28557e6b8fc21aa9d9bf398f
+test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) ... 
+======================================================================
+FAIL: test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) (scenario='pid ajeno vivo')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17a-injertos-1470a8e1/fleet/pueue-desk/tests/test_private.py", line 276, in test_preparar_exec_handles_stale_pid_rejection_and_delayed_start
+    restored = ready(process)
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17a-injertos-1470a8e1/fleet/pueue-desk/tests/test_private.py", line 242, in ready
+    self.fail('No arrancó preparar --exec: ' + (log.read_text() if log.exists() else 'sin log'))
+AssertionError: No arrancó preparar --exec: {"utc": "2026-11-12T16:40:12.948950+00:00", "evento": "cerrado", "grupo": "default", "motivo": "arranque"}
+{"utc": "2026-11-12T16:40:12.949571+00:00", "evento": "cerrado", "grupo": "suites", "motivo": "arranque"}
+
+
+======================================================================
+FAIL: test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) (scenario='pueued vivo sin socket')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17a-injertos-1470a8e1/fleet/pueue-desk/tests/test_private.py", line 258, in test_preparar_exec_handles_stale_pid_rejection_and_delayed_start
+    self.assertEqual(path.read_bytes(), before)
+AssertionError: b'{"t[612 chars]s": "Paused", "parallel_tasks": 1}, "suites": [94 chars]}}\n' != b'{"t[612 chars]s": "Running", "parallel_tasks": 1}, "suites":[94 chars]1}}}'
+
+======================================================================
+FAIL: test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) (scenario='arranque demorado')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17a-injertos-1470a8e1/fleet/pueue-desk/tests/test_private.py", line 276, in test_preparar_exec_handles_stale_pid_rejection_and_delayed_start
+    restored = ready(process)
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17a-injertos-1470a8e1/fleet/pueue-desk/tests/test_private.py", line 242, in ready
+    self.fail('No arrancó preparar --exec: ' + (log.read_text() if log.exists() else 'sin log'))
+AssertionError: No arrancó preparar --exec: {"utc": "2026-11-12T16:40:13.645677+00:00", "evento": "cerrado", "grupo": "default", "motivo": "arranque"}
+{"utc": "2026-11-12T16:40:13.646015+00:00", "evento": "cerrado", "grupo": "suites", "motivo": "arranque"}
+
+
+----------------------------------------------------------------------
+Ran 1 test in 1.343s
+
+FAILED (failures=3)

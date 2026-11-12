@@ -49,6 +49,8 @@ if name == "pueue":
     else:
         sys.exit("Comando falso no implementado: " + str(args))
     state_file.write_text(json.dumps(state))
+elif name == "pueued" and args == ["--version"]:
+    print("pueued 4.0.4")
 elif name == "pgrep":
     sys.exit(0 if (root / "manual").exists() else 1)
 elif name == "systemctl":
@@ -234,7 +236,7 @@ class DeploymentTests(Fixture):
         self.assertIn("SECO: pueue shutdown", result.stdout)
         self.assertFalse((self.root / ".config").exists())
         self.assertTrue((self.root / "manual").exists())
-        self.assertEqual([c[0] for c in self.calls()], ["systemctl", "pgrep", "pueue"])
+        self.assertEqual([c[0] for c in self.calls()], ["systemctl", "pgrep", "pueue", "pueued"])
 
     def test_live_manual_aborts_without_changes(self):
         for status in ("Queued", "Paused", {"Queued": {"enqueued_at": "now"}},
@@ -252,6 +254,18 @@ class DeploymentTests(Fixture):
                     self.assertTrue((self.root / "manual").exists())
                     self.assertFalse((self.root / ".config").exists())
                     self.assertEqual([c[0] for c in self.calls()[before:]], ["systemctl", "pgrep", "pueue"])
+
+    def test_install_refuses_wrong_version_before_linger_or_shutdown(self):
+        (self.bin / "pueued").write_text("#!/bin/sh\necho pueued 4.1.0\n")
+        for args in ((), ("--seco",)):
+            with self.subTest(args=args):
+                (self.root / "manual").touch()
+                result = self.deploy(*args)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("preparar exige pueued 4.0.4", result.stderr)
+                self.assertTrue((self.root / "manual").exists())
+                self.assertFalse((self.root / ".config").exists())
+                self.assertFalse(any(c[0] == "loginctl" or c == ["pueue", "shutdown"] for c in self.calls()))
 
     def test_rejected_linger_keeps_manual_daemon(self):
         (self.root / "manual").touch()

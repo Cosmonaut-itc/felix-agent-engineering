@@ -7,9 +7,10 @@ import random
 import signal
 import subprocess
 import time
+import tempfile
 import unittest
 
-from test_startup import control, ROOT
+from test_startup import control, ROOT, queue, task
 
 spec = importlib.util.spec_from_file_location('private_fixture', ROOT / 'evidence/diag-u17a.py')
 fixture = importlib.util.module_from_spec(spec)
@@ -187,6 +188,118 @@ class PrivateTests(unittest.TestCase):
             self.assertLessEqual(count, 1, sentinel)
             executed += count
         print('PRIVADA 500 SIGKILL: efectos=', executed, 'ventanas Queued+log observadas=', observed_log_window)
+
+
+@unittest.skipUnless(os.environ.get('PAO_PUEUE_PRIVATE') == '1', 'requiere corrida privada en Mini')
+class PrivateCLITests(unittest.TestCase):
+    def test_preparar_exec_handles_stale_pid_rejection_and_delayed_start(self):
+        for scenario in ('pid ajeno vivo', 'pueued vivo sin socket', 'arranque demorado'):
+            with self.subTest(scenario=scenario):
+                with tempfile.TemporaryDirectory(dir=fixture.ROOT) as name:
+                    home = Path(name)
+                    data = home / 'Library/Application Support/pueue'
+                    data.mkdir(parents=True)
+                    # HOME relativo mantiene el socket Unix bajo su límite de
+                    # 104 bytes en la copia larga de remote-run. Cwd y todas las
+                    # rutas estándar resuelven dentro de esta corrida; no hay -c
+                    # ni socket/ruta personalizados que B pudiera rechazar.
+                    env = {'HOME': '.', 'PATH': '/opt/homebrew/bin:/usr/bin:/bin'}
+                    (data / 'pueue.yml').write_text(json.dumps({
+                        'shared': {}, 'daemon': {'compress_state_file': False}}))
+                    path = data / 'state.json'
+                    state = queue()
+                    del state['groups']['reset']
+                    sentinel = home / 'sentinel'
+                    item = task(0)
+                    item['command'] = item['original_command'] = 'echo una >> ' + str(sentinel)
+                    item['path'] = str(home)
+                    state['tasks'] = {'0': item}
+                    path.write_text(json.dumps(state))
+                    directory = home / '.local/state/pao/pueue-desk'
+                    pid = data / 'pueue.pid'
+                    command = ['/usr/bin/python3', '-I', str(ROOT / 'control.py'),
+                               'preparar', '--host', 'mini', '--exec', '/opt/homebrew/bin/pueued']
+                    processes = []
+                    def client(*args, check=True):
+                        return subprocess.run(['/opt/homebrew/bin/pueue', *args], cwd=home,
+                            env=env, text=True, capture_output=True, timeout=10, check=check)
+                    def launch(argv):
+                        process = subprocess.Popen(argv, cwd=home, env=env,
+                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                        processes.append(process)
+                        return process
+                    def ready(process):
+                        deadline = time.monotonic() + 8
+                        while time.monotonic() < deadline:
+                            response = client('status', '--json', check=False)
+                            if response.returncode == 0:
+                                self.assertIsNone(process.poll())
+                                return json.loads(response.stdout)
+                            if process.poll() is not None:
+                                break
+                            time.sleep(.05)
+                        log = directory / 'guardia.log'
+                        self.fail('No arrancó preparar --exec: ' + (log.read_text() if log.exists() else 'sin log'))
+                    try:
+                        if scenario == 'pueued vivo sin socket':
+                            daemon = launch(['/opt/homebrew/bin/pueued'])
+                            ready(daemon)
+                            daemon.send_signal(signal.SIGSTOP)
+                            # La cola probada sigue abierta en disco; sin el
+                            # rechazo por PID B la cierra antes de fallar el exec.
+                            path.write_text(json.dumps(state))
+                            for socket in data.glob('*.socket'):
+                                socket.unlink()
+                            self.assertNotEqual(client('status', '--json', check=False).returncode, 0)
+                            before = path.read_bytes()
+                            pid_before = pid.read_bytes()
+                            rejected = launch(command)
+                            self.assertEqual(rejected.wait(timeout=10), 1)
+                            self.assertEqual(path.read_bytes(), before)
+                            self.assertEqual(pid.read_bytes(), pid_before)
+                            self.assertFalse((directory / 'guardia-state.json').exists())
+                            self.assertIsNone(daemon.poll())
+                            self.assertIn('sigue vivo', (directory / 'guardia.log').read_text())
+                        else:
+                            pid.write_text(str(os.getpid()))
+                            before = path.read_bytes()
+                            if scenario == 'arranque demorado':
+                                with control.locked(directory):
+                                    process = launch(command)
+                                    time.sleep(.3)
+                                    self.assertIsNone(process.poll())
+                                    self.assertEqual(path.read_bytes(), before)
+                                    self.assertFalse(list(data.glob('*.socket')))
+                                    self.assertNotEqual(client('status', '--json', check=False).returncode, 0)
+                            else:
+                                process = launch(command)
+                            restored = ready(process)
+                            # exec debe conservar el PID que observa el gestor.
+                            self.assertEqual(int(pid.read_text()), process.pid)
+                            self.assertEqual(restored['groups']['suites']['status'], 'Paused')
+                            self.assertEqual(restored['groups']['manual']['status'], 'Paused')
+                            self.assertIn('Queued', restored['tasks']['0']['status'])
+                            self.assertFalse(sentinel.exists())
+                            admitted = subprocess.run(['/usr/bin/python3', '-I', str(ROOT / 'control.py'),
+                                'guardia', '--host', 'mini'], cwd=home, env=env, timeout=10)
+                            self.assertEqual(admitted.returncode, 0)
+                            deadline = time.monotonic() + 5
+                            while time.monotonic() < deadline:
+                                current = json.loads(client('status', '--json').stdout)
+                                if 'Done' in current['tasks']['0']['status']:
+                                    break
+                                time.sleep(.05)
+                            self.assertEqual(current['tasks']['0']['status']['Done']['result'], 'Success')
+                            self.assertEqual(sentinel.read_text().splitlines(), ['una'])
+                            self.assertEqual(current['groups']['manual']['status'], 'Paused')
+                            self.assertEqual(control.load_owned(directory), set())
+                        print('PRIVADA CLI:', scenario, 'OK', flush=True)
+                    finally:
+                        for process in reversed(processes):
+                            if process.poll() is None:
+                                # SIGKILL retira también el daemon privado detenido.
+                                process.kill()
+                            process.wait(timeout=10)
 
 
 if __name__ == '__main__':
