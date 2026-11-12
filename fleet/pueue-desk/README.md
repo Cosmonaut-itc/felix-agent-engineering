@@ -236,3 +236,26 @@ consultas al doble Python de Pueue excedieron 10 s antes de ejecutar el
 instalador. La lectura de estado de esa fixture pasó a `cat`, manteniendo
 las mutaciones en el doble y el timeout de producción de 10 s. Se conserva
 la salida [del segundo pase](evidence/dirigida-u17a-sol-segundo-pase.txt).
+
+Resultado de entrega: corrida `dirigida-u17a-sol`, id
+`20261112-095119-685db8`, sobre el código
+`055dcc28a5910d7954c921ca188bcbf6a5b3d04b`. Python 3.9.6, Pueue estándar
+4.0.4 y ShellCheck 0.11.0. La copia no tenía cambios de fuente; el único
+archivo no versionado al entrar era `.remote-run.lock`, creado por el runner.
+La [salida íntegra](evidence/dirigida-u17a-sol.txt) acredita:
+
+| Comprobación | Resultado | Línea |
+|---|---|---|
+| Descubrimiento completo, privadas habilitadas | 53 pruebas, 1211.021 s, OK, sin omitidas | 87–89 |
+| 500 ciclos add/SIGKILL | ningún centinela duplicado; 495 efectos observados, 36 ventanas Queued + log | 90 |
+| Reset privado | preparador rechaza sin escribir; Pueue estándar lo abre solo | 91 |
+| TERM/KILL privado | interrumpida Killed; pendiente conserva id y corre una vez | 92–93 |
+| W6, solicitante | SIGKILL en 26 fronteras al instalar y 26 al retirar; un daemon, suites abierta, pausa manual intacta | 37, 40 |
+| W6, job | SIGKILL en 19 fronteras al instalar y 22 al retirar; reintento sano | 31, 35 |
+| plutil | ambos plist OK | 103–104 |
+| ShellCheck warning | código 0; el guion fail-fast llega al resultado final | 105 |
+
+La entrega añade después sólo esta evidencia y documentación al código
+probado. No se ejecutó ninguna instalación ni se abrieron PR. Las reservas
+sobre launchd real, systemd/WSL, reinicio físico y clientes completos siguen
+siendo las indicadas arriba; los dobles no acreditan esos sistemas reales.
