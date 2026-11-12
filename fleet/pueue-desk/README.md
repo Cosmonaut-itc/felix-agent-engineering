@@ -229,3 +229,10 @@ después de comprobar el fallo conservador y antes de encolar el siguiente
 id. No se reencola la fallida. Salida y causa:
 [primer pase](evidence/dirigida-u17a-sol-primer-pase.txt),
 [registro del caso 42](evidence/ventana-real-42.jsonl).
+
+El segundo pase (`20261112-091815-75e3ae`, SHA `d9740ac5`) completó los
+500 ciclos sin duplicados y observó 44 ventanas `Queued` + log. Dos
+consultas al doble Python de Pueue excedieron 10 s antes de ejecutar el
+instalador. La lectura de estado de esa fixture pasó a `cat`, manteniendo
+las mutaciones en el doble y el timeout de producción de 10 s. Se conserva
+la salida [del segundo pase](evidence/dirigida-u17a-sol-segundo-pase.txt).

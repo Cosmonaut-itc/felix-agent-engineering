@@ -18,7 +18,7 @@ import json
 import os
 from pathlib import Path
 import sys
-name = Path(sys.argv[0]).name
+name = os.environ.get("PAO_FAKE_NAME", Path(sys.argv[0]).name)
 root = Path(os.environ["FAKE_ROOT"])
 args = sys.argv[1:]
 if name == "ssh":
@@ -60,6 +60,15 @@ elif name not in ("loginctl", "pueued"):
     sys.exit("Ejecutable falso desconocido: " + name)
 '''
 
+FAST_STATUS = r'''#!/bin/sh
+if [ "$#" -eq 2 ] && [ "$1" = status ] && [ "$2" = --json ]; then
+    printf '%s\n' '["pueue", "status", "--json"]' >> "$FAKE_ROOT/calls"
+    exec /bin/cat "$FAKE_ROOT/pueue.json"
+fi
+PAO_FAKE_NAME=pueue exec /usr/bin/python3 "$FAKE_ROOT/.local/bin/pueue-python" "$@"
+'''
+
+
 
 class Fixture(unittest.TestCase):
     def setUp(self):
@@ -70,8 +79,9 @@ class Fixture(unittest.TestCase):
         self.bin.mkdir(parents=True)
         for name in ("pueue", "pueued", "ssh", "systemctl", "pgrep", "loginctl"):
             target = self.bin / name
-            target.write_text(FAKE)
+            target.write_text(FAST_STATUS if name == "pueue" else FAKE)
             target.chmod(0o755)
+        (self.bin / "pueue-python").write_text(FAKE)
         self.env = {**os.environ, "HOME": str(self.root), "FAKE_ROOT": str(self.root),
                     "PATH": str(self.bin) + os.pathsep + os.environ["PATH"]}
         env = patch.dict(os.environ, self.env)
