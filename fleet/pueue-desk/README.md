@@ -74,7 +74,8 @@ En la Mini, desde este checkout (no instala Pueue):
 se ejecutan al instalar. Antes de cualquier cambio exige el LaunchAgent
 `sh.brew.pueue` cargado y una respuesta válida de `/opt/homebrew/bin/pueue status
 --json` con `suites` y `default`. No arranca, detiene ni reinicia ese daemon,
-ni modifica `parallel`. La instalación es idempotente y copia el controlador a
+ni modifica `parallel`. La instalación es idempotente, reemplaza cada archivo de
+forma atómica y copia el controlador a
 `~/.local/lib/pao-pueue-mini/control.py`, renderiza rutas absolutas en
 `~/Library/LaunchAgents/local.pao.pueue-mini.guard.plist` y usa
 `launchctl bootstrap gui/$(id -u)`; para retirar usa `bootout` del servicio de

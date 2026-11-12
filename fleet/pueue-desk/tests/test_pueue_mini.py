@@ -343,6 +343,22 @@ class InstallerTests(Fixture):
             self.assertIsInstance(raised.exception.__cause__, subprocess.CalledProcessError)
             self.assertEqual(json.loads((state / "guardia-state.json").read_text()), ["suites"])
 
+    def test_partial_copy_keeps_previous_controller(self):
+        library = self.root / ".local/lib/pao-pueue-mini"
+        state = self.root / ".local/state/pao/pueue-mini"
+        self.install("instalar")
+        (state / "guardia-state.json").write_text('["suites"]\n')
+        def partial_copy(source, target, *args, **kwargs):
+            Path(target).write_bytes(Path(source).read_bytes()[:200])
+            raise OSError("copia interrumpida")
+        self.failing = {"start"}
+        with patch.object(installer.shutil, "copy2", side_effect=partial_copy):
+            with self.assertRaises(OSError):
+                self.install("instalar")
+        self.assertTrue(self.service_loaded)
+        self.assertEqual((library / "control.py").read_bytes(), (ROOT / "control.py").read_bytes())
+        self.assertEqual(json.loads((state / "guardia-state.json").read_text()), ["suites"])
+
     def test_invalid_status_aborts_before_changes(self):
         for value in ('{"groups": {"suites": {}}, "tasks": {}}',
                       '{"groups": {"default": {}}, "tasks": {}}',

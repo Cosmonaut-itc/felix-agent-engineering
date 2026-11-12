@@ -101,8 +101,12 @@ def main():
             library.mkdir(parents=True, exist_ok=True)
             state.mkdir(parents=True, exist_ok=True)
             agent.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(SOURCE / "control.py", library / "control.py")
-            agent.write_bytes(plistlib.dumps(template))
+            # Copia y reemplazo atómico: un fallo a medias deja intacto el archivo anterior.
+            for target, write in ((library / "control.py", lambda path: shutil.copy2(SOURCE / "control.py", path)),
+                                  (agent, lambda path: path.write_bytes(plistlib.dumps(template)))):
+                temporary = target.with_name(target.name + ".tmp")
+                write(temporary)
+                os.replace(temporary, target)
             run(LAUNCHCTL, "bootstrap", domain, str(agent))
         except Exception as error:
             keep_owned_guarded(state, domain, agent, error)

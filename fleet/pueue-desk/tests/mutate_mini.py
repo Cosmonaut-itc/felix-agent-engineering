@@ -74,6 +74,8 @@ MUTATIONS = [
      '    return\n    raise RuntimeError(f"sin guardia', "test_failed_recovery_names_paused_groups"),
     ("instalación fallida pasa por la recuperación", "install-mini.py", '        except Exception as error:\n            keep_owned_guarded(state, domain, agent, error)\n            raise\n    else:',
      '        except Exception as error:\n            raise\n    else:', "test_failed_bootstrap_resumes_owned_groups"),
+    ("instalación reemplaza el controlador de forma atómica", "install-mini.py", '                temporary = target.with_name(target.name + ".tmp")\n',
+     '                temporary = target\n', "test_partial_copy_keeps_previous_controller"),
     ("desk conserva umbral RAM 4GiB", "control.py", '"memory": 4 * 1024**3',
      '"memory": 3 * 1024**3', "test_thresholds"),
     ("log conserva tope", "control.py", 'if target.exists() and target.stat().st_size >= LOG_MAX_BYTES:',
