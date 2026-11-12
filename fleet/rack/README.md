@@ -84,20 +84,31 @@ Los hosts se consultan en paralelo con timeout de 25 segundos. Si falla un
 host se conserva su último dato bueno, marcado como antiguo. Las lecturas
 parciales se indican en `snapshot.errors`. No se exportan comandos, rutas ni
 entornos de Pueue. `body.sh` se recorre por líneas, extrayendo sólo MODE,
-BASE_REPO y REQUESTED_SHA; nunca se ejecuta ni registra su contenido.
+BASE_REPO, REQUESTED_SHA y BRANCH; nunca se ejecuta ni registra su contenido.
 
 El clon del desk no conserva ramas remotas al día, así que la instantánea
-sólo entrega el SHA y el repositorio (`owner/nombre`, sacado de
+entrega la rama solicitada cuando no es un SHA, además del SHA y el
+repositorio (`owner/nombre`, sacado de
 `remote.origin.url`). El servidor resuelve el ticket con el `gh` de la Mini,
 que ya tiene sesión: primero `commits/<sha>/branches-where-head` y luego
 `commits/<sha>/pulls`, y toma el primer `sen-<n>` del nombre de rama. Guarda
-el resultado en `commits.json`; un acierto no se vuelve a consultar y un
-fallo se reintenta cada 30 minutos, con máximo diez consultas por ciclo.
+el ticket, la primera rama y la primera línea del mensaje del commit en
+`commits.json`; las entradas antiguas se completan en la próxima consulta.
+Una entrada completa no se vuelve a consultar; los datos ausentes se
+reintentan cada 30 minutos, con máximo diez commits por ciclo.
+
+Las corridas `remote-run` de Mini y del grupo `hasito` del desk leen sólo
+`src` y `mirror` de `meta`, sin exportar `cmd`. Del espejo se consultan rama
+y último asunto con Git; si fallan quedan en null. Las tareas incluyen su
+prioridad de Pueue. Un ticket ausente se deduce también de `sen-<n>` en la
+rama, sin distinguir mayúsculas.
 
 El historial `~/.local/state/pao/rack/history.jsonl` conserva 30 días, sin
 duplicar `(host,id,start)`. El estimado usa la mediana de las últimas 20
 corridas exitosas con igual host, grupo y nombre sin sufijos `-sol`, `-opus`
-o `-rN`; necesita tres muestras. No se muestran tareas Done en la API.
+o `-rN`; necesita cinco muestras. Devuelve mediana (típico), p10 y p90, con
+interpolación lineal entre las duraciones ordenadas. La barra sólo se pone
+amarilla al superar p90. No se muestran tareas Done en la API.
 `tickets.json` cachea Linear por seis horas, con máximo diez consultas por
 ciclo. Ambos archivos se reemplazan atómicamente. `--state-dir` y `--hosts`
 permiten usar ubicaciones independientes.
@@ -112,12 +123,16 @@ pedidos: host antiguo, servidor sin respuesta, progreso sin estimado o
 excedido y tarea pausada; una lectura de capacidad ausente se muestra como
 «—» o «Sin lectura de CPU». Los lugares se apilan en móvil.
 
-## Pruebas locales
+La fila muestra proyecto, objetivo, rama y tiempo en espera, con descripción
+del ticket o, en su ausencia, asunto, rama u objetivo. Se ordena por prioridad
+descendente e id ascendente; muestra ocho tareas por grupo y permite ver el
+resto. No permite reordenar ni cambiar cupos u horarios.
+
+## Pruebas en la Mini
 
 ```bash
-/usr/bin/python3 -m unittest discover -s fleet/rack/tests -v
-bash -n fleet/rack/instalar.sh
-bash -n fleet/rack/instalar-desk.sh
+remote-run start --name dirigida-rack-u1 -- /usr/bin/python3 -m unittest discover -s fleet/rack/tests -v
+remote-run wait <id>
 ```
 
 Las pruebas usan Pueue y Tailscale falsos, un repositorio git temporal y HTTP

@@ -70,11 +70,25 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 
 @media(max-width:560px){.lane{grid-template-columns:1fr}.slots{grid-template-columns:1fr!important}.r-sub{flex-wrap:wrap;gap:4px 10px}.chip{max-width:100%;overflow:hidden;text-overflow:ellipsis}.m-val{font-size:16px}.m-label{flex-wrap:wrap}.host{padding:12px}.cap{gap:8px}}
 .r-sub span,.g{overflow-wrap:anywhere;min-width:0} #connection{color:var(--warn);padding:0 24px;font-size:13px} #connection:empty{display:none}
+.fila{margin:2px 0 6px}
+.fila h4{font-size:12px;font-weight:600;color:var(--ink2);margin:6px 0 2px}
+.fila ol{list-style:none;margin:0;padding:0;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.fila li{display:grid;grid-template-columns:20px minmax(0,1fr) auto;column-gap:10px;row-gap:2px;padding:8px 10px;border-top:1px solid var(--line);background:var(--panel)}
+.fila li:first-child{border-top:0}
+.fila .pos{grid-row:1/3;align-self:center;color:var(--muted);font-variant-numeric:tabular-nums;text-align:right;font-size:13px}
+.fila .l1{display:flex;gap:8px;min-width:0;font-size:13px}
+.fila .tk{font-weight:600;white-space:nowrap}
+.fila .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.fila .l2{grid-column:2/4;display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;color:var(--ink2);min-width:0}
+.fila .l2 span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.fila .d{font-size:12px;color:var(--ink2);white-space:nowrap;font-variant-numeric:tabular-nums}
+.fila .more{display:block;width:100%;font:inherit;font-size:12px;color:var(--ink2);background:var(--bg);border:0;border-top:1px solid var(--line);padding:6px;cursor:pointer}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span></header><div id="connection" role="status"></div><main id="app"></main><script>
 let S, NOW;
 const GB = b => b == null ? NaN : (b/1024**3);
 const fmtMin = s => `${Math.floor(s/60)} min`;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const what = t => t.title || t.subject || t.branch || objective(t);
 const proj = t => { const p = t.linear_project || t.project || t.group; return p.charAt(0).toUpperCase() + p.slice(1); };
 const OBJ = {contract:'Contrato',e2e:'E2E','api-unit':'Unitarias API','web-unit':'Unitarias web',types:'Tipos',gates:'Gates completos',launch:'Arranque',lint:'Lint'};
 const objective = t => {
@@ -99,7 +113,7 @@ function hostState(h){
 }
 const groups = h => Object.entries(h.groups).filter(([n,g]) => n !== 'default' || h.tasks.some(t => t.group === n && t.state !== 'Done'));
 const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
-const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>a.enqueued-b.enqueued);
+const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>b.priority-a.priority || a.id-b.id);
 const slotsTotal = h => groups(h).reduce((a,[,g])=>a+g.slots,0);
 
 function capacity(h){
@@ -121,12 +135,26 @@ function capacity(h){
       <div class="m-note ink2">${queued(h).length ? queued(h).length + ' en fila' : 'Fila vacía'}</div></div>
   </div>`;
 }
+const fmtDur = s => s < 5400 ? `${Math.max(1,Math.round(s/60))} min` : `${(s/3600).toFixed(1)} h`;
+const span = e => Math.round(e.low/60) === Math.round(e.high/60) ? fmtDur(e.typical) : `${fmtDur(e.low).replace(' min','')}–${fmtDur(e.high)}`;
+const known = t => t.est && t.est.n >= 5;
 function progress(t){
-  const el = Math.max(0, NOW - (t.start ?? t.enqueued ?? NOW));
-  if (!t.typical) return {html:`<div class="bar unknown" title="Sin historial suficiente para estimar"></div>`, time:`${fmtMin(el)} · sin estimado`};
-  const p = el/t.typical, over = p > 1.2;
-  return {html:`<div class="bar ${over?'over':''}"><i style="width:${Math.min(p,1)*100}%"></i></div>`,
-          time: over ? `${fmtMin(el)} · típico ${fmtMin(t.typical)}` : `${fmtMin(el)} de ~${fmtMin(t.typical)}`};
+  const el = Math.max(0, NOW - (t.start ?? t.enqueued ?? NOW)), e = t.est;
+  if (!known(t)) return {html:`<div class="bar unknown"></div>`, time:`${fmtMin(el)} · sin estimado`};
+  const over = el > e.high;
+  return {html:`<div class="bar ${over?'over':''}"><i style="width:${Math.min(el/Math.max(1,e.high),1)*100}%"></i></div>`,
+          time: over ? `${fmtMin(el)} · suele tardar ${span(e)}` : `${fmtMin(el)} de ~${fmtDur(e.typical)}`};
+}
+const OPEN = {};
+function fila(h, n, w){
+  if (!w.length) return '';
+  const key = h.id+'/'+n, shown = OPEN[key] ? w : w.slice(0, 8);
+  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li>
+    <span class="pos">${i+1}</span>
+    <div class="l1"><span class="tk">${esc(t.ticket||'Sin ticket')}</span><span class="t" title="${esc(what(t))}">${esc(what(t))}</span></div>
+    <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}</span>
+    <div class="l2"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span></div>
+  </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
 }
 
 function view(){
@@ -134,9 +162,9 @@ function view(){
       const lanes = groups(h).map(([n,g])=>{
         const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
         const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
-          const p=progress(t); return `<div class="slot busy"><div class="r-top"><span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(t.title)}">${esc(t.title||'Sin ticket')}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div></div>`;}).join('');
+          const p=progress(t); return `<div class="slot busy"><div class="r-top"><span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div></div>`;}).join('');
         return `<div class="lane"><div class="g">${esc(n)}<div class="muted">${r.length}/${g.slots}</div></div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
-          ${w.length?`<div class="lane"><div></div><div class="waiting">${w.slice(0,10).map(t=>`<span class="chip" title="${esc(t.title)}">${esc(t.ticket||objective(t))}</span>`).join('')}${w.length>10?`<span class="chip">+${w.length-10}</span>`:''}</div></div>`:''}`;
+          ${fila(h,n,w)}`;
       }).join('');
       return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}<div class="lanes">${lanes}</div></section>`;}).join('')}</div>`;
 }
@@ -147,11 +175,15 @@ function render(data){
     return {...h, guard:s.guard, cores:s.cpu?.cores, load:s.cpu?.load,
       mem_total:s.mem?.total, mem_avail:s.mem?.available, swap_used:s.mem?.swap_used, swap_total:s.mem?.swap_total,
       groups:Object.fromEntries((s.groups || []).map(g=>[g.name,g])),
-      tasks:(s.tasks || []).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,typical:h.estimates[String(t.id)]?.typical}))};
+      tasks:(s.tasks || []).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
   document.getElementById('app').innerHTML=view();
   document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
 }
+document.getElementById('app').addEventListener('click', event=>{
+  const button = event.target.closest('button[data-open]');
+  if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); }
+});
 let last=null;
 async function refresh(){
   try{

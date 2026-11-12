@@ -23,7 +23,7 @@ BASE = Path(__file__).resolve().parent
 TAIL4 = ipaddress.ip_network('100.64.0.0/10')
 TAIL6 = ipaddress.ip_network('fd7a:115c:a1e0::/48')
 TASK_STATES = ('Queued', 'Stashed', 'Locked', 'Running', 'Paused', 'Done')
-TASK_TEXT = ('name', 'scope', 'project', 'ticket', 'repo', 'sha', 'result')
+TASK_TEXT = ('name', 'scope', 'project', 'ticket', 'repo', 'sha', 'result', 'branch', 'subject')
 TASK_TIMES = ('enqueued', 'start', 'end')
 LOOKUP_BUDGET = 8
 
@@ -104,9 +104,14 @@ class History:
     def estimate(self, host, task):
         matches = sorted((r for r in self.rows if r['host'] == host and r['group'] == task['group']
                           and normalize(r['name']) == normalize(task['name']) and r['result'] == 'Success'), key=lambda r: r['end'])[-20:]
-        if len(matches) < 3:
+        if len(matches) < 5:
             return None
-        return dict(typical=statistics.median(r['end'] - r['start'] for r in matches), n=len(matches))
+        durations = sorted(r['end'] - r['start'] for r in matches)
+        def percentile(p):
+            position = (len(durations) - 1) * p
+            lo, hi = math.floor(position), math.ceil(position)
+            return durations[lo] + (durations[hi] - durations[lo]) * (position - lo)
+        return dict(typical=statistics.median(durations), low=percentile(.1), high=percentile(.9), n=len(matches))
 
 
 def validate_snapshot(data, host):
@@ -118,6 +123,7 @@ def validate_snapshot(data, host):
         raise ValueError('Tareas o grupos inválidos')
     for row in data['tasks']:
         if (not isinstance(row, dict) or not isinstance(row.get('id'), int) or not isinstance(row.get('group'), str)
+                or not isinstance(row.get('priority'), int) or isinstance(row.get('priority'), bool)
                 or row.get('state') not in TASK_STATES
                 or any(k not in row for k in TASK_TEXT + TASK_TIMES)
                 or any(not isinstance(row.get(k), (str, type(None))) for k in TASK_TEXT)
@@ -156,7 +162,7 @@ class Rack:
         self.tickets = read_cache(self.ticket_path, dict(title=str, project=str, updated=(int, float), failed=(int, float)))
         self.gh = gh
         self.commit_path = state_dir / 'commits.json'
-        self.commits = read_cache(self.commit_path, dict(ticket=str, checked=(int, float)))
+        self.commits = read_cache(self.commit_path, dict(ticket=str, branch=str, subject=str, checked=(int, float)))
         self.key = None
         key_path = key_path or Path.home() / '.config/pao-rack/linear-key'
         try:
@@ -198,12 +204,18 @@ class Rack:
     def resolve_commits(self, tasks, now, deadline=math.inf):
         pending = []
         for task in tasks:
+            if not task.get('ticket'):
+                match = re.search(r'sen-(\d+)', task.get('branch') or '', re.I)
+                if match:
+                    task['ticket'] = 'SEN-' + match[1]
             repo, sha = task.get('repo'), task.get('sha')
-            if (task.get('ticket') is None and isinstance(repo, str) and isinstance(sha, str)
+            if (isinstance(repo, str) and isinstance(sha, str)
                     and re.fullmatch(r'[\w.-]+/[\w.-]+', repo) and re.fullmatch('[0-9a-f]{40}', sha)):
                 key = repo + '@' + sha
                 known = self.commits.get(key)
-                if (not isinstance(known, dict) or (not known.get('ticket') and now - (known.get('checked') or 0) >= 1800)) and key not in pending:
+                incomplete = not isinstance(known, dict) or 'branch' not in known or 'subject' not in known
+                retry = known and any(not known.get(f) for f in ('ticket', 'branch', 'subject')) and now - (known.get('checked') or 0) >= 1800
+                if (incomplete or retry) and key not in pending:
                     pending.append(key)
         pending = pending[:10]
         for index, key in enumerate(pending):
@@ -211,23 +223,38 @@ class Rack:
                 pending = pending[:index]
                 break
             repo, sha = key.split('@')
-            found = None
+            found, branch, subject = None, None, None
             for path, field in (('branches-where-head', 'name'), ('pulls', 'head.ref')):
+                if time.monotonic() >= deadline:
+                    break
                 try:
                     result = subprocess.run([self.gh, 'api', 'repos/' + repo + '/commits/' + sha + '/' + path, '--jq', '.[].' + field],
-                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=5, check=True)
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=min(5, max(.001, deadline - time.monotonic())), check=True)
+                    if path == 'branches-where-head':
+                        branch = next(iter(result.stdout.splitlines()), None)
                     match = re.search(r'sen-(\d+)', result.stdout, re.I)
                     found = 'SEN-' + match[1] if match else None
                 except (OSError, subprocess.SubprocessError):
                     logging.warning('No se pudo consultar un commit en GitHub')
                 if found:
                     break
-            self.commits[key] = dict(ticket=found, checked=now)
+            if time.monotonic() < deadline:
+                try:
+                    result = subprocess.run([self.gh, 'api', 'repos/' + repo + '/commits/' + sha, '--jq', '.commit.message'],
+                        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                        timeout=min(5, max(.001, deadline - time.monotonic())), check=True)
+                    subject = next(iter(result.stdout.splitlines()), None)
+                except (OSError, subprocess.SubprocessError):
+                    logging.warning('No se pudo consultar un commit en GitHub')
+            self.commits[key] = dict(ticket=found, branch=branch, subject=subject, checked=now)
         if pending:
             atomic(self.commit_path, json.dumps(self.commits))
         for task in tasks:
-            if task.get('ticket') is None and task.get('repo') and task.get('sha'):
-                task['ticket'] = self.commits.get(task['repo'] + '@' + task['sha'], {}).get('ticket')
+            if task.get('repo') and task.get('sha'):
+                known = self.commits.get(task['repo'] + '@' + task['sha'], {})
+                for field in ('ticket', 'branch', 'subject'):
+                    if not task.get(field):
+                        task[field] = known.get(field)
 
     def publish(self, now):
         hosts = []
