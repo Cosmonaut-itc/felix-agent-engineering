@@ -29,6 +29,8 @@ with (root / "calls").open("a") as f:
 state_file = root / "pueue.json"
 state = json.loads(state_file.read_text())
 if name == "pueue":
+    if args[:3] == ["pause", "--wait", "-g"] and args[-1] == "default":
+        state["groups"].setdefault("default", {"status": "Paused", "parallel_tasks": 1})
     if args == ["status", "--json"]:
         print(json.dumps(state))
     elif args[:2] == ["group", "add"]:
@@ -49,6 +51,8 @@ if name == "pueue":
     else:
         sys.exit("Comando falso no implementado: " + str(args))
     state_file.write_text(json.dumps(state))
+elif name == "docker":
+    sys.exit(1 if (root / "docker-caido").exists() else 0)
 elif name == "pgrep":
     sys.exit(0 if (root / "manual").exists() else 1)
 elif name == "systemctl":
@@ -68,7 +72,7 @@ class Fixture(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.bin = self.root / ".local/bin"
         self.bin.mkdir(parents=True)
-        for name in ("pueue", "pueued", "ssh", "systemctl", "pgrep", "loginctl"):
+        for name in ("pueue", "pueued", "ssh", "systemctl", "pgrep", "loginctl", "docker"):
             target = self.bin / name
             target.write_text(FAKE)
             target.chmod(0o755)
@@ -99,7 +103,7 @@ class Fixture(unittest.TestCase):
 
     def guard(self):
         with control.locked(self.directory):
-            control.guard(self.pueue, self.proc, self.directory)
+            control.guard(self.pueue, self.proc, self.directory, self.bin / "docker")
 
     def deploy(self, *args):
         return subprocess.run(["bash", str(ROOT / "deploy-desk.sh"), *args],
@@ -137,7 +141,7 @@ class ControlTests(Fixture):
         self.pueue.call("pause", "--wait", "-g", "jale")
         self.metrics(io_value=41)
         self.guard()
-        owned = json.loads((self.directory / "guardia-state.json").read_text())
+        owned = control.load_control(self.directory)["owned"]
         self.assertEqual(set(owned), {"hasito", "otros", "pg5434"})
         self.metrics(io_value=30, cpu=20, memory=5)
         before = self.calls()
@@ -146,7 +150,7 @@ class ControlTests(Fixture):
         self.metrics(io_value=19, cpu=14, memory=6)
         self.guard()
         self.assertEqual(self.pueue.status()["groups"]["jale"]["status"], "Paused")
-        self.assertEqual(json.loads((self.directory / "guardia-state.json").read_text()), [])
+        self.assertEqual(control.load_control(self.directory)["owned"], [])
         records = [json.loads(line) for line in (self.directory / "guardia.log").read_text().splitlines()]
         self.assertEqual(len([r for r in records if r["evento"] == "lectura"]), 3)
         self.assertEqual([r["accion"] for r in records if r["evento"] == "decision"], ["pausar", "mantener", "reanudar"])
@@ -180,16 +184,19 @@ class ControlTests(Fixture):
         self.metrics()
         with self.assertRaises(subprocess.CalledProcessError):
             self.guard()
-        self.assertIn("hasito", json.loads((self.directory / "guardia-state.json").read_text()))
+        self.assertIn("hasito", control.load_control(self.directory)["owned"])
         self.guard()
         self.assertEqual({g["status"] for g in self.pueue.status()["groups"].values()}, {"Running"})
-        self.assertEqual(json.loads((self.directory / "guardia-state.json").read_text()), [])
+        self.assertEqual(control.load_control(self.directory)["owned"], [])
 
     def test_failed_apply_does_not_restart_daemon(self):
         units = ROOT / "units"
         daemon = (units / "pueued.service").read_text()
         self.assertNotIn("ExecStartPost", daemon)
-        self.assertIn("Wants=pueue-desk-mode.service", daemon)
+        self.assertIn("host.py --host desk", daemon)
+        self.assertIn("KillMode=mixed", daemon)
+        self.assertIn("Restart=always", daemon)
+        self.assertIn("TimeoutStopSec=30", daemon)
         mode = (units / "pueue-desk-mode.service").read_text()
         self.assertIn("Restart=on-failure", mode)
         self.assertIn("After=pueued.service", mode)

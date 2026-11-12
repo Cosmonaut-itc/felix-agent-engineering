@@ -35,9 +35,10 @@ def remote(action, dry):
         for binary in ("pueue", "pueued"):
             if not os.access(home / ".local/bin" / binary, os.X_OK):
                 raise RuntimeError(f"Falta el binario ejecutable {binary}; no se instala automáticamente")
+        managed_configuration(home, "desk", library)  # Validar también en --seco, sin escribir.
         print("Preflight: cola manual vacía" if manual else "Preflight: sin daemon manual")
         if dry:
-            print("SECO: copiar control.py y unidades a ~/.local/lib/pao-pueue-desk y ~/.config/systemd/user")
+            print("SECO: copiar control.py, host.py, configuración y unidades a ~/.local/lib/pao-pueue-desk y ~/.config/systemd/user")
             if manual:
                 print("SECO: pueue shutdown (daemon manual vacío)")
             print("SECO: loginctl enable-linger; systemctl --user daemon-reload")
@@ -85,11 +86,14 @@ def install(home, units, library, timers, pueue):
     units.mkdir(parents=True, exist_ok=True)
     library.mkdir(parents=True, exist_ok=True)
     for name, content in FILES.items():
-        target = library / name if name == "control.py" else units / name
+        target = library / name if name.endswith(".py") else units / name
         rendered = content.replace("@HOME@", str(home))
         temporary = target.with_suffix(target.suffix + ".tmp")
         temporary.write_text(rendered)
         temporary.replace(target)
+    settings, configuration = managed_configuration(home, "desk", library)
+    atomic_json(library / "pueue-paths.json", settings)
+    atomic_text(library / "pueue.yml", configuration)
     run("systemctl", "--user", "daemon-reload")
     run("systemctl", "--user", "enable", "--now", "pueued.service", *timers)
     # Si ya estaba activo, pueue-desk-mode no vuelve a arrancar solo.

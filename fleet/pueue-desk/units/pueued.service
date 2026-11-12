@@ -1,11 +1,14 @@
 [Unit]
-Description=Pueue del desk por proyecto
-# Las cuotas se aplican aparte: un fallo al aplicarlas no reinicia el daemon.
-Wants=pueue-desk-mode.service
+Description=Pueue del desk con recuperación y guardia al arrancar
+StartLimitIntervalSec=0
 
 [Service]
-ExecStart=@HOME@/.local/bin/pueued
-Restart=on-failure
+ExecStart=/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/host.py --host desk --config @HOME@/.local/lib/pao-pueue-desk/pueue.yml --paths @HOME@/.local/lib/pao-pueue-desk/pueue-paths.json --pueue-bin @HOME@/.local/bin/pueue --pueued-bin @HOME@/.local/bin/pueued
+# TERM sólo al supervisor: captura antes de apagar. KILL final a todo el cgroup.
+KillMode=mixed
+SendSIGKILL=yes
+TimeoutStopSec=30
+Restart=always
 RestartSec=5
 
 [Install]

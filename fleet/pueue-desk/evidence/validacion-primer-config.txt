@@ -1,0 +1,82 @@
+COMANDO: /usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -v
+test_preserves_json_daemon_settings (test_mini.ConfigurationTests) ... ok
+test_preserves_yaml_daemon_options_and_client (test_mini.ConfigurationTests) ... ok
+test_rejects_compression_before_install (test_mini.ConfigurationTests) ... FAIL
+test_dry_install_and_withdraw_do_not_write_or_mutate_launchctl (test_mini.MiniDeploymentTests) ... ok
+test_install_twice_and_withdraw_preserves_queue_and_restores_brew (test_mini.MiniDeploymentTests) ... ok
+test_live_queue_aborts_before_any_launchctl (test_mini.MiniDeploymentTests) ... ok
+test_withdraw_restores_prior_disabled_brew (test_mini.MiniDeploymentTests) ... ok
+test_wrong_data_directory_aborts_without_replacing_agent (test_mini.MiniDeploymentTests) ... ok
+test_apply_idempotent_and_creates_groups (test_pueue_desk.ControlTests) ... ok
+test_failed_apply_does_not_restart_daemon (test_pueue_desk.ControlTests) ... ok
+test_failed_resume_keeps_ownership_and_retries (test_pueue_desk.ControlTests) ... ok
+test_hysteresis_manual_pause_and_log (test_pueue_desk.ControlTests) ... ok
+test_invalid_readings_never_resume (test_pueue_desk.ControlTests) ... ok
+test_manual_takeover_of_guard_pause (test_pueue_desk.ControlTests) ... ok
+test_reject_limits_before_any_pueue_call (test_pueue_desk.ControlTests) ... ok
+test_rotation (test_pueue_desk.ControlTests) ... ok
+test_thresholds (test_pueue_desk.ControlTests) ... ok
+test_utc_boundaries (test_pueue_desk.ControlTests) ... ok
+test_dry_run (test_pueue_desk.DeploymentTests) ... ok
+test_failure_after_shutdown_is_announced (test_pueue_desk.DeploymentTests) ... ok
+test_install_twice_and_withdraw_preserves_queue (test_pueue_desk.DeploymentTests) ... ok
+test_live_manual_aborts_without_changes (test_pueue_desk.DeploymentTests) ... ok
+test_managed_daemon_with_live_tasks_is_not_stopped (test_pueue_desk.DeploymentTests) ... ok
+test_nonempty_suites_preserved (test_pueue_desk.DeploymentTests) ... ok
+test_rejected_linger_keeps_manual_daemon (test_pueue_desk.DeploymentTests) ... ok
+test_docker_down_pauses_every_managed_group_and_logs_docker (test_recovery.DockerGuardTests) ... ok
+test_docker_missing_or_timeout_is_not_ready (test_recovery.DockerGuardTests) ... ok
+test_docker_returns_high_pressure_does_not_resume (test_recovery.DockerGuardTests) ... ok
+test_docker_returns_low_pressure_resumes_only_owned_pauses (test_recovery.DockerGuardTests) ... ok
+test_pending_recovery_prevents_resume_even_when_docker_ready (test_recovery.DockerGuardTests) ... ok
+test_host_refuses_live_pid_and_does_not_touch_queue (test_recovery.HostAndMiniTests) ... ok
+test_mini_launchagent_runs_supervisor_and_keeps_alive (test_recovery.HostAndMiniTests) ... ok
+test_stale_pid_reused_by_another_program_is_removed_without_killing_it (test_recovery.HostAndMiniTests) ... ok
+test_capture_stop_preserves_manual_pause_and_claims_running_groups (test_recovery.RecoveryTests) ... ok
+test_corrupt_or_compressed_state_is_not_replaced (test_recovery.RecoveryTests) ... ok
+test_failed_flush_never_releases_startup_gate (test_recovery.RecoveryTests) ... ok
+test_interrupted_requeued_same_id_and_all_properties_durable (test_recovery.RecoveryTests) ... ok
+test_mini_same_boot_refuses_orphans_and_new_boot_recovers (test_recovery.RecoveryTests) ... ok
+test_ordinary_failures_and_manual_kills_untouched (test_recovery.RecoveryTests) ... ok
+test_own_failure_during_shutdown_not_retried (test_recovery.RecoveryTests) ... ok
+test_recovery_twice_same_state_one_restart (test_recovery.RecoveryTests) ... ok
+test_restart_failure_consumes_intent_without_second_command (test_recovery.RecoveryTests) ... ok
+test_reused_id_new_creation_gets_own_recovery (test_recovery.RecoveryTests) ... ok
+test_second_interruption_stays_failed_with_reason (test_recovery.RecoveryTests) ... ok
+test_start_closes_empty_and_delayed_groups_before_daemon (test_recovery.RecoveryTests) ... ok
+
+======================================================================
+FAIL: test_rejects_compression_before_install (test_mini.ConfigurationTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-validacion-a828e1aa/fleet/pueue-desk/tests/test_mini.py", line 134, in test_rejects_compression_before_install
+    self.assertFalse(self.library.exists())
+AssertionError: True is not false
+
+----------------------------------------------------------------------
+Ran 45 tests in 54.821s
+
+FAILED (failures=1)
+SECO: cola sin tareas vivas; conservar cola y configurar suites=3
+SECO: copiar control.py, host.py, configuración y io.pao.pueue.plist
+SECO: disable y bootout sh.brew.pueue; bootstrap io.pao.pueue (KeepAlive y RunAtLoad)
+SECO: bootout io.pao.pueue y quitar su plist; conservar cola, biblioteca y estado
+SECO: restaurar sh.brew.pueue sólo si este instalador lo había encontrado cargado
+LaunchAgent propio instalado; cola conservada, suites=3 y recuperación al arrancar
+LaunchAgent propio instalado; cola conservada, suites=3 y recuperación al arrancar
+Retirado el agente propio; cola y estado conservados
+Retirado el agente propio; cola y estado conservados
+LaunchAgent propio instalado; cola conservada, suites=3 y recuperación al arrancar
+Retirado el agente propio; cola y estado conservados
+Modo noche: hasito=4, jale=3, otros=1, pg5434=1
+Modo noche: hasito=4, jale=3, otros=1, pg5434=1
+Modo dia: hasito=3, jale=2, otros=1, pg5434=1
+Modo dia: hasito=3, jale=2, otros=1, pg5434=1
+
+SALIDA DEPLOY --seco (ssh falso):
+Preflight: cola manual vacía
+SECO: copiar control.py, host.py, configuración y unidades a ~/.local/lib/pao-pueue-desk y ~/.config/systemd/user
+SECO: pueue shutdown (daemon manual vacío)
+SECO: loginctl enable-linger; systemctl --user daemon-reload
+SECO: systemctl --user enable --now pueued.service pueue-desk-mode.timer pueue-desk-guard.timer
+SECO: aplicar y comprobar cuotas vigentes; retirar suites sólo si vacío

@@ -1,0 +1,53 @@
+test_apply_idempotent_and_creates_groups (test_pueue_desk.ControlTests) ... ok
+test_failed_apply_does_not_restart_daemon (test_pueue_desk.ControlTests) ... ok
+test_failed_resume_keeps_ownership_and_retries (test_pueue_desk.ControlTests) ... ok
+test_hysteresis_manual_pause_and_log (test_pueue_desk.ControlTests) ... ok
+test_invalid_readings_never_resume (test_pueue_desk.ControlTests) ... ok
+test_manual_takeover_of_guard_pause (test_pueue_desk.ControlTests) ... ok
+test_reject_limits_before_any_pueue_call (test_pueue_desk.ControlTests) ... ok
+test_rotation (test_pueue_desk.ControlTests) ... ok
+test_thresholds (test_pueue_desk.ControlTests) ... ok
+test_utc_boundaries (test_pueue_desk.ControlTests) ... ok
+test_dry_run (test_pueue_desk.DeploymentTests) ... ok
+test_failure_after_shutdown_is_announced (test_pueue_desk.DeploymentTests) ... ok
+test_install_twice_and_withdraw_preserves_queue (test_pueue_desk.DeploymentTests) ... ok
+test_live_manual_aborts_without_changes (test_pueue_desk.DeploymentTests) ... ok
+test_managed_daemon_with_live_tasks_is_not_stopped (test_pueue_desk.DeploymentTests) ... ok
+test_nonempty_suites_preserved (test_pueue_desk.DeploymentTests) ... ok
+test_rejected_linger_keeps_manual_daemon (test_pueue_desk.DeploymentTests) ... ok
+test_docker_down_pauses_every_managed_group_and_logs_docker (test_recovery.DockerGuardTests) ... ok
+test_docker_missing_or_timeout_is_not_ready (test_recovery.DockerGuardTests) ... ok
+test_docker_returns_high_pressure_does_not_resume (test_recovery.DockerGuardTests) ... ok
+test_docker_returns_low_pressure_resumes_only_owned_pauses (test_recovery.DockerGuardTests) ... ok
+test_pending_recovery_prevents_resume_even_when_docker_ready (test_recovery.DockerGuardTests) ... ok
+test_host_refuses_live_pid_and_does_not_touch_queue (test_recovery.HostAndMiniTests) ... ok
+test_mini_launchagent_runs_supervisor_and_keeps_alive (test_recovery.HostAndMiniTests) ... ok
+test_capture_stop_preserves_manual_pause_and_claims_running_groups (test_recovery.RecoveryTests) ... ok
+test_corrupt_or_compressed_state_is_not_replaced (test_recovery.RecoveryTests) ... ok
+test_failed_flush_never_releases_startup_gate (test_recovery.RecoveryTests) ... ok
+test_interrupted_requeued_same_id_and_all_properties_durable (test_recovery.RecoveryTests) ... ok
+test_mini_same_boot_refuses_orphans_and_new_boot_recovers (test_recovery.RecoveryTests) ... ok
+test_ordinary_failures_and_manual_kills_untouched (test_recovery.RecoveryTests) ... ok
+test_own_failure_during_shutdown_not_retried (test_recovery.RecoveryTests) ... ok
+test_recovery_twice_same_state_one_restart (test_recovery.RecoveryTests) ... ok
+test_restart_failure_consumes_intent_without_second_command (test_recovery.RecoveryTests) ... ok
+test_reused_id_new_creation_gets_own_recovery (test_recovery.RecoveryTests) ... ok
+test_second_interruption_stays_failed_with_reason (test_recovery.RecoveryTests) ... ok
+test_start_closes_empty_and_delayed_groups_before_daemon (test_recovery.RecoveryTests) ... ok
+
+----------------------------------------------------------------------
+Ran 36 tests in 97.858s
+
+OK
+Modo noche: hasito=4, jale=3, otros=1, pg5434=1
+Modo noche: hasito=4, jale=3, otros=1, pg5434=1
+Modo dia: hasito=3, jale=2, otros=1, pg5434=1
+Modo dia: hasito=3, jale=2, otros=1, pg5434=1
+
+SALIDA DEPLOY --seco (ssh falso):
+Preflight: cola manual vacía
+SECO: copiar control.py, host.py, configuración y unidades a ~/.local/lib/pao-pueue-desk y ~/.config/systemd/user
+SECO: pueue shutdown (daemon manual vacío)
+SECO: loginctl enable-linger; systemctl --user daemon-reload
+SECO: systemctl --user enable --now pueued.service pueue-desk-mode.timer pueue-desk-guard.timer
+SECO: aplicar y comprobar cuotas vigentes; retirar suites sólo si vacío

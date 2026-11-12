@@ -1,0 +1,7 @@
+INTEGRACION {"raiz": "/Users/cosmonaut/remote-run/work/dirigida-u17-supervisor-a828e1aa/.u17-host-5f73gskf", "usuario_sin_cambios": true}
+PARADA-ORDENADA {"en_cola": "1", "hijo_muerto": true, "interrumpida": "0"}
+RECUPERADA {"campos_iguales": true, "cola_ejecutada_una_vez": true, "id": "0", "intentos": 2, "recuperar_idempotente": true}
+SEGUNDO-REINICIO {"id": "0", "motivo": "Segundo reinicio: esta tarea ya consumi\u00f3 su \u00fanica recuperaci\u00f3n", "no_tercer_intento": true, "status": {"Done": {"end": "2026-11-12T01:32:39.852404-06:00", "enqueued_at": "2026-11-12T01:32:38.661436-06:00", "result": "Killed", "start": "2026-11-12T01:32:38.939316-06:00"}}}
+KILL-SIN-DUPLICADO {"hijo_original_vivo": true, "id": "0", "intentos": 1, "motivo": "No se descartan hijos vivos tras la muerte del daemon en macOS"}
+LAUNCHER-KILL {"cola_intacta": true, "daemon_original_conservado": true, "segundo_daemon_rechazado": true}
+FIN {"resultado": "OK; supervisor real, sin instalar ni tocar el Pueue del usuario"}

@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>io.pao.pueue</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string><string>-I</string><string>@HOME@/.local/lib/pao-pueue-desk/host.py</string>
+    <string>--host</string><string>mini</string>
+    <string>--config</string><string>@HOME@/.local/lib/pao-pueue-desk/pueue.yml</string>
+    <string>--paths</string><string>@HOME@/.local/lib/pao-pueue-desk/pueue-paths.json</string>
+    <string>--pueue-bin</string><string>/opt/homebrew/bin/pueue</string>
+    <string>--pueued-bin</string><string>/opt/homebrew/bin/pueued</string>
+  </array>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>5</integer>
+  <key>ExitTimeOut</key><integer>30</integer>
+  <key>StandardOutPath</key><string>@HOME@/.local/state/pao/pueue-desk/host.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/.local/state/pao/pueue-desk/host.log</string>
+</dict>
+</plist>
