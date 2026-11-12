@@ -328,6 +328,21 @@ class InstallerTests(Fixture):
         self.assertFalse(self.service_loaded)
         self.assertEqual(json.loads((state / "guardia-state.json").read_text()), [])
 
+    def test_failed_recovery_names_paused_groups(self):
+        state = self.root / ".local/state/pao/pueue-mini"
+        for command in ("instalar", "desinstalar"):
+            self.failing = set()
+            self.install("instalar")
+            (state / "guardia-state.json").write_text('["suites"]\n')
+            self.failing = {"bootstrap", "start"}
+            with self.assertRaises(RuntimeError) as raised:
+                self.install(command)
+            self.assertFalse(self.service_loaded)
+            self.assertIn("suites", str(raised.exception))
+            self.assertIn(f"{installer.PUEUE} start -g suites", str(raised.exception))
+            self.assertIsInstance(raised.exception.__cause__, subprocess.CalledProcessError)
+            self.assertEqual(json.loads((state / "guardia-state.json").read_text()), ["suites"])
+
     def test_invalid_status_aborts_before_changes(self):
         for value in ('{"groups": {"suites": {}}, "tasks": {}}',
                       '{"groups": {"default": {}}, "tasks": {}}',

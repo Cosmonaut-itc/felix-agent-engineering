@@ -98,9 +98,10 @@ Una segunda pausa directa de Pueue no expresa ese relevo. El estado
 1 MiB. Los errores de ejecución de launchd aparecen en `launchd.err.log` del
 mismo directorio. Desinstalar reanuda los grupos que pausó la guardia y vacía su propiedad; las
 pausas manuales no son suyas y siguen en pausa. Conserva el log.
-Ningún grupo pausado por la guardia queda sin guardia: si la instalación falla
-después de descargar la anterior, reanuda sus grupos; si desinstalar no puede
-reanudar uno, vuelve a cargar la guardia, conserva la propiedad y sale con error.
+Si instalar o desinstalar fallan con la guardia descargada, el guion reanuda
+sus grupos y, si no puede, vuelve a cargarla con la propiedad intacta; en ambos
+casos sale con error. Si tampoco puede recargarla, el error nombra los grupos que
+siguen en pausa y el comando `pueue start -g` para reanudarlos.
 
 **Límite:** sólo frena la admisión: las tareas que ya corren siguen. Las
 corridas de `remote-run` encolan en `suites`; las corridas de Jale en la Mini

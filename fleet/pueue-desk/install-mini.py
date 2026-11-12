@@ -38,6 +38,25 @@ def resume_owned(state):
             temporary.replace(owned_file)
 
 
+def keep_owned_guarded(state, domain, agent, error):
+    """Tras un fallo sin guardia cargada: reanuda sus grupos o la recarga; si no, lo dice."""
+    try:
+        resume_owned(state)
+        return
+    except Exception:
+        pass
+    try:
+        # Recargada, la guardia conserva la propiedad y reanuda cuando baje la presión.
+        run(LAUNCHCTL, "bootstrap", domain, str(agent))
+        return
+    except Exception:
+        pass
+    owned = json.loads((state / "guardia-state.json").read_text())
+    commands = "; ".join(f"{PUEUE} start -g {group}" for group in owned)
+    raise RuntimeError(f"sin guardia cargada y en pausa por ella: {', '.join(owned)}. "
+                       f"Reanudar a mano: {commands}") from error
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["instalar", "desinstalar"])
@@ -85,15 +104,14 @@ def main():
             shutil.copy2(SOURCE / "control.py", library / "control.py")
             agent.write_bytes(plistlib.dumps(template))
             run(LAUNCHCTL, "bootstrap", domain, str(agent))
-        except Exception:
-            resume_owned(state)
+        except Exception as error:
+            keep_owned_guarded(state, domain, agent, error)
             raise
     else:
         try:
             resume_owned(state)
-        except Exception:
-            # Recargada, la guardia conserva la propiedad y reanuda cuando baje la presión.
-            run(LAUNCHCTL, "bootstrap", domain, str(agent), check=False)
+        except Exception as error:
+            keep_owned_guarded(state, domain, agent, error)
             raise
         agent.unlink(missing_ok=True)
         (library / "control.py").unlink(missing_ok=True)
