@@ -48,6 +48,13 @@ class DayBridgeTest(unittest.TestCase):
         receipt, _, _ = self.launch('fourth', 4)
         self.assertEqual(receipt['reason'], 'lane-closed')
 
+    def test_jale_lane_three_waits_as_quota_full(self):
+        # run-suite.sh recorre los carriles hasta max_lane; lane-closed lo haría reintentar sin pausa.
+        self.day()
+        self.pending('third', 'jale', 'chain')
+        receipt, _, _ = self.launch('third', 3)
+        self.assertEqual(receipt['reason'], 'quota-full')
+
     def test_lane_three_pending_and_policy_view_in_day_and_fallback(self):
         self.day()
         self.engine.register('H3', 'hasito', 'script', 'test', 1, lane=3)

@@ -383,6 +383,9 @@ class DeskPolicy:
             if lane > limit:
                 if blocker is not None:
                     self.reconcile_claim(blocker, sample)
+                # De día max_lane es el de Hasito: Jale enumera hasta él y debe esperar, no reintentar.
+                if policy["mode"] == "day" and lane <= DAY_MAX_LANE:
+                    return deny("quota-full")
                 return deny("lane-closed")
             if blocker is not None:
                 if not self.reconcile_claim(blocker, sample):
