@@ -39,12 +39,17 @@ def atomic(path, text):
             os.unlink(temporary)
 
 
-def read_cache(path):
+def read_cache(path, fields):
     try:
         data = json.loads(path.read_text())
     except (OSError, ValueError):
         return {}
-    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
+    def valid(entry):
+        return isinstance(entry, dict) and all(
+            k in fields and (v is None or (isinstance(v, fields[k]) and not isinstance(v, bool)
+                                           and (not isinstance(v, float) or math.isfinite(v))))
+            for k, v in entry.items())
+    return {k: v for k, v in data.items() if valid(v)} if isinstance(data, dict) else {}
 
 
 def load_hosts(path):
@@ -113,6 +118,7 @@ def validate_snapshot(data, host):
     for row in data['tasks']:
         if (not isinstance(row, dict) or not isinstance(row.get('id'), int) or not isinstance(row.get('group'), str)
                 or row.get('state') not in TASK_STATES
+                or any(k not in row for k in TASK_TEXT + TASK_TIMES)
                 or any(not isinstance(row.get(k), (str, type(None))) for k in TASK_TEXT)
                 or any(not isinstance(row.get(k), (int, float, type(None))) for k in TASK_TIMES)):
             raise ValueError('Tarea inválida')
@@ -146,10 +152,10 @@ class Rack:
         self.errors = {}
         self.history = History(state_dir)
         self.ticket_path = state_dir / 'tickets.json'
-        self.tickets = read_cache(self.ticket_path)
+        self.tickets = read_cache(self.ticket_path, dict(title=str, project=str, updated=(int, float), failed=(int, float)))
         self.gh = gh
         self.commit_path = state_dir / 'commits.json'
-        self.commits = read_cache(self.commit_path)
+        self.commits = read_cache(self.commit_path, dict(ticket=str, checked=(int, float)))
         self.key = None
         key_path = key_path or Path.home() / '.config/pao-rack/linear-key'
         try:
@@ -171,7 +177,7 @@ class Rack:
             if count >= 10 or time.monotonic() >= deadline:
                 break
             known = self.tickets.get(ticket, {})
-            if now - known.get('updated', 0) < 6 * 3600 or now - known.get('failed', 0) < 1800:
+            if now - (known.get('updated') or 0) < 6 * 3600 or now - (known.get('failed') or 0) < 1800:
                 continue
             count += 1
             try:
@@ -196,7 +202,7 @@ class Rack:
                     and re.fullmatch(r'[\w.-]+/[\w.-]+', repo) and re.fullmatch('[0-9a-f]{40}', sha)):
                 key = repo + '@' + sha
                 known = self.commits.get(key)
-                if (not isinstance(known, dict) or (not known.get('ticket') and now - known.get('checked', 0) >= 1800)) and key not in pending:
+                if (not isinstance(known, dict) or (not known.get('ticket') and now - (known.get('checked') or 0) >= 1800)) and key not in pending:
                     pending.append(key)
         pending = pending[:10]
         for index, key in enumerate(pending):

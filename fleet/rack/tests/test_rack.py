@@ -29,6 +29,13 @@ def sample():
                 guard=None, groups=[dict(name='suites', status='Running', slots=3)], tasks=[], errors=[])
 
 
+def task(**fields):
+    row = dict(id=1, group='suites', state='Running', name='x', scope=None, project=None, ticket=None,
+               repo=None, sha=None, result=None, enqueued=None, start=None, end=None)
+    row.update(fields)
+    return row
+
+
 def executable(path, text):
     path.write_text('#!/usr/bin/python3\n' + text)
     path.chmod(0o755)
@@ -155,7 +162,7 @@ class ServerTests(unittest.TestCase):
 
     def test_done_hidden_and_recorded(self):
         data = sample()
-        data['tasks'] = [dict(id=1, name='x', group='suites', state='Done', start=900, end=950, result='Success')]
+        data['tasks'] = [task(state='Done', start=900, end=950, result='Success')]
         self.rack.cycle(lambda host: data, now=1001)
         self.assertEqual(self.rack.read()['hosts'][0]['snapshot']['tasks'], [])
         self.assertEqual(len(self.rack.history.rows), 1)
@@ -211,9 +218,10 @@ class ServerTests(unittest.TestCase):
 
     def fake_tailscale(self, login='owner@example.com', fail=False):
         path = self.root / 'Tailscale'
-        text = 'import sys\nassert sys.argv[1:3] == ["whois", "--json"]\n'
-        text += 'sys.exit(1)\n' if fail else 'print(' + repr(json.dumps(dict(UserProfile=dict(LoginName=login)))) + ')\n'
-        return serve.OwnerCheck('owner@example.com', executable(path, text))
+        body = 'exit 1' if fail else "printf '%s\\n' '" + json.dumps(dict(UserProfile=dict(LoginName=login))) + "'"
+        path.write_text('#!/bin/sh\n[ "$1 $2" = "whois --json" ] || exit 2\n' + body + '\n')
+        path.chmod(0o755)
+        return serve.OwnerCheck('owner@example.com', str(path))
 
     def test_lan_client_forbidden(self):
         self.assertEqual(self.request_as('192.168.1.5')[0], 403)
@@ -268,14 +276,20 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(len(calls.read_text().splitlines()), 1)
 
     def test_malformed_caches_are_ignored(self):
-        for name in ('tickets.json', 'commits.json', 'history.jsonl'):
-            (self.root / name).write_text('[]' if name != 'history.jsonl' else '{"host":"mini","id":1,"group":"g","name":"x","result":"Success","start":"a","end":null}\n')
-        rack = serve.Rack(self.hosts * 1, self.root, self.root / 'absent-key', gh='/bin/false')
-        data = sample()
-        data['tasks'] = [dict(id=1, group='suites', state='Running', name='x', ticket=None, repo='Owner/R', sha='b' * 40)]
-        rack.cycle(lambda host: data, now=1001)
-        self.assertEqual(rack.read()['now'], 1001)
-        self.assertTrue(rack.read()['hosts'][0]['fresh'])
+        sha = 'b' * 40
+        (self.root / 'history.jsonl').write_text('{"host":"mini","id":1,"group":"g","name":"x","result":"Success","start":"a","end":null}\n')
+        for tickets, commits in (('[]', '[]'),
+                                 ('{"SEN-1": {"title": NaN}}', '{"Owner/R@' + sha + '": {"ticket": null, "checked": []}}'),
+                                 ('{"SEN-1": {"updated": []}}', '{"Owner/R@' + sha + '": "x"}')):
+            (self.root / 'tickets.json').write_text(tickets)
+            (self.root / 'commits.json').write_text(commits)
+            rack = serve.Rack(self.hosts, self.root, self.root / 'absent-key', gh='/bin/false')
+            data = sample()
+            data['tasks'] = [task(ticket='SEN-1'), task(id=2, repo='Owner/R', sha=sha)]
+            rack.cycle(lambda host: data, now=1001)
+            payload = json.loads(json.dumps(rack.read(), allow_nan=False))
+            self.assertEqual(payload['now'], 1001)
+            self.assertTrue(payload['hosts'][0]['fresh'])
 
     def test_bad_host_snapshot_isolated(self):
         hosts = [dict(id='mini', name='Mini', transport='local', argv=['x']), dict(id='desk', name='Desk', transport='local', argv=['x'])]
@@ -283,8 +297,12 @@ class ServerTests(unittest.TestCase):
         def good(host):
             return dict(sample(), host=host['id'])
         rack.cycle(good, now=1000)
-        bad_cases = [dict(tasks=[dict(id=1, group='g', state='Running', name='x', ticket=['SEN-1'])]),
-                     dict(tasks=[dict(id=1, group='g', state='Running', name='x', start=float('nan'))]),
+        rack.history.add('desk', [task(id=i, state='Done', start=0, end=10, result='Success') for i in range(3)], 1000)
+        missing = task()
+        del missing['name']
+        bad_cases = [dict(tasks=[task(ticket=['SEN-1'])]),
+                     dict(tasks=[task(start=float('nan'))]),
+                     dict(tasks=[missing]),
                      dict(cpu=dict(load=[float('nan')])),
                      dict(errors=[dict(stage='pueue', message='Lectura fallida: OSError')])]
         for index, bad in enumerate(bad_cases):
