@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+set -euo pipefail
+origen=$(cd "$(dirname "$0")" && pwd)
+label=com.cosmonaut.pao-rack
+destino="$HOME/.local/lib/pao-rack"
+plist="$HOME/Library/LaunchAgents/$label.plist"
+if [ "$#" -gt 1 ]; then echo 'Demasiados argumentos' >&2; exit 2; fi
+case "${1:-}" in
+  --desinstalar)
+    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    rm -f "$plist" "$destino/snapshot.py" "$destino/serve.py" "$destino/index.html" "$destino/hosts.json"
+    rmdir "$destino" 2>/dev/null || true
+    exit ;;
+  '') ;;
+  *) echo 'uso: instalar.sh [--desinstalar]' >&2; exit 2 ;;
+esac
+tailscale=/Applications/Tailscale.app/Contents/MacOS/Tailscale
+ip=$("$tailscale" ip -4)
+temporal=$(mktemp -d)
+trap 'rm -rf "$temporal"' EXIT
+"$tailscale" status --json > "$temporal/status.json"
+"$tailscale" serve status --json > "$temporal/serve.json"
+"$tailscale" funnel status --json > "$temporal/funnel.json"
+/usr/bin/python3 - "$ip" "$temporal/serve.json" "$temporal/funnel.json" <<'PY'
+import ipaddress
+import json
+import re
+import sys
+if ipaddress.ip_address(sys.argv[1]) not in ipaddress.ip_network('100.64.0.0/10'):
+    sys.exit('rack: Tailscale no devolvió una IP del tailnet')
+def exposes(value):
+    if isinstance(value, dict):
+        return any(exposes(k) or exposes(v) for k, v in value.items())
+    if isinstance(value, list):
+        return any(exposes(v) for v in value)
+    return bool(re.search(r'(?<!\d)8787(?!\d)', str(value)))
+for path in sys.argv[2:]:
+    with open(path) as stream:
+        if exposes(json.load(stream)):
+            sys.exit('rack: Serve o Funnel expone el puerto 8787; elimina esa exposición antes de instalar')
+PY
+mkdir -p "$destino" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+for archivo in snapshot.py serve.py index.html hosts.json; do
+  install -m 644 "$origen/$archivo" "$destino/$archivo"
+done
+/usr/bin/python3 - "$destino" "$plist" "$ip" "$temporal/status.json" <<'PY'
+import json
+import os
+import plistlib
+import sys
+root, plist, ip, status_path = sys.argv[1:]
+with open(status_path) as stream:
+    status = json.load(stream)
+owner = status['User'][str(status['Self']['UserID'])]['LoginName']
+if not isinstance(owner, str) or not owner:
+    sys.exit('rack: no se pudo resolver el dueño de la Mini')
+with open(plist, 'wb') as stream:
+    plistlib.dump(dict(Label='com.cosmonaut.pao-rack',
+        ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', '8787', '--owner', owner],
+        KeepAlive=True, RunAtLoad=True,
+        StandardOutPath=os.path.expanduser('~/Library/Logs/pao-rack.log'),
+        StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log')), stream)
+PY
+launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+launchctl bootstrap "gui/$(id -u)" "$plist"
