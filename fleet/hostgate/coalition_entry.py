@@ -4,7 +4,9 @@ Fleet lo lanza con ``python -I -S -B coalition_entry.py <go-fd> <ready-fd> <argv
 sesión nueva, con close_fds y tuberías privadas, después del consumo del permiso. Antes del byte sólo usa
 módulos del intérprete; no importa código de usuario ni ejecuta el argv. EOF, una lectura corta o
 cualquier otro byte salen con 3 sin entrar. El byte llega una sola vez, cuando el registro de la raíz ya
-es durable en hostgate y en el ledger de Fleet.
+es durable en hostgate y en el ledger de Fleet. La tubería ready sigue abierta tras R y se cierra
+al lograr exec (no heredable). Después de G, R seguido de EOF confirma exec; si execvp falla,
+ready recibe E<errno>\n en ASCII (por ejemplo E2\n para ENOENT) antes de salir con 3.
 """
 import hashlib
 import json
@@ -24,13 +26,17 @@ def main(args):
     go, ready, expected, argv = int(args[0]), int(args[1]), args[2], args[4:]
     if argv_digest(argv) != expected: return 2
     os.write(ready, b'R')
-    os.close(ready)
     try:
         byte = os.read(go, 1)
     finally:
         os.close(go)
     if byte != GO: return 3  # EOF o un byte inválido: nunca se entra
-    os.execvp(argv[0], argv)
+    os.set_inheritable(ready, False)
+    try:
+        os.execvp(argv[0], argv)
+    except OSError as exc:
+        os.write(ready, ('E%d\n' % exc.errno).encode('ascii'))
+        return 3
 
 
 if __name__ == '__main__':

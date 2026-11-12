@@ -1,4 +1,5 @@
 """The creation bootstrap as a real process: ready first, then one valid byte or it never enters."""
+import errno
 import hashlib
 import json
 import os
@@ -14,12 +15,14 @@ ENTRY = Path(__file__).resolve().parents[1] / 'coalition_entry.py'
 
 
 class Bootstrap(unittest.TestCase):
-    def launch(self, byte, extra=()):
+    def launch(self, byte, extra=(), missing=False, exit_code=0, expected_tail=None):
         root = Path(tempfile.mkdtemp(prefix='entry-'))
         self.addCleanup(shutil.rmtree, str(root), True)
         counter = root / 'counter'
         argv = [sys.executable, '-c', "import os,sys\nfd=os.open(sys.argv[1],os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)\n"
-                "os.write(fd,b'x'); os.fsync(fd); os.close(fd)", str(counter)] + list(extra)
+                "os.write(fd,b'x'); os.fsync(fd); os.close(fd); sys.exit(%d)" % exit_code, str(counter)] + list(extra)
+        if missing:
+            argv = [str(root / 'no-such-executable')]
         digest = hashlib.sha256(json.dumps(argv, separators=(',', ':')).encode()).hexdigest()
         go_r, go_w = os.pipe()
         ready_r, ready_w = os.pipe()
@@ -42,6 +45,15 @@ class Bootstrap(unittest.TestCase):
             os.close(go_w)
             go_w = None
             code = child.wait(timeout=20)
+            if expected_tail is not None:
+                tail = b''
+                while True:
+                    self.assertTrue(select.select([ready_r], [], [], 20)[0], 'ready EOF timeout')
+                    chunk = os.read(ready_r, 128)
+                    if not chunk:
+                        break
+                    tail += chunk
+                self.assertEqual(tail, expected_tail)
         finally:
             os.close(ready_r)
             if go_w is not None:
@@ -57,6 +69,12 @@ class Bootstrap(unittest.TestCase):
     def test_non_ascii_and_surrogate_argv_enters_once(self):
         """Variante: digest_not_ascii."""
         self.assertEqual(self.launch(b'G', ('señal', '\udcff')), (b'R', 0, 1))
+
+    def test_exec_failure_differs_from_payload_exit_three(self):
+        """Variante: exec_failure_silent."""
+        self.assertEqual(self.launch(b'G', exit_code=3, expected_tail=b''), (b'R', 3, 1))
+        self.assertEqual(self.launch(b'G', missing=True,
+                                     expected_tail=('E%d\n' % errno.ENOENT).encode('ascii')), (b'R', 3, 0))
 
     def test_eof_or_invalid_byte_never_enters(self):
         """Variante: enter_on_eof."""
