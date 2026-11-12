@@ -11,6 +11,7 @@ import math
 import os
 from pathlib import Path
 import re
+import signal
 import statistics
 import subprocess
 import tempfile
@@ -297,9 +298,18 @@ class OwnerCheck:
             allowed = False
             try:
                 # Bajo launchd, el binario de Tailscale.app sólo actúa como CLI si su padre es un shell.
-                result = subprocess.run(['/bin/sh', '-c', '"$0" whois --json "$1"; exit $?', self.tailscale, address], timeout=3,
-                    check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
-                profile = json.loads(result.stdout)['UserProfile']
+                # Sesión propia para que el timeout termine también a whois, no sólo al shell.
+                process = subprocess.Popen(['/bin/sh', '-c', '"$0" whois --json "$1"; exit $?', self.tailscale, address],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+                try:
+                    output, _ = process.communicate(timeout=3)
+                except subprocess.TimeoutExpired:
+                    os.killpg(process.pid, signal.SIGKILL)
+                    process.communicate()
+                    raise
+                if process.returncode:
+                    raise subprocess.CalledProcessError(process.returncode, 'whois')
+                profile = json.loads(output)['UserProfile']
                 allowed = bool(self.owner) and profile['LoginName'] == self.owner
             except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
                 pass

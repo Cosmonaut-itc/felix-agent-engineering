@@ -1,9 +1,11 @@
 import importlib.util
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 from http.server import ThreadingHTTPServer
@@ -243,9 +245,15 @@ class ServerTests(unittest.TestCase):
         check = self.fake_tailscale()
         with patch.object(serve.time, 'monotonic', return_value=100):
             self.assertTrue(check.allows('100.111.159.14'))
-        with patch.object(serve.time, 'monotonic', return_value=401), patch.object(serve.subprocess, 'run', side_effect=subprocess.TimeoutExpired('whois', 3)) as run:
+        pidfile = self.root / 'whois.pid'
+        hung = self.root / 'Tailscale'
+        hung.write_text('#!/bin/sh\necho $$ > ' + str(pidfile) + '\nexec sleep 30\n')
+        started = time.monotonic()
+        with patch.object(serve.time, 'monotonic', return_value=401):
             self.assertFalse(check.allows('100.111.159.14'))
-            self.assertEqual(run.call_args.kwargs['timeout'], 3)
+        self.assertLess(time.monotonic() - started, 6)
+        with self.assertRaises(ProcessLookupError):
+            os.kill(int(pidfile.read_text()), 0)
 
     def test_other_owner_forbidden(self):
         self.assertEqual(self.request_as('100.111.159.14', self.fake_tailscale('guest@example.com')), (403, b''))
