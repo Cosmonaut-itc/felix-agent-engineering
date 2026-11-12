@@ -319,6 +319,10 @@ class RetirementTests(unittest.TestCase):
                 store.session_members.side_effect = PermissionError('censo ilegible')
                 with self.assertRaises(PermissionError):
                     remote.open_admissions(Path(directory))
+            with self.historical_engine([record], False, []) as (_, store):
+                store.session_members.return_value = None
+                with self.assertRaisesRegex(RuntimeError, 'inconcluso'):
+                    remote.open_admissions(Path(directory))
 
     def test_admitir_loaded_before_cutover_blocks_without_published_claim(self):
         cli = str(Path(pwd.getpwuid(os.getuid()).pw_dir) /

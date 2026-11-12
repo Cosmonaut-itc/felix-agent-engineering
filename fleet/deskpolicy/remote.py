@@ -121,9 +121,14 @@ def open_admissions(root=Path("/tmp/sen-test-slots")):
                 continue
             # Regla de reconcile_claim: ni lock de vida ni miembros de ninguna
             # sesión del dueño o sus keepers. Un error aborta, nunca acredita vacío.
-            if held(engine.life_path(record["project"], claim["lane"])) or any(
-                session_members(sid) for sid in engine.claim_sessions(claim)
-            ):
+            if held(engine.life_path(record["project"], claim["lane"])):
+                live.append(record)
+                continue
+            members = [session_members(sid) for sid in engine.claim_sessions(claim)]
+            # session_members devuelve None si el censo no concluye: sólo [] prueba vacío.
+            if any(found is None for found in members):
+                raise RuntimeError("Censo de sesiones inconcluso; writer y unidades conservados")
+            if any(members):
                 live.append(record)
         return live
 
