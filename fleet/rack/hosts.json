@@ -1,0 +1,4 @@
+[
+  {"id":"mini","name":"Mac Mini","transport":"local","argv":["/usr/bin/python3","-I","{rack_dir}/snapshot.py","--host","mini"]},
+  {"id":"desk","name":"Felix DESKTOP · WSL","transport":"ssh","argv":["/usr/bin/ssh","-T","-o","BatchMode=yes","-o","ConnectTimeout=10","-o","IdentitiesOnly=yes","-i","~/.ssh/id_ed25519_pao_rack","Felix@felix-desktop"]}
+]

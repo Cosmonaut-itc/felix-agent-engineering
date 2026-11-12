@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import fcntl
 import json
 import math
+import os
 from pathlib import Path
 import subprocess
 import time
@@ -19,7 +20,10 @@ GROUP_LIMITS = {
 PRESSURE_THRESHOLDS = {
     "pause": {"io": 40, "cpu": 30, "memory": 4 * 1024**3},
     "resume": {"io": 20, "cpu": 15, "memory": 6 * 1024**3},
+    "mini": {"pause": {"load": 2.0, "memory": 2},
+             "resume": {"load": 1.2, "memory": 1}},
 }
+MINI_GROUPS = ("suites", "default")
 LOG_MAX_BYTES = 1024 * 1024
 STATE_DIR = Path.home() / ".local/state/pao/pueue-desk"
 
@@ -110,22 +114,41 @@ def pressure(proc):
     return {"io": psi("io", "full"), "cpu": psi("cpu", "some"), "memory": int(amount) * 1024}
 
 
-def guard(pueue, proc, directory):
-    readings = pressure(proc)
+def pressure_mini():
+    load = os.getloadavg()[0]
+    cores = os.cpu_count()
+    level = int(subprocess.run(
+        ["/usr/sbin/sysctl", "-n", "kern.memorystatus_vm_pressure_level"],
+        check=True, text=True, capture_output=True).stdout.strip())
+    if not math.isfinite(load) or load < 0 or type(cores) is not int or cores < 1 or level not in (1, 2, 4):
+        raise ValueError("Presión de la Mini inválida")
+    return {"load": load / cores, "memory": level}
+
+
+def guard(pueue, proc, directory, *, host="desk"):
+    readings = pressure_mini() if host == "mini" else pressure(proc)
     log(directory, "lectura", **readings)
-    high, low = PRESSURE_THRESHOLDS["pause"], PRESSURE_THRESHOLDS["resume"]
+    thresholds = PRESSURE_THRESHOLDS["mini"] if host == "mini" else PRESSURE_THRESHOLDS
+    high, low = thresholds["pause"], thresholds["resume"]
     action = "mantener"
-    if readings["io"] > high["io"] or readings["cpu"] > high["cpu"] or readings["memory"] < high["memory"]:
-        action = "pausar"
-    elif readings["io"] < low["io"] and readings["cpu"] < low["cpu"] and readings["memory"] >= low["memory"]:
-        action = "reanudar"
+    if host == "mini":
+        if readings["load"] > high["load"] or readings["memory"] >= high["memory"]:
+            action = "pausar"
+        elif readings["load"] < low["load"] and readings["memory"] == low["memory"]:
+            action = "reanudar"
+    else:
+        if readings["io"] > high["io"] or readings["cpu"] > high["cpu"] or readings["memory"] < high["memory"]:
+            action = "pausar"
+        elif readings["io"] < low["io"] and readings["cpu"] < low["cpu"] and readings["memory"] >= low["memory"]:
+            action = "reanudar"
     log(directory, "decision", accion=action)
     target = directory / "guardia-state.json"
     owned = set(json.loads(target.read_text())) if target.exists() else set()
-    if not owned <= GROUP_LIMITS.keys():
+    managed_groups = MINI_GROUPS if host == "mini" else GROUP_LIMITS.keys()
+    if not owned <= set(managed_groups):
         raise ValueError("Grupos desconocidos en estado del guardia")
     groups = pueue.status()["groups"]
-    for group in GROUP_LIMITS:
+    for group in managed_groups:
         status = groups[group]["status"]
         # Si alguien ya arrancó un grupo, deja de pertenecer al guardia.
         if group in owned and status != "Paused":
@@ -155,10 +178,17 @@ def live_tasks(state):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["aplicar", "guardia", "pausar"])
-    parser.add_argument("group", nargs="?", choices=list(GROUP_LIMITS))
+    parser.add_argument("group", nargs="?")
+    parser.add_argument("--host", choices=["desk", "mini"], default="desk")
     args = parser.parse_args()
-    pueue = Pueue()
-    with locked(STATE_DIR):
+    groups = MINI_GROUPS if args.host == "mini" else GROUP_LIMITS
+    if args.group is not None and args.group not in groups:
+        parser.error("grupo desconocido para el host")
+    if args.host == "mini" and args.command == "aplicar":
+        parser.error("La Mini sólo admite guardia y pausa manual")
+    pueue = Pueue("/opt/homebrew/bin/pueue") if args.host == "mini" else Pueue()
+    directory = Path.home() / ".local/state/pao/pueue-mini" if args.host == "mini" else STATE_DIR
+    with locked(directory):
         try:
             if args.command == "aplicar":
                 for attempt in range(30):
@@ -171,18 +201,18 @@ def main():
                         time.sleep(1)
                 apply_mode(pueue, datetime.now(timezone.utc))
             elif args.command == "guardia":
-                guard(pueue, Path("/proc"), STATE_DIR)
+                guard(pueue, Path("/proc"), directory, host=args.host)
             else:
                 if args.group is None:
                     parser.error("pausar necesita un grupo")
-                target = STATE_DIR / "guardia-state.json"
+                target = directory / "guardia-state.json"
                 owned = set(json.loads(target.read_text())) if target.exists() else set()
                 owned.discard(args.group)
-                save_owned(STATE_DIR, owned)
+                save_owned(directory, owned)
                 pueue.call("pause", "--wait", "-g", args.group)
-                log(STATE_DIR, "pausa_manual", grupo=args.group)
+                log(directory, "pausa_manual", grupo=args.group)
         except Exception as error:
-            log(STATE_DIR, "error", detalle=str(error))
+            log(directory, "error", detalle=str(error))
             raise
 
 

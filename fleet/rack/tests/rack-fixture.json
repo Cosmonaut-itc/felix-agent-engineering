@@ -1,0 +1,513 @@
+{
+  "schema": "rack@1",
+  "now": 1794507599.864531,
+  "hosts": [
+    {
+      "id": "mini",
+      "name": "Mac Mini",
+      "fresh": true,
+      "age": 0,
+      "error": null,
+      "snapshot": {
+        "schema": "rack-host@1",
+        "host": "mini",
+        "os": "macos",
+        "taken": 1794507599.864531,
+        "cpu": {
+          "cores": 10,
+          "load": [
+            4.82,
+            6.38,
+            10.82
+          ],
+          "psi_avg60": null
+        },
+        "mem": {
+          "total": 25769803776,
+          "available": 10010607616,
+          "swap_total": 6442450944.0,
+          "swap_used": 5387709317.12
+        },
+        "disk": {
+          "total": 494384795648,
+          "free": 24703008768
+        },
+        "guard": null,
+        "groups": [
+          {
+            "name": "default",
+            "status": "Running",
+            "slots": 1
+          },
+          {
+            "name": "suites",
+            "status": "Running",
+            "slots": 3
+          }
+        ],
+        "tasks": [
+          {
+            "id": 242,
+            "group": "suites",
+            "state": "Running",
+            "enqueued": 1794506404.922331,
+            "start": 1794506680.56545,
+            "end": null,
+            "result": null,
+            "name": "dirigida-nn-u0",
+            "scope": "dirigida",
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 244,
+            "group": "suites",
+            "state": "Running",
+            "enqueued": 1794506892.542115,
+            "start": 1794507305.516086,
+            "end": null,
+            "result": null,
+            "name": "sen-4822-u3-sol",
+            "scope": null,
+            "project": "comprador",
+            "ticket": "SEN-4822"
+          },
+          {
+            "id": 245,
+            "group": "suites",
+            "state": "Running",
+            "enqueued": 1794507485.778286,
+            "start": 1794507576.77216,
+            "end": null,
+            "result": null,
+            "name": "sen-4822-u3-opus",
+            "scope": null,
+            "project": "comprador",
+            "ticket": "SEN-4822"
+          }
+        ],
+        "errors": []
+      },
+      "estimates": {
+        "242": {
+          "typical": 121.19455754756927,
+          "n": 72
+        }
+      }
+    },
+    {
+      "id": "desk",
+      "name": "Felix DESKTOP",
+      "fresh": true,
+      "age": 0,
+      "error": null,
+      "snapshot": {
+        "schema": "rack-host@1",
+        "host": "desk",
+        "os": "linux",
+        "taken": 1794507599.864531,
+        "cpu": {
+          "cores": 12,
+          "load": [
+            6.88,
+            7.58,
+            10.26
+          ],
+          "psi_avg60": 2.33
+        },
+        "mem": {
+          "total": 33657974784,
+          "available": 20887371776,
+          "swap_total": 8589934592,
+          "swap_used": 0
+        },
+        "disk": {
+          "total": 1081101176832,
+          "free": 527992221696
+        },
+        "guard": {
+          "action": "reanudar",
+          "utc": "2026-11-12T18:19:43.249166+00:00"
+        },
+        "groups": [
+          {
+            "name": "default",
+            "status": "Running",
+            "slots": 1
+          },
+          {
+            "name": "hasito",
+            "status": "Running",
+            "slots": 3
+          },
+          {
+            "name": "jale",
+            "status": "Running",
+            "slots": 5
+          },
+          {
+            "name": "otros",
+            "status": "Running",
+            "slots": 1
+          },
+          {
+            "name": "pg5434",
+            "status": "Running",
+            "slots": 1
+          }
+        ],
+        "tasks": [
+          {
+            "id": 14,
+            "group": "jale",
+            "state": "Running",
+            "enqueued": 1794504866.404249,
+            "start": 1794505815.555903,
+            "end": null,
+            "result": null,
+            "name": "contract",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 26,
+            "group": "jale",
+            "state": "Running",
+            "enqueued": 1794504978.57001,
+            "start": 1794506694.933676,
+            "end": null,
+            "result": null,
+            "name": "contract",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 28,
+            "group": "jale",
+            "state": "Running",
+            "enqueued": 1794505124.952594,
+            "start": 1794506752.268555,
+            "end": null,
+            "result": null,
+            "name": "contract",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 30,
+            "group": "jale",
+            "state": "Running",
+            "enqueued": 1794505296.270652,
+            "start": 1794507131.4703,
+            "end": null,
+            "result": null,
+            "name": "e2e",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 33,
+            "group": "jale",
+            "state": "Running",
+            "enqueued": 1794505371.399307,
+            "start": 1794507576.724162,
+            "end": null,
+            "result": null,
+            "name": "contract",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 34,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794505548.305841,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "launch",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 35,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794505738.838848,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "contract",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 36,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794505906.238292,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "api-unit",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 37,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794506416.179589,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "types",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 38,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794506523.303291,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "web-unit",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 39,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794506703.91726,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "gates",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 40,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794506713.574861,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "launch",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 41,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794506759.750858,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "launch",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 42,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794506781.952858,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "api-unit",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 44,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794506953.772692,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "launch",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 47,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794507156.415226,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "launch",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 48,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794507203.485095,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "gates",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 49,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794507303.845342,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "contract",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 50,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794507373.958433,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "types",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          },
+          {
+            "id": 51,
+            "group": "jale",
+            "state": "Queued",
+            "enqueued": 1794507603.416339,
+            "start": null,
+            "end": null,
+            "result": null,
+            "name": "launch",
+            "scope": null,
+            "project": "SEN-CheckIn",
+            "ticket": null
+          }
+        ],
+        "errors": []
+      },
+      "estimates": {
+        "34": {
+          "typical": 311.43407237529755,
+          "n": 8
+        },
+        "38": {
+          "typical": 311.43407237529755,
+          "n": 8
+        },
+        "39": {
+          "typical": 1015.4122591018677,
+          "n": 3
+        },
+        "40": {
+          "typical": 311.43407237529755,
+          "n": 8
+        },
+        "41": {
+          "typical": 311.43407237529755,
+          "n": 8
+        },
+        "44": {
+          "typical": 311.43407237529755,
+          "n": 8
+        },
+        "47": {
+          "typical": 311.43407237529755,
+          "n": 8
+        },
+        "48": {
+          "typical": 1015.4122591018677,
+          "n": 3
+        },
+        "51": {
+          "typical": 311.43407237529755,
+          "n": 8
+        }
+      }
+    }
+  ],
+  "tickets": {
+    "SEN-4822": {
+      "title": "Canario 2/36: las sesiones `team` se separan por Tenant, con las herramientas de la coreografía de familia",
+      "project": "comprador"
+    },
+    "SEN-6044": {
+      "title": "Preparar CFDI no reescribe un comprobante sin cambios por el orden de llaves del JSON",
+      "project": "jale"
+    },
+    "SEN-5868": {
+      "title": "Alta y edición: el paso «Salario» captura «Cobra» y «Salario», y Jale calcula el Complemento",
+      "project": "jale"
+    },
+    "SEN-5870": {
+      "title": "Recibos, nómina del periodo y corridas: «Neto», «Complemento» y «Total a pagar»",
+      "project": "jale"
+    },
+    "SEN-5667": {
+      "title": "Corrección de nómina: recalcular un periodo anterior con el salario vigente en ese periodo",
+      "project": "jale"
+    },
+    "SEN-5742": {
+      "title": "SUA: con la nómina dual apagada, usar el salario real y no el fiscal guardado",
+      "project": "jale"
+    },
+    "SEN-5717": {
+      "title": "Tiempo por tiempo 2 · Cubrir horas faltantes con el saldo y sugerir la compensación (API y motor)",
+      "project": "jale"
+    },
+    "SEN-5699": {
+      "title": "Preparar nómina: agrupar los pendientes por persona para acortar las listas",
+      "project": "jale"
+    },
+    "SEN-4481": {
+      "title": "Cambiar la configuración de nómina después de crear el borrador cambia la vista previa pero no lo que se procesa",
+      "project": "jale"
+    },
+    "SEN-5700": {
+      "title": "Editar empleado: conservar los cambios sin guardar al cerrar, como en el alta",
+      "project": "jale"
+    },
+    "SEN-5702": {
+      "title": "Prima de riesgo de trabajo: decir qué afecta y capturarla una sola vez",
+      "project": "jale"
+    },
+    "SEN-5743": {
+      "title": "El subsidio causado del mes no pasa del tope mensual, con el ajuste mensual encendido o apagado",
+      "project": "jale"
+    }
+  }
+}

@@ -1,0 +1,167 @@
+<!doctype html>
+<html lang="es"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Rack de pruebas</title><style>
+:root{
+  --bg:#f6f5f1; --panel:#ffffff; --ink:#1b1b19; --ink2:#55554f; --muted:#8a8981;
+  --line:#e4e2da; --track:#ecebe5; --accent:#2f6fd6; --accent-track:#dde7f8;
+  --good:#0ca30c; --warn:#c98a00; --crit:#d03b3b; --mono:ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+@media (prefers-color-scheme: dark){ :root:not([data-theme="light"]){
+  --bg:#141413; --panel:#1c1c1b; --ink:#ecebe6; --ink2:#b4b3ab; --muted:#7c7b74;
+  --line:#2c2c2a; --track:#2a2a28; --accent:#6c9ef0; --accent-track:#24324a;
+  --good:#2fbf2f; --warn:#fab219; --crit:#e65a5a; }}
+:root[data-theme="dark"]{
+  --bg:#141413; --panel:#1c1c1b; --ink:#ecebe6; --ink2:#b4b3ab; --muted:#7c7b74;
+  --line:#2c2c2a; --track:#2a2a28; --accent:#6c9ef0; --accent-track:#24324a;
+  --good:#2fbf2f; --warn:#fab219; --crit:#e65a5a; }
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.4 -apple-system,BlinkMacSystemFont,"Inter","Segoe UI",sans-serif;-webkit-font-smoothing:antialiased}
+header{display:flex;align-items:baseline;gap:16px;padding:20px 24px 8px;flex-wrap:wrap}
+h1{font-size:20px;margin:0;font-weight:600;letter-spacing:-.01em}
+.when{color:var(--muted);font-size:13px}
+.switch{margin-left:auto;display:flex;gap:4px}
+.switch button{font:inherit;font-size:12px;border:1px solid var(--line);background:var(--panel);color:var(--ink2);padding:4px 10px;border-radius:6px;cursor:pointer}
+.switch button[aria-pressed="true"]{background:var(--ink);color:var(--bg);border-color:var(--ink)}
+main{padding:8px 24px 40px}
+.mono{font-family:var(--mono);font-size:12px}
+.muted{color:var(--muted)} .ink2{color:var(--ink2)}
+/* host */
+.cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(420px,1fr));gap:16px;align-items:start}
+.host{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px}
+.host h2{font-size:16px;margin:0 0 2px;font-weight:600}
+.state{font-size:12px;display:inline-flex;align-items:center;gap:6px}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+.cap{display:grid;grid-template-columns:repeat(3,1fr);gap:14px;margin:14px 0 6px}
+.m-label{font-size:12px;color:var(--ink2);display:flex;justify-content:space-between;gap:6px}
+.m-val{font-size:18px;font-weight:600;margin:2px 0 6px;font-variant-numeric:tabular-nums}
+.meter{height:8px;border-radius:4px;background:var(--track);position:relative;overflow:visible}
+.meter>i{position:absolute;left:0;top:0;bottom:0;border-radius:4px}
+.meter .tick{position:absolute;top:-3px;bottom:-3px;width:1px;background:var(--muted);opacity:.6}
+.m-note{font-size:12px;margin-top:6px}
+h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
+.run{padding:10px 0;border-top:1px solid var(--line)}
+.run:first-of-type{border-top:0}
+.r-top{display:flex;gap:8px;align-items:baseline}
+.r-ticket{font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.r-title{color:var(--ink);overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0;flex:1}
+.r-sub{display:flex;gap:10px;font-size:12px;color:var(--ink2);margin:3px 0 6px}
+.bar{height:6px;border-radius:3px;background:var(--accent-track);position:relative;overflow:hidden}
+.bar>i{position:absolute;left:0;top:0;bottom:0;background:var(--accent);border-radius:3px}
+.bar.over>i{background:var(--warn)}
+.bar.unknown{background:repeating-linear-gradient(-45deg,var(--accent-track) 0 6px,transparent 6px 12px)}
+.r-time{font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums;white-space:nowrap}
+.queue{list-style:none;margin:0;padding:0}
+.queue li{display:grid;grid-template-columns:22px 82px 1fr auto;gap:8px;padding:5px 0;border-top:1px solid var(--line);font-size:13px;align-items:baseline}
+.queue li:first-child{border-top:0}
+.queue .pos{color:var(--muted);font-variant-numeric:tabular-nums}
+.queue .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.more{font-size:12px;color:var(--muted);padding-top:6px}
+/* C: lugares */
+.lanes{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.lane{display:grid;grid-template-columns:62px minmax(0,1fr);gap:8px;align-items:center}
+.lane .g{font-size:12px;color:var(--ink2)}
+.slots{display:grid;gap:6px}.slots>*{min-width:0;overflow:hidden}.stack{display:flex;flex-direction:column;gap:16px}
+.slot{border:1px dashed var(--line);border-radius:8px;min-height:54px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;gap:4px}
+.slot.busy{border:1px solid var(--line);background:var(--bg)}
+.slot .r-top{font-size:13px}
+.slot.empty{color:var(--muted);font-size:12px;align-items:center}
+.waiting{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
+.chip{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--ink2);white-space:nowrap}
+@media (max-width:560px){header,main{padding-left:16px;padding-right:16px}.cols{grid-template-columns:1fr}.cap{grid-template-columns:1fr 1fr 1fr;gap:8px}}
+
+@media(max-width:560px){.lane{grid-template-columns:1fr}.slots{grid-template-columns:1fr!important}.r-sub{flex-wrap:wrap;gap:4px 10px}.chip{max-width:100%;overflow:hidden;text-overflow:ellipsis}.m-val{font-size:16px}.m-label{flex-wrap:wrap}.host{padding:12px}.cap{gap:8px}}
+.r-sub span,.g{overflow-wrap:anywhere;min-width:0} #connection{color:var(--warn);padding:0 24px;font-size:13px} #connection:empty{display:none}
+</style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span></header><div id="connection" role="status"></div><main id="app"></main><script>
+let S, NOW;
+const GB = b => b == null ? NaN : (b/1024**3);
+const fmtMin = s => `${Math.floor(s/60)} min`;
+const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const proj = t => { const p = t.linear_project || t.project || t.group; return p.charAt(0).toUpperCase() + p.slice(1); };
+const OBJ = {contract:'Contrato',e2e:'E2E','api-unit':'Unitarias API','web-unit':'Unitarias web',types:'Tipos',gates:'Gates completos',launch:'Arranque',lint:'Lint'};
+const objective = t => {
+  if (!t.name) return 'sin nombre';
+  if (OBJ[t.name]) return OBJ[t.name];
+  const m = t.name.match(/^(suite|dirigida|repro|diag)-(.*)$/);
+  return m ? `${m[1][0].toUpperCase()+m[1].slice(1)} · ${m[2]}` : t.name;
+};
+function zone(h){
+  const per = h.load?.[0]/h.cores;
+  if (!Number.isFinite(per)) return {per:0,c:'var(--muted)',label:'Sin lectura de CPU'};
+  if (per < 1) return {per, c:'var(--good)', label:'Con capacidad libre'};
+  if (per <= 2) return {per, c:'var(--warn)', label:'Llena, las pruebas pasan'};
+  return {per, c:'var(--crit)', label:'Saturada, habrá timeouts'};
+}
+function hostState(h){
+  if (!h.fresh) return `<span class="state">Sin datos desde hace ${h.age == null ? '—' : Math.floor(h.age/60)} min</span>`;
+  if (h.guard && h.guard.action === 'pausar') return `<span class="state"><span class="dot" style="background:var(--warn)"></span>Admisión pausada por la guardia</span>`;
+  const anyPaused = Object.values(h.groups).some(g => g.status === 'Paused');
+  if (anyPaused) return `<span class="state"><span class="dot" style="background:var(--warn)"></span>Admisión pausada</span>`;
+  return `<span class="state"><span class="dot" style="background:var(--good)"></span>Admitiendo corridas</span>`;
+}
+const groups = h => Object.entries(h.groups).filter(([n,g]) => n !== 'default' || h.tasks.some(t => t.group === n && t.state !== 'Done'));
+const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
+const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>a.enqueued-b.enqueued);
+const slotsTotal = h => groups(h).reduce((a,[,g])=>a+g.slots,0);
+
+function capacity(h){
+  const z = zone(h), used = h.mem_total - h.mem_avail, memPct = used/h.mem_total;
+  const run = running(h).length, tot = slotsTotal(h);
+  const loadPct = Math.min(z.per/3,1);
+  return `<div class="cap">
+    <div><div class="m-label"><span>CPU</span><span class="muted">${esc(h.cores ?? '—')} núcleos</span></div>
+      <div class="m-val">${z.per.toFixed(1)} <span class="muted" style="font-size:12px;font-weight:400">por núcleo</span></div>
+      <div class="meter" title="Carga ${Number.isFinite(h.load?.[0]) ? h.load[0].toFixed(1) : '—'} sobre ${esc(h.cores ?? '—')} núcleos"><i style="width:${loadPct*100}%;background:${z.c}"></i><span class="tick" style="left:33.3%"></span><span class="tick" style="left:66.6%"></span></div>
+      <div class="m-note ink2">${z.label}</div></div>
+    <div><div class="m-label"><span>Memoria</span><span class="muted">${Number.isFinite(GB(h.mem_total)) ? GB(h.mem_total).toFixed(0) : '—'} GB</span></div>
+      <div class="m-val">${Number.isFinite(GB(h.mem_avail)) ? GB(h.mem_avail).toFixed(0) : '—'} GB <span class="muted" style="font-size:12px;font-weight:400">libres</span></div>
+      <div class="meter"><i style="width:${memPct*100}%;background:${memPct>.85?'var(--crit)':'var(--accent)'}"></i></div>
+      <div class="m-note ink2">Swap ${Number.isFinite(GB(h.swap_used)) ? GB(h.swap_used).toFixed(1) : '—'} de ${Number.isFinite(GB(h.swap_total)) ? GB(h.swap_total).toFixed(0) : '—'} GB</div></div>
+    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total</span></div>
+      <div class="m-val">${run} <span class="muted" style="font-size:12px;font-weight:400">ocupados</span></div>
+      <div class="meter"><i style="width:${tot?run/tot*100:0}%;background:var(--accent)"></i></div>
+      <div class="m-note ink2">${queued(h).length ? queued(h).length + ' en fila' : 'Fila vacía'}</div></div>
+  </div>`;
+}
+function progress(t){
+  const el = Math.max(0, NOW - (t.start ?? t.enqueued ?? NOW));
+  if (!t.typical) return {html:`<div class="bar unknown" title="Sin historial suficiente para estimar"></div>`, time:`${fmtMin(el)} · sin estimado`};
+  const p = el/t.typical, over = p > 1.2;
+  return {html:`<div class="bar ${over?'over':''}"><i style="width:${Math.min(p,1)*100}%"></i></div>`,
+          time: over ? `${fmtMin(el)} · típico ${fmtMin(t.typical)}` : `${fmtMin(el)} de ~${fmtMin(t.typical)}`};
+}
+
+function view(){
+    return `<div class="stack">${S.hosts.map(h=>{
+      const lanes = groups(h).map(([n,g])=>{
+        const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
+        const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
+          const p=progress(t); return `<div class="slot busy"><div class="r-top"><span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(t.title)}">${esc(t.title||'Sin ticket')}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div></div>`;}).join('');
+        return `<div class="lane"><div class="g">${esc(n)}<div class="muted">${r.length}/${g.slots}</div></div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
+          ${w.length?`<div class="lane"><div></div><div class="waiting">${w.slice(0,10).map(t=>`<span class="chip" title="${esc(t.title)}">${esc(t.ticket||objective(t))}</span>`).join('')}${w.length>10?`<span class="chip">+${w.length-10}</span>`:''}</div></div>`:''}`;
+      }).join('');
+      return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}<div class="lanes">${lanes}</div></section>`;}).join('')}</div>`;
+}
+function render(data){
+  NOW = data.now;
+  S = {hosts:data.hosts.map(h=>{
+    const s=h.snapshot || {};
+    return {...h, guard:s.guard, cores:s.cpu?.cores, load:s.cpu?.load,
+      mem_total:s.mem?.total, mem_avail:s.mem?.available, swap_used:s.mem?.swap_used, swap_total:s.mem?.swap_total,
+      groups:Object.fromEntries((s.groups || []).map(g=>[g.name,g])),
+      tasks:(s.tasks || []).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,typical:h.estimates[String(t.id)]?.typical}))};
+  })};
+  document.getElementById('app').innerHTML=view();
+  document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
+}
+let last=null;
+async function refresh(){
+  try{
+    const response=await fetch('/api/rack.json',{cache:'no-store',signal:AbortSignal.timeout(10000)});
+    if(!response.ok) throw Error('HTTP');
+    render(await response.json()); last=new Date();
+    document.getElementById('connection').textContent='';
+  }catch(error){
+    document.getElementById('connection').textContent=last ? 'Sin respuesta del servidor · último dato a las '+last.toLocaleTimeString('es-MX') : 'Sin respuesta del servidor';
+  }
+}
+refresh(); setInterval(refresh,15000);
+</script></body></html>
