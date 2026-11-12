@@ -1,0 +1,110 @@
+Corrida Mini: 20261112-104408-bf6a20
+Nombre: dirigida-u17a-injertos; REMOTE_RUN_TURNO=directo
+
+Instantánea: 5336c9591522f593de1ce432ca9c3e70703e68da
+Estado de trabajo:
+?? .remote-run.lock
+Python 3.9.6
+pueued 4.0.4
+ShellCheck - shell script analysis tool
+version: 0.11.0
+license: GNU General Public License, version 3
+website: https://www.shellcheck.net
+test_docker_down_closes_and_returns_only_owned_on_low_pressure (test_admission.AdmissionTests) ... ok
+test_logs_are_bounded_even_with_large_errors (test_admission.AdmissionTests) ... ok
+test_mini_does_not_require_docker_or_proc_and_preserves_manual_pause (test_admission.AdmissionTests) ... ok
+test_ownership_is_written_before_pause_even_if_killed (test_admission.AdmissionTests) ... ok
+test_reanudar_requests_admission_and_keeps_paused_on_docker_failure (test_admission.AdmissionTests) ... ok
+test_reanudar_respects_pressure (test_admission.AdmissionTests) ... ok
+test_docker_timeout_and_missing_binary_are_closed (test_admission.DockerTimeoutTests) ... ok
+test_async_bootstrap_and_sigkill_before_socket_response (test_handoff.HandoffTests) ... ok
+test_idempotent_install_then_withdraw_with_queued_task (test_handoff.HandoffTests) ... ok
+test_inherited_host_and_guard_logs_have_a_cap (test_handoff.HandoffTests) ... ok
+test_interval_and_daemon_output_are_bounded (test_handoff.HandoffTests) ... ok
+test_reconciler_can_be_killed_and_retried_at_every_boundary (test_handoff.HandoffTests) ... Relevo solicitado; el job comprueba y completa las fronteras pendientes
+Relevo solicitado; el job comprueba y completa las fronteras pendientes
+Relevo solicitado; el job comprueba y completa las fronteras pendientes
+Relevo solicitado; el job comprueba y completa las fronteras pendientes
+Relevo solicitado; el job comprueba y completa las fronteras pendientes
+Relevo solicitado; el job comprueba y completa las fronteras pendientes
+W6 job install: SIGKILL en 27 fronteras y reintento sano
+Relevo solicitado; el job comprueba y completa las fronteras pendientes
+ok
+test_running_task_aborts_without_stopping_daemon (test_handoff.HandoffTests) ... ok
+test_sigkill_at_every_install_and_withdraw_boundary (test_handoff.HandoffTests) ... W6 job withdraw: SIGKILL en 30 fronteras y reintento sano
+Relevo solicitado; el job comprueba y completa las fronteras pendientes
+W6 install: SIGKILL en 34 fronteras; un daemon, suites abierta, pausa manual intacta
+Relevo solicitado; el job comprueba y completa las fronteras pendientes
+ok
+test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) ... W6 withdraw: SIGKILL en 34 fronteras; un daemon, suites abierta, pausa manual intacta
+PRIVADA CLI: pid ajeno vivo OK
+PRIVADA CLI: pueued vivo sin socket OK
+PRIVADA CLI: arranque demorado OK
+ok
+test_500_crashes_never_repeat_a_sentinel (test_private.PrivateTests) ... PRIVADA ciclos 100 sin duplicados
+PRIVADA ciclos 200 sin duplicados
+PRIVADA ciclos 300 sin duplicados
+PRIVADA ciclos 400 sin duplicados
+PRIVADA ciclos 500 sin duplicados
+ok
+test_corrupt_state_remains_identical_and_daemon_not_started (test_private.PrivateTests) ... ok
+test_empty_group_add_waits_for_admission (test_private.PrivateTests) ... ok
+test_old_log_fails_visibly_and_group_stays_closed_until_resume (test_private.PrivateTests) ... ok
+test_reset_refuses_start_and_stock_pueue_would_reopen_group (test_private.PrivateTests) ... ok
+test_term_and_kill_leave_interrupted_failed_and_queued_runs_once (test_private.PrivateTests) ... ok
+test_apply_idempotent_requires_offline_groups (test_pueue_desk.ControlTests) ... ok
+test_failed_apply_does_not_restart_daemon (test_pueue_desk.ControlTests) ... ok
+test_failed_resume_keeps_ownership_and_retries (test_pueue_desk.ControlTests) ... ok
+test_hysteresis_manual_pause_and_log (test_pueue_desk.ControlTests) ... ok
+test_invalid_readings_never_resume (test_pueue_desk.ControlTests) ... ok
+test_manual_takeover_of_guard_pause (test_pueue_desk.ControlTests) ... ok
+test_reject_limits_before_any_pueue_call (test_pueue_desk.ControlTests) ... ok
+test_rotation (test_pueue_desk.ControlTests) ... ok
+test_thresholds (test_pueue_desk.ControlTests) ... ok
+test_utc_boundaries (test_pueue_desk.ControlTests) ... ok
+test_dry_run (test_pueue_desk.DeploymentTests) ... ok
+test_failure_after_shutdown_is_announced (test_pueue_desk.DeploymentTests) ... ok
+test_install_refuses_wrong_version_before_linger_or_shutdown (test_pueue_desk.DeploymentTests) ... ok
+test_install_twice_and_withdraw_preserves_queue (test_pueue_desk.DeploymentTests) ... ok
+test_live_manual_aborts_without_changes (test_pueue_desk.DeploymentTests) ... ok
+test_managed_daemon_with_live_tasks_is_not_stopped (test_pueue_desk.DeploymentTests) ... ok
+test_nonempty_suites_preserved (test_pueue_desk.DeploymentTests) ... ok
+test_rejected_linger_keeps_manual_daemon (test_pueue_desk.DeploymentTests) ... ok
+test_restart_preparation_and_kill_mode (test_pueue_desk.MaintenanceTests) ... ok
+test_timers_and_oneshots_stop_before_daemon (test_pueue_desk.MaintenanceTests) ... ok
+test_custom_paths_compression_and_ambiguous_yaml_rejected (test_startup.ConfigurationTests) ... ok
+test_duplicate_json_and_invalid_rust_numbers_rejected (test_startup.ConfigurationTests) ... ok
+test_relative_xdg_paths_rejected_before_reading_wrong_queue (test_startup.ConfigurationTests) ... ok
+test_standard_yaml_and_json_without_managing_configuration (test_startup.ConfigurationTests) ... ok
+test_compressed_state_rejected (test_startup.OfflineTests) ... ok
+test_interrupted_killed_once_and_no_requeue (test_startup.OfflineTests) ... ok
+test_invalid_queue_never_written_or_executed (test_startup.OfflineTests) ... ok
+test_missing_groups_created_closed_and_reset_preserved (test_startup.OfflineTests) ... ok
+test_ownership_durable_before_queue_and_retry (test_startup.OfflineTests) ... ok
+test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) ... ok
+test_python_iso_extensions_do_not_reach_rust_or_overwrite_queue (test_startup.OfflineTests) ... ok
+test_queued_any_log_fails_and_blocks_group_until_operator (test_startup.OfflineTests) ... ok
+test_reset_validates_but_refuses_start_without_overwriting (test_startup.OfflineTests) ... ok
+test_responding_daemon_rejected_without_mutation (test_startup.OfflineTests) ... ok
+test_wrong_version_rejected (test_startup.OfflineTests) ... ok
+
+----------------------------------------------------------------------
+Ran 56 tests in 425.899s
+
+OK
+PRIVADA 500 SIGKILL: efectos= 500 ventanas Queued+log observadas= 0
+PRIVADA Reset: preparador rechaza sin escribir; Pueue estándar lo abre solo
+PRIVADA interrupción SIGTERM Killed; pendiente conserva id y corre una vez
+PRIVADA interrupción SIGKILL Killed; pendiente conserva id y corre una vez
+
+SALIDA DEPLOY --seco (ssh falso):
+Preflight: cola manual vacía
+SECO: copiar control.py y unidades a ~/.local/lib/pao-pueue-desk y ~/.config/systemd/user
+SECO: pueue shutdown (daemon manual vacío)
+SECO: loginctl enable-linger; systemctl --user daemon-reload
+SECO: systemctl --user enable --now pueued.service pueue-desk-mode.timer pueue-desk-guard.timer
+SECO: aplicar y comprobar cuotas vigentes; retirar suites sólo si vacío
+
+fleet/pueue-desk/launchagents/io.pao.pueue-guardia.plist: OK
+fleet/pueue-desk/launchagents/io.pao.pueue.plist: OK
+DIRIGIDA U17a: OK (unitarias, privadas, plist y shellcheck)

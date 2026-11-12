@@ -300,3 +300,13 @@ servicios del usuario. Las pruebas W6 ya existentes también pasan con los
 tres estados separados; sus fronteras ahora incluyen inicio de proceso y
 publicación de socket. Esa mejora del arnés no es una prueba de los 60 s
 de launchd real, que siguen pendientes del despliegue.
+
+El pase completo en Mini `20261112-104408-bf6a20`, sobre
+`5336c9591522f593de1ce432ca9c3e70703e68da`, terminó con **56 pruebas OK,
+sin omisiones**, ambos plist OK y ShellCheck warning con código 0.
+Incluyó los 500 ciclos sin centinelas duplicados y las fronteras W6 del
+solicitante (34 al instalar y 34 al retirar) y del job (27 y 30).
+Salida completa: [dirigida-u17a-injertos.txt](evidence/dirigida-u17a-injertos.txt).
+El commit posterior sólo incorpora esa salida, esta referencia y la
+normalización de espacios finales de los registros rojos. El código
+operativo y las pruebas permanecen iguales.

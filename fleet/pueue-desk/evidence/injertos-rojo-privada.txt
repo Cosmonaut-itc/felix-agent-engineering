@@ -1,5 +1,5 @@
 e70a2f439703b0fb28557e6b8fc21aa9d9bf398f
-test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) ... 
+test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) ...
 ======================================================================
 FAIL: test_preparar_exec_handles_stale_pid_rejection_and_delayed_start (test_private.PrivateCLITests) (scenario='pid ajeno vivo')
 ----------------------------------------------------------------------

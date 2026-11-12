@@ -1,4 +1,4 @@
-test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) ... 
+test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) ...
 ======================================================================
 FAIL: test_pid_is_checked_before_mutating_queue (test_startup.OfflineTests) (platform='darwin', runtime=None, process='ajeno vivo')
 ----------------------------------------------------------------------
@@ -75,7 +75,7 @@ AssertionError: RuntimeError not raised
 Ran 1 test in 0.036s
 
 FAILED (failures=9)
-test_install_refuses_wrong_version_before_linger_or_shutdown (test_pueue_desk.DeploymentTests) ... 
+test_install_refuses_wrong_version_before_linger_or_shutdown (test_pueue_desk.DeploymentTests) ...
 ======================================================================
 FAIL: test_install_refuses_wrong_version_before_linger_or_shutdown (test_pueue_desk.DeploymentTests) (args=())
 ----------------------------------------------------------------------
