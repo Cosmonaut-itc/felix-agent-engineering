@@ -347,8 +347,17 @@ class ServerTests(unittest.TestCase):
         with patch.object(serve.time, 'monotonic', return_value=401):
             self.assertFalse(check.allows('100.111.159.14'))
         self.assertLess(time.monotonic() - started, 6)
-        with self.assertRaises(ProcessLookupError):
-            os.kill(int(pidfile.read_text()), 0)
+        # whois es nieto del sh: muerto, queda zombi hasta que lo recoge quien lo adopta.
+        pid = int(pidfile.read_text())
+        for _ in range(100):
+            try:
+                os.kill(pid, 0)
+            except ProcessLookupError:
+                break
+            time.sleep(0.02)
+        else:
+            os.kill(pid, 9)
+            self.fail('whois sigue vivo tras el plazo')
 
     def test_other_owner_forbidden(self):
         self.assertEqual(self.request_as('100.111.159.14', self.fake_tailscale('guest@example.com')), (403, b''))
