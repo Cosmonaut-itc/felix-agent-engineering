@@ -610,8 +610,15 @@ El `Runtime` efectivo conecta `DarwinCoalition` y, sólo si algún perfil trae b
 acreditación, corre el selfcheck y lee el build una vez por arranque.
 `profile_verified(profile, workload_uid)` es `Accredited` sólo con un selfcheck pasado
 cuyo boot coincide con el de `sysctl` (comparados como UUID) y con build y uid
-iguales. En sombra no corre nada. `require_creation_provider` sigue lanzando: no hay
-bootstrap, ledger ni migración, y Fleet no emite ni consume permisos.
+iguales. En sombra no corre nada. `require_creation_provider` sigue lanzando en producción.
+
+Desde 4e-1, `coalition_entry.py` es el bootstrap previsto para que Fleet lo lance con `python -I -S -B`, en
+sesión nueva y con tuberías privadas, tras el consumo original. Comprueba el digest del
+argv, anuncia `ready` y espera un byte. Sólo `G` hace `execvp` del argv fijo; EOF o
+cualquier otro byte salen con 3 sin entrar. Su digest es el `bootstrapDigest` que el
+perfil acredita. El digest del argv usa SHA-256 del JSON compacto con `ensure_ascii=True`,
+codificado en UTF-8, igual que `hostgate.protocol.canonical`, incluidos surrogates sueltos.
+La composición de Fleet llega en 4e-2; el despacho productivo sigue cerrado.
 
 `validate_result(result, mode, store_id, operation)` rechaza los campos de otra
 operación y valida la variante pública del permiso contra el estado, `scopeStatus`,

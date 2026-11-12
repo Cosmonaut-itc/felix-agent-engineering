@@ -490,3 +490,9 @@ Variantes defectuosas que las pruebas matan por aserción: `add_credit`, `regene
 `allowed_outside_reserved`, `query_fields_in_creation`, `short_novel` y `state_without_key`. Los ids de
 las corridas en la Mini constan en el PR. No acredita la integración de Fleet, el
 bootstrap del proveedor, el ledger ni la activación.
+
+SEN-5650, entrega **4e-1**: `test_coalition_entry.py` lanza el bootstrap como proceso real.
+Anuncia `ready` antes de entrar; el byte `G` entra una vez y EOF o `X` salen con 3 sin
+entrar (variante `enter_on_eof`). Un argv con `señal` y un surrogate suelto entra una
+vez con el digest JSON compacto ASCII (variante `digest_not_ascii`). La composición
+con Fleet llega en 4e-2; la coalición propia no se prueba en este corte.
