@@ -1,0 +1,10 @@
+[Unit]
+Description=Aplicar cuotas vigentes UTC del desk
+Requires=pueued.service
+After=pueued.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py aplicar
+Restart=on-failure
+RestartSec=30

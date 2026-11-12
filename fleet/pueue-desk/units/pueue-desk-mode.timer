@@ -1,0 +1,10 @@
+[Unit]
+Description=Cambio de cuotas UTC del desk
+
+[Timer]
+OnCalendar=*-*-* 05:00:00 UTC
+OnCalendar=*-*-* 14:00:00 UTC
+Persistent=true
+
+[Install]
+WantedBy=timers.target
