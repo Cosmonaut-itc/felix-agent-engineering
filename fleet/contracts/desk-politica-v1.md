@@ -362,7 +362,9 @@ Incluso sin writer, `admitir` intenta bajo el mutex reconciliar sólo la claim
 incierta del mismo proyecto y carril solicitado antes de denegar por
 `resource-busy` o `lane-closed`. Usa exactamente la prueba de `reconciliar`;
 si cierra un carril permitido, continúa la admisión con el censo actualizado.
-Un carril fuera del modo sigue devolviendo `lane-closed`, aunque cierre su claim.
+Un carril fuera del modo sigue devolviendo `lane-closed`, aunque cierre su claim;
+de día, un carril que no supera `max_lane` pero sí la cuota de su proyecto
+devuelve `quota-full`, como dice el paso 4 de la transacción.
 No recorre otras claims ni
 elude las demás comprobaciones de cuota, FIFO, carga o espaciado.
 No hay liberación forzada ni recuperación por TTL. Trabajo que haya escapado
