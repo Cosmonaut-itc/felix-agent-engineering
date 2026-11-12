@@ -29,19 +29,36 @@ def ticket(text):
     return 'SEN-' + match[1] if match else None
 
 
-def mini_metadata(task):
+def mini_metadata(task, home=None):
     meta = {}
     with (Path(task['path']).expanduser() / 'meta').open() as stream:
         for line in stream:
             key, sep, value = line.rstrip('\n').partition('=')
+            # remote-run escribe cmd= al final y puede ocupar varias líneas: nada después se lee.
+            if key == 'cmd':
+                break
             if sep and key in ('src', 'mirror'):
-                meta[key] = value
+                meta.setdefault(key, value)
+    branch, subject = None, None
+    mirror = meta.get('mirror')
+    if mirror:
+        mirror = (home or Path.home()) / mirror
+        for field, args in (('branch', ['branch', '--show-current']), ('subject', ['log', '-1', '--format=%s'])):
+            try:
+                value = command(['git', '-C', str(mirror)] + args).strip() or None
+            except (OSError, subprocess.SubprocessError):
+                value = None
+            if field == 'branch':
+                branch = value
+            else:
+                subject = value
     name = re.sub(r'-[a-fA-F0-9]{8}$', '', Path(meta.get('mirror', '')).name)
+    name = name or (branch.rsplit('/', 1)[-1] if branch else None)
     src = meta.get('src', '')
     match = re.search(r'(?:\.t3/worktrees/|REPOS/)([^/.]+)', src)
-    scope = name.split('-')[0]
+    scope = (name or '').split('-')[0]
     return dict(name=name or None, scope=scope if scope in ('suite', 'dirigida', 'repro', 'diag') else None,
-                project=match[1] if match else None, ticket=ticket(name + ' ' + src))
+                project=match[1] if match else None, ticket=ticket((name or '') + ' ' + src), branch=branch, subject=subject)
 
 
 def desk_metadata(task, home, cache):
@@ -51,19 +68,21 @@ def desk_metadata(task, home, cache):
     values = {}
     with Path(match[1]).with_name('body.sh').open() as stream:
         for line in stream:
-            found = re.fullmatch(r'declare -- (MODE|BASE_REPO|REQUESTED_SHA)="([^"\n]*)"\n?', line)
+            found = re.fullmatch(r'declare -- (MODE|BASE_REPO|REQUESTED_SHA|BRANCH)="([^"\n]*)"\n?', line)
             if found:
                 values[found[1]] = found[2]
+    branch = values.get('BRANCH')
+    branch = branch if branch and not re.fullmatch(r'[0-9a-fA-F]{40}', branch) else None
     repo = Path(values.get('BASE_REPO', '/')).resolve()
     if home.resolve() not in repo.parents:
-        return dict(name=values.get('MODE'))
+        return dict(name=values.get('MODE'), branch=branch)
     if repo not in cache:
         url = command(['git', '-C', str(repo), 'config', '--get', 'remote.origin.url']).strip()
         found = re.search(r'github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?$', url)
         cache[repo] = found[1] if found else None
     sha = values.get('REQUESTED_SHA', '').lower()
     return dict(name=values.get('MODE'), project=repo.name, repo=cache[repo],
-                sha=sha if re.fullmatch('[0-9a-f]{40}', sha) else None)
+                sha=sha if re.fullmatch('[0-9a-f]{40}', sha) else None, branch=branch)
 
 
 def desk_guard(home):
@@ -153,8 +172,9 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                 if isinstance(result, dict):
                     result = 'exit ' + str(result['Failed']) if 'Failed' in result else next(iter(result))
                 row = dict(id=task['id'], group=task['group'], state=state, enqueued=epoch(details.get('enqueued_at')), start=epoch(details.get('start')), end=end, result=result,
-                           name=None, scope=None, project=None, ticket=None, repo=None, sha=None)
-                metadata = attempt('metadata', lambda: mini_metadata(task) if mode == 'macos' else desk_metadata(task, home, cache))
+                           name=None, scope=None, project=None, ticket=None, repo=None, sha=None, branch=None, subject=None, priority=task.get('priority', 0))
+                jale = mode != 'macos' and re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
+                metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
                 output['tasks'].append(row)
         attempt('pueue', tasks)

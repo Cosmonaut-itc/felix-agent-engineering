@@ -33,7 +33,7 @@ def sample():
 
 def task(**fields):
     row = dict(id=1, group='suites', state='Running', name='x', scope=None, project=None, ticket=None,
-               repo=None, sha=None, result=None, enqueued=None, start=None, end=None)
+               repo=None, sha=None, branch=None, subject=None, priority=0, result=None, enqueued=None, start=None, end=None)
     row.update(fields)
     return row
 
@@ -87,12 +87,43 @@ class SnapshotTests(unittest.TestCase):
         subprocess.run(['git', '-C', str(repo), 'remote', 'add', 'origin', 'https://github.com/Owner/SEN-CheckIn.git'], check=True)
         job = self.root / 'job-0001'
         job.mkdir()
-        (job / 'body.sh').write_text('declare -x GH_T="gho_falso"\ndeclare -- MODE="contract"\ndeclare -- BASE_REPO="' + str(repo) + '"\ndeclare -- REQUESTED_SHA="' + sha + '"\n')
+        (job / 'body.sh').write_text('declare -x GH_T="gho_falso"\ndeclare -- MODE="contract"\ndeclare -- BASE_REPO="' + str(repo) + '"\ndeclare -- BRANCH=\"codex/SEN-123-rama\"\ndeclare -- REQUESTED_SHA="' + sha + '"\n')
         task = dict(id=1, group='suites', status={'Running': {'start': 100}}, command='exec bash ' + str(job / 'task.sh'))
         data = snapshot.collect('linux', 'desk', pueue=self.fake_pueue({'1': task}), home=self.root)
         self.assertNotIn('gho_falso', json.dumps(data))
         row = data['tasks'][0]
+        self.assertEqual(row['branch'], 'codex/SEN-123-rama')
+        body = job / 'body.sh'
+        body.write_text(body.read_text().replace('codex/SEN-123-rama', sha.upper()))
+        self.assertIsNone(snapshot.desk_metadata(task, self.root, {})['branch'])
         self.assertEqual((row['name'], row['project'], row['repo'], row['sha'], row['ticket']), ('contract', 'SEN-CheckIn', 'Owner/SEN-CheckIn', sha, None))
+
+    def test_remote_run_metadata_shared_by_hosts_and_never_emits_cmd(self):
+        mirror = self.root / 'mirror'
+        subprocess.run(['git', 'init', '-q', '-b', 'codex/SEN-234-prueba', str(mirror)], check=True)
+        subprocess.run(['git', '-C', str(mirror), '-c', 'user.name=Test', '-c', 'user.email=t@example.invalid',
+                        'commit', '--allow-empty', '-qm', 'Descripción <arbitraria>'], check=True)
+        run = self.root / 'run'
+        run.mkdir()
+        (run / 'meta').write_text('src=/Users/test/REPOS/proyecto/work\nmirror=mirror\ncmd=GH_T=secreto-no-exportar\nmirror=secreto-en-cmd\n')
+        # Un grupo cualquiera: la lectura depende del tipo de corrida, no del grupo.
+        raw = dict(id=8, group='otros', priority=9, status='Queued', path=str(run))
+        for mode, host in (('macos', 'mini'), ('linux', 'desk')):
+            data = snapshot.collect(mode, host, pueue=self.fake_pueue({'8': raw}), home=self.root)
+            row = data['tasks'][0]
+            self.assertEqual((row['branch'], row['subject'], row['project'], row['priority']),
+                             ('codex/SEN-234-prueba', 'Descripción <arbitraria>', 'proyecto', 9))
+            self.assertNotIn('cmd', json.dumps(data))
+            self.assertNotIn('secreto', json.dumps(data))
+        (run / 'meta').write_text('src=/Users/test/REPOS/proyecto\n')
+        # Sin nombre propio del espejo, la rama proporciona el nombre.
+        with patch.object(snapshot, 'command', return_value='codex/rama\n'):
+            (run / 'meta').write_text('mirror=.\n')
+            self.assertEqual(snapshot.mini_metadata(raw, self.root)['name'], 'rama')
+        (run / 'meta').write_text('mirror=inexistente\n')
+        row = snapshot.mini_metadata(raw, self.root)
+        self.assertIsNone(row['branch'])
+        self.assertIsNone(row['subject'])
 
     def test_capacity_failure_is_null_with_error(self):
         with patch.object(snapshot, 'mac_capacity', side_effect=OSError):
@@ -137,21 +168,85 @@ class ServerTests(unittest.TestCase):
 
     def test_estimates_success_median_normalization_and_minimum(self):
         task = dict(id=99, group='suites', name='suite-x-sol-r2', state='Running')
-        rows = [dict(id=i, group='suites', name='suite-x-opus', state='Done', start=100, end=100+d, result='Success') for i, d in enumerate([30, 10, 20])]
-        self.rack.history.add('mini', rows[:2], 150)
+        rows = [dict(id=i, group='suites', name='suite-x-opus', state='Done', start=100, end=100+d, result='Success') for i, d in enumerate([30, 10, 20, 40, 50])]
+        self.rack.history.add('mini', rows[:4], 150)
         self.assertIsNone(self.rack.history.estimate('mini', task))
         self.rack.history.add('mini', rows + [dict(rows[0], id=20, end=2000, result='exit 1')], 150)
-        self.assertEqual(self.rack.history.estimate('mini', task), dict(typical=20, n=3))
-        self.assertEqual(len(self.rack.history.rows), 4)
+        self.assertEqual(self.rack.history.estimate('mini', task), dict(typical=30, low=14, high=46, n=5))
+        self.assertEqual(len(self.rack.history.rows), 6)
         reloaded = serve.History(self.root)
-        self.assertEqual(len(reloaded.rows), 4)
+        self.assertEqual(len(reloaded.rows), 6)
         reloaded.add('mini', [], 40 * 86400)
         self.assertEqual(reloaded.rows, [])
 
     def test_last_twenty_durations(self):
         rows = [dict(id=i, group='g', name='x', state='Done', start=i, end=i+10+i, result='Success') for i in range(25)]
         self.rack.history.add('mini', rows, 100)
-        self.assertEqual(self.rack.history.estimate('mini', dict(group='g', name='x')), dict(typical=24.5, n=20))
+        self.assertEqual(self.rack.history.estimate('mini', dict(group='g', name='x')), dict(typical=24.5, low=16.9, high=32.1, n=20))
+
+    def test_branch_ticket_case_insensitive_and_existing_ticket_kept(self):
+        rows = [task(branch='codex/sEn-456-prueba'), task(ticket='SEN-9', branch='sen-1')]
+        self.rack.resolve_commits(rows, 1000)
+        self.assertEqual([r['ticket'] for r in rows], ['SEN-456', 'SEN-9'])
+
+    def test_new_snapshot_fields_are_validated_and_private_fields_removed(self):
+        row = task(branch='<rama>', subject='"commit"', priority=-2)
+        data = dict(sample(), tasks=[dict(row, envs={'GH_T': 'secret'}, command='secret', original_command='secret', path='secret')])
+        clean = serve.validate_snapshot(data, 'mini')['tasks'][0]
+        self.assertEqual(clean, row)
+        for field, value in (('branch', []), ('subject', 5), ('priority', True), ('priority', 1.5), ('priority', None)):
+            with self.assertRaises(ValueError):
+                serve.validate_snapshot(dict(sample(), tasks=[dict(row, **{field: value})]), 'mini')
+        for field in ('branch', 'subject', 'priority'):
+            missing = dict(row)
+            del missing[field]
+            with self.assertRaises(ValueError):
+                serve.validate_snapshot(dict(sample(), tasks=[missing]), 'mini')
+
+    def test_new_commit_cache_fields_are_validated(self):
+        path = self.root / 'commits.json'
+        path.write_text(json.dumps({'ok': dict(branch='b', subject='s', ticket=None, checked=100),
+                                    'bad_branch': dict(branch=[]), 'bad_subject': dict(subject=True)}))
+        self.assertEqual(set(serve.Rack(self.hosts, self.root, self.root / 'absent-key').commits), {'ok'})
+
+    def test_commit_negative_retry_and_deadline(self):
+        row = task(repo='Owner/Repo', sha='a' * 40)
+        self.rack.gh = '/bin/false'
+        self.rack.resolve_commits([row], 1000, deadline=0)
+        self.assertEqual(self.rack.commits, {})
+        with patch.object(serve.subprocess, 'run') as run:
+            run.return_value.stdout = ''
+            self.rack.resolve_commits([row], 1000)
+            self.assertEqual(run.call_count, 3)
+            self.rack.resolve_commits([row], 2799)
+            self.assertEqual(run.call_count, 3)
+            self.rack.resolve_commits([row], 2800)
+            self.assertEqual(run.call_count, 6)
+            key = 'Owner/Repo@' + row['sha']
+            self.rack.commits[key] = dict(ticket='SEN-1', branch='sen-1', subject=None, checked=2800)
+            self.rack.resolve_commits([row], 4599)
+            self.assertEqual(run.call_count, 6)
+            run.return_value.stdout = 'sen-1'
+            self.rack.resolve_commits([row], 4600)
+            self.assertEqual(run.call_count, 8)
+            self.assertEqual(self.rack.commits[key]['subject'], 'sen-1')
+
+    def test_commit_retry_failure_keeps_known_fields_and_pull_branch_used(self):
+        key = 'Owner/Repo@' + 'a' * 40
+        self.rack.commits[key] = dict(ticket='SEN-42', branch='codex/sen-42', subject=None, checked=1000)
+        row = task(repo='Owner/Repo', sha='a' * 40)
+        with patch.object(serve.subprocess, 'run', side_effect=subprocess.TimeoutExpired('gh', 5)):
+            self.rack.resolve_commits([row], 2800)
+        self.assertEqual((row['ticket'], row['branch']), ('SEN-42', 'codex/sen-42'))
+        self.assertEqual(self.rack.commits[key]['branch'], 'codex/sen-42')
+        other = task(repo='Owner/Repo', sha='b' * 40)
+        def run(argv, **kwargs):
+            path = argv[2]
+            out = '' if path.endswith('/branches-where-head') else 'codex/sen-7-prueba\n' if path.endswith('/pulls') else 'Asunto\n'
+            return subprocess.CompletedProcess(argv, 0, stdout=out)
+        with patch.object(serve.subprocess, 'run', side_effect=run):
+            self.rack.resolve_commits([other], 1000)
+        self.assertEqual((other['ticket'], other['branch'], other['subject']), ('SEN-7', 'codex/sen-7-prueba', 'Asunto'))
 
     def test_failed_host_keeps_previous_snapshot(self):
         self.rack.cycle(lambda host: sample(), now=1001)
@@ -269,7 +364,7 @@ class ServerTests(unittest.TestCase):
         sha = 'a' * 40
         calls = self.root / 'calls'
         gh = executable(self.root / 'gh', 'import sys\nopen(' + repr(str(calls)) + ', "a").write(" ".join(sys.argv[1:]) + "\\n")\n'
-                        'print("codex/sen-5702-pantalla" if sys.argv[2].endswith("/branches-where-head") else "")\n')
+                        'print("codex/sen-5702-pantalla" if sys.argv[2].endswith("/branches-where-head") else "Primera línea\\nSegunda línea")\n')
         rack = serve.Rack(self.hosts, self.root, self.root / 'absent-key', gh=gh)
         task = dict(id=1, group='jale', state='Running', name='gates', repo='Owner/SEN-CheckIn', sha=sha, ticket=None)
         rack.resolve_commits([task], 1000)
@@ -278,10 +373,15 @@ class ServerTests(unittest.TestCase):
         again = dict(task, ticket=None)
         serve.Rack(self.hosts, self.root, self.root / 'absent-key', gh='/bin/false').resolve_commits([again], 5000)
         self.assertEqual(again['ticket'], 'SEN-5702')
-        for bad in (dict(task, ticket=None, repo='x;rm'), dict(task, ticket=None, sha='HEAD')):
+        for bad in (dict(task, ticket=None, branch=None, repo='x;rm'), dict(task, ticket=None, branch=None, sha='HEAD')):
             rack.resolve_commits([bad], 1000)
             self.assertIsNone(bad['ticket'])
-        self.assertEqual(len(calls.read_text().splitlines()), 1)
+        self.assertEqual(len(calls.read_text().splitlines()), 2)
+        cached = json.loads((self.root / 'commits.json').read_text())['Owner/SEN-CheckIn@' + sha]
+        self.assertEqual(cached['branch'], 'codex/sen-5702-pantalla')
+        self.assertEqual(cached['subject'], 'Primera línea')
+        self.assertEqual(again['branch'], cached['branch'])
+        self.assertEqual(again['subject'], cached['subject'])
 
     def test_malformed_caches_are_ignored(self):
         sha = 'b' * 40
