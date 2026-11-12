@@ -1,0 +1,11 @@
+[Unit]
+Description=Pueue del desk por proyecto
+
+[Service]
+ExecStart=@HOME@/.local/bin/pueued
+ExecStartPost=/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py aplicar
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

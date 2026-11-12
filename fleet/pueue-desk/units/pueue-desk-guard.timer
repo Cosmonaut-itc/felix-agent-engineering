@@ -1,0 +1,10 @@
+[Unit]
+Description=Leer presión del desk cada minuto
+
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+AccuracySec=1
+
+[Install]
+WantedBy=timers.target
