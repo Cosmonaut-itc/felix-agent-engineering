@@ -95,8 +95,8 @@ Una segunda pausa directa de Pueue no expresa ese relevo. El estado
 `~/.local/state/pao/pueue-mini`. Verlo con
 `tail -f ~/.local/state/pao/pueue-mini/guardia.log`; rota a `guardia.log.1` a
 1 MiB. Los errores de ejecución de launchd aparecen en `launchd.err.log` del
-mismo directorio. Desinstalar conserva el estado y no reanuda grupos: revisar
-las pausas pendientes con `pueue status` y reanudarlas a mano si corresponde.
+mismo directorio. Desinstalar reanuda los grupos que pausó la guardia y vacía su propiedad; las
+pausas manuales no son suyas y siguen en pausa. Conserva el log.
 
 **Límite:** sólo frena la admisión: las tareas que ya corren siguen. Las
 corridas de `remote-run` encolan en `suites`; las corridas de Jale en la Mini

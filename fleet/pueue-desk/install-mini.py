@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 """Instala o retira sólo la guardia local de la Mini; nunca administra pueued."""
 import argparse
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -41,7 +42,8 @@ def main():
             print(f"SECO: crear {state} y renderizar plist -> {agent}")
             print("SECO: " + shlex.join([LAUNCHCTL, "bootstrap", domain, str(agent)]))
         else:
-            print(f"SECO: retirar {agent} y {library / 'control.py'}; conservar {state}")
+            print(f"SECO: {PUEUE} start -g <grupo> para cada grupo que pausó la guardia, y vaciar su propiedad")
+            print(f"SECO: retirar {agent} y {library / 'control.py'}; conservar el log en {state}")
         return
 
     if args.command == "instalar":
@@ -65,6 +67,20 @@ def main():
         agent.write_bytes(plistlib.dumps(template))
         run(LAUNCHCTL, "bootstrap", domain, str(agent))
     else:
+        # Sin guardia nadie reanudaría sus pausas; las manuales no están en su propiedad.
+        owned_file = state / "guardia-state.json"
+        if owned_file.exists():
+            with (state / "control.lock").open("a") as handle:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+                owned = json.loads(owned_file.read_text())
+                if not set(owned) <= {"suites", "default"}:
+                    raise ValueError("Grupos desconocidos en estado del guardia")
+                for group in sorted(owned):
+                    run(PUEUE, "start", "-g", group)
+                    remaining = sorted(set(json.loads(owned_file.read_text())) - {group})
+                    temporary = owned_file.with_suffix(".tmp")
+                    temporary.write_text(json.dumps(remaining) + "\n")
+                    temporary.replace(owned_file)
         agent.unlink(missing_ok=True)
         (library / "control.py").unlink(missing_ok=True)
         if library.exists():

@@ -229,6 +229,8 @@ class InstallerTests(Fixture):
                 self.service_loaded = False
             else:
                 self.fail(f"launchctl inesperado: {argv}")
+        elif argv[:3] == [installer.PUEUE, "start", "-g"]:
+            self.assertFalse(self.service_loaded)
         elif argv == [installer.PUEUE, "status", "--json"]:
             code = 0 if self.pueue_available else 1
             output = (self.root / "pueue.json").read_text()
@@ -265,7 +267,7 @@ class InstallerTests(Fixture):
             self.assertFalse((self.root / ".local/lib").exists())
             self.assertTrue(all(a[1] in ("print", "status") for a in self.actions))
 
-    def test_install_twice_plist_and_withdraw_twice_preserves_state(self):
+    def test_install_twice_plist_and_withdraw_twice_resumes_owned_groups(self):
         library = self.root / ".local/lib/pao-pueue-mini"
         state = self.root / ".local/state/pao/pueue-mini"
         agent = self.root / "Library/LaunchAgents" / (installer.LABEL + ".plist")
@@ -288,9 +290,10 @@ class InstallerTests(Fixture):
             self.assertFalse(self.service_loaded)
             self.assertFalse(agent.exists())
             self.assertFalse(library.exists())
-            self.assertEqual((state / "guardia-state.json").read_text(), '["suites"]\n')
+            self.assertEqual(json.loads((state / "guardia-state.json").read_text()), [])
             self.assertEqual((state / "guardia.log").read_text(), "registro conservado\n")
-        self.assertEqual([a[1] for a in self.actions if a[0] == installer.PUEUE], ["status", "status"])
+        self.assertEqual([a[1:] for a in self.actions if a[0] == installer.PUEUE],
+                         [["status", "--json"], ["status", "--json"], ["start", "-g", "suites"]])
         self.assertEqual(len([a for a in self.actions if a[1] == "bootstrap"]), 2)
         self.assertEqual(len([a for a in self.actions if a[1] == "bootout"]), 2)
 
