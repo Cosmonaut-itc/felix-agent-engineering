@@ -1,4 +1,5 @@
 """Retiro remoto: conserva todo el estado y los recibos históricos."""
+from collections import Counter
 import os
 from pathlib import Path
 import pwd
@@ -99,15 +100,50 @@ def live_command(command):
             if row[2] != "Z" and policy_command(row[3]) == command}
 
 
+def open_admissions(root=Path("/tmp/sen-test-slots")):
+    """Lee el estado normativo bajo su mutex, sin modificar claims ni recibos."""
+    if not root.exists() and not root.is_symlink():
+        return []
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    sys.path.insert(0, str(home / ".local/lib/pao-deskpolicy/v1"))
+    from deskpolicy.engine import DeskPolicy
+    from deskpolicy.store import Runtime, held, mutex, secure_dir, session_members
+
+    # La CLI ya es la respuesta de retiro; sólo usamos las bibliotecas históricas.
+    engine = DeskPolicy(Runtime(check_installation=False), prepare=False)
+    secure_dir(root)
+    with mutex(root):
+        records = engine.records(missing_ok=True)
+        live = []
+        for record in records:
+            claim = record["claim"]
+            if claim is None or claim["state"] == "closed":
+                continue
+            # Regla de reconcile_claim: ni lock de vida ni miembros de ninguna
+            # sesión del dueño o sus keepers. Un error aborta, nunca acredita vacío.
+            if held(engine.life_path(record["project"], claim["lane"])) or any(
+                session_members(sid) for sid in engine.claim_sessions(claim)
+            ):
+                live.append(record)
+        return live
+
+
 def drain(wait):
     deadline = time.monotonic() + wait
     while True:
-        running = live_command("ejecutar")
-        if not running:
+        # Incluye admitir que ya cargó la CLI vieja antes del reemplazo y aún
+        # no escribió su claim. ejecutar también puede estar antes de admitir.
+        running = Counter(policy_command(row[3]) for row in processes().values()
+                          if row[2] != "Z" and policy_command(row[3]) in ("ejecutar", "admitir"))
+        claims = Counter(f"{r['project']}/{r['kind']}" for r in open_admissions())
+        if not running and not claims:
             return True
         remaining = deadline - time.monotonic()
         if remaining <= 0:
-            print(f"Retiro pendiente: quedan {len(running)} corridas ejecutar vivas. "
+            detail = ", ".join(f"{count} {kind}" for kind, count in sorted(claims.items()))
+            commands = ", ".join(f"{count} {kind}" for kind, count in sorted(running.items()))
+            print(f"Retiro pendiente: quedan {sum(claims.values())} admisiones vivas "
+                  f"({detail or 'sin claim publicada'}); procesos CLI: {commands or 'ninguno'}. "
                   "Respuesta de retiro instalada; writer y unidades conservados. "
                   "Repite el retiro cuando terminen o usa --esperar N.", file=sys.stderr)
             return False

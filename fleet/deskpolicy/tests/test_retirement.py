@@ -1,4 +1,6 @@
 """Dobles de ssh, systemd y /proc: ninguna prueba conecta al desk."""
+import contextlib
+import io
 import importlib.util
 import json
 import os
@@ -8,6 +10,7 @@ import signal
 import subprocess
 import sys
 import tempfile
+import types
 import unittest
 from unittest.mock import patch
 
@@ -61,7 +64,7 @@ def run(argv, **kwargs):
     state_path.write_text(json.dumps(state))
     return subprocess.CompletedProcess(argv, status, output, '')
 subprocess.run = run
-program = program.replace('\nsys.exit(retire(', '\nprocesses = lambda: {}\nsys.exit(retire(')
+program = program.replace('\nsys.exit(retire(', '\nprocesses = lambda: {}\nopen_admissions = lambda: []\nsys.exit(retire(')
 exec(compile(program, '<ssh desk doble>', 'exec'))
 '''
 
@@ -70,6 +73,7 @@ class RetirementTests(unittest.TestCase):
     def test_any_command_is_terminal(self):
         for arguments in ([], ['--help'], ['estado'], ['pendiente'], ['admitir'],
                           ['publicar', '--desactivar-noche'], ['preflight'],
+                          ['admitir', '--request-id', 'nuevo'],
                           ['cerrar'], ['traspasar'], ['reconciliar'],
                           ['ejecutar', '--', 'touch', 'NO-EJECUTAR'], ['desconocido']):
             with self.subTest(arguments=arguments):
@@ -206,7 +210,8 @@ class RetirementTests(unittest.TestCase):
                                  (ROOT / 'cli.py').read_bytes())
                 events.append('scan')
                 return dict(alive)
-            with patch.object(remote, 'processes', side_effect=scan), \
+            with patch.object(remote, 'open_admissions', return_value=[]), \
+                 patch.object(remote, 'processes', side_effect=scan), \
                  patch.object(remote.pwd, 'getpwuid', return_value=type('User', (), {'pw_dir': str(home)})()), \
                  patch.object(remote, 'policy_units', return_value=[]), \
                  patch.object(remote, 'stop_units') as stop, \
@@ -251,12 +256,14 @@ class RetirementTests(unittest.TestCase):
         self.assertIn('--esperar debe ser no negativo', result.stderr)
 
     def test_wait_drains_or_times_out_without_stopping_writer(self):
-        with patch.object(remote, 'live_command', side_effect=[{410: ()}, {}]), \
+        with patch.object(remote, 'processes', return_value={}), \
+             patch.object(remote, 'open_admissions', side_effect=[[{'project': 'jale', 'kind': 'chain'}], []]), \
              patch.object(remote.time, 'monotonic', side_effect=[0, 0]), \
              patch.object(remote.time, 'sleep') as sleep:
             self.assertTrue(remote.drain(1))
             sleep.assert_called_once_with(0.2)
-        with patch.object(remote, 'live_command', return_value={410: ()}), \
+        with patch.object(remote, 'processes', return_value={}), \
+             patch.object(remote, 'open_admissions', return_value=[{'project': 'jale', 'kind': 'chain'}]), \
              patch.object(remote.time, 'monotonic', side_effect=[0, 1]):
             self.assertFalse(remote.drain(1))
 
@@ -267,11 +274,116 @@ class RetirementTests(unittest.TestCase):
                 with patch.object(remote.pwd, 'getpwuid', return_value=type('User', (), {'pw_dir': str(home)})()), \
                      patch.object(remote, 'policy_units', return_value=[]), \
                      patch.object(remote, 'processes', return_value={}), \
+                     patch.object(remote, 'open_admissions', return_value=[]), \
                      patch.object(remote, 'stop_processes', side_effect=error):
                     with self.assertRaises(type(error)):
                         remote.retire((ROOT / 'cli.py').read_bytes())
                 for relative in ('.local/lib/pao-deskpolicy/v1/deskpolicy/cli.py', '.local/bin/pao-deskpolicy'):
                     self.assertEqual((home / relative).read_bytes(), (ROOT / 'cli.py').read_bytes())
+
+    @contextlib.contextmanager
+    def historical_engine(self, records, held=True, members=(410,)):
+        """Dobla las bibliotecas que permanecen instaladas, nunca el desk."""
+        engine = unittest.mock.Mock()
+        engine.records.return_value = records
+        engine.life_path.return_value = Path('/locks/life')
+        engine.claim_sessions.side_effect = lambda claim: {410, 420}
+        libraries = {
+            'deskpolicy': types.ModuleType('deskpolicy'),
+            'deskpolicy.engine': types.ModuleType('deskpolicy.engine'),
+            'deskpolicy.store': types.ModuleType('deskpolicy.store'),
+        }
+        libraries['deskpolicy.engine'].DeskPolicy = unittest.mock.Mock(return_value=engine)
+        store = libraries['deskpolicy.store']
+        store.Runtime = unittest.mock.Mock()
+        store.held = unittest.mock.Mock(return_value=held)
+        store.session_members = unittest.mock.Mock(return_value=list(members))
+        store.mutex = lambda root: contextlib.nullcontext()
+        store.secure_dir = unittest.mock.Mock()
+        with patch.dict(sys.modules, libraries):
+            yield engine, store
+
+    def test_claims_use_life_lock_and_all_owner_keeper_sessions(self):
+        record = {'project': 'jale', 'kind': 'chain',
+                  'claim': {'state': 'active', 'lane': 1}}
+        closed = {'claim': {'state': 'closed'}}
+        with tempfile.TemporaryDirectory() as directory:
+            for held, members, expected in ((True, [], [record]), (False, [411], [record]),
+                                             (False, [], [])):
+                with self.subTest(held=held, members=members), \
+                     self.historical_engine([record, closed, {'claim': None}], held, members) as (_, store):
+                    self.assertEqual(remote.open_admissions(Path(directory)), expected)
+                    if not held and not members:
+                        self.assertEqual({c.args[0] for c in store.session_members.call_args_list}, {410, 420})
+            with self.historical_engine([record], False, []) as (_, store):
+                store.session_members.side_effect = PermissionError('censo ilegible')
+                with self.assertRaises(PermissionError):
+                    remote.open_admissions(Path(directory))
+
+    def test_admitir_loaded_before_cutover_blocks_without_published_claim(self):
+        cli = str(Path(pwd.getpwuid(os.getuid()).pw_dir) /
+                  '.local/lib/pao-deskpolicy/v1/deskpolicy/cli.py')
+        alive = {410: (1, '100', 'S', ('python3', '-I', cli, 'admitir'))}
+        with patch.object(remote, 'processes', return_value=alive), \
+             patch.object(remote, 'open_admissions', return_value=[]), \
+             contextlib.redirect_stderr(io.StringIO()) as stderr:
+            self.assertFalse(remote.drain(0))
+        self.assertIn('1 admitir', stderr.getvalue())
+
+    def test_close_rejection_from_historical_engine_never_becomes_success(self):
+        cli_spec = importlib.util.spec_from_file_location('retired_cli', ROOT / 'cli.py')
+        cli = importlib.util.module_from_spec(cli_spec)
+        cli_spec.loader.exec_module(cli)
+        with self.historical_engine([]) as (engine, _), \
+             patch.object(cli.os, 'read', return_value=b'token-invalido'), \
+             contextlib.redirect_stdout(io.StringIO()) as stdout:
+            engine.close.side_effect = ValueError('claim-token')
+            self.assertEqual(cli.close_previous(['--request-id', 'j1', '--run-id', 'rj1',
+                                                 '--pid', '410', '--claim-token-fd', '7']), 75)
+        self.assertEqual(json.loads(stdout.getvalue())['detail'], 'claim-token')
+
+    def test_jale_admitir_bash_blocks_retirement_then_closes_with_exit_7(self):
+        record = {'project': 'jale', 'kind': 'chain',
+                  'claim': {'state': 'active', 'lane': 1, 'script_exit_code': None}}
+        with tempfile.TemporaryDirectory() as directory:
+            home = Path(directory).resolve()
+            real_scan = getattr(remote, 'open_admissions', None)
+            cli = home / '.local/lib/pao-deskpolicy/v1/deskpolicy/cli.py'
+            alive = {410: (1, '100', 'S', ('bash', '-s', 'lint', '0' * 40)),
+                     411: (410, '101', 'S', ('bun', 'run', 'lint'))}
+            with self.historical_engine([record]) as (engine, store), \
+                 patch.object(remote.pwd, 'getpwuid', return_value=types.SimpleNamespace(pw_dir=str(home))), \
+                 patch.object(remote, 'processes', return_value=alive), \
+                 patch.object(remote, 'open_admissions', side_effect=lambda: real_scan(home), create=True), \
+                 patch.object(remote, 'policy_units', side_effect=lambda scope: ['writer.service'] if scope == 'user' else []), \
+                 patch.object(remote, 'stop_units') as stop, \
+                 patch.object(remote, 'stop_processes') as kill, \
+                 contextlib.redirect_stderr(io.StringIO()) as stderr:
+                self.assertEqual(remote.retire((ROOT / 'cli.py').read_bytes()), 2)
+                self.assertIn('1 admisiones vivas (1 jale/chain)', stderr.getvalue())
+                stop.assert_not_called()
+                kill.assert_not_called()
+                # Jale invoca cerrar después de terminar su Bash; el mismo CLI
+                # instalado debe delegar al close antiguo con los fd y el token.
+                module_spec = importlib.util.spec_from_file_location('installed_retired_cli', cli)
+                installed = importlib.util.module_from_spec(module_spec)
+                module_spec.loader.exec_module(installed)
+                def close(*args, **kwargs):
+                    self.assertEqual(args, ('j1', 'rj1', 410, 8, 9))
+                    self.assertEqual(kwargs, dict(claim_token='a' * 64, script_exit_code=7, cause='completed'))
+                    record['claim'].update(state='closed', script_exit_code=7)
+                    return record
+                engine.close.side_effect = close
+                argv = [str(cli), 'cerrar', '--request-id', 'j1', '--run-id', 'rj1', '--pid', '410',
+                        '--claim-token-fd', '7', '--script-exit-code', '7']
+                with patch.object(sys, 'argv', argv), patch.object(installed.os, 'read', return_value=b'a' * 64), \
+                     contextlib.redirect_stdout(io.StringIO()) as stdout:
+                    self.assertEqual(installed.main(), 0)
+                self.assertEqual(json.loads(stdout.getvalue())['claim']['script_exit_code'], 7)
+                # Segunda pasada: claim cerrada, sin tocar ni borrar registros.
+                self.assertEqual(remote.retire((ROOT / 'cli.py').read_bytes()), 0)
+                self.assertEqual(stop.call_count, 2)
+                kill.assert_called_once()
 
     def test_writer_children_terminated_without_killing_reused_pid(self):
         before = {410: self.inflight()[510],

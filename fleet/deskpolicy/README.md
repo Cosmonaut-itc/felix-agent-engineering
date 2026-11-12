@@ -22,14 +22,26 @@ Por `ssh desk`, descubre unidades systemd de usuario y sistema y comprueba
 servicios. Prepara ambos archivos de respuesta para detectar errores de
 permisos o rutas antes del reemplazo. Instala el rechazo antes de detener nada.
 
-Si quedan procesos de la CLI instalada en `ejecutar`, devuelve **2**, informa
-cuántos quedan y conserva writer y unidades sin enviar señales. Repite el
-retiro después, o usa `--esperar N` para esperar hasta N segundos. El vencimiento
-devuelve también 2 y deja instalado el rechazo. Las corridas admitidas y sus
-hijos terminan por sí solos, con las bibliotecas y registros antiguos intactos.
-El `execute` viejo espera a su hijo y cierra el recibo desde el mismo proceso;
-no consulta al writer durante la ejecución. Aun así se conserva el writer hasta
-completar el drenado.
+El drenado lee las claims de `/tmp/sen-test-slots/pao-wait/` bajo el mutex
+antiguo, además de los procesos `ejecutar` y `admitir` que pudieron cargar
+la CLI antes del reemplazo. Si queda una admisión viva, devuelve **2**,
+informa el total y los tipos (`jale/chain`, `hasito/script`, etc.) y conserva
+writer y unidades sin enviar señales. Repite el retiro después, o usa
+`--esperar N` para esperar hasta N segundos. El vencimiento también devuelve 2.
+
+Una claim abierta se considera abandonada sólo si su lock de vida está libre
+y todas las sesiones del dueño y sus keepers están vacías, igual que en
+`DeskPolicy.reconcile_claim` antiguo. Que muera el dueño no basta si quedan
+hijos o un keeper. Los errores de lectura o validación abortan el retiro.
+La consulta no cambia claims ni recibos históricos.
+
+La respuesta instalada conserva una sola excepción: **`cerrar` con sus
+argumentos** delega a `DeskPolicy.close` de las bibliotecas históricas ya
+instaladas. Mantiene las validaciones de token, identidad, mutex, lock de vida
+y sesiones vacías; permite a Jale acreditar `script_exit_code` al terminar
+durante el drenado. No copia ni ejecuta la CLI antigua, ni habilita admisiones.
+El `ejecutar` viejo cierra desde su propio proceso. Las bibliotecas antiguas
+siguen intactas; el writer se conserva hasta completar el drenado.
 
 Con el desk drenado, detiene y deshabilita activadores, writer y guardias.
 Sólo termina procesos sin unidad identificados como `publicar` de la CLI
@@ -47,7 +59,8 @@ configuración ni bibliotecas históricas del desk. No instala nada local.
 Un error del retiro se devuelve al operador; no acredita un corte completo.
 
 La fecha fija de la respuesta es `2026-11-12`, fecha del contrato de retiro.
-Incluso `--help` y operaciones desconocidas fallan sin analizar argumentos.
+Salvo el cierre acreditado anterior, incluso `--help` y operaciones desconocidas
+fallan sin analizar argumentos. Un cierre inválido nunca acredita éxito.
 
 ## Lo que ven las sesiones viejas
 
@@ -86,7 +99,7 @@ Clientes consultados con `git show origin/main:RUTA` el 2026-11-12:
 ## Verificación sin desk
 
 ```sh
-~/.local/bin/remote-run start --name dirigida-u16-r2 --no-git -- 'python3 -I -m unittest discover -s fleet/deskpolicy/tests -v && shellcheck --severity=warning fleet/deskpolicy/*-desk.sh'
+~/.local/bin/remote-run start --name dirigida-u16-r3 --no-git -- 'python3 -I -m unittest discover -s fleet/deskpolicy/tests -v && shellcheck --severity=warning fleet/deskpolicy/*-desk.sh'
 ~/.local/bin/remote-run wait ID
 ```
 
