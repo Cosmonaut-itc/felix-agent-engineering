@@ -296,7 +296,8 @@ class OwnerCheck:
                 return cached[1]
             allowed = False
             try:
-                result = subprocess.run([self.tailscale, 'whois', '--json', address], timeout=3,
+                # Bajo launchd, el binario de Tailscale.app sólo actúa como CLI si su padre es un shell.
+                result = subprocess.run(['/bin/sh', '-c', '"$0" whois --json "$1"; exit $?', self.tailscale, address], timeout=3,
                     check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
                 profile = json.loads(result.stdout)['UserProfile']
                 allowed = bool(self.owner) and profile['LoginName'] == self.owner

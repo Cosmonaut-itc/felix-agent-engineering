@@ -2,6 +2,7 @@
 set -euo pipefail
 origen=$(cd "$(dirname "$0")" && pwd)
 label=com.cosmonaut.pao-rack
+puerto=8788
 destino="$HOME/.local/lib/pao-rack"
 plist="$HOME/Library/LaunchAgents/$label.plist"
 if [ "$#" -gt 1 ]; then echo 'Demasiados argumentos' >&2; exit 2; fi
@@ -31,7 +32,7 @@ trap 'rm -rf "$temporal"' EXIT
 "$tailscale" status --json > "$temporal/status.json"
 "$tailscale" serve status --json > "$temporal/serve.json"
 "$tailscale" funnel status --json > "$temporal/funnel.json"
-/usr/bin/python3 - "$ip" "$temporal/serve.json" "$temporal/funnel.json" <<'PY'
+/usr/bin/python3 - "$ip" "$puerto" "$temporal/serve.json" "$temporal/funnel.json" <<'PY'
 import ipaddress
 import json
 import re
@@ -43,22 +44,22 @@ def exposes(value):
         return any(exposes(k) or exposes(v) for k, v in value.items())
     if isinstance(value, list):
         return any(exposes(v) for v in value)
-    return bool(re.search(r'(?<!\d)8787(?!\d)', str(value)))
-for path in sys.argv[2:]:
+    return bool(re.search(r'(?<!\d)' + sys.argv[2] + r'(?!\d)', str(value)))
+for path in sys.argv[3:]:
     with open(path) as stream:
         if exposes(json.load(stream)):
-            sys.exit('rack: Serve o Funnel expone el puerto 8787; elimina esa exposición antes de instalar')
+            sys.exit('rack: Serve o Funnel mencionan el puerto ' + sys.argv[2] + '; elimina esa exposición antes de instalar')
 PY
 mkdir -p "$destino" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
 for archivo in snapshot.py serve.py index.html hosts.json; do
   install -m 644 "$origen/$archivo" "$destino/$archivo"
 done
-/usr/bin/python3 - "$destino" "$plist" "$ip" "$temporal/status.json" <<'PY'
+/usr/bin/python3 - "$destino" "$plist" "$ip" "$puerto" "$temporal/status.json" <<'PY'
 import json
 import os
 import plistlib
 import sys
-root, plist, ip, status_path = sys.argv[1:]
+root, plist, ip, port, status_path = sys.argv[1:]
 with open(status_path) as stream:
     status = json.load(stream)
 owner = status['User'][str(status['Self']['UserID'])]['LoginName']
@@ -66,7 +67,7 @@ if not isinstance(owner, str) or not owner:
     sys.exit('rack: no se pudo resolver el dueño de la Mini')
 with open(plist, 'wb') as stream:
     plistlib.dump(dict(Label='com.cosmonaut.pao-rack',
-        ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', '8787', '--owner', owner],
+        ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', port, '--owner', owner],
         KeepAlive=True, RunAtLoad=True,
         StandardOutPath=os.path.expanduser('~/Library/Logs/pao-rack.log'),
         StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log')), stream)

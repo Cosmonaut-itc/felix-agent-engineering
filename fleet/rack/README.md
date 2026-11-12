@@ -36,14 +36,15 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
 5. Copiar `fleet/rack/` a la Mini y, allí, ejecutar `bash instalar.sh`.
    Obtiene la IP con `/Applications/Tailscale.app/Contents/MacOS/Tailscale ip -4`,
    verifica los JSON de `serve status` y `funnel status` y aborta si mencionan
-   el puerto 8787. También aborta si no puede consultar su configuración.
+   el puerto 8788. También aborta si no puede consultar su configuración.
    Resuelve el dueño mediante `status --json`: `Self.UserID` →
    `User[<id>].LoginName`. Copia los cuatro archivos a
    `~/.local/lib/pao-rack/` y carga `com.cosmonaut.pao-rack` con KeepAlive.
-   El puerto es **8787**; el Funnel existente en 10000 no se modifica.
+   El puerto es **8788**, fijado en `puerto=` de `instalar.sh`; en la Mini
+   el 8787 ya lo usa otro servicio. El Funnel existente en 10000 no se modifica.
 
 El LaunchAgent ejecuta `/usr/bin/python3 -I serve.py --bind <IP tailnet>
---port 8787 --owner <LoginName>`. Logs en `~/Library/Logs/pao-rack.log`.
+--port 8788 --owner <LoginName>`. Logs en `~/Library/Logs/pao-rack.log`.
 `bash instalar.sh --desinstalar` descarga el agente y quita sus archivos;
 conserva historial, caché, key de Linear, llave SSH y logs.
 
@@ -62,17 +63,17 @@ Los cambios de identidad pueden tardar hasta 5 minutos en reflejarse.
 Después de instalar, desde otro dispositivo del dueño conectado al tailnet:
 
 ```bash
-curl -sS -o /dev/null -w '%{http_code}\n' http://<IP-TAILNET-MINI>:8787/
+curl -sS -o /dev/null -w '%{http_code}\n' http://<IP-TAILNET-MINI>:8788/
 # 200
-curl -sS -o /dev/null -w '%{http_code}\n' -H 'Tailscale-Funnel-Request: ?1' http://<IP-TAILNET-MINI>:8787/
+curl -sS -o /dev/null -w '%{http_code}\n' -H 'Tailscale-Funnel-Request: ?1' http://<IP-TAILNET-MINI>:8788/
 # 403
-curl --connect-timeout 3 http://<IP-LAN-MINI>:8787/
+curl --connect-timeout 3 http://<IP-LAN-MINI>:8788/
 # Conexión rechazada: no debe responder HTTP por la IP de red local.
 ```
 
 Comprobar también desde un dispositivo de otro dueño: debe dar 403. No usar
 Funnel para verificarlo. Revisar de nuevo `Tailscale serve status --json` y
-`Tailscale funnel status --json`: no deben exponer 8787.
+`Tailscale funnel status --json`: no deben exponer 8788.
 
 ## Datos y operación
 
