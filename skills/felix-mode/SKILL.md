@@ -246,7 +246,7 @@ que demuestra:
   contexto nuevo, también en alto riesgo. Su brief lleva el brief original,
   el registro, el head ya revisado y el diff desde ese head, con
   `git range-diff` si hubo rebase. El revisor marca cada id del registro
-  como `resuelto` o `sigue abierto: <motivo>` y busca critical y warning en
+  como `resuelto`, `sigue asumido` o `sigue abierto: <motivo>` y busca critical y warning en
   lo que el delta cambió. Fuera del delta reporta sólo un critical. Da APTO
   sobre el head nuevo cuando ningún id sigue abierto y no trae critical ni
   warning nuevo, y ese APTO vale por todo el nivel. La ronda vuelve a ser completa si la corrección cambia de enfoque según
@@ -257,9 +257,9 @@ que demuestra:
   [procedimiento de merge](references/merge.md).
 - **Hallazgos.** El brief de todo revisor pide critical, warning y los nits
   de gravedad alta, que son riesgos asumidos. Descarta los demás nits sin
-  registrarlos. La clase sale sólo de **Clase**, también en documentación,
-  y la review de UI sigue [Menos es más](references/menos-es-mas.md). Corrige cada hallazgo aceptado con
-  el cambio mínimo y rebate con evidencia el que esté mal. Escribe tú la
+  registrarlos. La clase sale de **Clase**, también en documentación. En la
+  review de UI la fija [Menos es más](references/menos-es-mas.md). Corrige
+  cada critical y warning aceptado con el cambio mínimo y rebate con evidencia el que esté mal. Escribe tú la
   corrección de la ronda si cabe en el umbral de «Delegación» del routing.
   Si lo supera, o si corrige un candidato del
   [acumulador](references/acumulador.md), despáchala. Lo que pide trabajo
@@ -272,7 +272,7 @@ que demuestra:
   cambia entre rondas. El estado es `abierto`, `corregido`, `rebatido`,
   `declinado` o `asumido`. Si el nivel sube a alto, cada `asumido` vuelve a
   `abierto` como warning.
-- **Regla por hallazgo.** Si un hallazgo aceptado es mecánico, como un
+- **Regla por hallazgo.** Si un critical o warning aceptado es mecánico, como un
   patrón de sintaxis, una API prohibida, una forma de import o una regla de
   ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
   el orden de `pstack:correct`: arquitectura, tipos, un lint cuyo error
