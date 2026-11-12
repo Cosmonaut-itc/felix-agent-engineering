@@ -51,11 +51,18 @@ Ejecutar desde este worktree. RED conserva todo el código y las pruebas de
 `git rev-parse HEAD`, y superpone sólo las pruebas U4 sin commitearlas. No
 cambia el checkout de trabajo. El desk exige admisión: `remote-run` directo
 hacia el desk se rechaza sin `--desk-request` y `--desk-lane`. Las dos
-corridas entran por el lanzador de comprador, que exige `REMOTE_RUN_HOST=desk`,
-registra la solicitud, espera carril y devuelve el código.
+corridas entran por el lanzador de comprador desde un worktree en `origin/main`
+(el checkout principal puede ir atrás y traer un `run.py` sin admisión). Ese
+lanzador exige `REMOTE_RUN_HOST=desk`, registra la solicitud, espera carril,
+despacha con `--desk-request` y `--desk-lane` y devuelve el código.
 
 ```sh
-run_sh=/Users/felixddhs/VSCODE/REPOS/comprador./scripts/mini/run.sh
+hasito=/Users/felixddhs/VSCODE/REPOS/comprador.
+git -C "$hasito" fetch origin main
+hasito_run=$(mktemp -d /tmp/hasito-run.XXXXXX)
+git -C "$hasito" worktree add --detach "$hasito_run" origin/main
+grep -q -- '--desk-request' "$hasito_run/scripts/mini/remote-run"
+run_sh=$hasito_run/scripts/mini/run.sh
 export REMOTE_RUN_HOST=desk
 # Preparación local de un worktree RED nuevo, sin ejecutar pruebas locales.
 u4_red_dir=$(mktemp -d /tmp/pao-u4-red.XXXXXX)
@@ -68,7 +75,7 @@ cp fleet/deskpolicy/evidence/u4-red.sh "$u4_red_dir/u4-red.sh"
 # GREEN: suite completa y ShellCheck del CI para los scripts del módulo.
 "$run_sh" --entorno desk --worktree "$PWD" --owner u4-puente --etiqueta dirigida-u4-green \
   --script "$PWD/fleet/deskpolicy/evidence/u4-green.sh" --evidencia ~/.claude/encargos/desk-pueue/evidencia-u4-green
-# Al terminar: git worktree remove --force "$u4_red_dir"
+# Al terminar: git worktree remove --force "$u4_red_dir"; git -C "$hasito" worktree remove --force "$hasito_run"
 ```
 
 ## Consumidores leídos
