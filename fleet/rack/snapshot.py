@@ -34,8 +34,11 @@ def mini_metadata(task, home=None):
     with (Path(task['path']).expanduser() / 'meta').open() as stream:
         for line in stream:
             key, sep, value = line.rstrip('\n').partition('=')
+            # remote-run escribe cmd= al final y puede ocupar varias líneas: nada después se lee.
+            if key == 'cmd':
+                break
             if sep and key in ('src', 'mirror'):
-                meta[key] = value
+                meta.setdefault(key, value)
     branch, subject = None, None
     mirror = meta.get('mirror')
     if mirror:

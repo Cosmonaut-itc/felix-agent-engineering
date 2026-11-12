@@ -90,7 +90,7 @@ const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;
 const what = t => t.title || t.subject || t.branch || objective(t);
 // Nombre de producto por carpeta, repo o proyecto de Linear; igual con o sin ticket.
 const PRODUCT = {'comprador':'Hasito','hasito':'Hasito','sen-checkin':'Jale','jale':'Jale','personal-agent-orchestration':'PAO','felix-agent-engineering':'PAO','marhbe':'MARHBE'};
-const proj = t => { const p = t.project || t.linear_project || t.group || ''; return PRODUCT[p.toLowerCase()] || p.charAt(0).toUpperCase() + p.slice(1); };
+const proj = t => { const p = (t.project || t.linear_project || t.group || '').replace(/\.+$/, ''); return PRODUCT[p.toLowerCase()] || p.charAt(0).toUpperCase() + p.slice(1); };
 const OBJ = {contract:'Contrato',e2e:'E2E','api-unit':'Unitarias API','web-unit':'Unitarias web',types:'Tipos',gates:'Gates completos',launch:'Arranque',lint:'Lint'};
 const objective = t => {
   if (!t.name) return 'sin nombre';
@@ -137,7 +137,8 @@ function capacity(h){
   </div>`;
 }
 const fmtDur = s => s < 5400 ? `${Math.max(1,Math.round(s/60))} min` : `${(s/3600).toFixed(1)} h`;
-const span = e => Math.round(e.low/60) === Math.round(e.high/60) ? fmtDur(e.typical) : `${fmtDur(e.low).replace(' min','')}–${fmtDur(e.high)}`;
+const span = e => Math.round(e.low/60) === Math.round(e.high/60) ? fmtDur(e.typical)
+  : e.high < 5400 ? `${Math.max(1,Math.round(e.low/60))}–${fmtDur(e.high)}` : `${(e.low/3600).toFixed(1)}–${fmtDur(e.high)}`;
 // La barra sólo sale con base: 5 corridas o más y un rango que no pase del triple de la mediana.
 const known = t => t.est && t.est.n >= 5 && t.est.high <= 3 * t.est.typical;
 function progress(t){

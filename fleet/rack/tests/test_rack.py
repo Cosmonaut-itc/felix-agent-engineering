@@ -105,7 +105,7 @@ class SnapshotTests(unittest.TestCase):
                         'commit', '--allow-empty', '-qm', 'Descripción <arbitraria>'], check=True)
         run = self.root / 'run'
         run.mkdir()
-        (run / 'meta').write_text('src=/Users/test/REPOS/proyecto/work\nmirror=mirror\ncmd=GH_T=secreto-no-exportar\n')
+        (run / 'meta').write_text('src=/Users/test/REPOS/proyecto/work\nmirror=mirror\ncmd=GH_T=secreto-no-exportar\nmirror=secreto-en-cmd\n')
         # Un grupo cualquiera: la lectura depende del tipo de corrida, no del grupo.
         raw = dict(id=8, group='otros', priority=9, status='Queued', path=str(run))
         for mode, host in (('macos', 'mini'), ('linux', 'desk')):
@@ -230,6 +230,23 @@ class ServerTests(unittest.TestCase):
             self.rack.resolve_commits([row], 4600)
             self.assertEqual(run.call_count, 8)
             self.assertEqual(self.rack.commits[key]['subject'], 'sen-1')
+
+    def test_commit_retry_failure_keeps_known_fields_and_pull_branch_used(self):
+        key = 'Owner/Repo@' + 'a' * 40
+        self.rack.commits[key] = dict(ticket='SEN-42', branch='codex/sen-42', subject=None, checked=1000)
+        row = task(repo='Owner/Repo', sha='a' * 40)
+        with patch.object(serve.subprocess, 'run', side_effect=subprocess.TimeoutExpired('gh', 5)):
+            self.rack.resolve_commits([row], 2800)
+        self.assertEqual((row['ticket'], row['branch']), ('SEN-42', 'codex/sen-42'))
+        self.assertEqual(self.rack.commits[key]['branch'], 'codex/sen-42')
+        other = task(repo='Owner/Repo', sha='b' * 40)
+        def run(argv, **kwargs):
+            path = argv[2]
+            out = '' if path.endswith('/branches-where-head') else 'codex/sen-7-prueba\n' if path.endswith('/pulls') else 'Asunto\n'
+            return subprocess.CompletedProcess(argv, 0, stdout=out)
+        with patch.object(serve.subprocess, 'run', side_effect=run):
+            self.rack.resolve_commits([other], 1000)
+        self.assertEqual((other['ticket'], other['branch'], other['subject']), ('SEN-7', 'codex/sen-7-prueba', 'Asunto'))
 
     def test_failed_host_keeps_previous_snapshot(self):
         self.rack.cycle(lambda host: sample(), now=1001)

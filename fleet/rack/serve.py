@@ -230,8 +230,7 @@ class Rack:
                 try:
                     result = subprocess.run([self.gh, 'api', 'repos/' + repo + '/commits/' + sha + '/' + path, '--jq', '.[].' + field],
                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=min(5, max(.001, deadline - time.monotonic())), check=True)
-                    if path == 'branches-where-head':
-                        branch = next(iter(result.stdout.splitlines()), None)
+                    branch = branch or next(iter(result.stdout.splitlines()), None)
                     match = re.search(r'sen-(\d+)', result.stdout, re.I)
                     found = 'SEN-' + match[1] if match else None
                 except (OSError, subprocess.SubprocessError):
@@ -246,7 +245,9 @@ class Rack:
                     subject = next(iter(result.stdout.splitlines()), None)
                 except (OSError, subprocess.SubprocessError):
                     logging.warning('No se pudo consultar un commit en GitHub')
-            self.commits[key] = dict(ticket=found, branch=branch, subject=subject, checked=now)
+            previous = self.commits.get(key) if isinstance(self.commits.get(key), dict) else {}
+            self.commits[key] = dict(ticket=found or previous.get('ticket'), branch=branch or previous.get('branch'),
+                                     subject=subject or previous.get('subject'), checked=now)
         if pending:
             atomic(self.commit_path, json.dumps(self.commits))
         for task in tasks:
