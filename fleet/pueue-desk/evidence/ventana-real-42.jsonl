@@ -1,0 +1,8 @@
+{"utc": "2026-11-12T15:14:38.578472+00:00", "evento": "cerrado", "grupo": "default", "motivo": "arranque"}
+{"utc": "2026-11-12T15:14:38.578765+00:00", "evento": "cerrado", "grupo": "suites", "motivo": "arranque"}
+{"utc": "2026-11-12T15:14:38.578973+00:00", "evento": "interrumpida", "tarea": "42", "created_at": "2026-11-12T09:14:38.438956-06:00", "start": "2026-11-12T15:14:38.577799+00:00", "grupo": "suites", "causa": "log_existente"}
+{"utc": "2026-11-12T15:14:38.596887+00:00", "evento": "decision", "accion": "reanudar", "motivo": "arranque"}
+{"utc": "2026-11-12T15:14:38.651163+00:00", "evento": "reanudado", "grupo": "default", "motivo": "arranque"}
+{"utc": "2026-11-12T15:14:38.865866+00:00", "evento": "cerrado", "grupo": "default", "motivo": "arranque"}
+{"utc": "2026-11-12T15:14:38.880229+00:00", "evento": "decision", "accion": "reanudar", "motivo": "arranque"}
+{"utc": "2026-11-12T15:14:38.941773+00:00", "evento": "reanudado", "grupo": "default", "motivo": "arranque"}

@@ -143,14 +143,27 @@ class PrivateTests(unittest.TestCase):
             directory = self.prepare(inst)
             inst.start()
             self.open(inst, directory)
-            inst.await_status(task_id, 'Done')
+            result = inst.await_status(task_id, 'Done')
             count = len(sentinel.read_text().splitlines()) if sentinel.exists() else 0
             self.assertLessEqual(count, 1, (index, task_id, count))
             executed += count
-            # Evita crecimiento cuadrático y conserva la prueba de ausencia de
-            # reutilización: los ids se guardan hasta acabar las 500 iteraciones.
+            if inst.status()['groups']['suites']['status'] == 'Paused':
+                # El caso Queued+log exige intervención por contrato. Resolver
+                # sólo el grupo antes del próximo experimento, que usa otro id.
+                self.assertEqual(result['status']['Done']['result'], 'Killed')
+                with control.locked(directory):
+                    control.request_resume(inst, 'suites', directory, Path('/no-proc'), host='mini')
+            # Los ids se guardan hasta acabar los 500 ciclos: jamás restart.
             if index % 100 == 99:
                 print('PRIVADA ciclos', index + 1, 'sin duplicados', flush=True)
+        # Releer al final recoge también un último efecto de un hijo que aún
+        # estaba terminando tras el SIGKILL del daemon.
+        executed = 0
+        time.sleep(.05)
+        for sentinel in inst.root.glob('iteration-*'):
+            count = len(sentinel.read_text().splitlines())
+            self.assertLessEqual(count, 1, sentinel)
+            executed += count
         print('PRIVADA 500 SIGKILL: efectos=', executed, 'ventanas Queued+log observadas=', observed_log_window)
 
 

@@ -200,7 +200,9 @@ Incluye dobles de Docker/PSI, propiedad y pausas manuales, preparación
 idempotente, estado ilegible, mantenimiento y SIGKILL por frontera del
 instalador y del reconciliador. Las privadas comprueban TERM/KILL,
 pendientes con mismo id, grupos vacíos, log antiguo y 500 ciclos de
-`add`/SIGKILL sin duplicar centinelas. Las privadas sólo se habilitan en
+`add`/SIGKILL sin duplicar centinelas. Si aparece la ventana `Queued` + log,
+se comprueba el fallo conservador y se solicita admisión del grupo antes
+del siguiente experimento, que usa un id nuevo. Las privadas sólo se habilitan en
 Mini con ese indicador; el resto usa dobles en directorios temporales.
 
 Pendiente fuera de este entorno: systemd/cgroup real, WSL/Windows Update,
@@ -213,3 +215,12 @@ cola, Docker y timeout, cuotas, guardia Mini e intención antes del efecto.
 Se excluyen `host.py`, supervisor, recuperación, estado v2, configuración y
 socket gestionados, bitácora de auditoría y pruebas de recuperación. La
 base de esta implementación es U11 en `origin/main`, no aquel commit.
+
+El primer pase dirigido (`20261112-090936-370225`, SHA `53b0cdd9`) capturó
+una ventana real en la tarea 42: `Queued` con log pasó a `Killed` y dejó
+`suites` cerrada. El arnés erró al esperar que la siguiente tarea avanzara
+sin resolver esa pausa. Se corrigió sólo el arnés para solicitar admisión
+después de comprobar el fallo conservador y antes de encolar el siguiente
+id. No se reencola la fallida. Salida y causa:
+[primer pase](evidence/dirigida-u17a-sol-primer-pase.txt),
+[registro del caso 42](evidence/ventana-real-42.jsonl).

@@ -49,6 +49,7 @@ class FakeMachine:
         value = self.read()
         value['queue']['groups'][group]['parallel_tasks'] = number
         self.write(value)
+        self.checkpoint('pueue:parallel:' + group)
 
     def call(self, *args):
         value = self.read()
@@ -79,6 +80,8 @@ class FakeMachine:
                 value['loaded'].remove(label)
                 if label in value['daemons']:
                     value['daemons'].remove(label)
+        elif op == 'kickstart':
+            code = 0 if label in value['loaded'] else 113
         elif op == 'bootstrap':
             if label in value['loaded']:
                 code = 5
@@ -225,6 +228,43 @@ class HandoffTests(unittest.TestCase):
                         manager(home).reconcile()
                     self.assert_healthy(home)
             print(f'W6 job {action}: SIGKILL en {len(job_steps)} fronteras y reintento sano')
+
+    def test_async_bootstrap_and_sigkill_before_socket_response(self):
+        for action, initial in (('install', 'brew'), ('withdraw', 'own')):
+            with self.subTest(action=action):
+                home = self.fresh('async-' + action, initial)
+                desired = mini.LABEL if action == 'install' else mini.BREW_LABEL
+                machine = FakeMachine(home)
+                # Bootstrap retorna antes de que preparar tome control.lock.
+                def launch(*args, check=True):
+                    result = machine.launch(*args, check=check)
+                    if args[0] == 'bootstrap' and Path(args[-1]).stem == desired:
+                        state = machine.read()
+                        state['daemons'] = []
+                        state['pending'] = desired
+                        machine.write(state)
+                    return result
+                def interrupted():
+                    instance = manager(home)
+                    instance.launch = launch
+                    instance.change(action, False, preflight=False)
+                    os.kill(os.getpid(), signal.SIGKILL)
+                child = self.context.Process(target=interrupted)
+                child.start()
+                child.join(10)
+                self.assertFalse(child.is_alive())
+                self.assertEqual(child.exitcode, -signal.SIGKILL)
+                self.assertEqual(machine.read()['daemons'], [])
+                self.assertTrue(manager(home).transaction.exists())
+                # Otro tick mientras el destino sigue arrancando no pierde
+                # intención ni carga un segundo daemon.
+                manager(home).reconcile()
+                state = machine.read()
+                self.assertEqual(state['daemons'], [])
+                state['daemons'] = [state.pop('pending')]
+                machine.write(state)
+                manager(home).reconcile()
+                self.assert_healthy(home)
 
     def test_running_task_aborts_without_stopping_daemon(self):
         home = self.fresh('busy')
