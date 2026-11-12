@@ -64,6 +64,12 @@ fila con `ssh mini pueue status -g suites`. Si la corrida usa algo que no admite
 dos usuarios a la vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
 `postgres:5434`).
 
+Una sesión que corre en Felix DESKTOP llega a la Mini con `ssh mini`, desde
+Windows y desde WSL. Lanza `remote-run` desde un clon en WSL: el checkout de
+Windows sale con CRLF y Git Bash no trae `rsync`. El desk guarda además una
+copia local de `icg-test` en `127.0.0.1:14330`; los docs de cada repositorio
+que usa `icg-test` dicen para qué sirve.
+
 ## Roles
 
 - **Orquestador:** recibe la tarea del usuario, decide el reparto, conserva
