@@ -15,7 +15,7 @@ ENTRY = Path(__file__).resolve().parents[1] / 'coalition_entry.py'
 
 
 class Bootstrap(unittest.TestCase):
-    def launch(self, byte, extra=(), missing=False, exit_code=0, expected_tail=None, wrong_digest=False):
+    def launch(self, byte, extra=(), missing=False, exit_code=0, expected_tail=None, wrong_digest=False, empty=False):
         root = Path(tempfile.mkdtemp(prefix='entry-'))
         self.addCleanup(shutil.rmtree, str(root), True)
         counter = root / 'counter'
@@ -26,6 +26,8 @@ class Bootstrap(unittest.TestCase):
                 "sys.exit(%d)" % exit_code, str(counter), str(actual_argv)] + list(extra)
         if missing:
             argv = [str(root / 'no-such-executable')]
+        if empty:
+            argv = ['']
         digest = hashlib.sha256(json.dumps(argv, separators=(',', ':')).encode()).hexdigest()
         if wrong_digest:
             digest = '0' * 64
@@ -86,6 +88,11 @@ class Bootstrap(unittest.TestCase):
         self.assertEqual(self.launch(b'G', exit_code=3, expected_tail=b''), (b'R', 3, 1))
         self.assertEqual(self.launch(b'G', missing=True,
                                      expected_tail=('E%d\n' % errno.ENOENT).encode('ascii')), (b'R', 3, 0))
+
+    def test_empty_executable_reports_einval(self):
+        """Variante: exec_failure_only_oserror."""
+        self.assertEqual(self.launch(b'G', empty=True,
+                                     expected_tail=('E%d\n' % errno.EINVAL).encode('ascii')), (b'R', 3, 0))
 
     def test_eof_or_invalid_byte_never_enters(self):
         """Variante: enter_on_eof."""

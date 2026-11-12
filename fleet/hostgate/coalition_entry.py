@@ -5,9 +5,11 @@ sesión nueva, con close_fds y tuberías privadas, después del consumo del perm
 módulos del intérprete; no importa código de usuario ni ejecuta el argv. EOF, una lectura corta o
 cualquier otro byte salen con 3 sin entrar. El byte llega una sola vez, cuando el registro de la raíz ya
 es durable en hostgate y en el ledger de Fleet. La tubería ready sigue abierta tras R y se cierra
-al lograr exec (no heredable). Después de G, R seguido de EOF confirma exec; si execvp falla,
-ready recibe E<errno>\n en ASCII (por ejemplo E2\n para ENOENT) antes de salir con 3.
+al lograr exec (no heredable). Después de G, todo camino sin exec logrado intenta escribir
+E<errno>\n en ready antes de salir con 3: errno de OSError o EINVAL para cualquier otra excepción;
+si falla la escritura, sale igual con 3. R seguido de EOF confirma exec si el canal sigue operativo.
 """
+import errno
 import hashlib
 import json
 import os
@@ -31,11 +33,15 @@ def main(args):
     finally:
         os.close(go)
     if byte != GO: return 3  # EOF o un byte inválido: nunca se entra
-    os.set_inheritable(ready, False)
     try:
+        os.set_inheritable(ready, False)
         os.execvp(argv[0], argv)
-    except OSError as exc:
-        os.write(ready, ('E%d\n' % exc.errno).encode('ascii'))
+    except BaseException as exc:
+        try:
+            error = exc.errno if isinstance(exc, OSError) else errno.EINVAL
+            os.write(ready, ('E%d\n' % error).encode('ascii'))
+        except BaseException:
+            pass  # El marcador es best-effort; un canal roto no impide salir.
         return 3
 
 
