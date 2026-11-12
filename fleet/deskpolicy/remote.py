@@ -4,6 +4,7 @@ from pathlib import Path
 import pwd
 import signal
 import subprocess
+import sys
 import tempfile
 import time
 
@@ -67,17 +68,56 @@ def processes(proc=Path("/proc")):
             continue
         try:
             stat = (directory / "stat").read_text().rsplit(")", 1)[1].split()
-            argv = (directory / "cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+            argv = tuple(part.decode(errors="replace") for part in
+                         (directory / "cmdline").read_bytes().split(b"\0") if part)
             result[int(directory.name)] = (int(stat[1]), stat[19], stat[0], argv)
         except (FileNotFoundError, ProcessLookupError):
             continue
     return result
 
 
+def policy_command(argv):
+    """Sólo la CLI instalada, como programa Python; nunca texto en otro argv."""
+    if not argv:
+        return None
+    home = Path(pwd.getpwuid(os.getuid()).pw_dir)
+    paths = {str(home / ".local/lib/pao-deskpolicy/v1/deskpolicy/cli.py"),
+             str(home / ".local/bin/pao-deskpolicy")}
+    args = list(argv)
+    if Path(args[0]).name in ("python", "python3", "python3.10", "python3.11",
+                               "python3.12", "python3.13", "python3.14"):
+        args.pop(0)
+        while args and args[0] in ("-I", "-B", "-u", "-E", "-s", "-S"):
+            args.pop(0)
+    if len(args) >= 2 and args[0] in paths:
+        return args[1]
+    return None
+
+
+def live_command(command):
+    return {pid: row for pid, row in processes().items()
+            if row[2] != "Z" and policy_command(row[3]) == command}
+
+
+def drain(wait):
+    deadline = time.monotonic() + wait
+    while True:
+        running = live_command("ejecutar")
+        if not running:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            print(f"Retiro pendiente: quedan {len(running)} corridas ejecutar vivas. "
+                  "Respuesta de retiro instalada; writer y unidades conservados. "
+                  "Repite el retiro cuando terminen o usa --esperar N.", file=sys.stderr)
+            return False
+        time.sleep(min(0.2, remaining))
+
+
 def stop_processes():
     snapshot = processes()
     selected = {pid for pid, row in snapshot.items()
-                if "deskpolicy" in row[3].lower() and pid != os.getpid()}
+                if policy_command(row[3]) == "publicar" and pid != os.getpid()}
     # Incluye hijos del writer aunque ya no tengan el nombre de la CLI en argv.
     while True:
         children = {pid for pid, row in snapshot.items() if row[0] in selected}
@@ -100,7 +140,7 @@ def stop_processes():
         raise RuntimeError("Quedan procesos de deskpolicy vivos")
 
 
-def install(path, payload):
+def stage_install(path, payload):
     path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     if path.parent.resolve() != path.parent:
         raise RuntimeError(f"Directorio de instalación enlazado: {path.parent}")
@@ -111,23 +151,43 @@ def install(path, payload):
             stream.flush()
             os.fchmod(stream.fileno(), 0o700)
             os.fsync(stream.fileno())
+        return stage
+    except BaseException:
+        if os.path.exists(stage):
+            os.unlink(stage)
+        raise
+
+
+def install(path, payload):
+    stage = stage_install(path, payload)
+    try:
         os.replace(stage, path)
     finally:
         if os.path.exists(stage):
             os.unlink(stage)
 
 
-def retire(payload):
+def retire(payload, wait=0):
     os.umask(0o077)
     home = Path(pwd.getpwuid(os.getuid()).pw_dir)
     units = {scope: policy_units(scope) for scope in ("user", "system")}
-    for scope, names in units.items():
-        stop_units(scope, names)
-    stop_processes()
+    # Fallar antes de cambiar la CLI o detener cualquier servicio.
+    if units["system"]:
+        subprocess.run(["sudo", "-n", "true"], check=True, capture_output=True)
     destinations = [home / ".local/lib/pao-deskpolicy/v1/deskpolicy/cli.py",
                     home / ".local/bin/pao-deskpolicy"]
+    staged = []
+    try:
+        # Preparar ambos destinos detecta permisos y enlaces antes del reemplazo.
+        for path in destinations:
+            staged.append((path, stage_install(path, payload)))
+        for path, stage in staged:
+            os.replace(stage, path)
+    finally:
+        for _, stage in staged:
+            if os.path.exists(stage):
+                os.unlink(stage)
     for path in destinations:
-        install(path, payload)
         for arguments in (["estado"], ["publicar", "--help"], ["ejecutar", "--", "true"]):
             result = subprocess.run(["/usr/bin/python3", "-I", str(path), *arguments],
                                     capture_output=True)
@@ -135,10 +195,13 @@ def retire(payload):
                         "Actualiza tu rama a origin/main y usa el lanzador del repositorio.\n").encode()
             if result.returncode != 64 or result.stdout or result.stderr != expected:
                 raise RuntimeError(f"Respuesta de retiro incorrecta: {path}")
+    if not drain(wait):
+        return 2
     for scope, names in units.items():
         stop_units(scope, names)
-    if any("deskpolicy" in row[3].lower() and row[2] != "Z" and pid != os.getpid()
-           for pid, row in processes().items()):
+    stop_processes()
+    if live_command("publicar"):
         raise RuntimeError("Se reinició un proceso de deskpolicy durante el retiro")
     print("deskpolicy retirado: unidades detenidas y deshabilitadas; CLI verificada (64). "
           "pao-wait/ y recibos conservados.")
+    return 0

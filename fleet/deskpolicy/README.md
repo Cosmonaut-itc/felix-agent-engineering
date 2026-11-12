@@ -17,12 +17,26 @@ fleet/deskpolicy/deploy-desk.sh
 
 `--seco` sólo imprime el programa remoto; no abre SSH ni escribe archivos.
 `withdraw-desk.sh` es otro nombre del mismo retiro. Ambos son idempotentes.
-Por `ssh desk`, el programa descubre unidades systemd de usuario y sistema
-por nombre o contenido que mencione deskpolicy, detiene sus activadores,
-writer y guardias, deshabilita las unidades habilitadas y verifica su estado.
-Las unidades del sistema requieren `sudo -n`; un permiso insuficiente aborta.
-También termina procesos de deskpolicy y sus hijos, incluido el writer
-desacoplado que no tenga unidad, sin reutilizar identidades PID antiguas.
+Por `ssh desk`, descubre unidades systemd de usuario y sistema y comprueba
+`sudo -n true` si hay unidades del sistema, antes de cambiar la CLI o detener
+servicios. Prepara ambos archivos de respuesta para detectar errores de
+permisos o rutas antes del reemplazo. Instala el rechazo antes de detener nada.
+
+Si quedan procesos de la CLI instalada en `ejecutar`, devuelve **2**, informa
+cuántos quedan y conserva writer y unidades sin enviar señales. Repite el
+retiro después, o usa `--esperar N` para esperar hasta N segundos. El vencimiento
+devuelve también 2 y deja instalado el rechazo. Las corridas admitidas y sus
+hijos terminan por sí solos, con las bibliotecas y registros antiguos intactos.
+El `execute` viejo espera a su hijo y cierra el recibo desde el mismo proceso;
+no consulta al writer durante la ejecución. Aun así se conserva el writer hasta
+completar el drenado.
+
+Con el desk drenado, detiene y deshabilita activadores, writer y guardias.
+Sólo termina procesos sin unidad identificados como `publicar` de la CLI
+instalada y sus hijos, comprobando la identidad PID antes de señalar. No
+selecciona procesos por una mención de «deskpolicy» en sus argumentos.
+Un fallo posterior a instalar el rechazo lo conserva y devuelve error;
+el operador debe resolver el fallo y repetir el retiro para completarlo.
 
 Instala atómicamente la respuesta en la ruta usada por los clientes:
 `~/.local/lib/pao-deskpolicy/v1/deskpolicy/cli.py`, y en
@@ -35,7 +49,22 @@ Un error del retiro se devuelve al operador; no acredita un corte completo.
 La fecha fija de la respuesta es `2026-11-12`, fecha del contrato de retiro.
 Incluso `--help` y operaciones desconocidas fallan sin analizar argumentos.
 
-## Por qué devuelve 64
+## Lo que ven las sesiones viejas
+
+**El corte debe anunciarse a las sesiones** con la instrucción: «Actualiza tu
+rama a origin/main y usa el lanzador del repositorio». PAO no puede cambiar la
+terminal ni los códigos que los clientes antiguos transforman:
+
+- Hasito viejo muestra `No se pudo consultar politica estado: código 64`;
+  la instrucción queda en `politica-1.stderr` y `lanzador.log` de la evidencia.
+  Con `--lock` puede esperar antes en la fila local de sesiones viejas; cada
+  sesión falla al llegar a la consulta y esa fila se drena.
+- Jale viejo muestra `EXIT=75` en aproximadamente 1 s. El mensaje de retiro
+  queda en el log de la corrida, junto con `no free slot after 90 min`, aunque
+  no haya esperado 90 min. Su cliente convierte el 64 en 75; la CLI de PAO no
+  puede impedirlo. La migración de Jale elimina este camino.
+
+## Por qué la CLI devuelve 64
 
 Clientes consultados con `git show origin/main:RUTA` el 2026-11-12:
 
@@ -57,7 +86,7 @@ Clientes consultados con `git show origin/main:RUTA` el 2026-11-12:
 ## Verificación sin desk
 
 ```sh
-~/.local/bin/remote-run start --name dirigida-u16-retiro-deskpolicy --no-git -- 'python3 -I -m unittest discover -s fleet/deskpolicy/tests -v && shellcheck --severity=warning fleet/deskpolicy/*-desk.sh'
+~/.local/bin/remote-run start --name dirigida-u16-r2 --no-git -- 'python3 -I -m unittest discover -s fleet/deskpolicy/tests -v && shellcheck --severity=warning fleet/deskpolicy/*-desk.sh'
 ~/.local/bin/remote-run wait ID
 ```
 
