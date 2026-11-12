@@ -610,8 +610,24 @@ El `Runtime` efectivo conecta `DarwinCoalition` y, sólo si algún perfil trae b
 acreditación, corre el selfcheck y lee el build una vez por arranque.
 `profile_verified(profile, workload_uid)` es `Accredited` sólo con un selfcheck pasado
 cuyo boot coincide con el de `sysctl` (comparados como UUID) y con build y uid
-iguales. En sombra no corre nada. `require_creation_provider` sigue lanzando: no hay
-bootstrap, ledger ni migración, y Fleet no emite ni consume permisos.
+iguales. En sombra no corre nada. `require_creation_provider` sigue lanzando en producción.
+
+Desde 4e-1, `coalition_entry.py` es el bootstrap previsto para que Fleet lo lance con `python -I -S -B`, en
+sesión nueva y con tuberías privadas, tras el consumo original. Comprueba el digest del
+argv, anuncia `ready` y espera un byte. Sólo `G` hace `execvp` del argv fijo; EOF o
+cualquier otro byte salen con 3 sin entrar. Su digest es el `bootstrapDigest` que el
+perfil acredita. El digest del argv usa SHA-256 del JSON compacto con `ensure_ascii=True`,
+codificado en UTF-8, igual que `hostgate.protocol.canonical`, incluidos surrogates sueltos.
+La tubería `ready` permanece abierta después de `R` y se marca no heredable antes de
+`execvp`. Después de enviar `G`, el padre debe seguir leyendo `ready` hasta EOF:
+`R` seguido de EOF confirma que el argv entró; `R` seguido de `E<errno>\n` en ASCII
+indica fallo de exec y ninguna entrada (por ejemplo, `E2\n` para `ENOENT`, exit 3).
+Después de `G`, todo camino sin exec logrado intenta escribir el marcador con el errno de
+`OSError` o `EINVAL` para cualquier otra excepción; si falla esa escritura, sale igual con 3.
+El padre debe acumular el marcador completo: las lecturas pueden ser parciales.
+Sin `R`, el bootstrap no llegó a anunciarse. EOF o byte inválido en `go` conservan
+exit 3 sin entrar; el EOF de `ready` sólo confirma exec después de enviar `G`.
+La composición de Fleet llega en 4e-2; el despacho productivo sigue cerrado.
 
 `validate_result(result, mode, store_id, operation)` rechaza los campos de otra
 operación y valida la variante pública del permiso contra el estado, `scopeStatus`,
