@@ -57,6 +57,13 @@ con admisión del repositorio (`scripts/mini/run.sh --entorno desk` en Hasito,
 admisión sale con 75, va a la Mac Mini. Lo demás corre en la Mini, igual que lo
 que exige macOS o nunca ha pasado en Linux.
 
+Hacia la Mini, `remote-run start` y `scripts/mini/run.sh` encolan la corrida
+en Pueue (grupo `suites`, 3 lugares) y `remote-run wait ID` espera su turno y
+devuelve su código. No reserves la Mini a mano ni esperes en un bucle. Mira la
+fila con `ssh mini pueue status -g suites`. Si la corrida usa algo que no admite
+dos usuarios a la vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
+`postgres:5434`).
+
 ## Roles
 
 - **Orquestador:** recibe la tarea del usuario, decide el reparto, conserva
