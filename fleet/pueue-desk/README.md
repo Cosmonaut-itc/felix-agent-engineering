@@ -1,7 +1,8 @@
 # Pueue en el desk
 
 Servicio systemd **de usuario** para Pueue 4.0.4 en WSL, listo para instalar
-tras U10 (NVMe). No instala binarios ni migra clientes de deskpolicy.
+tras U10 (NVMe). No instala binarios. El [retiro de deskpolicy](../deskpolicy/)
+se despliega por separado durante el corte coordinado de los clientes a Pueue.
 
 Desde la MacBook: `fleet/pueue-desk/deploy-desk.sh --seco` comprueba sin escribir;
 `fleet/pueue-desk/deploy-desk.sh` instala por `ssh desk`. Requiere `pueue` y

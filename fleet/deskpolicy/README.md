@@ -1,203 +1,109 @@
-# deskpolicy v1
+# deskpolicy retirado
 
-Módulo stdlib para CPython 3.12.3 en Linux/WSL, según el contrato [desk-politica-v1](../contracts/desk-politica-v1.md).
-Admite en WSL bajo el mutex compartido, conserva claims inciertas y asigna
-CPUs nocturnas disjuntas. No modifica ni importa hostgate.
+El desk toma turno con [Pueue](../pueue-desk/). El motor, las pruebas de
+admisión y su evidencia anterior se retiraron. Queda sólo la respuesta
+terminal y su instalación, para impedir que una rama vieja abra otra fila.
 
-El bucle de publicación usa un hijo por tick, con plazo de 10 s y cierre de recursos por terminación del proceso.
-Requiere `fork`, `flock`, `/proc` y `prctl(PR_SET_PDEATHSIG)` de Linux, invocado mediante ctypes de stdlib.
-El corte no depende de excepciones de señal ni de los puntos de atención de señales de CPython.
-Sólo se declara soporte para el runtime aceptado, CPython 3.12.3 en Linux/WSL.
-Cambiar de intérprete exige repetir la aceptación.
-Un resultado `writer-cycle-timeout-publication-unknown` puede haber dejado publicada una política nueva; no implica rollback ni desactivación de noche.
-Los consumidores siguen leyendo y validando el archivo vigente; un corte no extiende sus tiempos.
-`publicar --una-vez` y `--desactivar-noche` conservan su ejecución directa sin el plazo del bucle.
+**Integrar y desplegar sólo en el corte coordinado**, con Hasito, Jale y
+apotheca ya migrados y las cargas anteriores drenadas. No ejecutar durante
+el mantenimiento ni antes de instalar Pueue en el desk.
 
-El supervisor debe tener un solo hilo. Introducir hilos exige revisar el lanzamiento
-por fork. Si falla `prctl`, el tick aborta antes de preparar admisión.
-El supervisor ordena SIGKILL al vencer; una syscall no interrumpible puede retrasar
-la muerte efectiva y la liberación de locks. No se promete tiempo real frente a
-desprogramación, kernel o almacenamiento detenido. No arranca otro tick mientras
-quede vivo el hijo anterior. Un log bloqueado puede detener el calendario o perder
-el informe, pero el supervisor no posee admisión y sólo escribe logs tras recoger
-al hijo. La muerte del supervisor también puede perder el informe.
-Si padre e hijo están detenidos, se requiere reanudación o muerte del padre.
-Antes de `prctl`, un hijo detenido cuyo padre muere puede conservar `writer.lock`
-hasta reanudación o terminación operativa; nunca llega a tomar admisión.
-Los cortes pueden conservar temporales `.pao-*`; se ignoran, ocupan disco e inodes
-y no se añade un recolector. No se promete una transacción multarchivo ni
-recuperación ante pérdida de energía o pérdida del estado instalado.
-Cambiar cli/engine invalida el armado anterior. Este cambio requiere preflight
-nuevo con drenado antes de habilitar noche; no despliega ni activa el writer.
-
-El contrato contiene los esquemas, rutas fijas y obligaciones de Jale y Hasito.
-Los adaptadores de esos repos se entregan por separado.
-
-## Probar en el desk
-
-La MacBook sólo edita. La suite necesita Linux, `/proc`, `flock` y `taskset`.
-Todos los fixtures se crean bajo el cwd del mirror con `testing.Harness`.
-La CLI sólo acepta rutas, reloj, boot y carga de prueba bajo `RUN_SUITE_HARNESS`.
-El contrato documenta las costuras y las rutas privadas obligatorias.
-
-PAO comprueba carga menor de 12 hasta 2026-11-05T22:00:00Z y menor de 9
-después, con 120 s desde el último arranque antes de usar:
+Desde la MacBook:
 
 ```sh
-REMOTE_RUN_HOST=desk remote-run start --dir "$PWD" --name desk-politica-u1 \
-  --no-git --script fleet/deskpolicy/tests/desk-run.sh
-REMOTE_RUN_HOST=desk remote-run wait -q <run-id>
+fleet/deskpolicy/deploy-desk.sh --seco
+fleet/deskpolicy/deploy-desk.sh
 ```
 
-`desk-run.sh` vuelve a comprobar los gates y ejecuta la suite bajo afinidad:
+`--seco` sólo imprime el programa remoto; no abre SSH ni escribe archivos.
+`withdraw-desk.sh` es otro nombre del mismo retiro. Ambos son idempotentes.
+Por `ssh desk`, descubre unidades systemd de usuario y sistema y comprueba
+`sudo -n true` si hay unidades del sistema, antes de cambiar la CLI o detener
+servicios. Prepara ambos archivos de respuesta para detectar errores de
+permisos o rutas antes del reemplazo. Instala el rechazo antes de detener nada.
+
+El drenado lee las claims de `/tmp/sen-test-slots/pao-wait/` bajo el mutex
+antiguo, además de los procesos `ejecutar` y `admitir` que pudieron cargar
+la CLI antes del reemplazo. Si queda una admisión viva, devuelve **2**,
+informa el total y los tipos (`jale/chain`, `hasito/script`, etc.) y conserva
+writer y unidades sin enviar señales. Repite el retiro después, o usa
+`--esperar N` para esperar hasta N segundos. El vencimiento también devuelve 2.
+
+Una claim abierta se considera abandonada sólo si su lock de vida está libre
+y todas las sesiones del dueño y sus keepers están vacías, igual que en
+`DeskPolicy.reconcile_claim` antiguo. Que muera el dueño no basta si quedan
+hijos o un keeper. Los errores de lectura o validación abortan el retiro.
+La consulta no cambia claims ni recibos históricos.
+
+La respuesta instalada conserva una sola excepción: **`cerrar` con sus
+argumentos** delega a `DeskPolicy.close` de las bibliotecas históricas ya
+instaladas. Mantiene las validaciones de token, identidad, mutex, lock de vida
+y sesiones vacías; permite a Jale acreditar `script_exit_code` al terminar
+durante el drenado. No copia ni ejecuta la CLI antigua, ni habilita admisiones.
+El `ejecutar` viejo cierra desde su propio proceso. Las bibliotecas antiguas
+siguen intactas; el writer se conserva hasta completar el drenado.
+
+Con el desk drenado, detiene y deshabilita activadores, writer y guardias.
+Sólo termina procesos sin unidad identificados como `publicar` de la CLI
+instalada y sus hijos, comprobando la identidad PID antes de señalar. No
+selecciona procesos por una mención de «deskpolicy» en sus argumentos.
+Un fallo posterior a instalar el rechazo lo conserva y devuelve error;
+el operador debe resolver el fallo y repetir el retiro para completarlo.
+
+Instala atómicamente la respuesta en la ruta usada por los clientes:
+`~/.local/lib/pao-deskpolicy/v1/deskpolicy/cli.py`, y en
+`~/.local/bin/pao-deskpolicy`. La ruta base sale de la cuenta remota, no de
+`HOME`. Invoca la CLI instalada con varios subcomandos y exige stderr exacto,
+stdout vacío y código 64. No borra `pao-wait/`, recibos, locks, claims,
+configuración ni bibliotecas históricas del desk. No instala nada local.
+Un error del retiro se devuelve al operador; no acredita un corte completo.
+
+La fecha fija de la respuesta es `2026-11-12`, fecha del contrato de retiro.
+Salvo el cierre acreditado anterior, incluso `--help` y operaciones desconocidas
+fallan sin analizar argumentos. Un cierre inválido nunca acredita éxito.
+
+## Lo que ven las sesiones viejas
+
+**El corte debe anunciarse a las sesiones** con la instrucción: «Actualiza tu
+rama a origin/main y usa el lanzador del repositorio». PAO no puede cambiar la
+terminal ni los códigos que los clientes antiguos transforman:
+
+- Hasito viejo muestra `No se pudo consultar politica estado: código 64`;
+  la instrucción queda en `politica-1.stderr` y `lanzador.log` de la evidencia.
+  Con `--lock` puede esperar antes en la fila local de sesiones viejas; cada
+  sesión falla al llegar a la consulta y esa fila se drena.
+- Jale viejo muestra `EXIT=75` en aproximadamente 1 s. El mensaje de retiro
+  queda en el log de la corrida, junto con `no free slot after 90 min`, aunque
+  no haya esperado 90 min. Su cliente convierte el 64 en 75; la CLI de PAO no
+  puede impedirlo. La migración de Jale elimina este camino.
+
+## Por qué la CLI devuelve 64
+
+Clientes consultados con `git show origin/main:RUTA` el 2026-11-12:
+
+- Hasito (`d0bccf9cb60902301bb6c9bcdf16efdc1f6d2c43`),
+  `scripts/mini/remote-run:96-100`: `politica` hace `exec` de Python con la
+  CLI instalada y propaga el código. La ruta está en las líneas 68-70.
+  `scripts/mini/desk.py:366-375` convierte cualquier código no cero en
+  `DeskFailure`; las líneas 472-479 sólo permiten reintentar errores 75 con
+  un recibo válido. Las líneas 298-305 tratan 255 como transporte y sólo
+  reintentan 75 por mutex; 64 es fallo definitivo.
+- Jale (`274e9cf4425f85ec4ce558b51a32a9e2e92dbc6c`),
+  `scripts/test-hosts/run-suite.sh:504-508` rechaza cualquier estado no cero;
+  `750-758` retorna de inmediato si falla esa consulta, antes de esperar.
+  `704-725` sólo admite con recibo `admitted` y código 0; 75 puede significar
+  denegación con espera. Se elige 64 para no emitir esa señal ni un éxito.
+  Jale convierte el error de estado a 75 al salir, pero su bucle interno no
+  reintenta la consulta fallida. No se puede cambiar esa conversión desde la CLI.
+
+## Verificación sin desk
 
 ```sh
-/usr/bin/taskset -c 0-1 /usr/bin/python3 -I fleet/deskpolicy/tests/run.py
+~/.local/bin/remote-run start --name dirigida-u16-r3 --no-git -- 'python3 -I -m unittest discover -s fleet/deskpolicy/tests -v && shellcheck --severity=warning fleet/deskpolicy/*-desk.sh'
+~/.local/bin/remote-run wait ID
 ```
 
-Después ejecuta `bin/pao check` y ShellCheck sobre los tres guiones si está
-disponible. Esas comprobaciones también permanecen bajo CPUs 0 y 1.
-
-El gate usa el mtime de `started`, con fallback al directorio para corridas
-sin ese archivo. Se excluye la propia corrida y se exigen 120 s desde el
-último arranque ajeno. La ronda 4 respeta el Estado #58 hasta su vencimiento.
-
-Las pruebas usan CPUs lógicas 0 a 11 para contabilización y carreras.
-Sólo la prueba de afinidad ejecuta carga hija, sobre la primera asignación,
-CPU 0. Los siete hijos son intérpretes breves que consultan su propia afinidad.
-Ninguna carga de prueba se amplía fuera de las CPUs 0 y 1 del runner.
-
-## Instalar después del APTO
-
-Los guiones se entregan sin ejecutar. No habilitan automáticamente noche.
-En el desk, después del drenado y de preparar la raíz privada:
-
-```sh
-bash fleet/deskpolicy/deploy-desk.sh --apto <referencia-de-revision>
-```
-
-La instalación crea configuración de día y un manifiesto SHA-256.
-Acepta repetir una instalación idéntica con la misma referencia.
-Rechaza contenido distinto y no inicia un writer. Antes de instalar comprueba
-raíz 0700, locks 0600 sobre sus inodes originales y drenado. Los locks
-históricos 0644 requieren el chmod explícito del procedimiento de corte.
-Un error detectado durante la publicación devuelve los nombres nuevos al staging.
-PAO verifica después los consumidores y recursos externos, registra evidencia,
-arma el preflight y arranca explícitamente `publicar` en una sesión desacoplada.
-Ampliar presupuestos por encima de lo armado o cambiar código o boot exige
-un armado nuevo. Reducir presupuestos conserva el armado y frena entradas.
-
-Para retirada conservando cargas y evidencia:
-
-```sh
-bash fleet/deskpolicy/withdraw-desk.sh --apto <referencia-de-revision>
-```
-
-Persiste noche desactivada y publica día. Los locks, registros y binarios
-permanecen hasta el drenado. Si el censo falla, el cambio de configuración ya
-impide renovar noche y el arriendo anterior vence en un máximo de 60 s.
-
-## Archivos del módulo
-
-`model.py` valida JSON, relojes y reparto. `store.py` mantiene paths, archivos
-atómicos, flocks e identidades Linux. `engine.py` implementa la transacción y
-el ciclo de vida. `cli.py` expone operaciones y el wrapper con taskset.
-`testing.py` contiene las costuras de prueba. `installation.py` valida el corte
-y publica runtime y configuración de día desde staging. Sus pruebas operan
-sólo sobre fixtures privados; no ejecutan el guion de despliegue.
-
-El wrapper opcional imprime primero el recibo y luego la salida del guion.
-Con `--recibo` guarda el JSON en el run remoto antes de ejecutar carga.
-Un guion admitido con salida 75 conserva un recibo admitted.
-Una repetición devuelve execute=false. No ejecuta de nuevo.
-Una sesión con hijos pendientes impide cerrar y conserva incertidumbre.
-Sin `--recibo`, la última línea JSON de stdout contiene el recibo final.
-El recibo guarda `script_exit_code` por separado y el wrapper devuelve ese
-código aunque el cierre no se pueda acreditar. Los recibos admitidos no pierden
-su identidad ni se convierten en una denegación.
-
-El wrapper conserva la sesión del runner. Su control usa otro grupo y la carga
-permanece en el grupo que mata `remote-run stop`, con TERM o KILL. Después de
-recoger al guion cierra con causa `stopped` si ambas sesiones están vacías.
-El keeper Jale registra primero su PID, inicio y SID con `traspasar`, bajo
-el mutex, fd 8 y token por fd heredado. El launcher espera el ACK antes de
-soltar su copia; la carga espera ese registro. Bajo el mutex el traspaso
-comprueba que sólo están el keeper y su propio control en la nueva sesión.
-Ante carga previa o prueba inconclusa falla con
-`handoff-load-before-registration` y el launcher conserva su fd de vida. Cada keeper posterior repite
-el protocolo. El cierre comprueba todas las sesiones registradas.
-
-Los pesos normativos están en el contrato. Hasito declara 1 a 4, con omisión 4.
-Jale declara 4, 2 o 1 según el comando. El canario sigue en 4 corridas y peso 8.
-De día no se suman pesos para admitir y cada guion conserva las 12 CPUs.
-
-`reconciliar` cierra con causa `reconciled` sólo inciertas con sesiones vacías
-y flock libre, bajo el mutex. El writer lo llama antes de cada publicación;
-también puede ejecutarse a mano. Antes de denegar `resource-busy`, `admitir`
-intenta reconciliar sólo la claim incierta del mismo recurso, incluso sin writer. Los metadatos Jale cerrados se archivan por
-rename, conservando el inode del flock. Un hijo vivo conserva la reserva.
-Hasito elige el menor lock local libre permitido y pasa `--lane N` explícito.
-Cada lock fija un carril y conserva su FIFO. `MINI_LOCK` cuenta como lock
-explícito. Ante `resource-busy` conserva la cabeza y reintenta ese carril,
-renovando sólo la solicitud remota, sin sincronizar ni saltar de fila.
-Ante `lane-closed` retira la espera remota, suelta el lock y retira su turno.
-Sin `--lock` ni `MINI_LOCK` explícitos vuelve a elegir el menor lock libre
-permitido, respetando su FIFO, y usa nuevos request y run id. Con lock
-explícito termina con «carril N cerrado en el modo vigente», sin reselección.
-Los sucesores del carril cerrado siguen la misma regla al llegar a cabeza.
-Toma primero el lock local por la FIFO de #984. Sólo su poseedor registra
-`pendiente --lane N` y pide admisión para ese N. Los sucesores esperan
-localmente, sin solicitud en PAO. La cabeza remota de Hasito es por carril.
-Los turnos están en `<lock>.turnos.json`, el mutex en `<lock>.turnos.lock`
-y la bitácora en `<lock>.cola.md`. Un turno activo no se renueva.
-Tras sync-timeout o vencimiento, conserva el lock y pide nuevos request y run
-id. Puede usar hasta `estado.max_lane` locks para mostrar más demanda nocturna.
-El transporte admite antes del sync, conservando mirror y lock local.
-`any` queda para clientes sin reserva local previa; no es normativo para
-Hasito ni Jale. El contrato fija las fases del transporte y el protocolo de fds.
-
-La prueba de vacío devuelve vacío, miembros o inconcluso. Exige tres barridos
-completos vacíos separados al menos 50 ms. Ignora PIDs terminados con
-ENOENT/ESRCH, cuenta zombies y conserva incertidumbre ante otros errores
-o cambios de identidad. Se acepta el riesgo de una cadena de fork y salida
-que esquive los tres barridos. Una verify sin keeper registrado puede cerrar
-si la sesión del launcher acredita vacío y el flock está libre. Un keeper
-vivo sin registrar conserva el flock y no puede lanzar hijos antes del registro.
-Al reconciliar o hacer replay se completan desde la claim los campos terminales
-null del recibo, incluso si está closed. Nunca se reemplaza un valor conocido
-ni la identidad admitida. Cada tick reintenta también recibos de claims cerradas.
-
-Toda escritura del recibo se serializa bajo el mutex. Su resultado es monótono.
-Después de recoger la salida, cualquier error del cierre conserva ese código,
-emite `pao/desk-close-diagnostic@1` sin `exit_code` por stderr y procura registrar la incertidumbre y
-`close_error` del recibo al recuperar el mutex. Nunca escribe la claim fuera
-de ese mutex. Con `--recibo`, stdout tiene una sola línea JSON del wrapper.
-El fd de vida cierra antes de soltarlo tras el commit de cierre.
-
-El control previo de Hasito usa `ejecutar --sync-ready-fd FD`, con un pipe
-heredado del transporte y un byte ASCII `1` cuando terminó el sync.
-`--sync-timeout-s` fija el plazo absoluto desde la admisión, 900 s (15 min)
-por omisión y como máximo. Tras leer el ACK vuelve a comprobar el reloj.
-EOF sin señal o un byte distinto de `1` cierra de inmediato con
-`sync-timeout`, sin ejecución, peso ni flock retenidos.
-Al vencer no ejecuta el guion, cierra con `sync-timeout`, conserva
-`script_exit_code=null` y devuelve 75. Un replay no ejecuta nada.
-El cliente resuelve el recibo y pide otra admisión con nuevas identidades.
-
-`estado.max_lane` indica el mayor índice permitido, 2 de día y el presupuesto
-nocturno de noche. `budget` es null de día; las cuotas diurnas están en
-`limits`. Un error al actualizar el recibo durante reconciliación se registra
-por stderr como `pao/desk-reconcile-diagnostic@1`; no revierte el cierre ni
-interrumpe el tick o las otras claims. Cada combinación de claim y error se
-diagnostica una sola vez por proceso; en el bucle del writer se deduplica durante
-la vida del supervisor, aunque cambie el hijo. La reparación se sigue reintentando
-en cada tick.
-Las pendientes con carril mayor que `max_lane` no cuentan en demanda o cabezas.
-
-Las regresiones de ronda 7 y dos aceptaciones completas usan nombre fijo
-`desk-politica-u1-r7` y `evidence/r7-full.sh`, con los mismos gates.
-Ese wrapper requiere una copia verificada de `estado.py` de Hasito en
-`.audit/r7-hasito-estado.py` (SHA-256 `2efcf5fc350965ec5bb0fee438e941d912d07b15679a2f7dca911090a17db006`).
-Los probes usan sus FIFO reales en directorios privados del mirror.
-`r7-fixture-schedules.py` añade 5 s de demora a la primera publicación de
-cada recibo para reproducir el nit temporal sin cambiar el reloj ni el sync.
+Las pruebas ejecutan el transporte con SSH falso y systemd simulado, comprueban
+dos retiros consecutivos, preservación de registros y fallos. Los procesos se
+prueban con dobles que incluyen hijos y reutilización de PID. CI también
+ejecuta estas pruebas y ShellCheck. No acreditan un despliegue real.
