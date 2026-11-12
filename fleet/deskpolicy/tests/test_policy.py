@@ -495,8 +495,8 @@ class PolicyTest(unittest.TestCase):
         admitted, worker, connection = self.launch("chain")
         self.assertTrue(admitted["execute"])
         self.pending("chain2", "jale", "chain")
-        denied, _, _ = self.launch("chain2", 2)
-        self.assertEqual(denied["reason"], "resource-busy")
+        second, _, _ = self.launch("chain2", 2)
+        self.assertTrue(second["execute"], second)
         self.h.load = 100
         self.pending("hasito")
         admitted, _, _ = self.launch("hasito")

@@ -1,7 +1,7 @@
 """Final-round recovery and consumer-contract regressions."""
 from pathlib import Path
 
-from deskpolicy.store import read_json
+from deskpolicy.store import atomic_json, read_json
 from deskpolicy.tests import test_policy as fixtures
 from deskpolicy.tests import test_r4 as r4
 
@@ -27,37 +27,40 @@ class RoundEightTest(r4.RoundFourTest):
 
     def test_closed_high_lane_reconciles_then_h2_enters_first_attempt(self):
         self.lane_pending('H1', 1)
-        self.lane_pending('H3', 3)
+        self.lane_pending('H4', 4)
         self.publish()
         first, w1, c1 = self.launch('H1', 1)
         self.assertTrue(first['execute'], first)
         self.advance(121)
-        high, w3, _ = self.launch('H3', 3)
+        high, w3, _ = self.launch('H4', 4)
         self.assertTrue(high['execute'], high)
         w3.kill()
         w3.join(60)
         self.expire_without_writer()
-        self.lane_pending('H3b', 3)
-        denied, _, _ = self.launch('H3b', 3)
+        self.lane_pending('H4b', 4)
+        denied, _, _ = self.launch('H4b', 4)
         self.assertEqual(denied['reason'], 'lane-closed', denied)
-        self.engine.register('H3b', 'hasito', 'script', 'test', 1, withdraw=True, lane=3)
+        self.engine.register('H4b', 'hasito', 'script', 'test', 1, withdraw=True, lane=4)
         self.lane_pending('H2', 2)
         second, w2, c2 = self.launch('H2', 2)
-        print('R8 STALE H3', self.claim('H3')['state'], 'H3b', denied['reason'],
+        print('R8 STALE H4', self.claim('H4')['state'], 'H4b', denied['reason'],
               'H2 first attempt', second['state'], second['reason'], flush=True)
-        self.assertEqual(self.claim('H3')['state'], 'closed')
-        self.assertEqual(self.claim('H3')['close_cause'], 'reconciled')
+        self.assertEqual(self.claim('H4')['state'], 'closed')
+        self.assertEqual(self.claim('H4')['close_cause'], 'reconciled')
         self.assertTrue(second['execute'], second)
         self.close_actor(w2, c2)
         self.close_actor(w1, c1)
 
     def test_closed_lane_reconciles_only_requested_project_and_lane(self):
-        self.lane_pending('H3', 3)
+        self.configuration['night_budget'] = 5
+        atomic_json(self.h.config, self.configuration)
+        self.engine.preflight(self.evidence, arm=True)
         self.lane_pending('H4', 4)
+        self.lane_pending('H5', 5)
         self.lane_pending('J3', 3, 'jale')
         self.publish()
         workers = []
-        for name, lane in (('H3', 3), ('H4', 4), ('J3', 3)):
+        for name, lane in (('H4', 4), ('H5', 5), ('J3', 3)):
             receipt, worker, _ = self.launch(name, lane)
             self.assertTrue(receipt['execute'], receipt)
             workers.append(worker)
@@ -67,12 +70,12 @@ class RoundEightTest(r4.RoundFourTest):
             worker.kill()
             worker.join(60)
         self.expire_without_writer()
-        self.lane_pending('H3b', 3)
-        denied, _, _ = self.launch('H3b', 3)
+        self.lane_pending('H4b', 4)
+        denied, _, _ = self.launch('H4b', 4)
         self.assertEqual(denied['reason'], 'lane-closed', denied)
-        states = {name: self.claim(name)['state'] for name in ('H3', 'H4', 'J3')}
+        states = {name: self.claim(name)['state'] for name in ('H4', 'H5', 'J3')}
         print('R8 SCOPE', states, flush=True)
-        self.assertEqual(states, {'H3': 'closed', 'H4': 'uncertain', 'J3': 'uncertain'})
+        self.assertEqual(states, {'H4': 'closed', 'H5': 'uncertain', 'J3': 'uncertain'})
 
     def test_contract_defines_jale_lane_closed_reselection(self):
         contract = (Path(__file__).resolve().parents[2] / 'contracts/desk-politica-v1.md').read_text()

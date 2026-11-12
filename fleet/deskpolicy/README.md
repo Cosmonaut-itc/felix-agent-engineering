@@ -128,8 +128,10 @@ Ante carga previa o prueba inconclusa falla con
 el protocolo. El cierre comprueba todas las sesiones registradas.
 
 Los pesos normativos están en el contrato. Hasito declara 1 a 4, con omisión 4.
-Jale declara 4, 2 o 1 según el comando. El canario sigue en 4 corridas y peso 8.
-De día no se suman pesos para admitir y cada guion conserva las 12 CPUs.
+Jale declara 4, 2 o 1 según el comando. El canario nocturno sigue en 4 corridas y peso 8.
+De día caben 5 corridas: Hasito 3 y Jale 2, con dos `chain` simultáneas,
+una sola `verify` y `exclusive` excluyendo las demás Jale. No se suman pesos
+para admitir y cada guion conserva las 12 CPUs.
 
 `reconciliar` cierra con causa `reconciled` sólo inciertas con sesiones vacías
 y flock libre, bajo el mutex. El writer lo llama antes de cada publicación;
@@ -184,7 +186,7 @@ Al vencer no ejecuta el guion, cierra con `sync-timeout`, conserva
 `script_exit_code=null` y devuelve 75. Un replay no ejecuta nada.
 El cliente resuelve el recibo y pide otra admisión con nuevas identidades.
 
-`estado.max_lane` indica el mayor índice permitido, 2 de día y el presupuesto
+`estado.max_lane` indica el mayor índice permitido para Hasito, 3 de día y el presupuesto
 nocturno de noche. `budget` es null de día; las cuotas diurnas están en
 `limits`. Un error al actualizar el recibo durante reconciliación se registra
 por stderr como `pao/desk-reconcile-diagnostic@1`; no revierte el cierre ni

@@ -1,3 +1,81 @@
+# Entrega U4 puente: cuotas diurnas tras NVMe
+
+Rama `t3/desk-pueue-u4-puente`, basada en `origin/main` `e056155b`.
+Se implementó Hasito 3, Jale 2 y total 5, con dos `chain` de Jale.
+`model.DAY_LIMITS` es la única tabla de cuotas; presupuesto total y máximo
+carril Hasito se derivan de ella. Publicación, fallback, validación, admisión,
+filtrado de pendientes y vista pública usan esos valores. Jale conserva los
+carriles 1..2, la exclusividad y una sola `verify` de día. No cambia la noche,
+la guardia de carga, la afinidad, el mutex ni los fsync.
+
+`test_u4.DayBridgeTest` añade 10 casos: tres Hasito y dos Jale simultáneas,
+dos `chain`, combinación `chain`/`verify`, vista y pendientes del carril 3,
+política diurna válida y rechazo de las cuotas antiguas, carril 4 cerrado,
+cuarta Hasito y sexta total (con claims nocturnas retenidas que dejan libre
+un carril), exclusividad en ambas direcciones y segunda `verify` rechazada.
+Se actualizan las expectativas anteriores de cuotas y se mueven los fixtures
+de carriles cerrados al amanecer de 3 a 4; la prueba de alcance de reconciliación
+usa Hasito 4/5 y Jale 3. El esquema de vista no tiene un JSON Schema separado;
+el contrato permite enteros no negativos en `limits`, y las pruebas de vista
+cubren explícitamente `max_lane=3` y `limits={jale:2,hasito:3}`.
+
+## Verificación realizada y pendiente
+
+Por indicación posterior de Felix, **RED y GREEN funcionales están pendientes
+de desk**: está apagado por la migración. No se ejecutó ningún comando en desk,
+no se desplegó y no se abrió PR. No hubo subagentes.
+
+El primer intento, antes de conocer la incompatibilidad, fue en macOS de la
+Mini (`20261111-224700-f899e4`): 8 errores de entorno por falta de `prctl`;
+no constituye RED. No se montó ni se ejecutó un Linux en la Mini.
+Después se ejecutaron sólo checks estáticos en la Mini:
+
+```sh
+REMOTE_RUN_HOST=mini ~/.local/bin/remote-run start --no-git --name dirigida-u4-puente -- 'bash fleet/deskpolicy/evidence/u4-macos.sh'
+REMOTE_RUN_HOST=mini ~/.local/bin/remote-run wait -q 20261111-225054-45987d
+```
+
+Salida final, rc 0 (log completo `evidence/u4-macos.log`):
+
+```text
+Python 3.9 syntax + py_compile: OK (34 files)
+ok: 12 citas; registro sin pstack (--registry-only)
+ok: manifest válido (12 files, 24 skills, 7 retire, 4 plugins)
+U4 macOS: syntax, py_compile, ShellCheck and pao check OK
+```
+
+## Comandos pendientes para cuando vuelva el desk
+
+Ejecutar desde este worktree. RED conserva todo el código y las pruebas de
+`e056155b` y superpone sólo las 10 pruebas U4. No cambia el checkout de trabajo.
+El comando start imprime el ID que se pasa al wait correspondiente.
+
+```sh
+# Preparación local de un snapshot RED nuevo, sin ejecutar pruebas locales.
+u4_red_dir=$(mktemp -d /tmp/pao-u4-red.XXXXXX)
+git archive e056155b fleet | tar -x -C "$u4_red_dir"
+cp fleet/deskpolicy/tests/test_u4.py "$u4_red_dir/fleet/deskpolicy/tests/test_u4.py"
+# RED: se esperan fallos de aserción de las nuevas admisiones/vista, sin errores.
+REMOTE_RUN_HOST=desk ~/.local/bin/remote-run start --dir "$u4_red_dir" --cd . --no-git --name dirigida-u4-puente --script "$PWD/fleet/deskpolicy/evidence/u4-red.sh"
+REMOTE_RUN_HOST=desk ~/.local/bin/remote-run wait -q <ID_RED>
+
+# GREEN: suite completa, pao check y ShellCheck del CI para los scripts del módulo.
+REMOTE_RUN_HOST=desk ~/.local/bin/remote-run start --no-git --name dirigida-u4-puente -- 'bash fleet/deskpolicy/tests/desk-run.sh && shellcheck --severity=warning fleet/deskpolicy/deploy-desk.sh fleet/deskpolicy/withdraw-desk.sh fleet/deskpolicy/tests/desk-run.sh'
+REMOTE_RUN_HOST=desk ~/.local/bin/remote-run wait -q <ID_GREEN>
+```
+
+## Consumidores leídos
+
+Se leyó `git -C /Users/felixddhs/VSCODE/REPOS/comprador.-pueue-turno show
+origin/main:scripts/mini/desk.py`. `lane_paths`, líneas 230–234, valida 1..12
+y genera todos los locks hasta `max_lane`; `select`, líneas 389–394, lo toma
+de la vista. No asume dos carriles y no necesita cambios. También se buscaron
+esas suposiciones en `scripts/mini/run.py`, sin hallazgos.
+`/Users/felixddhs/VSCODE/REPOS/Jale` no existe: no se pudo inspeccionar ese
+consumidor. No se modificaron consumidores.
+
+---
+
 # Entrega U1, corrección para ronda 9
 
 El objetivo de Felix se conserva. Quiere usar el desk para más corridas de

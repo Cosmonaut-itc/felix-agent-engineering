@@ -102,7 +102,7 @@ el mutex, también en el último control antes de guardar la claim.
 Una política nocturna debe emitirse dentro de esa ventana y vencer como máximo
 a las 14:00Z del mismo día. A las 14:00Z ya rige día.
 La suma de cuotas nocturnas no supera `night_budget`.
-De día las cuotas son exactamente 2 para cada proyecto.
+De día las cuotas son exactamente 2 para Jale y 3 para Hasito.
 
 Archivo ausente, corrupto, inseguro, vencido o de versión desconocida selecciona
 día. Nunca se reutiliza la última noche válida. Esto no certifica un censo sano.
@@ -110,10 +110,11 @@ Si el censo, el módulo o sus locks fallan, no se admite y se devuelve 75.
 
 ## Peso, día y afinidad
 
-En día se admiten como máximo 4 corridas conjuntas y 2 por proyecto.
-Jale permite una `chain` y una `verify`. `exclusive`, incluido web-unit completo,
+En día se admiten como máximo 5 corridas conjuntas: 3 de Hasito y 2 de Jale.
+Jale permite dos `chain` simultáneas y como máximo una `verify` dentro de sus 2.
+`exclusive`, incluido web-unit completo,
 excluye otras Jale. La carga Jale debe ser finita y estrictamente menor de 9.
-Hasito sólo crea nuevas reservas en carriles 1 o 2 y no recibe un umbral de
+Hasito sólo crea nuevas reservas en carriles 1 a 3 y no recibe un umbral de
 carga diurno nuevo. Los recursos locales de cada consumidor siguen vigentes.
 
 Las claims nocturnas, incluidas las inciertas, conservan CPUs, tipo y peso
@@ -428,7 +429,7 @@ La transacción sigue este orden:
 1. Lee política y ambos relojes actuales. Una política inválida selecciona día.
 2. Valida todo el registro y censa todos los recursos. Persiste incertidumbre.
 3. Resuelve reintentos por request y run sin volver a ejecutar.
-4. Un carril explícito mayor que `max_lane` intenta reconciliar sólo la claim incierta del mismo proyecto y carril y devuelve `lane-closed` en cualquier caso, antes de comprobar FIFO; no cierra claims activas ni cambia replays admitidos. Con `--lane any`, elige bajo el mutex el menor carril permitido por el modo (1..2 de día, 1..N de noche) sin claim no cerrada de su proyecto. Devuelve el carril numérico en el recibo; si no hay ninguno, deniega `resource-busy`. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto para Jale, o de su carril para Hasito. Si una claim no cerrada reserva ese proyecto y carril, intenta reconciliar sólo esa claim si está incierta. Si no cierra, rechaza con `resource-busy`. Lo comprueba antes de tomar flock, incluso si el supervisor muere después del censo.
+4. Un carril explícito mayor que el máximo de su proyecto (Hasito `max_lane`; Jale 2 de día) intenta reconciliar sólo la claim incierta del mismo proyecto y carril y devuelve `lane-closed` en cualquier caso, antes de comprobar FIFO; no cierra claims activas ni cambia replays admitidos. Con `--lane any`, elige bajo el mutex el menor carril permitido por el modo (1..3 para Hasito y 1..2 para Jale de día, 1..N de noche) sin claim no cerrada de su proyecto. Devuelve el carril numérico en el recibo; si no hay ninguno, deniega `resource-busy`. Exige solicitud pendiente vigente, del boot actual y cabeza de su proyecto para Jale, o de su carril para Hasito. Si una claim no cerrada reserva ese proyecto y carril, intenta reconciliar sólo esa claim si está incierta. Si no cierra, rechaza con `resource-busy`. Lo comprueba antes de tomar flock, incluso si el supervisor muere después del censo.
 5. Comprueba peso máximo, presupuesto total y cuota del proyecto.
 6. Aplica límites locales que sólo reducen capacidad y exclusividad Jale.
 7. Aplica el veto `pao-window.json`. Jale mantiene además su lector histórico.
@@ -638,8 +639,8 @@ carga, última admisión y último rechazo de cada solicitud.
 Los rechazos son persistidos en la propia solicitud. La vista puede contener
 motivos históricos. Un error de censo no devuelve esta vista parcial.
 `budget` es `night_budget` en noche y null en día, donde rigen por separado
-los límites de cada proyecto (`limits`, 2/2). `max_lane` es el mayor índice
-admisible para nuevas reservas, 2 de día y `night_budget` de noche. Los
+los límites de cada proyecto (`limits`, Jale 2 y Hasito 3). `max_lane` es el mayor índice
+admisible para nuevas reservas de Hasito, 3 de día y `night_budget` de noche. Los
 consumidores usan `max_lane` para enumerar carriles; una cuota no es un índice.
 
 ## Configuración, arranque y reinicio

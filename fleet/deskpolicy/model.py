@@ -7,6 +7,9 @@ import re
 from fractions import Fraction
 
 PROJECTS = ("jale", "hasito")
+DAY_LIMITS = {"jale": 2, "hasito": 3}
+DAY_BUDGET = sum(DAY_LIMITS.values())
+DAY_MAX_LANE = max(DAY_LIMITS.values())
 KINDS = {"jale": ("chain", "verify", "exclusive"), "hasito": ("script",)}
 ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_-]{0,127}\Z")
 BOOT = re.compile(r"[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}\Z")
@@ -154,7 +157,7 @@ def validate_policy(value, sample):
         require(value["load1_lt"] == 12 and sum(value["limits"].values())
                 <= value["night_budget"], "night-limits")
     else:
-        require(value["load1_lt"] == 9 and value["limits"] == dict.fromkeys(PROJECTS, 2),
+        require(value["load1_lt"] == 9 and value["limits"] == DAY_LIMITS,
                 "day-limits")
     return value
 

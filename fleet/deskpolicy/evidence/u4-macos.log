@@ -1,0 +1,4 @@
+Python 3.9 syntax + py_compile: OK (34 files)
+ok: 12 citas; registro sin pstack (--registry-only)
+ok: manifest válido (12 files, 24 skills, 7 retire, 4 plugins)
+U4 macOS: syntax, py_compile, ShellCheck and pao check OK

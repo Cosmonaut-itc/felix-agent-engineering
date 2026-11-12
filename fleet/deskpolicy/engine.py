@@ -9,7 +9,8 @@ import secrets
 import sys
 
 from . import VERSION
-from .model import (BOOT, INTERVAL, KINDS, PROJECTS, TTL, WAIT_TTL,
+from .model import (BOOT, DAY_BUDGET, DAY_LIMITS, DAY_MAX_LANE, INTERVAL,
+                    KINDS, PROJECTS, TTL, WAIT_TTL,
                     Invalid, allocate, config, finite_load, identifier,
                     integer, keys, night, require, timestamp, utc_text, validate_policy)
 from .store import (RECEIPT_DIR_MODES, Runtime, atomic_json, assert_held, code_digest,
@@ -264,7 +265,7 @@ class DeskPolicy:
         except (OSError, ValueError, TypeError, OverflowError) as exc:
             reason = str(exc)
             reason = reason if reason in ("policy-expired", "window-closed") else "policy-invalid"
-            return {"mode": "day", "revision": None, "limits": dict.fromkeys(PROJECTS, 2),
+            return {"mode": "day", "revision": None, "limits": dict(DAY_LIMITS),
                     "night_budget": 4, "cpu_weight_budget": None, "max_run_weight": 4,
                     "min_start_interval_s": INTERVAL, "expires_at": None}, reason
 
@@ -372,7 +373,7 @@ class DeskPolicy:
                 record["state"] = "expired"
                 return deny("request-expired")
             project = record["project"]
-            limit = policy["night_budget"] if policy["mode"] == "night" else 2
+            limit = policy["night_budget"] if policy["mode"] == "night" else DAY_LIMITS[project]
             if lane == "any":
                 occupied = {r["claim"]["lane"] for r in live if r["project"] == project}
                 lane = next((n for n in range(1, limit + 1) if n not in occupied), None)
@@ -391,14 +392,14 @@ class DeskPolicy:
                 record["state"] = "expired"
                 return deny("weight-too-large")
             waiting = self.waiting(records, sample, policy["max_run_weight"],
-                                   policy["night_budget"] if policy["mode"] == "night" else 2)
+                                   policy["night_budget"] if policy["mode"] == "night" else DAY_MAX_LANE)
             queue = waiting[project]
             if project == "hasito" and record.get("lane") is not None:
                 queue = [r for r in queue if r.get("lane") in (None, lane)]
             if queue[0]["request_id"] != request_id:
                 return deny("fifo")
             project_live = [r for r in live if r["project"] == project]
-            if len(live) >= (policy["night_budget"] if policy["mode"] == "night" else 4):
+            if len(live) >= (policy["night_budget"] if policy["mode"] == "night" else DAY_BUDGET):
                 return deny("budget-full")
             if len(project_live) >= policy["limits"][project]:
                 return deny("quota-full")
@@ -410,7 +411,8 @@ class DeskPolicy:
                 if (project_live and record["kind"] == "exclusive"
                         or any(r["kind"] == "exclusive" for r in project_live)):
                     return deny("resource-busy")
-                if policy["mode"] == "day" and any(r["kind"] == record["kind"] for r in project_live):
+                if (policy["mode"] == "day" and record["kind"] == "verify"
+                        and any(r["kind"] == "verify" for r in project_live)):
                     return deny("resource-busy")
                 if self.legacy_veto(record["kind"], sample, len(project_live)):
                     return deny("legacy-freeze")
@@ -684,7 +686,7 @@ class DeskPolicy:
             mode = "night" if (configuration["night_enabled"] and night(sample.utc)
                                and self.arm_valid(configuration, sample)) else "day"
             waiting = self.waiting(records, sample, configuration["max_run_weight"],
-                                   configuration["night_budget"] if mode == "night" else 2)
+                                   configuration["night_budget"] if mode == "night" else DAY_MAX_LANE)
             for record in records:
                 if (record["state"] == "pending" and record["boot_id"] == sample.boot
                         and record["weight"] > configuration["max_run_weight"]):
@@ -721,7 +723,7 @@ class DeskPolicy:
                       "max_run_weight": configuration["max_run_weight"],
                       "min_start_interval_s": configuration["min_start_interval_s"],
                       "load1_lt": 12 if mode == "night" else 9,
-                      "limits": quota if mode == "night" else dict.fromkeys(PROJECTS, 2),
+                      "limits": quota if mode == "night" else dict(DAY_LIMITS),
                       "pending": pending, "algorithm": "pending-divisor-min1@1"}
             validate_policy(policy, sample)
             atomic_json(control_path, {"schema": "pao/desk-control@1", "revision": revision})
@@ -737,7 +739,7 @@ class DeskPolicy:
             records = self.records()
             live = self.census(records, sample)
             waiting = self.waiting(records, sample, policy["max_run_weight"],
-                                   policy["night_budget"] if policy["mode"] == "night" else 2)
+                                   policy["night_budget"] if policy["mode"] == "night" else DAY_MAX_LANE)
             claims = [{"request_id": r["request_id"], "project": r["project"], **r["claim"]} for r in live]
             last = max((r["claim"]["admitted_boottime_s"] for r in records
                         if r["claim"] is not None and r["boot_id"] == sample.boot), default=None)
@@ -749,7 +751,7 @@ class DeskPolicy:
                       "mode": policy["mode"], "revision": policy["revision"],
                       "expires_at": policy["expires_at"], "limits": policy["limits"],
                       "budget": policy["night_budget"] if policy["mode"] == "night" else None,
-                      "max_lane": policy["night_budget"] if policy["mode"] == "night" else 2,
+                      "max_lane": policy["night_budget"] if policy["mode"] == "night" else DAY_MAX_LANE,
                       "cpu_weight_budget": policy["cpu_weight_budget"] if policy["mode"] == "night" else None,
                       "pending": {p: len(waiting[p]) for p in PROJECTS},
                       "head": {p: waiting[p][0]["request_id"] if waiting[p] else None for p in PROJECTS},

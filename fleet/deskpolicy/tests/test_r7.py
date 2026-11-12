@@ -36,8 +36,8 @@ class RoundSevenTest(r4.RoundFourTest):
             if n == 1:
                 self.advance(121)
         self.advance(30)
-        self.lane_pending('H3', 3)
-        before, _, _ = self.launch('H3', 3)
+        self.lane_pending('H4', 4)
+        before, _, _ = self.launch('H4', 4)
         self.assertEqual(before['reason'], 'quota-full')
         if writer_dies:
             self.h.advance(61)
@@ -47,16 +47,16 @@ class RoundSevenTest(r4.RoundFourTest):
         for worker, pipe in workers:
             self.close_actor(worker, pipe)
         view = self.engine.status()
-        self.assertEqual((view['mode'], view['max_lane']), ('day', 2))
+        self.assertEqual((view['mode'], view['max_lane']), ('day', 3))
         reasons = []
         for _ in range(8):
             self.h.advance(30)
             self.renew()
-            receipt, _, _ = self.launch('H3', 3)
+            receipt, _, _ = self.launch('H4', 4)
             reasons.append(receipt['reason'])
         print('R7 DAWN', 'writer-dead' if writer_dies else 'dawn', reasons, flush=True)
         self.assertEqual(reasons, ['lane-closed'] * 8)
-        self.assertIsNone(read_json(self.engine.record_path('H3'))['claim'])
+        self.assertIsNone(read_json(self.engine.record_path('H4'))['claim'])
         return receipt
 
     def test_dawn_high_lane_is_closed(self):
@@ -66,16 +66,16 @@ class RoundSevenTest(r4.RoundFourTest):
         self.dawn(True)
 
     def test_closed_lane_precedes_busy_claim_and_fifo(self):
-        self.lane_pending('live', 3)
+        self.lane_pending('live', 4)
         self.publish()
-        admitted, _, _ = self.launch('live', 3)
+        admitted, _, _ = self.launch('live', 4)
         self.assertTrue(admitted['execute'])
-        self.lane_pending('head', 3)
-        self.lane_pending('successor', 3)
+        self.lane_pending('head', 4)
+        self.lane_pending('successor', 4)
         self.h.advance(61)
         self.renew()
         for name in ('head', 'successor'):
-            receipt, _, _ = self.launch(name, 3)
+            receipt, _, _ = self.launch(name, 4)
             self.assertEqual(receipt['reason'], 'lane-closed', receipt)
         self.assertEqual(self.engine.status()['live']['hasito'], 1)
 
@@ -94,7 +94,7 @@ class RoundSevenTest(r4.RoundFourTest):
         self.assertEqual(after['limits']['jale'], 2)
 
     def test_day_and_expired_policy_views_ignore_closed_pending_lanes(self):
-        self.lane_pending('high', 3)
+        self.lane_pending('high', 4)
         self.publish()
         self.h.advance(61)
         self.renew()

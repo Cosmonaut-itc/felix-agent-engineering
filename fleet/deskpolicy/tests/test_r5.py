@@ -185,8 +185,8 @@ class RoundFiveTest(r4.RoundFourTest):
             if published:
                 self.publish()
             view = self.engine.status()
-            self.assertEqual((view['mode'], view['budget'], view.get('max_lane')), ('day', None, 2))
-            self.assertEqual(view['limits'], {'jale': 2, 'hasito': 2})
+            self.assertEqual((view['mode'], view['budget'], view.get('max_lane')), ('day', None, 3))
+            self.assertEqual(view['limits'], {'jale': 2, 'hasito': 3})
         self.h.now = self.h.now.replace(hour=6)
         self.publish()
         view = self.engine.status()
