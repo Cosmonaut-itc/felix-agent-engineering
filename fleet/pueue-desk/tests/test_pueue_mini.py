@@ -208,6 +208,7 @@ class InstallerTests(Fixture):
         self.brew_loaded = True
         self.pueue_available = True
         self.actions = []
+        self.failing = set()
         self.write_state({"groups": {"suites": {}, "default": {}}, "tasks": {}})
         mocked = patch.object(installer.subprocess, "run", side_effect=self.fake_run)
         mocked.start()
@@ -216,7 +217,9 @@ class InstallerTests(Fixture):
     def fake_run(self, argv, check, **kwargs):
         self.actions.append(argv)
         code, output = 0, ""
-        if argv[0] == installer.LAUNCHCTL:
+        if argv[1] in self.failing:
+            code = 5
+        elif argv[0] == installer.LAUNCHCTL:
             verb = argv[1]
             if verb == "print":
                 loaded = self.brew_loaded if argv[2].endswith("/sh.brew.pueue") else self.service_loaded
@@ -296,6 +299,34 @@ class InstallerTests(Fixture):
                          [["status", "--json"], ["status", "--json"], ["start", "-g", "suites"]])
         self.assertEqual(len([a for a in self.actions if a[1] == "bootstrap"]), 2)
         self.assertEqual(len([a for a in self.actions if a[1] == "bootout"]), 2)
+
+    def test_failed_bootstrap_resumes_owned_groups(self):
+        state = self.root / ".local/state/pao/pueue-mini"
+        self.install("instalar")
+        (state / "guardia-state.json").write_text('["suites"]\n')
+        self.actions.clear()
+        self.failing = {"bootstrap"}
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.install("instalar")
+        self.assertFalse(self.service_loaded)
+        self.assertIn([installer.PUEUE, "start", "-g", "suites"], self.actions)
+        self.assertEqual(json.loads((state / "guardia-state.json").read_text()), [])
+
+    def test_failed_resume_on_withdraw_reloads_guard_with_ownership(self):
+        state = self.root / ".local/state/pao/pueue-mini"
+        agent = self.root / "Library/LaunchAgents" / (installer.LABEL + ".plist")
+        self.install("instalar")
+        (state / "guardia-state.json").write_text('["suites"]\n')
+        self.failing = {"start"}
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.install("desinstalar")
+        self.assertTrue(self.service_loaded)
+        self.assertTrue(agent.exists())
+        self.assertEqual(json.loads((state / "guardia-state.json").read_text()), ["suites"])
+        self.failing = set()
+        self.install("desinstalar")
+        self.assertFalse(self.service_loaded)
+        self.assertEqual(json.loads((state / "guardia-state.json").read_text()), [])
 
     def test_invalid_status_aborts_before_changes(self):
         for value in ('{"groups": {"suites": {}}, "tasks": {}}',

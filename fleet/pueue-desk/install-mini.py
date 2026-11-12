@@ -20,6 +20,24 @@ def run(*args, check=True):
     return subprocess.run(list(args), check=check, text=True, capture_output=True)
 
 
+def resume_owned(state):
+    """Reanuda las pausas de la guardia: sin guardia cargada, nadie lo haría."""
+    owned_file = state / "guardia-state.json"
+    if not owned_file.exists():
+        return
+    with (state / "control.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        owned = json.loads(owned_file.read_text())
+        if not set(owned) <= {"suites", "default"}:
+            raise ValueError("Grupos desconocidos en estado del guardia")
+        for group in sorted(owned):
+            run(PUEUE, "start", "-g", group)
+            remaining = sorted(set(json.loads(owned_file.read_text())) - {group})
+            temporary = owned_file.with_suffix(".tmp")
+            temporary.write_text(json.dumps(remaining) + "\n")
+            temporary.replace(owned_file)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["instalar", "desinstalar"])
@@ -60,27 +78,23 @@ def main():
     if run(LAUNCHCTL, "print", service, check=False).returncode == 0:
         run(LAUNCHCTL, "bootout", service)
     if args.command == "instalar":
-        library.mkdir(parents=True, exist_ok=True)
-        state.mkdir(parents=True, exist_ok=True)
-        agent.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(SOURCE / "control.py", library / "control.py")
-        agent.write_bytes(plistlib.dumps(template))
-        run(LAUNCHCTL, "bootstrap", domain, str(agent))
+        try:
+            library.mkdir(parents=True, exist_ok=True)
+            state.mkdir(parents=True, exist_ok=True)
+            agent.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(SOURCE / "control.py", library / "control.py")
+            agent.write_bytes(plistlib.dumps(template))
+            run(LAUNCHCTL, "bootstrap", domain, str(agent))
+        except Exception:
+            resume_owned(state)
+            raise
     else:
-        # Sin guardia nadie reanudaría sus pausas; las manuales no están en su propiedad.
-        owned_file = state / "guardia-state.json"
-        if owned_file.exists():
-            with (state / "control.lock").open("a") as handle:
-                fcntl.flock(handle, fcntl.LOCK_EX)
-                owned = json.loads(owned_file.read_text())
-                if not set(owned) <= {"suites", "default"}:
-                    raise ValueError("Grupos desconocidos en estado del guardia")
-                for group in sorted(owned):
-                    run(PUEUE, "start", "-g", group)
-                    remaining = sorted(set(json.loads(owned_file.read_text())) - {group})
-                    temporary = owned_file.with_suffix(".tmp")
-                    temporary.write_text(json.dumps(remaining) + "\n")
-                    temporary.replace(owned_file)
+        try:
+            resume_owned(state)
+        except Exception:
+            # Recargada, la guardia conserva la propiedad y reanuda cuando baje la presión.
+            run(LAUNCHCTL, "bootstrap", domain, str(agent), check=False)
+            raise
         agent.unlink(missing_ok=True)
         (library / "control.py").unlink(missing_ok=True)
         if library.exists():

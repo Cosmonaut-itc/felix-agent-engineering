@@ -83,13 +83,14 @@ la guardia. El LaunchAgent ejecuta `/usr/bin/python3 -I` cada 60 s
 
 Afecta sólo a `suites` y `default`. No reclama grupos ya pausados, y suelta la
 propiedad si observa que alguien los arrancó. Para tomar manualmente una pausa
-que hizo la guardia, usar el mismo candado y retirar su propiedad:
+que hizo la guardia, usar el mismo candado y retirar su propiedad. El grupo
+sigue en pausa, ahora como pausa manual:
 
 ```sh
 /usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py pausar suites --host mini
-/opt/homebrew/bin/pueue start -g suites
 ```
 
+Para reanudarlo después: `/opt/homebrew/bin/pueue start -g suites`.
 Una segunda pausa directa de Pueue no expresa ese relevo. El estado
 `guardia-state.json`, `control.lock` y el log JSONL UTC viven en
 `~/.local/state/pao/pueue-mini`. Verlo con
@@ -97,6 +98,9 @@ Una segunda pausa directa de Pueue no expresa ese relevo. El estado
 1 MiB. Los errores de ejecución de launchd aparecen en `launchd.err.log` del
 mismo directorio. Desinstalar reanuda los grupos que pausó la guardia y vacía su propiedad; las
 pausas manuales no son suyas y siguen en pausa. Conserva el log.
+Ningún grupo pausado por la guardia queda sin guardia: si la instalación falla
+después de descargar la anterior, reanuda sus grupos; si desinstalar no puede
+reanudar uno, vuelve a cargar la guardia, conserva la propiedad y sale con error.
 
 **Límite:** sólo frena la admisión: las tareas que ya corren siguen. Las
 corridas de `remote-run` encolan en `suites`; las corridas de Jale en la Mini
