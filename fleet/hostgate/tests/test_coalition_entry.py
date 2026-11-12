@@ -15,15 +15,20 @@ ENTRY = Path(__file__).resolve().parents[1] / 'coalition_entry.py'
 
 
 class Bootstrap(unittest.TestCase):
-    def launch(self, byte, extra=(), missing=False, exit_code=0, expected_tail=None):
+    def launch(self, byte, extra=(), missing=False, exit_code=0, expected_tail=None, wrong_digest=False):
         root = Path(tempfile.mkdtemp(prefix='entry-'))
         self.addCleanup(shutil.rmtree, str(root), True)
         counter = root / 'counter'
-        argv = [sys.executable, '-c', "import os,sys\nfd=os.open(sys.argv[1],os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)\n"
-                "os.write(fd,b'x'); os.fsync(fd); os.close(fd); sys.exit(%d)" % exit_code, str(counter)] + list(extra)
+        actual_argv = root / 'argv.json'
+        argv = [sys.executable, '-c', "import json,os,sys\nfd=os.open(sys.argv[1],os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)\n"
+                "os.write(fd,b'x'); os.fsync(fd); os.close(fd)\n"
+                "with open(sys.argv[2], 'w') as stream: json.dump(sys.argv[3:], stream, ensure_ascii=True)\n"
+                "sys.exit(%d)" % exit_code, str(counter), str(actual_argv)] + list(extra)
         if missing:
             argv = [str(root / 'no-such-executable')]
         digest = hashlib.sha256(json.dumps(argv, separators=(',', ':')).encode()).hexdigest()
+        if wrong_digest:
+            digest = '0' * 64
         go_r, go_w = os.pipe()
         ready_r, ready_w = os.pipe()
         try:
@@ -61,14 +66,20 @@ class Bootstrap(unittest.TestCase):
             if child.poll() is None:
                 child.kill()
                 child.wait()
+        self.actual_argv = json.loads(actual_argv.read_text()) if actual_argv.exists() else None
         return announced, code, len(counter.read_bytes()) if counter.exists() else 0
 
     def test_valid_byte_enters_once(self):
         self.assertEqual(self.launch(b'G'), (b'R', 0, 1))
 
     def test_non_ascii_and_surrogate_argv_enters_once(self):
-        """Variante: digest_not_ascii."""
+        """Variante: digest_not_ascii, rewrite_argv_after_check."""
         self.assertEqual(self.launch(b'G', ('señal', '\udcff')), (b'R', 0, 1))
+        self.assertEqual(self.actual_argv, ['señal', '\udcff'])
+
+    def test_wrong_digest_never_announces_or_enters(self):
+        """Variante: skip_argv_digest."""
+        self.assertEqual(self.launch(b'G', wrong_digest=True), (b'', 2, 0))
 
     def test_exec_failure_differs_from_payload_exit_three(self):
         """Variante: exec_failure_silent."""
