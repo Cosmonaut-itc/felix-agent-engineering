@@ -21,6 +21,10 @@ import urllib.request
 BASE = Path(__file__).resolve().parent
 TAIL4 = ipaddress.ip_network('100.64.0.0/10')
 TAIL6 = ipaddress.ip_network('fd7a:115c:a1e0::/48')
+TASK_STATES = ('Queued', 'Stashed', 'Locked', 'Running', 'Paused', 'Done')
+TASK_TEXT = ('name', 'scope', 'project', 'ticket', 'repo', 'sha', 'result')
+TASK_TIMES = ('enqueued', 'start', 'end')
+LOOKUP_BUDGET = 8
 
 
 def atomic(path, text):
@@ -35,11 +39,12 @@ def atomic(path, text):
             os.unlink(temporary)
 
 
-def read_json(path, default):
+def read_cache(path):
     try:
-        return json.loads(path.read_text())
+        data = json.loads(path.read_text())
     except (OSError, ValueError):
-        return default
+        return {}
+    return {k: v for k, v in data.items() if isinstance(v, dict)} if isinstance(data, dict) else {}
 
 
 def load_hosts(path):
@@ -73,7 +78,8 @@ class History:
             for line in self.path.read_text().splitlines():
                 try:
                     row = json.loads(line)
-                    if all(k in row for k in ('host', 'id', 'start', 'end', 'group', 'name', 'result')):
+                    if (isinstance(row, dict) and all(k in row for k in ('host', 'id', 'group', 'name', 'result'))
+                            and all(isinstance(row.get(k), (int, float)) for k in ('start', 'end'))):
                         self.rows.append(row)
                 except ValueError:
                     continue
@@ -105,8 +111,16 @@ def validate_snapshot(data, host):
     if not isinstance(data.get('tasks'), list) or not isinstance(data.get('groups'), list):
         raise ValueError('Tareas o grupos inválidos')
     for row in data['tasks']:
-        if not isinstance(row, dict) or any(k not in row for k in ('id', 'group', 'state', 'name')):
+        if (not isinstance(row, dict) or not isinstance(row.get('id'), int) or not isinstance(row.get('group'), str)
+                or row.get('state') not in TASK_STATES
+                or any(not isinstance(row.get(k), (str, type(None))) for k in TASK_TEXT)
+                or any(not isinstance(row.get(k), (int, float, type(None))) for k in TASK_TIMES)):
             raise ValueError('Tarea inválida')
+    if any(not isinstance(data.get(k), (dict, type(None))) for k in ('cpu', 'mem', 'disk', 'guard')):
+        raise ValueError('Capacidad inválida')
+    if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in data.get('errors') or []):
+        raise ValueError('Pueue no se pudo leer')
+    json.dumps(data, allow_nan=False)
     for group in data['groups']:
         if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
             raise ValueError('Grupo inválido')
@@ -132,10 +146,10 @@ class Rack:
         self.errors = {}
         self.history = History(state_dir)
         self.ticket_path = state_dir / 'tickets.json'
-        self.tickets = read_json(self.ticket_path, {})
+        self.tickets = read_cache(self.ticket_path)
         self.gh = gh
         self.commit_path = state_dir / 'commits.json'
-        self.commits = read_json(self.commit_path, {})
+        self.commits = read_cache(self.commit_path)
         self.key = None
         key_path = key_path or Path.home() / '.config/pao-rack/linear-key'
         try:
@@ -149,14 +163,15 @@ class Rack:
         self.lock = threading.Lock()
         self.payload = dict(schema='rack@1', now=time.time(), hosts=[], tickets={})
 
-    def refresh_tickets(self, tickets, now):
+    def refresh_tickets(self, tickets, now, deadline=math.inf):
         count = 0
         if not self.key:
             return
         for ticket in sorted(tickets):
-            if count >= 10:
+            if count >= 10 or time.monotonic() >= deadline:
                 break
-            if now - self.tickets.get(ticket, {}).get('updated', 0) < 6 * 3600:
+            known = self.tickets.get(ticket, {})
+            if now - known.get('updated', 0) < 6 * 3600 or now - known.get('failed', 0) < 1800:
                 continue
             count += 1
             try:
@@ -168,10 +183,12 @@ class Rack:
                     issue = json.load(response)['data']['issue']
                 self.tickets[ticket] = dict(title=issue['title'], project=(issue.get('project') or {}).get('name'), updated=now)
             except Exception:
+                self.tickets[ticket] = dict(known, failed=now)
                 logging.warning('No se pudo actualizar un ticket de Linear')
-        atomic(self.ticket_path, json.dumps(self.tickets))
+        if count:
+            atomic(self.ticket_path, json.dumps(self.tickets))
 
-    def resolve_commits(self, tasks, now):
+    def resolve_commits(self, tasks, now, deadline=math.inf):
         pending = []
         for task in tasks:
             repo, sha = task.get('repo'), task.get('sha')
@@ -181,7 +198,11 @@ class Rack:
                 known = self.commits.get(key)
                 if (not isinstance(known, dict) or (not known.get('ticket') and now - known.get('checked', 0) >= 1800)) and key not in pending:
                     pending.append(key)
-        for key in pending[:10]:
+        pending = pending[:10]
+        for index, key in enumerate(pending):
+            if time.monotonic() >= deadline:
+                pending = pending[:index]
+                break
             repo, sha = key.split('@')
             found = None
             for path, field in (('branches-where-head', 'name'), ('pulls', 'head.ref')):
@@ -201,22 +222,7 @@ class Rack:
             if task.get('ticket') is None and task.get('repo') and task.get('sha'):
                 task['ticket'] = self.commits.get(task['repo'] + '@' + task['sha'], {}).get('ticket')
 
-    def cycle(self, fetch=fetch_host, now=None):
-        now = time.time() if now is None else now
-        with ThreadPoolExecutor(max_workers=len(self.hosts)) as pool:
-            jobs = [(host, pool.submit(fetch, host)) for host in self.hosts]
-            for host, job in jobs:
-                ident = host['id']
-                try:
-                    data = validate_snapshot(job.result(), ident)
-                    self.history.add(ident, data['tasks'], now)
-                    self.good[ident] = data
-                    self.errors[ident] = None
-                except Exception as error:
-                    self.errors[ident] = 'No se pudo leer el host: ' + type(error).__name__
-        self.resolve_commits([t for data in self.good.values() for t in data['tasks'] if t['state'] != 'Done'], now)
-        tickets = {t['ticket'] for data in self.good.values() for t in data['tasks'] if re.fullmatch(r'SEN-\d+', t.get('ticket') or '')}
-        self.refresh_tickets(tickets, now)
+    def publish(self, now):
         hosts = []
         for host in self.hosts:
             ident = host['id']
@@ -234,6 +240,25 @@ class Rack:
         with self.lock:
             self.payload = dict(schema='rack@1', now=now, hosts=hosts,
                                 tickets={k: {f: v.get(f) for f in ('title', 'project')} for k, v in self.tickets.items()})
+
+    def cycle(self, fetch=fetch_host, now=None):
+        now = time.time() if now is None else now
+        with ThreadPoolExecutor(max_workers=len(self.hosts)) as pool:
+            jobs = [(host, pool.submit(fetch, host)) for host in self.hosts]
+            for host, job in jobs:
+                ident = host['id']
+                try:
+                    data = validate_snapshot(job.result(), ident)
+                    self.history.add(ident, data['tasks'], now)
+                    self.good[ident] = data
+                    self.errors[ident] = None
+                except Exception as error:
+                    self.errors[ident] = 'No se pudo leer el host: ' + type(error).__name__
+        self.publish(now)
+        deadline = time.monotonic() + LOOKUP_BUDGET
+        self.resolve_commits([t for data in self.good.values() for t in data['tasks'] if t['state'] != 'Done'], now, deadline)
+        self.refresh_tickets({t['ticket'] for data in self.good.values() for t in data['tasks'] if re.fullmatch(r'SEN-\d+', t.get('ticket') or '')}, now, deadline)
+        self.publish(now)
 
     def read(self):
         with self.lock:

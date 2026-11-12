@@ -5,9 +5,19 @@ label=com.cosmonaut.pao-rack
 destino="$HOME/.local/lib/pao-rack"
 plist="$HOME/Library/LaunchAgents/$label.plist"
 if [ "$#" -gt 1 ]; then echo 'Demasiados argumentos' >&2; exit 2; fi
+descargar() {
+  launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || return 0
+  launchctl bootout "gui/$(id -u)/$label"
+  for _ in 1 2 3 4 5 6 7 8 9 10; do
+    launchctl print "gui/$(id -u)/$label" >/dev/null 2>&1 || return 0
+    sleep 1
+  done
+  echo 'rack: launchd no soltó el job en 10 s' >&2
+  exit 1
+}
 case "${1:-}" in
   --desinstalar)
-    launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
+    descargar
     rm -f "$plist" "$destino/snapshot.py" "$destino/serve.py" "$destino/index.html" "$destino/hosts.json"
     rmdir "$destino" 2>/dev/null || true
     exit ;;
@@ -61,5 +71,8 @@ with open(plist, 'wb') as stream:
         StandardOutPath=os.path.expanduser('~/Library/Logs/pao-rack.log'),
         StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log')), stream)
 PY
-launchctl bootout "gui/$(id -u)/$label" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$plist"
+descargar
+if ! launchctl bootstrap "gui/$(id -u)" "$plist"; then
+  sleep 1
+  launchctl bootstrap "gui/$(id -u)" "$plist"
+fi

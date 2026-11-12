@@ -98,7 +98,7 @@ function hostState(h){
   return `<span class="state"><span class="dot" style="background:var(--good)"></span>Admitiendo corridas</span>`;
 }
 const groups = h => Object.entries(h.groups).filter(([n,g]) => n !== 'default' || h.tasks.some(t => t.group === n && t.state !== 'Done'));
-const running = h => h.tasks.filter(t => t.state === 'Running').sort((a,b)=>a.start-b.start);
+const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
 const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>a.enqueued-b.enqueued);
 const slotsTotal = h => groups(h).reduce((a,[,g])=>a+g.slots,0);
 

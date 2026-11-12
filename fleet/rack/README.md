@@ -10,7 +10,8 @@ Estos pasos son manuales, después de revisar y fusionar el cambio. No publicar
 el puerto por Serve, Funnel, un proxy ni un túnel de red local.
 
 1. En la MacBook, `bash fleet/rack/instalar-desk.sh` copia únicamente la
-   instantánea a WSL, a través del alias SSH `desk`. No instala servicios.
+   instantánea a WSL, a través del alias SSH `desk`, que entra directo al
+   sshd de Ubuntu. Reemplaza el archivo de forma atómica. No instala servicios.
 2. En la Mini, la llave exclusiva del rack es `~/.ssh/id_ed25519_pao_rack`
    (comentario `pao-rack@mini`). Su pública vive en el archivo Windows
    `C:\ProgramData\ssh\administrators_authorized_keys`, que conserva los

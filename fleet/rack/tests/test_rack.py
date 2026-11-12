@@ -267,6 +267,44 @@ class ServerTests(unittest.TestCase):
             self.assertIsNone(bad['ticket'])
         self.assertEqual(len(calls.read_text().splitlines()), 1)
 
+    def test_malformed_caches_are_ignored(self):
+        for name in ('tickets.json', 'commits.json', 'history.jsonl'):
+            (self.root / name).write_text('[]' if name != 'history.jsonl' else '{"host":"mini","id":1,"group":"g","name":"x","result":"Success","start":"a","end":null}\n')
+        rack = serve.Rack(self.hosts * 1, self.root, self.root / 'absent-key', gh='/bin/false')
+        data = sample()
+        data['tasks'] = [dict(id=1, group='suites', state='Running', name='x', ticket=None, repo='Owner/R', sha='b' * 40)]
+        rack.cycle(lambda host: data, now=1001)
+        self.assertEqual(rack.read()['now'], 1001)
+        self.assertTrue(rack.read()['hosts'][0]['fresh'])
+
+    def test_bad_host_snapshot_isolated(self):
+        hosts = [dict(id='mini', name='Mini', transport='local', argv=['x']), dict(id='desk', name='Desk', transport='local', argv=['x'])]
+        rack = serve.Rack(hosts, self.root, self.root / 'absent-key')
+        def good(host):
+            return dict(sample(), host=host['id'])
+        rack.cycle(good, now=1000)
+        bad_cases = [dict(tasks=[dict(id=1, group='g', state='Running', name='x', ticket=['SEN-1'])]),
+                     dict(tasks=[dict(id=1, group='g', state='Running', name='x', start=float('nan'))]),
+                     dict(cpu=dict(load=[float('nan')])),
+                     dict(errors=[dict(stage='pueue', message='Lectura fallida: OSError')])]
+        for index, bad in enumerate(bad_cases):
+            now = 1001 + index
+            rack.cycle(lambda host: dict(good(host), **bad) if host['id'] == 'desk' else good(host), now=now)
+            payload = json.loads(json.dumps(rack.read(), allow_nan=False))
+            mini, desk = payload['hosts']
+            self.assertEqual(payload['now'], now)
+            self.assertTrue(mini['fresh'])
+            self.assertFalse(desk['fresh'])
+            self.assertEqual(desk['snapshot']['taken'], 1000)
+
+    def test_hosts_published_before_slow_lookups(self):
+        seen = []
+        def slow(*args, **kwargs):
+            seen.append(self.rack.read()['now'])
+        with patch.object(self.rack, 'resolve_commits', side_effect=slow):
+            self.rack.cycle(lambda host: sample(), now=1001)
+        self.assertEqual(seen, [1001])
+
     def test_linear_key_permissions_and_failure(self):
         key = self.root / 'key'
         key.write_text('fake-key')
@@ -275,9 +313,16 @@ class ServerTests(unittest.TestCase):
         key.chmod(0o600)
         rack = serve.Rack(self.hosts, self.root, key)
         self.assertEqual(rack.key, 'fake-key')
-        with patch.object(serve.urllib.request, 'urlopen', side_effect=OSError):
+        with patch.object(serve.urllib.request, 'urlopen', side_effect=OSError) as urlopen:
             rack.refresh_tickets({'SEN-123'}, 100000)
-        self.assertEqual(rack.tickets, {})
+            rack.refresh_tickets({'SEN-123'}, 100000 + 1799)
+            self.assertEqual(urlopen.call_count, 1)
+            rack.refresh_tickets({'SEN-123'}, 100000 + 1800)
+            self.assertEqual(urlopen.call_count, 2)
+        self.assertIsNone(rack.tickets['SEN-123'].get('title'))
+        with patch.object(serve.urllib.request, 'urlopen', side_effect=OSError) as urlopen:
+            rack.refresh_tickets({'SEN-124'}, 100000, deadline=0)
+            self.assertEqual(urlopen.call_count, 0)
 
 
 if __name__ == '__main__':
