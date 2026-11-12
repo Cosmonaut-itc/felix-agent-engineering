@@ -47,24 +47,28 @@ U4 macOS: syntax, py_compile, ShellCheck and pao check OK
 ## Comandos pendientes para cuando vuelva el desk
 
 Ejecutar desde este worktree. RED conserva todo el código y las pruebas de
-`e056155b` y superpone sólo las pruebas U4. No cambia el checkout de trabajo.
-El desk exige admisión: `remote-run` directo hacia el desk se rechaza sin
-`--desk-request` y `--desk-lane`. Las dos corridas entran por el lanzador de
-comprador, que registra la solicitud, espera carril y devuelve el código.
+`e056155b` en un worktree aparte, porque `run.py` fija el SHA con
+`git rev-parse HEAD`, y superpone sólo las pruebas U4 sin commitearlas. No
+cambia el checkout de trabajo. El desk exige admisión: `remote-run` directo
+hacia el desk se rechaza sin `--desk-request` y `--desk-lane`. Las dos
+corridas entran por el lanzador de comprador, que exige `REMOTE_RUN_HOST=desk`,
+registra la solicitud, espera carril y devuelve el código.
 
 ```sh
 run_sh=/Users/felixddhs/VSCODE/REPOS/comprador./scripts/mini/run.sh
-# Preparación local de un snapshot RED nuevo, sin ejecutar pruebas locales.
+export REMOTE_RUN_HOST=desk
+# Preparación local de un worktree RED nuevo, sin ejecutar pruebas locales.
 u4_red_dir=$(mktemp -d /tmp/pao-u4-red.XXXXXX)
-git archive e056155b fleet | tar -x -C "$u4_red_dir"
+git worktree add --detach "$u4_red_dir" e056155b
 cp fleet/deskpolicy/tests/test_u4.py "$u4_red_dir/fleet/deskpolicy/tests/test_u4.py"
 cp fleet/deskpolicy/evidence/u4-red.sh "$u4_red_dir/u4-red.sh"
 # RED: se esperan fallos de aserción de las nuevas admisiones/vista, sin errores.
 "$run_sh" --entorno desk --worktree "$u4_red_dir" --owner u4-puente --etiqueta dirigida-u4-red \
-  --script u4-red.sh --evidencia ~/.claude/encargos/desk-pueue/evidencia-u4-red
+  --script "$u4_red_dir/u4-red.sh" --evidencia ~/.claude/encargos/desk-pueue/evidencia-u4-red
 # GREEN: suite completa y ShellCheck del CI para los scripts del módulo.
 "$run_sh" --entorno desk --worktree "$PWD" --owner u4-puente --etiqueta dirigida-u4-green \
-  --script fleet/deskpolicy/evidence/u4-green.sh --evidencia ~/.claude/encargos/desk-pueue/evidencia-u4-green
+  --script "$PWD/fleet/deskpolicy/evidence/u4-green.sh" --evidencia ~/.claude/encargos/desk-pueue/evidencia-u4-green
+# Al terminar: git worktree remove --force "$u4_red_dir"
 ```
 
 ## Consumidores leídos
