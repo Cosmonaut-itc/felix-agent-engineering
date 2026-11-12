@@ -9,7 +9,7 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=["install", "withdraw"])
+    parser.add_argument("action", choices=["install", "withdraw", "parar", "arrancar"])
     parser.add_argument("--seco", action="store_true")
     args = parser.parse_args()
     root = Path(__file__).resolve().parent

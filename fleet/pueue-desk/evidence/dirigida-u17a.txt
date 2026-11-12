@@ -1,0 +1,94 @@
+# remote-run 20261112-101657-9c241c (--name dirigida-u17a-opus), Mac Mini, --script fleet/pueue-desk/evidence/verificar-u17a.sh
+COMANDO: /usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -v
+test_guard_interval_keeps_repair_under_a_minute (test_mini.World) ... ok
+test_install_survives_sigkill_at_every_boundary (test_mini.World) ... ok
+test_maintenance_stop_unloads_watcher_first (test_mini.World) ... ok
+test_running_task_aborts_install_without_touching_the_daemon (test_mini.World) ... ok
+test_withdraw_survives_sigkill_at_every_boundary (test_mini.World) ... ok
+test_docker_back_with_low_pressure_reopens_only_own_pauses (test_prepare.AdmissionTests) ... ok
+test_docker_down_nothing_opens (test_prepare.AdmissionTests) ... ok
+test_group_opened_by_hand_releases_retention (test_prepare.AdmissionTests) ... ok
+test_reanudar_goes_through_admission (test_prepare.AdmissionTests) ... ok
+test_reanudar_lifts_a_manual_pause_only_with_admission (test_prepare.AdmissionTests) ... ok
+test_retained_group_waits_for_reanudar (test_prepare.AdmissionTests) ... ok
+test_death_between_ownership_and_queue_is_completed_by_the_retry (test_prepare.CommandPrepareTests) ... ok
+test_interrupted_and_logged_tasks_end_visible (test_prepare.CommandPrepareTests) ... ok
+test_prepare_twice_same_bytes (test_prepare.CommandPrepareTests) ... ok
+test_rejections_never_write (test_prepare.CommandPrepareTests) ... preparar rechazado: pueued ya responde; no se prepara un estado en uso
+preparar rechazado: Se esperaba pueued 4.0.4 y hay pueued 4.1.0; la cola queda intacta
+preparar rechazado: Se requiere compress_state_file: false; no se altera el estado comprimido
+preparar rechazado: Cola Pueue ilegible (Expecting value: line 1 column 41 (char 40)); arranque abortado sin sustituirla
+preparar rechazado: Cola Pueue ilegible ('created_at'); arranque abortado sin sustituirla
+preparar rechazado: /Users/cosmonaut/remote-run/work/dirigida-u17a-opus-3f606ea1/.u17a-tmp/tmp6vfljrx3/.config/pueue/pueue.yml fija pueue_directory; preparar sólo conoce la ruta por defecto
+preparar rechazado: Expecting property name enclosed in double quotes: line 1 column 2 (char 1)
+ok
+test_stale_pid_of_another_process_is_cleared (test_prepare.CommandPrepareTests) ... ok
+test_every_host_log_has_a_limit (test_prepare.LogTests) ... ok
+test_host_log_is_capped_while_writer_keeps_appending (test_prepare.LogTests) ... ok
+test_first_boot_has_default_and_managed_groups_closed (test_prepare.PrepareTests) ... ok
+test_groups_closed_owned_and_missing_ones_created_closed (test_prepare.PrepareTests) ... ok
+test_interrupted_fail_visible_and_are_never_requeued (test_prepare.PrepareTests) ... ok
+test_kills_are_never_reopened (test_prepare.PrepareTests) ... ok
+test_queued_with_log_fails_and_holds_its_group (test_prepare.PrepareTests) ... ok
+test_second_pass_changes_nothing (test_prepare.PrepareTests) ... ok
+test_daemon_unit_prepares_and_restarts (test_prepare.UnitTests) ... ok
+test_timers_require_the_daemon (test_prepare.UnitTests) ... ok
+test_empty_open_group_admits_nothing_before_guard (test_private.PrivateInstance) ... ok
+test_interrupted_fails_once_and_queued_runs_once (test_private.PrivateInstance) ... ok
+test_manual_pause_survives_restarts (test_private.PrivateInstance) ... ok
+test_prepare_twice_is_identical (test_private.PrivateInstance) ... ok
+test_queued_with_log_fails_and_holds_group_until_reanudar (test_private.PrivateInstance) ... ok
+test_unreadable_state_does_not_start_or_overwrite (test_private.PrivateInstance) ... ok
+test_apply_idempotent (test_pueue_desk.ControlTests) ... ok
+test_apply_never_creates_open_groups (test_pueue_desk.ControlTests) ... ok
+test_failed_apply_does_not_restart_daemon (test_pueue_desk.ControlTests) ... ok
+test_failed_resume_keeps_ownership_and_retries (test_pueue_desk.ControlTests) ... ok
+test_hysteresis_manual_pause_and_log (test_pueue_desk.ControlTests) ... ok
+test_invalid_readings_never_resume (test_pueue_desk.ControlTests) ... ok
+test_manual_takeover_of_guard_pause (test_pueue_desk.ControlTests) ... ok
+test_reject_limits_before_any_pueue_call (test_pueue_desk.ControlTests) ... ok
+test_rotation (test_pueue_desk.ControlTests) ... ok
+test_thresholds (test_pueue_desk.ControlTests) ... ok
+test_utc_boundaries (test_pueue_desk.ControlTests) ... ok
+test_dry_run (test_pueue_desk.DeploymentTests) ... ok
+test_failure_after_shutdown_is_announced (test_pueue_desk.DeploymentTests) ... ok
+test_install_refuses_other_pueued_version (test_pueue_desk.DeploymentTests) ... ok
+test_install_twice_and_withdraw_preserves_queue (test_pueue_desk.DeploymentTests) ... ok
+test_live_manual_aborts_without_changes (test_pueue_desk.DeploymentTests) ... ok
+test_maintenance_stop_stops_timers_before_daemon (test_pueue_desk.DeploymentTests) ... ok
+test_managed_daemon_with_live_tasks_is_not_stopped (test_pueue_desk.DeploymentTests) ... ok
+test_nonempty_suites_preserved (test_pueue_desk.DeploymentTests) ... ok
+test_rejected_linger_keeps_manual_daemon (test_pueue_desk.DeploymentTests) ... ok
+
+----------------------------------------------------------------------
+Ran 52 tests in 416.082s
+
+OK
+
+W6 install: SIGKILL en 25 llamadas × antes/después; destino ['brew', 'propio']; sano tras una pasada de vigilar
+
+W6 withdraw: SIGKILL en 22 llamadas × antes/después; destino ['brew', 'propio']; sano tras una pasada de vigilar
+hasito queda cerrado hasta que el host lo admita (pausar, docker); el guardia lo reabrirá
+otros reabierto
+Modo noche: hasito=4, jale=3, otros=1, pg5434=1
+Modo noche: hasito=4, jale=3, otros=1, pg5434=1
+Modo dia: hasito=3, jale=2, otros=1, pg5434=1
+Modo dia: hasito=3, jale=2, otros=1, pg5434=1
+
+SALIDA DEPLOY --seco (ssh falso):
+Preflight: cola manual vacía
+SECO: copiar control.py y unidades a ~/.local/lib/pao-pueue-desk y ~/.config/systemd/user
+SECO: pueue shutdown (daemon manual vacío)
+SECO: loginctl enable-linger; systemctl --user daemon-reload
+SECO: systemctl --user enable --now pueued.service pueue-desk-mode.timer pueue-desk-guard.timer
+SECO: aplicar y comprobar cuotas vigentes; retirar suites sólo si vacío
+
+COMANDO: plutil -lint fleet/pueue-desk/launchagents/*.plist
+fleet/pueue-desk/launchagents/io.pao.pueue-guardia.plist: OK
+fleet/pueue-desk/launchagents/io.pao.pueue.plist: OK
+COMANDO: shellcheck --severity=warning fleet/pueue-desk/*.sh fleet/pueue-desk/evidence/*.sh
+ShellCheck: OK (código 0)
+DURACIÓN: 422 s
+VALIDACIÓN U17a: OK
+
+[exited with code 0]

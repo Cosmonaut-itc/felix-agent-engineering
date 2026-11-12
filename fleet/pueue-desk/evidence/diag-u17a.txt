@@ -1,0 +1,14 @@
+# remote-run 20261112-085853-2e2a75 (--name diag-u17a-opus), Mac Mini, /usr/bin/python3 -I fleet/pueue-desk/evidence/diag-u17a.py
+VERSION {"cliente": "pueue 4.0.4", "daemon": "pueued 4.0.4", "raiz": "/Users/cosmonaut/remote-run/work/diag-u17a-opus-3f606ea1/.u17a-diag-bpuetd3f"}
+M1-DISCO {"grupos": {"default": "Running", "manual": "Paused", "vacio": "Running", "work": "Running"}, "tareas": {"0": "Running", "1": "Queued", "2": "Queued"}}
+M1-RESTAURADO {"grupos": {"default": "Running", "manual": "Paused", "vacio": "Running", "work": "Paused"}, "nota": "vacio sigue Running: un add entraría antes de que el host esté listo", "tareas": {"0": "Done", "1": "Queued", "2": "Queued"}}
+M1-VACIO-ADMITE {"corrio": true}
+M2-DISCO {"grupo": "Paused", "log": true, "tarea": "Queued"}
+M2-REANUDADO {"lineas_centinela": 2, "log": "", "tarea": {"Done": {"end": "2026-11-12T09:00:40.083246-06:00", "enqueued_at": "2026-11-12T09:00:39.110649-06:00", "result": "Success", "start": "2026-11-12T09:00:39.781384-06:00"}}}
+M3-RESTAURADO {"grupos": {"default": {"parallel_tasks": 1, "status": "Paused"}, "nuevo": {"parallel_tasks": 3, "status": "Paused"}, "work": {"parallel_tasks": 1, "status": "Paused"}}, "resultado": "Killed", "tareas": {"0": "Done", "1": "Queued"}}
+M3-NUEVO-CERRADO {"estado": {"Queued": {"enqueued_at": "2026-11-12T09:00:40.567755-06:00"}}}
+M3-ABRIR {"interrumpida": "Killed", "queued_corre": true}
+M4-RESTAURADO {"sobrescrito": true, "tareas": 0}
+M5-PID-AJENO {"codigo": 1, "log": ["Run with RUST_BACKTRACE=full to include source snippets."]}
+M6-DISCO {"codigo": 0, "grupos": {"default": "Running", "work": "Running"}, "tarea": {"Done": {"end": "2026-11-12T09:00:43.256659-06:00", "enqueued_at": "2026-11-12T09:00:42.840277-06:00", "result": "Killed", "start": "2026-11-12T09:00:42.954892-06:00"}}}
+FIN {"resultado": "OK; daemons privados detenidos"}

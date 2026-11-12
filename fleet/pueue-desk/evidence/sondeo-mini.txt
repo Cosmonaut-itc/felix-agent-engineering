@@ -1,0 +1,38 @@
+# remote-run 20261112-090227-d5f5ba (--name diag-u17a-opus), Mac Mini, --script fleet/pueue-desk/evidence/sondeo-mini.sh (sólo lectura)
+LAUNCHCTL_LIST
+30538	0	sh.brew.pueue
+AGENTS
+sh.brew.pueue.plist
+PLIST /Users/cosmonaut/Library/LaunchAgents/sh.brew.pueue.plist
+  "Label" => "sh.brew.pueue"
+  "LimitLoadToSessionType" => [
+    0 => "Aqua"
+    1 => "Background"
+--
+  "ProgramArguments" => [
+    0 => "/opt/homebrew/opt/pueue/bin/pueued"
+    1 => "--verbose"
+  ]
+  "RunAtLoad" => true
+  "StandardErrorPath" => "/opt/homebrew/var/log/pueued.log"
+  "StandardOutPath" => "/opt/homebrew/var/log/pueued.log"
+  "WorkingDirectory" => "/opt/homebrew/var"
+DISABLED
+		"sh.brew.pueue" => enabled
+PINNED
+APPSUPPORT
+certs
+log
+pueue.pid
+pueue.yml
+pueue_cosmonaut.socket
+shared_secret
+state.json
+task_logs
+CONFIG
+16:  compress_state_file: false
+22:  pueue_directory: null
+23:  runtime_directory: null
+26:  unix_socket_path: null
+VERSION
+pueued 4.0.4

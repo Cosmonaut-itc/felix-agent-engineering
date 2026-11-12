@@ -54,8 +54,14 @@ elif name == "pgrep":
 elif name == "systemctl":
     if "is-active" in args:
         sys.exit(0 if (root / "managed").exists() else 3)
+    if args[:2] == ["--user", "stop"] and "pueued.service" in args:
+        (root / "managed").unlink(missing_ok=True)
 elif name == "loginctl" and (root / "linger-falla").exists():
     sys.exit("Access denied")
+elif name == "pueued" and args == ["--version"]:
+    print("pueued 4.0.4")
+elif name == "docker":
+    sys.exit(1 if (root / "docker-caido").exists() else 0)
 elif name not in ("loginctl", "pueued"):
     sys.exit("Ejecutable falso desconocido: " + name)
 '''
@@ -68,7 +74,7 @@ class Fixture(unittest.TestCase):
         self.root = Path(self.temp.name)
         self.bin = self.root / ".local/bin"
         self.bin.mkdir(parents=True)
-        for name in ("pueue", "pueued", "ssh", "systemctl", "pgrep", "loginctl"):
+        for name in ("pueue", "pueued", "ssh", "systemctl", "pgrep", "loginctl", "docker"):
             target = self.bin / name
             target.write_text(FAKE)
             target.chmod(0o755)
@@ -99,11 +105,11 @@ class Fixture(unittest.TestCase):
 
     def guard(self):
         with control.locked(self.directory):
-            control.guard(self.pueue, self.proc, self.directory)
+            return control.guard(self.pueue, self.proc, self.directory, self.bin / "docker")
 
     def deploy(self, *args):
         return subprocess.run(["bash", str(ROOT / "deploy-desk.sh"), *args],
-                              env=self.env, text=True, capture_output=True)
+                              env=self.env, text=True, capture_output=True, timeout=60)
 
 
 class ControlTests(Fixture):
@@ -122,8 +128,13 @@ class ControlTests(Fixture):
                 control.apply_mode(self.pueue, datetime.fromisoformat("2026-11-12T15:00:00+00:00"))
         self.assertEqual(self.calls(), [])
 
-    def test_apply_idempotent_and_creates_groups(self):
-        self.write_state({"groups": {}, "tasks": {}})
+    def test_apply_never_creates_open_groups(self):
+        self.write_state({"groups": {"hasito": {"status": "Paused", "parallel_tasks": 1}}, "tasks": {}})
+        with self.assertRaisesRegex(ValueError, "lo crea preparar"):
+            control.apply_mode(self.pueue, datetime.fromisoformat("2026-11-12T05:00:00+00:00"))
+        self.assertFalse(any(c[1:3] == ["group", "add"] for c in self.calls()))
+
+    def test_apply_idempotent(self):
         for hour in (5, 14):
             now = datetime.fromisoformat(f"2026-11-12T{hour:02}:00:00+00:00")
             control.apply_mode(self.pueue, now)
@@ -137,7 +148,7 @@ class ControlTests(Fixture):
         self.pueue.call("pause", "--wait", "-g", "jale")
         self.metrics(io_value=41)
         self.guard()
-        owned = json.loads((self.directory / "guardia-state.json").read_text())
+        owned = control.load_control(self.directory)["owned"]
         self.assertEqual(set(owned), {"hasito", "otros", "pg5434"})
         self.metrics(io_value=30, cpu=20, memory=5)
         before = self.calls()
@@ -146,7 +157,7 @@ class ControlTests(Fixture):
         self.metrics(io_value=19, cpu=14, memory=6)
         self.guard()
         self.assertEqual(self.pueue.status()["groups"]["jale"]["status"], "Paused")
-        self.assertEqual(json.loads((self.directory / "guardia-state.json").read_text()), [])
+        self.assertEqual(control.load_control(self.directory)["owned"], [])
         records = [json.loads(line) for line in (self.directory / "guardia.log").read_text().splitlines()]
         self.assertEqual(len([r for r in records if r["evento"] == "lectura"]), 3)
         self.assertEqual([r["accion"] for r in records if r["evento"] == "decision"], ["pausar", "mantener", "reanudar"])
@@ -167,8 +178,7 @@ class ControlTests(Fixture):
         self.metrics(cpu=31)
         self.guard()
         with patch.object(control, "STATE_DIR", self.directory), patch.object(control, "Pueue", return_value=self.pueue):
-            with patch("sys.argv", ["control.py", "pausar", "hasito"]):
-                control.main()
+            control.main(["pausar", "hasito"])
         self.metrics()
         self.guard()
         self.assertEqual(self.pueue.status()["groups"]["hasito"]["status"], "Paused")
@@ -180,10 +190,10 @@ class ControlTests(Fixture):
         self.metrics()
         with self.assertRaises(subprocess.CalledProcessError):
             self.guard()
-        self.assertIn("hasito", json.loads((self.directory / "guardia-state.json").read_text()))
+        self.assertIn("hasito", control.load_control(self.directory)["owned"])
         self.guard()
         self.assertEqual({g["status"] for g in self.pueue.status()["groups"].values()}, {"Running"})
-        self.assertEqual(json.loads((self.directory / "guardia-state.json").read_text()), [])
+        self.assertEqual(control.load_control(self.directory)["owned"], [])
 
     def test_failed_apply_does_not_restart_daemon(self):
         units = ROOT / "units"
@@ -219,7 +229,7 @@ class DeploymentTests(Fixture):
         self.assertIn("SECO: pueue shutdown", result.stdout)
         self.assertFalse((self.root / ".config").exists())
         self.assertTrue((self.root / "manual").exists())
-        self.assertEqual([c[0] for c in self.calls()], ["systemctl", "pgrep", "pueue"])
+        self.assertEqual([c[0] for c in self.calls()], ["systemctl", "pgrep", "pueue", "pueued"])
 
     def test_live_manual_aborts_without_changes(self):
         for status in ("Queued", "Paused", {"Queued": {"enqueued_at": "now"}},
@@ -269,7 +279,8 @@ class DeploymentTests(Fixture):
         self.assertNotIn("@HOME@", (units / "pueued.service").read_text())
         self.assertNotIn("suites", self.pueue.status()["groups"])
         before = self.pueue.status()
-        result = subprocess.run(["bash", str(ROOT / "withdraw-desk.sh")], env=self.env, text=True, capture_output=True)
+        result = subprocess.run(["bash", str(ROOT / "withdraw-desk.sh")], env=self.env, text=True,
+                                capture_output=True, timeout=60)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(list(units.iterdir()), [])
         self.assertEqual(before, self.pueue.status())
@@ -284,6 +295,29 @@ class DeploymentTests(Fixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(any(c == ["pueue", "shutdown"] for c in self.calls()))
         self.assertEqual(self.pueue.status()["tasks"], state["tasks"])
+
+    def test_maintenance_stop_stops_timers_before_daemon(self):
+        # Requires=pueued.service en guardia y cuotas: un timer vivo volvería a levantar el daemon.
+        (self.root / "managed").touch()
+        result = subprocess.run(["/usr/bin/python3", "-I", str(ROOT / "deploy.py"), "parar"],
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stops = [c[3:] for c in self.calls() if c[:3] == ["systemctl", "--user", "stop"]]
+        self.assertEqual(stops, [["pueue-desk-mode.timer", "pueue-desk-guard.timer"],
+                                 ["pueue-desk-guard.service", "pueue-desk-mode.service"], ["pueued.service"]])
+        self.assertFalse((self.root / "managed").exists())
+        result = subprocess.run(["/usr/bin/python3", "-I", str(ROOT / "deploy.py"), "arrancar"],
+                                env=self.env, text=True, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.calls()[-1], ["systemctl", "--user", "start", "pueued.service",
+                                            "pueue-desk-mode.timer", "pueue-desk-guard.timer"])
+
+    def test_install_refuses_other_pueued_version(self):
+        (self.bin / "pueued").write_text("#!/bin/sh\necho pueued 4.1.0\n")
+        result = self.deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("preparar exige pueued 4.0.4", result.stderr)
+        self.assertFalse((self.root / ".config/systemd").exists())
 
     def test_nonempty_suites_preserved(self):
         state = self.pueue.status()

@@ -35,6 +35,9 @@ def remote(action, dry):
         for binary in ("pueue", "pueued"):
             if not os.access(home / ".local/bin" / binary, os.X_OK):
                 raise RuntimeError(f"Falta el binario ejecutable {binary}; no se instala automáticamente")
+        version = run(str(home / ".local/bin/pueued"), "--version", check=False).stdout.strip()
+        if version != PUEUED_VERSION:
+            raise RuntimeError(f"Instalación abortada sin cambios: preparar exige {PUEUED_VERSION} y hay {version or 'nada'}")
         print("Preflight: cola manual vacía" if manual else "Preflight: sin daemon manual")
         if dry:
             print("SECO: copiar control.py y unidades a ~/.local/lib/pao-pueue-desk y ~/.config/systemd/user")
@@ -64,6 +67,25 @@ def remote(action, dry):
                 print("ATENCIÓN: el pueued manual quedó detenido y el servicio no quedó instalado. "
                       "Restáuralo con ~/.local/bin/pueued -d o vuelve a correr la instalación.", file=sys.stderr)
             raise
+    elif action == "parar":
+        # El guardia y las cuotas tienen Requires=pueued.service: si sus timers siguen activos,
+        # el siguiente disparo vuelve a levantar el daemon. Primero timers, después servicios.
+        stops = [timers, ["pueue-desk-guard.service", "pueue-desk-mode.service"], ["pueued.service"]]
+        if dry:
+            for names_ in stops:
+                print("SECO: systemctl --user stop " + " ".join(names_))
+            return
+        for names_ in stops:
+            run("systemctl", "--user", "stop", *names_)
+        if run("systemctl", "--user", "is-active", "pueued.service", check=False).returncode == 0:
+            raise RuntimeError("pueued.service sigue activo tras la parada")
+        print("Daemon y timers detenidos; cola conservada. Volver con: deploy.py arrancar")
+    elif action == "arrancar":
+        if dry:
+            print("SECO: systemctl --user start pueued.service " + " ".join(timers))
+            return
+        run("systemctl", "--user", "start", "pueued.service", *timers)
+        print("Daemon y timers en marcha; preparar corrió antes del arranque")
     else:
         if dry:
             print("SECO: detener y deshabilitar timers y pueued.service; quitar unidades; daemon-reload")
@@ -91,7 +113,10 @@ def install(home, units, library, timers, pueue):
         temporary.write_text(rendered)
         temporary.replace(target)
     run("systemctl", "--user", "daemon-reload")
+    active = run("systemctl", "--user", "is-active", "pueued.service", check=False).returncode == 0
     run("systemctl", "--user", "enable", "--now", "pueued.service", *timers)
+    if active:
+        print("Aviso: pueued.service ya estaba activo; preparar se aplica en su próximo arranque")
     # Si ya estaba activo, pueue-desk-mode no vuelve a arrancar solo.
     with locked(STATE_DIR):
         apply_mode(pueue, datetime.now(timezone.utc))
