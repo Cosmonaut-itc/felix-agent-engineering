@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>local.pao.pueue-mini.guard</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>-I</string>
+        <string>@HOME@/.local/lib/pao-pueue-mini/control.py</string>
+        <string>guardia</string>
+        <string>--host</string>
+        <string>mini</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>StandardOutPath</key>
+    <string>@HOME@/.local/state/pao/pueue-mini/launchd.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>@HOME@/.local/state/pao/pueue-mini/launchd.err.log</string>
+</dict>
+</plist>
