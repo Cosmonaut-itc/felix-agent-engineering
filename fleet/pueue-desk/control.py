@@ -252,7 +252,9 @@ def unique_object(pairs):
 def validate_task(task_id, task):
     """Rechazar antes de que Pueue sustituya una cola ilegible por una vacía."""
     def timestamp(value):
-        if not isinstance(value, str) or datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is None:
+        pattern = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,9})?(?:Z|[+-][0-9]{2}:[0-9]{2})"
+        if (not isinstance(value, str) or re.fullmatch(pattern, value) is None or
+                datetime.fromisoformat(value.replace("Z", "+00:00")).tzinfo is None):
             raise ValueError("Fecha Pueue incompatible")
 
     def status(value):

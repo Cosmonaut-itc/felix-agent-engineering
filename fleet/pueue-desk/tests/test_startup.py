@@ -127,6 +127,24 @@ class OfflineTests(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), before)
         self.assertFalse((self.directory / 'guardia-state.json').exists())
 
+    @patch.object(subprocess, 'check_output', return_value='pueued 4.0.4\n')
+    def test_python_iso_extensions_do_not_reach_rust_or_overwrite_queue(self, _version):
+        for timestamp in ('2026-11-12X08:00:00+00:00', '2026-11-12_08:00:00+00:00',
+                          '2026-11-12T08:00+00:00', '2026-11-12T08:00:00+00:00:30'):
+            # Python los acepta, pero no son el formato RFC3339 de Pueue.
+            datetime.fromisoformat(timestamp)
+            value = queue()
+            del value['groups']['reset']
+            item = task(0)
+            item['created_at'] = timestamp
+            value['tasks'] = {'0': item}
+            self.path.write_text(json.dumps(value))
+            before = self.path.read_bytes()
+            with self.assertRaisesRegex(ValueError, 'Fecha Pueue incompatible'):
+                control.prepare_start(self.dead(), self.directory, self.path, 'mini', '/fake/pueued')
+            self.assertEqual(self.path.read_bytes(), before)
+            self.assertFalse((self.directory / 'guardia-state.json').exists())
+
     def test_responding_daemon_rejected_without_mutation(self):
         self.path.write_text(json.dumps(queue()))
         class Alive:
