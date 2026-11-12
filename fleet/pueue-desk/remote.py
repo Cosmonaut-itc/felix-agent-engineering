@@ -64,6 +64,13 @@ def remote(action, dry):
                 print("ATENCIÓN: el pueued manual quedó detenido y el servicio no quedó instalado. "
                       "Restáuralo con ~/.local/bin/pueued -d o vuelve a correr la instalación.", file=sys.stderr)
             raise
+    elif action == "maintenance":
+        if dry:
+            print("SECO: parar primero ambos timers, luego guardia y cuotas, y al final pueued.service")
+            return
+        for name in [*timers, "pueue-desk-guard.service", "pueue-desk-mode.service", "pueued.service"]:
+            run("systemctl", "--user", "stop", name)
+        print("Mantenimiento: timers, guardia, cuotas y daemon detenidos; no vuelven a pedir arranque")
     else:
         if dry:
             print("SECO: detener y deshabilitar timers y pueued.service; quitar unidades; daemon-reload")
@@ -87,12 +94,11 @@ def install(home, units, library, timers, pueue):
     for name, content in FILES.items():
         target = library / name if name == "control.py" else units / name
         rendered = content.replace("@HOME@", str(home))
-        temporary = target.with_suffix(target.suffix + ".tmp")
-        temporary.write_text(rendered)
-        temporary.replace(target)
+        atomic_text(target, rendered)
     run("systemctl", "--user", "daemon-reload")
     run("systemctl", "--user", "enable", "--now", "pueued.service", *timers)
     # Si ya estaba activo, pueue-desk-mode no vuelve a arrancar solo.
+    wait_ready(pueue)
     with locked(STATE_DIR):
         apply_mode(pueue, datetime.now(timezone.utc))
         state = pueue.status()

@@ -1,0 +1,24 @@
+Fuentes primarias locales: /private/tmp/u17-pueue, tag v4.0.4. Consultadas 2026-11-12.
+Pueue estándar, sin parches.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/process_handler/spawn.rs#L134
+Crea log antes de command.spawn() (191) y antes de guardar Running (246).
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue_lib/src/log.rs#L21
+File::create trunca el log; no hay barrera durable antes de lanzar.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/internal_state/state.rs#L249
+save escribe temporal y rename, sin fsync.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/internal_state/state.rs#L328
+restore convierte Running/Paused en Done/Killed. Sólo pausa grupos con Queued (367).
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/internal_state/state.rs#L133
+group add crea un grupo Running; no debe usarse para preparar grupos online.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/network/message_handler/parallel.rs
+parallel cambia la cuota en memoria; pause --wait persiste el estado.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/mod.rs#L69
+Un estado ilegible se sustituye por cola vacía y se guarda encima.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue_lib/src/state.rs
+Grupos admitidos: Running, Paused, Reset. Estado persistido: tasks y groups.
+https://www.freedesktop.org/software/systemd/man/latest/systemd.kill.html#KillMode=
+KillMode=mixed envía TERM al principal y KILL a procesos restantes del cgroup.
+https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#Restart=
+Restart=always también reintenta tras fallo de ExecStartPre. Un stop explícito no reinicia por sí solo.
+Requires=pueued.service del guardia puede pedir un nuevo arranque al activarse su timer.
+Linux, WSL, reinicio Windows y launchd de producción no se miden en este encargo.

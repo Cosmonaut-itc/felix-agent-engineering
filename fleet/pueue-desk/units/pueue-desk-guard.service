@@ -6,3 +6,6 @@ After=pueued.service
 [Service]
 Type=oneshot
 ExecStart=/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py guardia
+
+StandardOutput=null
+StandardError=null

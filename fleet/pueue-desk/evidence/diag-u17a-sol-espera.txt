@@ -1,0 +1,6 @@
+mux_client_request_session: session request failed: Session open refused by peer
+ControlSocket /Users/felixddhs/.ssh/cm-cosmonaut@felixs-mac-mini.tail9f9a98.ts.net:22 already exists, disabling multiplexing
+mux_client_request_session: session request failed: Session open refused by peer
+ControlSocket /Users/felixddhs/.ssh/cm-cosmonaut@felixs-mac-mini.tail9f9a98.ts.net:22 already exists, disabling multiplexing
+No tasks found for selection TaskIds([166])
+remote-run: Pueue 166 cancelado y retirado de la cola

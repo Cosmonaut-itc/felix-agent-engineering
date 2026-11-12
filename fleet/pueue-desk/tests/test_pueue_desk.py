@@ -98,7 +98,7 @@ class Fixture(unittest.TestCase):
         (self.proc / "meminfo").write_text(f"MemAvailable: {int(memory * 1024**2)} kB\n")
 
     def guard(self):
-        with control.locked(self.directory):
+        with control.locked(self.directory), patch.object(control, "docker_ready", return_value=True):
             control.guard(self.pueue, self.proc, self.directory)
 
     def deploy(self, *args):
@@ -122,8 +122,13 @@ class ControlTests(Fixture):
                 control.apply_mode(self.pueue, datetime.fromisoformat("2026-11-12T15:00:00+00:00"))
         self.assertEqual(self.calls(), [])
 
-    def test_apply_idempotent_and_creates_groups(self):
+    def test_apply_idempotent_requires_offline_groups(self):
         self.write_state({"groups": {}, "tasks": {}})
+        with self.assertRaisesRegex(ValueError, "preparar offline"):
+            control.apply_mode(self.pueue, datetime.fromisoformat("2026-11-12T05:00:00+00:00"))
+        self.assertFalse(any(c[1:3] == ["group", "add"] for c in self.calls()))
+        self.write_state({"groups": {g: {"status": "Paused", "parallel_tasks": 1}
+                                     for g in control.GROUP_LIMITS}, "tasks": {}})
         for hour in (5, 14):
             now = datetime.fromisoformat(f"2026-11-12T{hour:02}:00:00+00:00")
             control.apply_mode(self.pueue, now)
@@ -298,3 +303,36 @@ class DeploymentTests(Fixture):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MaintenanceTests(Fixture):
+    def test_timers_and_oneshots_stop_before_daemon(self):
+        # Con timers activos, Requires puede volver a pedir el daemon. La prueba
+        # reproduce esa regla sobre la secuencia real enviada por el transporte.
+        result = subprocess.run(['bash', str(ROOT / 'maintenance-desk.sh')],
+                                env=self.env, text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = [call for call in self.calls() if call[0] == 'systemctl']
+        self.assertEqual(commands, [
+            ['systemctl', '--user', 'stop', 'pueue-desk-mode.timer'],
+            ['systemctl', '--user', 'stop', 'pueue-desk-guard.timer'],
+            ['systemctl', '--user', 'stop', 'pueue-desk-guard.service'],
+            ['systemctl', '--user', 'stop', 'pueue-desk-mode.service'],
+            ['systemctl', '--user', 'stop', 'pueued.service']])
+        active = {'pueue-desk-mode.timer', 'pueue-desk-guard.timer'}
+        restarts = 0
+        for command in commands:
+            name = command[-1]
+            active.discard(name)
+            if name == 'pueued.service' and active:
+                restarts += 1
+        self.assertEqual(restarts, 0)
+        self.assertIn('Requires=pueued.service', (ROOT / 'units/pueue-desk-guard.service').read_text())
+
+    def test_restart_preparation_and_kill_mode(self):
+        unit = (ROOT / 'units/pueued.service').read_text()
+        self.assertIn('ExecStartPre=', unit)
+        self.assertIn('preparar --host desk', unit)
+        self.assertIn('KillMode=mixed', unit)
+        self.assertIn('Restart=always', unit)
+        self.assertIn('StartLimitIntervalSec=0', unit)

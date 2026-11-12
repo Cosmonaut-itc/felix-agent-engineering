@@ -2,11 +2,18 @@
 Description=Pueue del desk por proyecto
 # Las cuotas se aplican aparte: un fallo al aplicarlas no reinicia el daemon.
 Wants=pueue-desk-mode.service
+StartLimitIntervalSec=0
 
 [Service]
+ExecStartPre=/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py preparar --host desk
 ExecStart=@HOME@/.local/bin/pueued
-Restart=on-failure
+ExecStop=-/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py parada
+KillMode=mixed
+Restart=always
 RestartSec=5
+StandardOutput=null
+StandardError=null
+WorkingDirectory=@HOME@
 
 [Install]
 WantedBy=default.target

@@ -1,0 +1,5 @@
+VERSION {"daemon": "pueued 4.0.4"}
+DISCO {"grupos": {"default": {"parallel_tasks": 1, "status": "Running"}, "manual": {"parallel_tasks": 1, "status": "Paused"}, "work": {"parallel_tasks": 1, "status": "Running"}}, "tareas": {"0": {"Running": {"enqueued_at": "2026-11-12T08:56:43.145061-06:00", "start": "2026-11-12T08:56:43.371563-06:00"}}, "1": {"Queued": {"enqueued_at": "2026-11-12T08:56:43.443159-06:00"}}}}
+RESTAURADO {"grupos": {"default": {"parallel_tasks": 1, "status": "Running"}, "manual": {"parallel_tasks": 1, "status": "Paused"}, "work": {"parallel_tasks": 1, "status": "Paused"}}, "tareas": {"0": {"Done": {"end": "2026-11-12T08:56:43.454081-06:00", "enqueued_at": "2026-11-12T08:56:43.145061-06:00", "result": "Killed", "start": "2026-11-12T08:56:43.371563-06:00"}}, "1": {"Queued": {"enqueued_at": "2026-11-12T08:56:43.443159-06:00"}}}}
+QUEUED_CON_LOG {"ejecuciones": 1, "id": "2", "log": "", "status": {"Done": {"end": "2026-11-12T08:56:44.705529-06:00", "enqueued_at": "2026-11-12T08:56:43.472913-06:00", "result": "Success", "start": "2026-11-12T08:56:44.402990-06:00"}}}
+FIN {"resultado": "OK; daemon privado e hijos detenidos"}
