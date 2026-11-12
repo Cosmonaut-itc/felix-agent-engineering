@@ -358,6 +358,9 @@ class InstallerTests(Fixture):
         self.assertTrue(self.service_loaded)
         self.assertEqual((library / "control.py").read_bytes(), (ROOT / "control.py").read_bytes())
         self.assertEqual(json.loads((state / "guardia-state.json").read_text()), ["suites"])
+        self.failing = set()
+        self.install("desinstalar")
+        self.assertFalse(library.exists())
 
     def test_invalid_status_aborts_before_changes(self):
         for value in ('{"groups": {"suites": {}}, "tasks": {}}',

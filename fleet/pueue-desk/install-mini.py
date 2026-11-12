@@ -117,8 +117,9 @@ def main():
         except Exception as error:
             keep_owned_guarded(state, domain, agent, error)
             raise
-        agent.unlink(missing_ok=True)
-        (library / "control.py").unlink(missing_ok=True)
+        for target in (agent, library / "control.py"):
+            target.unlink(missing_ok=True)
+            target.with_name(target.name + ".tmp").unlink(missing_ok=True)
         if library.exists():
             library.rmdir()
 
