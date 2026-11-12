@@ -21,3 +21,17 @@ https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/task_handler.rs#L3
 El loop duerme 300 ms; no es un intervalo de guardado periódico.
 https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/internal_state/state.rs#L327
 restore convierte Running/Paused a Done/Killed y pausa sólo grupos que tengan tareas Queued.
+
+Corrección R2, consultado el 2026-11-12:
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/mod.rs
+setup_signal_panic_handling: SIGTERM/SIGINT llama initiate_shutdown.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/process_handler/mod.rs
+initiate_shutdown: marca shutdown y llama kill(TaskSelection::All, issued_by_user=false).
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/process_handler/kill.rs
+TaskSelection::All emite «Killing all running tasks» antes de matar y guardar.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/process_handler/finish.rs
+Emite «Task N finished with result: Killed» antes de poner Done y guardar el estado.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue_lib/src/network/protocol.rs
+receive_message registra «Received message: ...» ANTES de despachar la orden del cliente.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/network/message_handler/restart.rs
+restart sólo cambia tareas Done y las pasa a Queued. Con grupos pausados, el mismo Done/Killed con igual start demuestra que no se ejecutó otra tentativa.

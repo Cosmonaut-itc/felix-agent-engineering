@@ -127,14 +127,37 @@ host = Host('ordenada')
 try:
     first = host.start()
     running, queued, child = host.add_running_and_queued()
-    before = host.status()['tasks'][running]
     host.stop(first)
     dead = subprocess.run(['/bin/ps', '-p', str(child)], stdout=subprocess.DEVNULL).returncode != 0
-    assert dead
-    queue = json.loads((host.data / 'state.json').read_text())
-    assert queue['tasks'][running]['status']['Done']['result'] == 'Killed'
-    assert 'Queued' in queue['tasks'][queued]['status']
-    emit('PARADA-ORDENADA', hijo_muerto=dead, en_cola=queued, interrumpida=running)
+    assert dead  # Sólo el sleep directo, no demuestra muerte de sesiones separadas.
+    second = host.start()
+    status = host.status()['tasks'][running]['status']
+    assert status['Done']['result'] == 'Killed'
+    record = next(iter(control.load_control(host.state)['recovery'].values()))
+    assert 'hijos vivos' in record['motivo']
+    assert (host.root / 'ejecuciones').read_text().splitlines() == ['intento']
+    host.wait_status(queued, 'Done')
+    emit('ORDENADA-MISMO-BOOT', hijo_directo_muerto=dead, id=running,
+         no_reencolada=True, motivo=record['motivo'])
+    host.stop(second)
+finally:
+    host.close()
+
+
+def simulate_previous_boot(host):
+    # No reinicia la máquina: sólo ejercita la rama de seguridad del control.
+    state = control.load_control(host.state)
+    state['boot'] = 'boot-anterior-simulado'
+    control.save_control(host.state, state)
+
+
+host = Host('boot-simulado')
+try:
+    first = host.start()
+    running, queued, child = host.add_running_and_queued()
+    before = host.status()['tasks'][running]
+    host.stop(first)
+    simulate_previous_boot(host)
     second = host.start()
     after = host.wait_status(running, 'Running')
     host.groups.append(os.getpgid(int((host.root / 'child.pid').read_text())))
@@ -142,22 +165,78 @@ try:
     for key in set(before) - {'status'}:
         assert before[key] == after[key], key
     assert (host.root / 'ejecuciones').read_text().splitlines() == ['intento', 'intento']
-    assert (host.root / 'cola').read_text().splitlines() == ['cola']
     state_before = (host.state / 'guardia-state.json').read_bytes()
     subprocess.run(['/usr/bin/python3', '-I', str(CODE / 'control.py'), 'recuperar', '--host', 'mini',
                     '--state-dir', str(host.state), '--data-dir', str(host.data), '--config', str(host.config),
                     '--pueue-bin', '/opt/homebrew/bin/pueue'], cwd=host.root, env=ENV, check=True)
     assert state_before == (host.state / 'guardia-state.json').read_bytes()
-    emit('RECUPERADA', id=running, campos_iguales=True, intentos=2, cola_ejecutada_una_vez=True, recuperar_idempotente=True)
+    emit('RECUPERADA-BOOT-SIMULADO', id=running, campos_iguales=True, intentos=2,
+         recuperar_idempotente=True, reinicio_real=False)
     host.stop(second)
+    simulate_previous_boot(host)
     third = host.start()
     status = host.status()['tasks'][running]['status']
     assert status['Done']['result'] == 'Killed'
     record = control.load_control(host.state)['recovery'][control.task_key(before)]
     assert record['phase'] == 'fallida' and 'Segundo reinicio' in record['motivo']
     assert len((host.root / 'ejecuciones').read_text().splitlines()) == 2
-    emit('SEGUNDO-REINICIO', id=running, status=status, motivo=record['motivo'], no_tercer_intento=True)
+    emit('SEGUNDO-REINICIO-SIMULADO', id=running, motivo=record['motivo'], no_tercer_intento=True)
     host.stop(third)
+finally:
+    host.close()
+
+host = Host('term-directo')
+try:
+    first = host.start()
+    running, queued, child = host.add_running_and_queued()
+    manual = host.call('add', '--print-task-id', '-g', 'suites', '--', 'sleep 601')
+    host.call('parallel', '3', '-g', 'suites')
+    host.wait_status(manual, 'Running')
+    host.call('kill', manual)
+    # No esperar su final: el kill del cliente puede solaparse con el shutdown.
+    os.kill(int((host.root / 'pueue.pid').read_text()), signal.SIGTERM)
+    assert first.wait(timeout=10) == 1
+    disk = json.loads((host.data / 'state.json').read_text())
+    captured, excluded = control.shutdown_attempts(host.state, disk, control.load_control(host.state))
+    assert running in captured and manual not in captured and manual in excluded, (captured, excluded)
+    simulate_previous_boot(host)
+    second = host.start()
+    host.wait_status(running, 'Running')
+    host.groups.append(os.getpgid(int((host.root / 'child.pid').read_text())))
+    assert host.status()['tasks'][manual]['status']['Done']['result'] == 'Killed'
+    assert len((host.root / 'ejecuciones').read_text().splitlines()) == 2
+    emit('SIGTERM-DIRECTO', id=running, recuperada_mismo_id=True, kill_manual_intacto=True,
+         seguridad_reinicio_simulada=True)
+    host.stop(second)
+finally:
+    host.close()
+
+host = Host('suite-separada')
+try:
+    first = host.start()
+    adapter = host.root / 'adaptador.py'
+    marker = host.root / 'suite.pid'
+    adapter.write_text('import subprocess, pathlib, time\n'
+                       'p = subprocess.Popen(["sleep", "600"], start_new_session=True)\n'
+                       'pathlib.Path(' + repr(str(marker)) + ').write_text(str(p.pid))\n'
+                       'time.sleep(600)\n')
+    task_id = host.call('add', '--print-task-id', '-g', 'suites', '--',
+                        '/usr/bin/python3 ' + shlex.quote(str(adapter)))
+    host.wait_status(task_id, 'Running')
+    for _ in range(100):
+        if marker.exists():
+            break
+        time.sleep(.05)
+    detached = int(marker.read_text())
+    host.groups.append(os.getpgid(detached))
+    host.stop(first)
+    assert subprocess.run(['/bin/ps', '-p', str(detached)], stdout=subprocess.DEVNULL).returncode == 0
+    second = host.start()
+    assert host.status()['tasks'][task_id]['status']['Done']['result'] == 'Killed'
+    record = next(iter(control.load_control(host.state)['recovery'].values()))
+    assert 'hijos vivos' in record['motivo']
+    emit('SUITE-OTRA-SESION', hija_viva=True, no_reencolada=True, motivo=record['motivo'])
+    host.stop(second)
 finally:
     host.close()
 

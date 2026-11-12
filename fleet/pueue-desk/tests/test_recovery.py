@@ -135,21 +135,22 @@ class RecoveryTests(Fixture):
         with self.assertRaisesRegex(RuntimeError, "No se confirmó"):
             self.recover()
         self.assertTrue(control.load_control(self.directory)["starting"])
-        # Si pueued perdió el restart no persistido, se falla de forma conservadora.
+        # Si pueued perdió el restart, el mismo Done/Killed prueba que no se ejecutó.
         self.fake = MemoryPueue(self.queue_path)
         self.recover()
-        self.assertEqual(self.fake.calls, [])
+        self.assertEqual(self.fake.calls[0], ["restart", "--in-place", "7"])
         record = control.load_control(self.directory)["recovery"][control.task_key(task())]
-        self.assertIn("incierto", record["motivo"])
+        self.assertEqual(record["phase"], "encolada")
 
-    def test_restart_failure_consumes_intent_without_second_command(self):
+    def test_restart_failure_keeps_reconcilable_intent(self):
         self.prepare()
         self.fake.fail_restart = True
         with self.assertRaises(subprocess.CalledProcessError):
             self.recover()
+        self.fake.fail_restart = False
         self.recover()
-        self.assertEqual(len(self.fake.calls), 1)
-        self.assertEqual(control.load_control(self.directory)["recovery"][control.task_key(task())]["phase"], "fallida")
+        self.assertEqual(len([c for c in self.fake.calls if c[0] == "restart"]), 2)
+        self.assertEqual(control.load_control(self.directory)["recovery"][control.task_key(task())]["phase"], "encolada")
 
     def test_reused_id_new_creation_gets_own_recovery(self):
         self.prepare()

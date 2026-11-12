@@ -9,21 +9,25 @@ en copias privadas de la Mini, con configuración, cola y socket propios.
 
 - Las tareas `Queued` conservan id, comando, directorio, grupo y entorno.
 - El host captura una tarea `Running`/`Paused` interrumpida y la devuelve a
-  `Queued` mediante `restart --in-place`, **una sola vez por identidad de tarea**.
-  Un segundo reinicio la deja `Done/Killed`, con el motivo en `guardia.log` y
-  `guardia-state.json`. Un fallo ordinario o un `Killed` anterior sin captura
-  de interrupción no se reintenta.
+  `Queued` mediante `restart --in-place`, **una sola vez por identidad de tarea**,
+  cuando se acredita que no quedan huérfanos. Un segundo reinicio la deja
+  `Done/Killed`, con el motivo en `guardia.log` y `guardia-state.json`. Un fallo
+  ordinario, un kill del cliente o un `Killed` sin prueba de interrupción no se reintenta.
 - Los grupos y sus cuotas persistidas sobreviven. Las cuotas del desk se
   vuelven a aplicar según UTC; la Mini vuelve a `suites=3`.
 - Las pausas manuales siguen pausadas. Las pausas de arranque, Docker o presión
   pertenecen al mismo guardia y sólo éste las levanta al estar listo el host.
 
-**Excepción medida en macOS:** SIGKILL de `pueued` deja vivos sus hijos. En el
-mismo arranque del sistema, la Mini deja esa tarea fallida y explica
-«No se descartan hijos vivos…»; no la duplica. Una parada ordenada del supervisor
-mata los hijos en la medición; un cambio de `kern.boottime` acredita un reinicio
-completo y permite recuperar. No se promete contener programas que se separen
-del grupo de procesos de Pueue.
+**Seguridad en macOS:** SIGKILL de `pueued` deja vivo el `sleep` directo medido.
+SIGTERM mata ese hijo directo, pero **una hija en otra sesión sobrevive también
+a la parada ordenada**, como puede ocurrir con el adaptador de Hasito. Por eso,
+en el mismo arranque del sistema la Mini nunca reencola una tarea interrumpida:
+la deja `Done/Killed` con «No se descartan hijos vivos…», incluso si una versión
+anterior guardó `clean_stop=true`. Un cambio de `kern.boottime` permite recuperar.
+La prueba de una hija separada y la negativa a duplicarla están en
+[`validacion-r2.txt`](evidence/validacion-r2.txt), evento `SUITE-OTRA-SESION`.
+No se midió un reinicio real de la Mini: las pruebas de ese camino simulan
+el identificador del arranque anterior.
 
 ## Mediciones antes de implementar
 
@@ -36,7 +40,7 @@ de cada instancia privada para respetar el límite de longitud de macOS.
 
 | Caso | Medido en la Mini | Evidencia, líneas de `diag-reinicio-durabilidad.txt` |
 | --- | --- | --- |
-| a. SIGTERM y nuevo arranque | Daemon sale 0, hijo muerto; Running pasa a Done/Killed; Queued mantiene id. El grupo con cola queda Paused. | [3–5](evidence/diag-reinicio-durabilidad.txt#L3) |
+| a. SIGTERM y nuevo arranque | Daemon sale 0, sleep directo muerto; Running pasa a Done/Killed; Queued mantiene id. El grupo con cola queda Paused. | [3–5](evidence/diag-reinicio-durabilidad.txt#L3) |
 | b. SIGKILL y nuevo arranque | Daemon sale -9, hijo **vivo**; en disco sigue Running, al restaurar pasa a Done/Killed; Queued conserva id. | [7–9](evidence/diag-reinicio-durabilidad.txt#L7) |
 | c. Frecuencia de escritura y add reciente | 8/8 adds ya estaban en disco al responder y los 8 sobreviven a SIGKILL inmediato. En 1,2 s de reposo no hay escritura periódica. | [14–15](evidence/diag-reinicio-durabilidad.txt#L14) |
 | d. Grupos, parallel y pausas | Preserva grupo manual Paused y parallel=3; un grupo vacío Running sigue Running. `parallel` sin otra mutación todavía no está en disco; tras `pause --wait` restaura el valor nuevo. | [5](evidence/diag-reinicio-durabilidad.txt#L5), [16–17](evidence/diag-reinicio-durabilidad.txt#L16) |
@@ -58,8 +62,8 @@ completo y ejecuta, en este orden:
 1. Verificar versión 4.0.4 y que no haya otro daemon vivo en el socket/PID.
    Un PID reutilizado por otro programa se retira sin matar ese programa.
 2. Bajo `control.lock`, validar el JSON de la cola **con el daemon detenido**,
-   capturar las identidades Running/Paused y marcar todos los grupos Paused en
-   disco. También cierra grupos vacíos y tareas diferidas: el auto-pause de Pueue
+   capturar las identidades Running/Paused y los Done/Killed acreditados por
+   la auditoría del último shutdown, y marcar todos los grupos Paused en disco. También cierra grupos vacíos y tareas diferidas: el auto-pause de Pueue
    sólo alcanza a grupos que ya contienen tareas Queued.
 3. Iniciar `pueued`, esperar su socket y comprobar que la cola está cerrada.
 4. Ejecutar `recuperar`, aplicar las cuotas y ejecutar el guardia; todo bajo
@@ -73,11 +77,14 @@ No se borra la cola ni se hace `reset` o `clean`.
 
 `recuperar` cruza id + `created_at` + inicio de ejecución con la captura; no
 interpreta cualquier `Killed` como reinicio. Registra la intención **antes**
-del único `restart --in-place`, fuerza el guardado con `pause --wait` y confirma
-el mismo id en disco antes de abrir la admisión. Si la recuperación misma muere
-en la ventana entre intención y confirmación, no repite un restart incierto:
-conserva el fallo y su motivo. El historial no se elimina al limpiar tareas de
-Pueue; `created_at` distingue un id reutilizado.
+de `restart --in-place`, fuerza el guardado con `pause --wait` y confirma
+el mismo id e identidad en disco antes de abrir la admisión. Si muere entre
+intención y confirmación, reconcilia con admisión cerrada: el mismo Done/Killed
+con el mismo inicio todavía no tuvo otra ejecución y permite completar el
+restart; si ya está Queued, sólo confirma y persiste la cola. Una ejecución
+posterior con otro inicio consume la recuperación y no se reintenta otra vez.
+El historial no se elimina al limpiar tareas de Pueue; `created_at` distingue
+un id reutilizado.
 
 Para volver a ejecutar el comando idempotente en una instalación normal:
 
@@ -93,11 +100,25 @@ reiniciar. La ejecución normal conserva el entorno de la tarea, no el entorno
 actual del supervisor.
 
 Para apagar o reiniciar usar el **servicio/supervisor**, que captura las tareas
-antes de mandar SIGTERM al daemon. Mandar SIGTERM directamente al hijo `pueued`
-produce un `Done/Killed` indistinguible de otras muertes por señal; sin captura
-positiva se conserva ese fallo. Un SIGKILL abrupto sí deja Running en disco.
-Si se mata sólo el supervisor de la Mini y el daemon sigue vivo, el nuevo
-supervisor se niega a editar la cola o crear otro daemon hasta que termine.
+antes de mandar SIGTERM al daemon, también al salir por una excepción del guardia.
+Un SIGTERM directo a `pueued` produce Done/Killed en disco. El supervisor activa
+una auditoría de 4.0.4 en `daemon-audit.log` (0600): cruza el evento de matar todas
+las tareas al apagar con los finales Killed posteriores y excluye las selecciones
+Kill/Reset/DaemonShutdown recibidas del cliente. Una orden manual queda excluida
+hasta observar su final; prevalece sobre una captura que todavía la vio Running.
+Una ejecución posterior del mismo id puede recuperarse.
+Si un mensaje manual queda truncado o intercalado, la atribución se rechaza de
+forma conservadora. Tampoco se usa un antiguo kill --all si después el daemon
+volvió a iniciar tareas. El registro se conserva aunque muera sólo el supervisor;
+se consume con el daemon detenido antes de rotarlo a `.1` en el siguiente arranque.
+El archivo actual crece durante cada activación: incluye las órdenes y respuestas
+del protocolo y debe conservarse para atribuir el shutdown. Sin esa evidencia no
+se atribuyen Done/Killed arbitrarios a una caída. La prueba primaria adicional está
+en [`diag-auditoria-r2.txt`](evidence/diag-auditoria-r2.txt).
+
+Un SIGKILL abrupto sí deja Running en disco. Si se mata sólo el supervisor de
+la Mini y el daemon sigue vivo, el nuevo supervisor se niega a editar la cola o
+crear otro daemon hasta que termine.
 
 ## Desk: Docker y presión deciden cuándo correr
 
@@ -212,6 +233,12 @@ Sin `--seco`, `deploy-mini.sh` sustituye `sh.brew.pueue` por
 [`io.pao.pueue.plist`](launchagents/io.pao.pueue.plist), con `KeepAlive`,
 `RunAtLoad`, reintentos cada 5 s y el mismo supervisor/recuperar. Exige la cola
 sin tareas vivas y verifica que coincide con el archivo de estado estándar.
+Antes de sustituir el agente pausa **todos** los grupos con `pause --wait`,
+repite el preflight y comprueba que siguen pausados. Si apareció una tarea,
+aborta sin sustituir el agente y deja los grupos pausados para su revisión.
+Las tareas que entren después esperan en cola. Las pausas que ya eran manuales
+se conservan; `suites` vuelve a abrirse sólo si estaba abierto antes del relevo.
+El modo `--seco` describe estos pasos y no pausa ni escribe.
 Deshabilita el job de Brew y lo descarga con launchctl; no modifica su plist.
 No volver a ejecutar `brew services start pueue` mientras se use este agente.
 El retiro restaura la carga/habilitación de Brew que encontró el instalador,
@@ -222,48 +249,73 @@ estado del guardia.
 
 Ambos instaladores generan `pueue.yml` y `pueue-paths.json` en
 `~/.local/lib/pao-pueue-desk`. Conservan las opciones existentes de daemon y
-cliente y fijan las rutas estándar compartidas por el cliente normal. Admiten
-JSON o el YAML por bloques emitido por Pueue; rechazan compresión y estructuras
-que no pueden conservar sin interpretarlas. Las rutas predeterminadas son
+cliente. **Antes de cambiar servicios, ambos rechazan rutas shared explícitas
+que difieran de las rutas administradas**, con el nombre del campo y un mensaje
+que pide conservar el servicio actual: así el cliente sin `--config` no acaba
+en otro socket o cola. Esto incluye `unix_socket_path`, `pueue_directory` y
+`runtime_directory`, también al actualizar una instalación ya administrada.
+Admiten JSON o el YAML por bloques emitido por Pueue; conservan las otras
+opciones de shared y rechazan compresión y estructuras que no pueden interpretar. Las rutas predeterminadas son
 `~/.local/share/pueue` en el desk y `~/Library/Application Support/pueue` en la
-Mini; runtime usa XDG_RUNTIME_DIR cuando existe. Una cola con rutas personalizadas
-requiere preparar y revisar una configuración explícita antes de adoptarla.
+Mini; runtime usa XDG_RUNTIME_DIR cuando existe. Una configuración personalizada
+no se adopta automáticamente ni se sobrescribe para hacerla encajar.
 
 ## Pruebas y límites
 
-La validación completa se lanza **en la Mini**, nunca en el desk ni en la MacBook:
+La validación R2 se lanza **en la Mini**, nunca en el desk ni en la MacBook:
 
 ```bash
-~/.local/bin/remote-run start --name dirigida-u17-validacion-final --no-git -- \
-  bash fleet/pueue-desk/evidence/verificar.sh
+~/.local/bin/remote-run start --name dirigida-u17-r2 --no-git -- \
+  'bash fleet/pueue-desk/evidence/verificar-r2.sh && /usr/bin/python3 -I fleet/pueue-desk/evidence/diag-auditoria.py'
 ~/.local/bin/remote-run wait ID
 ```
 
-El guion ejecuta los comandos exigidos:
+El guion ejecuta la suite completa, `plutil -lint`, el ShellCheck exacto de
+`.github/workflows/check.yml`, el ShellCheck de U17, `bin/pao check` y la
+integración privada con Pueue real. No instala nada. Las regresiones se encuentran
+en `tests/test_review_r2.py` y verifican los seis hallazgos:
+
+| Hallazgo | Regresión principal |
+| --- | --- |
+| C1 | clean_stop en la Mini no demuestra que haya muerto una suite en otra sesión |
+| W1 | rutas custom JSON/YAML en ambos hosts abortan antes de escribir; instaladores no sustituyen el servicio |
+| W2 | SIGTERM directo recupera el mismo id una vez; kill manual por id/grupo/all y shutdown del cliente quedan intactos |
+| W3 | caída antes de restart completa la intención; caída después sólo persiste Queued |
+| W4 | timeout del guardia captura la tarea recién iniciada antes de terminar el daemon |
+| W5 | pause --wait precede al relevo; una tarea que aparece en el preflight aborta el cambio |
+
+Para demostrar el rojo sobre el producto anterior, preparar sólo sus tres
+archivos de implementación y ejecutar los mismos tests nuevos:
 
 ```bash
-/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -v
-plutil -lint fleet/pueue-desk/launchagents/io.pao.pueue.plist
-shellcheck --severity=warning fleet/pueue-desk/*.sh fleet/pueue-desk/evidence/*.sh
-/usr/bin/python3 -I fleet/pueue-desk/evidence/verificar-supervisor.py
+mkdir -p .u17-baseline
+for p in control host mini; do
+  git show "8d4ed90f:fleet/pueue-desk/$p.py" > ".u17-baseline/$p.py"
+done
+~/.local/bin/remote-run start --name dirigida-u17-r2-base --no-git -- \
+  '/usr/bin/python3 -I fleet/pueue-desk/evidence/verificar-base-r2.py'
+~/.local/bin/remote-run wait ID
 ```
 
-Los dobles cubren recuperación única, segundo reinicio fallido, fallos ordinarios
-intactos, idempotencia, id reutilizado, escritura incierta, huérfanos en macOS,
-Docker con histéresis y pausas manuales, instalación/retiro y sus modos secos.
-La integración privada adicional prueba el supervisor real sin instalarlo:
-parada ordenada, recuperación preservando id/datos, cola que corre una sola vez,
-segundo reinicio sin tercer intento, SIGKILL sin duplicar al hijo vivo y rechazo
-de un segundo daemon tras morir sólo el supervisor.
+Corrida verde `20261112-023200-55c8e2`: **62 pruebas correctas**, plist OK,
+ShellCheck CI + U17 código 0, `bin/pao check` válido e integración
+`VALIDACIÓN U17 R2: OK`. Corrida de contraste `20261112-023242-e66a61`:
+16 pruebas nuevas contra el producto anterior, 23 aserciones fallidas esperadas
+(incluidos subcasos de W1), cero errores y los seis hallazgos en rojo.
 
-Corrida final `20261112-014010-adfc0e`: **45 pruebas correctas**, plist OK,
-ShellCheck código 0 e integración real `VALIDACIÓN U17: OK`.
-Salida completa: [`evidence/validacion.txt`](evidence/validacion.txt), líneas
-49–51 y 76–88. La corrida ampliada anterior conserva un fallo de fixture en
-[`validacion-primer-config.txt`](evidence/validacion-primer-config.txt): APFS
-trató `library` y `Library` como la misma carpeta. Se corrigió el nombre del
-fixture y la corrida final pasó; no fue un cambio para ocultar un fallo del
-producto.
+El verificador exige que cada hallazgo produzca al menos una aserción fallida,
+sin errores de importación o preparación. Resultado:
+[`baseline-r2.txt`](evidence/baseline-r2.txt). Resultado verde con el producto
+corregido: [`validacion-r2.txt`](evidence/validacion-r2.txt). Las evidencias de la
+primera entrega se conservan como histórico; sus afirmaciones sobre clean_stop
+y el fallo conservador de toda intención incompleta quedaron sustituidas por R2.
+
+La integración privada prueba parada ordenada sin duplicación, suite en otra
+sesión que sobrevive, SIGTERM directo con kill manual concurrente, recuperación
+conservando id/datos bajo **boot anterior simulado**, segundo reinicio simulado
+sin tercer intento, SIGKILL sin duplicar al hijo vivo y rechazo de un segundo
+daemon tras morir sólo el supervisor.
+
 No medidos: reinicio real de Windows/WSL o de la Mini, servicios reales
 systemd/launchd, Docker Desktop real y pérdida de energía. Ningún LaunchAgent,
 servicio ni archivo de `~/.local` del usuario fue cambiado por estas pruebas.

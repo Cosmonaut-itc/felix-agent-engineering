@@ -1,3 +1,4 @@
+import copy
 import importlib.util
 import json
 from pathlib import Path
@@ -20,7 +21,8 @@ class MiniDeploymentTests(unittest.TestCase):
         self.home = Path(self.temp.name)
         self.pueue = Mock()
         self.queue = {"groups": {"suites": {"parallel_tasks": 3, "status": "Running"}}, "tasks": {}}
-        self.pueue.status.return_value = self.queue
+        self.pueue.status.side_effect = lambda: copy.deepcopy(self.queue)
+        self.pueue.call.side_effect = self.pueue_call
         self.data = self.home / "Library/Application Support/pueue"
         self.data.mkdir(parents=True)
         (self.data / "state.json").write_text(json.dumps(self.queue))
@@ -31,6 +33,12 @@ class MiniDeploymentTests(unittest.TestCase):
         self.launcher = patch.object(mini, "launch", side_effect=self.launch)
         self.launcher.start()
         self.addCleanup(self.launcher.stop)
+
+    def pueue_call(self, *args):
+        if args[0] != "pause":
+            raise AssertionError(args)
+        self.queue["groups"][args[-1]]["status"] = "Paused"
+        (self.data / "state.json").write_text(json.dumps(self.queue))
 
     def launch(self, *args, check=True):
         self.calls.append(args)

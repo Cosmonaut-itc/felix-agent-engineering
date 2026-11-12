@@ -218,6 +218,16 @@ class ControlTests(Fixture):
 
 
 class DeploymentTests(Fixture):
+    def test_custom_socket_aborts_desk_before_replacing_service(self):
+        config = self.root / ".config/pueue/pueue.yml"
+        config.parent.mkdir(parents=True)
+        config.write_text(json.dumps({"shared": {"unix_socket_path": "/otro/socket"}}))
+        result = self.deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("unix_socket_path", result.stderr)
+        self.assertFalse(any("enable-linger" in c or "daemon-reload" in c or "shutdown" in c for c in self.calls()))
+        self.assertFalse((self.root / ".config/systemd/user/pueued.service").exists())
+
     def test_dry_run(self):
         (self.root / "manual").touch()
         result = self.deploy("--seco")

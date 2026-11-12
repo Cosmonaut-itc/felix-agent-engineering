@@ -297,17 +297,112 @@ def active_attempts(queue):
     return result
 
 
+def shutdown_attempts(directory, queue, state):
+    """Prueba positiva de shutdown de 4.0.4, sin confundir órdenes Kill del cliente.
+
+    El registro es exclusivo de la última activación, se lee con el daemon muerto.
+    Las órdenes manuales se excluyen hasta observar el final de su ejecución.
+    Devuelve (interrumpidas, manuales), con identidad e inicio de cada tentativa.
+    """
+    path = directory / "daemon-audit.log"
+    if not state.get("audit_active") or not path.exists():
+        return {}, {}
+    manual, manual_finished, finished = set(), set(), set()
+    shutdown = False
+    request = None
+    body = []
+    header = re.compile(r"^\d{2}:\d{2}:\d{2}\s+(?:INFO|DEBUG|WARN|ERROR)\s+([^: ]+(?:::[^: ]+)*): (.*)$")
+
+    def exclude(kind, text):
+        if kind in ("Reset", "DaemonShutdown"):
+            manual.update(queue["tasks"])
+        elif kind == "Kill":
+            ids = re.search(r"tasks: TaskIds\(\s*\[([\d,\s]*)\]", text)
+            group = re.search(r'tasks: Group\(\s*("(?:[^"\\]|\\.)*")', text)
+            if ids:
+                manual.update(re.findall(r"\d+", ids.group(1)))
+            elif group:
+                name = json.loads(group.group(1))
+                manual.update(i for i, t in queue["tasks"].items() if t["group"] == name)
+            else:
+                # All o un formato no reconocido nunca permite revivir un kill manual.
+                manual.update(queue["tasks"])
+
+    with path.open(errors="replace") as handle:
+        for raw in handle:
+            line = re.sub(r"\x1b\[[0-9;]*m", "", raw).rstrip("\n")
+            match = header.match(line)
+            if not match:
+                if request:
+                    body.append(line)
+                    if line == ")":
+                        exclude(request, "\n".join(body))
+                        request, body = None, []
+                continue
+            if request:  # Mensaje incompleto/intercalado: rechazar antes que adivinar.
+                manual.update(queue["tasks"])
+                request, body = None, []
+            module, message = match.groups()
+            if module == "pueue_lib::network::protocol":
+                incoming = re.fullmatch(r"Received message: (Kill|Reset|DaemonShutdown)\(", message)
+                if incoming:
+                    request, body = incoming.group(1), []
+            elif module == "pueue::daemon::process_handler::kill" and message == "Killing all running tasks":
+                shutdown = True
+                finished.clear()
+            elif module == "pueue::daemon::process_handler::spawn" and message.startswith("Started task: "):
+                # Un kill --all anterior no fue shutdown si el daemon volvió a admitir.
+                shutdown = False
+                finished.clear()
+            elif module == "pueue::daemon::process_handler::finish":
+                done = re.fullmatch(r"Task (\d+) finished with result: (.*)", message)
+                if done:
+                    task_id, result = done.groups()
+                    finished.discard(task_id)
+                    if task_id in manual:
+                        manual_finished.add(task_id)
+                    else:
+                        manual_finished.discard(task_id)
+                        if shutdown and result == "Killed":
+                            finished.add(task_id)
+                    # Una ejecución manual posterior del mismo id es otra tentativa.
+                    manual.discard(task_id)
+    if request:
+        manual.update(queue["tasks"])
+    result, excluded = {}, {}
+    for task_id in finished | manual | manual_finished:
+        task = queue["tasks"].get(task_id)
+        if not task or not isinstance(task["status"], dict):
+            continue
+        detail = next(iter(task["status"].values()))
+        if "start" not in detail:
+            continue
+        item = {"key": task_key(task), "start": detail["start"]}
+        if task_id in manual or task_id in manual_finished:
+            excluded[task_id] = item
+        elif detail.get("result") == "Killed":
+            result[task_id] = item
+    return result, excluded
+
+
 def prepare_start(queue_path, directory, host, boot):
     """Sólo con pueued detenido, bajo el candado de ciclo de vida del servicio."""
     queue = read_queue(queue_path)
     state = load_control(directory)
     # La intención de una parada ordenada ya se guardó antes de apagar el daemon.
     pending = dict(state.get("pending", {}))
+    interrupted, manual = shutdown_attempts(directory, queue, state)
+    pending.update(interrupted)
     pending.update(active_attempts(queue))
+    # Una orden del cliente prevalece incluso si capture_stop la vio aún Running.
+    for task_id, item in manual.items():
+        captured = pending.get(task_id)
+        if captured and all(captured.get(k) == item[k] for k in ("key", "start")):
+            del pending[task_id]
     same_boot = state.get("boot") == boot
     safe = host == "desk" or (state.get("boot") is not None and not same_boot)
-    if state.pop("clean_stop", False):
-        safe = True
+    # Una salida 0 sólo prueba killpg: Hasito puede haber creado otra sesión.
+    state.pop("clean_stop", None)
     for item in pending.values():
         item["safe"] = safe
     owned = set(state["owned"])
@@ -320,7 +415,7 @@ def prepare_start(queue_path, directory, host, boot):
     for value in queue["groups"].values():
         value["status"] = "Paused"
     queue["groups"].setdefault("default", {"status": "Paused", "parallel_tasks": 1})
-    state.update(owned=sorted(owned), pending=pending, starting=True, boot=boot)
+    state.update(owned=sorted(owned), pending=pending, starting=True, boot=boot, audit_active=False)
     save_control(directory, state)
     atomic_json(queue_path, queue)
     log(directory, "arranque_cerrado", pendientes=sorted(pending), sin_huerfanos=safe, host=host)
@@ -353,16 +448,20 @@ def recover(pueue, directory, queue_path):
             continue
         status = task["status"]
         detail = status.get("Done", {}) if isinstance(status, dict) else {}
+        record = state["recovery"].get(item["key"])
+        incomplete = bool(record and record.get("handled_start") == item["start"]
+                          and record["phase"] == "intentando")
+        queued = isinstance(status, dict) and "Queued" in status
+        if incomplete and queued:
+            if queue["groups"][task["group"]]["status"] != "Paused":
+                raise RuntimeError("recuperar requiere la admisión cerrada por el supervisor")
+            confirm_recovery(pueue, directory, queue_path, state, task_id, task, item)
+            continue
         if detail.get("result") != "Killed" or detail.get("start") != item["start"]:
             continue  # Un fallo propio, una muerte manual o una ejecución distinta.
-        record = state["recovery"].get(item["key"])
-        if record and record.get("handled_start") == item["start"]:
-            if record["phase"] == "intentando":
-                record.update(phase="fallida", motivo="Recuperación interrumpida; no se repite un restart de resultado incierto")
-                save_control(directory, state)
-                log(directory, "recuperacion_rechazada", tarea=task_id, motivo=record["motivo"])
+        if record and record.get("handled_start") == item["start"] and not incomplete:
             continue
-        if record or not item["safe"]:
+        if (record and not incomplete) or not item["safe"]:
             reason = ("Segundo reinicio: esta tarea ya consumió su única recuperación"
                       if record else "No se descartan hijos vivos tras la muerte del daemon en macOS")
             state["recovery"][item["key"]] = {"handled_start": item["start"], "phase": "fallida", "motivo": reason}
@@ -371,25 +470,30 @@ def recover(pueue, directory, queue_path):
             continue
         if queue["groups"][task["group"]]["status"] != "Paused":
             raise RuntimeError("recuperar requiere la admisión cerrada por el supervisor")
-        # El intento se consume ANTES de enviar restart. Una caída en esta ventana
-        # deja fallo conservador; jamás envía restart dos veces para la misma tarea.
+        # La admisión cerrada hace reconciliable la intención: si sigue el mismo
+        # Done/Killed, no llegó a ejecutarse otra vez; si está Queued, sólo guardar.
         state["recovery"][item["key"]] = {"handled_start": item["start"], "phase": "intentando"}
         save_control(directory, state)
         pueue.call("restart", "--in-place", task_id)
-        # 4.0.4 no persiste restart ni parallel. pause --wait sí guarda todo el estado.
-        pueue.call("pause", "--wait", "-g", task["group"])
-        disk = read_queue(queue_path)
-        restored = disk["tasks"].get(task_id, {})
-        if not isinstance(restored.get("status"), dict) or "Queued" not in restored["status"]:
-            raise RuntimeError(f"No se confirmó en disco la recuperación de {task_id}")
-        with queue_path.open("rb") as handle:
-            os.fsync(handle.fileno())
-        sync_directory(queue_path.parent)
-        state["recovery"][item["key"]]["phase"] = "encolada"
-        save_control(directory, state)
-        log(directory, "recuperada", tarea=task_id, motivo="reinicio", mismo_id=True)
+        confirm_recovery(pueue, directory, queue_path, state, task_id, task, item)
     state["starting"] = False
     save_control(directory, state)
+
+
+def confirm_recovery(pueue, directory, queue_path, state, task_id, task, item):
+    # 4.0.4 no persiste restart ni parallel. pause --wait sí guarda todo el estado.
+    pueue.call("pause", "--wait", "-g", task["group"])
+    disk = read_queue(queue_path)
+    restored = disk["tasks"].get(task_id, {})
+    if (not isinstance(restored.get("status"), dict) or "Queued" not in restored["status"]
+            or task_key(restored) != item["key"]):
+        raise RuntimeError(f"No se confirmó en disco la recuperación de {task_id}")
+    with queue_path.open("rb") as handle:
+        os.fsync(handle.fileno())
+    sync_directory(queue_path.parent)
+    state["recovery"][item["key"]]["phase"] = "encolada"
+    save_control(directory, state)
+    log(directory, "recuperada", tarea=task_id, motivo="reinicio", mismo_id=True)
 
 
 def live_tasks(state):
@@ -423,6 +527,14 @@ def managed_settings(home, host):
             "daemon": {"compress_state_file": False}}
 
 
+def validate_shared_paths(shared, expected):
+    for key, value in shared.items():
+        if key in expected and value is not None and value != expected[key]:
+            raise ValueError(f"Instalación abortada: shared.{key} personalizado ({value!r}); "
+                             "el cliente sin --config debe usar el mismo socket y cola. "
+                             "Conservar el servicio actual y revisar su configuración antes de adoptar")
+
+
 def managed_configuration(home, host, library):
     """Conservar opciones de daemon/cliente; fijar explícitamente las rutas adoptadas.
 
@@ -432,12 +544,17 @@ def managed_configuration(home, host, library):
     settings = managed_settings(home, host)
     default_config = (home / "Library/Application Support/pueue/pueue.yml" if host == "mini"
                       else Path(os.environ.get("XDG_CONFIG_HOME", str(home / ".config"))) / "pueue/pueue.yml")
-    source = library / "pueue.yml"
-    if not source.exists():
-        source = Path(os.environ.get("PUEUE_CONFIG_PATH", str(default_config)))
-    if not source.exists():
-        return settings, json.dumps(settings, ensure_ascii=False) + "\n"
-    text = source.read_text()
+    # Validar siempre la configuración del cliente normal antes de la copia del
+    # servicio. Ninguna de las dos se modifica durante este preflight.
+    sources = [Path(os.environ.get("PUEUE_CONFIG_PATH", str(default_config))), library / "pueue.yml"]
+    result = settings, json.dumps(settings, ensure_ascii=False) + "\n"
+    for source in sources:
+        if source.exists():
+            result = configuration_text(managed_settings(home, host), source.read_text())
+    return result
+
+
+def configuration_text(settings, text):
     try:
         original = json.loads(text)
     except json.JSONDecodeError:
@@ -457,11 +574,39 @@ def managed_configuration(home, host, library):
         end = first + 1
         while end < len(lines) and (not lines[end].strip() or lines[end][0].isspace() or lines[end].startswith("#")):
             end += 1
-        lines[first:end] = ["shared: " + json.dumps(settings["shared"], ensure_ascii=False) + "\n"]
+        shared = {}
+        inline = lines[first].split(":", 1)[1].strip()
+        if inline.startswith("{"):
+            shared = json.loads(inline)
+        elif inline and not inline.startswith("#"):
+            raise ValueError("shared debe ser YAML expandido o usar configuración JSON")
+        for line in lines[first + 1:end]:
+            if not line.strip() or line.lstrip().startswith("#"):
+                continue
+            match = re.fullmatch(r"  ([a-z_]+):\s*(.*?)\s*\n?", line)
+            if not match:
+                raise ValueError("shared complejo: usar JSON antes de adoptar la cola")
+            key, raw = match.groups()
+            try:
+                value = json.loads(raw)
+            except json.JSONDecodeError:
+                if raw.startswith("'") and raw.endswith("'"):
+                    value = raw[1:-1].replace("''", "'")
+                elif re.fullmatch(r"[a-zA-Z0-9_/. :~-]+", raw):
+                    value = raw
+                else:
+                    raise ValueError("Valor shared complejo: usar JSON antes de adoptar la cola") from None
+            shared[key] = value
+        validate_shared_paths(shared, settings["shared"])
+        shared.update(settings["shared"])
+        settings["shared"] = shared
+        lines[first:end] = ["shared: " + json.dumps(shared, ensure_ascii=False) + "\n"]
         return settings, "".join(lines)
     if original.get("daemon", {}).get("compress_state_file", False):
         raise ValueError("Se requiere compress_state_file: false antes de adoptar la cola")
-    original["shared"] = settings["shared"]
+    validate_shared_paths(original.get("shared", {}), settings["shared"])
+    original["shared"] = {**original.get("shared", {}), **settings["shared"]}
+    settings["shared"] = original["shared"]
     return settings, json.dumps(original, ensure_ascii=False) + "\n"
 
 

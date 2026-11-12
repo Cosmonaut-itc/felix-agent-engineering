@@ -63,12 +63,28 @@ def supervise(pueue, daemon_binary, config, directory, host, docker, paths=None)
     for sig in (signal.SIGTERM, signal.SIGINT):
         previous[sig] = signal.signal(sig, lambda number, frame: stop.append(number))
     daemon = None
+    audit = None
     try:
         with control.locked(directory / "lifecycle"):
             ensure_stopped(pueue, pid_file)
             with control.locked(directory):
                 control.prepare_start(data / "state.json", directory, host, boot_id(host))
-            daemon = subprocess.Popen([str(daemon_binary), "--config", str(config)])
+            # Archivo regular: si muere el supervisor, el daemon conserva su stderr
+            # y la evidencia de shutdown; no depende de un lector de pipe vivo.
+            audit_path = directory / "daemon-audit.log"
+            if audit_path.exists():
+                audit_path.replace(directory / "daemon-audit.log.1")
+            fd = os.open(audit_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            os.fchmod(fd, 0o600)
+            audit = os.fdopen(fd, "w")
+            with control.locked(directory):
+                state = control.load_control(directory)
+                state["audit_active"] = True
+                control.save_control(directory, state)
+            env = dict(os.environ, RUST_LOG="warn,pueue_lib::network::protocol=debug,"
+                       "pueue::daemon::process_handler::kill=info,pueue::daemon::process_handler::finish=info,"
+                       "pueue::daemon::process_handler::spawn=info")
+            daemon = subprocess.Popen([str(daemon_binary), "--config", str(config)], stderr=audit, env=env)
             for _ in range(100):
                 if daemon.poll() is not None:
                     raise RuntimeError("pueued terminó durante el arranque")
@@ -96,30 +112,33 @@ def supervise(pueue, daemon_binary, config, directory, host, docker, paths=None)
                     control.capture_stop(pueue, directory, host)
                 daemon.terminate()
                 try:
-                    code = daemon.wait(timeout=20)
+                    daemon.wait(timeout=20)
                 except subprocess.TimeoutExpired:
                     daemon.kill()
-                    code = daemon.wait(timeout=5)
-                with control.locked(directory):
-                    state = control.load_control(directory)
-                    # SIGTERM de pueued mata sus grupos en la medición macOS.
-                    # En systemd la siguiente activación ocurre tras limpiar el cgroup.
-                    state["clean_stop"] = code == 0
-                    control.save_control(directory, state)
+                    daemon.wait(timeout=5)
                 return 0
             with control.locked(directory):
                 control.log(directory, "daemon_terminado", codigo=daemon.returncode,
-                            motivo="El gestor volverá a iniciar; sin atribuir Killed ajenos a un reinicio")
+                            motivo="El gestor volverá a iniciar; recuperar cruzará la auditoría del daemon")
             return 1
     finally:
         # Nunca dejar un daemon arrancado después de fallar recuperar/guardia.
         if daemon is not None and daemon.poll() is None:
+            try:
+                with control.locked(directory):
+                    control.capture_stop(pueue, directory, host)
+            except Exception as error:
+                with control.locked(directory):
+                    control.log(directory, "error_captura", detalle=str(error))
+                # El registro del daemon permite reconocer el shutdown aun si falla el socket.
             daemon.terminate()
             try:
                 daemon.wait(timeout=20)
             except subprocess.TimeoutExpired:
                 daemon.kill()
                 daemon.wait(timeout=5)
+        if audit is not None:
+            audit.close()
         for sig, handler in previous.items():
             signal.signal(sig, handler)
 

@@ -1,0 +1,232 @@
+test_W1_custom_socket_aborts_mini_before_any_service_change (test_review_r2.ReviewMiniTests) ... FAIL
+test_W5_pause_wait_precedes_service_replacement_and_closes_admission (test_review_r2.ReviewMiniTests) ... FAIL
+test_W5_task_racing_preflight_aborts_before_disable (test_review_r2.ReviewMiniTests) ... FAIL
+test_C1_mini_clean_stop_does_not_prove_detached_suite_dead (test_review_r2.ReviewRecoveryTests) ... FAIL
+test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) ... test_W1_reinstall_validates_default_client_with_managed_config_present (test_review_r2.ReviewRecoveryTests) ... FAIL
+test_W2_client_shutdown_is_not_attributed_to_crash (test_review_r2.ReviewRecoveryTests) ... ok
+test_W2_direct_daemon_SIGTERM_recovers_Done_Killed_once_same_id (test_review_r2.ReviewRecoveryTests) ... FAIL
+test_W2_historical_Killed_and_ordinary_failure_remain_untouched (test_review_r2.ReviewRecoveryTests) ... ok
+test_W2_historical_kill_all_is_not_a_later_daemon_crash (test_review_r2.ReviewRecoveryTests) ... ok
+test_W2_manual_kill_finished_then_new_attempt_can_recover (test_review_r2.ReviewRecoveryTests) ... FAIL
+test_W2_manual_kill_overrides_concurrent_stop_capture (test_review_r2.ReviewRecoveryTests) ... FAIL
+test_W2_manual_kill_pending_at_shutdown_is_not_recovered (test_review_r2.ReviewRecoveryTests) ... ok
+test_W3_crash_after_intent_before_restart_reconciles_same_attempt (test_review_r2.ReviewRecoveryTests) ... FAIL
+test_W3_crash_after_restart_before_flush_only_confirms_queue (test_review_r2.ReviewRecoveryTests) ... FAIL
+test_W4_guard_timeout_captures_task_started_just_before_failure (test_review_r2.ReviewRecoveryTests) ... FAIL
+
+======================================================================
+FAIL: test_W1_custom_socket_aborts_mini_before_any_service_change (test_review_r2.ReviewMiniTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 255, in test_W1_custom_socket_aborts_mini_before_any_service_change
+    mini.change("install", False, self.home, self.pueue)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W5_pause_wait_precedes_service_replacement_and_closes_admission (test_review_r2.ReviewMiniTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 245, in test_W5_pause_wait_precedes_service_replacement_and_closes_admission
+    mini.change("install", False, self.home, self.pueue)
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/mini.py", line 65, in change
+    launch("disable", domain + "/" + BREW_LABEL)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py", line 1093, in __call__
+    return self._mock_call(*args, **kwargs)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py", line 1097, in _mock_call
+    return self._execute_mock_call(*args, **kwargs)
+  File "/Applications/Xcode.app/Contents/Developer/Library/Frameworks/Python3.framework/Versions/3.9/lib/python3.9/unittest/mock.py", line 1158, in _execute_mock_call
+    result = effect(*args, **kwargs)
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 238, in launch
+    self.assertEqual(self.queue["groups"]["suites"]["status"], "Paused")
+AssertionError: 'Running' != 'Paused'
+- Running
++ Paused
+
+
+======================================================================
+FAIL: test_W5_task_racing_preflight_aborts_before_disable (test_review_r2.ReviewMiniTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 267, in test_W5_task_racing_preflight_aborts_before_disable
+    mini.change("install", False, self.home, self.pueue)
+AssertionError: RuntimeError not raised
+
+======================================================================
+FAIL: test_C1_mini_clean_stop_does_not_prove_detached_suite_dead (test_review_r2.ReviewRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 45, in test_C1_mini_clean_stop_does_not_prove_detached_suite_dead
+    self.assertFalse(self.fake.calls, "Una suite en otra sesión puede seguir viva tras killpg")
+AssertionError: [['restart', '--in-place', '7'], ['pause', '--wait', '-g', 'suites']] is not false : Una suite en otra sesión puede seguir viva tras killpg
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='desk', key='unix_socket_path', syntax='json')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='desk', key='unix_socket_path', syntax='yaml')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='desk', key='pueue_directory', syntax='json')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='desk', key='pueue_directory', syntax='yaml')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='desk', key='runtime_directory', syntax='json')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='desk', key='runtime_directory', syntax='yaml')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='mini', key='unix_socket_path', syntax='json')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='mini', key='unix_socket_path', syntax='yaml')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='mini', key='pueue_directory', syntax='json')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='mini', key='pueue_directory', syntax='yaml')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='mini', key='runtime_directory', syntax='json')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_custom_paths_rejected_for_both_hosts_before_write (test_review_r2.ReviewRecoveryTests) (host='mini', key='runtime_directory', syntax='yaml')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 217, in test_W1_custom_paths_rejected_for_both_hosts_before_write
+    control.managed_configuration(self.root, target, self.root / "biblioteca")
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W1_reinstall_validates_default_client_with_managed_config_present (test_review_r2.ReviewRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 202, in test_W1_reinstall_validates_default_client_with_managed_config_present
+    control.managed_configuration(self.root, "mini", library)
+AssertionError: ValueError not raised
+
+======================================================================
+FAIL: test_W2_direct_daemon_SIGTERM_recovers_Done_Killed_once_same_id (test_review_r2.ReviewRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 60, in test_W2_direct_daemon_SIGTERM_recovers_Done_Killed_once_same_id
+    self.assertIn("Queued", self.fake.status()["tasks"]["7"]["status"])
+AssertionError: 'Queued' not found in {'Done': {'start': '2026-11-12T01:00:00Z', 'end': '2026-11-12T02:00:00Z', 'enqueued_at': '2026-11-12T00:00:00Z', 'result': 'Killed'}}
+
+======================================================================
+FAIL: test_W2_manual_kill_finished_then_new_attempt_can_recover (test_review_r2.ReviewRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 93, in test_W2_manual_kill_finished_then_new_attempt_can_recover
+    self.assertIn("Queued", self.fake.status()["tasks"]["7"]["status"])
+AssertionError: 'Queued' not found in {'Done': {'start': '2026-11-12T01:00:00Z', 'end': '2026-11-12T02:00:00Z', 'enqueued_at': '2026-11-12T00:00:00Z', 'result': 'Killed'}}
+
+======================================================================
+FAIL: test_W2_manual_kill_overrides_concurrent_stop_capture (test_review_r2.ReviewRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 85, in test_W2_manual_kill_overrides_concurrent_stop_capture
+    self.assertFalse(self.fake.calls)
+AssertionError: [['restart', '--in-place', '7'], ['pause', '--wait', '-g', 'hasito']] is not false
+
+======================================================================
+FAIL: test_W3_crash_after_intent_before_restart_reconciles_same_attempt (test_review_r2.ReviewRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 130, in test_W3_crash_after_intent_before_restart_reconciles_same_attempt
+    self.assertIn("Queued", self.fake.status()["tasks"]["7"]["status"])
+AssertionError: 'Queued' not found in {'Done': {'start': '2026-11-12T01:00:00Z', 'enqueued_at': '2026-11-12T00:00:00Z', 'end': '2026-11-12T02:00:00Z', 'result': 'Killed'}}
+
+======================================================================
+FAIL: test_W3_crash_after_restart_before_flush_only_confirms_queue (test_review_r2.ReviewRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 141, in test_W3_crash_after_restart_before_flush_only_confirms_queue
+    self.assertIn("Queued", json.loads(self.queue_path.read_text())["tasks"]["7"]["status"])
+AssertionError: 'Queued' not found in {'Done': {'start': '2026-11-12T01:00:00Z', 'enqueued_at': '2026-11-12T00:00:00Z', 'end': '2026-11-12T02:00:00Z', 'result': 'Killed'}}
+
+======================================================================
+FAIL: test_W4_guard_timeout_captures_task_started_just_before_failure (test_review_r2.ReviewRecoveryTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/cosmonaut/remote-run/work/dirigida-u17-r2-base-a0027fd4/.u17-tmp/baseline-8d4ed90f-lc7fnv5e/fleet/pueue-desk/tests/test_review_r2.py", line 187, in test_W4_guard_timeout_captures_task_started_just_before_failure
+    self.assertEqual(events, ["capture", "terminate"])
+AssertionError: Lists differ: ['terminate'] != ['capture', 'terminate']
+
+First differing element 0:
+'terminate'
+'capture'
+
+Second list contains 1 additional elements.
+First extra element 1:
+'terminate'
+
+- ['terminate']
++ ['capture', 'terminate']
+
+----------------------------------------------------------------------
+Ran 16 tests in 0.128s
+
+FAILED (failures=23)
+LaunchAgent propio instalado; cola conservada, suites=3 y recuperación al arrancar
+LaunchAgent propio instalado; cola conservada, suites=3 y recuperación al arrancar
+BASELINE 8d4ed90f: {"errores": 0, "fallos": 23, "regresiones_rojas": {"C1": true, "W1": true, "W2": true, "W3": true, "W4": true, "W5": true}, "tests": 16}
+BASELINE: cada hallazgo falla sobre 8d4ed90f (OK)

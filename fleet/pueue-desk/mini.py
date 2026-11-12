@@ -44,13 +44,29 @@ def change(action, dry, home=None, pueue=None):
         disabled_output = launch("print-disabled", domain).stdout
         disabled = bool(re.search(r'"sh[.]brew[.]pueue"\s*=>\s*true', disabled_output))
         if dry:
-            print("SECO: cola sin tareas vivas; conservar cola y configurar suites=3")
+            print("SECO: pausar todos los grupos con --wait y repetir el preflight de cola sin tareas vivas")
+            print("SECO: conservar cola y configurar suites=3")
             print("SECO: copiar control.py, host.py, configuración y io.pao.pueue.plist")
             print("SECO: disable y bootout sh.brew.pueue; bootstrap io.pao.pueue (KeepAlive y RunAtLoad)")
             return
+        # Cerrar todos los grupos y esperar la pausa antes del último preflight.
+        # Las tareas nuevas quedan Queued; se aborta sin sustituir el agente.
+        groups = pueue.status()["groups"]
+        for group in groups:
+            pueue.call("pause", "--wait", "-g", group)
+        if control.live_tasks(pueue.status()):
+            raise RuntimeError("Instalación abortada: esperar a que termine la cola; grupos pausados")
+        if any(g["status"] != "Paused" for g in pueue.status()["groups"].values()):
+            raise RuntimeError("Instalación abortada: no se confirmó la pausa de todos los grupos")
         directory.mkdir(parents=True, exist_ok=True)
         if not (directory / "launchagent-previo.json").exists():
             control.atomic_json(directory / "launchagent-previo.json", {"brew_loaded": loaded, "brew_disabled": disabled})
+        with control.locked(directory):
+            state = control.load_control(directory)
+            owned = set(state["owned"])
+            owned.update(g for g in control.limits_for("mini") if g in groups and groups[g]["status"] == "Running")
+            state["owned"] = sorted(owned)
+            control.save_control(directory, state)
         library.mkdir(parents=True, exist_ok=True)
         for name in ("control.py", "host.py"):
             (library / name).write_text((ROOT / name).read_text())
