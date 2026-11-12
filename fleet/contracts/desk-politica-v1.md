@@ -855,7 +855,7 @@ Si el mapa omite el elegido, falla con 75 sin claim. También acepta
 
 Los carriles de la MacBook son `~/.local/state/comprador/desk/desk.lock`,
 `desk-2.lock` hasta `desk-12.lock`. Un `--lock` explícito sólo acepta uno de
-esos nombres y rutas reales. De día sólo se crean nuevas reservas 1 o 2.
+esos nombres y rutas reales. De día sólo se crean nuevas reservas 1 a 3.
 De noche los índices candidatos llegan hasta N. Las reservas altas ya vivas
 siguen contando si baja N. Los poseedores que aún esperan en carriles altos
 reciben `lane-closed` al amanecer, al reducir N o al vencer la política sin writer,
