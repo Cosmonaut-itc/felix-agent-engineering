@@ -195,7 +195,8 @@ async function load(path, options, failure){
   try{
     const response=await fetch(path,{cache:'no-store',...options});
     if(!response.ok) throw Error('HTTP');
-    render(await response.json()); last=new Date();
+    // Una respuesta que llega tarde no reemplaza una instantánea más nueva.
+    const data=await response.json(); if(!(data.now < NOW)) render(data); last=new Date();
     document.getElementById('connection').textContent='';
   }catch(error){
     document.getElementById('connection').textContent=last ? failure+' · último dato a las '+last.toLocaleTimeString('es-MX') : failure;
