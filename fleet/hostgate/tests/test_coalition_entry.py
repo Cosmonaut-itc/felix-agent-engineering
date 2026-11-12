@@ -14,12 +14,12 @@ ENTRY = Path(__file__).resolve().parents[1] / 'coalition_entry.py'
 
 
 class Bootstrap(unittest.TestCase):
-    def launch(self, byte):
+    def launch(self, byte, extra=()):
         root = Path(tempfile.mkdtemp(prefix='entry-'))
         self.addCleanup(shutil.rmtree, str(root), True)
         counter = root / 'counter'
         argv = [sys.executable, '-c', "import os,sys\nfd=os.open(sys.argv[1],os.O_WRONLY|os.O_APPEND|os.O_CREAT,0o600)\n"
-                "os.write(fd,b'x'); os.fsync(fd); os.close(fd)", str(counter)]
+                "os.write(fd,b'x'); os.fsync(fd); os.close(fd)", str(counter)] + list(extra)
         digest = hashlib.sha256(json.dumps(argv, separators=(',', ':')).encode()).hexdigest()
         go_r, go_w = os.pipe()
         ready_r, ready_w = os.pipe()
@@ -53,6 +53,10 @@ class Bootstrap(unittest.TestCase):
 
     def test_valid_byte_enters_once(self):
         self.assertEqual(self.launch(b'G'), (b'R', 0, 1))
+
+    def test_non_ascii_and_surrogate_argv_enters_once(self):
+        """Variante: digest_not_ascii."""
+        self.assertEqual(self.launch(b'G', ('señal', '\udcff')), (b'R', 0, 1))
 
     def test_eof_or_invalid_byte_never_enters(self):
         """Variante: enter_on_eof."""

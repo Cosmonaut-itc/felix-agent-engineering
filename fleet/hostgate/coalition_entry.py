@@ -16,7 +16,7 @@ GO = b'G'
 
 def argv_digest(argv):
     """Digest canónico del argv de la carga: el mismo que Fleet declara en ``launch.argvDigest``."""
-    return hashlib.sha256(json.dumps(list(argv), ensure_ascii=False, separators=(',', ':')).encode('utf-8')).hexdigest()
+    return hashlib.sha256(json.dumps(list(argv), ensure_ascii=True, separators=(',', ':')).encode('utf-8')).hexdigest()
 
 
 def main(args):
