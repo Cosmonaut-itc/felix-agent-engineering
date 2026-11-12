@@ -97,7 +97,9 @@ class OfflineTests(unittest.TestCase):
 
     @patch.object(subprocess, 'check_output', return_value='pueued 4.0.4\n')
     def test_ownership_durable_before_queue_and_retry(self, _version):
-        self.path.write_text(json.dumps(queue()))
+        value = queue()
+        del value["groups"]["reset"]
+        self.path.write_text(json.dumps(value))
         original = control.atomic_json
         def fail_on_queue(path, value):
             if path == self.path:
@@ -113,6 +115,17 @@ class OfflineTests(unittest.TestCase):
         first = self.path.read_bytes()
         control.prepare_start(self.dead(), self.directory, self.path, 'mini', '/fake/pueued')
         self.assertEqual(self.path.read_bytes(), first)
+
+    @patch.object(subprocess, 'check_output', return_value='pueued 4.0.4\n')
+    def test_reset_validates_but_refuses_start_without_overwriting(self, _version):
+        value = queue()
+        self.path.write_text(json.dumps(value))
+        self.assertEqual(control.read_queue(self.path), value)
+        before = self.path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'Reset interrumpido'):
+            control.prepare_start(self.dead(), self.directory, self.path, 'mini', '/fake/pueued')
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertFalse((self.directory / 'guardia-state.json').exists())
 
     def test_responding_daemon_rejected_without_mutation(self):
         self.path.write_text(json.dumps(queue()))
@@ -175,6 +188,14 @@ class ConfigurationTests(unittest.TestCase):
         self.config.write_text('shared: {pueue_directory: /elsewhere}\n')
         with self.assertRaises(ValueError):
             control.validate_configuration()
+
+    def test_relative_xdg_paths_rejected_before_reading_wrong_queue(self):
+        self.config.write_text('{"shared":{}}')
+        for key in ('XDG_DATA_HOME', 'XDG_CONFIG_HOME', 'XDG_RUNTIME_DIR'):
+            for value in ('relative/path', ''):
+                with patch.dict(os.environ, {key: value}):
+                    with self.assertRaisesRegex(ValueError, key):
+                        control.validate_configuration()
 
     def test_duplicate_json_and_invalid_rust_numbers_rejected(self):
         path = self.data / 'state.json'

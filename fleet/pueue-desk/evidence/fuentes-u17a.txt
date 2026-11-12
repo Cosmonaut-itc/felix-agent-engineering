@@ -22,3 +22,5 @@ https://www.freedesktop.org/software/systemd/man/latest/systemd.service.html#Res
 Restart=always también reintenta tras fallo de ExecStartPre. Un stop explícito no reinicia por sí solo.
 Requires=pueued.service del guardia puede pedir un nuevo arranque al activarse su timer.
 Linux, WSL, reinicio Windows y launchd de producción no se miden en este encargo.
+https://github.com/Nukesor/pueue/blob/v4.0.4/pueue/src/daemon/task_handler.rs#L100
+handle_group_resets borra las tareas del grupo y lo pone Running sin admisión. Por eso un Reset interrumpido se conserva pero bloquea el arranque del host.

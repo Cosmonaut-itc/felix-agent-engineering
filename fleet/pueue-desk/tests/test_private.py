@@ -125,6 +125,28 @@ class PrivateTests(unittest.TestCase):
         with self.assertRaises(subprocess.CalledProcessError):
             inst.status()
 
+    def test_reset_refuses_start_and_stock_pueue_would_reopen_group(self):
+        inst = self.instance()
+        inst.start()
+        inst.stop()
+        path = inst.data / 'state.json'
+        state = json.loads(path.read_text())
+        state['groups']['default']['status'] = 'Reset'
+        path.write_text(json.dumps(state))
+        before = path.read_bytes()
+        with self.assertRaisesRegex(ValueError, 'Reset interrumpido'):
+            self.prepare(inst)
+        self.assertEqual(path.read_bytes(), before)
+        # Comparador estándar privado: el loop de Pueue abre Reset sin pasar
+        # por el guardia, incluso si el grupo estaba vacío.
+        inst.start()
+        for _ in range(100):
+            if inst.status()['groups']['default']['status'] == 'Running':
+                break
+            time.sleep(.02)
+        self.assertEqual(inst.status()['groups']['default']['status'], 'Running')
+        print('PRIVADA Reset: preparador rechaza sin escribir; Pueue estándar lo abre solo')
+
     def test_500_crashes_never_repeat_a_sentinel(self):
         inst = self.instance()
         inst.start()

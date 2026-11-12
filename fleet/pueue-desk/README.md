@@ -48,9 +48,14 @@ responda, estado comprimido, JSON truncado, tareas/grupos incompatibles y
 configuración ambigua. Ante un rechazo no sustituye la cola ni arranca el
 daemon; el motivo va al log acotado. Un archivo ausente es primer arranque.
 No genera configuración propia ni cambia el socket del cliente normal.
+Rechaza variables XDG relativas para no preparar una ruta diferente a la
+que resolvería Pueue. Un grupo `Reset` valida y se conserva byte a byte,
+pero bloquea el arranque hasta revisión manual: el loop estándar lo abre
+sin guardia y elimina sus tareas (`task_handler.rs:100–125`). La preparación
+no completa por su cuenta un reset destructivo interrumpido.
 
 Con `control.lock` tomado, la transformación pura `prepare_queue` crea los
-grupos administrados faltantes **ya pausados**, conserva `Reset`, cierra
+grupos administrados faltantes **ya pausados**, no transforma `Reset`, cierra
 los grupos `Running` incluso vacíos y registra su propiedad. Respeta las
 pausas manuales fuera de `owned`. Guarda primero la intención `owned` y
 luego la cola, ambos con temporal, fsync, rename y fsync del directorio.

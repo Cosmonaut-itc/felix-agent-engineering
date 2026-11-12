@@ -367,6 +367,8 @@ def prepare_start(pueue, directory, queue_path, host, daemon):
     if version != "pueued 4.0.4":
         raise RuntimeError("Se requiere pueued 4.0.4; arranque bloqueado")
     queue = read_queue(queue_path)
+    if any(group["status"] == "Reset" for group in queue["groups"].values()):
+        raise ValueError("Reset interrumpido: Pueue abriría el grupo sin admisión; revisar la cola antes de arrancar")
     # lexists: incluso un enlace roto implica evidencia previa, nunca ignorarla.
     logs = {task_id for task_id in queue["tasks"]
             if os.path.lexists(queue_path.parent / "task_logs" / (task_id + ".log"))}
@@ -392,6 +394,9 @@ def validate_configuration():
     Acepta JSON y el YAML expandido simple que emite Pueue. Ante sintaxis
     ambigua falla cerrado: no intenta adivinar dónde vive la cola.
     """
+    for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"):
+        if key in os.environ and not Path(os.environ[key]).is_absolute():
+            raise ValueError(f"{key} debe ser absoluto para compartir rutas con Pueue")
     config_dir = (default_data() if sys.platform == "darwin" else
                   Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "pueue")
     standard = config_dir / "pueue.yml"
