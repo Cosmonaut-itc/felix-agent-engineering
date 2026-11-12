@@ -211,6 +211,28 @@ que demuestra:
   documentación, el comando muestra las líneas que se contradicen. En el
   veto vuelves a correr cada comando. Un critical o warning sin comando, o
   cuyo comando no reproduce el fallo, no queda abierto.
+- **Clase.** El brief de todo revisor copia esta matriz y sus
+  definiciones, y pide en cada hallazgo, también en un NO APTO,
+  `Probabilidad`, `Gravedad` y el disparador: el llamador, la entrada o el
+  estado del sistema real que lo produce. La clase sale de la matriz:
+
+  | Gravedad \ Probabilidad | alta | media | baja |
+  |---|---|---|---|
+  | alta | critical | critical | warning en nivel alto, nit en normal |
+  | media | warning | warning | nit |
+  | baja | nit | nit | nit |
+
+  Probabilidad alta: el uso habitual lo dispara. Media: lo dispara un caso
+  raro que el sistema ya produce, como un reintento, un timeout o una
+  entrada vacía. Baja: el disparador no aparece hoy en el código ni en los
+  datos, o pide una combinación que nada genera. Gravedad alta: pierde o
+  corrompe datos, escribe mal en producción o en un sistema de cliente,
+  calcula mal dinero o impuestos, o abre acceso. Media: da un resultado
+  incorrecto o un fallo que pide intervención y se recupera. Baja: causa
+  una molestia sin efecto en datos ni resultados. El revisor da APTO
+  cuando no queda critical ni warning. En el veto confirmas el disparador
+  además del comando. Si no lo encuentras en el código ni en los datos, la
+  probabilidad es baja.
 - **Rondas.** La ronda 1 es completa, y cada revisor del nivel recibe el
   diff completo. Las siguientes siguen **Ronda delta**. Una review converge
   cuando cada ronda trae menos hallazgos y ninguno abre un caso nuevo en
@@ -226,26 +248,30 @@ que demuestra:
   `git range-diff` si hubo rebase. El revisor marca cada id del registro
   como `resuelto` o `sigue abierto: <motivo>` y busca critical y warning en
   lo que el delta cambió. Fuera del delta reporta sólo un critical. Da APTO
-  sobre el head nuevo cuando ningún id sigue abierto y no trae hallazgo
-  nuevo, y ese APTO vale por todo el nivel. La ronda vuelve a ser completa si la corrección cambia de enfoque según
+  sobre el head nuevo cuando ningún id sigue abierto y no trae critical ni
+  warning nuevo, y ese APTO vale por todo el nivel. La ronda vuelve a ser completa si la corrección cambia de enfoque según
   **Autonomía**, si el nivel sube a alto, o si el delta añade comportamiento
   que ningún hallazgo pidió o toca archivos de producción que la ronda
   completa no vio. Un head nuevo que sólo incorpora la rama destino conserva
   su APTO sin ronda cuando lo permite el paso 3 del
   [procedimiento de merge](references/merge.md).
-- **Hallazgos.** El brief de todo revisor pide sólo critical y warning. Un
-  nit que llegue se descarta sin registrarlo. Un critical o warning nunca es
-  un nit, aunque trate de documentación. Corrige cada hallazgo aceptado con
+- **Hallazgos.** El brief de todo revisor pide critical, warning y los nits
+  de gravedad alta, que son riesgos asumidos. Descarta los demás nits sin
+  registrarlos. La clase sale sólo de **Clase**, también en documentación,
+  y la review de UI sigue [Menos es más](references/menos-es-mas.md). Corrige cada hallazgo aceptado con
   el cambio mínimo y rebate con evidencia el que esté mal. Escribe tú la
   corrección de la ronda si cabe en el umbral de «Delegación» del routing.
   Si lo supera, o si corrige un candidato del
   [acumulador](references/acumulador.md), despáchala. Lo que pide trabajo
   fuera del objetivo sigue **Unidades** y el
   [procedimiento de merge](references/merge.md).
-- **Registro.** Lleva cada critical y warning en `hallazgos.tsv`, junto a los
-  encargos de la unidad o en el store del programa, con las columnas
-  `id	ronda	severidad	estado	evidencia`. El `id` no cambia entre rondas.
-  El estado es `abierto`, `corregido`, `rebatido` o `declinado`.
+- **Registro.** Lleva cada critical, warning y riesgo asumido en
+  `hallazgos.tsv`, junto a los encargos de la unidad o en el store del
+  programa, con las columnas
+  `id	ronda	probabilidad	gravedad	severidad	estado	evidencia`. El `id` no
+  cambia entre rondas. El estado es `abierto`, `corregido`, `rebatido`,
+  `declinado` o `asumido`. Si el nivel sube a alto, cada `asumido` vuelve a
+  `abierto` como warning.
 - **Regla por hallazgo.** Si un hallazgo aceptado es mecánico, como un
   patrón de sintaxis, una API prohibida, una forma de import o una regla de
   ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
@@ -275,6 +301,9 @@ que demuestra:
 - **Constancia.** El cuerpo de cada PR termina con una línea por revisor
   exigido, con la forma
   `Revisión: <modelo> <esfuerzo>, ronda <n>, <veredicto> sobre <head>`.
+  Antes de ellas va una línea
+  `Riesgo asumido: <id> <hallazgo>. Disparador: <disparador>` por cada
+  `asumido` del registro.
   Copia el veredicto literal, también NO APTO o SIN DICTAMEN. Mientras el
   head del PR no tiene veredicto, `<veredicto>` es `pendiente` y `<n>` es
   la ronda que lo juzgará. Una ronda delta se escribe `ronda <n> delta`. Un
