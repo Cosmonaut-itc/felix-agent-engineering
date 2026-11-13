@@ -22,7 +22,8 @@ sustituyas. Esa ronda no da APTO de consejo. La puerta del nivel sigue
 
 1. Prepara la ronda como pide **Revisión**: riesgo, pre-vuelo y registro.
 2. Envía a cada miembro el mismo brief. En alto riesgo usa el brief de
-   `interrogate` y añade la línea `NOTA`. En nivel normal usa este:
+   `interrogate` y añade la línea `Clase`, el formato de hallazgo de abajo,
+   `Nits descartados` y la línea `NOTA`. En nivel normal usa este:
 
    ```
    Nivel: <normal o alto> por <señal o ruta>
@@ -40,6 +41,7 @@ sustituyas. Esa ronda no da APTO de consejo. La puerta del nivel sigue
    que exige el objetivo.
    VEREDICTO: APTO o NO APTO
    NOTA: <1 a 10>
+   Nits descartados: <n>
    <id> [critical|warning|nit] <archivo>:<línea> <hallazgo>. Probabilidad: <alta|media|baja>. Gravedad: <alta|media|baja>. Disparador: <qué lo produce>. Arreglo: <propuesta>
    ```
 
