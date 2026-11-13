@@ -7,9 +7,9 @@ from pathlib import Path
 import pwd
 import re
 import signal
+import selectors
 import sqlite3
 import subprocess
-import tempfile
 import threading
 import time
 
@@ -129,23 +129,56 @@ class Executor:
             raise ValueError('Transporte deshabilitado')
         config = action_config(host.get('actions'))
         controller = self.home / config['controllers'][launcher][2:]
-        # A file bounds the public response and avoids an unbounded stdout pipe.
-        with tempfile.TemporaryFile() as output:
-            process = self.runner(['/usr/bin/python3', '-I', str(controller)],
-                stdin=subprocess.PIPE, stdout=output, stderr=subprocess.DEVNULL,
-                env={'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'},
-                cwd='/', start_new_session=True)
+        process = self.runner(['/usr/bin/python3', '-I', str(controller)],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            env={'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'},
+            cwd='/', start_new_session=True)
+        output = bytearray()
+        deadline = time.monotonic() + self.timeout
+        try:
+            # Drain stdout while running; never spool an unbounded response to disk.
+            # Nonblocking stdin also keeps a controller that never reads within the deadline.
+            raw = memoryview(json.dumps(request).encode())
+            with selectors.DefaultSelector() as selector:
+                for stream, event in ((process.stdin, selectors.EVENT_WRITE),
+                                      (process.stdout, selectors.EVENT_READ)):
+                    os.set_blocking(stream.fileno(), False)
+                    selector.register(stream, event)
+                while selector.get_map():
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise subprocess.TimeoutExpired(process.args, self.timeout)
+                    for key, event in selector.select(remaining):
+                        if key.fileobj is process.stdin:
+                            try:
+                                raw = raw[os.write(process.stdin.fileno(), raw):]
+                            except BrokenPipeError:
+                                raw = raw[:0]
+                            if not raw:
+                                selector.unregister(process.stdin)
+                                process.stdin.close()
+                        else:
+                            chunk = os.read(process.stdout.fileno(), min(4096, 16385 - len(output)))
+                            output.extend(chunk)
+                            if len(output) > 16384:
+                                raise ValueError('Respuesta demasiado grande')
+                            if not chunk:
+                                selector.unregister(process.stdout)
+                process.wait(timeout=max(0, deadline - time.monotonic()))
+        except BaseException:
+            # Only the session we created, including descendants holding stdout open.
             try:
-                process.communicate(json.dumps(request).encode(), timeout=self.timeout)
-            except subprocess.TimeoutExpired:
                 os.killpg(process.pid, signal.SIGKILL)
-                process.communicate()
-                raise
-            output.seek(0)
-            response = decode(output.read(16385))
-            if process.returncode not in (0, 2):
-                raise ValueError('Respuesta inválida')
-            return response
+            except ProcessLookupError:
+                pass
+            process.wait()
+            raise
+        finally:
+            process.stdin.close()
+            process.stdout.close()
+        if process.returncode not in (0, 2):
+            raise ValueError('Respuesta inválida')
+        return decode(output)
 
 
 def sanitize(request, response, op):
@@ -221,8 +254,6 @@ class Actions:
             return 'Actualiza la instantánea antes de cancelar.'
         task = next((t for t in (current.get('snapshot') or {}).get('tasks', [])
                      if t['id'] == request['expected']['task_id']), None)
-        if task and task['group'] in ('otros', 'pg5434'):
-            return 'Este grupo no ofrece cancelación desde el rack.'
         control = control_data(task.get('control'), task) if task else None
         if not control or control['reason'] or any(control[k] != request[k] for k in ('launcher', 'ref', 'expected')):
             return control['reason'] if control and control['reason'] else ERRORS['stale_state']
@@ -236,7 +267,9 @@ class Actions:
             wire['expected'] = request['expected']
         try:
             return sanitize(request, self.executor(self.hosts[request['host']], request['launcher'], wire), op)
-        except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):
+        except Exception:
+            # This is the controller boundary, after client validation. Any failure
+            # reading/decoding/validating its answer leaves the effect uncertain.
             return result(request, 'unknown')
 
     def save(self, request, response):
@@ -244,11 +277,20 @@ class Actions:
             db.execute('UPDATE actions SET response=?,updated=? WHERE action_id=?',
                        (json.dumps(response), self.clock(), request['action_id']))
 
+    def pending_reason(self, db, request):
+        for body, answer in db.execute('SELECT request,response FROM actions WHERE action_id != ?',
+                                       (request.get('action_id', ''),)):
+            previous, response = json.loads(body), json.loads(answer)
+            if response['status'] in OPEN and all(previous[k] == request[k] for k in ('host', 'launcher', 'ref')):
+                return 'Esta corrida tiene una cancelación pendiente (' + previous['action_id'] + '); consulta su recibo.'
+        return None
+
     def post(self, request):
         validate(request)
         with self.lock:
             if request['op'] == 'capabilities':
-                reason = ERRORS['disabled'] if self.disabled() else self.eligible(request)
+                with self.connect() as db:
+                    reason = ERRORS['disabled'] if self.disabled() else self.pending_reason(db, request) or self.eligible(request)
                 if reason:
                     return 200, result(request, 'rejected', 'unsupported', reason=reason)
                 return 200, self.call(request, 'capabilities')
@@ -267,9 +309,10 @@ class Actions:
                 # Rejections are bound too: a valid authorized ID is never reusable
                 # with another body, even if this first attempt had no effect.
                 disabled = self.disabled()
-                reason = ERRORS['disabled'] if disabled else self.eligible(request)
+                pending = self.pending_reason(db, request)
+                reason = ERRORS['disabled'] if disabled else pending or self.eligible(request)
                 if reason:
-                    code = 'disabled' if disabled else 'stale_state' if reason == ERRORS['stale_state'] else 'unsupported'
+                    code = 'disabled' if disabled else 'idempotency_conflict' if pending else 'stale_state' if reason == ERRORS['stale_state'] else 'unsupported'
                     rejected = result(request, 'rejected', code, reason=reason)
                     db.execute('UPDATE actions SET response=? WHERE action_id=?',
                                (json.dumps(rejected), request['action_id']))
@@ -285,7 +328,7 @@ class Actions:
             with self.connect() as db:
                 row = db.execute('SELECT request,response FROM actions WHERE action_id=?', (action_id,)).fetchone()
             if row is None:
-                # Absence in this journal is not proof of absence of an effect.
+                # A missing intent permits retrying only the exact same body and ID.
                 return 404, result(dict(action_id=action_id, op='cancel'), 'unknown')
             request, response = map(json.loads, row)
             if response['status'] in OPEN:

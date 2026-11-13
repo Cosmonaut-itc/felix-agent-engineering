@@ -208,7 +208,9 @@ fija resuelta con el usuario Unix del servicio. No hay shell ni TTY. El único
 ejecutor usa cwd `/`, un entorno nuevo con HOME del usuario Unix, PATH fijo y
 TMPDIR=/tmp; no hereda tokens ni configuración del panel. Tiene plazo de 10 s,
 termina únicamente su grupo de procesos si vence, recoge al hijo y limita la
-respuesta JSON a 16 KiB. Un timeout, respuesta inválida o fallo de transporte
+respuesta JSON a 16 KiB durante la ejecución (como máximo 16 385 bytes
+capturados); si excede el límite, termina y recoge sólo su grupo propio.
+Un timeout, respuesta inválida o fallo de transporte
 significa `unknown`, porque el efecto pudo ocurrir antes del corte.
 
 La instantánea añade por tarea:
@@ -225,8 +227,9 @@ compatibilidad: sólo el controlador confirma capacidades. No añade lecturas
 de `body.sh`, `meta` ni logs. Sin lanzador reconocido, `launcher/ref` son null;
 fuera de Queued/Running, `expected` es null. `reason` explica por qué no hay
 acción. Instantáneas antiguas conservan lectura y deshabilitan cancelación.
-Los grupos `otros` y `pg5434` quedan deshabilitados. Jale directo en la Mini
-fuera de Pueue no está cubierto por este contrato.
+Los grupos `otros` y `pg5434` sin lanzador reconocido quedan deshabilitados;
+una corrida reconocida consulta capacidades independientemente del grupo.
+Jale directo en la Mini fuera de Pueue no está cubierto por este contrato.
 
 El transporte de escritura es independiente del de instantáneas:
 
@@ -270,7 +273,8 @@ nuevas desde el cliente. Respuesta común `rack-action@1`: `action_id`, `op`,
 rutas, comandos, logs o secretos. 409 indica conflicto, 403 rechazo de acceso
 o interruptor, 400 petición inválida. Un resultado incierto se expresa como
 `unknown` aun cuando HTTP falle; un ID no hallado responde 404/unknown y nunca
-se interpreta como prueba de que no hubo efecto.
+se interpreta como una cancelación fallida. La UI reenvía una vez el mismo
+cuerpo con el mismo ID ante ese 404, protegido por el diario idempotente.
 
 Además de Host permitido, cliente del tailnet y rechazo de Funnel, cada POST
 exige `Origin` exactamente igual a `http://<Host servido>`, JSON y
@@ -279,6 +283,14 @@ no sustituye Origin. No hay CORS ni confianza en cabeceras de proxy.
 Whois se vuelve a consultar sin caché en cada petición de acciones. El GET
 también requiere whois fresco: puede continuar la limpieza ya aceptada por
 el lanzador. No abre una cancelación nueva.
+
+Una acción abierta (`cancelling`, `unknown` o `cancel_unconfirmed`) bloquea
+otra cancelación de la misma combinación host/lanzador/ref en el diario,
+incluso desde otra pestaña o tras reiniciar el servidor. El POST nuevo da
+409 con el ID abierto y capacidades muestra la misma razón. La fila pendiente
+sigue visible aunque Pueue indique Done o Stashed. La exclusión tras un recibo
+`cancelled` incluye encolado y arranque: un intento nuevo vuelve a aparecer.
+
 
 ### Diario e interruptor
 

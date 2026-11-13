@@ -122,7 +122,7 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 let S, NOW;
 const PENDING = new Map();
 const CANCELLED = new Set();
-const runKey = (h,t) => JSON.stringify([h.id,t.id,t.control?.ref]);
+const runKey = (h,t) => JSON.stringify([h.id,t.id,t.control?.ref,t.enqueued,t.start]);
 const actionKey = (h,t) => h.id+'/'+t.id;
 const pendingText = (h,t) => { const a=PENDING.get(actionKey(h,t)); return a ? `<span class="action-state" role="status">${esc(a.status==='unknown' ? 'Resultado desconocido · consultando…' : a.status==='cancel_unconfirmed' ? 'Cancelación sin confirmar · consultando…' : 'Cancelando…')}</span>` : ''; };
 const pendingClass = (h,t) => PENDING.has(actionKey(h,t)) ? 'pending' : '';
@@ -253,7 +253,11 @@ function render(data){
   })};
   for(const a of PENDING.values()){
     const h=S.hosts.find(h=>h.id===a.request.host);
-    if(h && a.task && !h.tasks.some(t=>t.id===a.task.id)) h.tasks.push(a.task);
+    if(h && a.task){
+      const i=h.tasks.findIndex(t=>t.id===a.task.id);
+      // Keep the observed row visible even when the worker becomes Done/Stashed.
+      if(i<0) h.tasks.push(a.task); else h.tasks[i]=a.task;
+    }
   }
   document.getElementById('app').innerHTML=view();
   syncMenu();
@@ -389,7 +393,7 @@ function acceptAction(key,action,data){
   }else{
     PENDING.delete(key); persistActions();
     if(data.status==='cancelled'){
-      const identity=JSON.stringify([action.request.host,action.request.expected.task_id,action.request.ref]);
+      const identity=runKey({id:action.request.host},action.task);
       CANCELLED.add(identity);
       try{sessionStorage.setItem('rack-cancelled',JSON.stringify([...CANCELLED]));}catch{}
       const h=S?.hosts.find(h=>h.id===action.request.host);
@@ -407,9 +411,13 @@ async function pollAction(key,action){
   try{
     const response=await fetch('/api/accion/'+encodeURIComponent(action.request.action_id),{cache:'no-store',signal:AbortSignal.timeout(15000)});
     const data=await response.json();
+    if(response.status===404 && data.schema==='rack-action@1' && data.action_id===action.request.action_id && !action.resent){
+      action.resent=true; persistActions();
+      await sendCancel(key,action); return;
+    }
     if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || !response.ok) throw Error('status');
     acceptAction(key,action,data);
-  }catch{action.status='unknown';persistActions();repaintActions();say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}
+  }catch{const changed=action.status!=='unknown';action.status='unknown';persistActions();repaintActions();if(changed) say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}
 }
 for(const [key,action] of PENDING) setTimeout(()=>pollAction(key,action),2000);
 let last=null;

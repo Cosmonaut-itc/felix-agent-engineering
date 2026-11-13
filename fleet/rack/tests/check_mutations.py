@@ -1,4 +1,4 @@
-"""Prove six safety regressions are caught, without editing the working tree.
+"""Prove safety regressions are caught, without editing the working tree.
 
 TMPDIR=/tmp /usr/bin/python3 tests/check_mutations.py
 """
@@ -25,6 +25,13 @@ CASES=(
     ('cancelled-old-snapshot','index.html',
      '.filter(t=>!CANCELLED.has(runKey(h,t)))', '',
      'test_actions.UITests.test_production_js_dialog_pending_toast_reasons_and_network'),
+    ('controller-decode-unknown','accion.py','except Exception:',
+     'except (OSError, ValueError, TypeError, KeyError, subprocess.SubprocessError):',
+     'test_r1fix.ExecutorRegressions.test_a2_deep_controller_response_is_http_unknown_and_reconciles'),
+    ('open-run-journal','accion.py', "if response['status'] in OPEN and all(previous[k] == request[k] for k in ('host', 'launcher', 'ref')):",
+     'if False:', 'test_r1fix.JournalRegressions.test_b2_open_action_blocks_other_id_and_capabilities_after_restart'),
+    ('snapshot-identity','accion.py', " or any(control[k] != request[k] for k in ('launcher', 'ref', 'expected'))", '',
+     'test_actions.ActionsTests.test_b3_snapshot_identity_binding_rejects_foreign_ref_launcher_and_expected'),
 )
 
 
@@ -43,7 +50,7 @@ def main():
                 raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
             print(name+': caught (expected failure)')
             print('\n'.join(line for line in result.stderr.splitlines() if 'AssertionError:' in line or line.startswith('FAILED')))
-    print('All six mutations caught; original tree untouched.')
+    print('All nine mutations caught; original tree untouched.')
 
 
 if __name__=='__main__':main()

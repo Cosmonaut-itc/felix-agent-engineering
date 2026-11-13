@@ -20,13 +20,14 @@ serve = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(serve)
 REF = '20261112-184713-d976b4'
 HOSTS = serve.load_hosts(BASE / 'hosts.json')
+ENQUEUED = time.time() - 90
 
 
 def fixture():
     now=time.time()
     def host(config):
         row=dict(id=77,group='suites',state='Queued',name='contract',ticket='SEN-123',project='Hasito',
-                 enqueued=now-90,start=None,end=None,result=None,scope=None,repo=None,sha=None,branch=None,subject=None,priority=0,
+                 enqueued=ENQUEUED,start=None,end=None,result=None,scope=None,repo=None,sha=None,branch=None,subject=None,priority=0,
                  control=dict(launcher='remote-run',ref=REF,expected=dict(task_id=77,state='Queued'),reason=None))
         snap=dict(schema='rack-host@1',host=config['id'],taken=now,groups=[dict(name='suites',status='Running',slots=1)],
                   tasks=[row],cpu=dict(cores=10,load=[1,1,1]),mem=dict(total=16*1024**3,available=12*1024**3,swap_total=0,swap_used=0))

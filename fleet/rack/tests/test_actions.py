@@ -81,6 +81,8 @@ class ActionsTests(unittest.TestCase):
                 self.assertEqual((code, response['status']), (200, status))
                 self.assertEqual(self.calls[-1], dict(schema='rack-cancel@1', op='cancel', ref=REF,
                     action_id=body['action_id'], expected=body['expected']))
+                self.response = 'cancelled'
+                self.actions.get(body['action_id'])
         for error in ('stale_state', 'not_found', 'unsupported', 'idempotency_conflict', 'invalid_request'):
             body = request(action_id='rejected-'+error.replace('_','-'))
             with patch.object(self.actions, 'executor', side_effect=lambda h,l,w: receipt(w, 'rejected', error)):
@@ -222,8 +224,6 @@ class ActionsTests(unittest.TestCase):
                       lambda: self.data.update(now=900),
                       lambda: self.data['hosts'][0].update(age=50),
                       lambda: self.data['hosts'][0]['snapshot']['tasks'][0].update(state='Running'),
-                      lambda: self.data['hosts'][0]['snapshot']['tasks'][0].update(group='otros'),
-                      lambda: self.data['hosts'][0]['snapshot']['tasks'][0].update(group='pg5434'),
                       lambda: self.data['hosts'][0]['snapshot']['tasks'][0].update(control=None))):
             self.data = payload(); alter()
             self.assertEqual(self.actions.post(request(action_id='ineligible-'+str(number)))[0], 409)
@@ -262,6 +262,19 @@ class ActionsTests(unittest.TestCase):
         self.assertEqual(len(calls), 1)
         self.assertEqual(answers[0], answers[1])
 
+    def test_b3_snapshot_identity_binding_rejects_foreign_ref_launcher_and_expected(self):
+        for n, changes in enumerate((dict(ref='20991231-235959-ffffff'),
+                                    dict(expected=dict(task_id=78,state='Queued')),
+                                    dict(expected=dict(task_id=77,state='Running')),
+                                    dict(launcher='jale',ref='job-AbCd1234'))):
+            host = dict(HOSTS[0],actions=dict(transport='local',reason=None,controllers=accion.CONTROLLERS))
+            self.actions.hosts['mini']=host
+            code, answer=self.actions.post(request(action_id='foreign-000'+str(n),**changes))
+            self.assertEqual(code,409)
+            self.assertEqual(answer['error']['code'],'stale_state')
+        self.assertEqual(self.calls,[])
+
+
 
 class SnapshotControlTests(unittest.TestCase):
     def test_identity_is_derived_without_reading_private_files(self):
@@ -272,7 +285,7 @@ class SnapshotControlTests(unittest.TestCase):
                 dict(launcher='remote-run', ref=REF, expected=dict(task_id=77, state='Queued'), reason=None))
             self.assertEqual(snapshot.task_control(raw, home, 'Running')['expected']['state'], 'Running')
             for group in ('otros','pg5434'):
-                self.assertIn('grupo', snapshot.task_control(dict(raw,group=group),home,'Queued')['reason'])
+                self.assertIsNone(snapshot.task_control(dict(raw,group=group),home,'Queued')['reason'])
             for ref in ('../../escape',REF+'x','garbage'):
                 self.assertIsNone(snapshot.task_control(dict(raw,path=str(home/'remote-run/runs'/ref)),home,'Queued')['launcher'])
             jale = dict(id=2,group='jale',command='exec bash /synthetic-home/.local/state/jale/pueue/job-AbCd1234/task.sh')
@@ -514,15 +527,18 @@ time.sleep(60)
         calls=[]
         class Process:
             returncode=0
-            def communicate(self,raw,timeout):
-                calls.append((json.loads(raw),timeout))
-                output.write(json.dumps(receipt(json.loads(raw))).encode())
+            def __init__(self, wire):
+                incoming, writer = os.pipe()
+                reader, outgoing = os.pipe()
+                self.stdin, self.stdout = os.fdopen(outgoing, 'wb'), os.fdopen(incoming, 'rb')
+                self.reader = reader
+                os.write(writer, json.dumps(receipt(wire)).encode()); os.close(writer)
+            def wait(self, timeout):
+                calls.append((json.loads(os.read(self.reader, 16384)), timeout))
+                os.close(self.reader)
         def runner(argv,**kwargs):
-            nonlocal output
-            output=kwargs['stdout']
             calls.append((argv,kwargs))
-            return Process()
-        output=None
+            return Process(wire if 'jale' not in argv[-1] else dict(wire,ref='job-AbCd1234'))
         executor=accion.Executor(runner=runner,home='/synthetic-home')
         wire=dict(schema='rack-cancel@1',op='cancel',ref=REF,action_id='action-0001',expected=dict(task_id=77,state='Queued'))
         with patch.dict('os.environ',{'GH_TOKEN':'secret','REMOTE_RUN_HOST':'desk','PYTHONPATH':'/evil'}):
@@ -531,10 +547,13 @@ time.sleep(60)
         self.assertEqual(argv,['/usr/bin/python3','-I','/synthetic-home/.local/lib/remote-run/run-control.py'])
         self.assertEqual(options['env'],{'HOME':'/synthetic-home','PATH':'/usr/bin:/bin:/opt/homebrew/bin','TMPDIR':'/tmp'})
         self.assertEqual(options['stdin'],subprocess.PIPE)
+        self.assertEqual(options['stdout'],subprocess.PIPE)
         self.assertEqual(options['stderr'],subprocess.DEVNULL)
         self.assertTrue(options['start_new_session'])
         self.assertEqual(options['cwd'],'/')
-        self.assertEqual(calls[1],(wire,10))
+        self.assertEqual(calls[1][0],wire)
+        self.assertGreater(calls[1][1],0)
+        self.assertLessEqual(calls[1][1],10)
         self.assertEqual(response['status'],'cancelled')
         for host,launcher in ((HOSTS[1],'remote-run'),(HOSTS[0],'jale')):
             with self.assertRaises(ValueError):executor(host,launcher,wire)
@@ -545,13 +564,20 @@ time.sleep(60)
         self.assertEqual(calls[2][0], ['/usr/bin/python3','-I','/synthetic-home/.local/lib/jale/pueue-control.py'])
 
     def test_timeout_kills_only_own_process_group_and_reaps(self):
-        process=Mock(pid=987654,returncode=-9)
-        process.communicate.side_effect=[subprocess.TimeoutExpired('fake',10),(None,None)]
-        with patch.object(accion.os,'killpg') as kill:
-            with self.assertRaises(subprocess.TimeoutExpired):
-                accion.Executor(runner=Mock(return_value=process),home='/synthetic-home')(HOSTS[0],'remote-run',{})
-        kill.assert_called_once_with(987654,accion.signal.SIGKILL)
-        self.assertEqual(process.communicate.call_count,2)
+        incoming, writer = os.pipe(); os.close(writer)
+        reader, outgoing = os.pipe()
+        process=Mock(pid=987654,returncode=-9,args=['synthetic'])
+        process.stdin,process.stdout=os.fdopen(outgoing,'wb'),os.fdopen(incoming,'rb')
+        process.wait.side_effect=[subprocess.TimeoutExpired('fake',10),0]
+        try:
+            with patch.object(accion.os,'killpg') as kill:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    accion.Executor(runner=Mock(return_value=process),home='/synthetic-home')(HOSTS[0],'remote-run',{})
+            kill.assert_called_once_with(987654,accion.signal.SIGKILL)
+            self.assertEqual(process.wait.call_count,2)
+            self.assertTrue(process.stdin.closed and process.stdout.closed)
+        finally:
+            os.close(reader)
 
     def test_guard_rejects_real_binaries_before_execution(self):
         for argv in (['/usr/bin/ssh','desk'],['/opt/homebrew/bin/pueue','status'],

@@ -130,9 +130,7 @@ def task_control(task, home, state):
         if job and job.parent == home / '.local/state/jale/pueue':
             launcher, ref = 'jale', job.name
     reason = None
-    if task.get('group') in ('otros', 'pg5434'):
-        reason = 'Este grupo no ofrece cancelación desde el rack.'
-    elif launcher is None:
+    if launcher is None:
         reason = 'Lanzador no reconocido; no se puede confirmar la cancelación.'
     elif state not in ('Queued', 'Running'):
         reason = 'Sólo se cancelan corridas en fila o en curso.'
