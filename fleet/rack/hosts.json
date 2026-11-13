@@ -36,12 +36,41 @@
       "Felix@felix-desktop"
     ],
     "actions": {
-      "transport": "disabled",
-      "reason": "canal de escritura del desk pendiente",
+      "transport": "ssh",
+      "reason": null,
       "controllers": {
         "remote-run": "~/.local/lib/remote-run/run-control.py",
         "jale": "~/.local/lib/jale/pueue-control.py"
-      }
+      },
+      "argv": [
+        "/usr/bin/ssh",
+        "-F",
+        "/dev/null",
+        "-T",
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "IdentitiesOnly=yes",
+        "-o",
+        "IdentityAgent=none",
+        "-o",
+        "ConnectTimeout=10",
+        "-o",
+        "StrictHostKeyChecking=yes",
+        "-o",
+        "UserKnownHostsFile=~/.ssh/known_hosts",
+        "-o",
+        "ClearAllForwardings=yes",
+        "-o",
+        "PermitLocalCommand=no",
+        "-o",
+        "ControlMaster=no",
+        "-o",
+        "ControlPath=none",
+        "-i",
+        "~/.ssh/id_ed25519_pao_rack_accion",
+        "Felix@felix-desktop"
+      ]
     }
   }
 ]

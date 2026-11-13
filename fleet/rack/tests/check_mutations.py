@@ -10,6 +10,15 @@ import tempfile
 
 BASE=Path(__file__).resolve().parents[1]
 CASES=(
+    ('desk-fixed-table','desk_action.py','controller = Path(CONTROLLERS[launcher])',
+     "controller = Path(CONTROLLERS['remote-run'])",
+     'test_c4.DispatcherTests.test_fixed_table_each_launcher_and_all_operations'),
+    ('desk-switch','desk_action.py',"and SWITCH.exists():",'and False:',
+     'test_c4.DispatcherTests.test_switch_blocks_cancel_and_capabilities_but_allows_status'),
+    ('ssh-fixed-argv','accion.py',"value['transport'] == 'ssh' and value['argv'] != DESK_ARGV",'False',
+     'test_c4.SSHTests.test_other_argv_controller_paths_and_host_rejected'),
+    ('ssh-failure-unknown','accion.py',"if code not in ((0,) if remote else (0, 2)):",'if False:',
+     'test_c4.SSHTests.test_ssh_failure_is_unknown_no_repeated_cancel_and_same_status'),
     ('whois-fresco','serve.py','allows(self.client_address[0], fresh=True)',
      'allows(self.client_address[0], fresh=False)',
      'test_actions.AuthorizationTests.test_whois_is_fresh_for_every_mutation_even_after_cached_read'),
@@ -50,7 +59,7 @@ def main():
                 raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
             print(name+': caught (expected failure)')
             print('\n'.join(line for line in result.stderr.splitlines() if 'AssertionError:' in line or line.startswith('FAILED')))
-    print('All nine mutations caught; original tree untouched.')
+    print('All '+str(len(CASES))+' mutations caught; original tree untouched.')
 
 
 if __name__=='__main__':main()

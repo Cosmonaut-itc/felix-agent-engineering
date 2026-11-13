@@ -405,7 +405,7 @@ class TransportTests(unittest.TestCase):
         shipped = serve.load_hosts(base / 'hosts.json')
         self.assertEqual(shipped[0]['actions']['controllers'], {'remote-run': accion.CONTROLLERS['remote-run']})
         self.assertEqual(shipped[1]['actions']['controllers'], accion.CONTROLLERS)
-        self.assertEqual(accion.transport_reason(shipped[1], 'remote-run'), 'canal de escritura del desk pendiente')
+        self.assertIsNone(accion.transport_reason(shipped[1], 'remote-run'))
         self.assertIsNotNone(accion.transport_reason(shipped[0], 'jale'))
         self.assertIsNotNone(accion.transport_reason(dict(id='old'), 'remote-run'))
         with tempfile.TemporaryDirectory(dir='/tmp') as folder:
@@ -430,7 +430,7 @@ class TransportTests(unittest.TestCase):
             self.assertIsNotNone(accion.transport_reason(remote, 'remote-run'))
             with self.assertRaises(ValueError): accion.Executor()(remote, 'remote-run', {})
             hosts = copy.deepcopy(shipped)
-            hosts[1]['actions']['reason'] = 'Razón configurada para este host'
+            hosts[1]['actions'] = dict(HOSTS[1]['actions'], reason='Razón configurada para este host')
             rack = serve.Rack(hosts, Path(folder), key_path=Path(folder)/'absent-key')
             rack.publish(1000)
             self.assertEqual(rack.read()['hosts'][1]['actions']['reason'], 'Razón configurada para este host')
@@ -580,7 +580,8 @@ time.sleep(60)
             os.close(reader)
 
     def test_guard_rejects_real_binaries_before_execution(self):
-        for argv in (['/usr/bin/ssh','desk'],['/opt/homebrew/bin/pueue','status'],
+        for argv in (['/usr/bin/python3','-I',str(Path.home()/'.local/bin/pao-rack-action')],
+                     ['/usr/bin/ssh','desk'],['/opt/homebrew/bin/pueue','status'],
                      ['/Applications/Tailscale.app/Contents/MacOS/Tailscale','whois'],
                      ['/usr/bin/python3','-I',str(Path.home()/'.local/lib/remote-run/run-control.py')]):
             with self.assertRaises(AssertionError):subprocess.run(argv)

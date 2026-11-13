@@ -76,7 +76,9 @@ def load_hosts(path):
                 raise ValueError()
             if 'actions' in host:
                 # A local write channel acts on the panel's own host, never on one read over ssh.
-                if accion.action_config(host['actions'])['transport'] == 'local' and host['transport'] != 'local':
+                config = accion.action_config(host['actions'])
+                if (config['transport'] == 'local' and host['transport'] != 'local'
+                        or config['transport'] == 'ssh' and (host['id'] != 'desk' or host['transport'] != 'ssh')):
                     raise ValueError()
             ids.add(host['id'])
         return hosts

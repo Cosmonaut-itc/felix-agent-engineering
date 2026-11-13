@@ -1,4 +1,5 @@
 """Cancelación por lanzador y diario durable. Python 3.9, biblioteca estándar."""
+import importlib.util
 from contextlib import contextmanager
 import hashlib
 import json
@@ -6,12 +7,16 @@ import os
 from pathlib import Path
 import pwd
 import re
-import signal
-import selectors
+import signal  # compatibility for process-group tests
 import sqlite3
 import subprocess
 import threading
 import time
+
+# -I excludes cwd and PYTHONPATH: load only the sibling installed with the panel.
+_spec = importlib.util.spec_from_file_location('rack_desk_channel', Path(__file__).with_name('desk_action.py'))
+desk_channel = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(desk_channel)
 
 SCHEMA = 'rack-action@1'
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
@@ -27,6 +32,15 @@ ERRORS = {
     'forbidden': 'No se pudo autorizar la petición.',
 }
 OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
+DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
+             '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
+             '-o', 'IdentityAgent=none', '-o', 'ConnectTimeout=10',
+             '-o', 'StrictHostKeyChecking=yes',
+             '-o', 'UserKnownHostsFile=~/.ssh/known_hosts',
+             '-o', 'ClearAllForwardings=yes', '-o', 'PermitLocalCommand=no',
+             '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
+             '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
+DESK_TIMEOUT = 40
 CONTROLLERS = {'remote-run': '~/.local/lib/remote-run/run-control.py',
                'jale': '~/.local/lib/jale/pueue-control.py'}
 
@@ -91,17 +105,19 @@ def control_data(value, task):
 
 
 def action_config(value):
-    """Only administrator-selected, contract-fixed controller paths; never argv."""
+    """Closed controller table and exact SSH argv; no configurable commands."""
     if value is None:
         return dict(transport='disabled', reason='Este host no tiene canal de escritura.', controllers={})
-    if (type(value) is not dict or set(value) != {'transport', 'reason', 'controllers'}
-            or value['transport'] not in ('local', 'disabled')
+    if (type(value) is not dict or set(value) != ({'transport', 'reason', 'controllers', 'argv'}
+                if value.get('transport') == 'ssh' else {'transport', 'reason', 'controllers'})
+            or value['transport'] not in ('local', 'ssh', 'disabled')
+            or value['transport'] == 'ssh' and value['argv'] != DESK_ARGV
             or type(value['controllers']) is not dict
             or any(k not in CONTROLLERS or v != CONTROLLERS[k] for k, v in value['controllers'].items())
             or value['reason'] is not None and (type(value['reason']) is not str
                 or not 0 < len(value['reason']) <= 240
                 or any(ord(c) < 32 or ord(c) == 127 for c in value['reason']))
-            or value['transport'] == 'local' and (not value['controllers'] or value['reason'] is not None)
+            or value['transport'] in ('local', 'ssh') and (not value['controllers'] or value['reason'] is not None)
             or value['transport'] == 'disabled' and not value['reason']):
         raise ValueError('Configuración de acciones inválida')
     return value
@@ -109,9 +125,11 @@ def action_config(value):
 
 def transport_reason(host, launcher):
     config = action_config(host.get('actions'))
-    if config['transport'] != 'local':
+    if config['transport'] == 'disabled':
         return config['reason']
-    if host.get('transport') != 'local':
+    if config['transport'] == 'ssh' and (host.get('id') != 'desk' or host.get('transport') != 'ssh'):
+        return 'El canal SSH de acciones sólo actúa sobre el desk.'
+    if config['transport'] == 'local' and host.get('transport') != 'local':
         return 'El canal local sólo actúa sobre el host donde corre el panel.'
     if launcher not in config['controllers']:
         return 'Este lanzador no tiene controlador configurado en este host.'
@@ -120,7 +138,7 @@ def transport_reason(host, launcher):
 
 class Executor:
     """One transport seam, selected by host configuration; no caller-supplied argv."""
-    def __init__(self, runner=subprocess.Popen, home=None, timeout=10):
+    def __init__(self, runner=subprocess.Popen, home=None, timeout=None):
         self.runner, self.timeout = runner, timeout
         self.home = Path(home or pwd.getpwuid(os.getuid()).pw_dir)
 
@@ -128,57 +146,19 @@ class Executor:
         if transport_reason(host, launcher):
             raise ValueError('Transporte deshabilitado')
         config = action_config(host.get('actions'))
-        controller = self.home / config['controllers'][launcher][2:]
-        process = self.runner(['/usr/bin/python3', '-I', str(controller)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env={'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'},
-            cwd='/', start_new_session=True)
-        output = bytearray()
-        deadline = time.monotonic() + self.timeout
-        try:
-            # Drain stdout while running; never spool an unbounded response to disk.
-            # Nonblocking stdin also keeps a controller that never reads within the deadline.
-            raw = memoryview(json.dumps(request).encode())
-            with selectors.DefaultSelector() as selector:
-                for stream, event in ((process.stdin, selectors.EVENT_WRITE),
-                                      (process.stdout, selectors.EVENT_READ)):
-                    os.set_blocking(stream.fileno(), False)
-                    selector.register(stream, event)
-                while selector.get_map():
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(process.args, self.timeout)
-                    for key, event in selector.select(remaining):
-                        if key.fileobj is process.stdin:
-                            try:
-                                raw = raw[os.write(process.stdin.fileno(), raw):]
-                            except BrokenPipeError:
-                                raw = raw[:0]
-                            if not raw:
-                                selector.unregister(process.stdin)
-                                process.stdin.close()
-                        else:
-                            chunk = os.read(process.stdout.fileno(), min(4096, 16385 - len(output)))
-                            output.extend(chunk)
-                            if len(output) > 16384:
-                                raise ValueError('Respuesta demasiado grande')
-                            if not chunk:
-                                selector.unregister(process.stdout)
-                process.wait(timeout=max(0, deadline - time.monotonic()))
-        except BaseException:
-            # Only the session we created, including descendants holding stdout open.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            raise
-        finally:
-            process.stdin.close()
-            process.stdout.close()
-        if process.returncode not in (0, 2):
+        remote = config['transport'] == 'ssh'
+        timeout = self.timeout if self.timeout is not None else DESK_TIMEOUT if remote else 10
+        if remote:
+            argv = list(config['argv'])
+            request = dict(schema='rack-desk-action@1', launcher=launcher, request=request)
+        else:
+            controller = self.home / config['controllers'][launcher][2:]
+            argv = ['/usr/bin/python3', '-I', str(controller)]
+        code, response = desk_channel.exchange(argv, request, self.runner,
+            {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}, timeout)
+        if code not in ((0,) if remote else (0, 2)):
             raise ValueError('Respuesta inválida')
-        return decode(output)
+        return response
 
 
 def sanitize(request, response, op):
