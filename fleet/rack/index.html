@@ -107,8 +107,26 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 
 #toast:empty{display:none}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;display:flex;gap:14px;align-items:center;max-width:calc(100% - 32px)}
-</style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><script>
+.menu button.danger{color:var(--crit)}
+.menu button:disabled{color:var(--muted);cursor:default}
+.menu .reason{font-size:12px;color:var(--ink2);padding:2px 10px 8px;max-width:280px;margin:0}
+.pending{outline:1px solid var(--warn);outline-offset:-1px}
+.action-state{color:var(--warn);font-size:12px}
+dialog{border:1px solid var(--line);border-radius:10px;background:var(--panel);color:var(--ink);padding:18px;max-width:380px}
+dialog::backdrop{background:rgba(0,0,0,.35)}
+dialog p{margin:0 0 14px;font-size:14px}
+dialog .row{display:flex;gap:8px;justify-content:flex-end}
+dialog button{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:6px;cursor:pointer}
+dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
+</style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
+const PENDING = new Map();
+const actionKey = (h,t) => h.id+'/'+t.id;
+const pendingText = (h,t) => { const a=PENDING.get(actionKey(h,t)); return a ? `<span class="action-state" role="status">${esc(a.status==='unknown' ? 'Resultado desconocido · consultando…' : a.status==='cancel_unconfirmed' ? 'Cancelación sin confirmar · consultando…' : 'Cancelando…')}</span>` : ''; };
+const pendingClass = (h,t) => PENDING.has(actionKey(h,t)) ? 'pending' : '';
+function persistActions(){try{sessionStorage.setItem('rack-actions',JSON.stringify([...PENDING]));}catch{}}
+try{for(const [key,a] of JSON.parse(sessionStorage.getItem('rack-actions') || '[]')){PENDING.set(key,a);}}catch{}
+
 const GB = b => b == null ? NaN : (b/1024**3);
 const fmtMin = s => `${Math.floor(s/60)} min`;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -187,11 +205,11 @@ const dots = () => `<button type="button" class="dots" aria-label="${esc('Accion
 function fila(h, n, w){
   if (!w.length) return '';
   const key = h.id+'/'+n, shown = OPEN[key] ? w : w.slice(0, 8);
-  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li data-id="${esc(t.id)}">
+  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li class="${pendingClass(h,t)}" data-id="${esc(t.id)}" aria-busy="${PENDING.has(actionKey(h,t))}">
     <span class="pos">${i+1}</span>
     <div class="l1"><span class="tk">${esc(t.ticket||'Sin ticket')}</span><span class="t" title="${esc(what(t))}">${esc(what(t))}</span></div>
     <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}${dots()}</span>
-    <div class="l2"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span></div>
+    <div class="l2">${pendingText(h,t)}<span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span></div>
   </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
 }
 
@@ -215,7 +233,7 @@ function view(){
       const lanes = groups(h).map(([n,g])=>{
         const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
         const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
-          const p=progress(t); return `<div class="slot busy" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}</div>`;}).join('');
+          const p=progress(t); return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}${pendingText(h,t)}</div>`;}).join('');
         return `<div class="lane"><div class="g">${esc(n)}<div class="muted">${r.length}/${g.slots}</div></div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}`;
       }).join('');
@@ -230,6 +248,10 @@ function render(data){
       groups:Object.fromEntries((s.groups || []).map(g=>[g.name,g])),
       tasks:(s.tasks || []).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
+  for(const a of PENDING.values()){
+    const h=S.hosts.find(h=>h.id===a.request.host);
+    if(h && a.task && !h.tasks.some(t=>t.id===a.task.id)) h.tasks.push(a.task);
+  }
   document.getElementById('app').innerHTML=view();
   syncMenu();
   document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
@@ -278,7 +300,8 @@ document.addEventListener('click', ev=>{
   if(button){
     closeMenu(); const {h,t}=findTask(button); menuTask={host:h.id,id:t.id};
     const menu=document.createElement('div'); menu.className='menu';
-    menu.innerHTML=`<button type="button">${esc('Copiar referencia')}</button>`;
+    menu.innerHTML=`<button type="button">${esc('Copiar referencia')}</button><button type="button" data-cancel class="danger" disabled aria-describedby="cancel-reason">Cancelar…</button><p class="reason" id="cancel-reason"></p>`;
+    prepareCancel(menu,{h,t});
     menu.querySelector('button').onclick=async ()=>{
       const current=menuButton(); if(!current) {closeMenu();return;}
       const text=reference(findTask(current)); closeMenu(true);
@@ -299,6 +322,90 @@ document.addEventListener('click', ev=>{
 });
 document.addEventListener('keydown',ev=>{if(ev.key==='Escape') closeMenu(true);});
 window.addEventListener('resize',syncMenu);
+
+function cancelReason({h,t}){
+  if(PENDING.has(actionKey(h,t))) return 'Esta cancelación sigue pendiente; se consulta con el mismo ID.';
+  return h.actions?.reason || (h.id==='desk' ? 'canal de escritura del desk pendiente' : null)
+    || (!h.fresh ? 'Actualiza la instantánea antes de cancelar.' : null)
+    || t.control?.reason || (!t.control?.launcher ? 'Lanzador no reconocido; no se puede confirmar la cancelación.' : null);
+}
+function actionRequest({h,t},op){return {schema:'rack-action@1',op,host:h.id,launcher:t.control.launcher,ref:t.control.ref,expected:{...t.control.expected}};}
+async function postAction(request){
+  const response=await fetch('/api/accion',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-Rack-Action':'1'},body:JSON.stringify(request),signal:AbortSignal.timeout(15000)});
+  const data=await response.json();
+  if(data.schema!=='rack-action@1') throw Error('Respuesta inválida');
+  return data;
+}
+async function prepareCancel(menu,found){
+  const button=menu.querySelector('[data-cancel]'), reason=menu.querySelector('.reason');
+  reason.textContent=cancelReason(found) || 'Comprobando si la corrida admite cancelación…';
+  if(cancelReason(found)) return;
+  try{
+    const data=await postAction(actionRequest(found,'capabilities'));
+    const enabled=data.capabilities?.[found.t.state==='Queued'?'queued':'running']===true;
+    reason.textContent=enabled ? '' : data.error?.message || data.capabilities?.reason || 'No se pudo confirmar la capacidad. Vuelve a abrir el menú.';
+    button.disabled=!enabled;
+    button.onclick=()=>{closeMenu();confirmCancel(found);};
+  }catch{reason.textContent='Error de red al comprobar la cancelación. Vuelve a abrir el menú.';}
+}
+function newActionId(){
+  const bytes=new Uint8Array(16); crypto.getRandomValues(bytes);
+  return [...bytes].map(b=>b.toString(16).padStart(2,'0')).join('');
+}
+function focusTask({h,t}){
+  [...document.querySelectorAll('.dots')].find(b=>{const f=findTask(b);return f.h.id===h.id && f.t.id===t.id;})?.focus();
+}
+function confirmCancel(found){
+  const d=document.getElementById('confirm'), {h,t}=found;
+  const request=actionRequest(found,'cancel'); // exactly the state the person saw
+  d.querySelector('p').textContent=`¿Cancelar ${t.ticket || objective(t)} · ${objective(t)} en ${h.name}? La sesión que la espera la verá como cancelada.`;
+  d.returnValue='no';
+  d.onclose=()=>{
+    if(d.returnValue==='si' && !PENDING.has(actionKey(h,t))){
+      const key=actionKey(h,t), action={request:{...request,action_id:newActionId()},task:{...t},status:'cancelling'};
+      PENDING.set(key,action); persistActions(); repaintActions(); focusTask(found); sendCancel(key,action);
+    }else focusTask(found);
+  };
+  d.querySelectorAll('button').forEach(b=>b.onclick=()=>d.close(b.value)); d.showModal();
+}
+function repaintActions(){if(S){document.getElementById('app').innerHTML=view();syncMenu();}}
+function actionMessage(data,action){
+  const label=action.task?.ticket || objective(action.task || {});
+  if(data.status==='cancelled') return `${label} cancelada`;
+  if(data.status==='already_finished') return `${label} ya había terminado (salida ${data.result.exit}).`;
+  if(data.status==='cancel_unconfirmed') return 'Cancelación sin confirmar: no se acreditó el fin de los procesos. Se conservan los recursos; seguimos consultando.';
+  if(data.status==='unknown') return 'Resultado desconocido: la acción pudo ocurrir. Consultando con el mismo ID.';
+  return data.error?.message || 'No se pudo confirmar la cancelación.';
+}
+function acceptAction(key,action,data){
+  if(['cancelling','unknown','cancel_unconfirmed'].includes(data.status)){
+    const changed=action.status!==data.status; action.status=data.status;
+    persistActions(); repaintActions();
+    if(changed && data.status!=='cancelling') say(actionMessage(data,action));
+    setTimeout(()=>pollAction(key,action),2000);
+  }else{
+    PENDING.delete(key); persistActions();
+    if(data.status==='cancelled'){
+      const h=S?.hosts.find(h=>h.id===action.request.host);
+      if(h) h.tasks=h.tasks.filter(t=>t.id!==action.task.id);
+    }
+    repaintActions(); say(actionMessage(data,action)); refresh();
+  }
+}
+async function sendCancel(key,action){
+  try{acceptAction(key,action,await postAction(action.request));}
+  catch{action.status='unknown';persistActions();repaintActions();say('Error de red: la cancelación pudo ocurrir. Consultando con el mismo ID.');setTimeout(()=>pollAction(key,action),2000);}
+}
+async function pollAction(key,action){
+  if(!PENDING.has(key)) return;
+  try{
+    const response=await fetch('/api/accion/'+encodeURIComponent(action.request.action_id),{cache:'no-store',signal:AbortSignal.timeout(15000)});
+    const data=await response.json();
+    if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || !response.ok) throw Error('status');
+    acceptAction(key,action,data);
+  }catch{action.status='unknown';persistActions();repaintActions();say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}
+}
+for(const [key,action] of PENDING) setTimeout(()=>pollAction(key,action),2000);
 let last=null;
 async function load(path, options, failure){
   try{

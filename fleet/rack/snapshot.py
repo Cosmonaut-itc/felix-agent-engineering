@@ -118,6 +118,29 @@ def task_activity(task, mode, home, metadata, active=True):
     return activity
 
 
+def task_control(task, home, state):
+    """Identity from queue fields only. Capability remains the launcher's decision."""
+    launcher, ref = None, None
+    run = Path(task.get('path', '')).expanduser()
+    if run.parent == home / 'remote-run/runs' and re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}', run.name):
+        launcher, ref = 'remote-run', run.name
+    else:
+        match = re.fullmatch(r'exec bash (/.*/job-[A-Za-z0-9]{8}/task\.sh)', task.get('command', ''))
+        job = Path(match[1]).parent if match else None
+        if job and job.parent == home / '.local/state/jale/pueue':
+            launcher, ref = 'jale', job.name
+    reason = None
+    if task.get('group') in ('otros', 'pg5434'):
+        reason = 'Este grupo no ofrece cancelación desde el rack.'
+    elif launcher is None:
+        reason = 'Lanzador no reconocido; no se puede confirmar la cancelación.'
+    elif state not in ('Queued', 'Running'):
+        reason = 'Sólo se cancelan corridas en fila o en curso.'
+    return dict(launcher=launcher, ref=ref,
+                expected=dict(task_id=task['id'], state=state) if state in ('Queued', 'Running') else None,
+                reason=reason)
+
+
 def desk_guard(home):
     thresholds = {'pause': {'cpu': 30}, 'resume': {'cpu': 15}}
     source = home / '.local/lib/pao-pueue-desk/control.py'
@@ -416,6 +439,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                 jale = mode != 'macos' and re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
                 metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
+                row['control'] = task_control(task, home, state)
                 row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'))
                 if state == 'Running':
                     ref = row['activity']['ref']

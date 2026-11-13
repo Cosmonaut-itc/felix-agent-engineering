@@ -19,7 +19,7 @@ descargar() {
 case "${1:-}" in
   --desinstalar)
     descargar
-    rm -f "$plist" "$destino/snapshot.py" "$destino/serve.py" "$destino/index.html" "$destino/hosts.json"
+    rm -f "$plist" "$destino/accion.py" "$destino/snapshot.py" "$destino/serve.py" "$destino/index.html" "$destino/hosts.json"
     rmdir "$destino" 2>/dev/null || true
     exit ;;
   '') ;;
@@ -74,7 +74,7 @@ with open(plist, 'wb') as stream:
         StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log')), stream)
 PY
 mkdir -p "$destino" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-for archivo in snapshot.py serve.py index.html hosts.json; do
+for archivo in accion.py snapshot.py serve.py index.html hosts.json; do
   install -m 644 "$origen/$archivo" "$destino/$archivo"
 done
 install -m 644 "$temporal/rack.plist" "$plist"

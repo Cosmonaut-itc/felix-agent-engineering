@@ -4,6 +4,7 @@ import argparse
 from concurrent.futures import ThreadPoolExecutor
 import copy
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import importlib.util
 import ipaddress
 import json
 import logging
@@ -12,6 +13,7 @@ import os
 from pathlib import Path
 import re
 import signal
+import sqlite3
 import statistics
 import subprocess
 import tempfile
@@ -20,6 +22,10 @@ import time
 import urllib.request
 
 BASE = Path(__file__).resolve().parent
+# -I omits the script directory: load only our installed, fixed sibling.
+_spec = importlib.util.spec_from_file_location('rack_accion', BASE / 'accion.py')
+accion = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(accion)
 TAIL4 = ipaddress.ip_network('100.64.0.0/10')
 TAIL6 = ipaddress.ip_network('fd7a:115c:a1e0::/48')
 TASK_STATES = ('Queued', 'Stashed', 'Locked', 'Running', 'Paused', 'Done')
@@ -62,12 +68,20 @@ def load_hosts(path):
             raise ValueError()
         ids = set()
         for host in hosts:
-            if (not isinstance(host, dict) or set(host) != {'id', 'name', 'transport', 'argv'}
+            if (not isinstance(host, dict) or not {'id', 'name', 'transport', 'argv'} <= set(host) or set(host) - {'id', 'name', 'transport', 'argv', 'actions'}
                     or not isinstance(host['id'], str) or not re.fullmatch(r'[a-zA-Z0-9_-]+', host['id'])
                     or host['id'] in ids or not isinstance(host['name'], str) or not host['name']
                     or host['transport'] not in ('local', 'ssh') or not isinstance(host['argv'], list)
                     or not host['argv'] or any(not isinstance(a, str) or not a or '\0' in a for a in host['argv'])):
                 raise ValueError()
+            if 'actions' in host:
+                config = host['actions']
+                if (type(config) is not dict or set(config) != {'transport', 'reason'}
+                        or config['transport'] not in ('local', 'disabled')
+                        or config['transport'] == 'local' and host['id'] != 'mini'
+                        or config['reason'] is not None and type(config['reason']) is not str
+                        or config['transport'] == 'disabled' and not config['reason']):
+                    raise ValueError()
             ids.add(host['id'])
         return hosts
     except (OSError, ValueError, TypeError, KeyError) as error:
@@ -168,6 +182,8 @@ def validate_snapshot(data, host):
         raise ValueError('Pueue no se pudo leer')
     data = copy.deepcopy(data)
     for row in data['tasks']:
+        if 'control' in row:
+            row['control'] = accion.control_data(row['control'], row)
         if 'activity' in row:
             row['activity'] = valid_activity(row['activity'])
         if 'usage' in row:
@@ -315,7 +331,7 @@ class Rack:
                         estimate = self.history.estimate(ident, task)
                         if estimate:
                             estimates[str(task['id'])] = estimate
-            hosts.append(dict(id=ident, name=host['name'], fresh=data is not None and self.errors.get(ident) is None,
+            hosts.append(dict(id=ident, name=host['name'], actions=dict(reason=accion.transport_reason(host, 'remote-run')), fresh=data is not None and self.errors.get(ident) is None,
                               age=max(0, now - data['taken']) if data else None, error=self.errors.get(ident), snapshot=data, estimates=estimates))
         with self.lock:
             self.payload = dict(schema='rack@1', now=now, hosts=hosts,
@@ -384,11 +400,11 @@ class OwnerCheck:
         self.cache = {}
         self.lock = threading.Lock()
 
-    def allows(self, address):
+    def allows(self, address, fresh=False):
         with self.lock:
             now = time.monotonic()
             cached = self.cache.get(address)
-            if cached and now - cached[0] < 300:
+            if not fresh and cached and now - cached[0] < 300:
                 return cached[1]
             allowed = False
             try:
@@ -413,7 +429,47 @@ class OwnerCheck:
 
 
 class Handler(BaseHTTPRequestHandler):
+    def action(self):
+        # No loopback exception for writes: tests inject a fake owner check.
+        host = self.headers.get('Host')
+        origins = self.headers.get_all('Origin') or []
+        if (not allowed_host(self.headers, self.server)
+                or not allowed_client(self.client_address[0], self.server.server_address[0],
+                                      'Tailscale-Funnel-Request' in self.headers)
+                or (self.command == 'POST' and (origins != ['http://' + host]
+                    or self.headers.get_all('X-Rack-Action') != ['1']
+                    or self.headers.get_all('Content-Type') != ['application/json']
+                    or self.headers.get('Sec-Fetch-Site') not in (None, 'same-origin')))
+                or not self.server.owner_check.allows(self.client_address[0], fresh=True)):
+            self.action_reply(403, accion.result({}, 'rejected', 'forbidden'))
+            return
+        try:
+            if self.path == '/api/accion' and self.command == 'POST':
+                lengths = self.headers.get_all('Content-Length') or []
+                if len(lengths) != 1 or not lengths[0].isdigit() or not 0 < int(lengths[0]) <= 16384 or 'Transfer-Encoding' in self.headers:
+                    raise ValueError()
+                self.connection.settimeout(5)
+                raw = self.rfile.read(int(lengths[0]))
+                code, response = self.server.actions.post(accion.decode(raw))
+            elif self.path.startswith('/api/accion/') and self.command == 'GET':
+                code, response = self.server.actions.get(self.path[len('/api/accion/'):])
+            else:
+                self.action_reply(405, accion.result({}, 'rejected', 'invalid_request'))
+                return
+            self.action_reply(code, response)
+        except (ValueError, TypeError, KeyError, UnicodeError, RecursionError):
+            self.action_reply(400, accion.result({}, 'rejected', 'invalid_request'))
+        except (OSError, sqlite3.Error):
+            # A failed receipt commit cannot imply that the launcher did nothing.
+            self.action_reply(503, accion.result({}, 'unknown'))
+
+    def action_reply(self, status, response):
+        self.reply(status, json.dumps(response, allow_nan=False).encode(), 'application/json; charset=utf-8')
+
     def dispatch(self):
+        if self.path == '/api/accion' or self.path.startswith('/api/accion/'):
+            self.action()
+            return
         if not allowed_host(self.headers, self.server):
             self.reply(403, b'')
         elif not allowed_client(self.client_address[0], self.server.server_address[0], 'Tailscale-Funnel-Request' in self.headers):
@@ -489,6 +545,7 @@ def main():
     server.rack = rack
     server.names = tuple(args.name)
     server.owner_check = OwnerCheck(args.owner, args.tailscale)
+    server.actions = accion.Actions(hosts, args.state_dir, rack.read)
     stop = threading.Event()
 
     def collect():
