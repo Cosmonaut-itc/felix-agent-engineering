@@ -181,7 +181,7 @@ class ControlTests(Fixture):
             self.assertEqual((decision["accion"], decision["accion_rapidas"]), (normal, rapid))
             self.assertEqual(set(json.loads((self.directory / "guardia-state.json").read_text())), owned)
         busy = {"hasito", "jale", "otros", "pg5434"}
-        step(8, "pausar", "mantener", busy, io_value=41, cpu=31)
+        step(8, "pausar", "reanudar", busy, io_value=41, cpu=31)
         self.assertEqual(self.pueue.status()["groups"]["rapidas"]["status"], "Running")
         step(3, "pausar", "pausar", busy | {"rapidas"}, io_value=41)
         step(5, "pausar", "mantener", busy | {"rapidas"}, cpu=31)
