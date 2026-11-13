@@ -14,9 +14,11 @@ cada 30 s y deja el error en `journalctl --user -u pueue-desk-mode`.
 Linger inicia el servicio al arrancar la distro; el arranque de Windows debe
 iniciar WSL por su mecanismo habitual (SSH despierta la distro).
 
-`control.py` contiene la única tabla de cuotas: hasito 3/4, jale 2/3,
-otros 1/1 y pg5434 1/1 (día/noche). Noche: [05:00Z, 14:00Z).
-La suma es 7/9 incluyendo pg5434; Pueue no impone un máximo global. Los timers
+`control.py` contiene la única tabla de cuotas: hasito 3/4, jale 5/7,
+otros 1/1, pg5434 1/1 y rapidas 2/2 (día/noche). Noche: [05:00Z, 14:00Z).
+La suma es 12/15 incluyendo pg5434 y rapidas; Pueue no impone un máximo global.
+`rapidas` es el carril rápido que comparten Hasito, Jale y Bodega para la
+prueba dirigida; cada lanzador corta sus tareas a los 600 s. Los timers
 y el arranque aplican el modo UTC vigente, sin interrumpir tareas vivas.
 Usar sólo esos grupos; `default` y otros grupos quedan fuera de estas cuotas.
 El instalador elimina `suites` sólo si no tiene ninguna tarea.
@@ -32,8 +34,9 @@ bajo el mismo candado; una pausa directa de Pueue no puede expresar ese relevo.
 
 Cada 60 s el guardia lee PSI avg60 y MemAvailable. Pausa con E/S >40,
 CPU >30 o RAM <4 GiB; reanuda sólo sus grupos con E/S <20, CPU <15 y RAM ≥6 GiB.
-Los bordes intermedios mantienen el estado. Registro JSONL UTC, con lecturas,
-decisiones y acciones: `ssh desk 'tail -f ~/.local/state/pao/pueue-desk/guardia.log'`.
+Los bordes intermedios mantienen el estado. `rapidas` sólo mira la memoria:
+se pausa con RAM <4 GiB y se reanuda con RAM ≥6 GiB. Registro JSONL UTC, con
+lecturas, decisiones (`accion` para los demás grupos y `accion_rapidas`) y acciones: `ssh desk 'tail -f ~/.local/state/pao/pueue-desk/guardia.log'`.
 Rota a `.1` al llegar a 1 MiB. Estado y candado comparten ese directorio.
 Ante errores de lectura o de Pueue falla sin reanudar; consultar también
 `journalctl --user -u pueue-desk-guard.service`.
@@ -50,7 +53,9 @@ ShellCheck: `shellcheck --severity=warning fleet/pueue-desk/*-desk.sh`.
 La Mini comparte la lógica de `control.py` (perfil `--host mini`), pero lee la
 carga de 1 minuto con `os.getloadavg()`, los núcleos con `os.cpu_count()` y la
 presión de memoria con `/usr/sbin/sysctl -n kern.memorystatus_vm_pressure_level`.
-Los umbrales viven en `PRESSURE_THRESHOLDS["mini"]`:
+Los umbrales viven en `MINI_THRESHOLDS`; los de `rapidas`, en
+`RAPIDAS_THRESHOLDS["mini"]`. `PRESSURE_THRESHOLDS` es sólo del desk, porque
+`fleet/rack/snapshot.py` lo lee del controlador instalado allí.
 
 | Acción | Carga1 / núcleos | Presión de memoria |
 | --- | --- | --- |
@@ -58,7 +63,10 @@ Los umbrales viven en `PRESSURE_THRESHOLDS["mini"]`:
 | Reanudar grupos propios | < 1,2 **y** | = 1 (normal) |
 
 Así, con 10 núcleos se pausa por carga >20 y sólo se reanuda por carga <12
-con memoria normal. Los bordes mantienen el estado. Una lectura ausente,
+con memoria normal. `rapidas` es lo último en pausarse: sólo con carga >3,0 por
+núcleo (>30 con 10 núcleos) o memoria ≥2. Se reanuda con el mismo criterio que
+los demás. Si un grupo no existe en Pueue, la guardia lo omite y deja de
+tenerlo como propio. Los bordes mantienen el estado. Una lectura ausente,
 no finita, negativa o un nivel de memoria desconocido causa error, se registra
 y no decide ni modifica grupos.
 

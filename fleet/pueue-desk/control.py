@@ -13,17 +13,29 @@ import time
 
 GROUP_LIMITS = {
     "hasito": {"dia": 3, "noche": 4},
-    "jale": {"dia": 2, "noche": 3},
+    "jale": {"dia": 5, "noche": 7},
     "otros": {"dia": 1, "noche": 1},
     "pg5434": {"dia": 1, "noche": 1},
+    "rapidas": {"dia": 2, "noche": 2},
 }
+# Sólo el desk: fleet/rack/snapshot.py lee pause y resume con su CPU.
 PRESSURE_THRESHOLDS = {
     "pause": {"io": 40, "cpu": 30, "memory": 4 * 1024**3},
     "resume": {"io": 20, "cpu": 15, "memory": 6 * 1024**3},
-    "mini": {"pause": {"load": 2.0, "memory": 2},
-             "resume": {"load": 1.2, "memory": 1}},
 }
-MINI_GROUPS = ("suites", "default")
+MINI_THRESHOLDS = {
+    "pause": {"load": 2.0, "memory": 2},
+    "resume": {"load": 1.2, "memory": 1},
+}
+# El carril rápido es lo último en pausarse: en la Mini aguanta carga hasta 3,0
+# por núcleo y en el desk sólo lo detiene la memoria. Reanuda con los demás.
+RAPIDAS_THRESHOLDS = {
+    "mini": {"pause": {**MINI_THRESHOLDS["pause"], "load": 3.0},
+             "resume": MINI_THRESHOLDS["resume"]},
+    "desk": {"pause": {"memory": PRESSURE_THRESHOLDS["pause"]["memory"]},
+             "resume": {"memory": PRESSURE_THRESHOLDS["resume"]["memory"]}},
+}
+MINI_GROUPS = ("suites", "default", "rapidas")
 LOG_MAX_BYTES = 1024 * 1024
 STATE_DIR = Path.home() / ".local/state/pao/pueue-desk"
 
@@ -125,23 +137,28 @@ def pressure_mini():
     return {"load": load / cores, "memory": level}
 
 
+def decide(host, readings, thresholds):
+    high, low = thresholds["pause"], thresholds["resume"]
+    if host == "mini":
+        if readings["load"] > high["load"] or readings["memory"] >= high["memory"]:
+            return "pausar"
+        if readings["load"] < low["load"] and readings["memory"] == low["memory"]:
+            return "reanudar"
+        return "mantener"
+    # Un umbral sin E/S o CPU, como el del carril rápido, decide sólo por memoria.
+    if readings["memory"] < high["memory"] or any(readings[k] > high[k] for k in ("io", "cpu") if k in high):
+        return "pausar"
+    if readings["memory"] >= low["memory"] and all(readings[k] < low[k] for k in ("io", "cpu") if k in low):
+        return "reanudar"
+    return "mantener"
+
+
 def guard(pueue, proc, directory, *, host="desk"):
     readings = pressure_mini() if host == "mini" else pressure(proc)
     log(directory, "lectura", **readings)
-    thresholds = PRESSURE_THRESHOLDS["mini"] if host == "mini" else PRESSURE_THRESHOLDS
-    high, low = thresholds["pause"], thresholds["resume"]
-    action = "mantener"
-    if host == "mini":
-        if readings["load"] > high["load"] or readings["memory"] >= high["memory"]:
-            action = "pausar"
-        elif readings["load"] < low["load"] and readings["memory"] == low["memory"]:
-            action = "reanudar"
-    else:
-        if readings["io"] > high["io"] or readings["cpu"] > high["cpu"] or readings["memory"] < high["memory"]:
-            action = "pausar"
-        elif readings["io"] < low["io"] and readings["cpu"] < low["cpu"] and readings["memory"] >= low["memory"]:
-            action = "reanudar"
-    log(directory, "decision", accion=action)
+    normal = decide(host, readings, MINI_THRESHOLDS if host == "mini" else PRESSURE_THRESHOLDS)
+    rapid = decide(host, readings, RAPIDAS_THRESHOLDS[host])
+    log(directory, "decision", accion=normal, accion_rapidas=rapid)
     target = directory / "guardia-state.json"
     owned = set(json.loads(target.read_text())) if target.exists() else set()
     managed_groups = MINI_GROUPS if host == "mini" else GROUP_LIMITS.keys()
@@ -149,7 +166,14 @@ def guard(pueue, proc, directory, *, host="desk"):
         raise ValueError("Grupos desconocidos en estado del guardia")
     groups = pueue.status()["groups"]
     for group in managed_groups:
+        # Un grupo que no existe en el host no se gestiona ni se conserva como propio.
+        if group not in groups:
+            if group in owned:
+                owned.remove(group)
+                save_owned(directory, owned)
+            continue
         status = groups[group]["status"]
+        action = rapid if group == "rapidas" else normal
         # Si alguien ya arrancó un grupo, deja de pertenecer al guardia.
         if group in owned and status != "Paused":
             owned.remove(group)
