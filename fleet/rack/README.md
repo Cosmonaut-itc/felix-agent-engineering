@@ -234,6 +234,11 @@ acción. Instantáneas antiguas conservan lectura y deshabilitan cancelación.
 Los grupos `otros` y `pg5434` sin lanzador reconocido quedan deshabilitados;
 una corrida reconocida consulta capacidades independientemente del grupo.
 Jale directo en la Mini fuera de Pueue no está cubierto por este contrato.
+Una tarea con la etiqueta de Pueue `apotheca-remote-run` es del remote-run de
+Bodega (repo apotheca). Usa la misma ruta `~/remote-run/runs/<ref>` que Hasito,
+así que la etiqueta manda: `launcher/ref` son null, el proyecto es `apotheca`
+(«Bodega» en la UI) y `reason` dice que su cancelación todavía no está
+disponible desde el panel.
 
 El transporte de escritura es independiente del de instantáneas:
 

@@ -31,6 +31,10 @@ def ticket(text):
     return 'SEN-' + match[1] if match else None
 
 
+# Etiqueta de Pueue del remote-run de Bodega (repo apotheca): su ruta de corrida es la misma que la de Hasito.
+BODEGA = 'apotheca-remote-run'
+
+
 def mini_metadata(task, home=None):
     meta = {}
     with (Path(task['path']).expanduser() / 'meta').open() as stream:
@@ -60,7 +64,7 @@ def mini_metadata(task, home=None):
     match = re.search(r'(?:\.t3/worktrees/|REPOS/)([^/.]+)', src)
     scope = (name or '').split('-')[0]
     return dict(name=name or None, scope=scope if scope in ('suite', 'dirigida', 'repro', 'diag') else None,
-                project=match[1] if match else None, ticket=ticket((name or '') + ' ' + src), branch=branch, subject=subject)
+                project='apotheca' if task.get('label') == BODEGA else match[1] if match else None, ticket=ticket((name or '') + ' ' + src), branch=branch, subject=subject)
 
 
 def desk_metadata(task, home, cache):
@@ -120,18 +124,19 @@ def task_activity(task, mode, home, metadata, active=True):
 
 def task_control(task, home, state):
     """Identity from queue fields only. Capability remains the launcher's decision."""
-    launcher, ref = None, None
+    launcher, ref, reason = None, None, None
     run = Path(task.get('path', '')).expanduser()
-    if run.parent == home / 'remote-run/runs' and re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}', run.name):
+    if task.get('label') == BODEGA:
+        reason = 'Las corridas de Bodega todavía no se cancelan desde el panel.'
+    elif run.parent == home / 'remote-run/runs' and re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}', run.name):
         launcher, ref = 'remote-run', run.name
     else:
         match = re.fullmatch(r'exec bash (/.*/job-[A-Za-z0-9]{8}/task\.sh)', task.get('command', ''))
         job = Path(match[1]).parent if match else None
         if job and job.parent == home / '.local/state/jale/pueue':
             launcher, ref = 'jale', job.name
-    reason = None
     if launcher is None:
-        reason = 'Lanzador no reconocido; no se puede confirmar la cancelación.'
+        reason = reason or 'Lanzador no reconocido; no se puede confirmar la cancelación.'
     elif state not in ('Queued', 'Running'):
         reason = 'Sólo se cancelan corridas en fila o en curso.'
     return dict(launcher=launcher, ref=ref,

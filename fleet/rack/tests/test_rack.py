@@ -85,6 +85,9 @@ class SnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot.mini_metadata({'path': str(run)})['project'], 'comprador')
         (run / 'meta').write_text('src=/Users/felix/VSCODE/REPOS/apotheca.-desk-pueue\nmirror=remote-run/work/suite-u15-1234abcd\n')
         self.assertEqual(snapshot.mini_metadata({'path': str(run)})['project'], 'apotheca')
+        (run / 'meta').write_text('src=/Users/felix/VSCODE/REPOS/.apotheca-exhib/sen-5957-sol\nmirror=remote-run/work/suite-sen-5957-1234abcd\n')
+        self.assertIsNone(snapshot.mini_metadata({'path': str(run)})['project'])
+        self.assertEqual(snapshot.mini_metadata({'path': str(run), 'label': 'apotheca-remote-run'})['project'], 'apotheca')
 
     def test_desk_reads_only_allowed_variables_and_reports_commit(self):
         repo = self.root / 'SEN-CheckIn'
