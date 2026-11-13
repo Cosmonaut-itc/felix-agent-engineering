@@ -1,6 +1,7 @@
 # tipo fuente destino (o nombre)
 # upstream: directorio de vendor, repo y seguimiento (tags = último release semver, head = rama por defecto)
 # ref: skill copiada a vendor para consulta por ruta, sin instalar
+file fleet/rack/rack-inspeccionar ~/.local/bin/rack-inspeccionar
 file docs/orchestration.md ~/.agents/docs/orchestration.md
 file docs/agent-routing.md ~/.agents/docs/agent-routing.md
 file docs/native-subagents.md ~/.agents/docs/native-subagents.md
