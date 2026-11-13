@@ -174,7 +174,14 @@ def mac_capacity():
 
 def linux_processes(proc, deadline=None):
     """Una lectura de contadores; ningún texto privado entra al resultado público."""
-    ticks = [int(n) for n in (proc / 'stat').read_text().splitlines()[0].split()[1:9]]
+    lines = (proc / 'stat').read_text().splitlines()
+    ticks = [int(n) for n in lines[0].split()[1:9]]
+    boot = next((int(line.split()[1]) for line in lines if line.startswith('btime ')), None)
+    hertz = os.sysconf('SC_CLK_TCK')
+    try:
+        now = float((proc / 'uptime').read_text().split()[0]) * hertz
+    except (OSError, ValueError, IndexError):
+        now = 0
     rows = {}
     for path in proc.iterdir():
         if deadline is not None and time.monotonic() >= deadline:
@@ -187,19 +194,20 @@ def linux_processes(proc, deadline=None):
             fields = tail.split()
             rows[int(path.name)] = dict(ppid=int(fields[1]), ticks=int(fields[11]) + int(fields[12]),
                                         start=int(fields[19]), mem=max(0, int(fields[21])) * os.sysconf('SC_PAGE_SIZE'),
-                                        daemon=name == 'pueued')
+                                        born=boot + int(fields[19]) / hertz if boot else None, daemon=name == 'pueued')
         except (OSError, ValueError, IndexError):  # procesos que terminaron durante la lectura
             continue
-    return (sum(ticks), sum(ticks) - ticks[3] - ticks[4]), rows
+    return (sum(ticks), sum(ticks) - ticks[3] - ticks[4], now), rows
 
 
 def process_sample(mode, cores, proc, deadline):
     if mode == 'macos':
         rows = {}
-        raw = command(['/bin/ps', '-Aww', '-o', 'pid=,ppid=,%cpu=,rss=,args='], timeout=max(.01, deadline - time.monotonic()))
+        now = time.time()
+        raw = command(['/bin/ps', '-Aww', '-o', 'pid=,ppid=,%cpu=,rss=,etime=,args='], timeout=max(.01, deadline - time.monotonic()))
         for line in raw.splitlines():
-            pid, ppid, cpu, rss, argv = line.split(None, 4)
-            rows[int(pid)] = dict(ppid=int(ppid), cpu=float(cpu) / 100, mem=int(rss) * 1024,
+            pid, ppid, cpu, rss, etime, argv = line.split(None, 5)
+            rows[int(pid)] = dict(ppid=int(ppid), cpu=float(cpu) / 100, mem=int(rss) * 1024, born=now - elapsed(etime),
                                   argv=argv, daemon=bool(re.match(r'(?:\S*/)?pueued(?:\s|$)', argv)))
         return 0, sum(row['cpu'] for row in rows.values()), rows
     started = time.monotonic()
@@ -214,7 +222,11 @@ def process_sample(mode, cores, proc, deadline):
         raise ValueError('Contadores de CPU sin avance')
     for pid, row in rows.items():
         old = before.get(pid)
-        row['cpu'] = max(0, row['ticks'] - old['ticks']) * cores / total if old and old['start'] == row['start'] else 0
+        if old and old['start'] == row['start']:
+            used = max(0, row['ticks'] - old['ticks'])
+        else:  # nació durante la muestra: todo su contador cae en el intervalo
+            used = row['ticks'] if first[2] and row['start'] >= first[2] else 0
+        row['cpu'] = used * cores / total
         # Sólo se necesita argv del daemon y de sus hijos directos.
         if row['daemon'] or rows.get(row['ppid'], {}).get('daemon'):
             try:
@@ -222,6 +234,15 @@ def process_sample(mode, cores, proc, deadline):
             except OSError:
                 row['argv'] = ''
     return interval, max(0, last[1] - first[1]) * cores / total, rows
+
+
+def elapsed(text):
+    """etime de ps: [[dd-]hh:]mm:ss."""
+    days, _, clock = text.rpartition('-')
+    seconds = 0
+    for part in clock.split(':'):
+        seconds = seconds * 60 + int(part)
+    return seconds + int(days or 0) * 86400
 
 
 def task_trees(rows, references, proc, mode, deadline=None):
@@ -257,15 +278,21 @@ def task_trees(rows, references, proc, mode, deadline=None):
                 match = re.search(r'(?:^|/)worktrees/sen-test-(\d+)(?:/|$)', cwd)
                 if match:
                     slots.add(match[1])
-        contexts[key] = dict(pids=tree, slots=slots)
+        contexts[key] = dict(born={pid: rows[pid].get('born') for pid in tree}, slots=slots)
     return contexts
+
+
+def pid_owner(container, ctx):
+    """El PID del nombre es del árbol y ya existía al crear el contenedor (no es un PID reutilizado)."""
+    match = re.search(r'-(\d+)$', container['name'])
+    born = ctx['born'].get(int(match[1])) if match else None
+    return born is not None and container['created'] is not None and born <= container['created'] + 1
 
 
 # Una entrada por regla de atribución. Un contenedor con varios dueños queda fuera.
 CONTAINER_RULES = (
-    ('pid_suffix', lambda name, ctx: bool(re.search(r'-(\d+)$', name)) and
-     int(name.rsplit('-', 1)[1]) in ctx['pids']),
-    ('jale_database', lambda name, ctx: any(name == 'sen-test-db-' + slot for slot in ctx['slots'])),
+    ('pid_suffix', pid_owner),
+    ('jale_database', lambda container, ctx: any(container['name'] == 'sen-test-db-' + slot for slot in ctx['slots'])),
 )
 
 
@@ -292,6 +319,16 @@ def docker_stats(mode, deadline):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError()
+        created = {}
+        for line in command([binary, 'ps', '--format', '{{.Names}}\t{{.CreatedAt}}'], timeout=remaining).splitlines():
+            name, _, stamp = line.partition('\t')
+            try:
+                created[name] = datetime.datetime.strptime(stamp[:25], '%Y-%m-%d %H:%M:%S %z').timestamp()
+            except ValueError:
+                created[name] = None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError()
         raw = command([binary, 'stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'], timeout=remaining)
     except (OSError, subprocess.SubprocessError):
         return 'error', []
@@ -303,19 +340,19 @@ def docker_stats(mode, deadline):
         except (ValueError, OverflowError):  # un contenedor que arranca muestra «--»
             continue
         if math.isfinite(cpu) and cpu >= 0:
-            rows.append((name, cpu, mem))
+            rows.append(dict(name=name, created=created.get(name), cpu=cpu, mem=mem))
     return 'read', rows
 
 
 def container_usage(stats, contexts):
     status, rows = stats
     usage = {}
-    for name, cpu, mem in rows:
-        owners = [key for key, ctx in contexts.items() if any(rule(name, ctx) for _, rule in CONTAINER_RULES)]
+    for container in rows:
+        owners = [key for key, ctx in contexts.items() if any(rule(container, ctx) for _, rule in CONTAINER_RULES)]
         if len(owners) == 1:
             row = usage.setdefault(owners[0], dict(cpu=0., mem=0, containers=0))
-            row['cpu'] += cpu
-            row['mem'] += mem
+            row['cpu'] += container['cpu']
+            row['mem'] += container['mem']
             row['containers'] += 1
     return status, usage
 
@@ -329,7 +366,7 @@ def collect_usage(output, references, mode, proc):
         contexts = task_trees(rows, references, proc, mode, deadline)
         docker, containers = container_usage(stats.result(), contexts)
     for task in output['tasks']:
-        tree = contexts.get(task['id'], {}).get('pids')
+        tree = contexts.get(task['id'], {}).get('born')
         if task['state'] != 'Running' or not tree:
             continue
         extra = containers.get(task['id'], dict(cpu=0., mem=0, containers=0))

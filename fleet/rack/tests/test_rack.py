@@ -1,4 +1,5 @@
 import importlib.util
+import datetime
 import json
 import os
 import shutil
@@ -183,7 +184,7 @@ class UsageTests(unittest.TestCase):
                     tasks=[task(id=1), task(id=2), task(id=3, state='Paused')])
 
     def test_linux_real_counters_tree_matching_and_cwd_container(self):
-        (self.root / 'stat').write_text('cpu 100 0 100 700 100 0 0 0 999 999\n')
+        (self.root / 'stat').write_text('cpu 100 0 100 700 100 0 0 0 999 999\nbtime 1000\n')
         self.proc_row(10, 1, 0, name='pueued')
         self.proc_row(20, 10, 10000, argv='bash /private/job-12345678/task.sh')
         self.proc_row(21, 20, 0, name='worker ) name', cwd='/private/worktrees/sen-test-4/packages/api')
@@ -192,7 +193,7 @@ class UsageTests(unittest.TestCase):
         self.proc_row(40, 10, 0, argv='bash /private/job-123456789/task.sh')
         def advance(seconds):
             self.assertEqual(seconds, 1)
-            (self.root / 'stat').write_text('cpu 300 0 200 1400 100 0 0 0 9999 9999\n')
+            (self.root / 'stat').write_text('cpu 300 0 200 1400 100 0 0 0 9999 9999\nbtime 1000\n')
             self.proc_row(20, 10, 10100, argv='bash /private/job-12345678/task.sh')
             self.proc_row(21, 20, 100, name='worker ) name')
             self.proc_row(30, 10, 550, argv='bash /home/u/remote-run/runs/run-abc/task.sh')
@@ -201,6 +202,8 @@ class UsageTests(unittest.TestCase):
             self.assertEqual(argv[0], '/usr/bin/docker')
             self.assertGreater(timeout, 0)
             self.assertLessEqual(timeout, 4)
+            if argv[1] == 'ps':
+                return 'sen-test-db-4\t1970-01-01 00:30:00 +0000 UTC\nunrelated\t1970-01-01 00:30:00 +0000 UTC\nsuite-30\t1970-01-01 00:30:00 +0000 UTC\n'
             self.assertEqual(argv[1:3], ['stats', '--no-stream'])
             return 'sen-test-db-4\t100.00%\t1MiB / 4GiB\nunrelated\t70.00%\t9GiB / 9GiB\nsuite-30\t50.00%\t2MB / 4GB\n'
         out = self.output()
@@ -235,13 +238,17 @@ class UsageTests(unittest.TestCase):
             if argv[0] == '/fake/pueue':
                 return json.dumps(raw)
             if argv[0] == '/bin/ps':
-                self.assertIn('pid=,ppid=,%cpu=,rss=,args=', argv)
-                return ('10 1 0 10 /opt/homebrew/bin/pueued daemon\n'
-                        '20 10 200 100 bash /private/remote-run/runs/run-1/body.sh SECRET\n'
-                        '21 20 45 200 worker SECRET\n'
-                        '30 10 0.7 64 bash /private/remote-run/runs/run-2/body.sh\n'
-                        '40 10 100 50 bash /private/remote-run/runs/run-10/body.sh\n'
-                        '50 1 10 500 com.docker.vm\n')
+                self.assertIn('pid=,ppid=,%cpu=,rss=,etime=,args=', argv)
+                return ('10 1 0 10 2-03:04:05 /opt/homebrew/bin/pueued daemon\n'
+                        '20 10 200 100 10:00 bash /private/remote-run/runs/run-1/body.sh SECRET\n'
+                        '21 20 45 200 05:00 worker SECRET\n'
+                        '30 10 0.7 64 01:00:00 bash /private/remote-run/runs/run-2/body.sh\n'
+                        '40 10 100 50 00:01 bash /private/remote-run/runs/run-10/body.sh\n'
+                        '50 1 10 500 10:00 com.docker.vm\n')
+            if argv[1] == 'ps':
+                # Creado hace un minuto: el PID 21 ya existía (nació hace cinco).
+                stamp = datetime.datetime.fromtimestamp(time.time() - 60, datetime.timezone.utc).strftime('%Y-%m-%d %H:%M:%S +0000 UTC')
+                return 'sen4951-suite-21\t' + stamp + '\nbuzz-espejo-x\t' + stamp + '\n'
             self.assertEqual(argv[1], 'stats')
             return 'sen4951-suite-21\t50%\t2MiB / 1GiB\nbuzz-espejo-x\t10%\t5MiB / 1GiB\n'
         with patch.object(snapshot, 'command', side_effect=command), patch.object(snapshot, 'mac_capacity', return_value=(dict(cores=10), dict(total=16000000, available=4000000))), patch.object(snapshot, 'mini_metadata', return_value=dict(name='suite-test')), patch.object(snapshot, 'disk', return_value=None), patch.object(snapshot, 'docker_binary', return_value='/opt/homebrew/bin/docker'), patch.object(snapshot.os, 'readlink', side_effect=AssertionError('macOS no lee cwd')):
@@ -261,28 +268,76 @@ class UsageTests(unittest.TestCase):
             self.assertNotIn(secret, json.dumps(out))
 
     def test_container_rules_ambiguity_failures_and_absent_binary(self):
-        contexts = {1: dict(pids={20}, slots={'2'}), 2: dict(pids={30}, slots={'2'})}
+        contexts = {1: dict(born={20: 100.}, slots={'2'}), 2: dict(born={30: 100.}, slots={'2'})}
+        created = '1970-01-01 00:10:00 +0000 UTC'  # 600: después de que nacieran 20 y 30
+        def container(name, cpu, mem, when=600.):
+            return dict(name=name, created=when, cpu=cpu, mem=mem)
         with patch.object(snapshot, 'command', side_effect=AssertionError('Docker ausente')):
             self.assertEqual(snapshot.docker_stats('linux', time.monotonic()+2), ('absent', []))
         with patch.object(snapshot, 'docker_binary', return_value='/usr/bin/docker'):
             # Un contenedor de dos dueños posibles o sin dueño queda fuera de las corridas.
-            with patch.object(snapshot, 'command', return_value='sen-test-db-2\t20%\t1MiB / 1GiB\nunknown\t5%\t1MiB / 1GiB\nsuite-20\t30%\t1MiB / 1GiB\n') as run:
+            with patch.object(snapshot, 'command', side_effect=['sen-test-db-2\t' + created + '\nunknown\t' + created + '\nsuite-20\t' + created,
+                                                                'sen-test-db-2\t20%\t1MiB / 1GiB\nunknown\t5%\t1MiB / 1GiB\nsuite-20\t30%\t1MiB / 1GiB\n']) as run:
                 stats = snapshot.docker_stats('linux', time.monotonic()+2)
-                self.assertEqual(run.call_count, 1)
+                self.assertEqual(run.call_count, 2)
             self.assertEqual(snapshot.container_usage(stats, contexts), ('read', {1: dict(cpu=.3, mem=1024**2, containers=1)}))
             for failure in (OSError(), subprocess.TimeoutExpired('docker', 1)):
                 with patch.object(snapshot, 'command', side_effect=failure):
                     self.assertEqual(snapshot.docker_stats('linux', time.monotonic()+2), ('error', []))
             # Líneas ilegibles (contenedor arrancando, nan, negativo) no tumban las demás.
-            with patch.object(snapshot, 'command', return_value='suite-20\t--\t-- / --\nsuite-20\tnan%\t1MiB / 1GiB\nsuite-20\t-1%\t1MiB / 1GiB\nroto\nsuite-30\t10%\t1KiB / 1GiB'):
-                self.assertEqual(snapshot.docker_stats('linux', time.monotonic()+2), ('read', [('suite-30', .1, 1024)]))
+            with patch.object(snapshot, 'command', side_effect=['suite-30\t' + created, 'suite-20\t--\t-- / --\nsuite-20\tnan%\t1MiB / 1GiB\nsuite-20\t-1%\t1MiB / 1GiB\nroto\nsuite-30\t10%\t1KiB / 1GiB']):
+                self.assertEqual(snapshot.docker_stats('linux', time.monotonic()+2), ('read', [container('suite-30', .1, 1024)]))
             with patch.object(snapshot, 'command', side_effect=AssertionError('presupuesto agotado')):
                 self.assertEqual(snapshot.docker_stats('linux', time.monotonic()-1), ('error', []))
+        # Un PID nacido después del contenedor es un PID reutilizado: el contenedor no es suyo.
+        self.assertEqual(snapshot.container_usage(('read', [container('suite-20', .3, 1, when=50.)]), contexts), ('read', {}))
+        # Sin fecha de creación o sin nacimiento del proceso no hay prueba de dueño.
+        self.assertEqual(snapshot.container_usage(('read', [container('suite-20', .3, 1, when=None)]), contexts), ('read', {}))
+        self.assertEqual(snapshot.container_usage(('read', [container('suite-20', .3, 1)]), {1: dict(born={20: None}, slots=set())}), ('read', {}))
         with patch.object(snapshot.Path, 'is_file', side_effect=lambda: False):
             # Probar la selección real sin ejecutar el binario.
             self.assertIsNone(UsageTests.real_docker_binary('linux'))
 
     real_docker_binary = staticmethod(snapshot.docker_binary)
+
+    def test_review_w1_process_born_during_sample_keeps_its_cpu(self):
+        (self.root / 'stat').write_text('cpu 100000 0 0 100000 0 0 0 0\nbtime 1000\n')
+        (self.root / 'uptime').write_text('1000.00 0.00\n')
+        hertz = os.sysconf('SC_CLK_TCK')
+        self.proc_row(10, 1, 0, name='pueued')
+        self.proc_row(20, 10, 0, argv='bash /private/job-12345678/task.sh')
+        self.proc_row(22, 20, 50, start=10)  # ya vivía antes de la muestra: sólo cuenta su delta
+        def advance(_):
+            (self.root / 'stat').write_text('cpu 100100 0 0 100100 0 0 0 0\nbtime 1000\n')
+            self.proc_row(21, 20, 100, start=1000 * hertz + 1)
+            self.proc_row(22, 20, 50, start=10)
+            self.proc_row(23, 20, 70, start=5)  # nació antes de la primera lectura: no se atribuye entero
+        out = self.output()
+        out['cpu']['cores'] = 2
+        with patch.object(snapshot.time, 'sleep', side_effect=advance), patch.object(snapshot, 'docker_stats', return_value=('absent', [])):
+            usage = snapshot.collect_usage(out, {1: 'job-12345678'}, 'linux', self.root)
+        self.assertEqual((usage['busy'], out['tasks'][0]['usage']['cpu'], usage['outside']['cpu']), (1.0, 1.0, 0.0))
+
+    def test_review_w2_reused_pid_never_claims_a_container(self):
+        (self.root / 'stat').write_text('cpu 100000 0 0 100000 0 0 0 0\nbtime 1000\n')
+        (self.root / 'uptime').write_text('1000.00 0.00\n')
+        hertz = os.sysconf('SC_CLK_TCK')
+        self.proc_row(10, 1, 0, name='pueued')
+        self.proc_row(20, 10, 0, argv='bash /private/job-11111111/task.sh')
+        self.proc_row(30, 10, 0, argv='bash /private/job-22222222/task.sh')
+        self.proc_row(21, 20, 0, start=1)
+        def advance(_):
+            (self.root / 'stat').write_text('cpu 100100 0 0 100100 0 0 0 0\nbtime 1000\n')
+            self.proc_row(21, 30, 0, start=1000 * hertz + 1)  # el PID 21 ahora es de la corrida 2
+        # suite-21 lo creó el PID 21 original, antes de que naciera el nuevo.
+        stats = ('read', [dict(name='suite-21', created=1500., cpu=1.0, mem=1048576)])
+        out = self.output()
+        out['cpu']['cores'] = 2
+        with patch.object(snapshot.time, 'sleep', side_effect=advance), patch.object(snapshot, 'docker_stats', return_value=stats):
+            usage = snapshot.collect_usage(out, {1: 'job-11111111', 2: 'job-22222222'}, 'linux', self.root)
+        self.assertEqual([t.get('usage', {}).get('containers') for t in out['tasks'][:2]], [0, 0])
+        self.assertEqual(out['tasks'][1]['usage']['cpu'], 0.0)
+        self.assertEqual(usage['outside']['cpu'], 1.0)
 
     def test_docker_error_retains_process_usage_without_stage_error(self):
         out = self.output()
