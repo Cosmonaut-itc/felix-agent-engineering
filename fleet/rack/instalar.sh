@@ -65,9 +65,13 @@ with open(status_path) as stream:
 owner = status['User'][str(status['Self']['UserID'])]['LoginName']
 if not isinstance(owner, str) or not owner:
     sys.exit('rack: no se pudo resolver el dueño de la Mini')
+name = status['Self']['DNSName'].rstrip('.')
+if not name.endswith('.ts.net'):
+    sys.exit('rack: Tailscale no devolvió un nombre MagicDNS')
 with open(plist, 'wb') as stream:
     plistlib.dump(dict(Label='com.cosmonaut.pao-rack',
-        ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', port, '--owner', owner],
+        ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', port, '--owner', owner,
+                           '--name', name, '--name', name.split('.')[0]],
         KeepAlive=True, RunAtLoad=True,
         StandardOutPath=os.path.expanduser('~/Library/Logs/pao-rack.log'),
         StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log')), stream)

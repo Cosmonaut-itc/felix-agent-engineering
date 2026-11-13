@@ -362,12 +362,12 @@ class ServerTests(unittest.TestCase):
             urllib.request.urlopen(urllib.request.Request(url))
         self.assertEqual(error.exception.code, 404)
 
-    def request_as(self, ip, owner_result=None, funnel=False):
+    def request_as(self, ip, owner_result=None, funnel=False, host='100.100.0.1:8787', names=()):
         handler = object.__new__(serve.Handler)
         handler.client_address = (ip, 1234)
         handler.server = type('Server', (), dict(server_address=('100.100.0.1', 8787), rack=self.rack,
-                                               owner_check=owner_result))()
-        handler.headers = {'Tailscale-Funnel-Request': '?1'} if funnel else {}
+                                               owner_check=owner_result, names=names))()
+        handler.headers = dict(Host=host, **({'Tailscale-Funnel-Request': '?1'} if funnel else {}))
         handler.command = 'GET'
         handler.path = '/api/rack.json'
         result = []
@@ -388,6 +388,32 @@ class ServerTests(unittest.TestCase):
     def test_tailnet_client_allowed(self):
         self.assertEqual(self.request_as('100.111.159.14', self.fake_tailscale())[0], 200)
         self.assertTrue(serve.allowed_client('fd7a:115c:a1e0::1', '100.100.0.1'))
+
+    def test_host_must_name_this_server(self):
+        check = self.fake_tailscale()
+        for host in ('mini.example.ts.net:8787', 'MINI:8787', '100.100.0.1:8787'):
+            self.assertEqual(self.request_as('100.111.159.14', check, host=host, names=('mini.example.ts.net', 'mini'))[0], 200)
+        for host in ('evil.example:8787', 'mini.example.ts.net:80', 'mini.example.ts.net', '100.100.0.1', None):
+            self.assertEqual(self.request_as('100.111.159.14', check, host=host, names=('mini.example.ts.net', 'mini')), (403, b''))
+
+    def test_rebound_host_cannot_read_or_refresh(self):
+        server = ThreadingHTTPServer(('127.0.0.1', 0), serve.Handler)
+        server.rack = self.rack
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        def cleanup():
+            server.shutdown()
+            server.server_close()
+            thread.join()
+        self.addCleanup(cleanup)
+        url = 'http://127.0.0.1:' + str(server.server_port)
+        host = 'evil.example:' + str(server.server_port)
+        for request in (urllib.request.Request(url + '/api/rack.json', headers={'Host': host}),
+                        urllib.request.Request(url + '/api/refresh', data=b'', method='POST', headers={'Host': host, 'X-Rack-Refresh': '1'})):
+            with self.assertRaises(urllib.error.HTTPError) as error:
+                urllib.request.urlopen(request)
+            self.assertEqual(error.exception.code, 403)
+        self.assertFalse(self.rack.wake.is_set())
 
     def test_funnel_forbidden(self):
         self.assertEqual(self.request_as('100.111.159.14', funnel=True), (403, b''))
