@@ -80,7 +80,7 @@ worktree sucio o con commits sólo locales se lista para Felix.
 Hacia la Mini, `remote-run start` y `scripts/mini/run.sh` encolan la corrida
 en Pueue (grupo `suites`) y `remote-run wait ID` espera su turno y devuelve su
 código. El carril rápido (`--carril rapido` o `REMOTE_RUN_CARRIL=rapido`)
-encola en `rapidas`, en la Mini y en el Desk, y corta la corrida a los 10 min.
+encola en el grupo `rapidas` del host y corta la corrida a los 10 min.
 No reserves la Mini a mano ni esperes en un bucle. Mira la fila con
 `ssh mini pueue status`. Si la corrida usa algo que no admite dos usuarios a la
 vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
