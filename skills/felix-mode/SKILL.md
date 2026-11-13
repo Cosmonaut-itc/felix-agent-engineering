@@ -240,8 +240,10 @@ que demuestra:
   ronda 3 no da APTO, lee y aplica `principle-attack-the-premise` de pstack
   y **Autonomía** antes de la siguiente corrección. Un mismo cambio tiene
   hasta ocho rondas sin autorización adicional, entre completas y delta.
-  Antes de la ronda 9 pausa, aunque la ronda 8 haya dado APTO. Entrega al
-  usuario lo que sigue abierto y el replanteamiento realizado.
+  Las rondas de sincronización no cuentan: son las que pide el paso 3 del
+  [procedimiento de merge](references/merge.md) cuando `apto-vigente`
+  imprime `Ronda delta`. Antes de la novena ronda que cuenta, pausa, aunque
+  la octava haya dado APTO. Entrega al usuario lo que sigue abierto y el replanteamiento realizado.
 - **Ronda delta.** La hace un solo revisor gpt-6.1-sol en `high` con
   contexto nuevo, también en alto riesgo. Su brief lleva el brief original,
   el registro, el head ya revisado y el diff desde ese head, con
@@ -306,7 +308,8 @@ que demuestra:
   `asumido` del registro.
   Copia el veredicto literal, también NO APTO o SIN DICTAMEN. Mientras el
   head del PR no tiene veredicto, `<veredicto>` es `pendiente` y `<n>` es
-  la ronda que lo juzgará. Una ronda delta se escribe `ronda <n> delta`. Un
+  la ronda que lo juzgará. Una ronda delta se escribe `ronda <n> delta`, y
+  una de sincronización `ronda <n> sincronización`. Un
   revisor que sólo corre en rondas completas conserva la línea de su última
   ronda, y la línea del revisor delta acredita el head actual. Un APTO que
   sigue vigente por el paso 3 del procedimiento de merge añade
