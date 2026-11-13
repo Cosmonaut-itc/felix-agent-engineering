@@ -128,7 +128,7 @@ El [vigilante Windows](scripts/desktop/README.md) observa carga nativa con Power
 | [`configs/*/pstack-models.md`](configs/claude/pstack-models.md) | Hojas de modelos de pstack para Claude Code y Codex, derivadas del routing. |
 | [`manifest`](manifest) | Registro único de archivos, skills, retiradas y plugins. |
 | [`bin/pao`](bin/pao) | Instalador, actualizador y diagnóstico para macOS, Linux y Git Bash. |
-| [`vendor/`](vendor/mattpocock/UPSTREAM) | Skills de Matt Pocock, licencia y versión de origen. |
+| [`vendor/`](vendor/README.md) | Skills de Matt Pocock y Emil Kowalski, sus licencias y la versión de origen. |
 | [`handbook/index.html`](handbook/index.html) | Handbook de consulta rápida del flujo: qué hace el usuario, playbooks, revisión, skills y modelos. |
 
 ## Contrato común
@@ -251,10 +251,13 @@ su gestión.
 
 ### Actualizaciones de skills y plugins
 
-Las 21 skills de Matt Pocock se distribuyen en `vendor/mattpocock/`, con su
-licencia MIT y el tag y commit de origen en `UPSTREAM`. No se editan a mano.
-El workflow diario ejecuta `bin/pao vendor-sync`, valida el resultado y
-corre las pruebas antes de hacer un commit a `main`. También se puede lanzar
+Las 21 skills de Matt Pocock se distribuyen en `vendor/mattpocock/`, y las
+de Emil Kowalski en `vendor/emilkowalski/`. Cada directorio lleva su licencia
+MIT y el commit de origen en `UPSTREAM`. No se editan a mano. De Emil sólo se
+instala `learn-taste`; el resto queda como referencia que felix-mode cita por
+ruta. [`vendor/README.md`](vendor/README.md) explica las filas `upstream` y
+`ref` del manifest. El workflow diario ejecuta `bin/pao vendor-sync`, valida
+el resultado y corre las pruebas antes de hacer un commit a `main`. También se puede lanzar
 con `workflow_dispatch`. El job local recoge ese commit en la siguiente
 actualización.
 
@@ -324,3 +327,6 @@ las comprobaciones pendientes y los controles de cada despacho.
   © 2026 Matt Pocock, con licencia MIT. `vendor/mattpocock/` las copia sin
   modificar junto con su [`LICENSE`](vendor/mattpocock/LICENSE). Ver
   [`vendor/README.md`](vendor/README.md).
+- Las [skills de Emil Kowalski](https://github.com/emilkowalski/skills) son
+  © 2026 Emil Kowalski, con licencia MIT. `vendor/emilkowalski/` las copia sin
+  modificar junto con su [`LICENSE`](vendor/emilkowalski/LICENSE).

@@ -387,7 +387,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 <section id="mantenimiento">
   <h2>Mantenimiento</h2>
   <ul class="plain">
-    <li><b>Se actualiza solo.</b> Cada 4 horas el job trae <code>main</code>, rehace los enlaces y actualiza pstack en Claude Code y Codex. Un CI diario copia el último release de Matt Pocock a <code>vendor/</code>.</li>
+    <li><b>Se actualiza solo.</b> Cada 4 horas el job trae <code>main</code>, rehace los enlaces y actualiza pstack en Claude Code y Codex. Un CI diario copia a <code>vendor/</code> el último release de Matt Pocock y la rama por defecto de Emil Kowalski.</li>
     <li><b>Algo falla.</b> En la Mac llega una notificación. Corre <code>pao status</code>: un archivo local editado queda retenido y nunca se pisa.</li>
     <li><b>Cambias la configuración.</b> Edita el repo y abre un PR. Al mergearlo llega a cada máquina en menos de 4 horas.</li>
     <li><b>Cambias un modelo.</b> Edita el routing y replica la tabla y la hoja <code>pstack-models.md</code>.</li>
@@ -398,7 +398,7 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
 
 <footer>
   <p>Fuente: <a href="https://github.com/Cosmonaut-itc/felix-agent-engineering/blob/main/docs/flujo-de-trabajo.md"><code>docs/flujo-de-trabajo.md</code></a> de felix-agent-engineering.</p>
-  <p>Créditos. <a href="https://github.com/cursor/plugins/tree/main/pstack">pstack</a> es obra de Lauren Tan (poteto). Se usa por el port <a href="https://github.com/michael-denyer/pstack-claude">pstack-claude</a> de Michael Denyer, con licencia MIT. Las <a href="https://github.com/mattpocock/skills">skills de Matt Pocock</a> son © 2026 Matt Pocock, con licencia MIT. <code>vendor/mattpocock</code> conserva su licencia.</p>
+  <p>Créditos. <a href="https://github.com/cursor/plugins/tree/main/pstack">pstack</a> es obra de Lauren Tan (poteto). Se usa por el port <a href="https://github.com/michael-denyer/pstack-claude">pstack-claude</a> de Michael Denyer, con licencia MIT. Las <a href="https://github.com/mattpocock/skills">skills de Matt Pocock</a> son © 2026 Matt Pocock, con licencia MIT. <code>vendor/mattpocock</code> conserva su licencia. Las <a href="https://github.com/emilkowalski/skills">skills de Emil Kowalski</a> son © 2026 Emil Kowalski, con licencia MIT, y <code>vendor/emilkowalski</code> conserva su licencia.</p>
 </footer>
 </main>
 </div>
