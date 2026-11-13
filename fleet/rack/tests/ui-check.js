@@ -2,19 +2,19 @@
 // No browser package or frontend dependency is used.
 const vm=require('vm'), assert=require('assert'), fs=require('fs');
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
-const timers=[],elements={},writes=[];
+const timers=[],elements={},writes=[],storage={};
 const element=()=>({addEventListener(){},innerHTML:'',textContent:'',focus(){}});
 const dialog={...element(),returnValue:'no',open:false,paragraph:element(),
   buttons:[{value:'no'},{value:'si'}],querySelector(){return this.paragraph},
   querySelectorAll(){return this.buttons},showModal(){this.open=true},
   close(value){this.returnValue=value;this.open=false;this.onclose()}};
 elements.confirm=dialog;
-const context={console,Intl,Date,Number,Object,String,Math,Map,Uint8Array,JSON,
+const context={console,Intl,Date,Number,Object,String,Math,Map,Set,Uint8Array,JSON,
  crypto:require('crypto').webcrypto,
  document:{getElementById:id=>elements[id] ||= element(),addEventListener(){},querySelector:()=>null,querySelectorAll:()=>[]},
  window:{addEventListener(){}},setInterval(){},clearTimeout(){},
  setTimeout(fn,ms){timers.push({fn,ms});return timers.length},
- sessionStorage:{getItem(){return null},setItem(k,v){writes.push([k,v])}},
+ sessionStorage:{getItem(k){return storage[k] || null},setItem(k,v){storage[k]=v;writes.push([k,v])}},
  AbortSignal:{timeout(){}},fetch:async()=>({ok:false})};
 vm.createContext(context);vm.runInContext(input.js,context);
 context.fixture=input.fixture;
@@ -23,7 +23,8 @@ vm.runInContext('render(fixture)',context);
  const run=source=>vm.runInContext(source,context);
  run("globalThis.found={h:S.hosts[0],t:S.hosts[0].tasks[0]}");
  assert.equal(run('cancelReason(found)'),null);
- assert.match(run('cancelReason({h:{...found.h,id:"desk"},t:found.t})'),/canal de escritura del desk pendiente/);
+ assert.match(run('cancelReason({h:{...found.h,id:"desk",actions:{reason:"Razón desde configuración"}},t:found.t})'),/Razón desde configuración/);
+ assert.equal(run('cancelReason({h:{...found.h,id:"desk",actions:{reason:null}},t:found.t})'),null);
  assert.match(run('cancelReason({h:found.h,t:{...found.t,control:null}})'),/Lanzador no reconocido/);
  const button={disabled:true},reason=element();
  context.menu={querySelector:s=>s==='[data-cancel]'?button:reason};
@@ -61,11 +62,28 @@ vm.runInContext('render(fixture)',context);
  await run('pollAction(key,action)');
  assert.equal(requests.at(-1)[0],'/api/accion/'+id);
  assert.equal(requests.filter(([url])=>url==='/api/accion').length,1);
+ const pendingReload={...context};vm.createContext(pendingReload);vm.runInContext(input.js,pendingReload);
+ vm.runInContext('render(fixture)',pendingReload);
+ assert.equal(vm.runInContext('[...PENDING.values()][0].request.action_id',pendingReload),id);
+ assert.match(elements.app.innerHTML,/Resultado desconocido/);
  context.fetch=async(url)=>({ok:true,json:async()=>url==='/api/rack.json'?input.fixture:
    {schema:'rack-action@1',status:'cancelled',action_id:id,result:{exit:130}}});
  await run('pollAction(key,action)');
  assert.equal(run('PENDING.size'),0);assert.match(elements.toast.innerHTML,/SEN-123 cancelada/);
+ // Render the exact pre-receipt snapshot, including the same task, after cancellation.
+ run('render(fixture)');
+ assert.equal(run('S.hosts[0].tasks.some(t=>t.id===77)'),false,'cancelled row reappeared from old snapshot');
+ assert.doesNotMatch(elements.app.innerHTML,/data-id="77"/);
+ // Exclusion is host/task/ref-specific: neither another host nor a reused ID is hidden.
+ run(`globalThis.other=JSON.parse(JSON.stringify(fixture));
+      other.hosts.push({...JSON.parse(JSON.stringify(other.hosts[0])),id:'desk'});
+      other.hosts[0].snapshot.tasks[0].control.ref='20261112-184713-aaaaaa';render(other)`);
+ assert.equal(run('S.hosts.every(h=>h.tasks.some(t=>t.id===77))'),true);
+ // A reload retains the receipt exclusion as well as pending-action persistence.
+ const reloaded={...context};vm.createContext(reloaded);vm.runInContext(input.js,reloaded);
+ vm.runInContext('render(fixture)',reloaded);
+ assert.equal(vm.runInContext('S.hosts[0].tasks.some(t=>t.id===77)',reloaded),false);
  const toastTimer=timers.filter(t=>t.ms===8000).at(-1);assert(toastTimer);toastTimer.fn();
  assert.equal(elements.toast.textContent,'');
- console.log('UI OK: confirmación, No, pendiente, toast 8s, desk, capacidades, conflictos, unknown y red con mismo ID');
+ console.log('UI OK: confirmación, No, pendiente, toast 8s, desk configurable, capacidades, conflictos, unknown y red con mismo ID, cancelada ausente tras snapshot anterior y recarga');
 })().catch(error=>{console.error(error);process.exitCode=1});

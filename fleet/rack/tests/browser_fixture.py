@@ -4,25 +4,22 @@ TMPDIR=/tmp /usr/bin/python3 tests/browser_fixture.py --port 0
 Never starts the collector or accesses installed controllers, Pueue or Tailscale.
 """
 import argparse
-import copy
 import importlib.util
 import json
 import os
 from pathlib import Path
-import subprocess
 import tempfile
 import time
 from http.server import ThreadingHTTPServer
 from unittest.mock import Mock
+import safety  # same global guard as the complete suite
 
 BASE = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('rack_serve', BASE / 'serve.py')
 serve = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(serve)
 REF = '20261112-184713-d976b4'
-HOSTS = [dict(id='mini',name='Mac Mini',transport='local',argv=['false'],actions=dict(transport='local',reason=None)),
-         dict(id='desk',name='Felix DESKTOP · WSL',transport='ssh',argv=['false'],
-              actions=dict(transport='disabled',reason='canal de escritura del desk pendiente'))]
+HOSTS = serve.load_hosts(BASE / 'hosts.json')
 
 
 def fixture():
@@ -34,7 +31,7 @@ def fixture():
         snap=dict(schema='rack-host@1',host=config['id'],taken=now,groups=[dict(name='suites',status='Running',slots=1)],
                   tasks=[row],cpu=dict(cores=10,load=[1,1,1]),mem=dict(total=16*1024**3,available=12*1024**3,swap_total=0,swap_used=0))
         return dict(id=config['id'],name=config['name'],fresh=True,age=0,error=None,snapshot=snap,estimates={},
-                    actions=dict(reason=config['actions']['reason']))
+                    actions=dict(reason=serve.accion.transport_reason(config, 'remote-run')))
     return dict(schema='rack@1',now=now,hosts=[host(h) for h in HOSTS],tickets={})
 
 
@@ -44,7 +41,8 @@ def main():
     args=parser.parse_args()
     with tempfile.TemporaryDirectory(prefix='rack-c3-browser-',dir='/tmp') as folder:
         root=Path(folder)
-        control=root/'fake-controller.py'
+        control=root/'.local/lib/remote-run/run-control.py'
+        control.parent.mkdir(parents=True)
         control.write_text('''import json,sys,time
 from pathlib import Path
 r=json.load(sys.stdin)
@@ -60,10 +58,7 @@ else:
  a['error']=None
 print(json.dumps(a))
 ''')
-        def runner(argv,**kwargs):
-            assert argv==['/usr/bin/python3','-I',str(root/'.local/lib/remote-run/run-control.py')]
-            return subprocess.Popen(['/usr/bin/python3','-I',str(control)],**kwargs)
-        executor=serve.accion.Executor(runner=runner,home=root)
+        executor=serve.accion.Executor(home=root)
         actions=serve.accion.Actions(HOSTS,root,fixture,executor=executor)
         server=ThreadingHTTPServer(('127.0.0.1',args.port),serve.Handler)
         server.actions=actions

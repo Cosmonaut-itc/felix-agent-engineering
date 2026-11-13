@@ -75,13 +75,7 @@ def load_hosts(path):
                     or not host['argv'] or any(not isinstance(a, str) or not a or '\0' in a for a in host['argv'])):
                 raise ValueError()
             if 'actions' in host:
-                config = host['actions']
-                if (type(config) is not dict or set(config) != {'transport', 'reason'}
-                        or config['transport'] not in ('local', 'disabled')
-                        or config['transport'] == 'local' and host['id'] != 'mini'
-                        or config['reason'] is not None and type(config['reason']) is not str
-                        or config['transport'] == 'disabled' and not config['reason']):
-                    raise ValueError()
+                accion.action_config(host['actions'])
             ids.add(host['id'])
         return hosts
     except (OSError, ValueError, TypeError, KeyError) as error:

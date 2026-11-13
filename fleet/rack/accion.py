@@ -27,6 +27,8 @@ ERRORS = {
     'forbidden': 'No se pudo autorizar la petición.',
 }
 OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
+CONTROLLERS = {'remote-run': '~/.local/lib/remote-run/run-control.py',
+               'jale': '~/.local/lib/jale/pueue-control.py'}
 
 
 def unique(pairs):
@@ -88,17 +90,34 @@ def control_data(value, task):
     return None
 
 
+def action_config(value):
+    """Only administrator-selected, contract-fixed controller paths; never argv."""
+    if value is None:
+        return dict(transport='disabled', reason='Este host no tiene canal de escritura.', controllers={})
+    if (type(value) is not dict or set(value) != {'transport', 'reason', 'controllers'}
+            or value['transport'] not in ('local', 'disabled')
+            or type(value['controllers']) is not dict
+            or any(k not in CONTROLLERS or v != CONTROLLERS[k] for k, v in value['controllers'].items())
+            or value['reason'] is not None and (type(value['reason']) is not str
+                or not 0 < len(value['reason']) <= 240
+                or any(ord(c) < 32 or ord(c) == 127 for c in value['reason']))
+            or value['transport'] == 'local' and (not value['controllers'] or value['reason'] is not None)
+            or value['transport'] == 'disabled' and not value['reason']):
+        raise ValueError('Configuración de acciones inválida')
+    return value
+
+
 def transport_reason(host, launcher):
-    config = host.get('actions', {})
-    if config.get('transport') != 'local':
-        return config.get('reason') or 'Este host no tiene canal de escritura.'
-    if launcher != 'remote-run' or host['id'] != 'mini':
-        return 'Jale directo en la Mini fuera de Pueue no admite cancelación.'
+    config = action_config(host.get('actions'))
+    if config['transport'] != 'local':
+        return config['reason']
+    if launcher not in config['controllers']:
+        return 'Este lanzador no tiene controlador configurado en este host.'
     return None
 
 
 class Executor:
-    """One transport seam. Only local Mini is enabled in C3; no caller-supplied argv."""
+    """One transport seam, selected by host configuration; no caller-supplied argv."""
     def __init__(self, runner=subprocess.Popen, home=None, timeout=10):
         self.runner, self.timeout = runner, timeout
         self.home = Path(home or pwd.getpwuid(os.getuid()).pw_dir)
@@ -106,7 +125,8 @@ class Executor:
     def __call__(self, host, launcher, request):
         if transport_reason(host, launcher):
             raise ValueError('Transporte deshabilitado')
-        controller = self.home / '.local/lib/remote-run/run-control.py'
+        config = action_config(host.get('actions'))
+        controller = self.home / config['controllers'][launcher][2:]
         # A file bounds the public response and avoids an unbounded stdout pipe.
         with tempfile.TemporaryFile() as output:
             process = self.runner(['/usr/bin/python3', '-I', str(controller)],
@@ -268,8 +288,8 @@ class Actions:
             request, response = map(json.loads, row)
             if response['status'] in OPEN:
                 response = self.call(request, 'status')
-                # A controller that lost its receipt does not prove non-execution.
-                if response['status'] == 'rejected' and response['error']['code'] == 'not_found':
+                # No status rejection proves that an accepted action had no effect.
+                if response['status'] == 'rejected':
                     response = result(request, 'unknown')
                 self.save(request, response)
             return 200, response

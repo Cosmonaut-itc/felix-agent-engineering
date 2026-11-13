@@ -194,7 +194,11 @@ habilitarse. Abre la confirmación aprobada «¿Cancelar <ticket> · <objetivo> 
 <host>? La sesión que la espera la verá como cancelada». «No» y Escape cierran
 sin actuar. Al confirmar, la fila muestra «Cancelando…» hasta que el lanzador
 confirma el resultado; el aviso dura 8 segundos. Sólo el recibo `cancelled`
-con `result.exit: 130` acredita una cancelación. `already_finished` conserva la
+con `result.exit: 130` acredita una cancelación. La pestaña conserva en
+sessionStorage las identidades canceladas `(host, task_id, ref)`: una instantánea
+anterior no vuelve a mostrar la misma corrida, tampoco al recargar. Otra
+referencia con el mismo ID, o el mismo ID en otro host, sigue visible.
+`already_finished` conserva la
 salida anterior; `stale_state` pide actualizar y decidir de nuevo. No se escala
 una petición observada en fila a detener una corrida que ya arrancó.
 
@@ -226,10 +230,19 @@ fuera de Pueue no está cubierto por este contrato.
 
 El transporte de escritura es independiente del de instantáneas:
 
-| Host | `actions.transport` | Estado |
-| --- | --- | --- |
-| mini | local | remote-run, controlador fijo |
-| desk | disabled | canal de escritura del desk pendiente |
+| Host | `actions.transport` | `actions.controllers` | `actions.reason` |
+| --- | --- | --- | --- |
+| mini | local | remote-run → `~/.local/lib/remote-run/run-control.py` | null |
+| desk | disabled | remote-run → misma ruta; jale → `~/.local/lib/jale/pueue-control.py` | canal de escritura del desk pendiente |
+
+`actions` tiene exactamente `transport`, `controllers` y `reason`. Se valida
+al cargar `hosts.json` y antes de ejecutar: sólo se admiten esas rutas fijas
+por lanzador. Un transporte local requiere al menos un controlador y razón
+null; uno deshabilitado requiere una razón legible de hasta 240 caracteres.
+Sin configuración, el host queda deshabilitado. El ejecutor elige la ruta de
+esa tabla y la resuelve bajo el home del usuario Unix; la API no permite
+enviar rutas ni argv. La razón que muestra la UI viene de esta configuración,
+sin una excepción fija para el desk.
 
 C4 añadirá el transporte con llave/comando forzado dedicado al mismo `Executor`
 y la tabla explícita de `hosts.json`. No reutilizar la llave de lectura ni
@@ -280,8 +293,11 @@ un timeout o liberar un ID.
 
 Tras una caída entre intención, efecto y recibo, un POST repetido devuelve lo
 que sabe el diario. Para `cancelling`, `cancel_unconfirmed` y `unknown`, el GET
-consulta únicamente `status` con la misma referencia e ID. Si el controlador
-no encuentra su recibo, se conserva `unknown`. La UI guarda las acciones
+consulta únicamente `status` con la misma referencia e ID. Todo `rejected`
+de esa consulta conserva `unknown`, sea `not_found`, `unsupported`,
+`stale_state`, `idempotency_conflict` o `invalid_request`: un rechazo tardío
+no demuestra que la cancelación aceptada no tuvo efecto. No se reenvían
+mensajes privados del controlador. La UI guarda las acciones
 pendientes en sessionStorage para continuar al recargar esa pestaña; nunca
 reenvía `cancel` automáticamente después de un error de red. La fila y el
 aviso distinguen incertidumbre y falta de confirmación del fin de procesos.
@@ -319,17 +335,27 @@ El último comando imprime una URL en 127.0.0.1 para abrir en un navegador.
 Ofrece una corrida sintética de la Mini y otra del desk. Tras confirmar, el
 controlador falso responde `cancelling` durante 7 s y luego `cancelled`/130.
 Ctrl-C cierra el servidor y borra su directorio temporal. No inicia recolector,
-no conecta a hosts y no usa 8787. La sustitución del controlador ocurre sólo
-en este fixture; el ejecutor de producción mantiene su argv fijo.
+no conecta a hosts y no usa 8787. El fixture genera el controlador bajo /tmp,
+en la misma ruta relativa configurada, y usa el ejecutor de producción sin
+sustituir argv. Conserva la corrida en sus instantáneas para acreditar que
+la fila cancelada no reaparece aunque el recolector todavía la incluya.
 
 Las pruebas son Python 3.9/biblioteca estándar, con whois, transporte, reloj y
 controladores falsos. Una guardia de auditoría impide ejecutar ssh, Pueue,
 Tailscale o controladores instalados. La prueba JS ejecuta el script real con
 DOM, red, reloj y almacenamiento sintéticos, mediante Node si está disponible,
 sin paquetes de frontend. Prueba diálogo, No, pendiente, avisos de 8 s,
-capacidades, razón deshabilitada, conflictos e incertidumbre/red con el mismo
-ID. `check_mutations.py` copia el artefacto a /tmp y acredita que quitar whois
-fresco, Origin, digest o intención unknown rompe las pruebas específicas;
+capacidades, razón configurable, conflictos e incertidumbre/red con el mismo
+ID; después del recibo renderiza la instantánea anterior y recarga la página
+con almacenamiento conservado. Las pruebas del ejecutor también lanzan
+controladores sintéticos generados en /tmp, bajo la guarda global: observan
+stdin, aislamiento, entorno y ausencia de TTY, y verifican que el plazo
+termina el grupo conocido y recoge el proceso. En macOS, el shim de Python
+puede añadir variables de SDK; se comprueba que ninguna variable del panel
+llega al controlador. `check_mutations.py` copia el artefacto a /tmp y
+acredita que quitar whois fresco, Origin, digest, intención unknown,
+conservación de unknown ante rechazos de status o exclusión de canceladas
+frente a instantáneas anteriores rompe las pruebas específicas;
 borra las copias al salir.
 
 `tests/rack-fixture.json` conserva la instantánea realista para las pruebas de

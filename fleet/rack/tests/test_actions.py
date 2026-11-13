@@ -3,6 +3,7 @@ import safety
 import copy
 import io
 import json
+import os
 from http.client import HTTPMessage
 from http.server import ThreadingHTTPServer
 from pathlib import Path
@@ -10,6 +11,7 @@ import sqlite3
 import subprocess
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch, Mock
 import urllib.request
@@ -20,9 +22,11 @@ from test_rack import module, sample, task
 serve, snapshot = module('serve'), module('snapshot')
 accion = serve.accion
 REF = '20261112-184713-d976b4'
-HOSTS = [dict(id='mini', name='Mac Mini', transport='local', argv=['false'], actions=dict(transport='local', reason=None)),
+HOSTS = [dict(id='mini', name='Mac Mini', transport='local', argv=['false'],
+              actions=dict(transport='local', reason=None, controllers={'remote-run': accion.CONTROLLERS['remote-run']})),
          dict(id='desk', name='Felix DESKTOP', transport='ssh', argv=['false'],
-              actions=dict(transport='disabled', reason='canal de escritura del desk pendiente'))]
+              actions=dict(transport='disabled', reason='canal de escritura del desk pendiente',
+                           controllers=dict(accion.CONTROLLERS)))]
 
 
 def request(**changes):
@@ -153,6 +157,30 @@ class ActionsTests(unittest.TestCase):
             self.response = 'cancelled'
             self.assertEqual(self.actions.get(body['action_id'])[1]['status'], 'cancelled')
 
+    def test_every_status_rejection_preserves_unknown_and_same_id(self):
+        for initial in accion.OPEN:
+            for error in ('stale_state', 'not_found', 'unsupported', 'idempotency_conflict', 'invalid_request'):
+                with self.subTest(initial=initial, error=error):
+                    body = request(action_id='status-'+initial.replace('_','-')+'-'+error.replace('_','-'))
+                    self.response = initial
+                    self.actions.post(body)
+                    calls = []
+                    def reject(host, launcher, wire):
+                        calls.append(wire)
+                        return receipt(wire, 'rejected', error)
+                    with patch.object(self.actions, 'executor', side_effect=reject):
+                        answer = self.actions.get(body['action_id'])[1]
+                        self.assertEqual(answer['status'], 'unknown')
+                        self.assertNotIn('PRIVATE', json.dumps(answer))
+                        self.assertEqual(answer['action_id'], body['action_id'])
+                        self.assertEqual(self.actions.post(body)[1], answer)
+                        self.assertEqual(self.actions.get(body['action_id'])[1], answer)
+                    self.assertEqual([w['op'] for w in calls], ['status', 'status'])
+                    self.assertTrue(all(w['action_id'] == body['action_id'] for w in calls))
+                    self.actions = self.reopen()
+                    self.response = 'cancelled'
+                    self.assertEqual(self.actions.get(body['action_id'])[1]['status'], 'cancelled')
+
     def test_switch_does_not_break_reads_or_abandon_accepted_actions(self):
         self.response = 'cancelling'
         self.actions.post(request())
@@ -180,7 +208,7 @@ class ActionsTests(unittest.TestCase):
         cap = request(op='capabilities'); del cap['action_id']
         self.assertTrue(self.actions.post(cap)[1]['capabilities']['queued'])
         for host, launcher, ref, reason in [('desk','remote-run',REF,'canal de escritura del desk pendiente'),
-                ('mini','jale','job-AbCd1234','fuera de Pueue')]:
+                ('mini','jale','job-AbCd1234','no tiene controlador configurado')]:
             answer = self.actions.post(dict(cap, host=host, launcher=launcher, ref=ref))[1]
             self.assertIn(reason, answer['error']['message'])
         with patch.object(self.actions, 'executor', return_value=dict(schema='rack-cancel-result@1', ref=REF,
@@ -359,6 +387,124 @@ class AuthorizationTests(unittest.TestCase):
 
 
 class TransportTests(unittest.TestCase):
+    def test_hosts_fixed_controller_table_and_configured_reason(self):
+        base = Path(__file__).resolve().parents[1]
+        shipped = serve.load_hosts(base / 'hosts.json')
+        self.assertEqual(shipped[0]['actions']['controllers'], {'remote-run': accion.CONTROLLERS['remote-run']})
+        self.assertEqual(shipped[1]['actions']['controllers'], accion.CONTROLLERS)
+        self.assertEqual(accion.transport_reason(shipped[1], 'remote-run'), 'canal de escritura del desk pendiente')
+        self.assertIsNotNone(accion.transport_reason(shipped[0], 'jale'))
+        self.assertIsNotNone(accion.transport_reason(dict(id='old'), 'remote-run'))
+        with tempfile.TemporaryDirectory(dir='/tmp') as folder:
+            path = Path(folder) / 'hosts.json'
+            for changes in (dict(controllers={'remote-run': '/tmp/other.py'}),
+                            dict(controllers={'remote-run': accion.CONTROLLERS['jale']}),
+                            dict(controllers={'unknown': accion.CONTROLLERS['remote-run']}),
+                            dict(controllers={'remote-run': ['bad-type']}),
+                            dict(controllers={}), dict(controllers=[]), dict(transport='ssh'),
+                            dict(reason='unexpected local reason'), dict(extra=True),
+                            dict(transport='disabled', reason=''),
+                            dict(transport='disabled', reason='bad\nreason'),
+                            dict(transport='disabled', reason=123)):
+                with self.subTest(changes=changes):
+                    config = dict(HOSTS[0]['actions'], **changes)
+                    path.write_text(json.dumps([dict(HOSTS[0], actions=config)]))
+                    with self.assertRaises(ValueError): serve.load_hosts(path)
+                    with self.assertRaises(ValueError): accion.Executor()(dict(HOSTS[0], actions=config), 'remote-run', {})
+            hosts = copy.deepcopy(shipped)
+            hosts[1]['actions']['reason'] = 'Razón configurada para este host'
+            rack = serve.Rack(hosts, Path(folder), key_path=Path(folder)/'absent-key')
+            rack.publish(1000)
+            self.assertEqual(rack.read()['hosts'][1]['actions']['reason'], 'Razón configurada para este host')
+
+    def controller(self, root, source):
+        path = root / '.local/lib/remote-run/run-control.py'
+        path.parent.mkdir(parents=True)
+        path.write_text(source)
+        return path
+
+    def test_real_controller_observes_stdin_isolation_clean_environment_and_no_tty(self):
+        with tempfile.TemporaryDirectory(prefix='rack-c3-executor-', dir='/tmp') as folder:
+            root = Path(folder)
+            dump = root / 'seen.json'
+            path = self.controller(root, '''import json,os,sys
+from pathlib import Path
+raw=sys.stdin.read()
+Path(''' + repr(str(dump)) + ''').write_text(json.dumps(dict(
+    argv=sys.argv,isolated=sys.flags.isolated,env=dict(os.environ),stdin=raw,
+    tty=[os.isatty(0),os.isatty(1),os.isatty(2)],session=os.getsid(0),pid=os.getpid(),cwd=os.getcwd())))
+r=json.loads(raw)
+print(json.dumps(dict(schema='rack-cancel-result@1',ref=r['ref'],action_id=r['action_id'],
+    status='cancelled',result=dict(exit=130),error=None)))
+''')
+            wire = dict(schema='rack-cancel@1', op='cancel', ref=REF, action_id='action-0001',
+                        expected=dict(task_id=77, state='Queued'))
+            with patch.dict(os.environ, {'GH_TOKEN': 'synthetic-secret', 'REMOTE_RUN_HOST': 'desk', 'PYTHONPATH': '/evil'}):
+                answer = accion.Executor(home=root)(HOSTS[0], 'remote-run', wire)
+            self.assertEqual(answer, receipt(wire))
+            seen = json.loads(dump.read_text())
+            self.assertEqual(json.loads(seen['stdin']), wire)
+            self.assertEqual(seen['argv'], [str(path)])
+            self.assertEqual(seen['isolated'], 1)
+            self.assertEqual(seen['tty'], [False, False, False])
+            self.assertEqual(seen['session'], seen['pid'])
+            self.assertEqual(seen['cwd'], '/')
+            # Apple's /usr/bin/python3 shim adds SDK paths; Python may coerce LC_CTYPE.
+            for key, value in dict(HOME=str(root), PATH='/usr/bin:/bin:/opt/homebrew/bin', TMPDIR='/tmp').items():
+                self.assertEqual(seen['env'][key], value)
+            self.assertLessEqual(set(seen['env']), {'HOME', 'PATH', 'TMPDIR', 'LC_CTYPE',
+                '__CF_USER_TEXT_ENCODING', 'SDKROOT', 'CPATH', 'LIBRARY_PATH', 'MANPATH'})
+            for key in ('GH_TOKEN', 'REMOTE_RUN_HOST', 'PYTHONPATH'):
+                self.assertNotIn(key, seen['env'])
+
+    def test_real_timeout_terminates_known_group_and_reaps_controller(self):
+        with tempfile.TemporaryDirectory(prefix='rack-c3-timeout-', dir='/tmp') as folder:
+            root = Path(folder)
+            dump = root / 'child.json'
+            self.controller(root, '''import json,os,subprocess,time
+from pathlib import Path
+child=subprocess.Popen(['/usr/bin/python3','-I','-c','import time; time.sleep(60)'])
+Path(''' + repr(str(dump)) + ''').write_text(json.dumps(dict(pid=child.pid,group=os.getpgid(child.pid))))
+time.sleep(60)
+''')
+            processes = []
+            ready = []
+            def runner(*args, **kwargs):
+                process = subprocess.Popen(*args, **kwargs)
+                processes.append(process)
+                # Observe the known child before starting the communication deadline;
+                # Apple's Python shim can otherwise consume the entire test timeout.
+                deadline = time.monotonic() + 8
+                while not dump.exists() and process.poll() is None and time.monotonic() < deadline:
+                    time.sleep(.02)
+                self.assertTrue(dump.exists(), 'synthetic controller did not report its child')
+                ready.append(time.monotonic())
+                return process
+            try:
+                with self.assertRaises(subprocess.TimeoutExpired):
+                    accion.Executor(home=root, runner=runner, timeout=1)(HOSTS[0], 'remote-run', {})
+                self.assertLess(time.monotonic() - ready[0], 5)
+                process = processes[0]
+                self.assertEqual(process.returncode, -accion.signal.SIGKILL)
+                with self.assertRaises(ChildProcessError): os.waitpid(process.pid, os.WNOHANG)
+                child = json.loads(dump.read_text())
+                self.assertEqual(child['group'], process.pid)
+                deadline = time.monotonic() + 3
+                while time.monotonic() < deadline:
+                    state = subprocess.run(['/bin/ps', '-o', 'stat=', '-p', str(child['pid'])],
+                                           capture_output=True, text=True, timeout=1).stdout.strip()
+                    if not state: break
+                    time.sleep(.02)
+                self.assertEqual(state, '', 'known descendant was not removed after group timeout')
+                with self.assertRaises(ProcessLookupError): os.kill(process.pid, 0)
+                with self.assertRaises(ProcessLookupError): os.kill(child['pid'], 0)
+            finally:
+                # Exact session ID created above; also cleans up if an assertion fails.
+                for process in processes:
+                    try: os.killpg(process.pid, accion.signal.SIGKILL)
+                    except ProcessLookupError: pass
+                    process.wait(timeout=3)
+
     def test_exact_argv_stdin_environment_no_tty_and_bounded_response(self):
         calls=[]
         class Process:
@@ -388,6 +534,10 @@ class TransportTests(unittest.TestCase):
         for host,launcher in ((HOSTS[1],'remote-run'),(HOSTS[0],'jale')):
             with self.assertRaises(ValueError):executor(host,launcher,wire)
         self.assertEqual(len(calls),2)
+        configured = dict(HOSTS[0], id='another-host', actions=dict(transport='local', reason=None,
+                          controllers={'jale': accion.CONTROLLERS['jale']}))
+        executor(configured, 'jale', dict(wire, ref='job-AbCd1234'))
+        self.assertEqual(calls[2][0], ['/usr/bin/python3','-I','/synthetic-home/.local/lib/jale/pueue-control.py'])
 
     def test_timeout_kills_only_own_process_group_and_reaps(self):
         process=Mock(pid=987654,returncode=-9)

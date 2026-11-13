@@ -1,4 +1,4 @@
-"""Prove four safety regressions are caught, without editing the working tree.
+"""Prove six safety regressions are caught, without editing the working tree.
 
 TMPDIR=/tmp /usr/bin/python3 tests/check_mutations.py
 """
@@ -19,6 +19,12 @@ CASES=(
      'test_actions.ActionsTests.test_id_is_bound_to_digest_and_duplicate_does_not_act'),
     ('unknown','accion.py',"intent = result(request, 'unknown')", "intent = result(request, 'rejected', 'not_found')",
      'test_actions.ActionsTests.test_intent_committed_before_effect_and_crash_before_effect'),
+    ('status-rejected-unknown','accion.py',"if response['status'] == 'rejected':",
+     "if response['status'] == 'rejected' and response['error']['code'] == 'not_found':",
+     'test_actions.ActionsTests.test_every_status_rejection_preserves_unknown_and_same_id'),
+    ('cancelled-old-snapshot','index.html',
+     '.filter(t=>!CANCELLED.has(runKey(h,t)))', '',
+     'test_actions.UITests.test_production_js_dialog_pending_toast_reasons_and_network'),
 )
 
 
@@ -37,7 +43,7 @@ def main():
                 raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
             print(name+': caught (expected failure)')
             print('\n'.join(line for line in result.stderr.splitlines() if 'AssertionError:' in line or line.startswith('FAILED')))
-    print('All four mutations caught; original tree untouched.')
+    print('All six mutations caught; original tree untouched.')
 
 
 if __name__=='__main__':main()

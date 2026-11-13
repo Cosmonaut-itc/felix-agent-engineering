@@ -121,11 +121,14 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 const PENDING = new Map();
+const CANCELLED = new Set();
+const runKey = (h,t) => JSON.stringify([h.id,t.id,t.control?.ref]);
 const actionKey = (h,t) => h.id+'/'+t.id;
 const pendingText = (h,t) => { const a=PENDING.get(actionKey(h,t)); return a ? `<span class="action-state" role="status">${esc(a.status==='unknown' ? 'Resultado desconocido · consultando…' : a.status==='cancel_unconfirmed' ? 'Cancelación sin confirmar · consultando…' : 'Cancelando…')}</span>` : ''; };
 const pendingClass = (h,t) => PENDING.has(actionKey(h,t)) ? 'pending' : '';
 function persistActions(){try{sessionStorage.setItem('rack-actions',JSON.stringify([...PENDING]));}catch{}}
 try{for(const [key,a] of JSON.parse(sessionStorage.getItem('rack-actions') || '[]')){PENDING.set(key,a);}}catch{}
+try{for(const key of JSON.parse(sessionStorage.getItem('rack-cancelled') || '[]')) CANCELLED.add(key);}catch{}
 
 const GB = b => b == null ? NaN : (b/1024**3);
 const fmtMin = s => `${Math.floor(s/60)} min`;
@@ -246,7 +249,7 @@ function render(data){
     return {...h, guard:s.guard, usage:s.usage, cores:s.cpu?.cores, load:s.cpu?.load,
       mem_total:s.mem?.total, mem_avail:s.mem?.available, swap_used:s.mem?.swap_used, swap_total:s.mem?.swap_total,
       groups:Object.fromEntries((s.groups || []).map(g=>[g.name,g])),
-      tasks:(s.tasks || []).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
+      tasks:(s.tasks || []).filter(t=>!CANCELLED.has(runKey(h,t))).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
   for(const a of PENDING.values()){
     const h=S.hosts.find(h=>h.id===a.request.host);
@@ -325,7 +328,7 @@ window.addEventListener('resize',syncMenu);
 
 function cancelReason({h,t}){
   if(PENDING.has(actionKey(h,t))) return 'Esta cancelación sigue pendiente; se consulta con el mismo ID.';
-  return h.actions?.reason || (h.id==='desk' ? 'canal de escritura del desk pendiente' : null)
+  return h.actions?.reason
     || (!h.fresh ? 'Actualiza la instantánea antes de cancelar.' : null)
     || t.control?.reason || (!t.control?.launcher ? 'Lanzador no reconocido; no se puede confirmar la cancelación.' : null);
 }
@@ -386,8 +389,11 @@ function acceptAction(key,action,data){
   }else{
     PENDING.delete(key); persistActions();
     if(data.status==='cancelled'){
+      const identity=JSON.stringify([action.request.host,action.request.expected.task_id,action.request.ref]);
+      CANCELLED.add(identity);
+      try{sessionStorage.setItem('rack-cancelled',JSON.stringify([...CANCELLED]));}catch{}
       const h=S?.hosts.find(h=>h.id===action.request.host);
-      if(h) h.tasks=h.tasks.filter(t=>t.id!==action.task.id);
+      if(h) h.tasks=h.tasks.filter(t=>runKey(h,t)!==identity);
     }
     repaintActions(); say(actionMessage(data,action)); refresh();
   }
