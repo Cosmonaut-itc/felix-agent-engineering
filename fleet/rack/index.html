@@ -135,7 +135,7 @@ const fmtMin = s => `${Math.floor(s/60)} min`;
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const what = t => t.title || t.subject || t.branch || objective(t);
 // Nombre de producto por carpeta, repo o proyecto de Linear; igual con o sin ticket.
-const PRODUCT = {'comprador':'Hasito','hasito':'Hasito','sen-checkin':'Jale','jale':'Jale','personal-agent-orchestration':'PAO','felix-agent-engineering':'PAO','marhbe':'MARHBE'};
+const PRODUCT = {'comprador':'Hasito','hasito':'Hasito','sen-checkin':'Jale','jale':'Jale','personal-agent-orchestration':'PAO','felix-agent-engineering':'PAO','marhbe':'MARHBE','apotheca':'Bodega'};
 const proj = t => { const p = (t.project || t.linear_project || t.group || '').replace(/\.+$/, ''); return PRODUCT[p.toLowerCase()] || p.charAt(0).toUpperCase() + p.slice(1); };
 const OBJ = {contract:'Contrato',e2e:'E2E','api-unit':'Unitarias API','web-unit':'Unitarias web',types:'Tipos',gates:'Gates completos',launch:'Arranque',lint:'Lint','packages-build':'Build de paquetes'};
 const objective = t => {

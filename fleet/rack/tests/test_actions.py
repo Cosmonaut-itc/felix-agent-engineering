@@ -294,6 +294,16 @@ class SnapshotControlTests(unittest.TestCase):
             self.assertIsNone(snapshot.task_control(dict(jale,command='exec bash /else/job-AbCd1234/task.sh'),home,'Queued')['launcher'])
             self.assertIn('Sólo',snapshot.task_control(raw,home,'Paused')['reason'])
 
+    def test_bodega_label_wins_over_the_shared_run_path(self):
+        home = Path('/synthetic-home')
+        raw = dict(id=78, group='suites', label='apotheca-remote-run', path=str(home / 'remote-run/runs' / REF))
+        for state in ('Queued', 'Running', 'Paused'):
+            control = snapshot.task_control(raw, home, state)
+            self.assertEqual((control['launcher'], control['ref']), (None, None))
+            self.assertIn('Bodega', control['reason'])
+        self.assertEqual(snapshot.task_control(raw, home, 'Queued')['expected'], dict(task_id=78, state='Queued'))
+        self.assertEqual(snapshot.task_control(dict(raw, label='otra'), home, 'Queued')['launcher'], 'remote-run')
+
     def test_control_is_validated_and_unknown_fields_cannot_escape(self):
         row = payload()['hosts'][0]['snapshot']['tasks'][0]
         data = dict(sample(), tasks=[row])
