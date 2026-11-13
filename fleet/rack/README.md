@@ -44,7 +44,7 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    el 8787 ya lo usa otro servicio. El Funnel existente en 10000 no se modifica.
 
 El LaunchAgent ejecuta `/usr/bin/python3 -I serve.py --bind <IP tailnet>
---port 8788 --owner <LoginName>`. Logs en `~/Library/Logs/pao-rack.log`.
+--port 8788 --owner <LoginName> --name <nombre MagicDNS> --name <nombre corto>`. Logs en `~/Library/Logs/pao-rack.log`.
 `bash instalar.sh --desinstalar` descarga el agente y quita sus archivos;
 conserva historial, caché, key de Linear, llave SSH y logs.
 
@@ -61,7 +61,8 @@ modo loopback; `--tailscale` permite sustituir el binario en las pruebas.
 Los cambios de identidad pueden tardar hasta 5 minutos en reflejarse.
 
 Antes de todo eso exige que la cabecera `Host` nombre a este servidor con su
-puerto: la IP de `--bind` o un `--name` (sin distinguir mayúsculas). Si no,
+puerto: la IP de `--bind` o un `--name` (sin distinguir mayúsculas), en una
+sola cabecera. Si no,
 responde 403. Así una página de otro sitio cuyo nombre resuelva a la IP de la
 Mini (DNS rebinding) no lee el panel desde el navegador del dueño.
 `instalar.sh` pasa el nombre MagicDNS completo y el corto.

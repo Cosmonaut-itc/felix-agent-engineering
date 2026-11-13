@@ -331,10 +331,11 @@ def allowed_client(address, bind, funnel=False):
         return False
 
 
-def allowed_host(header, server):
+def allowed_host(headers, server):
     # Un nombre ajeno que resuelve a esta IP (DNS rebinding) haría same-origin la página de otro sitio.
+    values = headers.get_all('Host') or []
     names = (server.server_address[0], *getattr(server, 'names', ()))
-    return isinstance(header, str) and header.lower() in {name.lower() + ':' + str(server.server_address[1]) for name in names}
+    return len(values) == 1 and values[0].lower() in {name.lower() + ':' + str(server.server_address[1]) for name in names}
 
 
 class OwnerCheck:
@@ -374,7 +375,7 @@ class OwnerCheck:
 
 class Handler(BaseHTTPRequestHandler):
     def dispatch(self):
-        if not allowed_host(self.headers.get('Host'), self.server):
+        if not allowed_host(self.headers, self.server):
             self.reply(403, b'')
         elif not allowed_client(self.client_address[0], self.server.server_address[0], 'Tailscale-Funnel-Request' in self.headers):
             self.reply(403, b'')

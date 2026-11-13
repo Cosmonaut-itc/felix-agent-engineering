@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+from http.client import HTTPMessage
 from pathlib import Path
 import subprocess
 import tempfile
@@ -367,7 +368,11 @@ class ServerTests(unittest.TestCase):
         handler.client_address = (ip, 1234)
         handler.server = type('Server', (), dict(server_address=('100.100.0.1', 8787), rack=self.rack,
                                                owner_check=owner_result, names=names))()
-        handler.headers = dict(Host=host, **({'Tailscale-Funnel-Request': '?1'} if funnel else {}))
+        handler.headers = HTTPMessage()
+        for value in (host if isinstance(host, tuple) else (host,) if host else ()):
+            handler.headers['Host'] = value
+        if funnel:
+            handler.headers['Tailscale-Funnel-Request'] = '?1'
         handler.command = 'GET'
         handler.path = '/api/rack.json'
         result = []
@@ -393,7 +398,8 @@ class ServerTests(unittest.TestCase):
         check = self.fake_tailscale()
         for host in ('mini.example.ts.net:8787', 'MINI:8787', '100.100.0.1:8787'):
             self.assertEqual(self.request_as('100.111.159.14', check, host=host, names=('mini.example.ts.net', 'mini'))[0], 200)
-        for host in ('evil.example:8787', 'mini.example.ts.net:80', 'mini.example.ts.net', '100.100.0.1', None):
+        for host in ('evil.example:8787', 'mini.example.ts.net:80', 'mini.example.ts.net', '100.100.0.1', None,
+                     ('100.100.0.1:8787', 'evil.example:8787'), ('100.100.0.1:8787', '100.100.0.1:8787')):
             self.assertEqual(self.request_as('100.111.159.14', check, host=host, names=('mini.example.ts.net', 'mini')), (403, b''))
 
     def test_rebound_host_cannot_read_or_refresh(self):
