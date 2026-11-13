@@ -95,12 +95,15 @@ restantes y la separación entre propietario, verificador y stacker.
      revisado con la rama destino, y esa rama no cambió archivos del parche.
      El APTO sigue vigente sin ronda nueva. Guarda esa línea con la prueba
      del paso 2.
-   - `Ronda delta`: la mezcla es exacta, pero la rama destino cambió los
-     archivos del parche que lista. Corre una ronda delta sobre esa
-     interacción.
+   - `Ronda delta`: la rama destino cambió los archivos del parche que
+     lista, o la mezcla tuvo conflictos. Con conflictos, la segunda línea
+     es el diff de su resolución y la lista incluye los archivos en
+     conflicto. Corre una ronda delta sobre esos archivos y ese diff. Es una
+     ronda de sincronización.
    - `Ronda`, o un error del script: corre la ronda que fija **Rondas**.
 
-   Cada ronda cuenta para el límite de **Rondas**. Un veredicto de
+   Una ronda de sincronización no cuenta para el límite de **Rondas**. Las
+   demás rondas sí cuentan. Un veredicto de
    **Verificado** sobrevive a un head nuevo sólo según Shipping 3.
 4. **Merge protegido.** Sigue Shipping 4 y su referencia `merge-safety.md`,
    con inspección y cancelación de solicitudes pendientes antes de cambiar
