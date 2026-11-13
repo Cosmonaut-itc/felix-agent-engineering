@@ -488,6 +488,23 @@ vendor_sync_upstreams() {
     assert grep -q 'vendor/ghost no tiene fila upstream' "$HOME/err"
 }
 
+vendor_links() {
+    fixture
+    local doc=$PAO_ROOT/skills/felix-mode/references/zz-test.md
+    printf 'Sigue [animate](../../../vendor/emilkowalski/animate/SKILL.md#hard-rules).\n' > "$doc"
+    pao check > "$HOME/output"
+    pao vendor-refs vendor/emilkowalski/animate/RECIPES.md > "$HOME/refs"
+    assert grep -qx 'skills/felix-mode/references/zz-test.md' "$HOME/refs"
+    pao vendor-refs vendor/emilkowalski/choreograph/RECIPES.md vendor/emilkowalski/UPSTREAM > "$HOME/refs"
+    if grep -q zz-test "$HOME/refs"; then return 1; fi
+    local link
+    for link in ../../../vendor/emilkowalski/animate/MISSING.md ../../vendor/emilkowalski/animate/SKILL.md ../../../vendor/emilkowalski/../emilkowalski/LICENSE/x.md; do
+        printf 'Roto: [x](%s)\n' "$link" > "$doc"
+        if pao check 2> "$HOME/error"; then return 1; fi
+        assert grep -F "zz-test.md: enlace a vendor roto: $link" "$HOME/error"
+    done
+}
+
 minimal_path() {
     fixture
     install_pao
@@ -614,7 +631,7 @@ STUB
 
 if ! prepare_template > "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
 FAILURES=0 CASE=0
-for test_case in pstack_refs_status clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored vendor_sync_upstreams update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning uninstall_rm_failure windows_job_backup; do
+for test_case in pstack_refs_status clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored vendor_sync_upstreams vendor_links update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning uninstall_rm_failure windows_job_backup; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
     result=$?

@@ -7,3 +7,8 @@ Feature	4	Delegate code-writing to a subagent using your configured feature mode
 Shipping	1	Resolve the forge, then verify each PR independently before it lands.
 Shipping	3	Re-check that the verdicts still describe the code.
 Shipping	4	Land bottom-up, one PR at a time.
+Prototype	1	Scope the decision the prototype exists to make
+Prototype	3	Build throwaway in an isolated scratch dir, separate from production source.
+Prototype	4	When comparing alternatives, build them behind one switcher
+Prototype	5	Verify on the matching surface.
+Prototype	6	Present alternatives, tradeoffs, and a recommendation.
