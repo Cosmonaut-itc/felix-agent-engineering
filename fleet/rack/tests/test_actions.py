@@ -498,11 +498,11 @@ time.sleep(60)
                 while time.monotonic() < deadline:
                     state = subprocess.run(['/bin/ps', '-o', 'stat=', '-p', str(child['pid'])],
                                            capture_output=True, text=True, timeout=1).stdout.strip()
-                    if not state: break
+                    # Gone, or a zombie where PID 1 does not reap orphans: either way it no longer runs.
+                    if not state or state.startswith('Z'): break
                     time.sleep(.02)
-                self.assertEqual(state, '', 'known descendant was not removed after group timeout')
+                self.assertTrue(not state or state.startswith('Z'), f'known descendant still runs after group timeout: {state}')
                 with self.assertRaises(ProcessLookupError): os.kill(process.pid, 0)
-                with self.assertRaises(ProcessLookupError): os.kill(child['pid'], 0)
             finally:
                 # Exact session ID created above; also cleans up if an assertion fails.
                 for process in processes:
