@@ -310,8 +310,9 @@ de esa consulta conserva `unknown`, sea `not_found`, `unsupported`,
 `stale_state`, `idempotency_conflict` o `invalid_request`: un rechazo tardío
 no demuestra que la cancelación aceptada no tuvo efecto. No se reenvían
 mensajes privados del controlador. La UI guarda las acciones
-pendientes en sessionStorage para continuar al recargar esa pestaña; nunca
-reenvía `cancel` automáticamente después de un error de red. La fila y el
+pendientes en sessionStorage para continuar al recargar esa pestaña. Tras
+un error de red consulta el recibo; sólo un 404 autoriza el reenvío único
+del mismo `cancel`, cuerpo e ID. La fila y el
 aviso distinguen incertidumbre y falta de confirmación del fin de procesos.
 
 Para apagar acciones localmente sin reinstalar ni afectar lectura:
