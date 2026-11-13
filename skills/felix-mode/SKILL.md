@@ -208,7 +208,9 @@ que demuestra:
 - **Prueba.** El brief de todo revisor pide que cada critical o warning
   traiga el comando que corrió, la salida que imprimió y la salida que exige
   la intención, como el brief de `interrogate`. En un hallazgo de
-  documentación, el comando muestra las líneas que se contradicen. En el
+  documentación, el comando muestra las líneas que se contradicen. En un
+  warning de probabilidad baja, muestra las líneas que causan el daño
+  cuando ocurre el disparador, sin reproducirlo. En el
   veto vuelves a correr cada comando. Un critical o warning sin comando, o
   cuyo comando no reproduce el fallo, no queda abierto.
 - **Clase.** El brief de todo revisor copia esta matriz y sus
@@ -224,15 +226,25 @@ que demuestra:
 
   Probabilidad alta: el uso habitual lo dispara. Media: lo dispara un caso
   raro que el sistema ya produce, como un reintento, un timeout o una
-  entrada vacía. Baja: el disparador no aparece hoy en el código ni en los
-  datos, o pide una combinación que nada genera. Gravedad alta: pierde o
+  entrada vacía. Con probabilidad alta o media, el hallazgo cita lo que
+  hoy produce el disparador: el llamador, el job o el dato, con archivo y
+  línea o con la consulta que lo muestra. Baja: el hallazgo no trae esa
+  cita, el disparador no aparece hoy en el código ni en los datos, o pide
+  una combinación que nada genera. Una carrera entre dos operaciones es
+  baja mientras el hallazgo no cite el mecanismo que la genera, como un
+  reintento, un job programado o un doble envío. Gravedad alta: pierde o
   corrompe datos, escribe mal en producción o en un sistema de cliente,
-  calcula mal dinero o impuestos, o abre acceso. Media: da un resultado
+  calcula mal dinero o impuestos, o abre acceso. El hallazgo de gravedad
+  alta dice cuál de esas consecuencias causa; sin ella, la gravedad es
+  media o baja. Media: da un resultado
   incorrecto o un fallo que pide intervención y se recupera. Baja: causa
   una molestia sin efecto en datos ni resultados. El revisor da APTO
   cuando no queda critical ni warning. En el veto confirmas el disparador
   además del comando. Si no lo encuentras en el código ni en los datos, la
-  probabilidad es baja.
+  probabilidad es baja. Un warning que el veto baja a nit queda en el
+  registro como `rebatido`, con la clase que traía y la búsqueda que
+  hiciste como evidencia. El revisor delta lo reabre sólo con la cita que
+  faltaba. Un critical que el veto baja a nit queda `asumido`.
 - **Rondas.** La ronda 1 es completa, y cada revisor del nivel recibe el
   diff completo. Las siguientes siguen **Ronda delta**. Una review converge
   cuando cada ronda trae menos hallazgos y ninguno abre un caso nuevo en
@@ -249,7 +261,7 @@ que demuestra:
   contexto nuevo, también en alto riesgo. Su brief lleva el brief original,
   el registro, el head ya revisado y el diff desde ese head, con
   `git range-diff` si hubo rebase. El revisor marca cada id del registro
-  como `resuelto`, `sigue asumido` o `sigue abierto: <motivo>` y busca critical y warning en
+  como `resuelto`, `sigue asumido` o `sigue abierto: <motivo>` y busca critical, warning y riesgos asumidos en
   lo que el delta cambió. Fuera del delta reporta sólo un critical. Da APTO
   sobre el head nuevo cuando ningún id sigue abierto y no trae critical ni
   warning nuevo, y ese APTO vale por todo el nivel. La ronda vuelve a ser completa si la corrección cambia de enfoque según
@@ -258,9 +270,10 @@ que demuestra:
   completa no vio. Un head nuevo que sólo incorpora la rama destino conserva
   su APTO sin ronda cuando lo permite el paso 3 del
   [procedimiento de merge](references/merge.md).
-- **Hallazgos.** El brief de todo revisor pide critical, warning y los nits
-  de gravedad alta, que son riesgos asumidos. Descarta los demás nits sin
-  registrarlos. La clase sale de **Clase**, también en documentación. En la
+- **Hallazgos.** El brief de todo revisor pide critical y warning. En nivel
+  normal pide también los nits de gravedad alta, que son riesgos asumidos.
+  Pide cerrar el reporte con `Nits descartados: <n>`, la cuenta de los
+  demás nits, sin describirlos. Descarta esos nits sin registrarlos. La clase sale de **Clase**, también en documentación. En la
   review de UI la fija [Menos es más](references/menos-es-mas.md). Corrige
   cada critical y warning aceptado con el cambio mínimo y rebate con evidencia el que esté mal. Escribe tú la
   corrección de la ronda si cabe en el umbral de «Delegación» del routing.
@@ -273,8 +286,12 @@ que demuestra:
   programa, con las columnas
   `id	ronda	probabilidad	gravedad	severidad	estado	evidencia`. El `id` no
   cambia entre rondas. El estado es `abierto`, `corregido`, `rebatido`,
-  `declinado` o `asumido`. Si el nivel sube a alto, cada `asumido` vuelve a
-  `abierto` como warning.
+  `declinado` o `asumido`. `asumido` existe sólo en nivel normal. Si el
+  nivel sube a alto, cada `asumido` vuelve a `abierto` como warning. Anota
+  la cuenta de `Nits descartados` de cada ronda en una fila con id
+  `nits-r<ronda>`, `-` en probabilidad y gravedad, severidad `nit`, estado
+  `declinado` y la cuenta en `evidencia`. El brief de la ronda delta omite
+  esas filas.
 - **Regla por hallazgo.** Si un critical o warning aceptado es mecánico, como un
   patrón de sintaxis, una API prohibida, una forma de import o una regla de
   ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
