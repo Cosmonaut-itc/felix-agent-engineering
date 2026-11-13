@@ -411,6 +411,11 @@ class TransportTests(unittest.TestCase):
                     path.write_text(json.dumps([dict(HOSTS[0], actions=config)]))
                     with self.assertRaises(ValueError): serve.load_hosts(path)
                     with self.assertRaises(ValueError): accion.Executor()(dict(HOSTS[0], actions=config), 'remote-run', {})
+            remote = dict(shipped[1], actions=dict(HOSTS[0]['actions']))
+            path.write_text(json.dumps([remote]))
+            with self.assertRaises(ValueError): serve.load_hosts(path)
+            self.assertIsNotNone(accion.transport_reason(remote, 'remote-run'))
+            with self.assertRaises(ValueError): accion.Executor()(remote, 'remote-run', {})
             hosts = copy.deepcopy(shipped)
             hosts[1]['actions']['reason'] = 'Razón configurada para este host'
             rack = serve.Rack(hosts, Path(folder), key_path=Path(folder)/'absent-key')

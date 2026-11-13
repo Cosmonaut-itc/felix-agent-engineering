@@ -111,6 +111,8 @@ def transport_reason(host, launcher):
     config = action_config(host.get('actions'))
     if config['transport'] != 'local':
         return config['reason']
+    if host.get('transport') != 'local':
+        return 'El canal local sólo actúa sobre el host donde corre el panel.'
     if launcher not in config['controllers']:
         return 'Este lanzador no tiene controlador configurado en este host.'
     return None

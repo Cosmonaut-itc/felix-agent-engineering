@@ -75,7 +75,9 @@ def load_hosts(path):
                     or not host['argv'] or any(not isinstance(a, str) or not a or '\0' in a for a in host['argv'])):
                 raise ValueError()
             if 'actions' in host:
-                accion.action_config(host['actions'])
+                # A local write channel acts on the panel's own host, never on one read over ssh.
+                if accion.action_config(host['actions'])['transport'] == 'local' and host['transport'] != 'local':
+                    raise ValueError()
             ids.add(host['id'])
         return hosts
     except (OSError, ValueError, TypeError, KeyError) as error:
