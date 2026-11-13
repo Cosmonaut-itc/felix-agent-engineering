@@ -568,19 +568,20 @@ uninstall() {
     printf 'Desinstalado. Respaldos conservados en %s/backups/\n' "$STATE"
 }
 
-# Invoked by sync_upstream's EXIT trap.
+# Invoked by vendor_sync's EXIT trap. Puts back any directory a failed swap already moved aside.
 # shellcheck disable=SC2329
 vendor_cleanup() {
-    local dest=$1 tmp=$2 stage=$3
-    if [ -n "$stage" ] && [ -d "$stage/previous" ] && [ ! -e "$dest" ]; then
-        if ! mv "$stage/previous" "$dest"; then
-            fail "respaldo vendor conservado en $stage/previous"
-            rm -rf "$tmp"
-            return 1
-        fi
+    local work=$1 stage=$2 previous dest kept=0
+    if [ -n "$stage" ]; then
+        for previous in "$stage"/*.previous; do
+            [ -d "$previous" ] || continue
+            dest=$PAO_ROOT/vendor/$(basename "$previous" .previous)
+            [ ! -e "$dest" ] || continue
+            mv "$previous" "$dest" || { fail "respaldo vendor conservado en $previous"; kept=1; }
+        done
+        [ "$kept" = 1 ] || rm -rf "$stage"
     fi
-    rm -rf "$tmp"
-    [ -z "$stage" ] || rm -rf "$stage"
+    rm -rf "$work"
 }
 
 upstream_version() {
@@ -590,63 +591,67 @@ upstream_version() {
     printf '%s' "$version"
 }
 
+# Builds one upstream's copy under $4 without touching vendor/.
 # A tags upstream follows its highest semver release; a head upstream follows its default branch.
-sync_upstream() (
-    local dir=$1 repo=$2 track=$3 dest=$PAO_ROOT/vendor/$1 version commit tmp i name src count old stage='' local_changes
-    local_changes=$(git -C "$PAO_ROOT" status --porcelain --ignored --untracked-files=all -- "vendor/$dir") || { fail 'no se pudo leer git status de vendor'; return 1; }
-    if [ -n "$local_changes" ]; then
-        fail "vendor/$dir tiene cambios locales; vendor-sync no los pisa"
-        return 1
-    fi
-    tmp=$(mktemp -d "${TMPDIR:-/tmp}/pao-vendor.XXXXXX") || return 1
-    trap 'vendor_cleanup "$dest" "$tmp" "$stage"' EXIT
-    trap 'exit 130' INT
-    trap 'exit 143' TERM
+prepare_upstream() {
+    local dir=$1 repo=$2 track=$3 out=$4 version commit i name src count
+    mkdir -p "$out/vendor" || return 1
     if [ "$track" = tags ]; then
-        git ls-remote --tags --refs "$repo" > "$tmp/tags" || return 1
-        version=$(awk '{sub(/^refs\/tags\//, "", $2); if ($2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) print $2}' "$tmp/tags" | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)
+        git ls-remote --tags --refs "$repo" > "$out/tags" || return 1
+        version=$(awk '{sub(/^refs\/tags\//, "", $2); if ($2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) print $2}' "$out/tags" | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)
         [ -n "$version" ] || { fail "$dir: no hay tags semver"; return 1; }
         set -- --branch "$version"
     else
         set --
     fi
-    if ! git -c advice.detachedHead=false -c core.autocrlf=false clone --quiet --depth 1 "$@" "$repo" "$tmp/repo" > "$tmp/clone.log" 2>&1; then cat "$tmp/clone.log" >&2; return 1; fi
-    commit=$(git -C "$tmp/repo" rev-parse HEAD) || return 1
+    if ! git -c advice.detachedHead=false -c core.autocrlf=false clone --quiet --depth 1 "$@" "$repo" "$out/repo" > "$out/clone.log" 2>&1; then cat "$out/clone.log" >&2; return 1; fi
+    commit=$(git -C "$out/repo" rev-parse HEAD) || return 1
     [ "$track" = tags ] || version=$(printf '%s' "$commit" | cut -c1-12)
-    mkdir "$tmp/vendor" || return 1
     for ((i=0; i<${#TYPES[@]}; i++)); do
         [[ ${TYPES[$i]} = skill || ${TYPES[$i]} = ref ]] && [[ ${SOURCES[$i]} = vendor/$dir/* ]] || continue
         name=${TARGETS[$i]}
         count=0 src=
-        for src in "$tmp/repo/skills/$name" "$tmp/repo/skills"/*/"$name"; do
+        for src in "$out/repo/skills/$name" "$out/repo/skills"/*/"$name"; do
             [ -d "$src" ] || continue
             count=$((count + 1))
             [ -f "$src/SKILL.md" ] && [ "$(skill_name "$src/SKILL.md")" = "$name" ] || { fail "$dir: SKILL.md/name upstream inválido: $name"; return 1; }
-            cp -R "$src" "$tmp/vendor/$name" || return 1
+            cp -R "$src" "$out/vendor/$name" || return 1
         done
         [ "$count" = 1 ] || { fail "$dir/$name: se esperaba una coincidencia, hay $count"; return 1; }
     done
-    cp "$tmp/repo/LICENSE" "$tmp/vendor/LICENSE" || return 1
-    { printf 'repo=%s\n' "$repo"; [ "$track" = head ] || printf 'tag=%s\n' "$version"; printf 'commit=%s\n' "$commit"; } > "$tmp/vendor/UPSTREAM"
-    if [ -d "$dest" ] && diff -qr "$dest" "$tmp/vendor" >/dev/null; then printf '%s unchanged\n' "$dir"; return; fi
-    old=$(upstream_version "$dest/UPSTREAM")
-    mkdir -p "$PAO_ROOT/vendor" || return 1
-    stage=$(mktemp -d "$PAO_ROOT/vendor/.$dir.XXXXXX") || return 1
-    cp -R "$tmp/vendor" "$stage/new" || return 1
-    if [ -e "$dest" ]; then mv "$dest" "$stage/previous" || return 1; fi
-    mv "$stage/new" "$dest" || return 1
-    printf '%s changed %s -> %s\n' "$dir" "${old:-none}" "$version"
-)
+    cp "$out/repo/LICENSE" "$out/vendor/LICENSE" || return 1
+    { printf 'repo=%s\n' "$repo"; [ "$track" = head ] || printf 'tag=%s\n' "$version"; printf 'commit=%s\n' "$commit"; } > "$out/vendor/UPSTREAM"
+    printf '%s' "$version" > "$out/version"
+}
 
-vendor_sync() {
-    local i failed=0
+# Every upstream is built before any is replaced, so a failed fetch leaves vendor/ untouched and a retry starts clean.
+vendor_sync() (
+    local i dir dest work stage='' old local_changes rows=()
     load_manifest vendor || return 1
     for ((i=0; i<${#TYPES[@]}; i++)); do
         [ "${TYPES[$i]}" = upstream ] || continue
-        sync_upstream "${SOURCES[$i]}" "${TARGETS[$i]}" "${MARKETS[$i]}" || failed=1
+        local_changes=$(git -C "$PAO_ROOT" status --porcelain --ignored --untracked-files=all -- "vendor/${SOURCES[$i]}") || { fail 'no se pudo leer git status de vendor'; return 1; }
+        [ -z "$local_changes" ] || { fail "vendor/${SOURCES[$i]} tiene cambios locales; vendor-sync no los pisa"; return 1; }
+        rows[${#rows[@]}]=$i
     done
-    return "$failed"
-}
+    work=$(mktemp -d "${TMPDIR:-/tmp}/pao-vendor.XXXXXX") || return 1
+    trap 'vendor_cleanup "$work" "$stage"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    for i in "${rows[@]}"; do
+        prepare_upstream "${SOURCES[$i]}" "${TARGETS[$i]}" "${MARKETS[$i]}" "$work/${SOURCES[$i]}" || return 1
+    done
+    for i in "${rows[@]}"; do
+        dir=${SOURCES[$i]} dest=$PAO_ROOT/vendor/${SOURCES[$i]}
+        if [ -d "$dest" ] && diff -qr "$dest" "$work/$dir/vendor" >/dev/null; then printf '%s unchanged\n' "$dir"; continue; fi
+        old=$(upstream_version "$dest/UPSTREAM")
+        if [ -z "$stage" ]; then mkdir -p "$PAO_ROOT/vendor" && stage=$(mktemp -d "$PAO_ROOT/vendor/.sync.XXXXXX") || return 1; fi
+        cp -R "$work/$dir/vendor" "$stage/$dir.new" || return 1
+        if [ -e "$dest" ]; then mv "$dest" "$stage/$dir.previous" || return 1; fi
+        mv "$stage/$dir.new" "$dest" || return 1
+        printf '%s changed %s -> %s\n' "$dir" "${old:-none}" "$(cat "$work/$dir/version")"
+    done
+)
 
 main() {
     # Task Scheduler starts Git Bash without /usr/bin in PATH; env restores the full PATH later.

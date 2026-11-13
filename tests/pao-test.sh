@@ -467,6 +467,18 @@ vendor_sync_upstreams() {
     pao vendor-sync > "$HOME/out"
     assert grep -qx "rolling changed ${head_commit:0:12} -> $(git -C "$dir/rolling" rev-parse --short=12 HEAD)" "$HOME/out"
     assert grep -qx updated "$PAO_ROOT/vendor/rolling/gamma/SKILL.md"
+    git -C "$PAO_ROOT" add vendor
+    git -C "$PAO_ROOT" -c core.hooksPath=/dev/null commit --quiet -m vendor
+    printf 'next\n' >> "$dir/released/skills/core/alpha/SKILL.md"
+    git -C "$dir/released" -c core.hooksPath=/dev/null commit --quiet -am next
+    git -C "$dir/released" tag v1.11.0
+    mv "$dir/rolling" "$dir/rolling-offline"
+    if pao vendor-sync > "$HOME/out" 2> "$HOME/err"; then return 1; fi
+    assert test -z "$(git -C "$PAO_ROOT" status --porcelain --ignored --untracked-files=all -- vendor)"
+    mv "$dir/rolling-offline" "$dir/rolling"
+    pao vendor-sync > "$HOME/out"
+    assert grep -qx 'released changed v1.10.0 -> v1.11.0' "$HOME/out"
+    assert grep -qx 'rolling unchanged' "$HOME/out"
     printf 'skill vendor/ghost/alpha alpha2\n' >> "$PAO_MANIFEST"
     if pao vendor-sync 2> "$HOME/err"; then return 1; fi
     assert grep -q 'fuente vendor inválida' "$HOME/err"
