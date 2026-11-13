@@ -1,4 +1,6 @@
 # tipo fuente destino (o nombre)
+# upstream: directorio de vendor, repo y seguimiento (tags = último release semver, head = rama por defecto)
+# ref: skill copiada a vendor para consulta por ruta, sin instalar
 file docs/orchestration.md ~/.agents/docs/orchestration.md
 file docs/agent-routing.md ~/.agents/docs/agent-routing.md
 file docs/native-subagents.md ~/.agents/docs/native-subagents.md
@@ -14,6 +16,8 @@ file configs/claude/hooks/duplicate-session-guard ~/.claude/hooks/duplicate-sess
 skill skills/felix-mode felix-mode
 skill skills/android-qa android-qa
 skill skills/launch-qa launch-qa
+upstream mattpocock https://github.com/mattpocock/skills tags
+upstream emilkowalski https://github.com/emilkowalski/skills head
 skill vendor/mattpocock/ask-matt ask-matt
 skill vendor/mattpocock/codebase-design codebase-design
 skill vendor/mattpocock/domain-modeling domain-modeling
@@ -35,6 +39,21 @@ skill vendor/mattpocock/to-questionnaire to-questionnaire
 skill vendor/mattpocock/wait-what wait-what
 skill vendor/mattpocock/writing-for-agents writing-for-agents
 skill vendor/mattpocock/handoff handoff
+skill vendor/emilkowalski/learn-taste learn-taste
+ref vendor/emilkowalski/animate animate
+ref vendor/emilkowalski/animate-expo animate-expo
+ref vendor/emilkowalski/animation-performance animation-performance
+ref vendor/emilkowalski/apple-design apple-design
+ref vendor/emilkowalski/break-ui break-ui
+ref vendor/emilkowalski/choreograph choreograph
+ref vendor/emilkowalski/emil-design-eng emil-design-eng
+ref vendor/emilkowalski/find-animation-opportunities find-animation-opportunities
+ref vendor/emilkowalski/gestures gestures
+ref vendor/emilkowalski/mobile-native mobile-native
+ref vendor/emilkowalski/pick-ui-library pick-ui-library
+ref vendor/emilkowalski/prototype prototype
+ref vendor/emilkowalski/remove-animations remove-animations
+ref vendor/emilkowalski/review-animations review-animations
 retire tdd
 retire diagnosing-bugs
 retire prototype
