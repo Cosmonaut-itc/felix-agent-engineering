@@ -461,9 +461,9 @@ class Handler(BaseHTTPRequestHandler):
                     if not chunk:
                         raise ValueError()
                     raw.extend(chunk)
-                code, response = self.server.actions.post(accion.decode(raw), started=started)
+                code, response = self.server.actions.respond('post', accion.decode(raw), started=started)
             elif self.path.startswith('/api/accion/') and self.command == 'GET':
-                code, response = self.server.actions.get(self.path[len('/api/accion/'):], started=started)
+                code, response = self.server.actions.respond('get', self.path[len('/api/accion/'):], started=started)
             else:
                 self.action_reply(405, accion.result({}, 'rejected', 'invalid_request'))
                 return

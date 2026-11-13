@@ -30,6 +30,7 @@ ERRORS = {
     'unsupported': 'Esta corrida no confirma la cancelación.',
     'disabled': 'Las acciones están apagadas localmente.',
     'deadline': 'No se lanzó una cancelación nueva: se agotó el plazo. Consulta el mismo recibo.',
+    'manually_closed': 'Recibo cerrado a mano tras comprobar la corrida en Pueue. No acredita una cancelación.',
     'forbidden': 'No se pudo autorizar la petición.',
 }
 OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
@@ -42,7 +43,7 @@ DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
              '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
              '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
 DESK_TIMEOUT = 40
-# One second for the final journal commit, one more outside the server for HTTP/UI.
+# Reserve for the journal, backed by an independent HTTP wait deadline.
 RECEIPT_RESERVE = 1
 MIN_TRANSPORT = 1
 JOURNAL_WAIT = .5
@@ -214,12 +215,63 @@ class Actions:
         self.lock = threading.RLock()
         self.timer = timer
         self.inflight = {}
+        # Independent of the journal lock: HTTP must not wait on filesystem I/O.
+        self.http_lock = threading.Lock()
+        self.identities = {}
+        self.workers = set()
         # The authoritative index is never rotated. Full SQLite commit precedes transport.
         with self.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS actions (action_id TEXT PRIMARY KEY COLLATE BINARY, '
                        'digest TEXT NOT NULL, request TEXT NOT NULL, response TEXT NOT NULL, '
                        'created REAL NOT NULL, updated REAL NOT NULL)')
+            if 'last_status' not in {row[1] for row in db.execute('PRAGMA table_info(actions)')}:
+                db.execute('ALTER TABLE actions ADD COLUMN last_status REAL')
+            self.identities = {key: json.loads(body) for key, body in
+                               db.execute('SELECT action_id,request FROM actions')}
         self.path.chmod(0o600)
+
+    def wait(self, event, timeout):
+        return event.wait(timeout)
+
+    def respond(self, operation, value, started=None):
+        """Bound HTTP waiting, including a blocked fsync or transport spawn.
+
+        The worker retains its original deadline and action reservation. A late
+        intent commit must still pass call()'s budget check before any effect.
+        """
+        started = self.timer() if started is None else started
+        if operation == 'post':
+            validate(value)
+            identity = dict(value)
+            if value['op'] == 'cancel':
+                with self.http_lock:
+                    self.identities.setdefault(value['action_id'], identity)
+        else:
+            if not ACTION.fullmatch(value):
+                raise ValueError()
+            with self.http_lock:
+                identity = self.identities.get(value, dict(action_id=value, op='cancel'))
+        # An unknown GET uses the shorter budget until its journal identity is known.
+        deadline = started + request_budget(identity.get('host'))
+        done, answers, errors = threading.Event(), [], []
+        def run():
+            try:
+                answers.append(getattr(self, operation)(value, started=started))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                with self.http_lock:
+                    self.workers.discard(threading.current_thread())
+                done.set()
+        worker = threading.Thread(target=run, name='rack-action', daemon=True)
+        with self.http_lock:
+            self.workers.add(worker)
+        worker.start()
+        if not self.wait(done, max(0, deadline - self.timer())):
+            return 200, result(identity, 'unknown')
+        if errors:
+            raise errors[0]
+        return answers[0]
 
     @contextmanager
     def connect(self, deadline=None):
@@ -293,8 +345,35 @@ class Actions:
 
     def save(self, request, response, deadline=None):
         with self.connect(deadline) as db:
+            # Share the SQLite writer lock with the manual CLI. Never overwrite
+            # its terminal result with a transport that was already in flight.
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT response FROM actions WHERE action_id=?',
+                             (request['action_id'],)).fetchone()
+            current = json.loads(row[0]) if row else None
+            if current and (current.get('error') or {}).get('code') == 'manually_closed':
+                return current
             db.execute('UPDATE actions SET response=?,updated=? WHERE action_id=?',
                        (json.dumps(response), self.clock(), request['action_id']))
+        return response
+
+    def close_receipt(self, action_id):
+        if not ACTION.fullmatch(action_id):
+            raise ValueError('ID inválido.')
+        with self.lock, self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT request,response FROM actions WHERE action_id=?', (action_id,)).fetchone()
+            if row is None:
+                raise ValueError('No existe ese recibo.')
+            request, response = map(json.loads, row)
+            if response['status'] not in OPEN:
+                if (response.get('error') or {}).get('code') == 'manually_closed':
+                    return response  # Repeating this exact administrative operation is harmless.
+                raise ValueError('El recibo ya es terminal.')
+            response = result(request, 'rejected', 'manually_closed')
+            db.execute('UPDATE actions SET response=?,updated=? WHERE action_id=?',
+                       (json.dumps(response), self.clock(), action_id))
+        return response
 
     def pending_reason(self, db, request):
         for body, answer in db.execute('SELECT request,response FROM actions WHERE action_id != ?',
@@ -311,7 +390,7 @@ class Actions:
                 response = result(request, 'unknown')
             try:
                 with self.journal(deadline):
-                    self.save(request, response, deadline)
+                    response = self.save(request, response, deadline)
                     self.inflight.pop(request['action_id'], None)
             except TimeoutError:
                 # The committed intent still owns this ID and blocks a second cancel.
@@ -324,6 +403,9 @@ class Actions:
     def post(self, request, started=None):
         started = self.timer() if started is None else started
         validate(request)
+        if request['op'] == 'cancel':
+            with self.http_lock:
+                self.identities.setdefault(request['action_id'], dict(request))
         deadline = started + request_budget(request['host'])
         try:
             with self.journal(deadline - RECEIPT_RESERVE):
@@ -343,7 +425,7 @@ class Actions:
                                 return 409, result(request, 'rejected', 'idempotency_conflict')
                             return 200, json.loads(row[1])
                         intent = result(request, 'unknown')
-                        db.execute('INSERT INTO actions VALUES (?,?,?,?,?,?)',
+                        db.execute('INSERT INTO actions (action_id,digest,request,response,created,updated) VALUES (?,?,?,?,?,?)',
                                    (request['action_id'], digest, body, json.dumps(intent), self.clock(), self.clock()))
                         # Rejections also bind the ID. No transport before this commit.
                         disabled = self.disabled()
@@ -374,14 +456,43 @@ class Actions:
             # itself is capped at JOURNAL_WAIT, even before that host is known.
             with self.journal(started + request_budget('desk') - RECEIPT_RESERVE):
                 with self.connect(started + request_budget('desk')) as db:
-                    row = db.execute('SELECT request,response FROM actions WHERE action_id=?', (action_id,)).fetchone()
-                if row is None:
-                    return 404, result(identity, 'unknown')
-                request, response = map(json.loads, row)
-                if response['status'] not in OPEN or self.active(action_id):
-                    return 200, response
+                    db.execute('BEGIN IMMEDIATE')
+                    row = db.execute('SELECT request,response,created,last_status FROM actions WHERE action_id=?', (action_id,)).fetchone()
+                    if row is None:
+                        return 404, result(identity, 'unknown')
+                    request, response = map(json.loads, row[:2])
+                    if response['status'] not in OPEN or self.active(action_id):
+                        return 200, response
+                    if request['host'] == 'desk':
+                        now = self.clock()
+                        interval = 2 if now - row[2] < 60 else 30
+                        if row[3] is not None and now - row[3] < interval:
+                            return 200, response
+                        db.execute('UPDATE actions SET last_status=? WHERE action_id=?', (now, action_id))
                 done = threading.Event()
                 self.inflight[action_id] = done
         except TimeoutError:
             return 503, result(identity, 'unknown')
         return self.complete(request, 'status', done, started + request_budget(request['host']))
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Administración local del diario del rack.')
+    parser.add_argument('--state-dir', type=Path, default=Path.home() / '.local/state/pao/rack')
+    commands = parser.add_subparsers(dest='command', required=True)
+    close = commands.add_parser('close-receipt', help='Cerrar un recibo tras comprobar la corrida en Pueue.')
+    close.add_argument('action_id')
+    args = parser.parse_args()
+    if not (args.state_dir / 'actions.sqlite3').is_file():
+        parser.exit(2, 'No existe el diario de acciones.\n')
+    try:
+        actions = Actions([], args.state_dir, lambda: None)
+        response = actions.close_receipt(args.action_id)
+    except (ValueError, OSError, sqlite3.Error) as error:
+        parser.exit(2, str(error) + '\n')
+    print(json.dumps(response, ensure_ascii=False))
+
+
+if __name__ == '__main__':
+    main()

@@ -240,6 +240,7 @@ class DeadlineTests(unittest.TestCase):
         self.assertEqual(len(self.calls),1)
 
     def test_inflight_status_cannot_overwrite_later_result_or_repeat_cancel(self):
+        self.actions.clock = lambda:self.now
         body=request(host='desk')
         self.actions.post(body)
         self.actions.save(body,accion.result(body,'unknown'))
@@ -251,11 +252,13 @@ class DeadlineTests(unittest.TestCase):
         self.actions.executor=status
         first=self.spawn(lambda:self.actions.get(body['action_id']))
         self.assertTrue(entered.wait(2))
+        self.now = 1003  # Beyond the desk poll interval, still excluded by inflight.
         for function in (lambda:self.actions.get(body['action_id']),lambda:self.actions.post(body)):
             self.assertEqual(self.join(self.spawn(function))[1]['status'],'unknown')
         self.assertEqual(len(self.calls),1)
         self.release.set();self.assertEqual(self.join(first)[1]['status'],'cancelling')
         self.actions.executor=self.execute
+        self.now = 1006
         self.assertEqual(self.actions.get(body['action_id'])[1]['status'],'cancelled')
         self.assertEqual(self.actions.post(body)[1]['status'],'cancelled')
         self.assertEqual(self.stored(body)['status'],'cancelled')

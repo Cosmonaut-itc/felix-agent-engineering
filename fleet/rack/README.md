@@ -255,7 +255,8 @@ incluyendo whois), también con clientes que lo envían byte a byte.
 | Cuerpo HTTP completo (POST) | ≤ 5 s | ≤ 5 s |
 | Admisión al diario | candado ≤ 0.5 s; espera SQLite ≤ 0.5 s | igual |
 | Transporte | `min(40, 44 − transcurrido − 1)` s | `min(10, 14 − transcurrido − 1)` s |
-| Reserva para guardar el recibo | 1 s | 1 s |
+| Reserva para guardar el recibo (objetivo) | 1 s | 1 s |
+| Espera HTTP por diario y transporte, desde entrada | ≤ 44 s | ≤ 14 s |
 | Margen de entrega HTTP antes del plazo UI | 1 s | 1 s |
 
 La cuenta no suma siempre todos los máximos: **whois + cuerpo + diario +
@@ -266,6 +267,17 @@ transporte es **1 s**. El tiempo real del diario y de la validación se resta
 antes de invocar al ejecutor; sus consultas SQLite comprueban el plazo y
 sus esperas no recuperan un presupuesto completo. El plazo de intercambio
 incluye también la creación del proceso.
+
+El manejador espera al trabajador sólo hasta el límite monotónico de 44/14 s,
+contado desde la entrada, y devuelve `unknown` con la identidad si no terminó.
+Esa espera es independiente del candado y de SQLite: una apertura, escritura o
+confirmación FULL bloqueada en E/S no queda acotada por el timeout de SQLite
+ni por su callback de progreso. El trabajador conserva la intención durable,
+la exclusión y el plazo original mientras acaba; nunca recupera presupuesto
+ni lanza un cancel nuevo después del límite. La reserva de 1 s ayuda a
+completar normalmente el recibo, pero no es la garantía del plazo HTTP.
+El seguimiento usa el mismo ID. Los GET de IDs aún desconocidos en memoria
+usan como máximo 14 s; al arrancar se cargan las identidades del diario.
 
 Si no queda ese mínimo, no se llama al controlador. Con una intención ya
 confirmada se guarda `rejected/deadline`: «No se lanzó una cancelación nueva:
@@ -495,6 +507,45 @@ un error de red consulta el recibo; sólo un 404 autoriza el reenvío único
 del mismo `cancel`, cuerpo e ID. La fila y el
 aviso distinguen incertidumbre y falta de confirmación del fin de procesos.
 
+Sólo para el desk, el servidor comparte entre pestañas un límite por
+`action_id`: como máximo un `status` cada **2 s durante el primer minuto**
+desde la intención, y cada **30 s después**. Dentro del intervalo devuelve
+el recibo guardado. La hora del último intento se confirma en SQLite antes
+del transporte y sobrevive al reinicio. Una consulta en vuelo también excluye
+otra de esa acción. La Mini conserva sus consultas habituales. `unknown`,
+`cancelling` y `cancel_unconfirmed` siguen abiertos: el paso del tiempo o un
+`rejected` de status nunca prueban que no hubo efecto.
+
+#### Cerrar a mano un recibo sin confirmación
+
+Si SSH/WSL falló antes de crear el recibo del controlador, o la cancelación
+permanece sin confirmar, Felix o el orquestador pueden cerrar el recibo
+**en la Mini**, fuera del panel. Primero apaga nuevas acciones con el
+interruptor local indicado abajo y deja terminar los transportes en vuelo.
+Comprueba en Pueue del desk (su interfaz habitual o `pueue status`) la tarea
+exacta del recibo (`host`, lanzador, ref y `expected.task_id`): confirma con
+el lanzador que ya no está cancelándose ni tiene limpieza pendiente. Si hay
+procesos o recursos de estado incierto, conserva el recibo abierto. No basta
+con que el controlador responda not_found ni con ver Done o una salida 130.
+
+Después ejecuta, sustituyendo `action-0001` por el ID que muestra el panel:
+
+```bash
+TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -I "$HOME/.local/lib/pao-rack/accion.py" --state-dir "$HOME/.local/state/pao/rack" close-receipt action-0001
+```
+
+Con un directorio de estado personalizado usa el mismo `--state-dir` que
+el servidor. El subcomando usa el mismo candado de escritura SQLite,
+transacción y confirmación `synchronous=FULL` que el servidor, y no ejecuta
+transportes. Guarda un terminal `rejected/manually_closed`: «Recibo cerrado
+a mano tras comprobar la corrida en Pueue. No acredita una cancelación.»
+Un ID inexistente o terminal por otra causa se rechaza con salida 2;
+repetir un cierre manual devuelve el mismo recibo sin volver a escribir.
+Un transporte anterior no puede sobrescribirlo. El próximo GET muestra el
+mensaje y la UI deja de consultar; `pending_reason` deja de bloquear la
+corrida. Para otro intento usa un ID nuevo. Reactiva las acciones sólo
+después de la comprobación. No borres el diario ni recibos de los lanzadores.
+
 Para apagar acciones localmente sin reinstalar ni afectar lectura:
 
 ```bash
@@ -555,7 +606,8 @@ retira la selección por tabla del desk, el interruptor, la validación del argv
 y unknown ante fallo SSH. También muta lstat, entorno/runtime, ausencia de
 controlador, admisión, mínimo/plazo restante, efecto tardío, transporte fuera
 del candado, exclusión de status/cancel, liberación tras fallo y origen del
-presupuesto HTTP: las 29 mutaciones deben ser detectadas;
+presupuesto HTTP; también la espera independiente de E/S, el espaciado
+del desk, la conservación del cierre manual y su fin de sondeo en la UI;
 borra las copias al salir.
 
 `tests/rack-fixture.json` conserva la instantánea realista para las pruebas de
