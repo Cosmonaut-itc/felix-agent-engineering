@@ -78,10 +78,12 @@ sus artefactos regenerables (`node_modules`, salidas de build, cachés). Un
 worktree sucio o con commits sólo locales se lista para Felix.
 
 Hacia la Mini, `remote-run start` y `scripts/mini/run.sh` encolan la corrida
-en Pueue (grupo `suites`, 3 lugares) y `remote-run wait ID` espera su turno y
-devuelve su código. No reserves la Mini a mano ni esperes en un bucle. Mira la
-fila con `ssh mini pueue status -g suites`. Si la corrida usa algo que no admite
-dos usuarios a la vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
+en Pueue (grupo `suites`) y `remote-run wait ID` espera su turno y devuelve su
+código. El carril rápido (`--carril rapido` o `REMOTE_RUN_CARRIL=rapido`)
+encola en `rapidas`, en la Mini y en el Desk, y corta la corrida a los 10 min.
+No reserves la Mini a mano ni esperes en un bucle. Mira la fila con
+`ssh mini pueue status`. Si la corrida usa algo que no admite dos usuarios a la
+vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
 `postgres:5434`).
 
 Una sesión que corre en Felix DESKTOP llega a la Mini con `ssh mini`, desde
