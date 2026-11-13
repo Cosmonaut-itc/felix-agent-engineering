@@ -70,6 +70,8 @@ with open(plist, 'wb') as stream:
         ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', port, '--owner', owner,
                            '--name', name, '--name', name.split('.')[0]],
         KeepAlive=True, RunAtLoad=True,
+        # Without it launchd throttles the agent: under suite load, whois exceeds its 3 s limit and the owner gets 403.
+        ProcessType='Interactive',
         StandardOutPath=os.path.expanduser('~/Library/Logs/pao-rack.log'),
         StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log')), stream)
 PY
