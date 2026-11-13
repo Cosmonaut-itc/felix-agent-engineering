@@ -1933,13 +1933,15 @@ apto_vigente_interactions() {
     printf 'target\n' > "$repo/nuevo/nuevo.js"
     git -C "$repo" add -A
     git -C "$repo" commit -q -m dir-rename-y-add
-    tree=$(git -C "$repo" merge-tree --write-tree destino revisado | head -n 1) || true
+    # Con los SHA, los marcadores llevan las mismas etiquetas que pone apto-vigente.
+    tree=$(git -C "$repo" merge-tree --write-tree "$(git -C "$repo" rev-parse destino)" "$(git -C "$repo" rev-parse revisado)" | head -n 1) || true
     git -C "$repo" branch candidato "$(git -C "$repo" commit-tree "$tree" -p destino -m candidato)"
     assert grep -q '^<<<<<<<' <(git -C "$repo" show candidato:nuevo/nuevo.js)
     output=$(apto "$repo" destino revisado candidato)
     assert test "$(head -n 1 <<< "$output")" = 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos'
+    # El candidato es la mezcla automática tal cual: su resolución no cambia nada.
     apto_resolution "$output"
-    assert git -C "$repo" diff --stat "${resolution[@]}"
+    assert git -C "$repo" diff --quiet "${resolution[@]}"
 }
 
 apto_vigente_conflict() {
