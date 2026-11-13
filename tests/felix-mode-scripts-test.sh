@@ -1809,6 +1809,8 @@ apto_repo() {
 }
 apto() { (cd "$1" && shift && "$SCRIPTS/apto-vigente" "$@"); }
 apto_short() { git -C "$1" rev-parse --short "$2"; }
+# Argumentos de `git diff` que apto-vigente imprime en su línea `Resolución:`.
+apto_resolution() { read -r -a resolution <<< "$(sed -n 's/^Resolución: git diff //p' <<< "$1")"; }
 
 apto_vigente() {
     local repo output tree status
@@ -1855,7 +1857,7 @@ apto_vigente() {
 }
 
 apto_vigente_interactions() {
-    local repo output tree mode
+    local repo output tree mode resolution
     # Un espacio dentro de una cadena cambia el árbol aunque el parche se parezca.
     repo=$(apto_repo)
     git -C "$repo" checkout -q revisado
@@ -1915,7 +1917,8 @@ apto_vigente_interactions() {
         assert test "$(head -n 1 <<< "$output")" = 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos'
         assert test -n "$(sed -n '3,$p' <<< "$output")"
         # El candidato es la mezcla automática en los dos modos: su resolución no cambia nada.
-        assert git -C "$repo" diff --quiet $(sed -n 's/^Resolución: git diff //p' <<< "$output")
+        apto_resolution "$output"
+        assert git -C "$repo" diff --quiet "${resolution[@]}"
     done
 
     # Un merge con conflictos también escribe un árbol, con los marcadores dentro.
@@ -1935,7 +1938,8 @@ apto_vigente_interactions() {
     output=$(apto "$repo" destino revisado candidato)
     assert test "$(head -n 1 <<< "$output")" = 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos'
     # El candidato es la mezcla automática tal cual: su resolución no cambia nada.
-    assert git -C "$repo" diff --quiet $(sed -n 's/^Resolución: git diff //p' <<< "$output")
+    apto_resolution "$output"
+    assert git -C "$repo" diff --quiet "${resolution[@]}"
 }
 
 apto_vigente_conflict() {
@@ -1965,17 +1969,17 @@ apto_vigente_conflict() {
         output=$(apto "$repo" destino revisado resuelto)
         assert test "$kind: $(sed -n 1p <<< "$output")" = "$kind: Ronda delta: la mezcla del head revisado con el destino tiene conflictos"
         assert test "$kind: $(sed -n '3,$p' <<< "$output")" = "$kind: otro.txt"
-        resolution=$(sed -n 's/^Resolución: git diff //p' <<< "$output")
-        assert test "$kind: ${resolution##* }" = "$kind: $(git -C "$repo" rev-parse resuelto)"
+        apto_resolution "$output"
+        assert test "$kind: ${resolution[${#resolution[@]}-1]}" = "$kind: $(git -C "$repo" rev-parse resuelto)"
         # El diff que imprime muestra sólo la resolución del conflicto.
-        output=$(git -C "$repo" diff --name-only $resolution)
+        output=$(git -C "$repo" diff --name-only "${resolution[@]}")
         assert test "$kind: $output" = "$kind: otro.txt"
-        assert grep -qx '+x resuelta' <(git -C "$repo" diff $resolution)
-        assert grep -q '^-<<<<<<<' <(git -C "$repo" diff $resolution)
+        assert grep -qx '+x resuelta' <(git -C "$repo" diff "${resolution[@]}")
+        assert grep -q '^-<<<<<<<' <(git -C "$repo" diff "${resolution[@]}")
         # Desde un subdirectorio y con diff.relative=true sigue mostrando la resolución.
         output=$(apto_with diff.relative=true "$repo/origen" destino revisado resuelto)
-        resolution=$(sed -n 's/^Resolución: git diff //p' <<< "$output")
-        output=$(cd "$repo/origen" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.relative GIT_CONFIG_VALUE_0=true git diff --name-only $resolution)
+        apto_resolution "$output"
+        output=$(cd "$repo/origen" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.relative GIT_CONFIG_VALUE_0=true git diff --name-only "${resolution[@]}")
         assert test "$kind relativo: $output" = "$kind relativo: otro.txt"
     done
 }
