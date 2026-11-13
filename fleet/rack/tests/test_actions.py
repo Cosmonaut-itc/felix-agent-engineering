@@ -65,7 +65,7 @@ class ActionsTests(unittest.TestCase):
     def reopen(self):
         return accion.Actions(HOSTS, self.root, lambda: self.data, executor=self.executor, clock=lambda: self.now)
 
-    def fake_executor(self, host, launcher, wire):
+    def fake_executor(self, host, launcher, wire, timeout=None):
         self.calls.append(copy.deepcopy(wire))
         if wire['op'] == 'capabilities':
             return dict(schema='rack-cancel-result@1', ref=REF,
@@ -85,7 +85,7 @@ class ActionsTests(unittest.TestCase):
                 self.actions.get(body['action_id'])
         for error in ('stale_state', 'not_found', 'unsupported', 'idempotency_conflict', 'invalid_request'):
             body = request(action_id='rejected-'+error.replace('_','-'))
-            with patch.object(self.actions, 'executor', side_effect=lambda h,l,w: receipt(w, 'rejected', error)):
+            with patch.object(self.actions, 'executor', side_effect=lambda h,l,w,timeout=None: receipt(w, 'rejected', error)):
                 response = self.actions.post(body)[1]
             self.assertEqual(response['error']['code'], error)
             self.assertNotIn('PRIVATE', json.dumps(response))
@@ -112,7 +112,7 @@ class ActionsTests(unittest.TestCase):
 
     def test_intent_committed_before_effect_and_crash_before_effect(self):
         class Crash(BaseException): pass
-        def crash(host, launcher, wire):
+        def crash(host, launcher, wire, timeout=None):
             with sqlite3.connect(str(self.actions.path)) as db:
                 row = db.execute('SELECT response FROM actions').fetchone()
             self.assertEqual(json.loads(row[0])['status'], 'unknown')
@@ -142,7 +142,7 @@ class ActionsTests(unittest.TestCase):
     def test_timeout_unknown_and_absent_launcher_receipt_is_not_no_effect(self):
         with patch.object(self.actions, 'executor', side_effect=subprocess.TimeoutExpired('fake', 10)):
             self.assertEqual(self.actions.post(request())[1]['status'], 'unknown')
-        with patch.object(self.actions, 'executor', side_effect=lambda h,l,w: receipt(w, 'rejected', 'not_found')):
+        with patch.object(self.actions, 'executor', side_effect=lambda h,l,w,timeout=None: receipt(w, 'rejected', 'not_found')):
             answer = self.actions.get('action-0001')[1]
         self.assertEqual(answer['status'], 'unknown')
         self.assertEqual(self.actions.get('missing-0000')[1]['status'], 'unknown')
@@ -167,7 +167,7 @@ class ActionsTests(unittest.TestCase):
                     self.response = initial
                     self.actions.post(body)
                     calls = []
-                    def reject(host, launcher, wire):
+                    def reject(host, launcher, wire, timeout=None):
                         calls.append(wire)
                         return receipt(wire, 'rejected', error)
                     with patch.object(self.actions, 'executor', side_effect=reject):
@@ -250,7 +250,7 @@ class ActionsTests(unittest.TestCase):
     def test_concurrent_same_id_calls_transport_once(self):
         entered, release = threading.Event(), threading.Event()
         calls = []
-        def block(h,l,w):
+        def block(h,l,w,timeout=None):
             calls.append(w); entered.set(); self.assertTrue(release.wait(2)); return receipt(w)
         self.actions.executor = block
         answers = []
@@ -260,7 +260,8 @@ class ActionsTests(unittest.TestCase):
         a.join(3); b.join(3)
         self.assertFalse(a.is_alive() or b.is_alive())
         self.assertEqual(len(calls), 1)
-        self.assertEqual(answers[0], answers[1])
+        self.assertTrue(all(answer[1]['status'] in ('unknown', 'cancelled') for answer in answers))
+        self.assertEqual(self.actions.post(request())[1]['status'], 'cancelled')
 
     def test_b3_snapshot_identity_binding_rejects_foreign_ref_launcher_and_expected(self):
         for n, changes in enumerate((dict(ref='20991231-235959-ffffff'),

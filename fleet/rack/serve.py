@@ -404,30 +404,32 @@ class OwnerCheck:
             cached = self.cache.get(address)
             if not fresh and cached and now - cached[0] < 300:
                 return cached[1]
-            allowed = False
+        allowed = False
+        try:
+            # Bajo launchd, el binario de Tailscale.app sólo actúa como CLI si su padre es un shell.
+            # Sesión propia para que el timeout termine también a whois, no sólo al shell.
+            process = subprocess.Popen(['/bin/sh', '-c', '"$0" whois --json "$1"; exit $?', self.tailscale, address],
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
             try:
-                # Bajo launchd, el binario de Tailscale.app sólo actúa como CLI si su padre es un shell.
-                # Sesión propia para que el timeout termine también a whois, no sólo al shell.
-                process = subprocess.Popen(['/bin/sh', '-c', '"$0" whois --json "$1"; exit $?', self.tailscale, address],
-                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, start_new_session=True)
-                try:
-                    output, _ = process.communicate(timeout=3)
-                except subprocess.TimeoutExpired:
-                    os.killpg(process.pid, signal.SIGKILL)
-                    process.communicate()
-                    raise
-                if process.returncode:
-                    raise subprocess.CalledProcessError(process.returncode, 'whois')
-                profile = json.loads(output)['UserProfile']
-                allowed = bool(self.owner) and profile['LoginName'] == self.owner
-            except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
-                pass
+                output, _ = process.communicate(timeout=3)
+            except subprocess.TimeoutExpired:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.communicate()
+                raise
+            if process.returncode:
+                raise subprocess.CalledProcessError(process.returncode, 'whois')
+            profile = json.loads(output)['UserProfile']
+            allowed = bool(self.owner) and profile['LoginName'] == self.owner
+        except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+            pass
+        with self.lock:
             self.cache[address] = (now, allowed)
-            return allowed
+        return allowed
 
 
 class Handler(BaseHTTPRequestHandler):
     def action(self):
+        started = self.server.actions.timer()
         # No loopback exception for writes: tests inject a fake owner check.
         host = self.headers.get('Host')
         origins = self.headers.get_all('Origin') or []
@@ -446,11 +448,22 @@ class Handler(BaseHTTPRequestHandler):
                 lengths = self.headers.get_all('Content-Length') or []
                 if len(lengths) != 1 or not lengths[0].isdigit() or not 0 < int(lengths[0]) <= 16384 or 'Transfer-Encoding' in self.headers:
                     raise ValueError()
-                self.connection.settimeout(5)
-                raw = self.rfile.read(int(lengths[0]))
-                code, response = self.server.actions.post(accion.decode(raw))
+                # Bound the entire body read, including a client sending one byte at a time.
+                body_deadline = min(started + 8, self.server.actions.timer() + 5)
+                raw = bytearray()
+                size = int(lengths[0])
+                while len(raw) < size:
+                    remaining = body_deadline - self.server.actions.timer()
+                    if remaining <= 0:
+                        raise TimeoutError()
+                    self.connection.settimeout(remaining)
+                    chunk = self.rfile.read1(size - len(raw))
+                    if not chunk:
+                        raise ValueError()
+                    raw.extend(chunk)
+                code, response = self.server.actions.post(accion.decode(raw), started=started)
             elif self.path.startswith('/api/accion/') and self.command == 'GET':
-                code, response = self.server.actions.get(self.path[len('/api/accion/'):])
+                code, response = self.server.actions.get(self.path[len('/api/accion/'):], started=started)
             else:
                 self.action_reply(405, accion.result({}, 'rejected', 'invalid_request'))
                 return

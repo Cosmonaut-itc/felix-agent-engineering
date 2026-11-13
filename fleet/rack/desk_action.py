@@ -2,9 +2,11 @@
 import json
 import os
 from pathlib import Path
+import pwd
 import re
 import selectors
 import signal
+import stat
 import subprocess
 import sys
 import time
@@ -39,12 +41,12 @@ def decode(raw):
 
 def exchange(argv, request, runner, env, timeout):
     """No shell/TTY, bounded stdin/stdout and time; kill only our session and reap."""
+    deadline = time.monotonic() + timeout
     process = runner(argv,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
         env=env,
         cwd='/', start_new_session=True)
     output = bytearray()
-    deadline = time.monotonic() + timeout
     try:
         # Drain stdout while running; never spool an unbounded response to disk.
         # Nonblocking stdin also keeps a controller that never reads within the deadline.
@@ -127,6 +129,31 @@ def failure(request, status, code, message):
                 error=dict(code=code, message=message))
 
 
+def switched_off():
+    """Only a definite absence permits a new effect, including broken symlinks."""
+    try:
+        SWITCH.lstat()
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return True
+
+
+def environment():
+    account = pwd.getpwuid(os.getuid())
+    env = dict(HOME=str(HOME), PATH='/usr/bin:/bin', TMPDIR='/tmp',
+               USER=account.pw_name, LOGNAME=account.pw_name)
+    runtime = '/run/user/' + str(account.pw_uid)
+    try:
+        info = os.stat(runtime)
+        if stat.S_ISDIR(info.st_mode) and info.st_uid == account.pw_uid:
+            env['XDG_RUNTIME_DIR'] = runtime
+    except OSError:
+        pass
+    return env
+
+
 def handle(raw, runner=subprocess.Popen):
     try:
         launcher, request = parse(raw)
@@ -135,17 +162,21 @@ def handle(raw, runner=subprocess.Popen):
     except (ValueError, TypeError, RecursionError):
         return failure({}, 'rejected', 'invalid_request', 'Envoltura inválida.'), 2
     # Independent of the panel switch. Queries remain available for accepted actions.
-    if request['op'] in ('cancel', 'capabilities') and SWITCH.exists():
+    if request['op'] in ('cancel', 'capabilities') and switched_off():
         if request['op'] == 'capabilities':
             return dict(schema='rack-cancel-result@1', ref=request['ref'],
                         capabilities=dict(queued=False, running=False, reason='Acciones apagadas en el desk.')), 0
         return failure(request, 'rejected', 'unsupported', 'Acciones apagadas en el desk.'), 0
     controller = Path(CONTROLLERS[launcher])
     if not controller.is_file():
-        return failure(request, 'rejected', 'unsupported', 'Controlador ausente.'), 3
+        if request['op'] == 'capabilities':
+            return dict(schema='rack-cancel-result@1', ref=request['ref'],
+                        capabilities=dict(queued=False, running=False, reason='Controlador ausente.')), 0
+        status = 'unknown' if request['op'] == 'status' else 'rejected'
+        return failure(request, status, 'unsupported', 'Controlador ausente.'), 0
     try:
         code, response = exchange(['/usr/bin/python3', '-I', str(controller)], request, runner,
-            {'HOME': str(HOME), 'PATH': '/usr/bin:/bin', 'TMPDIR': '/tmp'}, TIMEOUT)
+            environment(), TIMEOUT)
     except subprocess.TimeoutExpired:
         return failure(request, 'unknown', 'timeout', 'Plazo del controlador vencido.'), 4
     except ValueError:

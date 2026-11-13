@@ -45,6 +45,19 @@ def fixture():
     return dict(schema='rack@1',now=now,hosts=[host(h) for h in HOSTS],tickets={})
 
 
+def write_ssh_shim(root, controllers):
+    shim=root/'fake_ssh.py'
+    shim.write_text("import importlib.util,json,sys\nfrom pathlib import Path\n"
+        + "guard=importlib.util.spec_from_file_location('safety',"+repr(str(BASE/'tests/safety.py'))+")\n"
+        + "safety=importlib.util.module_from_spec(guard);guard.loader.exec_module(safety)\n"
+        + "spec=importlib.util.spec_from_file_location('desk',"+repr(str(BASE/'desk_action.py'))+")\n"
+        + "desk=importlib.util.module_from_spec(spec);spec.loader.exec_module(desk)\n"
+        + "desk.HOME=Path("+repr(str(root))+");desk.SWITCH=desk.HOME/'desk.disabled'\n"
+        + "desk.CONTROLLERS="+repr(controllers)+"\n"
+        + "answer,code=desk.handle(desk.read_request(sys.stdin.buffer))\nprint(json.dumps(answer));sys.exit(code)\n")
+    return shim
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--port',type=int,default=0)
@@ -73,15 +86,7 @@ print(json.dumps(a))
         jale.write_text(control.read_text())
         # Fake only the SSH connection: the production Executor still sends its exact
         # argv and stdin envelope, and the real dispatcher runs both fake controllers.
-        shim=root/'fake_ssh.py'
-        shim.write_text("import importlib.util,json,sys\nfrom pathlib import Path\n"
-            + "guard=importlib.util.spec_from_file_location('safety',"+repr(str(BASE/'tests/safety.py'))+")\n"
-            + "safety=importlib.util.module_from_spec(guard);guard.loader.exec_module(safety)\n"
-            + "spec=importlib.util.spec_from_file_location('desk',"+repr(str(BASE/'desk_action.py'))+")\n"
-            + "desk=importlib.util.module_from_spec(spec);spec.loader.exec_module(desk)\n"
-            + "desk.HOME=Path("+repr(str(root))+");desk.SWITCH=desk.HOME/'desk.disabled'\n"
-            + "desk.CONTROLLERS="+repr({'remote-run':str(control),'jale':str(jale)})+"\n"
-            + "answer,code=desk.handle(desk.read_request(sys.stdin.buffer))\nprint(json.dumps(answer));sys.exit(code)\n")
+        shim=write_ssh_shim(root, {'remote-run':str(control),'jale':str(jale)})
         processes=[]
         def runner(argv,**options):
             if argv and argv[0]=='/usr/bin/ssh':

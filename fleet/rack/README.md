@@ -242,6 +242,50 @@ El transporte de escritura es independiente del de instantáneas:
 | mini | local | remote-run → `~/.local/lib/remote-run/run-control.py` | null |
 | desk | ssh | remote-run → misma ruta; jale → `~/.local/lib/jale/pueue-control.py` | null |
 
+El presupuesto se mide con reloj monotónico desde la entrada al manejador HTTP,
+antes de whois y de leer el cuerpo. La UI conserva **45 s desk / 15 s Mini**;
+el servidor trabaja hasta **44 s / 14 s**, dejando **1 s para entregar HTTP**.
+Whois conserva su límite de **3 s**, sin candado durante el proceso. La lectura
+del cuerpo completo tiene **5 s** como máximo (hasta 8 s desde la entrada,
+incluyendo whois), también con clientes que lo envían byte a byte.
+
+| Parte de la petición | Desk | Mini |
+| --- | --- | --- |
+| Whois fresco | ≤ 3 s | ≤ 3 s |
+| Cuerpo HTTP completo (POST) | ≤ 5 s | ≤ 5 s |
+| Admisión al diario | candado ≤ 0.5 s; espera SQLite ≤ 0.5 s | igual |
+| Transporte | `min(40, 44 − transcurrido − 1)` s | `min(10, 14 − transcurrido − 1)` s |
+| Reserva para guardar el recibo | 1 s | 1 s |
+| Margen de entrega HTTP antes del plazo UI | 1 s | 1 s |
+
+La cuenta no suma siempre todos los máximos: **whois + cuerpo + diario +
+transporte restante + reserva + entrega ≤ 45/15 s**. Por ejemplo, tras 3 s
+de whois, 5 s de cuerpo y 1 s de admisión, quedan **34 s desk / 4 s Mini**
+de transporte, 1 s de recibo y 1 s de entrega. El mínimo útil antes del
+transporte es **1 s**. El tiempo real del diario y de la validación se resta
+antes de invocar al ejecutor; sus consultas SQLite comprueban el plazo y
+sus esperas no recuperan un presupuesto completo. El plazo de intercambio
+incluye también la creación del proceso.
+
+Si no queda ese mínimo, no se llama al controlador. Con una intención ya
+confirmada se guarda `rejected/deadline`: «No se lanzó una cancelación nueva:
+se agotó el plazo. Consulta el mismo recibo». Si no se pudo entrar al diario,
+la respuesta es 503/unknown con ese mensaje: no se lanzó nada nuevo, pero
+puede existir un recibo anterior con efecto para ese ID. No se afirma que
+una acción anterior no ocurrió. Si el transporte pudo actuar, vence o no
+puede confirmarse el guardado, queda `unknown` y se consulta el mismo ID.
+La UI muestra el texto de rechazo mediante su tratamiento habitual de errores.
+
+El candado sólo protege lectura/intención/guardado del diario, nunca un
+transporte. Un registro en memoria excluye `cancel` y `status` simultáneos del
+mismo `action_id`; los GET y POST duplicados devuelven el recibo guardado
+mientras está en vuelo. Otro cuerpo sigue dando 409 y `pending_reason` sigue
+bloqueando un segundo ID de la misma corrida. El registro se libera también
+si falla el guardado; la intención durable permite reconciliar después.
+Así una consulta lenta no pisa una cancelación posterior ni un cancel pisa
+un status posterior. Desk y Mini pueden transportar en paralelo, también
+dos acciones independientes del desk. No se cambian los plazos del navegador.
+
 `actions` tiene exactamente `transport`, `controllers` y `reason`; el transporte
 `ssh` requiere además `argv`, que debe coincidir **entero** con `DESK_ARGV` de
 `accion.py`. Sólo se acepta ese canal SSH para `id: desk` con lectura `ssh`.
@@ -325,7 +369,9 @@ argumentos de controlador. Su **propia tabla fija**, independiente de
 
 Invoca `/usr/bin/python3 -I <ruta fija>`, sin argumentos adicionales ni TTY,
 con cwd `/` y un entorno nuevo: `HOME=/home/felix`, `PATH=/usr/bin:/bin`,
-`TMPDIR=/tmp`. No transmite el entorno de SSH, tokens ni overrides de pruebas.
+`TMPDIR=/tmp`, y USER/LOGNAME calculados con la cuenta Unix efectiva. Sólo pasa
+`XDG_RUNTIME_DIR=/run/user/<uid>` si existe como directorio propiedad de esa
+cuenta. No transmite el entorno de SSH, tokens ni overrides de pruebas.
 Comparte con el ejecutor el intercambio acotado: stdout de hasta 16 KiB,
 plazo de 10 s para el controlador, terminación de su propio grupo y recogida.
 Devuelve la respuesta del controlador, verificando esquema e identidad; el
@@ -335,7 +381,9 @@ panel conserva además su saneamiento y validación semántica antes de la UI.
 | --- | --- | --- |
 | Envoltura inválida, claves extra/duplicadas, tamaño, stdin vencido o argv extra | 2 | rejected / invalid_request |
 | Lanzador desconocido | 2 | rejected / unsupported |
-| Controlador ausente | 3 | rejected / unsupported |
+| Controlador ausente, capabilities | 0 | queued=false, running=false |
+| Controlador ausente, cancel nuevo | 0 | rejected / unsupported |
+| Controlador ausente, status | 0 | unknown / unsupported |
 | Interruptor apagado, cancel | 0 | rejected / unsupported, no se invoca controlador |
 | Interruptor apagado, capabilities | 0 | queued=false, running=false |
 | Plazo del controlador vencido | 4 | unknown / timeout |
@@ -349,11 +397,11 @@ panel, aunque el despachador haya podido responder antes de cortarse. El
 panel nunca repite automáticamente una cancelación incierta; consulta status
 con el mismo ID mediante el diario existente.
 
-El plazo total del desk es **40 s**: presupuesto de conexión de 10 s, 10 s
-para arranque de WSL, 10 s de controlador y 10 s de holgura (incluida la entrada
-JSON). Es un presupuesto conservador, no una medición de WSL en producción.
-La UI espera 45 s para acciones del desk; Mini conserva 10 s de ejecutor y
-15 s de UI. Un arranque más lento deja unknown y se reconcilia; no se promete
+El límite de transporte del desk es **40 s**, reducido por el presupuesto
+restante de la petición descrito junto a la tabla de transporte. Su reparto
+orientativo es 10 s de conexión, 10 s de arranque WSL, 10 s de controlador y
+10 s de holgura, incluida la entrada JSON; no es una medición de WSL en
+producción. Un arranque más lento deja unknown y se reconcilia. No se promete
 que la limpieza del trabajo termine dentro de esos plazos. Matar SSH local
 no garantiza matar el proceso remoto: el despachador limita su controlador.
 
@@ -366,7 +414,9 @@ touch /home/felix/.local/state/pao/rack/actions.disabled
 rm /home/felix/.local/state/pao/rack/actions.disabled
 ```
 
-Se comprueba antes de cada cancel y capabilities. Status permanece disponible
+Se comprueba con `lstat` antes de cada cancel y capabilities. Cualquier entrada
+(archivo, directorio o enlace colgante), o error distinto de ausencia,
+apaga las acciones. Status permanece disponible
 para reconciliar acciones aceptadas, aunque pueda continuar su limpieza.
 El interruptor no revoca una acción que ya superó la comprobación. Es distinto
 del interruptor del panel en la Mini y no se copia ni borra al instalar.
@@ -375,7 +425,8 @@ de `administrators_authorized_keys`; la de lectura sigue funcionando. Borrar
 la de lectura tampoco revoca acciones. Conservar el diario y los recibos;
 quitar una llave no corta sesiones ni revoca una acción ya en vuelo.
 
-Este canal no altera el contrato, controladores, autorización, API ni diario.
+Este canal conserva el contrato y los controladores; el presupuesto y la
+concurrencia del panel conservan la autorización y las garantías del diario.
 No toca Pueue desde el panel, no cambia cuotas/horarios/prioridades ni permite
 comandos generales, Jale directo de Mini o lanzadores no reconocidos. La
 instalación Windows/ACL, comprobación de origen y canario de waiters/130 reales
@@ -501,7 +552,10 @@ acredita que quitar whois fresco, Origin, digest, intención unknown,
 conservación de unknown ante rechazos de status o exclusión de canceladas
 frente a instantáneas anteriores rompe las pruebas específicas. También
 retira la selección por tabla del desk, el interruptor, la validación del argv
-y unknown ante fallo SSH: las trece mutaciones deben ser detectadas;
+y unknown ante fallo SSH. También muta lstat, entorno/runtime, ausencia de
+controlador, admisión, mínimo/plazo restante, efecto tardío, transporte fuera
+del candado, exclusión de status/cancel, liberación tras fallo y origen del
+presupuesto HTTP: las 29 mutaciones deben ser detectadas;
 borra las copias al salir.
 
 `tests/rack-fixture.json` conserva la instantánea realista para las pruebas de

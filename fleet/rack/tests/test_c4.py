@@ -5,6 +5,8 @@ import json
 import os
 from pathlib import Path
 import shutil
+import stat
+from types import SimpleNamespace
 import subprocess
 import tempfile
 import time
@@ -65,7 +67,12 @@ print(json.dumps(a))
     def run_fake(self, argv, **options):
         self.assertIn(argv[-1], self.controllers.values())
         self.assertEqual(argv[:2], ['/usr/bin/python3', '-I'])
-        self.assertEqual(options['env'], dict(HOME=str(self.root), PATH='/usr/bin:/bin', TMPDIR='/tmp'))
+        env = options['env']
+        self.assertEqual(env['HOME'], str(self.root))
+        self.assertEqual(env['USER'], desk.pwd.getpwuid(os.getuid()).pw_name)
+        self.assertEqual(env['LOGNAME'], env['USER'])
+        self.assertEqual(env['PATH'], '/usr/bin:/bin')
+        self.assertEqual(env['TMPDIR'], '/tmp')
         self.assertEqual(options['cwd'], '/')
         self.assertEqual(options['stderr'], subprocess.DEVNULL)
         self.assertTrue(options['start_new_session'])
@@ -125,20 +132,63 @@ print(json.dumps(a))
         self.assertEqual(self.processes,[])
 
     def test_switch_blocks_cancel_and_capabilities_but_allows_status(self):
-        desk.SWITCH.touch()
-        answer,code = self.handle(envelope())
-        self.assertEqual((code,answer['status']), (0,'rejected'))
-        self.assertEqual(answer['error']['code'],'unsupported')
-        self.assertEqual(self.handle(envelope(op='capabilities'))[0]['capabilities']['queued'],False)
-        self.assertEqual(self.processes,[])
-        self.assertEqual(self.handle(envelope(op='status'))[0]['status'],'cancelled')
-        desk.SWITCH.unlink()
+        for kind in ('file', 'directory', 'dangling', 'permission'):
+            with self.subTest(kind=kind):
+                if kind == 'file': desk.SWITCH.touch()
+                elif kind == 'directory': desk.SWITCH.mkdir()
+                elif kind == 'dangling': desk.SWITCH.symlink_to(self.root / 'absent')
+                with patch.object(Path, 'lstat', side_effect=PermissionError()) if kind == 'permission' else patch.object(desk, 'TIMEOUT', 10):
+                    before = len(self.processes)
+                    answer,code = self.handle(envelope())
+                    self.assertEqual((code,answer['status']), (0,'rejected'))
+                    self.assertEqual(answer['error']['code'],'unsupported')
+                    self.assertEqual(self.handle(envelope(op='capabilities'))[0]['capabilities']['queued'],False)
+                    self.assertEqual(len(self.processes), before)
+                    self.assertEqual(self.handle(envelope(op='status'))[0]['status'],'cancelled')
+                if kind == 'directory': desk.SWITCH.rmdir()
+                elif kind != 'permission': desk.SWITCH.unlink()
         self.assertEqual(self.handle(envelope())[0]['status'],'cancelled')
         self.assert_reaped()
 
+    def test_environment_from_unix_account_and_owned_runtime_directory_only(self):
+        account = SimpleNamespace(pw_name='unix-owner', pw_uid=1234)
+        clean = dict(HOME=str(self.root), PATH='/usr/bin:/bin', TMPDIR='/tmp',
+                     USER='unix-owner', LOGNAME='unix-owner')
+        cases = ((stat.S_IFDIR | 0o700, 1234, True), (stat.S_IFREG | 0o600, 1234, False),
+                 (stat.S_IFDIR | 0o700, 9999, False))
+        with patch.object(desk.pwd, 'getpwuid', return_value=account) as lookup, patch.dict(os.environ,
+                dict(USER='ssh-user', LOGNAME='ssh-logname', XDG_RUNTIME_DIR='/evil', GH_TOKEN='secret')):
+            for mode, owner, allowed in cases:
+                with patch.object(desk.os, 'stat', return_value=SimpleNamespace(st_mode=mode, st_uid=owner)) as check:
+                    self.assertEqual(desk.environment(), dict(clean, XDG_RUNTIME_DIR='/run/user/1234') if allowed else clean)
+                    check.assert_called_once_with('/run/user/1234')
+            for error in (FileNotFoundError(), PermissionError()):
+                with patch.object(desk.os, 'stat', side_effect=error):
+                    self.assertEqual(desk.environment(), clean)
+            lookup.assert_called_with(os.getuid())
+        with patch.object(desk, 'environment', return_value=clean), patch.object(desk, 'exchange',
+                return_value=(0, receipt(wire()))) as exchange:
+            self.assertEqual(desk.handle(json.dumps(envelope()).encode())[1], 0)
+            self.assertEqual(exchange.call_args.args[3], clean)
+
+    def test_missing_controller_by_operation(self):
+        for launcher in self.controllers:
+            Path(self.controllers[launcher]).unlink()
+            for op in ('capabilities', 'cancel', 'status'):
+                with self.subTest(launcher=launcher, op=op):
+                    answer, code = self.handle(envelope(launcher, op))
+                    self.assertEqual(code, 0)
+                    if op == 'capabilities':
+                        self.assertEqual(answer['capabilities'], dict(queued=False, running=False, reason='Controlador ausente.'))
+                    else:
+                        self.assertEqual(answer['status'], 'unknown' if op == 'status' else 'rejected')
+                        self.assertEqual(answer['action_id'], wire(launcher, op)['action_id'])
+                        self.assertEqual(answer['error']['code'], 'unsupported')
+        self.assertEqual(self.processes, [])
+
     def test_missing_timeout_overflow_and_failed_controller(self):
         Path(self.controllers['remote-run']).unlink()
-        self.assertEqual(self.handle(envelope())[1],3)
+        self.assertEqual(self.handle(envelope())[0]['status'],'rejected')
         self.assertEqual(self.processes,[])
         self.controller('remote-run', 'import time\ntime.sleep(60)\n')
         with patch.object(desk, 'TIMEOUT', .5):
@@ -217,6 +267,15 @@ class SSHTests(unittest.TestCase):
         self.assertNotIn(REF,' '.join(argv))
         self.assertNotIn('action-0001',' '.join(argv))
 
+    def test_executor_caps_transport_by_request_remainder(self):
+        executor = accion.Executor(runner=self.runner, home='/synthetic-home')
+        self.assertEqual(executor(self.host, 'remote-run', wire(), timeout=2.5)['status'], 'cancelled')
+        self.assertGreater(self.calls[1][1], 2)
+        self.assertLessEqual(self.calls[1][1], 2.5)
+        self.calls.clear()
+        executor(self.host, 'remote-run', wire(), timeout=100)
+        self.assertLessEqual(self.calls[1][1], 40)
+
     def test_other_argv_controller_paths_and_host_rejected(self):
         with tempfile.TemporaryDirectory(dir='/tmp') as folder:
             path=Path(folder)/'hosts.json'
@@ -262,6 +321,43 @@ class SSHTests(unittest.TestCase):
             actions=accion.Actions([self.host],Path(folder)/'malformed',lambda:data,
                 executor=accion.Executor(runner=malformed),clock=lambda:1000)
             self.assertEqual(actions.post(request(host='desk'))[1]['status'],'unknown')
+
+
+class IntegrationTests(unittest.TestCase):
+    setUp = DispatcherTests.setUp
+    controller = DispatcherTests.controller
+    assert_reaped = DispatcherTests.assert_reaped
+
+    def test_panel_dispatcher_both_launchers_and_switch(self):
+        from browser_fixture import write_ssh_shim, fixture
+        shim = write_ssh_shim(self.root, self.controllers)
+        calls = []
+        def runner(argv, **options):
+            self.assertEqual(argv, SSH)
+            calls.append(argv)
+            process = subprocess.Popen(['/usr/bin/python3', '-I', str(shim)], **options)
+            self.processes.append(process)
+            return process
+        data = fixture()
+        actions = accion.Actions(serve.load_hosts(BASE/'hosts.json'), self.root, lambda:data,
+                                executor=accion.Executor(home=self.root, runner=runner))
+        for launcher in ('remote-run', 'jale'):
+            body = request(host='desk', launcher=launcher, ref=wire(launcher)['ref'],
+                           action_id='integration-'+launcher,
+                           expected=dict(task_id=78 if launcher == 'jale' else 77, state='Queued'))
+            cap = dict(body, op='capabilities'); del cap['action_id']
+            self.assertEqual(actions.post(cap)[1]['capabilities'], dict(queued=True, running=True, reason=None))
+            self.assertEqual(actions.post(body)[1]['status'], 'cancelled')
+            seen = json.loads(Path(self.controllers[launcher]).with_suffix('.seen').read_text())
+            self.assertEqual(seen['request'], dict(wire(launcher), action_id=body['action_id'], expected=body['expected']))
+        self.assertEqual(len(calls), 4)
+        (self.root/'desk.disabled').symlink_to(self.root/'absent')
+        body = dict(body, action_id='integration-disabled')
+        self.assertEqual(actions.post(body)[1]['error']['code'], 'unsupported')
+        self.assertEqual(actions.post(cap)[1]['capabilities']['queued'], False)
+        actions.save(body, accion.result(body, 'unknown'))
+        self.assertEqual(actions.get(body['action_id'])[1]['status'], 'cancelled')
+        self.assert_reaped()
 
 
 class DeskUITests(unittest.TestCase):
