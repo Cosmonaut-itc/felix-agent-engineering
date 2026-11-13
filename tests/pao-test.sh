@@ -83,7 +83,7 @@ clean_install() {
                 count=$((count + 2)) ;;
         esac
     done < "$PAO_MANIFEST"
-    assert test "$count" = 60
+    assert test "$count" = 62
     assert test ! -e "$HOME/.agents/skills/animate"
     assert test ! -e "$HOME/.codex/opencode.json"
     assert test ! -e "$HOME/Library/LaunchAgents/com.github.cosmonaut-itc.pao.plist"
