@@ -111,7 +111,7 @@ forma atómica y copia el controlador a
 la guardia. El LaunchAgent ejecuta `/usr/bin/python3 -I` cada 60 s
 (`StartInterval`, sin `KeepAlive`).
 
-Afecta sólo a `suites` y `default`. No reclama grupos ya pausados, y suelta la
+Afecta sólo a `suites`, `rapidas` y `default`. No reclama grupos ya pausados, y suelta la
 propiedad si observa que alguien los arrancó. Para tomar manualmente una pausa
 que hizo la guardia, usar el mismo candado y retirar su propiedad. El grupo
 sigue en pausa, ahora como pausa manual:
@@ -134,7 +134,7 @@ casos sale con error. Si tampoco puede recargarla, el error nombra los grupos qu
 siguen en pausa y el comando `pueue start -g` para reanudarlos.
 
 **Límite:** sólo frena la admisión: las tareas que ya corren siguen. Las
-corridas de `remote-run` encolan en `suites`; las corridas de Jale en la Mini
+corridas de `remote-run` encolan en `suites`, o en `rapidas` con `--carril rapido`; las corridas de Jale en la Mini
 no pasan por Pueue y esta guardia no las frena.
 
 Pruebas en la Mini, siempre mediante su Pueue:
