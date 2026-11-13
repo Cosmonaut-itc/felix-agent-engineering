@@ -160,6 +160,16 @@ class SnapshotTests(unittest.TestCase):
         log.write_text('{"evento":"decision","accion":"pausar","utc":"2026-11-12T00:00:00Z"}\nbad\n')
         self.assertEqual((snapshot.desk_guard(self.root)['cpu_pause'], snapshot.desk_guard(self.root)['cpu_resume']), (35, 12))
 
+    def test_desk_guard_reads_the_deployed_controller(self):
+        control = self.root / '.local/lib/pao-pueue-desk/control.py'
+        control.parent.mkdir(parents=True)
+        shutil.copy(BASE.parent / 'pueue-desk/control.py', control)
+        log = self.root / '.local/state/pao/pueue-desk/guardia.log'
+        log.parent.mkdir(parents=True)
+        log.write_text('{"evento":"decision","accion":"pausar","accion_rapidas":"mantener","utc":"2026-11-12T00:00:00Z"}\n')
+        guard = snapshot.desk_guard(self.root)
+        self.assertEqual((guard['action'], guard['cpu_pause'], guard['cpu_resume']), ('pausar', 30, 15))
+
     def test_old_done_excluded(self):
         task = dict(id=1, group='suites', status={'Done': dict(start=1, end=2, result='Success')})
         data = snapshot.collect('linux', 'desk', pueue=self.fake_pueue({'1': task}), home=self.root, now=100000)

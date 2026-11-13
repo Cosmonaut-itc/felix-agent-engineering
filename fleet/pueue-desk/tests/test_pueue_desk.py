@@ -163,6 +163,43 @@ class ControlTests(Fixture):
                 records = [json.loads(line) for line in (self.directory / "guardia.log").read_text().splitlines()]
                 self.assertEqual([r["accion"] for r in records if r["evento"] == "decision"][-1], expected)
 
+    def test_quotas_per_mode(self):
+        expected = {"dia": {"hasito": 3, "jale": 5, "otros": 1, "pg5434": 1, "rapidas": 2},
+                    "noche": {"hasito": 4, "jale": 7, "otros": 1, "pg5434": 1, "rapidas": 2}}
+        self.write_state({"groups": {}, "tasks": {}})
+        for hour, mode in ((15, "dia"), (6, "noche")):
+            control.apply_mode(self.pueue, datetime.fromisoformat(f"2026-11-12T{hour:02}:00:00+00:00"))
+            self.assertEqual({g: s["parallel_tasks"] for g, s in self.pueue.status()["groups"].items()},
+                             expected[mode])
+
+    def test_rapidas_pauses_and_resumes_only_by_memory(self):
+        def step(memory, normal, rapid, owned, **metrics):
+            self.metrics(memory=memory, **metrics)
+            self.guard()
+            records = [json.loads(line) for line in (self.directory / "guardia.log").read_text().splitlines()]
+            decision = [r for r in records if r["evento"] == "decision"][-1]
+            self.assertEqual((decision["accion"], decision["accion_rapidas"]), (normal, rapid))
+            self.assertEqual(set(json.loads((self.directory / "guardia-state.json").read_text())), owned)
+        busy = {"hasito", "jale", "otros", "pg5434"}
+        step(8, "pausar", "reanudar", busy, io_value=41, cpu=31)
+        self.assertEqual(self.pueue.status()["groups"]["rapidas"]["status"], "Running")
+        step(3, "pausar", "pausar", busy | {"rapidas"}, io_value=41)
+        step(5, "pausar", "mantener", busy | {"rapidas"}, cpu=31)
+        step(6, "pausar", "reanudar", busy, io_value=41)
+        self.assertEqual(self.pueue.status()["groups"]["rapidas"]["status"], "Running")
+        self.assertEqual(self.pueue.status()["groups"]["hasito"]["status"], "Paused")
+
+    def test_missing_group_is_skipped_and_released(self):
+        control.save_owned(self.directory, {"rapidas"})
+        state = self.pueue.status()
+        del state["groups"]["rapidas"]
+        self.write_state(state)
+        self.metrics(memory=3)
+        self.guard()
+        self.assertEqual(set(json.loads((self.directory / "guardia-state.json").read_text())),
+                         {"hasito", "jale", "otros", "pg5434"})
+        self.assertNotIn("rapidas", self.pueue.status()["groups"])
+
     def test_manual_takeover_of_guard_pause(self):
         self.metrics(cpu=31)
         self.guard()

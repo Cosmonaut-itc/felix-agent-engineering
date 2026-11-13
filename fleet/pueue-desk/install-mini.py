@@ -28,7 +28,7 @@ def resume_owned(state):
     with (state / "control.lock").open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         owned = json.loads(owned_file.read_text())
-        if not set(owned) <= {"suites", "default"}:
+        if not set(owned) <= {"suites", "default", "rapidas"}:
             raise ValueError("Grupos desconocidos en estado del guardia")
         for group in sorted(owned):
             run(PUEUE, "start", "-g", group)
