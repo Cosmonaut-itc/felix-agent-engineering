@@ -129,7 +129,9 @@ class ReviewActionsTests(unittest.TestCase):
         self.actions.post(body)
         with self.assertRaisesRegex(ValueError,'No existe'):self.actions.close_receipt('missing-000')
         closed=self.actions.close_receipt(body['action_id'])
-        self.assertEqual((closed['status'],closed['error']['code']),('rejected','manually_closed'))
+        self.assertEqual(closed['status'],'rejected')
+        self.assertIsNotNone(closed['error'])
+        self.assertEqual(closed['error']['code'],'manually_closed')
         self.assertTrue(closed['error']['message'].startswith('Recibo cerrado a mano'))
         with self.actions.connect() as db:
             updated=db.execute('SELECT updated FROM actions WHERE action_id=?',(body['action_id'],)).fetchone()[0]
