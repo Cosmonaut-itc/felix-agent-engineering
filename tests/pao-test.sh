@@ -83,7 +83,8 @@ clean_install() {
                 count=$((count + 2)) ;;
         esac
     done < "$PAO_MANIFEST"
-    assert test "$count" = 61
+    assert test "$count" = 63
+    assert test ! -e "$HOME/.agents/skills/animate"
     assert test ! -e "$HOME/.codex/opencode.json"
     assert test ! -e "$HOME/Library/LaunchAgents/com.github.cosmonaut-itc.pao.plist"
     assert grep -q '^overall ok$' "$STATE/status"
@@ -234,7 +235,9 @@ update_conflict() {
 bad_manifest() {
     fixture
     local row
-    for row in 'unknown whatever' 'skill skills/felix-mode other-name' 'retire felix-mode' 'file README.md ~/.codex/AGENTS.md' 'file ../README.md ~/.bad' 'file README.md /tmp/escape'; do
+    for row in 'unknown whatever' 'skill skills/felix-mode other-name' 'retire felix-mode' 'file README.md ~/.codex/AGENTS.md' 'file ../README.md ~/.bad' 'file README.md /tmp/escape' \
+        'ref skills/felix-mode felix-mode' 'ref vendor/emilkowalski/animate other-name' 'skill vendor/emilkowalski/animate animate' \
+        'upstream mattpocock https://example.invalid/skills tags' 'upstream extra https://example.invalid/skills weekly' 'upstream extra ssh://example.invalid/skills head'; do
         cp "$PAO_ROOT/manifest" "$HOME/broken"
         printf '%s\n' "$row" >> "$HOME/broken"
         if PAO_MANIFEST=$HOME/broken pao check; then return 1; fi
@@ -418,6 +421,73 @@ vendor_sync_ignored() {
     assert test -f "$PAO_ROOT/vendor/mattpocock/grilling/node_modules/pao-local"
 }
 
+fake_upstream() {
+    local repo=$1 path
+    shift
+    git init --quiet -b main "$repo"
+    printf 'MIT\n' > "$repo/LICENSE"
+    for path in "$@"; do
+        mkdir -p "$repo/skills/$path"
+        printf -- '---\nname: %s\n---\n' "${path##*/}" > "$repo/skills/$path/SKILL.md"
+    done
+    git -C "$repo" add -A
+    git -C "$repo" -c core.hooksPath=/dev/null commit --quiet -m upstream
+}
+
+vendor_sync_upstreams() {
+    fixture
+    local dir=$TEST_TMP/case-$CASE head_commit
+    fake_upstream "$dir/released" core/alpha core/omega
+    git -C "$dir/released" tag v1.2.0
+    git -C "$dir/released" tag v1.10.0
+    git -C "$dir/released" tag latest
+    fake_upstream "$dir/rolling" beta gamma unlisted
+    grep -v '^upstream \|^skill vendor/\|^ref vendor/' "$PAO_MANIFEST" > "$HOME/manifest-vendor"
+    printf '%s\n' "upstream released file://$dir/released tags" 'skill vendor/released/alpha alpha' \
+        "upstream rolling file://$dir/rolling head" 'skill vendor/rolling/beta beta' 'ref vendor/rolling/gamma gamma' >> "$HOME/manifest-vendor"
+    export PAO_MANIFEST=$HOME/manifest-vendor
+    pao vendor-sync > "$HOME/out"
+    head_commit=$(git -C "$dir/rolling" rev-parse HEAD)
+    assert grep -qx 'released changed none -> v1.10.0' "$HOME/out"
+    assert grep -qx "rolling changed none -> ${head_commit:0:12}" "$HOME/out"
+    assert grep -qx 'tag=v1.10.0' "$PAO_ROOT/vendor/released/UPSTREAM"
+    assert test -f "$PAO_ROOT/vendor/released/alpha/SKILL.md"
+    assert test ! -e "$PAO_ROOT/vendor/released/omega"
+    assert grep -qx "commit=$head_commit" "$PAO_ROOT/vendor/rolling/UPSTREAM"
+    if grep -q '^tag=' "$PAO_ROOT/vendor/rolling/UPSTREAM"; then return 1; fi
+    assert test -f "$PAO_ROOT/vendor/rolling/gamma/SKILL.md"
+    assert test ! -e "$PAO_ROOT/vendor/rolling/unlisted"
+    git -C "$PAO_ROOT" add vendor
+    git -C "$PAO_ROOT" -c core.hooksPath=/dev/null commit --quiet -m vendor
+    pao vendor-sync > "$HOME/out"
+    assert grep -qx 'released unchanged' "$HOME/out"
+    assert grep -qx 'rolling unchanged' "$HOME/out"
+    printf 'updated\n' >> "$dir/rolling/skills/gamma/SKILL.md"
+    git -C "$dir/rolling" -c core.hooksPath=/dev/null commit --quiet -am update
+    pao vendor-sync > "$HOME/out"
+    assert grep -qx "rolling changed ${head_commit:0:12} -> $(git -C "$dir/rolling" rev-parse --short=12 HEAD)" "$HOME/out"
+    assert grep -qx updated "$PAO_ROOT/vendor/rolling/gamma/SKILL.md"
+    git -C "$PAO_ROOT" add vendor
+    git -C "$PAO_ROOT" -c core.hooksPath=/dev/null commit --quiet -m vendor
+    printf 'next\n' >> "$dir/released/skills/core/alpha/SKILL.md"
+    git -C "$dir/released" -c core.hooksPath=/dev/null commit --quiet -am next
+    git -C "$dir/released" tag v1.11.0
+    mv "$dir/rolling" "$dir/rolling-offline"
+    if pao vendor-sync > "$HOME/out" 2> "$HOME/err"; then return 1; fi
+    assert test -z "$(git -C "$PAO_ROOT" status --porcelain --ignored --untracked-files=all -- vendor)"
+    mv "$dir/rolling-offline" "$dir/rolling"
+    pao vendor-sync > "$HOME/out"
+    assert grep -qx 'released changed v1.10.0 -> v1.11.0' "$HOME/out"
+    assert grep -qx 'rolling unchanged' "$HOME/out"
+    printf 'skill vendor/ghost/alpha alpha2\n' >> "$PAO_MANIFEST"
+    if pao vendor-sync 2> "$HOME/err"; then return 1; fi
+    assert grep -q 'fuente vendor inválida' "$HOME/err"
+    sed -i.bak '$d' "$PAO_MANIFEST"
+    printf 'skill vendor/ghost/alpha2 alpha2\n' >> "$PAO_MANIFEST"
+    if pao vendor-sync 2> "$HOME/err"; then return 1; fi
+    assert grep -q 'vendor/ghost no tiene fila upstream' "$HOME/err"
+}
+
 minimal_path() {
     fixture
     install_pao
@@ -544,7 +614,7 @@ STUB
 
 if ! prepare_template > "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
 FAILURES=0 CASE=0
-for test_case in pstack_refs_status clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning uninstall_rm_failure windows_job_backup; do
+for test_case in pstack_refs_status clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored vendor_sync_upstreams update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning uninstall_rm_failure windows_job_backup; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
     result=$?

@@ -44,7 +44,7 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    el 8787 ya lo usa otro servicio. El Funnel existente en 10000 no se modifica.
 
 El LaunchAgent ejecuta `/usr/bin/python3 -I serve.py --bind <IP tailnet>
---port 8788 --owner <LoginName>`. Logs en `~/Library/Logs/pao-rack.log`.
+--port 8788 --owner <LoginName> --name <nombre MagicDNS> --name <nombre corto>`. Logs en `~/Library/Logs/pao-rack.log`.
 `bash instalar.sh --desinstalar` descarga el agente y quita sus archivos;
 conserva historial, caché, key de Linear, llave SSH y logs.
 
@@ -60,12 +60,21 @@ la consulta o su formato, responde 403. `--owner` es obligatorio fuera del
 modo loopback; `--tailscale` permite sustituir el binario en las pruebas.
 Los cambios de identidad pueden tardar hasta 5 minutos en reflejarse.
 
+Antes de todo eso exige que la cabecera `Host` nombre a este servidor con su
+puerto: la IP de `--bind` o un `--name` (sin distinguir mayúsculas), en una
+sola cabecera. Si no,
+responde 403. Así una página de otro sitio cuyo nombre resuelva a la IP de la
+Mini (DNS rebinding) no lee el panel desde el navegador del dueño.
+`instalar.sh` pasa el nombre MagicDNS completo y el corto.
+
 Después de instalar, desde otro dispositivo del dueño conectado al tailnet:
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' http://<IP-TAILNET-MINI>:8788/
 # 200
 curl -sS -o /dev/null -w '%{http_code}\n' -H 'Tailscale-Funnel-Request: ?1' http://<IP-TAILNET-MINI>:8788/
+# 403
+curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: otro.example:8788' http://<IP-TAILNET-MINI>:8788/
 # 403
 curl --connect-timeout 3 http://<IP-LAN-MINI>:8788/
 # Conexión rechazada: no debe responder HTTP por la IP de red local.

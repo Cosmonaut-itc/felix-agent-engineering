@@ -21,6 +21,7 @@ repositorio declara. Ante un conflicto manda la capa de más arriba.
 | `felix-mode` | Cómo encajan pstack, el contrato y Matt Pocock: precedencia, sustituciones, revisión y pausas. | [`skills/felix-mode`](../skills/felix-mode/SKILL.md). |
 | pstack | Playbooks de ejecución, principios y verificación sobre el artefacto real. | Plugin `pstack@pstack-claude`, del upstream [michael-denyer/pstack-claude](https://github.com/michael-denyer/pstack-claude). |
 | Matt Pocock | Producto y planificación, más el grafo de tickets y acumulador de `implement-spec` adaptado por felix-mode. | [`vendor/mattpocock`](../vendor/mattpocock/), copia del último release de [mattpocock/skills](https://github.com/mattpocock/skills). |
+| Emil Kowalski | Referencia de UI y movimiento que felix-mode cita por ruta, más `learn-taste` instalada. | [`vendor/emilkowalski`](../vendor/emilkowalski/), copia de la rama por defecto de [emilkowalski/skills](https://github.com/emilkowalski/skills). |
 | Transporte | Cómo llega un encargo a otro runtime y cómo se recoge. | [`native-subagents.md`](native-subagents.md), [`t3-delegation.md`](t3-delegation.md), [`codex-delegation.md`](../configs/claude/docs/codex-delegation.md), [`claude-workers.md`](../configs/codex/docs/claude-workers.md) y [`opencode-workers.md`](opencode-workers.md). |
 
 La precedencia de `felix-mode` es la misma: usuario, `AGENTS.md` del
@@ -219,8 +220,8 @@ mantienen. `bin/pao` lo aplica:
 - Cada 4 horas el job trae `main` sólo si avanza en línea recta, rehace los
   enlaces y actualiza pstack. Un archivo editado en la máquina queda retenido
   y se reporta en `pao status`.
-- Un workflow diario copia el último release de Matt Pocock a
-  `vendor/mattpocock/` y lo commitea si pasa las comprobaciones.
+- Un workflow diario copia cada upstream de [`vendor/`](../vendor/README.md)
+  y lo commitea si pasa las comprobaciones.
 
 El [README](../README.md#instalación-con-pao) explica la instalación paso a paso.
 
@@ -232,4 +233,7 @@ El [README](../README.md#instalación-con-pao) explica la instalación paso a pa
   Denyer, con licencia MIT.
 - Las [skills de Matt Pocock](https://github.com/mattpocock/skills) son
   © 2026 Matt Pocock, con licencia MIT. La copia de `vendor/mattpocock/`
+  conserva su licencia y no se modifica.
+- Las [skills de Emil Kowalski](https://github.com/emilkowalski/skills) son
+  © 2026 Emil Kowalski, con licencia MIT. La copia de `vendor/emilkowalski/`
   conserva su licencia y no se modifica.

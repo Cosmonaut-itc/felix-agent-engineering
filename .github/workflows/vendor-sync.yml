@@ -23,12 +23,11 @@ jobs:
         run: |
           export HOME="$RUNNER_TEMP/pao-vendor-home"
           mkdir -p "$HOME"
-          old=$(sed -n 's/^tag=//p' vendor/mattpocock/UPSTREAM)
           result=$(bin/pao vendor-sync)
           printf '%s\n' "$result"
-          new=$(sed -n 's/^tag=//p' vendor/mattpocock/UPSTREAM)
-          if [[ $result = changed\ * ]]; then
-            printf 'changed=true\nold=%s\nnew=%s\n' "$old" "$new" >> "$GITHUB_OUTPUT"
+          summary=$(printf '%s\n' "$result" | awk '$2 == "changed" {printf "%s%s %s -> %s", sep, $1, $3, $5; sep = ", "}')
+          if [ -n "$summary" ]; then
+            printf 'changed=true\nsummary=%s\n' "$summary" >> "$GITHUB_OUTPUT"
           fi
       - name: Validate and test
         if: steps.sync.outputs.changed == 'true'
@@ -40,11 +39,10 @@ jobs:
       - name: Commit vendor update
         if: steps.sync.outputs.changed == 'true'
         env:
-          OLD_TAG: ${{ steps.sync.outputs.old }}
-          NEW_TAG: ${{ steps.sync.outputs.new }}
+          SUMMARY: ${{ steps.sync.outputs.summary }}
         run: |
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
-          git add vendor/mattpocock
-          git commit -m "chore(vendor): mattpocock/skills $OLD_TAG -> $NEW_TAG"
+          git add vendor
+          git commit -m "chore(vendor): $SUMMARY"
           git push origin HEAD:main
