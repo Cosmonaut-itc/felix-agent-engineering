@@ -347,12 +347,11 @@ class ServerTests(unittest.TestCase):
         with patch.object(serve.time, 'monotonic', return_value=401):
             self.assertFalse(check.allows('100.111.159.14'))
         self.assertLess(time.monotonic() - started, 6)
-        # whois es nieto del sh: muerto, queda zombi hasta que lo recoge quien lo adopta.
+        # whois es nieto del sh: muerto, queda zombi hasta que lo recoge quien lo adopta, y un zombi ya no corre.
         pid = int(pidfile.read_text())
         for _ in range(100):
-            try:
-                os.kill(pid, 0)
-            except ProcessLookupError:
+            state = subprocess.run(['/bin/ps', '-o', 'stat=', '-p', str(pid)], capture_output=True, text=True).stdout.strip()
+            if not state or state.startswith('Z'):
                 break
             time.sleep(0.02)
         else:
