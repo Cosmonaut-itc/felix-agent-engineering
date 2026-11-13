@@ -57,7 +57,12 @@
             "name": "dirigida-nn-u0",
             "scope": "dirigida",
             "project": "SEN-CheckIn",
-            "ticket": null
+            "ticket": null,
+            "usage": {
+              "cpu": 0.04,
+              "mem": 103079215,
+              "containers": 0
+            }
           },
           {
             "id": 244,
@@ -70,7 +75,12 @@
             "name": "sen-4822-u3-sol",
             "scope": null,
             "project": "comprador",
-            "ticket": "SEN-4822"
+            "ticket": "SEN-4822",
+            "usage": {
+              "cpu": 2.5,
+              "mem": 5153960755,
+              "containers": 1
+            }
           },
           {
             "id": 245,
@@ -83,10 +93,25 @@
             "name": "sen-4822-u3-opus",
             "scope": null,
             "project": "comprador",
-            "ticket": "SEN-4822"
+            "ticket": "SEN-4822",
+            "usage": {
+              "cpu": 0.8999999999999999,
+              "mem": 1546188226,
+              "containers": 0
+            }
           }
         ],
-        "errors": []
+        "errors": [],
+        "usage": {
+          "interval": 0,
+          "busy": 5.0,
+          "used": 15759196160,
+          "outside": {
+            "cpu": 1.56,
+            "mem": 8955967964
+          },
+          "docker": "read"
+        }
       },
       "estimates": {
         "242": {
@@ -168,7 +193,12 @@
             "name": "contract",
             "scope": null,
             "project": "SEN-CheckIn",
-            "ticket": null
+            "ticket": null,
+            "usage": {
+              "cpu": 0.048,
+              "mem": 134631899,
+              "containers": 0
+            }
           },
           {
             "id": 26,
@@ -181,7 +211,12 @@
             "name": "contract",
             "scope": null,
             "project": "SEN-CheckIn",
-            "ticket": null
+            "ticket": null,
+            "usage": {
+              "cpu": 3.0,
+              "mem": 6731594956,
+              "containers": 1
+            }
           },
           {
             "id": 28,
@@ -194,7 +229,12 @@
             "name": "contract",
             "scope": null,
             "project": "SEN-CheckIn",
-            "ticket": null
+            "ticket": null,
+            "usage": {
+              "cpu": 1.08,
+              "mem": 2019478487,
+              "containers": 0
+            }
           },
           {
             "id": 30,
@@ -207,7 +247,12 @@
             "name": "e2e",
             "scope": null,
             "project": "SEN-CheckIn",
-            "ticket": null
+            "ticket": null,
+            "usage": {
+              "cpu": 0.30000000000000004,
+              "mem": 841449369,
+              "containers": 0
+            }
           },
           {
             "id": 33,
@@ -220,7 +265,12 @@
             "name": "contract",
             "scope": null,
             "project": "SEN-CheckIn",
-            "ticket": null
+            "ticket": null,
+            "usage": {
+              "cpu": 0.012,
+              "mem": 33657974,
+              "containers": 0
+            }
           },
           {
             "id": 34,
@@ -418,7 +468,17 @@
             "ticket": null
           }
         ],
-        "errors": []
+        "errors": [],
+        "usage": {
+          "interval": 1.01,
+          "busy": 6.0,
+          "used": 12770603008,
+          "outside": {
+            "cpu": 1.5600000000000005,
+            "mem": 3009790323
+          },
+          "docker": "read"
+        }
       },
       "estimates": {
         "34": {

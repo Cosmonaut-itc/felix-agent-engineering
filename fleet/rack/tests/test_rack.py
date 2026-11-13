@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shutil
 from http.client import HTTPMessage
 from pathlib import Path
 import subprocess
@@ -50,6 +51,9 @@ class SnapshotTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        usage = patch.object(snapshot, 'collect_usage', return_value=None)
+        usage.start()
+        self.addCleanup(usage.stop)
 
     def fake_pueue(self, tasks):
         data = dict(groups={'suites': dict(status='Running', parallel_tasks=3)}, tasks=tasks)
@@ -154,6 +158,228 @@ class SnapshotTests(unittest.TestCase):
         task = dict(id=1, group='suites', status={'Done': dict(start=1, end=2, result='Success')})
         data = snapshot.collect('linux', 'desk', pueue=self.fake_pueue({'1': task}), home=self.root, now=100000)
         self.assertEqual(data['tasks'], [])
+
+
+class UsageTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        docker = patch.object(snapshot, 'docker_binary', return_value=None)
+        docker.start()
+        self.addCleanup(docker.stop)
+
+    def proc_row(self, pid, ppid, ticks, name='bash', start=1, pages=2, argv='', cwd=None):
+        path = self.root / str(pid)
+        path.mkdir(exist_ok=True)
+        fields = ['S', str(ppid)] + ['0'] * 9 + [str(ticks), '0'] + ['0'] * 6 + [str(start), '0', str(pages)]
+        (path / 'stat').write_text(str(pid) + ' (' + name + ') ' + ' '.join(fields))
+        (path / 'cmdline').write_bytes(argv.encode().replace(b' ', b'\0'))
+        if cwd:
+            (path / 'cwd').symlink_to(cwd)
+
+    def output(self):
+        return dict(sample(), cpu=dict(cores=12), mem=dict(total=100000000, available=60000000),
+                    tasks=[task(id=1), task(id=2), task(id=3, state='Paused')])
+
+    def test_linux_real_counters_tree_matching_and_cwd_container(self):
+        (self.root / 'stat').write_text('cpu 100 0 100 700 100 0 0 0 999 999\n')
+        self.proc_row(10, 1, 0, name='pueued')
+        self.proc_row(20, 10, 10000, argv='bash /private/job-12345678/task.sh')
+        self.proc_row(21, 20, 0, name='worker ) name', cwd='/private/worktrees/sen-test-4/packages/api')
+        self.proc_row(30, 10, 500, argv='bash /home/u/remote-run/runs/run-abc/task.sh')
+        self.proc_row(31, 30, 500, start=1)
+        self.proc_row(40, 10, 0, argv='bash /private/job-123456789/task.sh')
+        def advance(seconds):
+            self.assertEqual(seconds, 1)
+            (self.root / 'stat').write_text('cpu 300 0 200 1400 100 0 0 0 9999 9999\n')
+            self.proc_row(20, 10, 10100, argv='bash /private/job-12345678/task.sh')
+            self.proc_row(21, 20, 100, name='worker ) name')
+            self.proc_row(30, 10, 550, argv='bash /home/u/remote-run/runs/run-abc/task.sh')
+            self.proc_row(31, 30, 9999, start=2)  # PID reutilizado: no sumar su contador anterior.
+        def docker(argv, timeout):
+            self.assertEqual(argv[0], '/usr/bin/docker')
+            self.assertGreater(timeout, 0)
+            self.assertLessEqual(timeout, 4)
+            self.assertEqual(argv[1:3], ['stats', '--no-stream'])
+            return 'sen-test-db-4\t100.00%\t1MiB / 4GiB\nunrelated\t70.00%\t9GiB / 9GiB\nsuite-30\t50.00%\t2MB / 4GB\n'
+        out = self.output()
+        with patch.object(snapshot.time, 'sleep', side_effect=advance), patch.object(snapshot, 'command', side_effect=docker), patch.object(snapshot, 'docker_binary', return_value='/usr/bin/docker'):
+            usage = snapshot.collect_usage(out, {1: 'job-12345678', 2: 'remote-run/runs/run-abc'}, 'linux', self.root)
+        self.assertAlmostEqual(usage['busy'], 3.6)
+        self.assertGreaterEqual(usage['interval'], 0)
+        self.assertAlmostEqual(out['tasks'][0]['usage']['cpu'], 3.4)
+        self.assertAlmostEqual(out['tasks'][1]['usage']['cpu'], 1.1)
+        self.assertEqual(out['tasks'][0]['usage']['mem'], 4 * os.sysconf('SC_PAGE_SIZE') + 1024**2)
+        self.assertEqual(out['tasks'][1]['usage']['containers'], 1)
+        self.assertEqual(usage['outside']['cpu'], 0)  # Nunca negativo por diferencias entre fuentes.
+        self.assertEqual(usage['used'], 40000000)
+        self.assertEqual(usage['outside']['mem'], 40000000 - sum(t['usage']['mem'] for t in out['tasks'][:2]))
+        self.assertNotIn('usage', out['tasks'][2])
+        self.assertNotIn('private', json.dumps([usage, out]))
+        # Un proceso que desaparece, una entrada rota y un directorio no PID no tumban /proc.
+        (self.root / '99').mkdir()
+        (self.root / '98').mkdir()
+        (self.root / '98/stat').write_text('roto')
+        (self.root / 'not-pid').mkdir()
+        self.assertEqual(len(snapshot.linux_processes(self.root)[1]), 6)
+
+    def test_macos_collect_single_ps_and_pid_container_without_cwd(self):
+        raw = dict(groups={'suites': dict(status='Running', parallel_tasks=3)}, tasks={
+            '1': dict(id=1, group='suites', status='Running', path='/private/remote-run/runs/run-1'),
+            '2': dict(id=2, group='suites', status='Running', path='/private/remote-run/runs/run-2'),
+            '3': dict(id=3, group='suites', status='Queued', path='/private/remote-run/runs/run-3')})
+        calls = []
+        def command(argv, timeout=5):
+            calls.append(argv)
+            if argv[0] == '/fake/pueue':
+                return json.dumps(raw)
+            if argv[0] == '/bin/ps':
+                self.assertIn('pid=,ppid=,%cpu=,rss=,args=', argv)
+                return ('10 1 0 10 /opt/homebrew/bin/pueued daemon\n'
+                        '20 10 200 100 bash /private/remote-run/runs/run-1/body.sh SECRET\n'
+                        '21 20 45 200 worker SECRET\n'
+                        '30 10 0.7 64 bash /private/remote-run/runs/run-2/body.sh\n'
+                        '40 10 100 50 bash /private/remote-run/runs/run-10/body.sh\n'
+                        '50 1 10 500 com.docker.vm\n')
+            self.assertEqual(argv[1], 'stats')
+            return 'sen4951-suite-21\t50%\t2MiB / 1GiB\nbuzz-espejo-x\t10%\t5MiB / 1GiB\n'
+        with patch.object(snapshot, 'command', side_effect=command), patch.object(snapshot, 'mac_capacity', return_value=(dict(cores=10), dict(total=16000000, available=4000000))), patch.object(snapshot, 'mini_metadata', return_value=dict(name='suite-test')), patch.object(snapshot, 'disk', return_value=None), patch.object(snapshot, 'docker_binary', return_value='/opt/homebrew/bin/docker'), patch.object(snapshot.os, 'readlink', side_effect=AssertionError('macOS no lee cwd')):
+            out = snapshot.collect('macos', 'mini', pueue='/fake/pueue', home=self.root)
+        self.assertEqual(sum(argv[0] == '/bin/ps' for argv in calls), 1)
+        self.assertEqual(out['usage']['interval'], 0)
+        self.assertAlmostEqual(out['usage']['busy'], 3.557)
+        self.assertEqual(out['usage']['docker'], 'read')
+        self.assertAlmostEqual(out['tasks'][0]['usage']['cpu'], 2.95)
+        self.assertEqual(out['tasks'][0]['usage']['mem'], 300 * 1024 + 2 * 1024**2)
+        self.assertEqual(out['tasks'][0]['usage']['containers'], 1)
+        self.assertAlmostEqual(out['tasks'][1]['usage']['cpu'], .007)
+        self.assertNotIn('usage', out['tasks'][2])
+        self.assertAlmostEqual(out['usage']['outside']['cpu'], .6)
+        self.assertEqual(out['errors'], [])
+        for secret in ('SECRET', '/private', 'sen4951', 'buzz-espejo', 'argv', 'cwd'):
+            self.assertNotIn(secret, json.dumps(out))
+
+    def test_container_rules_ambiguity_failures_and_absent_binary(self):
+        contexts = {1: dict(pids={20}, slots={'2'}), 2: dict(pids={30}, slots={'2'})}
+        with patch.object(snapshot, 'command', side_effect=AssertionError('Docker ausente')):
+            self.assertEqual(snapshot.docker_stats('linux', time.monotonic()+2), ('absent', []))
+        with patch.object(snapshot, 'docker_binary', return_value='/usr/bin/docker'):
+            # Un contenedor de dos dueños posibles o sin dueño queda fuera de las corridas.
+            with patch.object(snapshot, 'command', return_value='sen-test-db-2\t20%\t1MiB / 1GiB\nunknown\t5%\t1MiB / 1GiB\nsuite-20\t30%\t1MiB / 1GiB\n') as run:
+                stats = snapshot.docker_stats('linux', time.monotonic()+2)
+                self.assertEqual(run.call_count, 1)
+            self.assertEqual(snapshot.container_usage(stats, contexts), ('read', {1: dict(cpu=.3, mem=1024**2, containers=1)}))
+            for failure in (OSError(), subprocess.TimeoutExpired('docker', 1)):
+                with patch.object(snapshot, 'command', side_effect=failure):
+                    self.assertEqual(snapshot.docker_stats('linux', time.monotonic()+2), ('error', []))
+            # Líneas ilegibles (contenedor arrancando, nan, negativo) no tumban las demás.
+            with patch.object(snapshot, 'command', return_value='suite-20\t--\t-- / --\nsuite-20\tnan%\t1MiB / 1GiB\nsuite-20\t-1%\t1MiB / 1GiB\nroto\nsuite-30\t10%\t1KiB / 1GiB'):
+                self.assertEqual(snapshot.docker_stats('linux', time.monotonic()+2), ('read', [('suite-30', .1, 1024)]))
+            with patch.object(snapshot, 'command', side_effect=AssertionError('presupuesto agotado')):
+                self.assertEqual(snapshot.docker_stats('linux', time.monotonic()-1), ('error', []))
+        with patch.object(snapshot.Path, 'is_file', side_effect=lambda: False):
+            # Probar la selección real sin ejecutar el binario.
+            self.assertIsNone(UsageTests.real_docker_binary('linux'))
+
+    real_docker_binary = staticmethod(snapshot.docker_binary)
+
+    def test_docker_error_retains_process_usage_without_stage_error(self):
+        out = self.output()
+        rows = {10: dict(ppid=1, daemon=True, cpu=0, mem=0),
+                20: dict(ppid=10, argv='/home/u/remote-run/runs/run-x/task.sh', cpu=2., mem=1024)}
+        with patch.object(snapshot, 'process_sample', return_value=(0, 3., rows)), patch.object(snapshot, 'docker_binary', return_value='/usr/bin/docker'), patch.object(snapshot, 'command', side_effect=subprocess.TimeoutExpired('docker', 1)):
+            out['usage'] = snapshot.collect_usage(out, {1: 'remote-run/runs/run-x', 2: 'unmatched'}, 'macos', self.root)
+        self.assertEqual(out['usage']['docker'], 'error')
+        self.assertEqual(out['tasks'][0]['usage'], dict(cpu=2., mem=1024, containers=0))
+        self.assertNotIn('usage', out['tasks'][1])  # Sin árbol no hay lectura: el panel muestra «—», no 0 %.
+        self.assertEqual(out['errors'], [])
+
+    def test_usage_validation_and_old_snapshots(self):
+        task_usage = dict(cpu=2.5, mem=12345, containers=1)
+        host_usage = dict(interval=1.01, busy=4.5, used=123456, outside=dict(cpu=2., mem=111111), docker='read')
+        for usage in (task_usage, None):
+            out = serve.validate_snapshot(dict(sample(), usage=host_usage, tasks=[task(usage=usage)]), 'mini')
+            self.assertEqual(out['usage'], host_usage)
+            self.assertEqual(out['tasks'][0]['usage'], usage)
+        self.assertNotIn('usage', serve.validate_snapshot(sample(), 'mini'))
+        self.assertIsNone(serve.validate_snapshot(dict(sample(), tasks=[task(state='Paused', usage=task_usage)]), 'mini')['tasks'][0]['usage'])
+        for key in task_usage:
+            for bad in (True, -1, float('nan'), float('inf'), '1', [], None):
+                out = serve.validate_snapshot(dict(sample(), tasks=[task(usage=dict(task_usage, **{key: bad}))]), 'mini')
+                self.assertIsNone(out['tasks'][0]['usage'], (key, bad))
+        for key in ('mem', 'containers'):
+            self.assertIsNone(serve.valid_usage(dict(task_usage, **{key: 1.5})))
+        for key in ('interval', 'busy', 'used'):
+            for bad in (True, -1, float('nan'), float('inf'), '1', [], None):
+                out = serve.validate_snapshot(dict(sample(), usage=dict(host_usage, **{key: bad})), 'mini')
+                self.assertIsNone(out['usage'], (key, bad))
+        for bad in (dict(host_usage, used=1.5), dict(host_usage, docker='unknown'), dict(host_usage, outside=dict(cpu=-1, mem=1)),
+                    dict(host_usage, outside=dict(cpu=1, mem=1.5)), dict(host_usage, outside=dict(cpu=float('nan'), mem=1)),
+                    dict(host_usage, outside=dict(cpu=1, mem=1, cwd='SECRET')), dict(host_usage, argv='SECRET'), [], True):
+            self.assertIsNone(serve.validate_snapshot(dict(sample(), usage=bad), 'mini')['usage'])
+        self.assertIsNone(serve.valid_usage(dict(task_usage, name='SECRET')))
+
+
+class UsageRenderTests(unittest.TestCase):
+    def test_render_ranking_percentages_legacy_and_escaping(self):
+        node = shutil.which('node')
+        if not node:
+            self.skipTest('node no está disponible para ejecutar el render real')
+        fixture = json.loads((BASE / 'tests/rack-fixture.json').read_text())
+        html = (BASE / 'index.html').read_text()
+        js = html.split('<script>', 1)[1].split('</script>', 1)[0]
+        # Ejecuta el script de producción con DOM mínimo; no hace HTTP ni usa dependencias.
+        harness = r'''
+const vm=require('vm'), assert=require('assert');
+const input=JSON.parse(require('fs').readFileSync(0,'utf8'));
+const elements={};
+const context={console, Intl, Date, Number, Object, String, Math,
+  document:{getElementById:id=>elements[id] ||= {addEventListener(){},innerHTML:'',textContent:''},
+    addEventListener(){},querySelector:()=>null},
+  window:{addEventListener(){}},setInterval(){},AbortSignal:{timeout(){}},
+  fetch:async()=>({ok:false})};
+vm.createContext(context); vm.runInContext(input.js,context);
+context.fixture=input.fixture;
+vm.runInContext(`render(fixture)`,context);
+let html=elements.app.innerHTML;
+assert.equal((html.match(/<table class="usage">/g)||[]).length,2);
+assert.equal((html.match(/Fuera de las corridas/g)||[]).length,2);
+assert(html.includes('0,4 %')); assert(html.includes('25 %'));
+assert(html.includes('aria-hidden="true"'));
+assert(html.includes('<th scope="col">CPU</th>'));
+assert(html.includes('<th scope="col">RAM</th>'));
+assert(html.includes('Incluye contenedores atribuibles.'));
+vm.runInContext(`
+const h=S.hosts[0];
+h.tasks=[{id:1,state:'Running',name:'menos',usage:{cpu:1,mem:1}},
+ {id:2,state:'Running',name:'<más>',usage:{cpu:3,mem:2}},
+ {id:3,state:'Running',name:'empate',usage:{cpu:3,mem:9}},
+ {id:4,state:'Paused',name:'pausada',usage:{cpu:9,mem:9}},
+ {id:5,state:'Queued',name:'enfila'}];
+document.getElementById('app').innerHTML=resourceTable(h);
+`,context);
+html=elements.app.innerHTML;
+assert(html.indexOf('empate')<html.indexOf('&lt;más&gt;'));
+assert(html.indexOf('&lt;más&gt;')<html.indexOf('menos'));
+assert(html.indexOf('menos')<html.indexOf('Fuera de las corridas'));
+assert(!html.includes('pausada')); assert(!html.includes('enfila')); assert(!html.includes('<más>'));
+for(const status of ['absent','error']){
+ vm.runInContext(`S.hosts[0].usage.docker='${status}'; document.getElementById('app').innerHTML=resourceTable(S.hosts[0])`,context);
+ assert(elements.app.innerHTML.includes(status==='absent'?'Docker no está instalado':'Docker no respondió'));
+}
+vm.runInContext(`S.hosts[0].tasks=[]; document.getElementById('app').innerHTML=resourceTable(S.hosts[0])`,context);
+assert.equal(elements.app.innerHTML,'');
+for(const host of context.fixture.hosts) delete host.snapshot.usage;
+vm.runInContext(`render(fixture)`,context);
+assert(!elements.app.innerHTML.includes('<table class="usage">'));
+assert(elements.app.innerHTML.includes('slot busy'));
+console.log('render: ranking, porcentajes es, escape, Docker y compatibilidad OK');
+'''
+        result = subprocess.run([node, '-e', harness], input=json.dumps(dict(js=js, fixture=fixture)),
+                                text=True, capture_output=True, timeout=10)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('compatibilidad OK', result.stdout)
 
 
 class ActivityTests(unittest.TestCase):
