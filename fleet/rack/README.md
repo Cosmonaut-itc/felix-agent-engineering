@@ -44,7 +44,7 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    el 8787 ya lo usa otro servicio. El Funnel existente en 10000 no se modifica.
 
 El LaunchAgent ejecuta `/usr/bin/python3 -I serve.py --bind <IP tailnet>
---port 8788 --owner <LoginName>`. Logs en `~/Library/Logs/pao-rack.log`.
+--port 8788 --owner <LoginName> --name <nombre MagicDNS> --name <nombre corto>`. Logs en `~/Library/Logs/pao-rack.log`.
 `bash instalar.sh --desinstalar` descarga el agente y quita sus archivos;
 conserva historial, caché, key de Linear, llave SSH y logs.
 
@@ -60,12 +60,21 @@ la consulta o su formato, responde 403. `--owner` es obligatorio fuera del
 modo loopback; `--tailscale` permite sustituir el binario en las pruebas.
 Los cambios de identidad pueden tardar hasta 5 minutos en reflejarse.
 
+Antes de todo eso exige que la cabecera `Host` nombre a este servidor con su
+puerto: la IP de `--bind` o un `--name` (sin distinguir mayúsculas), en una
+sola cabecera. Si no,
+responde 403. Así una página de otro sitio cuyo nombre resuelva a la IP de la
+Mini (DNS rebinding) no lee el panel desde el navegador del dueño.
+`instalar.sh` pasa el nombre MagicDNS completo y el corto.
+
 Después de instalar, desde otro dispositivo del dueño conectado al tailnet:
 
 ```bash
 curl -sS -o /dev/null -w '%{http_code}\n' http://<IP-TAILNET-MINI>:8788/
 # 200
 curl -sS -o /dev/null -w '%{http_code}\n' -H 'Tailscale-Funnel-Request: ?1' http://<IP-TAILNET-MINI>:8788/
+# 403
+curl -sS -o /dev/null -w '%{http_code}\n' -H 'Host: otro.example:8788' http://<IP-TAILNET-MINI>:8788/
 # 403
 curl --connect-timeout 3 http://<IP-LAN-MINI>:8788/
 # Conexión rechazada: no debe responder HTTP por la IP de red local.
@@ -84,7 +93,7 @@ Los hosts se consultan en paralelo con timeout de 25 segundos. Si falla un
 host se conserva su último dato bueno, marcado como antiguo. Las lecturas
 parciales se indican en `snapshot.errors`. No se exportan comandos, rutas ni
 entornos de Pueue. `body.sh` se recorre por líneas, extrayendo sólo MODE,
-BASE_REPO, REQUESTED_SHA y BRANCH; nunca se ejecuta ni registra su contenido.
+BASE_REPO, REQUESTED_SHA, BRANCH y SLOT_KIND; nunca se ejecuta ni registra su contenido.
 
 El clon del desk no conserva ramas remotas al día, así que la instantánea
 entrega la rama solicitada cuando no es un SHA, además del SHA y el
@@ -127,6 +136,35 @@ La fila muestra proyecto, objetivo, rama y tiempo en espera, con descripción
 del ticket o, en su ausencia, asunto, rama u objetivo. Se ordena por prioridad
 descendente e id ascendente; muestra ocho tareas por grupo y permite ver el
 resto. No permite reordenar ni cambiar cupos u horarios.
+
+## Actividad y referencias
+
+El aviso aparece tras más de 15 minutos sin salida; los arranques Jale con
+`MODE=launch` y `SLOT_KIND=verify` indican que esperan liberar sus servidores.
+La actividad usa sólo tamaño y `mtime`: el más reciente entre el log de Pueue
+(`~/Library/Application Support/pueue/task_logs/<id>.log` en Mini,
+`~/.local/share/pueue/task_logs/<id>.log` en desk) y el `log` de
+`~/.local/state/jale/pueue/job-…/` o `~/remote-run/runs/<id>/`.
+Sin archivos, `last` es null; no se calcula un tiempo de silencio.
+La fila conserva tipo y referencia, sin consultar salida hasta correr.
+
+El menú ⋯ sólo ofrece «Copiar referencia»: host e id, grupo, ticket, producto,
+objetivo, rama, referencia propia y tiempos. Conserva el menú al actualizar.
+`manifest` instala el guion ejecutable en `~/.local/bin/rack-inspeccionar`:
+
+```bash
+rack-inspeccionar desk:77
+rack-inspeccionar 'rack desk:77 · jale · SEN-5731 · …'
+rack-inspeccionar mini:288 --json
+```
+
+Consulta el panel por Tailscale y muestra metadatos, actividad y comandos de
+lectura para seguir por SSH. Los comandos `remote-run` se ejecutan en la
+MacBook y fijan `REMOTE_RUN_HOST` a la máquina de la referencia.
+`--json` devuelve la tarea original de la API.
+`--url` o `RACK_URL` sustituyen la URL predeterminada
+`http://felixs-mac-mini.tail9f9a98.ts.net:8788/api/rack.json`.
+Códigos: referencia inválida 2, tarea ausente 3, panel inaccesible 4.
 
 ## Pruebas en la Mini
 

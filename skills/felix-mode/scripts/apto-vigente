@@ -2,10 +2,10 @@
 # Dice si un APTO sigue vigente cuando el head cambió por incorporar el destino.
 # Imprime `APTO vigente` si el head nuevo es la mezcla sin conflictos del head
 # revisado con el destino y el destino no cambió ningún archivo del parche.
-# Imprime `Ronda delta` y los archivos compartidos si la mezcla es exacta pero
-# el destino cambió archivos del parche. En los demás casos imprime `Ronda` y
-# el motivo. Sale con 2 cuando no puede decidir; eso tampoco conserva el APTO.
-# Necesita git 2.38 o posterior.
+# Imprime `Ronda delta` y los archivos que revisar si el destino cambió archivos
+# del parche, o si la mezcla tuvo conflictos, con el diff de su resolución.
+# En los demás casos imprime `Ronda` y el motivo. Sale con 2 cuando no puede
+# decidir; eso tampoco conserva el APTO. Necesita git 2.38 o posterior.
 set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
 
@@ -42,14 +42,19 @@ new_base=$(git merge-base "$target" "$new") || fail 'el head nuevo no comparte h
 
 # Con directoryRenames=true git mueve sin conflicto un archivo del parche al
 # directorio que el destino renombró, y ninguna de las dos listas lo muestra.
-merged=$(git -c merge.directoryRenames=conflict merge-tree --write-tree "$new_base" "$reviewed" 2>/dev/null)
-case $? in
-    0) ;;
-    1) printf 'Ronda: la mezcla del head revisado con el destino tiene conflictos\n'; exit 0 ;;
+# Con conflictos, el árbol que escribe lleva los marcadores, y su diff contra el
+# head nuevo es la resolución.
+merged=$(git -c merge.directoryRenames=conflict merge-tree --write-tree --name-only --no-messages "$new_base" "$reviewed" 2>/dev/null)
+merge_status=$?
+case $merge_status in
+    0|1) ;;
     *) fail 'git merge-tree --write-tree falló' ;;
 esac
+auto=${merged%%$'\n'*}
+conflicted=''
+[ "$merge_status" = 0 ] || conflicted=${merged#"$auto"}
 tree=$(git rev-parse --verify --quiet "$new^{tree}") || fail "no puedo leer el árbol de $new"
-if [ "$merged" != "$tree" ]; then
+if [ "$merge_status" = 0 ] && [ "$auto" != "$tree" ]; then
     printf 'Ronda: el head nuevo no es la mezcla del head revisado con el destino\n'
     exit 0
 fi
@@ -67,6 +72,11 @@ while IFS= read -r file; do
     [ -n "$file" ] || continue
     case $'\n'"$incoming"$'\n' in *$'\n'"$file"$'\n'*) shared+=$file$'\n' ;; esac
 done <<< "$patch"
+if [ "$merge_status" = 1 ]; then
+    printf 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos\nResolución: git diff --no-relative %s %s\n' "$auto" "$new"
+    printf '%s\n%s' "$conflicted" "$shared" | sed '/^$/d' | LC_ALL=C sort -u
+    exit 0
+fi
 if [ -n "$shared" ]; then
     printf 'Ronda delta: el destino cambió archivos del parche\n%s' "$shared"
     exit 0

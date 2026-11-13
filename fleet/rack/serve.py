@@ -116,6 +116,18 @@ class History:
         return dict(typical=statistics.median(durations), low=percentile(.1), high=percentile(.9), n=len(matches))
 
 
+def valid_activity(value):
+    if not isinstance(value, dict) or set(value) != {'last', 'kind', 'ref'}:
+        return None
+    last, kind, ref = value['last'], value['kind'], value['ref']
+    if (last is not None and (isinstance(last, bool) or not isinstance(last, (int, float)) or isinstance(last, float) and not math.isfinite(last))
+            or kind not in ('verify', 'chain', None)
+            or ref is not None and (not isinstance(ref, str) or not 0 < len(ref) <= 200
+                                    or any(ord(c) < 32 or ord(c) == 127 for c in ref))):
+        return None
+    return dict(last=last, kind=kind, ref=ref)
+
+
 def validate_snapshot(data, host):
     if not isinstance(data, dict) or data.get('schema') != 'rack-host@1' or data.get('host') != host:
         raise ValueError('Esquema o host inválido')
@@ -135,6 +147,10 @@ def validate_snapshot(data, host):
         raise ValueError('Capacidad inválida')
     if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in data.get('errors') or []):
         raise ValueError('Pueue no se pudo leer')
+    data = copy.deepcopy(data)
+    for row in data['tasks']:
+        if 'activity' in row:
+            row['activity'] = valid_activity(row['activity'])
     json.dumps(data, allow_nan=False)
     for group in data['groups']:
         if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
@@ -331,6 +347,13 @@ def allowed_client(address, bind, funnel=False):
         return False
 
 
+def allowed_host(headers, server):
+    # Un nombre ajeno que resuelve a esta IP (DNS rebinding) haría same-origin la página de otro sitio.
+    values = headers.get_all('Host') or []
+    names = (server.server_address[0], *getattr(server, 'names', ()))
+    return len(values) == 1 and values[0].lower() in {name.lower() + ':' + str(server.server_address[1]) for name in names}
+
+
 class OwnerCheck:
     def __init__(self, owner, tailscale):
         self.owner = owner
@@ -368,7 +391,9 @@ class OwnerCheck:
 
 class Handler(BaseHTTPRequestHandler):
     def dispatch(self):
-        if not allowed_client(self.client_address[0], self.server.server_address[0], 'Tailscale-Funnel-Request' in self.headers):
+        if not allowed_host(self.headers, self.server):
+            self.reply(403, b'')
+        elif not allowed_client(self.client_address[0], self.server.server_address[0], 'Tailscale-Funnel-Request' in self.headers):
             self.reply(403, b'')
         elif not (self.client_address[0] == '127.0.0.1' and self.server.server_address[0] == '127.0.0.1') and not self.server.owner_check.allows(self.client_address[0]):
             self.reply(403, b'')
@@ -425,6 +450,7 @@ def main():
     parser.add_argument('--bind', required=True, type=bind_address)
     parser.add_argument('--port', required=True, type=int)
     parser.add_argument('--owner')
+    parser.add_argument('--name', action='append', default=[], help='nombre DNS aceptado en Host, además de la IP de --bind')
     parser.add_argument('--tailscale', default='/Applications/Tailscale.app/Contents/MacOS/Tailscale')
     parser.add_argument('--hosts', type=Path, default=BASE / 'hosts.json')
     parser.add_argument('--state-dir', type=Path, default=Path.home() / '.local/state/pao/rack')
@@ -438,6 +464,7 @@ def main():
     rack = Rack(hosts, args.state_dir)
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
     server.rack = rack
+    server.names = tuple(args.name)
     server.owner_check = OwnerCheck(args.owner, args.tailscale)
     stop = threading.Event()
 

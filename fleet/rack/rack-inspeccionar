@@ -1,0 +1,85 @@
+#!/usr/bin/env python3
+"""Inspecciona una referencia del rack, sin modificar corridas (Python 3.9)."""
+import argparse
+import datetime
+import json
+import os
+import re
+import shlex
+import sys
+import urllib.request
+
+DEFAULT_URL = 'http://felixs-mac-mini.tail9f9a98.ts.net:8788/api/rack.json'
+PRODUCT = {'comprador': 'Hasito', 'hasito': 'Hasito', 'sen-checkin': 'Jale',
+           'jale': 'Jale', 'personal-agent-orchestration': 'PAO',
+           'felix-agent-engineering': 'PAO', 'marhbe': 'MARHBE'}
+
+
+def line(key, value):
+    # Una clave por línea incluso con texto arbitrario de tickets o commits.
+    print(key + ': ' + ('—' if value is None else str(value).replace('\r', ' ').replace('\n', ' ')))
+
+
+def date(value):
+    return datetime.datetime.fromtimestamp(value, datetime.timezone.utc).isoformat() if value is not None else None
+
+
+def fail(code, message):
+    print(message, file=sys.stderr)
+    return code
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('reference')
+    parser.add_argument('--url', default=os.environ.get('RACK_URL', DEFAULT_URL))
+    parser.add_argument('--json', action='store_true')
+    args = parser.parse_args()
+    match = re.fullmatch(r'(?:rack )?(mini|desk):(\d+)(?: · [^\r\n]*)?', args.reference.strip())
+    if not match:
+        return fail(2, 'Referencia mal escrita; usa desk:77 o mini:288')
+    host, ident = match[1], int(match[2])
+    try:
+        with urllib.request.urlopen(args.url, timeout=15) as response:
+            data = json.load(response)
+        machine = next((h for h in data['hosts'] if h['id'] == host), None)
+        tasks = (machine.get('snapshot') or {}).get('tasks', []) if machine else []
+        task = next((t for t in tasks if t['id'] == ident), None)
+        tickets = data.get('tickets', {})
+    except (OSError, ValueError, KeyError, TypeError):
+        return fail(4, 'Panel inaccesible o respuesta inválida')
+    if task is None:
+        return fail(3, 'La tarea ya no está en la instantánea')
+    if args.json:
+        print(json.dumps(task, ensure_ascii=False, allow_nan=False))
+        return 0
+    ticket = tickets.get(task.get('ticket')) or {}
+    product = (task.get('project') or ticket.get('project') or task['group']).rstrip('.')
+    for key, value in [('host', host), ('id', ident), ('grupo', task['group']), ('estado', task['state']),
+                       ('ticket', task.get('ticket')), ('título', ticket.get('title')),
+                       ('producto', PRODUCT.get(product.lower(), product.capitalize())),
+                       ('objetivo', task.get('name')), ('rama', task.get('branch')),
+                       ('último commit', task.get('subject')), ('sha', task.get('sha')),
+                       ('repositorio', task.get('repo')), ('alcance', task.get('scope')),
+                       ('prioridad', task.get('priority')), ('resultado', task.get('result')),
+                       ('en fila desde' if task['state'] == 'Queued' else 'corriendo desde',
+                        date(task.get('enqueued') if task['state'] == 'Queued' else task.get('start'))),
+                       ('estimado', json.dumps(machine.get('estimates', {}).get(str(ident)), ensure_ascii=False)),
+                       ('actividad', json.dumps(task.get('activity'), ensure_ascii=False)),
+                       ('ref', (task.get('activity') or {}).get('ref'))]:
+        line(key, value)
+    print('Para seguir:')
+    pueue = '/opt/homebrew/bin/pueue' if host == 'mini' else '/home/felix/.local/bin/pueue'
+    print('ssh ' + host + ' ' + shlex.quote(pueue + ' log ' + str(ident) + ' --lines 50'))
+    activity = task.get('activity') or {}
+    ref = activity.get('ref') or ''
+    if activity.get('kind') in ('chain', 'verify') and re.fullmatch(r'job-[\w-]+', ref):
+        line('directorio Jale', '/home/felix/.local/state/jale/pueue/' + ref)
+    elif re.fullmatch(r'\d{8}-\d{6}-[a-fA-F0-9]+', ref):
+        for action in ('status', 'logs'):
+            print('REMOTE_RUN_HOST=' + host + ' remote-run ' + action + ' ' + ref)
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

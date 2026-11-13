@@ -1809,6 +1809,8 @@ apto_repo() {
 }
 apto() { (cd "$1" && shift && "$SCRIPTS/apto-vigente" "$@"); }
 apto_short() { git -C "$1" rev-parse --short "$2"; }
+# Argumentos de `git diff` que apto-vigente imprime en su línea `Resolución:`.
+apto_resolution() { read -r -a resolution <<< "$(sed -n 's/^Resolución: git diff //p' <<< "$1")"; }
 
 apto_vigente() {
     local repo output tree status
@@ -1855,7 +1857,7 @@ apto_vigente() {
 }
 
 apto_vigente_interactions() {
-    local repo output tree mode
+    local repo output tree mode resolution
     # Un espacio dentro de una cadena cambia el árbol aunque el parche se parezca.
     repo=$(apto_repo)
     git -C "$repo" checkout -q revisado
@@ -1912,7 +1914,12 @@ apto_vigente_interactions() {
         tree=$(git -C "$repo" merge-tree --write-tree destino revisado | head -n 1) || true
         git -C "$repo" branch candidato "$(git -C "$repo" commit-tree "$tree" -p destino -m candidato)"
         output=$(apto "$repo" destino revisado candidato)
-        assert test "$output" = 'Ronda: la mezcla del head revisado con el destino tiene conflictos'
+        assert test "$(head -n 1 <<< "$output")" = 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos'
+        assert test -n "$(sed -n '3,$p' <<< "$output")"
+        # El árbol de la mezcla automática con renombre de directorio cambia entre
+        # versiones de git; basta con que el comando impreso corra en el repositorio.
+        apto_resolution "$output"
+        assert git -C "$repo" diff --stat "${resolution[@]}"
     done
 
     # Un merge con conflictos también escribe un árbol, con los marcadores dentro.
@@ -1926,11 +1933,57 @@ apto_vigente_interactions() {
     printf 'target\n' > "$repo/nuevo/nuevo.js"
     git -C "$repo" add -A
     git -C "$repo" commit -q -m dir-rename-y-add
-    tree=$(git -C "$repo" merge-tree --write-tree destino revisado | head -n 1) || true
+    # Con los SHA, los marcadores llevan las mismas etiquetas que pone apto-vigente.
+    tree=$(git -C "$repo" merge-tree --write-tree "$(git -C "$repo" rev-parse destino)" "$(git -C "$repo" rev-parse revisado)" | head -n 1) || true
     git -C "$repo" branch candidato "$(git -C "$repo" commit-tree "$tree" -p destino -m candidato)"
     assert grep -q '^<<<<<<<' <(git -C "$repo" show candidato:nuevo/nuevo.js)
     output=$(apto "$repo" destino revisado candidato)
-    assert test "$output" = 'Ronda: la mezcla del head revisado con el destino tiene conflictos'
+    assert test "$(head -n 1 <<< "$output")" = 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos'
+    # El candidato es la mezcla automática tal cual: su resolución no cambia nada.
+    apto_resolution "$output"
+    assert git -C "$repo" diff --quiet "${resolution[@]}"
+}
+
+apto_vigente_conflict() {
+    local repo output resolution kind
+    for kind in rebase merge; do
+        repo=$(apto_repo)
+        git -C "$repo" checkout -q revisado
+        printf 'x del parche\n' > "$repo/otro.txt"
+        git -C "$repo" commit -q -am parche-otro
+        git -C "$repo" checkout -q destino
+        printf 'x del destino\n' > "$repo/otro.txt"
+        printf 'y\n' > "$repo/solo-destino.txt"
+        git -C "$repo" add -A
+        git -C "$repo" commit -q -m destino
+        git -C "$repo" checkout -q -b resuelto revisado
+        if [ "$kind" = rebase ]; then
+            git -C "$repo" rebase -q destino > /dev/null 2>&1 && return 1
+            printf 'x resuelta\n' > "$repo/otro.txt"
+            git -C "$repo" add otro.txt
+            GIT_EDITOR=true git -C "$repo" rebase --continue > /dev/null 2>&1
+        else
+            git -C "$repo" merge -q --no-edit destino > /dev/null 2>&1 && return 1
+            printf 'x resuelta\n' > "$repo/otro.txt"
+            git -C "$repo" add otro.txt
+            git -C "$repo" commit -q --no-edit
+        fi
+        output=$(apto "$repo" destino revisado resuelto)
+        assert test "$kind: $(sed -n 1p <<< "$output")" = "$kind: Ronda delta: la mezcla del head revisado con el destino tiene conflictos"
+        assert test "$kind: $(sed -n '3,$p' <<< "$output")" = "$kind: otro.txt"
+        apto_resolution "$output"
+        assert test "$kind: ${resolution[${#resolution[@]}-1]}" = "$kind: $(git -C "$repo" rev-parse resuelto)"
+        # El diff que imprime muestra sólo la resolución del conflicto.
+        output=$(git -C "$repo" diff --name-only "${resolution[@]}")
+        assert test "$kind: $output" = "$kind: otro.txt"
+        assert grep -qx '+x resuelta' <(git -C "$repo" diff "${resolution[@]}")
+        assert grep -q '^-<<<<<<<' <(git -C "$repo" diff "${resolution[@]}")
+        # Desde un subdirectorio y con diff.relative=true sigue mostrando la resolución.
+        output=$(apto_with diff.relative=true "$repo/origen" destino revisado resuelto)
+        apto_resolution "$output"
+        output=$(cd "$repo/origen" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.relative GIT_CONFIG_VALUE_0=true git diff --name-only "${resolution[@]}")
+        assert test "$kind relativo: $output" = "$kind relativo: otro.txt"
+    done
 }
 
 # Corre apto-vigente con una clave de configuración de git del usuario, sin
@@ -2092,7 +2145,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

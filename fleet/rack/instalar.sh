@@ -50,11 +50,8 @@ for path in sys.argv[3:]:
         if exposes(json.load(stream)):
             sys.exit('rack: Serve o Funnel mencionan el puerto ' + sys.argv[2] + '; elimina esa exposición antes de instalar')
 PY
-mkdir -p "$destino" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
-for archivo in snapshot.py serve.py index.html hosts.json; do
-  install -m 644 "$origen/$archivo" "$destino/$archivo"
-done
-/usr/bin/python3 - "$destino" "$plist" "$ip" "$puerto" "$temporal/status.json" <<'PY'
+# El plist se arma antes de tocar la instalación: si falta el dueño o el nombre, no cambia nada.
+/usr/bin/python3 - "$destino" "$temporal/rack.plist" "$ip" "$puerto" "$temporal/status.json" <<'PY'
 import json
 import os
 import plistlib
@@ -65,13 +62,22 @@ with open(status_path) as stream:
 owner = status['User'][str(status['Self']['UserID'])]['LoginName']
 if not isinstance(owner, str) or not owner:
     sys.exit('rack: no se pudo resolver el dueño de la Mini')
+name = status['Self']['DNSName'].rstrip('.')
+if not name.endswith('.ts.net'):
+    sys.exit('rack: Tailscale no devolvió un nombre MagicDNS')
 with open(plist, 'wb') as stream:
     plistlib.dump(dict(Label='com.cosmonaut.pao-rack',
-        ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', port, '--owner', owner],
+        ProgramArguments=['/usr/bin/python3', '-I', root + '/serve.py', '--bind', ip, '--port', port, '--owner', owner,
+                           '--name', name, '--name', name.split('.')[0]],
         KeepAlive=True, RunAtLoad=True,
         StandardOutPath=os.path.expanduser('~/Library/Logs/pao-rack.log'),
         StandardErrorPath=os.path.expanduser('~/Library/Logs/pao-rack.log')), stream)
 PY
+mkdir -p "$destino" "$HOME/Library/LaunchAgents" "$HOME/Library/Logs"
+for archivo in snapshot.py serve.py index.html hosts.json; do
+  install -m 644 "$origen/$archivo" "$destino/$archivo"
+done
+install -m 644 "$temporal/rack.plist" "$plist"
 descargar
 if ! launchctl bootstrap "gui/$(id -u)" "$plist"; then
   sleep 1
