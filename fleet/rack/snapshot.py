@@ -109,10 +109,7 @@ def task_activity(task, mode, home, metadata, active=True):
         times = []
         for path in logs:
             try:
-                stat = path.stat()
-                # El tamaño se consulta junto con mtime, sin leer contenido.
-                if stat.st_size >= 0:
-                    times.append(stat.st_mtime)
+                times.append(path.stat().st_mtime)
             except OSError:
                 continue
         activity['last'] = max(times) if times else None
