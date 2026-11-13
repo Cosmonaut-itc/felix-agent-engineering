@@ -132,6 +132,24 @@ pedidos: host antiguo, servidor sin respuesta, progreso sin estimado o
 excedido y tarea pausada; una lectura de capacidad ausente se muestra como
 «—» o «Sin lectura de CPU». Los lugares se apilan en móvil.
 
+Cada host con tareas `Running` y una lectura de consumo muestra debajo una
+tabla ordenada por CPU y después por RAM, de mayor a menor, con una fila final
+«Fuera de las corridas». Los porcentajes usan los núcleos y la memoria total
+del host. En macOS, una sola llamada a `ps` obtiene CPU reciente y RSS de los
+árboles de procesos hijos de `pueued`; en Linux, dos lecturas de `/proc` en una
+muestra de aproximadamente un segundo calculan CPU por delta de contadores
+y RSS, y la memoria usada del host es total menos disponible. Se incluyen
+contenedores Docker atribuibles por sufijo de PID del árbol o, en Linux,
+por `sen-test-db-N` y el cwd `worktrees/sen-test-N`. Una sola llamada a
+`docker stats` lee todos los contenedores mientras se muestrean los procesos,
+porque tarda unos 2 segundos. Los contenedores sin dueño único quedan en el
+resto del host, sin sumar otra vez su consumo al total. Si Docker falta o
+falla, se conserva el consumo de procesos y la nota indica que no incluye
+contenedores. Una tarea cuyo árbol no se encontró muestra «—». `usage` es
+opcional en `rack-host@1`: una instantánea antigua conserva su presentación.
+La lectura adicional comparte un presupuesto de 4 segundos; argv, cwd y
+nombres de contenedores se usan localmente y no se exportan.
+
 La fila muestra proyecto, objetivo, rama y tiempo en espera, con descripción
 del ticket o, en su ausencia, asunto, rama u objetivo. Se ordena por prioridad
 descendente e id ascendente; muestra ocho tareas por grupo y permite ver el

@@ -128,6 +128,25 @@ def valid_activity(value):
     return dict(last=last, kind=kind, ref=ref)
 
 
+def valid_usage(value, host=False):
+    fields = {'interval', 'busy', 'used', 'outside', 'docker'} if host else {'cpu', 'mem', 'containers'}
+    if not isinstance(value, dict) or set(value) != fields:
+        return None
+    def number(n, integer=False):
+        return (not isinstance(n, bool) and isinstance(n, int if integer else (int, float))
+                and n >= 0 and (isinstance(n, int) or math.isfinite(n)))
+    if host:
+        outside = value['outside']
+        if (not number(value['interval']) or not number(value['busy']) or not number(value['used'], True)
+                or value['docker'] not in ('read', 'absent', 'error')
+                or not isinstance(outside, dict) or set(outside) != {'cpu', 'mem'}
+                or not number(outside['cpu']) or not number(outside['mem'], True)):
+            return None
+    elif not number(value['cpu']) or not number(value['mem'], True) or not number(value['containers'], True):
+        return None
+    return copy.deepcopy(value)
+
+
 def validate_snapshot(data, host):
     if not isinstance(data, dict) or data.get('schema') != 'rack-host@1' or data.get('host') != host:
         raise ValueError('Esquema o host inválido')
@@ -151,6 +170,10 @@ def validate_snapshot(data, host):
     for row in data['tasks']:
         if 'activity' in row:
             row['activity'] = valid_activity(row['activity'])
+        if 'usage' in row:
+            row['usage'] = valid_usage(row['usage']) if row['state'] == 'Running' else None
+    if 'usage' in data:
+        data['usage'] = valid_usage(data['usage'], host=True)
     json.dumps(data, allow_nan=False)
     for group in data['groups']:
         if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):

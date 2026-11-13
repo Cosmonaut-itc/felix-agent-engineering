@@ -92,6 +92,18 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .menu{position:absolute;z-index:5;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;min-width:190px}
 .menu button{display:block;width:100%;text-align:left;font:inherit;font-size:13px;border:0;background:none;color:var(--ink);padding:7px 10px;border-radius:5px;cursor:pointer}
 .menu button:hover{background:var(--bg)}
+.usage{width:100%;table-layout:fixed;border-collapse:collapse;margin-top:18px;font-size:13px;color:var(--ink)}
+.usage caption{text-align:left;font-size:12px;font-weight:600;color:var(--ink2);margin-bottom:6px}
+.usage th,.usage td{padding:7px 6px;border-bottom:1px solid var(--line);text-align:left}
+.usage thead th{font-size:12px;font-weight:600;color:var(--ink2)}
+.usage th:first-child{width:44%;padding-left:0}
+.usage tbody th{font-weight:400;overflow-wrap:anywhere}
+.usage-label{display:block;color:var(--ink2);font-size:12px}
+.usage-meter{display:grid;grid-template-columns:minmax(0,1fr) 48px;gap:6px;align-items:center}
+.usage-number{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap;color:var(--ink)}
+.usage .outside .bar>i{background:var(--muted)}
+.usage-note{font-size:12px;color:var(--ink2);margin:8px 0 0}
+@media(max-width:560px){.usage th:first-child{width:40%}.usage th,.usage td{padding:7px 3px}.usage-meter{grid-template-columns:minmax(0,1fr) 43px;gap:4px}}
 
 #toast:empty{display:none}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;display:flex;gap:14px;align-items:center;max-width:calc(100% - 32px)}
@@ -183,6 +195,21 @@ function fila(h, n, w){
   </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
 }
 
+function resourceTable(h){
+  const tasks = h.tasks.filter(t=>t.state==='Running');
+  if (!h.usage || !tasks.length || !(h.cores>0) || !(h.mem_total>0)) return '';
+  tasks.sort((a,b)=>(b.usage?.cpu ?? 0)-(a.usage?.cpu ?? 0) || (b.usage?.mem ?? 0)-(a.usage?.mem ?? 0));
+  const cell = (value,total) => {
+    if (!Number.isFinite(value)) return '<td>—</td>';
+    const pct=value/total*100, digits=pct>0 && pct<1 ? 1 : 0;
+    const text=pct>0 && pct<.05 ? '<0,1 %' : pct.toLocaleString('es',{minimumFractionDigits:digits,maximumFractionDigits:digits})+' %';
+    return `<td><div class="usage-meter"><div class="bar" aria-hidden="true"><i style="width:${Math.min(100,Math.max(0,pct))}%"></i></div><span class="usage-number">${text}</span></div></td>`;
+  };
+  const row = (label,u,cls='') => `<tr class="${cls}"><th scope="row">${label}</th>${cell(u?.cpu,h.cores)}${cell(u?.mem,h.mem_total)}</tr>`;
+  const note = h.usage.docker==='read' ? 'Incluye contenedores atribuibles.' : h.usage.docker==='error' ? 'Sin contenedores: Docker no respondió.' : 'Sin contenedores: Docker no está instalado.';
+  return `<table class="usage"><caption>Consumo por corrida</caption><thead><tr><th scope="col">Corrida</th><th scope="col">CPU</th><th scope="col">RAM</th></tr></thead><tbody>${tasks.map(t=>row(`${t.ticket?`<strong>${esc(t.ticket)}</strong> · `:''}${esc(what(t))}<span class="usage-label">${esc(proj(t))} · ${esc(objective(t))} · ${esc(t.group)}</span>`,t.usage)).join('')}${row('Fuera de las corridas',h.usage.outside,'outside')}</tbody></table><p class="usage-note">Porcentajes del host completo. ${note}</p>`;
+}
+
 function view(){
     return `<div class="stack">${S.hosts.map(h=>{
       const lanes = groups(h).map(([n,g])=>{
@@ -192,13 +219,13 @@ function view(){
         return `<div class="lane"><div class="g">${esc(n)}<div class="muted">${r.length}/${g.slots}</div></div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}`;
       }).join('');
-      return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}<div class="lanes">${lanes}</div></section>`;}).join('')}</div>`;
+      return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
 function render(data){
   NOW = data.now;
   S = {hosts:data.hosts.map(h=>{
     const s=h.snapshot || {};
-    return {...h, guard:s.guard, cores:s.cpu?.cores, load:s.cpu?.load,
+    return {...h, guard:s.guard, usage:s.usage, cores:s.cpu?.cores, load:s.cpu?.load,
       mem_total:s.mem?.total, mem_avail:s.mem?.available, swap_used:s.mem?.swap_used, swap_total:s.mem?.swap_total,
       groups:Object.fromEntries((s.groups || []).map(g=>[g.name,g])),
       tasks:(s.tasks || []).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};

@@ -2,8 +2,10 @@
 """Instantánea saneada del host; compatible con Python 3.9."""
 import argparse
 import ast
+from concurrent.futures import ThreadPoolExecutor
 import datetime
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -170,6 +172,213 @@ def mac_capacity():
     return dict(cores=cores, load=load, psi_avg60=None), dict(total=total, available=available, swap_total=swap['total'], swap_used=swap['used'])
 
 
+def linux_processes(proc, deadline=None):
+    """Una lectura de contadores; ningún texto privado entra al resultado público."""
+    lines = (proc / 'stat').read_text().splitlines()
+    ticks = [int(n) for n in lines[0].split()[1:9]]
+    boot = next((int(line.split()[1]) for line in lines if line.startswith('btime ')), None)
+    hertz = os.sysconf('SC_CLK_TCK')
+    try:
+        now = float((proc / 'uptime').read_text().split()[0]) * hertz
+    except (OSError, ValueError, IndexError):
+        now = 0
+    rows = {}
+    for path in proc.iterdir():
+        if deadline is not None and time.monotonic() >= deadline:
+            raise TimeoutError()
+        if not path.name.isdigit():
+            continue
+        try:
+            text = (path / 'stat').read_text()
+            name, _, tail = text.partition('(')[2].rpartition(')')
+            fields = tail.split()
+            rows[int(path.name)] = dict(ppid=int(fields[1]), ticks=int(fields[11]) + int(fields[12]),
+                                        start=int(fields[19]), mem=max(0, int(fields[21])) * os.sysconf('SC_PAGE_SIZE'),
+                                        born=boot + int(fields[19]) / hertz if boot else None, daemon=name == 'pueued')
+        except (OSError, ValueError, IndexError):  # procesos que terminaron durante la lectura
+            continue
+    return (sum(ticks), sum(ticks) - ticks[3] - ticks[4], now), rows
+
+
+def process_sample(mode, cores, proc, deadline):
+    if mode == 'macos':
+        rows = {}
+        now = time.time()
+        raw = command(['/bin/ps', '-Aww', '-o', 'pid=,ppid=,%cpu=,rss=,etime=,args='], timeout=max(.01, deadline - time.monotonic()))
+        for line in raw.splitlines():
+            pid, ppid, cpu, rss, etime, argv = line.split(None, 5)
+            rows[int(pid)] = dict(ppid=int(ppid), cpu=float(cpu) / 100, mem=int(rss) * 1024, born=now - elapsed(etime),
+                                  argv=argv, daemon=bool(re.match(r'(?:\S*/)?pueued(?:\s|$)', argv)))
+        return 0, sum(row['cpu'] for row in rows.values()), rows
+    started = time.monotonic()
+    first, before = linux_processes(proc, deadline)
+    if deadline - time.monotonic() < 1:
+        raise TimeoutError()
+    time.sleep(1)
+    last, rows = linux_processes(proc, deadline)
+    interval = time.monotonic() - started
+    total = last[0] - first[0]
+    if total <= 0:
+        raise ValueError('Contadores de CPU sin avance')
+    for pid, row in rows.items():
+        old = before.get(pid)
+        if old and old['start'] == row['start']:
+            used = max(0, row['ticks'] - old['ticks'])
+        else:  # nació durante la muestra: todo su contador cae en el intervalo
+            used = row['ticks'] if first[2] and row['start'] >= first[2] else 0
+        row['cpu'] = used * cores / total
+        # Sólo se necesita argv del daemon y de sus hijos directos.
+        if row['daemon'] or rows.get(row['ppid'], {}).get('daemon'):
+            try:
+                row['argv'] = (proc / str(pid) / 'cmdline').read_bytes().replace(b'\0', b' ').decode(errors='replace')
+            except OSError:
+                row['argv'] = ''
+    return interval, max(0, last[1] - first[1]) * cores / total, rows
+
+
+def elapsed(text):
+    """etime de ps: [[dd-]hh:]mm:ss."""
+    days, _, clock = text.rpartition('-')
+    seconds = 0
+    for part in clock.split(':'):
+        seconds = seconds * 60 + int(part)
+    return seconds + int(days or 0) * 86400
+
+
+def task_trees(rows, references, proc, mode, deadline=None):
+    children = {}
+    for pid, row in rows.items():
+        children.setdefault(row['ppid'], []).append(pid)
+    trees = {key: set() for key in references}
+    for pid, row in rows.items():
+        if not rows.get(row['ppid'], {}).get('daemon'):
+            continue
+        owners = [key for key, ref in references.items() if ref and
+                  re.search(r'(?<![\w.-])' + re.escape(ref) + r'(?![\w.-])', row.get('argv', ''))]
+        if len(owners) != 1:
+            continue
+        pending = [pid]
+        tree = trees[owners[0]]
+        while pending:
+            child = pending.pop()
+            if child not in tree:
+                tree.add(child)
+                pending.extend(children.get(child, []))
+    contexts = {}
+    for key, tree in trees.items():
+        slots = set()
+        if mode == 'linux':
+            for pid in tree:
+                if deadline is not None and time.monotonic() >= deadline:
+                    raise TimeoutError()
+                try:
+                    cwd = os.readlink(str(proc / str(pid) / 'cwd'))
+                except OSError:
+                    continue
+                match = re.search(r'(?:^|/)worktrees/sen-test-(\d+)(?:/|$)', cwd)
+                if match:
+                    slots.add(match[1])
+        contexts[key] = dict(born={pid: rows[pid].get('born') for pid in tree}, slots=slots)
+    return contexts
+
+
+def pid_owner(container, ctx):
+    """El PID del nombre es del árbol y ya existía al crear el contenedor (no es un PID reutilizado)."""
+    match = re.search(r'-(\d+)$', container['name'])
+    born = ctx['born'].get(int(match[1])) if match else None
+    return born is not None and container['created'] is not None and born <= container['created'] + 1
+
+
+# Una entrada por regla de atribución. Un contenedor con varios dueños queda fuera.
+CONTAINER_RULES = (
+    ('pid_suffix', pid_owner),
+    ('jale_database', lambda container, ctx: any(container['name'] == 'sen-test-db-' + slot for slot in ctx['slots'])),
+)
+
+
+def docker_binary(mode):
+    paths = ('/usr/local/bin/docker', '/opt/homebrew/bin/docker') if mode == 'macos' else ('/usr/bin/docker',)
+    return next((path for path in paths if Path(path).is_file()), None)
+
+
+def docker_bytes(text):
+    match = re.fullmatch(r'([\d.]+)\s*(B|kB|KB|MB|GB|TB|KiB|MiB|GiB|TiB)', text.strip())
+    if not match:
+        raise ValueError('Memoria Docker inválida')
+    unit = match[2]
+    power = {'B': 0, 'k': 1, 'K': 1, 'M': 2, 'G': 3, 'T': 4}[unit[0]]
+    return int(float(match[1]) * (1024 if 'i' in unit else 1000) ** power)
+
+
+def docker_stats(mode, deadline):
+    """Una sola lectura de todos los contenedores, en paralelo a la muestra de procesos."""
+    binary = docker_binary(mode)
+    if not binary:
+        return 'absent', []
+    try:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError()
+        created = {}
+        for line in command([binary, 'ps', '--format', '{{.Names}}\t{{.CreatedAt}}'], timeout=remaining).splitlines():
+            name, _, stamp = line.partition('\t')
+            try:
+                created[name] = datetime.datetime.strptime(stamp[:25], '%Y-%m-%d %H:%M:%S %z').timestamp()
+            except ValueError:
+                created[name] = None
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError()
+        raw = command([binary, 'stats', '--no-stream', '--format', '{{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}'], timeout=remaining)
+    except (OSError, subprocess.SubprocessError):
+        return 'error', []
+    rows = []
+    for line in raw.splitlines():
+        try:
+            name, cpu, memory = line.split('\t')
+            cpu, mem = float(cpu.rstrip('%')) / 100, docker_bytes(memory.split('/')[0])
+        except (ValueError, OverflowError):  # un contenedor que arranca muestra «--»
+            continue
+        if math.isfinite(cpu) and cpu >= 0:
+            rows.append(dict(name=name, created=created.get(name), cpu=cpu, mem=mem))
+    return 'read', rows
+
+
+def container_usage(stats, contexts):
+    status, rows = stats
+    usage = {}
+    for container in rows:
+        owners = [key for key, ctx in contexts.items() if any(rule(container, ctx) for _, rule in CONTAINER_RULES)]
+        if len(owners) == 1:
+            row = usage.setdefault(owners[0], dict(cpu=0., mem=0, containers=0))
+            row['cpu'] += container['cpu']
+            row['mem'] += container['mem']
+            row['containers'] += 1
+    return status, usage
+
+
+def collect_usage(output, references, mode, proc):
+    # docker stats tarda unos 2 s: corre mientras se muestrean los procesos.
+    deadline = time.monotonic() + 4
+    with ThreadPoolExecutor(1) as pool:
+        stats = pool.submit(docker_stats, mode, deadline)
+        interval, busy, rows = process_sample(mode, output['cpu']['cores'], proc, deadline)
+        contexts = task_trees(rows, references, proc, mode, deadline)
+        docker, containers = container_usage(stats.result(), contexts)
+    for task in output['tasks']:
+        tree = contexts.get(task['id'], {}).get('born')
+        if task['state'] != 'Running' or not tree:
+            continue
+        extra = containers.get(task['id'], dict(cpu=0., mem=0, containers=0))
+        task['usage'] = dict(cpu=sum(rows[pid]['cpu'] for pid in tree) + extra['cpu'],
+                             mem=sum(rows[pid]['mem'] for pid in tree) + extra['mem'], containers=extra['containers'])
+    attributed = [t['usage'] for t in output['tasks'] if t.get('usage')]
+    used = max(0, int(output['mem']['total'] - output['mem']['available']))
+    return dict(interval=interval, busy=busy, used=used, docker=docker,
+                outside=dict(cpu=max(0, busy - sum(u['cpu'] for u in attributed)),
+                             mem=max(0, used - sum(u['mem'] for u in attributed))))
+
+
 def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     home, now = home or Path.home(), time.time() if now is None else now
     output = dict(schema='rack-host@1', host=host, os=mode, taken=now, cpu=None, mem=None, disk=None, guard=None, groups=[], tasks=[], errors=[])
@@ -189,7 +398,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     output['disk'] = attempt('disk', lambda: disk('/System/Volumes/Data' if mode == 'macos' and Path('/System/Volumes/Data').exists() else '/'))
     output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home))
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
-    cache = {}
+    cache, references = {}, {}
     if data:
         def tasks():
             output['groups'] = [dict(name=name, status=g['status'], slots=g['parallel_tasks']) for name, g in data['groups'].items()]
@@ -208,8 +417,13 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                 metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
                 row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'))
+                if state == 'Running':
+                    ref = row['activity']['ref']
+                    references[row['id']] = ref if jale else 'remote-run/runs/' + Path(task.get('path', '')).name
                 output['tasks'].append(row)
         attempt('pueue', tasks)
+    if references and output['cpu'] and output['mem']:
+        output['usage'] = attempt('usage', lambda: collect_usage(output, references, mode, proc))
     return output
 
 
