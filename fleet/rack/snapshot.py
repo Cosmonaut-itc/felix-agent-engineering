@@ -68,21 +68,55 @@ def desk_metadata(task, home, cache):
     values = {}
     with Path(match[1]).with_name('body.sh').open() as stream:
         for line in stream:
-            found = re.fullmatch(r'declare -- (MODE|BASE_REPO|REQUESTED_SHA|BRANCH)="([^"\n]*)"\n?', line)
+            found = re.fullmatch(r'declare -- (MODE|SLOT_KIND|BASE_REPO|REQUESTED_SHA|BRANCH)="([^"\n]*)"\n?', line)
             if found:
                 values[found[1]] = found[2]
+    kind = 'verify' if values.get('MODE') == 'launch' and values.get('SLOT_KIND') == 'verify' else 'chain'
     branch = values.get('BRANCH')
     branch = branch if branch and not re.fullmatch(r'[0-9a-fA-F]{40}', branch) else None
     repo = Path(values.get('BASE_REPO', '/')).resolve()
     if home.resolve() not in repo.parents:
-        return dict(name=values.get('MODE'), branch=branch)
+        return dict(name=values.get('MODE'), branch=branch, activity=dict(last=None, kind=kind, ref=Path(match[1]).parent.name))
     if repo not in cache:
-        url = command(['git', '-C', str(repo), 'config', '--get', 'remote.origin.url']).strip()
+        try:
+            url = command(['git', '-C', str(repo), 'config', '--get', 'remote.origin.url']).strip()
+        except (OSError, subprocess.SubprocessError):
+            url = ''
         found = re.search(r'github\.com[:/]([\w.-]+/[\w.-]+?)(?:\.git)?$', url)
         cache[repo] = found[1] if found else None
     sha = values.get('REQUESTED_SHA', '').lower()
     return dict(name=values.get('MODE'), project=repo.name, repo=cache[repo],
-                sha=sha if re.fullmatch('[0-9a-f]{40}', sha) else None, branch=branch)
+                sha=sha if re.fullmatch('[0-9a-f]{40}', sha) else None, branch=branch,
+                activity=dict(last=None, kind=kind, ref=Path(match[1]).parent.name))
+
+
+def task_activity(task, mode, home, metadata, active=True):
+    """Sólo stat de salidas conocidas; nunca se abre un log."""
+    activity = dict(metadata.get('activity') or dict(last=None, kind=None, ref=None))
+    jale = re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
+    run = Path(task.get('path', '')).expanduser()
+    logs = [home / ('Library/Application Support/pueue' if mode == 'macos' else '.local/share/pueue')
+            / 'task_logs' / (str(task['id']) + '.log')]
+    if jale:
+        job = Path(jale[1]).parent
+        activity['ref'] = job.name
+        activity['kind'] = activity['kind'] or 'chain'
+        logs.append(job / 'log')
+    elif run.parent == home / 'remote-run/runs':
+        activity['ref'] = run.name
+        logs.append(run / 'log')
+    if active:
+        times = []
+        for path in logs:
+            try:
+                stat = path.stat()
+                # El tamaño se consulta junto con mtime, sin leer contenido.
+                if stat.st_size >= 0:
+                    times.append(stat.st_mtime)
+            except OSError:
+                continue
+        activity['last'] = max(times) if times else None
+    return activity
 
 
 def desk_guard(home):
@@ -176,6 +210,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                 jale = mode != 'macos' and re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
                 metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
+                row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'))
                 output['tasks'].append(row)
         attempt('pueue', tasks)
     return output

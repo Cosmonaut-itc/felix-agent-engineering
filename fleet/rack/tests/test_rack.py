@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 from unittest.mock import patch
-from http.server import ThreadingHTTPServer
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import urllib.error
 import urllib.request
 
@@ -153,6 +153,126 @@ class SnapshotTests(unittest.TestCase):
         task = dict(id=1, group='suites', status={'Done': dict(start=1, end=2, result='Success')})
         data = snapshot.collect('linux', 'desk', pueue=self.fake_pueue({'1': task}), home=self.root, now=100000)
         self.assertEqual(data['tasks'], [])
+
+
+class ActivityTests(unittest.TestCase):
+    setUp = SnapshotTests.setUp
+    fake_pueue = SnapshotTests.fake_pueue
+
+    def test_activity_uses_only_stat_and_latest_log(self):
+        secret = 'ghp_SECRET_NEVER_READ'
+        for mode in ('macos', 'linux'):
+            logdir = self.root / ('Library/Application Support/pueue' if mode == 'macos' else '.local/share/pueue') / 'task_logs'
+            logdir.mkdir(parents=True)
+            run = self.root / 'remote-run/runs' / ('run-' + mode)
+            run.mkdir(parents=True)
+            raw = dict(id=42, path=str(run))
+            for path, mtime in ((logdir / '42.log', 200), (run / 'log', 400)):
+                path.write_text(secret)
+                os.utime(path, (mtime, mtime))
+            with patch.object(Path, 'open', side_effect=AssertionError('No se abre la salida')):
+                result = snapshot.task_activity(raw, mode, self.root, {})
+            self.assertEqual(result, dict(last=400, kind=None, ref=run.name))
+            self.assertNotIn(secret, json.dumps(result))
+            os.utime(logdir / '42.log', (500, 500))
+            self.assertEqual(snapshot.task_activity(raw, mode, self.root, {})['last'], 500)
+            (run / 'log').unlink()
+            (logdir / '42.log').unlink()
+            self.assertIsNone(snapshot.task_activity(raw, mode, self.root, {})['last'])
+
+    def test_verify_and_chain_keep_credentials_private(self):
+        job = self.root / 'job-verify'
+        job.mkdir()
+        body = job / 'body.sh'
+        raw = dict(id=9, group='jale', command='exec bash ' + str(job / 'task.sh'), status={'Paused': {'start': 100}})
+        (job / 'log').write_text('github_pat_LOG_SECRET')
+        os.utime(job / 'log', (300, 300))
+        for mode, slot, kind in [('launch', 'verify', 'verify'), ('launch', 'other', 'chain'), ('gates', 'verify', 'chain')]:
+            body.write_text('declare -- MODE="' + mode + '"\ndeclare -- SLOT_KIND="' + slot + '"\ndeclare -- GH_T="github_pat_BODY_SECRET"\n')
+            data = snapshot.collect('linux', 'desk', pueue=self.fake_pueue({'9': raw}), home=self.root)
+            self.assertEqual(data['tasks'][0]['activity'], dict(last=300, kind=kind, ref='job-verify'))
+            self.assertNotIn('SECRET', json.dumps(data))
+            raw['status'] = 'Queued'
+            queued = snapshot.collect('linux', 'desk', pueue=self.fake_pueue({'9': raw}), home=self.root)
+            self.assertEqual(queued['tasks'][0]['activity'], dict(last=None, kind=kind, ref='job-verify'))
+            raw['status'] = {'Paused': {'start': 100}}
+
+    def test_invalid_activity_is_discarded_without_losing_snapshot(self):
+        good = dict(last=12.5, kind='chain', ref='job-x')
+        invalid = [True, [], {}, dict(good, last=float('nan')), dict(good, last=float('inf')),
+                   dict(good, last=True), dict(good, kind='launch'), dict(good, ref='x' * 201),
+                   dict(good, ref=1), dict(good, ref='bad\nref'), dict(good, command='private')]
+        for activity in invalid + [good, dict(last=None, kind=None, ref=None)]:
+            data = dict(sample(), tasks=[task(activity=activity, command='private', envs={'GH_T': 'private'}, path='/private')])
+            safe = serve.validate_snapshot(data, 'mini')
+            self.assertEqual(safe['tasks'][0]['activity'], activity if activity in [good, dict(last=None, kind=None, ref=None)] else None)
+            self.assertNotIn('private', json.dumps(safe, allow_nan=False))
+
+
+class InspectorTests(unittest.TestCase):
+    def setUp(self):
+        self.row = task(id=77, group='jale', name='launch', ticket='SEN-5731', start=100,
+                        activity=dict(last=200, kind='verify', ref='job-abc'))
+        payload = dict(hosts=[dict(id='desk', snapshot=dict(tasks=[self.row]), estimates={'77': dict(n=5, typical=60, low=30, high=90)})],
+                       tickets={'SEN-5731': dict(title='Título de prueba', project='Jale')})
+        class Handler(BaseHTTPRequestHandler):
+            def do_GET(self):
+                self.send_response(200)
+                self.end_headers()
+                self.wfile.write(json.dumps(payload).encode())
+            def log_message(self, *args):
+                pass
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+        self.thread = threading.Thread(target=self.server.serve_forever)
+        self.thread.start()
+        self.addCleanup(self.close_server)
+        self.url = 'http://127.0.0.1:' + str(self.server.server_port)
+
+    def close_server(self):
+        self.server.shutdown()
+        self.server.server_close()
+        self.thread.join(timeout=3)
+        self.assertFalse(self.thread.is_alive())
+
+    def run_inspector(self, ref, *args, url=None, env=None):
+        argv = ['/usr/bin/python3', '-B', str(BASE / 'rack-inspeccionar'), ref, *args]
+        if url is not None:
+            argv += ['--url', url]
+        return subprocess.run(argv, capture_output=True, text=True, env=env or dict(os.environ, RACK_URL=self.url), timeout=5)
+
+    def test_short_and_full_reference_and_read_commands(self):
+        for ref in ['desk:77', 'rack desk:77 · jale · SEN-5731 · Jale · Arranque']:
+            result = self.run_inspector(ref, url=self.url)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            for value in ['host: desk', 'id: 77', 'título: Título de prueba', 'producto: Jale',
+                          'ssh desk \'/home/felix/.local/bin/pueue log 77 --lines 50\'',
+                          '/home/felix/.local/state/jale/pueue/job-abc', 'Para seguir:']:
+                self.assertIn(value, result.stdout)
+        self.assertEqual(self.run_inspector('desk:77', url=self.url, env=dict(os.environ, RACK_URL='http://127.0.0.1:1')).returncode, 0)
+
+    def test_json_returns_exact_task_and_environment_url(self):
+        result = self.run_inspector('rack desk:77 · ignored', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout), self.row)
+
+    def test_error_codes_and_single_line_messages(self):
+        for ref in ['wrong', 'desk:77; rm', 'rack mini:x · texto', 'other:77']:
+            result = self.run_inspector(ref)
+            self.assertEqual(result.returncode, 2)
+            self.assertEqual(len(result.stderr.splitlines()), 1)
+        for ref, url, code in [('desk:78', self.url, 3), ('mini:77', self.url, 3),
+                               ('desk:77', 'http://127.0.0.1:1', 4)]:
+            result = self.run_inspector(ref, url=url)
+            self.assertEqual(result.returncode, code)
+            if code:
+                self.assertEqual(len(result.stderr.splitlines()), 1)
+
+    def test_remote_run_commands(self):
+        self.row['activity'] = dict(last=200, kind=None, ref='20261112-174413-f28e66')
+        result = self.run_inspector('desk:77')
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("REMOTE_RUN_HOST=desk remote-run status 20261112-174413-f28e66", result.stdout)
+        self.assertIn("REMOTE_RUN_HOST=desk remote-run logs 20261112-174413-f28e66", result.stdout)
 
 
 class ServerTests(unittest.TestCase):

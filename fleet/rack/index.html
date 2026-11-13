@@ -84,7 +84,18 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .fila .l2 span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .fila .d{font-size:12px;color:var(--ink2);white-space:nowrap;font-variant-numeric:tabular-nums}
 .fila .more{display:block;width:100%;font:inherit;font-size:12px;color:var(--ink2);background:var(--bg);border:0;border-top:1px solid var(--line);padding:6px;cursor:pointer}
-</style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><script>
+.slot.busy{position:relative}
+.dots{font:inherit;font-size:14px;line-height:1;border:0;background:none;color:var(--muted);cursor:pointer;padding:0 2px;margin-left:auto;order:9}
+.fila .d{display:flex;gap:8px;align-items:baseline;justify-content:flex-end}
+.act{font-size:12px;color:var(--ink2)}
+.act.warn::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);margin-right:6px;vertical-align:1px}
+.menu{position:absolute;z-index:5;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;min-width:190px}
+.menu button{display:block;width:100%;text-align:left;font:inherit;font-size:13px;border:0;background:none;color:var(--ink);padding:7px 10px;border-radius:5px;cursor:pointer}
+.menu button:hover{background:var(--bg)}
+
+#toast:empty{display:none}
+#toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;display:flex;gap:14px;align-items:center;max-width:calc(100% - 32px)}
+</style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><script>
 let S, NOW;
 const GB = b => b == null ? NaN : (b/1024**3);
 const fmtMin = s => `${Math.floor(s/60)} min`;
@@ -152,13 +163,22 @@ function progress(t){
           time: over ? `${fmtMin(el)} · suele tardar ${span(e)}` : `${fmtMin(el)} de ~${fmtDur(e.typical)}`};
 }
 const OPEN = {};
+const IDLE = 15*60;
+function activity(t){
+  const a = t.activity; if (!a) return '';
+  const quiet = a.last == null ? null : Math.max(0, NOW - a.last);
+  if (a.kind === 'verify') return `<div class="act warn">${esc('Servidores de verificación arriba, esperando que los suelten' + (quiet == null ? '' : ' · sin salida hace ' + fmtMin(quiet)))}</div>`;
+  if (quiet != null && quiet > IDLE) return `<div class="act warn">${esc('Sin actividad hace ' + fmtMin(quiet))}</div>`;
+  return '';
+}
+const dots = () => `<button type="button" class="dots" aria-label="${esc('Acciones')}" aria-expanded="false">${esc('⋯')}</button>`;
 function fila(h, n, w){
   if (!w.length) return '';
   const key = h.id+'/'+n, shown = OPEN[key] ? w : w.slice(0, 8);
-  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li>
+  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li data-id="${esc(t.id)}">
     <span class="pos">${i+1}</span>
     <div class="l1"><span class="tk">${esc(t.ticket||'Sin ticket')}</span><span class="t" title="${esc(what(t))}">${esc(what(t))}</span></div>
-    <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}</span>
+    <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}${dots()}</span>
     <div class="l2"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span></div>
   </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
 }
@@ -168,7 +188,7 @@ function view(){
       const lanes = groups(h).map(([n,g])=>{
         const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
         const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
-          const p=progress(t); return `<div class="slot busy"><div class="r-top"><span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div></div>`;}).join('');
+          const p=progress(t); return `<div class="slot busy" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}</div>`;}).join('');
         return `<div class="lane"><div class="g">${esc(n)}<div class="muted">${r.length}/${g.slots}</div></div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}`;
       }).join('');
@@ -184,12 +204,74 @@ function render(data){
       tasks:(s.tasks || []).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
   document.getElementById('app').innerHTML=view();
+  syncMenu();
   document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 document.getElementById('app').addEventListener('click', event=>{
   const button = event.target.closest('button[data-open]');
-  if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); }
+  if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); syncMenu(); }
 });
+let menuTask = null, toastTimer;
+function say(text){
+  const toast = document.getElementById('toast');
+  toast.innerHTML = esc(text);
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>toast.textContent='', 8000);
+}
+function findTask(el){
+  const box = el.closest('[data-id]'), host = box.dataset.host || box.closest('ol').dataset.host;
+  const h = S.hosts.find(x=>x.id===host); return {h, t:h.tasks.find(x=>String(x.id)===box.dataset.id)};
+}
+function reference({h,t}){
+  const a = t.activity, parts = [`rack ${h.id}:${t.id}`, t.group, t.ticket || 'sin ticket', proj(t), objective(t)];
+  if (t.branch) parts.push(t.branch);
+  if (a?.ref) parts.push(a.ref);
+  parts.push(t.state === 'Queued' ? `en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}` : `corriendo ${fmtMin(Math.max(0,NOW-(t.start ?? NOW)))}` + (a?.last != null ? `, última salida hace ${fmtMin(Math.max(0,NOW-a.last))}` : ''));
+  return parts.join(' · ');
+}
+function closeMenu(focus=false){
+  const button = menuButton();
+  document.querySelector('.menu')?.remove(); menuTask=null;
+  button?.setAttribute('aria-expanded','false'); if(focus) button?.focus();
+}
+function menuButton(){
+  if (!menuTask) return null;
+  return [...document.querySelectorAll('.dots')].find(b=>{const {h,t}=findTask(b); return h.id===menuTask.host && t.id===menuTask.id;});
+}
+function syncMenu(){
+  if (!menuTask) return;
+  const button=menuButton(), menu=document.querySelector('.menu');
+  if (!button || !menu) { closeMenu(); return; }
+  button.setAttribute('aria-expanded','true');
+  const r=button.getBoundingClientRect();
+  menu.style.top=(window.scrollY+r.bottom+4)+'px';
+  menu.style.left=Math.max(8,window.scrollX+r.right-190)+'px';
+}
+document.addEventListener('click', ev=>{
+  const button=ev.target.closest('.dots');
+  if(button){
+    closeMenu(); const {h,t}=findTask(button); menuTask={host:h.id,id:t.id};
+    const menu=document.createElement('div'); menu.className='menu';
+    menu.innerHTML=`<button type="button">${esc('Copiar referencia')}</button>`;
+    menu.querySelector('button').onclick=async ()=>{
+      const current=menuButton(); if(!current) {closeMenu();return;}
+      const text=reference(findTask(current)); closeMenu(true);
+      try {
+        if(navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+        else {
+          const field=document.createElement('textarea'); field.value=text;
+          field.style.position='fixed'; field.style.opacity='0'; document.body.appendChild(field);
+          try { field.select(); if(!document.execCommand('copy')) throw Error('copy'); }
+          finally { field.remove(); current.focus(); }
+        }
+        say('Copiado: '+text);
+      } catch { say('No se pudo copiar'); }
+    };
+    document.body.appendChild(menu); syncMenu(); menu.querySelector('button').focus(); return;
+  }
+  if(!ev.target.closest('.menu') && !ev.target.closest('#refresh')) closeMenu();
+});
+document.addEventListener('keydown',ev=>{if(ev.key==='Escape') closeMenu(true);});
+window.addEventListener('resize',syncMenu);
 let last=null;
 async function load(path, options, failure){
   try{

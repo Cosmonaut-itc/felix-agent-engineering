@@ -1,4 +1,5 @@
 # tipo fuente destino (o nombre)
+file fleet/rack/rack-inspeccionar ~/.local/bin/rack-inspeccionar
 file docs/orchestration.md ~/.agents/docs/orchestration.md
 file docs/agent-routing.md ~/.agents/docs/agent-routing.md
 file docs/native-subagents.md ~/.agents/docs/native-subagents.md

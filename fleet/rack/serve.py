@@ -116,6 +116,18 @@ class History:
         return dict(typical=statistics.median(durations), low=percentile(.1), high=percentile(.9), n=len(matches))
 
 
+def valid_activity(value):
+    if not isinstance(value, dict) or set(value) != {'last', 'kind', 'ref'}:
+        return None
+    last, kind, ref = value['last'], value['kind'], value['ref']
+    if (last is not None and (isinstance(last, bool) or not isinstance(last, (int, float)) or isinstance(last, float) and not math.isfinite(last))
+            or kind not in ('verify', 'chain', None)
+            or ref is not None and (not isinstance(ref, str) or not 0 < len(ref) <= 200
+                                    or any(ord(c) < 32 or ord(c) == 127 for c in ref))):
+        return None
+    return dict(last=last, kind=kind, ref=ref)
+
+
 def validate_snapshot(data, host):
     if not isinstance(data, dict) or data.get('schema') != 'rack-host@1' or data.get('host') != host:
         raise ValueError('Esquema o host inválido')
@@ -135,6 +147,10 @@ def validate_snapshot(data, host):
         raise ValueError('Capacidad inválida')
     if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in data.get('errors') or []):
         raise ValueError('Pueue no se pudo leer')
+    data = copy.deepcopy(data)
+    for row in data['tasks']:
+        if 'activity' in row:
+            row['activity'] = valid_activity(row['activity'])
     json.dumps(data, allow_nan=False)
     for group in data['groups']:
         if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
