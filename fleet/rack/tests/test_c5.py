@@ -22,7 +22,7 @@ CAPS = dict(queued=True, running=True, reason=None, cancel_origin=True)
 
 # Synthetic controller: logs every request, answers capabilities from caps.json
 # (or raw/sleep variants), and cancel/status from a fixed receipt.
-CONTROLLER = r'''import fcntl,json,os,sys,time
+CONTROLLER = r'''import fcntl,json,os,subprocess,sys,time
 from pathlib import Path
 here=Path(__file__).parent
 r=json.load(sys.stdin)
@@ -32,6 +32,8 @@ if r['op']=='capabilities':
     if mode.get('lock'):
         held=open(here/'rack-control.lock','w'); fcntl.flock(held,fcntl.LOCK_EX)
         (here/'probe.pid').write_text(str(os.getpid()))
+        if mode.get('descendant'):
+            subprocess.Popen([sys.executable,'-c','import time; time.sleep(60)'],pass_fds=(held.fileno(),))
     if mode.get('sleep'): time.sleep(mode['sleep'])
     if 'raw' in mode: sys.stdout.write(mode['raw']); sys.exit(mode.get('code',0))
     a=dict(schema=mode.get('schema','rack-cancel-result@1'),ref=mode.get('ref',r['ref']))
@@ -74,10 +76,10 @@ class Fixture(unittest.TestCase):
 
     def reap_all(self):
         for process in self.processes:
+            # Descendants may outlive an already reaped controller in a mutant.
+            try: os.killpg(process.pid, 9)
+            except ProcessLookupError: pass
             if process.poll() is None:
-                # Only the exact session created by this test.
-                try: os.killpg(process.pid, 9)
-                except ProcessLookupError: pass
                 process.wait(3)
             for stream in (process.stdin, process.stdout):
                 if stream and not stream.closed: stream.close()
@@ -209,7 +211,8 @@ class DegradationTests(Fixture):
         code, answer = self.send(timeout=10.6)
         self.assertLess(time.monotonic() - started, 5)
         self.assertEqual((code, answer['status']), (0, 'cancelled'))
-        self.assertEqual(seen(self.path)[1], wire())
+        cancels = [r for r in seen(self.path) if r['op'] == 'cancel']
+        self.assertEqual(cancels, [wire()])
 
 
 class DispatcherScopeTests(Fixture):
@@ -293,6 +296,10 @@ class BudgetTests(Fixture):
             with self.subTest(timeout=timeout):
                 self.assertEqual(self.run_send(timeout, 5), [('cancel', timeout, 100.0)])
 
+    def test_probe_uses_two_seconds_and_cancel_gets_ten_point_five(self):
+        self.assertEqual(self.run_send(12, 1.5),
+                         [('capabilities', 2, 100.0), ('cancel', 10.5, 101.5)])
+
     def test_no_late_effect_after_the_deadline(self):
         now = [0.0]; ops = []
         def stuck(argv, request, runner, env, limit):
@@ -318,6 +325,21 @@ class BudgetTests(Fixture):
         self.assertEqual(seen(path)[1], wire())
 
 
+    def test_probe_descendant_holding_stdout_and_lock_is_killed_before_cancel(self):
+        path = write_controller(self.root / 'controller/run-control.py')
+        set_probe(path, caps=CAPS, lock=True, descendant=True, sleep=60)
+        started = time.monotonic()
+        code, answer = desk.send(['/usr/bin/python3', '-I', str(path)], wire(), self.runner,
+                                 dict(HOME=str(self.root), PATH='/usr/bin:/bin', TMPDIR='/tmp'), 12)
+        self.assertLess(time.monotonic() - started, 8)
+        self.assertEqual((code, answer['status']), (0, 'cancelled'))
+        self.assertTrue((path.parent / 'probe.pid').exists(), 'probe must reach the locked section')
+        self.assertEqual((path.parent / 'cancel-lock.txt').read_text(), 'free')
+        self.assertEqual([r for r in seen(path) if r['op'] == 'cancel'], [wire()])
+        self.assertEqual(len(self.processes), 2)
+        self.assertEqual(self.processes[0].returncode, -9)
+
+
 class JournalTests(Fixture):
     """HTTP POST, duplicate, lost answer and restart: one cancel, then only status."""
     def test_one_cancel_per_action_id_across_duplicate_lost_answer_restart_and_capability_change(self):
@@ -333,6 +355,7 @@ class JournalTests(Fixture):
         (path.parent / 'status.txt').write_text('cancelling')
         set_probe(path, caps=dict(CAPS, cancel_origin=False))
         self.assertEqual(case.handler()[1]['status'], 'unknown')
+        self.assertEqual(sum(r['op'] == 'cancel' for r in seen(path)), 1, 'duplicate POST reemitted cancel')
         self.assertEqual(case.handler(method='GET', path='/api/accion/action-0001')[1]['status'], 'cancelling')
         restarted = accion.Actions(T.HOSTS, case.root, payload,
             executor=accion.Executor(home=case.root, runner=self.runner), clock=lambda: 1000)
