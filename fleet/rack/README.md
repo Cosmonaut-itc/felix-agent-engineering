@@ -210,12 +210,55 @@ El panel nunca ejecuta kill/remove/stash de Pueue. Envía `rack-cancel@1` por
 stdin a `/usr/bin/python3 -I ~/.local/lib/remote-run/run-control.py`, una ruta
 fija resuelta con el usuario Unix del servicio. No hay shell ni TTY. El único
 ejecutor (`Executor`, con el intercambio acotado compartido de `desk_action.py`) usa cwd `/`, un entorno nuevo con HOME del usuario Unix, PATH fijo y
-TMPDIR=/tmp; no hereda tokens ni configuración del panel. Tiene plazo de 10 s para Mini y 40 s para desk,
+TMPDIR=/tmp; no hereda tokens ni configuración del panel. Tiene plazo de 10 s para Mini (12 s para
+cancel, ver «Procedencia de la cancelación») y 40 s para desk,
 termina únicamente su grupo de procesos si vence, recoge al hijo y limita la
 respuesta JSON a 16 KiB durante la ejecución (como máximo 16 385 bytes
 capturados); si excede el límite, termina y recoge sólo su grupo propio.
 Un timeout, respuesta inválida o fallo de transporte
 significa `unknown`, porque el efecto pudo ocurrir antes del corte.
+
+### Procedencia de la cancelación (C5)
+
+`rack-cancel@1` admite en `cancel` la clave opcional `origin`, con el único
+valor `"rack-panel"`. Con ella el controlador guarda el origen junto al instante
+de aceptación, y la espera de la sesión, en la MacBook, añade la línea
+«Cancelada desde el panel del rack a las HH:MM; no la relances sin preguntar»
+en su hora local. La extensión es **por corrida**: el controlador anuncia
+`capabilities.cancel_origin: true` sólo si el manifiesto de esa corrida lo
+declara, y sólo lo declaran las corridas nuevas del productor actualizado.
+
+El navegador, la API HTTP, el diario SQLite y la envoltura SSH
+`rack-desk-action@1` no cambian ni llevan `origin`. Lo añade el canal local
+junto al controlador (`desk_action.send`): el ejecutor de la Mini, o el
+despachador del desk. Para un cancel, ese canal consulta antes `capabilities`
+de la misma corrida al mismo controlador y añade `origin` sólo si la respuesta
+es válida (esquema, `ref`, `queued`/`running` booleanos) y `cancel_origin` es
+exactamente `true`. Si falta, es falsa o inválida, el controlador falla o el
+sondeo vence, envía el cancel anterior sin origen. El sondeo nunca bloquea la
+cancelación ni cambia `expected`, y su proceso termina y se recoge antes del
+cancel, para no retener el candado del controlador. `status` y `capabilities`
+siguen siendo una sola llamada, sin sondeo.
+
+Presupuestos, con un único plazo monotónico: el cancel conserva su ventana
+de 10 s y el sondeo sólo usa el margen por encima, hasta 2 s. En la Mini el
+cancel local tiene hasta 12 s dentro del presupuesto HTTP de 14 s y su reserva
+de recibo; en el desk el despachador da 12 s interiores al cancel y el límite
+SSH exterior sigue en 40 s (presupuesto HTTP 44 s). Con menos margen se omite
+el sondeo. Si el plazo vence durante el sondeo, no se inicia el cancel y el
+resultado es `unknown`. No hay reintentos: cada `action_id` emite un único
+cancel, y un duplicado, un GET o un reinicio sólo consultan `status`.
+
+La compatibilidad se decide por camino. Un despachador del desk nuevo añade
+el origen aunque el servidor del panel sea anterior, porque la envoltura no
+cambió; un despachador anterior cancela sin origen. La Mini lo añade sólo con
+el ejecutor actualizado. Un controlador anterior, o una corrida sin la
+declaración, conserva la cancelación y el mensaje de siempre. La UI mantiene
+su promesa actual; no anuncia la procedencia, porque depende de la versión de
+cada pieza. Instalación: cerrar la admisión con el interruptor del host,
+esperar a que terminen las llamadas cancel/capabilities admitidas, instalar
+controladores y productores de Hasito y Jale, y después el canal de PAO en el
+desk (`desk_action.py`) y el servidor de la Mini, en cualquier orden; reabrir.
 
 La instantánea añade por tarea:
 
@@ -390,7 +433,8 @@ con cwd `/` y un entorno nuevo: `HOME=/home/felix`, `PATH=/usr/bin:/bin`,
 `XDG_RUNTIME_DIR=/run/user/<uid>` si existe como directorio propiedad de esa
 cuenta. No transmite el entorno de SSH, tokens ni overrides de pruebas.
 Comparte con el ejecutor el intercambio acotado: stdout de hasta 16 KiB,
-plazo de 10 s para el controlador, terminación de su propio grupo y recogida.
+plazo de 10 s para el controlador (12 s para cancel, con el sondeo de
+procedencia), terminación de su propio grupo y recogida.
 Devuelve la respuesta del controlador, verificando esquema e identidad; el
 panel conserva además su saneamiento y validación semántica antes de la UI.
 
@@ -576,7 +620,7 @@ pruebas de este directorio.
 ```bash
 cd fleet/rack
 TMPDIR=/tmp /usr/bin/python3 -m unittest discover -s tests -v
-TMPDIR=/tmp /usr/bin/python3 tests/check_mutations.py
+TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/check_mutations.py
 TMPDIR=/tmp /usr/bin/python3 tests/browser_fixture.py --port 0
 ```
 
@@ -612,8 +656,17 @@ y unknown ante fallo SSH. También muta lstat, entorno/runtime, ausencia de
 controlador, admisión, mínimo/plazo restante, efecto tardío, transporte fuera
 del candado, exclusión de status/cancel, liberación tras fallo y origen del
 presupuesto HTTP; también la espera independiente de E/S, el espaciado
-del desk, la conservación del cierre manual y su fin de sondeo en la UI;
-borra las copias al salir.
+del desk, la conservación del cierre manual y su fin de sondeo en la UI.
+`tests/test_c5.py` cubre la procedencia: sondeo y un único cancel con
+`origin` en la Mini y en el desk, envoltura SSH sin `origin`, degradación ante
+controladores anteriores, corridas sin declaración y respuestas inválidas o
+vencidas, parser cerrado, presupuestos con reloj virtual, sondeo que retiene
+stdout y candado, duplicado/GET/reinicio sin reenviar cancel, y canales
+viejos y nuevos por camino. Sus mutaciones (`c5-*`) usan `exchange` en vez de
+`send`, añaden origen antes de SSH o en el servidor, aceptan valores
+truthy, bloquean el cancel ante un sondeo fallido, abren el parser, sondean
+toda operación, ignoran el margen, no recogen el sondeo, reinician el plazo o
+reenvían cancel en GET. Borra las copias al salir.
 
 `tests/rack-fixture.json` conserva la instantánea realista para las pruebas de
 lectura y render existentes, sin comandos ni rutas.
