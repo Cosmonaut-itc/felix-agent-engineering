@@ -46,7 +46,7 @@ Baja por la tabla y detente en la primera que alcance:
 |---|---|
 | Hover, press, color, un estado que controla una clase | Transición CSS |
 | Entrada al montar, sin estado de JS | `@starting-style` |
-| Movimiento fijo que debe seguir fluido mientras la página carga | Animación CSS, fuera del hilo principal |
+| Movimiento fijo que debe seguir fluido mientras la página carga | Animación CSS de `transform` y `opacity`, que corre en el compositor |
 | Control desde JS con rendimiento de CSS | WAAPI (`element.animate()`) |
 | Springs, layout, salidas al desmontar, valores que sigue un gesto | `motion` |
 
@@ -58,13 +58,15 @@ falta es un componente (toast, drawer, menú, sheet), resuélvelo con
 
 ## 3. Propiedades
 
-Anima `transform` y `opacity`. Cualquier otra propiedad necesita una razón:
+Anima `transform` y `opacity`. Cualquier otra propiedad necesita una razón.
+Las excepciones documentadas son `clip-path`, como en mantener para
+confirmar, y la altura medida de un acordeón:
 
 | Costo | Propiedades | Cámbiala por |
 |---|---|---|
-| Sólo composición | `transform`, `opacity` (y en Chrome y Firefox actuales `filter`, `clip-path`, `background-color`) | Ya es la más barata. |
-| Pintura | `box-shadow`, `border-radius`, `color` | `filter: drop-shadow()` en lugar de `box-shadow`. |
-| Layout | `width`, `height`, `padding`, `margin`, `top`, `left` | `scale()` para crecer, `translate()` para mover, `opacity` en lugar de `display`. El acordeón es la excepción con `height`. |
+| Sólo composición | `transform`, `opacity` | Ya es la más barata. |
+| Pintura | `box-shadow`, `border-radius`, `color` | `filter: drop-shadow()` en lugar de `box-shadow`. Chrome compone `filter`; en otros navegadores puede repintar, así que mide. |
+| Layout | `width`, `height`, `padding`, `margin`, `top`, `left` | `scale()` para crecer, `translate()` para mover, `opacity` en lugar de `display`, con `visibility: hidden` al terminar para que deje de recibir clics. |
 
 - **Transición con nombre.** Lista las propiedades exactas en cada
   `transition`, para que sólo se anime lo que decidiste.
@@ -127,15 +129,17 @@ Las curvas de CSS son débiles. Usa estas, o tómalas de
 | Dropdown, select | 150 a 250 ms |
 | Modal, drawer | 200 a 500 ms |
 
-La UI se queda bajo 300 ms. Un tooltip que sigue a otro en la misma barra
+La UI se queda bajo 300 ms. Las excepciones documentadas son modales,
+drawers y sheets, hasta 500 ms, y el toast, con los 400 ms en `ease` de
+Sonner. Un tooltip que sigue a otro en la misma barra
 aparece sin retraso ni animación.
 
 **Spring cuando hubo un dedo.** Un drag, un flick o un gesto que el usuario
 puede invertir terminan con spring, porque conserva la velocidad al
 interrumpirse. Por defecto va críticamente amortiguado, sin rebote:
 `{ type: "spring", duration: 0.4, bounce: 0 }` (damping 1.0 en términos de
-Apple). El rebote, hasta `bounce: 0.2` (damping 0.8), es sólo para lo que
-el usuario lanzó: un sheet soltado con impulso o una tarjeta arrojada. El
+Apple). El rebote, de `bounce: 0.1` a `0.3` (damping 0.9 a 0.7), es sólo para lo
+que el usuario lanzó: un sheet soltado con impulso o una tarjeta arrojada. El
 mismo elemento cerrado con un botón no rebota.
 
 **Gestos.** Mientras el dedo está abajo, la posición lo sigue 1:1, sin
@@ -214,8 +218,8 @@ Sólo en apps móviles, con `expo-haptics`:
 | Aterriza algo pesado, se ejecuta una acción destructiva | `impactAsync(Medium)` |
 | La operación salió bien o falló | `notificationAsync(Success / Error)` |
 
-El háptico cae en el mismo frame que el cambio visual, uno por acción del
-usuario, y lo visual funciona sin él, porque muchos usuarios los tienen
+El háptico cae en el mismo frame que el cambio visual, uno por evento
+semántico (un paso, un snap, un commit), y lo visual funciona sin él, porque muchos usuarios los tienen
 apagados.
 
 ## 8. Reduced motion y accesibilidad
