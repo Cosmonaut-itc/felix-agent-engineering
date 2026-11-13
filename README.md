@@ -256,7 +256,8 @@ de Emil Kowalski en `vendor/emilkowalski/`. Cada directorio lleva su licencia
 MIT y el commit de origen en `UPSTREAM`. No se editan a mano. De Emil sólo se
 instala `learn-taste`; el resto queda como referencia que felix-mode cita por
 ruta. [`vendor/README.md`](vendor/README.md) explica las filas `upstream` y
-`ref` del manifest. El workflow diario ejecuta `bin/pao vendor-sync`, valida
+`ref` del manifest y cómo se revisan las referencias que adaptan una skill
+cuando su upstream cambia. El workflow diario ejecuta `bin/pao vendor-sync`, valida
 el resultado y corre las pruebas antes de hacer un commit a `main`. También se puede lanzar
 con `workflow_dispatch`. El job local recoge ese commit en la siguiente
 actualización.

@@ -183,7 +183,7 @@ pstack cubre estas necesidades, así que sus equivalentes no se instalan.
 |-----------|--------|-----------|
 | Test primero | `tdd` de pstack | `tdd` de Matt Pocock, `test-driven-development` |
 | Bug | Playbook Bug fix | `diagnosing-bugs`, `systematic-debugging` |
-| Prototipo | Playbook Prototype | `prototype` de Matt Pocock |
+| Prototipo | Playbook Prototype, con las reglas de [Prototipo de UI](../skills/felix-mode/references/ui-prototipo.md) cuando decide UI | `prototype` de Matt Pocock |
 | Implementar un issue o una spec | Playbook Feature | `implement`, `subagent-driven-development`, `executing-plans` |
 | Review de cambios | Sección Revisión | `code-review`, `pr`, `requesting-code-review` |
 | Pausar o retomar | Playbooks Pause safely y Session pickup; `handoff` de Matt Pocock cuando pides un documento de traspaso | — |

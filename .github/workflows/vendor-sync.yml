@@ -44,5 +44,12 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add vendor
-          git commit -m "chore(vendor): $SUMMARY"
+          review=$(git diff --cached --name-only -- vendor | xargs bin/pao vendor-refs)
+          {
+            printf 'chore(vendor): %s\n' "$SUMMARY"
+            if [ -n "$review" ]; then
+              printf '\nReferencias de felix-mode que citan lo que cambió; revisa si siguen al día:\n%s\n' "$review"
+            fi
+          } > "$RUNNER_TEMP/vendor-commit"
+          git commit -F "$RUNNER_TEMP/vendor-commit"
           git push origin HEAD:main

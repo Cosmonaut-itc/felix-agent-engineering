@@ -100,8 +100,8 @@ cerrar una sesión o un programa que tomó tickets, sigue
 |---|---|---|
 | Test primero | `tdd` de pstack | `tdd` de Matt Pocock, `test-driven-development` |
 | Bug | playbook Bug fix | `diagnosing-bugs`, `systematic-debugging` |
-| Prototipo | playbook Prototype | `prototype` de Matt Pocock |
-| Diseñar, implementar o revisar UI/UX | [Menos es más](references/menos-es-mas.md), también en el brief de cada trabajador | — |
+| Prototipo | playbook Prototype, con [Prototipo de UI](references/ui-prototipo.md) cuando decide UI | `prototype` de Matt Pocock |
+| Diseñar, implementar o revisar UI/UX | [Menos es más](references/menos-es-mas.md) y las referencias que enruta, también en el brief de cada trabajador | — |
 | Implementar un issue o una spec | playbook Feature, uno por issue | `implement`, `subagent-driven-development`, `executing-plans` |
 | Implementar tickets acoplados | [Acumulador](references/acumulador.md) | `implement-spec` de Matt Pocock |
 | Review de cambios | sección Revisión | `code-review` de Matt Pocock, `requesting-code-review` |

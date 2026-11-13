@@ -19,3 +19,10 @@ Sólo se copian las skills que el manifest declara. Una fila `skill` además la
 instala en `~/.agents/skills` y `~/.claude/skills`. Una fila `ref` sólo la
 copia, para que una referencia de felix-mode la cite por ruta sin sumarla al
 contexto de cada sesión.
+
+Las referencias de felix-mode adaptan estas skills y enlazan sus archivos por
+ruta relativa. Esos enlaces son el mapa de qué referencia depende de qué
+archivo de upstream: `bin/pao check` falla si uno apunta a un archivo que no
+existe, y `bin/pao vendor-refs RUTA...` lista las referencias que citan el
+directorio de skill de cada ruta. Cuando el workflow copia un cambio, su
+commit nombra esas referencias para revisarlas.

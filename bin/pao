@@ -114,9 +114,45 @@ load_manifest() {
     return 0
 }
 
+# Each felix-mode link into vendor/ maps an upstream file to the reference that cites it,
+# so the map cannot drift from the references. Prints "doc<TAB>link" per link.
+vendor_links() {
+    local doc link
+    for doc in "$PAO_ROOT/skills/felix-mode/SKILL.md" "$PAO_ROOT/skills/felix-mode/references"/*.md; do
+        [ -f "$doc" ] || continue
+        grep -oE '\]\([^)]*vendor/[^)]*\)' "$doc" | while IFS= read -r link; do
+            link=${link#??} link=${link%?}
+            printf '%s\t%s\n' "${doc#"$PAO_ROOT"/}" "${link%%#*}"
+        done
+    done
+}
+
+check_vendor_links() {
+    local doc link dir broken=0
+    while IFS=$'\t' read -r doc link; do
+        dir=$(cd "$PAO_ROOT/$(dirname "$doc")/$(dirname "$link")" 2>/dev/null && pwd -P) || dir=
+        [ -n "$dir" ] && [ -f "$dir/$(basename "$link")" ] && [ "$dir/$(basename "$link")" = "$PAO_ROOT/vendor/${link#*vendor/}" ] ||
+            { fail "$doc: enlace a vendor roto: $link"; broken=1; }
+    done < <(vendor_links)
+    return "$broken"
+}
+
+# Prints the felix-mode docs that cite the vendor skill directory of any given path.
+vendor_refs() {
+    local doc link path
+    vendor_links | while IFS=$'\t' read -r doc link; do
+        link=vendor/${link#*vendor/}
+        for path in "$@"; do
+            [ "$(printf '%s' "$path" | cut -d/ -f1-3)" = "$(printf '%s' "$link" | cut -d/ -f1-3)" ] || continue
+            printf '%s\n' "$doc"; break
+        done
+    done | sort -u
+}
+
 check() {
     load_manifest || return 1
     "$PAO_ROOT/skills/felix-mode/scripts/pstack-refs" --registry-only --root "$PAO_ROOT" || return 1
+    check_vendor_links || return 1
     printf 'ok: manifest válido (%s files, %s skills, %s refs, %s upstreams, %s retire, %s plugins)\n' \
         "$(count_type file)" "$(count_type skill)" "$(count_type ref)" "$(count_type upstream)" "$(count_type retire)" "$(count_type plugin)"
 }
@@ -665,7 +701,8 @@ main() {
         update|status|uninstall|vendor-sync|check)
             [ "$#" = 0 ] || { fail 'argumentos inesperados'; return 1; }
             case "$command" in update) update ;; status) show_status ;; uninstall) uninstall ;; vendor-sync) vendor_sync ;; check) check ;; esac ;;
-        help|--help|-h) printf 'pao install [--no-schedule] [--no-plugins] | update | sync | status | uninstall | vendor-sync | check\n' ;;
+        vendor-refs) vendor_refs "$@" ;;
+        help|--help|-h) printf 'pao install [--no-schedule] [--no-plugins] | update | sync | status | uninstall | vendor-sync | vendor-refs PATH... | check\n' ;;
         *) fail "subcomando desconocido: $command" ;;
     esac
 }
