@@ -1,6 +1,7 @@
 # Rack de pruebas
 
-Panel de sólo lectura de Mac Mini y Felix DESKTOP (WSL), con la variante
+Panel de Mac Mini y Felix DESKTOP (WSL), con lectura del rack y cancelación
+por lanzador en la Mini, con la variante
 «C · Lugares». Python 3.9 y biblioteca estándar; sin dependencias de frontend.
 Cada host entrega `rack-host@1`; el servidor sirve `rack@1` cada 15 segundos.
 
@@ -38,7 +39,7 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    verifica los JSON de `serve status` y `funnel status` y aborta si mencionan
    el puerto 8788. También aborta si no puede consultar su configuración.
    Resuelve el dueño mediante `status --json`: `Self.UserID` →
-   `User[<id>].LoginName`. Copia los cuatro archivos a
+   `User[<id>].LoginName`. Copia `snapshot.py`, `serve.py`, `accion.py`, `index.html` y `hosts.json` a
    `~/.local/lib/pao-rack/` y carga `com.cosmonaut.pao-rack` con KeepAlive.
    El puerto es **8788**, fijado en `puerto=` de `instalar.sh`; en la Mini
    el 8787 ya lo usa otro servicio. El Funnel existente en 10000 no se modifica.
@@ -46,7 +47,7 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
 El LaunchAgent ejecuta `/usr/bin/python3 -I serve.py --bind <IP tailnet>
 --port 8788 --owner <LoginName> --name <nombre MagicDNS> --name <nombre corto>`. Logs en `~/Library/Logs/pao-rack.log`.
 `bash instalar.sh --desinstalar` descarga el agente y quita sus archivos;
-conserva historial, caché, key de Linear, llave SSH y logs.
+conserva historial, caché, diario de acciones, interruptor, key de Linear, llave SSH y logs.
 
 ## Sólo dispositivos del dueño dentro del tailnet
 
@@ -58,7 +59,9 @@ No confía en `X-Forwarded-For`. Resuelve cada IP permitida con
 IP, comparando `UserProfile.LoginName` con `--owner`. Si no coincide o falla
 la consulta o su formato, responde 403. `--owner` es obligatorio fuera del
 modo loopback; `--tailscale` permite sustituir el binario en las pruebas.
-Los cambios de identidad pueden tardar hasta 5 minutos en reflejarse.
+La caché de 5 minutos sólo se usa para lectura. Cada petición a `/api/accion`
+y `/api/accion/<id>` exige whois fresco, incluso en loopback: no hereda la
+excepción de lectura local. El servidor de pruebas inyecta un whois falso.
 
 Antes de todo eso exige que la cabecera `Host` nombre a este servidor con su
 puerto: la IP de `--bind` o un `--name` (sin distinguir mayúsculas), en una
@@ -86,7 +89,7 @@ Funnel para verificarlo. Revisar de nuevo `Tailscale serve status --json` y
 
 ## Datos y operación
 
-`hosts.json` es una lista de `{id,name,transport,argv}`. `local` ejecuta la
+`hosts.json` es una lista de `{id,name,transport,argv,actions}`. `local` ejecuta la
 instantánea como subproceso y admite `{rack_dir}` en argv; `ssh` ejecuta el
 argv sin shell. Un host futuro será otra entrada (no se implementan VMs).
 Los hosts se consultan en paralelo con timeout de 25 segundos. Si falla un
@@ -166,7 +169,7 @@ La actividad usa sólo tamaño y `mtime`: el más reciente entre el log de Pueue
 Sin archivos, `last` es null; no se calcula un tiempo de silencio.
 La fila conserva tipo y referencia, sin consultar salida hasta correr.
 
-El menú ⋯ sólo ofrece «Copiar referencia»: host e id, grupo, ticket, producto,
+El menú ⋯ ofrece «Cancelar…» y «Copiar referencia»: host e id, grupo, ticket, producto,
 objetivo, rama, referencia propia y tiempos. Conserva el menú al actualizar.
 `manifest` instala el guion ejecutable en `~/.local/bin/rack-inspeccionar`:
 
@@ -184,14 +187,189 @@ MacBook y fijan `REMOTE_RUN_HOST` a la máquina de la referencia.
 `http://felixs-mac-mini.tail9f9a98.ts.net:8788/api/rack.json`.
 Códigos: referencia inválida 2, tarea ausente 3, panel inaccesible 4.
 
-## Pruebas en la Mini
+## Cancelar una corrida de la Mini
 
-```bash
-remote-run start --name dirigida-rack-u1 -- /usr/bin/python3 -m unittest discover -s fleet/rack/tests -v
-remote-run wait <id>
+«Cancelar…» consulta las capacidades de esa corrida con su lanzador antes de
+habilitarse. Abre la confirmación aprobada «¿Cancelar <ticket> · <objetivo> en
+<host>? La sesión que la espera la verá como cancelada». «No» y Escape cierran
+sin actuar. Al confirmar, la fila muestra «Cancelando…» hasta que el lanzador
+confirma el resultado; el aviso dura 8 segundos. Sólo el recibo `cancelled`
+con `result.exit: 130` acredita una cancelación. La pestaña conserva en
+sessionStorage las identidades canceladas `(host, task_id, ref)`: una instantánea
+anterior no vuelve a mostrar la misma corrida, tampoco al recargar. Otra
+referencia con el mismo ID, o el mismo ID en otro host, sigue visible.
+`already_finished` conserva la
+salida anterior; `stale_state` pide actualizar y decidir de nuevo. No se escala
+una petición observada en fila a detener una corrida que ya arrancó.
+
+El panel nunca ejecuta kill/remove/stash de Pueue. Envía `rack-cancel@1` por
+stdin a `/usr/bin/python3 -I ~/.local/lib/remote-run/run-control.py`, una ruta
+fija resuelta con el usuario Unix del servicio. No hay shell ni TTY. El único
+ejecutor usa cwd `/`, un entorno nuevo con HOME del usuario Unix, PATH fijo y
+TMPDIR=/tmp; no hereda tokens ni configuración del panel. Tiene plazo de 10 s,
+termina únicamente su grupo de procesos si vence, recoge al hijo y limita la
+respuesta JSON a 16 KiB durante la ejecución (como máximo 16 385 bytes
+capturados); si excede el límite, termina y recoge sólo su grupo propio.
+Un timeout, respuesta inválida o fallo de transporte
+significa `unknown`, porque el efecto pudo ocurrir antes del corte.
+
+La instantánea añade por tarea:
+
+```json
+{"control":{"launcher":"remote-run","ref":"20261112-184713-d976b4",
+ "expected":{"task_id":77,"state":"Queued"},"reason":null}}
 ```
 
-Las pruebas usan Pueue y Tailscale falsos, un repositorio git temporal y HTTP
-en loopback. No usan red externa ni SSH. `tests/rack-fixture.json` deriva de
-la instantánea realista del brief, enriquecida con títulos y estimados de `proto/data.js`, sin comandos ni rutas, y permite capturas
-reproducibles de ambos tamaños.
+La identidad se deriva exclusivamente de los campos de la cola: directorio
+`~/remote-run/runs/<ref>` o comando fijo de Jale que apunta a
+`~/.local/state/jale/pueue/job-<8 alfanuméricos>/task.sh`. Este dato no presume
+compatibilidad: sólo el controlador confirma capacidades. No añade lecturas
+de `body.sh`, `meta` ni logs. Sin lanzador reconocido, `launcher/ref` son null;
+fuera de Queued/Running, `expected` es null. `reason` explica por qué no hay
+acción. Instantáneas antiguas conservan lectura y deshabilitan cancelación.
+Los grupos `otros` y `pg5434` sin lanzador reconocido quedan deshabilitados;
+una corrida reconocida consulta capacidades independientemente del grupo.
+Jale directo en la Mini fuera de Pueue no está cubierto por este contrato.
+
+El transporte de escritura es independiente del de instantáneas:
+
+| Host | `actions.transport` | `actions.controllers` | `actions.reason` |
+| --- | --- | --- | --- |
+| mini | local | remote-run → `~/.local/lib/remote-run/run-control.py` | null |
+| desk | disabled | remote-run → misma ruta; jale → `~/.local/lib/jale/pueue-control.py` | canal de escritura del desk pendiente |
+
+`actions` tiene exactamente `transport`, `controllers` y `reason`. Se valida
+al cargar `hosts.json` y antes de ejecutar: sólo se admiten esas rutas fijas
+por lanzador. Un transporte local requiere al menos un controlador y razón
+null; uno deshabilitado requiere una razón legible de hasta 240 caracteres.
+Sin configuración, el host queda deshabilitado. El ejecutor elige la ruta de
+esa tabla y la resuelve bajo el home del usuario Unix; la API no permite
+enviar rutas ni argv. La razón que muestra la UI viene de esta configuración,
+sin una excepción fija para el desk.
+
+C4 añadirá el transporte con llave/comando forzado dedicado al mismo `Executor`
+y la tabla explícita de `hosts.json`. No reutilizar la llave de lectura ni
+convertir el `argv` público en un comando recibido del cliente. C3 no instala
+canales en el desk ni cambia cuotas, horarios o el orden de la fila.
+
+### API y autorización
+
+`POST /api/accion` admite sólo `cancel` y la consulta `capabilities` (ensayo sin
+cancelar). Envoltura cerrada, sin claves adicionales:
+
+```json
+{"schema":"rack-action@1","op":"cancel","host":"mini","launcher":"remote-run",
+ "ref":"20261112-184713-d976b4","action_id":"action-0001",
+ "expected":{"task_id":77,"state":"Queued"}}
+```
+
+`capabilities` usa los mismos campos salvo `action_id`. El servidor comprueba
+host, identidad y estado de la instantánea, con máximo 45 s de antigüedad,
+y transmite el `expected` exacto al lanzador, que cierra la carrera real.
+`GET /api/accion/action-0001` consulta el recibo; no acepta referencias o rutas
+nuevas desde el cliente. Respuesta común `rack-action@1`: `action_id`, `op`,
+`host`, `launcher`, `ref`, `status`, `result` y `error`; las capacidades añaden
+`capabilities`. Errores del controlador se traducen a mensajes fijos sin
+rutas, comandos, logs o secretos. 409 indica conflicto, 403 rechazo de acceso
+o interruptor, 400 petición inválida. Un resultado incierto se expresa como
+`unknown` aun cuando HTTP falle; un ID no hallado responde 404/unknown y nunca
+se interpreta como una cancelación fallida. La UI reenvía una vez el mismo
+cuerpo con el mismo ID ante ese 404, protegido por el diario idempotente.
+
+Además de Host permitido, cliente del tailnet y rechazo de Funnel, cada POST
+exige `Origin` exactamente igual a `http://<Host servido>`, JSON y
+`X-Rack-Action: 1`. `Sec-Fetch-Site`, si está presente, debe ser `same-origin`;
+no sustituye Origin. No hay CORS ni confianza en cabeceras de proxy.
+Whois se vuelve a consultar sin caché en cada petición de acciones. El GET
+también requiere whois fresco: puede continuar la limpieza ya aceptada por
+el lanzador. No abre una cancelación nueva.
+
+Una acción abierta (`cancelling`, `unknown` o `cancel_unconfirmed`) bloquea
+otra cancelación de la misma combinación host/lanzador/ref en el diario,
+incluso desde otra pestaña o tras reiniciar el servidor. El POST nuevo da
+409 con el ID abierto y capacidades muestra la misma razón. La fila pendiente
+sigue visible aunque Pueue indique Done o Stashed. La exclusión tras un recibo
+`cancelled` incluye encolado y arranque: un intento nuevo vuelve a aparecer.
+
+
+### Diario e interruptor
+
+`~/.local/state/pao/rack/actions.sqlite3` es el diario autoritativo, modo 0600,
+con commits SQLite `synchronous=FULL`. La tabla `actions` guarda `action_id`
+(clave primaria sensible a mayúsculas), digest SHA-256 del JSON canónico,
+petición, respuesta, created y updated. Se confirma `unknown` **antes** de
+llamar al controlador; después se guarda su recibo. El mismo ID/cuerpo no
+vuelve a cancelar; un cuerpo diferente con ese ID es 409/idempotency_conflict.
+El diario no se rota ni depende de history.jsonl. No borrarlo para reparar
+un timeout o liberar un ID.
+
+Tras una caída entre intención, efecto y recibo, un POST repetido devuelve lo
+que sabe el diario. Para `cancelling`, `cancel_unconfirmed` y `unknown`, el GET
+consulta únicamente `status` con la misma referencia e ID. Todo `rejected`
+de esa consulta conserva `unknown`, sea `not_found`, `unsupported`,
+`stale_state`, `idempotency_conflict` o `invalid_request`: un rechazo tardío
+no demuestra que la cancelación aceptada no tuvo efecto. No se reenvían
+mensajes privados del controlador. La UI guarda las acciones
+pendientes en sessionStorage para continuar al recargar esa pestaña. Tras
+un error de red consulta el recibo; sólo un 404 autoriza el reenvío único
+del mismo `cancel`, cuerpo e ID. La fila y el
+aviso distinguen incertidumbre y falta de confirmación del fin de procesos.
+
+Para apagar acciones localmente sin reinstalar ni afectar lectura:
+
+```bash
+mkdir -p ~/.local/state/pao/rack
+touch ~/.local/state/pao/rack/actions.disabled
+# Para reactivarlas:
+rm ~/.local/state/pao/rack/actions.disabled
+```
+
+Con `--state-dir` usar ese directorio. El interruptor bloquea nuevas
+cancelaciones y capacidades; los recibos y consultas de acciones ya aceptadas
+siguen disponibles para no abandonarlas. No revoca retrospectivamente una
+cancelación en curso.
+
+Instalar el panel con `bash instalar.sh` después de revisión. El controlador
+compatible se instala con el procedimiento del repo Hasito; el instalador del
+rack no lo copia ni lo cambia. Si falta, la UI no habilita la acción. La
+instalación y canarios productivos se hacen en otro paso, nunca con las
+pruebas de este directorio.
+
+## Pruebas locales sin hosts reales
+
+```bash
+cd fleet/rack
+TMPDIR=/tmp /usr/bin/python3 -m unittest discover -s tests -v
+TMPDIR=/tmp /usr/bin/python3 tests/check_mutations.py
+TMPDIR=/tmp /usr/bin/python3 tests/browser_fixture.py --port 0
+```
+
+El último comando imprime una URL en 127.0.0.1 para abrir en un navegador.
+Ofrece una corrida sintética de la Mini y otra del desk. Tras confirmar, el
+controlador falso responde `cancelling` durante 7 s y luego `cancelled`/130.
+Ctrl-C cierra el servidor y borra su directorio temporal. No inicia recolector,
+no conecta a hosts y no usa 8787. El fixture genera el controlador bajo /tmp,
+en la misma ruta relativa configurada, y usa el ejecutor de producción sin
+sustituir argv. Conserva la corrida en sus instantáneas para acreditar que
+la fila cancelada no reaparece aunque el recolector todavía la incluya.
+
+Las pruebas son Python 3.9/biblioteca estándar, con whois, transporte, reloj y
+controladores falsos. Una guardia de auditoría impide ejecutar ssh, Pueue,
+Tailscale o controladores instalados. La prueba JS ejecuta el script real con
+DOM, red, reloj y almacenamiento sintéticos, mediante Node si está disponible,
+sin paquetes de frontend. Prueba diálogo, No, pendiente, avisos de 8 s,
+capacidades, razón configurable, conflictos e incertidumbre/red con el mismo
+ID; después del recibo renderiza la instantánea anterior y recarga la página
+con almacenamiento conservado. Las pruebas del ejecutor también lanzan
+controladores sintéticos generados en /tmp, bajo la guarda global: observan
+stdin, aislamiento, entorno y ausencia de TTY, y verifican que el plazo
+termina el grupo conocido y recoge el proceso. En macOS, el shim de Python
+puede añadir variables de SDK; se comprueba que ninguna variable del panel
+llega al controlador. `check_mutations.py` copia el artefacto a /tmp y
+acredita que quitar whois fresco, Origin, digest, intención unknown,
+conservación de unknown ante rechazos de status o exclusión de canceladas
+frente a instantáneas anteriores rompe las pruebas específicas;
+borra las copias al salir.
+
+`tests/rack-fixture.json` conserva la instantánea realista para las pruebas de
+lectura y render existentes, sin comandos ni rutas.

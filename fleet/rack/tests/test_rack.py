@@ -1,3 +1,4 @@
+import safety  # fail closed before any subprocess
 import importlib.util
 import datetime
 import json
@@ -137,9 +138,10 @@ class SnapshotTests(unittest.TestCase):
         self.assertIsNone(data['cpu'])
         self.assertIsNone(data['mem'])
         self.assertTrue(any(e['stage'] == 'capacity' for e in data['errors']))
-        process = subprocess.run(['/usr/bin/python3', '-I', str(BASE / 'snapshot.py'), '--os', 'linux'], stdout=subprocess.PIPE, text=True)
-        self.assertEqual(process.returncode, 0)
-        self.assertEqual(json.loads(process.stdout)['schema'], 'rack-host@1')
+        # Never let the CLI's default paths reach an installed Pueue or real home.
+        with patch.object(snapshot, 'command', side_effect=OSError('fake unavailable')):
+            data = snapshot.collect('linux', 'desk', home=self.root, proc=self.root)
+        self.assertEqual(data['schema'], 'rack-host@1')
 
     def test_linux_capacity_and_guard(self):
         (self.root / 'loadavg').write_text('2.5 2.0 1.0 1/10 1')
