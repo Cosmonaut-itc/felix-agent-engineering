@@ -131,7 +131,8 @@ class DeadlineTests(unittest.TestCase):
             self.now = 1042.5
         with patch.object(self.actions, 'connect', delayed):
             code, answer = self.actions.post(request(host='desk'))
-        self.assertEqual((code, answer['status'], answer['error']['code']), (200, 'rejected', 'deadline'))
+        self.assertEqual((code, answer['status']), (200, 'rejected'))
+        self.assertEqual(answer['error']['code'], 'deadline')
         self.assertEqual(self.calls, [])
         self.assertLess(self.now - 1000, 45)
         self.assertEqual(self.stored(request()), answer)

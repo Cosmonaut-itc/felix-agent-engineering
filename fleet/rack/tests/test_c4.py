@@ -134,19 +134,21 @@ print(json.dumps(a))
     def test_switch_blocks_cancel_and_capabilities_but_allows_status(self):
         for kind in ('file', 'directory', 'dangling', 'permission'):
             with self.subTest(kind=kind):
-                if kind == 'file': desk.SWITCH.touch()
-                elif kind == 'directory': desk.SWITCH.mkdir()
-                elif kind == 'dangling': desk.SWITCH.symlink_to(self.root / 'absent')
-                with patch.object(Path, 'lstat', side_effect=PermissionError()) if kind == 'permission' else patch.object(desk, 'TIMEOUT', 10):
-                    before = len(self.processes)
-                    answer,code = self.handle(envelope())
-                    self.assertEqual((code,answer['status']), (0,'rejected'))
-                    self.assertEqual(answer['error']['code'],'unsupported')
-                    self.assertEqual(self.handle(envelope(op='capabilities'))[0]['capabilities']['queued'],False)
-                    self.assertEqual(len(self.processes), before)
-                    self.assertEqual(self.handle(envelope(op='status'))[0]['status'],'cancelled')
-                if kind == 'directory': desk.SWITCH.rmdir()
-                elif kind != 'permission': desk.SWITCH.unlink()
+                try:
+                    if kind == 'file': desk.SWITCH.touch()
+                    elif kind == 'directory': desk.SWITCH.mkdir()
+                    elif kind == 'dangling': desk.SWITCH.symlink_to(self.root / 'absent')
+                    with patch.object(Path, 'lstat', side_effect=PermissionError()) if kind == 'permission' else patch.object(desk, 'TIMEOUT', 10):
+                        before = len(self.processes)
+                        answer,code = self.handle(envelope())
+                        self.assertEqual((code,answer['status']), (0,'rejected'))
+                        self.assertEqual(answer['error']['code'],'unsupported')
+                        self.assertEqual(self.handle(envelope(op='capabilities'))[0]['capabilities']['queued'],False)
+                        self.assertEqual(len(self.processes), before)
+                        self.assertEqual(self.handle(envelope(op='status'))[0]['status'],'cancelled')
+                finally:
+                    if kind == 'directory': desk.SWITCH.rmdir()
+                    elif kind != 'permission': desk.SWITCH.unlink()
         self.assertEqual(self.handle(envelope())[0]['status'],'cancelled')
         self.assert_reaped()
 
