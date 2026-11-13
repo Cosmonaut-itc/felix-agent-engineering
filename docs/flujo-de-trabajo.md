@@ -130,7 +130,7 @@ pausa antes de:
   sección «Tickets de Linear» de `felix-mode`;
 - instalar dependencias, cambiar CI o tocar la configuración global de agentes;
 - implementar UI/UX sin un prototipo aprobado;
-- la ronda 9 de review de un mismo cambio;
+- la novena ronda contada de review de un mismo cambio, sin las de sincronización;
 - un force push a una rama compartida, un borrado de datos o un mensaje a un cliente.
 
 ## Preguntas al dueño

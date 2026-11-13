@@ -1914,12 +1914,8 @@ apto_vigente_interactions() {
         output=$(apto "$repo" destino revisado candidato)
         assert test "$(head -n 1 <<< "$output")" = 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos'
         assert test -n "$(sed -n '3,$p' <<< "$output")"
-        # Con directoryRenames=true el candidato movió el archivo, y el diff lo muestra.
-        if [ "$mode" = conflict ]; then
-            assert git -C "$repo" diff --quiet $(sed -n 's/^Resolución: git diff //p' <<< "$output")
-        else
-            assert test -n "$(git -C "$repo" diff --name-only $(sed -n 's/^Resolución: git diff //p' <<< "$output"))"
-        fi
+        # El candidato es la mezcla automática en los dos modos: su resolución no cambia nada.
+        assert git -C "$repo" diff --quiet $(sed -n 's/^Resolución: git diff //p' <<< "$output")
     done
 
     # Un merge con conflictos también escribe un árbol, con los marcadores dentro.
@@ -1970,12 +1966,17 @@ apto_vigente_conflict() {
         assert test "$kind: $(sed -n 1p <<< "$output")" = "$kind: Ronda delta: la mezcla del head revisado con el destino tiene conflictos"
         assert test "$kind: $(sed -n '3,$p' <<< "$output")" = "$kind: otro.txt"
         resolution=$(sed -n 's/^Resolución: git diff //p' <<< "$output")
-        assert test "$kind: ${resolution#* }" = "$kind: $(git -C "$repo" rev-parse resuelto)"
+        assert test "$kind: ${resolution##* }" = "$kind: $(git -C "$repo" rev-parse resuelto)"
         # El diff que imprime muestra sólo la resolución del conflicto.
         output=$(git -C "$repo" diff --name-only $resolution)
         assert test "$kind: $output" = "$kind: otro.txt"
         assert grep -qx '+x resuelta' <(git -C "$repo" diff $resolution)
         assert grep -q '^-<<<<<<<' <(git -C "$repo" diff $resolution)
+        # Desde un subdirectorio y con diff.relative=true sigue mostrando la resolución.
+        output=$(apto_with diff.relative=true "$repo/origen" destino revisado resuelto)
+        resolution=$(sed -n 's/^Resolución: git diff //p' <<< "$output")
+        output=$(cd "$repo/origen" && GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=diff.relative GIT_CONFIG_VALUE_0=true git diff --name-only $resolution)
+        assert test "$kind relativo: $output" = "$kind relativo: otro.txt"
     done
 }
 

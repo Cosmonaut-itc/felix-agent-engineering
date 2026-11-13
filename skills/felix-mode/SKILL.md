@@ -242,8 +242,9 @@ que demuestra:
   hasta ocho rondas sin autorización adicional, entre completas y delta.
   Las rondas de sincronización no cuentan: son las que pide el paso 3 del
   [procedimiento de merge](references/merge.md) cuando `apto-vigente`
-  imprime `Ronda delta`. Antes de la novena ronda que cuenta, pausa, aunque
-  la octava haya dado APTO. Entrega al usuario lo que sigue abierto y el replanteamiento realizado.
+  imprime `Ronda delta`. Todas las rondas se numeran en orden, también las
+  de sincronización, y el límite cuenta sólo las demás. Antes de la novena
+  ronda contada, pausa, aunque la octava contada haya dado APTO. Entrega al usuario lo que sigue abierto y el replanteamiento realizado.
 - **Ronda delta.** La hace un solo revisor gpt-6.1-sol en `high` con
   contexto nuevo, también en alto riesgo. Su brief lleva el brief original,
   el registro, el head ya revisado y el diff desde ese head, con
@@ -367,7 +368,7 @@ además de «Always pause» de pstack, pausa antes de:
   agentes;
 - implementar UI/UX sin un prototipo aprobado por el dueño, como pide el
   routing;
-- la ronda 9 de review de un mismo cambio, como dice **Rondas**.
+- la novena ronda contada de review de un mismo cambio, como dice **Rondas**.
 
 El resto del trabajo local y reversible avanza sin preguntar.
 

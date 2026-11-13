@@ -73,7 +73,7 @@ while IFS= read -r file; do
     case $'\n'"$incoming"$'\n' in *$'\n'"$file"$'\n'*) shared+=$file$'\n' ;; esac
 done <<< "$patch"
 if [ "$merge_status" = 1 ]; then
-    printf 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos\nResolución: git diff %s %s\n' "$auto" "$new"
+    printf 'Ronda delta: la mezcla del head revisado con el destino tiene conflictos\nResolución: git diff --no-relative %s %s\n' "$auto" "$new"
     printf '%s\n%s' "$conflicted" "$shared" | sed '/^$/d' | LC_ALL=C sort -u
     exit 0
 fi
