@@ -37,7 +37,7 @@ REGISTRY = [
     for pattern in (
         "manifest", "bin/*", "skills/*", "vendor/*", "configs/*",
         "docs/orchestration.md", "docs/agent-routing.md", "docs/native-subagents.md",
-        "docs/opencode-workers.md", "docs/t3-delegation.md")
+        "docs/opencode-workers.md", "docs/t3-delegation.md", "fleet/rack/rack-inspeccionar")
 ]
 NO_HEAD = ("gh pr merge necesita --match-head-commit <head aprobado>, para que GitHub rechace "
            "el merge si el head cambió después de la review. Usa el head que aprobaron "

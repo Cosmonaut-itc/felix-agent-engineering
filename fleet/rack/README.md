@@ -93,7 +93,7 @@ Los hosts se consultan en paralelo con timeout de 25 segundos. Si falla un
 host se conserva su último dato bueno, marcado como antiguo. Las lecturas
 parciales se indican en `snapshot.errors`. No se exportan comandos, rutas ni
 entornos de Pueue. `body.sh` se recorre por líneas, extrayendo sólo MODE,
-BASE_REPO, REQUESTED_SHA y BRANCH; nunca se ejecuta ni registra su contenido.
+BASE_REPO, REQUESTED_SHA, BRANCH y SLOT_KIND; nunca se ejecuta ni registra su contenido.
 
 El clon del desk no conserva ramas remotas al día, así que la instantánea
 entrega la rama solicitada cuando no es un SHA, además del SHA y el
@@ -136,6 +136,35 @@ La fila muestra proyecto, objetivo, rama y tiempo en espera, con descripción
 del ticket o, en su ausencia, asunto, rama u objetivo. Se ordena por prioridad
 descendente e id ascendente; muestra ocho tareas por grupo y permite ver el
 resto. No permite reordenar ni cambiar cupos u horarios.
+
+## Actividad y referencias
+
+El aviso aparece tras más de 15 minutos sin salida; los arranques Jale con
+`MODE=launch` y `SLOT_KIND=verify` indican que esperan liberar sus servidores.
+La actividad usa sólo tamaño y `mtime`: el más reciente entre el log de Pueue
+(`~/Library/Application Support/pueue/task_logs/<id>.log` en Mini,
+`~/.local/share/pueue/task_logs/<id>.log` en desk) y el `log` de
+`~/.local/state/jale/pueue/job-…/` o `~/remote-run/runs/<id>/`.
+Sin archivos, `last` es null; no se calcula un tiempo de silencio.
+La fila conserva tipo y referencia, sin consultar salida hasta correr.
+
+El menú ⋯ sólo ofrece «Copiar referencia»: host e id, grupo, ticket, producto,
+objetivo, rama, referencia propia y tiempos. Conserva el menú al actualizar.
+`manifest` instala el guion ejecutable en `~/.local/bin/rack-inspeccionar`:
+
+```bash
+rack-inspeccionar desk:77
+rack-inspeccionar 'rack desk:77 · jale · SEN-5731 · …'
+rack-inspeccionar mini:288 --json
+```
+
+Consulta el panel por Tailscale y muestra metadatos, actividad y comandos de
+lectura para seguir por SSH. Los comandos `remote-run` se ejecutan en la
+MacBook y fijan `REMOTE_RUN_HOST` a la máquina de la referencia.
+`--json` devuelve la tarea original de la API.
+`--url` o `RACK_URL` sustituyen la URL predeterminada
+`http://felixs-mac-mini.tail9f9a98.ts.net:8788/api/rack.json`.
+Códigos: referencia inválida 2, tarea ausente 3, panel inaccesible 4.
 
 ## Pruebas en la Mini
 
