@@ -1,7 +1,7 @@
 # Rack de pruebas
 
 Panel de Mac Mini y Felix DESKTOP (WSL), con lectura del rack y cancelación
-por lanzador en la Mini, con la variante
+por lanzador en ambos hosts, con la variante
 «C · Lugares». Python 3.9 y biblioteca estándar; sin dependencias de frontend.
 Cada host entrega `rack-host@1`; el servidor sirve `rack@1` cada 15 segundos.
 
@@ -11,8 +11,10 @@ Estos pasos son manuales, después de revisar y fusionar el cambio. No publicar
 el puerto por Serve, Funnel, un proxy ni un túnel de red local.
 
 1. En la MacBook, `bash fleet/rack/instalar-desk.sh` copia únicamente la
-   instantánea a WSL, a través del alias SSH `desk`, que entra directo al
-   sshd de Ubuntu. Reemplaza el archivo de forma atómica. No instala servicios.
+   instantánea y el despachador autónomo `desk_action.py` a WSL, como
+   `~/.local/bin/pao-rack-snapshot` y `~/.local/bin/pao-rack-action`, a través
+   del alias SSH `desk`, que entra directo al sshd de Ubuntu. Reemplaza cada
+   archivo de forma atómica. No instala servicios, controladores ni llaves.
 2. En la Mini, la llave exclusiva del rack es `~/.ssh/id_ed25519_pao_rack`
    (comentario `pao-rack@mini`). Su pública vive en el archivo Windows
    `C:\ProgramData\ssh\administrators_authorized_keys`, que conserva los
@@ -39,7 +41,7 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    verifica los JSON de `serve status` y `funnel status` y aborta si mencionan
    el puerto 8788. También aborta si no puede consultar su configuración.
    Resuelve el dueño mediante `status --json`: `Self.UserID` →
-   `User[<id>].LoginName`. Copia `snapshot.py`, `serve.py`, `accion.py`, `index.html` y `hosts.json` a
+   `User[<id>].LoginName`. Copia `snapshot.py`, `serve.py`, `accion.py`, `desk_action.py`, `index.html` y `hosts.json` a
    `~/.local/lib/pao-rack/` y carga `com.cosmonaut.pao-rack` con KeepAlive y
    `ProcessType` `Interactive`. Sin él, launchd limita al agente: con la Mini
    cargada, `whois` pasa de 3 s y el dueño recibe 403.
@@ -189,7 +191,7 @@ MacBook y fijan `REMOTE_RUN_HOST` a la máquina de la referencia.
 `http://felixs-mac-mini.tail9f9a98.ts.net:8788/api/rack.json`.
 Códigos: referencia inválida 2, tarea ausente 3, panel inaccesible 4.
 
-## Cancelar una corrida de la Mini
+## Cancelar una corrida de la Mini o del desk
 
 «Cancelar…» consulta las capacidades de esa corrida con su lanzador antes de
 habilitarse. Abre la confirmación aprobada «¿Cancelar <ticket> · <objetivo> en
@@ -207,8 +209,8 @@ una petición observada en fila a detener una corrida que ya arrancó.
 El panel nunca ejecuta kill/remove/stash de Pueue. Envía `rack-cancel@1` por
 stdin a `/usr/bin/python3 -I ~/.local/lib/remote-run/run-control.py`, una ruta
 fija resuelta con el usuario Unix del servicio. No hay shell ni TTY. El único
-ejecutor usa cwd `/`, un entorno nuevo con HOME del usuario Unix, PATH fijo y
-TMPDIR=/tmp; no hereda tokens ni configuración del panel. Tiene plazo de 10 s,
+ejecutor (`Executor`, con el intercambio acotado compartido de `desk_action.py`) usa cwd `/`, un entorno nuevo con HOME del usuario Unix, PATH fijo y
+TMPDIR=/tmp; no hereda tokens ni configuración del panel. Tiene plazo de 10 s para Mini y 40 s para desk,
 termina únicamente su grupo de procesos si vence, recoge al hijo y limita la
 respuesta JSON a 16 KiB durante la ejecución (como máximo 16 385 bytes
 capturados); si excede el límite, termina y recoge sólo su grupo propio.
@@ -238,21 +240,209 @@ El transporte de escritura es independiente del de instantáneas:
 | Host | `actions.transport` | `actions.controllers` | `actions.reason` |
 | --- | --- | --- | --- |
 | mini | local | remote-run → `~/.local/lib/remote-run/run-control.py` | null |
-| desk | disabled | remote-run → misma ruta; jale → `~/.local/lib/jale/pueue-control.py` | canal de escritura del desk pendiente |
+| desk | ssh | remote-run → misma ruta; jale → `~/.local/lib/jale/pueue-control.py` | null |
 
-`actions` tiene exactamente `transport`, `controllers` y `reason`. Se valida
-al cargar `hosts.json` y antes de ejecutar: sólo se admiten esas rutas fijas
-por lanzador. Un transporte local requiere al menos un controlador y razón
+El presupuesto se mide con reloj monotónico desde la entrada al manejador HTTP,
+antes de whois y de leer el cuerpo. La UI conserva **45 s desk / 15 s Mini**;
+el servidor trabaja hasta **44 s / 14 s**, dejando **1 s para entregar HTTP**.
+Whois conserva su límite de **3 s**, sin candado durante el proceso. La lectura
+del cuerpo completo tiene **5 s** como máximo (hasta 8 s desde la entrada,
+incluyendo whois), también con clientes que lo envían byte a byte.
+
+| Parte de la petición | Desk | Mini |
+| --- | --- | --- |
+| Whois fresco | ≤ 3 s | ≤ 3 s |
+| Cuerpo HTTP completo (POST) | ≤ 5 s | ≤ 5 s |
+| Admisión al diario | candado ≤ 0.5 s; espera SQLite ≤ 0.5 s | igual |
+| Transporte | `min(40, 44 − transcurrido − 1)` s | `min(10, 14 − transcurrido − 1)` s |
+| Reserva para guardar el recibo (objetivo) | 1 s | 1 s |
+| Espera HTTP por diario y transporte, desde entrada | ≤ 44 s | ≤ 14 s |
+| Margen de entrega HTTP antes del plazo UI | 1 s | 1 s |
+
+La cuenta no suma siempre todos los máximos: **whois + cuerpo + diario +
+transporte restante + reserva + entrega ≤ 45/15 s**. Por ejemplo, tras 3 s
+de whois, 5 s de cuerpo y 1 s de admisión, quedan **34 s desk / 4 s Mini**
+de transporte, 1 s de recibo y 1 s de entrega. El mínimo útil antes del
+transporte es **1 s**. El tiempo real del diario y de la validación se resta
+antes de invocar al ejecutor; sus consultas SQLite comprueban el plazo y
+sus esperas no recuperan un presupuesto completo. El plazo de intercambio
+incluye también la creación del proceso.
+
+El manejador espera al trabajador sólo hasta el límite monotónico de 44/14 s,
+contado desde la entrada, y devuelve `unknown` con la identidad si no terminó.
+Esa espera es independiente del candado y de SQLite: una apertura, escritura o
+confirmación FULL bloqueada en E/S no queda acotada por el timeout de SQLite
+ni por su callback de progreso. El trabajador conserva la intención durable,
+la exclusión y el plazo original mientras acaba; nunca recupera presupuesto
+ni lanza un cancel nuevo después del límite. La reserva de 1 s ayuda a
+completar normalmente el recibo, pero no es la garantía del plazo HTTP.
+El seguimiento usa el mismo ID. Los GET de IDs aún desconocidos en memoria
+usan como máximo 14 s; al arrancar se cargan las identidades del diario.
+
+Si no queda ese mínimo, no se llama al controlador. Con una intención ya
+confirmada se guarda `rejected/deadline`: «No se lanzó una cancelación nueva:
+se agotó el plazo. Consulta el mismo recibo». Si no se pudo entrar al diario,
+la respuesta es 503/unknown con ese mensaje: no se lanzó nada nuevo, pero
+puede existir un recibo anterior con efecto para ese ID. No se afirma que
+una acción anterior no ocurrió. Si el transporte pudo actuar, vence o no
+puede confirmarse el guardado, queda `unknown` y se consulta el mismo ID.
+La UI muestra el texto de rechazo mediante su tratamiento habitual de errores.
+
+El candado sólo protege lectura/intención/guardado del diario, nunca un
+transporte. Un registro en memoria excluye `cancel` y `status` simultáneos del
+mismo `action_id`; los GET y POST duplicados devuelven el recibo guardado
+mientras está en vuelo. Otro cuerpo sigue dando 409 y `pending_reason` sigue
+bloqueando un segundo ID de la misma corrida. El registro se libera también
+si falla el guardado; la intención durable permite reconciliar después.
+Así una consulta lenta no pisa una cancelación posterior ni un cancel pisa
+un status posterior. Desk y Mini pueden transportar en paralelo, también
+dos acciones independientes del desk. No se cambian los plazos del navegador.
+
+`actions` tiene exactamente `transport`, `controllers` y `reason`; el transporte
+`ssh` requiere además `argv`, que debe coincidir **entero** con `DESK_ARGV` de
+`accion.py`. Sólo se acepta ese canal SSH para `id: desk` con lectura `ssh`.
+Se valida al cargar `hosts.json` y antes de ejecutar: sólo se admiten las rutas
+fijas por lanzador. Un transporte habilitado requiere controladores y razón
 null; uno deshabilitado requiere una razón legible de hasta 240 caracteres.
-Sin configuración, el host queda deshabilitado. El ejecutor elige la ruta de
-esa tabla y la resuelve bajo el home del usuario Unix; la API no permite
-enviar rutas ni argv. La razón que muestra la UI viene de esta configuración,
-sin una excepción fija para el desk.
+Sin configuración, el host queda deshabilitado. La API no admite rutas ni argv.
+El desk también puede tener grupos en pausa: una corrida Queued conserva la
+consulta de capacidades de su lanzador; la pausa no implica incompatibilidad.
 
-C4 añadirá el transporte con llave/comando forzado dedicado al mismo `Executor`
-y la tabla explícita de `hosts.json`. No reutilizar la llave de lectura ni
-convertir el `argv` público en un comando recibido del cliente. C3 no instala
-canales en el desk ni cambia cuotas, horarios o el orden de la fila.
+### Canal SSH del desk e instalación manual
+
+Estos pasos los ejecuta el orquestador **después del merge**. No se ejecutan en
+las pruebas. El despachador funciona con Python 3.8+; la instantánea existente
+asume Python 3.9, y los controladores tienen contrato Python 3.9. Verificar
+Python 3.9+ en WSL al instalar el conjunto.
+
+1. Instalar instantánea/despachador con `bash fleet/rack/instalar-desk.sh` desde
+   la MacBook. Los controladores compatibles se instalan desde Hasito y Jale,
+   sin modificarlos desde este repositorio.
+2. Crear en la **Mini** una llave nueva, nunca reutilizar la de lectura:
+
+   ```bash
+   # Ejecutar sólo si la ruta nueva no existe; nunca sobrescribir otra llave.
+   test ! -e ~/.ssh/id_ed25519_pao_rack_accion
+   ssh-keygen -t ed25519 -N '' -C pao-rack-accion@mini -f ~/.ssh/id_ed25519_pao_rack_accion
+   chmod 600 ~/.ssh/id_ed25519_pao_rack_accion
+   cat ~/.ssh/id_ed25519_pao_rack_accion.pub
+   ```
+
+   Ejecutar `ssh-keygen` sólo tras el éxito del `test` anterior. No copiar la
+   privada al desk. La llave no lleva passphrase porque la usa el servicio;
+   sólo autoriza el comando forzado de esta sección.
+3. Agregar su pública como **otra línea** de
+   `C:\ProgramData\ssh\administrators_authorized_keys`, preservando las ACL de
+   SYSTEM/Administrators y la línea de lectura. Línea exacta propuesta, donde
+   `<PUBLICA_ACCION>` es sólo el bloque base64 de la nueva pública:
+
+   ```text
+   from="100.89.145.51",restrict,command="MSYS_NO_PATHCONV=1 wsl -d Ubuntu -u felix -- /usr/bin/python3 -I /home/felix/.local/bin/pao-rack-action" ssh-ed25519 <PUBLICA_ACCION> pao-rack-accion@mini
+   ```
+
+   **Activar `from=` sólo tras verificar en los logs de OpenSSH de Windows
+   que éste ve `100.89.145.51` como origen de la Mini.** Si no está verificado,
+   omitir únicamente `from="100.89.145.51",` hasta completar esa comprobación.
+   No sustituirlo a ciegas por una IP de WSL. Git bash requiere
+   `MSYS_NO_PATHCONV=1`, igual que la lectura. `restrict` impide TTY y reenvíos;
+   el comando forzado no usa `SSH_ORIGINAL_COMMAND`.
+4. Confirmar por un canal de confianza que la host key Windows del nombre
+   `felix-desktop` ya está en `~/.ssh/known_hosts` de la Mini. No usar
+   `accept-new`, ni desactivar su verificación. Instalar el panel actualizado
+   en la Mini con `bash instalar.sh`.
+
+El argv cerrado de escritura, sin comando remoto ni datos de la corrida:
+
+```text
+/usr/bin/ssh -F /dev/null -T -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o ClearAllForwardings=yes -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none -i ~/.ssh/id_ed25519_pao_rack_accion Felix@felix-desktop
+```
+
+`-F /dev/null` evita comandos/proxies configurados por el usuario y la
+configuración global; no se usa agente ni una conexión multiplexada que pudiera
+haber autenticado con la llave de lectura. SSH expande los `~` de las opciones.
+La llave de lectura y su argv permanecen independientes.
+
+El panel escribe por stdin una envoltura **interna**, cerrada y de hasta 16 KiB:
+
+```json
+{"schema":"rack-desk-action@1","launcher":"jale","request":{"schema":"rack-cancel@1","op":"cancel","ref":"job-AbCd1234","action_id":"action-0001","expected":{"task_id":77,"state":"Queued"}}}
+```
+
+El despachador valida también la petición interior por operación, tipos
+exactos, identidades y claves duplicadas; acepta sólo capabilities, cancel y
+status. El stdin tiene plazo de 5 s y límite de 16 KiB. No recibe una ruta ni
+argumentos de controlador. Su **propia tabla fija**, independiente de
+`hosts.json`, es:
+
+| Lanzador | Ruta en WSL |
+| --- | --- |
+| remote-run | `/home/felix/.local/lib/remote-run/run-control.py` |
+| jale | `/home/felix/.local/lib/jale/pueue-control.py` |
+
+Invoca `/usr/bin/python3 -I <ruta fija>`, sin argumentos adicionales ni TTY,
+con cwd `/` y un entorno nuevo: `HOME=/home/felix`, `PATH=/usr/bin:/bin`,
+`TMPDIR=/tmp`, y USER/LOGNAME calculados con la cuenta Unix efectiva. Sólo pasa
+`XDG_RUNTIME_DIR=/run/user/<uid>` si existe como directorio propiedad de esa
+cuenta. No transmite el entorno de SSH, tokens ni overrides de pruebas.
+Comparte con el ejecutor el intercambio acotado: stdout de hasta 16 KiB,
+plazo de 10 s para el controlador, terminación de su propio grupo y recogida.
+Devuelve la respuesta del controlador, verificando esquema e identidad; el
+panel conserva además su saneamiento y validación semántica antes de la UI.
+
+| Fallo propio del despachador | Salida | Respuesta |
+| --- | --- | --- |
+| Envoltura inválida, claves extra/duplicadas, tamaño, stdin vencido o argv extra | 2 | rejected / invalid_request |
+| Lanzador desconocido | 2 | rejected / unsupported |
+| Controlador ausente, capabilities | 0 | queued=false, running=false |
+| Controlador ausente, cancel nuevo | 0 | rejected / unsupported |
+| Controlador ausente, status | 0 | unknown / unsupported |
+| Interruptor apagado, cancel | 0 | rejected / unsupported, no se invoca controlador |
+| Interruptor apagado, capabilities | 0 | queued=false, running=false |
+| Plazo del controlador vencido | 4 | unknown / timeout |
+| Salida excesiva o JSON/esquema/identidad inválidos | 5 | unknown / invalid_response |
+| Controlador no arranca o termina con otro código | 6 | unknown / controller_failed |
+
+Una respuesta válida del controlador conserva su código 0 o 2. Los errores
+propios usan textos fijos sin rutas, logs ni secretos. Un fallo de transporte
+SSH, **incluida cualquier salida no cero**, se convierte en `unknown` en el
+panel, aunque el despachador haya podido responder antes de cortarse. El
+panel nunca repite automáticamente una cancelación incierta; consulta status
+con el mismo ID mediante el diario existente.
+
+El límite de transporte del desk es **40 s**, reducido por el presupuesto
+restante de la petición descrito junto a la tabla de transporte. Su reparto
+orientativo es 10 s de conexión, 10 s de arranque WSL, 10 s de controlador y
+10 s de holgura, incluida la entrada JSON; no es una medición de WSL en
+producción. Un arranque más lento deja unknown y se reconcilia. No se promete
+que la limpieza del trabajo termine dentro de esos plazos. Matar SSH local
+no garantiza matar el proceso remoto: el despachador limita su controlador.
+
+Para apagar nuevas acciones en **WSL**, sin tocar lectura ni llaves:
+
+```bash
+mkdir -p /home/felix/.local/state/pao/rack
+touch /home/felix/.local/state/pao/rack/actions.disabled
+# Reactivar:
+rm /home/felix/.local/state/pao/rack/actions.disabled
+```
+
+Se comprueba con `lstat` antes de cada cancel y capabilities. Cualquier entrada
+(archivo, directorio o enlace colgante), o error distinto de ausencia,
+apaga las acciones. Status permanece disponible
+para reconciliar acciones aceptadas, aunque pueda continuar su limpieza.
+El interruptor no revoca una acción que ya superó la comprobación. Es distinto
+del interruptor del panel en la Mini y no se copia ni borra al instalar.
+Para revocar acceso, borrar **sólo** la línea con la pública/comment de acciones
+de `administrators_authorized_keys`; la de lectura sigue funcionando. Borrar
+la de lectura tampoco revoca acciones. Conservar el diario y los recibos;
+quitar una llave no corta sesiones ni revoca una acción ya en vuelo.
+
+Este canal conserva el contrato y los controladores; el presupuesto y la
+concurrencia del panel conservan la autorización y las garantías del diario.
+No toca Pueue desde el panel, no cambia cuotas/horarios/prioridades ni permite
+comandos generales, Jale directo de Mini o lanzadores no reconocidos. La
+instalación Windows/ACL, comprobación de origen y canario de waiters/130 reales
+se verifican por el orquestador tras el merge; las pruebas locales son falsas.
 
 ### API y autorización
 
@@ -317,6 +507,45 @@ un error de red consulta el recibo; sólo un 404 autoriza el reenvío único
 del mismo `cancel`, cuerpo e ID. La fila y el
 aviso distinguen incertidumbre y falta de confirmación del fin de procesos.
 
+Sólo para el desk, el servidor comparte entre pestañas un límite por
+`action_id`: como máximo un `status` cada **2 s durante el primer minuto**
+desde la intención, y cada **30 s después**. Dentro del intervalo devuelve
+el recibo guardado. La hora del último intento se confirma en SQLite antes
+del transporte y sobrevive al reinicio. Una consulta en vuelo también excluye
+otra de esa acción. La Mini conserva sus consultas habituales. `unknown`,
+`cancelling` y `cancel_unconfirmed` siguen abiertos: el paso del tiempo o un
+`rejected` de status nunca prueban que no hubo efecto.
+
+#### Cerrar a mano un recibo sin confirmación
+
+Si SSH/WSL falló antes de crear el recibo del controlador, o la cancelación
+permanece sin confirmar, Felix o el orquestador pueden cerrar el recibo
+**en la Mini**, fuera del panel. Primero apaga nuevas acciones con el
+interruptor local indicado abajo y deja terminar los transportes en vuelo.
+Comprueba en Pueue del desk (su interfaz habitual o `pueue status`) la tarea
+exacta del recibo (`host`, lanzador, ref y `expected.task_id`): confirma con
+el lanzador que ya no está cancelándose ni tiene limpieza pendiente. Si hay
+procesos o recursos de estado incierto, conserva el recibo abierto. No basta
+con que el controlador responda not_found ni con ver Done o una salida 130.
+
+Después ejecuta, sustituyendo `action-0001` por el ID que muestra el panel:
+
+```bash
+TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -I "$HOME/.local/lib/pao-rack/accion.py" --state-dir "$HOME/.local/state/pao/rack" close-receipt action-0001
+```
+
+Con un directorio de estado personalizado usa el mismo `--state-dir` que
+el servidor. El subcomando usa el mismo candado de escritura SQLite,
+transacción y confirmación `synchronous=FULL` que el servidor, y no ejecuta
+transportes. Guarda un terminal `rejected/manually_closed`: «Recibo cerrado
+a mano tras comprobar la corrida en Pueue. No acredita una cancelación.»
+Un ID inexistente o terminal por otra causa se rechaza con salida 2;
+repetir un cierre manual devuelve el mismo recibo sin volver a escribir.
+Un transporte anterior no puede sobrescribirlo. El próximo GET muestra el
+mensaje y la UI deja de consultar; `pending_reason` deja de bloquear la
+corrida. Para otro intento usa un ID nuevo. Reactiva las acciones sólo
+después de la comprobación. No borres el diario ni recibos de los lanzadores.
+
 Para apagar acciones localmente sin reinstalar ni afectar lectura:
 
 ```bash
@@ -347,12 +576,14 @@ TMPDIR=/tmp /usr/bin/python3 tests/browser_fixture.py --port 0
 ```
 
 El último comando imprime una URL en 127.0.0.1 para abrir en un navegador.
-Ofrece una corrida sintética de la Mini y otra del desk. Tras confirmar, el
+Ofrece una corrida sintética de la Mini y dos del desk (remote-run y Jale),
+en grupos pausados. Tras confirmar, el
 controlador falso responde `cancelling` durante 7 s y luego `cancelled`/130.
 Ctrl-C cierra el servidor y borra su directorio temporal. No inicia recolector,
-no conecta a hosts y no usa 8787. El fixture genera el controlador bajo /tmp,
-en la misma ruta relativa configurada, y usa el ejecutor de producción sin
-sustituir argv. Conserva la corrida en sus instantáneas para acreditar que
+no conecta a hosts y no usa 8787. El fixture genera ambos controladores bajo /tmp y usa el ejecutor de
+producción. Su runner comprueba el argv SSH exacto y sustituye sólo la conexión
+por un shim Python; el despachador real valida la envoltura y ejecuta los
+controladores sintéticos. No se ejecuta ningún binario SSH. Conserva la corrida en sus instantáneas para acreditar que
 la fila cancelada no reaparece aunque el recolector todavía la incluya.
 
 Las pruebas son Python 3.9/biblioteca estándar, con whois, transporte, reloj y
@@ -370,7 +601,13 @@ puede añadir variables de SDK; se comprueba que ninguna variable del panel
 llega al controlador. `check_mutations.py` copia el artefacto a /tmp y
 acredita que quitar whois fresco, Origin, digest, intención unknown,
 conservación de unknown ante rechazos de status o exclusión de canceladas
-frente a instantáneas anteriores rompe las pruebas específicas;
+frente a instantáneas anteriores rompe las pruebas específicas. También
+retira la selección por tabla del desk, el interruptor, la validación del argv
+y unknown ante fallo SSH. También muta lstat, entorno/runtime, ausencia de
+controlador, admisión, mínimo/plazo restante, efecto tardío, transporte fuera
+del candado, exclusión de status/cancel, liberación tras fallo y origen del
+presupuesto HTTP; también la espera independiente de E/S, el espaciado
+del desk, la conservación del cierre manual y su fin de sondeo en la UI;
 borra las copias al salir.
 
 `tests/rack-fixture.json` conserva la instantánea realista para las pruebas de

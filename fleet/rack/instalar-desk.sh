@@ -6,3 +6,7 @@ origen=$(cd "$(dirname "$0")" && pwd)
 ssh -o BatchMode=yes -o ConnectTimeout=10 desk \
   'umask 022; mkdir -p ~/.local/bin && cat > ~/.local/bin/pao-rack-snapshot.nuevo && chmod 755 ~/.local/bin/pao-rack-snapshot.nuevo && mv ~/.local/bin/pao-rack-snapshot.nuevo ~/.local/bin/pao-rack-snapshot' \
   < "$origen/snapshot.py"
+# El despachador es autónomo: no importa archivos del cwd bajo python -I.
+ssh -o BatchMode=yes -o ConnectTimeout=10 desk \
+  'umask 022; mkdir -p ~/.local/bin && cat > ~/.local/bin/pao-rack-action.nuevo && chmod 755 ~/.local/bin/pao-rack-action.nuevo && mv ~/.local/bin/pao-rack-action.nuevo ~/.local/bin/pao-rack-action' \
+  < "$origen/desk_action.py"

@@ -338,7 +338,7 @@ function cancelReason({h,t}){
 }
 function actionRequest({h,t},op){return {schema:'rack-action@1',op,host:h.id,launcher:t.control.launcher,ref:t.control.ref,expected:{...t.control.expected}};}
 async function postAction(request){
-  const response=await fetch('/api/accion',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-Rack-Action':'1'},body:JSON.stringify(request),signal:AbortSignal.timeout(15000)});
+  const response=await fetch('/api/accion',{method:'POST',cache:'no-store',headers:{'Content-Type':'application/json','X-Rack-Action':'1'},body:JSON.stringify(request),signal:AbortSignal.timeout(request.host==='desk'?45000:15000)});
   const data=await response.json();
   if(data.schema!=='rack-action@1') throw Error('Respuesta inválida');
   return data;
@@ -409,7 +409,7 @@ async function sendCancel(key,action){
 async function pollAction(key,action){
   if(!PENDING.has(key)) return;
   try{
-    const response=await fetch('/api/accion/'+encodeURIComponent(action.request.action_id),{cache:'no-store',signal:AbortSignal.timeout(15000)});
+    const response=await fetch('/api/accion/'+encodeURIComponent(action.request.action_id),{cache:'no-store',signal:AbortSignal.timeout(action.request.host==='desk'?45000:15000)});
     const data=await response.json();
     if(response.status===404 && data.schema==='rack-action@1' && data.action_id===action.request.action_id && !action.resent){
       action.resent=true; persistActions();

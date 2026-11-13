@@ -1,4 +1,5 @@
 """Cancelación por lanzador y diario durable. Python 3.9, biblioteca estándar."""
+import importlib.util
 from contextlib import contextmanager
 import hashlib
 import json
@@ -6,12 +7,16 @@ import os
 from pathlib import Path
 import pwd
 import re
-import signal
-import selectors
+import signal  # compatibility for process-group tests
 import sqlite3
 import subprocess
 import threading
 import time
+
+# -I excludes cwd and PYTHONPATH: load only the sibling installed with the panel.
+_spec = importlib.util.spec_from_file_location('rack_desk_channel', Path(__file__).with_name('desk_action.py'))
+desk_channel = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(desk_channel)
 
 SCHEMA = 'rack-action@1'
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
@@ -24,11 +29,31 @@ ERRORS = {
     'not_found': 'No se encontró la corrida.',
     'unsupported': 'Esta corrida no confirma la cancelación.',
     'disabled': 'Las acciones están apagadas localmente.',
+    'deadline': 'No se lanzó una cancelación nueva: se agotó el plazo. Consulta el mismo recibo.',
+    'manually_closed': 'Recibo cerrado a mano tras comprobar la corrida en Pueue. No acredita una cancelación.',
     'forbidden': 'No se pudo autorizar la petición.',
 }
 OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
+DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
+             '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
+             '-o', 'IdentityAgent=none', '-o', 'ConnectTimeout=10',
+             '-o', 'StrictHostKeyChecking=yes',
+             '-o', 'UserKnownHostsFile=~/.ssh/known_hosts',
+             '-o', 'ClearAllForwardings=yes', '-o', 'PermitLocalCommand=no',
+             '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
+             '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
+DESK_TIMEOUT = 40
+# Reserve for the journal, backed by an independent HTTP wait deadline.
+RECEIPT_RESERVE = 1
+MIN_TRANSPORT = 1
+JOURNAL_WAIT = .5
+
 CONTROLLERS = {'remote-run': '~/.local/lib/remote-run/run-control.py',
                'jale': '~/.local/lib/jale/pueue-control.py'}
+
+
+def request_budget(host):
+    return 44 if host == 'desk' else 14
 
 
 def unique(pairs):
@@ -91,17 +116,19 @@ def control_data(value, task):
 
 
 def action_config(value):
-    """Only administrator-selected, contract-fixed controller paths; never argv."""
+    """Closed controller table and exact SSH argv; no configurable commands."""
     if value is None:
         return dict(transport='disabled', reason='Este host no tiene canal de escritura.', controllers={})
-    if (type(value) is not dict or set(value) != {'transport', 'reason', 'controllers'}
-            or value['transport'] not in ('local', 'disabled')
+    if (type(value) is not dict or set(value) != ({'transport', 'reason', 'controllers', 'argv'}
+                if value.get('transport') == 'ssh' else {'transport', 'reason', 'controllers'})
+            or value['transport'] not in ('local', 'ssh', 'disabled')
+            or value['transport'] == 'ssh' and value['argv'] != DESK_ARGV
             or type(value['controllers']) is not dict
             or any(k not in CONTROLLERS or v != CONTROLLERS[k] for k, v in value['controllers'].items())
             or value['reason'] is not None and (type(value['reason']) is not str
                 or not 0 < len(value['reason']) <= 240
                 or any(ord(c) < 32 or ord(c) == 127 for c in value['reason']))
-            or value['transport'] == 'local' and (not value['controllers'] or value['reason'] is not None)
+            or value['transport'] in ('local', 'ssh') and (not value['controllers'] or value['reason'] is not None)
             or value['transport'] == 'disabled' and not value['reason']):
         raise ValueError('Configuración de acciones inválida')
     return value
@@ -109,9 +136,11 @@ def action_config(value):
 
 def transport_reason(host, launcher):
     config = action_config(host.get('actions'))
-    if config['transport'] != 'local':
+    if config['transport'] == 'disabled':
         return config['reason']
-    if host.get('transport') != 'local':
+    if config['transport'] == 'ssh' and (host.get('id') != 'desk' or host.get('transport') != 'ssh'):
+        return 'El canal SSH de acciones sólo actúa sobre el desk.'
+    if config['transport'] == 'local' and host.get('transport') != 'local':
         return 'El canal local sólo actúa sobre el host donde corre el panel.'
     if launcher not in config['controllers']:
         return 'Este lanzador no tiene controlador configurado en este host.'
@@ -120,65 +149,28 @@ def transport_reason(host, launcher):
 
 class Executor:
     """One transport seam, selected by host configuration; no caller-supplied argv."""
-    def __init__(self, runner=subprocess.Popen, home=None, timeout=10):
+    def __init__(self, runner=subprocess.Popen, home=None, timeout=None):
         self.runner, self.timeout = runner, timeout
         self.home = Path(home or pwd.getpwuid(os.getuid()).pw_dir)
 
-    def __call__(self, host, launcher, request):
+    def __call__(self, host, launcher, request, timeout=None):
         if transport_reason(host, launcher):
             raise ValueError('Transporte deshabilitado')
         config = action_config(host.get('actions'))
-        controller = self.home / config['controllers'][launcher][2:]
-        process = self.runner(['/usr/bin/python3', '-I', str(controller)],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-            env={'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'},
-            cwd='/', start_new_session=True)
-        output = bytearray()
-        deadline = time.monotonic() + self.timeout
-        try:
-            # Drain stdout while running; never spool an unbounded response to disk.
-            # Nonblocking stdin also keeps a controller that never reads within the deadline.
-            raw = memoryview(json.dumps(request).encode())
-            with selectors.DefaultSelector() as selector:
-                for stream, event in ((process.stdin, selectors.EVENT_WRITE),
-                                      (process.stdout, selectors.EVENT_READ)):
-                    os.set_blocking(stream.fileno(), False)
-                    selector.register(stream, event)
-                while selector.get_map():
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        raise subprocess.TimeoutExpired(process.args, self.timeout)
-                    for key, event in selector.select(remaining):
-                        if key.fileobj is process.stdin:
-                            try:
-                                raw = raw[os.write(process.stdin.fileno(), raw):]
-                            except BrokenPipeError:
-                                raw = raw[:0]
-                            if not raw:
-                                selector.unregister(process.stdin)
-                                process.stdin.close()
-                        else:
-                            chunk = os.read(process.stdout.fileno(), min(4096, 16385 - len(output)))
-                            output.extend(chunk)
-                            if len(output) > 16384:
-                                raise ValueError('Respuesta demasiado grande')
-                            if not chunk:
-                                selector.unregister(process.stdout)
-                process.wait(timeout=max(0, deadline - time.monotonic()))
-        except BaseException:
-            # Only the session we created, including descendants holding stdout open.
-            try:
-                os.killpg(process.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            process.wait()
-            raise
-        finally:
-            process.stdin.close()
-            process.stdout.close()
-        if process.returncode not in (0, 2):
+        remote = config['transport'] == 'ssh'
+        limit = self.timeout if self.timeout is not None else DESK_TIMEOUT if remote else 10
+        timeout = limit if timeout is None else min(limit, timeout)
+        if remote:
+            argv = list(config['argv'])
+            request = dict(schema='rack-desk-action@1', launcher=launcher, request=request)
+        else:
+            controller = self.home / config['controllers'][launcher][2:]
+            argv = ['/usr/bin/python3', '-I', str(controller)]
+        code, response = desk_channel.exchange(argv, request, self.runner,
+            {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}, timeout)
+        if code not in ((0,) if remote else (0, 2)):
             raise ValueError('Respuesta inválida')
-        return decode(output)
+        return response
 
 
 def sanitize(request, response, op):
@@ -215,28 +207,101 @@ def sanitize(request, response, op):
 
 
 class Actions:
-    def __init__(self, hosts, directory, read, executor=None, clock=time.time):
+    def __init__(self, hosts, directory, read, executor=None, clock=time.time, timer=time.monotonic):
         self.hosts = {h['id']: h for h in hosts}
         self.directory, self.read, self.executor, self.clock = Path(directory), read, executor or Executor(), clock
         self.directory.mkdir(parents=True, exist_ok=True)
         self.path = self.directory / 'actions.sqlite3'
         self.lock = threading.RLock()
+        self.timer = timer
+        self.inflight = {}
+        # Independent of the journal lock: HTTP must not wait on filesystem I/O.
+        self.http_lock = threading.Lock()
+        self.identities = {}
+        self.workers = set()
         # The authoritative index is never rotated. Full SQLite commit precedes transport.
         with self.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS actions (action_id TEXT PRIMARY KEY COLLATE BINARY, '
                        'digest TEXT NOT NULL, request TEXT NOT NULL, response TEXT NOT NULL, '
                        'created REAL NOT NULL, updated REAL NOT NULL)')
+            if 'last_status' not in {row[1] for row in db.execute('PRAGMA table_info(actions)')}:
+                db.execute('ALTER TABLE actions ADD COLUMN last_status REAL')
+            self.identities = {key: json.loads(body) for key, body in
+                               db.execute('SELECT action_id,request FROM actions')}
         self.path.chmod(0o600)
 
+    def wait(self, event, timeout):
+        return event.wait(timeout)
+
+    def respond(self, operation, value, started=None):
+        """Bound HTTP waiting, including a blocked fsync or transport spawn.
+
+        The worker retains its original deadline and action reservation. A late
+        intent commit must still pass call()'s budget check before any effect.
+        """
+        started = self.timer() if started is None else started
+        if operation == 'post':
+            validate(value)
+            identity = dict(value)
+            if value['op'] == 'cancel':
+                with self.http_lock:
+                    self.identities.setdefault(value['action_id'], identity)
+        else:
+            if not ACTION.fullmatch(value):
+                raise ValueError()
+            with self.http_lock:
+                identity = self.identities.get(value, dict(action_id=value, op='cancel'))
+        # An unknown GET uses the shorter budget until its journal identity is known.
+        deadline = started + request_budget(identity.get('host'))
+        done, answers, errors = threading.Event(), [], []
+        def run():
+            try:
+                answers.append(getattr(self, operation)(value, started=started))
+            except Exception as error:
+                errors.append(error)
+            finally:
+                with self.http_lock:
+                    self.workers.discard(threading.current_thread())
+                done.set()
+        worker = threading.Thread(target=run, name='rack-action', daemon=True)
+        with self.http_lock:
+            self.workers.add(worker)
+        worker.start()
+        if not self.wait(done, max(0, deadline - self.timer())):
+            return 200, result(identity, 'unknown')
+        if errors:
+            raise errors[0]
+        return answers[0]
+
     @contextmanager
-    def connect(self):
-        db = sqlite3.connect(str(self.path), timeout=5)
-        db.execute('PRAGMA synchronous=FULL')
+    def connect(self, deadline=None):
+        wait = JOURNAL_WAIT if deadline is None else min(JOURNAL_WAIT, max(0, deadline - self.timer()))
+        db = sqlite3.connect(str(self.path), timeout=wait)
+        if deadline is not None:
+            db.set_progress_handler(lambda: int(self.timer() >= deadline), 100)
         try:
+            db.execute('PRAGMA synchronous=FULL')
             with db:
                 yield db
         finally:
             db.close()
+
+    @contextmanager
+    def journal(self, deadline):
+        # Admission is bounded even if another request or the filesystem stalls.
+        wait = min(JOURNAL_WAIT, max(0, deadline - self.timer()))
+        if not self.lock.acquire(timeout=wait):
+            raise TimeoutError()
+        try:
+            if self.timer() >= deadline:
+                raise TimeoutError()
+            yield
+        finally:
+            self.lock.release()
+
+    def active(self, action_id):
+        done = self.inflight.get(action_id)
+        return done is not None and not done.is_set()
 
     def disabled(self):
         return (self.directory / 'actions.disabled').exists()
@@ -259,23 +324,56 @@ class Actions:
             return control['reason'] if control and control['reason'] else ERRORS['stale_state']
         return None
 
-    def call(self, request, op):
+    def call(self, request, op, deadline):
         wire = dict(schema='rack-cancel@1', op=op, ref=request['ref'])
         if op != 'capabilities':
             wire['action_id'] = request['action_id']
         if op == 'cancel':
             wire['expected'] = request['expected']
+        remaining = deadline - self.timer() - RECEIPT_RESERVE
+        if remaining < MIN_TRANSPORT:
+            return result(request, 'rejected', 'deadline') if op != 'status' else result(request, 'unknown')
+        timeout = min(DESK_TIMEOUT if request['host'] == 'desk' else 10, remaining)
         try:
-            return sanitize(request, self.executor(self.hosts[request['host']], request['launcher'], wire), op)
+            answer = sanitize(request, self.executor(self.hosts[request['host']], request['launcher'], wire,
+                                                     timeout=timeout), op)
+            return answer if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')
         except Exception:
             # This is the controller boundary, after client validation. Any failure
             # reading/decoding/validating its answer leaves the effect uncertain.
             return result(request, 'unknown')
 
-    def save(self, request, response):
-        with self.connect() as db:
+    def save(self, request, response, deadline=None):
+        with self.connect(deadline) as db:
+            # Share the SQLite writer lock with the manual CLI. Never overwrite
+            # its terminal result with a transport that was already in flight.
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT response FROM actions WHERE action_id=?',
+                             (request['action_id'],)).fetchone()
+            current = json.loads(row[0]) if row else None
+            if current and (current.get('error') or {}).get('code') == 'manually_closed':
+                return current
             db.execute('UPDATE actions SET response=?,updated=? WHERE action_id=?',
                        (json.dumps(response), self.clock(), request['action_id']))
+        return response
+
+    def close_receipt(self, action_id):
+        if not ACTION.fullmatch(action_id):
+            raise ValueError('ID inválido.')
+        with self.lock, self.connect() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT request,response FROM actions WHERE action_id=?', (action_id,)).fetchone()
+            if row is None:
+                raise ValueError('No existe ese recibo.')
+            request, response = map(json.loads, row)
+            if response['status'] not in OPEN:
+                if (response.get('error') or {}).get('code') == 'manually_closed':
+                    return response  # Repeating this exact administrative operation is harmless.
+                raise ValueError('El recibo ya es terminal.')
+            response = result(request, 'rejected', 'manually_closed')
+            db.execute('UPDATE actions SET response=?,updated=? WHERE action_id=?',
+                       (json.dumps(response), self.clock(), action_id))
+        return response
 
     def pending_reason(self, db, request):
         for body, answer in db.execute('SELECT request,response FROM actions WHERE action_id != ?',
@@ -285,56 +383,116 @@ class Actions:
                 return 'Esta corrida tiene una cancelación pendiente (' + previous['action_id'] + '); consulta su recibo.'
         return None
 
-    def post(self, request):
-        validate(request)
-        with self.lock:
-            if request['op'] == 'capabilities':
-                with self.connect() as db:
-                    reason = ERRORS['disabled'] if self.disabled() else self.pending_reason(db, request) or self.eligible(request)
-                if reason:
-                    return 200, result(request, 'rejected', 'unsupported', reason=reason)
-                return 200, self.call(request, 'capabilities')
-            body = json.dumps(request, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
-            digest = hashlib.sha256(body.encode()).hexdigest()
-            with self.connect() as db:
-                db.execute('BEGIN IMMEDIATE')
-                row = db.execute('SELECT digest,response FROM actions WHERE action_id=?', (request['action_id'],)).fetchone()
-                if row:
-                    if row[0] != digest:
-                        return 409, result(request, 'rejected', 'idempotency_conflict')
-                    return 200, json.loads(row[1])
-                intent = result(request, 'unknown')
-                db.execute('INSERT INTO actions VALUES (?,?,?,?,?,?)',
-                           (request['action_id'], digest, body, json.dumps(intent), self.clock(), self.clock()))
-                # Rejections are bound too: a valid authorized ID is never reusable
-                # with another body, even if this first attempt had no effect.
-                disabled = self.disabled()
-                pending = self.pending_reason(db, request)
-                reason = ERRORS['disabled'] if disabled else pending or self.eligible(request)
-                if reason:
-                    code = 'disabled' if disabled else 'idempotency_conflict' if pending else 'stale_state' if reason == ERRORS['stale_state'] else 'unsupported'
-                    rejected = result(request, 'rejected', code, reason=reason)
-                    db.execute('UPDATE actions SET response=? WHERE action_id=?',
-                               (json.dumps(rejected), request['action_id']))
-                    return 403 if disabled else 409, rejected
-            response = self.call(request, 'cancel')
-            self.save(request, response)
+    def complete(self, request, op, done, deadline):
+        try:
+            response = self.call(request, op, deadline)
+            if op == 'status' and response['status'] == 'rejected':
+                response = result(request, 'unknown')
+            try:
+                with self.journal(deadline):
+                    response = self.save(request, response, deadline)
+                    self.inflight.pop(request['action_id'], None)
+            except TimeoutError:
+                # The committed intent still owns this ID and blocks a second cancel.
+                return 200, result(request, 'unknown')
             return 200, response
+        finally:
+            # Event.set needs no journal lock. A failed commit can be reconciled by GET.
+            done.set()
 
-    def get(self, action_id):
+    def post(self, request, started=None):
+        started = self.timer() if started is None else started
+        validate(request)
+        if request['op'] == 'cancel':
+            with self.http_lock:
+                self.identities.setdefault(request['action_id'], dict(request))
+        deadline = started + request_budget(request['host'])
+        try:
+            with self.journal(deadline - RECEIPT_RESERVE):
+                if request['op'] == 'capabilities':
+                    with self.connect(deadline) as db:
+                        reason = ERRORS['disabled'] if self.disabled() else self.pending_reason(db, request) or self.eligible(request)
+                    if reason:
+                        return 200, result(request, 'rejected', 'unsupported', reason=reason)
+                else:
+                    body = json.dumps(request, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+                    digest = hashlib.sha256(body.encode()).hexdigest()
+                    with self.connect(deadline) as db:
+                        db.execute('BEGIN IMMEDIATE')
+                        row = db.execute('SELECT digest,response FROM actions WHERE action_id=?', (request['action_id'],)).fetchone()
+                        if row:
+                            if row[0] != digest:
+                                return 409, result(request, 'rejected', 'idempotency_conflict')
+                            return 200, json.loads(row[1])
+                        intent = result(request, 'unknown')
+                        db.execute('INSERT INTO actions (action_id,digest,request,response,created,updated) VALUES (?,?,?,?,?,?)',
+                                   (request['action_id'], digest, body, json.dumps(intent), self.clock(), self.clock()))
+                        # Rejections also bind the ID. No transport before this commit.
+                        disabled = self.disabled()
+                        pending = self.pending_reason(db, request)
+                        reason = ERRORS['disabled'] if disabled else pending or self.eligible(request)
+                        if reason:
+                            code = 'disabled' if disabled else 'idempotency_conflict' if pending else 'stale_state' if reason == ERRORS['stale_state'] else 'unsupported'
+                            rejected = result(request, 'rejected', code, reason=reason)
+                            db.execute('UPDATE actions SET response=? WHERE action_id=?',
+                                       (json.dumps(rejected), request['action_id']))
+                            return 403 if disabled else 409, rejected
+                    done = threading.Event()
+                    self.inflight[request['action_id']] = done
+        except TimeoutError:
+            # No new transport; the existing ID may already have an effect/receipt.
+            return 503, result(request, 'unknown', 'deadline')
+        if request['op'] == 'capabilities':
+            return 200, self.call(request, 'capabilities', deadline)
+        return self.complete(request, 'cancel', done, deadline)
+
+    def get(self, action_id, started=None):
+        started = self.timer() if started is None else started
         if not ACTION.fullmatch(action_id):
             raise ValueError()
-        with self.lock:
-            with self.connect() as db:
-                row = db.execute('SELECT request,response FROM actions WHERE action_id=?', (action_id,)).fetchone()
-            if row is None:
-                # A missing intent permits retrying only the exact same body and ID.
-                return 404, result(dict(action_id=action_id, op='cancel'), 'unknown')
-            request, response = map(json.loads, row)
-            if response['status'] in OPEN:
-                response = self.call(request, 'status')
-                # No status rejection proves that an accepted action had no effect.
-                if response['status'] == 'rejected':
-                    response = result(request, 'unknown')
-                self.save(request, response)
-            return 200, response
+        identity = dict(action_id=action_id, op='cancel')
+        try:
+            # Host comes from the journal, never from a GET parameter. Admission
+            # itself is capped at JOURNAL_WAIT, even before that host is known.
+            with self.journal(started + request_budget('desk') - RECEIPT_RESERVE):
+                with self.connect(started + request_budget('desk')) as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    row = db.execute('SELECT request,response,created,last_status FROM actions WHERE action_id=?', (action_id,)).fetchone()
+                    if row is None:
+                        return 404, result(identity, 'unknown')
+                    request, response = map(json.loads, row[:2])
+                    if response['status'] not in OPEN or self.active(action_id):
+                        return 200, response
+                    if request['host'] == 'desk':
+                        now = self.clock()
+                        interval = 2 if now - row[2] < 60 else 30
+                        if row[3] is not None and now - row[3] < interval:
+                            return 200, response
+                        db.execute('UPDATE actions SET last_status=? WHERE action_id=?', (now, action_id))
+                done = threading.Event()
+                self.inflight[action_id] = done
+        except TimeoutError:
+            return 503, result(identity, 'unknown')
+        return self.complete(request, 'status', done, started + request_budget(request['host']))
+
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='Administración local del diario del rack.')
+    parser.add_argument('--state-dir', type=Path, default=Path.home() / '.local/state/pao/rack')
+    commands = parser.add_subparsers(dest='command', required=True)
+    close = commands.add_parser('close-receipt', help='Cerrar un recibo tras comprobar la corrida en Pueue.')
+    close.add_argument('action_id')
+    args = parser.parse_args()
+    if not (args.state_dir / 'actions.sqlite3').is_file():
+        parser.exit(2, 'No existe el diario de acciones.\n')
+    try:
+        actions = Actions([], args.state_dir, lambda: None)
+        response = actions.close_receipt(args.action_id)
+    except (ValueError, OSError, sqlite3.Error) as error:
+        parser.exit(2, str(error) + '\n')
+    print(json.dumps(response, ensure_ascii=False))
+
+
+if __name__ == '__main__':
+    main()
