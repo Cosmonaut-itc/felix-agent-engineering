@@ -34,11 +34,13 @@ sustituyas. Esa ronda no da APTO de consejo. La puerta del nivel sigue
    Checks: <comando y resultado; los que faltan o ya fallaban>
    Diff: git diff <base> [-- <rutas>]; lee también los archivos sin seguimiento.
    Registro: <id, estado y evidencia de cada hallazgo previo> (desde la ronda 2)
-   Reporta sólo critical y warning. Cada uno trae el comando que corriste,
-   la salida que imprimió y la salida que exige el objetivo.
+   Clase: <matriz y definiciones de **Clase**>
+   Reporta critical, warning y nits de gravedad alta. Cada critical o
+   warning trae el comando que corriste, la salida que imprimió y la salida
+   que exige el objetivo.
    VEREDICTO: APTO o NO APTO
    NOTA: <1 a 10>
-   <id> [critical|warning] <archivo>:<línea> <hallazgo>. Arreglo: <propuesta>
+   <id> [critical|warning|nit] <archivo>:<línea> <hallazgo>. Probabilidad: <alta|media|baja>. Gravedad: <alta|media|baja>. Disparador: <qué lo produce>. Arreglo: <propuesta>
    ```
 
 3. Veta los hallazgos con **Prueba** y atiéndelos con **Hallazgos**. Un

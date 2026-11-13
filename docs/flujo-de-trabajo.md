@@ -101,8 +101,12 @@ tocan CI, dependencias o la gobernanza de agentes.
 | Diseño disputado | Alto riesgo, o dos candidatos empatados. | `arena` con opus-5.5 y gpt-6.1-sol, juzgado por astra, y dos implementaciones completas. |
 | Consejo | Sólo cuando pides «consejo», para un cambio o una decisión. | [Consejo](../skills/felix-mode/references/consejo.md): gpt-6.1-sol y opus-5.5 en `high`, y gpt-6-astra en `low`, con nota por ronda en el PR. |
 
-Los revisores reportan sólo critical y warning. Cada uno trae el comando
-que lo prueba y su salida. El
+Cada hallazgo trae su probabilidad, su gravedad y el disparador real que
+lo produce, y una matriz decide si es critical, warning o nit. Lo
+improbable de gravedad media o baja es nit y no bloquea. Lo grave e
+improbable bloquea en alto riesgo y en un cambio normal queda como riesgo
+asumido, con una línea en el cuerpo del PR. Cada critical o warning trae el
+comando que lo prueba y su salida. El
 orquestador vuelve a correr ese comando y sólo deja abierto el hallazgo que
 reproduce. Si no puede correr ningún revisor independiente, la puerta sigue
 cerrada. La lectura propia del orquestador no cuenta como review.
