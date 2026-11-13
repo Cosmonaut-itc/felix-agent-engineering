@@ -40,7 +40,9 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    el puerto 8788. También aborta si no puede consultar su configuración.
    Resuelve el dueño mediante `status --json`: `Self.UserID` →
    `User[<id>].LoginName`. Copia `snapshot.py`, `serve.py`, `accion.py`, `index.html` y `hosts.json` a
-   `~/.local/lib/pao-rack/` y carga `com.cosmonaut.pao-rack` con KeepAlive.
+   `~/.local/lib/pao-rack/` y carga `com.cosmonaut.pao-rack` con KeepAlive y
+   `ProcessType` `Interactive`. Sin él, launchd limita al agente: con la Mini
+   cargada, `whois` pasa de 3 s y el dueño recibe 403.
    El puerto es **8788**, fijado en `puerto=` de `instalar.sh`; en la Mini
    el 8787 ya lo usa otro servicio. El Funnel existente en 10000 no se modifica.
 
