@@ -212,7 +212,7 @@ que demuestra:
   warning de probabilidad baja, muestra las líneas que causan el daño
   cuando ocurre el disparador, sin reproducirlo. En el
   veto vuelves a correr cada comando. Un critical o warning sin comando, o
-  cuyo comando no reproduce el fallo, no queda abierto.
+  cuyo comando no muestra lo que el hallazgo afirma, no queda abierto.
 - **Clase.** El brief de todo revisor copia esta matriz y sus
   definiciones, y pide en cada hallazgo, también en un NO APTO,
   `Probabilidad`, `Gravedad` y el disparador: el llamador, la entrada o el
@@ -241,10 +241,10 @@ que demuestra:
   una molestia sin efecto en datos ni resultados. El revisor da APTO
   cuando no queda critical ni warning. En el veto confirmas el disparador
   además del comando. Si no lo encuentras en el código ni en los datos, la
-  probabilidad es baja. Un warning que el veto baja a nit queda en el
-  registro como `rebatido`, con la clase que traía y la búsqueda que
+  probabilidad es baja. Un critical o warning que el veto baja a nit queda
+  en el registro como `rebatido`, con la clase que traía y la búsqueda que
   hiciste como evidencia. El revisor delta lo reabre sólo con la cita que
-  faltaba. Un critical que el veto baja a nit queda `asumido`.
+  faltaba. Si conserva gravedad alta en nivel normal, queda `asumido`.
 - **Rondas.** La ronda 1 es completa, y cada revisor del nivel recibe el
   diff completo. Las siguientes siguen **Ronda delta**. Una review converge
   cuando cada ronda trae menos hallazgos y ninguno abre un caso nuevo en
