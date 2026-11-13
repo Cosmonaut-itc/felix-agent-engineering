@@ -1,4 +1,6 @@
 # tipo fuente destino (o nombre)
+# upstream: directorio de vendor, repo y seguimiento (tags = último release semver, head = rama por defecto)
+# ref: skill copiada a vendor para consulta por ruta, sin instalar
 file docs/orchestration.md ~/.agents/docs/orchestration.md
 file docs/agent-routing.md ~/.agents/docs/agent-routing.md
 file docs/native-subagents.md ~/.agents/docs/native-subagents.md
@@ -14,6 +16,7 @@ file configs/claude/hooks/duplicate-session-guard ~/.claude/hooks/duplicate-sess
 skill skills/felix-mode felix-mode
 skill skills/android-qa android-qa
 skill skills/launch-qa launch-qa
+upstream mattpocock https://github.com/mattpocock/skills tags
 skill vendor/mattpocock/ask-matt ask-matt
 skill vendor/mattpocock/codebase-design codebase-design
 skill vendor/mattpocock/domain-modeling domain-modeling

@@ -36,8 +36,8 @@ contains() {
 }
 
 load_manifest() {
-    local mode=${1:-full} line kind src target market extra n=0 key dest
-    local keys=() names=() retired_names=()
+    local mode=${1:-full} line kind src target market extra n=0 key dest vendor
+    local keys=() names=() retired_names=() vendors=() upstreams=()
     [ -f "$PAO_MANIFEST" ] || { fail "manifest ausente: $PAO_MANIFEST"; return 1; }
     while IFS= read -r line || [ -n "$line" ]; do
         n=$((n + 1))
@@ -55,13 +55,26 @@ load_manifest() {
                 dest=$HOME/${target#\~/}
                 key=dest:$dest
                 ;;
-            skill)
-                safe_relative "$src" && valid_name "$target" && [ -z "$market$extra" ] || { fail "manifest:$n: skill inválida"; return 1; }
-                if [ "$mode" = full ] || [[ $src != vendor/mattpocock/* ]]; then
+            skill|ref)
+                safe_relative "$src" && valid_name "$target" && [ -z "$market$extra" ] || { fail "manifest:$n: $kind inválida"; return 1; }
+                if [[ $src = vendor/* ]]; then
+                    vendor=${src#vendor/} vendor=${vendor%%/*}
+                    valid_name "$vendor" && [ "$src" = "vendor/$vendor/$target" ] || { fail "manifest:$n: fuente vendor inválida: $src"; return 1; }
+                    vendors[${#vendors[@]}]=$vendor
+                elif [ "$kind" = ref ]; then
+                    fail "manifest:$n: ref fuera de vendor: $src"; return 1
+                fi
+                if [ "$mode" = full ] || [[ $src != vendor/* ]]; then
                     [ -f "$PAO_ROOT/$src/SKILL.md" ] && [ "$(skill_name "$PAO_ROOT/$src/SKILL.md")" = "$target" ] || { fail "manifest:$n: SKILL.md/name inválido: $src"; return 1; }
                 fi
-                key=skill:$target
-                names[${#names[@]}]=$target
+                contains "source:$src" "${keys[@]}" && { fail "manifest:$n: fuente duplicada $src"; return 1; }
+                keys[${#keys[@]}]=source:$src
+                if [ "$kind" = skill ]; then key=skill:$target; names[${#names[@]}]=$target; else key=ref:$src; fi
+                ;;
+            upstream)
+                valid_name "$src" && [[ $target =~ ^(https|file):// ]] && [[ $market = tags || $market = head ]] && [ -z "$extra" ] || { fail "manifest:$n: upstream inválido"; return 1; }
+                key=upstream:$src
+                upstreams[${#upstreams[@]}]=$src
                 ;;
             retire)
                 valid_name "$src" && [ -z "$target$market$extra" ] || { fail "manifest:$n: retire inválido"; return 1; }
@@ -95,14 +108,17 @@ load_manifest() {
     for src in "${retired_names[@]}"; do
         contains "$src" "${names[@]}" && { fail "skill declarada y retirada: $src"; return 1; }
     done
+    for vendor in "${vendors[@]}"; do
+        contains "$vendor" "${upstreams[@]}" || { fail "vendor/$vendor no tiene fila upstream"; return 1; }
+    done
     return 0
 }
 
 check() {
     load_manifest || return 1
     "$PAO_ROOT/skills/felix-mode/scripts/pstack-refs" --registry-only --root "$PAO_ROOT" || return 1
-    printf 'ok: manifest válido (%s files, %s skills, %s retire, %s plugins)\n' \
-        "$(count_type file)" "$(count_type skill)" "$(count_type retire)" "$(count_type plugin)"
+    printf 'ok: manifest válido (%s files, %s skills, %s refs, %s upstreams, %s retire, %s plugins)\n' \
+        "$(count_type file)" "$(count_type skill)" "$(count_type ref)" "$(count_type upstream)" "$(count_type retire)" "$(count_type plugin)"
 }
 
 count_type() {
@@ -552,12 +568,12 @@ uninstall() {
     printf 'Desinstalado. Respaldos conservados en %s/backups/\n' "$STATE"
 }
 
-# Invoked by vendor_sync's EXIT trap.
+# Invoked by sync_upstream's EXIT trap.
 # shellcheck disable=SC2329
 vendor_cleanup() {
-    local tmp=$1 stage=$2
-    if [ -n "$stage" ] && [ -d "$stage/previous" ] && [ ! -e "$PAO_ROOT/vendor/mattpocock" ]; then
-        if ! mv "$stage/previous" "$PAO_ROOT/vendor/mattpocock"; then
+    local dest=$1 tmp=$2 stage=$3
+    if [ -n "$stage" ] && [ -d "$stage/previous" ] && [ ! -e "$dest" ]; then
+        if ! mv "$stage/previous" "$dest"; then
             fail "respaldo vendor conservado en $stage/previous"
             rm -rf "$tmp"
             return 1
@@ -567,49 +583,70 @@ vendor_cleanup() {
     [ -z "$stage" ] || rm -rf "$stage"
 }
 
-vendor_sync() (
-    local repo=https://github.com/mattpocock/skills tag commit tmp i name src count old stage=''
-    load_manifest vendor || return 1
-    local local_changes
-    local_changes=$(git -C "$PAO_ROOT" status --porcelain --ignored --untracked-files=all -- vendor/mattpocock) || { fail 'no se pudo leer git status de vendor'; return 1; }
+upstream_version() {
+    local version
+    version=$(sed -n 's/^tag=//p' "$1" 2>/dev/null)
+    [ -n "$version" ] || version=$(sed -n 's/^commit=//p' "$1" 2>/dev/null | cut -c1-12)
+    printf '%s' "$version"
+}
+
+# A tags upstream follows its highest semver release; a head upstream follows its default branch.
+sync_upstream() (
+    local dir=$1 repo=$2 track=$3 dest=$PAO_ROOT/vendor/$1 version commit tmp i name src count old stage='' local_changes
+    local_changes=$(git -C "$PAO_ROOT" status --porcelain --ignored --untracked-files=all -- "vendor/$dir") || { fail 'no se pudo leer git status de vendor'; return 1; }
     if [ -n "$local_changes" ]; then
-        fail 'vendor/mattpocock tiene cambios locales; vendor-sync no los pisa'
+        fail "vendor/$dir tiene cambios locales; vendor-sync no los pisa"
         return 1
     fi
     tmp=$(mktemp -d "${TMPDIR:-/tmp}/pao-vendor.XXXXXX") || return 1
-    trap 'vendor_cleanup "$tmp" "$stage"' EXIT
+    trap 'vendor_cleanup "$dest" "$tmp" "$stage"' EXIT
     trap 'exit 130' INT
     trap 'exit 143' TERM
-    git ls-remote --tags --refs "$repo" > "$tmp/tags" || return 1
-    tag=$(awk '{sub(/^refs\/tags\//, "", $2); if ($2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) print $2}' "$tmp/tags" | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)
-    [ -n "$tag" ] || { fail 'no hay tags semver'; return 1; }
-    if ! git -c advice.detachedHead=false clone --quiet --depth 1 --branch "$tag" "$repo" "$tmp/repo" > "$tmp/clone.log" 2>&1; then cat "$tmp/clone.log" >&2; return 1; fi
+    if [ "$track" = tags ]; then
+        git ls-remote --tags --refs "$repo" > "$tmp/tags" || return 1
+        version=$(awk '{sub(/^refs\/tags\//, "", $2); if ($2 ~ /^v[0-9]+\.[0-9]+\.[0-9]+$/) print $2}' "$tmp/tags" | sort -t. -k1.2,1n -k2,2n -k3,3n | tail -n 1)
+        [ -n "$version" ] || { fail "$dir: no hay tags semver"; return 1; }
+        set -- --branch "$version"
+    else
+        set --
+    fi
+    if ! git -c advice.detachedHead=false -c core.autocrlf=false clone --quiet --depth 1 "$@" "$repo" "$tmp/repo" > "$tmp/clone.log" 2>&1; then cat "$tmp/clone.log" >&2; return 1; fi
     commit=$(git -C "$tmp/repo" rev-parse HEAD) || return 1
+    [ "$track" = tags ] || version=$(printf '%s' "$commit" | cut -c1-12)
     mkdir "$tmp/vendor" || return 1
     for ((i=0; i<${#TYPES[@]}; i++)); do
-        [ "${TYPES[$i]}" = skill ] && [[ ${SOURCES[$i]} = vendor/mattpocock/* ]] || continue
+        [[ ${TYPES[$i]} = skill || ${TYPES[$i]} = ref ]] && [[ ${SOURCES[$i]} = vendor/$dir/* ]] || continue
         name=${TARGETS[$i]}
-        [ "${SOURCES[$i]}" = "vendor/mattpocock/$name" ] || { fail "fuente vendor inválida: ${SOURCES[$i]}"; return 1; }
         count=0 src=
-        for src in "$tmp/repo/skills"/*/"$name"; do
+        for src in "$tmp/repo/skills/$name" "$tmp/repo/skills"/*/"$name"; do
             [ -d "$src" ] || continue
             count=$((count + 1))
-            [ -f "$src/SKILL.md" ] && [ "$(skill_name "$src/SKILL.md")" = "$name" ] || { fail "SKILL.md/name upstream inválido: $name"; return 1; }
+            [ -f "$src/SKILL.md" ] && [ "$(skill_name "$src/SKILL.md")" = "$name" ] || { fail "$dir: SKILL.md/name upstream inválido: $name"; return 1; }
             cp -R "$src" "$tmp/vendor/$name" || return 1
         done
-        [ "$count" = 1 ] || { fail "$name: se esperaba una coincidencia, hay $count"; return 1; }
+        [ "$count" = 1 ] || { fail "$dir/$name: se esperaba una coincidencia, hay $count"; return 1; }
     done
     cp "$tmp/repo/LICENSE" "$tmp/vendor/LICENSE" || return 1
-    printf 'repo=%s\ntag=%s\ncommit=%s\n' "$repo" "$tag" "$commit" > "$tmp/vendor/UPSTREAM"
-    if [ -d "$PAO_ROOT/vendor/mattpocock" ] && diff -qr "$PAO_ROOT/vendor/mattpocock" "$tmp/vendor" >/dev/null; then printf 'unchanged\n'; return; fi
-    old=$(sed -n 's/^tag=//p' "$PAO_ROOT/vendor/mattpocock/UPSTREAM" 2>/dev/null)
+    { printf 'repo=%s\n' "$repo"; [ "$track" = head ] || printf 'tag=%s\n' "$version"; printf 'commit=%s\n' "$commit"; } > "$tmp/vendor/UPSTREAM"
+    if [ -d "$dest" ] && diff -qr "$dest" "$tmp/vendor" >/dev/null; then printf '%s unchanged\n' "$dir"; return; fi
+    old=$(upstream_version "$dest/UPSTREAM")
     mkdir -p "$PAO_ROOT/vendor" || return 1
-    stage=$(mktemp -d "$PAO_ROOT/vendor/.mattpocock.XXXXXX") || return 1
+    stage=$(mktemp -d "$PAO_ROOT/vendor/.$dir.XXXXXX") || return 1
     cp -R "$tmp/vendor" "$stage/new" || return 1
-    if [ -e "$PAO_ROOT/vendor/mattpocock" ]; then mv "$PAO_ROOT/vendor/mattpocock" "$stage/previous" || return 1; fi
-    mv "$stage/new" "$PAO_ROOT/vendor/mattpocock" || return 1
-    printf 'changed %s -> %s\n' "${old:-none}" "$tag"
+    if [ -e "$dest" ]; then mv "$dest" "$stage/previous" || return 1; fi
+    mv "$stage/new" "$dest" || return 1
+    printf '%s changed %s -> %s\n' "$dir" "${old:-none}" "$version"
 )
+
+vendor_sync() {
+    local i failed=0
+    load_manifest vendor || return 1
+    for ((i=0; i<${#TYPES[@]}; i++)); do
+        [ "${TYPES[$i]}" = upstream ] || continue
+        sync_upstream "${SOURCES[$i]}" "${TARGETS[$i]}" "${MARKETS[$i]}" || failed=1
+    done
+    return "$failed"
+}
 
 main() {
     # Task Scheduler starts Git Bash without /usr/bin in PATH; env restores the full PATH later.
