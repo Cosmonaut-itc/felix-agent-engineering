@@ -57,6 +57,14 @@ con admisión del repositorio (`scripts/mini/run.sh --entorno desk` en Hasito,
 admisión sale con 75, va a la Mac Mini. Lo demás corre en la Mini, igual que lo
 que exige macOS o nunca ha pasado en Linux.
 
+En la MacBook no se borra nada: ni `/tmp`, ni logs, guiones, briefs o
+evidencia. Vale para orquestadores, trabajadores y revisores. La excepción son
+los worktrees y copias del repositorio propios o de hilos archivados: se quitan
+con `git worktree remove` sin `--force` cuando el árbol está limpio, sus commits
+están en un remoto o en main y ningún proceso tiene su cwd dentro, junto con
+sus artefactos regenerables (`node_modules`, salidas de build, cachés). Un
+worktree sucio o con commits sólo locales se lista para Felix.
+
 Hacia la Mini, `remote-run start` y `scripts/mini/run.sh` encolan la corrida
 en Pueue (grupo `suites`, 3 lugares) y `remote-run wait ID` espera su turno y
 devuelve su código. No reserves la Mini a mano ni esperes en un bucle. Mira la
