@@ -124,13 +124,20 @@ El servicio tiene `After=pueued.service`, sin `Requires=`.
 ## Arranque y humo supervisado
 
 Instalar primero en `informe`. Hacer el humo en cada host, con su binario
-de Pueue. Estos comandos son pasos de operación; no forman parte del test:
+de Pueue. Estos comandos son pasos de operación; no forman parte del test.
+La guardia de carga de la Mini pausa `default`, `suites` y `rapidas` cuando
+sube la carga. Encolar el humo en un grupo que esté corriendo, sin reanudar
+la pausa. Antes de esperar, comprobar con `pueue status` que la tarea pasó
+a `Running`: los minutos cuentan desde su inicio, no desde que entró en
+cola. Si sigue `Queued`, el humo queda pendiente hasta que la guardia
+reanude el grupo.
 
 ```sh
 pueue add -g default --label 'pao-humo tope=1' -- sleep 600
 ```
 
-A los 2 o 3 minutos debe aparecer `cortaria`. Cancelar esa tarea a mano.
+A los 2 o 3 minutos de su inicio debe aparecer `cortaria`. Cancelar esa
+tarea a mano.
 Revisar el censo, las tareas DUDOSAS y las filas `cortaria` y `hueco`.
 Para leer el censo desde el propio host:
 
@@ -148,10 +155,12 @@ python3 -I fleet/pueue-vigilante/instalar.py instalar --host mini --modo cortar
 python3 -I fleet/pueue-vigilante/instalar.py instalar --host desk --modo cortar
 ```
 
-En cada host, encolar primero el caso que ignora SIGTERM:
+En cada host, encolar primero el caso que ignora SIGTERM. Pueue une con
+espacios los argumentos que siguen a `--` y ejecuta el resultado con
+`sh -c`, así que una orden con comillas va como una sola cadena:
 
 ```sh
-pueue add -g default --label 'pao-humo tope=1' -- bash -c 'trap "" TERM; sleep 600'
+pueue add -g default --label 'pao-humo tope=1' -- 'trap "" TERM; sleep 600'
 ```
 
 Se espera `fin_corte` con `desenlace=forzada`, la marca al final del log
@@ -159,12 +168,21 @@ y ningún proceso de ese humo vivo. Identificar el PID y sus hijos antes
 del humo; no terminar procesos ajenos por nombre. Repetir con `sleep 600`
 sin trap y comprobar `desenlace=terminada`.
 
-El humo mide qué alcanza SIGTERM en Pueue 4.0.4: hijo o grupo de procesos.
-Queda pendiente medirlo en el host. Allí también hay que consultar
-`pueue edit --help` para confirmar las restricciones sobre tareas vivas y
-anotar los dígitos de fracción que escribe el desk. El parser acepta `Z`,
-offsets y de uno a nueve decimales. CI imprime la versión del Python de
-Apple antes de ejecutar la suite con él. No se fija una espera de 24 h.
+En Pueue 4.0.4, `pueue kill -s SIGTERM` llega a toda la cadena de la
+tarea, no sólo al proceso que lanza el daemon. Se midió en el desk y en la
+Mini con un `sh` que ignora TERM y lanza un `python3` que restaura la
+acción por omisión. En los dos hosts, el log mostró `rc_py=143` y la tarea
+terminó `forzada`. Para repetir la medición:
+
+```sh
+pueue add -g default --label 'pao-humo-alcance tope=1' -- 'trap "" TERM; /usr/bin/python3 -c "import signal,time; signal.signal(signal.SIGTERM, signal.SIG_DFL); time.sleep(600)"; echo "rc_py=$?"; sleep 600'
+```
+
+`pueue edit` sólo edita tareas `Stashed` o `Queued`, así que la etiqueta
+de una tarea viva no cambia. El desk escribe nueve decimales en las marcas
+de tiempo de Pueue y la Mini seis. El parser acepta `Z`, offsets y de uno
+a nueve decimales. CI imprime la versión del Python de Apple antes de
+ejecutar la suite con él. No se fija una espera de 24 h.
 
 ## Volver y retirar
 
@@ -202,4 +220,6 @@ Para la RED, `PAO_VIGILANTE_SOURCE` puede apuntar al directorio del
 esqueleto con los dos módulos. El fake y las unidades siguen saliendo del
 checkout de las pruebas. La paridad sólo carga `fleet/rack/snapshot.py`
 por ruta, con `importlib`, y comprueba que toda tarea que rack reconoce
-queda fuera de MANUAL.
+queda fuera de MANUAL. `test_readme_humo.py` lee los bloques `sh` de este
+README y falla si una orden de `pueue add` con sintaxis de shell llega
+partida en varios argumentos.
