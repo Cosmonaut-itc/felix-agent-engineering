@@ -1296,7 +1296,9 @@ pushes = ["git push origin main", "git push origin HEAD:main",
           "git push origin", "git push --all origin", "git push --mirror origin",
           "git -C " + str(repo) + " push origin HEAD:main",
           "cd " + str(repo) + " && git push origin HEAD:main",
-          "cd " + str(repo) + "\ngit push origin HEAD:main"]
+          "cd " + str(repo) + "\ngit push origin HEAD:main",
+          "bash -c 'git push origin HEAD:main'",
+          "sh -ec 'git push --force-with-lease origin HEAD:main'"]
 # Sin archivo no interviene en pushes, ni siquiera si falta origin.
 for command in pushes:
     invoke(command, False)

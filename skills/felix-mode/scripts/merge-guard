@@ -312,6 +312,13 @@ def train_guard(command, directory):
         # Reconoce también env, command y rutas absolutas al ejecutable.
         for start, token in enumerate(args):
             tool = token.rsplit("/", 1)[-1]
+            if tool in {"bash", "sh", "zsh", "dash", "ksh"}:
+                for index in range(start + 1, len(args) - 1):
+                    if args[index].startswith("-") and "c" in args[index][1:]:
+                        finding = train_guard(args[index + 1], directory)
+                        if finding:
+                            return finding
+                        break
             if tool not in {"git", "gh"}:
                 continue
             tail = args[start + 1:]
