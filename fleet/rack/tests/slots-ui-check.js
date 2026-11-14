@@ -54,13 +54,15 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    await run('pollAction(key,a)');assert.equal(run('PENDING.size'),0);assert.match(elements.app.innerHTML,/Los lugares cambiaron/);
    run('SLOT_MESSAGES.clear();render(fixture)');
    context.answer={schema:'rack-action@1',action_id:'confirm-000001',status:'applied',revision:2,
-     result:{observed:{...run('h.control.slots'),jale:6},desired:{...run('h.control.slots'),jale:6},expires_at:1794664800,slots_note:'Lugares ajustados · hasta las 08:00'}};
+     result:{observed:{...run('h.control.slots'),jale:6},desired:{...run('h.control.slots'),jale:6},expires_at:1794664800,slots_note:'Lugares ajustados · hasta las 08:00'},served_at:1794664799};
    run("acceptSlots(slotKey(h),{request:{op:'slots',host:'desk',action_id:'confirm-000001'},group:'jale'},answer)");
    assert.match(elements.toast.innerHTML,/hasta las 08:00/);assert.match(elements.toast.innerHTML,/Deshacer/);
    assert.doesNotMatch(elements.toast.innerHTML,/otro cambio manual/);
    assert.match(elements.app.innerHTML,/Lugares ajustados · hasta las 08:00/);
    context.expired=JSON.parse(JSON.stringify(input.fixture));
    context.expired.now=1794664800;
+   // The rack stamps every later reply of the same receipt with its own, later time.
+   context.answer={...context.answer,served_at:1794664800};
    const ec=context.expired.hosts[0].snapshot.control;
    ec.revision=3;ec.mode='dia';ec.cap=14;ec.expires_at=null;ec.slots={hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3};ec.desired=ec.slots;
    run('render(expired);globalThis.h=S.hosts[0]');

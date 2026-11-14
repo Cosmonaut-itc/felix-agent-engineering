@@ -43,7 +43,7 @@ if(input.check) (async()=>{
      context.from=from;
      run("PENDING.clear();h.control.mode=from;globalThis.target=from==='dia'?'noche':'dia';startMode(h,target);globalThis.action=PENDING.get(slotKey(h));globalThis.key=slotKey(h)");
      // Confirm through production acceptSlots, then use the actual toast callback.
-     run("acceptSlots(key,action,{status:'applied',revision:h.control.revision+1,result:{...h.control,mode:target,before:h.control.slots,observed:h.control.slots,desired:h.control.slots,expires_at:null,next_event:NOW+3600}})");
+     run("acceptSlots(key,action,{status:'applied',revision:h.control.revision+1,result:{...h.control,mode:target,before:h.control.slots,observed:h.control.slots,desired:h.control.slots,expires_at:null,next_event:NOW+3600},served_at:NOW})");
      elements.toast.button.onclick();
      console.log('undo',from,run('JSON.stringify(PENDING.get(key))'),run('modeControls(h)'),run('hostControlState(h)'));
      assert.equal(run('PENDING.get(key).request.op'),'undo');
@@ -113,20 +113,24 @@ if(input.check) (async()=>{
  run('h.control.mode_note="Automático · cambia a noche a las 23:00";h.control.mode_detail=null;h.control.mode="dia"');
  assert.match(run('modeControls(h)'),/Automático · cambia a noche a las 23:00/);
  // Expired/late success may not change an already newer host state or offer undo.
- run('NOW=applied.result.expires_at;h.control.revision=99;acceptSlots(key,a,applied)');
+ run('h.control.revision=99;acceptSlots(key,a,{...applied,served_at:applied.result.expires_at})');
  assert.equal(run('h.control.revision'),99);assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);
  assert.match(elements.toast.innerHTML,/venció/);
  // Returning to the automatic mode clears overrides but its undo still expires.
- run('NOW=applied.result.next_event;h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,result:{...applied.result,expires_at:null}})');
+ run('h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,served_at:applied.result.next_event,result:{...applied.result,expires_at:null}})');
  assert.equal(run('h.control.revision'),1);assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);
  assert.match(elements.toast.innerHTML,/venció/);
- // A receipt delivered after the event, before any newer snapshot, is not confirmed (R1-sol-1).
- elements.toast.innerHTML='';run('NOW=applied.result.next_event-2;NOW_AT=Date.now()-3000;h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,result:{...applied.result,expires_at:null}})');
+ // Expiry follows the rack's reply time, not the last snapshot (R1-sol-1): a stale or repeated
+ // snapshot before the event cannot confirm a receipt the rack served after it.
+ elements.toast.innerHTML='';run('render({...fixture,now:applied.result.next_event-30});globalThis.h=S.hosts[0];h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,served_at:applied.result.next_event+1,result:{...applied.result,expires_at:null}})');
  assert.equal(run('h.control.revision'),1);assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);
  assert.match(elements.toast.innerHTML,/venció/);
- // After a fresh snapshot, the same receipt delivered before the event is confirmed and offers undo.
- elements.toast.innerHTML='';run('NOW_AT=Date.now()-3600e3;render({...fixture,now:applied.result.next_event-5});globalThis.h=S.hosts[0];h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,result:{...applied.result,expires_at:null}})');
+ // A receipt served before the event is current even when the snapshot is older.
+ elements.toast.innerHTML='';run('render({...fixture,now:applied.result.next_event-30});globalThis.h=S.hosts[0];h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,served_at:applied.result.next_event-1,result:{...applied.result,expires_at:null}})');
  assert.notEqual(run('h.control.revision'),1);assert.match(elements.toast.innerHTML,/Deshacer/);
+ // A receipt without the reply time cannot prove it is current.
+ elements.toast.innerHTML='';run('h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,served_at:undefined})');
+ assert.equal(run('h.control.revision'),1);assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);
  assert.equal(requests.filter(([url,o])=>url==='/api/accion' && JSON.parse(o.body).action_id===ident).length,1);
  console.log('UI mode OK: automatic/advanced both ways; pending/partial/conflict/unknown/expired; foreign work; old host; Mini; undo; toast 8s; no replay');
 })().catch(e=>{console.error(e);process.exitCode=1});

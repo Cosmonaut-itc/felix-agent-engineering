@@ -1,6 +1,7 @@
 """U3.3 public/forced host-control contract with synthetic Pueue and transport."""
 import copy
 import json
+import sqlite3
 import subprocess
 import unittest
 from unittest.mock import patch
@@ -182,9 +183,19 @@ class ModeChannelTests(unittest.TestCase):
             groups=[dict(name=g,slots=n,status='Running') for g,n in v['slots'].items()],tasks=[],
             cpu=dict(cores=12,load=[1,1,1]),mem=dict(total=32*1024**3,available=24*1024**3,swap_total=0,swap_used=0)))])
 
+    def test_reply_time_is_stamped_per_reply_and_never_journaled(self):
+        r=self.request();_,first=self.actions.respond('post',r)
+        self.assertEqual((first['status'],first['served_at']),('applied',self.now))
+        self.now+=30
+        _,again=self.actions.respond('get',r['action_id'])
+        self.assertEqual((again['status'],again['served_at']),('applied',self.now))
+        with sqlite3.connect(self.actions.path) as db:
+            stored=[json.loads(body) for body, in db.execute('SELECT response FROM actions')]
+        self.assertTrue(stored);self.assertTrue(all('served_at' not in body for body in stored))
+
     def test_mode_production_ui_states_undo_toast_and_unknown_no_resend(self):
         fixture=self.fixture()
-        r=self.request();_,applied=self.actions.post(r)
+        r=self.request();_,applied=self.actions.respond('post',r)
         source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
         run=subprocess.run(['node',str(BASE/'tests/mode-ui-check.js')],input=json.dumps(dict(js=source,fixture=fixture,applied=applied)),
                            text=True,capture_output=True,timeout=10)

@@ -837,7 +837,9 @@ consulta GET; no reenvía POST. Un éxito confirmado ofrece «Deshacer» durante
 8 s. Undo restaura modo, adelanto, ajustes y vencimientos originales; después de
 otro ajuste o evento se explica `undo_conflict`. Una respuesta tardía tampoco
 ofrece undo si cruzó el evento del recibo, incluso al volver al modo automático
-sin adelanto ni ajustes. La Mini conserva «Lugares ajustados · hasta otro cambio
+sin adelanto ni ajustes. El rack marca cada respuesta de acción con su hora
+(`served_at`), sin guardarla en el registro, y el panel juzga el vencimiento con
+esa hora, nunca con la de la última instantánea. La Mini conserva «Lugares ajustados · hasta otro cambio
 manual», emitido por su host. Si hay trabajo fuera del reparto,
 se bloquea el modo que aumente algún grupo y se conserva el diagnóstico de U3.2.
 El estado aparece una sola vez junto al segmento y conserva los conflictos junto

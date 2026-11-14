@@ -311,10 +311,13 @@ class Actions:
             self.workers.add(worker)
         worker.start()
         if not self.wait(done, max(0, deadline - self.timer())):
-            return 200, result(identity, 'unknown')
-        if errors:
+            code, response = 200, result(identity, 'unknown')
+        elif errors:
             raise errors[0]
-        return answers[0]
+        else:
+            code, response = answers[0]
+        # Stamped per reply, never journaled: the panel judges a receipt's expiry by this, not by a snapshot.
+        return code, dict(response, served_at=self.clock())
 
     @contextmanager
     def connect(self, deadline=None):
