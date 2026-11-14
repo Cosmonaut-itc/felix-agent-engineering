@@ -53,7 +53,7 @@ CASES = [
  ('pueue-desk','control.py',"return [(g, target[g]) for g in sorted(target) if target[g] < before[g]] + [\n        (g, target[g]) for g in sorted(target) if target[g] > before[g]]", "return [(g, target[g]) for g in sorted(target) if target[g] > before[g]] + [\n        (g, target[g]) for g in sorted(target) if target[g] < before[g]]",'SlotsTests.test_reductions_verified_before_increases'),
  ('pueue-desk','control.py',"if observed[g] != n or self.generation(state) != generation:",'if False:','SlotsTests.test_unconfirmed_reduction_never_runs_increases'),
  ('pueue-desk','control.py',"previous['revision'] != state['revision']",'False','SlotsTests.test_undo_strict_revision_and_no_inverse_when_state_changed'),
- ('pueue-desk','control.py',"'ambiguous'})","'manual'})",'SlotsTests.test_restart_lost_parallel_is_reconciled_without_opening_ambiguous_or_foreign_groups'),
+ ('pueue-desk','control.py',"state['reasons'][g] = sorted(set(state['reasons'].get(g, [])) | {'ambiguous'})","state['reasons'][g] = sorted(set(state['reasons'].get(g, [])) | {'manual'})",'SlotsTests.test_restart_lost_parallel_is_reconciled_without_opening_ambiguous_or_foreign_groups'),
  ('pueue-desk','control.py',"if has_authority(directory):\n        engine =",'if False:\n        engine =','SlotsTests.test_actual_guard_dispatch_never_falls_back_when_authority_corrupt'),
  ('pueue-desk','control.py',"if calculated != value['desired'] and not migrating:",'if False:','SlotsTests.test_invalid_desire_metadata_does_not_apply_default'),
  ('pueue-desk','control.py',"'pressure' if g in owned and g in self.profile else 'manual'","'pressure' if g in owned else 'manual'",'SlotsTests.test_import_ownership_separate_profile_including_missing_legacy_groups'),
