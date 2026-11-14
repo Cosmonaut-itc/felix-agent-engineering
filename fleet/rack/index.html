@@ -295,7 +295,7 @@ function hostControlState(h){
   else if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
   else if(c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
   else if(c?.recovery_pending) message='Reconciliación pendiente';
-  else if(h.id==='desk' && c?.slots_note) message=c.slots_note;
+  else if(c?.slots_note) message=c.slots_note;
   else if(h.id==='desk' && c?.expires_at && !c?.mode_note) message=slotExpiry(c.expires_at);
   if(c?.foreign_work) message+=(message?' · ':'')+'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.';
   const result=a?.result;
@@ -333,7 +333,8 @@ function acceptSlots(key,action,data){
     setTimeout(()=>pollAction(key,action),2000);return;
   }
   PENDING.delete(key);persistActions();
-  const expired=h?.id==='desk' && data.result?.expires_at && data.result.expires_at<=NOW;
+  const boundary=data.result?.expires_at || data.result?.next_event;
+  const expired=h?.id==='desk' && boundary && boundary<=NOW;
   if(expired){
     SLOT_MESSAGES.set(h.id,'El ajuste venció en el cambio de horario.');say(SLOT_MESSAGES.get(h.id));
   }else if(data.status==='applied' && h && data.result?.observed && data.revision>=h.control.revision){

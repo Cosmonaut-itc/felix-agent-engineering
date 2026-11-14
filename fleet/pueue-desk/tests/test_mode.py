@@ -283,6 +283,11 @@ class ModeTests(DeskFixture):
         self.assertFalse(engine.view()['capabilities']['mode'])
         self.assertEqual(engine.view()['mode'],'fijo')
         self.assertEqual(p.calls,[])
+        self.assertIsNone(engine.view()['slots_note'])
+        down=dict(r,op='slots',action_id='mini-note-0001',change=dict(group='suites',delta=-1))
+        adjusted=engine.handle(down)
+        self.assertEqual(adjusted['status'],'applied')
+        self.assertEqual(engine.view()['slots_note'],'Lugares ajustados · hasta otro cambio manual')
         changed=copy.deepcopy(r);changed['change']['mode']='noche'
         self.assertEqual((engine.handle(changed).get('error') or {}).get('code'),'idempotency_conflict')
 

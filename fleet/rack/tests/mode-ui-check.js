@@ -57,6 +57,10 @@ run('render(fixture);globalThis.h=S.hosts[0]');
  run('NOW=applied.result.expires_at;h.control.revision=99;acceptSlots(key,a,applied)');
  assert.equal(run('h.control.revision'),99);assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);
  assert.match(elements.toast.innerHTML,/venció/);
+ // Returning to the automatic mode clears overrides but its undo still expires.
+ run('NOW=applied.result.next_event;h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,result:{...applied.result,expires_at:null}})');
+ assert.equal(run('h.control.revision'),1);assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);
+ assert.match(elements.toast.innerHTML,/venció/);
  assert.equal(requests.filter(([url,o])=>url==='/api/accion' && JSON.parse(o.body).action_id===ident).length,1);
  console.log('UI mode OK: automatic/advanced both ways; pending/partial/conflict/unknown/expired; foreign work; old host; Mini; undo; toast 8s; no replay');
 })().catch(e=>{console.error(e);process.exitCode=1});
