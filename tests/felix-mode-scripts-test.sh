@@ -1433,6 +1433,11 @@ git(other, "remote", "add", "train", "git@github.com:SEN-HASO/Hasito.git")
 git(enrolled, "remote", "add", "other", "https://github.com/otro/repo.git")
 probe("named-enrolled-remote", "git push train HEAD:main", other)
 probe("named-unenrolled-remote", "git push other HEAD:main", expected="allow")
+# U5-r3-1: a configured remote name may contain a slash; its URL decides.
+git(other, "remote", "add", "team/hasito", "git@github.com:SEN-HASO/Hasito.git")
+git(enrolled, "remote", "add", "team/otro", "https://github.com/otro/repo.git")
+probe("U5-r3-1-slash-enrolled-remote", "git push team/hasito HEAD:main", other)
+probe("U5-r3-1-slash-unenrolled-remote", "git push team/otro HEAD:main", expected="allow")
 # Push URL rather than fetch URL defines enrollment.
 git(other, "remote", "set-url", "--push", "origin", "git@github.com:SEN-HASO/Hasito.git")
 probe("push-url", "git push origin HEAD:main", other)

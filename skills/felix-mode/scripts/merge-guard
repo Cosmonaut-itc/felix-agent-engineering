@@ -481,7 +481,10 @@ def train_guard(command, directory, inherited_env=None):
                 remote = positional.pop(0) if positional else "origin"
             read = lambda args: git_read(directory, args, env, options)
             try:
-                if ":" in remote or "/" in remote:
+                # A configured remote wins over a URL reading, as in Git; its
+                # name may contain a slash.
+                configured = (read(["remote"]) or "").splitlines()
+                if remote not in configured and (":" in remote or "/" in remote):
                     destinations = [repository(remote)]
                 else:
                     urls = read(["remote", "get-url", "--push", "--all", remote])
