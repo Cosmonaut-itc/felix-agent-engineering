@@ -187,6 +187,17 @@ El JSON anterior se renombra a `guardia-state.imported.json`; deja de ser escrib
 como autoridad. Una lectura corrupta o una base desaparecida nunca aplica la tabla
 por defecto ni permite abrir grupos. `control.adopted` impide reinicializarla.
 
+La protección por presión sigue cerrando los grupos Running existentes aunque
+la autoridad de cuotas sea ilegible, falte un grupo, haya una cuota inválida o
+falle una RPC. Conserva el diagnóstico y el deseo; no crea grupos ni aplica el
+perfil por defecto. No abre mientras falle la reconciliación, y un fallo al
+pausar un grupo no impide proteger los demás. Se conserva la escalera #118.
+Si no puede guardar propiedad en SQLite, una marca durable
+`pause-GRUPO.manual` retiene esa pausa como manual incluso después de reparar
+la autoridad. La marca no asigna cuotas ni concede permiso para abrir; sólo
+`control.py reanudar GRUPO --host mini`, con reconciliación y sensores frescos,
+la retira. No borrar estas marcas para recuperar admisión automáticamente.
+
 La generación se identifica con el `pid_path` configurado, su fecha y la identidad
 `ps` del PID concreto. No se buscan ni terminan procesos por nombre. Tras reiniciar
 `pueued`, se reponen cuotas, pero las pausas observadas quedan ambiguas y retenidas.
@@ -220,7 +231,8 @@ vector/generación antes de admitir. No hay botón de reanudación en el panel.
    /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --cuotas
    ```
 
-   El preflight de configuración/perfil ocurre antes de bootout o escrituras.
+   El modo `--seco` sólo imprime el plan; no ejecuta el preflight. Al instalar,
+   el preflight de configuración/perfil ocurre antes de bootout o escrituras.
    Después se bloquean sólo las cuotas con `slots.disabled`, se descarga la guardia,
    se espera su candado, se adopta/importa y se reemplaza atómicamente el controlador.
    Sólo tras `bootstrap` se retira el switch creado por esa instalación; uno anterior
@@ -254,3 +266,9 @@ intercala otro ajuste, el undo estricto se rechaza: no encadenar undos antiguos
 ni forzar una restauración. Ante unknown, consultar el mismo ID, nunca lanzar la
 inversa a ciegas. Las pruebas del repositorio usan exclusivamente dobles y un
 daemon privado, sin este canario productivo.
+
+El guion `tests/private_slots.py --run-private` admite Mini y desk únicamente
+dentro de `remote-run`, con Pueue estándar y directorio/configuración propios.
+En Linux usa `~/.local/bin/{pueue,pueued}`; admite rutas explícitas con
+`--pueue` y `--pueued`. Comprueba tanto pérdida de `parallel` sin guardado como
+persistencia tras una operación guardadora y reconciliación en ambos casos.

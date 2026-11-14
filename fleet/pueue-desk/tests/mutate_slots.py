@@ -16,7 +16,7 @@ CASES = [
 
  ('pueue-desk','control.py','os.path.lexists(directory / name)','(directory / name).exists()','SlotsTests.test_broken_authority_marker_never_restores_legacy_guard'),
 
- ('rack','accion.py',"if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown'):",'if False:','ChannelTests.test_host_downgrade_cannot_turn_uncertain_status_into_terminal_unsupported'),
+ ('rack','accion.py',"if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown') and not verified:",'if False:','ChannelTests.test_host_downgrade_cannot_turn_uncertain_status_into_terminal_unsupported'),
 
  ('pueue-desk','install-mini.py','if observed != control.MINI_PROFILE:','if False:','SlotsInstallTests.test_profile_mismatch_refuses_before_bootout_or_writes'),
  ('pueue-desk','install-mini.py','if not os.path.lexists(switch):','if False:','SlotsInstallTests.test_atomic_adoption_enables_only_after_bootstrap_and_reinstall_preserves_receipts'),
@@ -25,7 +25,7 @@ CASES = [
 
  ('pueue-desk','control.py',"self.store(db, state)  # ownership/intention precedes pause RPC",'pass','SlotsTests.test_pause_intention_durable_before_effect'),
  ('pueue-desk','control.py',"if decide('mini', current, RAPIDAS_THRESHOLDS['mini'] if g == 'rapidas' else MINI_THRESHOLDS) != 'reanudar':",'if False:','SlotsTests.test_fresh_pressure_prevents_reopen_after_low_initial_sample'),
- ('pueue-desk','control.py',"if not self.reconcile():\n            raise ValueError('Deseo sin reconciliar; admisión retenida')",'if False:\n            pass','SlotsTests.test_guard_never_opens_before_desire_verified'),
+ ('pueue-desk','control.py',"can_open = failure is None",'can_open = True','SlotsTests.test_guard_never_opens_before_desire_verified'),
 
  ('pueue-desk','control.py',"if observed != state['desired']:\n                validate_target(observed, state['desired'])",'if False:\n                pass','SlotsTests.test_recovery_never_increases_above_cap_even_for_grandfathered_desire'),
  ('pueue-desk','control.py','type(value) is not int or not 1 <= value <= 8','not isinstance(value, int) or not 1 <= value <= 8','SlotsTests.test_host_limits_boolean_zero_nine_and_complete_vector'),
@@ -52,6 +52,15 @@ CASES = [
  ('rack','host_action.py',"type(c['delta']) is not int or",'False or','ChannelTests.test_public_host_variants_closed_without_breaking_cancel'),
  ('rack','index.html',"&& action.request.op==='cancel'",'','ChannelTests.test_production_ui_slots'),
  ('rack','index.html',"if(['slots','undo'].includes(action.request.op)) return acceptSlots(key,action,data);",'','ChannelTests.test_production_ui_slots'),
+ ('pueue-desk', 'control.py', 'if not can_open:\n                        self.fence_pause(g)', 'if not can_open:\n                        continue', 'SlotsTests.test_corrupt_quota_authority_still_closes_running_groups'),
+ ('pueue-desk', 'control.py', 'if g not in groups:\n                continue', "if g not in groups:\n                raise ValueError('missing')", 'SlotsTests.test_missing_profile_member_three_ticks_preserve_rapidas_ladder'),
+ ('pueue-desk', 'control.py', 'except errors as error:\n                    can_open, failure = False, error\n                continue', 'except errors as error:\n                    raise\n                continue', 'SlotsTests.test_failed_pause_rpc_does_not_skip_other_groups'),
+ ('pueue-desk', 'control.py', 'except errors as error:\n                    can_open, failure = False, error\n                    try:', 'except errors as error:\n                    can_open, failure = False, error\n                    continue\n                    try:', 'SlotsTests.test_failed_authority_write_closes_but_never_grants_future_reopen'),
+ ('pueue-desk', 'control.py', 'if os.path.lexists(self.pause_fence(g)):', 'if False:', 'SlotsTests.test_failed_authority_write_closes_but_never_grants_future_reopen'),
+ ('rack', 'host_action.py', "response.get('receipt_digest') != digest or response.get('effects') is not False", 'False', 'ChannelTests.test_unbound_or_effectful_terminal_and_generic_unsupported_remain_unknown'),
+ ('rack', 'accion.py', 'and not verified:', 'and True:', 'ChannelTests.test_lost_durable_rejection_recovers_terminal_without_resend'),
+ ('rack', 'index.html', '(!response.ok && !hostTerminal)', '!response.ok', 'ChannelTests.test_production_ui_slots'),
+ ('rack', 'tests/safety.py', ", 'control.py'", '', 'ChannelTests.test_installed_controller_is_forbidden_by_audit_hook'),
 ]
 
 

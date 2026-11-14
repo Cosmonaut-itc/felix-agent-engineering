@@ -470,6 +470,80 @@ sys.argv=['control.py','rack','--host','mini'];c.main()
         with self.assertRaises(ValueError): self.engine.adopt()
         self.assertEqual(self.p.calls, [])
 
+
+    def protective_tick(self, load=4, memory=1):
+        with patch.object(control, 'pressure_mini', return_value=dict(load=load, memory=memory)), \
+             patch.object(control, 'MiniControl', return_value=self.engine):
+            try:
+                control.guard(self.p, None, self.root, host='mini')
+            except (OSError, sqlite3.Error, ValueError, KeyError, subprocess.SubprocessError):
+                pass  # The diagnostic must not prevent the protective assertions below.
+
+    def assert_closed(self, *groups):
+        for group in groups:
+            self.assertEqual(self.p.groups[group]['status'], 'Paused', group)
+        self.assertFalse(any(c[0] in ('start', 'parallel') for c in self.p.calls), self.p.calls)
+
+    def test_corrupt_quota_authority_still_closes_running_groups(self):
+        self.engine.path.write_bytes(b'not sqlite')
+        before = self.engine.path.read_bytes()
+        for _ in range(3):
+            self.protective_tick()
+            self.assert_closed('suites', 'default', 'rapidas')
+        self.assertEqual(self.engine.path.read_bytes(), before)
+
+    def test_missing_profile_member_three_ticks_preserve_rapidas_ladder(self):
+        del self.p.groups['default']
+        for _ in range(3):
+            self.protective_tick(load=2.5)
+            self.assert_closed('suites')
+            self.assertEqual(self.p.groups['rapidas']['status'], 'Running')
+        self.protective_tick(load=3.1)
+        self.assert_closed('suites', 'rapidas')
+        self.assertNotIn('default', self.p.groups)
+
+    def test_invalid_quota_still_closes_existing_groups_without_profile_fallback(self):
+        self.p.groups['suites']['parallel_tasks'] = 0
+        self.protective_tick(memory=2, load=0)
+        self.assert_closed('suites', 'default', 'rapidas')
+        self.assertEqual(self.p.groups['suites']['parallel_tasks'], 0)
+
+    def test_failed_reconciliation_rpc_still_closes_and_retains_desire(self):
+        self.change_state(desired=dict(suites=2, default=1, rapidas=3))
+        with patch.object(self.p, 'parallel', side_effect=OSError('RPC unavailable')):
+            for _ in range(3):
+                self.protective_tick()
+                self.assert_closed('suites', 'default', 'rapidas')
+        self.assertEqual(self.engine.view()['desired']['suites'], 2)
+
+    def test_failed_pause_rpc_does_not_skip_other_groups(self):
+        original = self.p.call
+        def fail(*args):
+            if args[-1] == 'suites':
+                raise OSError('one group unreachable')
+            return original(*args)
+        with patch.object(self.p, 'call', side_effect=fail):
+            for _ in range(3):
+                self.protective_tick()
+                self.assert_closed('default', 'rapidas')
+        self.assertEqual(self.p.groups['suites']['status'], 'Running')
+
+    def test_failed_authority_write_closes_but_never_grants_future_reopen(self):
+        # A stale pressure owner must not reclaim an emergency pause after repair.
+        self.change_state(reasons=dict(suites=['pressure']))
+        with patch.object(self.engine, 'store', side_effect=sqlite3.OperationalError('readonly authority')):
+            self.protective_tick()
+        self.assert_closed('suites', 'default', 'rapidas')
+        self.p.calls.clear()
+        with patch.object(control, 'pressure_mini', return_value=dict(load=0, memory=1)):
+            self.engine.guard(dict(load=0, memory=1))
+        self.assert_closed('suites', 'default', 'rapidas')
+        self.assertIn('manual', self.engine.view()['pause_reasons']['suites'])
+        with patch.object(control, 'pressure_mini', return_value=dict(load=0, memory=1)):
+            self.engine.manual('suites', resume=True)
+        self.assertEqual(self.p.groups['suites']['status'], 'Running')
+        self.assertEqual(self.p.groups['default']['status'], 'Paused')
+
     def request_without_read(self):
         return dict(schema=control.HOST_SCHEMA,op='capabilities')
 

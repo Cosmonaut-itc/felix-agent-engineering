@@ -56,6 +56,17 @@ class SnapshotTests(unittest.TestCase):
         usage = patch.object(snapshot, 'collect_usage', return_value=None)
         usage.start()
         self.addCleanup(usage.stop)
+        quotas = patch.object(snapshot, 'read_control', return_value=None)
+        quotas.start()
+        self.addCleanup(quotas.stop)
+
+    def test_snapshot_control_read_is_injected_even_with_installed_path(self):
+        controller = self.root/'.local/lib/pao-pueue-mini/control.py'
+        controller.parent.mkdir(parents=True)
+        controller.write_text('raise AssertionError("must use injected read")')
+        data = snapshot.collect('macos', 'mini', pueue=self.fake_pueue({}), home=self.root)
+        snapshot.read_control.assert_called_once_with(controller)
+        self.assertIsNone(data['control'])
 
     def fake_pueue(self, tasks):
         data = dict(groups={'suites': dict(status='Running', parallel_tasks=3)}, tasks=tasks)

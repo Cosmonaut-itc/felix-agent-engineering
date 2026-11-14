@@ -1,16 +1,19 @@
-"""Run ONLY via remote-run on Mini, with a private daemon; no tasks are submitted."""
+"""Run ONLY via remote-run on Mini or desk, with a private daemon; no tasks are submitted."""
 import argparse
 import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-private', action='store_true', required=True)
+    parser.add_argument('--pueue', default='/opt/homebrew/bin/pueue' if sys.platform == 'darwin' else str(Path.home()/'.local/bin/pueue'))
+    parser.add_argument('--pueued', default='/opt/homebrew/bin/pueued' if sys.platform == 'darwin' else str(Path.home()/'.local/bin/pueued'))
     args = parser.parse_args()
     base = Path.cwd().resolve()
     root = base/'private-u31-sol'
@@ -30,7 +33,7 @@ def main():
         print(line, flush=True); log.write(line+'\n')
     class PrivatePueue(control.Pueue):
         def call(self, *argv):
-            return subprocess.run(['/opt/homebrew/bin/pueue','--config',str(config),*map(str,argv)],
+            return subprocess.run([args.pueue,'--config',str(config),*map(str,argv)],
                 check=True, capture_output=True, text=True, timeout=4, env=env, cwd=str(base)).stdout
     pueue = PrivatePueue()
     daemon, output = None, (root/'daemon.log').open('a')
@@ -38,7 +41,7 @@ def main():
         nonlocal daemon
         pid = root/'pid'
         if pid.exists(): pid.unlink()  # only after wait() of OUR previous child
-        daemon = subprocess.Popen(['/opt/homebrew/bin/pueued','--config',str(config)],
+        daemon = subprocess.Popen([args.pueued,'--config',str(config)],
             cwd=str(base),env=env,stdout=output,stderr=output)
         until = time.monotonic()+5
         while time.monotonic()<until:
@@ -54,7 +57,7 @@ def main():
                     expected={k:view[k] for k in ('revision','policy_hash','generation','mode','slots')},
                     change=dict(group='suites',delta=delta))
     try:
-        emit('version', version=subprocess.check_output(['/opt/homebrew/bin/pueue','--version'],text=True).strip())
+        emit('version', version=subprocess.check_output([args.pueue,'--version'],text=True).strip())
         start()
         for group, slots in control.MINI_PROFILE.items():
             if group == 'default': pueue.parallel(group,slots)

@@ -418,6 +418,9 @@ class MiniControl:
                        if json.loads(r[0])['response']['status'] in ('applying', 'partial', 'unknown')]
         observed, groups = self.observed()
         generation = self.generation(state)
+        for group in MINI_GROUPS:
+            if os.path.lexists(self.pause_fence(group)):
+                state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
         enabled = not self.disabled()
         return dict(schema='rack-host-result@1', status='ok', capabilities=dict(
             slots=enabled, undo=enabled, dry_run=enabled, mode=False, reorder=False, restart_queue=False),
@@ -447,6 +450,8 @@ class MiniControl:
                 # Rejected IDs are bound too; a later refresh cannot turn a retry
                 # of the same ID into a previously unaccepted effect.
                 digest = hashlib.sha256(canonical(dict(host='mini', request=request)).encode()).hexdigest()
+                if (response.get('error') or {}).get('code') != 'idempotency_conflict':
+                    response['receipt_digest'] = digest
                 with self.connect(write=True) as db:
                     db.execute('INSERT OR IGNORE INTO host_actions VALUES (?,?,?)',
                                (request['action_id'], digest, canonical(dict(request=request, response=response))))
@@ -462,8 +467,8 @@ class MiniControl:
             return self.view()
         if op == 'status':
             with self.connect() as db:
-                row = db.execute('SELECT body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
-            return json.loads(row[0])['response'] if row else self.reply(request, 'unknown')
+                row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
+            return dict(json.loads(row[1])['response'], receipt_digest=row[0]) if row else self.reply(request, 'unknown')
         digest = hashlib.sha256(canonical(dict(host='mini', request=request)).encode()).hexdigest()
         with self.connect() as db:
             row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
@@ -565,26 +570,68 @@ class MiniControl:
                 db.execute('UPDATE host_actions SET body=? WHERE action_id=?', (canonical(action), key))
         return not failure
 
+    def pause_fence(self, group):
+        return self.directory / ('pause-' + group + '.manual')
+
+    def fence_pause(self, group):
+        # A tombstone, not another ownership authority. Only explicit CLI admission
+        # removes it; repairing SQLite must never claim an emergency pause.
+        with self.pause_fence(group).open('w') as stream:
+            stream.write('manual\n'); stream.flush(); os.fsync(stream.fileno())
+        folder = os.open(str(self.directory), os.O_RDONLY)
+        try:
+            os.fsync(folder)
+        finally:
+            os.close(folder)
+
     def guard(self, readings):
-        if not self.reconcile():
-            raise ValueError('Deseo sin reconciliar; admisión retenida')
-        with self.connect() as db:
-            state = self.state(db)
-        _, groups = self.observed()
+        failure, state = None, None
+        errors = (OSError, sqlite3.Error, ValueError, KeyError, TypeError, subprocess.SubprocessError)
+        try:
+            if not self.reconcile():
+                raise ValueError('Deseo sin reconciliar; admisión retenida')
+        except errors as error:
+            failure = error
+        try:
+            with self.connect() as db:
+                state = self.state(db)
+        except errors as error:
+            failure = error
+        can_open = failure is None
+        # Protective closing needs existing group status, not a valid quota vector.
+        groups = self.pueue.status()['groups']
         normal = decide('mini', readings, MINI_THRESHOLDS)
         rapid = decide('mini', readings, RAPIDAS_THRESHOLDS['mini'])
         log(self.directory, 'decision', accion=normal, accion_rapidas=rapid)
         for g in MINI_GROUPS:
-            reasons = set(state['reasons'].get(g, []))
+            if g not in groups:
+                continue
+            reasons = set(state['reasons'].get(g, [])) if state else set()
+            if os.path.lexists(self.pause_fence(g)):
+                reasons.add('manual')
             status = groups[g]['status']
             decision = rapid if g == 'rapidas' else normal
             if decision == 'pausar' and (status == 'Running' or 'pressure' in reasons):
-                reasons.add('pressure')
-                state['reasons'][g] = sorted(reasons)
-                with self.connect(write=True) as db:
-                    self.store(db, state)  # ownership/intention precedes pause RPC
-                self.pueue.call('pause', '--wait', '-g', g)
-            elif decision == 'reanudar' and 'pressure' in reasons:
+                try:
+                    if not can_open:
+                        self.fence_pause(g)
+                    else:
+                        reasons.add('pressure')
+                        state['reasons'][g] = sorted(reasons)
+                        with self.connect(write=True) as db:
+                            self.store(db, state)  # ownership/intention precedes pause RPC
+                except errors as error:
+                    can_open, failure = False, error
+                    try:
+                        self.fence_pause(g)
+                    except errors:
+                        pass  # Even a failed disk must not suppress protective pause.
+                try:
+                    self.pueue.call('pause', '--wait', '-g', g)
+                except errors as error:
+                    can_open, failure = False, error
+                continue
+            elif can_open and decision == 'reanudar' and 'pressure' in reasons:
                 if reasons == {'pressure'} and status == 'Paused':
                     # A fresh sample, after reconciliation and immediately before admission.
                     current = pressure_mini()
@@ -598,10 +645,13 @@ class MiniControl:
                 state['reasons'][g] = sorted(reasons)
                 with self.connect(write=True) as db:
                     self.store(db, state)
-            elif status == 'Paused' and not reasons:
+            elif can_open and status == 'Paused' and not reasons:
                 state['reasons'][g] = ['manual']
                 with self.connect(write=True) as db:
                     self.store(db, state)
+        if failure is not None:
+            log(self.directory, 'sin_reconciliar', detalle=type(failure).__name__)
+            raise failure
 
     def manual(self, group, resume=False):
         with self.connect() as db:
@@ -629,6 +679,8 @@ class MiniControl:
             self.pueue.call('pause', '--wait', '-g', group)
         with self.connect(write=True) as db:
             self.store(db, state)
+        if resume and os.path.lexists(self.pause_fence(group)):
+            self.pause_fence(group).unlink()
 
 
 def main():

@@ -109,6 +109,66 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(self.actions.get(request['action_id'])[1]['status'],'unknown')
         self.assertEqual(self.p.calls,[])
 
+
+    def test_lost_durable_rejection_recovers_terminal_without_resend(self):
+        request = self.request()
+        request['expected']['revision'] = 99
+        def lose(host, target, wire, timeout):
+            self.executor(host, target, wire, timeout)
+            raise OSError('lost rejection only')
+        self.actions.executor = lose
+        self.assertEqual(self.actions.post(request)[1]['status'], 'unknown')
+        self.actions.executor = self.executor
+        code, answer = self.actions.get(request['action_id'])
+        self.assertEqual((code, answer['status']), (409, 'conflict'))
+        self.assertEqual(self.actions.get(request['action_id']), (code, answer))
+        self.assertEqual(self.actions.post(request), (code, answer))
+        self.assertEqual([r['op'] for r in self.calls], ['slots', 'status'])
+        self.assertEqual(self.p.calls, [])
+        self.assertEqual(self.actions.post(self.request('slots-00000002'))[1]['status'], 'applied')
+
+    def test_unbound_or_effectful_terminal_and_generic_unsupported_remain_unknown(self):
+        request = self.request()
+        self.actions.executor = lambda *a, **k: dict(schema='rack-host-result@1',
+            action_id=request['action_id'], status='unknown')
+        self.actions.post(request)
+        wire = {k:v for k,v in request.items() if k not in ('schema','host')}
+        wire['schema'] = control.HOST_SCHEMA
+        import hashlib
+        digest = hashlib.sha256(control.canonical(dict(host='mini', request=wire)).encode()).hexdigest()
+        for status, binding, effects in (('conflict', None, False), ('rejected', '0'*64, False),
+                                         ('rejected', digest, True), ('unsupported', digest, False)):
+            self.actions.executor = lambda *a, **k: dict(schema='rack-host-result@1',
+                action_id=request['action_id'],status=status,receipt_digest=binding,effects=effects)
+            self.assertEqual(self.actions.get(request['action_id'])[1]['status'], 'unknown')
+        self.assertEqual(self.p.calls, [])
+
+    def test_host_http_conflict_capacity_applying_and_duplicates(self):
+        stale = self.request('stale-00000001'); stale['expected']['revision'] = 99
+        self.assertEqual(self.actions.post(stale)[0], 409)
+        self.assertEqual(self.actions.post(stale)[0], 409)
+        self.assertEqual(self.actions.get(stale['action_id'])[0], 409)
+        full = self.request('full-000000001'); full['change']['delta'] = 1
+        self.assertEqual(self.actions.post(full)[0], 409)
+        self.assertEqual(self.actions.post(full)[0], 409)
+        self.assertEqual(self.actions.get(full['action_id'])[0], 409)
+        self.actions.executor = lambda host,target,wire,timeout: dict(schema='rack-host-result@1',
+            action_id=wire['action_id'],status='applying')
+        pending = self.request('pending-0000001')
+        self.assertEqual(self.actions.post(pending)[0], 202)
+        self.assertEqual(self.actions.post(pending)[0], 202)
+        self.assertEqual(self.actions.get(pending['action_id'])[0], 202)
+
+    def test_cancel_mutation_anchor_is_unique_and_targets_original_channel(self):
+        source = (BASE/'accion.py').read_text()
+        anchor = "if remaining < MIN_TRANSPORT:\n            return result(request"
+        self.assertEqual(source.count(anchor), 1)
+        # A-W4: the old single-line anchor appears in both channels.
+        import runpy
+        campaign = runpy.run_path(str(BASE/'tests/check_mutations.py'))
+        case = next(c for c in campaign['CASES'] if c[0] == 'request-minimum')
+        self.assertEqual(case[2], anchor)
+
     def test_freshness_and_disabled_close_host_mutations_but_allow_status(self):
         self.payload['hosts'][0]['fresh']=False
         self.assertEqual(self.actions.post(self.request())[0],409);self.assertEqual(self.calls,[])
@@ -133,6 +193,15 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(response['status'],'unknown')
         self.assertEqual(calls[0][0],['/usr/bin/python3','-I',str(controller),'rack','--host','mini'])
         self.assertTrue(calls[0][1]['start_new_session']);self.assertEqual(calls[0][1]['cwd'],'/')
+
+    def test_installed_controller_is_forbidden_by_audit_hook(self):
+        error = None
+        try:
+            subprocess.run(['/usr/bin/python3', '-I', '/not-a-fixture/control.py'], check=True, capture_output=True)
+        except (AssertionError, subprocess.CalledProcessError) as caught:
+            error = caught
+        self.assertIsInstance(error, AssertionError)
+        self.assertIn('real host binary: control.py', str(error))
 
     def test_sanitize_observed_desired_and_no_private_output(self):
         answer=self.actions.post(self.request())[1]

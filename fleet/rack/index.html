@@ -118,14 +118,14 @@ dialog p{margin:0 0 14px;font-size:14px}
 dialog .row{display:flex;gap:8px;justify-content:flex-end}
 dialog button{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:6px;cursor:pointer}
 dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
-.lane{grid-template-columns:84px minmax(0,1fr)}
-.step{display:inline-flex;align-items:center;gap:2px;margin-top:4px;position:relative}
-.step button{font:inherit;font-size:13px;line-height:1;width:22px;height:22px;border:1px solid var(--line);background:var(--panel);color:var(--ink2);border-radius:5px;cursor:pointer;padding:0}
+.lane{grid-template-columns:150px minmax(0,1fr)}
+.step{display:inline-flex;align-items:center;gap:8px;margin-top:4px;position:relative}
+.step button{font:inherit;font-size:13px;line-height:1;width:44px;height:44px;border:1px solid var(--line);background:var(--panel);color:var(--ink2);border-radius:5px;cursor:pointer;padding:0}
 .step button:disabled{opacity:.35;cursor:default}
 .step b{min-width:34px;text-align:center;font-weight:500;font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
 .slot-help{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
-.step:focus .slot-help,.step:focus-within .slot-help{position:static;width:auto;height:auto;clip-path:none;overflow:visible;font-size:12px;max-width:240px}
-.step:focus,.step:focus-within{flex-wrap:wrap}
+.step:focus .slot-help,.step:focus-within .slot-help{position:absolute;left:0;top:100%;width:280px;max-width:calc(100vw - 80px);height:auto;clip-path:none;overflow:visible;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;z-index:6;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.step:focus{outline:2px solid var(--accent);outline-offset:2px}
 #toast button{font:inherit;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
 @media(max-width:560px){.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
@@ -186,7 +186,7 @@ function capacity(h){
       <div class="m-val">${Number.isFinite(GB(h.mem_avail)) ? GB(h.mem_avail).toFixed(0) : '—'} GB <span class="muted" style="font-size:12px;font-weight:400">libres</span></div>
       <div class="meter"><i style="width:${memPct*100}%;background:${memPct>.85?'var(--crit)':'var(--accent)'}"></i></div>
       <div class="m-note ink2">Swap ${Number.isFinite(GB(h.swap_used)) ? GB(h.swap_used).toFixed(1) : '—'} de ${Number.isFinite(GB(h.swap_total)) ? GB(h.swap_total).toFixed(0) : '—'} GB</div></div>
-    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total</span></div>
+    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total${h.control?.cap ? ' · tope '+h.control.cap : ''}</span></div>
       <div class="m-val">${run} <span class="muted" style="font-size:12px;font-weight:400">ocupados</span></div>
       <div class="meter"><i style="width:${tot?run/tot*100:0}%;background:var(--accent)"></i></div>
       <div class="m-note ink2">${queued(h).length ? queued(h).length + ' en fila' : 'Fila vacía'}</div></div>
@@ -251,9 +251,10 @@ function slotControls(h,n,g,r){
   const total=capable ? Object.values(c.slots).reduce((a,n)=>a+n,0) : 0;
   const minus=common || (g.slots<=1 ? 'Mínimo de 1 lugar.' : '');
   const plus=common || (g.slots>=8 ? 'Máximo de 8 lugares.' : total>=c.cap ? `Tope de ${c.cap} lugares. Quita un lugar a otro grupo para añadirlo aquí.` : '');
-  const count=r>g.slots ? `${r}/${g.slots} · no entran nuevas hasta bajar de ${g.slots}` : `${r}/${g.slots}`;
+  const count=g.slots;
+  const usage=`${r}/${g.slots} en uso${r>g.slots ? ` · no entran nuevas hasta bajar de ${g.slots}` : ''}`;
   const name='slots-'+h.id+'-'+n;
-  return `<div class="step" tabindex="0" data-slot-focus="${esc(h.id+'/'+n)}" aria-label="Lugares de ${esc(n)}" aria-describedby="${esc(name)}"><button type="button" data-step="-1" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-label="Quitar un lugar a ${esc(n)}" title="${esc(minus || 'Quitar un lugar')}" ${minus?'disabled':''}>−</button><b>${esc(count)}</b><button type="button" data-step="1" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-label="Añadir un lugar a ${esc(n)}" title="${esc(plus || 'Añadir un lugar')}" ${plus?'disabled':''}>+</button><span class="slot-help" id="${esc(name)}">${esc(plus || minus)}</span></div>`;
+  return `<div class="muted slot-usage">${esc(usage)}</div><div class="step" tabindex="0" data-slot-focus="${esc(h.id+'/'+n)}" aria-label="Lugares de ${esc(n)}" aria-describedby="${esc(name)}"><button type="button" data-step="-1" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-label="Quitar un lugar a ${esc(n)}" title="${esc(minus || 'Quitar un lugar')}" ${minus?'disabled':''}>−</button><b>${esc(count)}</b><button type="button" data-step="1" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-label="Añadir un lugar a ${esc(n)}" title="${esc(plus || 'Añadir un lugar')}" ${plus?'disabled':''}>+</button><span class="slot-help" id="${esc(name)}">${esc(plus || minus)}</span></div>`;
 }
 function hostControlState(h){
   const a=PENDING.get(slotKey(h)), c=h.control;
@@ -508,7 +509,8 @@ async function pollAction(key,action){
       action.resent=true; persistActions();
       await sendCancel(key,action); return;
     }
-    if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || !response.ok) throw Error('status');
+    const hostTerminal=response.status===409 && ['slots','undo'].includes(action.request.op) && ['conflict','rejected','unsupported'].includes(data.status);
+    if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || (!response.ok && !hostTerminal)) throw Error('status');
     acceptAction(key,action,data);
   }catch{const changed=action.status!=='unknown';action.status='unknown';persistActions();repaintActions();if(changed) say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}
 }

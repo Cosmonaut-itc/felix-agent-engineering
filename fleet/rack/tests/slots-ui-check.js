@@ -1,11 +1,11 @@
 // Production JS; synthetic DOM/network/storage. No browser or server required.
 const vm=require('vm'),assert=require('assert'),fs=require('fs');
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
-const elements={},storage={},timers=[],requests=[];
+const elements={},storage={},timers=[],requests=[],listeners=[];
 const el=()=>({innerHTML:'',textContent:'',addEventListener(){},focus(){},querySelector(){return {onclick:null}}});
 const context={console,Intl,Date,Number,Object,String,Math,Map,Set,Uint8Array,JSON,
  crypto:require('crypto').webcrypto,AbortSignal:{timeout(){}},
- document:{getElementById:id=>elements[id] ||= el(),addEventListener(){},querySelector:()=>null,querySelectorAll:()=>[]},
+ document:{getElementById:id=>elements[id] ||= el(),addEventListener(type,fn){listeners.push([type,fn])},querySelector:()=>null,querySelectorAll:()=>[]},
  window:{addEventListener(){}},setInterval(){},clearTimeout(){},
  setTimeout(fn,ms){timers.push({fn,ms});return timers.length},
  sessionStorage:{getItem:k=>storage[k],setItem:(k,v)=>storage[k]=v},
@@ -15,12 +15,19 @@ const run=s=>vm.runInContext(s,context);
 run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
  assert.match(elements.app.innerHTML,/default/);
+ assert.match(run("slotControls(h,'suites',h.groups.suites,0)"),/<b>3<\/b>/);
+ assert.match(run("slotControls(h,'suites',h.groups.suites,0)"),/0\/3 en uso/);
+ assert.match(elements.app.innerHTML,/· tope 7/);
+ const disabled={disabled:true,dataset:{step:'1',host:'mini',group:'suites'}};
+ for(const [type,fn] of listeners) if(type==='click') fn({target:{closest:selector=>selector==='button[data-step]'?disabled:null}});
+ assert.equal(run('PENDING.size'),0);
+
  assert.match(run("slotControls(h,'default',h.groups.default,0)"),/Mínimo de 1 lugar/);
  assert.match(run("slotControls(h,'suites',h.groups.suites,0)"),/Tope de 7 lugares. Quita un lugar a otro grupo para añadirlo aquí./);
  assert.match(run("slotControls({...h,control:{...h.control,slots:{suites:8,default:1,rapidas:1}}},'suites',{slots:8},0)"),/Máximo de 8 lugares/);
  assert.match(run("slotControls({...h,control:null},'suites',{slots:3},0)"),/Falta actualizar/);
  assert.match(run("slotControls({...h,id:'desk'},'suites',{slots:3},0)"),/disabled/);
- assert.match(run("slotControls(h,'suites',{slots:2},4)"),/4\/2 · no entran nuevas hasta bajar de 2/);
+ assert.match(run("slotControls(h,'suites',{slots:2},4)"),/4\/2 en uso · no entran nuevas hasta bajar de 2/);
  context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('network')};
  run("globalThis.sent=null;const originalSendSlots=sendSlots;sendSlots=(...args)=>(globalThis.sent=originalSendSlots(...args));");
  run("startSlots(h,{group:'suites',delta:-1})"); await run('sent');
@@ -43,5 +50,13 @@ run('render(fixture);globalThis.h=S.hosts[0]');
  assert.equal(run("PENDING.get(slotKey(h)).request.op"),'undo');
  run("globalThis.undo=PENDING.get(slotKey(h));acceptSlots(slotKey(h),undo,{status:'conflict',error:{message:'Los lugares cambiaron. No se puede deshacer.'}})");
  assert.match(elements.app.innerHTML,/Los lugares cambiaron/);assert.equal(run('PENDING.size'),0);
+ run("startSlots(h,{group:'suites',delta:-1})"); await run('sent');
+ run("globalThis.terminal=PENDING.get(slotKey(h))");
+ const terminalId=run('terminal.request.action_id');
+ context.fetch=async()=>({ok:false,status:409,json:async()=>({schema:'rack-action@1',action_id:terminalId,status:'rejected',error:{message:'Tope confirmado'}})});
+ await run('pollAction(slotKey(h),terminal)');
+ assert.equal(run('PENDING.size'),0);
+ assert.match(elements.app.innerHTML,/Tope confirmado/);
+
  console.log('UI slots OK: mínimo/máximo/tope, host antiguo, exceso, pendiente/conflicto/unknown, sin optimismo, parcial visible, reload, GET sin reenvío, undo y toast 8 s');
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -722,3 +722,22 @@ Verificación dirigida: `tests/test_slots.py` ejecuta el canal con Pueue/reloj y
 transporte sintéticos, autorización HTTP y el JavaScript de producción mediante
 `tests/slots-ui-check.js`. Las mutaciones nuevas están en
 `fleet/pueue-desk/tests/mutate_slots.py`; nunca usan colas reales.
+
+### Recibos y presentación de lugares U3.1
+
+El control muestra `N/M en uso` separado de la cuota entera `− M +`, y la
+capacidad indica `· tope 7`. Los botones tienen 44 px; el contenedor enfocable
+explica el límite en una ayuda flotante sin ensanchar ni alargar la fila.
+Un parcial conserva los valores observados y deseados desde su primera respuesta.
+
+Conflictos y límites del host responden HTTP 409; `applying` responde 202,
+también al duplicar o consultar un recibo. La consulta del panel acepta un 409
+terminal como resultado confirmado. Si se perdió sólo la respuesta de un rechazo,
+GET puede cerrarlo únicamente con el mismo ID, digest del cuerpo original y
+`effects=false` desde el recibo durable del host. Un downgrade, ausencia de
+recibo, digest distinto o `unsupported` genérico conserva unknown. GET nunca
+reenvía un ajuste. Cancelar conserva sus contratos C3–C5.
+
+Las pruebas de snapshot inyectan `read_control`; su guardia de subprocess veta
+además el `control.py` instalado fuera de temporales propios. El controlador
+sintético del canal sigue probándose por su ruta fija dentro de `/tmp`.

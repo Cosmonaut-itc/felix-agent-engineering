@@ -1,5 +1,7 @@
 """Closed Mini host-control variant; cancellation keeps its original contract."""
 import re
+import hashlib
+import json
 
 OPS = ('host_capabilities', 'slots', 'undo')
 GROUPS = {'suites', 'default', 'rapidas'}
@@ -94,6 +96,14 @@ def sanitize(request, response, op):
     if status not in ('applied', 'applying', 'partial', 'unknown', 'conflict', 'rejected', 'dry_run', 'recovery_error', 'unsupported'):
         raise ValueError('Estado inválido')
     answer = dict(schema='rack-host-result@1', action_id=request['action_id'], status=status, error=None)
+    if op == 'status' and status in ('conflict', 'rejected'):
+        wire = {k: v for k, v in request.items() if k not in ('schema', 'host')}
+        wire['schema'] = 'rack-host-control@1'
+        body = json.dumps(dict(host=request['host'], request=wire), sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        if response.get('receipt_digest') != digest or response.get('effects') is not False:
+            raise ValueError('Rechazo sin recibo vinculado y sin efectos')
+        answer['receipt_verified'] = True
     error = response.get('error')
     messages = dict(stale_state='Los lugares cambiaron. Actualiza antes de decidir.',
                     busy='Hay un ajuste pendiente; consulta su recibo.',

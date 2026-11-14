@@ -155,6 +155,15 @@ def transport_reason(host, launcher):
     return None
 
 
+def host_http(response):
+    status = response['status']
+    if status == 'rejected':
+        return 403 if (response.get('error') or {}).get('code') == 'disabled' else 409
+    if status in ('conflict', 'unsupported', 'undo_conflict'):
+        return 409
+    return 202 if status in ('accepted', 'applying') else 200
+
+
 class Executor:
     """One transport seam, selected by host configuration; no caller-supplied argv."""
     def __init__(self, runner=subprocess.Popen, home=None, timeout=None):
@@ -369,7 +378,8 @@ class Actions:
             try:
                 response = self.executor(self.hosts[request['host']], 'host-control', wire, timeout=min(10, remaining))
                 response = host_channel.sanitize(request, response, wire['op'])
-                if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown'):
+                verified = response.pop('receipt_verified', False)
+                if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown') and not verified:
                     return result(request, 'unknown')
                 response.update(schema=SCHEMA, op=request['op'], host=request['host'])
                 return response if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')
@@ -442,7 +452,7 @@ class Actions:
     def complete(self, request, op, done, deadline):
         try:
             response = self.call(request, op, deadline)
-            if op == 'status' and response['status'] == 'rejected':
+            if op == 'status' and response['status'] == 'rejected' and request['op'] not in host_channel.OPS:
                 response = result(request, 'unknown')
             try:
                 with self.journal(deadline):
@@ -451,7 +461,7 @@ class Actions:
             except TimeoutError:
                 # The committed intent still owns this ID and blocks a second cancel.
                 return 200, result(request, 'unknown')
-            return 200, response
+            return host_http(response) if request['op'] in host_channel.OPS else 200, response
         finally:
             # Event.set needs no journal lock. A failed commit can be reconciled by GET.
             done.set()
@@ -464,9 +474,10 @@ class Actions:
             if reason:
                 response = result(request, 'unsupported', 'unsupported', reason=reason)
                 response['capabilities'] = host_channel.unavailable()['capabilities']
-                return 200, response
-            return 200, self.call(request, 'capabilities' if request['op'] == 'host_capabilities' else request['op'],
-                                  started + request_budget(request['host']))
+                return host_http(response), response
+            response = self.call(request, 'capabilities' if request['op'] == 'host_capabilities' else request['op'],
+                                 started + request_budget(request['host']))
+            return host_http(response), response
         if request['op'] == 'cancel':
             with self.http_lock:
                 self.identities.setdefault(request['action_id'], dict(request))
@@ -487,7 +498,8 @@ class Actions:
                         if row:
                             if row[0] != digest:
                                 return 409, result(request, 'rejected', 'idempotency_conflict')
-                            return 200, json.loads(row[1])
+                            response = json.loads(row[1])
+                            return host_http(response) if request['op'] in host_channel.OPS else 200, response
                         intent = result(request, 'unknown')
                         db.execute('INSERT INTO actions (action_id,digest,request,response,created,updated) VALUES (?,?,?,?,?,?)',
                                    (request['action_id'], digest, body, json.dumps(intent), self.clock(), self.clock()))
@@ -526,7 +538,7 @@ class Actions:
                         return 404, result(identity, 'unknown')
                     request, response = map(json.loads, row[:2])
                     if response['status'] not in OPEN or self.active(action_id):
-                        return 200, response
+                        return host_http(response) if request['op'] in host_channel.OPS else 200, response
                     if request['host'] == 'desk':
                         now = self.clock()
                         interval = 2 if now - row[2] < 60 else 30
