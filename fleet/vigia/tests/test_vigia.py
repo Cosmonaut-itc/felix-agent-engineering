@@ -23,6 +23,7 @@ PUEUE = '''#!/usr/bin/python3
 import os, pathlib, sys
 assert sys.argv[1:] == ['status', '--json']
 p = pathlib.Path(os.environ['FAKE_ROOT'])
+with (p/'lecturas').open('a') as f: f.write('x')
 if (p/'fail').exists(): sys.exit(1)
 print((p/'data.json').read_text())
 '''
@@ -214,6 +215,15 @@ class Corredor(Fixture):
         self.assertEqual(ra, rb)
         self.assertEqual(ra['VIGIA'], 'cambio')
         self.assertNotEqual(ra['VIGIA_TOKEN'], token)
+
+    def test_suscripcion_sobrevive_entre_esperas(self):
+        self.env.update(PAO_VIGIA_TICK='30', PAO_VIGIA_CONTACT='60')
+        token = self.resultado(self.timbre())['VIGIA_TOKEN']
+        lecturas = (self.root/'lecturas').read_text()
+        time.sleep(1.2)
+        r = self.resultado(self.timbre(token, '0'))
+        self.assertEqual((r['VIGIA'], r['VIGIA_TOKEN']), ('plazo', token))
+        self.assertEqual((self.root/'lecturas').read_text(), lecturas)
 
     def test_caida_reconexion_sin_falso_cambio(self):
         token = self.resultado(self.timbre())['VIGIA_TOKEN']

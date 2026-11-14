@@ -201,7 +201,7 @@ def corredor(host):
     path = root/(host + ".sock")
     sel = selectors.DefaultSelector()
     server = socket.socket(socket.AF_UNIX)
-    proc, clients, tokens, suscritas = None, {}, {}, set()
+    proc, clients, tokens, suscritas, usadas = None, {}, {}, set(), {}
     contacto, reconectar, retraso, inactivo = -float("inf"), 0, 1, time.monotonic()
     buffer = b""
     vivo = True
@@ -331,6 +331,7 @@ def corredor(host):
                             task, visto, plazo = validar(*parts[2:])
                             info["peticion"] = (task, visto, plazo)
                             info["creada"] = now
+                            usadas[task] = now
                             if task not in suscritas:
                                 tokens.pop(task, None)
                                 suscritas.add(task)
@@ -362,10 +363,15 @@ def corredor(host):
                     sel.unregister(client)
                     client.close()
                     del clients[client]
-            necesarias = {v["peticion"][0] for v in clients.values() if v["peticion"]}
-            for task in suscritas - necesarias:
+            # Un lanzador vuelve al timbre segundos después de su consulta: la
+            # suscripción sobrevive a la espera para no forzar otra lectura de Pueue.
+            for v in clients.values():
+                if v["peticion"]:
+                    usadas[v["peticion"][0]] = now
+            for task in [t for t in suscritas if now - usadas[t] >= intervalo("LINGER", 120)]:
                 enviar("U " + task)
-            suscritas = necesarias
+                suscritas.discard(task)
+                usadas.pop(task, None)
             if clients:
                 inactivo = now
     finally:
