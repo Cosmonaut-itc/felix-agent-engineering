@@ -127,7 +127,7 @@ que demuestra:
 - **Prueba dirigida.** Mientras implementas, en cada ronda de corrección y
   en cada candidato de `arena`, corre sólo lo que toca el cambio: los tests
   de los archivos y paquetes modificados, el typecheck y el lint de esos
-  paquetes, y la reproducción de cada hallazgo.
+  paquetes, y la reproducción de cada hallazgo. Lánzala en el carril rápido.
 - **Suite completa.** Los gates del `AGENTS.md` corren sobre el head que
   recibió APTO, antes del merge. En `arena` corren sólo sobre la base
   elegida después del injerto, y en el acumulador en su paso 8. Si fallan,
