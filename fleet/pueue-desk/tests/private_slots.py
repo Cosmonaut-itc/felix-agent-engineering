@@ -42,6 +42,8 @@ class Daemon:
         self.config = base / "pueue.yml"
         self.wrapper = base / "bin/pueue"
         self.wrapper.parent.mkdir()
+        for folder in ("data", "data/certs", "run"):
+            (base / folder).mkdir(mode=0o700)
         self.wrapper.write_text(f"#!/bin/sh\nexec {PUEUE} -c {self.config} \"$@\"\n")
         self.wrapper.chmod(0o700)
 
@@ -63,11 +65,12 @@ class Daemon:
         return subprocess.run([str(self.wrapper), *map(str, args)], text=True, capture_output=True,
                               timeout=20, check=check)
 
-    def start(self, after_crash=False):
-        variants = (self.variant,) if after_crash else (0, 1)
-        for attempt, variant in enumerate(variants * (2 if after_crash else 1)):
-            if after_crash and attempt == 1:
-                # Sólo si pueued no arranca solo tras la caída: archivos propios rancios.
+    def start(self, again=False):
+        """again: reinicio de un daemon propio ya probado; con la misma variante, reintenta una vez."""
+        variants = (self.variant,) if again else (0, 1)
+        for attempt, variant in enumerate(variants * (2 if again else 1)):
+            if again and attempt == 1:
+                # Sólo si pueued no arranca solo: archivos propios rancios en nuestro run/.
                 stale = [p for p in (self.base / "run/pueue.sock", self.base / "run/pueue.pid") if p.exists()]
                 for path in stale:
                     path.unlink()
@@ -102,8 +105,10 @@ class Daemon:
             return
         if kill:
             os.kill(self.process.pid, signal.SIGKILL)
-        else:
+        elif self.ours():
             self.pueue("shutdown", check=False)
+        else:
+            os.kill(self.process.pid, signal.SIGTERM)
         try:
             self.process.wait(timeout=15)
         except subprocess.TimeoutExpired:
@@ -191,7 +196,7 @@ def main():
         daemon.pueue("pause", "-g", "suites")
         daemon.pueue("add", "-g", "suites", "--", "/usr/bin/true")
         daemon.stop(kill=True)
-        daemon.start(after_crash=True)
+        daemon.start(again=True)
         after = pueue.status()
         lost = control.observed_slots(after)
         say("tras_SIGKILL", observado=lost, estados={g: after["groups"][g]["status"] for g in control.MINI_PROFILE})
@@ -206,13 +211,13 @@ def main():
                 say("guardia_error", detalle=f"{type(error).__name__}: {error}")
         final = pueue.status()
         records = [json.loads(r) for r in (state / "guardia.log").read_text().splitlines()]
-        decision = [r for r in records if r["evento"] == "decision"][-1]
+        decision = ([r for r in records if r["evento"] == "decision"] or [{}])[-1]
         say("guardia_tras_reinicio", observado=control.observed_slots(final), decision=decision,
             estado_suites=final["groups"]["suites"]["status"],
             propios=sorted(json.loads((state / "guardia-state.json").read_text())),
             reconciliado=[r for r in records if r["evento"] == "reconciliado"])
         check("la guardia repone el deseo tras reiniciar", control.observed_slots(final) == desired)
-        if decision["accion"] == "reanudar":
+        if decision.get("accion") == "reanudar":
             check("abre sólo reconciliado", final["groups"]["suites"]["status"] == "Running")
 
         # Reinicio ordenado: lo que pueued conserva por sí mismo, y la guardia otra vez.
@@ -221,7 +226,7 @@ def main():
                and control.live_tasks(pueue.status())):
             time.sleep(0.5)
         daemon.stop()
-        daemon.start()
+        daemon.start(again=True)
         restored = vector()
         say("tras_shutdown_ordenado", observado=restored)
         check("reconciliación tras reinicio ordenado",

@@ -398,7 +398,10 @@ class InstallerTests(Fixture):
     def test_invalid_status_aborts_before_changes(self):
         for value in ('{"groups": {"suites": {}}, "tasks": {}}',
                       '{"groups": {"default": {}}, "tasks": {}}',
-                      '{"groups": {"suites": {}, "default": {}}, "tasks": []}', "no es JSON"):
+                      '{"groups": {"suites": {}, "default": {}}, "tasks": []}', "no es JSON",
+                      # Perfil completo con tasks inválido: sólo la validación de estado lo detiene.
+                      json.dumps({"groups": {g: {"status": "Running", "parallel_tasks": n}
+                                             for g, n in control.MINI_PROFILE.items()}, "tasks": []})):
             (self.root / "pueue.json").write_text(value)
             with self.assertRaises(ValueError):
                 self.install("instalar")
