@@ -77,8 +77,13 @@ class Fixture(unittest.TestCase):
     def reap_all(self):
         for process in self.processes:
             # Descendants may outlive an already reaped controller in a mutant.
+            process.poll()  # reap a dead leader before killpg (zombies give EPERM on macOS)
             try: os.killpg(process.pid, 9)
             except ProcessLookupError: pass
+            except PermissionError:
+                # A SIGKILLed group can still be exiting on macOS. Reap our
+                # verified Popen; do not turn the mutant's assertion into ERROR.
+                process.wait(3)
             if process.poll() is None:
                 process.wait(3)
             for stream in (process.stdin, process.stdout):
@@ -236,6 +241,9 @@ class DispatcherScopeTests(Fixture):
                          dict(envelope(op=op), origin='rack-panel')):
                 with self.subTest(op=op, data=data):
                     answer, code = self.handle(data)
+                    self.assertIsInstance(answer, dict)
+                    self.assertIn('error', answer)
+                    self.assertIsInstance(answer['error'], dict)
                     self.assertEqual((code, answer['error']['code']), (2, 'invalid_request'))
         self.assertEqual(self.processes, [])
 

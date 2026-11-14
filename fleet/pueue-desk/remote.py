@@ -11,7 +11,8 @@ def remote(action, dry):
     library = home / '.local/lib/pao-pueue-desk'
     if not has_authority(STATE_DIR):
         # Includes --seco. Never stop or adopt a manual daemon incidentally.
-        validate_configuration(home=home)
+        manager = manager_environment(run('systemctl', '--user', 'show-environment').stdout)
+        validate_configuration(home=home, env=manager, cwd=home)
         raise ValueError('Instalación abortada sin cambios: U3.4 requiere desk adoptado')
     if action == 'install':
         namespace = dict(__file__=str(library / 'install-desk.py'), __name__='embedded_install')

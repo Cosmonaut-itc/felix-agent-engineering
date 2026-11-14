@@ -52,7 +52,7 @@ CASES=[
   'StartupTests.test_unreadable_authority_no_fallback_and_maintenance_no_open_or_prepare'),
  ('cli-zero-write-reject','control.py',"            if args.command != 'preparar':","            if True:",
   'StartupTests.test_cli_invalid_queue_does_not_even_write_diagnostic_log'),
- ('install-preflight','install-desk.py',"    config = control.validate_configuration(home=home)","    config = dict(data=home/'data', pid_file=home/'data/pid')",
+ ('install-preflight','install-desk.py',"    config = control.validate_configuration(home=home, env=manager, cwd=home)","    config = dict(data=home/'data', pid_file=home/'data/pid')",
   'InstallerStartupTests.test_o_w2_install_real_and_seco_use_validator_before_every_effect'),
  ('install-pending-same-schema','install-desk.py',"        actions = [json.loads(row[0]) for row in db.execute('SELECT body FROM host_actions')]",
   "        if state['policy_hash'] == engine.policy_hash and not fields_missing:\n            return None\n        actions = [json.loads(row[0]) for row in db.execute('SELECT body FROM host_actions')]",
@@ -82,6 +82,39 @@ CASES=[
 ]
 
 
+CASES += [
+ ('external-running-startup','control.py',"                reasons.discard('startup')\n                state.get('startup', {}).get('holds', {}).pop(g, None)","                state.get('startup', {}).get('holds', {}).pop(g, None)",
+  'test_startup_injerto.StartupGraftTests.test_a_w2_external_running_releases_startup_and_second_pause_is_manual'),
+ ('external-running-hold','control.py',"                reasons.discard('startup')\n                state.get('startup', {}).get('holds', {}).pop(g, None)","                reasons.discard('startup')",
+  'test_startup_injerto.StartupGraftTests.test_a_w2_external_running_releases_startup_and_second_pause_is_manual'),
+ ('foreign-resume-cli','control.py',"foreign_resume = args.host == 'desk' and args.command == 'reanudar'",'foreign_resume = False',
+  'test_startup_injerto.StartupGraftTests.test_a_w1_cli_resolves_existing_foreign_without_changing_profile'),
+ ('foreign-resume-exists','control.py',"if self.host == 'desk' and group not in self.pueue.status()['groups']:",'if False:',
+  'test_startup_injerto.StartupGraftTests.test_a_w1_cli_resolves_existing_foreign_without_changing_profile'),
+ ('manager-env-gate','install-desk.py',"env=manager, cwd=home",'env={}, cwd=home',
+  'test_startup_injerto.InstallerGraftTests.test_a_w3_service_cwd_and_manager_xdg_reject_before_effects'),
+ ('manager-cwd-gate','install-desk.py',"env=manager, cwd=home",'env=manager',
+  'test_startup_injerto.InstallerGraftTests.test_a_w3_service_cwd_and_manager_xdg_reject_before_effects'),
+ ('intent-foreign-image','control.py',"        elif digest != prior['target_hash']:","        elif False:",
+  'test_startup_injerto.StartupGraftTests.test_foreign_image_during_intent_blocks_without_writes'),
+ ('preexisting-pressure-startup','control.py',"        reasons.add('startup')","        if 'pressure' not in reasons:reasons.add('startup')",
+  'test_startup_injerto.StartupGraftTests.test_pressure_manual_and_foreign_pauses_keep_startup_docker_gate'),
+ ('install-missing-queue','install-desk.py',"    control.read_queue(config['data'] / 'state.json')",'    pass',
+  'test_startup_injerto.InstallerGraftTests.test_adopted_missing_or_corrupt_queue_rejected_without_effects'),
+ ('timer-requisite','units/pueue-desk-guard.service','Requisite=pueued.service','Requires=pueued.service',
+  'test_startup_injerto.InstallerGraftTests.test_timer_services_require_running_daemon_without_starting_it'),
+]
+for key,condition in (
+ ('pid',"loaded['MainPID'] != engine.install_unit_before['MainPID']"),
+ ('active',"loaded['ActiveState'] != engine.install_unit_before['ActiveState']"),
+ ('reload',"loaded['NeedDaemonReload'] != 'no'"),
+ ('restart',"loaded['Restart'] != 'always'"),
+ ('killmode',"loaded['KillMode'] != 'mixed'"),
+ ('preparer',"str(home / '.local/lib/pao-pueue-desk/control.py') + ' preparar --host desk' not in loaded['ExecStartPre']")):
+ CASES.append(('loaded-unit-'+key,'install-desk.py',condition,'False',
+  'test_startup_injerto.InstallerGraftTests.test_loaded_unit_mismatch_retains_maintenance_and_no_timer_restart'))
+
+
 def main():
     for name,filename,before,after,test in CASES:
         with tempfile.TemporaryDirectory(prefix='u34-sol-mut-',dir='/tmp') as folder:
@@ -92,7 +125,7 @@ def main():
                 assert source.count(original)==1,(name,'nonunique anchor')
                 source=source.replace(original,replacement)
             path.write_text(source)
-            result=subprocess.run([sys.executable,'-B','-m','unittest','test_startup.'+test,'-v'],cwd=str(root/'tests'),
+            result=subprocess.run([sys.executable,'-B','-m','unittest',(test if test.startswith('test_') else 'test_startup.'+test),'-v'],cwd=str(root/'tests'),
                                   text=True,capture_output=True,timeout=15,env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'))
             assert result.returncode==1 and 'FAIL:' in result.stderr and 'ERROR:' not in result.stderr,name+' survived or failed outside assertion:\n'+result.stderr
             print(name+': caught by assertion',flush=True)

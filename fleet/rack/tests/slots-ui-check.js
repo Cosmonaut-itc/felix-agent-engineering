@@ -14,6 +14,21 @@ vm.createContext(context);vm.runInContext(input.js,context);context.fixture=inpu
 const run=s=>vm.runInContext(s,context);
 run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
+ if(input.scenario==='startup-default'){
+   assert(run('groups(h).some(([g])=>g==="default")'),'attributed default interruption must be visible');
+   assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
+   run('h.tasks=[]');
+   assert(!run('groups(h).some(([g])=>g==="default")'),'empty default remains hidden');
+   console.log('UI startup default pipeline OK');return;
+ }
+ if(input.scenario==='startup-waits'){
+   assert.equal((elements.app.innerHTML.match(/Esperando cuotas y Docker · reanudación automática/g)||[]).length,6);
+   assert.match(elements.app.innerHTML,/Retenido al reiniciar: pausa de origen desconocido &lt;script&gt; · resolver con control.py reanudar suites/);
+   for(const g of ['hasito','jale','jale-verify','otros','pesadas','rapidas'])
+     assert(!elements.app.innerHTML.includes('resolver con control.py reanudar '+g));
+   assert.doesNotMatch(elements.app.innerHTML,/Pausa tras reinicio: resolver por SSH|>Reanudar<|data-resume/);
+   console.log('UI startup waits pipeline OK');return;
+ }
  if(input.scenario==='startup'){
    assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
    assert.match(elements.app.innerHTML,/Retenido al reiniciar: pausa de origen desconocido &lt;script&gt;/);

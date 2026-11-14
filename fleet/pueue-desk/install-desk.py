@@ -12,6 +12,16 @@ import subprocess
 SOURCE = Path(__file__).resolve().parent
 TIMERS = ('pueue-desk-mode.timer', 'pueue-desk-guard.timer')
 SERVICES = ('pueue-desk-mode.service', 'pueue-desk-guard.service')
+SHOWN = ('MainPID', 'ActiveState', 'NeedDaemonReload', 'Restart', 'KillMode', 'ExecStartPre')
+
+
+def unit_properties():
+    result = run('systemctl', '--user', 'show', 'pueued.service',
+                 *[arg for key in SHOWN for arg in ('-p', key)])
+    values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    if set(values) != set(SHOWN):
+        raise ValueError('systemctl show incompleto')
+    return values
 
 
 def run(*argv):
@@ -58,7 +68,8 @@ def policy_plan(engine):
 
 def preflight(home, pid_file, control):
     """Read-only gates shared by --seco and installation; no file creation."""
-    config = control.validate_configuration(home=home)
+    manager = control.manager_environment(run('systemctl', '--user', 'show-environment').stdout)
+    config = control.validate_configuration(home=home, env=manager, cwd=home)
     control.read_queue(config['data'] / 'state.json')
     if pid_file.resolve() != config['pid_file'].resolve():
         raise ValueError('pid_path no coincide con la configuración')
@@ -69,7 +80,11 @@ def preflight(home, pid_file, control):
         raise ValueError('Primero se necesita el servicio desk existente; ver README')
     for name in TIMERS:
         run('systemctl', '--user', 'is-active', name)
-    engine = control.MiniControl(control.Pueue(home / '.local/bin/pueue'), directory, host='desk')
+    client_env = dict(os.environ)
+    for key in control.MANAGER_KEYS:
+        client_env.pop(key, None)
+    client_env.update(manager)
+    engine = control.MiniControl(control.Pueue(home / '.local/bin/pueue', env=client_env, cwd=home), directory, host='desk')
     if control.has_authority(directory):
         with authority_lock(directory):
             migration = policy_plan(engine)
@@ -84,6 +99,10 @@ def preflight(home, pid_file, control):
         if observed != control.desk_profile(engine.clock()):
             raise ValueError('El desk no coincide con la tabla vigente; no se instala')
     control.mini_generation(pid_file)
+    engine.install_unit_before = unit_properties()
+    if (not engine.install_unit_before['MainPID'].isdigit() or int(engine.install_unit_before['MainPID']) < 1
+            or engine.install_unit_before['ActiveState'] != 'active'):
+        raise ValueError('Se requiere pueued activo con MainPID verificable')
     return engine
 
 
@@ -177,6 +196,13 @@ def install(home, pid_file, control, dry_run=False, sources=None):
                 os.replace(temporary_unit, unit)
             control.sync_directory(units)
             run('systemctl', '--user', 'daemon-reload')  # never restart the shared daemon
+            loaded = unit_properties()
+            if (loaded['MainPID'] != engine.install_unit_before['MainPID']
+                    or loaded['ActiveState'] != engine.install_unit_before['ActiveState']
+                    or loaded['NeedDaemonReload'] != 'no' or loaded['Restart'] != 'always'
+                    or loaded['KillMode'] != 'mixed'
+                    or str(home / '.local/lib/pao-pueue-desk/control.py') + ' preparar --host desk' not in loaded['ExecStartPre']):
+                raise ValueError('La unidad cargada no coincide o cambió MainPID; conservar mantenimiento')
             if own_maintenance:
                 maintenance.unlink(); control.sync_directory(directory)
                 if not engine.reconcile():

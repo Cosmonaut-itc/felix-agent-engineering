@@ -500,7 +500,11 @@ La razón `startup` es independiente de las cuotas y de `manual`, `pressure`,
 generación como propia. La guardia reconcilia reducciones, después aumentos,
 verifica todo el vector/generación y exige presión fresca y `docker info`
 correcto antes de retirar sólo sus razones liberadas. Los grupos ajenos al
-reparto quedan retenidos, sin apropiarse de sus cuotas ni abrirlos.
+reparto quedan retenidos hasta resolución explícita, sin apropiarse de sus cuotas.
+`control.py reanudar default` o `reanudar suites` admite un grupo existente por
+el mismo gate de Docker, presión, mantenimiento, cuotas y generación; no lo añade
+al reparto. Un grupo inexistente se rechaza. Observar Running tras un start externo
+libera la propiedad startup: una nueva pausa externa no se reabre automáticamente.
 
 - `Queued` sin log conserva id, estado, prioridad, dependencias y lugar.
 - `Running` y tareas `Paused` quedan `Done/Killed` y no se reejecutan.
@@ -517,10 +521,13 @@ reparto quedan retenidos, sin apropiarse de sus cuotas ni abrirlos.
 
 El snapshot conserva para la tarea identificada por id + created_at el texto
 **«Interrumpida al reiniciar Pueue; relanzar manualmente»**. No fabrica recibos
-ni procedencia de cancelación. El panel muestra esas interrupciones recientes
-(24 h), aunque sean terminales, y junto al grupo retenido muestra
+ni procedencia de cancelación. El panel conserva esas interrupciones mientras existan la tarea y su identidad
+atribuida, aunque sean terminales o tengan más de 24 h; no aplica un tope de 64.
+La espera automática de cuotas/Docker se muestra como espera con reanudación
+automática, sin instrucciones manuales. Junto al grupo realmente retenido muestra
 **«Retenido al reiniciar: <motivo> · resolver con control.py reanudar <grupo>»**.
-No incorpora botón. `default` vacío sigue oculto.
+No incorpora botón ni repite la instrucción SSH en la cabecera. `default` vacío
+sigue oculto; una terminal atribuida al reinicio lo hace visible.
 
 Felix revisa la causa y resuelve por el SSH existente, por ejemplo:
 
@@ -553,7 +560,11 @@ servicio compartido. Conservar respaldo SQLite mediante `backup` bajo
    propias, `daemon.env_vars` complejo o `shell_command` explícito se rechazan,
    también en seco, **antes** de copiar, detener, tocar unidades o linger.
    No se arregla la configuración borrando campos. El mismo validador se usa
-   en el preparador. El preflight comprueba también la cola, perfil y PID vivo.
+   en el preparador. El instalador consulta sólo las claves de rutas XDG/PUEUE del
+   entorno del gestor (`systemctl --user show-environment`) y usa HOME como cwd,
+   igual que la unidad. No usa el cwd ni las rutas XDG de la consola instaladora.
+   El preflight comprueba también la cola, perfil y PID vivo, ambos binarios y
+   MainPID/ActiveState antes de cualquier efecto.
 2. Bajo `control.lock`, migrar aditivamente `startup_version=1`. Conservar deseo,
    modo, adelanto, ajustes, revisión, vencimientos y todos los recibos. Recibos
    applying/partial/unknown rechazan sin efectos, incluso con esquema ya vigente.
@@ -562,7 +573,11 @@ servicio compartido. Conservar respaldo SQLite mediante `backup` bajo
 3. La instalación crea `maintenance` antes de detener **primero timers**, después
    guardia/modo. Publica controlador y las cinco unidades, guarda copias
    `.pre-u34`, hace `daemon-reload` y conserva el MainPID. No para ni reinicia
-   `pueued`. El preparador se estrenará en el siguiente arranque natural.
+   `pueued`. Antes de retirar mantenimiento comprueba lo efectivamente cargado:
+   mismo MainPID y ActiveState, NeedDaemonReload=no, Restart=always, KillMode=mixed
+   y la ruta/argumentos del ExecStartPre entregado. Un drop-in divergente hace
+   fallar la instalación y conserva mantenimiento. El preparador se estrenará
+   en el siguiente arranque natural.
    Sólo retira sus propias marcas tras comprobar el deseo y reactiva timers;
    un mantenimiento previo, incluido un enlace roto, se conserva. Ante fallo,
    deja mantenimiento y cuotas apagadas para completar o revertir explícitamente.
@@ -589,7 +604,8 @@ servicio compartido. Conservar respaldo SQLite mediante `backup` bajo
 Para una parada de mantenimiento explícita, `withdraw-desk.sh` crea la marca
 bajo el candado, detiene los timers, detiene guardia/modo, deshabilita disparadores
 y para el daemon al final. Conserva cola, autoridad y unidades. La marca impide
-que guardia/timer o Requires reactiven el daemon. No usarlo con trabajo ajeno
+que guardia/timer reactiven el daemon. Requisite (además de la marca y After)
+impide que un timer arranque el daemon ausente. No usarlo con trabajo ajeno
 como ensayo de esta entrega.
 
 Para revertir **antes del próximo arranque**, crear/conservar maintenance,
@@ -616,9 +632,13 @@ fsync no cambia el save de Pueue. SIGKILL no acredita durabilidad ante apagón.
 Pruebas dirigidas: `tests/test_startup.py`, `tests/mutate_startup.py`,
 `fleet/rack/tests/test_startup.py` y `fleet/rack/tests/check_mutations.py --startup-only`.
 `tests/test_private.py --run-private` se ejecuta sólo dentro de remote-run en el
-desk: daemon/config/data/PID privados y unidades transitorias `pao-u34-sol-*`,
+desk: daemon/config/data/PID privados y unidades transitorias `pao-u34-injerto-*`,
 con limpieza y comprobación al terminar. Acredita restauración stock y orden
-ExecStartPre → daemon → guardia, y Restart=always tras una salida correcta.
+ExecStartPre → daemon → guardia, Restart=always tras una salida correcta,
+propiedades leídas de la unidad entregada con RestartSec=5, SIGKILL del MainPID
+verificado, retiro de hijos de su cgroup y cola corrupta que reintenta. La vaciedad
+del cgroup tras detener se exige por aserción; se limpian sólo nombres exactos
+de esta corrida, nunca por prefijo.
 No reinicia WSL, Windows ni el servicio productivo. El arranque de Windows/WSL
 queda como verificación separada del orquestador. Reinicios de la Mini quedan
 para U3.5.

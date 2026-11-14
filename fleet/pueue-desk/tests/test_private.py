@@ -1,7 +1,7 @@
 """U3.4 acceptance. Only --run-private inside an authorized desk remote-run.
 
 Never imports HOME config or starts production units. Every Pueue argv pins
---config. Transient services use only pao-u34-sol-* and are stopped in finally.
+--config. Transient services use only pao-u34-injerto-* and are stopped in finally.
 """
 import argparse
 import importlib.util
@@ -9,6 +9,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -26,7 +27,7 @@ def main():
     args=parser.parse_args()
     if args.unit_worker:
         return worker(args.root,args.unit_worker)
-    root=Path.cwd()/'private-u34-sol';root.mkdir()
+    root=Path.cwd()/'private-u34-injerto';root.mkdir()
     pueue=Path.home()/'.local/bin/pueue';daemon=Path.home()/'.local/bin/pueued'
     data=root/'data';data.mkdir();pid=data/'pid';config=root/'config.json'
     config.write_text(json.dumps(dict(shared=dict(pueue_directory=str(data),runtime_directory=str(data),
@@ -41,7 +42,8 @@ def main():
             return subprocess.run([str(pueue),'--config',str(config),*map(str,argv)],check=True,
                                   capture_output=True,text=True,timeout=8,env=env).stdout
     p=Private();engine=control.MiniControl(p,root/'control',host='desk')
-    process=None;unit='pao-u34-sol-'+str(os.getpid())+'.service';guard_unit=unit.replace('.service','-guard.service')
+    process=None;unit='pao-u34-injerto-'+str(os.getpid())+'.service';guard_unit=unit.replace('.service','-guard.service')
+    cgroup_directory=None
     output=(root/'daemon.log').open('a')
     def wait_for(predicate, seconds=12):
         until=time.monotonic()+seconds
@@ -52,6 +54,22 @@ def main():
             except (OSError,subprocess.SubprocessError,ValueError):pass
             time.sleep(.1)
         raise AssertionError('private wait expired')
+    def show(*keys):
+        raw=subprocess.run(['systemctl','--user','show',unit,*[a for k in keys for a in ('-p',k)]],text=True,capture_output=True).stdout
+        return dict(line.split('=',1) for line in raw.splitlines() if '=' in line)
+    def verified_main_pid():
+        main=int(show('MainPID')['MainPID'])
+        assert main>1 and Path('/proc',str(main),'comm').read_text().strip()=='pueued'
+        assert unit in Path('/proc',str(main),'cgroup').read_text()
+        assert int(pid.read_text())==main
+        return main
+    def cgroup_pids():
+        nonlocal cgroup_directory
+        group=show('ControlGroup').get('ControlGroup','')
+        if group:cgroup_directory=Path('/sys/fs/cgroup')/group.lstrip('/')
+        if cgroup_directory is None:return []  # failure before our transient service existed
+        base=cgroup_directory  # inspect the original cgroup even after systemd collected the unit
+        return sorted({int(p) for file in base.rglob('cgroup.procs') for p in file.read_text().split()}) if base.exists() else []
     def start():
         nonlocal process
         process=subprocess.Popen([str(daemon),'--config',str(config)],stdout=output,stderr=output,env=env)
@@ -119,19 +137,29 @@ def main():
         pre=shlex.join(worker_base+['--unit-worker','prepare'])
         stop=shlex.join(worker_base+['--unit-worker','stop'])
         start_command=[str(daemon),'--config',str(config)]
-        unitfile=root/'unit.txt'
-        unitfile.write_text('[Unit]\nStartLimitIntervalSec=0\n[Service]\nExecStartPre='+pre+'\nExecStart='+shlex.join(start_command)+'\nExecStop=-'+stop+'\nRestart=always\nRestartSec=1\nKillMode=mixed\n')
-        # systemd-run accepts ExecStartPre as a service property. All units transient.
+        # Read delivered properties rather than using test-only restart delays.
+        delivered=(BASE/'units/pueued.service').read_text().replace('@HOME@',str(root))
+        properties={}
+        for line in delivered.splitlines():
+            if '=' in line and not line.startswith('#'):
+                key,value=line.split('=',1);properties[key]=value
+        assert properties['Restart']=='always' and properties['RestartSec']=='5'
+        assert properties['KillMode']=='mixed' and properties['StartLimitIntervalSec']=='0'
+        assert 'control.py preparar --host desk' in properties['ExecStartPre']
+        assert 'control.py parada --host desk' in properties['ExecStop']
+        emit('delivered_unit',properties={k:properties[k] for k in ('Restart','RestartSec','KillMode','StartLimitIntervalSec','ExecStartPre','ExecStop')})
+        props={k:properties[k] for k in ('Restart','RestartSec','KillMode','StartLimitIntervalSec','WorkingDirectory','StandardOutput','StandardError')}
+        props.update(ExecStartPre=pre,ExecStop=stop,ConditionPathExists='!'+str(engine.directory/'maintenance'))
+        (root/'unit.txt').write_text(delivered)
         units_created.append(unit)
-        subprocess.run(['systemd-run','--user','--unit',unit,'--property=Restart=always','--property=RestartSec=1',
-                        '--property=StartLimitIntervalSec=0','--property=KillMode=mixed','--property=ExecStartPre='+pre,
-                        '--property=ExecStop='+stop,*start_command],check=True,capture_output=True,text=True)
+        subprocess.run(['systemd-run','--user','--unit',unit,
+                        *['--property='+k+'='+v for k,v in props.items()],*start_command],check=True,capture_output=True,text=True)
         wait_for(lambda:p.status())
-        first_pid=int(pid.read_text());assert first_pid>1
+        first_pid=verified_main_pid()
         # Guard is ordered After/Requires this private service, never a real unit.
         units_created.append(guard_unit)
         subprocess.run(['systemd-run','--user','--unit',guard_unit,'--property=Type=oneshot',
-                        '--property=After='+unit,'--property=Requires='+unit,
+                        '--property=After='+unit,'--property=Requisite='+unit,
                         *worker_base,'--unit-worker','guard'],check=True,capture_output=True,text=True)
         wait_for(lambda:(root/'guard-observed').exists())
         assert (root/'prepare-observed').exists()
@@ -140,19 +168,54 @@ def main():
         wait_for(lambda:pid.exists() and int(pid.read_text())!=first_pid)
         second_pid=int(pid.read_text());wait_for(lambda:p.status())
         assert second_pid!=first_pid
-        properties=subprocess.check_output(['systemctl','--user','show',unit,'-p','MainPID','-p','NRestarts','-p','Restart','-p','KillMode'],text=True)
-        emit('systemd_PASS',pre_daemon_guard_order=True,successful_exit_restarted=True,properties=properties.strip())
+        properties=show('MainPID','NRestarts','Restart','RestartUSec','KillMode','ExecStartPre','NeedDaemonReload')
+        assert properties['RestartUSec']=='5s' and properties['Restart']=='always' and properties['KillMode']=='mixed'
+        assert properties['NeedDaemonReload']=='no' and 'prepare' in properties['ExecStartPre']
+        emit('systemd_PASS',pre_daemon_guard_order=True,successful_exit_restarted=True,properties=properties)
+        # A child in the service cgroup must be retired after MainPID SIGKILL.
+        child=root/'child.py'
+        child.write_text('import os,pathlib,time\np=pathlib.Path('+repr(str(root)) + ')\n(p/"child-pid").write_text(str(os.getpid()))\nend=time.monotonic()+90\nwhile not (p/"child-release").exists() and time.monotonic()<end:time.sleep(.1)\n')
+        p.call('start','-g','jale')
+        interrupted=add('python3 '+shlex.quote(str(child)))
+        wait_for(lambda:(root/'child-pid').exists())
+        child_pid=int((root/'child-pid').read_text())
+        assert child_pid in cgroup_pids(), 'child must belong to private unit'
+        p.call('pause','--wait','-g','hasito')  # stock persists the Running status
+        old=verified_main_pid();os.kill(old,signal.SIGKILL)
+        wait_for(lambda:pid.exists() and int(pid.read_text())!=old,seconds=35)
+        wait_for(lambda:p.status())
+        new=verified_main_pid()
+        assert new!=old and child_pid not in cgroup_pids()
+        assert p.status()['tasks'][interrupted]['status']['Done']['result']=='Killed'
+        assert all(g['status']=='Paused' for g in p.status()['groups'].values())
+        emit('SIGKILL_cgroup_PASS',killed_main=old,new_main=new,retired_child=child_pid,cgroup_pids=cgroup_pids())
         # A completed transient oneshot is already garbage-collected by systemd.
         subprocess.run(['systemctl','--user','stop',guard_unit],check=False,capture_output=True,text=True)
         subprocess.run(['systemctl','--user','stop',unit],check=True,capture_output=True,text=True)
         wait_for(lambda:not pid.exists() or subprocess.run(['/bin/ps','-p',pid.read_text().strip(),'-o','comm='],capture_output=True).returncode==1)
+        assert cgroup_pids()==[],cgroup_pids()
+        emit('stopped_cgroup_empty',pids=cgroup_pids())
+        # Re-use only our exact unit name after collection, with a corrupt queue.
+        subprocess.run(['systemctl','--user','reset-failed',unit],check=False,capture_output=True,text=True)
+        saved=(data/'state.json').read_bytes();(data/'state.json').write_bytes(b'{"tasks":')
+        wait_for(lambda:subprocess.run(['systemctl','--user','show',unit,'-p','LoadState','--value'],capture_output=True,text=True).stdout.strip()=='not-found')
+        subprocess.run(['systemd-run','--user','--unit',unit,
+                        *['--property='+k+'='+v for k,v in props.items()],*start_command],check=True,capture_output=True,text=True)
+        wait_for(lambda:int(show('NRestarts')['NRestarts'])>=2,seconds=40)
+        assert (data/'state.json').read_bytes()==b'{"tasks":'
+        assert int(show('MainPID')['MainPID'])==0
+        emit('corrupt_queue_retries_PASS',properties=show('NRestarts','MainPID','RestartUSec'),cgroup_pids=cgroup_pids())
+        subprocess.run(['systemctl','--user','stop',unit],check=True,capture_output=True,text=True)
+        assert cgroup_pids()==[],cgroup_pids()
+        (data/'state.json').write_bytes(saved)
         emit('PASS',windows_boot_not_claimed=True)
     finally:
-        (root/'release').touch()
+        (root/'release').touch();(root/'child-release').touch()
         for name in reversed(units_created):
             subprocess.run(['systemctl','--user','stop',name],check=False,capture_output=True,text=True)
             subprocess.run(['systemctl','--user','reset-failed',name],check=False,capture_output=True,text=True)
         stop_process()
+        assert cgroup_pids()==[],cgroup_pids()
         listing=subprocess.check_output(['systemctl','--user','list-units','pao-u34-*','--no-legend','--no-pager'],text=True)
         own=[line for line in listing.splitlines() if unit in line or guard_unit in line]
         emit('cleanup',popen_reaped=process is None or process.poll() is not None,own_units=own)

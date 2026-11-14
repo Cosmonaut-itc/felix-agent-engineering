@@ -14,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sqlite3
 import re
+import shlex
 import sys
 import time
 
@@ -107,13 +108,14 @@ def validate_limit(value):
 
 
 class Pueue:
-    def __init__(self, binary=None):
+    def __init__(self, binary=None, env=None, cwd=None):
         self.binary = str(binary or Path.home() / ".local/bin/pueue")
         self.timeout = None
+        self.context = dict(env=env, cwd=cwd) if env is not None else {}
 
     def call(self, *args):
         return subprocess.run([self.binary, *map(str, args)], check=True,
-                              text=True, capture_output=True, timeout=self.timeout).stdout
+                              text=True, capture_output=True, timeout=self.timeout, **self.context).stdout
 
     def status(self):
         state = json.loads(self.call("status", "--json"))
@@ -461,15 +463,37 @@ def default_data(home=None):
     return Path(os.environ.get("XDG_DATA_HOME", str(home / ".local/share"))) / "pueue"
 
 
-def validate_configuration(home=None, config_path=None, data=None, pid_file=None, pueue=None, daemon=None):
+MANAGER_KEYS = ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'PUEUE_CONFIG_PATH')
+
+
+def manager_environment(text):
+    """Only path settings from systemctl show-environment; never log its contents."""
+    env = {}
+    for line in text.splitlines():
+        key = line.split('=', 1)[0]
+        if key not in MANAGER_KEYS:
+            continue
+        words = shlex.split(line)
+        if len(words) != 1 or words[0].startswith("$'") or '=' not in words[0]:
+            raise ValueError('Entorno de systemd ambiguo para ' + key)
+        name, value = words[0].split('=', 1)
+        env[name] = value
+    return env
+
+
+def validate_configuration(home=None, config_path=None, data=None, pid_file=None, pueue=None, daemon=None,
+                           env=None, cwd=None):
     """Sólo valida; no escribe ni genera un pueue.yml administrado.
 
     Acepta JSON y el YAML expandido simple que emite Pueue. Ante sintaxis
     ambigua falla cerrado: no intenta adivinar dónde vive la cola.
     """
     home = home or Path.home()
-    data = data or default_data(home)
-    runtime = os.environ.get('XDG_RUNTIME_DIR') if sys.platform != 'darwin' else None
+    env = os.environ if env is None else env
+    cwd = Path.cwd() if cwd is None else Path(cwd)
+    data = data or (default_data(home) if sys.platform == 'darwin' else
+                    Path(env.get('XDG_DATA_HOME', str(home / '.local/share'))) / 'pueue')
+    runtime = env.get('XDG_RUNTIME_DIR') if sys.platform != 'darwin' else None
     pid_file = pid_file or (Path(runtime) if runtime else data) / 'pueue.pid'
     pueue = pueue or home / '.local/bin/pueue'
     daemon = daemon or home / '.local/bin/pueued'
@@ -477,14 +501,14 @@ def validate_configuration(home=None, config_path=None, data=None, pid_file=None
         if subprocess.check_output([str(binary), '--version'], text=True, timeout=5).strip() != expected:
             raise ValueError('Se requiere Pueue estándar 4.0.4')
     for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"):
-        if key in os.environ and not Path(os.environ[key]).is_absolute():
+        if key in env and not Path(env[key]).is_absolute():
             raise ValueError(f"{key} debe ser absoluto para compartir rutas con Pueue")
     config_dir = (default_data() if sys.platform == "darwin" else
-                  Path(os.environ.get("XDG_CONFIG_HOME", str(home / ".config"))) / "pueue")
+                  Path(env.get("XDG_CONFIG_HOME", str(home / ".config"))) / "pueue")
     standard = config_dir / "pueue.yml"
-    if config_path is None and os.environ.get("PUEUE_CONFIG_PATH"):
+    if config_path is None and env.get("PUEUE_CONFIG_PATH"):
         raise ValueError("PUEUE_CONFIG_PATH personalizado no se admite en el host")
-    source = config_path or (standard if standard.exists() else Path.cwd() / "pueue.yml")
+    source = config_path or (standard if standard.exists() else cwd / "pueue.yml")
     if not source.exists():
         return dict(data=data, pid_file=pid_file)
     text = source.read_text()
@@ -920,8 +944,10 @@ class MiniControl:
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
             reason=None if enabled else 'Los ajustes de lugares están apagados en este host.',
             recovery_pending=bool(pending) or generation != state['generation'],
-            startup_holds={g:state.get('startup', {}).get('holds', {}).get(g, 'esperando cuotas y sensores')
-                           for g,r in state['reasons'].items() if 'startup' in r},
+            startup_holds={g:state.get('startup', {}).get('holds', {}).get(g, 'pausa manual' if 'manual' in r else 'pausa de origen desconocido')
+                           for g,r in state['reasons'].items() if 'startup' in r and set(r) & {'manual', 'ambiguous'}},
+            startup_waiting={g:'cuotas_sensores' for g,r in state['reasons'].items()
+                             if 'startup' in r and not set(r) & {'manual', 'ambiguous'}},
             pause_reasons=state['reasons'], pending_actions=[a['request']['action_id'] for a in pending], **extra)
 
     def reply(self, request, status, code=None, **fields):
@@ -1258,9 +1284,11 @@ class MiniControl:
             if os.path.lexists(self.pause_fence(g)):
                 reasons.add('manual')
             status = groups[g]['status']
-            if status == 'Running' and 'pressure' in reasons:
+            if status == 'Running' and reasons & {'pressure', 'startup'}:
                 # An external start ends our ownership, even in hysteresis.
                 reasons.discard('pressure')
+                reasons.discard('startup')
+                state.get('startup', {}).get('holds', {}).pop(g, None)
                 state['reasons'][g] = sorted(reasons)
                 try:
                     with self.connect(write=True) as db:
@@ -1341,6 +1369,9 @@ class MiniControl:
         return self.resolve(state) == state
 
     def manual(self, group, resume=False):
+        # Existing foreign groups may be resolved without joining the quota profile.
+        if self.host == 'desk' and group not in self.pueue.status()['groups']:
+            raise ValueError('Grupo inexistente; no se crea al reanudar')
         with self.connect() as db:
             state = self.state(db)
         if resume:
@@ -1389,7 +1420,8 @@ def main():
     if args.seco and args.command != 'preparar':
         parser.error('--seco sólo para preparar; rack usa dry_run')
     groups = MINI_GROUPS if args.host == "mini" else GROUP_LIMITS
-    if args.group is not None and args.group not in groups and not (args.command == 'retirar' and args.group in ('suites', 'pg5434')):
+    foreign_resume = args.host == 'desk' and args.command == 'reanudar'
+    if args.group is not None and args.group not in groups and not foreign_resume and not (args.command == 'retirar' and args.group in ('suites', 'pg5434')):
         parser.error("grupo desconocido para el host")
     if args.host == "mini" and args.command == "aplicar":
         parser.error("La Mini sólo admite guardia y pausa manual")

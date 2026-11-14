@@ -84,3 +84,83 @@ class StartupUITests(unittest.TestCase):
 
 
 if __name__=='__main__':unittest.main()
+
+
+class StartupPipelineTests(unittest.TestCase):
+    def fixture(self, normal=False):
+        # Production planner/view, collect, validation and publication. Every host
+        # boundary is injected; no fixture bypasses the terminal publication filter.
+        import threading
+        from unittest.mock import Mock
+        test=desk_tests.DeskChannelTests();test.setUp()
+        try:
+            c=desk_tests.control
+            home=test.root
+            controller=home/'.local/lib/pao-pueue-desk/control.py'
+            controller.parent.mkdir(parents=True);controller.write_text('# injected read only')
+            with test.engine.connect() as db:state=test.engine.state(db)
+            groups=copy.deepcopy(test.p.groups)
+            groups.update(default=dict(status='Running',parallel_tasks=1))
+            if not normal:groups['suites']=dict(status='Paused',parallel_tasks=3)
+            raw=dict(id=1,group='default',created_at=STAMP,path=str(home/'synthetic'),envs={},command='synthetic',original_command='synthetic',priority=0,
+                     dependencies=[],label=None,status={'Running':dict(enqueued_at=STAMP,start=STAMP)})
+            queue=dict(tasks={} if normal else {'1':raw},groups=groups)
+            if not normal:
+                state,queue=c.startup_plan(queue,state,test.now,home,c.GROUP_LIMITS)
+                state['startup']['phase']='ready'
+                state['startup_version']=1
+                # Preserve a specific safe message, exercising HTML escaping.
+                state['startup']['holds']['suites']='pausa de origen desconocido <script>'
+            test.p.groups=copy.deepcopy(queue['groups'])
+            with test.engine.connect(write=True) as db:test.engine.store(db,state)
+            authority=home/'.local/state/pao/pueue-desk/control.sqlite3'
+            authority.parent.mkdir(parents=True)
+            with test.engine.connect() as db:
+                with sqlite3.connect(str(authority)) as target:db.backup(target)
+            view=test.engine.view()
+            with patch.object(snapshot,'command',return_value=json.dumps(queue)),patch.object(snapshot,'read_control',return_value=view), \
+                 patch.object(snapshot,'linux_capacity',return_value=(dict(cores=12,load=[1,1,1]),dict(total=32*1024**3,available=24*1024**3,swap_total=0,swap_used=0))), \
+                 patch.object(snapshot,'desk_guard',return_value=None),patch.object(snapshot,'disk',return_value=None):
+                collected=snapshot.collect('linux','desk',pueue='/synthetic/pueue',home=home,now=test.now)
+            try:collected=serve.validate_snapshot(collected,'desk')
+            except ValueError as error:self.fail('Production pipeline produced an invalid snapshot: '+str(error))
+            cache=serve.Rack.__new__(serve.Rack)
+            cache.hosts=[dict(id='desk',name='Felix DESKTOP · WSL',transport='ssh')]
+            cache.good={'desk':collected};cache.errors={};cache.lock=threading.Lock();cache.tickets={}
+            cache.history=Mock();cache.history.estimate.return_value=None
+            cache.publish(test.now)
+            return cache.payload
+        finally:test.doCleanups()
+
+    def render(self, scenario):
+        source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
+        result=subprocess.run(['node',str(BASE/'tests/slots-ui-check.js')],input=json.dumps(dict(js=source,fixture=self.fixture(),scenario=scenario)),
+                              text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+
+    def test_a_w4_snapshot_validate_publish_render_default_interrupted_and_empty_hidden(self):
+        self.assertEqual([t['id'] for t in self.fixture()['hosts'][0]['snapshot']['tasks']],[1])
+        self.render('startup-default')
+
+    def test_a_w5_pipeline_six_waits_one_hold_and_no_redundant_ssh(self):
+        self.render('startup-waits')
+
+    def test_wait_codes_are_closed_and_disjoint_from_holds(self):
+        view=self.fixture()['hosts'][0]['snapshot']['control']
+        self.assertEqual(view.get('startup_waiting'),{g:'cuotas_sensores' for g in desk_tests.control.GROUP_LIMITS})
+        for value in ([],{'jale':'<script>'},{'suites':'cuotas_sensores'}):
+            with self.assertRaises(ValueError):serve.accion.host_channel.control(dict(view,startup_waiting=value),'desk')
+
+    def test_attributed_interruption_survives_ordinary_terminal_age_cutoff(self):
+        test=StartupSnapshotTests();test.setUp()
+        try:
+            authority=test.root/'.local/state/pao/pueue-desk/control.sqlite3';authority.parent.mkdir(parents=True)
+            with sqlite3.connect(str(authority)) as db:
+                db.execute('CREATE TABLE policy(id INTEGER PRIMARY KEY,body TEXT)')
+                db.execute('INSERT INTO policy VALUES(1,?)',(json.dumps(dict(startup=dict(interruptions={'1':dict(created_at=STAMP,message=MESSAGE)}))),))
+            raw=dict(id=1,group='default',created_at=STAMP,path='/synthetic',envs={},command='synthetic',original_command='synthetic',priority=0,
+                     status={'Done':dict(enqueued_at=STAMP,start=STAMP,end=STAMP,result='Killed')})
+            with patch.object(snapshot,'linux_capacity',return_value=None),patch.object(snapshot,'desk_guard',return_value=None):
+                data=snapshot.collect('linux','desk',pueue=test.fake_pueue({'1':raw}),home=test.root,now=1794664800+3*86400)
+            self.assertEqual([t['id'] for t in data['tasks'] if t.get('interruption_reason')],[1])
+        finally:test.doCleanups()

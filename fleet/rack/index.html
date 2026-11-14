@@ -171,7 +171,7 @@ function hostState(h){
 }
 const active = (h,n) => h.tasks.some(t => t.group === n && t.state !== 'Done');
 // default only shows while it has work; the Mini still counts its slot toward the cap.
-const groups = h => Object.entries(h.groups).filter(([n]) => n !== 'default' || active(h,n));
+const groups = h => Object.entries(h.groups).filter(([n]) => n !== 'default' || active(h,n) || h.tasks.some(t=>t.group===n && t.interruption_reason));
 const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
 const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>b.priority-a.priority || a.id-b.id);
 const slotsTotal = h => Object.entries(h.groups).filter(([n]) => h.id==='mini' || n !== 'default' || active(h,n)).reduce((a,[,g])=>a+g.slots,0);
@@ -231,7 +231,8 @@ function fila(h, n, w){
 
 function startupHold(h,n){
   const reason=h.control?.startup_holds?.[n];
-  return reason ? `<p class="startup-hold muted" role="status">${esc('Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n)}</p>` : '';
+  if(reason) return `<p class="startup-hold muted" role="status">${esc('Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n)}</p>`;
+  return h.control?.startup_waiting?.[n]==='cuotas_sensores' ? '<p class="startup-wait muted" role="status">Esperando cuotas y Docker · reanudación automática</p>' : '';
 }
 function interrupted(h,n){
   const rows=h.tasks.filter(t=>t.group===n && t.state==='Done' && t.interruption_reason);
@@ -317,8 +318,6 @@ function hostControlMessage(h){
   if((a?.status==='partial' || c?.drift) && desired){
     message+=' · '+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
   }
-  if(c?.pause_reasons && Object.values(c.pause_reasons).some(r=>r.includes('ambiguous')))
-    message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
   return message;
 }
 function hostControlState(h){

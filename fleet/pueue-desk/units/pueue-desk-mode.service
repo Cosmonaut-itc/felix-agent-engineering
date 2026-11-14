@@ -1,6 +1,6 @@
 [Unit]
 Description=Aplicar cuotas vigentes UTC del desk
-Requires=pueued.service
+Requisite=pueued.service
 After=pueued.service
 ConditionPathExists=!@HOME@/.local/state/pao/pueue-desk/maintenance
 

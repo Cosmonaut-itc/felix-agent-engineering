@@ -121,6 +121,11 @@ def control(value, host='mini'):
     if (type(holds) is not dict or any(type(g) is not str or type(r) is not str or not 1 <= len(r) <= 300 for g,r in holds.items())):
         raise ValueError('Retención de arranque inválida')
     result['startup_holds'] = holds
+    waiting = value.get('startup_waiting', {})
+    if (type(waiting) is not dict or any(type(g) is not str or code != 'cuotas_sensores'
+            or g in holds for g,code in waiting.items())):
+        raise ValueError('Espera de arranque inválida')
+    result['startup_waiting'] = waiting
     if host == 'desk':
         foreign = value.get('foreign_work', 0)
         if type(foreign) is not int or foreign < 0:

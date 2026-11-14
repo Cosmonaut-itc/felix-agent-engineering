@@ -2,6 +2,7 @@
 import copy
 import importlib.util
 import io
+import inspect
 import json
 from pathlib import Path
 import sqlite3
@@ -405,14 +406,29 @@ class InstallerStartupTests(unittest.TestCase):
         (self.data/'state.json').write_text(json.dumps(dict(tasks={},groups=self.p.groups)))
         self.syscalls=[]
         original_validator=control.validate_configuration
-        def validate(home=None):
+        def validate(home=None, **context):
+            supported = inspect.signature(original_validator).parameters
+            context = {k:v for k,v in context.items() if k in supported}
             return original_validator(home=self.home,config_path=self.config,data=self.data,pid_file=self.pid,
-                                      pueue=self.home/'pueue',daemon=self.home/'pueued')
+                                      pueue=self.home/'pueue',daemon=self.home/'pueued', **context)
+        self.original_validator=original_validator
+        self.manager=''
+        self.loaded_overrides={}
+        def systemctl(*args):
+            self.syscalls.append(args)
+            if args[2]=='show-environment':return subprocess.CompletedProcess(args,0,self.manager,'')
+            if args[2]=='show':
+                values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',
+                    ExecStartPre='/usr/bin/python3 -I '+str(self.library/'control.py')+' preparar --host desk')
+                if any(c[2]=='daemon-reload' for c in self.syscalls):values.update(self.loaded_overrides)
+                return subprocess.CompletedProcess(args,0,''.join(k+'='+v+'\n' for k,v in values.items()),'')
+            return subprocess.CompletedProcess(args,0,'','')
+        self.systemctl=systemctl
         for manager in (patch.object(control,'validate_configuration',side_effect=validate),
                         patch.object(control,'Pueue',return_value=self.p),
                         patch.object(control,'MiniControl',return_value=self.engine),
                         patch.object(control,'mini_generation',return_value='live-original'),
-                        patch.object(self.installer,'run',side_effect=lambda *a:self.syscalls.append(a))):
+                        patch.object(self.installer,'run',side_effect=systemctl)):
             manager.start();self.addCleanup(manager.stop)
 
     def fingerprint(self):return {str(p.relative_to(self.home)):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
@@ -424,7 +440,7 @@ class InstallerStartupTests(unittest.TestCase):
                 self.config.write_text(text);before=self.fingerprint();self.syscalls.clear()
                 with self.assertRaises(ValueError):self.installer.install(self.home,self.pid,control,dry_run=dry)
                 self.assertEqual(self.fingerprint(),before)
-                self.assertEqual(self.syscalls,[])
+                self.assertTrue(all(c[2]=='show-environment' for c in self.syscalls))
                 self.assertEqual(self.engine.generation(None),'live-original')
                 self.assertEqual(self.p.calls,[])
 
@@ -438,7 +454,7 @@ class InstallerStartupTests(unittest.TestCase):
             for dry in (True,False):
                 with self.assertRaises(ValueError):self.installer.install(self.home,self.pid,control,dry_run=dry)
                 self.assertEqual(self.fingerprint(),before)
-                self.assertTrue(all(c[2]=='is-active' for c in self.syscalls))
+                self.assertTrue(all(c[2] in ('is-active','show-environment') for c in self.syscalls))
                 self.assertEqual(self.p.calls,[])
 
     def test_additive_install_keeps_pid_desire_receipts_and_loads_unit_without_restart(self):
@@ -448,7 +464,7 @@ class InstallerStartupTests(unittest.TestCase):
         self.assertEqual(after,dict(before,startup_version=1))
         self.assertTrue((self.home/'.config/systemd/user/pueued.service').is_file())
         self.assertIn(('systemctl','--user','daemon-reload'),self.syscalls)
-        self.assertFalse(any('pueued.service' in c for c in self.syscalls))
+        self.assertFalse(any('pueued.service' in c and c[2]!='show' for c in self.syscalls))
         stops=[c for c in self.syscalls if c[2]=='stop']
         self.assertEqual(stops,[('systemctl','--user','stop',*self.installer.TIMERS),('systemctl','--user','stop',*self.installer.SERVICES)])
         self.assertFalse((self.directory/'maintenance').exists())
@@ -463,8 +479,8 @@ class InstallerStartupTests(unittest.TestCase):
 
     def test_failure_after_unit_publication_retains_maintenance_and_stops_timers(self):
         def run(*args):
-            self.syscalls.append(args)
             if args[2]=='daemon-reload':raise OSError('injected systemd failure')
+            return self.systemctl(*args)
         with patch.object(self.installer,'run',side_effect=run):
             with self.assertRaises(OSError):self.installer.install(self.home,self.pid,control)
         self.assertTrue((self.directory/'maintenance').exists())

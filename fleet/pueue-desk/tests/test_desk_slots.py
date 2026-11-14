@@ -603,6 +603,13 @@ class DeskSlotsTests(DeskFixture):
 
 
 class DeskInstallTests(DeskFixture):
+    def systemctl(self, home, commands, *args):
+        commands.append(args)
+        values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',
+                    ExecStartPre='/usr/bin/python3 -I '+str(home/'.local/lib/pao-pueue-desk/control.py')+' preparar --host desk')
+        text=''.join(k+'='+v+'\n' for k,v in values.items()) if args[2]=='show' else ''
+        return subprocess.CompletedProcess(args,0,text,'')
+
     def setUp(self):
         super().setUp()
         # Installation tests inject the new read-only binary/config/queue gate.
@@ -650,7 +657,7 @@ class DeskInstallTests(DeskFixture):
                         patch.object(new, 'MiniControl', side_effect=factory),
                         patch.object(new, 'mini_generation', return_value=self.gen),
                         patch.object(installer, 'SOURCE', candidate),
-                        patch.object(installer, 'run', side_effect=lambda *a:commands.append(a))):
+                        patch.object(installer, 'run', side_effect=lambda *a:self.systemctl(home,commands,*a))):
             manager.start(); self.addCleanup(manager.stop)
         return installer, new, home, engine, factory(self.p, directory, host='desk'), target, commands
 
@@ -697,7 +704,7 @@ class DeskInstallTests(DeskFixture):
             self.assertEqual(db.execute('SELECT * FROM host_actions').fetchall(), receipt)
         self.assertEqual(target.read_bytes(), (installer.SOURCE/'control.py').read_bytes())
         self.assertFalse((engine.directory/'slots.disabled').exists())
-        self.assertFalse(any('pueued.service' in c for c in commands))
+        self.assertFalse(any('pueued.service' in c and c[2]!='show' for c in commands))
 
     def test_table_migration_rejects_open_receipts_and_corrupt_authority_without_effects(self):
         installer, new, home, old, engine, target, commands = self.migration_fixture()
@@ -727,7 +734,7 @@ class DeskInstallTests(DeskFixture):
                             installer.install(home, self.root/'pid', new, dry_run=dry_run)
                         self.assertEqual(self.fingerprint(), fingerprint)
                         self.assertEqual(self.p.calls, [])
-                        self.assertTrue(all(c[2] == 'is-active' for c in commands))
+                        self.assertTrue(all(c[2] in ('is-active','show-environment','show') for c in commands))
                 finally:
                     with old.connect(write=True) as db:
                         db.execute('INSERT OR REPLACE INTO policy VALUES (1,?)', (control.canonical(valid),))
@@ -800,12 +807,12 @@ class DeskInstallTests(DeskFixture):
                 return out.getvalue()
         with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
              patch.object(control, 'mini_generation', return_value=self.gen) as pid, \
-             patch.object(installer, 'run', side_effect=lambda *a:commands.append(a)) as run:
+             patch.object(installer, 'run', side_effect=lambda *a:self.systemctl(home,commands,*a)) as run:
             for invalid in ('table', 'pid', 'timer', 'corrupt', 'lost'):
                 with self.subTest(invalid=invalid):
                     self.p.groups['jale']['parallel_tasks'] = 6 if invalid == 'table' else 7
                     pid.side_effect = ValueError('wrong pid') if invalid == 'pid' else None
-                    run.side_effect = subprocess.CalledProcessError(3, ['fake-systemctl']) if invalid == 'timer' else lambda *a:commands.append(a)
+                    run.side_effect = subprocess.CalledProcessError(3, ['fake-systemctl']) if invalid == 'timer' else lambda *a:self.systemctl(home,commands,*a)
                     if invalid in ('corrupt', 'lost'):
                         directory.mkdir(parents=True, exist_ok=True)
                         (directory/('control.sqlite3' if invalid == 'corrupt' else 'control.adopted')).write_bytes(b'invalid')
@@ -816,11 +823,12 @@ class DeskInstallTests(DeskFixture):
                     for f in directory.glob('*'):
                         f.unlink()
             self.p.groups['jale']['parallel_tasks'] = 7
-            pid.side_effect = None; run.side_effect = lambda *a:commands.append(a)
+            pid.side_effect = None; run.side_effect = lambda *a:self.systemctl(home,commands,*a)
             commands.clear()
             before = self.fingerprint()
             output = invoke()
-            self.assertEqual(commands, [('systemctl','--user','is-active',n) for n in installer.TIMERS])
+            self.assertEqual([c for c in commands if c[2]=='is-active'], [('systemctl','--user','is-active',n) for n in installer.TIMERS])
+            self.assertTrue(all(c[2] in ('is-active','show-environment','show') for c in commands))
             pid.assert_called_with(self.root/'pid')
             self.assertIn('Comprobado (lectura)', output)
             self.assertIn('pendiente:', output)
@@ -853,6 +861,7 @@ class DeskInstallTests(DeskFixture):
                 if argv[3:] == installer.SERVICES:
                     retired.set(); release.set(); worker.join(2)
                     self.assertFalse(worker.is_alive())
+            return self.systemctl(home, [], *argv)
         try:
             with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
                  patch.object(control, 'mini_generation', return_value=self.gen), patch.object(installer, 'run', side_effect=run):
@@ -887,7 +896,7 @@ class DeskInstallTests(DeskFixture):
         factory=lambda p,d,**kw:Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         commands=[]
         with patch.object(control,'Pueue',return_value=self.p),patch.object(control,'MiniControl',side_effect=factory), \
-             patch.object(control,'mini_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:commands.append(a)):
+             patch.object(control,'mini_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,commands,*a)):
             installer.install(home,self.root/'pid',control)
             directory=home/'.local/state/pao/pueue-desk'
             engine=factory(self.p,directory,host='desk')
@@ -902,9 +911,10 @@ class DeskInstallTests(DeskFixture):
             before=target.read_bytes();engine.path.write_bytes(b'corrupt')
             commands.clear()
             with self.assertRaises(sqlite3.Error):installer.install(home,self.root/'pid',control)
-            self.assertEqual(commands,[('systemctl','--user','is-active',name) for name in installer.TIMERS])
+            self.assertEqual([c for c in commands if c[2]=='is-active'],[('systemctl','--user','is-active',name) for name in installer.TIMERS])
+            self.assertTrue(all(c[2] in ('is-active','show-environment','show') for c in commands))
             self.assertEqual(target.read_bytes(),before)
-        self.assertFalse(any('pueued.service' in c for c in commands))
+        self.assertFalse(any('pueued.service' in c and c[2]!='show' for c in commands))
         self.assertEqual((library/'control.pre-slots.py').read_text(),'# previous\n')
 
     def test_installer_preflight_mismatch_and_failure_keep_closed_recovery_path(self):
@@ -916,7 +926,7 @@ class DeskInstallTests(DeskFixture):
         factory=lambda p,d,**kw:Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         self.p.groups['jale']['parallel_tasks']=6
         with patch.object(control,'Pueue',return_value=self.p),patch.object(control,'MiniControl',side_effect=factory), \
-             patch.object(control,'mini_generation',return_value=self.gen),patch.object(installer,'run') as run:
+             patch.object(control,'mini_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,[],*a)) as run:
             with self.assertRaises(ValueError):installer.install(home,self.root/'pid',control)
             self.assertFalse((home/'.local/state').exists());self.assertEqual(target.read_text(),'# previous\n')
             self.p.groups['jale']['parallel_tasks']=7

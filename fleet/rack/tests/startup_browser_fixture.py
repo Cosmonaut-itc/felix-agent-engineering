@@ -1,17 +1,14 @@
-"""Offline HTML with synthetic data. No collector, server, or real host access."""
-import copy
+"""Offline HTML from synthetic collect -> validate -> publish. No real host."""
 import json
 from pathlib import Path
 import sys
-from test_startup import StartupUITests
+from test_startup import StartupPipelineTests
 from test_slots import BASE
 
 
 def main():
-    interrupted=StartupUITests().fixture()
-    normal=copy.deepcopy(interrupted)
-    h=normal['hosts'][0]['snapshot'];h['control']['startup_holds']={};h['control']['pause_reasons']={};h['tasks']=[]
-    for group in h['groups']:group['status']='Running'
+    interrupted=StartupPipelineTests().fixture()
+    normal=StartupPipelineTests().fixture(normal=True)
     scenarios=dict(interrumpida=interrupted,normal=normal)
     script='''
 window.useStartupScenario=function(name){
@@ -19,6 +16,7 @@ window.useStartupScenario=function(name){
   render(structuredClone(STARTUP_SCENARIOS[name]));
   return {scenario:name,width:innerWidth,scrollWidth:document.documentElement.scrollWidth,
     hold:document.querySelector('.startup-hold')?.textContent,
+    waits:document.querySelectorAll('.startup-wait').length,
     interrupted:document.querySelector('.interrupted')?.textContent};
 };
 window.fetch=async()=>{throw Error('Synthetic fixture: network forbidden')};

@@ -266,7 +266,7 @@ class DeploymentTests(Fixture):
                     self.assertEqual(self.pueue.status(),before)
                     self.assertFalse((self.root/'.config').exists())
                     self.assertFalse(any(c==['pueue','shutdown'] for c in self.calls()))
-                    self.assertFalse(any(c[0] in ('loginctl','systemctl') for c in self.calls()))
+                    self.assertFalse(any(c[0]=='loginctl' or c[0]=='systemctl' and 'show-environment' not in c for c in self.calls()))
 
     def test_legacy_owned_foreign_groups_do_not_block_other_groups(self):
         self.metrics(io_value=90)

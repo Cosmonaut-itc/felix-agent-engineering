@@ -460,8 +460,6 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                 state = task['status']
                 state, details = (state, {}) if isinstance(state, str) else next(iter(state.items()))
                 end = epoch(details.get('end'))
-                if state == 'Done' and (end is None or end < now - 86400):
-                    continue
                 result = details.get('result')
                 if isinstance(result, dict):
                     result = 'exit ' + str(result['Failed']) if 'Failed' in result else next(iter(result))
@@ -474,6 +472,8 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                 if (state == 'Done' and result == 'Killed' and interruption.get('created_at') == task.get('created_at')
                         and interruption.get('message') == 'Interrumpida al reiniciar Pueue; relanzar manualmente'):
                     row['interruption_reason'] = interruption['message']
+                if state == 'Done' and (end is None or end < now - 86400) and not row.get('interruption_reason'):
+                    continue
                 row['control'] = task_control(task, home, state)
                 row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'))
                 if state == 'Running':
