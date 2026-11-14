@@ -3,10 +3,16 @@ import re
 import hashlib
 import json
 
-OPS = ('host_capabilities', 'slots', 'undo')
+OPS = ('host_capabilities', 'slots', 'undo', 'mode')
 GROUPS = {'suites', 'default', 'rapidas'}
 DESK_GROUPS = {'hasito', 'jale', 'jale-verify', 'otros', 'pesadas', 'rapidas'}
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
+HOUR = r'las (?:[01][0-9]|2[0-3]):[0-5][0-9]'
+CLOCK = ' a ' + HOUR
+# Host-computed texts (diseño §3); anything else from a controller is rejected.
+MODE_NOTES = {'dia': re.compile('Automático · cambia a noche' + CLOCK + '|Adelantado · vuelve a noche' + CLOCK),
+              'noche': re.compile('Automático · cambia a día' + CLOCK + '|Adelantado · vuelve a día' + CLOCK)}
+DETAIL = re.compile('(?:Ajustes manuales hasta|Lugares ajustados · hasta) ' + HOUR)
 
 
 def vector(value, host='mini'):
@@ -19,7 +25,7 @@ def validate(request):
         raise ValueError('Operación inválida')
     keys = {'schema', 'op', 'host'}
     if request['op'] != 'host_capabilities':
-        keys |= {'action_id', 'dry_run', 'expected', 'change' if request['op'] == 'slots' else 'undo_of'}
+        keys |= {'action_id', 'dry_run', 'expected', 'undo_of' if request['op'] == 'undo' else 'change'}
         if (type(request.get('action_id')) is not str or not ACTION.fullmatch(request['action_id'])
                 or type(request.get('dry_run')) is not bool):
             raise ValueError('Identidad inválida')
@@ -37,6 +43,12 @@ def validate(request):
                     or type(c['group']) is not str or c['group'] not in (DESK_GROUPS if request.get('host') == 'desk' else GROUPS)
                     or type(c['delta']) is not int or c['delta'] not in (-1, 1)):
                 raise ValueError('Cambio inválido')
+        elif request['op'] == 'mode':
+            c = request.get('change')
+            # The Mini has a fixed profile: Día/Noche exists only on the desk.
+            if (request.get('host') != 'desk' or type(c) is not dict or set(c) != {'mode'}
+                    or type(c['mode']) is not str or c['mode'] not in ('dia', 'noche')):
+                raise ValueError('Horario inválido')
         elif type(request.get('undo_of')) is not str or not ACTION.fullmatch(request['undo_of']):
             raise ValueError('Recibo inválido')
     if (set(request) != keys or request['schema'] != 'rack-action@1'
@@ -96,8 +108,25 @@ def control(value, host='mini'):
                 or expires is not None and (type(expires) not in (int, float) or expires != next_event)):
             raise ValueError('Evento inválido')
         result.update(schedule_event=event, next_event=next_event, expires_at=expires)
+        notes = value.get('notes')
+        if notes is not None or caps['mode']:
+            result['notes'] = valid_notes(notes, value['mode'])
+            tables = value.get('tables')
+            if (type(tables) is not dict or set(tables) != {'dia', 'noche'}
+                    or any(not vector(tables[m], 'desk') or sum(tables[m].values()) != cap
+                           for m, cap in (('dia', 14), ('noche', 18)))):
+                raise ValueError('Tablas inválidas')
+            result['tables'] = tables
     result['reason'] = None if caps['slots'] else 'Los ajustes de lugares están apagados en este host.'
     return result
+
+
+def valid_notes(notes, mode):
+    if (type(notes) is not dict or set(notes) != {'mode', 'detail'} or type(notes['mode']) is not str
+            or not MODE_NOTES[mode].fullmatch(notes['mode'])
+            or notes['detail'] is not None and (type(notes['detail']) is not str or not DETAIL.fullmatch(notes['detail']))):
+        raise ValueError('Notas inválidas')
+    return dict(notes)
 
 
 def sanitize(request, response, op):
@@ -122,7 +151,7 @@ def sanitize(request, response, op):
         # An ordinary desk click may recover the schedule before rejecting its
         # vector. It is terminal only with its bound receipt and explicit event.
         event = response.get('schedule_recovery')
-        scheduled = (request['host'] == 'desk' and request['op'] == 'slots' and request['dry_run'] is False
+        scheduled = (request['host'] == 'desk' and request['op'] in ('slots', 'mode') and request['dry_run'] is False
                      and status == 'conflict' and (response.get('error') or {}).get('code') == 'stale_state'
                      and response.get('effects') is True and type(event) in (int, float))
         if scheduled:
@@ -136,8 +165,9 @@ def sanitize(request, response, op):
                     busy='Hay un ajuste pendiente; consulta su recibo.',
                     lock_busy='El control está ocupado. Vuelve a intentarlo.',
                     invalid_request='Cada grupo admite 1..8 lugares y se respeta el tope del modo.',
-                    undo_conflict='El horario o los lugares cambiaron. No se puede deshacer.',
+                    undo_conflict='El horario o los lugares cambiaron; no se puede deshacer este ajuste',
                     expired='El ajuste venció en el cambio de horario.',
+                    same_mode='Ese horario ya está vigente.',
                     idempotency_conflict='Ese ID ya pertenece a otra petición.',
                     recovery_error='Estado de control no disponible. Se conserva la pausa.',
                     disabled='Los ajustes de lugares están apagados en este host.',
@@ -164,6 +194,12 @@ def sanitize(request, response, op):
         if expires is not None and (request['host'] != 'desk' or type(expires) not in (int, float) or not 0 < expires < 10**11):
             raise ValueError('Vencimiento inválido')
         answer['result'].update(expires_at=expires, undo_of=request['action_id'] if status == 'applied' else None)
+        if request['host'] == 'desk' and payload.get('mode') is not None:
+            mode, cap = payload.get('mode'), payload.get('cap')
+            if (mode, cap) not in (('dia', 14), ('noche', 18)):
+                raise ValueError('Horario inválido')
+            notes = payload.get('notes')
+            answer['result'].update(mode=mode, cap=cap, notes=None if notes is None else valid_notes(notes, mode))
         changed = [g for g in payload['desired'] if payload['before'][g] != payload['desired'][g]]
         observed = payload.get('observed')
         answer['result']['applied'] = [g for g in changed if observed is not None and observed[g] == payload['desired'][g]]

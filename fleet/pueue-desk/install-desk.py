@@ -44,7 +44,7 @@ def policy_plan(engine):
     engine.generation(state)
     event = engine.resolve(state)['schedule_event']
     desired = {g: row[engine.mode(dict(schedule_event=event))] for g, row in engine.profile.items()}
-    return dict(state, policy_hash=engine.policy_hash, desired=desired,
+    return dict(state, policy_hash=engine.policy_hash, desired=desired, mode_override=None,
                 overrides={}, schedule_event=event, revision=state['revision'] + 1)
 
 

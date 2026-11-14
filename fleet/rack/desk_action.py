@@ -246,15 +246,15 @@ def handle_host(data, runner):
     request = data['request']
     op = request.get('op')
     keys = {'schema', 'op'}
-    if op in ('status', 'slots', 'undo'):
+    if op in ('status', 'slots', 'undo', 'mode'):
         keys.add('action_id')
         if type(request.get('action_id')) is not str or not ACTION.fullmatch(request['action_id']):
             raise ValueError('ID inválido')
-    if op in ('slots', 'undo'):
-        keys |= {'dry_run', 'expected', 'change' if op == 'slots' else 'undo_of'}
+    if op in ('slots', 'undo', 'mode'):
+        keys |= {'dry_run', 'expected', 'undo_of' if op == 'undo' else 'change'}
         if type(request.get('dry_run')) is not bool or type(request.get('expected')) is not dict:
             raise ValueError('Ajuste inválido')
-    if op not in ('capabilities', 'status', 'slots', 'undo') or set(request) != keys or request['schema'] != 'rack-host-control@1':
+    if op not in ('capabilities', 'status', 'slots', 'undo', 'mode') or set(request) != keys or request['schema'] != 'rack-host-control@1':
         raise ValueError('Petición inválida')
     def failed(status, code):
         return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,

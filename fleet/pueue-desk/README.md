@@ -332,8 +332,9 @@ jamás se presenta como el ajuste anterior aplicado.
 intención aceptada. `maintenance` retiene también reconciliación/aperturas.
 Una autoridad ilegible/ausente con marcador nunca habilita la tabla por defecto:
 no hay aperturas ni aumentos; la guardia conserva su cierre protector y #118.
-Tras perder `parallel`, se repone el deseo sin abrir pausas ambiguas. Esta
-unidad mantiene `mode`, `reorder` y `restart_queue` en false.
+Tras perder `parallel`, se repone el deseo sin abrir pausas ambiguas. U3.2
+dejó `mode`, `reorder` y `restart_queue` en false; U3.3 enciende `mode` en el
+desk (ver «Día/Noche del desk»).
 Un controlador instalado que nunca fue adoptado responde `unsupported`, sin
 crear archivos; una consulta de recibo devuelve `unknown`. Un marcador o SQLite
 perdido/corrupto conserva el diagnóstico de recuperación, sin readoptar.
@@ -374,6 +375,66 @@ Pasos para el operador, **no ejecutados por las pruebas**:
    No readoptar una base perdida/corrupta: restaurar respaldo verificado bajo
    el mismo candado. `deploy-desk.sh`/`withdraw-desk.sh` rechazan una autoridad
    ya adoptada para impedir volver a una guardia o tabla ciegas.
+
+### Día/Noche del desk (U3.3)
+
+`mode` es otra operación de `rack-host-control@1`, con las claves de `slots`
+y `change:{"mode":"dia"|"noche"}`. Sólo el desk anuncia `capabilities.mode`.
+La Mini responde `unsupported` sin efectos y conserva `MINI_PROFILE`.
+
+- **Tabla completa.** El modo elegido aplica la tabla entera del destino
+  (14 de día, 18 de noche) y retira los ± vigentes. No arrastra un `jale=7`
+  nocturno al día. Aplica primero las bajadas: el paso de 18 a 14 sólo baja
+  `parallel`, sin pausar ni detener tareas vivas.
+- **Adelanto.** Elegir el otro modo guarda `mode_override` con
+  `{mode, actor:"Felix", action_id, requested_at, expires_at}`. `expires_at` es
+  el próximo evento estricto 05:00/14:00 UTC desde la aceptación, calculado
+  por el host. Vence en ese evento aunque el modo programado coincida: un
+  adelanto a noche a las 16:00 de México vence a las 23:00. Desde ahí la nota
+  dice «Automático · cambia a día a las 08:00».
+- **Rechazos sin efectos.** Pedir el modo vigente responde `rejected/same_mode`.
+  Volver al modo del horario retira el adelanto sin guardar uno nuevo.
+- **Notas.** El host calcula los textos en America/Mexico_City:
+  «Automático · cambia a noche a las 23:00», «Adelantado · vuelve a día a las
+  08:00», «Ajustes manuales hasta las HH:mm» y «Lugares ajustados · hasta las
+  HH:mm». Sin datos de zona horaria, `capabilities.mode` queda en false y
+  `mode` responde `unsupported`.
+- **Deshacer.** El recibo guarda el modo, el adelanto y los ajustes anteriores.
+  Deshacer restaura sus vencimientos originales sólo si la revisión es la que
+  dejó la acción, no cruzó ningún evento y lo observado coincide. Si no,
+  responde `409 undo_conflict` con «El horario o los lugares cambiaron; no se
+  puede deshacer este ajuste», sin RPC.
+- **Trabajo ajeno.** Con trabajo no terminal fuera del reparto, se rechaza
+  entero un adelanto o un undo que sube algún grupo (`foreign_work`). Uno que
+  sólo baja pasa. El timer y la guardia no aplican ese veto.
+- **Evento.** El evento se revalida después de la última lectura bloqueante
+  (estado, identidad del daemon, zona horaria), antes de cada RPC y antes de
+  confirmar el recibo. Un evento cruzado antes del commit da `conflict` sin
+  efectos. Uno cruzado durante la aplicación termina en `aborted/expired`.
+- **Cierre.** Un adelanto ilegible deja la autoridad ilegible: no se aplica
+  ninguna tabla ni se abre nada, y la guardia conserva el cierre protector.
+  `lock_busy` y el timeout de las RPC del panel funcionan como en `slots`.
+
+**Instalación en un desk ya adoptado.** No hay migración estructural.
+`state()` lee una autoridad de U3.2 sin la clave `mode_override` como «sin
+adelanto», con `value.setdefault('mode_override', None)` en `control.py`. La
+instalación es la de U3.2: `install-desk.py --seco` y después
+`install-desk.py`, con el mismo `--pid-file`. La migración de tabla
+(`policy_plan`) también retira un adelanto vigente.
+
+**Revertir.** Primero deshacer el adelanto antes de su evento, o esperar al
+evento, que lo retira. El controlador de U3.2 tolera `mode_override: null`.
+Con un adelanto vivo vería un deseo distinto de su tabla y cerraría con
+«Deseo inconsistente»: es un cierre protector, no una pérdida, pero exige
+reinstalar U3.3 o esperar al evento. `slots.disabled` apaga también `mode`.
+
+Prueba privada dirigida: `tests/private_slots.py --run-private --host desk
+--scenario mode` comprueba la zona horaria y el adelanto con la tabla completa.
+También comprueba el undo de 18 a 14 con siete tareas `sleep` vivas que siguen
+corriendo, el evento que retira el adelanto y el undo tardío sin RPC. Cierra
+con el adelanto a día, el regreso al horario por `aplicar` y el veto de trabajo
+ajeno. Usa un daemon stock privado. Sus tareas sintéticas llevan un entorno
+mínimo y se detienen antes de apagar el daemon.
 
 ### Cambiar GROUP_LIMITS después de adoptar
 

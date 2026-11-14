@@ -69,9 +69,39 @@ def schedule_at(timestamp):
     return max(t for t in events if t <= timestamp), min(t for t in events if t > timestamp)
 
 
-def desk_profile(timestamp):
-    mode = mode_at(datetime.fromtimestamp(timestamp, timezone.utc))
+def mode_table(mode):
     return {g: row[mode] for g, row in GROUP_LIMITS.items()}
+
+
+def desk_profile(timestamp):
+    return mode_table(mode_at(datetime.fromtimestamp(timestamp, timezone.utc)))
+
+
+MODE_ZONE = 'America/Mexico_City'
+MODE_LABEL = {'dia': 'día', 'noche': 'noche'}
+
+
+def clock_text(timestamp):
+    from zoneinfo import ZoneInfo
+    return datetime.fromtimestamp(timestamp, ZoneInfo(MODE_ZONE)).strftime('%H:%M')
+
+
+def mode_notes(event, override, overrides):
+    """Approved texts (diseño §3) from absolute instants; the browser only shows them.
+
+    An adelanto expires at the next event even if that event keeps its mode, so
+    «vuelve a» names the first event whose own mode is the scheduled one.
+    """
+    scheduled, upcoming = mode_at(datetime.fromtimestamp(event, timezone.utc)), schedule_at(event)[1]
+    if override is None:
+        other = 'noche' if scheduled == 'dia' else 'dia'
+        mode = 'Automático · cambia a ' + MODE_LABEL[other] + ' a las ' + clock_text(upcoming)
+    else:
+        mode = 'Adelantado · vuelve a ' + MODE_LABEL[scheduled] + ' a las ' + clock_text(schedule_at(upcoming)[1])
+    detail = None
+    if override is not None or overrides:
+        detail = ('Ajustes manuales hasta las ' if override is not None else 'Lugares ajustados · hasta las ') + clock_text(upcoming)
+    return dict(mode=mode, detail=detail)
 
 
 def validate_limit(value):
@@ -259,12 +289,12 @@ def validate_host_request(request, host='mini'):
         raise ValueError('Petición inválida')
     op = request.get('op')
     keys = {'schema', 'op'}
-    if op in ('slots', 'undo', 'status'):
+    if op in ('slots', 'undo', 'status', 'mode'):
         keys.add('action_id')
         if type(request.get('action_id')) is not str or not ID.fullmatch(request['action_id']):
             raise ValueError('ID inválido')
-    if op in ('slots', 'undo'):
-        keys |= {'dry_run', 'expected', 'change' if op == 'slots' else 'undo_of'}
+    if op in ('slots', 'undo', 'mode'):
+        keys |= {'dry_run', 'expected', 'undo_of' if op == 'undo' else 'change'}
         if type(request.get('dry_run')) is not bool:
             raise ValueError('Ensayo inválido')
         e = request.get('expected')
@@ -280,6 +310,10 @@ def validate_host_request(request, host='mini'):
                     or type(c['group']) is not str or c['group'] not in (MINI_PROFILE if host == 'mini' else GROUP_LIMITS)
                     or type(c['delta']) is not int or c['delta'] not in (-1, 1)):
                 raise ValueError('Cambio inválido')
+        elif op == 'mode':
+            c = request.get('change')
+            if type(c) is not dict or set(c) != {'mode'} or type(c['mode']) is not str or c['mode'] not in ('dia', 'noche'):
+                raise ValueError('Horario inválido')
         elif type(request.get('undo_of')) is not str or not ID.fullmatch(request['undo_of']):
             raise ValueError('Recibo inválido')
     elif op not in ('capabilities', 'status'):
@@ -340,11 +374,23 @@ class MiniControl:
         self.path = self.directory / 'control.sqlite3'
         self.generation_source = generation
 
+    def scheduled(self, state):
+        return mode_at(datetime.fromtimestamp(state['schedule_event'], timezone.utc))
+
     def mode(self, state):
-        return 'fijo' if self.host == 'mini' else mode_at(datetime.fromtimestamp(state['schedule_event'], timezone.utc))
+        if self.host == 'mini':
+            return 'fijo'
+        # An adelanto is the effective mode until the next event retires it.
+        return (state.get('mode_override') or {}).get('mode') or self.scheduled(state)
 
     def cap(self, state):
-        return 7 if self.host == 'mini' else sum(desk_profile(state['schedule_event']).values())
+        return 7 if self.host == 'mini' else sum(mode_table(self.mode(state)).values())
+
+    def notes(self, state):
+        try:
+            return mode_notes(state['schedule_event'], state['mode_override'], state['overrides'])
+        except (ImportError, KeyError, OSError, ValueError):
+            return None  # without tz data the approved notes cannot be shown: no mode control
 
     def resolve(self, state, now=None):
         # Pure projection: capabilities and ensayo must never recover or write.
@@ -353,8 +399,8 @@ class MiniControl:
             if event < state['schedule_event']:
                 raise ValueError('Reloj anterior al evento durable')
             if event != state['schedule_event']:
-                state = dict(state, schedule_event=event, overrides={}, desired=desk_profile(event),
-                             revision=state['revision'] + 1)
+                state = dict(state, schedule_event=event, overrides={}, mode_override=None,
+                             desired=desk_profile(event), revision=state['revision'] + 1)
         return state
 
     @contextmanager
@@ -387,11 +433,25 @@ class MiniControl:
         if type(overrides) is not dict or not set(overrides) <= set(self.profile):
             raise ValueError('Ajustes inválidos')
         calculated = dict(MINI_PROFILE)
+        if self.host == 'mini' and value.get('mode_override') is not None:
+            raise ValueError('La Mini no tiene horario')
         if self.host == 'desk':
             event = value.get('schedule_event')
             if type(event) not in (int, float) or not math.isfinite(event) or schedule_at(event)[0] != event:
                 raise ValueError('Evento inválido')
-            calculated = desk_profile(event)
+            # U3.2 authorities have no key: absent is read as no adelanto, no migration.
+            override = value.setdefault('mode_override', None)
+            if override is not None and (
+                    type(override) is not dict
+                    or set(override) != {'mode', 'actor', 'action_id', 'requested_at', 'expires_at'}
+                    or override['mode'] not in ('dia', 'noche') or override['mode'] == self.scheduled(value)
+                    or override['actor'] != 'Felix'
+                    or type(override['action_id']) is not str or not ID.fullmatch(override['action_id'])
+                    or type(override['requested_at']) not in (int, float) or not math.isfinite(override['requested_at'])
+                    or override['expires_at'] != schedule_at(event)[1]
+                    or not event <= override['requested_at'] < override['expires_at']):
+                raise ValueError('Adelanto inválido')
+            calculated = mode_table(self.mode(value))
         for g, item in overrides.items():
             if (type(item) is not dict or set(item) != {'slots', 'actor', 'action_id', 'requested_at', 'expires_at'}
                     or item['actor'] != 'Felix'
@@ -451,7 +511,7 @@ class MiniControl:
         state = dict(policy_hash=self.policy_hash, revision=1, desired=observed, overrides={},
                      reasons={}, generation='', pid_file=str(Path(pid_file).resolve()), actor='Felix', at=self.clock())
         if self.host == 'desk':
-            state['schedule_event'] = schedule_at(now)[0]
+            state.update(schedule_event=schedule_at(now)[0], mode_override=None)
         state['generation'] = self.generation(state)
         old = self.directory / 'guardia-state.json'
         owned = set(json.loads(old.read_text())) if old.exists() else set()
@@ -501,10 +561,16 @@ class MiniControl:
             if os.path.lexists(self.pause_fence(group)):
                 state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
         enabled = not self.disabled()
-        extra = dict(expires_at=schedule_at(state['schedule_event'])[1] if state['overrides'] else None,
-                     next_event=schedule_at(state['schedule_event'])[1], schedule_event=state['schedule_event']) if self.host == 'desk' else {}
+        extra, notes = {}, None
+        if self.host == 'desk':
+            adjusted = bool(state['overrides']) or state['mode_override'] is not None
+            notes = self.notes(state)
+            extra = dict(expires_at=schedule_at(state['schedule_event'])[1] if adjusted else None,
+                         next_event=schedule_at(state['schedule_event'])[1], schedule_event=state['schedule_event'],
+                         tables={m: mode_table(m) for m in ('dia', 'noche')}, notes=notes)
         return dict(schema='rack-host-result@1', status='ok', capabilities=dict(
-            slots=enabled, undo=enabled, dry_run=enabled, mode=False, reorder=False, restart_queue=False),
+            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and notes is not None,
+            reorder=False, restart_queue=False),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
@@ -517,8 +583,9 @@ class MiniControl:
                     'busy': 'Hay un ajuste pendiente; consulta su recibo.',
                     'lock_busy': 'El control está ocupado. Vuelve a intentarlo.',
                     'idempotency_conflict': 'Ese ID ya pertenece a otra petición.',
-                    'undo_conflict': 'El horario o los lugares cambiaron. No se puede deshacer.',
+                    'undo_conflict': 'El horario o los lugares cambiaron; no se puede deshacer este ajuste',
                     'expired': 'El ajuste venció en el cambio de horario.',
+                    'same_mode': 'Ese horario ya está vigente.',
                     'invalid_request': 'Ajuste inválido: cada grupo admite 1..8 y se respeta el tope del modo.',
                     'recovery_error': 'Estado de control ilegible o no disponible. Se conserva la pausa.',
                     'disabled': 'Los ajustes de lugares están apagados en este host.',
@@ -534,7 +601,7 @@ class MiniControl:
                               'unsupported', effects=False)
         try:
             response = self._handle(request)
-            if request['op'] in ('slots', 'undo') and not request['dry_run']:
+            if request['op'] in ('slots', 'undo', 'mode') and not request['dry_run']:
                 # Rejected IDs are bound too; a later refresh cannot turn a retry
                 # of the same ID into a previously unaccepted effect.
                 digest = hashlib.sha256(canonical(dict(host=self.host, request=request)).encode()).hexdigest()
@@ -545,7 +612,7 @@ class MiniControl:
                                (request['action_id'], digest, canonical(dict(request=request, response=response))))
             return response
         except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-            uncertain = request['op'] == 'status' or request['op'] in ('slots', 'undo') and not request['dry_run']
+            uncertain = request['op'] == 'status' or request['op'] in ('slots', 'undo', 'mode') and not request['dry_run']
             return self.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
 
     def _handle(self, request):
@@ -563,9 +630,11 @@ class MiniControl:
             if row:
                 return (self.reply(request, 'conflict', 'idempotency_conflict') if row[0] != digest
                         else json.loads(row[1])['response'])
+            if op == 'mode' and self.host == 'mini':
+                return self.reply(request, 'unsupported', 'unsupported', effects=False)
             if self.disabled():
                 return self.reply(request, 'rejected', 'disabled', effects=False)
-            if self.host == 'desk' and op == 'slots' and not request['dry_run']:
+            if self.host == 'desk' and op in ('slots', 'mode') and not request['dry_run']:
                 stored = self.state(db)
                 if self.resolve(stored) != stored:
                     # A missed timer is recovered by a real ordinary click too.
@@ -590,35 +659,58 @@ class MiniControl:
             if any(json.loads(r[0])['response']['status'] in ('applying', 'partial', 'unknown')
                    for r in db.execute('SELECT body FROM host_actions')):
                 return self.reply(request, 'rejected', 'busy', effects=False)
-            target, overrides = dict(before), dict(state['overrides'])
+            target, overrides, override = dict(before), dict(state['overrides']), state.get('mode_override')
+            accepted = self.clock()
             if op == 'slots':
                 group, delta = request['change']['group'], request['change']['delta']
                 target[group] += delta
                 overrides[group] = dict(slots=target[group], actor='Felix', action_id=request['action_id'],
-                                        requested_at=self.clock(), expires_at=(schedule_at(state['schedule_event'])[1]
+                                        requested_at=accepted, expires_at=(schedule_at(state['schedule_event'])[1]
                                         if self.host == 'desk' else None))
+            elif op == 'mode':
+                wanted = request['change']['mode']
+                if wanted == self.mode(state):
+                    # Never a silent reset of the adjusted places to the table.
+                    return self.reply(request, 'rejected', 'same_mode', effects=False)
+                # The whole destination table, adjustments retired; back to the schedule
+                # retires the adelanto instead of recording one equal to it.
+                target, overrides = mode_table(wanted), {}
+                override = None if wanted == self.scheduled(state) else dict(
+                    mode=wanted, actor='Felix', action_id=request['action_id'], requested_at=accepted,
+                    expires_at=schedule_at(state['schedule_event'])[1])
             else:
                 previous = db.execute('SELECT body FROM host_actions WHERE action_id=?', (request['undo_of'],)).fetchone()
                 previous = json.loads(previous[0]) if previous else None
                 if (not previous or previous['response']['status'] != 'applied'
                         or previous['revision'] != state['revision'] or previous['target'] != before):
                     return self.reply(request, 'conflict', 'undo_conflict', effects=False)
+                # Original adelanto and expirations, never renewed by the undo.
                 target, overrides = previous['before'], previous['before_overrides']
+                override = previous.get('before_mode_override')
+            after = dict(state, desired=target, overrides=overrides)
+            if self.host == 'desk':
+                after['mode_override'] = override
             try:
-                validate_target(before, target, self.host, self.cap(state))
+                validate_target(before, target, self.host, self.cap(after))
             except ValueError:
                 return self.reply(request, 'rejected', 'invalid_request', effects=False)
             if self.foreign_work and any(target[g] > before[g] for g in target):
                 return self.reply(request, 'rejected', 'foreign_work', control=self.view(), effects=False)
             plan = slot_plan(before, target)
-            expires = schedule_at(state['schedule_event'])[1] if self.host == 'desk' and overrides else None
-            if self.resolve(state) != state:
-                return self.reply(request, 'conflict', 'stale_state', effects=False)
+            expires = (schedule_at(state['schedule_event'])[1]
+                       if self.host == 'desk' and (overrides or override is not None) else None)
             payload = dict(before=before, desired=target, observed=before, expires_at=expires,
                            applied=[], unconfirmed=[g for g, _ in plan],
                            decreases=[dict(group=g, slots=n) for g, n in plan if n < before[g]],
                            increases=[dict(group=g, slots=n) for g, n in plan if n > before[g]],
                            rpc=[['parallel', str(n), '-g', g] for g, n in plan])
+            if self.host == 'desk':
+                payload.update(mode=self.mode(after), cap=self.cap(after), notes=self.notes(after))
+                if op == 'mode' and payload['notes'] is None:
+                    return self.reply(request, 'unsupported', 'unsupported', effects=False)
+            # After the last blocking read (status, daemon identity, tz data).
+            if self.resolve(state) != state:
+                return self.reply(request, 'conflict', 'stale_state', effects=False)
             if request['dry_run']:
                 return self.reply(request, 'dry_run', result=payload, effects=False)
         state['revision'] += 1
@@ -626,7 +718,8 @@ class MiniControl:
                       revision=state['revision'], at=self.clock(), response=self.reply(request, 'applying',
                       revision=state['revision'], result=payload))
         if self.host == 'desk':
-            action['schedule_event'] = state['schedule_event']
+            action.update(schedule_event=state['schedule_event'], before_mode_override=state['mode_override'])
+            state['mode_override'] = override
         state.update(desired=target, overrides=overrides, actor='Felix', at=self.clock())
         with self.connect(write=True) as db:
             self.store(db, state)
@@ -876,12 +969,12 @@ def main():
                     if wait_rack_lock(handle):
                         response = engine.handle(request)
                     else:
-                        status = ('rejected' if request['op'] in ('slots', 'undo') else
+                        status = ('rejected' if request['op'] in ('slots', 'undo', 'mode') else
                                   'unknown' if request['op'] == 'status' else 'busy')
                         response = engine.reply(request, status, 'lock_busy', effects=False)
         except (OSError, ValueError, TypeError, sqlite3.Error):
             request = request if type(request) is dict else {}
-            uncertain = request.get('op') == 'status' or request.get('op') in ('slots', 'undo') and request.get('dry_run') is False
+            uncertain = request.get('op') == 'status' or request.get('op') in ('slots', 'undo', 'mode') and request.get('dry_run') is False
             response = engine.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
         print(json.dumps(response, allow_nan=False))
         return

@@ -73,7 +73,8 @@ class DeskSlotsTests(DeskFixture):
             v = self.engine.view()
             self.assertEqual((v['mode'], v['cap'], sum(v['slots'].values())), (mode, cap, cap))
             self.assertNotIn('default', v['slots'])
-            self.assertFalse(any(v['capabilities'][k] for k in ('mode','reorder','restart_queue')))
+            self.assertTrue(v['capabilities']['mode'])  # U3.3: only the desk
+            self.assertFalse(any(v['capabilities'][k] for k in ('reorder','restart_queue')))
             r = self.request(group='default')
             with self.assertRaises(ValueError):self.engine.handle(r)
             self.assertEqual(self.p.groups['default']['parallel_tasks'],1)

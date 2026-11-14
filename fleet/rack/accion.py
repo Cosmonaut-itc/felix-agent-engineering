@@ -286,7 +286,7 @@ class Actions:
         if operation == 'post':
             validate(value)
             identity = dict(value)
-            if value['op'] in ('cancel', 'slots', 'undo') and not value.get('dry_run'):
+            if value['op'] in ('cancel', 'slots', 'undo', 'mode') and not value.get('dry_run'):
                 with self.http_lock:
                     self.identities.setdefault(value['action_id'], identity)
         else:
@@ -361,6 +361,10 @@ class Actions:
             current = next((h for h in payload['hosts'] if h['id'] == request['host']), None)
             if not current or not current['fresh'] or current.get('age') is None or current['age'] > 45 or self.clock() - payload['now'] > 45:
                 return ERRORS['stale_state']
+            # A U3.2 desk would answer an unknown op as an uncertain failure: never send it.
+            control = (current.get('snapshot') or {}).get('control') or {}
+            if request['op'] == 'mode' and (control.get('capabilities') or {}).get('mode') is not True:
+                return 'Falta actualizar el control de este host.'
             return None
         reason = transport_reason(host, request['launcher'])
         if reason:

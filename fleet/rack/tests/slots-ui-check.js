@@ -85,6 +85,89 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    console.log('UI desk OK: día/noche, mínimo/máximo/tope, pendiente/conflicto/unknown, vencimiento, undo y host antiguo');
    return;
  }
+ if(input.scenario==='mode'){
+   // Día/Noche: the host sends notes/tables; the browser only maps action states.
+   const toastButton={onclick:null};elements.toast={...el(),querySelector:()=>toastButton};
+   const head=run('modeControl(h)');
+   assert.match(elements.app.innerHTML,/class="hhead"/);
+   assert.match(head,/data-mode="dia"[^>]*aria-pressed="true"[^>]*disabled/);
+   assert.match(head,/data-mode="noche"[^>]*aria-pressed="false"/);
+   assert(!/data-mode="noche"[^>]*disabled/.test(head));
+   assert.match(head,/Automático · cambia a noche a las 23:00/);
+   assert.equal(run("modeControl({...h,id:'mini'})"),'');
+   for(const old of ["{...h.control,capabilities:{...h.control.capabilities,mode:false}}","{...h.control,notes:undefined}","null"]){
+     const html=run(`modeControl({...h,control:${old}})`);
+     assert.match(html,/Falta actualizar el control de este host/);
+     assert.equal((html.match(/disabled/g)||[]).length,2,'old host: both buttons disabled');
+   }
+   assert.match(run("modeControl({...h,fresh:false})"),/data-mode="noche"[^>]*disabled/);
+   assert.match(run("modeControl({...h,control:{...h.control,drift:true}})"),/Reconciliación pendiente/);
+   // Foreign work: a raising adelanto is blocked, a lowering one passes.
+   assert.match(run("modeControl({...h,control:{...h.control,foreign_work:1}})"),/data-mode="noche"[^>]*title="Hay trabajo fuera del reparto[^"]*"[^>]*disabled/);
+   context.night={...run('h.control'),mode:'noche',cap:18,foreign_work:1,slots:{...run('h.control.tables.noche')},
+     notes:{mode:'Automático · cambia a día a las 08:00',detail:null}};
+   const lowering=run("modeControl({...h,control:night})");
+   assert(!/data-mode="dia"[^>]*disabled/.test(lowering));
+   assert.match(lowering,/data-mode="noche"[^>]*aria-pressed="true"/);
+   // Clicking the pressed button or a disabled one sends nothing.
+   for(const [type,fn] of listeners) if(type==='click') fn({target:{closest:sel=>sel==='button[data-mode]'?{disabled:false,getAttribute:()=> 'true',dataset:{host:'desk',mode:'dia'}}:null}});
+   for(const [type,fn] of listeners) if(type==='click') fn({target:{closest:sel=>sel==='button[data-mode]'?{disabled:true,getAttribute:()=> 'false',dataset:{host:'desk',mode:'noche'}}:null}});
+   assert.equal(run('PENDING.size'),0);
+   // Pending → unknown → conflict, never replaying the POST.
+   context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('lost')};
+   run("globalThis.sent=null;const oldSend=sendSlots;sendSlots=(...a)=>(globalThis.sent=oldSend(...a))");
+   for(const [type,fn] of listeners) if(type==='click') fn({target:{closest:sel=>sel==='button[data-mode]'?{disabled:false,getAttribute:()=> 'false',dataset:{host:'desk',mode:'noche'}}:null}});
+   assert.equal(run('PENDING.size'),1);
+   assert.match(elements.app.innerHTML,/Aplicando horario de noche…/);
+   assert.doesNotMatch(elements.app.innerHTML,/>Aplicando…</);
+   assert.match(run('modeControl(h)'),/data-mode="noche"[^>]*disabled/);
+   assert.match(run("slotControls(h,'jale',h.groups.jale,0)"),/Hay un ajuste pendiente/);
+   const body=JSON.parse(requests[0][1].body);
+   assert.deepEqual([body.op,body.change,body.host,body.dry_run],['mode',{mode:'noche'},'desk',false]);
+   assert.deepEqual(Object.keys(body.expected).sort(),['generation','mode','policy_hash','revision','slots']);
+   await run('sent');assert.match(elements.app.innerHTML,/Cambio sin confirmar · consultando…/);
+   run('globalThis.a=PENDING.get(slotKey(h));globalThis.key=slotKey(h)');
+   const reload={...context};vm.createContext(reload);vm.runInContext(input.js,reload);vm.runInContext('render(fixture)',reload);
+   assert.equal(vm.runInContext('[...PENDING.values()][0].mode',reload),'noche');
+   run("acceptAction(key,a,{status:'partial',result:{observed:{...h.control.slots,hasito:2},desired:{...h.control.tables.noche}}})");
+   assert.match(elements.app.innerHTML,/Horario aplicado parcialmente · revisando…/);
+   assert.match(elements.app.innerHTML,/jale: 5 observado \/ 7 deseado/);
+   const ident=run('a.request.action_id');
+   context.fetch=async()=>({ok:false,status:409,json:async()=>({schema:'rack-action@1',action_id:ident,status:'conflict',error:{message:'Los lugares cambiaron'}})});
+   await run('pollAction(key,a)');assert.equal(run('PENDING.size'),0);assert.match(elements.app.innerHTML,/Los lugares cambiaron/);
+   assert.equal(requests.filter(r=>r[0]==='/api/accion').length,1,'unknown must query, never replay POST');
+   // Applied adelanto: host notes, 8 s toast with Deshacer that sends undo_of.
+   run('SLOT_MESSAGES.clear();render(fixture);globalThis.h=S.hosts[0]');
+   const noche=run('h.control.tables.noche');
+   context.answer={schema:'rack-action@1',action_id:'modo-confirm-01',status:'applied',revision:2,
+     result:{observed:noche,desired:noche,expires_at:1794718800,mode:'noche',cap:18,
+             notes:{mode:'Adelantado · vuelve a día a las 08:00',detail:'Ajustes manuales hasta las 23:00'}}};
+   run("acceptSlots(slotKey(h),{request:{op:'mode',host:'desk',action_id:'modo-confirm-01'},mode:'noche',from:'dia'},answer)");
+   assert.match(elements.toast.innerHTML,/horario de noche/);assert.match(elements.toast.innerHTML,/Deshacer/);
+   assert(timers.some(t=>t.ms===8000));
+   assert.equal(run('h.control.cap'),18);
+   assert.match(run('modeControl(h)'),/data-mode="noche"[^>]*aria-pressed="true"/);
+   assert.match(elements.app.innerHTML,/Adelantado · vuelve a día a las 08:00/);
+   assert.match(elements.app.innerHTML,/Ajustes manuales hasta las 23:00/);
+   assert.match(elements.app.innerHTML,/· tope 18/);
+   context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('lost')};
+   toastButton.onclick();await run('sent');
+   const undo=JSON.parse(requests.at(-1)[1].body);
+   assert.deepEqual([undo.op,undo.undo_of,undo.change],['undo','modo-confirm-01',undefined]);
+   assert.equal(undo.expected.mode,'noche');
+   run("globalThis.u=PENDING.get(slotKey(h));acceptSlots(slotKey(h),u,{status:'conflict',error:{message:'El horario o los lugares cambiaron; no se puede deshacer este ajuste'}})");
+   assert.match(elements.app.innerHTML,/El horario o los lugares cambiaron; no se puede deshacer este ajuste/);
+   assert.equal(run('PENDING.size'),0);
+   // Expired at 05:00Z (23:00): the night table stays, the note returns to automatic.
+   context.expired=JSON.parse(JSON.stringify(input.fixture));context.expired.now=1794718800;
+   Object.assign(context.expired.hosts[0].snapshot.control,{revision:3,mode:'noche',cap:18,expires_at:null,slots:noche,desired:noche,
+     schedule_event:1794718800,next_event:1794751200,notes:{mode:'Automático · cambia a día a las 08:00',detail:null}});
+   run('SLOT_MESSAGES.clear();render(expired);globalThis.h=S.hosts[0]');
+   assert.match(elements.app.innerHTML,/Automático · cambia a día a las 08:00/);
+   assert.doesNotMatch(elements.app.innerHTML,/Ajustes manuales|Adelantado/);
+   console.log('UI mode OK: cabecera, día/noche, adelantado, pendiente/parcial/unknown/conflicto, vencido, trabajo ajeno, host antiguo, Mini sin control, toast 8 s con Deshacer');
+   return;
+ }
  if(input.scenario==='disabled'){
    context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('POST answer lost')};
    run("globalThis.sent=null;const originalSendSlots=sendSlots;sendSlots=(...args)=>(globalThis.sent=originalSendSlots(...args));startSlots(h,{group:'suites',delta:-1})");

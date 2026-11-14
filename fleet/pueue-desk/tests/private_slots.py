@@ -15,11 +15,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-private', action='store_true', required=True)
     parser.add_argument('--host', choices=('mini','desk'), default='mini')
+    parser.add_argument('--scenario', choices=('slots','mode'), default='slots')
     parser.add_argument('--pueue', default='/opt/homebrew/bin/pueue' if sys.platform == 'darwin' else str(Path.home()/'.local/bin/pueue'))
     parser.add_argument('--pueued', default='/opt/homebrew/bin/pueued' if sys.platform == 'darwin' else str(Path.home()/'.local/bin/pueued'))
     args = parser.parse_args()
     base = Path.cwd().resolve()
-    root = base/('private-u32-sol' if args.host == 'desk' else 'private-u31-sol')
+    root = base/('private-u33-opus' if args.scenario == 'mode' else 'private-u32-sol' if args.host == 'desk' else 'private-u31-sol')
     root.mkdir()  # refuse reuse
     config = root/'config.json'
     config.write_text(json.dumps(dict(shared=dict(pueue_directory=str(root),runtime_directory=str(root),
@@ -67,6 +68,14 @@ def main():
     try:
         emit('version', version=subprocess.check_output([args.pueue,'--config',str(config),'--version'],text=True).strip())
         start()
+        if args.host == 'desk' and args.scenario == 'mode':
+            def add_task(group, *argv):
+                # Minimal environment: the task record never inherits the runner's variables.
+                clean = dict(PATH='/usr/bin:/bin', HOME=str(root), TMPDIR=str(root), PUEUE_CONFIG_PATH=str(config))
+                subprocess.run([args.pueue,'--config',str(config),'add','--group',group,'--',*argv],
+                               check=True, capture_output=True, text=True, timeout=4, env=clean, cwd=str(root))
+            desk_mode_scenario(control, pueue, root, emit, add_task)
+            return
         if args.host == 'desk':
             desk_scenario(control, pueue, root, start, crash, emit)
             return
@@ -193,6 +202,92 @@ def desk_scenario(control, pueue, root, start, crash, emit):
     emit('missed_timer_applied_by_slots', status=click['status'], observed=engine.view()['slots'])
     emit('PASS', assertions='timer preserves override then expires; guard restores lost parallel; missed timer; '
          'expired undo no RPC; ordinary click recovers; 05:00Z with stashed default task')
+
+
+def desk_mode_scenario(control, pueue, root, emit, add_task):
+    """U3.3 Día/Noche against a private stock pueued: synthetic clock, real parallel RPCs."""
+    utc = lambda text: datetime.strptime(text, '%Y-%m-%dT%H:%M:%S').replace(tzinfo=timezone.utc).timestamp()
+    now = [utc('2026-11-14T22:00:00')]  # 16:00 en México, horario de día
+    dia, noche = control.mode_table('dia'), control.mode_table('noche')
+    for group, slots in dia.items():
+        pueue.call('group', 'add', group, '--parallel', slots)
+    pueue.call('pause', '--wait', '-g', 'default')
+    directory = root/'control'; directory.mkdir()
+    engine = control.MiniControl(pueue, directory, clock=lambda: now[0], host='desk')
+    low = dict(io=0, cpu=0, memory=64*1024**3)
+    def observed():
+        groups = pueue.status()['groups']
+        return {g: groups[g]['parallel_tasks'] for g in dia}
+    def running(group='jale'):
+        return sum(1 for t in pueue.status()['tasks'].values() if t.get('group') == group and 'Running' in (t.get('status') or {}))
+    def send(ident, mode=None, undo_of=None):
+        v = engine.view()
+        request = dict(schema=control.HOST_SCHEMA, op='undo' if undo_of else 'mode', action_id=ident, dry_run=False,
+                       expected={k: v[k] for k in ('revision', 'policy_hash', 'generation', 'mode', 'slots')},
+                       **(dict(undo_of=undo_of) if undo_of else dict(change=dict(mode=mode))))
+        with control.locked(directory):
+            return engine.handle(request)
+    def entry(command):
+        with patch.object(control, 'STATE_DIR', directory), patch.object(control, 'Pueue', return_value=pueue), \
+             patch.object(control, 'MiniControl', return_value=engine), patch.object(control, 'pressure', return_value=low), \
+             patch.object(control.sys, 'argv', ['control.py', command, '--host', 'desk']):
+            control.main()
+    def notes():
+        return engine.view()['notes']
+    with control.locked(directory):
+        engine.adopt(root/'pid')
+    v = engine.view()
+    assert v['capabilities']['mode'] is True, 'sin datos de zona horaria'
+    assert notes() == dict(mode='Automático · cambia a noche a las 23:00', detail=None), notes()
+    emit('zona_horaria', zone=control.MODE_ZONE, notes=notes())
+    first = send('u33-desk-noche-01', 'noche')
+    assert first['status'] == 'applied' and observed() == noche, first
+    assert first['result']['expires_at'] == utc('2026-11-15T05:00:00'), first
+    assert notes() == dict(mode='Adelantado · vuelve a día a las 08:00', detail='Ajustes manuales hasta las 23:00'), notes()
+    emit('adelanto_noche', observed=observed(), cap=engine.view()['cap'], notes=notes(), rpc=first['result']['rpc'])
+    for _ in range(7):
+        add_task('jale', 'sleep', '90')
+    deadline = time.monotonic() + 10
+    while running() < 7 and time.monotonic() < deadline: time.sleep(.1)
+    assert running() == 7, running()
+    back = send('u33-desk-deshacer1', undo_of='u33-desk-noche-01')
+    assert back['status'] == 'applied' and observed() == dia, back
+    assert running() == 7, 'una reducción no detiene tareas vivas'
+    with engine.connect() as db:
+        assert engine.state(db)['mode_override'] is None
+    emit('deshacer_18_a_14_con_tareas_vivas', observed=observed(), running_jale=running(), notes=notes())
+    again = send('u33-desk-noche-02', 'noche')
+    assert again['status'] == 'applied', again
+    now[0] = utc('2026-11-15T05:00:00')  # 23:00 en México; noche sigue, el adelanto vence
+    entry('aplicar')
+    with engine.connect() as db:
+        state = engine.state(db)
+    assert state['mode_override'] is None and observed() == noche, state
+    assert notes() == dict(mode='Automático · cambia a día a las 08:00', detail=None), notes()
+    late = send('u33-desk-deshacer2', undo_of='u33-desk-noche-02')
+    assert (late['status'], (late.get('error') or {}).get('code'), late.get('effects')) == ('conflict', 'undo_conflict', False), late
+    assert observed() == noche
+    emit('evento_retira_adelanto', observed=observed(), notes=notes(), undo=late['error']['code'])
+    now[0] = utc('2026-11-15T06:00:00')
+    day = send('u33-desk-dia-0001', 'dia')
+    assert day['status'] == 'applied' and observed() == dia and running() == 7, day
+    assert notes() == dict(mode='Adelantado · vuelve a noche a las 23:00', detail='Ajustes manuales hasta las 08:00'), notes()
+    emit('adelanto_dia_con_tareas_vivas', observed=observed(), running_jale=running(), notes=notes())
+    now[0] = utc('2026-11-15T14:00:00')
+    entry('aplicar')
+    assert observed() == dia and notes() == dict(mode='Automático · cambia a noche a las 23:00', detail=None), notes()
+    pueue.call('add', '--stashed', '--group', 'default', '--', 'true')
+    before = observed()
+    vetoed = send('u33-desk-ajeno-01', 'noche')
+    assert (vetoed['status'], (vetoed.get('error') or {}).get('code'), vetoed.get('effects')) == ('rejected', 'foreign_work', False), vetoed
+    assert observed() == before
+    emit('trabajo_ajeno_veta_subida', status=vetoed['status'], observed=observed())
+    pueue.call('kill', '-g', 'jale')  # only the synthetic sleeps of this private daemon
+    deadline = time.monotonic() + 10
+    while running() and time.monotonic() < deadline: time.sleep(.1)
+    assert running() == 0, running()
+    emit('PASS', assertions='zona horaria; adelanto con tabla completa; deshacer 18→14 sin detener tareas; '
+         'evento retira adelanto y deshacer tardío sin RPC; adelanto a día; timer vuelve al horario; trabajo ajeno veta subir')
 
 
 if __name__ == '__main__': main()

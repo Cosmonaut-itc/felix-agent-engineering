@@ -128,6 +128,16 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 .step:focus{outline:2px solid var(--accent);outline-offset:2px}
 #toast button{font:inherit;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
 @media(max-width:560px){.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
+.hhead{display:flex;align-items:flex-start;gap:12px}
+.hhead>div:first-child{flex:1;min-width:0}
+.mode{text-align:right}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}
+.seg button{font:inherit;font-size:12px;border:0;background:var(--panel);color:var(--ink2);padding:4px 12px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--ink);color:var(--bg);cursor:default}
+.seg button:disabled:not([aria-pressed="true"]){opacity:.35;cursor:default}
+.mode .note{font-size:12px;color:var(--muted);margin-top:4px}
+.mode .note.action-state{color:var(--warn)}
+@media(max-width:560px){.hhead{flex-direction:column}.mode{text-align:left}.seg button{min-height:44px}}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 const PENDING = new Map();
@@ -260,15 +270,16 @@ function slotControls(h,n,g,r){
 function hostControlState(h){
   const a=PENDING.get(slotKey(h)), c=h.control;
   let message=SLOT_MESSAGES.get(h.id) || (['recovery_error','busy'].includes(c?.status) ? c.error.message : '');
-  if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
+  // A Día/Noche change states its progress next to its own buttons.
+  if(a) message=a.mode ? '' : a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
   else if(c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
   else if(c?.recovery_pending) message='Reconciliación pendiente';
-  else if(h.id==='desk' && c?.expires_at) message=slotExpiry(c.expires_at);
+  else if(h.id==='desk' && c?.expires_at) message+=(message?' · ':'')+(c.notes?.detail || slotExpiry(c.expires_at));
   if(c?.foreign_work) message+=(message?' · ':'')+'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.';
   const result=a?.result;
   const desired=result?.desired || c?.desired, observed=result?.observed || c?.slots;
   if((a?.status==='partial' || c?.drift) && desired){
-    message+=' · '+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
+    message+=(message?' · ':'')+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
   }
   if(c?.pause_reasons && Object.values(c.pause_reasons).some(r=>r.includes('ambiguous')))
     message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
@@ -280,6 +291,36 @@ function slotExpected(h){
 }
 function slotExpiry(expires){
   return 'Lugares ajustados · hasta las '+new Date(expires*1000).toLocaleTimeString('es-MX',{timeZone:'America/Mexico_City',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+}
+const MODE_NAME={dia:'día',noche:'noche'};
+const FOREIGN='Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.';
+function modeControl(h){
+  if(h.id!=='desk') return '';
+  const c=h.control, a=PENDING.get(slotKey(h));
+  const capable=c?.capabilities?.mode===true && !!c.notes && !!c.tables;
+  const reason=!capable ? c?.reason || c?.error?.message || 'Falta actualizar el control de este host.' : !h.fresh ? 'Actualiza la instantánea antes de decidir.'
+    : a ? 'Hay un ajuste pendiente; consulta su recibo.' : (c.drift || c.recovery_pending) ? 'Reconciliación pendiente.' : '';
+  const note=a?.mode ? (a.status==='partial' ? 'Horario aplicado parcialmente · revisando…' : a.status==='unknown' ? 'Cambio sin confirmar · consultando…' : `Aplicando horario de ${MODE_NAME[a.mode]}…`)
+    : capable ? c.notes.mode : reason;
+  const button=m=>{
+    const pressed=capable && c.mode===m;
+    const raises=capable && c.foreign_work && Object.entries(c.tables[m]).some(([g,n])=>n>c.slots[g]);
+    const why=pressed ? '' : reason || (raises ? FOREIGN : '');
+    return `<button type="button" data-mode="${m}" data-host="${esc(h.id)}" aria-pressed="${pressed}" title="${esc(why || 'Horario de '+MODE_NAME[m])}" ${why || pressed ? 'disabled' : ''}>${m==='dia'?'Día':'Noche'}</button>`;
+  };
+  return `<div class="mode"><div class="seg" role="group" aria-label="Horario">${button('dia')}${button('noche')}</div><div class="note${a?.mode ? ' action-state' : ''}" role="status">${esc(note)}</div></div>`;
+}
+function startMode(h,mode,undoOf){
+  if(PENDING.has(slotKey(h)) || !undoOf && h.control?.mode===mode) return;
+  const request={schema:'rack-action@1',op:undoOf?'undo':'mode',host:h.id,action_id:newActionId(),dry_run:false,expected:slotExpected(h)};
+  if(undoOf) request.undo_of=undoOf; else request.change={mode};
+  const action={request,status:'applying',mode,from:h.control.mode};
+  PENDING.set(slotKey(h),action);SLOT_MESSAGES.delete(h.id);persistActions();repaintActions();
+  focusMode(h.id,mode);
+  sendSlots(slotKey(h),action);
+}
+function focusMode(host,mode){
+  [...document.querySelectorAll('button[data-mode]')].find(e=>e.dataset.host===host && e.dataset.mode===mode)?.focus();
 }
 function focusSlots(host,group){
   [...document.querySelectorAll('[data-slot-focus]')].find(e=>e.dataset.slotFocus===host+'/'+group)?.focus();
@@ -304,11 +345,20 @@ function acceptSlots(key,action,data){
   if(expired){
     SLOT_MESSAGES.set(h.id,'El ajuste venció en el cambio de horario.');say(SLOT_MESSAGES.get(h.id));
   }else if(data.status==='applied' && h && data.result?.observed && data.revision>=h.control.revision){
-    const c={...h.control,revision:data.revision,slots:{...data.result.observed},desired:{...data.result.desired},expires_at:data.result.expires_at,drift:false,recovery_pending:false};
+    const r=data.result;
+    const c={...h.control,revision:data.revision,slots:{...r.observed},desired:{...r.desired},expires_at:r.expires_at,drift:false,recovery_pending:false,
+      ...(r.mode ? {mode:r.mode,cap:r.cap,notes:r.notes} : {})};
     HOST_CONFIRMED.set(h.id,c);h.control=c;
     for(const [g,n] of Object.entries(c.slots)) if(h.groups[g]) h.groups[g].slots=n;
     SLOT_MESSAGES.delete(h.id);
-    say(action.request.op==='undo' ? 'Lugares restaurados' : `${action.group}: ${c.slots[action.group]} lugares · ${h.id==='desk' ? slotExpiry(c.expires_at).split(' · ')[1] : 'hasta otro cambio manual'}`,
+    if(action.mode){
+      // 8 s from the confirmed change; the undo restores the host receipt, never the browser's copy.
+      say(action.request.op==='undo' ? 'Horario restaurado' : `${h.name}: horario de ${MODE_NAME[c.mode]}`,
+        action.request.op==='undo' ? null : ()=>{
+          const current=S?.hosts.find(x=>x.id===h.id);
+          if(current) startMode(current,action.from,action.request.action_id);
+        });
+    }else say(action.request.op==='undo' ? 'Lugares restaurados' : `${action.group}: ${c.slots[action.group]} lugares · ${h.id==='desk' ? slotExpiry(c.expires_at).split(' · ')[1] : 'hasta otro cambio manual'}`,
       action.request.op==='undo' ? null : ()=>{
         const current=S?.hosts.find(x=>x.id===h.id);
         if(current) startSlots(current,{group:action.group},action.request.action_id);
@@ -317,12 +367,20 @@ function acceptSlots(key,action,data){
     SLOT_MESSAGES.set(action.request.host,data.error?.message || 'No se pudo confirmar el ajuste. Actualiza antes de decidir.');
     say(SLOT_MESSAGES.get(action.request.host));
   }
-  repaintActions();if(action.group) focusSlots(action.request.host,action.group);refresh();
+  repaintActions();if(action.group) focusSlots(action.request.host,action.group);
+  if(action.mode) focusMode(action.request.host,action.mode);
+  refresh();
 }
 async function sendSlots(key,action){
   try{acceptSlots(key,action,await postAction(action.request));}
   catch{action.status='unknown';persistActions();repaintActions();setTimeout(()=>pollAction(key,action),2000);}
 }
+document.addEventListener('click',ev=>{
+  const b=ev.target.closest('button[data-mode]');
+  if(!b || b.disabled || b.getAttribute('aria-pressed')==='true') return;
+  const h=S?.hosts.find(h=>h.id===b.dataset.host);
+  if(h?.control?.capabilities?.mode) startMode(h,b.dataset.mode);
+});
 document.addEventListener('click',ev=>{
   const b=ev.target.closest('button[data-step]');
   if(!b || b.disabled) return;
@@ -339,7 +397,7 @@ function view(){
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}`;
       }).join('');
-      return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}${hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
+      return `<section class="host"><div class="hhead"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControl(h)}</div>${capacity(h)}${hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
 function render(data){
   NOW = data.now;
@@ -487,7 +545,7 @@ function actionMessage(data,action){
   return data.error?.message || 'No se pudo confirmar la cancelación.';
 }
 function acceptAction(key,action,data){
-  if(['slots','undo'].includes(action.request.op)) return acceptSlots(key,action,data);
+  if(['slots','undo','mode'].includes(action.request.op)) return acceptSlots(key,action,data);
   if(['cancelling','unknown','cancel_unconfirmed'].includes(data.status)){
     const changed=action.status!==data.status; action.status=data.status;
     persistActions(); repaintActions();
@@ -518,7 +576,7 @@ async function pollAction(key,action){
       action.resent=true; persistActions();
       await sendCancel(key,action); return;
     }
-    const hostTerminal=['slots','undo'].includes(action.request.op) &&
+    const hostTerminal=['slots','undo','mode'].includes(action.request.op) &&
       (response.status===409 && ['conflict','rejected','unsupported'].includes(data.status) ||
        response.status===403 && data.status==='rejected' && data.error?.code==='disabled' && data.effects===false);
     if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || (!response.ok && !hostTerminal)) throw Error('status');

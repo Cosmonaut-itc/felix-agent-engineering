@@ -703,8 +703,8 @@ Python aislado y transporte acotado. No acepta actor, comandos o rutas del naveg
 Los contratos cancel/capabilities de lanzador de C3–C5 conservan su forma.
 Se mantienen whois fresco del dueño, tailnet, Host permitido y Origin exacto;
 ningún fallback abre SSH o ejecuta shell a partir de datos. La variante host del
-despachador desk responde no disponible. Día/Noche, reordenar y reinicios se
-anuncian `false`; un controlador antiguo deja cuotas deshabilitadas sin romper
+despachador desk responde no disponible. Reordenar y reinicios se anuncian
+`false`, y Día/Noche sólo existe en el desk; un controlador antiguo deja cuotas deshabilitadas sin romper
 la lectura ni «Cancelar…».
 
 Instalar **primero** el controlador Mini siguiendo
@@ -790,7 +790,8 @@ permitido y Origin exacto siguen siendo obligatorios para mutar.
 El snapshot incorpora la misma vista saneada de control en ambos hosts. No
 transmite entornos, rutas privadas ni metadatos de undo. Un host antiguo queda
 sin ± con «Falta actualizar el control de este host»; leer y cancelar siguen
-disponibles. `mode`, `reorder` y `restart_queue` continúan deshabilitados.
+disponibles. `reorder` y `restart_queue` continúan deshabilitados; `mode`
+se describe en «Día/Noche del desk (U3.3)».
 Un desk sin primera adopción degrada igual, sin crear estado; perder una
 autoridad ya adoptada conserva el error de recuperación.
 
@@ -812,3 +813,42 @@ Para apagar nuevos ajustes, crear `slots.disabled` en el estado del desk;
 consultas y recuperación continúan. Puede revertirse el panel manteniendo la
 autoridad nueva y sus timers. Nunca retirar la base durable o restaurar la
 aplicación ciega de tabla para deshacer un cambio.
+
+# Día/Noche del desk (U3.3)
+
+La cabecera del desk muestra el control segmentado «Día | Noche» y, debajo,
+la nota que calcula el host. El botón del modo vigente queda presionado
+(`aria-pressed`). El otro envía `op:"mode"` por el mismo `POST /api/accion`,
+con las claves de `slots` y `change:{"mode":"dia"|"noche"}`. La Mini no tiene
+control de modo: el rack rechaza `mode` para ella con 400 antes de transportar.
+
+- **Notas del host.** El panel muestra sin reescribir «Automático · cambia a
+  noche a las 23:00», «Adelantado · vuelve a día a las 08:00» y, en la fila de
+  estado, «Ajustes manuales hasta las 23:00» o «Lugares ajustados · hasta las
+  HH:mm». `host_action.py` acepta sólo esos textos, validados con expresiones
+  regulares por modo. También exige las dos tablas completas (sumas 14 y 18).
+- **Estados de la acción.** «Aplicando horario de noche…», «Horario aplicado
+  parcialmente · revisando…» y «Cambio sin confirmar · consultando…» los pone
+  el panel a partir del estado del recibo. Un conflicto o rechazo muestra el
+  mensaje del host. Unknown consulta el mismo ID y nunca reenvía el POST.
+- **Toast.** Tras la confirmación aparece un toast de 8 s con «Deshacer».
+  Envía `undo` con `undo_of` y el `expected` vigente. El host restaura desde su
+  recibo o responde «El horario o los lugares cambiaron; no se puede deshacer
+  este ajuste».
+- **Botones deshabilitados.** Ambos botones se deshabilitan con un ajuste
+  pendiente, una instantánea vieja, una reconciliación pendiente o un host
+  antiguo («Falta actualizar el control de este host»). Con trabajo fuera del
+  reparto sólo se deshabilita el modo cuya tabla sube algún grupo.
+- **Host antiguo.** `accion.py` no envía `mode` a un desk cuya instantánea no
+  anuncie `capabilities.mode`: un controlador de U3.2 lo trataría como una
+  operación desconocida e incierta.
+
+Instalación: primero el controlador con `install-desk.py` (ver el
+[README del controlador](../pueue-desk/README.md#díanoche-del-desk-u33)). Después
+`fleet/rack/instalar-desk.sh`, porque `desk_action.py` admite ahora `mode`. Al
+final, `instalar.sh` en la Mini. Hasta que el desk publique `capabilities.mode`,
+el panel nuevo muestra el control deshabilitado. Revertir el panel no afecta al
+host. Para revertir el controlador, primero deshacer o dejar vencer el adelanto.
+
+Verificación dirigida: `tests/test_desk_mode.py` cubre el canal, el saneo de
+notas y tablas, y el escenario `mode` de `tests/slots-ui-check.js`.
