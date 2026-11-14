@@ -82,9 +82,10 @@ en `github.com/actions/runner/releases`.
 - **Quién ejecuta código en la Mini.** Un trabajo corre el código de la rama
   como el usuario de la Mini, igual que `remote-run`. Con el runner, basta
   permiso de escritura en `SEN-HASO/Jale` para ejecutar código ahí; sin él
-  hacía falta `ssh`. El 2026-11-14 el único colaborador es el dueño. Antes de
-  dar escritura a otra persona o a una app, retira los runners o pásalos a un
-  usuario de macOS sin acceso al home.
+  hacía falta `ssh`. Eso incluye a cada colaborador y a cada app de GitHub con
+  escritura en el repositorio; `gh api orgs/SEN-HASO/installations` lista las
+  apps. Para acotarlo, quita la escritura a quien no deba tenerla o pasa los
+  runners a un usuario de macOS sin acceso al home del dueño.
 - **Fuera de Pueue.** Los trabajos no pasan por los grupos `suites` ni
   `rapidas` y la guardia de la Mini no los pausa. La carga queda acotada por
   los propios runners: un trabajo a la vez cada uno, y sólo esos dos trabajos
