@@ -221,6 +221,24 @@ class InventarioTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'meta sin mirror válido'):
             inv.espejo(r / 'meta')
 
+    def test_meta_con_carril_y_limites_de_bodega(self):
+        r = self.corrida(fin=True)
+        base = b'src=/src\nhost=mini\nmirror=remote-run/work/copia\nsub=.\n'
+        for extra in (b'carril=normal\n',
+                      b'carril=rapido\ntope_min=\nsilencio_min=15\n',
+                      b'carril=rapido\netiqueta=dirigida-x\ncarril_origen=implicito\n'
+                      b'tope_min=60\nsilencio_min=15\n'):
+            with self.subTest(extra=extra):
+                (r / 'meta').write_bytes(base + extra + b'cmd=true\n')
+                item, mirror, _ = inv.corrida(r, self.now)
+                self.assertEqual((item['clase'], mirror), ('terminal', 'copia'))
+                self.assertEqual(self.inventario()['proteccionCopias']['bloqueoGlobal'], [])
+        for extra in (b'otra=1\n', b'carril=normal\ncarril=rapido\n'):
+            with self.subTest(extra=extra):
+                (r / 'meta').write_bytes(base + extra + b'cmd=true\n')
+                with self.assertRaisesRegex(ValueError, 'meta mal formado'):
+                    inv.espejo(r / 'meta')
+
     def test_ilegible_y_symlink_corrida(self):
         self.copia()
         (self.root / 'runs/enlace').symlink_to('/no-existe')
