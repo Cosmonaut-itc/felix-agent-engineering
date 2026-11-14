@@ -14,6 +14,41 @@ vm.createContext(context);vm.runInContext(input.js,context);context.fixture=inpu
 const run=s=>vm.runInContext(s,context);
 run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
+ if(input.scenario==='startup-default'){
+   assert(run('groups(h).some(([g])=>g==="default")'),'attributed default interruption must be visible');
+   assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
+   run('h.tasks=[]');
+   assert(!run('groups(h).some(([g])=>g==="default")'),'empty default remains hidden');
+   console.log('UI startup default pipeline OK');return;
+ }
+ if(input.scenario==='startup-waits'){
+   assert.equal((elements.app.innerHTML.match(/Esperando cuotas y Docker · reanudación automática/g)||[]).length,6);
+   assert.match(elements.app.innerHTML,/Retenido al reiniciar: pausa de origen desconocido &lt;script&gt; · resolver con control.py reanudar suites/);
+   for(const g of ['hasito','jale','jale-verify','otros','pesadas','rapidas'])
+     assert(!elements.app.innerHTML.includes('resolver con control.py reanudar '+g));
+   assert.doesNotMatch(elements.app.innerHTML,/Pausa tras reinicio: resolver por SSH|>Reanudar<|data-resume/);
+   console.log('UI startup waits pipeline OK');return;
+ }
+ if(input.scenario==='ambiguous-notice'){
+   const notice=/Pausa tras reinicio: resolver por SSH con control.py/;
+   assert.match(run('hostControlMessage({id:"mini",control:{pause_reasons:{suites:["ambiguous"]}}})'),notice);
+   assert.match(run('hostControlMessage({id:"desk",control:{pause_reasons:{suites:["ambiguous"]}}})'),notice);
+   assert.doesNotMatch(run('hostControlMessage({id:"desk",control:{pause_reasons:{suites:["ambiguous","startup"]},startup_holds:{suites:"x"}}})'),notice);
+   console.log('UI ambiguous notice OK');return;
+ }
+ if(input.scenario==='startup'){
+   assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
+   assert.match(elements.app.innerHTML,/Retenido al reiniciar: pausa de origen desconocido &lt;script&gt;/);
+   assert.match(elements.app.innerHTML,/resolver con control.py reanudar jale/);
+   assert(!elements.app.innerHTML.includes('<script>'));
+   assert.doesNotMatch(elements.app.innerHTML,/>Reanudar<|data-resume/);
+   assert(!run('groups(h).some(([g])=>g==="default")'));
+   run('h.control.startup_holds={};h.tasks=[]');
+   assert.doesNotMatch(run('view()'),/Retenido al reiniciar|Interrumpida al reiniciar/);
+   assert.match(run('view()'),/data-mode="dia"/);
+   assert.match(run('view()'),/data-step="-1"/);
+   console.log('UI startup OK: interruption, hold, SSH resolution, escaping, default hidden, normal host unchanged');return;
+ }
  if(input.scenario==='desk'){
    for(const [mode,cap,slots] of [['dia',14,{hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3}],
                                 ['noche',18,{hasito:2,jale:7,'jale-verify':1,otros:2,pesadas:3,rapidas:3}]]){

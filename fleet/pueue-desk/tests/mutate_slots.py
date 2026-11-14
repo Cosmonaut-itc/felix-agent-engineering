@@ -12,7 +12,7 @@ CASES = [
  ('pueue-desk','control.py','deadline = time.monotonic() + RACK_LOCK_SECONDS','deadline = time.monotonic()', 'SlotsTests.test_slots_and_undo_wait_for_short_guard_or_snapshot_tick'),
  ('pueue-desk','control.py',"status = ('rejected' if request['op'] in ('slots', 'mode', 'undo') else", "status = ('unknown' if request['op'] in ('slots', 'mode', 'undo') else", 'SlotsTests.test_expired_lock_is_terminal_without_effects_for_slots_and_undo'),
  ('rack','host_action.py',"if value.get('status') == 'busy' and (value.get('error') or {}).get('code') == 'lock_busy':",'if False:', 'ChannelTests.test_lock_busy_is_terminal_in_rack_and_snapshot_without_effects'),
- ('pueue-desk','control.py',"if status == 'Running' and 'pressure' in reasons:",'if False:', 'SlotsTests.test_external_start_drops_adopted_pressure_ownership'),
+ ('pueue-desk','control.py',"if status == 'Running' and reasons & {'pressure', 'startup'}:",'if False:', 'SlotsTests.test_external_start_drops_adopted_pressure_ownership'),
  ('pueue-desk','control.py',"self.store(db, state)\n                except errors as error:\n                    can_open, failure = False, error\n                    try:\n                        self.fence_pause(g)", "self.store(db, state)\n                except errors as error:\n                    can_open, failure = False, error\n                    try:\n                        pass", 'SlotsTests.test_failed_external_start_release_never_reclaims_foreign_pause'),
  ('pueue-desk','control.py','self.timeout = None','self.timeout = 3', 'SlotsTests.test_slow_pueue_still_protects_both_guards_and_applies_mode'),
  ('pueue-desk','control.py','pueue.timeout = 3','pueue.timeout = None', 'SlotsTests.test_panel_rpc_stays_bounded_and_uncertain_status_never_replays'),
@@ -53,7 +53,7 @@ CASES = [
  ('pueue-desk','control.py',"return [(g, target[g]) for g in sorted(target) if target[g] < before[g]] + [\n        (g, target[g]) for g in sorted(target) if target[g] > before[g]]", "return [(g, target[g]) for g in sorted(target) if target[g] > before[g]] + [\n        (g, target[g]) for g in sorted(target) if target[g] < before[g]]",'SlotsTests.test_reductions_verified_before_increases'),
  ('pueue-desk','control.py',"if observed[g] != n or self.generation(state) != generation:",'if False:','SlotsTests.test_unconfirmed_reduction_never_runs_increases'),
  ('pueue-desk','control.py',"previous['revision'] != state['revision']",'False','SlotsTests.test_undo_strict_revision_and_no_inverse_when_state_changed'),
- ('pueue-desk','control.py',"'ambiguous'})","'manual'})",'SlotsTests.test_restart_lost_parallel_is_reconciled_without_opening_ambiguous_or_foreign_groups'),
+ ('pueue-desk','control.py',"state['reasons'][g] = sorted(set(state['reasons'].get(g, [])) | {'ambiguous'})","state['reasons'][g] = sorted(set(state['reasons'].get(g, [])) | {'manual'})",'SlotsTests.test_restart_lost_parallel_is_reconciled_without_opening_ambiguous_or_foreign_groups'),
  ('pueue-desk','control.py',"if has_authority(directory):\n        engine =",'if False:\n        engine =','SlotsTests.test_actual_guard_dispatch_never_falls_back_when_authority_corrupt'),
  ('pueue-desk','control.py',"if calculated != value['desired'] and not migrating:",'if False:','SlotsTests.test_invalid_desire_metadata_does_not_apply_default'),
  ('pueue-desk','control.py',"'pressure' if g in owned and g in self.profile else 'manual'","'pressure' if g in owned else 'manual'",'SlotsTests.test_import_ownership_separate_profile_including_missing_legacy_groups'),
@@ -90,7 +90,7 @@ DESK_CASES = [
  ('pueue-desk','control.py',"self.store(db, state)\n            db.execute('INSERT INTO host_actions","self.store(db, state)\n            db.commit()\n            db.execute('INSERT INTO host_actions",'DeskSlotsTests.test_atomic_desire_and_intent_rollback_and_unverified_reduction'),
  ('pueue-desk','control.py',"if observed[g] != n or self.generation(state) != generation:",'if False:','DeskSlotsTests.test_atomic_desire_and_intent_rollback_and_unverified_reduction'),
  ('pueue-desk','control.py',"'pressure' if g in owned and g in self.profile else 'manual'","'pressure' if g in owned else 'manual'",'DeskSlotsTests.test_import_ownership_separate_from_six_group_profile'),
- ('pueue-desk','control.py',"if status == 'Running' and 'pressure' in reasons:",'if False:','DeskSlotsTests.test_pressure_guard_rapidas_ladder_manual_pause_and_external_start'),
+ ('pueue-desk','control.py',"if status == 'Running' and reasons & {'pressure', 'startup'}:",'if False:','DeskSlotsTests.test_pressure_guard_rapidas_ladder_manual_pause_and_external_start'),
  ('pueue-desk','control.py',"decision = rapid if g == 'rapidas' else normal",'decision = normal','DeskSlotsTests.test_pressure_guard_rapidas_ladder_manual_pause_and_external_start'),
  ('pueue-desk','control.py',"status = ('rejected' if request['op'] in ('slots', 'mode', 'undo') else","status = ('unknown' if request['op'] in ('slots', 'mode', 'undo') else",'DeskSlotsTests.test_panel_lock_wait_is_terminal_and_guard_rpc_timeout_remains_unbounded'),
  ('pueue-desk','install-desk.py',"migration = policy_plan(engine)\n            if migration is None:",'migration = None\n            if migration is None:', 'DeskInstallTests.test_table_migration_seco_and_install_retire_overrides_atomically'),
@@ -165,12 +165,12 @@ DESK_CASES += [('pueue-desk',
   'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
  ('pueue-desk',
   'install-desk.py',
-  "with authority_lock(directory):\n            migration = policy_plan(engine)\n            if migration is None:\n                engine.view()  # unreadable authority never grants re-adoption\n            engine.install_migration = migration",
+  "with authority_lock(directory):\n            migration = policy_plan(engine)\n            if migration is None:\n                engine.view()  # unreadable authority never grants re-adoption\n            with engine.connect() as db:\n                if Path(engine.state(db, policy_migration=True)['pid_file']).resolve() != pid_file.resolve():\n                    raise ValueError('pid_path difiere de la autoridad')\n            engine.install_migration = migration",
   'pass  # unchecked authority',
   'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
  ('pueue-desk',
   'install-desk.py',
-  "run('systemctl', '--user', 'stop', *TIMERS, *SERVICES)",
+  "run('systemctl', '--user', 'stop', *SERVICES)",
   'pass  # old workers still live',
   'DeskInstallTests.test_installer_retires_old_worker_waiting_before_lock_before_adoption'),
  ('pueue-desk',
@@ -390,7 +390,7 @@ MODE_CASES = [('pueue-desk',
   'ModeTests.test_corrupt_mode_metadata_keeps_protective_closing_and_rapidas_ladder'),
  ('pueue-desk',
   'install-desk.py',
-  "fields_missing = 'mode_override' not in original",
+  "fields_missing = 'mode_override' not in original or original.get('startup_version') != 1",
   'fields_missing = False',
   'ModeMigrationTests.test_existing_adopted_authority_migrates_preserving_receipts_and_expirations'),
  ('pueue-desk',
@@ -485,7 +485,7 @@ MODE_CASES += [
 ]
 
 def main():
-    cases = MODE_CASES if '--mode-only' in sys.argv else DESK_CASES if '--desk-only' in sys.argv else CASES + DESK_CASES + MODE_CASES
+    cases = CASES if '--base-only' in sys.argv else MODE_CASES if '--mode-only' in sys.argv else DESK_CASES if '--desk-only' in sys.argv else CASES + DESK_CASES + MODE_CASES
     for number,(directory,relative,original,replacement,test) in enumerate(cases,1):
         with tempfile.TemporaryDirectory(prefix='u31-mutation-sol-',dir='/tmp') as folder:
             root=Path(folder)/'fleet'

@@ -1,7 +1,8 @@
 [Unit]
 Description=Guardia PSI del desk
-Requires=pueued.service
+Requisite=pueued.service
 After=pueued.service
+ConditionPathExists=!@HOME@/.local/state/pao/pueue-desk/maintenance
 
 [Service]
 Type=oneshot

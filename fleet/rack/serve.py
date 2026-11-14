@@ -182,6 +182,10 @@ def validate_snapshot(data, host):
         raise ValueError('Pueue no se pudo leer')
     data = copy.deepcopy(data)
     for row in data['tasks']:
+        if 'interruption_reason' in row:
+            if (host != 'desk' or row['state'] != 'Done' or row.get('result') != 'Killed'
+                    or row['interruption_reason'] != 'Interrumpida al reiniciar Pueue; relanzar manualmente'):
+                raise ValueError('Motivo de interrupción inválido')
         if 'control' in row:
             row['control'] = accion.control_data(row['control'], row)
         if 'activity' in row:
@@ -325,7 +329,7 @@ class Rack:
             data = copy.deepcopy(self.good.get(ident))
             estimates = {}
             if data:
-                data['tasks'] = [t for t in data['tasks'] if t['state'] != 'Done']
+                data['tasks'] = [t for t in data['tasks'] if t['state'] != 'Done' or t.get('interruption_reason')]
                 for task in data['tasks']:
                     if task['state'] in ('Running', 'Queued'):
                         estimate = self.history.estimate(ident, task)

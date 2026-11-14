@@ -1,12 +1,20 @@
 [Unit]
 Description=Pueue del desk por proyecto
-# Las cuotas se aplican aparte: un fallo al aplicarlas no reinicia el daemon.
-Wants=pueue-desk-mode.service
+# Cuotas/sensores fallidos retienen admisión; no reinician el daemon.
+Wants=pueue-desk-mode.service pueue-desk-guard.service
+StartLimitIntervalSec=0
+ConditionPathExists=!@HOME@/.local/state/pao/pueue-desk/maintenance
 
 [Service]
+ExecStartPre=/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py preparar --host desk
 ExecStart=@HOME@/.local/bin/pueued
-Restart=on-failure
+ExecStop=-/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py parada --host desk
+WorkingDirectory=@HOME@
+StandardOutput=null
+StandardError=journal
+Restart=always
 RestartSec=5
+KillMode=mixed
 
 [Install]
 WantedBy=default.target

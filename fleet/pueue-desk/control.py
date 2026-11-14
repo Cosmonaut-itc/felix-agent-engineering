@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 """Cuotas y guardia de Pueue 4.0.4; sólo biblioteca estándar."""
 import argparse
+from copy import deepcopy
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -13,6 +14,7 @@ from pathlib import Path
 import subprocess
 import sqlite3
 import re
+import shlex
 import sys
 import time
 
@@ -106,13 +108,14 @@ def validate_limit(value):
 
 
 class Pueue:
-    def __init__(self, binary=None):
+    def __init__(self, binary=None, env=None, cwd=None):
         self.binary = str(binary or Path.home() / ".local/bin/pueue")
         self.timeout = None
+        self.context = dict(env=env, cwd=cwd) if env is not None else {}
 
     def call(self, *args):
         return subprocess.run([self.binary, *map(str, args)], check=True,
-                              text=True, capture_output=True, timeout=self.timeout).stdout
+                              text=True, capture_output=True, timeout=self.timeout, **self.context).stdout
 
     def status(self):
         state = json.loads(self.call("status", "--json"))
@@ -140,9 +143,10 @@ def apply_mode(pueue, now):
 
 
 @contextmanager
-def locked(directory):
-    directory.mkdir(parents=True, exist_ok=True)
-    with (directory / "control.lock").open("a") as handle:
+def locked(directory, create=True):
+    if create:
+        directory.mkdir(parents=True, exist_ok=True)
+    with (directory / "control.lock").open("a" if create else "rb") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         yield
 
@@ -227,26 +231,27 @@ def decide(host, readings, thresholds):
 
 
 def guard(pueue, proc, directory, *, host="desk"):
-    readings = pressure_mini() if host == "mini" else pressure(proc)
-    log(directory, "lectura", **readings)
     if has_authority(directory):
         engine = MiniControl(pueue, directory) if host == 'mini' else MiniControl(pueue, directory, host='desk')
-        return engine.guard(readings, proc=proc)
+        return engine.guard(None, proc=proc)
+    readings = pressure_mini() if host == 'mini' else pressure(proc)
+    log(directory, 'lectura', **readings)
     normal = decide(host, readings, MINI_THRESHOLDS if host == "mini" else PRESSURE_THRESHOLDS)
     rapid = decide(host, readings, RAPIDAS_THRESHOLDS[host])
     log(directory, "decision", accion=normal, accion_rapidas=rapid)
     target = directory / "guardia-state.json"
     owned = set(json.loads(target.read_text())) if target.exists() else set()
     managed_groups = MINI_GROUPS if host == "mini" else GROUP_LIMITS.keys()
-    if not owned <= set(managed_groups):
-        raise ValueError("Grupos desconocidos en estado del guardia")
     groups = pueue.status()["groups"]
+    if any(type(g) is not str for g in owned):
+        raise ValueError('Propiedad inválida')
+    absent = owned - set(groups)
+    if absent:
+        owned -= absent
+        save_owned(directory, owned)
     for group in managed_groups:
-        # Un grupo que no existe en el host no se gestiona ni se conserva como propio.
+        # Un grupo que no existe en el host no se gestiona; la poda anterior ya lo soltó.
         if group not in groups:
-            if group in owned:
-                owned.remove(group)
-                save_owned(directory, owned)
             continue
         status = groups[group]["status"]
         action = rapid if group == "rapidas" else normal
@@ -353,6 +358,366 @@ def mini_generation(pid_file):
     return hashlib.sha256((pid + ':' + str(pid_file.stat().st_mtime_ns) + ':' + identity).encode()).hexdigest()
 
 
+INTERRUPTED = 'Interrumpida al reiniciar Pueue; relanzar manualmente'
+
+
+def validate_timestamp(value):
+    # fromisoformat normalizes +00:99 on Python 3.9. Chrono rejects it.
+    pattern = r"[0-9]{4}-[0-9]{2}-[0-9]{2}T([0-9]{2}):([0-9]{2}):([0-9]{2})(?:\.[0-9]{1,9})?(?:Z|[+-]([0-9]{2}):([0-9]{2}))"
+    match = re.fullmatch(pattern, value) if isinstance(value, str) else None
+    if not match or any(int(n or 0) > limit for n, limit in zip(match.groups(), (23, 59, 59, 23, 59))):
+        raise ValueError('Fecha Pueue incompatible')
+    datetime.fromisoformat(value[:19])  # calendar; preserve nanoseconds on Python 3.9
+
+
+def unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise ValueError("Clave JSON duplicada; no se sustituye la cola")
+        value[key] = item
+    return value
+
+
+def validate_task(task_id, task):
+    """Rechazar antes de que Pueue sustituya una cola ilegible por una vacía."""
+    def timestamp(value):
+        validate_timestamp(value)
+
+    def status(value):
+        if not isinstance(value, dict) or len(value) != 1:
+            raise ValueError("Estado de tarea incompatible")
+        name, detail = next(iter(value.items()))
+        required = {"Queued": ("enqueued_at",), "Running": ("enqueued_at", "start"),
+                    "Paused": ("enqueued_at", "start"), "Done": ("enqueued_at", "start", "end")}
+        if name in required:
+            for field in required[name]:
+                timestamp(detail[field])
+            if name == "Done":
+                result = detail["result"]
+                if isinstance(result, dict):
+                    if len(result) != 1 or not (
+                        ("Failed" in result and type(result["Failed"]) is int and -(2**31) <= result["Failed"] < 2**31)
+                        or ("FailedToSpawn" in result and isinstance(result["FailedToSpawn"], str))
+                    ):
+                        raise ValueError("Resultado Pueue incompatible")
+                elif result not in ("Success", "Killed", "Errored", "DependencyFailed"):
+                    raise ValueError("Resultado Pueue incompatible")
+        elif name == "Stashed":
+            if detail["enqueue_at"] is not None:
+                timestamp(detail["enqueue_at"])
+        elif name == "Locked":
+            status(detail["previous_status"])
+        else:
+            raise ValueError("Estado de tarea incompatible")
+
+    if type(task["id"]) is not int or str(task["id"]) != task_id or not 0 <= task["id"] < 2**64:
+        raise ValueError("Identidad Pueue incompatible")
+    timestamp(task["created_at"])
+    for field in ("command", "original_command", "path", "group"):
+        if not isinstance(task[field], str):
+            raise ValueError("Tarea Pueue incompatible")
+    if not isinstance(task["envs"], dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in task["envs"].items()):
+        raise ValueError("Entorno Pueue incompatible")
+    if not isinstance(task["dependencies"], list) or not all(type(v) is int and 0 <= v < 2**64 for v in task["dependencies"]):
+        raise ValueError("Dependencias Pueue incompatibles")
+    if type(task["priority"]) is not int or not -(2**31) <= task["priority"] < 2**31:
+        raise ValueError("Prioridad Pueue incompatible")
+    if task["label"] is not None and not isinstance(task["label"], str):
+        raise ValueError("Etiqueta Pueue incompatible")
+    status(task["status"])
+
+
+def read_queue(path):
+    if os.path.lexists(path.with_suffix(".json.gz")):
+        raise ValueError("Se requiere compress_state_file: false; no se altera el estado comprimido")
+    value = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    return validate_queue(value)
+
+
+def validate_queue(value):
+    if not isinstance(value, dict) or not isinstance(value.get("tasks"), dict) or not isinstance(value.get("groups"), dict):
+        raise ValueError("Estado Pueue incompleto; arranque abortado sin reemplazar la cola")
+    try:
+        for name, group in value["groups"].items():
+            if not isinstance(name, str) or not name or not isinstance(group, dict):
+                raise ValueError("Grupo incompatible")
+            if group.get("status") not in ("Running", "Paused") or type(group.get("parallel_tasks")) is not int or not 0 <= group["parallel_tasks"] < 2**64:
+                raise ValueError("Grupo Pueue incompatible; arranque abortado")
+        for task_id, task in value["tasks"].items():
+            validate_task(task_id, task)
+            if task["group"] not in value["groups"]:
+                raise ValueError("Grupo de tarea ausente; no se remapea ni se pierde la cola")
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError("Cola Pueue incompatible; arranque abortado sin sustituirla") from error
+    return value
+
+
+def default_data(home=None):
+    home = home or Path.home()
+    if sys.platform == "darwin":
+        return Path.home() / "Library/Application Support/pueue"
+    return Path(os.environ.get("XDG_DATA_HOME", str(home / ".local/share"))) / "pueue"
+
+
+MANAGER_KEYS = ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'PUEUE_CONFIG_PATH')
+
+
+def manager_environment(text):
+    """Only path settings from systemctl show-environment; never log its contents."""
+    env = {}
+    for line in text.splitlines():
+        key = line.split('=', 1)[0]
+        if key not in MANAGER_KEYS:
+            continue
+        words = shlex.split(line)
+        if len(words) != 1 or words[0].startswith("$'") or '=' not in words[0]:
+            raise ValueError('Entorno de systemd ambiguo para ' + key)
+        name, value = words[0].split('=', 1)
+        env[name] = value
+    return env
+
+
+def validate_configuration(home=None, config_path=None, data=None, pid_file=None, pueue=None, daemon=None,
+                           env=None, cwd=None):
+    """Sólo valida; no escribe ni genera un pueue.yml administrado.
+
+    Acepta JSON y el YAML expandido simple que emite Pueue. Ante sintaxis
+    ambigua falla cerrado: no intenta adivinar dónde vive la cola.
+    """
+    home = home or Path.home()
+    env = os.environ if env is None else env
+    cwd = Path.cwd() if cwd is None else Path(cwd)
+    data = data or (default_data(home) if sys.platform == 'darwin' else
+                    Path(env.get('XDG_DATA_HOME', str(home / '.local/share'))) / 'pueue')
+    runtime = env.get('XDG_RUNTIME_DIR') if sys.platform != 'darwin' else None
+    pid_file = pid_file or (Path(runtime) if runtime else data) / 'pueue.pid'
+    pueue = pueue or home / '.local/bin/pueue'
+    daemon = daemon or home / '.local/bin/pueued'
+    for binary, expected in ((pueue, 'pueue 4.0.4'), (daemon, 'pueued 4.0.4')):
+        if subprocess.check_output([str(binary), '--version'], text=True, timeout=5).strip() != expected:
+            raise ValueError('Se requiere Pueue estándar 4.0.4')
+    for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"):
+        if key in env and not Path(env[key]).is_absolute():
+            raise ValueError(f"{key} debe ser absoluto para compartir rutas con Pueue")
+    config_dir = (default_data() if sys.platform == "darwin" else
+                  Path(env.get("XDG_CONFIG_HOME", str(home / ".config"))) / "pueue")
+    standard = config_dir / "pueue.yml"
+    if config_path is None and env.get("PUEUE_CONFIG_PATH"):
+        raise ValueError("PUEUE_CONFIG_PATH personalizado no se admite en el host")
+    source = config_path or (standard if standard.exists() else cwd / "pueue.yml")
+    if not source.exists():
+        return dict(data=data, pid_file=pid_file)
+    text = source.read_text()
+    try:
+        config = json.loads(text)
+    except ValueError:
+        config = {}
+        section = None
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith("#") or line.strip() == "---":
+                continue
+            if not line.startswith(" "):
+                match = re.fullmatch(r"([a-z_]+):\s*(.*?)\s*", line)
+                if not match:
+                    raise ValueError("Configuración YAML compleja; revisar antes de adoptar")
+                section, raw = match.groups()
+                if section in config:
+                    raise ValueError("Bloque de configuración duplicado")
+                if not raw or raw.startswith("#"):
+                    config[section] = {}
+                else:
+                    try:
+                        config[section] = json.loads(raw.split(" #", 1)[0])
+                    except ValueError:
+                        raise ValueError("Bloque YAML inline complejo; revisar antes de adoptar") from None
+            elif section in ("shared", "daemon"):
+                match = re.fullmatch(r"  ([a-z_]+):\s*(.*?)\s*", line)
+                if not match:
+                    raise ValueError("Configuración shared/daemon compleja")
+                key, raw = match.groups()
+                if key in config[section]:
+                    raise ValueError("Clave de configuración duplicada")
+                raw = raw.split(" #", 1)[0]
+                try:
+                    value = json.loads(raw)
+                except ValueError:
+                    if raw.startswith("'") and raw.endswith("'"):
+                        value = raw[1:-1].replace("''", "'")
+                    elif re.fullmatch(r"[a-zA-Z0-9_/. :~-]+", raw):
+                        value = raw
+                    else:
+                        raise ValueError("Valor de configuración complejo") from None
+                config[section][key] = value
+    if not isinstance(config, dict) or not all(isinstance(config.get(key, {}), dict) for key in ("shared", "daemon")):
+        raise ValueError("Configuración incompatible")
+    shared = config.get("shared", {})
+    # El cliente y el daemon sin --config deben mirar las mismas rutas estándar.
+    for key in ("pueue_directory", "runtime_directory", "unix_socket_path", "pid_path"):
+        value = shared.get(key)
+        allowed = {'pueue_directory': str(data)}
+        if config_path is not None:
+            allowed.update(runtime_directory=str(data), unix_socket_path=str(data / 'socket'), pid_path=str(pid_file))
+        if value is not None and value != allowed.get(key):
+            raise ValueError(f"shared.{key} personalizado; no se adopta la cola")
+    if shared.get("use_unix_socket", True) is not True:
+        raise ValueError("El host requiere socket Unix")
+    if config.get("daemon", {}).get("compress_state_file", False) is not False:
+        raise ValueError("Se requiere compress_state_file: false")
+
+
+    daemon_config = config.get('daemon', {})
+    if daemon_config.get('env_vars', {}) != {} or 'shell_command' in daemon_config:
+        raise ValueError('daemon.env_vars o shell_command complejo no soportado; conservar configuración')
+    return dict(data=data, pid_file=pid_file)
+
+
+def sync_directory(path):
+    descriptor = os.open(str(path), os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def atomic_json(path, value):
+    temporary = path.with_name(path.name + '.startup-tmp')
+    with temporary.open('w') as stream:
+        os.chmod(temporary, 0o600)
+        stream.write(canonical(value) + '\n')
+        stream.flush(); os.fsync(stream.fileno())
+    os.replace(temporary, path)
+    sync_directory(path.parent)
+
+
+def queue_hash(queue):
+    return hashlib.sha256(canonical(queue).encode()).hexdigest()
+
+
+def assert_offline(pueue, pid_file):
+    try:
+        pueue.status()
+    except subprocess.CalledProcessError:
+        pass
+    else:
+        raise ValueError('Daemon responde; preparar exige daemon detenido')
+    if os.path.lexists(pid_file):
+        pid = pid_file.read_text().strip()
+        if not pid.isdigit() or int(pid) < 1:
+            raise ValueError('PID ilegible; no se prepara')
+        # Any live or unidentifiable PID blocks. No name search, no killing.
+        result = subprocess.run(['/bin/ps', '-p', pid, '-o', 'comm='],
+                                text=True, capture_output=True, timeout=5)
+        if result.returncode != 1:
+            raise ValueError('PID anterior vivo o ambiguo; no se prepara')
+
+
+def startup_plan(queue, state, now, data, profile):
+    image = deepcopy(queue)
+    state = deepcopy(state)
+    previous = state.get('startup', {})
+    holds = dict(previous.get('holds', {}))
+    interruptions = dict(previous.get('interruptions', {}))
+    changes = {}
+    image['groups'].setdefault('default', dict(status='Running', parallel_tasks=1))
+    for g, n in state['desired'].items():
+        image['groups'].setdefault(g, dict(status='Running', parallel_tasks=n))
+        image['groups'][g]['parallel_tasks'] = n
+    for g, row in image['groups'].items():
+        reasons = set(state['reasons'].get(g, []))
+        if g not in profile:
+            reasons.add('ambiguous'); holds[g] = 'grupo fuera del reparto'
+        elif row['status'] == 'Paused' and not reasons:
+            reasons.add('manual'); holds[g] = 'pausa de origen desconocido'
+        elif 'manual' in reasons or 'ambiguous' in reasons:
+            holds.setdefault(g, 'pausa manual' if 'manual' in reasons else 'pausa de origen desconocido')
+        reasons.add('startup')
+        state['reasons'][g] = sorted(reasons)
+        row['status'] = 'Paused'
+    stamp = datetime.fromtimestamp(now, timezone.utc).isoformat()
+    for ident, task in image['tasks'].items():
+        variant, detail = next(iter(task['status'].items()))
+        if variant in ('Running', 'Paused') or (variant == 'Queued' and os.path.lexists(data / 'task_logs' / (ident + '.log'))):
+            task['status'] = {'Done': dict(enqueued_at=detail['enqueued_at'], start=detail.get('start', stamp), end=stamp, result='Killed')}
+            changes[ident] = task['status']
+            interruptions[ident] = dict(created_at=task['created_at'], message=INTERRUPTED)
+            if variant == 'Queued':
+                holds[task['group']] = 'tarea en fila con log previo; lanzamiento ambiguo'
+                state['reasons'][task['group']] = sorted(set(state['reasons'][task['group']]) | {'ambiguous'})
+        elif (variant == 'Done' and detail['result'] == 'Killed'
+              and state.get('stop_tasks', {}).get(ident) == task['created_at']):
+            interruptions[ident] = dict(created_at=task['created_at'], message=INTERRUPTED)
+        elif variant == 'Locked':
+            holds[task['group']] = 'tarea Locked desconocida; revisar antes de reanudar'
+            state['reasons'][task['group']] = sorted(set(state['reasons'][task['group']]) | {'ambiguous'})
+    # Identity is checked again by snapshot; cancelled/terminal tasks get no new reason.
+    state.pop('stop_tasks', None)
+    state['startup'] = dict(phase='intent', source_hash=queue_hash(queue), target_hash=queue_hash(image),
+                            statuses=changes, groups=image['groups'], holds=holds,
+                            interruptions=interruptions, previous_generation=state['generation'])
+    return state, image
+
+
+def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, boundary=lambda phase: None):
+    """Caller holds control.lock. Intention -> queue rename -> repeatable completion.
+
+    configuration is an already validated private fixture only in tests; production
+    and install-desk call exactly the same validator, before any write.
+    """
+    if engine.host != 'desk':
+        raise ValueError('Preparación Mini pendiente de U3.5')
+    config = configuration if configuration is not None else validate_configuration()
+    queue_path = queue_path or config['data'] / 'state.json'
+    queue = read_queue(queue_path)  # adopted host: absent is never a fresh queue
+    with engine.connect() as db:
+        stored = engine.state(db)
+    if os.path.lexists(engine.directory / 'maintenance'):
+        raise ValueError('Host en mantenimiento')
+    if config['pid_file'].resolve() != Path(stored['pid_file']).resolve():
+        raise ValueError('PID configurado difiere de la autoridad')
+    assert_offline(engine.pueue, config['pid_file'])
+    state = engine.resolve(stored)
+    state['startup_version'] = 1
+    prior = state.get('startup', {})
+    disk_hash = queue_hash(queue)
+    if prior.get('phase') == 'intent':
+        digest = queue_hash(queue)
+        if digest == prior['source_hash']:
+            queue = deepcopy(queue)
+            queue['groups'] = prior['groups']
+            for ident, status in prior['statuses'].items():
+                queue['tasks'][ident]['status'] = status
+            if queue_hash(queue) != prior['target_hash']:
+                raise ValueError('Intención de arranque inconsistente')
+        elif digest != prior['target_hash']:
+            raise ValueError('Cola cambió durante preparación; conservar archivos')
+    validate_queue(queue)  # an intent reconstructed from authority is validated too
+    # Re-project even after a crash: an event may have expired overrides meanwhile.
+    state, image = startup_plan(queue, state, engine.clock(), config['data'], engine.profile)
+    validate_queue(image)  # validate the exact bytes to be published, before intent
+    state['startup']['source_hash'] = disk_hash
+    # Carry recovered statuses forward if the disk still contains the old image.
+    if prior.get('phase') == 'intent':
+        state['startup']['statuses'] = dict(prior['statuses'], **state['startup']['statuses'])
+    if dry_run:
+        return image
+    with engine.connect(write=True) as db:
+        engine.store(db, state)
+    boundary('intent')
+    atomic_json(queue_path, image)
+    boundary('queue')
+    state['startup']['phase'] = 'prepared'
+    with engine.connect(write=True) as db:
+        engine.store(db, state)
+    boundary('complete')
+    if engine.resolve(state) != state:
+        return prepare_start(engine, queue_path, config, dry_run=False, boundary=boundary)
+    # Stock refuses even a dead pid file. Remove only after all data are durable.
+    if os.path.lexists(config['pid_file']):
+        config['pid_file'].unlink(); sync_directory(config['pid_file'].parent)
+    return image
+
+
 class MiniControl:
     """Caller holds control.lock. Queries/ensayos open SQLite read-only, never recover.
 
@@ -455,9 +820,23 @@ class MiniControl:
         if calculated != value['desired'] and not migrating:
             raise ValueError('Deseo inconsistente')
         # Ownership is independent of the quota profile (including foreign groups).
-        if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous'}
+        if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous', 'startup'}
                for g, r in value['reasons'].items()):
             raise ValueError('Propiedad inválida')
+        startup = value.get('startup')
+        if ('startup_version' in value and (type(value['startup_version']) is not int or value['startup_version'] != 1)
+                or any('startup' in r for r in value['reasons'].values()) and startup is None):
+            raise ValueError('Versión o propiedad de arranque inválida')
+        if startup is not None:
+            if (value.get('startup_version') != 1 or type(startup) is not dict or startup.get('phase') not in ('intent', 'prepared', 'ready')
+                    or any(type(startup.get(k)) is not dict for k in ('statuses', 'groups', 'holds', 'interruptions'))
+                    or any(type(g) is not str or type(reason) is not str for g, reason in startup['holds'].items())
+                    or any(not re.fullmatch('[0-9a-f]{64}', startup.get(k, '')) for k in ('source_hash', 'target_hash'))):
+                raise ValueError('Arranque durable inválido')
+            for ident, item in startup['interruptions'].items():
+                if not ident.isdigit() or type(item) is not dict or item.get('message') != INTERRUPTED:
+                    raise ValueError('Interrupción inválida')
+                validate_timestamp(item['created_at'])
         return value
 
     def store(self, db, state):
@@ -562,6 +941,10 @@ class MiniControl:
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
             reason=None if enabled else 'Los ajustes de lugares están apagados en este host.',
             recovery_pending=bool(pending) or generation != state['generation'],
+            startup_holds={g:state.get('startup', {}).get('holds', {}).get(g, 'pausa manual' if 'manual' in r else 'pausa de origen desconocido')
+                           for g,r in state['reasons'].items() if 'startup' in r and set(r) & {'manual', 'ambiguous'}},
+            startup_waiting={g:'cuotas_sensores' for g,r in state['reasons'].items()
+                             if 'startup' in r and not set(r) & {'manual', 'ambiguous'}},
             pause_reasons=state['reasons'], pending_actions=[a['request']['action_id'] for a in pending], **extra)
 
     def reply(self, request, status, code=None, **fields):
@@ -711,27 +1094,89 @@ class MiniControl:
         self.reconcile()
         return self._handle(dict(schema=HOST_SCHEMA, op='status', action_id=request['action_id']))
 
+    def record_stop(self):
+        with self.connect() as db:
+            state = self.state(db)
+        snapshot = self.pueue.status()
+        state['stop_tasks'] = {ident:task['created_at'] for ident,task in snapshot['tasks'].items()
+                               if isinstance(task['status'], dict) and set(task['status']) & {'Running', 'Paused'}}
+        with self.connect(write=True) as db:
+            self.store(db, state)
+
+    def retire_empty(self, group):
+        # Explicit only. Caller holds control.lock; never retire on deployment.
+        if self.host != 'desk' or group not in ('suites', 'pg5434'):
+            raise ValueError('Retiro no autorizado para este grupo')
+        with self.connect() as db:
+            state = self.state(db)
+        snapshot = self.pueue.status()
+        if any(t['group'] == group for t in snapshot['tasks'].values()):
+            raise ValueError('Grupo con tareas; no se retira')
+        state['retire_intent'] = group
+        with self.connect(write=True) as db:
+            self.store(db, state)
+        self.finish_retirement(state)
+
+    def finish_retirement(self, state):
+        group = state.get('retire_intent')
+        if group is None:
+            return
+        if group not in ('suites', 'pg5434'):
+            raise ValueError('Intención de retiro inválida')
+        snapshot = self.pueue.status()
+        if any(t['group'] == group for t in snapshot['tasks'].values()):
+            state.pop('retire_intent', None)
+            state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
+            with self.connect(write=True) as db:
+                self.store(db, state)
+            return False
+        if group in snapshot['groups']:
+            self.pueue.call('group', 'remove', group)
+        if group in self.pueue.status()['groups']:
+            raise ValueError('Retiro sin confirmar')
+        state['reasons'].pop(group, None)
+        state.get('startup', {}).get('holds', {}).pop(group, None)
+        state.pop('retire_intent', None)
+        with self.connect(write=True) as db:
+            self.store(db, state)
+
     def reconcile(self):
         if self.host == 'desk' and os.path.lexists(self.directory / 'maintenance'):
             return False
         with self.connect() as db:
             stored = self.state(db)
             state = self.resolve(stored)
+        if state.get('startup', {}).get('phase') == 'intent':
+            raise ValueError('Preparación incompleta; no se admite trabajo')
         if state != stored:
             with self.connect(write=True) as db:
                 self.store(db, state)  # durable expiration precedes any RPC
+        if state.get('retire_intent'):
+            self.finish_retirement(state)
         observed = None
         failure = False
         try:
             generation = self.generation(state)
             observed, groups = self.observed()
+            absent = set(state['reasons']) - set(groups)
+            if absent:
+                for g in absent:
+                    state['reasons'].pop(g, None)
+                    state.get('startup', {}).get('holds', {}).pop(g, None)
+                with self.connect(write=True) as db:
+                    self.store(db, state)
             if observed != state['desired']:
                 validate_target(observed, state['desired'], self.host, self.cap(state))
             if generation != state['generation']:
                 # A paused group after restore has ambiguous origin. Never open it.
+                startup = state.get('startup', {})
+                prepared = (startup.get('phase') == 'prepared' and
+                            startup.get('previous_generation') == state['generation'])
                 for g, row in groups.items():
-                    if row['status'] == 'Paused':
+                    if row['status'] == 'Paused' and not (prepared and 'startup' in state['reasons'].get(g, [])):
                         state['reasons'][g] = sorted(set(state['reasons'].get(g, [])) | {'ambiguous'})
+                if prepared:
+                    startup['phase'] = 'ready'
                 state['generation'] = generation
                 with self.connect(write=True) as db:
                     self.store(db, state)
@@ -820,7 +1265,9 @@ class MiniControl:
                 state = self.state(db)
         except errors as error:
             failure = error
-        can_open = failure is None
+        can_open = failure is None and not os.path.lexists(self.directory / 'maintenance')
+        readings = readings if readings is not None else (pressure_mini() if self.host == 'mini' else pressure(proc))
+        log(self.directory, 'lectura', **readings)
         # Protective closing needs existing group status, not a valid quota vector.
         groups = self.pueue.status()['groups']
         thresholds = MINI_THRESHOLDS if self.host == 'mini' else PRESSURE_THRESHOLDS
@@ -834,9 +1281,11 @@ class MiniControl:
             if os.path.lexists(self.pause_fence(g)):
                 reasons.add('manual')
             status = groups[g]['status']
-            if status == 'Running' and 'pressure' in reasons:
+            if status == 'Running' and reasons & {'pressure', 'startup'}:
                 # An external start ends our ownership, even in hysteresis.
                 reasons.discard('pressure')
+                reasons.discard('startup')
+                state.get('startup', {}).get('holds', {}).pop(g, None)
                 state['reasons'][g] = sorted(reasons)
                 try:
                     with self.connect(write=True) as db:
@@ -868,8 +1317,8 @@ class MiniControl:
                 except errors as error:
                     can_open, failure = False, error
                 continue
-            elif can_open and decision == 'reanudar' and 'pressure' in reasons:
-                if reasons == {'pressure'} and status == 'Paused':
+            elif can_open and decision == 'reanudar' and reasons & {'pressure', 'startup'}:
+                if reasons <= {'pressure', 'startup'} and status == 'Paused':
                     # A fresh sample, after reconciliation and immediately before admission.
                     current = pressure_mini() if self.host == 'mini' else pressure(proc)
                     if decide(self.host, current, RAPIDAS_THRESHOLDS[self.host] if g == 'rapidas' else thresholds) != 'reanudar':
@@ -879,7 +1328,11 @@ class MiniControl:
                         raise ValueError('Deseo o daemon cambiaron antes de admitir')
                     if self.resolve(state) != state:  # guard: after status and daemon identity
                         raise ValueError('Evento antes de abrir por presión')
+                    if not self.admission_ready(state, group=g, proc=proc):
+                        continue
                     self.pueue.call('start', '-g', g)
+                    reasons.discard('startup')
+                    state.get('startup', {}).get('holds', {}).pop(g, None)
                 reasons.discard('pressure')
                 state['reasons'][g] = sorted(reasons)
                 with self.connect(write=True) as db:
@@ -892,7 +1345,30 @@ class MiniControl:
             log(self.directory, 'sin_reconciliar', detalle=type(failure).__name__)
             raise failure
 
+    def admission_ready(self, state, group=None, proc=Path('/proc')):
+        if os.path.lexists(self.directory / 'maintenance'):
+            return False
+        if state.get('startup') and state['startup']['phase'] != 'ready':
+            return False
+        if self.host == 'desk' and state.get('startup_version') == 1:
+            try:
+                subprocess.run(['/usr/bin/docker', 'info'], check=True, capture_output=True, timeout=5)
+                observed, _ = self.observed()
+                if observed != state['desired'] or self.generation(state) != state['generation']:
+                    return False
+                if group is not None:
+                    current = pressure(proc)  # Docker/identity reads can take time too
+                    threshold = RAPIDAS_THRESHOLDS['desk'] if group == 'rapidas' else PRESSURE_THRESHOLDS
+                    if decide('desk', current, threshold) != 'reanudar':
+                        return False
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                return False
+        return self.resolve(state) == state
+
     def manual(self, group, resume=False):
+        # Existing foreign groups may be resolved without joining the quota profile.
+        if self.host == 'desk' and group not in self.pueue.status()['groups']:
+            raise ValueError('Grupo inexistente; no se crea al reanudar')
         with self.connect() as db:
             state = self.state(db)
         if resume:
@@ -904,7 +1380,11 @@ class MiniControl:
             current = pressure_mini() if self.host == 'mini' else pressure(Path('/proc'))
             if decide(self.host, current, threshold) != 'reanudar' or self.resolve(state) != state:
                 raise ValueError('La presión no permite admitir')
-            reasons = set(state['reasons'].get(group, [])) - {'manual', 'ambiguous'}
+            if not self.admission_ready(state, group=group):
+                raise ValueError('Mantenimiento o Docker no preparado; admisión retenida')
+            if state.get('startup', {}).get('phase') not in (None, 'ready'):
+                raise ValueError('Arranque sin verificar')
+            reasons = set(state['reasons'].get(group, [])) - {'manual', 'ambiguous', 'startup'}
             if not reasons:
                 # Keep reasons until success: a failed start retains explicit ownership.
                 observed, _ = self.observed()
@@ -914,6 +1394,7 @@ class MiniControl:
                     raise ValueError('Evento antes de reanudar manualmente')
                 self.pueue.call('start', '-g', group)
             state['reasons'][group] = sorted(reasons)
+            state.get('startup', {}).get('holds', {}).pop(group, None)
         else:
             state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
             with self.connect(write=True) as db:
@@ -927,13 +1408,17 @@ class MiniControl:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack"])
+    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "preparar", "retirar", "parada"])
     parser.add_argument("group", nargs="?")
     parser.add_argument("--host", choices=["desk", "mini"], default="desk")
     parser.add_argument('--pid-file', type=Path)
+    parser.add_argument('--seco', action='store_true')
     args = parser.parse_args()
+    if args.seco and args.command != 'preparar':
+        parser.error('--seco sólo para preparar; rack usa dry_run')
     groups = MINI_GROUPS if args.host == "mini" else GROUP_LIMITS
-    if args.group is not None and args.group not in groups:
+    foreign_resume = args.host == 'desk' and args.command == 'reanudar'
+    if args.group is not None and args.group not in groups and not foreign_resume and not (args.command == 'retirar' and args.group in ('suites', 'pg5434')):
         parser.error("grupo desconocido para el host")
     if args.host == "mini" and args.command == "aplicar":
         parser.error("La Mini sólo admite guardia y pausa manual")
@@ -974,10 +1459,16 @@ def main():
             response = engine.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
         print(json.dumps(response, allow_nan=False))
         return
-    with locked(directory):
+    with locked(directory, create=args.command != 'preparar'):
         try:
             engine = MiniControl(pueue, directory, host=args.host)
-            if args.command == 'adoptar':
+            if args.command == 'preparar':
+                prepare_start(engine, dry_run=args.seco)
+            elif args.command == 'parada':
+                engine.record_stop()
+            elif args.command == 'retirar':
+                engine.retire_empty(args.group)
+            elif args.command == 'adoptar':
                 print(json.dumps(engine.adopt(args.pid_file)))
             elif args.command == 'reanudar':
                 if args.group is None:
@@ -1012,7 +1503,8 @@ def main():
                 pueue.call("pause", "--wait", "-g", args.group)
                 log(directory, "pausa_manual", grupo=args.group)
         except Exception as error:
-            log(directory, "error", detalle=str(error))
+            if args.command != 'preparar':
+                log(directory, "error", detalle=str(error))
             raise
 
 

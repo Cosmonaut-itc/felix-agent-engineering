@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sqlite3
 import sys
 import time
 
@@ -142,6 +143,19 @@ def task_control(task, home, state):
     return dict(launcher=launcher, ref=ref,
                 expected=dict(task_id=task['id'], state=state) if state in ('Queued', 'Running') else None,
                 reason=reason)
+
+
+def desk_interruptions(home):
+    # Same authority, read-only. Never infer cancellation from Killed or a log.
+    path = home / '.local/state/pao/pueue-desk/control.sqlite3'
+    if not os.path.lexists(path):
+        return {}
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)
+    try:
+        row = db.execute('SELECT body FROM policy WHERE id=1').fetchone()
+        return json.loads(row[0]).get('startup', {}).get('interruptions', {})
+    finally:
+        db.close()
 
 
 def desk_guard(home):
@@ -437,6 +451,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     output['disk'] = attempt('disk', lambda: disk('/System/Volumes/Data' if mode == 'macos' and Path('/System/Volumes/Data').exists() else '/'))
     output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home))
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
+    interruptions = (attempt('startup', lambda: desk_interruptions(home)) or {}) if host == 'desk' else {}
     cache, references = {}, {}
     if data:
         def tasks():
@@ -445,16 +460,21 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                 state = task['status']
                 state, details = (state, {}) if isinstance(state, str) else next(iter(state.items()))
                 end = epoch(details.get('end'))
-                if state == 'Done' and (end is None or end < now - 86400):
-                    continue
                 result = details.get('result')
                 if isinstance(result, dict):
                     result = 'exit ' + str(result['Failed']) if 'Failed' in result else next(iter(result))
                 row = dict(id=task['id'], group=task['group'], state=state, enqueued=epoch(details.get('enqueued_at')), start=epoch(details.get('start')), end=end, result=result,
                            name=None, scope=None, project=None, ticket=None, repo=None, sha=None, branch=None, subject=None, priority=task.get('priority', 0))
+                interruption = interruptions.get(str(task['id']), {})
+                attributed = (state == 'Done' and result == 'Killed' and interruption.get('created_at') == task.get('created_at')
+                              and interruption.get('message') == 'Interrumpida al reiniciar Pueue; relanzar manualmente')
+                if state == 'Done' and (end is None or end < now - 86400) and not attributed:
+                    continue
                 jale = mode != 'macos' and re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
                 metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
+                if attributed:
+                    row['interruption_reason'] = interruption['message']
                 row['control'] = task_control(task, home, state)
                 row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'))
                 if state == 'Running':

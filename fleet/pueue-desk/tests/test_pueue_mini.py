@@ -134,7 +134,7 @@ class MiniTests(Fixture):
             with patch.object(sys, "argv", ["control.py", "pausar", "suites", "--host", "mini"]):
                 control.main()
             factory.assert_called_once_with("/opt/homebrew/bin/pueue")
-            lock.assert_called_once_with(home_state)
+            lock.assert_called_once_with(home_state, create=True)
         self.assertEqual(json.loads((home_state / "guardia-state.json").read_text()), ["default"])
         self.load = 0
         with patch.object(control, "Pueue", return_value=self.pueue):
