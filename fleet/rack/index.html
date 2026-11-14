@@ -168,10 +168,12 @@ function hostState(h){
   if (anyPaused) return `<span class="state"><span class="dot" style="background:var(--warn)"></span>Admisión pausada</span>`;
   return `<span class="state"><span class="dot" style="background:var(--good)"></span>Admitiendo corridas</span>`;
 }
-const groups = h => Object.entries(h.groups).filter(([n,g]) => h.id==='mini' || n !== 'default' || h.tasks.some(t => t.group === n && t.state !== 'Done'));
+const active = (h,n) => h.tasks.some(t => t.group === n && t.state !== 'Done');
+// default only shows while it has work; the Mini still counts its slot toward the cap.
+const groups = h => Object.entries(h.groups).filter(([n]) => n !== 'default' || active(h,n));
 const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
 const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>b.priority-a.priority || a.id-b.id);
-const slotsTotal = h => groups(h).reduce((a,[,g])=>a+g.slots,0);
+const slotsTotal = h => Object.entries(h.groups).filter(([n]) => h.id==='mini' || n !== 'default' || active(h,n)).reduce((a,[,g])=>a+g.slots,0);
 
 function capacity(h){
   const z = zone(h), used = h.mem_total - h.mem_avail, memPct = used/h.mem_total;

@@ -119,7 +119,11 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    console.log('UI slots OK: disabled 403 confirmado libera bloqueo; autorización falla cerrada; ID nuevo sin reenviar');
    return;
  }
- assert.match(elements.app.innerHTML,/default/);
+ assert.doesNotMatch(elements.app.innerHTML,/Lugares de default/);
+ assert.match(elements.app.innerHTML,/7 en total · tope 7/);
+ run("S.hosts[0].tasks.push({id:999,group:'default',state:'Queued',priority:0,label:''});render2=view()");
+ assert.match(run('render2'),/Lugares de default/);
+ run('S.hosts[0].tasks.pop()');
  assert.match(run("slotControls(h,'suites',h.groups.suites,0)"),/<b>3<\/b>/);
  assert.match(run("slotControls(h,'suites',h.groups.suites,0)"),/0\/3 en uso/);
  assert.match(elements.app.innerHTML,/· tope 7/);

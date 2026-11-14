@@ -674,7 +674,8 @@ lectura y render existentes, sin comandos ni rutas.
 ## Botones −/+ de la Mini
 
 U3.1 habilita lugares y deshacer únicamente en la Mini con el controlador adoptado.
-Perfil `suites=3`, `default=1`, `rapidas=3`, tope 7; incluye `default` aun vacío.
+Perfil `suites=3`, `default=1`, `rapidas=3`, tope 7; el tope cuenta `default` aun vacío.
+En los dos hosts, la fila de `default` sólo aparece mientras tiene trabajo.
 El «+» al llenar el tope explica: «Tope de 7 lugares. Quita un lugar a otro grupo
 para añadirlo aquí.» En 1/8 se deshabilita la dirección correspondiente. La cifra
 sigue siendo observada mientras se aplica; un parcial muestra observado/deseado,
@@ -759,7 +760,7 @@ El desk ofrece los mismos controles −/+ y «Deshacer» que la Mini. Cada grupo
 admite 1..8 lugares y el tope es 14 de día / 18 de noche. Con el tope lleno,
 «+» explica que hay que quitar un lugar a otro grupo. Los grupos pausados
 consumen su cuota completa. El `default` del desk queda fuera del reparto.
-Su fila explica «Reservado · fuera del reparto». Si hay trabajo no terminal
+Cuando tiene trabajo, su fila explica «Reservado · fuera del reparto». Si hay trabajo no terminal
 en grupos ajenos, el panel informa y bloquea «+», conservando «−» para reducir.
 El host veta sólo aumentos nuevos de ± y undo; la reconciliación del deseo
 durable sigue aplicando la tabla vigente o un ajuste ya aceptado. El panel
