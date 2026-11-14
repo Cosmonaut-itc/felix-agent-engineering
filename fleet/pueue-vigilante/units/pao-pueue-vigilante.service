@@ -1,0 +1,8 @@
+[Unit]
+Description=Vigilante de tareas de Pueue sin lanzador
+After=pueued.service
+
+[Service]
+Type=oneshot
+TimeoutStartSec=300
+ExecStart=/usr/bin/python3 -I "@HOME@/.local/lib/pao-pueue-vigilante/vigilante.py" pasada --host desk --pueue "@HOME@/.local/bin/pueue" --modo @MODO@
