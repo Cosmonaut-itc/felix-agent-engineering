@@ -14,6 +14,19 @@ vm.createContext(context);vm.runInContext(input.js,context);context.fixture=inpu
 const run=s=>vm.runInContext(s,context);
 run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
+ if(input.scenario==='startup'){
+   assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
+   assert.match(elements.app.innerHTML,/Retenido al reiniciar: pausa de origen desconocido &lt;script&gt;/);
+   assert.match(elements.app.innerHTML,/resolver con control.py reanudar jale/);
+   assert(!elements.app.innerHTML.includes('<script>'));
+   assert.doesNotMatch(elements.app.innerHTML,/>Reanudar<|data-resume/);
+   assert(!run('groups(h).some(([g])=>g==="default")'));
+   run('h.control.startup_holds={};h.tasks=[]');
+   assert.doesNotMatch(run('view()'),/Retenido al reiniciar|Interrumpida al reiniciar/);
+   assert.match(run('view()'),/data-mode="dia"/);
+   assert.match(run('view()'),/data-step="-1"/);
+   console.log('UI startup OK: interruption, hold, SSH resolution, escaping, default hidden, normal host unchanged');return;
+ }
  if(input.scenario==='desk'){
    for(const [mode,cap,slots] of [['dia',14,{hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3}],
                                 ['noche',18,{hasito:2,jale:7,'jale-verify':1,otros:2,pesadas:3,rapidas:3}]]){

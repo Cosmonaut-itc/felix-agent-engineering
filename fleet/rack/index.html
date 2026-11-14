@@ -128,6 +128,7 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 .step:focus{outline:2px solid var(--accent);outline-offset:2px}
 #toast button{font:inherit;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
 @media(max-width:560px){.host-heading{flex-direction:column}.mode-control{text-align:left}.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
+.startup-hold,.interrupted p{overflow-wrap:anywhere;font-size:13px;line-height:1.5;margin:6px 0}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 const PENDING = new Map();
@@ -226,6 +227,15 @@ function fila(h, n, w){
     <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}${dots()}</span>
     <div class="l2">${pendingText(h,t)}<span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span></div>
   </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
+}
+
+function startupHold(h,n){
+  const reason=h.control?.startup_holds?.[n];
+  return reason ? `<p class="startup-hold muted" role="status">${esc('Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n)}</p>` : '';
+}
+function interrupted(h,n){
+  const rows=h.tasks.filter(t=>t.group===n && t.state==='Done' && t.interruption_reason);
+  return rows.length ? `<div class="lane"><div></div><div class="fila interrupted" role="status">${rows.map(t=>`<p>${esc(what(t))} · ${esc(t.interruption_reason)}</p>`).join('')}</div></div>` : '';
 }
 
 function resourceTable(h){
@@ -391,7 +401,7 @@ function view(){
         const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
           const p=progress(t); return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}${pendingText(h,t)}</div>`;}).join('');
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
-          ${fila(h,n,w)}`;
+          ${startupHold(h,n) ? `<div class="lane"><div></div><div>${startupHold(h,n)}</div></div>` : ''}${fila(h,n,w)}${interrupted(h,n)}`;
       }).join('');
       return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }

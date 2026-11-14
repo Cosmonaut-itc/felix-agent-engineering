@@ -165,12 +165,12 @@ DESK_CASES += [('pueue-desk',
   'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
  ('pueue-desk',
   'install-desk.py',
-  "with authority_lock(directory):\n            migration = policy_plan(engine)\n            if migration is None:\n                engine.view()  # unreadable authority never grants re-adoption\n            engine.install_migration = migration",
+  "with authority_lock(directory):\n            migration = policy_plan(engine)\n            if migration is None:\n                engine.view()  # unreadable authority never grants re-adoption\n            with engine.connect() as db:\n                if Path(engine.state(db, policy_migration=True)['pid_file']).resolve() != pid_file.resolve():\n                    raise ValueError('pid_path difiere de la autoridad')\n            engine.install_migration = migration",
   'pass  # unchecked authority',
   'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
  ('pueue-desk',
   'install-desk.py',
-  "run('systemctl', '--user', 'stop', *TIMERS, *SERVICES)",
+  "run('systemctl', '--user', 'stop', *SERVICES)",
   'pass  # old workers still live',
   'DeskInstallTests.test_installer_retires_old_worker_waiting_before_lock_before_adoption'),
  ('pueue-desk',
@@ -390,7 +390,7 @@ MODE_CASES = [('pueue-desk',
   'ModeTests.test_corrupt_mode_metadata_keeps_protective_closing_and_rapidas_ladder'),
  ('pueue-desk',
   'install-desk.py',
-  "fields_missing = 'mode_override' not in original",
+  "fields_missing = 'mode_override' not in original or original.get('startup_version') != 1",
   'fields_missing = False',
   'ModeMigrationTests.test_existing_adopted_authority_migrates_preserving_receipts_and_expirations'),
  ('pueue-desk',
@@ -485,7 +485,7 @@ MODE_CASES += [
 ]
 
 def main():
-    cases = MODE_CASES if '--mode-only' in sys.argv else DESK_CASES if '--desk-only' in sys.argv else CASES + DESK_CASES + MODE_CASES
+    cases = CASES if '--base-only' in sys.argv else MODE_CASES if '--mode-only' in sys.argv else DESK_CASES if '--desk-only' in sys.argv else CASES + DESK_CASES + MODE_CASES
     for number,(directory,relative,original,replacement,test) in enumerate(cases,1):
         with tempfile.TemporaryDirectory(prefix='u31-mutation-sol-',dir='/tmp') as folder:
             root=Path(folder)/'fleet'

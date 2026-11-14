@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 BASE=Path(__file__).resolve().parents[1]
@@ -155,22 +156,48 @@ CASES=(
 )
 
 
+STARTUP_CASES = (
+    ('startup-task-visible','index.html',"${interrupted(h,n)}",'',
+     'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
+    ('startup-hold-visible','index.html',"const reason=h.control?.startup_holds?.[n];","const reason=null;",
+     'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
+    ('startup-hold-escaped','index.html',"${esc('Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n)}",
+     "${'Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n}",
+     'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
+    ('startup-publish-terminal','serve.py',"if t['state'] != 'Done' or t.get('interruption_reason')","if t['state'] != 'Done'",
+     'test_startup.StartupPublicationTests.test_publish_retains_only_attributed_interruption_and_snapshot_rejects_false_origin'),
+    ('startup-task-identity','snapshot.py',"and interruption.get('created_at') == task.get('created_at')","and True",
+     'test_startup.StartupSnapshotTests.test_interruption_requires_durable_exact_identity_and_killed_and_preserves_cancel'),
+    ('startup-task-result','snapshot.py',"state == 'Done' and result == 'Killed'","state == 'Done'",
+     'test_startup.StartupSnapshotTests.test_interruption_requires_durable_exact_identity_and_killed_and_preserves_cancel'),
+    ('startup-hold-sanitize','host_action.py',"result['startup_holds'] = holds","result['startup_holds'] = {}",
+     'test_startup.StartupUITests.test_sanitizer_retains_only_valid_hold_strings'),
+    ('startup-default-hidden','index.html',"const groups = h => Object.entries(h.groups).filter(([n]) => n !== 'default' || active(h,n));","const groups = h => Object.entries(h.groups);",
+     'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
+    ('startup-reject-false-cancel','serve.py',"or row['interruption_reason'] != 'Interrumpida al reiniciar Pueue; relanzar manualmente'","or False",
+     'test_startup.StartupPublicationTests.test_publish_retains_only_attributed_interruption_and_snapshot_rejects_false_origin'),
+)
+
+
 def main():
-    for name,filename,before,after,test in CASES:
+    cases = STARTUP_CASES if '--startup-only' in sys.argv else CASES + STARTUP_CASES
+    for name,filename,before,after,test in cases:
         with tempfile.TemporaryDirectory(prefix='rack-c3-mutation-',dir='/tmp') as folder:
             root=Path(folder)/'rack'
             shutil.copytree(BASE,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+            if name.startswith('startup-'):
+                shutil.copytree(BASE.parent/'pueue-desk',root.parent/'pueue-desk',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
             path=root/filename
             text=path.read_text()
             if text.count(before)!=1:raise AssertionError('Mutation anchor is no longer unique: '+name)
             path.write_text(text.replace(before,after))
             result=subprocess.run(['/usr/bin/python3','-B','-m','unittest',test,'-v'],cwd=str(root/'tests'),
                                   env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),capture_output=True,text=True,timeout=20)
-            if result.returncode!=1 or 'FAIL:' not in result.stderr:
+            if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:
                 raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
             print(name+': caught (expected failure)')
             print('\n'.join(line for line in result.stderr.splitlines() if 'AssertionError:' in line or line.startswith('FAILED')))
-    print('All '+str(len(CASES))+' mutations caught; original tree untouched.')
+    print('All '+str(len(cases))+' mutations caught; original tree untouched.')
 
 
 if __name__=='__main__':main()

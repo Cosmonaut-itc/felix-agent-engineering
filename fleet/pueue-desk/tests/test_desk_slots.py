@@ -603,6 +603,16 @@ class DeskSlotsTests(DeskFixture):
 
 
 class DeskInstallTests(DeskFixture):
+    def setUp(self):
+        super().setUp()
+        # Installation tests inject the new read-only binary/config/queue gate.
+        # test_startup.ConfigurationTests exercises the real parser separately.
+        self.enter_context(patch.object(control, 'validate_configuration', return_value=dict(data=self.root, pid_file=self.root/'pid')))
+        self.enter_context(patch.object(control, 'read_queue', return_value=dict(tasks={},groups={})))
+
+    def enter_context(self, manager):
+        value = manager.start(); self.addCleanup(manager.stop); return value
+
     def migration_fixture(self):
         spec = importlib.util.spec_from_file_location('install_desk_r1', Path(control.__file__).with_name('install-desk.py'))
         installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
@@ -626,13 +636,17 @@ class DeskInstallTests(DeskFixture):
                             '"otros": {"dia": 2, "noche": 2}', '"otros": {"dia": 3, "noche": 2}')
         candidate = self.root/'candidate'; candidate.mkdir()
         (candidate/'control.py').write_text(source)
+        import shutil
+        shutil.copytree(Path(control.__file__).parent/'units', candidate/'units')
         spec = importlib.util.spec_from_file_location('candidate_r1', candidate/'control.py')
         new = importlib.util.module_from_spec(spec); spec.loader.exec_module(new)
         Original = new.MiniControl
         factory = lambda p,d,**kw: Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         commands = []
         # addCleanup works on both supported interpreters.
-        for manager in (patch.object(new, 'Pueue', return_value=self.p),
+        for manager in (patch.object(new, 'validate_configuration', return_value=dict(data=self.root, pid_file=self.root/'pid')),
+                        patch.object(new, 'read_queue', return_value=dict(tasks={},groups={})),
+                        patch.object(new, 'Pueue', return_value=self.p),
                         patch.object(new, 'MiniControl', side_effect=factory),
                         patch.object(new, 'mini_generation', return_value=self.gen),
                         patch.object(installer, 'SOURCE', candidate),
@@ -832,12 +846,13 @@ class DeskInstallTests(DeskFixture):
         factory = lambda p,d,**kw: Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         def run(*argv):
             if argv[2] == 'stop':
-                self.assertEqual(argv[3:], (*installer.TIMERS, *installer.SERVICES))
+                self.assertIn(argv[3:], (installer.TIMERS, installer.SERVICES))
                 self.assertEqual(target.read_text(), '# old\n')
                 self.assertFalse(control.has_authority(directory))
                 self.assertTrue((directory/'slots.disabled').exists())
-                retired.set(); release.set(); worker.join(2)
-                self.assertFalse(worker.is_alive())
+                if argv[3:] == installer.SERVICES:
+                    retired.set(); release.set(); worker.join(2)
+                    self.assertFalse(worker.is_alive())
         try:
             with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
                  patch.object(control, 'mini_generation', return_value=self.gen), patch.object(installer, 'run', side_effect=run):
@@ -851,11 +866,16 @@ class DeskInstallTests(DeskFixture):
     def test_legacy_deploy_withdraw_cannot_discard_adopted_desire(self):
         scope=dict(control.__dict__,STATE_DIR=self.engine.directory,FILES={})
         exec(Path(control.__file__).with_name('remote.py').read_text(),scope)
-        with patch.object(scope['subprocess'],'run',side_effect=AssertionError('No external commands')), \
-             patch.dict(scope,Pueue=lambda:self.p):
-            for action in ('install','withdraw'):
-                for dry in (True,False):
-                    with self.assertRaisesRegex(RuntimeError,'Autoridad durable'):scope['remote'](action,dry)
+        commands=[];before=self.engine.path.read_bytes()
+        with patch.object(scope['subprocess'],'run',side_effect=lambda argv,**kw:commands.append(argv)), \
+             patch.dict(scope,Pueue=lambda:self.p),redirect_stdout(io.StringIO()):
+            scope['remote']('withdraw',True)
+            self.assertEqual(commands,[])
+            scope['remote']('withdraw',False)
+        self.assertEqual(self.engine.path.read_bytes(),before)
+        self.assertTrue((self.engine.directory/'maintenance').exists())
+        self.assertEqual(commands[0][3:],['pueue-desk-mode.timer','pueue-desk-guard.timer'])
+        self.assertEqual(commands[-1],['systemctl','--user','stop','pueued.service'])
         self.assertEqual(self.p.calls,[])
 
     def test_installer_migrates_under_lock_preserves_switch_receipts_and_restart_free(self):
@@ -903,7 +923,8 @@ class DeskInstallTests(DeskFixture):
             with patch.object(Original,'adopt',side_effect=OSError('disk failure')):
                 with self.assertRaises(OSError):installer.install(home,self.root/'pid',control)
             self.assertTrue((home/'.local/state/pao/pueue-desk/slots.disabled').exists())
-            self.assertEqual(run.call_args.args,('systemctl','--user','start',*installer.TIMERS))
+            self.assertFalse(any(c.args[:3]==('systemctl','--user','start') for c in run.call_args_list))
+            self.assertTrue((home/'.local/state/pao/pueue-desk/maintenance').exists())
 
 
 if __name__=='__main__':unittest.main()

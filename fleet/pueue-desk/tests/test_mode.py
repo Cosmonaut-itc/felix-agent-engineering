@@ -437,7 +437,7 @@ class ModeMigrationTests(DeskFixture):
     def test_existing_adopted_authority_migrates_preserving_receipts_and_expirations(self):
         self.engine.handle(self.request())
         with self.engine.connect(write=True) as db:
-            prior=self.engine.state(db);del prior['mode_override'];self.engine.store(db,prior)
+            prior=self.engine.state(db);prior['startup_version']=1;del prior['mode_override'];self.engine.store(db,prior)
             receipts=db.execute('SELECT * FROM host_actions').fetchall()
         spec=importlib.util.spec_from_file_location('mode_installer',control.Path(control.__file__).with_name('install-desk.py'))
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
@@ -484,7 +484,9 @@ class ModeInstallTests(DeskFixture):
         Original=control.MiniControl
         factory=lambda p,d,**kw:Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         commands=[]
-        for manager in (patch.object(control,'Pueue',return_value=self.p),
+        for manager in (patch.object(control,'validate_configuration',return_value=dict(data=self.root,pid_file=self.root/'pid')),
+                        patch.object(control,'read_queue',return_value=dict(tasks={},groups={})),
+                        patch.object(control,'Pueue',return_value=self.p),
                         patch.object(control,'MiniControl',side_effect=factory),
                         patch.object(control,'mini_generation',return_value=self.gen),
                         patch.object(installer,'run',side_effect=lambda *a:commands.append(a))):
@@ -499,7 +501,7 @@ class ModeInstallTests(DeskFixture):
         self.assertEqual(self.fingerprint(),before);self.assertEqual(self.p.calls,[])
         self.assertEqual(commands,[('systemctl','--user','is-active',n) for n in installer.TIMERS])
         with redirect_stdout(io.StringIO()):installer.install(home,self.root/'pid',control)
-        self.assertEqual(self.state(),dict(original,mode_override=None))
+        self.assertEqual(self.state(),dict(original,mode_override=None,startup_version=1))
         with self.engine.connect() as db:self.assertEqual(db.execute('SELECT * FROM host_actions').fetchall(),receipts)
         self.assertEqual(self.p.calls,[])
         self.assertEqual(target.read_bytes(),(installer.SOURCE/'control.py').read_bytes())

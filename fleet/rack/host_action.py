@@ -114,9 +114,13 @@ def control(value, host='mini'):
                   ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue')}, **{k: value[k] for k in fields})
     reasons = value.get('pause_reasons', {})
     if type(reasons) is not dict or any(type(g) is not str or type(r) is not list
-            or any(x not in ('pressure', 'manual', 'ambiguous') for x in r) for g, r in reasons.items()):
+            or any(x not in ('pressure', 'manual', 'ambiguous', 'startup') for x in r) for g, r in reasons.items()):
         raise ValueError('Pausas inválidas')
     result['pause_reasons'] = reasons
+    holds = value.get('startup_holds', {})
+    if (type(holds) is not dict or any(type(g) is not str or type(r) is not str or not 1 <= len(r) <= 300 for g,r in holds.items())):
+        raise ValueError('Retención de arranque inválida')
+    result['startup_holds'] = holds
     if host == 'desk':
         foreign = value.get('foreign_work', 0)
         if type(foreign) is not int or foreign < 0:

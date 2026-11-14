@@ -4,19 +4,17 @@ Servicio systemd **de usuario** para Pueue 4.0.4 en WSL, listo para instalar
 tras U10 (NVMe). No instala binarios. El [retiro de deskpolicy](../deskpolicy/)
 se despliega por separado durante el corte coordinado de los clientes a Pueue.
 
-Antes de adoptar el control durable, desde la MacBook:
-`fleet/pueue-desk/deploy-desk.sh --seco` comprueba sin escribir;
-`fleet/pueue-desk/deploy-desk.sh` instala por `ssh desk`. Requiere `pueue` y
-`pueued` en `/home/felix/.local/bin`, systemd de usuario y permiso para
-`loginctl enable-linger felix`. El instalador lo pide antes de detener un
-`pueued` manual: si se rechaza, termina con error y el daemon manual sigue vivo.
-Un fallo de `aplicar` no reinicia `pueued`: `pueue-desk-mode.service` reintenta
-cada 30 s y deja el error en `journalctl --user -u pueue-desk-mode`.
-Linger inicia el servicio al arrancar la distro; el arranque de Windows debe
-iniciar WSL por su mecanismo habitual (SSH despierta la distro).
+El desk ya tiene la autoridad durable de U3.3. Para actualizar desde la MacBook:
+`fleet/pueue-desk/deploy-desk.sh --seco` valida sin escribir y
+`fleet/pueue-desk/deploy-desk.sh` publica por el SSH existente. También se puede
+usar `install-desk.py` desde el checkout en WSL, como se describe abajo.
+Ambos actualizan la unidad y hacen `daemon-reload` **sin reiniciar pueued**.
+No relevan ni adoptan incidentalmente un daemon manual. No instalan binarios,
+llaves ni listeners. Un fallo de cuotas no reinicia el daemon.
 
-Tras adoptar, `deploy-desk.sh` ya no es el camino de instalación; usar
-`install-desk.py` como se describe abajo, también al cambiar la tabla.
+Cuando arranca la distro, systemd de usuario inicia el servicio habilitado con
+linger. Esto no acredita que Windows inicie WSL sin intervención tras Update.
+La entrega no promete reinicio desatendido de Windows.
 
 `control.py` contiene la única tabla de cuotas (día/noche): hasito 1/2,
 jale 5/7, jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3.
@@ -31,10 +29,11 @@ Usar sólo esos grupos; `default` y otros grupos quedan fuera de estas cuotas.
 `otros` es de los repositorios sin grupo propio: `remote-run` encola ahí toda
 corrida normal sin `REMOTE_RUN_PROYECTO=hasito`, que sólo fija el lanzador de
 Hasito.
-El instalador elimina los grupos retirados, `suites` y `pg5434`, sólo si no
-tienen ninguna tarea. `pg5434` reservaba un lugar para el Postgres del puerto
-5434 y nunca recibió tareas: los lanzadores toman ese recurso con
-`REMOTE_RUN_RECURSOS`. Su lugar pasó a `otros`.
+El instalador conserva `suites`, `pg5434` y otros grupos existentes. Sus pausas
+se registran por separado del perfil. Un retiro explícito y vacío puede hacerse
+con `control.py retirar suites --host desk` (o `pg5434`), bajo el mismo candado,
+con intención recuperable. Si hay cualquier tarea, incluso terminal, se rechaza.
+Nunca se retiran grupos como efecto incidental del despliegue.
 
 ### Reparto
 
@@ -60,7 +59,7 @@ Pausar a mano, dejando terminar tareas:
 `ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py pausar hasito'`.
 Reanudar en un desk adoptado:
 `ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py reanudar hasito'`.
-Ese comando retira la razón manual y comprueba cuotas, horario y presión antes de abrir.
+Ese comando retira la razón manual/ambigua y comprueba cuotas, horario, generación, presión y Docker antes de abrir.
 El guardia respeta grupos previamente pausados. **Si el guardia ya había
 pausado el grupo, usar siempre el comando `pausar` anterior**: Pueue no distingue
 una segunda pausa manual de la suya. Ese comando retira la propiedad del guardia
@@ -76,8 +75,8 @@ Ante errores de lectura o de Pueue falla sin reanudar; consultar también
 `journalctl --user -u pueue-desk-guard.service`.
 
 Retirar: `fleet/pueue-desk/withdraw-desk.sh` (admite `--seco`). Detiene y
-deshabilita timers y daemon y quita unidades; conserva cola, estado, biblioteca
-y linger. No drenar tareas automáticamente: retirar cuando hayan terminado.
+deshabilita timers y daemon; conserva unidades, cola, autoridad, biblioteca
+y linger, y deja `maintenance` para impedir reactivaciones. No drenar tareas automáticamente: retirar cuando hayan terminado.
 
 Pruebas: `/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -v`.
 ShellCheck: `shellcheck --severity=warning fleet/pueue-desk/*-desk.sh`.
@@ -362,7 +361,7 @@ Pasos para el operador, **no ejecutados por las pruebas**:
    oneshots, toma el candado, publica atómicamente el controlador y adopta/importa
    propiedad, o conserva la autoridad y sus recibos. Reconcilia, reactiva los
    mismos timers y retira sólo su propio switch. No reinicia `pueued`, no edita
-   su configuración ni instala unidades. Conserva `control.pre-slots.py`.
+   su configuración. En U3.4 también publica unidades y hace daemon-reload, sin restart. Conserva `control.pre-slots.py`.
 3. Ejecutar después `fleet/rack/instalar-desk.sh` desde la máquina de despliegue
    y actualizar el rack en la Mini (`fleet/rack/instalar.sh`): sólo actualizan
    snapshot/despachador y panel, con las llaves existentes. Verificar capacidades
@@ -372,8 +371,8 @@ Pasos para el operador, **no ejecutados por las pruebas**:
    Retirar manualmente el switch de un intento fallido sólo tras verificar
    ambos timers activos y deseo reconciliado. Un switch previo se conserva.
    No readoptar una base perdida/corrupta: restaurar respaldo verificado bajo
-   el mismo candado. `deploy-desk.sh`/`withdraw-desk.sh` rechazan una autoridad
-   ya adoptada para impedir volver a una guardia o tabla ciegas.
+   el mismo candado. En U3.4 `deploy-desk.sh` usa el mismo instalador;
+   `withdraw-desk.sh` realiza el mantenimiento ordenado descrito abajo.
 
 ### Cambiar GROUP_LIMITS después de adoptar
 
@@ -391,7 +390,7 @@ la correspondencia del deseo con la tabla sustituida. Exigen cero recibos
 controlador anterior. Una base perdida, ilegible o corrupta se rechaza sin efectos.
 La comprobación se repite bajo el candado antes de publicar. El controlador en
 operación sigue rechazando un hash diferente; sólo el instalador puede migrarlo.
-`deploy-desk.sh` no sirve para actualizar un desk adoptado. La Mini presenta el
+`deploy-desk.sh` delega esta actualización al mismo instalador. La Mini presenta el
 mismo límite con `MINI_PROFILE`; su migración queda para una unidad aparte.
 
 Para revertir la entrega, deshacer el recibo antes de su evento, o apagar cuotas
@@ -467,3 +466,153 @@ Pruebas dirigidas: `tests/test_mode.py`, `tests/mutate_slots.py --mode-only` y
 sólo mediante `remote-run`: daemon/configuración propios, siete tareas sintéticas
 acotadas, reducción 18→14 sin detenerlas, evento 05Z y undo exacto, con limpieza
 por la puerta privada y espera del PID propio.
+
+
+### Reinicios del desk (U3.4)
+
+`pueued.service` ejecuta `control.py preparar --host desk` como `ExecStartPre`,
+y después el **pueued estándar 4.0.4**. Usa `Restart=always`, `RestartSec=5`,
+`StartLimitIntervalSec=0` y `KillMode=mixed`. Guardia y modo se ordenan después
+del daemon; la guardia existente es el único recuperador periódico. Un error
+al reconciliar deja los grupos cerrados, sin reiniciar el daemon.
+
+Bajo `control.lock`, el preparador valida configuración, binarios, cola y
+SQLite sin escribir. Rechaza JSON duplicado, estado comprimido, Reset, enums o
+tipos desconocidos, identidades inconsistentes y fechas RFC3339 inválidas,
+incluidos offsets `+00:99`, `-00:99`, `+24:00` y fechas anidadas. Un `state.json`
+ausente en un desk adoptado bloquea, igual que una autoridad ausente/corrupta.
+No se sustituye por una cola vacía ni una tabla por defecto. Un PID anterior
+vivo o no identificable también bloquea; no se mata por nombre. systemd espera
+la terminación anterior antes del próximo `ExecStartPre`.
+
+La transacción SQLite guarda la intención de arranque **antes** del rename de
+`state.json`. Incluye hashes de origen/destino, cambios de estado y propiedad de
+pausas. Luego escribe cola con flush/fsync/rename/fsync del directorio y confirma
+la preparación en SQLite. Caer antes/después de cada frontera se recupera de
+forma repetible; un hash ajeno bloquea sin sobrescribir. El evento UTC vigente
+se proyecta de nuevo al recuperar y al terminar: ni adelantos ni ajustes vencidos
+se reponen. No hay una transacción conjunta ficticia entre SQLite y Pueue.
+
+Todos los grupos quedan Paused offline, incluidos vacíos, `default` y grupos
+fuera del reparto. Los administrados ausentes se crean en esa imagen cerrada.
+La razón `startup` es independiente de las cuotas y de `manual`, `pressure`,
+`ambiguous`. Sólo una preparación confirmada permite reconocer la nueva
+generación como propia. La guardia reconcilia reducciones, después aumentos,
+verifica todo el vector/generación y exige presión fresca y `docker info`
+correcto antes de retirar sólo sus razones liberadas. Los grupos ajenos al
+reparto quedan retenidos, sin apropiarse de sus cuotas ni abrirlos.
+
+- `Queued` sin log conserva id, estado, prioridad, dependencias y lugar.
+- `Running` y tareas `Paused` quedan `Done/Killed` y no se reejecutan.
+- `Queued` con un log existente, incluso un enlace roto, falla de forma
+  conservadora y retiene su grupo por lanzamiento ambiguo. No se usa mtime.
+- Un `Locked` desconocido queda para revisión; stock lo restaura como Stashed.
+  Nunca se convierte en Queued. Stashed y resultados terminales previos se conservan.
+- `ExecStop` registra identidades activas antes de una parada administrada; si
+  stock ya guardó su `Killed`, la próxima preparación conserva su motivo.
+  Un Killed previo sin esa evidencia no se atribuye a un reinicio ni a cancelación.
+
+El snapshot conserva para la tarea identificada por id + created_at el texto
+**«Interrumpida al reiniciar Pueue; relanzar manualmente»**. No fabrica recibos
+ni procedencia de cancelación. El panel muestra esas interrupciones recientes
+(24 h), aunque sean terminales, y junto al grupo retenido muestra
+**«Retenido al reiniciar: <motivo> · resolver con control.py reanudar <grupo>»**.
+No incorpora botón. `default` vacío sigue oculto.
+
+Felix revisa la causa y resuelve por el SSH existente, por ejemplo:
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py reanudar jale --host desk
+```
+
+La reanudación solicita admisión por el mismo motor; si falla Docker, presión,
+cuotas, generación o mantenimiento, conserva el cierre. Relanzar una tarea
+interrumpida significa una **corrida nueva del cliente**, nunca `pueue restart`
+del id anterior. Antes de relanzar hay que revisar procesos supervivientes;
+`Killed` es un estado de cola y no demuestra por sí mismo el retiro de hijos.
+`KillMode=mixed` cubre el cgroup de la unidad del desk, sin buscar descendientes
+por un PID viejo ni prometer lo mismo en otros gestores.
+
+#### Mantenimiento e instalación sobre U3.3 adoptada
+
+Los siguientes pasos son para el operador; las pruebas no los ejecutan en el
+servicio compartido. Conservar respaldo SQLite mediante `backup` bajo
+`control.lock`, y de controlador/unidades. No copiar una SQLite abierta con cp.
+
+1. Desde el checkout revisado en WSL, ejecutar el ensayo y después la instalación:
+
+   ```sh
+   /usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /run/user/1000/pueue.pid --seco
+   /usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /run/user/1000/pueue.pid
+   ```
+
+   Usar el pid_path real. Se aceptan las rutas estándar XDG absolutas; las rutas
+   propias, `daemon.env_vars` complejo o `shell_command` explícito se rechazan,
+   también en seco, **antes** de copiar, detener, tocar unidades o linger.
+   No se arregla la configuración borrando campos. El mismo validador se usa
+   en el preparador. El preflight comprueba también la cola, perfil y PID vivo.
+2. Bajo `control.lock`, migrar aditivamente `startup_version=1`. Conservar deseo,
+   modo, adelanto, ajustes, revisión, vencimientos y todos los recibos. Recibos
+   applying/partial/unknown rechazan sin efectos, incluso con esquema ya vigente.
+   No se readopta ni se borra la autoridad. La migración de tabla de U3.2 sigue
+   siendo explícita; esta entrega no cambia tabla ni horarios.
+3. La instalación crea `maintenance` antes de detener **primero timers**, después
+   guardia/modo. Publica controlador y las cinco unidades, guarda copias
+   `.pre-u34`, hace `daemon-reload` y conserva el MainPID. No para ni reinicia
+   `pueued`. El preparador se estrenará en el siguiente arranque natural.
+   Sólo retira sus propias marcas tras comprobar el deseo y reactiva timers;
+   un mantenimiento previo, incluido un enlace roto, se conserva. Ante fallo,
+   deja mantenimiento y cuotas apagadas para completar o revertir explícitamente.
+4. Comprobar sin reiniciar:
+
+   ```sh
+   systemctl --user show pueued.service -p MainPID -p ExecStartPre -p ExecStart -p ExecStop -p Restart -p RestartUSec -p KillMode -p StartLimitIntervalUSec -p NeedDaemonReload
+   systemctl --user cat pueued.service
+   systemctl --user is-active pueue-desk-mode.timer pueue-desk-guard.timer
+   ```
+
+   Comparar MainPID antes/después y exigir NeedDaemonReload=no, Restart=always,
+   el ExecStartPre nuevo, KillMode=mixed y StartLimitIntervalUSec=0. No usar
+   `status --json` como evidencia pública: contiene entornos con secretos.
+5. Actualizar snapshot/despachador y panel con los instaladores del rack ya
+   existentes. Conservar el canal forzado y las llaves actuales; verificar
+   capacidades y ensayo. `reorder` sigue no disponible; `restart_queue` conserva
+   su valor histórico false como capacidad de acción del panel, no como permiso
+   para ejecutar reintentos.
+
+Para una parada de mantenimiento explícita, `withdraw-desk.sh` crea la marca
+bajo el candado, detiene los timers, detiene guardia/modo, deshabilita disparadores
+y para el daemon al final. Conserva cola, autoridad y unidades. La marca impide
+que guardia/timer o Requires reactiven el daemon. No usarlo con trabajo ajeno
+como ensayo de esta entrega.
+
+Para revertir **antes del próximo arranque**, crear/conservar maintenance,
+parar timers y luego guardia/modo, tomar control.lock, restaurar
+`control.py.pre-u34` y cada unidad `.pre-u34`, y hacer daemon-reload. No reiniciar
+pueued ni restaurar una base SQLite vieja: U3.3 tolera el campo adicional y los
+recibos siguen vigentes. Retirar sólo las marcas propias tras verificar el
+controlador anterior, su deseo y las unidades cargadas; reactivar timers.
+Después de estrenar un arranque U3.4, conservar este controlador mientras existan
+razones startup o interrupciones pendientes: volver sólo al panel anterior es
+seguro. Para quitar también el controlador, resolver primero esas razones con
+Felix y retirar los campos/razones de arranque en una migración bajo candado;
+U3.3 rechaza una razón startup desconocida. No borrar evidencia ni abrir grupos
+directamente para forzar la reversión.
+
+#### Límites aceptados de stock y verificación
+
+Se mantienen los dos riesgos raros elegidos por Felix: stock puede lanzar una
+tarea antes de guardar Running y volverla a ejecutar tras una caída; y un add
+confirmado puede perderse ante un apagón porque State::save no hace fsync.
+La comprobación de logs reduce la primera ventana, sin eliminarla. Nuestro
+fsync no cambia el save de Pueue. SIGKILL no acredita durabilidad ante apagón.
+
+Pruebas dirigidas: `tests/test_startup.py`, `tests/mutate_startup.py`,
+`fleet/rack/tests/test_startup.py` y `fleet/rack/tests/check_mutations.py --startup-only`.
+`tests/test_private.py --run-private` se ejecuta sólo dentro de remote-run en el
+desk: daemon/config/data/PID privados y unidades transitorias `pao-u34-sol-*`,
+con limpieza y comprobación al terminar. Acredita restauración stock y orden
+ExecStartPre → daemon → guardia, y Restart=always tras una salida correcta.
+No reinicia WSL, Windows ni el servicio productivo. El arranque de Windows/WSL
+queda como verificación separada del orquestador. Reinicios de la Mini quedan
+para U3.5.

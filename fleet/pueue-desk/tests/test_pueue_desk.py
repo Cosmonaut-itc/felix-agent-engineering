@@ -28,6 +28,8 @@ with (root / "calls").open("a") as f:
     f.write(json.dumps([name, *args]) + "\n")
 state_file = root / "pueue.json"
 state = json.loads(state_file.read_text())
+if args == ["--version"] and name in ("pueue", "pueued"):
+    print(name+" 4.0.4");sys.exit(0)
 if name == "pueue":
     if args == ["status", "--json"]:
         print(json.dumps(state))
@@ -252,122 +254,38 @@ class ControlTests(Fixture):
 
 
 class DeploymentTests(Fixture):
-    def test_dry_run(self):
-        (self.root / "manual").touch()
-        result = self.deploy("--seco")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        print("\nSALIDA DEPLOY --seco (ssh falso):\n" + result.stdout)
-        self.assertIn("SECO: pueue shutdown", result.stdout)
-        self.assertFalse((self.root / ".config").exists())
-        self.assertTrue((self.root / "manual").exists())
-        self.assertEqual([c[0] for c in self.calls()], ["systemctl", "pgrep", "pueue"])
+    def test_unadopted_deploy_is_readonly_and_cannot_shutdown_any_daemon(self):
+        for mode in ('manual','managed'):
+            (self.root/mode).touch()
+            for args in ((),('--seco',)):
+                with self.subTest(mode=mode,args=args):
+                    before=self.pueue.status()
+                    result=self.deploy(*args)
+                    self.assertNotEqual(result.returncode,0)
+                    self.assertIn('requiere desk adoptado',result.stderr)
+                    self.assertEqual(self.pueue.status(),before)
+                    self.assertFalse((self.root/'.config').exists())
+                    self.assertFalse(any(c==['pueue','shutdown'] for c in self.calls()))
+                    self.assertFalse(any(c[0] in ('loginctl','systemctl') for c in self.calls()))
 
-    def test_live_manual_aborts_without_changes(self):
-        for status in ("Queued", "Paused", {"Queued": {"enqueued_at": "now"}},
-                       {"Paused": {"start": "now"}}, {"Running": {"start": "now"}}, "Stashed", "Locked"):
-            for args in ((), ("--seco",)):
-                with self.subTest(status=status, args=args):
-                    (self.root / "manual").touch()
-                    state = self.pueue.status()
-                    state["tasks"] = {"0": {"status": status, "group": "hasito"}}
-                    self.write_state(state)
-                    before = len(self.calls())
-                    result = self.deploy(*args)
-                    self.assertNotEqual(result.returncode, 0)
-                    self.assertIn("abortada sin cambios", result.stderr)
-                    self.assertTrue((self.root / "manual").exists())
-                    self.assertFalse((self.root / ".config").exists())
-                    self.assertEqual([c[0] for c in self.calls()[before:]], ["systemctl", "pgrep", "pueue"])
-
-    def test_rejected_linger_keeps_manual_daemon(self):
-        (self.root / "manual").touch()
-        (self.root / "linger-falla").touch()
-        result = self.deploy()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Access denied", result.stderr)
-        self.assertTrue((self.root / "manual").exists())
-        self.assertFalse(any(c == ["pueue", "shutdown"] for c in self.calls()))
-        self.assertFalse((self.root / ".config").exists())
-
-    def test_failure_after_shutdown_is_announced(self):
-        (self.root / "manual").touch()
-        (self.root / ".config").write_text("no es un directorio")
-        result = self.deploy()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("el pueued manual quedó detenido", result.stderr)
-
-    def test_install_twice_and_withdraw_preserves_queue(self):
-        (self.root / "manual").touch()
-        state = self.pueue.status()
-        state["groups"]["suites"] = {"status": "Running", "parallel_tasks": 2}
-        state["tasks"] = {"1": {"status": {"Done": "Success"}, "group": "hasito"}}
+    def test_legacy_owned_foreign_groups_do_not_block_other_groups(self):
+        self.metrics(io_value=90)
+        state=self.pueue.status();state['groups']['suites']=dict(status='Running',parallel_tasks=3)
         self.write_state(state)
-        for _ in range(2):
-            result = self.deploy()
-            self.assertEqual(result.returncode, 0, result.stderr)
-        units = self.root / ".config/systemd/user"
-        self.assertEqual(len(list(units.iterdir())), 5)
-        self.assertNotIn("@HOME@", (units / "pueued.service").read_text())
-        self.assertNotIn("suites", self.pueue.status()["groups"])
-        before = self.pueue.status()
-        result = subprocess.run(["bash", str(ROOT / "withdraw-desk.sh")], env=self.env, text=True, capture_output=True)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(list(units.iterdir()), [])
-        self.assertEqual(before, self.pueue.status())
+        (self.directory/'guardia-state.json').write_text(json.dumps(['suites','pg5434']))
+        for _ in range(3):self.guard()
+        self.assertIn('suites',self.pueue.status()['groups'])
+        self.assertEqual(self.pueue.status()['groups']['jale']['status'],'Paused')
+        self.assertEqual(json.loads((self.directory/'guardia-state.json').read_text()),
+                         sorted(['suites','hasito','jale','jale-verify','otros','pesadas']))
 
-    def test_managed_daemon_with_live_tasks_is_not_stopped(self):
-        (self.root / "managed").touch()
-        (self.root / "manual").touch()  # pgrep también ve al daemon administrado.
-        state = self.pueue.status()
-        state["tasks"] = {"1": {"status": {"Running": {}}, "group": "hasito"}}
-        self.write_state(state)
-        result = self.deploy()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(any(c == ["pueue", "shutdown"] for c in self.calls()))
-        self.assertEqual(self.pueue.status()["tasks"], state["tasks"])
+    def test_service_prepares_offline_and_restarts_without_startlimit_cutoff(self):
+        unit=(ROOT/'units/pueued.service').read_text()
+        for setting in ('ExecStartPre=', 'control.py preparar --host desk','Restart=always','RestartSec=5',
+                        'KillMode=mixed','StartLimitIntervalSec=0','ConditionPathExists=!'):
+            self.assertIn(setting,unit)
+        self.assertLess(unit.index('ExecStartPre='),unit.index('ExecStart='))
 
-    def test_nonempty_suites_preserved(self):
-        state = self.pueue.status()
-        state["groups"]["suites"] = {"status": "Running", "parallel_tasks": 2}
-        state["tasks"] = {"1": {"status": {"Done": "Success"}, "group": "suites"}}
-        self.write_state(state)
-        result = self.deploy()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("suites tiene tareas; se conserva", result.stdout)
-        self.assertIn("suites", self.pueue.status()["groups"])
-
-    def test_retired_pg5434_leaves_the_queue_and_the_guard(self):
-        state = self.pueue.status()
-        state["groups"]["pg5434"] = {"status": "Paused", "parallel_tasks": 1}
-        self.write_state(state)
-        guard_dir = self.root / ".local/state/pao/pueue-desk"
-        guard_dir.mkdir(parents=True)
-        (guard_dir / "guardia-state.json").write_text(json.dumps(["hasito", "pg5434"]))
-        result = self.deploy()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        groups = self.pueue.status()["groups"]
-        self.assertNotIn("pg5434", groups)
-        self.assertEqual(groups["otros"]["parallel_tasks"], 2)
-        self.assertEqual(json.loads((guard_dir / "guardia-state.json").read_text()), ["hasito"])
-        # Con pg5434 aún en su estado, el guardia abortaba cada minuto.
-        self.metrics()
-        with control.locked(guard_dir):
-            control.guard(self.pueue, self.proc, guard_dir)
-
-    def test_failed_quotas_still_leave_a_state_the_guard_accepts(self):
-        guard_dir = self.root / ".local/state/pao/pueue-desk"
-        guard_dir.mkdir(parents=True)
-        (guard_dir / "guardia-state.json").write_text(json.dumps(["hasito", "pg5434"]))
-        (self.root / "parallel-falla").touch()
-        result = self.deploy()
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("'parallel'", result.stderr)
-        self.assertEqual(json.loads((guard_dir / "guardia-state.json").read_text()), ["hasito"])
-        # Pueue se recupera: el guardia sigue sin repetir la instalación.
-        (self.root / "parallel-falla").unlink()
-        self.metrics()
-        with control.locked(guard_dir):
-            control.guard(self.pueue, self.proc, guard_dir)
 
 
 if __name__ == "__main__":
