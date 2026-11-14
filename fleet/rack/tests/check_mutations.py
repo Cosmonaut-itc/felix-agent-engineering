@@ -176,9 +176,8 @@ CASES=(
 )
 
 
-def main():
-    import sys
-    prefix=sys.argv[1] if len(sys.argv)>1 else ''
+def main(prefix=''):
+    """prefix selects cases by name while iterating (e.g. u34); empty runs them all."""
     for name,filename,before,after,test in CASES:
         if not name.startswith(prefix):continue
         with tempfile.TemporaryDirectory(prefix='rack-c3-mutation-',dir='/tmp') as folder:
@@ -199,4 +198,6 @@ def main():
     print('All '+str(sum(n.startswith(prefix) for n,*_ in CASES))+' mutations caught; original tree untouched.')
 
 
-if __name__=='__main__':main()
+if __name__=='__main__':
+    import sys
+    main(sys.argv[1] if len(sys.argv)>1 else '')

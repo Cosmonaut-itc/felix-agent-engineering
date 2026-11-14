@@ -12,8 +12,9 @@ Antes de adoptar el control durable, desde la MacBook:
 `pueued` manual: si se rechaza, termina con error y el daemon manual sigue vivo.
 Un fallo de `aplicar` no reinicia `pueued`: `pueue-desk-mode.service` reintenta
 cada 30 s y deja el error en `journalctl --user -u pueue-desk-mode`.
-Linger inicia el servicio al arrancar la distro; el arranque de Windows debe
-iniciar WSL por su mecanismo habitual (SSH despierta la distro).
+Linger inicia el servicio cuando arranca la distro. Este README no promete que
+Windows arranque WSL sin intervención tras un reinicio; describe lo que pasa
+cuando la distro arranca (ver «Arranque y reinicios», U3.4).
 
 Tras adoptar, `deploy-desk.sh` ya no es el camino de instalación; usar
 `install-desk.py` como se describe abajo, también al cambiar la tabla.
@@ -31,10 +32,11 @@ Usar sólo esos grupos; `default` y otros grupos quedan fuera de estas cuotas.
 `otros` es de los repositorios sin grupo propio: `remote-run` encola ahí toda
 corrida normal sin `REMOTE_RUN_PROYECTO=hasito`, que sólo fija el lanzador de
 Hasito.
-El instalador elimina los grupos retirados, `suites` y `pg5434`, sólo si no
-tienen ninguna tarea. `pg5434` reservaba un lugar para el Postgres del puerto
-5434 y nunca recibió tareas: los lanzadores toman ese recurso con
-`REMOTE_RUN_RECURSOS`. Su lugar pasó a `otros`.
+Ningún instalador elimina grupos. Los retirados, `suites` y `pg5434`, se quitan
+con `control.py retirar suites` (o `pg5434`), que se niega si el grupo tiene
+alguna tarea; mientras sigan, la guardia los ignora. `pg5434` reservaba un lugar
+para el Postgres del puerto 5434 y nunca recibió tareas: los lanzadores toman ese
+recurso con `REMOTE_RUN_RECURSOS`. Su lugar pasó a `otros`.
 
 ### Reparto
 
@@ -467,3 +469,140 @@ Pruebas dirigidas: `tests/test_mode.py`, `tests/mutate_slots.py --mode-only` y
 sólo mediante `remote-run`: daemon/configuración propios, siete tareas sintéticas
 acotadas, reducción 18→14 sin detenerlas, evento 05Z y undo exacto, con limpieza
 por la puerta privada y espera del PID propio.
+
+### Arranque y reinicios (U3.4)
+
+`pueued.service` arranca así, cada vez que la distro o systemd lo inician:
+
+1. `ExecStartPre` ejecuta `control.py preparar --host desk` con el daemon
+   detenido. Exige Pueue 4.0.4 estándar, la configuración que escribe Pueue
+   (sin `env_vars`, `shell_command` ni rutas propias, `compress_state_file:
+   false`) y un `state.json` íntegro: zona horaria válida en cada fecha, también
+   anidada, ids y grupos coherentes. Si algo falla, no escribe nada y `pueued`
+   no arranca; systemd reintenta cada 5 s sin límite de arranques.
+2. Bajo `control.lock` guarda primero la intención en SQLite y después escribe
+   la cola de forma atómica. Cierra **todos** los grupos, también vacíos y
+   `default`, y fija las cuotas del horario vigente; los ajustes y adelantos
+   vencidos no se reponen. Si se cae a la mitad, preparar otra vez llega a las
+   mismas decisiones sin duplicar motivos.
+3. Cada tarea recibe una decisión:
+   - Running o Paused: falla como `Killed` y **no se reejecuta**.
+   - Queued sin log: conserva id y lugar.
+   - Queued con log previo: falla igual, porque pudo haber empezado.
+   - Stashed, Success, Failed y cancelaciones previas: se quedan como están.
+   - Locked: es una edición desconocida. Pueue la deja en Stashed y su grupo queda retenido.
+4. `ExecStart` es el `pueued` estándar. Al arrancar, la guardia reconcilia
+   cuotas y modo, toma una lectura fresca de presión y espera a que
+   `docker info` responda. Después abre sólo los grupos que cerró el arranque
+   (motivo `startup`). Las pausas manuales y las retenidas siguen cerradas; las
+   de presión siguen su histéresis habitual.
+5. `ExecStop` (`control.py parada`) anota las tareas vivas antes de que
+   systemd detenga el daemon con `KillMode=mixed`. Si el daemon cae, `Restart=always` lo
+   vuelve a preparar y arrancar; los hijos que quedaban en el cgroup mueren con
+   la unidad. La guardia y el modo usan `Requisite=pueued.service`: nunca
+   arrancan el daemon, y si fallan no lo reinician.
+
+**Qué ve Felix en el panel tras un reinicio:**
+
+- En la tarea cortada: «SEN-123 · … · Interrumpida al reiniciar Pueue; relanzar manualmente». Relanzar es una corrida nueva con id nuevo.
+- En un grupo retenido: «Retenido al reiniciar: <motivo> · resolver con control.py reanudar <grupo>». No tiene botón.
+- Si se espera a Docker: «Cerrado al reiniciar · espera a Docker».
+
+La fila `default` sigue oculta mientras esté vacía. Sólo aparece si guarda una tarea cortada.
+
+Los motivos de retención son:
+
+- «una tarea en fila ya tenía registro»
+- «una tarea quedó en edición»
+- «grupo fuera del reparto» (`default` y grupos ajenos que estaban abiertos)
+- «ya estaba pausado sin motivo»
+- «Pueue arrancó sin preparar la cola»: Pueue se inició fuera de la unidad y sus pausas no tienen origen comprobable.
+
+**Resolver un grupo retenido**: revisar la causa por SSH y luego
+
+```sh
+ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py reanudar pesadas'
+```
+
+`reanudar` reconcilia, exige presión fresca baja y abre sólo ese grupo. Funciona
+también con `default` o con un grupo ajeno, siempre que exista en Pueue. Para
+dejarlo cerrado, no hacer nada: la guardia nunca abre una retención.
+
+**Mantenimiento** (actualizar Pueue, mover datos, revisar la cola):
+
+```sh
+ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py mantenimiento entrar'
+# … trabajo …
+ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py mantenimiento salir'
+```
+
+`entrar` escribe el marcador `maintenance` con fsync y detiene, en este orden:
+timers, después `pueue-desk-guard`/`pueue-desk-mode` y al final `pueued`. Su
+`ExecStop` anota las tareas cortadas. Mientras exista el marcador, ni la guardia
+ni el timer reabren ni reconcilian. `install-desk.py`, `deploy-desk.sh` y su
+`--seco` se niegan a instalar. `salir` quita el marcador y arranca `pueued`, que
+vuelve a preparar, y después los timers.
+
+**Instalar U3.4 en el desk adoptado sin reiniciar `pueued`.** Estos pasos no se
+ejecutan en las pruebas. Primero, desde la máquina de despliegue, actualizar
+el rack: `fleet/rack/instalar-desk.sh` (snapshot y despachador) y
+`fleet/rack/instalar.sh` (panel). El panel anterior rechazaría los motivos
+nuevos (`startup`). Después, desde el checkout revisado **en WSL**:
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /ruta/configurada/pueue.pid --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /ruta/configurada/pueue.pid
+```
+
+Ambos hacen, antes de cualquier efecto:
+
+- lee `systemctl --user show-environment` y aplica la misma validación que
+  `preparar` a configuración, versión y cola;
+- exige que el `pid_path` adoptado sea el que encontrará `preparar`;
+- rechaza el mantenimiento y los recibos `applying`, `partial` o `unknown`.
+
+La instalación real hace después lo de U3.3: apaga cuotas nuevas, detiene
+timers y toma el candado. Luego, bajo `control.lock`, añade a la autoridad el
+registro `startup` (fase `none`) sin readoptar ni tocar recibos. Publica el
+controlador, guardando `control.pre-u34.py`, y reconcilia. Copia
+`pueued.service`, `pueue-desk-guard.service` y `pueue-desk-mode.service`,
+guardando las anteriores en `~/.local/lib/pao-pueue-desk/units.pre-u34/`, y hace
+`daemon-reload`. **No reinicia `pueued`.** Por último comprueba que MainPID y
+ActiveState siguen iguales y que la unidad cargada ya tiene `Restart=always`,
+`KillMode=mixed` y el `ExecStartPre` de `preparar`. Si algo no coincide, falla
+en voz alta. Para verificarlo a mano:
+
+```sh
+systemctl --user show pueued.service -p MainPID -p ActiveState -p NeedDaemonReload \
+  -p Restart -p KillMode -p ExecStartPre
+```
+
+El MainPID debe ser el de antes y `NeedDaemonReload=no`. La nueva política rige
+desde el próximo arranque del daemon, sea un reinicio de Windows, una caída o
+`mantenimiento salir`. Las tareas que ya corren no se tocan.
+
+**Revertir:** con el daemon vivo, restaurar las tres unidades desde
+`units.pre-u34/` y hacer `systemctl --user daemon-reload`, sin reiniciar
+`pueued`. Para volver también al controlador anterior, primero no debe quedar
+ningún motivo `startup` (guardia ya pasó) ni retenciones sin resolver. Después,
+con timers detenidos y bajo el candado como en el instalador, restaurar
+`control.pre-u34.py` y reactivar los timers. El campo `startup` de la autoridad
+se conserva; U3.3 lo ignora. No restaurar un SQLite viejo ni borrar recibos.
+
+**Riesgos raros aceptados** (Pueue 4.0.4 estándar, sin binario propio):
+
+1. Si `pueued` lanza una tarea y cae antes de guardar `Running`, la cola
+   guardada la muestra Queued y podría repetirse. La comprobación del log previo
+   la detecta casi siempre, porque la marca como fallida y retiene el grupo,
+   pero no lo elimina del todo.
+2. Pueue guarda `state.json` sin fsync: un `add` confirmado puede perderse ante
+   un corte eléctrico. Las pruebas con SIGKILL no demuestran durabilidad ante
+   apagón.
+
+Pruebas: `tests/test_startup.py` (dobles: S-W1, O-W1, O-W2, cada estado de
+tarea, caída en cada frontera, mantenimiento, instalador) y
+`tests/mutate_startup.py`. En el rack: `fleet/rack/tests/test_startup.py` y
+`check_mutations.py u34`. `tests/test_private.py --run-private` corre **sólo**
+mediante `remote-run` en el desk. Usa un `pueued` privado en unidades
+transitorias `pao-u34-<cand>-*` con HOME/XDG propios para ejercitar `ExecStartPre`,
+`ExecStop`, Requisite, SIGKILL con `Restart=always` y una cola corrupta.
