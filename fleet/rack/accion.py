@@ -286,7 +286,7 @@ class Actions:
         if operation == 'post':
             validate(value)
             identity = dict(value)
-            if value['op'] in ('cancel', 'slots', 'undo') and not value.get('dry_run'):
+            if value['op'] in ('cancel', 'slots', 'mode', 'undo') and not value.get('dry_run'):
                 with self.http_lock:
                     self.identities.setdefault(value['action_id'], identity)
         else:
@@ -311,10 +311,13 @@ class Actions:
             self.workers.add(worker)
         worker.start()
         if not self.wait(done, max(0, deadline - self.timer())):
-            return 200, result(identity, 'unknown')
-        if errors:
+            code, response = 200, result(identity, 'unknown')
+        elif errors:
             raise errors[0]
-        return answers[0]
+        else:
+            code, response = answers[0]
+        # Stamped per reply, never journaled: the panel judges a receipt's expiry by this, not by a snapshot.
+        return code, dict(response, served_at=self.clock())
 
     @contextmanager
     def connect(self, deadline=None):
@@ -361,6 +364,8 @@ class Actions:
             current = next((h for h in payload['hosts'] if h['id'] == request['host']), None)
             if not current or not current['fresh'] or current.get('age') is None or current['age'] > 45 or self.clock() - payload['now'] > 45:
                 return ERRORS['stale_state']
+            if request['op'] == 'mode' and ((current.get('snapshot') or {}).get('control') or {}).get('capabilities', {}).get('mode') is not True:
+                return 'Falta actualizar el control de este host.'
             return None
         reason = transport_reason(host, request['launcher'])
         if reason:

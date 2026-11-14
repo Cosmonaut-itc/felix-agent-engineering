@@ -33,19 +33,26 @@ def authority_lock(directory):
 def policy_plan(engine):
     """Installer-only validation; runtime still requires the exact policy hash."""
     with engine.connect() as db:
+        original = json.loads(db.execute('SELECT body FROM policy WHERE id=1').fetchone()[0])
         state = engine.state(db, policy_migration=True)
-        if state['policy_hash'] == engine.policy_hash:
+        fields_missing = 'mode_override' not in original
+        if state['policy_hash'] == engine.policy_hash and not fields_missing:
             return None
         actions = [json.loads(row[0]) for row in db.execute('SELECT body FROM host_actions')]
         if any(a['response']['status'] in ('applying', 'partial', 'unknown') for a in actions):
             raise ValueError('Hay recibos abiertos; recuperar con el controlador anterior antes de migrar')
+    if state['policy_hash'] == engine.policy_hash:
+        # Additive migration: retain revisions, original expirations and all receipts.
+        engine.observed()
+        engine.generation(state)
+        return state
     # Validate the live host too, before effects. Time is sampled after blocking reads.
     engine.observed()
     engine.generation(state)
     event = engine.resolve(state)['schedule_event']
-    desired = {g: row[engine.mode(dict(schedule_event=event))] for g, row in engine.profile.items()}
+    desired = {g: row[engine.mode(dict(schedule_event=event, mode_override=None))] for g, row in engine.profile.items()}
     return dict(state, policy_hash=engine.policy_hash, desired=desired,
-                overrides={}, schedule_event=event, revision=state['revision'] + 1)
+                overrides={}, mode_override=None, schedule_event=event, revision=state['revision'] + 1)
 
 
 def preflight(home, pid_file, control):
@@ -77,7 +84,11 @@ def install(home, pid_file, control, dry_run=False):
     if dry_run:
         if getattr(engine, 'install_migration', None) is not None:
             plan = engine.install_migration
-            print('SECO, migración de tabla: retirar ajustes; revisión ' + str(plan['revision'])
+            print('SECO, autoridad: añadir mode_override=null si falta; conservar recibos y vencimientos.')
+            with engine.connect() as db:
+                old_hash = json.loads(db.execute('SELECT body FROM policy WHERE id=1').fetchone()[0])['policy_hash']
+            kind = 'migración de tabla: retirar ajustes' if old_hash != plan['policy_hash'] else 'migración aditiva'
+            print('SECO, ' + kind + '; revisión ' + str(plan['revision'])
                   + '; policy_hash ' + plan['policy_hash'] + '; desired ' + json.dumps(plan['desired'], sort_keys=True))
         print('Comprobado (lectura): controlador existente, timers activos, autoridad o tabla vigente y PID de pueued.')
         print('SECO, pendiente: apagar cuotas nuevas; detener timers/oneshots; bajo control.lock publicar, '
@@ -107,6 +118,11 @@ def install(home, pid_file, control, dry_run=False):
                 backup = library / 'control.pre-slots.py'
                 if not backup.exists():
                     backup.write_bytes(target.read_bytes())
+            if control.has_authority(directory):
+                backup = library / 'control.pre-mode.py'
+                if not backup.exists():
+                    with backup.open('xb') as stream:
+                        stream.write(target.read_bytes()); stream.flush(); os.fsync(stream.fileno())
             temporary = target.with_suffix('.nuevo')
             with temporary.open('wb') as stream:
                 stream.write((SOURCE / 'control.py').read_bytes()); stream.flush(); os.fsync(stream.fileno())

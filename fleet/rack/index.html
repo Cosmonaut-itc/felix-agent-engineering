@@ -60,7 +60,7 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .lanes{display:flex;flex-direction:column;gap:6px;margin-top:10px}
 .lane{display:grid;grid-template-columns:62px minmax(0,1fr);gap:8px;align-items:center}
 .lane .g{font-size:12px;color:var(--ink2)}
-.slots{display:grid;gap:6px}.slots>*{min-width:0;overflow:hidden}.stack{display:flex;flex-direction:column;gap:16px}
+.host-heading{display:flex;align-items:start;justify-content:space-between;gap:12px;flex-wrap:wrap}.host-heading>div:first-child{flex:1;min-width:0}.mode-control{max-width:min(100%,440px);min-width:0;text-align:right}.mode-switch{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.mode-switch button{min-height:44px;min-width:64px;border:0;background:var(--panel);color:var(--ink2);font:inherit;font-size:12px;padding:4px 12px;cursor:pointer;touch-action:manipulation;user-select:none}.mode-switch button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}.mode-switch button:disabled{cursor:default;opacity:.6}.mode-switch button[aria-pressed="true"]:disabled{opacity:1}.mode-note{font-size:12px;overflow-wrap:anywhere;margin:6px 0}.slots{display:grid;gap:6px}.slots>*{min-width:0;overflow:hidden}.stack{display:flex;flex-direction:column;gap:16px}
 .slot{border:1px dashed var(--line);border-radius:8px;min-height:54px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;gap:4px}
 .slot.busy{border:1px solid var(--line);background:var(--bg)}
 .slot .r-top{font-size:13px}
@@ -69,7 +69,7 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .chip{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--ink2);white-space:nowrap}
 @media (max-width:560px){header,main{padding-left:16px;padding-right:16px}.cols{grid-template-columns:1fr}.cap{grid-template-columns:1fr 1fr 1fr;gap:8px}}
 
-@media(max-width:560px){.lane{grid-template-columns:1fr}.slots{grid-template-columns:1fr!important}.r-sub{flex-wrap:wrap;gap:4px 10px}.chip{max-width:100%;overflow:hidden;text-overflow:ellipsis}.m-val{font-size:16px}.m-label{flex-wrap:wrap}.host{padding:12px}.cap{gap:8px}}
+@media(max-width:560px){.host-heading{flex-direction:column}.mode-control{text-align:left}.lane{grid-template-columns:1fr}.slots{grid-template-columns:1fr!important}.r-sub{flex-wrap:wrap;gap:4px 10px}.chip{max-width:100%;overflow:hidden;text-overflow:ellipsis}.m-val{font-size:16px}.m-label{flex-wrap:wrap}.host{padding:12px}.cap{gap:8px}}
 .r-sub span,.g{overflow-wrap:anywhere;min-width:0} #connection{color:var(--warn);padding:0 24px;font-size:13px} #connection:empty{display:none}
 .fila{margin:2px 0 6px}
 .fila h4{font-size:12px;font-weight:600;color:var(--ink2);margin:6px 0 2px}
@@ -127,7 +127,7 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 .step:focus .slot-help,.step:focus-within .slot-help{position:absolute;left:0;top:100%;width:280px;max-width:calc(100vw - 80px);height:auto;clip-path:none;overflow:visible;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;z-index:6;box-shadow:0 4px 12px rgba(0,0,0,.15)}
 .step:focus{outline:2px solid var(--accent);outline-offset:2px}
 #toast button{font:inherit;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
-@media(max-width:560px){.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
+@media(max-width:560px){.host-heading{flex-direction:column}.mode-control{text-align:left}.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 const PENDING = new Map();
@@ -259,13 +259,48 @@ function slotControls(h,n,g,r){
   const name='slots-'+h.id+'-'+n;
   return `<div class="muted slot-usage">${esc(usage)}</div><div class="step" tabindex="0" data-slot-focus="${esc(h.id+'/'+n)}" aria-label="Lugares de ${esc(n)}" aria-describedby="${esc(name)}"><button type="button" data-step="-1" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-label="Quitar un lugar a ${esc(n)}" title="${esc(minus || 'Quitar un lugar')}" ${minus?'disabled':''}>−</button><b>${esc(count)}</b><button type="button" data-step="1" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-label="Añadir un lugar a ${esc(n)}" title="${esc(plus || 'Añadir un lugar')}" ${plus?'disabled':''}>+</button><span class="slot-help" id="${esc(name)}">${esc(plus || minus)}</span></div>`;
 }
-function hostControlState(h){
+function modeControls(h){
+  if(h.id!=='desk') return '';
+  const c=h.control, a=PENDING.get(slotKey(h));
+  const capable=c?.capabilities?.mode===true && !!c.tables?.dia && !!c.tables?.noche;
+  const common=!capable ? c?.reason || c?.error?.message || 'Falta actualizar el control de este host.'
+    : !h.fresh ? 'Actualiza la instantánea antes de decidir.' : a ? 'Hay un ajuste pendiente; consulta su recibo.'
+    : c.drift || c.recovery_pending ? 'Reconciliación pendiente.' : '';
+  const buttons=['dia','noche'].map(mode=>{
+    // Going to day can still raise a manually reduced component.
+    const table=c?.tables?.[mode];
+    const foreign=capable && c.foreign_work && Object.entries(table || {}).some(([g,n])=>n>c.slots[g]);
+    const reason=common || (foreign ? 'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.' : '');
+    const selected=capable && !c.drift && !c.recovery_pending && c.mode===mode;
+    return `<button type="button" data-mode="${mode}" data-host="${esc(h.id)}" aria-pressed="${selected}" title="${esc(reason || 'Aplicar horario de '+(mode==='dia'?'día':'noche'))}" ${reason || selected?'disabled':''}>${mode==='dia'?'Día':'Noche'}</button>`;
+  }).join('');
+  const message=hostControlMessage(h) || common;
+  return `<div class="mode-control"><div class="mode-switch" tabindex="0" data-mode-focus="desk" role="group" aria-label="Horario del desk" aria-describedby="mode-desk-note">${buttons}</div><p id="mode-desk-note" class="mode-note muted" role="status">${esc(message)}</p></div>`;
+}
+function focusMode(host){
+  document.querySelector(`[data-mode-focus="${host}"]`)?.focus();
+}
+function startMode(h,mode,undoOf){
+  if(h.id!=='desk' || !h.fresh || !h.control?.capabilities?.mode || PENDING.has(slotKey(h)) || (!undoOf && mode===h.control.mode)) return;
+  const request={schema:'rack-action@1',op:undoOf?'undo':'mode',host:h.id,action_id:newActionId(),dry_run:false,
+    expected:slotExpected(h)};
+  if(undoOf) request.undo_of=undoOf; else request.change={mode};
+  // Presentation only: undo authority and its exact before vector stay on the host.
+  const action={request,status:'applying',mode:true,targetMode:mode,from:h.control.mode};
+  PENDING.set(slotKey(h),action);SLOT_MESSAGES.delete(h.id);persistActions();repaintActions();focusMode(h.id);sendSlots(slotKey(h),action);
+}
+function hostControlMessage(h){
   const a=PENDING.get(slotKey(h)), c=h.control;
   let message=SLOT_MESSAGES.get(h.id) || (['recovery_error','busy'].includes(c?.status) ? c.error.message : '');
-  if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
-  else if(c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
-  else if(c?.recovery_pending) message='Reconciliación pendiente';
-  else if(h.id==='desk' && c?.expires_at) message=slotExpiry(c.expires_at);
+  if(a && (a.mode || a.request.op==='mode')) message=a.status==='partial' ? c?.mode_partial : a.status==='unknown' ? c?.mode_unknown : c?.mode_pending?.[a.targetMode || a.request.change?.mode] || c?.mode_unknown;
+  else if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
+  else if(!message && c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
+  else if(!message && c?.recovery_pending) message='Reconciliación pendiente';
+  if(!a){
+    const notes=[h.id==='desk' ? c?.mode_note : null,h.id==='desk' ? c?.mode_detail : null,c?.slots_note];
+    if(h.id==='desk' && c?.expires_at && !c?.mode_note && !c?.slots_note) notes.push(slotExpiry(c.expires_at));
+    message=[message,...notes].filter(Boolean).join(' · ');
+  }
   if(c?.foreign_work) message+=(message?' · ':'')+'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.';
   const result=a?.result;
   const desired=result?.desired || c?.desired, observed=result?.observed || c?.slots;
@@ -274,6 +309,10 @@ function hostControlState(h){
   }
   if(c?.pause_reasons && Object.values(c.pause_reasons).some(r=>r.includes('ambiguous')))
     message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
+  return message;
+}
+function hostControlState(h){
+  const message=hostControlMessage(h);
   return message ? `<p class="action-state" role="status">${esc(message)}</p>` : '';
 }
 function slotExpected(h){
@@ -290,7 +329,7 @@ function startSlots(h,change,undoOf){
   if(PENDING.has(slotKey(h))) return;
   const request={schema:'rack-action@1',op:undoOf?'undo':'slots',host:h.id,action_id:newActionId(),dry_run:false,expected:slotExpected(h)};
   if(undoOf) request.undo_of=undoOf; else request.change=change;
-  const action={request,status:'applying',group:change?.group};
+  const action={request,status:'applying',group:change?.group,mode:undoOf && change?.mode===true};
   PENDING.set(slotKey(h),action);SLOT_MESSAGES.delete(h.id);persistActions();repaintActions();
   if(action.group) focusSlots(h.id,action.group);
   sendSlots(slotKey(h),action);
@@ -302,30 +341,43 @@ function acceptSlots(key,action,data){
     setTimeout(()=>pollAction(key,action),2000);return;
   }
   PENDING.delete(key);persistActions();
-  const expired=h?.id==='desk' && data.result?.expires_at && data.result.expires_at<=NOW;
+  const boundary=data.result?.expires_at || data.result?.next_event;
+  // Judged by the rack's reply time; a receipt without it cannot prove it is still current.
+  const expired=h?.id==='desk' && boundary && !(data.served_at < boundary);
   if(expired){
     SLOT_MESSAGES.set(h.id,'El ajuste venció en el cambio de horario.');say(SLOT_MESSAGES.get(h.id));
   }else if(data.status==='applied' && h && data.result?.observed && data.revision>=h.control.revision){
     const c={...h.control,revision:data.revision,slots:{...data.result.observed},desired:{...data.result.desired},expires_at:data.result.expires_at,drift:false,recovery_pending:false};
+    for(const k of ['mode','cap','schedule_event','next_event','mode_note','mode_detail','slots_note','mode_pending','mode_partial','mode_unknown'])
+      if(Object.hasOwn(data.result,k)) c[k]=data.result[k];
     HOST_CONFIRMED.set(h.id,c);h.control=c;
     for(const [g,n] of Object.entries(c.slots)) if(h.groups[g]) h.groups[g].slots=n;
     SLOT_MESSAGES.delete(h.id);
-    say(action.request.op==='undo' ? 'Lugares restaurados' : `${action.group}: ${c.slots[action.group]} lugares · ${h.id==='desk' ? slotExpiry(c.expires_at).split(' · ')[1] : 'hasta otro cambio manual'}`,
+    say(action.request.op==='undo' ? (action.mode ? 'Horario y lugares restaurados' : 'Lugares restaurados') : action.request.op==='mode' ? `Horario de ${c.mode==='dia'?'día':'noche'} aplicado` : `${action.group}: ${c.slots[action.group]} lugares · ${h.id==='desk' ? slotExpiry(c.expires_at).split(' · ')[1] : 'hasta otro cambio manual'}`,
       action.request.op==='undo' ? null : ()=>{
         const current=S?.hosts.find(x=>x.id===h.id);
-        if(current) startSlots(current,{group:action.group},action.request.action_id);
+        if(current){
+          if(action.request.op==='mode') startMode(current,action.from,action.request.action_id);
+          else startSlots(current,{group:action.group},action.request.action_id);
+        }
       });
   }else{
     SLOT_MESSAGES.set(action.request.host,data.error?.message || 'No se pudo confirmar el ajuste. Actualiza antes de decidir.');
     say(SLOT_MESSAGES.get(action.request.host));
   }
-  repaintActions();if(action.group) focusSlots(action.request.host,action.group);refresh();
+  repaintActions();if(action.group) focusSlots(action.request.host,action.group);else if(action.mode || action.request.op==='mode') focusMode(action.request.host);refresh();
 }
 async function sendSlots(key,action){
   try{acceptSlots(key,action,await postAction(action.request));}
   catch{action.status='unknown';persistActions();repaintActions();setTimeout(()=>pollAction(key,action),2000);}
 }
 document.addEventListener('click',ev=>{
+  const m=ev.target.closest('button[data-mode]');
+  if(m && !m.disabled){
+    const h=S?.hosts.find(h=>h.id===m.dataset.host);
+    if(h) startMode(h,m.dataset.mode);
+    return;
+  }
   const b=ev.target.closest('button[data-step]');
   if(!b || b.disabled) return;
   const h=S?.hosts.find(h=>h.id===b.dataset.host);
@@ -341,7 +393,7 @@ function view(){
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}`;
       }).join('');
-      return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}${hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
+      return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
 function render(data){
   NOW = data.now;
@@ -489,7 +541,7 @@ function actionMessage(data,action){
   return data.error?.message || 'No se pudo confirmar la cancelación.';
 }
 function acceptAction(key,action,data){
-  if(['slots','undo'].includes(action.request.op)) return acceptSlots(key,action,data);
+  if(['slots','mode','undo'].includes(action.request.op)) return acceptSlots(key,action,data);
   if(['cancelling','unknown','cancel_unconfirmed'].includes(data.status)){
     const changed=action.status!==data.status; action.status=data.status;
     persistActions(); repaintActions();
@@ -520,7 +572,7 @@ async function pollAction(key,action){
       action.resent=true; persistActions();
       await sendCancel(key,action); return;
     }
-    const hostTerminal=['slots','undo'].includes(action.request.op) &&
+    const hostTerminal=['slots','mode','undo'].includes(action.request.op) &&
       (response.status===409 && ['conflict','rejected','unsupported'].includes(data.status) ||
        response.status===403 && data.status==='rejected' && data.error?.code==='disabled' && data.effects===false);
     if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || (!response.ok && !hostTerminal)) throw Error('status');

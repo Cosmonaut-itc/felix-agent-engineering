@@ -704,8 +704,8 @@ Python aislado y transporte acotado. No acepta actor, comandos o rutas del naveg
 Los contratos cancel/capabilities de lanzador de C3–C5 conservan su forma.
 Se mantienen whois fresco del dueño, tailnet, Host permitido y Origin exacto;
 ningún fallback abre SSH o ejecuta shell a partir de datos. La variante host del
-despachador desk responde no disponible. Día/Noche, reordenar y reinicios se
-anuncian `false`; un controlador antiguo deja cuotas deshabilitadas sin romper
+despachador desk admite el mismo control con `--host desk`. La Mini no tiene
+Día/Noche; reordenar y reinicios se anuncian `false`; un controlador antiguo deja cuotas deshabilitadas sin romper
 la lectura ni «Cancelar…».
 
 Instalar **primero** el controlador Mini siguiendo
@@ -813,3 +813,56 @@ Para apagar nuevos ajustes, crear `slots.disabled` en el estado del desk;
 consultas y recuperación continúan. Puede revertirse el panel manteniendo la
 autoridad nueva y sus timers. Nunca retirar la base durable o restaurar la
 aplicación ciega de tabla para deshacer un cambio.
+
+### Control Día/Noche del desk (U3.3)
+
+Día/Noche vive en la cabecera del desk. El botón vigente aparece seleccionado;
+la Mini no muestra ese control. El panel usa `op:"mode"` en `rack-action@1`,
+con las mismas expectativas de revisión, política, generación, modo y vector que
+±. El canal forzado `host-control` existente lo traduce a `rack-host-control@1`;
+no hay llave ni listener nuevos. Leer, Cancelar y ± conservan su contrato.
+
+Elegir un modo aplica su tabla completa y retira ajustes previos. El host fija
+la vigencia al siguiente evento estricto 05:00/14:00 UTC y calcula las notas en
+`America/Mexico_City`. «Adelantado · vuelve a día a las 08:00» describe el próximo
+cambio visible: un adelanto de noche a las 16:00 vence a las 23:00, cuando pasa a
+«Automático · cambia a día a las 08:00». La nota adicional indica el vencimiento
+real. Los ajustes de lugares conservan su nota adicional cuando existen.
+
+Durante el envío se bloquean los controles del host y se conserva el último modo
+confirmado. Se muestran «Aplicando horario de noche…», «Horario aplicado
+parcialmente · revisando…» o «Cambio sin confirmar · consultando…», con los
+vectores observado/deseado desde el primer parcial. Unknown conserva el ID y
+consulta GET; no reenvía POST. Un éxito confirmado ofrece «Deshacer» durante
+8 s. Undo restaura modo, adelanto, ajustes y vencimientos originales; después de
+otro ajuste o evento se explica `undo_conflict`. Una respuesta tardía tampoco
+ofrece undo si cruzó el evento del recibo, incluso al volver al modo automático
+sin adelanto ni ajustes. El rack marca cada respuesta de acción con su hora
+(`served_at`), sin guardarla en el registro, y el panel juzga el vencimiento con
+esa hora, nunca con la de la última instantánea. La Mini conserva «Lugares ajustados · hasta otro cambio
+manual», emitido por su host. Si hay trabajo fuera del reparto,
+se bloquea el modo que aumente algún grupo y se conserva el diagnóstico de U3.2.
+El estado aparece una sola vez junto al segmento y conserva los conflictos junto
+a la vigencia de los lugares, también en la Mini. El destino de presentación de
+undo se conserva al recargar; el host determina la restauración. Las tablas de
+destino llegan del host y se validan en el canal, sin otra tabla en JavaScript.
+Los hosts anteriores muestran ambos botones deshabilitados con la actualización
+pendiente y el servidor rechaza mode antes del transporte; GET de recibos
+aceptados sigue disponible. Sin tzdata se deshabilita sólo mode; ±, undo y
+recuperación UTC continúan disponibles. Reordenar y reinicios siguen deshabilitados.
+
+Instalar primero el controlador desk mediante el preflight y la migración aditiva
+de `fleet/pueue-desk/install-desk.py`, descritos en su README: en un desk adoptado
+añade `mode_override=null` bajo `control.lock`, conserva recibos/ajustes y rechaza
+recibos abiertos. No readopta ni reinicia `pueued`. Después ejecutar
+`instalar-desk.sh` para snapshot/despachador y `instalar.sh` en la Mini para el
+panel. El canario real se reserva al orquestador tras el merge, con filas vacías
+en todos los grupos que suben, tanto a la ida como al deshacer.
+Para revertir la UI, restaurar el panel/despachador previos conservando el
+controlador/SQLite nuevos; para revertir el controlador seguir su README una vez
+vencidos y reconciliados los adelantos, sin restaurar bases anteriores.
+
+Pruebas de contrato y UI: `tests/test_mode.py` y `tests/mode-ui-check.js`.
+`tests/mode_browser_fixture.py OUTPUT.html` genera una página sin servidor ni
+collector, sólo con datos sintéticos, para los 18 estados, incluidas combinaciones de conflicto con lugares, undo en
+ambos sentidos y unknown recargado, con capturas a 1280/390 px.
