@@ -361,7 +361,7 @@ class DeploymentTests(Fixture):
         (self.root / "parallel-falla").touch()
         result = self.deploy()
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("parallel falló", result.stderr)
+        self.assertIn("'parallel'", result.stderr)
         self.assertEqual(json.loads((guard_dir / "guardia-state.json").read_text()), ["hasito"])
         # Pueue se recupera: el guardia sigue sin repetir la instalación.
         (self.root / "parallel-falla").unlink()
