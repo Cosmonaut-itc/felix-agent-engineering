@@ -60,7 +60,7 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .lanes{display:flex;flex-direction:column;gap:6px;margin-top:10px}
 .lane{display:grid;grid-template-columns:62px minmax(0,1fr);gap:8px;align-items:center}
 .lane .g{font-size:12px;color:var(--ink2)}
-.host-heading{display:flex;align-items:start;justify-content:space-between;gap:12px;flex-wrap:wrap}.host-heading>div:first-child{flex:1;min-width:0}.mode-control{max-width:100%;min-width:0;text-align:right}.mode-switch{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.mode-switch button{min-height:44px;min-width:64px;border:0;background:var(--panel);color:var(--ink2);font:inherit;font-size:12px;padding:4px 12px;cursor:pointer;touch-action:manipulation;user-select:none}.mode-switch button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}.mode-switch button:disabled{cursor:default;opacity:.6}.mode-switch button[aria-pressed="true"]:disabled{opacity:1}.mode-note{font-size:12px;overflow-wrap:anywhere;margin:6px 0}.slots{display:grid;gap:6px}.slots>*{min-width:0;overflow:hidden}.stack{display:flex;flex-direction:column;gap:16px}
+.host-heading{display:flex;align-items:start;justify-content:space-between;gap:12px;flex-wrap:wrap}.host-heading>div:first-child{flex:1;min-width:0}.mode-control{max-width:min(100%,440px);min-width:0;text-align:right}.mode-switch{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.mode-switch button{min-height:44px;min-width:64px;border:0;background:var(--panel);color:var(--ink2);font:inherit;font-size:12px;padding:4px 12px;cursor:pointer;touch-action:manipulation;user-select:none}.mode-switch button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}.mode-switch button:disabled{cursor:default;opacity:.6}.mode-switch button[aria-pressed="true"]:disabled{opacity:1}.mode-note{font-size:12px;overflow-wrap:anywhere;margin:6px 0}.slots{display:grid;gap:6px}.slots>*{min-width:0;overflow:hidden}.stack{display:flex;flex-direction:column;gap:16px}
 .slot{border:1px dashed var(--line);border-radius:8px;min-height:54px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;gap:4px}
 .slot.busy{border:1px solid var(--line);background:var(--bg)}
 .slot .r-top{font-size:13px}
@@ -262,41 +262,45 @@ function slotControls(h,n,g,r){
 function modeControls(h){
   if(h.id!=='desk') return '';
   const c=h.control, a=PENDING.get(slotKey(h));
-  const capable=c?.capabilities?.mode===true;
+  const capable=c?.capabilities?.mode===true && !!c.tables?.dia && !!c.tables?.noche;
   const common=!capable ? c?.reason || c?.error?.message || 'Falta actualizar el control de este host.'
     : !h.fresh ? 'Actualiza la instantánea antes de decidir.' : a ? 'Hay un ajuste pendiente; consulta su recibo.'
     : c.drift || c.recovery_pending ? 'Reconciliación pendiente.' : '';
   const buttons=['dia','noche'].map(mode=>{
     // Going to day can still raise a manually reduced component.
-    const table=mode==='dia' ? {hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3}
-      : {hasito:2,jale:7,'jale-verify':1,otros:2,pesadas:3,rapidas:3};
-    const foreign=capable && c.foreign_work && Object.entries(table).some(([g,n])=>n>c.slots[g]);
+    const table=c?.tables?.[mode];
+    const foreign=capable && c.foreign_work && Object.entries(table || {}).some(([g,n])=>n>c.slots[g]);
     const reason=common || (foreign ? 'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.' : '');
     const selected=capable && !c.drift && !c.recovery_pending && c.mode===mode;
     return `<button type="button" data-mode="${mode}" data-host="${esc(h.id)}" aria-pressed="${selected}" title="${esc(reason || 'Aplicar horario de '+(mode==='dia'?'día':'noche'))}" ${reason || selected?'disabled':''}>${mode==='dia'?'Día':'Noche'}</button>`;
   }).join('');
-  const message=common || c?.mode_note || '';
-  return `<div class="mode-control"><div class="mode-switch" tabindex="0" data-mode-focus="desk" role="group" aria-label="Horario del desk" aria-describedby="mode-desk-note">${buttons}</div><p id="mode-desk-note" class="mode-note muted">${esc(message)}${!common && c?.mode_detail ? '<br>'+esc(c.mode_detail) : ''}</p></div>`;
+  const message=hostControlMessage(h) || common;
+  return `<div class="mode-control"><div class="mode-switch" tabindex="0" data-mode-focus="desk" role="group" aria-label="Horario del desk" aria-describedby="mode-desk-note">${buttons}</div><p id="mode-desk-note" class="mode-note muted" role="status">${esc(message)}</p></div>`;
 }
 function focusMode(host){
   document.querySelector(`[data-mode-focus="${host}"]`)?.focus();
 }
-function startMode(h,mode){
-  if(h.id!=='desk' || !h.fresh || !h.control?.capabilities?.mode || PENDING.has(slotKey(h)) || mode===h.control.mode) return;
-  const request={schema:'rack-action@1',op:'mode',host:h.id,action_id:newActionId(),dry_run:false,
-    expected:slotExpected(h),change:{mode}};
-  const action={request,status:'applying',mode:true};
+function startMode(h,mode,undoOf){
+  if(h.id!=='desk' || !h.fresh || !h.control?.capabilities?.mode || PENDING.has(slotKey(h)) || (!undoOf && mode===h.control.mode)) return;
+  const request={schema:'rack-action@1',op:undoOf?'undo':'mode',host:h.id,action_id:newActionId(),dry_run:false,
+    expected:slotExpected(h)};
+  if(undoOf) request.undo_of=undoOf; else request.change={mode};
+  // Presentation only: undo authority and its exact before vector stay on the host.
+  const action={request,status:'applying',mode:true,targetMode:mode,from:h.control.mode};
   PENDING.set(slotKey(h),action);SLOT_MESSAGES.delete(h.id);persistActions();repaintActions();focusMode(h.id);sendSlots(slotKey(h),action);
 }
-function hostControlState(h){
+function hostControlMessage(h){
   const a=PENDING.get(slotKey(h)), c=h.control;
   let message=SLOT_MESSAGES.get(h.id) || (['recovery_error','busy'].includes(c?.status) ? c.error.message : '');
-  if(a && (a.mode || a.request.op==='mode')) message=a.status==='partial' ? c?.mode_partial : a.status==='unknown' ? c?.mode_unknown : c?.mode_pending?.[a.request.change?.mode || c?.mode];
+  if(a && (a.mode || a.request.op==='mode')) message=a.status==='partial' ? c?.mode_partial : a.status==='unknown' ? c?.mode_unknown : c?.mode_pending?.[a.targetMode || a.request.change?.mode] || c?.mode_unknown;
   else if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
-  else if(c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
-  else if(c?.recovery_pending) message='Reconciliación pendiente';
-  else if(c?.slots_note) message=c.slots_note;
-  else if(h.id==='desk' && c?.expires_at && !c?.mode_note) message=slotExpiry(c.expires_at);
+  else if(!message && c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
+  else if(!message && c?.recovery_pending) message='Reconciliación pendiente';
+  if(!a){
+    const notes=[h.id==='desk' ? c?.mode_note : null,h.id==='desk' ? c?.mode_detail : null,c?.slots_note];
+    if(h.id==='desk' && c?.expires_at && !c?.mode_note && !c?.slots_note) notes.push(slotExpiry(c.expires_at));
+    message=[message,...notes].filter(Boolean).join(' · ');
+  }
   if(c?.foreign_work) message+=(message?' · ':'')+'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.';
   const result=a?.result;
   const desired=result?.desired || c?.desired, observed=result?.observed || c?.slots;
@@ -305,6 +309,10 @@ function hostControlState(h){
   }
   if(c?.pause_reasons && Object.values(c.pause_reasons).some(r=>r.includes('ambiguous')))
     message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
+  return message;
+}
+function hostControlState(h){
+  const message=hostControlMessage(h);
   return message ? `<p class="action-state" role="status">${esc(message)}</p>` : '';
 }
 function slotExpected(h){
@@ -347,7 +355,10 @@ function acceptSlots(key,action,data){
     say(action.request.op==='undo' ? (action.mode ? 'Horario y lugares restaurados' : 'Lugares restaurados') : action.request.op==='mode' ? `Horario de ${c.mode==='dia'?'día':'noche'} aplicado` : `${action.group}: ${c.slots[action.group]} lugares · ${h.id==='desk' ? slotExpiry(c.expires_at).split(' · ')[1] : 'hasta otro cambio manual'}`,
       action.request.op==='undo' ? null : ()=>{
         const current=S?.hosts.find(x=>x.id===h.id);
-        if(current) startSlots(current,{group:action.group,mode:action.request.op==='mode'},action.request.action_id);
+        if(current){
+          if(action.request.op==='mode') startMode(current,action.from,action.request.action_id);
+          else startSlots(current,{group:action.group},action.request.action_id);
+        }
       });
   }else{
     SLOT_MESSAGES.set(action.request.host,data.error?.message || 'No se pudo confirmar el ajuste. Actualiza antes de decidir.');
@@ -381,7 +392,7 @@ function view(){
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}`;
       }).join('');
-      return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
+      return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
 function render(data){
   NOW = data.now;

@@ -13,7 +13,7 @@ from test_slots import control, FakePueue, BASE
 
 def scenarios():
     result={}
-    def make(name,when,mode=None,pending=None,message=None):
+    def make(name,when,mode=None,pending=None,message=None,slots=False,undo_target=None):
         test=ModeChannelTests();test.setUp()
         try:
             test.now=when;test.engine.reconcile()
@@ -21,8 +21,13 @@ def scenarios():
                 answer=test.engine.handle(dict(schema=control.HOST_SCHEMA,op='mode',action_id='fixture-mode-001',dry_run=False,
                     expected={k:test.engine.view()[k] for k in ('revision','policy_hash','generation','mode','slots')},change=dict(mode=mode)))
                 assert answer['status']=='applied',answer
+            if slots:
+                view=test.engine.view()
+                answer=test.engine.handle(dict(schema=control.HOST_SCHEMA,op='slots',action_id='fixture-slots01',dry_run=False,
+                    expected={k:view[k] for k in ('revision','policy_hash','generation','mode','slots')},change=dict(group='jale',delta=-1)))
+                assert answer['status']=='applied',answer
             fixture=test.fixture()
-            result[name]=dict(fixture=fixture,pending=pending,message=message)
+            result[name]=dict(fixture=fixture,pending=pending,message=message,undo_target=undo_target)
         finally:test.doCleanups()
     night=1794664799.0
     day=1794693600.0  # 2026-11-14 22:00 UTC
@@ -32,6 +37,11 @@ def scenarios():
     make('adelantado-dia',night,'dia')
     for pending in ('applying','partial','unknown'):make(pending,day,pending=pending)
     make('conflicto',day,message='El horario o los lugares cambiaron; no se puede deshacer este ajuste')
+    make('conflicto-con-lugares',day,'noche',slots=True,message='El horario o los lugares cambiaron; no se puede deshacer este ajuste')
+    make('undo-a-dia',day,'noche',pending='applying',undo_target='dia')
+    make('undo-a-noche',night,'dia',pending='applying',undo_target='noche')
+    make('unknown-recargado',day,'noche',pending='unknown',undo_target='dia')
+    make('parcial-con-ajustes',day,'noche',slots=True,pending='partial',undo_target='dia')
     make('vencido',1794718800.,message='El ajuste venció en el cambio de horario.')
     make('trabajo-ajeno',day)
     result['trabajo-ajeno']['fixture']['hosts'][0]['snapshot']['control']['foreign_work']=1
@@ -44,6 +54,13 @@ def scenarios():
     host['snapshot']['control']['capabilities']['mode']=False
     host['snapshot']['groups']=[dict(name=g,slots=n,status='Running') for g,n in control.MINI_PROFILE.items()]
     result['mini']=mini
+    adjusted=copy.deepcopy(mini)
+    c=adjusted['fixture']['hosts'][0]['snapshot']['control']
+    c['slots_note']='Lugares ajustados · hasta otro cambio manual'
+    c['slots']=dict(control.MINI_PROFILE,suites=2);c['desired']=dict(c['slots'])
+    adjusted['fixture']['hosts'][0]['snapshot']['groups']=[dict(name=g,slots=n,status='Running') for g,n in c['slots'].items()]
+    adjusted['message']='El horario o los lugares cambiaron; no se puede deshacer este ajuste'
+    result['mini-conflicto-con-lugares']=adjusted
     return result
 
 
@@ -56,9 +73,14 @@ window.useModeScenario = function(name){
   PENDING.clear();SLOT_MESSAGES.clear();HOST_CONFIRMED.clear();
   if(scenario.pending){
     const c=fixture.hosts[0].snapshot.control;
-    PENDING.set('@host/desk',{mode:true,status:scenario.pending,
-      request:{op:'mode',host:'desk',action_id:'browser-mode-001',change:{mode:'noche'}},
-      result:{observed:c.slots,desired:{hasito:2,jale:7,'jale-verify':1,otros:2,pesadas:3,rapidas:3}}});
+    const target=scenario.undo_target || 'noche';
+    const request={op:scenario.undo_target?'undo':'mode',host:'desk',action_id:'browser-mode-001'};
+    if(scenario.undo_target) request.undo_of='browser-before1';else request.change={mode:target};
+    const action={mode:true,targetMode:target,from:c.mode,status:scenario.pending,request,
+      result:{observed:c.slots,desired:c.tables[target]}};
+    // Restore through the same persisted JSON shape as a reloaded tab.
+    sessionStorage.setItem('rack-actions',JSON.stringify([['@host/desk',action]]));
+    PENDING.set('@host/desk',JSON.parse(sessionStorage.getItem('rack-actions'))[0][1]);
   }
   if(scenario.message) SLOT_MESSAGES.set(fixture.hosts[0].id,scenario.message);
   render(fixture);document.getElementById('toast').textContent='';

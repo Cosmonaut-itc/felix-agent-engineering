@@ -58,9 +58,11 @@ def unavailable():
 
 def mode_fields(value):
     result = {}
-    for key, pattern in (('mode_note', r'(?:Automático · cambia|Adelantado · vuelve) a (?:día|noche) a las [0-2][0-9]:[0-5][0-9]'),
-                         ('mode_detail', r'Ajustes manuales hasta las [0-2][0-9]:[0-5][0-9]'),
-                         ('slots_note', r'Lugares ajustados · hasta las [0-2][0-9]:[0-5][0-9]')):
+    hour = r'(?:[01][0-9]|2[0-3]):[0-5][0-9]'
+    other = 'noche' if value['mode'] == 'dia' else 'día'
+    for key, pattern in (('mode_note', r'(?:Automático · cambia|Adelantado · vuelve) a ' + other + ' a las ' + hour),
+                         ('mode_detail', r'Ajustes manuales hasta las ' + hour),
+                         ('slots_note', r'Lugares ajustados · hasta las ' + hour)):
         item = value.get(key)
         if item is not None and (type(item) is not str or not re.fullmatch(pattern, item)):
             raise ValueError('Nota de horario inválida')
@@ -126,6 +128,15 @@ def control(value, host='mini'):
                 or expires is not None and (type(expires) not in (int, float) or expires != next_event)):
             raise ValueError('Evento inválido')
         result.update(schedule_event=event, next_event=next_event, expires_at=expires, **mode_fields(value))
+        if caps['mode'] and result.get('mode_note') is None:
+            raise ValueError('Nota de horario ausente')
+        tables = value.get('tables')
+        if tables is not None or caps['mode']:
+            if (type(tables) is not dict or set(tables) != {'dia', 'noche'}
+                    or any(not vector(tables[m], 'desk') or sum(tables[m].values()) != cap
+                           for m, cap in (('dia', 14), ('noche', 18)))):
+                raise ValueError('Tablas inválidas')
+            result['tables'] = tables
     if host == 'mini' and 'slots_note' in value:
         if value['slots_note'] not in (None, 'Lugares ajustados · hasta otro cambio manual'):
             raise ValueError('Nota de lugares inválida')

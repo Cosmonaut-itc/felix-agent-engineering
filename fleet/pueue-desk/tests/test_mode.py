@@ -13,6 +13,88 @@ from test_slots import control, FakePueue
 
 
 class ModeTests(DeskFixture):
+    def test_aborted_receipt_after_opposite_event_has_coherent_mode_cap_notes_and_vector(self):
+        self.go_day()
+        request = self.mode_request('noche', 'receipt-expired1')
+        with patch.object(self.engine, 'reconcile', side_effect=OSError('offline')):
+            self.assertEqual(self.engine.handle(request)['status'], 'unknown')
+        self.now = utc('2026-11-15T14:00:00')
+        self.assertTrue(self.engine.reconcile())
+        result = self.status(request)
+        self.assertEqual((result['status'], result['error']['code']), ('aborted','expired'))
+        payload = result['result']
+        self.assertEqual(result['revision'], self.state()['revision'])
+        self.assertEqual((payload['mode'], payload['cap'], payload['desired'], payload['observed']),
+            ('dia', 14, control.mode_profile('dia'), control.mode_profile('dia')))
+        self.assertEqual(payload['mode_note'], 'Automático · cambia a noche a las 23:00')
+        for key in ('mode_detail','slots_note','expires_at','undo_of'):
+            self.assertIsNone(payload[key], key)
+        self.assertEqual(payload['schedule_event'], self.now)
+        self.assertEqual(payload['next_event'], control.schedule_at(self.now)[1])
+
+    def test_missing_tzdata_disables_only_mode_and_keeps_slots_undo_and_utc_recovery(self):
+        mode = self.mode_request()
+        slots = self.request('tzdata-slots-01')
+        before = self.state(); self.p.calls.clear()
+        with patch.object(control, 'ZoneInfo', side_effect=KeyError('no tzdata')):
+            view = self.engine.handle(dict(schema=control.HOST_SCHEMA, op='capabilities'))
+            self.assertEqual(view['status'], 'ok')
+            self.assertEqual((view['capabilities']['mode'], view['capabilities']['slots'], view['capabilities']['undo']),
+                             (False, True, True))
+            self.assertIsNone(view['mode_note'])
+            self.assertEqual(view['tables'], {m:control.mode_profile(m) for m in ('dia','noche')})
+            result = self.engine.handle(mode)
+            self.assertEqual((result['status'], (result.get('error') or {}).get('code'), result.get('effects')), ('rejected','unsupported',False))
+            self.assertEqual(self.state(), before); self.assertEqual(self.p.calls, [])
+            self.assertEqual(self.engine.handle(slots)['status'], 'applied')
+            undo = self.request('tzdata-undo-001', undo_of=slots['action_id'])
+            self.assertEqual(self.engine.handle(undo)['status'], 'applied')
+            self.assertEqual(self.state()['desired'], before['desired'])
+            self.now = control.schedule_at(self.now)[1]
+            self.assertTrue(self.engine.reconcile())
+            self.assertEqual(self.state()['desired'], control.desk_profile(self.now))
+            self.assertIsNone(self.state()['mode_override'])
+
+    def test_notes_cross_event_rejects_mode_undo_and_ensayo_before_acceptance(self):
+        for undo in (False, True):
+            for dry in (False, True):
+                with self.subTest(undo=undo, dry_run=dry):
+                    t = ModeTests(); t.setUp()
+                    try:
+                        t.go_day()
+                        if undo:
+                            t.apply_mode('noche', 'notes-before-01')
+                            request = t.request('notes-cross-001', undo_of='notes-before-01', dry_run=dry)
+                        else:
+                            request = t.mode_request('noche', 'notes-cross-001', dry_run=dry)
+                        boundary = control.schedule_at(t.now)[1]
+                        t.now = boundary - .1
+                        before = t.state(); files = t.fingerprint(); t.p.calls.clear()
+                        original = control.mode_notes
+                        def crossing(*args):
+                            result = original(*args)
+                            t.now = boundary
+                            return result
+                        with patch.object(control, 'mode_notes', side_effect=crossing):
+                            result = t.engine.handle(request)
+                        after = t.state()
+                        print('notes-cross-event', json.dumps(dict(undo=undo, dry_run=dry,
+                            status=result['status'], error=result.get('error'), effects=result.get('effects'),
+                            revisions=[before['revision'], after['revision']],
+                            vectors=[before['desired'], after['desired']], calls=t.p.calls), ensure_ascii=False))
+                        self.assertEqual((result['status'], result.get('error'), result.get('effects')),
+                            ('conflict', dict(code='undo_conflict' if undo else 'stale_state', message=
+                                'El horario o los lugares cambiaron; no se puede deshacer este ajuste' if undo else
+                                'Los lugares cambiaron. Actualiza antes de decidir.'), False))
+                        self.assertEqual(after, before)
+                        self.assertEqual(t.p.calls, [])
+                        if dry:
+                            self.assertEqual(t.fingerprint(), files)
+                        else:
+                            self.assertEqual(t.status(request)['error'], result['error'])
+                    finally:
+                        t.doCleanups()
+
     def mode_request(self, mode='dia', ident='mode-00000001', dry_run=False):
         r = self.request(ident, dry_run=dry_run)
         r.update(op='mode', change=dict(mode=mode))

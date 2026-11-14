@@ -376,6 +376,13 @@ class MiniControl:
     def cap(self, state):
         return 7 if self.host == 'mini' else sum(mode_profile(self.mode(state)).values())
 
+    def notes(self, state):
+        try:
+            return mode_notes(state, self.mode(state))
+        except (ImportError, KeyError, OSError, ValueError):
+            # UTC policy and ± remain available without the display timezone.
+            return dict(mode_note=None, mode_detail=None, slots_note=None)
+
     def resolve(self, state, now=None):
         # Pure projection: capabilities and ensayo must never recover or write.
         if self.host == 'desk':
@@ -546,10 +553,10 @@ class MiniControl:
         enabled = not self.disabled()
         extra = dict(expires_at=schedule_at(state['schedule_event'])[1] if state['overrides'] or state['mode_override'] else None,
                      next_event=schedule_at(state['schedule_event'])[1], schedule_event=state['schedule_event'],
-                     **mode_notes(state, self.mode(state))) if self.host == 'desk' else dict(
+                     tables={m: mode_profile(m) for m in ('dia', 'noche')}, **self.notes(state)) if self.host == 'desk' else dict(
                          slots_note='Lugares ajustados · hasta otro cambio manual' if state['overrides'] else None)
         return dict(schema='rack-host-result@1', status='ok', capabilities=dict(
-            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk', reorder=False, restart_queue=False),
+            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=False, restart_queue=False),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
@@ -681,7 +688,11 @@ class MiniControl:
                 projected = dict(state, mode_override=advance, overrides=overrides)
                 payload.update(mode=self.mode(projected), cap=self.cap(projected),
                                schedule_event=state['schedule_event'], next_event=schedule_at(state['schedule_event'])[1],
-                               **mode_notes(projected, self.mode(projected)))
+                               **self.notes(projected))
+            if self.resolve(state) != state:  # acceptance fence after potentially blocking notes
+                return self.reply(request, 'conflict', 'undo_conflict' if op == 'undo' else 'stale_state', effects=False)
+            if op == 'mode' and payload.get('mode_note') is None:
+                return self.reply(request, 'rejected', 'unsupported', effects=False)
             if request['dry_run']:
                 return self.reply(request, 'dry_run', result=payload, effects=False)
         state['revision'] += 1
@@ -767,7 +778,7 @@ class MiniControl:
                                    schedule_event=state['schedule_event'], next_event=schedule_at(state['schedule_event'])[1],
                                    expires_at=(schedule_at(state['schedule_event'])[1]
                                                if state['overrides'] or state['mode_override'] else None),
-                                   **mode_notes(state, self.mode(state)))
+                                   **self.notes(state))
                 else:
                     payload['slots_note'] = 'Lugares ajustados · hasta otro cambio manual' if state['overrides'] else None
                 action['response'] = self.reply(action['request'], status, 'expired' if expired else None,

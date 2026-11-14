@@ -423,7 +423,12 @@ el evento por identidad, también si no corrió el timer o confirma el mismo mod
 Un adelanto nocturno a las 16:00 de México muestra «Adelantado · vuelve a día a
 las 08:00» y «Ajustes manuales hasta las 23:00». A las 23:00 vence y pasa a
 «Automático · cambia a día a las 08:00». Las notas vienen del host con
-`America/Mexico_City`; el reloj del navegador no decide la vigencia.
+`America/Mexico_City`; el reloj del navegador no decide la vigencia. Tras calcular
+las notas se vuelve a validar el evento antes de aceptar modo, undo o ensayo:
+si cruzó, responde stale_state o undo_conflict sin cambiar la política ni emitir
+RPC. Sin tzdata se deshabilita mode, conservando ±, undo y recuperación UTC.
+La vista publica las tablas desde GROUP_LIMITS; el canal valida las notas del
+modo y las horas 00:00–23:59, manteniendo las dos notas si coexisten adelanto y ±.
 
 El recibo conserva modo, adelanto y ajustes anteriores. Undo exige la revisión
 posterior exacta, vector y generación observados y ningún evento cruzado;

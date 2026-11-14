@@ -826,7 +826,7 @@ Elegir un modo aplica su tabla completa y retira ajustes previos. El host fija
 la vigencia al siguiente evento estricto 05:00/14:00 UTC y calcula las notas en
 `America/Mexico_City`. «Adelantado · vuelve a día a las 08:00» describe el próximo
 cambio visible: un adelanto de noche a las 16:00 vence a las 23:00, cuando pasa a
-«Automático · cambia a día a las 08:00». La segunda línea indica el vencimiento
+«Automático · cambia a día a las 08:00». La nota adicional indica el vencimiento
 real. Los ajustes de lugares conservan su nota adicional cuando existen.
 
 Durante el envío se bloquean los controles del host y se conserva el último modo
@@ -840,8 +840,14 @@ ofrece undo si cruzó el evento del recibo, incluso al volver al modo automátic
 sin adelanto ni ajustes. La Mini conserva «Lugares ajustados · hasta otro cambio
 manual», emitido por su host. Si hay trabajo fuera del reparto,
 se bloquea el modo que aumente algún grupo y se conserva el diagnóstico de U3.2.
+El estado aparece una sola vez junto al segmento y conserva los conflictos junto
+a la vigencia de los lugares, también en la Mini. El destino de presentación de
+undo se conserva al recargar; el host determina la restauración. Las tablas de
+destino llegan del host y se validan en el canal, sin otra tabla en JavaScript.
 Los hosts anteriores muestran ambos botones deshabilitados con la actualización
-pendiente. Reordenar y reinicios siguen deshabilitados.
+pendiente y el servidor rechaza mode antes del transporte; GET de recibos
+aceptados sigue disponible. Sin tzdata se deshabilita sólo mode; ±, undo y
+recuperación UTC continúan disponibles. Reordenar y reinicios siguen deshabilitados.
 
 Instalar primero el controlador desk mediante el preflight y la migración aditiva
 de `fleet/pueue-desk/install-desk.py`, descritos en su README: en un desk adoptado
@@ -856,4 +862,5 @@ vencidos y reconciliados los adelantos, sin restaurar bases anteriores.
 
 Pruebas de contrato y UI: `tests/test_mode.py` y `tests/mode-ui-check.js`.
 `tests/mode_browser_fixture.py OUTPUT.html` genera una página sin servidor ni
-collector, sólo con datos sintéticos, para los doce estados y capturas a 1280/390 px.
+collector, sólo con datos sintéticos, para los 18 estados, incluidas combinaciones de conflicto con lugares, undo en
+ambos sentidos y unknown recargado, con capturas a 1280/390 px.
