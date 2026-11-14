@@ -250,11 +250,8 @@ def guard(pueue, proc, directory, *, host="desk"):
         owned -= absent
         save_owned(directory, owned)
     for group in managed_groups:
-        # Un grupo que no existe en el host no se gestiona ni se conserva como propio.
+        # Un grupo que no existe en el host no se gestiona; la poda anterior ya lo soltó.
         if group not in groups:
-            if group in owned:
-                owned.remove(group)
-                save_owned(directory, owned)
             continue
         status = groups[group]["status"]
         action = rapid if group == "rapidas" else normal
