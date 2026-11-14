@@ -738,6 +738,18 @@ GET puede cerrarlo únicamente con el mismo ID, digest del cuerpo original y
 recibo, digest distinto o `unsupported` genérico conserva unknown. GET nunca
 reenvía un ajuste. Cancelar conserva sus contratos C3–C5.
 
+Un rechazo `disabled` recuperado por GET responde HTTP 403: con el mismo
+`action_id`, estado `rejected` y `effects=false`, el panel libera el bloqueo y
+muestra que los ajustes están apagados. Cuando vuelven las capacidades permite
+un clic nuevo con ID nuevo. Un 403 de autorización sin recibo sigue cerrado.
+
+`control.py rack` espera hasta 1 s por el candado de la Mini. Si vence antes de
+entrar, `slots`/`undo` reciben HTTP 409 `rejected/lock_busy`, sin efectos; el
+recibo terminal del rack permite el ajuste siguiente. El snapshot muestra
+«El control está ocupado. Vuelve a intentarlo.», sin afirmar que haya una pausa.
+Si se pierde la respuesta de transporte, sigue consultando el mismo ID; nunca
+reenvía el ajuste.
+
 Las pruebas de snapshot inyectan `read_control`; su guardia de subprocess veta
 además el `control.py` instalado fuera de temporales propios. El controlador
 sintético del canal sigue probándose por su ruta fija dentro de `/tmp`.

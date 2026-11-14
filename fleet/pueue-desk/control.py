@@ -49,6 +49,7 @@ HOST_SCHEMA = 'rack-host-control@1'
 ID = re.compile(r'[A-Za-z0-9-]{8,64}')
 LOG_MAX_BYTES = 1024 * 1024
 STATE_DIR = Path.home() / ".local/state/pao/pueue-desk"
+RACK_LOCK_SECONDS = 1.0
 
 
 def mode_at(now):
@@ -66,10 +67,11 @@ def validate_limit(value):
 class Pueue:
     def __init__(self, binary=None):
         self.binary = str(binary or Path.home() / ".local/bin/pueue")
+        self.timeout = None
 
     def call(self, *args):
         return subprocess.run([self.binary, *map(str, args)], check=True,
-                              text=True, capture_output=True, timeout=3).stdout
+                              text=True, capture_output=True, timeout=self.timeout).stdout
 
     def status(self):
         state = json.loads(self.call("status", "--json"))
@@ -102,6 +104,20 @@ def locked(directory):
     with (directory / "control.lock").open("a") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
         yield
+
+
+def wait_rack_lock(handle):
+    """A short tick may finish; expiry before entry certifies no effects."""
+    deadline = time.monotonic() + RACK_LOCK_SECONDS
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return False
+            time.sleep(min(.02, remaining))
 
 
 def save_owned(directory, owned):
@@ -433,6 +449,7 @@ class MiniControl:
     def reply(self, request, status, code=None, **fields):
         messages = {'stale_state': 'Los lugares cambiaron. Actualiza antes de decidir.',
                     'busy': 'Hay un ajuste pendiente; consulta su recibo.',
+                    'lock_busy': 'El control está ocupado. Vuelve a intentarlo.',
                     'idempotency_conflict': 'Ese ID ya pertenece a otra petición.',
                     'undo_conflict': 'Los lugares cambiaron desde ese ajuste. No se puede deshacer.',
                     'invalid_request': 'Ajuste inválido: cada grupo admite 1..8 y el tope es 7.',
@@ -610,6 +627,19 @@ class MiniControl:
             if os.path.lexists(self.pause_fence(g)):
                 reasons.add('manual')
             status = groups[g]['status']
+            if status == 'Running' and 'pressure' in reasons:
+                # An external start ends our ownership, even in hysteresis.
+                reasons.discard('pressure')
+                state['reasons'][g] = sorted(reasons)
+                try:
+                    with self.connect(write=True) as db:
+                        self.store(db, state)
+                except errors as error:
+                    can_open, failure = False, error
+                    try:
+                        self.fence_pause(g)
+                    except errors:
+                        pass
             decision = rapid if g == 'rapidas' else normal
             if decision == 'pausar' and (status == 'Running' or 'pressure' in reasons):
                 try:
@@ -698,6 +728,8 @@ def main():
     pueue = Pueue("/opt/homebrew/bin/pueue") if args.host == "mini" else Pueue()
     directory = Path.home() / ".local/state/pao/pueue-mini" if args.host == "mini" else STATE_DIR
     if args.command == 'rack':
+        # Only panel RPCs have a deadline. Guards and aplicar wait for Pueue.
+        pueue.timeout = 3
         request = {}
         engine = MiniControl(pueue, directory)
         try:
@@ -718,8 +750,12 @@ def main():
             else:
                 # The lock is installed by adoption; even an ensayo cannot create it.
                 with (directory / 'control.lock').open('r') as handle:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    response = engine.handle(request)
+                    if wait_rack_lock(handle):
+                        response = engine.handle(request)
+                    else:
+                        status = ('rejected' if request['op'] in ('slots', 'undo') else
+                                  'unknown' if request['op'] == 'status' else 'busy')
+                        response = engine.reply(request, status, 'lock_busy', effects=False)
         except (OSError, ValueError, TypeError, sqlite3.Error):
             request = request if type(request) is dict else {}
             uncertain = request.get('op') == 'status' or request.get('op') in ('slots', 'undo') and request.get('dry_run') is False

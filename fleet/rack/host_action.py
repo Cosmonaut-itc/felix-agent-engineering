@@ -53,6 +53,11 @@ def control(value):
     """Read view whitelist; never publish arbitrary controller fields or error text."""
     if type(value) is not dict or value.get('schema') != 'rack-host-result@1':
         return unavailable()
+    if value.get('status') == 'busy' and (value.get('error') or {}).get('code') == 'lock_busy':
+        answer = unavailable()
+        answer.update(status='busy', error=dict(code='lock_busy',
+                      message='El control está ocupado. Vuelve a intentarlo.'))
+        return answer
     if value.get('status') == 'recovery_error':
         answer = unavailable()
         answer.update(status='recovery_error', error=dict(code='recovery_error',
@@ -107,6 +112,7 @@ def sanitize(request, response, op):
     error = response.get('error')
     messages = dict(stale_state='Los lugares cambiaron. Actualiza antes de decidir.',
                     busy='Hay un ajuste pendiente; consulta su recibo.',
+                    lock_busy='El control está ocupado. Vuelve a intentarlo.',
                     invalid_request='Cada grupo admite 1..8 lugares y el tope es 7.',
                     undo_conflict='Los lugares cambiaron. No se puede deshacer.',
                     idempotency_conflict='Ese ID ya pertenece a otra petición.',

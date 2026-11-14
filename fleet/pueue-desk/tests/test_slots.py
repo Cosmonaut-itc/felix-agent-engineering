@@ -1,5 +1,7 @@
 """U3.1: in-memory Pueue, injected clock/generation, SQLite only in our /tmp."""
 import copy
+from contextlib import redirect_stdout
+import io
 import importlib.util
 import json
 import os
@@ -7,6 +9,8 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import threading
+import time
 import unittest
 from unittest.mock import patch
 
@@ -250,6 +254,101 @@ sys.argv=['control.py','rack','--host','mini'];c.main()
             db.execute('INSERT INTO host_actions VALUES (?,?,?)', (request['action_id'], 'digest', control.canonical(action)))
         return request, target
 
+    def rack_cli(self, request, pueue=None):
+        """Real CLI and flock, with only HOME, Pueue and generation replaced."""
+        home = self.root / 'cli-home'
+        directory = home / '.local/state/pao/pueue-mini'
+        if not directory.exists():
+            directory.parent.mkdir(parents=True)
+            directory.symlink_to(self.root, target_is_directory=True)
+        output = io.StringIO()
+        with patch.object(control.Path, 'home', return_value=home), \
+             patch.object(control, 'Pueue', return_value=pueue or self.p), \
+             patch.object(control, 'mini_generation', return_value=self.gen), \
+             patch.object(control.sys, 'argv', ['control.py', 'rack', '--host', 'mini']), \
+             patch.object(control.sys, 'stdin', io.TextIOWrapper(io.BytesIO(json.dumps(request).encode()))), \
+             redirect_stdout(output):
+            control.main()
+        return json.loads(output.getvalue())
+
+    def test_slots_and_undo_wait_for_short_guard_or_snapshot_tick(self):
+        for op in ('slots', 'undo'):
+            with self.subTest(op=op):
+                request = (self.request('wait-slots-0001') if op == 'slots' else
+                           self.request('wait-undo-00001', op='undo', undo_of='wait-slots-0001'))
+                with (self.root / 'control.lock').open('r') as lock:
+                    control.fcntl.flock(lock, control.fcntl.LOCK_EX)
+                    release = threading.Timer(.12, control.fcntl.flock, args=(lock, control.fcntl.LOCK_UN))
+                    release.start()
+                    try:
+                        response = self.rack_cli(request)
+                    finally:
+                        release.join()
+                self.assertEqual(response['status'], 'applied', response)
+        self.assertEqual(self.p.calls, [('parallel', 'suites', 2), ('parallel', 'suites', 3)])
+
+    def test_expired_lock_is_terminal_without_effects_for_slots_and_undo(self):
+        self.engine.handle(self.request('before-undo-001'))
+        self.p.calls.clear()
+        for op in ('slots', 'undo'):
+            with self.subTest(op=op):
+                request = (self.request('busy-slots-0001') if op == 'slots' else
+                           self.request('busy-undo-00001', op='undo', undo_of='before-undo-001'))
+                with control.locked(self.root):
+                    started = time.monotonic()
+                    response = self.rack_cli(request)
+                    elapsed = time.monotonic() - started
+                self.assertEqual(response['status'], 'rejected', response)
+                self.assertIs(response.get('effects'), False)
+                self.assertEqual(response['error']['code'], 'lock_busy')
+                self.assertEqual(response['action_id'], request['action_id'])
+                self.assertLess(elapsed, 2)
+                self.assertEqual(self.p.calls, [])
+                with self.engine.connect() as db:
+                    self.assertIsNone(db.execute('SELECT body FROM host_actions WHERE action_id=?',
+                                                (request['action_id'],)).fetchone())
+        self.assertEqual(self.rack_cli(self.request('after-busy-0001'))['status'], 'applied')
+
+    def test_capabilities_wait_or_report_busy_without_inventing_pause(self):
+        request = dict(schema=control.HOST_SCHEMA, op='capabilities')
+        with (self.root / 'control.lock').open('r') as lock:
+            control.fcntl.flock(lock, control.fcntl.LOCK_EX)
+            release = threading.Timer(.12, control.fcntl.flock, args=(lock, control.fcntl.LOCK_UN))
+            release.start()
+            try:
+                response = self.rack_cli(request)
+            finally:
+                release.join()
+        self.assertEqual(response['status'], 'ok', response)
+        with control.locked(self.root):
+            response = self.rack_cli(request)
+        self.assertEqual(response['status'], 'busy', response)
+        self.assertEqual(response['error']['code'], 'lock_busy')
+        self.assertNotIn('pausa', response['error']['message'])
+        self.assertTrue(all(self.p.groups[g]['status'] == 'Running' for g in control.MINI_GROUPS))
+        self.assertEqual(self.p.calls, [])
+
+    def test_panel_rpc_stays_bounded_and_uncertain_status_never_replays(self):
+        request = self.request()
+        pueue = control.Pueue('/tmp/only-a-double-not-executable')
+        def slow_run(argv, **kwargs):
+            timeout = kwargs.get('timeout')
+            if timeout is not None and timeout < 3.5:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            args = argv[1:]
+            if args[0] == 'parallel':
+                self.p.parallel(args[-1], int(args[1]))
+                return subprocess.CompletedProcess(argv, 0, '')
+            self.assertEqual(args, ['status', '--json'])
+            return subprocess.CompletedProcess(argv, 0, json.dumps(self.p.status()))
+        with patch.object(control.subprocess, 'run', side_effect=slow_run):
+            response = self.rack_cli(request, pueue)
+        self.assertEqual(response['status'], 'unknown')
+        for _ in range(2):
+            self.assertEqual(self.rack_cli(dict(schema=control.HOST_SCHEMA, op='status',
+                                              action_id=request['action_id']))['status'], 'unknown')
+        self.assertEqual(self.p.calls, [])
+
     def test_reductions_verified_before_increases(self):
         _, target = self.prepare_pending()
         self.assertTrue(self.engine.reconcile())
@@ -426,6 +525,85 @@ sys.argv=['control.py','rack','--host','mini'];c.main()
         with patch.object(self.p, 'call', side_effect=checked):
             self.engine.guard(dict(load=4,memory=1))
 
+    def test_external_start_drops_adopted_pressure_ownership(self):
+        self.engine.guard(dict(load=2.5, memory=1))
+        self.assertEqual(self.engine.view()['pause_reasons']['suites'], ['pressure'])
+        self.p.call('start', '-g', 'suites')
+        self.engine.guard(dict(load=1.5, memory=1))  # hysteresis: mantener
+        with self.engine.connect() as db:
+            self.assertNotIn('pressure', self.engine.state(db)['reasons'].get('suites', []))
+        self.p.call('pause', '--wait', '-g', 'suites')
+        self.p.calls.clear()
+        with patch.object(control, 'pressure_mini', return_value=dict(load=0, memory=1)):
+            self.engine.guard(dict(load=0, memory=1))
+        self.assertEqual(self.p.groups['suites']['status'], 'Paused')
+        self.assertEqual(self.p.calls, [('start', '-g', 'default')])
+
+    def test_failed_external_start_release_never_reclaims_foreign_pause(self):
+        self.engine.guard(dict(load=2.5, memory=1))
+        self.p.call('start', '-g', 'suites')
+        with patch.object(self.engine, 'store', side_effect=sqlite3.OperationalError('readonly authority')):
+            try:
+                self.engine.guard(dict(load=1.5, memory=1))
+            except sqlite3.OperationalError:
+                pass
+        self.assertTrue(self.engine.pause_fence('suites').exists())
+        self.p.call('pause', '--wait', '-g', 'suites')
+        self.p.calls.clear()
+        with patch.object(control, 'pressure_mini', return_value=dict(load=0, memory=1)):
+            self.engine.guard(dict(load=0, memory=1))
+        self.assertEqual(self.p.groups['suites']['status'], 'Paused')
+        self.assertNotIn(('start', '-g', 'suites'), self.p.calls)
+
+    def test_slow_pueue_still_protects_both_guards_and_applies_mode(self):
+        # A virtual RPC takes 3.5 s, including pause/parallel. Honour the actual
+        # timeout passed to subprocess.run; no real Pueue or wall-clock delay.
+        for route in ('desk-guard', 'mini-guard', 'apply'):
+            with self.subTest(route=route):
+                groups = {g: dict(status='Running', parallel_tasks=1) for g in control.GROUP_LIMITS}
+                if route == 'mini-guard':
+                    groups = copy.deepcopy(self.p.groups)
+                calls = []
+                def slow_run(argv, **kwargs):
+                    args = argv[1:]
+                    calls.append(tuple(args))
+                    if kwargs.get('timeout') is not None and kwargs['timeout'] < 3.5:
+                        raise subprocess.TimeoutExpired(argv, kwargs['timeout'])
+                    if args == ['status', '--json']:
+                        return subprocess.CompletedProcess(argv, 0, json.dumps(dict(tasks={}, groups=groups)))
+                    if args[0] == 'pause':
+                        groups[args[-1]]['status'] = 'Paused'
+                    elif args[0] == 'parallel':
+                        groups[args[-1]]['parallel_tasks'] = int(args[1])
+                    else:
+                        raise AssertionError(args)
+                    return subprocess.CompletedProcess(argv, 0, '')
+                pueue = control.Pueue('/tmp/only-a-double-not-executable')
+                failure = None
+                with patch.object(control.subprocess, 'run', side_effect=slow_run), \
+                     patch.object(control, 'pressure', return_value=dict(io=60, cpu=0, memory=8*1024**3)), \
+                     patch.object(control, 'pressure_mini', return_value=dict(load=4, memory=1)), \
+                     redirect_stdout(io.StringIO()):
+                    try:
+                        if route == 'mini-guard':
+                            with patch.object(self.engine, 'pueue', pueue), \
+                                 patch.object(control, 'MiniControl', return_value=self.engine):
+                                control.guard(pueue, None, self.root, host='mini')
+                        elif route == 'desk-guard':
+                            control.guard(pueue, None, self.root)
+                        else:
+                            control.apply_mode(pueue, control.datetime(2026, 11, 13, 15, tzinfo=control.timezone.utc))
+                    except subprocess.TimeoutExpired as error:
+                        failure = type(error).__name__
+                self.assertIsNone(failure, (route, calls))
+                if route == 'apply':
+                    self.assertEqual({g: row['parallel_tasks'] for g, row in groups.items()},
+                                     {g: row['dia'] for g, row in control.GROUP_LIMITS.items()})
+                else:
+                    expected = control.MINI_GROUPS if route == 'mini-guard' else set(control.GROUP_LIMITS) - {'rapidas'}
+                    self.assertEqual({c[-1] for c in calls if c[0] == 'pause'}, set(expected))
+                    self.assertTrue(all(groups[g]['status'] == 'Paused' for g in expected))
+
     def test_manual_pause_intention_durable_before_effect(self):
         original=self.p.call
         def checked(*args):
@@ -531,6 +709,7 @@ sys.argv=['control.py','rack','--host','mini'];c.main()
     def test_failed_authority_write_closes_but_never_grants_future_reopen(self):
         # A stale pressure owner must not reclaim an emergency pause after repair.
         self.change_state(reasons=dict(suites=['pressure']))
+        self.p.groups['suites']['status'] = 'Paused'
         with patch.object(self.engine, 'store', side_effect=sqlite3.OperationalError('readonly authority')):
             self.protective_tick()
         self.assert_closed('suites', 'default', 'rapidas')

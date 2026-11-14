@@ -14,6 +14,40 @@ vm.createContext(context);vm.runInContext(input.js,context);context.fixture=inpu
 const run=s=>vm.runInContext(s,context);
 run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
+ if(input.scenario==='disabled'){
+   context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('POST answer lost')};
+   run("globalThis.sent=null;const originalSendSlots=sendSlots;sendSlots=(...args)=>(globalThis.sent=originalSendSlots(...args));startSlots(h,{group:'suites',delta:-1})");
+   await run('sent');
+   run('globalThis.a=PENDING.get(slotKey(h));globalThis.key=slotKey(h)');
+   const ident=run('a.request.action_id');
+   // A whois/Host/Origin denial from serve.py has no receipt or action_id.
+   const disabled={...input.disabled_response,action_id:ident};
+   for(const denial of [{schema:'rack-action@1',error:{code:'forbidden'}},
+                         {...disabled,action_id:'different-00001'},
+                         {...disabled,effects:true},
+                         {...disabled,error:{code:'forbidden'}}]){
+     context.fetch=async()=>({ok:false,status:403,json:async()=>denial});
+     await run('pollAction(key,a)');
+     assert.equal(run('PENDING.size'),1);assert.equal(run('a.status'),'unknown');
+   }
+   const reload={...context};vm.createContext(reload);vm.runInContext(input.js,reload);vm.runInContext('render(fixture)',reload);
+   assert.equal(vm.runInContext('[...PENDING.values()][0].request.action_id',reload),ident);
+   context.fetch=async()=>({ok:false,status:403,json:async()=>disabled});
+   await run('pollAction(key,a)');
+   assert.equal(run('PENDING.size'),0,'confirmed disabled GET must release host lock');
+   assert.match(elements.app.innerHTML,/Los ajustes de lugares están apagados/);
+   assert.doesNotMatch(elements.app.innerHTML,/Resultado desconocido/);
+   assert.deepEqual(JSON.parse(storage['rack-actions'] || '[]'),[]);
+   // Fresh capabilities permit another click, always with a new action_id.
+   run('render(fixture);globalThis.h=S.hosts[0]');
+   assert(!/data-step="-1"[^>]*disabled/.test(run("slotControls(h,'suites',h.groups.suites,0)")));
+   context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('next POST answer lost')};
+   run("startSlots(h,{group:'suites',delta:-1})");await run('sent');
+   assert.notEqual(run('PENDING.get(slotKey(h)).request.action_id'),ident);
+   assert.equal(requests.filter(r=>r[0]==='/api/accion' && JSON.parse(r[1].body).action_id===ident).length,1);
+   console.log('UI slots OK: disabled 403 confirmado libera bloqueo; autorización falla cerrada; ID nuevo sin reenviar');
+   return;
+ }
  assert.match(elements.app.innerHTML,/default/);
  assert.match(run("slotControls(h,'suites',h.groups.suites,0)"),/<b>3<\/b>/);
  assert.match(run("slotControls(h,'suites',h.groups.suites,0)"),/0\/3 en uso/);
@@ -26,6 +60,8 @@ run('render(fixture);globalThis.h=S.hosts[0]');
  assert.match(run("slotControls(h,'suites',h.groups.suites,0)"),/Tope de 7 lugares. Quita un lugar a otro grupo para añadirlo aquí./);
  assert.match(run("slotControls({...h,control:{...h.control,slots:{suites:8,default:1,rapidas:1}}},'suites',{slots:8},0)"),/Máximo de 8 lugares/);
  assert.match(run("slotControls({...h,control:null},'suites',{slots:3},0)"),/Falta actualizar/);
+ assert.match(run("hostControlState({...h,control:{status:'busy',error:{message:'El control está ocupado. Vuelve a intentarlo.'}}})"),/El control está ocupado/);
+ assert.doesNotMatch(run("slotControls({...h,control:{status:'busy',error:{message:'El control está ocupado. Vuelve a intentarlo.'}}},'suites',{slots:3},0)"),/pausa/);
  assert.match(run("slotControls({...h,id:'desk'},'suites',{slots:3},0)"),/disabled/);
  assert.match(run("slotControls(h,'suites',{slots:2},4)"),/4\/2 en uso · no entran nuevas hasta bajar de 2/);
  context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('network')};

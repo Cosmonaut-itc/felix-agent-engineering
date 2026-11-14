@@ -258,7 +258,7 @@ function slotControls(h,n,g,r){
 }
 function hostControlState(h){
   const a=PENDING.get(slotKey(h)), c=h.control;
-  let message=SLOT_MESSAGES.get(h.id) || (c?.status==='recovery_error' ? c.error.message : '');
+  let message=SLOT_MESSAGES.get(h.id) || (['recovery_error','busy'].includes(c?.status) ? c.error.message : '');
   if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
   else if(c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
   else if(c?.recovery_pending) message='Reconciliación pendiente';
@@ -509,7 +509,9 @@ async function pollAction(key,action){
       action.resent=true; persistActions();
       await sendCancel(key,action); return;
     }
-    const hostTerminal=response.status===409 && ['slots','undo'].includes(action.request.op) && ['conflict','rejected','unsupported'].includes(data.status);
+    const hostTerminal=['slots','undo'].includes(action.request.op) &&
+      (response.status===409 && ['conflict','rejected','unsupported'].includes(data.status) ||
+       response.status===403 && data.status==='rejected' && data.error?.code==='disabled' && data.effects===false);
     if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || (!response.ok && !hostTerminal)) throw Error('status');
     acceptAction(key,action,data);
   }catch{const changed=action.status!=='unknown';action.status='unknown';persistActions();repaintActions();if(changed) say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}

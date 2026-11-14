@@ -1,13 +1,15 @@
 """U3.1 channel integration; never invoke installed controllers or shared hosts."""
 import safety
 import copy
+from contextlib import redirect_stdout
 import importlib.util
+import io
 import json
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 import test_actions
 
 accion = test_actions.accion
@@ -127,6 +129,64 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(self.p.calls, [])
         self.assertEqual(self.actions.post(self.request('slots-00000002'))[1]['status'], 'applied')
 
+    def test_lock_busy_is_terminal_in_rack_and_snapshot_without_effects(self):
+        home = self.root/'cli-home'
+        directory = home/'.local/state/pao/pueue-mini'
+        directory.parent.mkdir(parents=True)
+        directory.symlink_to(self.engine.directory, target_is_directory=True)
+        def cli_executor(host, target, request, timeout):
+            self.calls.append(copy.deepcopy(request))
+            output = io.StringIO()
+            with patch.object(control.Path, 'home', return_value=home), \
+                 patch.object(control, 'Pueue', return_value=self.p), \
+                 patch.object(control, 'mini_generation', return_value='daemon-1'), \
+                 patch.object(control.sys, 'argv', ['control.py','rack','--host','mini']), \
+                 patch.object(control.sys, 'stdin', io.TextIOWrapper(io.BytesIO(json.dumps(request).encode()))), \
+                 redirect_stdout(output):
+                control.main()
+            return json.loads(output.getvalue())
+        self.actions.executor = cli_executor
+        request = self.request()
+        with control.locked(self.engine.directory):
+            code, response = self.actions.post(request)
+            self.assertEqual((code, response['status']), (409, 'rejected'))
+            self.assertIs(response.get('effects'), False)
+            self.assertEqual(response['error']['code'], 'lock_busy')
+            raw = cli_executor(self.host, 'host-control', dict(schema=control.HOST_SCHEMA, op='capabilities'), 10)
+            snapshot = accion.host_channel.control(raw)
+            self.assertEqual(snapshot['status'], 'busy')
+            self.assertFalse(snapshot['capabilities']['slots'])
+            self.assertNotIn('pausa', snapshot['error']['message'])
+        for _ in range(2):
+            self.assertEqual(self.actions.get(request['action_id']), (code, response))
+        self.assertEqual(self.actions.post(request), (code, response))
+        self.assertEqual(self.p.calls, [])
+        self.assertEqual(self.actions.post(self.request('after-busy-0001'))[1]['status'], 'applied')
+        self.assertEqual([r['op'] for r in self.calls], ['slots', 'capabilities', 'slots'])
+
+    def test_lost_disabled_rejection_releases_ui_but_auth_403_stays_closed(self):
+        request = self.request()
+        switch = self.engine.directory/'slots.disabled'
+        switch.touch()
+        def lose(host, target, wire, timeout):
+            self.executor(host, target, wire, timeout)
+            raise OSError('lost disabled rejection only')
+        self.actions.executor = lose
+        self.assertEqual(self.actions.post(request)[1]['status'], 'unknown')
+        self.actions.executor = self.executor
+        code, response = self.actions.get(request['action_id'])
+        self.assertEqual((code, response['status']), (403, 'rejected'))
+        self.assertEqual(response['error']['code'], 'disabled')
+        self.assertIs(response['effects'], False)
+        self.assertEqual(self.p.calls, [])
+        switch.unlink()
+        self.assertTrue(self.engine.view()['capabilities']['slots'])
+        self.assertEqual(self.actions.get(request['action_id']), (code, response))
+        self.run_ui(scenario='disabled', disabled_response=response)
+        self.assertEqual([r['op'] for r in self.calls], ['slots', 'status'])
+        self.assertEqual(self.p.calls, [])
+        self.assertEqual(self.actions.post(self.request('after-disabled-01'))[1]['status'], 'applied')
+
     def test_unbound_or_effectful_terminal_and_generic_unsupported_remain_unknown(self):
         request = self.request()
         self.actions.executor = lambda *a, **k: dict(schema='rack-host-result@1',
@@ -226,11 +286,14 @@ class ChannelTests(unittest.TestCase):
         self.assertEqual(handler()[0],403)
 
     def test_production_ui_slots(self):
+        self.run_ui()
+
+    def run_ui(self, **extra):
         fixture=dict(now=1000,tickets={},hosts=[dict(id='mini',name='Mac Mini',fresh=True,age=0,estimates={},actions=dict(reason=None),
             snapshot=dict(control=self.engine.view(),groups=[dict(name=g,slots=n,status='Running') for g,n in control.MINI_PROFILE.items()],
             tasks=[],cpu=dict(cores=10,load=[1,1,1]),mem=dict(total=16*1024**3,available=12*1024**3,swap_total=0,swap_used=0)))])
         source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
-        result=subprocess.run(['node',str(BASE/'tests/slots-ui-check.js')],input=json.dumps(dict(js=source,fixture=fixture)),text=True,capture_output=True,timeout=10)
+        result=subprocess.run(['node',str(BASE/'tests/slots-ui-check.js')],input=json.dumps(dict(js=source,fixture=fixture,**extra)),text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr);self.assertIn('UI slots OK',result.stdout)
 
 

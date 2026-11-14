@@ -179,10 +179,25 @@ leer el resultado; consultar el mismo recibo, sin enviar otra acción. El siguie
 tick converge al deseo aceptado incluso con acciones nuevas apagadas. Se mantienen
 la histéresis y la escalera de `rapidas` (#118).
 
+El canal del panel espera hasta 1 s por `control.lock`: un tick breve de la
+guardia o del snapshot puede terminar antes de atender el ajuste. Si vence sin
+entrar, `slots` y `undo` devuelven `rejected/lock_busy`, `effects=false`, sin
+escribir deseo ni recibos en el host. El rack guarda ese rechazo terminal y
+permite una acción nueva. Las capacidades muestran «El control está ocupado.
+Vuelve a intentarlo.», sin atribuir una pausa. Consultar un recibo con el candado
+ocupado conserva `unknown`; nunca reenvía la mutación.
+
+Sólo las RPC de `control.py rack` en la Mini tienen límite de 3 s. Las guardias
+del desk y de la Mini, y `aplicar`, esperan a Pueue como antes: un `status` o una
+pausa lentos no cancelan el cierre protector por ese límite del panel.
+
 La propiedad de pausas vive separada del perfil: `pressure`, `manual` y
 `ambiguous`. La intención de pausar se guarda antes de la RPC. La adopción importa
 `guardia-state.json`, conserva como manual cualquier pausa sin dueño verificable,
 y retiene referencias legacy/ajenas con motivo, sin asignarles cuotas ni abrirlas.
+Si observa un grupo Running, suelta inmediatamente su razón `pressure`, incluso
+en la banda de histéresis. Una pausa posterior de otro actor no le pertenece;
+las pausas que siguen siendo propias por presión conservan su admisión habitual.
 El JSON anterior se renombra a `guardia-state.imported.json`; deja de ser escribible
 como autoridad. Una lectura corrupta o una base desaparecida nunca aplica la tabla
 por defecto ni permite abrir grupos. `control.adopted` impide reinicializarla.
