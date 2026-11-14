@@ -27,7 +27,10 @@ contacto queda invalidado hasta recibir de nuevo datos del host.
 Estado local 0700 en `~/.local/state/pao-vigia` (`PAO_VIGIA_STATE_DIR` lo cambia),
 socket 0600, candado por host y bitácora de conexiones/caídas. El corredor sale a
 los 600 s sin esperas. Se puede terminar con SIGTERM; cierra su SSH y el flujo
-sale al recibir EOF. El socket residual se reemplaza bajo el candado.
+sale al recibir EOF. El socket residual se reemplaza bajo el candado, sólo si es
+un socket del mismo usuario; si la ruta es otra cosa, el corredor falla sin
+borrarla. Ese socket es estado regenerable del propio corredor: Felix autorizó
+el 2026-11-14 quitarlo en la MacBook como excepción a «nada se borra».
 `./instalar.sh --retirar` renombra los dos archivos a `.retirado-<fecha>`; no
 borra estado ni bitácoras. Terminar los corredores antes de retirar.
 
