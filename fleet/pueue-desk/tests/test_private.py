@@ -199,11 +199,19 @@ def main():
         subprocess.run(['systemctl','--user','reset-failed',unit],check=False,capture_output=True,text=True)
         saved=(data/'state.json').read_bytes();(data/'state.json').write_bytes(b'{"tasks":')
         wait_for(lambda:subprocess.run(['systemctl','--user','show',unit,'-p','LoadState','--value'],capture_output=True,text=True).stdout.strip()=='not-found')
-        subprocess.run(['systemd-run','--user','--unit',unit,
-                        *['--property='+k+'='+v for k,v in props.items()],*start_command],check=True,capture_output=True,text=True)
+        corrupt_start=subprocess.run(['systemd-run','--user','--unit',unit,
+                        *['--property='+k+'='+v for k,v in props.items()],*start_command],
+                        check=False,capture_output=True,text=True)
+        # systemd-run waits for the initial start job, which preparar must fail.
+        # Restart=always then retries that same private unit independently.
+        assert corrupt_start.returncode in (0,1),corrupt_start.stderr
+        emit('corrupt_initial_start',returncode=corrupt_start.returncode,stderr=corrupt_start.stderr.strip())
         wait_for(lambda:int(show('NRestarts')['NRestarts'])>=2,seconds=40)
         assert (data/'state.json').read_bytes()==b'{"tasks":'
         assert int(show('MainPID')['MainPID'])==0
+        try:p.status()
+        except subprocess.CalledProcessError:pass
+        else:raise AssertionError('corrupt queue must never reach the private daemon')
         emit('corrupt_queue_retries_PASS',properties=show('NRestarts','MainPID','RestartUSec'),cgroup_pids=cgroup_pids())
         subprocess.run(['systemctl','--user','stop',unit],check=True,capture_output=True,text=True)
         assert cgroup_pids()==[],cgroup_pids()
