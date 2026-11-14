@@ -25,7 +25,7 @@ case "$1" in
   bootout) rm "$FAKE_ROOT/cargado" ;;
   bootstrap)
     : > "$FAKE_ROOT/cargado"
-    [ -e "$FAKE_ROOT/mudo" ] || echo 'Listening for Jobs' >> "$HOME/Library/Logs/pao-gha-runner-jale.log" ;;
+    [ -e "$FAKE_ROOT/mudo" ] || echo 'Listening for Jobs' >> "$HOME/Library/Logs/pao-gha-runner-jale-guard.log" ;;
 esac
 ''',
 }
@@ -55,11 +55,12 @@ class Instalador(unittest.TestCase):
             paquete.add(origen / 'bin', 'bin')
         self.entorno = dict(os.environ, HOME=str(self.home), FAKE_ROOT=str(self.fake),
                             PATH=f"{stubs}:{os.environ['PATH']}", PAO_GHA_RUNNER_ESPERA='2')
-        self.dir = self.home / 'actions-runner-jale'
-        self.plist = self.home / 'Library/LaunchAgents/local.pao.gha-runner-jale.plist'
+        self.dir = self.home / 'actions-runner-jale-guard'
+        self.plist = self.home / 'Library/LaunchAgents/local.pao.gha-runner-jale-guard.plist'
 
-    def correr(self, *args, token=None):
-        return subprocess.run(['bash', str(SCRIPT), *args], env=self.entorno, text=True, capture_output=True,
+    def correr(self, *args, token=None, papel='guard'):
+        return subprocess.run(['bash', str(SCRIPT), *args, *([papel] if papel else [])], env=self.entorno,
+                              text=True, capture_output=True,
                               **({'input': token + '\n'} if token else {'stdin': subprocess.DEVNULL}))
 
     def leer(self, nombre):
@@ -72,7 +73,7 @@ class Instalador(unittest.TestCase):
         self.assertIn('escuchando', resultado.stdout)
         registro = self.leer('config.log')
         self.assertIn('--url https://github.com/SEN-HASO/Jale', registro)
-        self.assertIn('--labels jale-ligero', registro)
+        self.assertIn('--name mini-jale-guard --labels jale-guard', registro)
         self.assertIn(f'token={TOKEN}\n', registro)
         self.assertIn(f'path={RUTA}\n', registro)
         self.assertNotIn(TOKEN, registro.splitlines()[0])
@@ -122,7 +123,7 @@ class Instalador(unittest.TestCase):
         (self.fake / 'mudo').touch()
         resultado = self.correr(token=TOKEN)
         self.assertEqual(resultado.returncode, 1)
-        self.assertIn('pao-gha-runner-jale.log', resultado.stderr)
+        self.assertIn('pao-gha-runner-jale-guard.log', resultado.stderr)
 
     def test_retirar_da_de_baja_y_conserva_los_archivos(self):
         self.assertEqual(self.correr(token=TOKEN).returncode, 0)
@@ -132,7 +133,7 @@ class Instalador(unittest.TestCase):
         self.assertFalse((self.fake / 'cargado').exists())
         self.assertFalse(self.dir.exists())
         self.assertFalse(self.plist.exists())
-        self.assertEqual(len(list(self.home.glob('actions-runner-jale.retirado-*'))), 1)
+        self.assertEqual(len(list(self.home.glob('actions-runner-jale-guard.retirado-*'))), 1)
         self.assertEqual(len(list(self.plist.parent.glob('*.plist.retirado-*'))), 1)
 
     def test_retirar_sin_token_no_descarga_el_servicio(self):
@@ -141,9 +142,19 @@ class Instalador(unittest.TestCase):
         self.assertEqual(resultado.returncode, 2)
         self.assertTrue((self.fake / 'cargado').exists())
 
+    def test_cada_papel_tiene_su_registro_y_su_directorio(self):
+        (self.fake / 'mudo').touch()
+        self.assertEqual(self.correr(token=TOKEN, papel='datos').returncode, 1)
+        self.assertIn('--name mini-jale-datos --labels jale-datos', self.leer('config.log'))
+        self.assertTrue((self.home / 'actions-runner-jale-datos/.runner').exists())
+        self.assertFalse(self.dir.exists())
+
     def test_argumentos_invalidos(self):
-        for args in (['--otro'], ['--seco', '--retirar']):
-            self.assertEqual(self.correr(*args).returncode, 2, args)
+        for args in (['--otro', 'guard'], ['--seco', '--retirar', 'guard'], ['guard', 'datos'], ['otro'], []):
+            resultado = subprocess.run(['bash', str(SCRIPT), *args], env=self.entorno, text=True,
+                                       capture_output=True, stdin=subprocess.DEVNULL)
+            self.assertEqual(resultado.returncode, 2, args)
+            self.assertEqual(list(self.home.iterdir()), [], args)
 
 
 if __name__ == '__main__':

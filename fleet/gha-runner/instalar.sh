@@ -1,23 +1,29 @@
 #!/usr/bin/env bash
-# Runner de GitHub Actions de la Mini para los trabajos ligeros de Jale.
-# Uso, en la Mini: instalar.sh [--seco|--retirar]. El token de GitHub llega por stdin.
+# Runners de GitHub Actions de la Mini para los trabajos ligeros de Jale.
+# Uso, en la Mini: instalar.sh [--seco|--retirar] guard|datos. El token de GitHub llega por stdin.
 set -euo pipefail
+modo=instalar
+case "${1:-}" in --seco|--retirar) modo=$1; shift ;; esac
+# Un runner por papel: el guard abre paso a Boat y no espera detrás de las unitarias.
+papel=${1:-}
+case "$#:$papel" in
+  1:guard|1:datos) ;;
+  *) echo 'Uso: instalar.sh [--seco|--retirar] guard|datos' >&2; exit 2 ;;
+esac
 version=2.338.2
 sha256=25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b1258e919a388
 repo=https://github.com/SEN-HASO/Jale
-nombre=mini-jale
-etiqueta=jale-ligero
-label=local.pao.gha-runner-jale
-dir="$HOME/actions-runner-jale"
+nombre=mini-jale-$papel
+etiqueta=jale-$papel
+label=local.pao.gha-runner-jale-$papel
+dir="$HOME/actions-runner-jale-$papel"
 plist="$HOME/Library/LaunchAgents/$label.plist"
-log="$HOME/Library/Logs/pao-gha-runner-jale.log"
+log="$HOME/Library/Logs/pao-gha-runner-jale-$papel.log"
 paquete="actions-runner-osx-arm64-$version.tar.gz"
 # Los trabajos reciben esta ruta fija; no heredan la del shell que instala.
 ruta=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
 dominio="gui/$(id -u)"
 fecha=$(date +%Y%m%d-%H%M%S)-$$
-modo=${1:-instalar}
-if [ "$#" -gt 1 ]; then modo=invalido; fi
 
 fallo() { echo "gha-runner: $1" >&2; exit "${2:-1}"; }
 
@@ -57,8 +63,6 @@ case "$modo" in
       fi
     done
     exit ;;
-  instalar) ;;
-  *) echo 'Uso: instalar.sh [--seco|--retirar]' >&2; exit 2 ;;
 esac
 
 [ "$(uname -sm)" = 'Darwin arm64' ] || fallo 'el paquete fijado es para macOS arm64'
