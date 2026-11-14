@@ -173,6 +173,15 @@ class Executor:
     def __call__(self, host, launcher, request, timeout=None):
         if launcher == 'host-control':
             config = action_config(host.get('actions'))
+            if host['id'] == 'desk' and host['transport'] == 'ssh' and config['transport'] == 'ssh':
+                envelope = dict(schema='rack-desk-action@1', target='host-control', request=request)
+                argv = [a.replace('~/', str(self.home) + '/') for a in config['argv']]
+                code, response = desk_channel.exchange(argv, envelope, self.runner,
+                    {'HOME': str(self.home), 'PATH': '/usr/bin:/bin', 'TMPDIR': '/tmp'},
+                    min(DESK_TIMEOUT, timeout if timeout is not None else DESK_TIMEOUT))
+                if code != 0:
+                    raise ValueError('Respuesta inválida')
+                return response
             if host['id'] != 'mini' or host['transport'] != 'local' or config['transport'] != 'local':
                 return host_channel.unavailable()
             controller = self.home / '.local/lib/pao-pueue-mini/control.py'
@@ -345,7 +354,8 @@ class Actions:
         if host is None:
             return 'Este host no tiene canal de escritura.'
         if request['op'] in host_channel.OPS:
-            if host['id'] != 'mini' or host['transport'] != 'local' or action_config(host.get('actions'))['transport'] != 'local':
+            transport = action_config(host.get('actions'))['transport']
+            if not ((host['id'], host['transport'], transport) in (('mini','local','local'), ('desk','ssh','ssh'))):
                 return 'Falta actualizar el control de este host.'
             payload = self.read()
             current = next((h for h in payload['hosts'] if h['id'] == request['host']), None)

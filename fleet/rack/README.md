@@ -753,3 +753,46 @@ reenvía el ajuste.
 Las pruebas de snapshot inyectan `read_control`; su guardia de subprocess veta
 además el `control.py` instalado fuera de temporales propios. El controlador
 sintético del canal sigue probándose por su ruta fija dentro de `/tmp`.
+# ± del desk y expiración (U3.2)
+
+El desk ofrece los mismos controles −/+ y «Deshacer» que la Mini. Cada grupo
+admite 1..8 lugares y el tope es 14 de día / 18 de noche. Con el tope lleno,
+«+» explica que hay que quitar un lugar a otro grupo. Los grupos pausados
+consumen su cuota completa. El `default` del desk queda fuera del reparto.
+La tabla de `main` tiene seis grupos (incluido `otros=2`; `pg5434` ya retirado).
+
+Los ajustes del desk vencen en el próximo evento 05:00/14:00 UTC, aunque se
+pierda el timer. La nota y el toast indican «hasta las HH:mm», en México.
+Deshacer restaura los valores y vencimientos exactos si no hubo otro cambio
+ni evento. Una respuesta demorada de un ajuste vencido no vuelve a confirmarlo
+ni ofrece undo. La Mini conserva su duración hasta otro cambio manual.
+
+Se reutiliza POST `/api/accion`, GET del mismo ID, `rack-host-control@1` y el
+canal SSH forzado de C4/C5: envoltura cerrada con `target:"host-control"`, sin
+`launcher`. El despachador sólo ejecuta la ruta fija del controlador desk con
+`rack --host desk`, sin shell ni rutas del solicitante. Conserva las operaciones
+de cancelación. No hay llave ni listener nuevos. Dueño con whois fresco, Host
+permitido y Origin exacto siguen siendo obligatorios para mutar.
+
+El snapshot incorpora la misma vista saneada de control en ambos hosts. No
+transmite entornos, rutas privadas ni metadatos de undo. Un host antiguo queda
+sin ± con «Falta actualizar el control de este host»; leer y cancelar siguen
+disponibles. `mode`, `reorder` y `restart_queue` continúan deshabilitados.
+
+Primero instalar la autoridad/guardia desk con
+[`install-desk.py`](../pueue-desk/install-desk.py), siguiendo el
+[`README del controlador`](../pueue-desk/README.md), y luego ejecutar
+`fleet/rack/instalar-desk.sh` para snapshot/despachador y `instalar.sh` para el
+rack de la Mini. Son pasos de despliegue; no forman parte de las pruebas.
+Verificar capacidades y ensayo antes de cualquier canario real.
+
+Ante parcial/unknown, consultar siempre el mismo ID: GET no repite la mutación.
+Un evento que sustituye una intención incompleta entrega `aborted/expired` y la
+tabla vigente; no ofrece undo. El candado ocupado devuelve `lock_busy` terminal
+sin efectos si vence antes de entrar. Un `disabled` confirmado por GET también
+es terminal, mientras un 403 de autorización sigue cerrado.
+
+Para apagar nuevos ajustes, crear `slots.disabled` en el estado del desk;
+consultas y recuperación continúan. Puede revertirse el panel manteniendo la
+autoridad nueva y sus timers. Nunca retirar la base durable o restaurar la
+aplicación ciega de tabla para deshacer un cambio.

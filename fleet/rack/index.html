@@ -245,7 +245,7 @@ const HOST_CONFIRMED = new Map(), SLOT_MESSAGES = new Map();
 const slotKey = h => '@host/'+h.id;
 function slotControls(h,n,g,r){
   const c=h.control, a=PENDING.get(slotKey(h));
-  const capable=h.id==='mini' && c?.capabilities?.slots===true && Object.hasOwn(c.slots,n);
+  const capable=c?.capabilities?.slots===true && Object.hasOwn(c.slots,n);
   const common=!capable ? c?.reason || c?.error?.message || 'Falta actualizar el control de este host.' : !h.fresh ? 'Actualiza la instantánea antes de decidir.'
     : a ? 'Hay un ajuste pendiente; consulta su recibo.' : c.drift || c.recovery_pending ? 'Reconciliación pendiente.' : '';
   const total=capable ? Object.values(c.slots).reduce((a,n)=>a+n,0) : 0;
@@ -262,6 +262,7 @@ function hostControlState(h){
   if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
   else if(c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
   else if(c?.recovery_pending) message='Reconciliación pendiente';
+  else if(h.id==='desk' && c?.expires_at) message=slotExpiry(c.expires_at);
   const result=a?.result;
   const desired=result?.desired || c?.desired, observed=result?.observed || c?.slots;
   if((a?.status==='partial' || c?.drift) && desired){
@@ -274,6 +275,9 @@ function hostControlState(h){
 function slotExpected(h){
   const c=h.control;
   return {revision:c.revision,policy_hash:c.policy_hash,generation:c.generation,mode:c.mode,slots:{...c.slots}};
+}
+function slotExpiry(expires){
+  return 'Lugares ajustados · hasta las '+new Date(expires*1000).toLocaleTimeString('es-MX',{timeZone:'America/Mexico_City',hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
 }
 function focusSlots(host,group){
   [...document.querySelectorAll('[data-slot-focus]')].find(e=>e.dataset.slotFocus===host+'/'+group)?.focus();
@@ -294,12 +298,15 @@ function acceptSlots(key,action,data){
     setTimeout(()=>pollAction(key,action),2000);return;
   }
   PENDING.delete(key);persistActions();
-  if(data.status==='applied' && h && data.result?.observed){
-    const c={...h.control,revision:data.revision,slots:{...data.result.observed},desired:{...data.result.desired},drift:false,recovery_pending:false};
+  const expired=h?.id==='desk' && data.result?.expires_at && data.result.expires_at<=NOW;
+  if(expired){
+    SLOT_MESSAGES.set(h.id,'El ajuste venció en el cambio de horario.');say(SLOT_MESSAGES.get(h.id));
+  }else if(data.status==='applied' && h && data.result?.observed && data.revision>=h.control.revision){
+    const c={...h.control,revision:data.revision,slots:{...data.result.observed},desired:{...data.result.desired},expires_at:data.result.expires_at,drift:false,recovery_pending:false};
     HOST_CONFIRMED.set(h.id,c);h.control=c;
     for(const [g,n] of Object.entries(c.slots)) if(h.groups[g]) h.groups[g].slots=n;
     SLOT_MESSAGES.delete(h.id);
-    say(action.request.op==='undo' ? 'Lugares restaurados' : `${action.group}: ${c.slots[action.group]} lugares · hasta otro cambio manual`,
+    say(action.request.op==='undo' ? 'Lugares restaurados' : `${action.group}: ${c.slots[action.group]} lugares · ${h.id==='desk' ? slotExpiry(c.expires_at).split(' · ')[1] : 'hasta otro cambio manual'}`,
       action.request.op==='undo' ? null : ()=>{
         const current=S?.hosts.find(x=>x.id===h.id);
         if(current) startSlots(current,{group:action.group},action.request.action_id);

@@ -14,6 +14,54 @@ vm.createContext(context);vm.runInContext(input.js,context);context.fixture=inpu
 const run=s=>vm.runInContext(s,context);
 run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
+ if(input.scenario==='desk'){
+   for(const [mode,cap,slots] of [['dia',14,{hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3}],
+                                ['noche',18,{hasito:2,jale:7,'jale-verify':1,otros:2,pesadas:3,rapidas:3}]]){
+     context.c={...run('h.control'),mode,cap,slots,desired:slots};
+     run('h.control=c;for(const [g,n] of Object.entries(c.slots)) h.groups[g]={slots:n}');
+     const full=run("slotControls(h,'jale',h.groups.jale,0)");
+     assert.match(full,new RegExp(`Tope de ${cap} lugares. Quita un lugar a otro grupo`));
+     assert.match(full,/data-step="1"[^>]*disabled/);
+     assert(!/data-step="-1"[^>]*disabled/.test(full));
+     assert.match(run("slotControls(h,'jale-verify',h.groups['jale-verify'],0)"),/Mínimo de 1 lugar/);
+     assert.match(run("slotControls({...h,control:{...c,slots:{...c.slots,jale:8}}},'jale',{slots:8},0)"),/Máximo de 8 lugares/);
+     assert.match(run("slotControls({...h,control:null},'jale',h.groups.jale,0)"),/Falta actualizar/);
+     assert.match(run("slotControls(h,'default',{slots:1},0)"),/disabled/);
+     run("h.control.slots.jale--;h.groups.jale.slots--");
+     assert(!/data-step="1"[^>]*disabled/.test(run("slotControls(h,'jale',h.groups.jale,0)")));
+   }
+   run('render(fixture);globalThis.h=S.hosts[0]');
+   context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('lost')};
+   run("globalThis.sent=null;const oldSend=sendSlots;sendSlots=(...a)=>(globalThis.sent=oldSend(...a));startSlots(h,{group:'jale',delta:-1})");
+   assert.match(elements.app.innerHTML,/Aplicando/);
+   await run('sent');assert.match(elements.app.innerHTML,/Resultado desconocido/);
+   run('globalThis.a=PENDING.get(slotKey(h));globalThis.key=slotKey(h)');
+   const ident=run('a.request.action_id');
+   context.fetch=async()=>({ok:false,status:409,json:async()=>({schema:'rack-action@1',action_id:ident,status:'conflict',error:{message:'Los lugares cambiaron'}})});
+   await run('pollAction(key,a)');assert.equal(run('PENDING.size'),0);assert.match(elements.app.innerHTML,/Los lugares cambiaron/);
+   run('SLOT_MESSAGES.clear();render(fixture)');
+   context.answer={schema:'rack-action@1',action_id:'confirm-000001',status:'applied',revision:2,
+     result:{observed:{...run('h.control.slots'),jale:6},desired:{...run('h.control.slots'),jale:6},expires_at:1794664800}};
+   run("acceptSlots(slotKey(h),{request:{op:'slots',host:'desk',action_id:'confirm-000001'},group:'jale'},answer)");
+   assert.match(elements.toast.innerHTML,/hasta las 08:00/);assert.match(elements.toast.innerHTML,/Deshacer/);
+   assert.doesNotMatch(elements.toast.innerHTML,/otro cambio manual/);
+   assert.match(elements.app.innerHTML,/Lugares ajustados · hasta las 08:00/);
+   context.expired=JSON.parse(JSON.stringify(input.fixture));
+   context.expired.now=1794664800;
+   const ec=context.expired.hosts[0].snapshot.control;
+   ec.revision=3;ec.mode='dia';ec.cap=14;ec.expires_at=null;ec.slots={hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3};ec.desired=ec.slots;
+   run('render(expired);globalThis.h=S.hosts[0]');
+   assert.doesNotMatch(elements.app.innerHTML,/Lugares ajustados/);
+   assert.equal(run('h.control.cap'),14);assert.equal(run('h.groups.jale.slots'),5);
+   run("acceptSlots(slotKey(h),{request:{op:'slots',host:'desk',action_id:'confirm-000001'},group:'jale'},answer)");
+   assert.equal(run('h.control.cap'),14);assert.equal(run('h.groups.jale.slots'),5);
+   assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);assert.match(elements.toast.innerHTML,/venció/);
+   run("SLOT_MESSAGES.clear();acceptSlots(slotKey(h),{request:{op:'slots',host:'desk',action_id:'confirm-000001'},group:'jale'},{status:'aborted',error:{message:'El ajuste venció en el cambio de horario.'}})");
+   assert.equal(run('PENDING.size'),0);assert.match(elements.app.innerHTML,/venció/);
+   assert.equal(requests.length,1,'unknown must query, never replay POST');
+   console.log('UI desk OK: día/noche, mínimo/máximo/tope, pendiente/conflicto/unknown, vencimiento, undo y host antiguo');
+   return;
+ }
  if(input.scenario==='disabled'){
    context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('POST answer lost')};
    run("globalThis.sent=null;const originalSendSlots=sendSlots;sendSlots=(...args)=>(globalThis.sent=originalSendSlots(...args));startSlots(h,{group:'suites',delta:-1})");

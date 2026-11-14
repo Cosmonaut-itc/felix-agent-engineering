@@ -68,6 +68,15 @@ class SnapshotTests(unittest.TestCase):
         snapshot.read_control.assert_called_once_with(controller)
         self.assertIsNone(data['control'])
 
+    def test_desk_snapshot_uses_same_fixed_controller_with_host_desk(self):
+        controller=self.root/'.local/lib/pao-pueue-desk/control.py'
+        controller.parent.mkdir(parents=True)
+        controller.write_text('raise AssertionError("must use injected read")')
+        with patch.object(snapshot,'linux_capacity',return_value=None),patch.object(snapshot,'desk_guard',return_value=None):
+            data=snapshot.collect('linux','desk',pueue=self.fake_pueue({}),home=self.root)
+        snapshot.read_control.assert_called_once_with(controller,'desk')
+        self.assertIsNone(data['control'])
+
     def fake_pueue(self, tasks):
         data = dict(groups={'suites': dict(status='Running', parallel_tasks=3)}, tasks=tasks)
         return executable(self.root / 'pueue', 'print(' + repr(json.dumps(data)) + ')\n')

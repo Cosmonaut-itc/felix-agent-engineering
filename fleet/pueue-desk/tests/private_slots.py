@@ -7,16 +7,18 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+from datetime import datetime, timezone
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-private', action='store_true', required=True)
+    parser.add_argument('--host', choices=('mini','desk'), default='mini')
     parser.add_argument('--pueue', default='/opt/homebrew/bin/pueue' if sys.platform == 'darwin' else str(Path.home()/'.local/bin/pueue'))
     parser.add_argument('--pueued', default='/opt/homebrew/bin/pueued' if sys.platform == 'darwin' else str(Path.home()/'.local/bin/pueued'))
     args = parser.parse_args()
     base = Path.cwd().resolve()
-    root = base/'private-u31-sol'
+    root = base/('private-u32-sol' if args.host == 'desk' else 'private-u31-sol')
     root.mkdir()  # refuse reuse
     config = root/'config.json'
     config.write_text(json.dumps(dict(shared=dict(pueue_directory=str(root),runtime_directory=str(root),
@@ -24,8 +26,10 @@ def main():
         alias_file=str(root/'aliases.yml'),shared_secret_path=str(root/'secret')),
         daemon=dict(compress_state_file=False))))
     env = dict(os.environ, TMPDIR=str(root), PUEUE_CONFIG_PATH=str(config))
-    # The uploaded directory contains exactly this script and the candidate controller.
-    spec = importlib.util.spec_from_file_location('candidate', base/'control.py')
+    controller = base/'control.py'
+    if not controller.is_file():
+        controller = Path(__file__).resolve().parents[1]/'control.py'
+    spec = importlib.util.spec_from_file_location('candidate', controller)
     control = importlib.util.module_from_spec(spec); spec.loader.exec_module(control)
     log = (base/'private-slots.jsonl').open('w', buffering=1)
     def emit(event, **values):
@@ -51,20 +55,23 @@ def main():
         raise RuntimeError('private daemon unavailable')
     def crash():
         daemon.kill(); daemon.wait(timeout=4)
+    group = 'jale' if args.host == 'desk' else 'suites'
+    now = [datetime(2026,11,14,13,59,59,tzinfo=timezone.utc).timestamp()]
+    profile = control.desk_profile(now[0]) if args.host == 'desk' else control.MINI_PROFILE
     def request(engine, ident, delta):
         view = engine.view()
         return dict(schema=control.HOST_SCHEMA,op='slots',action_id=ident,dry_run=False,
                     expected={k:view[k] for k in ('revision','policy_hash','generation','mode','slots')},
-                    change=dict(group='suites',delta=delta))
+                    change=dict(group=group,delta=delta))
     try:
-        emit('version', version=subprocess.check_output([args.pueue,'--version'],text=True).strip())
+        emit('version', version=subprocess.check_output([args.pueue,'--config',str(config),'--version'],text=True).strip())
         start()
-        for group, slots in control.MINI_PROFILE.items():
-            if group == 'default': pueue.parallel(group,slots)
-            else: pueue.call('group','add',group,'--parallel',slots)
-        pueue.call('pause','--wait','-g','default')  # save exact baseline 3/1/3
+        for name, slots in profile.items():
+            if name == 'default': pueue.parallel(name,slots)
+            else: pueue.call('group','add',name,'--parallel',slots)
+        pueue.call('pause','--wait','-g','default')  # save exact baseline
         directory = root/'control'; directory.mkdir()
-        engine = control.MiniControl(pueue,directory)
+        engine = control.MiniControl(pueue,directory,host=args.host,clock=lambda:now[0])
         with control.locked(directory):
             engine.adopt(root/'pid')
             before = engine.view()
@@ -74,24 +81,40 @@ def main():
             crash(); start()
             restored = engine.view()
             emit('after_restart_without_save',observed=restored['slots'],desired=restored['desired'])
-            assert restored['slots']['suites']==3, restored
+            assert restored['slots'][group]==profile[group], restored
             assert engine.reconcile()
             recovered = engine.view()
-            assert recovered['slots']['suites']==2
+            assert recovered['slots'][group]==profile[group]-1
             emit('reconciled', observed=recovered['slots'],desired=recovered['desired'],
                  paused=recovered['pause_reasons'])
             up = engine.handle(request(engine,'private-up-00001',1))
             assert up['status']=='applied',up
-            pueue.call('pause','--wait','-g','suites')  # this operation saves parallel too
+            pueue.call('pause','--wait','-g',group)  # this operation saves parallel too
             crash(); start()
             persisted = engine.view()
-            assert persisted['slots']['suites']==3
+            assert persisted['slots'][group]==profile[group]
             assert engine.reconcile()
             emit('saved_parallel_survives',observed=persisted['slots'],desired=persisted['desired'])
+            if args.host == 'desk':
+                down = engine.handle(request(engine,'private-event-0001',-1))
+                assert down['status']=='applied', down
+                with engine.connect() as db:
+                    assert engine.state(db)['overrides']
+                now[0] += 1  # exact UTC event, real stock daemon, synthetic host clock
+                projected = engine.view()
+                assert projected['mode']=='dia' and projected['drift'], projected
+                assert engine.reconcile()
+                expired = engine.view()
+                assert expired['slots']==control.desk_profile(now[0]), expired
+                with engine.connect() as db:
+                    assert engine.state(db)['overrides']=={}
+                emit('mode_event', mode=expired['mode'],cap=expired['cap'],before=down['result']['observed'],
+                     after=expired['slots'],expires_at=expired['expires_at'],overrides_retired=True)
             emit('PASS', assertions='parallel unsaved lost; saved survives; durable candidate reconciles both; no tasks')
     finally:
         if daemon is not None and daemon.poll() is None:
             try: pueue.call('shutdown')
+            except subprocess.SubprocessError: pass
             finally:
                 try: daemon.wait(timeout=4)
                 except subprocess.TimeoutExpired: daemon.kill(); daemon.wait(timeout=4)
