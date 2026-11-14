@@ -126,6 +126,10 @@ def control(value, host='mini'):
                 or expires is not None and (type(expires) not in (int, float) or expires != next_event)):
             raise ValueError('Evento inválido')
         result.update(schedule_event=event, next_event=next_event, expires_at=expires, **mode_fields(value))
+    if host == 'mini' and 'slots_note' in value:
+        if value['slots_note'] not in (None, 'Lugares ajustados · hasta otro cambio manual'):
+            raise ValueError('Nota de lugares inválida')
+        result['slots_note'] = value['slots_note']
     result['reason'] = None if caps['slots'] else 'Los ajustes de lugares están apagados en este host.'
     return result
 
@@ -203,6 +207,10 @@ def sanitize(request, response, op):
                 raise ValueError('Evento inválido')
             answer['result'].update(mode=payload['mode'], cap=payload['cap'],
                                     schedule_event=event, next_event=nxt, **mode_fields(payload))
+        if request['host'] == 'mini' and 'slots_note' in payload:
+            if payload['slots_note'] not in (None, 'Lugares ajustados · hasta otro cambio manual'):
+                raise ValueError('Nota de lugares inválida')
+            answer['result']['slots_note'] = payload['slots_note']
         changed = [g for g in payload['desired'] if payload['before'][g] != payload['desired'][g]]
         observed = payload.get('observed')
         answer['result']['applied'] = [g for g in changed if observed is not None and observed[g] == payload['desired'][g]]

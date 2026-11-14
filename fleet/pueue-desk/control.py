@@ -546,7 +546,8 @@ class MiniControl:
         enabled = not self.disabled()
         extra = dict(expires_at=schedule_at(state['schedule_event'])[1] if state['overrides'] or state['mode_override'] else None,
                      next_event=schedule_at(state['schedule_event'])[1], schedule_event=state['schedule_event'],
-                     **mode_notes(state, self.mode(state))) if self.host == 'desk' else {}
+                     **mode_notes(state, self.mode(state))) if self.host == 'desk' else dict(
+                         slots_note='Lugares ajustados · hasta otro cambio manual' if state['overrides'] else None)
         return dict(schema='rack-host-result@1', status='ok', capabilities=dict(
             slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk', reorder=False, restart_queue=False),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
@@ -767,6 +768,8 @@ class MiniControl:
                                    expires_at=(schedule_at(state['schedule_event'])[1]
                                                if state['overrides'] or state['mode_override'] else None),
                                    **mode_notes(state, self.mode(state)))
+                else:
+                    payload['slots_note'] = 'Lugares ajustados · hasta otro cambio manual' if state['overrides'] else None
                 action['response'] = self.reply(action['request'], status, 'expired' if expired else None,
                                                revision=state['revision'], result=payload)
                 if self.resolve(state) != state:  # immediately before each durable receipt

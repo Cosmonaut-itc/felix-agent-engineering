@@ -422,6 +422,11 @@ MODE_CASES = [('pueue-desk',
   'index.html',
   'const foreign=capable && c.foreign_work',
   'const foreign=false && c.foreign_work',
+  'ModeChannelTests.test_mode_production_ui_states_undo_toast_and_unknown_no_resend'),
+ ('rack',
+  'index.html',
+  'data.result?.expires_at || data.result?.next_event',
+  'data.result?.expires_at',
   'ModeChannelTests.test_mode_production_ui_states_undo_toast_and_unknown_no_resend')]
 
 def main():
