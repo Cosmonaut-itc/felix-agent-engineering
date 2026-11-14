@@ -124,6 +124,10 @@ CASES += [
   'ConfigurationTests.test_stock_4_0_4_configuration_with_null_shell_command_is_accepted'),
  ('custom-shell-command','control.py',"daemon_config.get('shell_command') is not None","False",
   'ConfigurationTests.test_o_w2_complex_configuration_rejects_in_same_validator'),
+ ('pre-u34-empty-exec-start-pre','install-desk.py',"    values.setdefault('ExecStartPre', '')\n",'',
+  'InstallerStartupTests.test_pre_u34_unit_without_exec_start_pre_installs_and_missing_property_blocks'),
+ ('show-requires-every-property','install-desk.py',"    if set(values) != set(SHOWN):","    if False:",
+  'InstallerStartupTests.test_pre_u34_unit_without_exec_start_pre_installs_and_missing_property_blocks'),
 ]
 
 

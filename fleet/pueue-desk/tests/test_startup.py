@@ -429,14 +429,20 @@ class InstallerStartupTests(unittest.TestCase):
         self.original_validator=original_validator
         self.manager=''
         self.loaded_overrides={}
+        self.before_overrides={}
         def systemctl(*args):
             self.syscalls.append(args)
             if args[2]=='show-environment':return subprocess.CompletedProcess(args,0,self.manager,'')
             if args[2]=='show':
-                values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',
-                    ExecStartPre='/usr/bin/python3 -I '+str(self.library/'control.py')+' preparar --host desk')
-                if any(c[2]=='daemon-reload' for c in self.syscalls):values.update(self.loaded_overrides)
-                return subprocess.CompletedProcess(args,0,''.join(k+'='+v+'\n' for k,v in values.items()),'')
+                if any(c[2]=='daemon-reload' for c in self.syscalls):
+                    values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',
+                        ExecStartPre='/usr/bin/python3 -I '+str(self.library/'control.py')+' preparar --host desk')
+                    values.update(self.loaded_overrides)
+                else:
+                    # The desk's pre-U3.4 unit as systemd 255 prints it: an empty ExecStartPre has no line.
+                    values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='on-failure',KillMode='control-group')
+                    values.update(self.before_overrides)
+                return subprocess.CompletedProcess(args,0,''.join(k+'='+v+'\n' for k,v in values.items() if v is not None),'')
             return subprocess.CompletedProcess(args,0,'','')
         self.systemctl=systemctl
         for manager in (patch.object(control,'validate_configuration',side_effect=validate),
@@ -447,6 +453,17 @@ class InstallerStartupTests(unittest.TestCase):
             manager.start();self.addCleanup(manager.stop)
 
     def fingerprint(self):return {str(p.relative_to(self.home)):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+
+    def test_pre_u34_unit_without_exec_start_pre_installs_and_missing_property_blocks(self):
+        for dry in (True,False):
+            try:
+                with redirect_stdout(io.StringIO()):self.installer.install(self.home,self.pid,control,dry_run=dry)
+            except ValueError as error:self.fail('pre-U3.4 unit rejected: '+str(error))
+        self.assertTrue(any(c[2]=='daemon-reload' for c in self.syscalls))
+        self.assertFalse(any(c[2] in ('stop','restart') and 'pueued.service' in c for c in self.syscalls))
+        self.syscalls.clear();self.before_overrides={'NeedDaemonReload':None}
+        with self.assertRaisesRegex(ValueError,'systemctl show incompleto'):
+            self.installer.install(self.home,self.pid,control,dry_run=True)
 
     def test_o_w2_install_real_and_seco_use_validator_before_every_effect(self):
         for text in ('daemon:\n  env_vars:\n    TZ: UTC\n','daemon:\n  shell_command:\n    - sh\n',
@@ -474,7 +491,9 @@ class InstallerStartupTests(unittest.TestCase):
 
     def test_additive_install_keeps_pid_desire_receipts_and_loads_unit_without_restart(self):
         with self.engine.connect() as db:before=self.engine.state(db)
-        with redirect_stdout(io.StringIO()):self.installer.install(self.home,self.pid,control)
+        try:
+            with redirect_stdout(io.StringIO()):self.installer.install(self.home,self.pid,control)
+        except ValueError as error:self.fail('additive install rejected: '+str(error))
         with self.engine.connect() as db:after=self.engine.state(db)
         self.assertEqual(after,dict(before,startup_version=1))
         self.assertTrue((self.home/'.config/systemd/user/pueued.service').is_file())
