@@ -36,6 +36,16 @@ en un programa. El tren es el único camino a `main`.
      --apto <ruta-del-veredicto-o-URL-del-comentario> --dirigida <ruta-del-recibo>
    ```
 
+   El veredicto y el recibo son JSON sin texto alrededor, en un archivo o
+   en el cuerpo de un comentario del mismo PR:
+
+   ```json
+   {"veredicto":"APTO","head":"<SHA40>","hallazgos_abiertos":0}
+   {"head":"<SHA40>","resultado":"limpio"}
+   ```
+
+   En alto riesgo el veredicto añade `"verificado":"Verificado"`. Un formato
+   distinto deja la entrega retenida.
    Guarda el recibo `estado=custodia` y termina el turno con el watch
    registrado. Si la entrega falla, resuelve su motivo antes de terminar.
 4. Ante un comentario de rojo del tren, lee el lote, B, C, unidad, firma,
