@@ -530,6 +530,15 @@ class DeskSlotsTests(DeskFixture):
             with self.assertRaises(sqlite3.Error):control.main()
         self.assertFalse(any(c[0]=='parallel' for c in self.p.calls))
 
+    def test_authority_with_overflowing_number_still_closes_under_pressure(self):
+        state=self.state();state['at']=10**400
+        with self.engine.connect(write=True) as db:self.engine.store(db,state)
+        self.p.calls.clear();high=dict(self.low,io=90,memory=1024**3)
+        with control.locked(self.engine.directory),patch.object(control,'pressure',return_value=high):
+            with self.assertRaises(OverflowError):self.engine.guard(high)
+        self.assertEqual([list(c) for c in self.p.calls],[['pause','--wait','-g',g] for g in control.GROUP_LIMITS])
+        self.assertTrue(all(self.p.groups[g]['status']=='Paused' for g in control.GROUP_LIMITS))
+
     def test_timer_entry_preserves_live_override_then_expires(self):
         self.engine.handle(self.request());self.p.calls.clear()
         def run_timer():

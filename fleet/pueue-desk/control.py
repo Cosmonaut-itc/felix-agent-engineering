@@ -719,7 +719,8 @@ class MiniControl:
 
     def guard(self, readings, proc=Path('/proc')):
         failure, state = None, None
-        errors = (OSError, sqlite3.Error, ValueError, KeyError, TypeError, subprocess.SubprocessError)
+        # Any unreadable authority, including numeric overflow, keeps protective closing.
+        errors = (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError)
         try:
             if not self.reconcile():
                 raise ValueError('Deseo sin reconciliar; admisión retenida')

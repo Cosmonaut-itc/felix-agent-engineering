@@ -280,6 +280,9 @@ DESK_CASES += [
  ('pueue-desk','control.py',
   "or value['revision'] < 1 or type(value['reasons']) is not dict", "or False or type(value['reasons']) is not dict",
   'DeskInstallTests.test_table_migration_rejects_open_receipts_and_corrupt_authority_without_effects'),
+ ('pueue-desk','control.py',
+  'TypeError, ArithmeticError, subprocess.SubprocessError)', 'TypeError, subprocess.SubprocessError)',
+  'DeskSlotsTests.test_authority_with_overflowing_number_still_closes_under_pressure'),
 ]
 
 
