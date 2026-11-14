@@ -381,6 +381,21 @@ class ConfigurationTests(unittest.TestCase):
         self.config.write_text('daemon:\n  compress_state_file: false\nshared:\n  use_unix_socket: true\n')
         self.assertEqual(self.validate(),dict(data=self.data,pid_file=self.pid))
 
+    def test_stock_4_0_4_configuration_with_null_shell_command_is_accepted(self):
+        # Daemon and shared sections exactly as Pueue 4.0.4 wrote them on the desk.
+        stock=('client:\n  restart_in_place: false\n  dark_mode: false\n  max_status_lines: null\n'
+               'daemon:\n  pause_group_on_failure: false\n  pause_all_on_failure: false\n  compress_state_file: false\n'
+               '  callback: null\n  env_vars: {}\n  callback_log_lines: 10\n  shell_command: null\n'
+               'shared:\n  pueue_directory: null\n  runtime_directory: null\n  alias_file: null\n  use_unix_socket: true\n'
+               '  unix_socket_path: null\n  unix_socket_permissions: 448\n  host: 127.0.0.1\n  port: \'6924\'\n'
+               '  pid_path: null\n  daemon_cert: null\n  daemon_key: null\n  shared_secret_path: null\nprofiles: {}\n')
+        for text in (stock,json.dumps(dict(daemon=dict(env_vars={},shell_command=None)))):
+            with self.subTest(text=text[:20]):
+                self.config.write_text(text)
+                try:result=self.validate()
+                except ValueError as error:self.fail('stock configuration rejected: '+str(error))
+                self.assertEqual(result,dict(data=self.data,pid_file=self.pid))
+
     def test_binary_versions_and_relative_xdg_are_fail_closed(self):
         with patch.object(control.subprocess,'check_output',return_value='pueued 5.0.0'):
             with self.assertRaises(ValueError):self.validate()

@@ -120,6 +120,10 @@ CASES += [
  ('timer-start-stops-timers','install-desk.py',
   "                run('systemctl', '--user', 'stop', *TIMERS)\n            except Exception:","                pass\n            except Exception:",
   'InstallerStartupTests.test_failed_timer_start_restores_maintenance_and_stops_both_timers'),
+ ('stock-null-shell-command','control.py',"daemon_config.get('shell_command') is not None","'shell_command' in daemon_config",
+  'ConfigurationTests.test_stock_4_0_4_configuration_with_null_shell_command_is_accepted'),
+ ('custom-shell-command','control.py',"daemon_config.get('shell_command') is not None","False",
+  'ConfigurationTests.test_o_w2_complex_configuration_rejects_in_same_validator'),
 ]
 
 
