@@ -615,12 +615,73 @@ rack no lo copia ni lo cambia. Si falta, la UI no habilita la acción. La
 instalación y canarios productivos se hacen en otro paso, nunca con las
 pruebas de este directorio.
 
+## Lugares por grupo en la Mini (U3.1)
+
+Cada carril de la Mini muestra `N/M en uso`, los botones − y + y la cifra de
+lugares. La tarjeta de capacidad dice `N en total · tope 7`. Si corren más
+corridas que lugares, el carril avisa que no entran nuevas hasta bajar de esa
+cifra. Un botón que no aplica queda con `aria-disabled` y explica la razón al
+pasar el cursor o al pulsarlo:
+
+- mínimo 1 y máximo 8 por grupo;
+- con el tope lleno, «Quita un lugar a otro grupo para añadirlo aquí»;
+- un cambio en curso en el host, propio o de otra pestaña;
+- una instantánea vieja o una deriva que la guardia está reponiendo;
+- un host sin el control nuevo, y el desk, que todavía no admite este cambio.
+
+Al pulsar, la página envía `POST /api/accion` con
+`{schema:'rack-action@1', op:'slots', host:'mini', action_id, dry_run:false,
+expected:{revision, policy_hash, slots}, change:{group, delta}}`. `expected`
+es exactamente lo que vio Felix. Mientras espera, el carril dice «Aplicando…».
+Con el resultado, un aviso de 8 s ofrece **Deshacer**, que envía `op:'undo'`
+con `undo_of` y la revisión nueva. La cifra aplicada se mantiene hasta que la
+instantánea alcance esa revisión, y la página pide una instantánea nueva.
+Ante un error de red, el carril dice «Resultado desconocido · consultando…» y
+consulta con el mismo ID. Si el panel no tiene la intención (404), reenvía el
+mismo cuerpo una sola vez; el host aplica a lo sumo una vez por ID. Un
+resultado parcial dice «Aplicado parcialmente · intentando completar», porque
+la guardia lo completa. El pendiente se conserva en `sessionStorage`
+(`rack-slots`) y sobrevive a recargar la página.
+
+En el servidor, `slots` y `undo` siguen el diario de Cancelar:
+
+1. Esquema cerrado.
+2. Intención `unknown` confirmada antes del transporte, en `actions.sqlite3`.
+3. Mismo ID con otro cuerpo da 409.
+4. El interruptor `actions.disabled` da 403.
+5. Un cambio abierto del mismo host da `busy`.
+6. Una instantánea de más de 45 s, o con otra revisión, deseo u observado, da
+   `stale_state`.
+
+`dry_run:true` no escribe en el diario ni reserva el ID. El transporte es fijo:
+`/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py rack --host mini`,
+con el cuerpo por stdin. Esa ruta la fija `host_control` en `hosts.json`, sólo
+con transporte local. Un GET sobre un recibo abierto consulta `status` al host.
+Si el host no conoce el ID, reenvía el mismo cuerpo una vez. La instantánea
+lleva `control`, la vista saneada de `capabilities`. Sin esa vista no hay
+cambios de lugares. Las capacidades de modo, reordenar y reiniciar la fila se
+anuncian como no disponibles.
+
+Instalación, después de revisar y fusionar, en este orden:
+
+1. En la Mini, `install-mini.py instalar --seco` y después `instalar`. Ver
+   «Lugares por grupo (U3.1)» en `fleet/pueue-desk/README.md`: instala el
+   control nuevo y adopta el perfil.
+2. Copiar `fleet/rack/` a la Mini y ejecutar `bash instalar.sh`. Copia
+   `hosts.json` con `host_control`.
+
+Para revertir, reinstalar `fleet/rack/` desde el commit anterior. Sin
+`host_control`, el panel rechaza los cambios de lugares como `unsupported` y
+deja los botones sin efecto. Volver también a la guardia anterior no cambia
+`parallel`.
+
 ## Pruebas locales sin hosts reales
 
 ```bash
 cd fleet/rack
 TMPDIR=/tmp /usr/bin/python3 -m unittest discover -s tests -v
 TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/check_mutations.py
+TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 -I ../pueue-desk/tests/mutate_slots.py
 TMPDIR=/tmp /usr/bin/python3 tests/browser_fixture.py --port 0
 ```
 

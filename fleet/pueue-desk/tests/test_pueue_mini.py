@@ -21,6 +21,8 @@ class MiniTests(Fixture):
     def setUp(self):
         super().setUp()
         self.reset_state()
+        control.adopt(self.directory, self.pueue.status())
+        (self.root / "calls").unlink()
         self.load = 0.0
         self.cores = 10
         self.level = "1"
@@ -44,7 +46,7 @@ class MiniTests(Fixture):
 
     def reset_state(self):
         self.write_state({"groups": {g: {"status": "Running", "parallel_tasks": n}
-                                     for g, n in (("suites", 3), ("default", 1), ("rapidas", 1), ("ajeno", 7))},
+                                     for g, n in (("suites", 3), ("default", 1), ("rapidas", 3), ("ajeno", 7))},
                           "tasks": {"10": {"status": {"Running": {}}, "group": "suites"}}})
 
     def guard(self):
@@ -128,6 +130,7 @@ class MiniTests(Fixture):
         self.guard()
         home_state = self.root / ".local/state/pao/pueue-mini"
         home_state.mkdir(parents=True)
+        control.adopt(home_state, self.pueue.status())
         control.save_owned(home_state, self.owned())
         with patch.object(control, "Pueue", return_value=self.pueue) as factory, \
                 patch.object(control, "locked", wraps=control.locked) as lock:
@@ -237,7 +240,8 @@ class InstallerTests(Fixture):
         self.pueue_available = True
         self.actions = []
         self.failing = set()
-        self.write_state({"groups": {"suites": {}, "default": {}}, "tasks": {}})
+        self.write_state({"groups": {g: {"status": "Running", "parallel_tasks": n}
+                                     for g, n in control.MINI_PROFILE.items()}, "tasks": {}})
         mocked = patch.object(installer.subprocess, "run", side_effect=self.fake_run)
         mocked.start()
         self.addCleanup(mocked.stop)
@@ -401,6 +405,57 @@ class InstallerTests(Fixture):
             self.assertFalse((self.root / "Library").exists())
             self.assertFalse((self.root / ".local/lib").exists())
             self.assertFalse(self.service_loaded)
+
+
+    def test_first_install_adopts_profile_and_reinstall_keeps_adjustment(self):
+        state = self.root / ".local/state/pao/pueue-mini"
+        self.install("instalar")
+        with control.Store(state / control.STORE, readonly=True) as store:
+            self.assertEqual(store.view()["desired"], control.MINI_PROFILE)
+            self.assertEqual(store.view()["revision"], 0)
+        # Un ajuste del panel: deseo y Pueue en {suites: 2}. Reinstalar no lo pisa.
+        with control.Store(state / control.STORE) as store, store.transaction():
+            store.db.execute("UPDATE desired SET slots=2 WHERE grp='suites'")
+            store.db.execute("UPDATE meta SET value='1' WHERE key='revision'")
+        status = json.loads((self.root / "pueue.json").read_text())
+        status["groups"]["suites"]["parallel_tasks"] = 2
+        self.write_state(status)
+        before = (state / control.STORE).read_bytes()
+        self.install("desinstalar")
+        self.install("instalar")
+        self.assertEqual((state / control.STORE).read_bytes(), before)
+        with control.Store(state / control.STORE, readonly=True) as store:
+            self.assertEqual(store.view()["desired"]["suites"], 2)
+        self.assertFalse(any(a[1] == "parallel" for a in self.actions))
+
+    def test_first_install_with_other_quotas_aborts_before_changes(self):
+        for change in ({"suites": 2}, {"rapidas": 0}):
+            status = json.loads((self.root / "pueue.json").read_text())
+            for group, value in change.items():
+                status["groups"][group]["parallel_tasks"] = value
+            self.write_state(status)
+            self.actions.clear()
+            with self.assertRaises(ValueError) as raised:
+                self.install("instalar")
+            self.assertIn("parallel N -g GRUPO", str(raised.exception))
+            # Nada se escribe ni se descarga; tampoco se fija la tabla por defecto.
+            self.assertTrue(all(a[1] in ("print", "status") for a in self.actions), self.actions)
+            self.assertFalse((self.root / ".local/state").exists())
+            self.assertFalse((self.root / "Library").exists())
+            self.write_state({"groups": {g: {"status": "Running", "parallel_tasks": n}
+                                         for g, n in control.MINI_PROFILE.items()}, "tasks": {}})
+
+    def test_unreadable_authority_aborts_install_before_changes(self):
+        state = self.root / ".local/state/pao/pueue-mini"
+        state.mkdir(parents=True)
+        (state / control.STORE).write_bytes(b"no es sqlite" * 100)
+        # El instalador carga su propia copia de control.py: se compara la clase por nombre.
+        with self.assertRaises(Exception) as raised:
+            self.install("instalar")
+        self.assertEqual(type(raised.exception).__name__, "StoreError")
+        self.assertTrue(all(a[1] in ("print", "status") for a in self.actions), self.actions)
+        self.assertEqual((state / control.STORE).read_bytes(), b"no es sqlite" * 100)
+        self.assertFalse((self.root / "Library").exists())
 
 
 if __name__ == "__main__":

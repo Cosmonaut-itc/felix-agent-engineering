@@ -108,6 +108,14 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 #toast:empty{display:none}
 #toast{position:fixed;left:50%;bottom:20px;transform:translateX(-50%);background:var(--ink);color:var(--bg);padding:8px 14px;border-radius:8px;font-size:13px;display:flex;gap:14px;align-items:center;max-width:calc(100% - 32px)}
 .menu button.danger{color:var(--crit)}
+#toast button{font:inherit;background:none;border:0;color:var(--bg);text-decoration:underline;cursor:pointer;padding:0}
+.lane{grid-template-columns:84px minmax(0,1fr)}
+.step{display:inline-flex;align-items:center;gap:2px;margin-top:4px}
+.step button{font:inherit;font-size:13px;line-height:1;width:22px;height:22px;border:1px solid var(--line);background:var(--panel);color:var(--ink2);border-radius:5px;cursor:pointer;padding:0}
+.step button[aria-disabled="true"]{opacity:.35;cursor:default}
+.step b{min-width:34px;text-align:center;font-weight:500;font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.lane-over{color:var(--warn)}
+@media(max-width:560px){.lane{grid-template-columns:1fr}}
 .menu button:disabled{color:var(--muted);cursor:default}
 .menu .reason{font-size:12px;color:var(--ink2);padding:2px 10px 8px;max-width:280px;margin:0}
 .pending{outline:1px solid var(--warn);outline-offset:-1px}
@@ -129,6 +137,12 @@ const pendingClass = (h,t) => PENDING.has(actionKey(h,t)) ? 'pending' : '';
 function persistActions(){try{sessionStorage.setItem('rack-actions',JSON.stringify([...PENDING]));}catch{}}
 try{for(const [key,a] of JSON.parse(sessionStorage.getItem('rack-actions') || '[]')){PENDING.set(key,a);}}catch{}
 try{for(const key of JSON.parse(sessionStorage.getItem('rack-cancelled') || '[]')) CANCELLED.add(key);}catch{}
+// Un cambio de lugares en curso por host, con su ID: se consulta con el mismo ID tras recargar.
+const SLOTS = new Map();
+// Lo aplicado se muestra hasta que la instantánea alcance esa revisión.
+const CONFIRMED = new Map();
+function persistSlots(){try{sessionStorage.setItem('rack-slots',JSON.stringify([...SLOTS]));}catch{}}
+try{for(const [key,a] of JSON.parse(sessionStorage.getItem('rack-slots') || '[]')) SLOTS.set(key,a);}catch{}
 
 const GB = b => b == null ? NaN : (b/1024**3);
 const fmtMin = s => `${Math.floor(s/60)} min`;
@@ -158,10 +172,16 @@ function hostState(h){
   if (anyPaused) return `<span class="state"><span class="dot" style="background:var(--warn)"></span>Admisión pausada</span>`;
   return `<span class="state"><span class="dot" style="background:var(--good)"></span>Admitiendo corridas</span>`;
 }
-const groups = h => Object.entries(h.groups).filter(([n,g]) => n !== 'default' || h.tasks.some(t => t.group === n && t.state !== 'Done'));
+// El control del host con lo ya aplicado encima, mientras la instantánea no lo alcance.
+function ctl(h){
+  const c = h.control, done = CONFIRMED.get(h.id);
+  return c && done && !(c.revision >= done.revision) ? {...c, revision:done.revision, desired:done.slots, observed:done.slots, waiting:true} : c;
+}
+const groups = h => Object.entries(h.groups).filter(([n,g]) => n !== 'default' || ctl(h)?.desired?.[n] != null || h.tasks.some(t => t.group === n && t.state !== 'Done'));
+const slotsOf = (h,n) => ctl(h)?.observed?.[n] ?? h.groups[n].slots;
 const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
 const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>b.priority-a.priority || a.id-b.id);
-const slotsTotal = h => groups(h).reduce((a,[,g])=>a+g.slots,0);
+const slotsTotal = h => groups(h).reduce((a,[n])=>a+slotsOf(h,n),0);
 
 function capacity(h){
   const z = zone(h), used = h.mem_total - h.mem_avail, memPct = used/h.mem_total;
@@ -176,7 +196,7 @@ function capacity(h){
       <div class="m-val">${Number.isFinite(GB(h.mem_avail)) ? GB(h.mem_avail).toFixed(0) : '—'} GB <span class="muted" style="font-size:12px;font-weight:400">libres</span></div>
       <div class="meter"><i style="width:${memPct*100}%;background:${memPct>.85?'var(--crit)':'var(--accent)'}"></i></div>
       <div class="m-note ink2">Swap ${Number.isFinite(GB(h.swap_used)) ? GB(h.swap_used).toFixed(1) : '—'} de ${Number.isFinite(GB(h.swap_total)) ? GB(h.swap_total).toFixed(0) : '—'} GB</div></div>
-    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total</span></div>
+    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total${ctl(h)?.cap ? ' · tope '+esc(ctl(h).cap) : ''}</span></div>
       <div class="m-val">${run} <span class="muted" style="font-size:12px;font-weight:400">ocupados</span></div>
       <div class="meter"><i style="width:${tot?run/tot*100:0}%;background:var(--accent)"></i></div>
       <div class="m-note ink2">${queued(h).length ? queued(h).length + ' en fila' : 'Fila vacía'}</div></div>
@@ -235,9 +255,10 @@ function view(){
     return `<div class="stack">${S.hosts.map(h=>{
       const lanes = groups(h).map(([n,g])=>{
         const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
-        const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
+        const cells = Array.from({length:Math.max(slotsOf(h,n),r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
           const p=progress(t); return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}${pendingText(h,t)}</div>`;}).join('');
-        return `<div class="lane"><div class="g">${esc(n)}<div class="muted">${r.length}/${g.slots}</div></div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
+        const s = slotsOf(h,n), over = r.length > s ? `<div class="lane-over">no entran nuevas hasta bajar de ${s}</div>` : '';
+        return `<div class="lane"><div class="g">${esc(n)}<div class="muted">${r.length}/${s} en uso</div>${over}${stepper(h,n)}${slotsState(h,n)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(Math.max(s,r.length),5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}`;
       }).join('');
       return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
@@ -248,7 +269,7 @@ function render(data){
     const s=h.snapshot || {};
     return {...h, guard:s.guard, usage:s.usage, cores:s.cpu?.cores, load:s.cpu?.load,
       mem_total:s.mem?.total, mem_avail:s.mem?.available, swap_used:s.mem?.swap_used, swap_total:s.mem?.swap_total,
-      groups:Object.fromEntries((s.groups || []).map(g=>[g.name,g])),
+      groups:Object.fromEntries((s.groups || []).map(g=>[g.name,g])), control:s.control || null,
       tasks:(s.tasks || []).filter(t=>!CANCELLED.has(runKey(h,t))).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
   for(const a of PENDING.values()){
@@ -259,18 +280,26 @@ function render(data){
       if(i<0) h.tasks.push(a.task); else h.tasks[i]=a.task;
     }
   }
+  for(const h of S.hosts){const done=CONFIRMED.get(h.id); if(done && h.control?.revision >= done.revision) CONFIRMED.delete(h.id);}
   document.getElementById('app').innerHTML=view();
   syncMenu();
   document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 document.getElementById('app').addEventListener('click', event=>{
   const button = event.target.closest('button[data-open]');
-  if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); syncMenu(); }
+  if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); syncMenu(); return; }
+  const step = event.target.closest('button[data-step]');
+  if (step) {
+    const h = S.hosts.find(x=>x.id===step.dataset.host), n = step.dataset.group, delta = Number(step.dataset.step);
+    const why = slotWhy(h,n,delta);
+    if (why) say(why); else startSlots(h,n,delta);
+  }
 });
 let menuTask = null, toastTimer;
-function say(text){
+function say(text, back){
   const toast = document.getElementById('toast');
-  toast.innerHTML = esc(text);
+  toast.innerHTML = back ? '<span>'+esc(text)+'</span><button type="button">Deshacer</button>' : esc(text);
+  if (back) toast.querySelector('button').onclick = () => { clearTimeout(toastTimer); toast.textContent=''; back(); };
   clearTimeout(toastTimer); toastTimer = setTimeout(()=>toast.textContent='', 8000);
 }
 function findTask(el){
@@ -420,6 +449,99 @@ async function pollAction(key,action){
   }catch{const changed=action.status!=='unknown';action.status='unknown';persistActions();repaintActions();if(changed) say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}
 }
 for(const [key,action] of PENDING) setTimeout(()=>pollAction(key,action),2000);
+
+// Lugares por grupo. El host valida todo otra vez; esto sólo explica antes de enviar.
+const SLOT_STATE = {applying:'Aplicando…', unknown:'Resultado desconocido · consultando…', partial:'Aplicado parcialmente · intentando completar'};
+function slotWhy(h,n,delta){
+  const c = ctl(h);
+  if (!c) return h.id === 'mini' ? 'Falta actualizar el control de este host.' : 'Este host todavía no admite cambiar lugares desde el panel.';
+  if (SLOTS.has(h.id) || c.pending) return 'Hay un cambio de lugares en curso en este host; espera su resultado.';
+  if (!c.slots) return c.reason || 'Falta actualizar el control de este host.';
+  if (!h.fresh) return 'Actualiza la instantánea antes de cambiar lugares.';
+  if (c.waiting) return 'Actualizando la instantánea con el cambio aplicado…';
+  const v = c.desired[n];
+  if (v == null) return 'Este grupo no tiene cuota en el control del host.';
+  if (delta < 0 && v <= c.min) return 'Cada grupo necesita al menos '+c.min+' lugar.';
+  if (delta > 0 && v >= c.max) return 'Un grupo admite como máximo '+c.max+' lugares.';
+  if (delta > 0 && Object.values(c.desired).reduce((a,b)=>a+b,0) >= c.cap) return 'Tope de '+c.cap+' lugares. Quita un lugar a otro grupo para añadirlo aquí.';
+  return null;
+}
+function stepper(h,n){
+  const value = ctl(h)?.desired?.[n] ?? slotsOf(h,n);
+  const button = (delta,sign,label) => { const why = slotWhy(h,n,delta);
+    return `<button type="button" data-step="${delta}" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-disabled="${!!why}" aria-label="${esc(label+' '+n)}"${why ? ` title="${esc(why)}"` : ''}>${sign}</button>`; };
+  return `<div class="step">${button(-1,'−','Quitar un lugar a')}<b>${esc(value)}</b>${button(1,'+','Dar un lugar a')}</div>`;
+}
+function slotsState(h,n){
+  const a = SLOTS.get(h.id);
+  return a && a.group === n ? `<span class="action-state" role="status">${esc(SLOT_STATE[a.status] || SLOT_STATE.applying)}</span>` : '';
+}
+function slotRequest(h,op,extra){
+  const c = ctl(h);
+  return {schema:'rack-action@1',op,host:h.id,action_id:newActionId(),dry_run:false,
+    expected:{revision:c.revision,policy_hash:c.policy_hash,slots:{...c.desired}},...extra};
+}
+function startSlots(h,n,delta){
+  const action = {request:slotRequest(h,'slots',{change:{group:n,delta}}),group:n,status:'applying'};
+  SLOTS.set(h.id,action); persistSlots(); repaintActions(); sendSlots(h.id,action);
+}
+function startUndo(hostId,data){
+  const h = S.hosts.find(x=>x.id===hostId), c = ctl(h);
+  if (!c || SLOTS.has(hostId)) { say('Hay un cambio de lugares en curso en este host; espera su resultado.'); return; }
+  const request = {schema:'rack-action@1',op:'undo',host:hostId,action_id:newActionId(),dry_run:false,
+    expected:{revision:data.revision,policy_hash:c.policy_hash,slots:{...data.result.desired}},undo_of:data.action_id};
+  const action = {request,group:SLOTS_GROUP(data.result),status:'applying'};
+  SLOTS.set(hostId,action); persistSlots(); repaintActions(); sendSlots(hostId,action);
+}
+// El grupo que cambió entre el vector previo y el aplicado.
+const SLOTS_GROUP = value => Object.keys(value.desired).find(n => value.before?.[n] !== value.desired[n]);
+function slotsMessage(data){
+  const n = SLOTS_GROUP(data.result || {desired:{}});
+  if (!n) return 'Lugares sin cambios.';
+  return (data.op === 'undo' ? 'Deshecho: ' : '') + `${n} pasa de ${data.result.before[n]} a ${data.result.desired[n]} lugares.`;
+}
+async function refreshNow(){
+  await load('/api/refresh', {method:'POST', headers:{'X-Rack-Refresh':'1'}, signal:AbortSignal.timeout(45000)}, 'No se pudo actualizar');
+}
+function acceptSlots(hostId,action,data){
+  if (data.schema !== 'rack-action@1' || data.action_id !== action.request.action_id) throw Error('Respuesta inválida');
+  if (data.status in SLOT_STATE) {
+    const changed = action.status !== data.status; action.status = data.status;
+    persistSlots(); repaintActions();
+    if (changed && data.status === 'unknown') say('Resultado desconocido: el cambio pudo aplicarse. Consultando con el mismo ID.');
+    if (changed && data.status === 'partial') say('Aplicado parcialmente: la guardia del host completa el cambio. Seguimos consultando.');
+    setTimeout(()=>pollSlots(hostId,action),2000);
+    return;
+  }
+  SLOTS.delete(hostId); persistSlots();
+  if (data.status === 'applied') {
+    CONFIRMED.set(hostId,{revision:data.revision,slots:{...data.result.desired}});
+    repaintActions();
+    // Deshacer sólo un cambio, no un deshacer; el host lo exige igual.
+    say(slotsMessage(data), data.op === 'slots' ? () => startUndo(hostId,data) : null);
+  } else {
+    repaintActions(); say(data.error?.message || 'No se pudieron cambiar los lugares.');
+  }
+  refreshNow();
+}
+async function sendSlots(hostId,action){
+  try{acceptSlots(hostId,action,await postAction(action.request));}
+  catch{action.status='unknown';persistSlots();repaintActions();say('Error de red: el cambio pudo aplicarse. Consultando con el mismo ID.');setTimeout(()=>pollSlots(hostId,action),2000);}
+}
+async function pollSlots(hostId,action){
+  if (SLOTS.get(hostId) !== action) return;
+  try{
+    const response=await fetch('/api/accion/'+encodeURIComponent(action.request.action_id),{cache:'no-store',signal:AbortSignal.timeout(15000)});
+    const data=await response.json();
+    // El panel no tiene la intención: se reenvía el mismo cuerpo una vez; el host aplica a lo sumo una vez por ID.
+    if(response.status===404 && data.schema==='rack-action@1' && data.action_id===action.request.action_id && !action.resent){
+      action.resent=true; persistSlots(); await sendSlots(hostId,action); return;
+    }
+    if(response.status===404) throw Error('status');
+    acceptSlots(hostId,action,data);
+  }catch{const changed=action.status!=='unknown';action.status='unknown';persistSlots();repaintActions();if(changed) say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollSlots(hostId,action),5000);}
+}
+for(const [hostId,action] of SLOTS) setTimeout(()=>pollSlots(hostId,action),2000);
 let last=null;
 async function load(path, options, failure){
   try{

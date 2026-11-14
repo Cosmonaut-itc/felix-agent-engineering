@@ -179,6 +179,9 @@ def validate_snapshot(data, host):
     if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in data.get('errors') or []):
         raise ValueError('Pueue no se pudo leer')
     data = copy.deepcopy(data)
+    if 'control' in data:
+        # Lugares por grupo: sólo la vista saneada del control del host, o nada.
+        data['control'] = accion.host_view(data['control'])
     for row in data['tasks']:
         if 'control' in row:
             row['control'] = accion.control_data(row['control'], row)

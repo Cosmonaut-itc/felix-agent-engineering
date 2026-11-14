@@ -56,6 +56,10 @@ class SnapshotTests(unittest.TestCase):
         usage = patch.object(snapshot, 'collect_usage', return_value=None)
         usage.start()
         self.addCleanup(usage.stop)
+        # En la Mini el HOME real tiene el control instalado: estas pruebas nunca lo consultan.
+        quotas = patch.object(snapshot, 'host_control', return_value=None)
+        quotas.start()
+        self.addCleanup(quotas.stop)
 
     def fake_pueue(self, tasks):
         data = dict(groups={'suites': dict(status='Running', parallel_tasks=3)}, tasks=tasks)

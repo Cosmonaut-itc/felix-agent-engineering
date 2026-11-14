@@ -1,4 +1,4 @@
-"""Cancelación por lanzador y diario durable. Python 3.9, biblioteca estándar."""
+"""Cancelación por lanzador, lugares por grupo y diario durable. Python 3.9, biblioteca estándar."""
 import importlib.util
 from contextlib import contextmanager
 import hashlib
@@ -52,6 +52,31 @@ JOURNAL_WAIT = .5
 
 CONTROLLERS = {'remote-run': '~/.local/lib/remote-run/run-control.py',
                'jale': '~/.local/lib/jale/pueue-control.py'}
+# Autoridad de cuotas del host (fleet/pueue-desk/control.py). Ruta fija por host;
+# el panel nunca la recibe del navegador.
+HOST_CONTROL = {'mini': '~/.local/lib/pao-pueue-mini/control.py'}
+HOST_OPS = ('slots', 'undo')
+HOST_OPEN = ('unknown', 'applying', 'partial')
+HOST_TIMEOUT = 10
+GROUP = re.compile(r'[A-Za-z0-9_-]{1,32}')
+DIGEST = re.compile(r'[0-9a-f]{64}')
+HOST_ERRORS = {
+    'invalid_request': ERRORS['invalid_request'],
+    'idempotency_conflict': ERRORS['idempotency_conflict'],
+    'disabled': ERRORS['disabled'],
+    'deadline': 'No se envió el cambio: se agotó el plazo. Consulta el mismo recibo.',
+    'stale_state': 'Los lugares cambiaron desde que los viste. Actualiza antes de decidir.',
+    'drift': 'Pueue no tiene las cuotas guardadas; la guardia las está reponiendo.',
+    'busy': 'Hay un cambio de lugares en curso en este host; espera su resultado.',
+    'min': 'Cada grupo necesita al menos 1 lugar.',
+    'max': 'Un grupo admite como máximo 8 lugares.',
+    'capacity': 'Se llenó el tope de lugares del host. Quita un lugar a otro grupo para añadirlo aquí.',
+    'undo_conflict': 'Ya no se puede deshacer: los lugares cambiaron después.',
+    'not_adopted': 'Falta actualizar el control de este host.',
+    'unsupported': 'Falta actualizar el control de este host.',
+    'unreadable': 'El estado de cuotas del host no se puede leer; no se abre ni aumenta nada.',
+    'unavailable': 'No se pudo leer Pueue en el host; no se cambió nada.',
+}
 
 
 def request_budget(host):
@@ -84,7 +109,41 @@ def expected(value):
             and value['state'] in ('Queued', 'Running'))
 
 
+def slot_vector(value):
+    return (type(value) is dict and 0 < len(value) <= 16
+            and all(type(k) is str and GROUP.fullmatch(k) and type(v) is int and 0 <= v <= 1000
+                    for k, v in value.items()))
+
+
+def validate_host(request):
+    """Closed schema per host operation; booleans are never integers."""
+    op = request['op']
+    keys = {'schema', 'op', 'host', 'action_id', 'dry_run', 'expected', 'change' if op == 'slots' else 'undo_of'}
+    expected = request.get('expected')
+    if (set(request) != keys or request['schema'] != SCHEMA
+            or type(request['host']) is not str or not re.fullmatch(r'[A-Za-z0-9_-]+', request['host'])
+            or type(request['action_id']) is not str or not ACTION.fullmatch(request['action_id'])
+            or type(request['dry_run']) is not bool
+            or type(expected) is not dict or set(expected) != {'revision', 'policy_hash', 'slots'}
+            or type(expected['revision']) is not int or expected['revision'] < 0
+            or type(expected['policy_hash']) is not str or not DIGEST.fullmatch(expected['policy_hash'])
+            or not slot_vector(expected['slots'])):
+        raise ValueError()
+    if op == 'slots':
+        change = request['change']
+        if (type(change) is not dict or set(change) != {'group', 'delta'}
+                or type(change['group']) is not str or change['group'] not in expected['slots']
+                or type(change['delta']) is not int or change['delta'] not in (-1, 1)):
+            raise ValueError()
+    elif (type(request['undo_of']) is not str or not ACTION.fullmatch(request['undo_of'])
+          or request['undo_of'] == request['action_id']):
+        raise ValueError()
+    return request
+
+
 def validate(request):
+    if type(request) is dict and request.get('op') in HOST_OPS:
+        return validate_host(request)
     keys = {'schema', 'op', 'host', 'launcher', 'ref', 'expected'}
     if type(request) is not dict or request.get('op') not in ('cancel', 'capabilities'):
         raise ValueError()
@@ -106,6 +165,89 @@ def result(request, status, code=None, exit=None, reason=None):
                 error=None if code is None else dict(code=code, message=reason or ERRORS[code]))
 
 
+def host_result(request, status, code=None, revision=None, value=None):
+    return dict(schema=SCHEMA, action_id=request.get('action_id'), op=request.get('op'),
+                host=request.get('host'), status=status, revision=revision, result=value,
+                error=None if code is None else dict(code=code, message=HOST_ERRORS[code]))
+
+
+def host_http(response):
+    status = response['status']
+    if status == 'rejected':
+        code = response['error']['code']
+        return 403 if code == 'disabled' else 400 if code == 'invalid_request' else 409
+    return 409 if status == 'conflict' else 202 if status == 'applying' else 200
+
+
+def host_view(value):
+    """Whitelist of the host's capabilities answer for the snapshot; anything else is absent."""
+    try:
+        caps, control = value['capabilities'], value['control']
+        if (value['schema'] != 'rack-host-result@1' or value['status'] != 'ok'
+                or type(caps['slots']) is not bool or type(caps['undo']) is not bool
+                or type(control['cap']) is not int or not 1 <= control['cap'] <= 64
+                or control['min'] != 1 or control['max'] != 8
+                or control['reason'] is not None and control['reason'] not in HOST_ERRORS):
+            return None
+        revision, digest = control['revision'], control['policy_hash']
+        desired, observed, pending = control['desired'], control['observed'], control['pending']
+        if (revision is not None and (type(revision) is not int or revision < 0)
+                or digest is not None and (type(digest) is not str or not DIGEST.fullmatch(digest))
+                or desired is not None and not slot_vector(desired)
+                or observed is not None and not slot_vector(observed)
+                or pending is not None and (type(pending) is not dict or set(pending) != {'action_id', 'phase'}
+                    or type(pending['action_id']) is not str or not ACTION.fullmatch(pending['action_id'])
+                    or pending['phase'] not in ('applying', 'partial'))):
+            return None
+        slots = caps['slots'] and control['reason'] is None and None not in (revision, digest, desired, observed)
+        return dict(slots=slots, undo=caps['undo'] and slots, revision=revision, policy_hash=digest,
+                    cap=control['cap'], min=1, max=8, desired=desired, observed=observed,
+                    pending=pending, reason=None if control['reason'] is None else HOST_ERRORS[control['reason']])
+    except (KeyError, TypeError):
+        return None
+
+
+def sanitize_host(request, response):
+    """Only fixed codes and integer vectors reach the browser; never controller text."""
+    if (type(response) is not dict or response.get('schema') != 'rack-host-result@1'
+            or response.get('action_id') != request['action_id'] or response.get('op') != request['op']):
+        raise ValueError()
+    status, error, revision, value = (response.get(k) for k in ('status', 'error', 'revision', 'result'))
+    if status not in ('dry_run', 'applied', 'partial', 'applying', 'rejected', 'conflict', 'unknown'):
+        raise ValueError()
+    code = None
+    if status in ('rejected', 'conflict'):
+        code = error.get('code') if type(error) is dict else None
+        if code not in HOST_ERRORS:
+            raise ValueError()
+    elif error is not None:
+        raise ValueError()
+    if revision is not None and (type(revision) is not int or revision < 0):
+        raise ValueError()
+    clean = None
+    if value is not None:
+        if type(value) is not dict or not set(value) <= {'before', 'desired', 'observed', 'plan', 'undo_of'}:
+            raise ValueError()
+        clean = {}
+        for key in ('before', 'desired', 'observed'):
+            if key in value:
+                if value[key] is not None and not slot_vector(value[key]):
+                    raise ValueError()
+                clean[key] = value[key]
+        if 'plan' in value:
+            plan = value['plan']
+            if (type(plan) is not dict or set(plan) != {'decreases', 'increases'}
+                    or any(type(v) is not list or not all(type(g) is str and GROUP.fullmatch(g) for g in v)
+                           for v in plan.values())):
+                raise ValueError()
+            clean['plan'] = plan
+        if 'undo_of' in value:
+            if type(value['undo_of']) is not str or not ACTION.fullmatch(value['undo_of']):
+                raise ValueError()
+            clean['undo_of'] = value['undo_of']
+    return host_result(request, status, code, revision, clean)
+
+
 def control_data(value, task):
     """Whitelist the snapshot's cancellation identity; never use activity/metadata."""
     if (type(value) is dict and set(value) == {'launcher', 'ref', 'expected', 'reason'}
@@ -121,8 +263,11 @@ def action_config(value):
     """Closed controller table and exact SSH argv; no configurable commands."""
     if value is None:
         return dict(transport='disabled', reason='Este host no tiene canal de escritura.', controllers={})
-    if (type(value) is not dict or set(value) != ({'transport', 'reason', 'controllers', 'argv'}
-                if value.get('transport') == 'ssh' else {'transport', 'reason', 'controllers'})
+    base = ({'transport', 'reason', 'controllers', 'argv'} if type(value) is dict and value.get('transport') == 'ssh'
+            else {'transport', 'reason', 'controllers'})
+    if (type(value) is not dict or set(value) - {'host_control'} != base
+            or 'host_control' in value and (value['transport'] != 'local'
+                                            or value['host_control'] not in HOST_CONTROL.values())
             or value['transport'] not in ('local', 'ssh', 'disabled')
             or value['transport'] == 'ssh' and value['argv'] != DESK_ARGV
             or type(value['controllers']) is not dict
@@ -146,6 +291,17 @@ def transport_reason(host, launcher):
         return 'El canal local sólo actúa sobre el host donde corre el panel.'
     if launcher not in config['controllers']:
         return 'Este lanzador no tiene controlador configurado en este host.'
+    return None
+
+
+def host_reason(host):
+    """Only the local channel next to the panel reaches its own host's control."""
+    config = action_config(host.get('actions'))
+    if config['transport'] == 'disabled':
+        return config['reason']
+    if (config['transport'] != 'local' or host.get('transport') != 'local'
+            or config.get('host_control') != HOST_CONTROL.get(host.get('id'))):
+        return HOST_ERRORS['unsupported']
     return None
 
 
@@ -174,6 +330,18 @@ class Executor:
             argv = ['/usr/bin/python3', '-I', str(controller)]
             code, response = desk_channel.send(argv, request, self.runner, env, timeout)
         if code not in ((0,) if remote else (0, 2)):
+            raise ValueError('Respuesta inválida')
+        return response
+
+    def host(self, host, request, timeout):
+        """Fixed argv to this host's own control; the request only travels on stdin."""
+        if host_reason(host):
+            raise ValueError('Transporte deshabilitado')
+        path = self.home / action_config(host['actions'])['host_control'][2:]
+        argv = ['/usr/bin/python3', '-I', str(path), 'rack', '--host', host['id']]
+        env = {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}
+        code, response = desk_channel.exchange(argv, request, self.runner, env, min(HOST_TIMEOUT, timeout))
+        if code != 0:
             raise ValueError('Respuesta inválida')
         return response
 
@@ -248,7 +416,7 @@ class Actions:
         if operation == 'post':
             validate(value)
             identity = dict(value)
-            if value['op'] == 'cancel':
+            if value['op'] == 'cancel' or value['op'] in HOST_OPS and not value['dry_run']:
                 with self.http_lock:
                     self.identities.setdefault(value['action_id'], identity)
         else:
@@ -273,7 +441,8 @@ class Actions:
             self.workers.add(worker)
         worker.start()
         if not self.wait(done, max(0, deadline - self.timer())):
-            return 200, result(identity, 'unknown')
+            return 200, (host_result(identity, 'unknown') if identity.get('op') in HOST_OPS
+                         else result(identity, 'unknown'))
         if errors:
             raise errors[0]
         return answers[0]
@@ -385,14 +554,16 @@ class Actions:
         for body, answer in db.execute('SELECT request,response FROM actions WHERE action_id != ?',
                                        (request.get('action_id', ''),)):
             previous, response = json.loads(body), json.loads(answer)
-            if response['status'] in OPEN and all(previous[k] == request[k] for k in ('host', 'launcher', 'ref')):
+            if response['status'] in OPEN and all(previous.get(k) == request[k] for k in ('host', 'launcher', 'ref')):
                 return 'Esta corrida tiene una cancelación pendiente (' + previous['action_id'] + '); consulta su recibo.'
         return None
 
     def complete(self, request, op, done, deadline):
+        host = request['op'] in HOST_OPS
+        unknown = host_result if host else result
         try:
-            response = self.call(request, op, deadline)
-            if op == 'status' and response['status'] == 'rejected':
+            response = self.host_call(request, op, deadline) if host else self.call(request, op, deadline)
+            if op == 'status' and response['status'] == 'rejected' and not host:
                 response = result(request, 'unknown')
             try:
                 with self.journal(deadline):
@@ -400,15 +571,112 @@ class Actions:
                     self.inflight.pop(request['action_id'], None)
             except TimeoutError:
                 # The committed intent still owns this ID and blocks a second cancel.
-                return 200, result(request, 'unknown')
-            return 200, response
+                return 200, unknown(request, 'unknown')
+            return (host_http(response) if host else 200), response
         finally:
             # Event.set needs no journal lock. A failed commit can be reconciled by GET.
             done.set()
 
+    def host_eligible(self, request):
+        """Better message before transport; the host validates everything again."""
+        host = self.hosts.get(request['host'])
+        if host is None:
+            return 'unsupported'
+        if host_reason(host):
+            return 'unsupported'
+        payload = self.read()
+        current = next((h for h in payload['hosts'] if h['id'] == request['host']), None)
+        if (not current or not current['fresh'] or current.get('age') is None or current['age'] > 45
+                or self.clock() - payload['now'] > 45):
+            return 'stale_state'
+        control = (current.get('snapshot') or {}).get('control')
+        if not control or not control.get('slots'):
+            return 'unsupported'
+        expected = request['expected']
+        if (control['revision'] != expected['revision'] or control['policy_hash'] != expected['policy_hash']
+                or control['desired'] != expected['slots'] or control['observed'] != expected['slots']):
+            return 'stale_state'
+        return None
+
+    def host_pending(self, db, request):
+        for body, answer in db.execute('SELECT request,response FROM actions WHERE action_id != ?',
+                                       (request['action_id'],)):
+            previous, response = json.loads(body), json.loads(answer)
+            if previous.get('op') in HOST_OPS and previous['host'] == request['host'] and response['status'] in HOST_OPEN:
+                return True
+        return False
+
+    def host_call(self, request, op, deadline):
+        """One host exchange. status that finds no intent resends the same body once:
+        the host binds the ID before any effect, so it applies at most once."""
+        wire = dict(schema='rack-host-control@1', op=request['op'], action_id=request['action_id'],
+                    dry_run=request['dry_run'], expected=request['expected'])
+        wire.update({'change': request['change']} if request['op'] == 'slots' else {'undo_of': request['undo_of']})
+        for attempt in (('status', wire) if op == 'status' else (wire,)):
+            remaining = deadline - self.timer() - RECEIPT_RESERVE
+            if remaining < MIN_TRANSPORT:
+                return host_result(request, 'unknown') if op == 'status' else host_result(request, 'rejected', 'deadline')
+            if attempt == 'status':
+                attempt = dict(schema='rack-host-control@1', op='status', action_id=request['action_id'])
+            try:
+                answer = self.executor.host(self.hosts[request['host']], attempt, timeout=remaining)
+                if attempt['op'] == 'status':
+                    answer = dict(answer, op=request['op']) if type(answer) is dict else answer
+                    if type(answer) is dict and answer.get('status') == 'rejected' and \
+                            (answer.get('error') or {}).get('code') == 'not_found' and answer.get('action_id') == request['action_id']:
+                        if self.disabled():
+                            return host_result(request, 'unknown')
+                        continue
+                response = sanitize_host(request, answer)
+            except Exception:
+                return host_result(request, 'unknown')
+            return response if self.timer() <= deadline - RECEIPT_RESERVE else host_result(request, 'unknown')
+        return host_result(request, 'unknown')
+
+    def post_host(self, request, started):
+        deadline = started + request_budget(request['host'])
+        if request['dry_run']:
+            # Dry run: no journal row, no reservation; the host does not write either.
+            code = self.host_eligible(request)
+            if code:
+                response = host_result(request, 'conflict' if code == 'stale_state' else 'rejected', code)
+                return host_http(response), response
+            response = self.host_call(request, 'dry_run', deadline)
+            return host_http(response), response
+        body = json.dumps(request, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+        digest = hashlib.sha256(body.encode()).hexdigest()
+        try:
+            with self.journal(deadline - RECEIPT_RESERVE):
+                with self.connect(deadline) as db:
+                    db.execute('BEGIN IMMEDIATE')
+                    row = db.execute('SELECT digest,response FROM actions WHERE action_id=?', (request['action_id'],)).fetchone()
+                    if row:
+                        if row[0] != digest:
+                            return 409, host_result(request, 'rejected', 'idempotency_conflict')
+                        stored = json.loads(row[1])
+                        return host_http(stored), stored
+                    db.execute('INSERT INTO actions (action_id,digest,request,response,created,updated) VALUES (?,?,?,?,?,?)',
+                               (request['action_id'], digest, body, json.dumps(host_result(request, 'unknown')),
+                                self.clock(), self.clock()))
+                    # Rejections also bind the ID. No transport before this commit.
+                    code = ('disabled' if self.disabled() else 'busy' if self.host_pending(db, request)
+                            else self.host_eligible(request))
+                    if code:
+                        rejected = host_result(request, 'conflict' if code == 'stale_state' else 'rejected', code)
+                        db.execute('UPDATE actions SET response=? WHERE action_id=?',
+                                   (json.dumps(rejected), request['action_id']))
+                        return host_http(rejected), rejected
+                done = threading.Event()
+                self.inflight[request['action_id']] = done
+        except TimeoutError:
+            return 503, host_result(request, 'unknown', 'deadline')
+        return self.complete(request, request['op'], done, deadline)
+
     def post(self, request, started=None):
         started = self.timer() if started is None else started
         validate(request)
+        if request['op'] in HOST_OPS:
+            return self.post_host(request, started)
         if request['op'] == 'cancel':
             with self.http_lock:
                 self.identities.setdefault(request['action_id'], dict(request))
@@ -467,7 +735,7 @@ class Actions:
                     if row is None:
                         return 404, result(identity, 'unknown')
                     request, response = map(json.loads, row[:2])
-                    if response['status'] not in OPEN or self.active(action_id):
+                    if response['status'] not in (HOST_OPEN if request['op'] in HOST_OPS else OPEN) or self.active(action_id):
                         return 200, response
                     if request['host'] == 'desk':
                         now = self.clock()

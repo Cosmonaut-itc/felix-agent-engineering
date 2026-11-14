@@ -2,6 +2,7 @@
 """Instala o retira sólo la guardia local de la Mini; nunca administra pueued."""
 import argparse
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,31 @@ LAUNCHCTL = "/bin/launchctl"
 
 def run(*args, check=True):
     return subprocess.run(list(args), check=check, text=True, capture_output=True)
+
+
+def controller():
+    """El control.py que se va a instalar, cargado desde este checkout."""
+    spec = importlib.util.spec_from_file_location("pao_pueue_control", SOURCE / "control.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def check_authority(control, state, status):
+    """Antes de cualquier cambio: una autoridad existente debe leerse; si no hay,
+    Pueue debe tener exactamente el perfil. Nunca se adopta una tabla por defecto."""
+    if (state / control.STORE).exists():
+        with control.Store(state / control.STORE, readonly=True) as store:
+            store.view()
+    elif control.observed_slots(status) != control.MINI_PROFILE:
+        raise ValueError(f"Cuotas de Pueue distintas del perfil {control.MINI_PROFILE}: "
+                         f"{control.observed_slots(status)}. Fijarlas con {PUEUE} parallel N -g GRUPO")
+
+
+def adopt(control, state, status):
+    with (state / "control.lock").open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        control.adopt(state, status)
 
 
 def resume_owned(state):
@@ -73,10 +99,12 @@ def main():
         if args.command == "instalar":
             print(f"SECO: comprobar {LAUNCHCTL} print {domain}/sh.brew.pueue")
             print(f"SECO: comprobar {PUEUE} status --json (grupos suites y default)")
+            print(f"SECO: leer {state / 'control.sqlite3'} o, si no existe, exigir suites=3 default=1 rapidas=3")
         print(f"SECO: si está cargado, {LAUNCHCTL} bootout {service}")
         if args.command == "instalar":
             print(f"SECO: copiar {SOURCE / 'control.py'} -> {library / 'control.py'}")
             print(f"SECO: crear {state} y renderizar plist -> {agent}")
+            print(f"SECO: bajo {state / 'control.lock'}, adoptar el perfil en control.sqlite3 si aún no existe")
             print("SECO: " + shlex.join([LAUNCHCTL, "bootstrap", domain, str(agent)]))
         else:
             print(f"SECO: {PUEUE} start -g <grupo> para cada grupo que pausó la guardia, y vaciar su propiedad")
@@ -89,6 +117,8 @@ def main():
         status = json.loads(run(PUEUE, "status", "--json").stdout)
         if not isinstance(status.get("tasks"), dict) or not {"suites", "default"} <= status["groups"].keys():
             raise ValueError("Pueue incompleto: se necesitan suites y default")
+        control = controller()
+        check_authority(control, state, status)
         template = plistlib.loads((SOURCE / "launchagents" / (LABEL + ".plist")).read_bytes())
         for key in ("ProgramArguments", "StandardOutPath", "StandardErrorPath"):
             value = template[key]
@@ -101,6 +131,8 @@ def main():
             library.mkdir(parents=True, exist_ok=True)
             state.mkdir(parents=True, exist_ok=True)
             agent.parent.mkdir(parents=True, exist_ok=True)
+            # Con la guardia descargada y antes de instalar el controlador nuevo.
+            adopt(control, state, status)
             # Copia y reemplazo atómico: un fallo a medias deja intacto el archivo anterior.
             for target, write in ((library / "control.py", lambda path: shutil.copy2(SOURCE / "control.py", path)),
                                   (agent, lambda path: path.write_bytes(plistlib.dumps(template)))):

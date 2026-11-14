@@ -15,7 +15,8 @@
       "reason": null,
       "controllers": {
         "remote-run": "~/.local/lib/remote-run/run-control.py"
-      }
+      },
+      "host_control": "~/.local/lib/pao-pueue-mini/control.py"
     }
   },
   {

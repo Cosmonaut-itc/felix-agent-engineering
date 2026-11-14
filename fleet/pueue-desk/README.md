@@ -137,6 +137,84 @@ siguen en pausa y el comando `pueue start -g` para reanudarlos.
 corridas de `remote-run` encolan en `suites`, o en `rapidas` con `--carril rapido`; las corridas de Jale en la Mini
 no pasan por Pueue y esta guardia no las frena.
 
+### Lugares por grupo (U3.1)
+
+El panel del rack cambia `parallel` de `suites`, `default` y `rapidas` de uno
+en uno. El perfil es `suites=3 default=1 rapidas=3`. Cada grupo admite de 1
+a 8 lugares y la suma no pasa del tope 7, que es la suma del perfil. El host
+valida todo otra vez; el panel sólo explica antes de enviar. Si la suma ya
+supera el tope, sólo se acepta bajar, sin subir ningún otro grupo. Bajar
+`parallel` no detiene lo que corre: sólo deja de admitir corridas nuevas.
+
+**Estado deseado.** La autoridad es
+`~/.local/state/pao/pueue-mini/control.sqlite3`, con `synchronous=FULL` y
+`fullfsync=ON`, bajo el mismo `control.lock` que la guardia:
+
+- `meta`: esquema, host, `revision`, `policy_hash` del perfil y fecha de adopción.
+- `desired`: los lugares deseados por grupo, con el `action_id` y el actor del último cambio.
+- `host_actions`: un recibo por `action_id`, con su digest, el vector previo, el
+  destino y la fase (`applying`, `partial` o `verified`).
+
+Una sola transacción guarda la intención, el deseo nuevo y la revisión antes de
+cualquier llamada a Pueue. Un ajuste dura hasta otro cambio manual, también
+después de reiniciar `pueued`: Pueue guarda `parallel` en memoria, y la
+guardia lo repone desde este archivo. La propiedad de las pausas sigue en
+`guardia-state.json`, separada del perfil.
+
+**Canal.** `control.py rack --host mini` lee un JSON `rack-host-control@1` por
+stdin y responde un `rack-host-result@1`. Toma `control.lock` con espera
+acotada de 4 s y nunca crea la instalación. Las operaciones son:
+
+| Operación | Efecto |
+| --- | --- |
+| `capabilities` | Revisión, `policy_hash`, tope, deseo, observado, cambio pendiente y razón. |
+| `status` | El recibo guardado del `action_id`, o `not_found`. |
+| `slots` | `change: {group, delta: ±1}` sobre el `expected` que vio el panel. |
+| `undo` | Vuelve al vector previo de un `slots` verificado, sólo en su misma revisión. |
+
+Con `dry_run: true`, `slots` y `undo` devuelven el plan (`decreases`,
+`increases`) y la deriva, si la hay, sin escribir, sin crear archivos y sin
+reparar. Un mismo `action_id` con el mismo cuerpo devuelve el mismo recibo y
+nunca aplica dos veces; con otro cuerpo responde `idempotency_conflict`. Un
+cambio abierto bloquea el siguiente (`busy`). Si Pueue no coincide con el deseo,
+responde `drift` y no cambia nada. Al aplicar, las bajadas van antes que las
+subidas, y cada etapa se confirma con una lectura nueva. `0` en Pueue es
+ilimitado y cuenta como exceso.
+
+**Recuperación.** La guardia es el único recuperador de la Mini. En cada ciclo
+lleva `parallel` al deseo, con bajadas primero, y cierra los recibos abiertos
+cuyo destino ya se observa. Abre un grupo sólo con el deseo aplicado. Si
+`control.sqlite3` falta o no se puede leer, la guardia todavía puede pausar,
+pero no abre ni cambia `parallel`, no aplica ninguna tabla por defecto y sale
+con error. Después de reiniciar `pueued`, Pueue deja en pausa los grupos con
+corridas en fila. Esa pausa no es de la guardia. Para que la guardia la tome y
+la abra cuando la presión lo permita, usar por ssh:
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar suites --host mini
+```
+
+**Instalación.** `install-mini.py instalar` adopta el perfil una sola vez:
+
+- Si existe `control.sqlite3`, lo lee y lo conserva. Si no lo puede leer, aborta antes de cualquier cambio.
+- Si no existe, exige que Pueue tenga exactamente el perfil. Si no lo tiene,
+  aborta y nombra `pueue parallel N -g GRUPO`.
+
+Reinstalar conserva el ajuste. `desinstalar` también conserva el archivo.
+Para volver al perfil, bajar o subir los lugares desde el panel. Para
+retirar la autoridad, descargar antes la guardia con `desinstalar`. Luego
+renombrar el archivo, por ejemplo a `control.sqlite3.retirado-AAAAMMDD`; la
+siguiente instalación vuelve a exigir el perfil. Para volver al controlador
+anterior, instalar desde el commit previo: esa guardia ignora el archivo y el
+panel deja los botones − y + sin efecto, con la razón «Falta actualizar el
+control de este host».
+
+Pruebas de U3.1: `tests/test_slots_mini.py` (dobles en proceso),
+`tests/mutate_slots.py` (una mutación por regla, también del panel) y
+`tests/private_slots.py`. Este último corre sólo por `remote-run` contra un
+`pueued` privado, con su configuración, socket y directorio en `/tmp`. Lo
+detiene por su pid al terminar.
+
 Pruebas en la Mini, siempre mediante su Pueue:
 
 ```sh

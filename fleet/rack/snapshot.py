@@ -173,6 +173,18 @@ def mini_guard():
     return None
 
 
+def host_control(home, mode):
+    """Vista de cuotas del control instalado; sin control nuevo, el panel no ofrece ±."""
+    path = home / '.local/lib/pao-pueue-mini/control.py'
+    if mode != 'macos' or not path.is_file():
+        return None
+    answer = subprocess.run(['/usr/bin/python3', '-I', str(path), 'rack', '--host', 'mini'],
+                            input=json.dumps(dict(schema='rack-host-control@1', op='capabilities')),
+                            check=True, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=8,
+                            env=dict(HOME=str(home), PATH='/usr/bin:/bin', TMPDIR='/tmp')).stdout
+    return json.loads(answer)
+
+
 def disk(path):
     stat = os.statvfs(path)
     return dict(total=stat.f_blocks * stat.f_frsize, free=stat.f_bavail * stat.f_frsize)
@@ -423,6 +435,9 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
         output['cpu']['psi_avg60'] = attempt('psi', lambda: float(re.search(r'^some .*avg60=([\d.]+)', (proc / 'pressure/cpu').read_text())[1]))
     output['disk'] = attempt('disk', lambda: disk('/System/Volumes/Data' if mode == 'macos' and Path('/System/Volumes/Data').exists() else '/'))
     output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home))
+    control = attempt('control', lambda: host_control(home, mode))
+    if control is not None:
+        output['control'] = control
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
     cache, references = {}, {}
     if data:
