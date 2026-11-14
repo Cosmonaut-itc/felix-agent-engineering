@@ -36,6 +36,8 @@ if name == "pueue":
         state["groups"][args[2]] = {"status": "Running", "parallel_tasks": int(args[4])}
     elif args[:2] == ["group", "remove"]:
         del state["groups"][args[2]]
+    elif args[0] == "parallel" and (root / "parallel-falla").exists():
+        sys.exit("parallel falló")
     elif args[0] == "parallel":
         assert 1 <= int(args[1]) <= 8
         state["groups"][args[3]]["parallel_tasks"] = int(args[1])
@@ -348,6 +350,21 @@ class DeploymentTests(Fixture):
         self.assertEqual(groups["otros"]["parallel_tasks"], 2)
         self.assertEqual(json.loads((guard_dir / "guardia-state.json").read_text()), ["hasito"])
         # Con pg5434 aún en su estado, el guardia abortaba cada minuto.
+        self.metrics()
+        with control.locked(guard_dir):
+            control.guard(self.pueue, self.proc, guard_dir)
+
+    def test_failed_quotas_still_leave_a_state_the_guard_accepts(self):
+        guard_dir = self.root / ".local/state/pao/pueue-desk"
+        guard_dir.mkdir(parents=True)
+        (guard_dir / "guardia-state.json").write_text(json.dumps(["hasito", "pg5434"]))
+        (self.root / "parallel-falla").touch()
+        result = self.deploy()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("parallel falló", result.stderr)
+        self.assertEqual(json.loads((guard_dir / "guardia-state.json").read_text()), ["hasito"])
+        # Pueue se recupera: el guardia sigue sin repetir la instalación.
+        (self.root / "parallel-falla").unlink()
         self.metrics()
         with control.locked(guard_dir):
             control.guard(self.pueue, self.proc, guard_dir)

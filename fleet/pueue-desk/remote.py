@@ -85,6 +85,14 @@ def remote(action, dry):
         print("Retiro completo; cola y estado de Pueue conservados. Linger se conserva")
 
 
+def drop_retired_owned():
+    """Quita los grupos retirados del estado del guardia. Pide el candado tomado."""
+    target = STATE_DIR / "guardia-state.json"
+    owned = set(json.loads(target.read_text())) if target.exists() else set()
+    if owned & set(RETIRED_GROUPS):
+        save_owned(STATE_DIR, owned - set(RETIRED_GROUPS))
+
+
 def install(home, units, library, timers, pueue):
     units.mkdir(parents=True, exist_ok=True)
     library.mkdir(parents=True, exist_ok=True)
@@ -94,6 +102,10 @@ def install(home, units, library, timers, pueue):
         temporary = target.with_suffix(target.suffix + ".tmp")
         temporary.write_text(rendered)
         temporary.replace(target)
+    # Antes de cualquier paso que pueda fallar: el controlador ya publicado
+    # aborta si su estado nombra un grupo retirado.
+    with locked(STATE_DIR):
+        drop_retired_owned()
     run("systemctl", "--user", "daemon-reload")
     run("systemctl", "--user", "enable", "--now", "pueued.service", *timers)
     # Si ya estaba activo, pueue-desk-mode no vuelve a arrancar solo.
@@ -108,9 +120,6 @@ def install(home, units, library, timers, pueue):
             else:
                 pueue.call("group", "remove", group)
                 print(f"Grupo {group} vacío retirado")
-        # El guardia rechaza un grupo propio que ya no está en la tabla.
-        target = STATE_DIR / "guardia-state.json"
-        owned = set(json.loads(target.read_text())) if target.exists() else set()
-        if owned & set(RETIRED_GROUPS):
-            save_owned(STATE_DIR, owned - set(RETIRED_GROUPS))
+        # Un guardia anterior que aún corría pudo volver a anotarlos.
+        drop_retired_owned()
     print("Servicio y timers habilitados; linger permite arrancar sin login interactivo")
