@@ -567,7 +567,8 @@ def validate_configuration(home=None, config_path=None, data=None, pid_file=None
 
 
     daemon_config = config.get('daemon', {})
-    if daemon_config.get('env_vars', {}) != {} or 'shell_command' in daemon_config:
+    # Pueue 4.0.4 writes `shell_command: null` for its default shell.
+    if daemon_config.get('env_vars', {}) != {} or daemon_config.get('shell_command') is not None:
         raise ValueError('daemon.env_vars o shell_command complejo no soportado; conservar configuración')
     return dict(data=data, pid_file=pid_file)
 
