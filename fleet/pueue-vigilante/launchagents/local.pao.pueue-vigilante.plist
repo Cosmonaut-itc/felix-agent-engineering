@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>local.pao.pueue-vigilante</string>
+  <key>ProgramArguments</key><array>
+    <string>/usr/bin/python3</string><string>-I</string>
+    <string>@HOME@/.local/lib/pao-pueue-vigilante/vigilante.py</string>
+    <string>pasada</string><string>--host</string><string>mini</string>
+    <string>--pueue</string><string>/opt/homebrew/bin/pueue</string>
+    <string>--modo</string><string>@MODO@</string>
+  </array>
+  <key>StartInterval</key><integer>60</integer>
+  <key>StandardOutPath</key><string>@HOME@/.local/state/pao/pueue-vigilante/launchd.out.log</string>
+  <key>StandardErrorPath</key><string>@HOME@/.local/state/pao/pueue-vigilante/launchd.err.log</string>
+</dict></plist>
