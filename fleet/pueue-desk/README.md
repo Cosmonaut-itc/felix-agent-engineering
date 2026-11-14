@@ -21,7 +21,7 @@ Noche: [05:00Z, 14:00Z). La suma es 14/18; Pueue no impone un máximo global.
 prueba dirigida; cada lanzador corta sus tareas a los 600 s. `pesadas` recibe
 las suites de horas (`contract` y `e2e` completas de Jale) para que no ocupen
 todo `jale`, y `jale-verify` las sesiones de verify, que ya eran de una en una.
-Mientras el lanzador de Jale no las enrute, esos dos grupos quedan vacíos. Los timers
+El lanzador de Jale las enruta desde SEN-HASO/Jale#705. Los timers
 y el arranque aplican el modo UTC vigente, sin interrumpir tareas vivas.
 Usar sólo esos grupos; `default` y otros grupos quedan fuera de estas cuotas.
 `otros` es de los repositorios sin grupo propio: `remote-run` encola ahí toda
@@ -45,7 +45,8 @@ La tabla sale de la medición del 2026-11-13 sobre el historial de Pueue
 - Las sesiones de verify retuvieron 8 % de las horas-lugar de `jale`, y 29
   salieron con 75 por su candado tras esperar turno.
 
-`jale` baja a 4/5 cuando el lanzador de Jale enrute a `pesadas`. En la Mini,
+`jale` se queda en 5/7 con ese enrutamiento, por decisión de Felix: sus lugares
+quedan para las corridas cortas, que son las que hacen fila. En la Mini,
 `suites` queda en 3 y `rapidas` en 3; ahí la tabla no aplica y se fija con
 `/opt/homebrew/bin/pueue parallel 3 -g rapidas`.
 
