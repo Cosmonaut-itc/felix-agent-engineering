@@ -52,8 +52,11 @@ es la lista local explícita de heads sensibles autorizados por Felix; no se
 deduce permiso de un comentario cualquiera. No subir configuración privada.
 `gh api --method GET` usa su propia sesión; ningún token va en argv.
 
-CI exige checks completados con success y el último status de cada contexto
-verde; ausencia, skipped o neutral retienen. Todas las páginas se leen. Un
+CI exige la corrida más nueva de cada check completada con success y el
+último status de cada contexto verde; una corrida cancelada que un re-run
+reemplazó no cuenta. Ausencia, skipped o neutral retienen. `checks_esperados`
+(opcional) lista nombres que deben existir; `[]` declara un repo sin CI, y
+sólo entonces cero checks cuenta como verde. Todas las páginas se leen. Un
 inventario de archivos truncado retiene. El head se relee antes de terminar.
 Alto riesgo queda excluido por defecto en el piloto; deshabilitar
 `excluir_alto_riesgo` permite planearlo solo y con Verificado. Sensibles

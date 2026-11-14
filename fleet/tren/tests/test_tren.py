@@ -373,7 +373,7 @@ class ObservadorTests(Aislado):
         self.pr = {"head": {"sha": HEAD}, "base": {"sha": BASE, "ref": "main"},
                    "state": "open", "changed_files": 1, "labels": [], "mergeable": True}
         self.archivos = [[{"filename": "src/app.py"}]]
-        self.checks = [{"check_runs": [{"status": "completed", "conclusion": "success"}]}]
+        self.checks = [{"check_runs": [{"id": 1, "name": "lint", "status": "completed", "conclusion": "success"}]}]
         self.statuses = [[]]
         self.llamadas = []
 
@@ -440,7 +440,7 @@ class ObservadorTests(Aislado):
         self.assertIsInstance(self.decision(), Admitido)
 
     def test_pagina_dos_ci_pendiente_retiene(self):
-        self.checks.append({"check_runs": [{"status": "in_progress", "conclusion": None}]})
+        self.checks.append({"check_runs": [{"id": 2, "name": "tests", "status": "in_progress", "conclusion": None}]})
         self.assertEqual(self.decision(), Retenido(Motivo.CI))
 
     def test_status_nuevo_pendiente_no_oculto_por_verde(self):
@@ -450,6 +450,27 @@ class ObservadorTests(Aislado):
 
     def test_ci_ausente_retiene(self):
         self.checks = [{"check_runs": []}]
+        self.assertEqual(self.decision(), Retenido(Motivo.CI))
+
+    def test_ci_vacio_declarado_admite(self):
+        self.checks = [{"check_runs": []}]
+        self.config["checks_esperados"] = []
+        self.assertIsInstance(self.decision(), Admitido)
+
+    def test_check_esperado_ausente_retiene(self):
+        self.config["checks_esperados"] = ["lint", "e2e"]
+        self.assertEqual(self.decision(), Retenido(Motivo.CI))
+        self.config["checks_esperados"] = ["lint"]
+        self.assertIsInstance(self.decision(), Admitido)
+
+    def test_rerun_supera_corrida_cancelada(self):
+        self.checks = [{"check_runs": [
+            {"id": 9, "name": "lint", "status": "completed", "conclusion": "success"},
+            {"id": 3, "name": "lint", "status": "completed", "conclusion": "cancelled"}]}]
+        self.assertIsInstance(self.decision(), Admitido)
+        self.checks = [{"check_runs": [
+            {"id": 3, "name": "lint", "status": "completed", "conclusion": "success"},
+            {"id": 9, "name": "lint", "status": "completed", "conclusion": "failure"}]}]
         self.assertEqual(self.decision(), Retenido(Motivo.CI))
 
     def test_archivos_truncados_retienen(self):

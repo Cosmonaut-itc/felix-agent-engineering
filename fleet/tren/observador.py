@@ -80,17 +80,26 @@ class GitHubGit:
     def ci(self, repo, head):
         # --slurp retains every page of both APIs, including >100 checks/statuses.
         paginas = self.api("repos/{}/commits/{}/check-runs?per_page=100".format(repo, head), True)
-        checks = [c for pagina in paginas for c in pagina["check_runs"]]
+        # A re-run leaves the superseded run (often cancelled) on the same head;
+        # only the newest run per check name decides.
+        checks = {}
+        for c in sorted((c for pagina in paginas for c in pagina["check_runs"]),
+                        key=lambda c: c["id"]):
+            checks[c["name"]] = c
         paginas_status = self.api("repos/{}/commits/{}/statuses?per_page=100".format(repo, head), True)
         statuses = [s for pagina in paginas_status for s in pagina]
         # Status API returns newest first. A newer pending status supersedes green.
         ultimos = {}
         for status in statuses:
             ultimos.setdefault(status["context"], status["state"])
-        if not checks and not ultimos:
+        esperados = self.config.get("checks_esperados")
+        if esperados is not None and any(n not in checks for n in esperados):
+            return "pendiente"
+        # Zero checks counts as green only when the repo declares an empty CI.
+        if not checks and not ultimos and esperados != []:
             return "pendiente"
         return "verde" if (all(c["status"] == "completed" and c["conclusion"] == "success"
-                               for c in checks)
+                               for c in checks.values())
                            and all(s == "success" for s in ultimos.values())) else "pendiente"
 
     def vista(self, entrega):
