@@ -1,0 +1,101 @@
+#!/usr/bin/env python3
+"""CLI U1: entrega durable y planificación en sombra; activación deshabilitada."""
+import argparse
+import json
+from pathlib import Path
+import re
+import sqlite3
+import subprocess
+import sys
+import time
+
+# Script location is trusted, independent of cwd, including python -I invocations.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from dominio import Entrega, datos, paso
+from ledger import Ledger
+from observador import GitHubGit, configuracion, sha
+
+
+def repositorio(valor):
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", valor):
+        raise argparse.ArgumentTypeError("repo debe ser owner/repo")
+    return valor
+
+
+def head(valor):
+    if not sha(valor):
+        raise argparse.ArgumentTypeError("head debe ser SHA40 hexadecimal minúsculo")
+    return valor
+
+
+def positivo(valor):
+    numero = int(valor)
+    if numero <= 0:
+        raise argparse.ArgumentTypeError("pr debe ser positivo")
+    return numero
+
+
+def parser():
+    cli = argparse.ArgumentParser(description=__doc__)
+    comandos = cli.add_subparsers(dest="comando", required=True)
+    entregar = comandos.add_parser("entregar")
+    entregar.add_argument("--repo", required=True, type=repositorio)
+    entregar.add_argument("--pr", required=True, type=positivo)
+    entregar.add_argument("--head", required=True, type=head)
+    entregar.add_argument("--apto", required=True)
+    entregar.add_argument("--dirigida", required=True)
+    estado = comandos.add_parser("estado")
+    estado.add_argument("--repo", required=True, type=repositorio)
+    estado.add_argument("--juicio", action="store_true")
+    tick = comandos.add_parser("tick")
+    tick.add_argument("--repo", required=True, type=repositorio)
+    tick.add_argument("--seco", action="store_true")
+    tick.add_argument("--config", help="JSON privado por repo; por defecto state/config.json")
+    return cli
+
+
+def ejecutar(args, observador=None, ahora=None):
+    if args.comando == "tick" and not args.seco:
+        return 2, {"error": "activación en una unidad posterior"}
+    ledger = Ledger()
+    ahora = time.time() if ahora is None else ahora
+    try:
+        if args.comando == "entregar":
+            # Freeze relative local references, so subsequent ticks can have another cwd.
+            refs = [v if v.startswith("https://") else str(Path(v).resolve())
+                    for v in (args.apto, args.dirigida)]
+            entrega = Entrega(args.repo, args.pr, args.head, *refs)
+            recibo = ledger.entregar(entrega, ahora)
+            return 0, {"recibo": recibo, "estado": "custodia"}
+        if args.comando == "estado":
+            return 0, {"estado": datos(ledger.estado(args.repo)),
+                       "sombra": datos(ledger.estado(args.repo, sombra=True)),
+                       "eventos": ledger.ultimos_eventos(args.repo)}
+        with ledger.candado(args.repo):
+            estado = ledger.estado(args.repo, sombra=True)
+            if observador is None:
+                ruta = args.config or ledger.directorio / "config.json"
+                observador = GitHubGit(configuracion(ruta, args.repo))
+            observacion = observador.observar(estado, ahora)
+            nuevo, efectos = paso(estado, observacion)
+            plan = ledger.sombra(nuevo, efectos, ahora)
+            return 0, {"modo": "sombra", "plan": plan}
+    finally:
+        ledger.close()
+
+
+def main():
+    args = parser().parse_args()
+    try:
+        codigo, resultado = ejecutar(args)
+    except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
+        # Do not echo subprocess argv/output or private config/evidence paths.
+        codigo, resultado = 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
+    except sqlite3.Error:
+        codigo, resultado = 2, {"error": "ledger no disponible"}
+    print(json.dumps(resultado, sort_keys=True, ensure_ascii=False))
+    return codigo
+
+
+if __name__ == "__main__":
+    sys.exit(main())
