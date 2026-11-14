@@ -511,6 +511,9 @@ reparto quedan retenidos, sin apropiarse de sus cuotas ni abrirlos.
 - `ExecStop` registra identidades activas antes de una parada administrada; si
   stock ya guardó su `Killed`, la próxima preparación conserva su motivo.
   Un Killed previo sin esa evidencia no se atribuye a un reinicio ni a cancelación.
+  Por eso las paradas operativas pasan por systemd: un `pueue shutdown` externo
+  puede terminar antes de que ExecStop observe las identidades y deja sólo Killed,
+  sin motivo atribuible. Stock no distingue ese caso de un kill o cancelación previa.
 
 El snapshot conserva para la tarea identificada por id + created_at el texto
 **«Interrumpida al reiniciar Pueue; relanzar manualmente»**. No fabrica recibos
@@ -563,6 +566,9 @@ servicio compartido. Conservar respaldo SQLite mediante `backup` bajo
    Sólo retira sus propias marcas tras comprobar el deseo y reactiva timers;
    un mantenimiento previo, incluido un enlace roto, se conserva. Ante fallo,
    deja mantenimiento y cuotas apagadas para completar o revertir explícitamente.
+   Una reinstalación conserva esas marcas previas: retirarlas manualmente sólo
+   después de verificar publicación, unidad cargada, autoridad y cuotas. Reactivar
+   los timers después de quitar el mantenimiento propio; no borrar marcas ajenas.
 4. Comprobar sin reiniciar:
 
    ```sh

@@ -433,6 +433,10 @@ def read_queue(path):
     if os.path.lexists(path.with_suffix(".json.gz")):
         raise ValueError("Se requiere compress_state_file: false; no se altera el estado comprimido")
     value = json.loads(path.read_text(), object_pairs_hook=unique_object)
+    return validate_queue(value)
+
+
+def validate_queue(value):
     if not isinstance(value, dict) or not isinstance(value.get("tasks"), dict) or not isinstance(value.get("groups"), dict):
         raise ValueError("Estado Pueue incompleto; arranque abortado sin reemplazar la cola")
     try:
@@ -652,6 +656,7 @@ def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, bo
         raise ValueError('PID configurado difiere de la autoridad')
     assert_offline(engine.pueue, config['pid_file'])
     state = engine.resolve(stored)
+    state['startup_version'] = 1
     prior = state.get('startup', {})
     disk_hash = queue_hash(queue)
     if prior.get('phase') == 'intent':
@@ -665,8 +670,10 @@ def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, bo
                 raise ValueError('Intención de arranque inconsistente')
         elif digest != prior['target_hash']:
             raise ValueError('Cola cambió durante preparación; conservar archivos')
+    validate_queue(queue)  # an intent reconstructed from authority is validated too
     # Re-project even after a crash: an event may have expired overrides meanwhile.
     state, image = startup_plan(queue, state, engine.clock(), config['data'], engine.profile)
+    validate_queue(image)  # validate the exact bytes to be published, before intent
     state['startup']['source_hash'] = disk_hash
     # Carry recovered statuses forward if the disk still contains the old image.
     if prior.get('phase') == 'intent':
@@ -796,8 +803,11 @@ class MiniControl:
                for g, r in value['reasons'].items()):
             raise ValueError('Propiedad inválida')
         startup = value.get('startup')
+        if ('startup_version' in value and (type(value['startup_version']) is not int or value['startup_version'] != 1)
+                or any('startup' in r for r in value['reasons'].values()) and startup is None):
+            raise ValueError('Versión o propiedad de arranque inválida')
         if startup is not None:
-            if (type(startup) is not dict or startup.get('phase') not in ('intent', 'prepared', 'ready')
+            if (value.get('startup_version') != 1 or type(startup) is not dict or startup.get('phase') not in ('intent', 'prepared', 'ready')
                     or any(type(startup.get(k)) is not dict for k in ('statuses', 'groups', 'holds', 'interruptions'))
                     or any(type(g) is not str or type(reason) is not str for g, reason in startup['holds'].items())
                     or any(not re.fullmatch('[0-9a-f]{64}', startup.get(k, '')) for k in ('source_hash', 'target_hash'))):
@@ -1092,7 +1102,11 @@ class MiniControl:
             raise ValueError('Intención de retiro inválida')
         snapshot = self.pueue.status()
         if any(t['group'] == group for t in snapshot['tasks'].values()):
-            raise ValueError('Grupo con tareas; retiro retenido')
+            state.pop('retire_intent', None)
+            state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
+            with self.connect(write=True) as db:
+                self.store(db, state)
+            return False
         if group in snapshot['groups']:
             self.pueue.call('group', 'remove', group)
         if group in self.pueue.status()['groups']:
@@ -1289,7 +1303,7 @@ class MiniControl:
                         raise ValueError('Deseo o daemon cambiaron antes de admitir')
                     if self.resolve(state) != state:  # guard: after status and daemon identity
                         raise ValueError('Evento antes de abrir por presión')
-                    if not self.admission_ready(state):
+                    if not self.admission_ready(state, group=g, proc=proc):
                         continue
                     self.pueue.call('start', '-g', g)
                     reasons.discard('startup')
@@ -1306,7 +1320,7 @@ class MiniControl:
             log(self.directory, 'sin_reconciliar', detalle=type(failure).__name__)
             raise failure
 
-    def admission_ready(self, state):
+    def admission_ready(self, state, group=None, proc=Path('/proc')):
         if os.path.lexists(self.directory / 'maintenance'):
             return False
         if state.get('startup') and state['startup']['phase'] != 'ready':
@@ -1317,6 +1331,11 @@ class MiniControl:
                 observed, _ = self.observed()
                 if observed != state['desired'] or self.generation(state) != state['generation']:
                     return False
+                if group is not None:
+                    current = pressure(proc)  # Docker/identity reads can take time too
+                    threshold = RAPIDAS_THRESHOLDS['desk'] if group == 'rapidas' else PRESSURE_THRESHOLDS
+                    if decide('desk', current, threshold) != 'reanudar':
+                        return False
             except (OSError, ValueError, KeyError, subprocess.SubprocessError):
                 return False
         return self.resolve(state) == state
@@ -1333,7 +1352,7 @@ class MiniControl:
             current = pressure_mini() if self.host == 'mini' else pressure(Path('/proc'))
             if decide(self.host, current, threshold) != 'reanudar' or self.resolve(state) != state:
                 raise ValueError('La presión no permite admitir')
-            if not self.admission_ready(state):
+            if not self.admission_ready(state, group=group):
                 raise ValueError('Mantenimiento o Docker no preparado; admisión retenida')
             if state.get('startup', {}).get('phase') not in (None, 'ready'):
                 raise ValueError('Arranque sin verificar')

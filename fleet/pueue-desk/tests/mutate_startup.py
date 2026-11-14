@@ -67,6 +67,16 @@ CASES=[
   'InstallerStartupTests.test_additive_install_keeps_pid_desire_receipts_and_loads_unit_without_restart'),
  ('graceful-stop-identity','control.py',"state.get('stop_tasks', {}).get(ident) == task['created_at']","True",
   'StartupTests.test_graceful_stop_marks_only_active_identities_before_terminal_killed'),
+ ('fresh-after-docker','control.py',"                    if decide('desk', current, threshold) != 'reanudar':","                    if False:",
+  'StartupTests.test_pressure_and_generation_are_fresh_after_docker'),
+ ('validated-reconstructed-image','control.py',("    validate_queue(queue)  # an intent reconstructed from authority is validated too","    validate_queue(image)  # validate the exact bytes to be published, before intent"),("    pass","    pass"),
+  'StartupTests.test_reconstructed_intent_must_pass_same_queue_validator_before_writes'),
+ ('startup-authority-version','control.py',"        if ('startup_version' in value and (type(value['startup_version']) is not int or value['startup_version'] != 1)","        if (False and (type(value['startup_version']) is not int or value['startup_version'] != 1)",
+  'StartupTests.test_corrupt_startup_version_or_unattributed_reason_is_not_authority'),
+ ('startup-owner-proof','control.py',"or any('startup' in r for r in value['reasons'].values()) and startup is None","or False",
+  'StartupTests.test_corrupt_startup_version_or_unattributed_reason_is_not_authority'),
+ ('legacy-retirement-progress','control.py',"            state.pop('retire_intent', None)","            pass  # retain stale retirement",
+  'StartupTests.test_explicit_retirement_is_recoverable_and_refuses_tasks'),
  ('legacy-retirement-tasks','control.py',"        if any(t['group'] == group for t in snapshot['tasks'].values()):\n            raise ValueError('Grupo con tareas; no se retira')",
   "        if False:\n            raise ValueError('Grupo con tareas; no se retira')",'StartupTests.test_explicit_retirement_is_recoverable_and_refuses_tasks'),
 ]
@@ -77,8 +87,11 @@ def main():
         with tempfile.TemporaryDirectory(prefix='u34-sol-mut-',dir='/tmp') as folder:
             root=Path(folder)/'pueue-desk';shutil.copytree(BASE,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
             path=root/filename;source=path.read_text()
-            assert source.count(before)==1,(name,'nonunique anchor')
-            path.write_text(source.replace(before,after))
+            changes=zip(before,after) if isinstance(before,tuple) else [(before,after)]
+            for original,replacement in changes:
+                assert source.count(original)==1,(name,'nonunique anchor')
+                source=source.replace(original,replacement)
+            path.write_text(source)
             result=subprocess.run([sys.executable,'-B','-m','unittest','test_startup.'+test,'-v'],cwd=str(root/'tests'),
                                   text=True,capture_output=True,timeout=15,env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'))
             assert result.returncode==1 and 'FAIL:' in result.stderr and 'ERROR:' not in result.stderr,name+' survived or failed outside assertion:\n'+result.stderr

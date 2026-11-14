@@ -157,8 +157,10 @@ class StartupTests(DeskFixture):
         self.assertEqual(self.p.calls,[])
 
     def test_event_crosses_prepare_and_expired_advance_adjustments_are_not_reinstated(self):
-        state=self.state();state['overrides']['jale']=dict(slots=6,actor='Felix',action_id='old-slots-0001',requested_at=self.now,expires_at=utc('2026-11-14T14:00:00'))
-        state['desired']['jale']=6
+        state=self.state();state['mode_override']=dict(mode='dia',actor='Felix',action_id='old-mode-0001',requested_at=self.now,expires_at=utc('2026-11-14T14:00:00'))
+        state['desired']=control.mode_profile('dia')
+        state['overrides']['jale']=dict(slots=4,actor='Felix',action_id='old-slots-0001',requested_at=self.now,expires_at=utc('2026-11-14T14:00:00'))
+        state['desired']['jale']=4
         with self.engine.connect(write=True) as db:self.engine.store(db,state)
         def boundary(phase):
             if phase=='queue':self.now=utc('2026-11-14T14:00:00')
@@ -259,9 +261,12 @@ class StartupTests(DeskFixture):
         with patch.object(self.p,'status',side_effect=busy):
             with self.assertRaises(ValueError):self.engine.retire_empty('suites')
             self.assertEqual(self.engine.path.read_bytes(),before)
+            state=self.state();state['retire_intent']='suites'
+            with self.engine.connect(write=True) as db:self.engine.store(db,state)
             for _ in range(3):
                 with patch.object(control,'pressure',return_value=self.low):self.engine.guard(self.low)
         self.assertIn('suites',self.p.groups)
+        self.assertNotIn('retire_intent',self.state())
         self.assertEqual(self.p.groups['jale']['status'],'Running')
 
     def test_graceful_stop_marks_only_active_identities_before_terminal_killed(self):
@@ -281,6 +286,70 @@ class StartupTests(DeskFixture):
              patch.object(control.sys,'argv',['control.py','preparar','--host','desk']):
             with self.assertRaises(ValueError):control.main()
         self.assertEqual(self.fingerprint(),before)
+
+
+    def test_reconstructed_intent_must_pass_same_queue_validator_before_writes(self):
+        with self.assertRaises(RuntimeError):
+            self.prepare(boundary=lambda phase: (_ for _ in ()).throw(RuntimeError()) if phase=='intent' else None)
+        state=self.state();intent=state['startup']
+        invalid=copy.deepcopy(self.queue);invalid['groups']=intent['groups']
+        invalid['tasks']['0']['status']={'Done':dict(enqueued_at=STAMP,start=STAMP,end='2026-11-14T13:00:00+00:99',result='Killed')}
+        intent['statuses']['0']=invalid['tasks']['0']['status'];intent['target_hash']=control.queue_hash(invalid)
+        with self.engine.connect(write=True) as db:self.engine.store(db,state)
+        before=self.fingerprint()
+        with self.assertRaises(ValueError):self.prepare()
+        self.assertEqual(self.fingerprint(),before)
+
+    def test_pressure_and_generation_are_fresh_after_docker(self):
+        self.prepare();self.boot();current=[self.low]
+        def docker(*a,**kw):
+            current[0]=dict(self.low,memory=1024**3)
+            return subprocess.CompletedProcess(a,0,'','')
+        with patch.object(control,'pressure',side_effect=lambda *a:current[0]),patch.object(control.subprocess,'run',side_effect=docker):
+            self.engine.guard(self.low)
+        self.assertFalse(any(c[0]=='start' for c in self.p.calls))
+        current[0]=self.low
+        with patch.object(control,'pressure',return_value=self.low):self.engine.guard(self.low)
+        self.assertEqual(self.p.groups['jale']['status'],'Running')
+
+    def test_pending_quota_intent_expires_before_startup_admission(self):
+        request=self.request()
+        with patch.object(self.engine,'reconcile',side_effect=OSError('crash before RPC')):
+            self.assertEqual(self.engine.handle(request)['status'],'unknown')
+        self.now=utc('2026-11-14T14:00:00');self.prepare();self.boot()
+        with patch.object(control,'pressure',return_value=self.low):self.engine.guard(self.low)
+        answer=self.engine.handle(dict(schema=control.HOST_SCHEMA,op='status',action_id=request['action_id']))
+        self.assertEqual(answer['status'],'aborted')
+        self.assertTrue(answer['result']['expired'])
+        self.assertEqual(answer['result']['observed'],control.desk_profile(self.now))
+        self.assertEqual(self.p.groups['jale']['parallel_tasks'],5)
+
+    def test_missing_managed_groups_are_created_closed_and_pressure_ownership_survives(self):
+        self.engine.guard(dict(self.low,memory=1024**3))
+        self.queue['groups']=copy.deepcopy(self.p.groups);del self.queue['groups']['rapidas'];self.write()
+        image=self.prepare()
+        self.assertEqual(image['groups']['rapidas'],dict(status='Paused',parallel_tasks=3))
+        self.assertEqual(self.state()['reasons']['rapidas'],['pressure','startup'])
+        self.boot()
+        with patch.object(control,'pressure',return_value=dict(self.low,memory=1024**3)):
+            self.engine.guard(dict(self.low,memory=1024**3))
+        self.assertIn('pressure',self.state()['reasons']['jale'])
+        self.assertEqual(self.p.groups['jale']['status'],'Paused')
+        with patch.object(control,'pressure',return_value=self.low):self.engine.guard(self.low)
+        self.assertEqual(self.p.groups['jale']['status'],'Running')
+
+
+    def test_corrupt_startup_version_or_unattributed_reason_is_not_authority(self):
+        before_state=self.state()
+        for case in ('version','boolean','ownership'):
+            state=copy.deepcopy(before_state)
+            if case=='ownership':state['reasons']['jale']=['startup']
+            else:state['startup_version']=True if case=='boolean' else 2
+            with self.engine.connect(write=True) as db:self.engine.store(db,state)
+            before=self.fingerprint()
+            with self.assertRaises(ValueError):self.prepare()
+            self.assertEqual(self.fingerprint(),before)
+        with self.engine.connect(write=True) as db:self.engine.store(db,before_state)
 
 
 
