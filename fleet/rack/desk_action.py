@@ -194,6 +194,18 @@ def environment():
 
 
 def handle(raw, runner=subprocess.Popen):
+    # Additive host variant is explicitly unavailable on desk in U3.1.
+    try:
+        data = decode(raw)
+        if (type(data) is dict and set(data) == {'schema', 'target', 'request'}
+                and data['schema'] == SCHEMA and data['target'] == 'host-control'
+                and type(data['request']) is dict and data['request'].get('schema') == 'rack-host-control@1'):
+            return dict(schema='rack-host-result@1', action_id=data['request'].get('action_id'),
+                        status='unsupported', capabilities=dict(slots=False, undo=False, dry_run=False,
+                        mode=False, reorder=False, restart_queue=False),
+                        error=dict(code='unsupported', message='El desk no admite ajustes desde este canal.')), 0
+    except (ValueError, TypeError, RecursionError):
+        pass
     try:
         launcher, request = parse(raw)
     except LookupError:

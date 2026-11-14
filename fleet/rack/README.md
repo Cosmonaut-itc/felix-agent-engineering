@@ -670,3 +670,55 @@ reenvían cancel en GET. Borra las copias al salir.
 
 `tests/rack-fixture.json` conserva la instantánea realista para las pruebas de
 lectura y render existentes, sin comandos ni rutas.
+
+## Botones −/+ de la Mini
+
+U3.1 habilita lugares y deshacer únicamente en la Mini con el controlador adoptado.
+Perfil `suites=3`, `default=1`, `rapidas=3`, tope 7; incluye `default` aun vacío.
+El «+» al llenar el tope explica: «Tope de 7 lugares. Quita un lugar a otro grupo
+para añadirlo aquí.» En 1/8 se deshabilita la dirección correspondiente. La cifra
+sigue siendo observada mientras se aplica; un parcial muestra observado/deseado,
+y unknown conserva el ID y consulta sin reenviar el POST, incluso tras recargar.
+El toast ofrece Deshacer durante 8 s desde la confirmación visible. Una instantánea
+anterior a la revisión confirmada no revierte visualmente el número.
+
+Se conserva `rack-action@1` y el mismo `POST /api/accion`/`GET /api/accion/<id>`:
+
+```json
+{"schema":"rack-action@1","op":"host_capabilities","host":"mini"}
+```
+
+`slots` usa claves exactas `schema,op,host,action_id,dry_run,expected,change`;
+`expected` contiene `revision,policy_hash,generation,mode:"fijo",slots` con el
+vector completo. `change` contiene `group` y `delta:-1|1`. `undo` sustituye
+`change` por `undo_of`; el before se obtiene del recibo durable del host.
+`dry_run:true` devuelve plan, bajadas y subidas sin crear recibos ni recuperar.
+El host vuelve a validar límites, tope y expectativas bajo `control.lock`.
+Los recibos del rack vinculan ID/cuerpo antes del transporte. Un mismo ID con
+otro cuerpo es conflicto; no se elimina su deduplicación al rotar logs.
+
+El nuevo destino lógico es `host-control`, con `rack-host-control@1` por stdin
+hacia la ruta fija `~/.local/lib/pao-pueue-mini/control.py rack --host mini`, usando
+Python aislado y transporte acotado. No acepta actor, comandos o rutas del navegador.
+Los contratos cancel/capabilities de lanzador de C3–C5 conservan su forma.
+Se mantienen whois fresco del dueño, tailnet, Host permitido y Origin exacto;
+ningún fallback abre SSH o ejecuta shell a partir de datos. La variante host del
+despachador desk responde no disponible. Día/Noche, reordenar y reinicios se
+anuncian `false`; un controlador antiguo deja cuotas deshabilitadas sin romper
+la lectura ni «Cancelar…».
+
+Instalar **primero** el controlador Mini siguiendo
+`fleet/pueue-desk/README.md`, con `install-mini.py instalar --cuotas`. Después
+instalar este rack con `instalar.sh`: ahora incluye `host_action.py` junto a los
+archivos anteriores. Sin adopción/capacidad válida no se habilitan los botones.
+`slots.disabled` en `~/.local/state/pao/pueue-mini` apaga sólo estos ajustes;
+`actions.disabled` del rack mantiene su significado de interruptor general.
+Ni uno ni otro abandona el deseo ya aceptado. Para revertir el panel se puede
+restaurar su versión anterior conservando controlador, SQLite y guardia nuevos.
+La pausa ambigua tras reinicio se resuelve por SSH con `control.py reanudar`,
+sin botón nuevo y sin promesa de reapertura automática todavía.
+
+Verificación dirigida: `tests/test_slots.py` ejecuta el canal con Pueue/reloj y
+transporte sintéticos, autorización HTTP y el JavaScript de producción mediante
+`tests/slots-ui-check.js`. Las mutaciones nuevas están en
+`fleet/pueue-desk/tests/mutate_slots.py`; nunca usan colas reales.

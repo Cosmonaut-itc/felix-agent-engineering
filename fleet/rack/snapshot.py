@@ -416,6 +416,17 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
             output['errors'].append(dict(stage=stage, message='Lectura fallida: ' + type(error).__name__))
             return None
 
+    controller = home / '.local/lib/pao-pueue-mini/control.py'
+    if host == 'mini' and mode == 'macos' and controller.is_file():
+        def read_control():
+            answer = subprocess.run(['/usr/bin/python3', '-I', str(controller), 'rack', '--host', 'mini'],
+                input=json.dumps(dict(schema='rack-host-control@1', op='capabilities')),
+                check=True, text=True, capture_output=True, timeout=5)
+            if len(answer.stdout) > 16384:
+                raise ValueError('Respuesta excesiva')
+            return json.loads(answer.stdout)
+        output['control'] = attempt('control', read_control)
+
     capacity = attempt('capacity', lambda: mac_capacity() if mode == 'macos' else linux_capacity(proc))
     if capacity:
         output['cpu'], output['mem'] = capacity
