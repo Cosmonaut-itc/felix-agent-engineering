@@ -19,6 +19,8 @@ def unit_properties():
     result = run('systemctl', '--user', 'show', 'pueued.service',
                  *[arg for key in SHOWN for arg in ('-p', key)])
     values = dict(line.split('=', 1) for line in result.stdout.splitlines() if '=' in line)
+    # systemd omite una lista Exec vacía, incluso con --all: la unidad previa a U3.4 no tiene ExecStartPre.
+    values.setdefault('ExecStartPre', '')
     if set(values) != set(SHOWN):
         raise ValueError('systemctl show incompleto')
     return values
