@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import tempfile
+import sys
 
 FLEET = Path(__file__).resolve().parents[2]
 # directory, file, original, replacement, targeted test
@@ -33,10 +34,10 @@ CASES = [
  ('pueue-desk','control.py',"target.lstat()",'target.stat()','SlotsTests.test_host_switch_rejects_new_effect_but_accepted_recovery_continues'),
 
  ('pueue-desk','control.py',"self.store(db, state)  # ownership/intention precedes pause RPC",'pass','SlotsTests.test_pause_intention_durable_before_effect'),
- ('pueue-desk','control.py',"if decide('mini', current, RAPIDAS_THRESHOLDS['mini'] if g == 'rapidas' else MINI_THRESHOLDS) != 'reanudar':",'if False:','SlotsTests.test_fresh_pressure_prevents_reopen_after_low_initial_sample'),
+ ('pueue-desk','control.py',"if decide(self.host, current, RAPIDAS_THRESHOLDS[self.host] if g == 'rapidas' else thresholds) != 'reanudar':",'if False:','SlotsTests.test_fresh_pressure_prevents_reopen_after_low_initial_sample'),
  ('pueue-desk','control.py',"can_open = failure is None",'can_open = True','SlotsTests.test_guard_never_opens_before_desire_verified'),
 
- ('pueue-desk','control.py',"if observed != state['desired']:\n                validate_target(observed, state['desired'])",'if False:\n                pass','SlotsTests.test_recovery_never_increases_above_cap_even_for_grandfathered_desire'),
+ ('pueue-desk','control.py',"if observed != state['desired']:\n                validate_target(observed, state['desired'], self.host, self.cap(state))",'if False:\n                pass','SlotsTests.test_recovery_never_increases_above_cap_even_for_grandfathered_desire'),
  ('pueue-desk','control.py','type(value) is not int or not 1 <= value <= 8','not isinstance(value, int) or not 1 <= value <= 8','SlotsTests.test_host_limits_boolean_zero_nine_and_complete_vector'),
  ('pueue-desk','control.py','not 1 <= value <= 8','not 0 <= value <= 9','SlotsTests.test_host_limits_boolean_zero_nine_and_complete_vector'),
  ('pueue-desk','control.py','if sum(target.values()) > cap and not monotonic:', 'if False:', 'SlotsTests.test_host_cap_counts_paused_groups'),
@@ -53,9 +54,9 @@ CASES = [
  ('pueue-desk','control.py',"if observed[g] != n or self.generation(state) != generation:",'if False:','SlotsTests.test_unconfirmed_reduction_never_runs_increases'),
  ('pueue-desk','control.py',"previous['revision'] != state['revision']",'False','SlotsTests.test_undo_strict_revision_and_no_inverse_when_state_changed'),
  ('pueue-desk','control.py',"'ambiguous'})","'manual'})",'SlotsTests.test_restart_lost_parallel_is_reconciled_without_opening_ambiguous_or_foreign_groups'),
- ('pueue-desk','control.py',"if host == 'mini' and has_authority(directory):",'if False:','SlotsTests.test_actual_guard_dispatch_never_falls_back_when_authority_corrupt'),
- ('pueue-desk','control.py',"if calculated != value['desired']:",'if False:','SlotsTests.test_invalid_desire_metadata_does_not_apply_default'),
- ('pueue-desk','control.py',"'pressure' if g in owned and g in MINI_PROFILE else 'manual'","'pressure' if g in owned else 'manual'",'SlotsTests.test_import_ownership_separate_profile_including_missing_legacy_groups'),
+ ('pueue-desk','control.py',"if has_authority(directory):\n        engine =",'if False:\n        engine =','SlotsTests.test_actual_guard_dispatch_never_falls_back_when_authority_corrupt'),
+ ('pueue-desk','control.py',"if calculated != value['desired'] and not migrating:",'if False:','SlotsTests.test_invalid_desire_metadata_does_not_apply_default'),
+ ('pueue-desk','control.py',"'pressure' if g in owned and g in self.profile else 'manual'","'pressure' if g in owned else 'manual'",'SlotsTests.test_import_ownership_separate_profile_including_missing_legacy_groups'),
  ('pueue-desk','control.py',"decision = rapid if g == 'rapidas' else normal",'decision = normal','SlotsTests.test_guard_pressure_rapidas_and_manual_takeover'),
  ('rack','accion.py',"if request['op'] == 'host_capabilities' or request.get('dry_run') is True:","if request['op'] == 'host_capabilities':",'ChannelTests.test_dry_run_and_capabilities_do_not_create_receipts_or_recover'),
  ('rack','host_action.py',"type(c['delta']) is not int or",'False or','ChannelTests.test_public_host_variants_closed_without_breaking_cancel'),
@@ -66,15 +67,228 @@ CASES = [
  ('pueue-desk', 'control.py', 'except errors as error:\n                    can_open, failure = False, error\n                continue', 'except errors as error:\n                    raise\n                continue', 'SlotsTests.test_failed_pause_rpc_does_not_skip_other_groups'),
  ('pueue-desk', 'control.py', 'self.store(db, state)  # ownership/intention precedes pause RPC\n                except errors as error:\n                    can_open, failure = False, error\n                    try:', 'self.store(db, state)  # ownership/intention precedes pause RPC\n                except errors as error:\n                    can_open, failure = False, error\n                    continue\n                    try:', 'SlotsTests.test_failed_authority_write_closes_but_never_grants_future_reopen'),
  ('pueue-desk', 'control.py', 'if os.path.lexists(self.pause_fence(g)):', 'if False:', 'SlotsTests.test_failed_authority_write_closes_but_never_grants_future_reopen'),
- ('rack', 'host_action.py', "response.get('receipt_digest') != digest or response.get('effects') is not False", 'False', 'ChannelTests.test_unbound_or_effectful_terminal_and_generic_unsupported_remain_unknown'),
+ ('rack', 'host_action.py', "response.get('receipt_digest') != digest or status != 'aborted' and response.get('effects') is not False and not scheduled", 'False', 'ChannelTests.test_unbound_or_effectful_terminal_and_generic_unsupported_remain_unknown'),
  ('rack', 'accion.py', 'and not verified:', 'and True:', 'ChannelTests.test_lost_durable_rejection_recovers_terminal_without_resend'),
  ('rack', 'index.html', '(!response.ok && !hostTerminal)', '!response.ok', 'ChannelTests.test_production_ui_slots'),
  ('rack', 'tests/safety.py', ", 'control.py'", '', 'ChannelTests.test_installed_controller_is_forbidden_by_audit_hook'),
 ]
 
+# Each new safety branch has a directed assertion, also run on desk Python 3.12.
+DESK_CASES = [
+ ('pueue-desk','control.py',"if event != state['schedule_event']:","if mode_at(datetime.fromtimestamp(event, timezone.utc)) != self.mode(state):",'DeskSlotsTests.test_missed_whole_day_expires_by_event_identity_even_same_mode'),
+ ('pueue-desk','control.py',"prior.get('schedule_event') != state['schedule_event']",'False','DeskSlotsTests.test_undo_after_event_rejected_without_rpc_even_if_timer_missed'),
+ ('pueue-desk','control.py',"state = self.resolve(self.state(db))\n            pending =",'state = self.state(db)\n            pending =','DeskSlotsTests.test_queries_ensayo_and_stale_event_request_never_recover_or_write'),
+ ('pueue-desk','control.py',"self.store(db, state)  # durable expiration precedes any RPC",'pass  # lost durable expiration','DeskSlotsTests.test_missed_whole_day_expires_by_event_identity_even_same_mode'),
+ ('pueue-desk','control.py',"state = self.resolve(self.state(db))\n            if op == 'undo':","state = self.state(db)\n            if op == 'undo':",'DeskSlotsTests.test_undo_after_event_rejected_without_rpc_even_if_timer_missed'),
+ ('pueue-desk','control.py',"if expired and not failure:",'if False:','DeskSlotsTests.test_expiration_supersedes_pending_intent_and_never_undoes_new_table'),
+ ('pueue-desk','control.py',"if self.resolve(state) != state:\n                return self.reconcile()",'if False:\n                return self.reconcile()','DeskSlotsTests.test_reconcile_event_crossed_in_final_identity_without_receipts'),
+ ('pueue-desk','control.py',"if has_authority(directory):\n                    if not engine.reconcile():",'if False:\n                    if not engine.reconcile():','DeskSlotsTests.test_timer_entry_preserves_live_override_then_expires'),
+ ('pueue-desk','control.py',"self.directory / 'maintenance', ",'','DeskSlotsTests.test_maintenance_blocks_mutation_recovery_and_opening'),
+ ('pueue-desk','control.py',"return 7 if self.host == 'mini' else sum(desk_profile(state['schedule_event']).values())",'return 7','DeskSlotsTests.test_verified_table_caps_and_reserved_default'),
+ ('pueue-desk','control.py',"if sum(target.values()) > cap and not monotonic:",'if False:','DeskSlotsTests.test_min_max_caps_count_paused_in_both_modes_and_monotonic_repair'),
+ ('pueue-desk','control.py',"type(value) is not int or not 1 <= value <= 8",'not isinstance(value, int) or not 1 <= value <= 8','DeskSlotsTests.test_host_validates_limits_booleans_vector_revision_hash_generation_mode'),
+ ('pueue-desk','control.py',"self.store(db, state)\n            db.execute('INSERT INTO host_actions","self.store(db, state)\n            db.commit()\n            db.execute('INSERT INTO host_actions",'DeskSlotsTests.test_atomic_desire_and_intent_rollback_and_unverified_reduction'),
+ ('pueue-desk','control.py',"if observed[g] != n or self.generation(state) != generation:",'if False:','DeskSlotsTests.test_atomic_desire_and_intent_rollback_and_unverified_reduction'),
+ ('pueue-desk','control.py',"'pressure' if g in owned and g in self.profile else 'manual'","'pressure' if g in owned else 'manual'",'DeskSlotsTests.test_import_ownership_separate_from_six_group_profile'),
+ ('pueue-desk','control.py',"if status == 'Running' and 'pressure' in reasons:",'if False:','DeskSlotsTests.test_pressure_guard_rapidas_ladder_manual_pause_and_external_start'),
+ ('pueue-desk','control.py',"decision = rapid if g == 'rapidas' else normal",'decision = normal','DeskSlotsTests.test_pressure_guard_rapidas_ladder_manual_pause_and_external_start'),
+ ('pueue-desk','control.py',"status = ('rejected' if request['op'] in ('slots', 'undo') else","status = ('unknown' if request['op'] in ('slots', 'undo') else",'DeskSlotsTests.test_panel_lock_wait_is_terminal_and_guard_rpc_timeout_remains_unbounded'),
+ ('pueue-desk','install-desk.py',"migration = policy_plan(engine)\n            if migration is None:",'migration = None\n            if migration is None:', 'DeskInstallTests.test_table_migration_seco_and_install_retire_overrides_atomically'),
+ ('pueue-desk','install-desk.py',"enable_after = False",'enable_after = True','DeskInstallTests.test_installer_migrates_under_lock_preserves_switch_receipts_and_restart_free'),
+ ('rack','host_action.py',"expires_at=expires, undo_of=",'expires_at=None, undo_of=','DeskChannelTests.test_desk_post_undo_and_sanitized_expiration_no_private_fields'),
+ ('rack','index.html',"const capable=c?.capabilities?.slots===true", "const capable=h.id==='mini' && c?.capabilities?.slots===true",'DeskChannelTests.test_desk_host_capabilities_snapshots_and_ui'),
+ ('rack','index.html',"if(expired){",'if(false){','DeskChannelTests.test_desk_host_capabilities_snapshots_and_ui'),
+ ('rack','accion.py',"if host['id'] == 'desk' and host['transport'] == 'ssh' and config['transport'] == 'ssh':",'if False:','DeskChannelTests.test_executor_forced_envelope_fixed_key_expanded_paths_no_shell'),
+]
+
+
+DESK_CASES += [('pueue-desk',
+  'control.py',
+  'if self.foreign_work and any(target[g] > before[g] for g in target):',
+  'if False:',
+  'DeskSlotsTests.test_foreign_work_blocks_increases_but_allows_safe_reductions'),
+
+ ('pueue-desk',
+  'control.py',
+  "sum(task['group'] not in self.profile for task in live_tasks(snapshot))",
+  '0',
+  'DeskSlotsTests.test_foreign_work_blocks_increases_but_allows_safe_reductions'),
+ ('pueue-desk',
+  'control.py',
+  "if self.host == 'desk' and op == 'slots' and not request['dry_run']:",
+  'if False:',
+  'DeskSlotsTests.test_real_slots_recovers_missed_timer_before_judging_fresh_projection'),
+ ('pueue-desk',
+  'control.py',
+  "if self.host == 'desk' and op == 'slots' and not request['dry_run']:",
+  "if self.host == 'desk' and op in ('slots', 'undo') and not request['dry_run']:",
+  'DeskSlotsTests.test_undo_after_event_rejected_without_rpc_even_if_timer_missed'),
+ ('pueue-desk',
+  'control.py',
+  "if self.host == 'desk' and op == 'slots' and not request['dry_run']:",
+  "if self.host == 'desk' and op == 'slots':",
+  'DeskSlotsTests.test_queries_ensayo_and_stale_event_request_never_recover_or_write'),
+ ('pueue-desk',
+  'control.py',
+  "if args.host == 'desk' and not has_authority(directory):",
+  'if False:',
+  'DeskSlotsTests.test_unadopted_cli_is_unsupported_but_lost_authority_stays_closed'),
+ ('pueue-desk',
+  'control.py',
+  "if self.host == 'desk' and not has_authority(self.directory):",
+  'if False:',
+  'DeskSlotsTests.test_unadopted_cli_is_unsupported_but_lost_authority_stays_closed'),
+ ('pueue-desk',
+  'control.py',
+  "('control.adopted', 'control.sqlite3')",
+  "('control.sqlite3',)",
+  'DeskSlotsTests.test_unadopted_cli_is_unsupported_but_lost_authority_stays_closed'),
+ ('pueue-desk',
+  'install-desk.py',
+  'install(Path.home(), args.pid_file, control, dry_run=args.seco)',
+  'if args.seco: return\n    install(Path.home(), args.pid_file, control, dry_run=args.seco)',
+  'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
+ ('pueue-desk',
+  'install-desk.py',
+  'if observed != control.desk_profile(engine.clock()):',
+  'if False:',
+  'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
+ ('pueue-desk',
+  'install-desk.py',
+  'control.mini_generation(pid_file)',
+  'pass  # unchecked PID',
+  'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
+ ('pueue-desk',
+  'install-desk.py',
+  'for name in TIMERS:',
+  'for name in ():',
+  'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
+ ('pueue-desk',
+  'install-desk.py',
+  "with authority_lock(directory):\n            migration = policy_plan(engine)\n            if migration is None:\n                engine.view()  # unreadable authority never grants re-adoption\n            engine.install_migration = migration",
+  'pass  # unchecked authority',
+  'DeskInstallTests.test_seco_runs_readonly_preflight_and_rejects_invalid_adoption'),
+ ('pueue-desk',
+  'install-desk.py',
+  "run('systemctl', '--user', 'stop', *TIMERS, *SERVICES)",
+  'pass  # old workers still live',
+  'DeskInstallTests.test_installer_retires_old_worker_waiting_before_lock_before_adoption'),
+ ('pueue-desk',
+  'control.py',
+  'if expired and not failure:',
+  'if expired:',
+  'DeskSlotsTests.test_expired_partial_never_becomes_terminal_before_new_table_verified'),
+ ('rack',
+  'host_action.py',
+  "result['foreign_work'] = foreign",
+  "result['foreign_work'] = 0",
+  'DeskChannelTests.test_foreign_work_diagnostic_is_sanitized_and_host_rejection_is_terminal'),
+ ('rack',
+  'host_action.py',
+  'if type(foreign) is not int or foreign < 0:',
+  'if False:',
+  'DeskChannelTests.test_foreign_work_diagnostic_is_sanitized_and_host_rejection_is_terminal'),
+ ('rack',
+  'index.html',
+  "const outside=h.id==='desk' && n==='default';",
+  'const outside=false;',
+  'DeskChannelTests.test_desk_host_capabilities_snapshots_and_ui'),
+ ('rack',
+  'index.html',
+  "if(c?.foreign_work) message+=",
+  "if(false) message+=",
+  'DeskChannelTests.test_desk_host_capabilities_snapshots_and_ui'),
+ ('rack',
+  'desk_action.py',
+  "str(HOST_CONTROLLER), 'rack', '--host', 'desk'",
+  "str(HOST_CONTROLLER), 'rack', '--host', 'mini'",
+  'DeskForcedChannelTests.test_end_to_end_forced_slots_undo_receipts_and_ensayo')]
+
+
+DESK_CASES += [('rack',
+  '../pueue-desk/control.py',
+  "schedule_recovery=view['schedule_event']",
+  'schedule_recovery=None',
+  'DeskChannelTests.test_lost_missed_timer_conflict_recovers_bound_receipt_without_resend'),
+ ('rack',
+  'host_action.py',
+  "scheduled = (request['host'] == 'desk' and request['op'] == 'slots' and request['dry_run'] is False",
+  "scheduled = (True or request['host'] == 'desk' and request['op'] == 'slots' and request['dry_run'] is False",
+  'DeskChannelTests.test_lost_missed_timer_conflict_recovers_bound_receipt_without_resend'),
+ ('rack',
+  'host_action.py',
+  "event == view['schedule_event']",
+  'True',
+  'DeskChannelTests.test_lost_missed_timer_conflict_recovers_bound_receipt_without_resend'),
+ ('rack',
+  'host_action.py',
+  'and not scheduled:',
+  'and True:',
+  'DeskChannelTests.test_lost_missed_timer_conflict_recovers_bound_receipt_without_resend')]
+
+
+DESK_CASES += [
+ ('pueue-desk','control.py',
+  "if self.resolve(state) != state:  # guard: after status and daemon identity",
+  "if False:  # guard: after status and daemon identity",
+  'DeskSlotsTests.test_guard_event_crossed_in_final_status_or_generation_never_starts'),
+ ('pueue-desk','control.py',
+  "if self.resolve(state) != state:  # manual: after status and daemon identity",
+  "if False:  # manual: after status and daemon identity",
+  'DeskSlotsTests.test_manual_resume_event_crossed_in_final_status_or_generation'),
+ ('pueue-desk','control.py',
+  "if self.resolve(state) != state:  # revalidate each receipt after DB reads",
+  "if False:  # revalidate each receipt after DB reads",
+  'DeskSlotsTests.test_confirmation_event_crossed_in_final_receipt_read'),
+ ('pueue-desk','control.py',
+  '                self.pueue.parallel(g, n)',
+  "                if self.foreign_work and n > observed[g]:\n                    raise ValueError('Trabajo ajeno')\n                self.pueue.parallel(g, n)",
+  'DeskSlotsTests.test_night_event_with_foreign_work_preserves_pressure_reopening'),
+ ('pueue-desk','control.py',
+  'if not can_open:\n                        self.fence_pause(g)',
+  'if not can_open or self.foreign_work:\n                        self.fence_pause(g)',
+  'DeskSlotsTests.test_night_event_with_foreign_work_preserves_pressure_reopening'),
+ ('rack','index.html',
+  '&& !c.foreign_work', '&& true',
+  'DeskChannelTests.test_desk_host_capabilities_snapshots_and_ui'),
+ ('pueue-desk','install-desk.py',
+  "if any(a['response']['status'] in ('applying', 'partial', 'unknown') for a in actions):",
+  'if False:',
+  'DeskInstallTests.test_table_migration_rejects_open_receipts_and_corrupt_authority_without_effects'),
+ ('pueue-desk','install-desk.py',
+  "overrides={}, schedule_event=event, revision=state['revision'] + 1)",
+  "overrides=state['overrides'], schedule_event=event, revision=state['revision'] + 1)",
+  'DeskInstallTests.test_table_migration_seco_and_install_retire_overrides_atomically'),
+ ('pueue-desk','install-desk.py',
+  "revision=state['revision'] + 1)", "revision=state['revision'])",
+  'DeskInstallTests.test_table_migration_seco_and_install_retire_overrides_atomically'),
+ ('pueue-desk','install-desk.py',
+  'engine.store(db, migration)  # one transaction: hash, desire, overrides, revision',
+  'pass  # migration lost',
+  'DeskInstallTests.test_table_migration_seco_and_install_retire_overrides_atomically'),
+]
+
+
+DESK_CASES += [
+ ('pueue-desk','install-desk.py',
+  '        fcntl.flock(handle, fcntl.LOCK_EX)', '        pass  # no lock',
+  'DeskInstallTests.test_table_migration_preflight_waits_on_existing_control_lock'),
+ ('pueue-desk','install-desk.py',
+  'engine.store(db, migration)  # one transaction: hash, desire, overrides, revision',
+  "old = engine.state(db, policy_migration=True)\n                        engine.store(db, dict(old, policy_hash=engine.policy_hash))\n                        db.commit()\n                        engine.store(db, migration)",
+  'DeskInstallTests.test_table_migration_transaction_failure_keeps_original_policy'),
+ ('pueue-desk','control.py',
+  "or value['revision'] < 1 or type(value['reasons']) is not dict", "or False or type(value['reasons']) is not dict",
+  'DeskInstallTests.test_table_migration_rejects_open_receipts_and_corrupt_authority_without_effects'),
+ ('pueue-desk','control.py',
+  'TypeError, ArithmeticError, subprocess.SubprocessError)', 'TypeError, subprocess.SubprocessError)',
+  'DeskSlotsTests.test_authority_with_overflowing_number_still_closes_under_pressure'),
+]
+
 
 def main():
-    for number,(directory,relative,original,replacement,test) in enumerate(CASES,1):
+    cases = DESK_CASES if '--desk-only' in sys.argv else CASES + DESK_CASES
+    for number,(directory,relative,original,replacement,test) in enumerate(cases,1):
         with tempfile.TemporaryDirectory(prefix='u31-mutation-sol-',dir='/tmp') as folder:
             root=Path(folder)/'fleet'
             for name in ('rack','pueue-desk'):
@@ -84,14 +298,15 @@ def main():
             if source.count(original)!=1:
                 raise AssertionError('Nonunique mutation anchor '+str(number)+': '+repr(original))
             target.write_text(source.replace(original,replacement))
-            result=subprocess.run(['/usr/bin/python3','-B','-m','unittest',('test_slots_install.' if test.startswith('SlotsInstallTests.') else 'test_slots.')+test,'-v'],
+            module = 'test_desk_slots.' if test.startswith('Desk') else 'test_slots_install.' if test.startswith('SlotsInstallTests.') else 'test_slots.'
+            result=subprocess.run([sys.executable,'-B','-m','unittest',module+test,'-v'],
                 cwd=str(root/directory/'tests'),text=True,capture_output=True,timeout=15,
                 env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'))
             if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:
                 raise AssertionError('Mutation '+str(number)+' did not fail by assertion:\n'+result.stdout+result.stderr)
             reason=next((s for s in result.stderr.splitlines() if s.startswith('AssertionError:')),'assertion')
             print(str(number)+' '+test+': caught | '+reason,flush=True)
-    print(str(len(CASES))+'/'+str(len(CASES))+' safety mutations caught; original tree untouched')
+    print(str(len(cases))+'/'+str(len(cases))+' safety mutations caught; original tree untouched')
 
 
 if __name__=='__main__': main()

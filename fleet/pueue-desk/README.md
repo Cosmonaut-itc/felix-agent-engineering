@@ -4,7 +4,8 @@ Servicio systemd **de usuario** para Pueue 4.0.4 en WSL, listo para instalar
 tras U10 (NVMe). No instala binarios. El [retiro de deskpolicy](../deskpolicy/)
 se despliega por separado durante el corte coordinado de los clientes a Pueue.
 
-Desde la MacBook: `fleet/pueue-desk/deploy-desk.sh --seco` comprueba sin escribir;
+Antes de adoptar el control durable, desde la MacBook:
+`fleet/pueue-desk/deploy-desk.sh --seco` comprueba sin escribir;
 `fleet/pueue-desk/deploy-desk.sh` instala por `ssh desk`. Requiere `pueue` y
 `pueued` en `/home/felix/.local/bin`, systemd de usuario y permiso para
 `loginctl enable-linger felix`. El instalador lo pide antes de detener un
@@ -13,6 +14,9 @@ Un fallo de `aplicar` no reinicia `pueued`: `pueue-desk-mode.service` reintenta
 cada 30 s y deja el error en `journalctl --user -u pueue-desk-mode`.
 Linger inicia el servicio al arrancar la distro; el arranque de Windows debe
 iniciar WSL por su mecanismo habitual (SSH despierta la distro).
+
+Tras adoptar, `deploy-desk.sh` ya no es el camino de instalación; usar
+`install-desk.py` como se describe abajo, también al cambiar la tabla.
 
 `control.py` contiene la única tabla de cuotas (día/noche): hasito 1/2,
 jale 5/7, jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3.
@@ -54,7 +58,9 @@ durable descrito abajo; una llamada directa a `parallel` se considera deriva.
 Ver fila: `ssh desk '~/.local/bin/pueue status -g hasito'`.
 Pausar a mano, dejando terminar tareas:
 `ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py pausar hasito'`.
-Reanudar: `ssh desk '~/.local/bin/pueue start -g hasito'`.
+Reanudar en un desk adoptado:
+`ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py reanudar hasito'`.
+Ese comando retira la razón manual y comprueba cuotas, horario y presión antes de abrir.
 El guardia respeta grupos previamente pausados. **Si el guardia ya había
 pausado el grupo, usar siempre el comando `pausar` anterior**: Pueue no distingue
 una segunda pausa manual de la suya. Ese comando retira la propiedad del guardia
@@ -287,3 +293,116 @@ dentro de `remote-run`, con Pueue estándar y directorio/configuración propios.
 En Linux usa `~/.local/bin/{pueue,pueued}`; admite rutas explícitas con
 `--pueue` y `--pueued`. Comprueba tanto pérdida de `parallel` sin guardado como
 persistencia tras una operación guardadora y reconciliación en ambos casos.
+
+### Lugares del desk desde el rack (U3.2)
+
+El desk usa el mismo `rack-host-control@1`, recibos SQLite, undo y `control.lock`
+que la Mini. Su tabla vigente tiene **seis** grupos: hasito 1/2, jale 5/7,
+jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3 (día/noche).
+Suman **14/18**. `pg5434` fue retirado; `default` queda fuera del reparto y sin ±.
+No se absorben grupos ajenos en el perfil; su propiedad de pausa se conserva
+por separado, incluso cuando el grupo ya no existe.
+Si aparece trabajo no terminal fuera del reparto (incluido `default`), se publica
+sólo su conteo `foreign_work`: no se exponen tareas ni entornos. Bloquea aumentos
+sólo en ± y undo; permite reducciones seguras. La reconciliación hacia el deseo
+durable (horario o ajuste ya aceptado) sigue aplicando su tabla sin tocar el grupo ajeno.
+La guardia conserva sus razones de presión y su capacidad de reabrir.
+
+Cada grupo admite 1..8 lugares, contando también las cuotas de grupos pausados.
+El host coteja revisión, hash de tabla/horarios, generación y vector vivo completo.
+Sólo admite una reducción monotónica si el vector ya excede el tope. Aplica
+bajadas antes de subidas y verifica cada RPC. Un parcial conserva el deseo y
+su recibo; `guardia` y `aplicar` usan el mismo reconciliador, sin un job nuevo.
+Ni las guardias ni el timer heredan el timeout de las RPC del panel.
+
+Un ± dura **hasta el próximo evento estricto 05:00/14:00 UTC**, no hasta que un
+timer consiga ejecutarse ni hasta que cambie el nombre del modo. Se guarda la
+identidad del evento y el vencimiento absoluto. Consulta y ensayo proyectan
+los eventos perdidos sin escribir ni recuperar. La guardia y `aplicar` retiran
+ajustes vencidos y reconcilian la tabla actual. Un `slots` real ordinario también
+recupera un evento perdido antes de juzgar el clic: responde conflicto y pide
+actualizar, indicando efectos de horario si hubo recuperación. Una llamada anticipada a
+`aplicar` conserva el ajuste vigente. Un undo tras el evento se rechaza sin RPC;
+antes del evento restaura números y metadatos originales, sin renovar vigencia.
+Una intención incompleta vencida conserva `partial`/`unknown` mientras falle la
+tabla nueva; termina `aborted/expired` sólo tras verificar su convergencia, y
+jamás se presenta como el ajuste anterior aplicado.
+
+`slots.disabled` apaga nuevos ± y undo; no impide consultar ni completar una
+intención aceptada. `maintenance` retiene también reconciliación/aperturas.
+Una autoridad ilegible/ausente con marcador nunca habilita la tabla por defecto:
+no hay aperturas ni aumentos; la guardia conserva su cierre protector y #118.
+Tras perder `parallel`, se repone el deseo sin abrir pausas ambiguas. Esta
+unidad mantiene `mode`, `reorder` y `restart_queue` en false.
+Un controlador instalado que nunca fue adoptado responde `unsupported`, sin
+crear archivos; una consulta de recibo devuelve `unknown`. Un marcador o SQLite
+perdido/corrupto conserva el diagnóstico de recuperación, sin readoptar.
+
+### Instalar U3.2 en un desk que ya tiene servicio y timers
+
+Pasos para el operador, **no ejecutados por las pruebas**:
+
+1. Llevar el checkout verificado al desk. Comprobar Pueue **4.0.4 estándar** y
+   el `pid_path` configurado; no publicar `status --json`, pues incluye `envs`.
+   El instalador exige `--pid-file` explícito y valida su identidad. Preparar
+   respaldo del controlador y propiedad anteriores; si ya hay SQLite, usar su
+   API `backup` bajo `control.lock`, nunca copiar una base abierta.
+2. Desde ese checkout **en WSL**, con los dos timers existentes activos:
+
+   ```sh
+   /usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /ruta/configurada/pueue.pid --seco
+   /usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /ruta/configurada/pueue.pid
+   ```
+
+   `--seco` y la instalación comparten el preflight de lectura: controlador
+   existente, ambos timers activos, autoridad válida o tabla vigente, y PID de
+   `pueued`. El ensayo no crea archivos y distingue lo comprobado de los pasos
+   pendientes. La instalación comprueba lo mismo antes de detener nada;
+   apaga cuotas nuevas, detiene los dos timers y espera sus
+   oneshots, toma el candado, publica atómicamente el controlador y adopta/importa
+   propiedad, o conserva la autoridad y sus recibos. Reconcilia, reactiva los
+   mismos timers y retira sólo su propio switch. No reinicia `pueued`, no edita
+   su configuración ni instala unidades. Conserva `control.pre-slots.py`.
+3. Ejecutar después `fleet/rack/instalar-desk.sh` desde la máquina de despliegue
+   y actualizar el rack en la Mini (`fleet/rack/instalar.sh`): sólo actualizan
+   snapshot/despachador y panel, con las llaves existentes. Verificar capacidades
+   y ensayo por el canal forzado antes del canario. El canario productivo lo
+   ejecuta el orquestador tras el merge; no forma parte de esta instalación.
+4. Si falla, conservar marcador, SQLite y switch; reinstalar esta versión.
+   Retirar manualmente el switch de un intento fallido sólo tras verificar
+   ambos timers activos y deseo reconciliado. Un switch previo se conserva.
+   No readoptar una base perdida/corrupta: restaurar respaldo verificado bajo
+   el mismo candado. `deploy-desk.sh`/`withdraw-desk.sh` rechazan una autoridad
+   ya adoptada para impedir volver a una guardia o tabla ciegas.
+
+### Cambiar GROUP_LIMITS después de adoptar
+
+Cambiar la tabla en el checkout revisado y ejecutar primero `install-desk.py --seco`
+y luego `install-desk.py` con el mismo `--pid-file` de los pasos anteriores.
+El ensayo toma el `control.lock` existente sin crear archivos e imprime la migración:
+retira ajustes vigentes, fija el deseo a la tabla nueva del evento actual, cambia
+`policy_hash` y sube una revisión. La instalación hace esos cuatro cambios en una
+sola transacción y después reconcilia reducciones antes que aumentos. Conserva
+recibos y razones de pausa; nunca readopta ni reinicia el daemon.
+
+Ambos caminos validan la estructura de la autoridad anterior, salvo el hash y
+la correspondencia del deseo con la tabla sustituida. Exigen cero recibos
+`applying`, `partial` o `unknown`: si hay alguno, recuperar primero con el
+controlador anterior. Una base perdida, ilegible o corrupta se rechaza sin efectos.
+La comprobación se repite bajo el candado antes de publicar. El controlador en
+operación sigue rechazando un hash diferente; sólo el instalador puede migrarlo.
+`deploy-desk.sh` no sirve para actualizar un desk adoptado. La Mini presenta el
+mismo límite con `MINI_PROFILE`; su migración queda para una unidad aparte.
+
+Para revertir la entrega, deshacer el recibo antes de su evento, o apagar cuotas
+con `slots.disabled` y volver al panel anterior, **conservando este controlador y
+los timers** para recuperación/expiración. No borrar autoridad ni restaurar el
+controlador anterior sobre un deseo vigente. Una retirada completa exige una
+migración explícita de deseo/propiedad y queda fuera de U3.2.
+
+Prueba privada dirigida: `tests/private_slots.py --run-private --host desk`
+comprueba pérdida/reposición de `parallel`, las entradas `aplicar` y `guardia`,
+retiro de ajustes al evento, undo vencido sin RPC tras perder el timer y
+recuperación de otro evento por un clic ordinario (reloj/sensores inyectados,
+daemon stock real).
+No encola tareas y siempre espera al PID exacto de su daemon al terminar.

@@ -1,15 +1,16 @@
-"""Closed Mini host-control variant; cancellation keeps its original contract."""
+"""Closed host-control variant; cancellation keeps its original contract."""
 import re
 import hashlib
 import json
 
 OPS = ('host_capabilities', 'slots', 'undo')
 GROUPS = {'suites', 'default', 'rapidas'}
+DESK_GROUPS = {'hasito', 'jale', 'jale-verify', 'otros', 'pesadas', 'rapidas'}
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
 
 
-def vector(value):
-    return (type(value) is dict and set(value) == GROUPS
+def vector(value, host='mini'):
+    return (type(value) is dict and set(value) == (DESK_GROUPS if host == 'desk' else GROUPS)
             and all(type(n) is int and 1 <= n <= 8 for n in value.values()))
 
 
@@ -27,12 +28,13 @@ def validate(request):
                 or type(e['revision']) is not int or e['revision'] < 1
                 or type(e['policy_hash']) is not str or len(e['policy_hash']) != 64
                 or type(e['generation']) is not str or not 1 <= len(e['generation']) <= 160
-                or e['mode'] != 'fijo' or not vector(e['slots'])):
+                or e['mode'] not in (('dia', 'noche') if request.get('host') == 'desk' else ('fijo',))
+                or not vector(e['slots'], request.get('host'))):
             raise ValueError('Estado inválido')
         if request['op'] == 'slots':
             c = request.get('change')
             if (type(c) is not dict or set(c) != {'group', 'delta'}
-                    or type(c['group']) is not str or c['group'] not in GROUPS
+                    or type(c['group']) is not str or c['group'] not in (DESK_GROUPS if request.get('host') == 'desk' else GROUPS)
                     or type(c['delta']) is not int or c['delta'] not in (-1, 1)):
                 raise ValueError('Cambio inválido')
         elif type(request.get('undo_of')) is not str or not ACTION.fullmatch(request['undo_of']):
@@ -49,7 +51,7 @@ def unavailable():
         error=dict(code='unsupported', message='Falta actualizar el control de este host.'))
 
 
-def control(value):
+def control(value, host='mini'):
     """Read view whitelist; never publish arbitrary controller fields or error text."""
     if type(value) is not dict or value.get('schema') != 'rack-host-result@1':
         return unavailable()
@@ -68,9 +70,9 @@ def control(value):
     caps = value.get('capabilities')
     if (type(caps) is not dict or any(type(caps.get(k)) is not bool for k in
             ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue'))
-            or not vector(value.get('slots')) or not vector(value.get('desired'))
+            or not vector(value.get('slots'), host) or not vector(value.get('desired'), host)
             or type(value.get('revision')) is not int or value['revision'] < 1
-            or value.get('cap') != 7 or value.get('mode') != 'fijo'
+            or (value.get('mode'), value.get('cap')) not in ((('dia', 14), ('noche', 18)) if host == 'desk' else (('fijo', 7),))
             or type(value.get('policy_hash')) is not str or len(value['policy_hash']) != 64
             or type(value.get('generation')) is not str or not 1 <= len(value['generation']) <= 160
             or type(value.get('drift')) is not bool or type(value.get('recovery_pending')) is not bool):
@@ -83,7 +85,18 @@ def control(value):
             or any(x not in ('pressure', 'manual', 'ambiguous') for x in r) for g, r in reasons.items()):
         raise ValueError('Pausas inválidas')
     result['pause_reasons'] = reasons
-    result['reason'] = None if caps['slots'] else 'Los ajustes de lugares están apagados en la Mini.'
+    if host == 'desk':
+        foreign = value.get('foreign_work', 0)
+        if type(foreign) is not int or foreign < 0:
+            raise ValueError('Trabajo ajeno inválido')
+        result['foreign_work'] = foreign
+        event, next_event, expires = value.get('schedule_event'), value.get('next_event'), value.get('expires_at')
+        if (type(event) not in (int, float) or type(next_event) not in (int, float)
+                or not 0 < event < next_event or next_event - event not in (9*3600, 15*3600)
+                or expires is not None and (type(expires) not in (int, float) or expires != next_event)):
+            raise ValueError('Evento inválido')
+        result.update(schedule_event=event, next_event=next_event, expires_at=expires)
+    result['reason'] = None if caps['slots'] else 'Los ajustes de lugares están apagados en este host.'
     return result
 
 
@@ -94,30 +107,41 @@ def sanitize(request, response, op):
             return unavailable()
         raise ValueError('Respuesta inválida')
     if op == 'capabilities':
-        return control(response)
+        return control(response, request['host'])
     if response.get('action_id') != request['action_id']:
         raise ValueError('ID distinto')
     status = response.get('status')
-    if status not in ('applied', 'applying', 'partial', 'unknown', 'conflict', 'rejected', 'dry_run', 'recovery_error', 'unsupported'):
+    if status not in ('applied', 'applying', 'partial', 'unknown', 'conflict', 'rejected', 'dry_run', 'recovery_error', 'unsupported', 'aborted'):
         raise ValueError('Estado inválido')
     answer = dict(schema='rack-host-result@1', action_id=request['action_id'], status=status, error=None)
-    if op == 'status' and status in ('conflict', 'rejected'):
+    if op == 'status' and status in ('conflict', 'rejected', 'aborted'):
         wire = {k: v for k, v in request.items() if k not in ('schema', 'host')}
         wire['schema'] = 'rack-host-control@1'
         body = json.dumps(dict(host=request['host'], request=wire), sort_keys=True, separators=(',', ':'), ensure_ascii=True)
         digest = hashlib.sha256(body.encode()).hexdigest()
-        if response.get('receipt_digest') != digest or response.get('effects') is not False:
+        # An ordinary desk click may recover the schedule before rejecting its
+        # vector. It is terminal only with its bound receipt and explicit event.
+        event = response.get('schedule_recovery')
+        scheduled = (request['host'] == 'desk' and request['op'] == 'slots' and request['dry_run'] is False
+                     and status == 'conflict' and (response.get('error') or {}).get('code') == 'stale_state'
+                     and response.get('effects') is True and type(event) in (int, float))
+        if scheduled:
+            view = control(response.get('control'), 'desk')
+            scheduled = view['status'] == 'ok' and event == view['schedule_event']
+        if response.get('receipt_digest') != digest or status != 'aborted' and response.get('effects') is not False and not scheduled:
             raise ValueError('Rechazo sin recibo vinculado y sin efectos')
         answer['receipt_verified'] = True
     error = response.get('error')
     messages = dict(stale_state='Los lugares cambiaron. Actualiza antes de decidir.',
                     busy='Hay un ajuste pendiente; consulta su recibo.',
                     lock_busy='El control está ocupado. Vuelve a intentarlo.',
-                    invalid_request='Cada grupo admite 1..8 lugares y el tope es 7.',
-                    undo_conflict='Los lugares cambiaron. No se puede deshacer.',
+                    invalid_request='Cada grupo admite 1..8 lugares y se respeta el tope del modo.',
+                    undo_conflict='El horario o los lugares cambiaron. No se puede deshacer.',
+                    expired='El ajuste venció en el cambio de horario.',
                     idempotency_conflict='Ese ID ya pertenece a otra petición.',
                     recovery_error='Estado de control no disponible. Se conserva la pausa.',
-                    disabled='Los ajustes de lugares están apagados en la Mini.',
+                    disabled='Los ajustes de lugares están apagados en este host.',
+                    foreign_work='Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.',
                     unsupported='Falta actualizar el control de este host.')
     if error is not None:
         code = error.get('code') if type(error) is dict else None
@@ -127,16 +151,19 @@ def sanitize(request, response, op):
     if type(response.get('revision')) is int:
         answer['revision'] = response['revision']
     if 'control' in response:
-        answer['control'] = control(response['control'])
+        answer['control'] = control(response['control'], request['host'])
     if type(response.get('effects')) is bool:
         answer['effects'] = response['effects']
     payload = response.get('result')
     if payload is not None:
-        if (type(payload) is not dict or not vector(payload.get('before')) or not vector(payload.get('desired'))
-                or payload.get('observed') is not None and not vector(payload['observed'])):
+        if (type(payload) is not dict or not vector(payload.get('before'), request['host']) or not vector(payload.get('desired'), request['host'])
+                or payload.get('observed') is not None and not vector(payload['observed'], request['host'])):
             raise ValueError('Vector inválido')
         answer['result'] = {k: payload.get(k) for k in ('before', 'desired', 'observed')}
-        answer['result'].update(expires_at=None, undo_of=request['action_id'] if status == 'applied' else None)
+        expires = payload.get('expires_at')
+        if expires is not None and (request['host'] != 'desk' or type(expires) not in (int, float) or not 0 < expires < 10**11):
+            raise ValueError('Vencimiento inválido')
+        answer['result'].update(expires_at=expires, undo_of=request['action_id'] if status == 'applied' else None)
         changed = [g for g in payload['desired'] if payload['before'][g] != payload['desired'][g]]
         observed = payload.get('observed')
         answer['result']['applied'] = [g for g in changed if observed is not None and observed[g] == payload['desired'][g]]

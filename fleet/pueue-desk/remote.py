@@ -26,6 +26,8 @@ def remote(action, dry):
     names = ["pueued.service", "pueue-desk-mode.service", *timers,
              "pueue-desk-guard.service"]
     pueue = Pueue()
+    if has_authority(STATE_DIR):
+        raise RuntimeError('Autoridad durable: usar install-desk.py para actualizar; conservar controlador y timers al retirar el panel')
     manual = False
     if action == "install":
         # Todo este bloque es de lectura: incluso --seco rechaza una cola viva.

@@ -18,6 +18,7 @@ CONTROLLERS = {
     'jale': '/home/felix/.local/lib/jale/pueue-control.py',
 }
 SWITCH = HOME / '.local/state/pao/rack/actions.disabled'
+HOST_CONTROLLER = HOME / '.local/lib/pao-pueue-desk/control.py'
 TIMEOUT = 10
 # rack-cancel@1 origin extension: cancel keeps its previous 10 s window; the
 # capabilities probe only uses time beyond it, at most 2 s.
@@ -194,16 +195,10 @@ def environment():
 
 
 def handle(raw, runner=subprocess.Popen):
-    # Additive host variant is explicitly unavailable on desk in U3.1.
     try:
         data = decode(raw)
-        if (type(data) is dict and set(data) == {'schema', 'target', 'request'}
-                and data['schema'] == SCHEMA and data['target'] == 'host-control'
-                and type(data['request']) is dict and data['request'].get('schema') == 'rack-host-control@1'):
-            return dict(schema='rack-host-result@1', action_id=data['request'].get('action_id'),
-                        status='unsupported', capabilities=dict(slots=False, undo=False, dry_run=False,
-                        mode=False, reorder=False, restart_queue=False),
-                        error=dict(code='unsupported', message='El desk no admite ajustes desde este canal.')), 0
+        if type(data) is dict and 'target' in data:
+            return handle_host(data, runner), 0
     except (ValueError, TypeError, RecursionError):
         pass
     try:
@@ -241,6 +236,42 @@ def handle(raw, runner=subprocess.Popen):
             or request['op'] != 'capabilities' and response.get('action_id') != request['action_id']):
         return failure(request, 'unknown', 'invalid_response', 'Respuesta inválida o excesiva.'), 5
     return response, code
+
+
+def handle_host(data, runner):
+    """Same forced key, fixed controller; full host validation happens under its lock."""
+    if (set(data) != {'schema', 'target', 'request'} or data['schema'] != SCHEMA
+            or data['target'] != 'host-control' or type(data['request']) is not dict):
+        raise ValueError('Envoltura inválida')
+    request = data['request']
+    op = request.get('op')
+    keys = {'schema', 'op'}
+    if op in ('status', 'slots', 'undo'):
+        keys.add('action_id')
+        if type(request.get('action_id')) is not str or not ACTION.fullmatch(request['action_id']):
+            raise ValueError('ID inválido')
+    if op in ('slots', 'undo'):
+        keys |= {'dry_run', 'expected', 'change' if op == 'slots' else 'undo_of'}
+        if type(request.get('dry_run')) is not bool or type(request.get('expected')) is not dict:
+            raise ValueError('Ajuste inválido')
+    if op not in ('capabilities', 'status', 'slots', 'undo') or set(request) != keys or request['schema'] != 'rack-host-control@1':
+        raise ValueError('Petición inválida')
+    def failed(status, code):
+        return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
+                    error=dict(code=code, message='Control del desk no disponible.'))
+    if not HOST_CONTROLLER.is_file():
+        return failed('unsupported', 'unsupported')
+    try:
+        # The controller owns the switch and records disabled rejections durably.
+        # Status queries and periodic recovery remain available while disabled.
+        code, response = exchange(['/usr/bin/python3', '-I', str(HOST_CONTROLLER), 'rack', '--host', 'desk'],
+                                  request, runner, environment(), TIMEOUT)
+        if (code != 0 or type(response) is not dict or response.get('schema') != 'rack-host-result@1'
+                or op != 'capabilities' and response.get('action_id') != request['action_id']):
+            raise ValueError('Respuesta inválida')
+        return response
+    except Exception:
+        return failed('unknown' if op != 'capabilities' else 'recovery_error', 'recovery_error')
 
 
 def read_request(stream):
