@@ -35,6 +35,13 @@ run('render(fixture);globalThis.h=S.hosts[0]');
      assert.match(foreign,/trabajo fuera del reparto/);
      assert.match(foreign,/data-step="1"[^>]*disabled/);
      assert(!/data-step="-1"[^>]*disabled/.test(foreign));
+     for(const pending of [{drift:true},{recovery_pending:true},{drift:true,recovery_pending:true}]){
+       context.foreignHost={...run('h'),control:{...run('h.control'),foreign_work:1,...pending}};
+       const buttons=run("slotControls(foreignHost,'jale',foreignHost.groups.jale,0)");
+       assert(!/data-step="-1"[^>]*disabled/.test(buttons),'foreign work must allow reduction during reconciliation');
+       assert.match(buttons,/data-step="1"[^>]*disabled/);
+       assert.match(run('hostControlState(foreignHost)'),/Hay trabajo fuera del reparto/);
+     }
    }
    run('render(fixture);globalThis.h=S.hosts[0]');
    context.fetch=async(url,options)=>{requests.push([url,options]);throw Error('lost')};

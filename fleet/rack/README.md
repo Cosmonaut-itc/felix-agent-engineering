@@ -761,8 +761,10 @@ admite 1..8 lugares y el tope es 14 de día / 18 de noche. Con el tope lleno,
 consumen su cuota completa. El `default` del desk queda fuera del reparto.
 Su fila explica «Reservado · fuera del reparto». Si hay trabajo no terminal
 en grupos ajenos, el panel informa y bloquea «+», conservando «−» para reducir.
-El host aplica el mismo veto a aumentos y undo, también durante recuperación;
-el snapshot publica sólo un conteo saneado, sin identidades ni entornos.
+El host veta sólo aumentos nuevos de ± y undo; la reconciliación del deseo
+durable sigue aplicando la tabla vigente o un ajuste ya aceptado. El panel
+nombra el trabajo ajeno también con deriva o recuperación pendiente y conserva
+«−». El snapshot publica sólo un conteo saneado, sin identidades ni entornos.
 La tabla de `main` tiene seis grupos (incluido `otros=2`; `pg5434` ya retirado).
 
 Los ajustes del desk vencen en el próximo evento 05:00/14:00 UTC, aunque se

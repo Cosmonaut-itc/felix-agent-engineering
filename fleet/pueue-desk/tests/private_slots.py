@@ -1,4 +1,4 @@
-"""Run ONLY via remote-run on Mini or desk, with a private daemon; no tasks are submitted."""
+"""Run ONLY via remote-run on Mini or desk, with a private daemon; only a stashed synthetic task is submitted on desk."""
 import argparse
 import importlib.util
 import json
@@ -174,10 +174,13 @@ def desk_scenario(control, pueue, root, start, crash, emit):
     assert parallel.call_count == 0, parallel.call_args_list
     assert engine.view()['slots'] == desired
     emit('missed_timer_undo_no_rpc', status=expired['status'], effects=expired['effects'], rpc_count=parallel.call_count)
+    # A stashed task in default must not veto the 05:00Z durable night table.
+    pueue.call('add', '--stashed', '--group', 'default', '--', 'true')
     entry('guardia')
     missed = engine.view()
     assert missed['slots'] == table and missed['mode'] == 'noche' and missed['expires_at'] is None, missed
-    emit('missed_timer_applied_by_guard', mode=missed['mode'], observed=missed['slots'])
+    assert missed['foreign_work'] == 1, missed
+    emit('missed_timer_applied_by_guard', mode=missed['mode'], observed=missed['slots'], foreign_work=missed['foreign_work'])
     # A further missed event is recovered by an ordinary real slots click, without accepting it.
     with control.locked(directory):
         adjusted = engine.handle(request('private-desk-down3'))
@@ -189,7 +192,7 @@ def desk_scenario(control, pueue, root, start, crash, emit):
     assert engine.view()['slots'] == control.desk_profile(now[0]) and not engine.view()['drift']
     emit('missed_timer_applied_by_slots', status=click['status'], observed=engine.view()['slots'])
     emit('PASS', assertions='timer preserves override then expires; guard restores lost parallel; missed timer; '
-         'expired undo no RPC; ordinary click recovers; no tasks')
+         'expired undo no RPC; ordinary click recovers; 05:00Z with stashed default task')
 
 
 if __name__ == '__main__': main()

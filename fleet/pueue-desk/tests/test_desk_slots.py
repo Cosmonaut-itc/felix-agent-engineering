@@ -1,5 +1,6 @@
 """Desk quota authority: fake time, Pueue, sensors and private /tmp filesystem."""
 import copy
+import fcntl
 from datetime import datetime, timezone
 import importlib.util
 import io
@@ -11,7 +12,7 @@ import tempfile
 import threading
 from types import SimpleNamespace
 import unittest
-from contextlib import redirect_stdout
+from contextlib import contextmanager, redirect_stdout
 from unittest.mock import patch
 from test_slots import control, FakePueue
 
@@ -197,7 +198,7 @@ class DeskSlotsTests(DeskFixture):
         self.assertEqual(self.engine.view().get('foreign_work'), 0)
         self.assertEqual(self.engine.handle(self.request('foreign-gone-01', delta=1))['status'], 'applied')
 
-    def test_foreign_work_rechecked_before_recovery_increase(self):
+    def test_foreign_work_does_not_veto_accepted_recovery_increase(self):
         self.set_desire(dict(control.desk_profile(self.now), jale=6, otros=3))
         tasks = {}
         original = self.p.parallel
@@ -205,10 +206,10 @@ class DeskSlotsTests(DeskFixture):
             original(group, value)
             tasks['2'] = dict(group='default', status='Queued')
         with self.foreign_status(tasks), patch.object(self.p, 'parallel', side_effect=arriving):
-            self.assertFalse(self.engine.reconcile())
-        self.assertEqual(self.p.calls, [('parallel', 'jale', 6)])
-        self.assertEqual(self.p.groups['otros']['parallel_tasks'], 2)
-        self.assertTrue(self.engine.view()['drift'])
+            self.assertTrue(self.engine.reconcile())
+        self.assertEqual(self.p.calls, [('parallel', 'jale', 6), ('parallel', 'otros', 3)])
+        self.assertEqual(self.p.groups['otros']['parallel_tasks'], 3)
+        self.assertFalse(self.engine.view()['drift'])
 
     def test_real_slots_recovers_missed_timer_before_judging_fresh_projection(self):
         self.engine.handle(self.request())
@@ -267,6 +268,136 @@ class DeskSlotsTests(DeskFixture):
         self.assertNotEqual(answer['result']['observed'], answer['result']['desired'])
         self.assertTrue(self.engine.reconcile())
         self.assertEqual(self.status(r)['status'], 'aborted')
+
+    def test_guard_event_crossed_in_final_status_or_generation_never_starts(self):
+        for day, source in ((14, 'observed'), (15, 'generation')):
+            with self.subTest(source=source):
+                self.now = utc('2026-11-%dT13:59:59' % day)
+                self.assertTrue(self.engine.reconcile())
+                self.engine.guard(dict(self.low, io=60))
+                self.p.calls.clear()
+                original = getattr(self.engine, source)
+                reads = [0]
+                def crossing(*args):
+                    value = original(*args)
+                    reads[0] += 1
+                    if reads[0] == 3:
+                        self.now = utc('2026-11-%dT14:00:00' % day)
+                    return value
+                with patch.object(self.engine, source, side_effect=crossing), \
+                     patch.object(control, 'pressure', return_value=self.low):
+                    with self.assertRaises(ValueError):
+                        self.engine.guard(self.low)
+                self.assertFalse(any(c[0] == 'start' for c in self.p.calls))
+                self.assertEqual(self.p.groups['hasito']['status'], 'Paused')
+                self.assertTrue(self.engine.reconcile())
+
+    def test_confirmation_event_crossed_in_final_daemon_identity(self):
+        request = self.request()
+        original = self.engine.generation
+        reads = [0]
+        def crossing(state):
+            value = original(state)
+            reads[0] += 1
+            if reads[0] == 4:
+                self.now = utc('2026-11-14T14:00:00')
+            return value
+        with patch.object(self.engine, 'generation', side_effect=crossing):
+            answer = self.engine.handle(request)
+        self.assertEqual(answer['status'], 'aborted')
+        self.assertEqual(answer['error']['code'], 'expired')
+        self.assertIsNone(answer['result']['undo_of'])
+        self.assertEqual(answer['result']['observed'], control.desk_profile(self.now))
+        self.assertEqual(answer['result']['observed'], answer['result']['desired'])
+
+    def test_reconcile_event_crossed_in_final_identity_without_receipts(self):
+        original = self.engine.generation
+        reads = [0]
+        def crossing(state):
+            value = original(state)
+            reads[0] += 1
+            if reads[0] == 2:
+                self.now = utc('2026-11-14T14:00:00')
+            return value
+        with patch.object(self.engine, 'generation', side_effect=crossing):
+            self.assertTrue(self.engine.reconcile())
+        self.assertEqual(self.engine.view()['slots'], control.desk_profile(self.now))
+        self.assertEqual(self.state()['schedule_event'], control.schedule_at(self.now)[0])
+
+    def test_confirmation_event_crossed_in_final_receipt_read(self):
+        request = self.pending()
+        original = self.engine.connect
+        @contextmanager
+        def connect(write=False):
+            with original(write) as db:
+                class Proxy:
+                    def __getattr__(proxy, name):
+                        return getattr(db, name)
+                    def execute(proxy, sql, *args):
+                        cursor = db.execute(sql, *args)
+                        if sql == 'SELECT action_id,body FROM host_actions':
+                            class Rows:
+                                def fetchall(inner):
+                                    rows = cursor.fetchall()
+                                    self.now = utc('2026-11-14T14:00:00')
+                                    return rows
+                            return Rows()
+                        return cursor
+                yield Proxy()
+        with patch.object(self.engine, 'connect', side_effect=connect):
+            self.assertTrue(self.engine.reconcile())
+        answer = self.status(request)
+        self.assertEqual(answer['status'], 'aborted')
+        self.assertIsNone(answer['result']['undo_of'])
+        self.assertEqual(answer['result']['observed'], control.desk_profile(self.now))
+
+    def test_manual_resume_event_crossed_in_final_status_or_generation(self):
+        for day, source in ((14, 'observed'), (15, 'generation')):
+            with self.subTest(source=source):
+                self.now = utc('2026-11-%dT13:59:59' % day)
+                self.assertTrue(self.engine.reconcile())
+                self.engine.manual('hasito')
+                self.p.calls.clear()
+                original = getattr(self.engine, source)
+                reads = [0]
+                def crossing(*args):
+                    value = original(*args)
+                    reads[0] += 1
+                    if reads[0] == 3:
+                        self.now = utc('2026-11-%dT14:00:00' % day)
+                    return value
+                with patch.object(self.engine, source, side_effect=crossing), \
+                     patch.object(control, 'pressure', return_value=self.low):
+                    with self.assertRaises(ValueError):
+                        self.engine.manual('hasito', resume=True)
+                self.assertFalse(any(c[0] == 'start' for c in self.p.calls))
+                self.assertEqual(self.p.groups['hasito']['status'], 'Paused')
+                self.assertIn('manual', self.state()['reasons']['hasito'])
+                self.assertTrue(self.engine.reconcile())
+
+    def test_night_event_with_foreign_work_preserves_pressure_reopening(self):
+        # Match the review: day at 04:58Z, high pressure, default queued, 05:00Z.
+        self.now = utc('2026-11-15T04:58:00')
+        self.assertTrue(self.engine.reconcile())
+        high = dict(self.low, io=90, cpu=90, memory=1024**3)
+        self.engine.guard(high)
+        tasks = {'7': dict(group='default', status={'Queued': {}})}
+        with self.foreign_status(tasks):
+            self.now = utc('2026-11-15T05:00:30')
+            self.assertTrue(self.engine.reconcile())
+            self.assertEqual(self.engine.view()['slots'], control.desk_profile(self.now))
+            with patch.object(control, 'pressure', return_value=self.low):
+                self.engine.guard(self.low)
+            self.assertTrue(all(self.p.groups[g]['status'] == 'Running' for g in control.GROUP_LIMITS))
+            self.engine.guard(high)
+            self.assertEqual(list(self.engine.directory.glob('pause-*.manual')), [])
+            for g in control.GROUP_LIMITS:
+                self.assertEqual(self.state()['reasons'][g], ['pressure'])
+            with patch.object(control, 'pressure', return_value=self.low):
+                self.engine.guard(self.low)
+            self.assertTrue(all(self.p.groups[g]['status'] == 'Running' for g in control.GROUP_LIMITS))
+            self.assertEqual(self.engine.view()['foreign_work'], 1)
+        self.assertEqual(self.p.groups['default']['status'], 'Paused')
 
     def test_guard_crossing_event_in_fresh_sample_reconciles_before_opening(self):
         self.engine.guard(dict(self.low, io=60))
@@ -460,6 +591,167 @@ class DeskSlotsTests(DeskFixture):
 
 
 class DeskInstallTests(DeskFixture):
+    def migration_fixture(self):
+        spec = importlib.util.spec_from_file_location('install_desk_r1', Path(control.__file__).with_name('install-desk.py'))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        home = self.root/'table-home'
+        library = home/'.local/lib/pao-pueue-desk'; library.mkdir(parents=True)
+        target = library/'control.py'; target.write_text('# installed old controller\n')
+        directory = home/'.local/state/pao/pueue-desk'
+        self.now = utc('2026-11-15T16:00:00')
+        for g, n in control.desk_profile(self.now).items():
+            self.p.groups[g]['parallel_tasks'] = n
+        engine = control.MiniControl(self.p, directory, clock=lambda:self.now, generation=lambda:self.gen, host='desk')
+        with control.locked(directory):
+            engine.adopt(self.root/'pid')
+        v = engine.view()
+        request = dict(schema=control.HOST_SCHEMA, op='slots', action_id='migration-old-001', dry_run=False,
+                       expected={k:v[k] for k in ('revision','policy_hash','generation','mode','slots')},
+                       change=dict(group='otros', delta=-1))
+        self.assertEqual(engine.handle(request)['status'], 'applied')
+        source = Path(control.__file__).read_text().replace('"jale": {"dia": 5, "noche": 7}',
+                                                            '"jale": {"dia": 4, "noche": 7}').replace(
+                            '"otros": {"dia": 2, "noche": 2}', '"otros": {"dia": 3, "noche": 2}')
+        candidate = self.root/'candidate'; candidate.mkdir()
+        (candidate/'control.py').write_text(source)
+        spec = importlib.util.spec_from_file_location('candidate_r1', candidate/'control.py')
+        new = importlib.util.module_from_spec(spec); spec.loader.exec_module(new)
+        Original = new.MiniControl
+        factory = lambda p,d,**kw: Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
+        commands = []
+        # addCleanup works on both supported interpreters.
+        for manager in (patch.object(new, 'Pueue', return_value=self.p),
+                        patch.object(new, 'MiniControl', side_effect=factory),
+                        patch.object(new, 'mini_generation', return_value=self.gen),
+                        patch.object(installer, 'SOURCE', candidate),
+                        patch.object(installer, 'run', side_effect=lambda *a:commands.append(a))):
+            manager.start(); self.addCleanup(manager.stop)
+        return installer, new, home, engine, factory(self.p, directory, host='desk'), target, commands
+
+    def test_table_migration_seco_and_install_retire_overrides_atomically(self):
+        installer, new, home, old, engine, target, commands = self.migration_fixture()
+        with old.connect() as db:
+            before = old.state(db)
+            receipt = db.execute('SELECT * FROM host_actions').fetchall()
+        self.p.calls.clear()
+        with self.assertRaises(ValueError):
+            engine.view()  # runtime must keep failing closed on the old hash
+        fingerprint = self.fingerprint()
+        error = None
+        with redirect_stdout(io.StringIO()) as out:
+            try:
+                installer.install(home, self.root/'pid', new, dry_run=True)
+            except (ValueError, TypeError) as caught:
+                error = caught
+        self.assertIsNone(error, 'La tabla nueva debe tener preflight de migración: ' + str(error))
+        self.assertIn('migración de tabla', out.getvalue())
+        self.assertIn(new.DESK_POLICY_HASH, out.getvalue())
+        self.assertEqual(self.fingerprint(), fingerprint)
+        self.assertEqual(self.p.calls, [])
+        stores = []
+        store = engine.__class__.store
+        def inspect_store(instance, db, state):
+            if state['policy_hash'] == new.DESK_POLICY_HASH:
+                stores.append(copy.deepcopy(state))
+                self.assertEqual(state['overrides'], {})
+                self.assertEqual(state['desired'], new.desk_profile(self.now))
+                self.assertEqual(state['revision'], before['revision'] + 1)
+            return store(instance, db, state)
+        error = None
+        with patch.object(engine.__class__, 'store', inspect_store), redirect_stdout(io.StringIO()):
+            try:
+                installer.install(home, self.root/'pid', new)
+            except (ValueError, TypeError) as caught:
+                error = caught
+        self.assertIsNone(error, 'La migración debe terminar: ' + str(error))
+        self.assertTrue(stores)
+        self.assertEqual(engine.view()['slots'], new.desk_profile(self.now))
+        self.assertEqual(self.p.calls, [('parallel','jale',4), ('parallel','otros',3)])
+        with engine.connect() as db:
+            self.assertEqual(db.execute('SELECT * FROM host_actions').fetchall(), receipt)
+        self.assertEqual(target.read_bytes(), (installer.SOURCE/'control.py').read_bytes())
+        self.assertFalse((engine.directory/'slots.disabled').exists())
+        self.assertFalse(any('pueued.service' in c for c in commands))
+
+    def test_table_migration_rejects_open_receipts_and_corrupt_authority_without_effects(self):
+        installer, new, home, old, engine, target, commands = self.migration_fixture()
+        with old.connect() as db:
+            valid = old.state(db)
+        for invalid in ('applying','partial','unknown','revision','reasons','desired','event','override','pid','hash','missing'):
+            with self.subTest(invalid=invalid):
+                state = copy.deepcopy(valid)
+                with old.connect(write=True) as db:
+                    if invalid in ('applying','partial','unknown'):
+                        db.execute('INSERT INTO host_actions VALUES (?,?,?)',
+                                   ('open-000001','digest',json.dumps(dict(response=dict(status=invalid)))))
+                    elif invalid == 'revision': state['revision'] = 0
+                    elif invalid == 'reasons': state['reasons'] = {'jale':['alien']}
+                    elif invalid == 'desired': state['desired']['jale'] = True
+                    elif invalid == 'event': state['schedule_event'] += 1
+                    elif invalid == 'override': state['overrides']['otros']['expires_at'] += 1
+                    elif invalid == 'pid': state['pid_file'] = 'relative'
+                    elif invalid == 'hash': state['policy_hash'] = 'broken'
+                    if invalid == 'missing': db.execute('DELETE FROM policy')
+                    else: old.store(db, state)
+                try:
+                    fingerprint = self.fingerprint()
+                    self.p.calls.clear(); commands.clear()
+                    for dry_run in (True,False):
+                        with self.assertRaises((ValueError, TypeError, sqlite3.Error)), redirect_stdout(io.StringIO()):
+                            installer.install(home, self.root/'pid', new, dry_run=dry_run)
+                        self.assertEqual(self.fingerprint(), fingerprint)
+                        self.assertEqual(self.p.calls, [])
+                        self.assertTrue(all(c[2] == 'is-active' for c in commands))
+                finally:
+                    with old.connect(write=True) as db:
+                        db.execute('INSERT OR REPLACE INTO policy VALUES (1,?)', (control.canonical(valid),))
+                        db.execute('DELETE FROM host_actions WHERE action_id=?', ('open-000001',))
+
+    def test_table_migration_preflight_waits_on_existing_control_lock(self):
+        installer, new, home, old, engine, target, commands = self.migration_fixture()
+        entering, finished = threading.Event(), threading.Event()
+        original = installer.authority_lock
+        @contextmanager
+        def lock(directory):
+            entering.set()
+            with original(directory):
+                yield
+        errors = []
+        def install():
+            try:
+                installer.install(home, self.root/'pid', new, dry_run=True)
+            except Exception as error:
+                errors.append(error)
+            finally:
+                finished.set()
+        with patch.object(installer, 'authority_lock', lock):
+            with (engine.directory/'control.lock').open('rb') as held:
+                fcntl.flock(held, fcntl.LOCK_EX)
+                worker = threading.Thread(target=install)
+                worker.start()
+                try:
+                    self.assertTrue(entering.wait(1))
+                    self.assertFalse(finished.wait(.05), 'El preflight debe esperar el candado existente')
+                finally:
+                    fcntl.flock(held, fcntl.LOCK_UN)
+                    worker.join(3)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(errors, [])
+        self.assertTrue(finished.is_set())
+
+    def test_table_migration_transaction_failure_keeps_original_policy(self):
+        installer, new, home, old, engine, target, commands = self.migration_fixture()
+        with old.connect(write=True) as db:
+            before = old.state(db)
+            db.execute("CREATE TRIGGER refuse_policy BEFORE UPDATE ON policy WHEN instr(NEW.body, '\"overrides\":{}') > 0 BEGIN SELECT RAISE(ABORT, 'fixture'); END")
+        self.p.calls.clear()
+        with self.assertRaises(sqlite3.Error), redirect_stdout(io.StringIO()):
+            installer.install(home, self.root/'pid', new)
+        with old.connect() as db:
+            self.assertEqual(json.loads(db.execute('SELECT body FROM policy WHERE id=1').fetchone()[0]), before)
+        self.assertEqual(self.p.calls, [])
+        self.assertTrue((engine.directory/'slots.disabled').exists())
+
     def test_seco_runs_readonly_preflight_and_rejects_invalid_adoption(self):
         spec = importlib.util.spec_from_file_location('install_desk_seco', Path(control.__file__).with_name('install-desk.py'))
         installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)

@@ -248,7 +248,7 @@ function slotControls(h,n,g,r){
   const outside=h.id==='desk' && n==='default';
   const capable=c?.capabilities?.slots===true && Object.hasOwn(c.slots,n);
   const common=outside ? 'Reservado · fuera del reparto.' : !capable ? c?.reason || c?.error?.message || 'Falta actualizar el control de este host.' : !h.fresh ? 'Actualiza la instantánea antes de decidir.'
-    : a ? 'Hay un ajuste pendiente; consulta su recibo.' : c.drift || c.recovery_pending ? 'Reconciliación pendiente.' : '';
+    : a ? 'Hay un ajuste pendiente; consulta su recibo.' : (c.drift || c.recovery_pending) && !c.foreign_work ? 'Reconciliación pendiente.' : '';
   const total=capable ? Object.values(c.slots).reduce((a,n)=>a+n,0) : 0;
   const minus=common || (g.slots<=1 ? 'Mínimo de 1 lugar.' : '');
   const plus=common || (c?.foreign_work ? 'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.' : g.slots>=8 ? 'Máximo de 8 lugares.' : total>=c.cap ? `Tope de ${c.cap} lugares. Quita un lugar a otro grupo para añadirlo aquí.` : '');
@@ -263,8 +263,8 @@ function hostControlState(h){
   if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
   else if(c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
   else if(c?.recovery_pending) message='Reconciliación pendiente';
-  else if(c?.foreign_work) message='Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.';
   else if(h.id==='desk' && c?.expires_at) message=slotExpiry(c.expires_at);
+  if(c?.foreign_work) message+=(message?' · ':'')+'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.';
   const result=a?.result;
   const desired=result?.desired || c?.desired, observed=result?.observed || c?.slots;
   if((a?.status==='partial' || c?.drift) && desired){

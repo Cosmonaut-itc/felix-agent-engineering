@@ -369,11 +369,18 @@ class MiniControl:
         finally:
             db.close()
 
-    def state(self, db):
+    def state(self, db, policy_migration=False):
         row = db.execute('SELECT body FROM policy WHERE id=1').fetchone()
         value = json.loads(row[0])
-        if (value['policy_hash'] != self.policy_hash or type(value['revision']) is not int
+        migrating = policy_migration and self.host == 'desk' and value['policy_hash'] != self.policy_hash
+        if ((value['policy_hash'] != self.policy_hash and not migrating) or type(value['revision']) is not int
                 or value['revision'] < 1 or type(value['reasons']) is not dict):
+            raise ValueError('Autoridad inválida')
+        if (type(value['policy_hash']) is not str or not re.fullmatch(r'[0-9a-f]{64}', value['policy_hash'])
+                or type(value['generation']) is not str or not value['generation']
+                or type(value['pid_file']) is not str or not Path(value['pid_file']).is_absolute()
+                or value['actor'] != 'Felix' or type(value['at']) not in (int, float)
+                or not math.isfinite(value['at'])):
             raise ValueError('Autoridad inválida')
         validate_vector(value['desired'], self.host)
         overrides = value['overrides']
@@ -396,7 +403,7 @@ class MiniControl:
             if self.host == 'desk' and not value['schedule_event'] <= item['requested_at'] < item['expires_at']:
                 raise ValueError('Ajuste fuera de su evento')
             calculated[g] = validate_limit(item['slots'])
-        if calculated != value['desired']:
+        if calculated != value['desired'] and not migrating:
             raise ValueError('Deseo inconsistente')
         # Ownership is independent of the quota profile (including foreign groups).
         if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous'}
@@ -654,25 +661,29 @@ class MiniControl:
             for g, n in slot_plan(observed, state['desired']):
                 if self.resolve(state) != state:
                     return self.reconcile()
-                if n > observed[g] and self.foreign_work:
-                    raise ValueError('Trabajo fuera del reparto; aumento retenido')
                 self.pueue.parallel(g, n)
                 observed, _ = self.observed()
                 if observed[g] != n or self.generation(state) != generation:
                     raise ValueError('RPC no confirmada o daemon sustituido')
             observed, _ = self.observed()
-            if self.resolve(state) != state:
-                return self.reconcile()
             if observed != state['desired'] or self.generation(state) != generation:
                 raise ValueError('Deriva de cuotas')
+            # The final daemon identification can cross the schedule boundary too.
+            if self.resolve(state) != state:
+                return self.reconcile()
         except (OSError, ValueError, KeyError, subprocess.SubprocessError):
             failure = True
             try:
                 observed, _ = self.observed()
             except (OSError, ValueError, KeyError, subprocess.SubprocessError):
                 observed = None
+        crossed_event = False
         with self.connect(write=True) as db:
             for key, body in db.execute('SELECT action_id,body FROM host_actions').fetchall():
+                if self.resolve(state) != state:  # revalidate each receipt after DB reads
+                    db.rollback()
+                    crossed_event = True
+                    break
                 action = json.loads(body)
                 if action['response']['status'] not in ('applying', 'partial', 'unknown'):
                     continue
@@ -688,6 +699,8 @@ class MiniControl:
                 action['response'] = self.reply(action['request'], status, 'expired' if expired else None,
                                                revision=state['revision'], result=payload)
                 db.execute('UPDATE host_actions SET body=? WHERE action_id=?', (canonical(action), key))
+        if crossed_event:
+            return self.reconcile()  # release the receipt transaction before recovering
         return not failure
 
     def pause_fence(self, group):
@@ -771,11 +784,11 @@ class MiniControl:
                     current = pressure_mini() if self.host == 'mini' else pressure(proc)
                     if decide(self.host, current, RAPIDAS_THRESHOLDS[self.host] if g == 'rapidas' else thresholds) != 'reanudar':
                         continue
-                    if self.resolve(state) != state:
-                        raise ValueError('Evento antes de admitir; esperar reconciliación')
                     observed, _ = self.observed()
                     if observed != state['desired'] or self.generation(state) != state['generation']:
                         raise ValueError('Deseo o daemon cambiaron antes de admitir')
+                    if self.resolve(state) != state:  # guard: after status and daemon identity
+                        raise ValueError('Evento antes de abrir por presión')
                     self.pueue.call('start', '-g', g)
                 reasons.discard('pressure')
                 state['reasons'][g] = sorted(reasons)
@@ -807,6 +820,8 @@ class MiniControl:
                 observed, _ = self.observed()
                 if observed != state['desired'] or self.generation(state) != state['generation']:
                     raise ValueError('Deseo o daemon cambiaron antes de admitir')
+                if self.resolve(state) != state:  # manual: after status and daemon identity
+                    raise ValueError('Evento antes de reanudar manualmente')
                 self.pueue.call('start', '-g', group)
             state['reasons'][group] = sorted(reasons)
         else:

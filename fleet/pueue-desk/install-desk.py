@@ -1,6 +1,9 @@
 #!/usr/bin/python3 -I
 """Migra sólo el controlador desk instalado; no reinicia ni configura pueued."""
 import argparse
+from contextlib import contextmanager
+import fcntl
+import json
 import importlib.util
 import os
 from pathlib import Path
@@ -15,8 +18,38 @@ def run(*argv):
     return subprocess.run(list(argv), check=True, capture_output=True, text=True)
 
 
+@contextmanager
+def authority_lock(directory):
+    # --seco may lock the existing inode, but must never create an authority/file.
+    try:
+        handle = (directory / 'control.lock').open('rb')
+    except FileNotFoundError as error:
+        raise ValueError('Falta el candado de la autoridad; no se readopta') from error
+    with handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        yield
+
+
+def policy_plan(engine):
+    """Installer-only validation; runtime still requires the exact policy hash."""
+    with engine.connect() as db:
+        state = engine.state(db, policy_migration=True)
+        if state['policy_hash'] == engine.policy_hash:
+            return None
+        actions = [json.loads(row[0]) for row in db.execute('SELECT body FROM host_actions')]
+        if any(a['response']['status'] in ('applying', 'partial', 'unknown') for a in actions):
+            raise ValueError('Hay recibos abiertos; recuperar con el controlador anterior antes de migrar')
+    # Validate the live host too, before effects. Time is sampled after blocking reads.
+    engine.observed()
+    engine.generation(state)
+    event = engine.resolve(state)['schedule_event']
+    desired = {g: row[engine.mode(dict(schedule_event=event))] for g, row in engine.profile.items()}
+    return dict(state, policy_hash=engine.policy_hash, desired=desired,
+                overrides={}, schedule_event=event, revision=state['revision'] + 1)
+
+
 def preflight(home, pid_file, control):
-    """Read-only gates shared by --seco and installation; no lock or mkdir."""
+    """Read-only gates shared by --seco and installation; no file creation."""
     directory = home / '.local/state/pao/pueue-desk'
     library = home / '.local/lib/pao-pueue-desk'
     target = library / 'control.py'
@@ -26,7 +59,11 @@ def preflight(home, pid_file, control):
         run('systemctl', '--user', 'is-active', name)
     engine = control.MiniControl(control.Pueue(home / '.local/bin/pueue'), directory, host='desk')
     if control.has_authority(directory):
-        engine.view()  # unreadable authority never grants re-adoption
+        with authority_lock(directory):
+            migration = policy_plan(engine)
+            if migration is None:
+                engine.view()  # unreadable authority never grants re-adoption
+            engine.install_migration = migration
     else:
         observed, _ = engine.observed()
         if observed != control.desk_profile(engine.clock()):
@@ -38,6 +75,10 @@ def preflight(home, pid_file, control):
 def install(home, pid_file, control, dry_run=False):
     engine = preflight(home, pid_file, control)
     if dry_run:
+        if getattr(engine, 'install_migration', None) is not None:
+            plan = engine.install_migration
+            print('SECO, migración de tabla: retirar ajustes; revisión ' + str(plan['revision'])
+                  + '; policy_hash ' + plan['policy_hash'] + '; desired ' + json.dumps(plan['desired'], sort_keys=True))
         print('Comprobado (lectura): controlador existente, timers activos, autoridad o tabla vigente y PID de pueued.')
         print('SECO, pendiente: apagar cuotas nuevas; detener timers/oneshots; bajo control.lock publicar, '
               'adoptar/importar o conservar SQLite/recibos; reconciliar; reactivar timers y retirar sólo '
@@ -50,6 +91,8 @@ def install(home, pid_file, control, dry_run=False):
     switch = directory / 'slots.disabled'
     enable_after = False
     with control.locked(directory):
+        if control.has_authority(directory):
+            policy_plan(engine)  # refuse pending/corrupt authority before even the switch
         if not os.path.lexists(switch):
             with switch.open('x') as stream:
                 stream.write('instalación en curso\n'); stream.flush(); os.fsync(stream.fileno())
@@ -59,6 +102,7 @@ def install(home, pid_file, control, dry_run=False):
     try:
         run('systemctl', '--user', 'stop', *TIMERS, *SERVICES)
         with control.locked(directory):
+            migration = policy_plan(engine) if control.has_authority(directory) else None
             if not control.has_authority(directory):
                 backup = library / 'control.pre-slots.py'
                 if not backup.exists():
@@ -73,6 +117,9 @@ def install(home, pid_file, control, dry_run=False):
             finally:
                 os.close(folder)
             if control.has_authority(directory):
+                if migration is not None:
+                    with engine.connect(write=True) as db:
+                        engine.store(db, migration)  # one transaction: hash, desire, overrides, revision
                 engine.view()
             else:
                 engine.adopt(pid_file)

@@ -4,7 +4,8 @@ Servicio systemd **de usuario** para Pueue 4.0.4 en WSL, listo para instalar
 tras U10 (NVMe). No instala binarios. El [retiro de deskpolicy](../deskpolicy/)
 se despliega por separado durante el corte coordinado de los clientes a Pueue.
 
-Desde la MacBook: `fleet/pueue-desk/deploy-desk.sh --seco` comprueba sin escribir;
+Antes de adoptar el control durable, desde la MacBook:
+`fleet/pueue-desk/deploy-desk.sh --seco` comprueba sin escribir;
 `fleet/pueue-desk/deploy-desk.sh` instala por `ssh desk`. Requiere `pueue` y
 `pueued` en `/home/felix/.local/bin`, systemd de usuario y permiso para
 `loginctl enable-linger felix`. El instalador lo pide antes de detener un
@@ -13,6 +14,9 @@ Un fallo de `aplicar` no reinicia `pueued`: `pueue-desk-mode.service` reintenta
 cada 30 s y deja el error en `journalctl --user -u pueue-desk-mode`.
 Linger inicia el servicio al arrancar la distro; el arranque de Windows debe
 iniciar WSL por su mecanismo habitual (SSH despierta la distro).
+
+Tras adoptar, `deploy-desk.sh` ya no es el camino de instalación; usar
+`install-desk.py` como se describe abajo, también al cambiar la tabla.
 
 `control.py` contiene la única tabla de cuotas (día/noche): hasito 1/2,
 jale 5/7, jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3.
@@ -54,7 +58,9 @@ durable descrito abajo; una llamada directa a `parallel` se considera deriva.
 Ver fila: `ssh desk '~/.local/bin/pueue status -g hasito'`.
 Pausar a mano, dejando terminar tareas:
 `ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py pausar hasito'`.
-Reanudar: `ssh desk '~/.local/bin/pueue start -g hasito'`.
+Reanudar en un desk adoptado:
+`ssh desk '/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py reanudar hasito'`.
+Ese comando retira la razón manual y comprueba cuotas, horario y presión antes de abrir.
 El guardia respeta grupos previamente pausados. **Si el guardia ya había
 pausado el grupo, usar siempre el comando `pausar` anterior**: Pueue no distingue
 una segunda pausa manual de la suya. Ese comando retira la propiedad del guardia
@@ -298,7 +304,9 @@ No se absorben grupos ajenos en el perfil; su propiedad de pausa se conserva
 por separado, incluso cuando el grupo ya no existe.
 Si aparece trabajo no terminal fuera del reparto (incluido `default`), se publica
 sólo su conteo `foreign_work`: no se exponen tareas ni entornos. Bloquea aumentos
-en ±, undo y recuperación; permite reducciones seguras, sin tocar el grupo ajeno.
+sólo en ± y undo; permite reducciones seguras. La reconciliación hacia el deseo
+durable (horario o ajuste ya aceptado) sigue aplicando su tabla sin tocar el grupo ajeno.
+La guardia conserva sus razones de presión y su capacidad de reabrir.
 
 Cada grupo admite 1..8 lugares, contando también las cuotas de grupos pausados.
 El host coteja revisión, hash de tabla/horarios, generación y vector vivo completo.
@@ -366,6 +374,25 @@ Pasos para el operador, **no ejecutados por las pruebas**:
    No readoptar una base perdida/corrupta: restaurar respaldo verificado bajo
    el mismo candado. `deploy-desk.sh`/`withdraw-desk.sh` rechazan una autoridad
    ya adoptada para impedir volver a una guardia o tabla ciegas.
+
+### Cambiar GROUP_LIMITS después de adoptar
+
+Cambiar la tabla en el checkout revisado y ejecutar primero `install-desk.py --seco`
+y luego `install-desk.py` con el mismo `--pid-file` de los pasos anteriores.
+El ensayo toma el `control.lock` existente sin crear archivos e imprime la migración:
+retira ajustes vigentes, fija el deseo a la tabla nueva del evento actual, cambia
+`policy_hash` y sube una revisión. La instalación hace esos cuatro cambios en una
+sola transacción y después reconcilia reducciones antes que aumentos. Conserva
+recibos y razones de pausa; nunca readopta ni reinicia el daemon.
+
+Ambos caminos validan la estructura de la autoridad anterior, salvo el hash y
+la correspondencia del deseo con la tabla sustituida. Exigen cero recibos
+`applying`, `partial` o `unknown`: si hay alguno, recuperar primero con el
+controlador anterior. Una base perdida, ilegible o corrupta se rechaza sin efectos.
+La comprobación se repite bajo el candado antes de publicar. El controlador en
+operación sigue rechazando un hash diferente; sólo el instalador puede migrarlo.
+`deploy-desk.sh` no sirve para actualizar un desk adoptado. La Mini presenta el
+mismo límite con `MINI_PROFILE`; su migración queda para una unidad aparte.
 
 Para revertir la entrega, deshacer el recibo antes de su evento, o apagar cuotas
 con `slots.disabled` y volver al panel anterior, **conservando este controlador y
