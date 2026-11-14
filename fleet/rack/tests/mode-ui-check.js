@@ -120,6 +120,13 @@ if(input.check) (async()=>{
  run('NOW=applied.result.next_event;h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,result:{...applied.result,expires_at:null}})');
  assert.equal(run('h.control.revision'),1);assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);
  assert.match(elements.toast.innerHTML,/venció/);
+ // A receipt delivered after the event, before any newer snapshot, is not confirmed (R1-sol-1).
+ elements.toast.innerHTML='';run('NOW=applied.result.next_event-2;NOW_AT=Date.now()-3000;h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,result:{...applied.result,expires_at:null}})');
+ assert.equal(run('h.control.revision'),1);assert.doesNotMatch(elements.toast.innerHTML,/Deshacer/);
+ assert.match(elements.toast.innerHTML,/venció/);
+ // After a fresh snapshot, the same receipt delivered before the event is confirmed and offers undo.
+ elements.toast.innerHTML='';run('NOW_AT=Date.now()-3600e3;render({...fixture,now:applied.result.next_event-5});globalThis.h=S.hosts[0];h.control.revision=1;SLOT_MESSAGES.clear();acceptSlots(key,a,{...applied,result:{...applied.result,expires_at:null}})');
+ assert.notEqual(run('h.control.revision'),1);assert.match(elements.toast.innerHTML,/Deshacer/);
  assert.equal(requests.filter(([url,o])=>url==='/api/accion' && JSON.parse(o.body).action_id===ident).length,1);
  console.log('UI mode OK: automatic/advanced both ways; pending/partial/conflict/unknown/expired; foreign work; old host; Mini; undo; toast 8s; no replay');
 })().catch(e=>{console.error(e);process.exitCode=1});

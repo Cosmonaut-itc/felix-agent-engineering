@@ -129,7 +129,9 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 #toast button{font:inherit;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
 @media(max-width:560px){.host-heading{flex-direction:column}.mode-control{text-align:left}.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
-let S, NOW;
+let S, NOW, NOW_AT=Date.now();
+// Host time advanced by elapsed browser time since the last snapshot; never a browser-chosen date.
+const hostNow = () => NOW + Math.max(0, Date.now() - NOW_AT) / 1000;
 const PENDING = new Map();
 const CANCELLED = new Set();
 const runKey = (h,t) => JSON.stringify([h.id,t.id,t.control?.ref,t.enqueued,t.start]);
@@ -342,7 +344,7 @@ function acceptSlots(key,action,data){
   }
   PENDING.delete(key);persistActions();
   const boundary=data.result?.expires_at || data.result?.next_event;
-  const expired=h?.id==='desk' && boundary && boundary<=NOW;
+  const expired=h?.id==='desk' && boundary && boundary<=hostNow();
   if(expired){
     SLOT_MESSAGES.set(h.id,'El ajuste venció en el cambio de horario.');say(SLOT_MESSAGES.get(h.id));
   }else if(data.status==='applied' && h && data.result?.observed && data.revision>=h.control.revision){
@@ -395,7 +397,7 @@ function view(){
       return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
 function render(data){
-  NOW = data.now;
+  NOW = data.now; NOW_AT = Date.now();
   S = {hosts:data.hosts.map(h=>{
     const s=h.snapshot || {};
     const confirmed=HOST_CONFIRMED.get(h.id);
