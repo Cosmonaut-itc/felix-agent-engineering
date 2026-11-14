@@ -288,7 +288,8 @@ def train_guard(command, directory):
     enrolled.discard("")
     reason = "repo inscrito en el tren: usa pao-tren entregar"
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
         lexer.whitespace_split = True
         tokens = list(lexer)
     except ValueError:
@@ -297,7 +298,7 @@ def train_guard(command, directory):
         return None
     segments, segment = [], []
     for token in tokens + [";"]:
-        if token and all(char in ";&|()" for char in token):
+        if token and all(char in ";&|()\n" for char in token):
             segments.append(segment)
             segment = []
         else:
@@ -340,9 +341,11 @@ def train_guard(command, directory):
             if tail[index:index + 1] != ["push"]:
                 continue
             positional, index = [], index + 1
-            broad = False
+            broad, tags_only = False, False
             while index < len(tail):
                 arg = tail[index]
+                if arg == "--tags":
+                    tags_only = True
                 if arg in {"--all", "--mirror"}:
                     broad = True
                 if arg in {"--repo", "--receive-pack", "--exec", "-o", "--push-option"}:
@@ -356,7 +359,7 @@ def train_guard(command, directory):
                     positional.append(arg)
                 index += 1
             refs = positional[1:]
-            if not refs and not broad:
+            if not refs and not broad and not tags_only:
                 refs = git_read(git_directory, ["config", "--get-all", "remote.origin.push"])
                 refs = refs.splitlines() if refs else [git_read(git_directory, ["symbolic-ref", "--short", "HEAD"]) or ""]
             to_main = broad or any(ref.lstrip("+").rsplit(":", 1)[-1] in {"main", "refs/heads/main", "refs/heads/*", "*"} for ref in refs)
