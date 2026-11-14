@@ -17,9 +17,8 @@ GROUP_LIMITS = {
     "hasito": {"dia": 1, "noche": 2},
     "jale": {"dia": 5, "noche": 7},
     "jale-verify": {"dia": 1, "noche": 1},
-    "otros": {"dia": 1, "noche": 1},
+    "otros": {"dia": 2, "noche": 2},
     "pesadas": {"dia": 2, "noche": 3},
-    "pg5434": {"dia": 1, "noche": 1},
     "rapidas": {"dia": 3, "noche": 3},
 }
 # Sólo el desk: fleet/rack/snapshot.py lee pause y resume con su CPU.
