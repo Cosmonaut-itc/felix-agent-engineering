@@ -142,7 +142,9 @@ def main():
         assert second_pid!=first_pid
         properties=subprocess.check_output(['systemctl','--user','show',unit,'-p','MainPID','-p','NRestarts','-p','Restart','-p','KillMode'],text=True)
         emit('systemd_PASS',pre_daemon_guard_order=True,successful_exit_restarted=True,properties=properties.strip())
-        subprocess.run(['systemctl','--user','stop',guard_unit,unit],check=True,capture_output=True,text=True)
+        # A completed transient oneshot is already garbage-collected by systemd.
+        subprocess.run(['systemctl','--user','stop',guard_unit],check=False,capture_output=True,text=True)
+        subprocess.run(['systemctl','--user','stop',unit],check=True,capture_output=True,text=True)
         wait_for(lambda:not pid.exists() or subprocess.run(['/bin/ps','-p',pid.read_text().strip(),'-o','comm='],capture_output=True).returncode==1)
         emit('PASS',windows_boot_not_claimed=True)
     finally:
