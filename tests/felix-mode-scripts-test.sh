@@ -1445,6 +1445,17 @@ for flag in ("--repo github.com/SEN-HASO/Hasito", "-R SEN-HASO/Hasito", "--repo 
 probe("Opus-1-head", "git push origin HEAD", hasito)
 probe("Opus-1b-arroba", "git push -u origin @", hasito)
 probe("Opus-5-cd-comment", "cd " + str(hasito) + " # entra al repo\ngit push origin HEAD:main", other)
+# H8: quoted text that spans lines is ordinary work, not an unparseable push.
+heredoc_commit = "git commit -m \"$(cat <<'EOF'\nfix: merge-guard niega push a main\n\nEOF\n)\""
+heredoc_pr = "gh pr create --title t --body \"$(cat <<'EOF'\nNo hace push ni merge.\nEOF\n)\""
+for cwd in (other, hasito):
+    probe("H8-commit-heredoc-" + cwd.name, heredoc_commit, cwd, "allow")
+    probe("H8-pr-create-heredoc-" + cwd.name, heredoc_pr, cwd, "allow")
+    probe("H8-commit-multiline-" + cwd.name, "git commit -m \"uno\ndos sobre push\"", cwd, "allow")
+# A quoted or mid-word # is not a comment and must not hide the next command.
+probe("H8-quoted-hash", "git commit -m \"a # b\"\ngit push origin HEAD:main", hasito)
+probe("H8-echo-hash", "echo '#'; git push origin HEAD:main", hasito)
+probe("H8-word-hash", "echo a#b; git push origin HEAD:main", hasito)
 probe("feature-HEAD", "git push origin HEAD", expected="allow")
 probe("unknown-merge", merge, base, reason="No puedo resolver")
 probe("unknown-push", "git push origin HEAD:main", base, reason="No puedo resolver")

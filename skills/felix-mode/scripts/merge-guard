@@ -344,6 +344,30 @@ def push_to_main(refs, broad, tags_only, read, remote):
     return False
 
 
+def strip_comments(command):
+    # shlex swallows the newline that ends a comment, merging two commands.
+    # Drop unquoted comments here and keep that newline; quotes may span lines.
+    out, quote, word_start, index = [], None, True, 0
+    while index < len(command):
+        char = command[index]
+        if char == "\\" and quote != "\x27" and index + 1 < len(command):
+            out.append(command[index:index + 2])
+            index, word_start = index + 2, False
+            continue
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "\x27\"":
+            quote = char
+        elif char == "#" and word_start:
+            end = command.find("\n", index)
+            index = len(command) if end < 0 else end
+            continue
+        out.append(char)
+        word_start = not quote and char in " \t\r\n;&|()"
+        index += 1
+    return "".join(out)
+
+
 def train_guard(command, directory, inherited_env=None):
     config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
     registry = os.path.join(config, "pao-tren", "inscritos")
@@ -362,20 +386,18 @@ def train_guard(command, directory, inherited_env=None):
     reason = "repo inscrito en el tren: usa pao-tren entregar"
     unresolved = "No puedo resolver el repo o la ref destino; " + reason
     try:
-        tokens = []
-        # shlex consumes the newline after a comment. Lex lines separately so
-        # cd keeps its own segment even when a comment follows it.
-        for line in command.split("\n"):
-            lexer = shlex.shlex(line, posix=True, punctuation_chars=";&|()")
-            lexer.whitespace_split = True
-            tokens.extend(list(lexer) + [";"])
+        lexer = shlex.shlex(strip_comments(command), posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
     except ValueError:
-        if re.search(r"\b(?:git|gh)\b.*\b(?:push|merge)\b", command, re.S):
+        if re.search(r"\bgit\b[^\n]*\bpush\b|\bgh\b[^\n]*\bmerge\b", command):
             return ("tren", unresolved)
         return None
     segments, segment = [], []
     for token in tokens + [";"]:
-        if token and all(char in ";&|()" for char in token):
+        if token and all(char in ";&|()\n" for char in token):
             segments.append(segment)
             segment = []
         else:
