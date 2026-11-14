@@ -35,6 +35,22 @@ class StartupSnapshotTests(unittest.TestCase):
         self.assertFalse(any('origin' in (t.get('control') or {}) for t in data['tasks']))
         self.assertNotIn('envs',json.dumps(data));self.assertNotIn('original_command',json.dumps(data))
 
+    def test_old_terminal_is_dropped_before_reading_its_metadata(self):
+        authority=self.root/'.local/state/pao/pueue-desk/control.sqlite3';authority.parent.mkdir(parents=True)
+        with sqlite3.connect(str(authority)) as db:
+            db.execute('CREATE TABLE policy(id INTEGER PRIMARY KEY,body TEXT)')
+            db.execute('INSERT INTO policy VALUES(1,?)',(json.dumps(dict(startup=dict(interruptions={'1':dict(created_at=STAMP,message=MESSAGE)}))),))
+        def task(ident,result):
+            return dict(id=ident,group='jale',created_at=STAMP,path='/synthetic/'+str(ident),envs={},command='synthetic',original_command='synthetic',priority=0,
+                        status={'Done':dict(enqueued_at=STAMP,start=STAMP,end=STAMP,result=result)})
+        tasks={'1':task(1,'Killed'),**{str(i):task(i,'Success') for i in range(2,12)}}
+        with patch.object(snapshot,'linux_capacity',return_value=None),patch.object(snapshot,'desk_guard',return_value=None), \
+             patch.object(snapshot,'mini_metadata',return_value={}) as metadata:
+            data=snapshot.collect('linux','desk',pueue=self.fake_pueue(tasks),home=self.root,now=1794664800+3*86400)
+        self.assertEqual([t['id'] for t in data['tasks']],[1])
+        self.assertEqual([c.args[0]['id'] for c in metadata.call_args_list],[1])
+        self.assertNotIn('metadata',json.dumps(data.get('errors')))
+
 
 class StartupPublicationTests(unittest.TestCase):
     def test_publish_retains_only_attributed_interruption_and_snapshot_rejects_false_origin(self):
@@ -82,8 +98,6 @@ class StartupUITests(unittest.TestCase):
         for value in ([],{'jale':None},{'jale':'x'*301}):
             with self.assertRaises(ValueError):serve.accion.host_channel.control(dict(c,startup_holds=value),'desk')
 
-
-if __name__=='__main__':unittest.main()
 
 
 class StartupPipelineTests(unittest.TestCase):
@@ -145,6 +159,9 @@ class StartupPipelineTests(unittest.TestCase):
     def test_a_w5_pipeline_six_waits_one_hold_and_no_redundant_ssh(self):
         self.render('startup-waits')
 
+    def test_ambiguous_pause_without_group_hold_keeps_the_ssh_notice(self):
+        self.render('ambiguous-notice')
+
     def test_wait_codes_are_closed_and_disjoint_from_holds(self):
         view=self.fixture()['hosts'][0]['snapshot']['control']
         self.assertEqual(view.get('startup_waiting'),{g:'cuotas_sensores' for g in desk_tests.control.GROUP_LIMITS})
@@ -164,3 +181,6 @@ class StartupPipelineTests(unittest.TestCase):
                 data=snapshot.collect('linux','desk',pueue=test.fake_pueue({'1':raw}),home=test.root,now=1794664800+3*86400)
             self.assertEqual([t['id'] for t in data['tasks'] if t.get('interruption_reason')],[1])
         finally:test.doCleanups()
+
+
+if __name__=='__main__':unittest.main()

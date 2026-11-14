@@ -190,8 +190,15 @@ STARTUP_CASES += (
      'test_startup.StartupPipelineTests.test_wait_codes_are_closed_and_disjoint_from_holds'),
     ('startup-wait-disjoint','host_action.py',"or g in holds for g,code in waiting.items()","for g,code in waiting.items()",
      'test_startup.StartupPipelineTests.test_wait_codes_are_closed_and_disjoint_from_holds'),
-    ('startup-attributed-age','snapshot.py'," and not row.get('interruption_reason')",'',
+    ('startup-attributed-age','snapshot.py'," and not attributed:",':',
      'test_startup.StartupPipelineTests.test_attributed_interruption_survives_ordinary_terminal_age_cutoff'),
+    ('startup-old-terminal-before-metadata','snapshot.py',
+     "                if state == 'Done' and (end is None or end < now - 86400) and not attributed:\n                    continue\n",'',
+     'test_startup.StartupSnapshotTests.test_old_terminal_is_dropped_before_reading_its_metadata'),
+    ('startup-ambiguous-notice','index.html',"r.includes('ambiguous') && !c.startup_holds?.[g]",'false',
+     'test_startup.StartupPipelineTests.test_ambiguous_pause_without_group_hold_keeps_the_ssh_notice'),
+    ('startup-ambiguous-notice-hold','index.html'," && !c.startup_holds?.[g]",'',
+     'test_startup.StartupPipelineTests.test_ambiguous_pause_without_group_hold_keeps_the_ssh_notice'),
 )
 
 

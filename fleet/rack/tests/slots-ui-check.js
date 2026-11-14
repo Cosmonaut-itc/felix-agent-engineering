@@ -29,6 +29,13 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    assert.doesNotMatch(elements.app.innerHTML,/Pausa tras reinicio: resolver por SSH|>Reanudar<|data-resume/);
    console.log('UI startup waits pipeline OK');return;
  }
+ if(input.scenario==='ambiguous-notice'){
+   const notice=/Pausa tras reinicio: resolver por SSH con control.py/;
+   assert.match(run('hostControlMessage({id:"mini",control:{pause_reasons:{suites:["ambiguous"]}}})'),notice);
+   assert.match(run('hostControlMessage({id:"desk",control:{pause_reasons:{suites:["ambiguous"]}}})'),notice);
+   assert.doesNotMatch(run('hostControlMessage({id:"desk",control:{pause_reasons:{suites:["ambiguous","startup"]},startup_holds:{suites:"x"}}})'),notice);
+   console.log('UI ambiguous notice OK');return;
+ }
  if(input.scenario==='startup'){
    assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
    assert.match(elements.app.innerHTML,/Retenido al reiniciar: pausa de origen desconocido &lt;script&gt;/);

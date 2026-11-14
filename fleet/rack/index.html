@@ -318,6 +318,9 @@ function hostControlMessage(h){
   if((a?.status==='partial' || c?.drift) && desired){
     message+=' · '+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
   }
+  // The Mini has no per-group startup hold yet; this is its only explanation of an ambiguous pause.
+  if(c?.pause_reasons && Object.entries(c.pause_reasons).some(([g,r])=>r.includes('ambiguous') && !c.startup_holds?.[g]))
+    message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
   return message;
 }
 function hostControlState(h){

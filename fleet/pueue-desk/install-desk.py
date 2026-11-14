@@ -212,7 +212,16 @@ def install(home, pid_file, control, dry_run=False, sources=None):
             control.atomic_json(maintenance, dict(reason='instalación incompleta'))
         raise
     if own_maintenance:
-        run('systemctl', '--user', 'start', *TIMERS)
+        try:
+            run('systemctl', '--user', 'start', *TIMERS)
+        except BaseException:
+            if not os.path.lexists(maintenance):
+                control.atomic_json(maintenance, dict(reason='instalación incompleta'))
+            try:
+                run('systemctl', '--user', 'stop', *TIMERS)
+            except Exception:
+                pass  # keep the original error; maintenance already blocks guard and mode
+            raise
     if enable_after and own_maintenance:
         with control.locked(directory):
             switch.unlink()

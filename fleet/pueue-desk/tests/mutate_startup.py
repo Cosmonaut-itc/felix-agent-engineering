@@ -113,6 +113,14 @@ for key,condition in (
  ('preparer',"str(home / '.local/lib/pao-pueue-desk/control.py') + ' preparar --host desk' not in loaded['ExecStartPre']")):
  CASES.append(('loaded-unit-'+key,'install-desk.py',condition,'False',
   'test_startup_injerto.InstallerGraftTests.test_loaded_unit_mismatch_retains_maintenance_and_no_timer_restart'))
+CASES += [
+ ('timer-start-keeps-maintenance','install-desk.py',
+  "            if not os.path.lexists(maintenance):\n                control.atomic_json(maintenance, dict(reason='instalación incompleta'))\n            try:","            try:",
+  'InstallerStartupTests.test_failed_timer_start_restores_maintenance_and_stops_both_timers'),
+ ('timer-start-stops-timers','install-desk.py',
+  "                run('systemctl', '--user', 'stop', *TIMERS)\n            except Exception:","                pass\n            except Exception:",
+  'InstallerStartupTests.test_failed_timer_start_restores_maintenance_and_stops_both_timers'),
+]
 
 
 def main():

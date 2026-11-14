@@ -465,15 +465,16 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                     result = 'exit ' + str(result['Failed']) if 'Failed' in result else next(iter(result))
                 row = dict(id=task['id'], group=task['group'], state=state, enqueued=epoch(details.get('enqueued_at')), start=epoch(details.get('start')), end=end, result=result,
                            name=None, scope=None, project=None, ticket=None, repo=None, sha=None, branch=None, subject=None, priority=task.get('priority', 0))
+                interruption = interruptions.get(str(task['id']), {})
+                attributed = (state == 'Done' and result == 'Killed' and interruption.get('created_at') == task.get('created_at')
+                              and interruption.get('message') == 'Interrumpida al reiniciar Pueue; relanzar manualmente')
+                if state == 'Done' and (end is None or end < now - 86400) and not attributed:
+                    continue
                 jale = mode != 'macos' and re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
                 metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
-                interruption = interruptions.get(str(task['id']), {})
-                if (state == 'Done' and result == 'Killed' and interruption.get('created_at') == task.get('created_at')
-                        and interruption.get('message') == 'Interrumpida al reiniciar Pueue; relanzar manualmente'):
+                if attributed:
                     row['interruption_reason'] = interruption['message']
-                if state == 'Done' and (end is None or end < now - 86400) and not row.get('interruption_reason'):
-                    continue
                 row['control'] = task_control(task, home, state)
                 row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'))
                 if state == 'Running':

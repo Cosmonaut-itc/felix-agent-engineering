@@ -486,5 +486,17 @@ class InstallerStartupTests(unittest.TestCase):
         self.assertTrue((self.directory/'maintenance').exists())
         self.assertFalse(any(c[2]=='start' for c in self.syscalls))
 
+    def test_failed_timer_start_restores_maintenance_and_stops_both_timers(self):
+        def run(*args):
+            result=self.systemctl(*args)
+            if args[2]=='start':raise subprocess.CalledProcessError(1,list(args),stderr='injected partial start')
+            return result
+        with patch.object(self.installer,'run',side_effect=run),redirect_stdout(io.StringIO()):
+            with self.assertRaises(subprocess.CalledProcessError):self.installer.install(self.home,self.pid,control)
+        self.assertTrue((self.directory/'maintenance').exists())
+        start=max(i for i,c in enumerate(self.syscalls) if c[2]=='start')
+        self.assertEqual(self.syscalls[start+1:],[('systemctl','--user','stop',*self.installer.TIMERS)])
+        self.assertFalse(any(c[2] in ('stop','restart') and 'pueued.service' in c for c in self.syscalls))
+
 
 if __name__=='__main__':unittest.main()
