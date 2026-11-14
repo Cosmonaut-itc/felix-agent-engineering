@@ -1,0 +1,15 @@
+{
+  "repos": {
+    "owner/project": {
+      "git": "/path/to/local/checkout",
+      "excluir_alto_riesgo": true,
+      "etiquetas_alto_riesgo": ["alto-riesgo"],
+      "heads_autorizados": [],
+      "sensibles": {
+        "ci": [".github/*", ".buildkite/*"],
+        "gobierno": ["AGENTS.md", "CLAUDE.md", "**/AGENTS.md", "**/CLAUDE.md", "docs/governance/*", "**/merge.md"],
+        "lockfiles": ["*lock*", "**/*lock*", "go.sum"]
+      }
+    }
+  }
+}
