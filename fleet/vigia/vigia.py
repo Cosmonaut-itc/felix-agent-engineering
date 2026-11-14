@@ -104,7 +104,8 @@ def flujo():
             nueva = None
         if nueva != firma:
             firma = nueva
-            pendiente = now + .3
+            # El rebote no se alarga: con reescrituras seguidas, se lee igual a los 0,3 s.
+            pendiente = now + .3 if pendiente is None else pendiente
         if subs and now - ultima >= tick and pendiente is None:
             pendiente = now
         if subs and pendiente is not None and now >= pendiente and now - ultima >= 1:
@@ -203,6 +204,7 @@ def corredor(host):
     server = socket.socket(socket.AF_UNIX)
     proc, clients, tokens, suscritas, usadas = None, {}, {}, set(), {}
     contacto, reconectar, retraso, inactivo = -float("inf"), 0, 1, time.monotonic()
+    conectado_en = -float("inf")
     buffer = b""
     vivo = True
 
@@ -224,6 +226,7 @@ def corredor(host):
     def cerrar_ssh():
         nonlocal proc, contacto
         contacto = -float("inf")
+        tokens.clear()  # Tras reconectar sólo valen los T de la conexión nueva.
         if proc is not None:
             try:
                 sel.unregister(proc.stdout)
@@ -277,6 +280,7 @@ def corredor(host):
                     proc.stdin.flush()
                     sel.register(proc.stdout, selectors.EVENT_READ)
                     buffer = b""
+                    conectado_en = now
                     for task in suscritas:
                         enviar("S " + task)
                     log("conectado")
@@ -351,10 +355,11 @@ def corredor(host):
                         respuesta = "cambio " + " ".join(valor)
                     elif now - info["creada"] >= plazo and valor is not None:
                         respuesta = ("plazo " + " ".join(valor)) if sano else "sin-vigia"
-                    elif now - info["creada"] >= min(12, plazo) and valor is None:
-                        # Primera suscripción dispone de hasta 12 s incluso con plazo 0.
-                        if now - info["creada"] >= 12:
-                            respuesta = "sin-vigia"
+                    elif valor is None and (now - max(info["creada"], conectado_en) >= 12
+                                            or now - info["creada"] >= max(plazo, 12)):
+                        # Sin token: hasta 12 s desde la petición o la última conexión,
+                        # incluso con plazo 0, y nunca más allá del plazo.
+                        respuesta = "sin-vigia"
                 if respuesta:
                     try:
                         client.sendall((respuesta + "\n").encode())

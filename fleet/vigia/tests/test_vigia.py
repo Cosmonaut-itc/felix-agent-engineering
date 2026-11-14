@@ -225,6 +225,45 @@ class Corredor(Fixture):
         self.assertEqual((r['VIGIA'], r['VIGIA_TOKEN']), ('plazo', token))
         self.assertEqual((self.root/'lecturas').read_text(), lecturas)
 
+    def test_reconexion_no_reusa_tokens_sin_refrescar(self):
+        # Ambas tareas cambian durante la caída; el T nuevo de una de ellas llega tarde.
+        (self.root/'ssh').write_text("""#!/usr/bin/python3
+import os, pathlib, sys, time
+r = pathlib.Path(os.environ['FAKE_ROOT'])
+b = sys.stdin.buffer
+b.read(int(b.readline()))
+s = r/'sesion'
+n = int(s.read_text())+1 if s.exists() else 1
+s.write_text(str(n))
+for line in b:
+    p = line.decode().split()
+    if p[0] != 'S': continue
+    if n == 1:
+        print('T', p[1], 'v1-'+('a' if p[1] == '1' else 'b')*16, 'Running', flush=True)
+        if p[1] == '2':
+            (r/'listo').touch()
+            while not (r/'caida').exists(): time.sleep(.01)
+            sys.exit(0)
+    else:
+        print('T', p[1], 'v1-'+'c'*16, 'Done', flush=True)
+        if not (r/'primera').exists():
+            (r/'primera').write_text(p[1])
+            while not (r/'suelta').exists(): time.sleep(.01)
+""")
+        self.env['PAO_VIGIA_CONTACT'] = '60'
+        for task in ('1', '2'):
+            self.resultado(self.launch('timbre', 'desk', task, '-', '0'))
+        self.esperar(lambda: (self.root/'listo').exists())
+        (self.root/'caida').touch()
+        self.esperar(lambda: (self.root/'primera').exists())
+        tarde = '2' if (self.root/'primera').read_text() == '1' else '1'
+        p = self.launch('timbre', 'desk', tarde, 'v1-'+('a' if tarde == '1' else 'b')*16, '0')
+        time.sleep(.7)
+        self.assertIsNone(p.poll(), 'respondió con el token anterior a la caída')
+        (self.root/'suelta').touch()
+        r = self.resultado(p)
+        self.assertEqual((r['VIGIA'], r['VIGIA_TOKEN'], r['VIGIA_ESTADO']), ('cambio', 'v1-'+'c'*16, 'Done'))
+
     def test_caida_reconexion_sin_falso_cambio(self):
         token = self.resultado(self.timbre())['VIGIA_TOKEN']
         (self.root/'offline').touch()
