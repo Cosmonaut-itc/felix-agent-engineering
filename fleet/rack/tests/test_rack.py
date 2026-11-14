@@ -65,8 +65,21 @@ class SnapshotTests(unittest.TestCase):
         controller.parent.mkdir(parents=True)
         controller.write_text('raise AssertionError("must use injected read")')
         data = snapshot.collect('macos', 'mini', pueue=self.fake_pueue({}), home=self.root)
-        snapshot.read_control.assert_called_once_with(controller)
+        snapshot.read_control.assert_called_once_with(controller, 'mini')
         self.assertIsNone(data['control'])
+
+    def test_desk_snapshot_reads_only_its_own_installed_controller(self):
+        mini = self.root/'.local/lib/pao-pueue-mini/control.py'
+        mini.parent.mkdir(parents=True)
+        mini.write_text('raise AssertionError("desk must not read the Mini controller")')
+        data = snapshot.collect('linux', 'desk', pueue=self.fake_pueue({}), home=self.root, proc=self.root/'proc')
+        snapshot.read_control.assert_not_called()
+        self.assertNotIn('control', data)
+        desk = self.root/'.local/lib/pao-pueue-desk/control.py'
+        desk.parent.mkdir(parents=True)
+        desk.write_text('raise AssertionError("must use injected read")')
+        snapshot.collect('linux', 'desk', pueue=self.fake_pueue({}), home=self.root, proc=self.root/'proc')
+        snapshot.read_control.assert_called_once_with(desk, 'desk')
 
     def fake_pueue(self, tasks):
         data = dict(groups={'suites': dict(status='Running', parallel_tasks=3)}, tasks=tasks)

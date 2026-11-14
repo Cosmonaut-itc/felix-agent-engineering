@@ -590,7 +590,9 @@ sys.argv=['control.py','rack','--host','mini'];c.main()
                                  patch.object(control, 'MiniControl', return_value=self.engine):
                                 control.guard(pueue, None, self.root, host='mini')
                         elif route == 'desk-guard':
-                            control.guard(pueue, None, self.root)
+                            # The desk keeps its own directory; this one has the Mini's authority.
+                            (self.root / 'desk').mkdir(exist_ok=True)
+                            control.guard(pueue, None, self.root / 'desk')
                         else:
                             control.apply_mode(pueue, control.datetime(2026, 11, 13, 15, tzinfo=control.timezone.utc))
                     except subprocess.TimeoutExpired as error:

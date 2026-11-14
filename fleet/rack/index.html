@@ -186,7 +186,7 @@ function capacity(h){
       <div class="m-val">${Number.isFinite(GB(h.mem_avail)) ? GB(h.mem_avail).toFixed(0) : '—'} GB <span class="muted" style="font-size:12px;font-weight:400">libres</span></div>
       <div class="meter"><i style="width:${memPct*100}%;background:${memPct>.85?'var(--crit)':'var(--accent)'}"></i></div>
       <div class="m-note ink2">Swap ${Number.isFinite(GB(h.swap_used)) ? GB(h.swap_used).toFixed(1) : '—'} de ${Number.isFinite(GB(h.swap_total)) ? GB(h.swap_total).toFixed(0) : '—'} GB</div></div>
-    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total${h.control?.cap ? ' · tope '+h.control.cap : ''}</span></div>
+    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total${h.control?.cap ? ' · tope '+h.control.cap+(MODE_LABEL[h.control.mode] ? ' de '+MODE_LABEL[h.control.mode] : '') : ''}</span></div>
       <div class="m-val">${run} <span class="muted" style="font-size:12px;font-weight:400">ocupados</span></div>
       <div class="meter"><i style="width:${tot?run/tot*100:0}%;background:var(--accent)"></i></div>
       <div class="m-note ink2">${queued(h).length ? queued(h).length + ' en fila' : 'Fila vacía'}</div></div>
@@ -243,10 +243,14 @@ function resourceTable(h){
 
 const HOST_CONFIRMED = new Map(), SLOT_MESSAGES = new Map();
 const slotKey = h => '@host/'+h.id;
+// The desk splits its slots by a Día/Noche table; an adjustment lasts until the next event.
+const MODE_LABEL = {dia:'día', noche:'noche'};
+const clock = at => new Date(at*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit'});
 function slotControls(h,n,g,r){
   const c=h.control, a=PENDING.get(slotKey(h));
-  const capable=h.id==='mini' && c?.capabilities?.slots===true && Object.hasOwn(c.slots,n);
-  const common=!capable ? c?.reason || c?.error?.message || 'Falta actualizar el control de este host.' : !h.fresh ? 'Actualiza la instantánea antes de decidir.'
+  const outside=c?.status==='ok' && !Object.hasOwn(c.slots,n);
+  const capable=c?.capabilities?.slots===true && !outside;
+  const common=outside ? 'Fuera del reparto: no cuenta en el tope.' : !capable ? c?.reason || c?.error?.message || 'Falta actualizar el control de este host.' : !h.fresh ? 'Actualiza la instantánea antes de decidir.'
     : a ? 'Hay un ajuste pendiente; consulta su recibo.' : c.drift || c.recovery_pending ? 'Reconciliación pendiente.' : '';
   const total=capable ? Object.values(c.slots).reduce((a,n)=>a+n,0) : 0;
   const minus=common || (g.slots<=1 ? 'Mínimo de 1 lugar.' : '');
@@ -267,6 +271,8 @@ function hostControlState(h){
   if((a?.status==='partial' || c?.drift) && desired){
     message+=' · '+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
   }
+  if(!a && c?.expires_at)
+    message+=(message?' · ':'')+`Ajustes hasta las ${clock(c.expires_at)} · después rige la tabla de ${c.mode==='dia'?'noche':'día'}`;
   if(c?.pause_reasons && Object.values(c.pause_reasons).some(r=>r.includes('ambiguous')))
     message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
   return message ? `<p class="action-state" role="status">${esc(message)}</p>` : '';
@@ -295,11 +301,11 @@ function acceptSlots(key,action,data){
   }
   PENDING.delete(key);persistActions();
   if(data.status==='applied' && h && data.result?.observed){
-    const c={...h.control,revision:data.revision,slots:{...data.result.observed},desired:{...data.result.desired},drift:false,recovery_pending:false};
+    const c={...h.control,revision:data.revision,slots:{...data.result.observed},desired:{...data.result.desired},drift:false,recovery_pending:false,expires_at:data.result.expires_at ?? null};
     HOST_CONFIRMED.set(h.id,c);h.control=c;
     for(const [g,n] of Object.entries(c.slots)) if(h.groups[g]) h.groups[g].slots=n;
     SLOT_MESSAGES.delete(h.id);
-    say(action.request.op==='undo' ? 'Lugares restaurados' : `${action.group}: ${c.slots[action.group]} lugares · hasta otro cambio manual`,
+    say(action.request.op==='undo' ? 'Lugares restaurados' : `${action.group}: ${c.slots[action.group]} lugares · ${c.expires_at ? 'hasta las '+clock(c.expires_at) : 'hasta otro cambio manual'}`,
       action.request.op==='undo' ? null : ()=>{
         const current=S?.hosts.find(x=>x.id===h.id);
         if(current) startSlots(current,{group:action.group},action.request.action_id);

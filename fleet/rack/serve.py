@@ -167,7 +167,7 @@ def validate_snapshot(data, host):
     if not isinstance(data.get('tasks'), list) or not isinstance(data.get('groups'), list):
         raise ValueError('Tareas o grupos inválidos')
     if 'control' in data:
-        data['control'] = accion.host_channel.control(data['control'])
+        data['control'] = accion.host_channel.control(data['control'], host)
     for row in data['tasks']:
         if (not isinstance(row, dict) or not isinstance(row.get('id'), int) or not isinstance(row.get('group'), str)
                 or not isinstance(row.get('priority'), int) or isinstance(row.get('priority'), bool)

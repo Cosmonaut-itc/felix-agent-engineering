@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import sys
 import tempfile
 
 FLEET = Path(__file__).resolve().parents[2]
@@ -25,7 +26,7 @@ CASES = [
 
  ('pueue-desk','control.py','os.path.lexists(directory / name)','(directory / name).exists()','SlotsTests.test_broken_authority_marker_never_restores_legacy_guard'),
 
- ('rack','accion.py',"if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown') and not verified:",'if False:','ChannelTests.test_host_downgrade_cannot_turn_uncertain_status_into_terminal_unsupported'),
+ ('rack','accion.py',"if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown', 'aborted') and not verified:",'if False:','ChannelTests.test_host_downgrade_cannot_turn_uncertain_status_into_terminal_unsupported'),
 
  ('pueue-desk','install-mini.py','if observed != control.MINI_PROFILE:','if False:','SlotsInstallTests.test_profile_mismatch_refuses_before_bootout_or_writes'),
  ('pueue-desk','install-mini.py','if not os.path.lexists(switch):','if False:','SlotsInstallTests.test_atomic_adoption_enables_only_after_bootstrap_and_reinstall_preserves_receipts'),
@@ -33,10 +34,10 @@ CASES = [
  ('pueue-desk','control.py',"target.lstat()",'target.stat()','SlotsTests.test_host_switch_rejects_new_effect_but_accepted_recovery_continues'),
 
  ('pueue-desk','control.py',"self.store(db, state)  # ownership/intention precedes pause RPC",'pass','SlotsTests.test_pause_intention_durable_before_effect'),
- ('pueue-desk','control.py',"if decide('mini', current, RAPIDAS_THRESHOLDS['mini'] if g == 'rapidas' else MINI_THRESHOLDS) != 'reanudar':",'if False:','SlotsTests.test_fresh_pressure_prevents_reopen_after_low_initial_sample'),
+ ('pueue-desk','control.py',"if decide(self.HOST, current, self.thresholds(g)) != 'reanudar':",'if False:','SlotsTests.test_fresh_pressure_prevents_reopen_after_low_initial_sample'),
  ('pueue-desk','control.py',"can_open = failure is None",'can_open = True','SlotsTests.test_guard_never_opens_before_desire_verified'),
 
- ('pueue-desk','control.py',"if observed != state['desired']:\n                validate_target(observed, state['desired'])",'if False:\n                pass','SlotsTests.test_recovery_never_increases_above_cap_even_for_grandfathered_desire'),
+ ('pueue-desk','control.py',"if observed != state['desired']:\n                validate_target(observed, state['desired'], self.cap(state), self.GROUPS)",'if False:\n                pass','SlotsTests.test_recovery_never_increases_above_cap_even_for_grandfathered_desire'),
  ('pueue-desk','control.py','type(value) is not int or not 1 <= value <= 8','not isinstance(value, int) or not 1 <= value <= 8','SlotsTests.test_host_limits_boolean_zero_nine_and_complete_vector'),
  ('pueue-desk','control.py','not 1 <= value <= 8','not 0 <= value <= 9','SlotsTests.test_host_limits_boolean_zero_nine_and_complete_vector'),
  ('pueue-desk','control.py','if sum(target.values()) > cap and not monotonic:', 'if False:', 'SlotsTests.test_host_cap_counts_paused_groups'),
@@ -53,9 +54,9 @@ CASES = [
  ('pueue-desk','control.py',"if observed[g] != n or self.generation(state) != generation:",'if False:','SlotsTests.test_unconfirmed_reduction_never_runs_increases'),
  ('pueue-desk','control.py',"previous['revision'] != state['revision']",'False','SlotsTests.test_undo_strict_revision_and_no_inverse_when_state_changed'),
  ('pueue-desk','control.py',"'ambiguous'})","'manual'})",'SlotsTests.test_restart_lost_parallel_is_reconciled_without_opening_ambiguous_or_foreign_groups'),
- ('pueue-desk','control.py',"if host == 'mini' and has_authority(directory):",'if False:','SlotsTests.test_actual_guard_dispatch_never_falls_back_when_authority_corrupt'),
+ ('pueue-desk','control.py',"    if has_authority(directory):\n        return engine_for(",'    if False:\n        return engine_for(','SlotsTests.test_actual_guard_dispatch_never_falls_back_when_authority_corrupt'),
  ('pueue-desk','control.py',"if calculated != value['desired']:",'if False:','SlotsTests.test_invalid_desire_metadata_does_not_apply_default'),
- ('pueue-desk','control.py',"'pressure' if g in owned and g in MINI_PROFILE else 'manual'","'pressure' if g in owned else 'manual'",'SlotsTests.test_import_ownership_separate_profile_including_missing_legacy_groups'),
+ ('pueue-desk','control.py',"'pressure' if g in owned and g in self.GROUPS else 'manual'","'pressure' if g in owned else 'manual'",'SlotsTests.test_import_ownership_separate_profile_including_missing_legacy_groups'),
  ('pueue-desk','control.py',"decision = rapid if g == 'rapidas' else normal",'decision = normal','SlotsTests.test_guard_pressure_rapidas_and_manual_takeover'),
  ('rack','accion.py',"if request['op'] == 'host_capabilities' or request.get('dry_run') is True:","if request['op'] == 'host_capabilities':",'ChannelTests.test_dry_run_and_capabilities_do_not_create_receipts_or_recover'),
  ('rack','host_action.py',"type(c['delta']) is not int or",'False or','ChannelTests.test_public_host_variants_closed_without_breaking_cancel'),
@@ -70,7 +71,41 @@ CASES = [
  ('rack', 'accion.py', 'and not verified:', 'and True:', 'ChannelTests.test_lost_durable_rejection_recovers_terminal_without_resend'),
  ('rack', 'index.html', '(!response.ok && !hostTerminal)', '!response.ok', 'ChannelTests.test_production_ui_slots'),
  ('rack', 'tests/safety.py', ", 'control.py'", '', 'ChannelTests.test_installed_controller_is_forbidden_by_audit_hook'),
+ # U3.2: desk slots, expiry by Día/Noche event, same forced channel.
+ ('pueue-desk','control.py',"        if event <= state['event']:\n            return state, False","        if True:\n            return state, False",'DeskSlotsTests.test_adjust_an_instant_before_the_event_expires_at_it'),
+ ('pueue-desk','control.py',"overrides={}, desired=self.base(dict(mode=mode)),","overrides={}, desired=state['desired'],",'DeskSlotsTests.test_adjust_an_instant_before_the_event_expires_at_it'),
+ ('pueue-desk','control.py',"        return next_event(state['event'])","        return None",'DeskSlotsTests.test_adjust_an_instant_before_the_event_expires_at_it'),
+ ('pueue-desk','control.py',"        return sum(self.base(state).values())","        return 14",'DeskSlotsTests.test_cap_fourteen_by_day_and_eighteen_by_night_counts_paused_groups'),
+ ('pueue-desk','control.py',"if previous and previous.get('event') != state.get('event'):","if False:",'DeskSlotsTests.test_undo_after_event_is_rejected_without_effects'),
+ ('pueue-desk','control.py',"status = 'aborted' if expired else status","status = status",'DeskSlotsTests.test_pending_intent_superseded_by_event_is_aborted'),
+ ('pueue-desk','control.py',"if not request['dry_run'] and self.advance():","if False and self.advance():",'DeskSlotsTests.test_missed_timer_converges_to_current_table_on_the_first_entry'),
+ ('pueue-desk','control.py',"if not request['dry_run'] and self.advance():","if self.advance():",'DeskSlotsTests.test_dry_run_has_no_effects_even_after_an_elapsed_event'),
+ ('pueue-desk','control.py',"or last_event(event) != event or event_mode(event) != value['mode']):","or last_event(event) != event):",'DeskSlotsTests.test_schedule_metadata_inconsistent_with_event_is_illegible'),
+ ('pueue-desk','control.py',"dict(limits=GROUP_LIMITS, hours=SCHEDULE_HOURS)","dict(limits=GROUP_LIMITS)",'DeskSlotsTests.test_policy_hash_names_table_and_hours'),
+ ('pueue-desk','control.py',"    if has_authority(directory):\n        return engine_for(","    if False:\n        return engine_for(",'DeskSlotsTests.test_periodic_guard_entry_dispatches_to_the_desk_authority'),
+ ('pueue-desk','control.py',"                if has_authority(directory):\n                    engine.apply()","                if False:\n                    engine.apply()",'DeskSlotsTests.test_aplicar_cli_with_authority_keeps_the_adjustment_until_the_event'),
+ ('pueue-desk','remote.py',"        if has_authority(STATE_DIR):\n            engine.apply()","        if False:\n            engine.apply()",'DeskInstallerTests.test_adoption_then_reinstall_never_applies_bare_table'),
+ ('pueue-desk','remote.py',"        if adopted:\n            raise RuntimeError(","        if False:\n            raise RuntimeError(",'DeskInstallerTests.test_adoption_then_reinstall_never_applies_bare_table'),
+ ('pueue-desk','remote.py',"        if created:\n            switch.unlink()","        if False:\n            switch.unlink()",'DeskInstallerTests.test_adoption_then_reinstall_never_applies_bare_table'),
+ ('rack','accion.py',"dict(schema='rack-desk-action@1', target='host-control', request=request)","dict(schema='rack-desk-action@1', launcher='host-control', request=request)",'DeskChannelTests.test_envelope_names_only_the_target_and_keeps_the_ssh_window'),
+ ('rack','accion.py',"('applied', 'applying', 'partial', 'unknown', 'aborted') and not verified:","('applied', 'applying', 'partial', 'unknown') and not verified:",'DeskChannelTests.test_aborted_receipt_is_terminal_over_get_and_unbound_rejection_stays_unknown'),
+ ('rack','desk_action.py',"host_reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')","host_reply(request, 'recovery_error', 'recovery_error')",'DeskDispatcherTests.test_controller_isolated_and_bad_answers_are_uncertain'),
+ ('rack','desk_action.py',"or request['op'] != 'capabilities' and response.get('action_id') != request['action_id']):\n        # Killed","):\n        # Killed",'DeskDispatcherTests.test_controller_isolated_and_bad_answers_are_uncertain'),
+ ('rack','host_action.py',"if status == 'aborted' and answer['error'] is None:","if False:",'DeskProfileTests.test_result_codes_bound_to_their_status'),
+ ('rack','host_action.py',"(code == 'expired') != (status == 'aborted')","False",'DeskProfileTests.test_result_codes_bound_to_their_status'),
+ ('rack','host_action.py',"c['group'] not in rules['groups']","c['group'] not in rules['groups'] | {'default'}",'DeskProfileTests.test_closed_desk_vector_modes_and_groups'),
+ ('rack','host_action.py',"or not cap_ok(value.get('cap'), host)","or False",'DeskProfileTests.test_capabilities_view_bounds_cap_expiry_and_mode'),
+ ('rack','serve.py',"accion.host_channel.control(data['control'], host)","accion.host_channel.control(data['control'])",'DeskProfileTests.test_desk_snapshot_validation_uses_the_desk_profile'),
+ ('rack','snapshot.py',"           ('desk', 'linux'): '.local/lib/pao-pueue-desk/control.py'}","}",'test_rack.SnapshotTests.test_desk_snapshot_reads_only_its_own_installed_controller'),
+ ('rack','index.html',"${c.expires_at ? 'hasta las '+clock(c.expires_at) : 'hasta otro cambio manual'}","hasta otro cambio manual",'DeskUITests.test_production_ui_desk_slots'),
+ ('rack','index.html',"const outside=c?.status==='ok' && !Object.hasOwn(c.slots,n);","const outside=false;",'DeskUITests.test_production_ui_desk_slots'),
 ]
+
+# Test classes outside test_slots, by directory; a dotted module.Class.test is used as is.
+MODULES = {'SlotsInstallTests': 'test_slots_install', 'DeskSlotsTests': 'test_desk_slots',
+           'DeskInstallerTests': 'test_desk_slots', 'DeskChannelTests': 'test_desk_slots',
+           'DeskProfileTests': 'test_desk_slots', 'DeskDispatcherTests': 'test_desk_slots',
+           'DeskUITests': 'test_desk_slots'}
 
 
 def main():
@@ -84,8 +119,9 @@ def main():
             if source.count(original)!=1:
                 raise AssertionError('Nonunique mutation anchor '+str(number)+': '+repr(original))
             target.write_text(source.replace(original,replacement))
-            result=subprocess.run(['/usr/bin/python3','-B','-m','unittest',('test_slots_install.' if test.startswith('SlotsInstallTests.') else 'test_slots.')+test,'-v'],
-                cwd=str(root/directory/'tests'),text=True,capture_output=True,timeout=15,
+            name=test if test.count('.')==2 else MODULES.get(test.split('.')[0],'test_slots')+'.'+test
+            result=subprocess.run([sys.executable,'-B','-m','unittest',name,'-v'],
+                cwd=str(root/directory/'tests'),text=True,capture_output=True,timeout=30,
                 env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'))
             if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:
                 raise AssertionError('Mutation '+str(number)+' did not fail by assertion:\n'+result.stdout+result.stderr)

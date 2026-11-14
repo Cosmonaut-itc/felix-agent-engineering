@@ -723,6 +723,57 @@ transporte sintéticos, autorización HTTP y el JavaScript de producción median
 `tests/slots-ui-check.js`. Las mutaciones nuevas están en
 `fleet/pueue-desk/tests/mutate_slots.py`; nunca usan colas reales.
 
+## Botones −/+ del desk (U3.2)
+
+U3.2 extiende los mismos botones, recibos, Deshacer y contrato
+`rack-host-control@1` al desk, con el controlador del desk adoptado. Grupos
+`hasito`, `jale`, `jale-verify`, `otros`, `pesadas` y `rapidas`; cada uno entre
+1 y 8. El tope es la suma de la tabla del modo vigente: **14 de día y 18 de
+noche**; la capacidad lo muestra como `· tope 14 de día` o `· tope 18 de noche`.
+Con el tope lleno, «+» queda deshabilitado y explica que hay que quitar un lugar
+a otro grupo. `default` aparece sin botones: «Fuera del reparto: no cuenta en
+el tope.» `expected.mode` es `dia` o `noche` y debe coincidir con el del host.
+
+**Vencimiento.** Un ajuste dura hasta el siguiente cambio Día/Noche (05:00Z o
+14:00Z). Mientras hay un ajuste, la fila indica «Ajustes hasta las HH:MM ·
+después rige la tabla de noche/día» y el toast del ajuste dice «hasta las
+HH:MM» (hora local del navegador). En el evento el host vuelve a la tabla del
+modo nuevo, aunque el timer no haya corrido. Deshacer antes del evento restaura
+los valores exactos; después responde `undo_expired` sin efectos. Un recibo
+pendiente que el evento reemplaza termina en `aborted/expired`, terminal
+también por GET. Un clic con un vector visto antes del evento recibe
+`stale_state`; el panel relee y el clic siguiente decide sobre la tabla nueva.
+
+El canal es el **mismo forzado de C4/C5**: la llave
+`id_ed25519_pao_rack_accion` y su comando forzado, sin llave ni listener nuevos.
+El sobre por stdin es `{"schema":"rack-desk-action@1","target":"host-control",
+"request":{…}}`; el despachador lo valida cerrado y ejecuta sólo la ruta fija
+`/home/felix/.local/lib/pao-pueue-desk/control.py rack --host desk` con Python
+aislado y límite de 30 s. Un sobre sin `target` sigue siendo una cancelación
+C4/C5 sin cambios. Un desk sin ese controlador, o con uno no adoptado, responde
+`unsupported` (`unknown` al consultar un recibo) y los botones quedan
+deshabilitados sin romper la lectura ni «Cancelar…». Una respuesta ilegible o
+de otro ID queda `unknown` y se consulta sin reenviar. Tope, interruptor y
+expectativas se deciden en el host; el rack sólo acota el formato. Siguen
+whois fresco del dueño, tailnet, Host permitido y Origin exacto.
+
+Instalar, en este orden (pasos; no forman parte de las pruebas):
+
+1. El controlador del desk con `fleet/pueue-desk/deploy-desk.sh --cuotas`
+   (ver `fleet/pueue-desk/README.md`, «Lugares del desk (U3.2)»).
+2. El despachador del desk con `bash fleet/rack/instalar-desk.sh`.
+3. El rack de la Mini con `instalar.sh`.
+
+Revertir: `slots.disabled` en `~/.local/state/pao/pueue-desk` apaga sólo los
+ajustes del desk; `actions.disabled` del rack sigue siendo el interruptor
+general. Se puede volver al despachador y al rack anteriores conservando
+controlador, SQLite y guardia del desk; no reinstalar el controlador anterior.
+
+Verificación dirigida: `tests/test_desk_slots.py` (canal extremo a extremo con
+transporte SSH sintético y Pueue de archivo, perfil, despachador y la UI de
+producción con el escenario `desk` de `tests/slots-ui-check.js`), y en `fleet/pueue-desk`
+`tests/test_desk_slots.py` y `tests/private_slots.py --host desk`.
+
 ### Recibos y presentación de lugares U3.1
 
 El control muestra `N/M en uso` separado de la cuota entera `− M +`, y la

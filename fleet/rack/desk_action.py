@@ -18,6 +18,12 @@ CONTROLLERS = {
     'jale': '/home/felix/.local/lib/jale/pueue-control.py',
 }
 SWITCH = HOME / '.local/state/pao/rack/actions.disabled'
+# Slots on the desk: fixed controller, never named by the envelope. It checks the
+# same SWITCH, its own slots.disabled, its lock and its authority itself.
+HOST_CONTROL = '/home/felix/.local/lib/pao-pueue-desk/control.py'
+HOST_OPS = ('capabilities', 'slots', 'undo', 'status')
+# Inside the panel's 40 s SSH window: lock wait plus bounded 3 s Pueue RPCs.
+HOST_TIMEOUT = 30
 TIMEOUT = 10
 # rack-cancel@1 origin extension: cancel keeps its previous 10 s window; the
 # capabilities probe only uses time beyond it, at most 2 s.
@@ -193,19 +199,59 @@ def environment():
     return env
 
 
+def host_request(data):
+    """Closed envelope; the controller validates the body itself and fails closed."""
+    request = data.get('request')
+    op = request.get('op') if type(request) is dict else None
+    if (set(data) != {'schema', 'target', 'request'} or data['schema'] != SCHEMA
+            or type(request) is not dict or request.get('schema') != 'rack-host-control@1'
+            or type(op) is not str or op not in HOST_OPS
+            or op != 'capabilities' and (type(request.get('action_id')) is not str
+                                         or not ACTION.fullmatch(request['action_id']))):
+        raise ValueError()
+    return request
+
+
+def host_reply(request, status, code):
+    messages = dict(unsupported='Falta actualizar el control de este host.',
+                    recovery_error='Estado de control no disponible. Se conserva la pausa.')
+    reply = dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
+                 error=dict(code=code, message=messages[code]))
+    if status != 'unknown':
+        reply['effects'] = False
+    return reply
+
+
+def handle_host(request, runner):
+    uncertain = request['op'] == 'status' or request['op'] in ('slots', 'undo') and request.get('dry_run') is not True
+    if not Path(HOST_CONTROL).is_file():
+        # An old desk: nothing can have been accepted, and a status stays unknown.
+        return host_reply(request, 'unknown' if request['op'] == 'status' else 'unsupported', 'unsupported'), 0
+    try:
+        code, response = exchange(['/usr/bin/python3', '-I', HOST_CONTROL, 'rack', '--host', 'desk'],
+                                  request, runner, environment(), HOST_TIMEOUT)
+    except Exception:
+        code, response = None, None
+    if (code != 0 or type(response) is not dict or response.get('schema') != 'rack-host-result@1'
+            or request['op'] != 'capabilities' and response.get('action_id') != request['action_id']):
+        # Killed, late or malformed: the effect is uncertain; the panel asks again by ID.
+        return host_reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error'), 0
+    return response, 0
+
+
 def handle(raw, runner=subprocess.Popen):
-    # Additive host variant is explicitly unavailable on desk in U3.1.
     try:
         data = decode(raw)
-        if (type(data) is dict and set(data) == {'schema', 'target', 'request'}
-                and data['schema'] == SCHEMA and data['target'] == 'host-control'
-                and type(data['request']) is dict and data['request'].get('schema') == 'rack-host-control@1'):
-            return dict(schema='rack-host-result@1', action_id=data['request'].get('action_id'),
-                        status='unsupported', capabilities=dict(slots=False, undo=False, dry_run=False,
-                        mode=False, reorder=False, restart_queue=False),
-                        error=dict(code='unsupported', message='El desk no admite ajustes desde este canal.')), 0
     except (ValueError, TypeError, RecursionError):
-        pass
+        data = None
+    if type(data) is dict and 'target' in data:
+        try:
+            if data['target'] != 'host-control':
+                raise ValueError()
+            request = host_request(data)
+        except (ValueError, TypeError):
+            return failure({}, 'rejected', 'invalid_request', 'Envoltura inválida.'), 2
+        return handle_host(request, runner)
     try:
         launcher, request = parse(raw)
     except LookupError:

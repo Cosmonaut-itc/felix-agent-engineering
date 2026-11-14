@@ -155,6 +155,14 @@ def transport_reason(host, launcher):
     return None
 
 
+def host_reason(host):
+    """Slots travel only on each host's existing channel: local Mini, forced SSH to the desk."""
+    config = action_config(host.get('actions'))
+    if (host['id'], host.get('transport'), config['transport']) in (('mini', 'local', 'local'), ('desk', 'ssh', 'ssh')):
+        return None
+    return 'Falta actualizar el control de este host.'
+
+
 def host_http(response):
     status = response['status']
     if status == 'rejected':
@@ -173,15 +181,23 @@ class Executor:
     def __call__(self, host, launcher, request, timeout=None):
         if launcher == 'host-control':
             config = action_config(host.get('actions'))
-            if host['id'] != 'mini' or host['transport'] != 'local' or config['transport'] != 'local':
+            if host_reason(host):
                 return host_channel.unavailable()
+            env = {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}
+            if host['id'] == 'desk':
+                # Same forced key as cancellation; the desk dispatcher picks the controller.
+                code, response = desk_channel.exchange(
+                    list(config['argv']), dict(schema='rack-desk-action@1', target='host-control', request=request),
+                    self.runner, env, min(DESK_TIMEOUT, timeout if timeout is not None else DESK_TIMEOUT))
+                if code != 0:
+                    raise ValueError('Respuesta inválida')
+                return response
             controller = self.home / '.local/lib/pao-pueue-mini/control.py'
             if not controller.is_file():
                 return host_channel.unavailable()
             code, response = desk_channel.exchange(
                 ['/usr/bin/python3', '-I', str(controller), 'rack', '--host', 'mini'], request,
-                self.runner, {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'},
-                min(10, timeout if timeout is not None else 10))
+                self.runner, env, min(10, timeout if timeout is not None else 10))
             if code != 0:
                 raise ValueError('Respuesta inválida')
             return response
@@ -345,8 +361,9 @@ class Actions:
         if host is None:
             return 'Este host no tiene canal de escritura.'
         if request['op'] in host_channel.OPS:
-            if host['id'] != 'mini' or host['transport'] != 'local' or action_config(host.get('actions'))['transport'] != 'local':
-                return 'Falta actualizar el control de este host.'
+            reason = host_reason(host)
+            if reason:
+                return reason
             payload = self.read()
             current = next((h for h in payload['hosts'] if h['id'] == request['host']), None)
             if not current or not current['fresh'] or current.get('age') is None or current['age'] > 45 or self.clock() - payload['now'] > 45:
@@ -376,10 +393,11 @@ class Actions:
             if remaining < MIN_TRANSPORT:
                 return result(request, 'unknown')
             try:
-                response = self.executor(self.hosts[request['host']], 'host-control', wire, timeout=min(10, remaining))
+                limit = DESK_TIMEOUT if request['host'] == 'desk' else 10
+                response = self.executor(self.hosts[request['host']], 'host-control', wire, timeout=min(limit, remaining))
                 response = host_channel.sanitize(request, response, wire['op'])
                 verified = response.pop('receipt_verified', False)
-                if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown') and not verified:
+                if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown', 'aborted') and not verified:
                     return result(request, 'unknown')
                 response.update(schema=SCHEMA, op=request['op'], host=request['host'])
                 return response if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')

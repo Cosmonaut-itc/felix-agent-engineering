@@ -1,21 +1,49 @@
-"""Closed Mini host-control variant; cancellation keeps its original contract."""
+"""Closed host-control variant for the Mini and the desk; cancellation keeps its original contract."""
 import re
 import hashlib
 import json
+import math
 
 OPS = ('host_capabilities', 'slots', 'undo')
-GROUPS = {'suites', 'default', 'rapidas'}
+# Closed per-host profiles. The desk's `default` stays outside the split. Its cap
+# comes from the host (sum of the Día/Noche table) and is only bounded here.
+PROFILES = {
+    'mini': dict(groups={'suites', 'default', 'rapidas'}, modes=('fijo',), place='en la Mini',
+                 cap_text='7'),
+    'desk': dict(groups={'hasito', 'jale', 'jale-verify', 'otros', 'pesadas', 'rapidas'},
+                 modes=('dia', 'noche'), place='en el desk', cap_text='14 de día y 18 de noche'),
+}
+GROUPS = PROFILES['mini']['groups']
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
 
 
-def vector(value):
-    return (type(value) is dict and set(value) == GROUPS
+def profile(host):
+    if host not in PROFILES:
+        raise ValueError('Host sin control de lugares')
+    return PROFILES[host]
+
+
+def vector(value, host='mini'):
+    return (type(value) is dict and set(value) == profile(host)['groups']
             and all(type(n) is int and 1 <= n <= 8 for n in value.values()))
+
+
+def cap_ok(value, host):
+    groups = len(profile(host)['groups'])
+    if host == 'mini':
+        return value == 7
+    return type(value) is int and groups <= value <= 8 * groups
+
+
+def instant(value):
+    return value is None or type(value) in (int, float) and math.isfinite(value) and value > 0
 
 
 def validate(request):
     if type(request) is not dict or request.get('op') not in OPS:
         raise ValueError('Operación inválida')
+    host = request.get('host')
+    rules = profile(host if type(host) is str else None)
     keys = {'schema', 'op', 'host'}
     if request['op'] != 'host_capabilities':
         keys |= {'action_id', 'dry_run', 'expected', 'change' if request['op'] == 'slots' else 'undo_of'}
@@ -27,12 +55,12 @@ def validate(request):
                 or type(e['revision']) is not int or e['revision'] < 1
                 or type(e['policy_hash']) is not str or len(e['policy_hash']) != 64
                 or type(e['generation']) is not str or not 1 <= len(e['generation']) <= 160
-                or e['mode'] != 'fijo' or not vector(e['slots'])):
+                or e['mode'] not in rules['modes'] or not vector(e['slots'], host)):
             raise ValueError('Estado inválido')
         if request['op'] == 'slots':
             c = request.get('change')
             if (type(c) is not dict or set(c) != {'group', 'delta'}
-                    or type(c['group']) is not str or c['group'] not in GROUPS
+                    or type(c['group']) is not str or c['group'] not in rules['groups']
                     or type(c['delta']) is not int or c['delta'] not in (-1, 1)):
                 raise ValueError('Cambio inválido')
         elif type(request.get('undo_of')) is not str or not ACTION.fullmatch(request['undo_of']):
@@ -49,8 +77,9 @@ def unavailable():
         error=dict(code='unsupported', message='Falta actualizar el control de este host.'))
 
 
-def control(value):
+def control(value, host='mini'):
     """Read view whitelist; never publish arbitrary controller fields or error text."""
+    rules = profile(host)
     if type(value) is not dict or value.get('schema') != 'rack-host-result@1':
         return unavailable()
     if value.get('status') == 'busy' and (value.get('error') or {}).get('code') == 'lock_busy':
@@ -68,9 +97,10 @@ def control(value):
     caps = value.get('capabilities')
     if (type(caps) is not dict or any(type(caps.get(k)) is not bool for k in
             ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue'))
-            or not vector(value.get('slots')) or not vector(value.get('desired'))
+            or not vector(value.get('slots'), host) or not vector(value.get('desired'), host)
             or type(value.get('revision')) is not int or value['revision'] < 1
-            or value.get('cap') != 7 or value.get('mode') != 'fijo'
+            or not cap_ok(value.get('cap'), host) or value.get('mode') not in rules['modes']
+            or not instant(value.get('expires_at')) or host == 'mini' and value.get('expires_at') is not None
             or type(value.get('policy_hash')) is not str or len(value['policy_hash']) != 64
             or type(value.get('generation')) is not str or not 1 <= len(value['generation']) <= 160
             or type(value.get('drift')) is not bool or type(value.get('recovery_pending')) is not bool):
@@ -83,7 +113,8 @@ def control(value):
             or any(x not in ('pressure', 'manual', 'ambiguous') for x in r) for g, r in reasons.items()):
         raise ValueError('Pausas inválidas')
     result['pause_reasons'] = reasons
-    result['reason'] = None if caps['slots'] else 'Los ajustes de lugares están apagados en la Mini.'
+    result['expires_at'] = value.get('expires_at')
+    result['reason'] = None if caps['slots'] else f"Los ajustes de lugares están apagados {rules['place']}."
     return result
 
 
@@ -93,12 +124,14 @@ def sanitize(request, response, op):
         if type(response) is dict and (response.get('error') or {}).get('code') == 'invalid_request':
             return unavailable()
         raise ValueError('Respuesta inválida')
+    rules = profile(request['host'])
     if op == 'capabilities':
-        return control(response)
+        return control(response, request['host'])
     if response.get('action_id') != request['action_id']:
         raise ValueError('ID distinto')
     status = response.get('status')
-    if status not in ('applied', 'applying', 'partial', 'unknown', 'conflict', 'rejected', 'dry_run', 'recovery_error', 'unsupported'):
+    if status not in ('applied', 'applying', 'partial', 'unknown', 'aborted', 'conflict', 'rejected', 'dry_run',
+                      'recovery_error', 'unsupported'):
         raise ValueError('Estado inválido')
     answer = dict(schema='rack-host-result@1', action_id=request['action_id'], status=status, error=None)
     if op == 'status' and status in ('conflict', 'rejected'):
@@ -113,30 +146,40 @@ def sanitize(request, response, op):
     messages = dict(stale_state='Los lugares cambiaron. Actualiza antes de decidir.',
                     busy='Hay un ajuste pendiente; consulta su recibo.',
                     lock_busy='El control está ocupado. Vuelve a intentarlo.',
-                    invalid_request='Cada grupo admite 1..8 lugares y el tope es 7.',
+                    invalid_request=f"Cada grupo admite 1..8 lugares y el tope es {rules['cap_text']}.",
                     undo_conflict='Los lugares cambiaron. No se puede deshacer.',
+                    undo_expired='El ajuste venció con el cambio de horario. No se puede deshacer.',
+                    expired='Venció con el cambio de horario; rige la tabla del modo nuevo.',
                     idempotency_conflict='Ese ID ya pertenece a otra petición.',
                     recovery_error='Estado de control no disponible. Se conserva la pausa.',
-                    disabled='Los ajustes de lugares están apagados en la Mini.',
+                    disabled=f"Los ajustes de lugares están apagados {rules['place']}.",
                     unsupported='Falta actualizar el control de este host.')
     if error is not None:
         code = error.get('code') if type(error) is dict else None
-        if code not in messages:
+        # Only an aborted receipt carries `expired`; only a conflict carries `undo_expired`.
+        if (code not in messages or (code == 'expired') != (status == 'aborted')
+                or code == 'undo_expired' and status != 'conflict'):
             raise ValueError('Error inválido')
         answer['error'] = dict(code=code, message=messages[code])
+    if status == 'aborted' and answer['error'] is None:
+        raise ValueError('Abortado sin motivo')
     if type(response.get('revision')) is int:
         answer['revision'] = response['revision']
     if 'control' in response:
-        answer['control'] = control(response['control'])
+        answer['control'] = control(response['control'], request['host'])
     if type(response.get('effects')) is bool:
         answer['effects'] = response['effects']
     payload = response.get('result')
     if payload is not None:
-        if (type(payload) is not dict or not vector(payload.get('before')) or not vector(payload.get('desired'))
-                or payload.get('observed') is not None and not vector(payload['observed'])):
+        host = request['host']
+        if (type(payload) is not dict or not vector(payload.get('before'), host) or not vector(payload.get('desired'), host)
+                or payload.get('observed') is not None and not vector(payload['observed'], host)
+                or not instant(payload.get('expires_at')) or host == 'mini' and payload.get('expires_at') is not None):
             raise ValueError('Vector inválido')
         answer['result'] = {k: payload.get(k) for k in ('before', 'desired', 'observed')}
-        answer['result'].update(expires_at=None, undo_of=request['action_id'] if status == 'applied' else None)
+        # The desk adjustment lasts until the next Día/Noche event; the Mini has no expiry.
+        answer['result'].update(expires_at=payload.get('expires_at'),
+                                undo_of=request['action_id'] if status == 'applied' else None)
         changed = [g for g in payload['desired'] if payload['before'][g] != payload['desired'][g]]
         observed = payload.get('observed')
         answer['result']['applied'] = [g for g in changed if observed is not None and observed[g] == payload['desired'][g]]

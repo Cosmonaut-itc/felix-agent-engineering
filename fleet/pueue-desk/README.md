@@ -287,3 +287,83 @@ dentro de `remote-run`, con Pueue estándar y directorio/configuración propios.
 En Linux usa `~/.local/bin/{pueue,pueued}`; admite rutas explícitas con
 `--pueue` y `--pueued`. Comprueba tanto pérdida de `parallel` sin guardado como
 persistencia tras una operación guardadora y reconciliación en ambos casos.
+
+## Lugares del desk (U3.2)
+
+El desk usa el mismo controlador durable que la Mini (`DeskControl` en
+`control.py`), con la tabla de arriba como base: tope **14 de día y 18 de
+noche**, la suma de la tabla del modo vigente. Cada grupo administrado queda
+entre 1 y 8 y un grupo pausado sigue contando. `default` queda fuera del
+reparto: no aparece en el vector ni cuenta en el tope. El host valida tope,
+vector visto, revisión, hash de política (tabla y horas 05:00/14:00 UTC),
+generación del daemon (`/proc/PID/comm` y `starttime` del `pid_path`) y modo;
+el panel sólo propone. Un clic es −1/+1. Desde un exceso heredado sólo se baja.
+
+**Vencimiento por evento.** Un ajuste dura hasta el siguiente cambio de
+Día/Noche (05:00Z o 14:00Z). La base guarda el último evento aplicado. La
+primera entrada que ve un evento posterior guarda la tabla del modo nuevo y
+retira todos los ajustes: el timer `pueue-desk-mode`, la guardia de 60 s o una
+acción del panel, aunque el timer no haya corrido. Varios eventos perdidos
+convergen al vigente, sin reproducir la historia. Antes del evento, Deshacer
+con el recibo original restaura exactamente los valores y ajustes anteriores.
+Después del evento devuelve `conflict/undo_expired` sin efectos. Una intención
+pendiente (`applying`, `partial` o `unknown`) que un evento reemplaza termina en
+`aborted/expired`; su historia queda en el índice y su cuota no se aplica. La
+vista de capacidades trae `expires_at` mientras hay un ajuste en vigor.
+
+Una petición vista antes del evento llega con un vector o revisión viejos y
+recibe `conflict/stale_state`; el panel vuelve a leer y el siguiente clic decide
+sobre la tabla nueva. El ensayo resuelve el evento en memoria y no escribe, no
+recupera ni aplica cuotas.
+
+Después de la adopción, `aplicar` (timer y arranque), `guardia` e `instalar`
+reconcilian el deseo durable del evento vigente: **nunca aplican la tabla
+sola**. Hay un único recuperador por host: la guardia periódica del desk entra
+por `control.py guardia`, que delega en el mismo controlador que la Mini.
+La reconciliación hace primero las bajadas y verifica cada RPC. Tras reiniciar
+`pueued`, Pueue 4.0.4 pierde los `parallel` no guardados; el siguiente tick los
+repone y marca como ambiguas las pausas observadas, sin abrirlas. Una base
+ilegible o ausente nunca aplica la tabla ni abre grupos; la guardia sigue
+cerrando por presión. Las reglas de propiedad de pausas, `pause-GRUPO.manual`,
+`reanudar` y `pausar` son las de la Mini, con `--host desk` (el valor por
+defecto).
+
+Sólo las RPC de `control.py rack` tienen límite de 3 s. `lock_busy` es terminal
+para `slots` y `undo` (`rejected`, `effects=false`). Antes de adoptar, el canal
+responde `unsupported` (o `unknown` al consultar un recibo) sin crear archivos.
+
+### Instalar en el desk (pasos; no forman parte de las pruebas)
+
+1. Desde la MacBook, con el checkout verificado, comprobar que `pueued.service`
+   está activo con la tabla vigente (instalación sin `--cuotas` ya hecha) y que
+   el `pid_path` de Pueue es `~/.local/share/pueue/pueue.pid`. Si la
+   configuración lo personaliza, añadir `--pid-file /ruta/configurada` en ambos
+   comandos. No cambiar la configuración de Pueue.
+2. Revisar el plan y luego adoptar:
+
+   ```sh
+   fleet/pueue-desk/deploy-desk.sh --cuotas --seco
+   fleet/pueue-desk/deploy-desk.sh --cuotas
+   ```
+
+   El preflight es de lectura: exige `pueued.service` activo y un daemon
+   identificado, o una autoridad legible si ya se adoptó. Después crea
+   `slots.disabled` (si no había uno del operador), copia controlador y
+   unidades, aplica y verifica la tabla vigente bajo `control.lock`, adopta
+   deseo y propiedad en `~/.local/state/pao/pueue-desk/control.sqlite3` y retira
+   sólo el switch que creó. Las reinstalaciones detectan la autoridad aunque se
+   omita `--cuotas` y conservan ajustes y recibos.
+3. Instalar el rack actualizado en la Mini (`fleet/rack/instalar.sh`) y el
+   despachador del desk (`fleet/rack/instalar-desk.sh`). Verificar capacidades
+   y ensayo desde el panel. El canario lo hace el orquestador tras el merge.
+
+### Revertir en el desk
+
+- Apagar sólo los ajustes: crear `~/.local/state/pao/pueue-desk/slots.disabled`.
+  Se apagan capacidades y cuotas nuevas; siguen lectura, cancelación,
+  reconciliación y el vencimiento por evento.
+- Apagar todo el panel: `actions.disabled` del rack (ver la guía del rack).
+- `withdraw-desk.sh` se niega mientras haya deseo durable. No reinstalar el
+  controlador anterior ni borrar SQLite tras adoptar: el controlador viejo
+  aplicaría la tabla sola sobre el deseo de Felix. Una retirada completa exige
+  migrar propiedad y deseo de forma explícita.

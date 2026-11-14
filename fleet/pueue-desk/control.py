@@ -45,6 +45,11 @@ RAPIDAS_THRESHOLDS = {
 MINI_GROUPS = ("suites", "default", "rapidas")
 MINI_PROFILE = {"suites": 3, "default": 1, "rapidas": 3}
 POLICY_HASH = hashlib.sha256(json.dumps(MINI_PROFILE, sort_keys=True).encode()).hexdigest()
+# Horas UTC de los eventos de Día/Noche, las mismas de pueue-desk-mode.timer.
+SCHEDULE_HOURS = (5, 14)
+# `default` del desk queda fuera del reparto: no entra en el tope ni en el hash.
+DESK_POLICY_HASH = hashlib.sha256(json.dumps(dict(limits=GROUP_LIMITS, hours=SCHEDULE_HOURS),
+                                             sort_keys=True).encode()).hexdigest()
 HOST_SCHEMA = 'rack-host-control@1'
 ID = re.compile(r'[A-Za-z0-9-]{8,64}')
 LOG_MAX_BYTES = 1024 * 1024
@@ -56,6 +61,28 @@ def mode_at(now):
     if now.tzinfo is None:
         raise ValueError("La hora debe incluir zona horaria")
     return "noche" if 5 <= now.astimezone(timezone.utc).hour < 14 else "dia"
+
+
+def last_event(at):
+    """Epoch del último evento de horario en o antes de `at`."""
+    day = math.floor(at / 86400) * 86400
+    for hour in reversed(SCHEDULE_HOURS):
+        if day + hour * 3600 <= at:
+            return day + hour * 3600
+    return day - 86400 + SCHEDULE_HOURS[-1] * 3600
+
+
+def next_event(at):
+    """Epoch del primer evento de horario estrictamente después de `at`."""
+    day = math.floor(at / 86400) * 86400
+    for hour in SCHEDULE_HOURS:
+        if day + hour * 3600 > at:
+            return day + hour * 3600
+    return day + 86400 + SCHEDULE_HOURS[0] * 3600
+
+
+def event_mode(event):
+    return mode_at(datetime.fromtimestamp(event, timezone.utc))
 
 
 def validate_limit(value):
@@ -188,8 +215,8 @@ def decide(host, readings, thresholds):
 def guard(pueue, proc, directory, *, host="desk"):
     readings = pressure_mini() if host == "mini" else pressure(proc)
     log(directory, "lectura", **readings)
-    if host == 'mini' and has_authority(directory):
-        return MiniControl(pueue, directory).guard(readings)
+    if has_authority(directory):
+        return engine_for(host, pueue, directory, proc=proc).guard(readings)
     normal = decide(host, readings, MINI_THRESHOLDS if host == "mini" else PRESSURE_THRESHOLDS)
     rapid = decide(host, readings, RAPIDAS_THRESHOLDS[host])
     log(directory, "decision", accion=normal, accion_rapidas=rapid)
@@ -237,7 +264,7 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
-def validate_host_request(request):
+def validate_host_request(request, groups=MINI_PROFILE, modes=('fijo',)):
     if type(request) is not dict or request.get('schema') != HOST_SCHEMA:
         raise ValueError('Petición inválida')
     op = request.get('op')
@@ -254,13 +281,13 @@ def validate_host_request(request):
         if (type(e) is not dict or set(e) != {'revision', 'policy_hash', 'generation', 'mode', 'slots'}
                 or type(e['revision']) is not int or e['revision'] < 1
                 or type(e['generation']) is not str or not 1 <= len(e['generation']) <= 160
-                or type(e['policy_hash']) is not str or e['mode'] != 'fijo'):
+                or type(e['policy_hash']) is not str or type(e['mode']) is not str or e['mode'] not in modes):
             raise ValueError('Estado esperado inválido')
-        validate_vector(e['slots'])
+        validate_vector(e['slots'], groups)
         if op == 'slots':
             c = request.get('change')
             if (type(c) is not dict or set(c) != {'group', 'delta'}
-                    or type(c['group']) is not str or c['group'] not in MINI_PROFILE
+                    or type(c['group']) is not str or c['group'] not in groups
                     or type(c['delta']) is not int or c['delta'] not in (-1, 1)):
                 raise ValueError('Cambio inválido')
         elif type(request.get('undo_of')) is not str or not ID.fullmatch(request['undo_of']):
@@ -272,21 +299,20 @@ def validate_host_request(request):
     return request
 
 
-def validate_vector(slots):
-    if type(slots) is not dict or set(slots) != set(MINI_PROFILE):
+def validate_vector(slots, groups=MINI_PROFILE):
+    if type(slots) is not dict or set(slots) != set(groups):
         raise ValueError('Vector incompleto')
     for value in slots.values():
         validate_limit(value)
     return slots
 
 
-def validate_target(before, target):
-    validate_vector(before)
-    validate_vector(target)
-    cap = sum(MINI_PROFILE.values())
+def validate_target(before, target, cap=sum(MINI_PROFILE.values()), groups=MINI_PROFILE):
+    validate_vector(before, groups)
+    validate_vector(target, groups)
     monotonic = sum(target.values()) < sum(before.values()) and all(target[g] <= before[g] for g in before)
     if sum(target.values()) > cap and not monotonic:
-        raise ValueError('Tope de 7 lugares. Quita un lugar a otro grupo para añadirlo aquí.')
+        raise ValueError(f'Tope de {cap} lugares. Quita un lugar a otro grupo para añadirlo aquí.')
 
 
 def slot_plan(before, target):
@@ -308,16 +334,68 @@ def mini_generation(pid_file):
     return hashlib.sha256((pid + ':' + str(pid_file.stat().st_mtime_ns) + ':' + identity).encode()).hexdigest()
 
 
-class MiniControl:
+def desk_generation(pid_file, proc=Path('/proc')):
+    # Linux: the configured pid file plus that PID's own start time and comm.
+    pid = pid_file.read_text().strip()
+    if not pid.isdigit() or int(pid) < 1:
+        raise ValueError('PID inválido')
+    comm = (proc / pid / 'comm').read_text().strip()
+    if comm != 'pueued':
+        raise ValueError('Daemon no identificado')
+    started = (proc / pid / 'stat').read_text().rsplit(')', 1)[1].split()[19]
+    return hashlib.sha256((pid + ':' + str(pid_file.stat().st_mtime_ns) + ':' + started + ':' + comm).encode()).hexdigest()
+
+
+class HostControl:
     """Caller holds control.lock. Queries/ensayos open SQLite read-only, never recover.
 
     One FULL transaction accepts both desired policy and intent. RPCs run outside
     transactions; a crashed worker leaves the same durable target for guardia.
+    The fixed profile below is the Mini's; DeskControl adds the Día/Noche table.
     """
-    def __init__(self, pueue, directory, clock=time.time, generation=None):
+    HOST, GROUPS, MODES, PLACE, CAP_TEXT = 'mini', MINI_PROFILE, ('fijo',), 'en la Mini', '7'
+    POLICY_HASH = POLICY_HASH
+    SCHEDULED = False
+
+    def __init__(self, pueue, directory, clock=time.time, generation=None, proc=Path('/proc')):
         self.pueue, self.directory, self.clock = pueue, Path(directory), clock
         self.path = self.directory / 'control.sqlite3'
         self.generation_source = generation
+        self.proc = Path('/proc') if proc is None else Path(proc)
+
+    def base(self, state):
+        return dict(self.GROUPS)
+
+    def mode(self, state):
+        return 'fijo'
+
+    def cap(self, state):
+        return sum(self.base(state).values())
+
+    def expiry(self, state):
+        return None
+
+    def resolve(self, state, now):
+        """Pure: the state an elapsed schedule event would produce, and whether it changed."""
+        return state, False
+
+    def check_schedule(self, value):
+        pass
+
+    def initial(self):
+        return dict(MINI_PROFILE), {}
+
+    def default_pid(self):
+        return Path.home() / 'Library/Application Support/pueue/pueue.pid'
+
+    def sample(self):
+        return pressure_mini()
+
+    def thresholds(self, group):
+        return RAPIDAS_THRESHOLDS['mini'] if group == 'rapidas' else MINI_THRESHOLDS
+
+    def extra_view(self, state):
+        return {}
 
     @contextmanager
     def connect(self, write=False):
@@ -334,17 +412,20 @@ class MiniControl:
     def state(self, db):
         row = db.execute('SELECT body FROM policy WHERE id=1').fetchone()
         value = json.loads(row[0])
-        if (value['policy_hash'] != POLICY_HASH or type(value['revision']) is not int
+        if (value['policy_hash'] != self.POLICY_HASH or type(value['revision']) is not int
                 or value['revision'] < 1 or type(value['reasons']) is not dict):
             raise ValueError('Autoridad inválida')
-        validate_vector(value['desired'])
+        self.check_schedule(value)
+        validate_vector(value['desired'], self.GROUPS)
         overrides = value['overrides']
-        if type(overrides) is not dict or not set(overrides) <= set(MINI_PROFILE):
+        if type(overrides) is not dict or not set(overrides) <= set(self.GROUPS):
             raise ValueError('Ajustes inválidos')
-        calculated = dict(MINI_PROFILE)
+        calculated = self.base(value)
         for g, item in overrides.items():
+            # Desk overrides expire at the first event after their acceptance.
             if (type(item) is not dict or set(item) != {'slots', 'actor', 'action_id', 'requested_at', 'expires_at'}
-                    or item['actor'] != 'Felix' or item['expires_at'] is not None
+                    or item['actor'] != 'Felix' or type(item['expires_at']) is bool
+                    or item['expires_at'] != self.expiry(value)
                     or type(item['action_id']) is not str or not ID.fullmatch(item['action_id'])
                     or type(item['requested_at']) not in (int, float) or not math.isfinite(item['requested_at'])):
                 raise ValueError('Ajuste inválido')
@@ -361,7 +442,10 @@ class MiniControl:
         db.execute('UPDATE policy SET body=? WHERE id=1', (canonical(state),))
 
     def generation(self, state):
-        return self.generation_source() if self.generation_source else mini_generation(Path(state['pid_file']))
+        if self.generation_source:
+            return self.generation_source()
+        pid_file = Path(state['pid_file'])
+        return mini_generation(pid_file) if self.HOST == 'mini' else desk_generation(pid_file, self.proc)
 
     def disabled(self):
         for target in (self.directory / 'slots.disabled', self.directory.parent / 'rack/actions.disabled'):
@@ -374,9 +458,9 @@ class MiniControl:
 
     def observed(self):
         groups = self.pueue.status()['groups']
-        vector = {g: groups[g]['parallel_tasks'] for g in MINI_PROFILE}
-        validate_vector(vector)
-        if any(groups[g]['status'] not in ('Running', 'Paused') for g in MINI_PROFILE):
+        vector = {g: groups[g]['parallel_tasks'] for g in self.GROUPS}
+        validate_vector(vector, self.GROUPS)
+        if any(groups[g]['status'] not in ('Running', 'Paused') for g in self.GROUPS):
             raise ValueError('Admisión no disponible')
         return vector, groups
 
@@ -384,11 +468,13 @@ class MiniControl:
         if has_authority(self.directory):
             raise ValueError('La autoridad ya fue adoptada; no se reinicializa')
         observed, groups = self.observed()
-        if observed != MINI_PROFILE:
-            raise ValueError('La adopción requiere el perfil verificado 3/1/3')
-        pid_file = pid_file or Path.home() / 'Library/Application Support/pueue/pueue.pid'
-        state = dict(policy_hash=POLICY_HASH, revision=1, desired=observed, overrides={},
-                     reasons={}, generation='', pid_file=str(Path(pid_file).resolve()), actor='Felix', at=self.clock())
+        profile, schedule = self.initial()
+        if observed != profile:
+            raise ValueError('La adopción requiere el perfil verificado ' + '/'.join(map(str, profile.values())))
+        pid_file = pid_file or self.default_pid()
+        state = dict(policy_hash=self.POLICY_HASH, revision=1, desired=observed, overrides={},
+                     reasons={}, generation='', pid_file=str(Path(pid_file).resolve()), actor='Felix', at=self.clock(),
+                     **schedule)
         state['generation'] = self.generation(state)
         old = self.directory / 'guardia-state.json'
         owned = set(json.loads(old.read_text())) if old.exists() else set()
@@ -396,7 +482,7 @@ class MiniControl:
             raise ValueError('Propiedad anterior inválida')
         for g, row in groups.items():
             if row['status'] == 'Paused':
-                state['reasons'][g] = ['pressure' if g in owned and g in MINI_PROFILE else 'manual']
+                state['reasons'][g] = ['pressure' if g in owned and g in self.GROUPS else 'manual']
         for g in owned - groups.keys():
             state['reasons'][g] = ['manual']
         # Record intent to adopt before creating DB; missing/corrupt DB stays closed.
@@ -432,19 +518,23 @@ class MiniControl:
             state = self.state(db)
             pending = [json.loads(r[0]) for r in db.execute('SELECT body FROM host_actions')
                        if json.loads(r[0])['response']['status'] in ('applying', 'partial', 'unknown')]
+        # Virtual: an elapsed event shows its table now, but only real entries store it.
+        state, elapsed = self.resolve(state, self.clock())
         observed, groups = self.observed()
         generation = self.generation(state)
-        for group in MINI_GROUPS:
+        for group in self.GROUPS:
             if os.path.lexists(self.pause_fence(group)):
                 state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
         enabled = not self.disabled()
         return dict(schema='rack-host-result@1', status='ok', capabilities=dict(
             slots=enabled, undo=enabled, dry_run=enabled, mode=False, reorder=False, restart_queue=False),
-            revision=state['revision'], policy_hash=POLICY_HASH, generation=generation, mode='fijo', cap=7,
+            revision=state['revision'], policy_hash=self.POLICY_HASH, generation=generation,
+            mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
-            reason=None if enabled else 'Los ajustes de lugares están apagados en la Mini.',
-            recovery_pending=bool(pending) or generation != state['generation'],
-            pause_reasons=state['reasons'], pending_actions=[a['request']['action_id'] for a in pending])
+            reason=None if enabled else f'Los ajustes de lugares están apagados {self.PLACE}.',
+            recovery_pending=bool(pending) or generation != state['generation'] or elapsed,
+            pause_reasons=state['reasons'], pending_actions=[a['request']['action_id'] for a in pending],
+            **self.extra_view(state))
 
     def reply(self, request, status, code=None, **fields):
         messages = {'stale_state': 'Los lugares cambiaron. Actualiza antes de decidir.',
@@ -452,21 +542,23 @@ class MiniControl:
                     'lock_busy': 'El control está ocupado. Vuelve a intentarlo.',
                     'idempotency_conflict': 'Ese ID ya pertenece a otra petición.',
                     'undo_conflict': 'Los lugares cambiaron desde ese ajuste. No se puede deshacer.',
-                    'invalid_request': 'Ajuste inválido: cada grupo admite 1..8 y el tope es 7.',
+                    'undo_expired': 'El ajuste venció con el cambio de horario. No se puede deshacer.',
+                    'expired': 'Venció con el cambio de horario; rige la tabla del modo nuevo.',
+                    'invalid_request': f'Ajuste inválido: cada grupo admite 1..8 y el tope es {self.CAP_TEXT}.',
                     'recovery_error': 'Estado de control ilegible o no disponible. Se conserva la pausa.',
-                    'disabled': 'Los ajustes de lugares están apagados en la Mini.',
+                    'disabled': f'Los ajustes de lugares están apagados {self.PLACE}.',
                     'unsupported': 'Falta actualizar el control de este host.'}
         return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
                     error=dict(code=code, message=messages[code]) if code else None, **fields)
 
     def handle(self, request):
-        validate_host_request(request)
+        validate_host_request(request, self.GROUPS, self.MODES)
         try:
             response = self._handle(request)
             if request['op'] in ('slots', 'undo') and not request['dry_run']:
                 # Rejected IDs are bound too; a later refresh cannot turn a retry
                 # of the same ID into a previously unaccepted effect.
-                digest = hashlib.sha256(canonical(dict(host='mini', request=request)).encode()).hexdigest()
+                digest = hashlib.sha256(canonical(dict(host=self.HOST, request=request)).encode()).hexdigest()
                 if (response.get('error') or {}).get('code') != 'idempotency_conflict':
                     response['receipt_digest'] = digest
                 with self.connect(write=True) as db:
@@ -486,7 +578,7 @@ class MiniControl:
             with self.connect() as db:
                 row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
             return dict(json.loads(row[1])['response'], receipt_digest=row[0]) if row else self.reply(request, 'unknown')
-        digest = hashlib.sha256(canonical(dict(host='mini', request=request)).encode()).hexdigest()
+        digest = hashlib.sha256(canonical(dict(host=self.HOST, request=request)).encode()).hexdigest()
         with self.connect() as db:
             row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
             if row:
@@ -494,10 +586,21 @@ class MiniControl:
                         else json.loads(row[1])['response'])
             if self.disabled():
                 return self.reply(request, 'rejected', 'disabled', effects=False)
-            state = self.state(db)
+        # Only a real entry stores an elapsed event, and reconciles it before judging.
+        if not request['dry_run'] and self.advance():
+            self.reconcile()
+        with self.connect() as db:
+            state, _ = self.resolve(self.state(db), self.clock())
             before, _ = self.observed()
-            expected = dict(revision=state['revision'], policy_hash=POLICY_HASH,
-                            generation=self.generation(state), mode='fijo', slots=before)
+            expected = dict(revision=state['revision'], policy_hash=self.POLICY_HASH,
+                            generation=self.generation(state), mode=self.mode(state), slots=before)
+            previous = None
+            if op == 'undo':
+                previous = db.execute('SELECT body FROM host_actions WHERE action_id=?', (request['undo_of'],)).fetchone()
+                previous = json.loads(previous[0]) if previous else None
+                # Desk: an event between the receipt and its undo already restored the table.
+                if previous and previous.get('event') != state.get('event'):
+                    return self.reply(request, 'conflict', 'undo_expired', effects=False)
             if (request['expected'] != expected or expected['generation'] != state['generation']
                     or before != state['desired']):
                 return self.reply(request, 'conflict', 'stale_state', control=self.view(), effects=False)
@@ -509,20 +612,19 @@ class MiniControl:
                 group, delta = request['change']['group'], request['change']['delta']
                 target[group] += delta
                 overrides[group] = dict(slots=target[group], actor='Felix', action_id=request['action_id'],
-                                        requested_at=self.clock(), expires_at=None)
+                                        requested_at=self.clock(), expires_at=self.expiry(state))
             else:
-                previous = db.execute('SELECT body FROM host_actions WHERE action_id=?', (request['undo_of'],)).fetchone()
-                previous = json.loads(previous[0]) if previous else None
                 if (not previous or previous['response']['status'] != 'applied'
                         or previous['revision'] != state['revision'] or previous['target'] != before):
                     return self.reply(request, 'conflict', 'undo_conflict', effects=False)
                 target, overrides = previous['before'], previous['before_overrides']
             try:
-                validate_target(before, target)
+                validate_target(before, target, self.cap(state), self.GROUPS)
             except ValueError:
                 return self.reply(request, 'rejected', 'invalid_request', effects=False)
             plan = slot_plan(before, target)
-            payload = dict(before=before, desired=target, observed=before, expires_at=None,
+            payload = dict(before=before, desired=target, observed=before,
+                           expires_at=self.expiry(state) if overrides else None,
                            applied=[], unconfirmed=[g for g, _ in plan],
                            decreases=[dict(group=g, slots=n) for g, n in plan if n < before[g]],
                            increases=[dict(group=g, slots=n) for g, n in plan if n > before[g]],
@@ -531,7 +633,7 @@ class MiniControl:
                 return self.reply(request, 'dry_run', result=payload, effects=False)
         state['revision'] += 1
         action = dict(request=request, before=before, before_overrides=state['overrides'], target=target,
-                      revision=state['revision'], at=self.clock(), response=self.reply(request, 'applying',
+                      revision=state['revision'], event=state.get('event'), at=self.clock(), response=self.reply(request, 'applying',
                       revision=state['revision'], result=payload))
         state.update(desired=target, overrides=overrides, actor='Felix', at=self.clock())
         with self.connect(write=True) as db:
@@ -540,7 +642,20 @@ class MiniControl:
         self.reconcile()
         return self._handle(dict(schema=HOST_SCHEMA, op='status', action_id=request['action_id']))
 
+    def advance(self):
+        """Store an elapsed schedule event: table of the new mode, overrides retired."""
+        if not self.SCHEDULED:
+            return False
+        with self.connect(write=True) as db:
+            state, changed = self.resolve(self.state(db), self.clock())
+            if changed:
+                self.store(db, state)
+        if changed:
+            log(self.directory, 'evento', modo=state['mode'], revision=state['revision'])
+        return changed
+
     def reconcile(self):
+        self.advance()
         with self.connect() as db:
             state = self.state(db)
         observed = None
@@ -549,7 +664,7 @@ class MiniControl:
             generation = self.generation(state)
             observed, groups = self.observed()
             if observed != state['desired']:
-                validate_target(observed, state['desired'])
+                validate_target(observed, state['desired'], self.cap(state), self.GROUPS)
             if generation != state['generation']:
                 # A paused group after restore has ambiguous origin. Never open it.
                 for g, row in groups.items():
@@ -578,12 +693,16 @@ class MiniControl:
                 if action['response']['status'] not in ('applying', 'partial', 'unknown'):
                     continue
                 status = 'unknown' if observed is None else 'partial' if failure else 'applied'
+                # An event superseded this pending intent: its history stays, its quota does not.
+                expired = action.get('event') != state.get('event')
+                status = 'aborted' if expired else status
                 payload = dict(action['response']['result'], observed=observed, desired=state['desired'],
                                undo_of=key if status == 'applied' else None)
                 changed = [g for g in action['target'] if action['target'][g] != action['before'][g]]
                 payload['applied'] = [g for g in changed if observed is not None and observed[g] == action['target'][g]]
                 payload['unconfirmed'] = [g for g in changed if observed is None or observed[g] != action['target'][g]]
-                action['response'] = self.reply(action['request'], status, revision=state['revision'], result=payload)
+                action['response'] = self.reply(action['request'], status, 'expired' if expired else None,
+                                                revision=state['revision'], result=payload)
                 db.execute('UPDATE host_actions SET body=? WHERE action_id=?', (canonical(action), key))
         return not failure
 
@@ -617,10 +736,10 @@ class MiniControl:
         can_open = failure is None
         # Protective closing needs existing group status, not a valid quota vector.
         groups = self.pueue.status()['groups']
-        normal = decide('mini', readings, MINI_THRESHOLDS)
-        rapid = decide('mini', readings, RAPIDAS_THRESHOLDS['mini'])
+        normal = decide(self.HOST, readings, self.thresholds(None))
+        rapid = decide(self.HOST, readings, self.thresholds('rapidas'))
         log(self.directory, 'decision', accion=normal, accion_rapidas=rapid)
-        for g in MINI_GROUPS:
+        for g in self.GROUPS:
             if g not in groups:
                 continue
             reasons = set(state['reasons'].get(g, [])) if state else set()
@@ -664,8 +783,8 @@ class MiniControl:
             elif can_open and decision == 'reanudar' and 'pressure' in reasons:
                 if reasons == {'pressure'} and status == 'Paused':
                     # A fresh sample, after reconciliation and immediately before admission.
-                    current = pressure_mini()
-                    if decide('mini', current, RAPIDAS_THRESHOLDS['mini'] if g == 'rapidas' else MINI_THRESHOLDS) != 'reanudar':
+                    current = self.sample()
+                    if decide(self.HOST, current, self.thresholds(g)) != 'reanudar':
                         continue
                     observed, _ = self.observed()
                     if observed != state['desired'] or self.generation(state) != state['generation']:
@@ -691,8 +810,7 @@ class MiniControl:
                 raise ValueError('Deseo sin reconciliar')
             with self.connect() as db:
                 state = self.state(db)
-            threshold = RAPIDAS_THRESHOLDS['mini'] if group == 'rapidas' else MINI_THRESHOLDS
-            if decide('mini', pressure_mini(), threshold) != 'reanudar':
+            if decide(self.HOST, self.sample(), self.thresholds(group)) != 'reanudar':
                 raise ValueError('La presión no permite admitir')
             reasons = set(state['reasons'].get(group, [])) - {'manual', 'ambiguous'}
             if not reasons:
@@ -713,6 +831,77 @@ class MiniControl:
             self.pause_fence(group).unlink()
 
 
+class MiniControl(HostControl):
+    """Fixed 3/1/3 profile, cap 7; a quota adjustment lasts until another manual change."""
+
+
+class DeskControl(HostControl):
+    """GROUP_LIMITS for the current Día/Noche event; adjustments last until the next event.
+
+    `event` is the last 05:00/14:00 UTC boundary already applied. The first entry
+    that sees a later boundary (timer, guardia or a panel action) stores the new
+    mode's table and retires every override, whether or not the timer ran.
+    """
+    HOST, GROUPS, MODES, PLACE = 'desk', {g: row['dia'] for g, row in GROUP_LIMITS.items()}, ('dia', 'noche'), 'en el desk'
+    CAP_TEXT = '{} de día y {} de noche'.format(*(sum(row[m] for row in GROUP_LIMITS.values()) for m in ('dia', 'noche')))
+    POLICY_HASH = DESK_POLICY_HASH
+    SCHEDULED = True
+
+    def base(self, state):
+        return {g: validate_limit(row[state['mode']]) for g, row in GROUP_LIMITS.items()}
+
+    def mode(self, state):
+        return state['mode']
+
+    def expiry(self, state):
+        return next_event(state['event'])
+
+    def resolve(self, state, now):
+        event = last_event(now)
+        if event <= state['event']:
+            return state, False
+        # Several missed events converge to the current one, never replay history.
+        mode = event_mode(event)
+        return dict(state, mode=mode, event=event, overrides={}, desired=self.base(dict(mode=mode)),
+                    revision=state['revision'] + 1, actor='horario', at=now), True
+
+    def check_schedule(self, value):
+        event = value.get('event')
+        if (value.get('mode') not in self.MODES or type(event) not in (int, float) or not math.isfinite(event)
+                or last_event(event) != event or event_mode(event) != value['mode']):
+            raise ValueError('Horario inválido')
+
+    def initial(self):
+        event = last_event(self.clock())
+        mode = event_mode(event)
+        return self.base(dict(mode=mode)), dict(mode=mode, event=event)
+
+    def default_pid(self):
+        return Path.home() / '.local/share/pueue/pueue.pid'
+
+    def sample(self):
+        return pressure(self.proc)
+
+    def thresholds(self, group):
+        return RAPIDAS_THRESHOLDS['desk'] if group == 'rapidas' else PRESSURE_THRESHOLDS
+
+    def extra_view(self, state):
+        # Only when an adjustment is in force: when the table of the next event returns.
+        return dict(expires_at=self.expiry(state) if state['overrides'] else None)
+
+    def apply(self):
+        """Timer entry: never the bare table; the durable desire for the current event."""
+        if not self.reconcile():
+            raise ValueError('Deseo sin reconciliar')
+        with self.connect() as db:
+            state = self.state(db)
+        print(f"Modo {state['mode']}: " + ", ".join(f"{g}={n}" for g, n in state['desired'].items()))
+
+
+def engine_for(host, pueue, directory, proc=Path('/proc')):
+    return (DeskControl if host == 'desk' else MiniControl)(pueue, directory, proc=proc)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack"])
@@ -731,7 +920,7 @@ def main():
         # Only panel RPCs have a deadline. Guards and aplicar wait for Pueue.
         pueue.timeout = 3
         request = {}
-        engine = MiniControl(pueue, directory)
+        engine = engine_for(args.host, pueue, directory)
         try:
             def unique(pairs):
                 value = {}
@@ -744,9 +933,11 @@ def main():
             if len(raw) > 16384:
                 raise ValueError('Petición excesiva')
             request = json.loads(raw, object_pairs_hook=unique)
-            validate_host_request(request)
-            if args.host != 'mini':
-                response = engine.reply(request, 'unsupported', 'unsupported')
+            validate_host_request(request, engine.GROUPS, engine.MODES)
+            if not has_authority(directory):
+                # Not adopted yet: nothing to read or change here, and no receipt can exist.
+                response = engine.reply(request, 'unknown' if request['op'] == 'status' else 'unsupported',
+                                        'unsupported', effects=False)
             else:
                 # The lock is installed by adoption; even an ensayo cannot create it.
                 with (directory / 'control.lock').open('r') as handle:
@@ -762,11 +953,9 @@ def main():
             response = engine.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
         print(json.dumps(response, allow_nan=False))
         return
-    if args.command in ('adoptar', 'reanudar') and args.host != 'mini':
-        parser.error('Operación disponible sólo en la Mini')
     with locked(directory):
         try:
-            engine = MiniControl(pueue, directory)
+            engine = engine_for(args.host, pueue, directory)
             if args.command == 'adoptar':
                 print(json.dumps(engine.adopt(args.pid_file)))
             elif args.command == 'reanudar':
@@ -782,13 +971,16 @@ def main():
                         if attempt == 29:
                             raise
                         time.sleep(1)
-                apply_mode(pueue, datetime.now(timezone.utc))
+                if has_authority(directory):
+                    engine.apply()
+                else:
+                    apply_mode(pueue, datetime.now(timezone.utc))
             elif args.command == "guardia":
                 guard(pueue, Path("/proc"), directory, host=args.host)
             else:
                 if args.group is None:
                     parser.error("pausar necesita un grupo")
-                if args.host == 'mini' and has_authority(directory):
+                if has_authority(directory):
                     engine.manual(args.group)
                     return
                 target = directory / "guardia-state.json"
