@@ -14,14 +14,34 @@ cada 30 s y deja el error en `journalctl --user -u pueue-desk-mode`.
 Linger inicia el servicio al arrancar la distro; el arranque de Windows debe
 iniciar WSL por su mecanismo habitual (SSH despierta la distro).
 
-`control.py` contiene la única tabla de cuotas: hasito 3/4, jale 5/7,
-otros 1/1, pg5434 1/1 y rapidas 2/2 (día/noche). Noche: [05:00Z, 14:00Z).
-La suma es 12/15 incluyendo pg5434 y rapidas; Pueue no impone un máximo global.
+`control.py` contiene la única tabla de cuotas (día/noche): hasito 1/2,
+jale 5/7, jale-verify 1/1, otros 1/1, pesadas 2/3, pg5434 1/1 y rapidas 3/3.
+Noche: [05:00Z, 14:00Z). La suma es 14/18; Pueue no impone un máximo global.
 `rapidas` es el carril rápido que comparten Hasito, Jale y Bodega para la
-prueba dirigida; cada lanzador corta sus tareas a los 600 s. Los timers
+prueba dirigida; cada lanzador corta sus tareas a los 600 s. `pesadas` recibe
+las suites de horas (`contract` y `e2e` completas de Jale) para que no ocupen
+todo `jale`, y `jale-verify` las sesiones de verify, que ya eran de una en una.
+Mientras el lanzador de Jale no las enrute, esos dos grupos quedan vacíos. Los timers
 y el arranque aplican el modo UTC vigente, sin interrumpir tareas vivas.
 Usar sólo esos grupos; `default` y otros grupos quedan fuera de estas cuotas.
 El instalador elimina `suites` sólo si no tiene ninguna tarea.
+
+### Reparto
+
+La tabla sale de la medición del 2026-11-13 sobre el historial de Pueue
+(891 tareas del desk en 31 h, 645 de la Mini en 44 h):
+
+- `hasito` tuvo cero tareas corriendo 57 % del tiempo y dos o más sólo 0,8 %.
+- Las corridas de Jale de menos de 10 min sumaron 11,8 h corriendo y 153,4 h
+  en fila, con espera mediana de 13,8 min.
+- `contract` completa de Jale ocupó 52 % de las horas-lugar de `jale`, con
+  hasta seis a la vez.
+- Las sesiones de verify retuvieron 8 % de las horas-lugar de `jale`, y 29
+  salieron con 75 por su candado tras esperar turno.
+
+`jale` baja a 4/5 cuando el lanzador de Jale enrute a `pesadas`. En la Mini,
+`suites` queda en 3 y `rapidas` en 3; ahí la tabla no aplica y se fija con
+`/opt/homebrew/bin/pueue parallel 3 -g rapidas`.
 
 Ver fila: `ssh desk '~/.local/bin/pueue status -g hasito'`.
 Pausar a mano, dejando terminar tareas:
