@@ -1,6 +1,7 @@
 [Unit]
 Description=Aplicar cuotas vigentes UTC del desk
-Requires=pueued.service
+# Requisite: un timer nunca arranca pueued (mantenimiento, preparador fallido).
+Requisite=pueued.service
 After=pueued.service
 
 [Service]

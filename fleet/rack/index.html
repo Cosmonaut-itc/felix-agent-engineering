@@ -60,6 +60,7 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .lanes{display:flex;flex-direction:column;gap:6px;margin-top:10px}
 .lane{display:grid;grid-template-columns:62px minmax(0,1fr);gap:8px;align-items:center}
 .lane .g{font-size:12px;color:var(--ink2)}
+.lane-notes{min-width:0}.lane-note{margin:0;font-size:12px;color:var(--warn);overflow-wrap:anywhere}
 .host-heading{display:flex;align-items:start;justify-content:space-between;gap:12px;flex-wrap:wrap}.host-heading>div:first-child{flex:1;min-width:0}.mode-control{max-width:min(100%,440px);min-width:0;text-align:right}.mode-switch{display:inline-flex;border:1px solid var(--line);border-radius:7px;overflow:hidden}.mode-switch button{min-height:44px;min-width:64px;border:0;background:var(--panel);color:var(--ink2);font:inherit;font-size:12px;padding:4px 12px;cursor:pointer;touch-action:manipulation;user-select:none}.mode-switch button[aria-pressed="true"]{background:var(--ink);color:var(--bg)}.mode-switch button:disabled{cursor:default;opacity:.6}.mode-switch button[aria-pressed="true"]:disabled{opacity:1}.mode-note{font-size:12px;overflow-wrap:anywhere;margin:6px 0}.slots{display:grid;gap:6px}.slots>*{min-width:0;overflow:hidden}.stack{display:flex;flex-direction:column;gap:16px}
 .slot{border:1px dashed var(--line);border-radius:8px;min-height:54px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;gap:4px}
 .slot.busy{border:1px solid var(--line);background:var(--bg)}
@@ -169,8 +170,8 @@ function hostState(h){
   return `<span class="state"><span class="dot" style="background:var(--good)"></span>Admitiendo corridas</span>`;
 }
 const active = (h,n) => h.tasks.some(t => t.group === n && t.state !== 'Done');
-// default only shows while it has work; the Mini still counts its slot toward the cap.
-const groups = h => Object.entries(h.groups).filter(([n]) => n !== 'default' || active(h,n));
+// default only shows while it has work or a task cut by a restart; the Mini still counts its slot toward the cap.
+const groups = h => Object.entries(h.groups).filter(([n]) => n !== 'default' || active(h,n) || h.tasks.some(t => t.group === n && t.interrupted === true));
 const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
 const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>b.priority-a.priority || a.id-b.id);
 const slotsTotal = h => Object.entries(h.groups).filter(([n]) => h.id==='mini' || n !== 'default' || active(h,n)).reduce((a,[,g])=>a+g.slots,0);
@@ -226,6 +227,20 @@ function fila(h, n, w){
     <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}${dots()}</span>
     <div class="l2">${pendingText(h,t)}<span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span></div>
   </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
+}
+
+// Why a restart left a group closed; retained ones need Felix by SSH, never a button.
+const HELD = {log_existente:'una tarea en fila ya tenía registro', bloqueada:'una tarea quedó en edición',
+  fuera_del_reparto:'grupo fuera del reparto', pausa_previa:'ya estaba pausado sin motivo', sin_preparar:'Pueue arrancó sin preparar la cola'};
+function laneNotes(h,n,g){
+  const c=h.control, reasons=c?.pause_reasons?.[n] || [], notes=[];
+  if(g.status==='Paused' && reasons.includes('ambiguous'))
+    notes.push(`Retenido al reiniciar: ${HELD[c.startup_held?.[n]] || HELD.sin_preparar} · resolver con control.py reanudar ${n}${h.id==='mini' ? ' --host mini' : ''}`);
+  else if(g.status==='Paused' && reasons.includes('startup') && c?.startup_docker===false)
+    notes.push('Cerrado al reiniciar · espera a Docker');
+  for(const t of h.tasks.filter(t=>t.group===n && t.interrupted===true))
+    notes.push(`${t.ticket || '#'+t.id} · ${what(t)} · Interrumpida al reiniciar Pueue; relanzar manualmente`);
+  return notes.length ? `<div class="lane"><div></div><div class="lane-notes">${notes.map(m=>`<p class="lane-note">${esc(m)}</p>`).join('')}</div></div>` : '';
 }
 
 function resourceTable(h){
@@ -307,8 +322,6 @@ function hostControlMessage(h){
   if((a?.status==='partial' || c?.drift) && desired){
     message+=' · '+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
   }
-  if(c?.pause_reasons && Object.values(c.pause_reasons).some(r=>r.includes('ambiguous')))
-    message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
   return message;
 }
 function hostControlState(h){
@@ -391,7 +404,7 @@ function view(){
         const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
           const p=progress(t); return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}${pendingText(h,t)}</div>`;}).join('');
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
-          ${fila(h,n,w)}`;
+          ${laneNotes(h,n,g)}${fila(h,n,w)}`;
       }).join('');
       return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }

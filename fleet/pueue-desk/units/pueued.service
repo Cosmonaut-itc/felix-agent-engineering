@@ -2,11 +2,19 @@
 Description=Pueue del desk por proyecto
 # Las cuotas se aplican aparte: un fallo al aplicarlas no reinicia el daemon.
 Wants=pueue-desk-mode.service
+# Sin corte permanente: un preparador que rechaza la cola reintenta cada RestartSec.
+StartLimitIntervalSec=0
 
 [Service]
+WorkingDirectory=%h
+# Cierra todos los grupos y falla visibles las interrumpidas antes de que Pueue lea la cola.
+ExecStartPre=/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py preparar --host desk
 ExecStart=@HOME@/.local/bin/pueued
-Restart=on-failure
+# Anota qué tareas corta esta parada; si falla, la parada sigue.
+ExecStop=-/usr/bin/python3 -I @HOME@/.local/lib/pao-pueue-desk/control.py parada --host desk
+Restart=always
 RestartSec=5
+KillMode=mixed
 
 [Install]
 WantedBy=default.target

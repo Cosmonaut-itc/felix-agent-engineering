@@ -1,6 +1,7 @@
 [Unit]
 Description=Guardia PSI del desk
-Requires=pueued.service
+# Requisite: un timer nunca arranca pueued (mantenimiento, preparador fallido).
+Requisite=pueued.service
 After=pueued.service
 
 [Service]

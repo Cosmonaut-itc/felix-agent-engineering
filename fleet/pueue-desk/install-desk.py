@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Migra sólo el controlador desk instalado; no reinicia ni configura pueued."""
+"""Migra el controlador desk instalado y sus unidades; no reinicia ni configura pueued."""
 import argparse
 from contextlib import contextmanager
 import fcntl
@@ -12,6 +12,10 @@ import subprocess
 SOURCE = Path(__file__).resolve().parent
 TIMERS = ('pueue-desk-mode.timer', 'pueue-desk-guard.timer')
 SERVICES = ('pueue-desk-mode.service', 'pueue-desk-guard.service')
+# U3.4: preparar como ExecStartPre y Requisite en guardia/modo. Respaldo fuera de systemd.
+UNITS = ('pueued.service', 'pueue-desk-guard.service', 'pueue-desk-mode.service')
+UNIT_BACKUP = 'units.pre-u34'
+SHOWN = ('MainPID', 'ActiveState', 'NeedDaemonReload', 'Restart', 'KillMode', 'ExecStartPre')
 
 
 def run(*argv):
@@ -30,17 +34,20 @@ def authority_lock(directory):
         yield
 
 
-def policy_plan(engine):
+def policy_plan(engine, pid_path=None):
     """Installer-only validation; runtime still requires the exact policy hash."""
     with engine.connect() as db:
         original = json.loads(db.execute('SELECT body FROM policy WHERE id=1').fetchone()[0])
         state = engine.state(db, policy_migration=True)
-        fields_missing = 'mode_override' not in original
-        if state['policy_hash'] == engine.policy_hash and not fields_missing:
-            return None
+        if pid_path is not None and Path(state['pid_file']) != pid_path:
+            raise ValueError('La autoridad adoptó otro pid_path; preparar no la reconocería')
+        # U3.4 adds the startup record (defaults); never readopt nor drop the DB.
+        fields_missing = 'mode_override' not in original or 'startup' not in original
         actions = [json.loads(row[0]) for row in db.execute('SELECT body FROM host_actions')]
         if any(a['response']['status'] in ('applying', 'partial', 'unknown') for a in actions):
             raise ValueError('Hay recibos abiertos; recuperar con el controlador anterior antes de migrar')
+        if state['policy_hash'] == engine.policy_hash and not fields_missing:
+            return None
     if state['policy_hash'] == engine.policy_hash:
         # Additive migration: retain revisions, original expirations and all receipts.
         engine.observed()
@@ -55,6 +62,12 @@ def policy_plan(engine):
                 overrides={}, mode_override=None, schedule_event=event, revision=state['revision'] + 1)
 
 
+def startup_gate(home, pid_file, control):
+    """O-W2: same config/queue/version validation as preparar, with the service manager's env."""
+    manager = run('systemctl', '--user', 'show-environment').stdout
+    return control.host_gate(home, control.manager_environment(manager), pid_file)[0]
+
+
 def preflight(home, pid_file, control):
     """Read-only gates shared by --seco and installation; no file creation."""
     directory = home / '.local/state/pao/pueue-desk'
@@ -62,8 +75,12 @@ def preflight(home, pid_file, control):
     target = library / 'control.py'
     if not target.is_file():
         raise ValueError('Primero se necesita el servicio desk existente; ver README')
+    if os.path.lexists(directory / 'maintenance'):
+        # Installing would restart the timers that maintenance keeps stopped.
+        raise ValueError('Mantenimiento en curso: control.py mantenimiento salir antes de instalar')
     for name in TIMERS:
         run('systemctl', '--user', 'is-active', name)
+    paths = startup_gate(home, pid_file, control)
     engine = control.MiniControl(control.Pueue(home / '.local/bin/pueue'), directory, host='desk')
     if control.has_authority(directory):
         with authority_lock(directory):
@@ -71,6 +88,9 @@ def preflight(home, pid_file, control):
             if migration is None:
                 engine.view()  # unreadable authority never grants re-adoption
             engine.install_migration = migration
+        if paths is not None:
+            with authority_lock(directory):
+                policy_plan(engine, paths['pid'].resolve())  # preparar finds the adopted pid_path
     else:
         observed, _ = engine.observed()
         if observed != control.desk_profile(engine.clock()):
@@ -90,9 +110,11 @@ def install(home, pid_file, control, dry_run=False):
             kind = 'migración de tabla: retirar ajustes' if old_hash != plan['policy_hash'] else 'migración aditiva'
             print('SECO, ' + kind + '; revisión ' + str(plan['revision'])
                   + '; policy_hash ' + plan['policy_hash'] + '; desired ' + json.dumps(plan['desired'], sort_keys=True))
-        print('Comprobado (lectura): controlador existente, timers activos, autoridad o tabla vigente y PID de pueued.')
+        print('Comprobado (lectura): controlador existente, timers activos, autoridad o tabla vigente, PID de pueued, '
+              'configuración, versión y cola que preparar acepta, sin recibos abiertos.')
         print('SECO, pendiente: apagar cuotas nuevas; detener timers/oneshots; bajo control.lock publicar, '
-              'adoptar/importar o conservar SQLite/recibos; reconciliar; reactivar timers y retirar sólo '
+              'adoptar/importar o conservar SQLite/recibos; reconciliar; instalar ' + ', '.join(UNITS)
+              + ' (respaldo en ' + UNIT_BACKUP + '/) y daemon-reload; reactivar timers y retirar sólo '
               'el switch creado aquí. No reiniciar pueued.')
         return
     directory = engine.directory
@@ -119,10 +141,11 @@ def install(home, pid_file, control, dry_run=False):
                 if not backup.exists():
                     backup.write_bytes(target.read_bytes())
             if control.has_authority(directory):
-                backup = library / 'control.pre-mode.py'
-                if not backup.exists():
-                    with backup.open('xb') as stream:
-                        stream.write(target.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+                for name in ('control.pre-mode.py', 'control.pre-u34.py'):
+                    backup = library / name
+                    if not backup.exists():
+                        with backup.open('xb') as stream:
+                            stream.write(target.read_bytes()); stream.flush(); os.fsync(stream.fileno())
             temporary = target.with_suffix('.nuevo')
             with temporary.open('wb') as stream:
                 stream.write((SOURCE / 'control.py').read_bytes()); stream.flush(); os.fsync(stream.fileno())
@@ -141,12 +164,51 @@ def install(home, pid_file, control, dry_run=False):
                 engine.adopt(pid_file)
             if not engine.reconcile():
                 raise ValueError('Deseo pendiente; conservar el switch y reinstalar')
+        # After the controller that understands 'startup' is published.
+        install_units(home, library)
     finally:
         run('systemctl', '--user', 'start', *TIMERS)
     if enable_after:
         with control.locked(directory):
             switch.unlink()
     print('Control desk migrado; timers activos; pueued y su configuración conservados')
+
+
+def unit_properties(text):
+    values = dict(line.split('=', 1) for line in text.splitlines() if '=' in line)
+    if set(values) != set(SHOWN):
+        raise ValueError('systemctl show incompleto')
+    return values
+
+
+def install_units(home, library):
+    """Atomic unit files + daemon-reload. pueued keeps its MainPID; preparar runs on its next start."""
+    units = home / '.config/systemd/user'
+    show = ('systemctl', '--user', 'show', 'pueued.service', *[a for k in SHOWN for a in ('-p', k)])
+    before = unit_properties(run(*show).stdout)
+    backups = library / UNIT_BACKUP
+    backups.mkdir(exist_ok=True)
+    for name in UNITS:
+        target = units / name
+        if not target.is_file():
+            raise ValueError('Falta la unidad instalada ' + name + '; el desk adoptado ya la tiene')
+        backup = backups / name
+        if not backup.exists():
+            with backup.open('xb') as stream:
+                stream.write(target.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+        temporary = target.with_name(name + '.nuevo')
+        with temporary.open('w') as stream:
+            stream.write((SOURCE / 'units' / name).read_text().replace('@HOME@', str(home)))
+            stream.flush(); os.fsync(stream.fileno())
+        os.replace(temporary, target)
+    run('systemctl', '--user', 'daemon-reload')
+    after = unit_properties(run(*show).stdout)
+    if (after['MainPID'] != before['MainPID'] or after['ActiveState'] != before['ActiveState']
+            or after['NeedDaemonReload'] != 'no' or after['Restart'] != 'always'
+            or after['KillMode'] != 'mixed' or 'preparar' not in after['ExecStartPre']):
+        raise ValueError('La unidad cargada no coincide o pueued cambió; revisar con systemctl --user show pueued.service')
+    print('Unidad nueva cargada sin reiniciar pueued: MainPID ' + after['MainPID'] + ', ' + after['ActiveState']
+          + '; preparar corre en el próximo arranque. Respaldo: ' + str(backups))
 
 
 def main():

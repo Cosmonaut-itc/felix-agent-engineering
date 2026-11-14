@@ -56,6 +56,8 @@ elif name == "pgrep":
 elif name == "systemctl":
     if "is-active" in args:
         sys.exit(0 if (root / "managed").exists() else 3)
+elif name == "pueued" and args == ["--version"]:
+    print((root / "version").read_text() if (root / "version").exists() else "pueued 4.0.4")
 elif name == "loginctl" and (root / "linger-falla").exists():
     sys.exit("Access denied")
 elif name not in ("loginctl", "pueued"):
@@ -260,7 +262,8 @@ class DeploymentTests(Fixture):
         self.assertIn("SECO: pueue shutdown", result.stdout)
         self.assertFalse((self.root / ".config").exists())
         self.assertTrue((self.root / "manual").exists())
-        self.assertEqual([c[0] for c in self.calls()], ["systemctl", "pgrep", "pueue"])
+        # show-environment y pueued --version: la validación de preparar (O-W2) va primero.
+        self.assertEqual([c[0] for c in self.calls()], ["systemctl", "pueued", "systemctl", "pgrep", "pueue"])
 
     def test_live_manual_aborts_without_changes(self):
         for status in ("Queued", "Paused", {"Queued": {"enqueued_at": "now"}},
@@ -277,7 +280,8 @@ class DeploymentTests(Fixture):
                     self.assertIn("abortada sin cambios", result.stderr)
                     self.assertTrue((self.root / "manual").exists())
                     self.assertFalse((self.root / ".config").exists())
-                    self.assertEqual([c[0] for c in self.calls()[before:]], ["systemctl", "pgrep", "pueue"])
+                    self.assertEqual([c[0] for c in self.calls()[before:]],
+                                     ["systemctl", "pueued", "systemctl", "pgrep", "pueue"])
 
     def test_rejected_linger_keeps_manual_daemon(self):
         (self.root / "manual").touch()
@@ -308,7 +312,8 @@ class DeploymentTests(Fixture):
         units = self.root / ".config/systemd/user"
         self.assertEqual(len(list(units.iterdir())), 5)
         self.assertNotIn("@HOME@", (units / "pueued.service").read_text())
-        self.assertNotIn("suites", self.pueue.status()["groups"])
+        # Instalar nunca retira grupos (O-W1); sólo `control.py retirar`.
+        self.assertIn("suites", self.pueue.status()["groups"])
         before = self.pueue.status()
         result = subprocess.run(["bash", str(ROOT / "withdraw-desk.sh")], env=self.env, text=True, capture_output=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -333,7 +338,7 @@ class DeploymentTests(Fixture):
         self.write_state(state)
         result = self.deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("suites tiene tareas; se conserva", result.stdout)
+        self.assertIn("Aviso: suites sigue en Pueue", result.stdout)
         self.assertIn("suites", self.pueue.status()["groups"])
 
     def test_retired_pg5434_leaves_the_queue_and_the_guard(self):
@@ -346,13 +351,17 @@ class DeploymentTests(Fixture):
         result = self.deploy()
         self.assertEqual(result.returncode, 0, result.stderr)
         groups = self.pueue.status()["groups"]
-        self.assertNotIn("pg5434", groups)
+        self.assertIn("pg5434", groups)  # instalar no lo retira (O-W1)
         self.assertEqual(groups["otros"]["parallel_tasks"], 2)
         self.assertEqual(json.loads((guard_dir / "guardia-state.json").read_text()), ["hasito"])
         # Con pg5434 aún en su estado, el guardia abortaba cada minuto.
         self.metrics()
         with control.locked(guard_dir):
             control.guard(self.pueue, self.proc, guard_dir)
+        # El retiro explícito y vacío sí lo quita.
+        with control.locked(guard_dir):
+            control.MiniControl(self.pueue, guard_dir, host="desk").retire("pg5434")
+        self.assertNotIn("pg5434", self.pueue.status()["groups"])
 
     def test_failed_quotas_still_leave_a_state_the_guard_accepts(self):
         guard_dir = self.root / ".local/state/pao/pueue-desk"

@@ -3,9 +3,8 @@ import os
 import pwd
 import sys
 
-# Grupos que la tabla ya no gestiona: `suites` pasó a los grupos por proyecto y
-# `pg5434` nunca recibió tareas (su lugar pasó a `otros`).
-RETIRED_GROUPS = ("suites", "pg5434")
+# RETIRED_GROUPS viene de control.py: `suites` pasó a los grupos por proyecto y
+# `pg5434` nunca recibió tareas (su lugar pasó a `otros`). Sólo `control.py retirar` los quita.
 
 
 def run(*args, check=True):
@@ -31,6 +30,13 @@ def remote(action, dry):
     manual = False
     if action == "install":
         # Todo este bloque es de lectura: incluso --seco rechaza una cola viva.
+        if os.path.lexists(STATE_DIR / "maintenance"):
+            raise RuntimeError("Mantenimiento en curso: control.py mantenimiento salir antes de instalar")
+        # O-W2: la misma validación que preparar, antes de linger, copia, shutdown o unidades.
+        manager = subprocess.run(["systemctl", "--user", "show-environment"], text=True,
+                                 capture_output=True, check=True).stdout
+        host_gate(home, manager_environment(manager))
+        print("Preflight: configuración y cola de Pueue compatibles con preparar")
         active = run("systemctl", "--user", "is-active", "pueued.service", check=False)
         process = run("pgrep", "-u", str(os.getuid()), "-x", "pueued", check=False)
         if active.returncode not in (0, 3, 4) or process.returncode not in (0, 1):
@@ -48,7 +54,7 @@ def remote(action, dry):
                 print("SECO: pueue shutdown (daemon manual vacío)")
             print("SECO: loginctl enable-linger; systemctl --user daemon-reload")
             print("SECO: systemctl --user enable --now pueued.service pueue-desk-mode.timer pueue-desk-guard.timer")
-            print("SECO: aplicar y comprobar cuotas vigentes; retirar suites y pg5434 sólo si vacíos")
+            print("SECO: aplicar y comprobar cuotas vigentes; avisar si siguen suites o pg5434")
             return
         # Linger antes de detener nada: si se rechaza, el daemon manual sigue vivo.
         run("loginctl", "enable-linger", pwd.getpwuid(os.getuid()).pw_name)
@@ -115,13 +121,9 @@ def install(home, units, library, timers, pueue):
         apply_mode(pueue, datetime.now(timezone.utc))
         state = pueue.status()
         for group in RETIRED_GROUPS:
-            if group not in state["groups"]:
-                continue
-            if any(task["group"] == group for task in state["tasks"].values()):
-                print(f"Aviso: {group} tiene tareas; se conserva")
-            else:
-                pueue.call("group", "remove", group)
-                print(f"Grupo {group} vacío retirado")
+            # Instalar nunca retira grupos (O-W1): sólo `control.py retirar <grupo>`, con el grupo vacío.
+            if group in state["groups"]:
+                print(f"Aviso: {group} sigue en Pueue; retirarlo con control.py retirar {group} si está vacío")
         # Un guardia anterior que aún corría pudo volver a anotarlos.
         drop_retired_owned()
     print("Servicio y timers habilitados; linger permite arrancar sin login interactivo")

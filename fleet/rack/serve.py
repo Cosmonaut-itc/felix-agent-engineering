@@ -176,6 +176,8 @@ def validate_snapshot(data, host):
                 or any(not isinstance(row.get(k), (str, type(None))) for k in TASK_TEXT)
                 or any(not isinstance(row.get(k), (int, float, type(None))) for k in TASK_TIMES)):
             raise ValueError('Tarea inválida')
+        if 'interrupted' in row and (row['interrupted'] is not True or row['state'] != 'Done' or row.get('result') != 'Killed'):
+            raise ValueError('Interrupción inválida')
     if any(not isinstance(data.get(k), (dict, type(None))) for k in ('cpu', 'mem', 'disk', 'guard')):
         raise ValueError('Capacidad inválida')
     if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in data.get('errors') or []):

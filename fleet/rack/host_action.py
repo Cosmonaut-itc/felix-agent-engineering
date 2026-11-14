@@ -83,6 +83,9 @@ def mode_fields(value):
     return result
 
 
+STARTUP_HELD = ('log_existente', 'bloqueada', 'fuera_del_reparto', 'pausa_previa', 'sin_preparar')
+
+
 def control(value, host='mini'):
     """Read view whitelist; never publish arbitrary controller fields or error text."""
     if type(value) is not dict or value.get('schema') != 'rack-host-result@1':
@@ -114,9 +117,19 @@ def control(value, host='mini'):
                   ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue')}, **{k: value[k] for k in fields})
     reasons = value.get('pause_reasons', {})
     if type(reasons) is not dict or any(type(g) is not str or type(r) is not list
-            or any(x not in ('pressure', 'manual', 'ambiguous') for x in r) for g, r in reasons.items()):
+            or any(x not in ('pressure', 'manual', 'ambiguous', 'startup') for x in r) for g, r in reasons.items()):
         raise ValueError('Pausas inválidas')
     result['pause_reasons'] = reasons
+    # U3.4: why a group stays retained after a restart; older controllers omit it.
+    held = value.get('startup_held', {})
+    if type(held) is not dict or any(type(g) is not str or code not in STARTUP_HELD
+                                     or 'ambiguous' not in reasons.get(g, []) for g, code in held.items()):
+        raise ValueError('Retención inválida')
+    result['startup_held'] = held
+    docker = value.get('startup_docker')
+    if docker is not None and type(docker) is not bool:
+        raise ValueError('Docker inválido')
+    result['startup_docker'] = docker
     if host == 'desk':
         foreign = value.get('foreign_work', 0)
         if type(foreign) is not int or foreign < 0:

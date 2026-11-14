@@ -441,6 +441,7 @@ class ModeMigrationTests(DeskFixture):
             receipts=db.execute('SELECT * FROM host_actions').fetchall()
         spec=importlib.util.spec_from_file_location('mode_installer',control.Path(control.__file__).with_name('install-desk.py'))
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        self.quiet_startup(installer)  # U3.4 gates: tests/test_startup.py
         before=self.fingerprint()
         with installer.authority_lock(self.engine.directory):plan=installer.policy_plan(self.engine)
         self.assertEqual(self.fingerprint(),before)
@@ -481,6 +482,7 @@ class ModeInstallTests(DeskFixture):
             receipts=db.execute('SELECT * FROM host_actions').fetchall()
         spec=importlib.util.spec_from_file_location('mode_install_complete',control.Path(control.__file__).with_name('install-desk.py'))
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        self.quiet_startup(installer)  # U3.4 gates: tests/test_startup.py
         Original=control.MiniControl
         factory=lambda p,d,**kw:Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         commands=[]

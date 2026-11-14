@@ -37,6 +37,12 @@ class DeskFixture(unittest.TestCase):
             self.engine.adopt(self.root/'pid')
         self.low = dict(io=0, cpu=0, memory=8*1024**3)
 
+    def quiet_startup(self, installer):
+        # Startup gate and unit install read systemd/pueued; covered with fakes in test_startup.py.
+        for manager in (patch.object(installer, 'startup_gate', return_value=None),
+                        patch.object(installer, 'install_units')):
+            manager.start(); self.addCleanup(manager.stop)
+
     def request(self, ident='desk-slots-0001', group='jale', delta=-1, undo_of=None, dry_run=False):
         v = self.engine.view()
         return dict(schema=control.HOST_SCHEMA, op='undo' if undo_of else 'slots', action_id=ident, dry_run=dry_run,
@@ -606,6 +612,7 @@ class DeskInstallTests(DeskFixture):
     def migration_fixture(self):
         spec = importlib.util.spec_from_file_location('install_desk_r1', Path(control.__file__).with_name('install-desk.py'))
         installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        self.quiet_startup(installer)  # U3.4 gates: tests/test_startup.py
         home = self.root/'table-home'
         library = home/'.local/lib/pao-pueue-desk'; library.mkdir(parents=True)
         target = library/'control.py'; target.write_text('# installed old controller\n')
@@ -767,6 +774,7 @@ class DeskInstallTests(DeskFixture):
     def test_seco_runs_readonly_preflight_and_rejects_invalid_adoption(self):
         spec = importlib.util.spec_from_file_location('install_desk_seco', Path(control.__file__).with_name('install-desk.py'))
         installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        self.quiet_startup(installer)  # U3.4 gates: tests/test_startup.py
         home = self.root/'seco-home'
         library = home/'.local/lib/pao-pueue-desk'; library.mkdir(parents=True)
         target = library/'control.py'; target.write_text('# old\n')
@@ -816,6 +824,7 @@ class DeskInstallTests(DeskFixture):
     def test_installer_retires_old_worker_waiting_before_lock_before_adoption(self):
         spec = importlib.util.spec_from_file_location('install_desk_worker', Path(control.__file__).with_name('install-desk.py'))
         installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        self.quiet_startup(installer)  # U3.4 gates: tests/test_startup.py
         home = self.root/'worker-home'; library = home/'.local/lib/pao-pueue-desk'; library.mkdir(parents=True)
         target = library/'control.py'; target.write_text('# old\n')
         directory = home/'.local/state/pao/pueue-desk'
@@ -861,6 +870,7 @@ class DeskInstallTests(DeskFixture):
     def test_installer_migrates_under_lock_preserves_switch_receipts_and_restart_free(self):
         spec=importlib.util.spec_from_file_location('install_desk_test',Path(control.__file__).with_name('install-desk.py'))
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        self.quiet_startup(installer)  # U3.4 gates: tests/test_startup.py
         home=self.root/'installed';library=home/'.local/lib/pao-pueue-desk';library.mkdir(parents=True)
         target=library/'control.py';target.write_text('# previous\n')
         Original=control.MiniControl
@@ -890,6 +900,7 @@ class DeskInstallTests(DeskFixture):
     def test_installer_preflight_mismatch_and_failure_keep_closed_recovery_path(self):
         spec=importlib.util.spec_from_file_location('install_desk_test',Path(control.__file__).with_name('install-desk.py'))
         installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        self.quiet_startup(installer)  # U3.4 gates: tests/test_startup.py
         home=self.root/'installed';library=home/'.local/lib/pao-pueue-desk';library.mkdir(parents=True)
         target=library/'control.py';target.write_text('# previous\n')
         Original=control.MiniControl

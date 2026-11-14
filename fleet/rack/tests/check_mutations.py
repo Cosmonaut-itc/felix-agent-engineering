@@ -152,25 +152,51 @@ CASES=(
      'test_c5.CompatibilityTests.test_new_desk_channel_adds_origin_old_desk_channel_never_does'),
     ('snapshot-identity','accion.py', " or any(control[k] != request[k] for k in ('launcher', 'ref', 'expected'))", '',
      'test_actions.ActionsTests.test_b3_snapshot_identity_binding_rejects_foreign_ref_launcher_and_expected'),
+    # U3.4: startup motives of the desk, from the channel to the panel.
+    ('u34-held-needs-ambiguous','host_action.py',"\n                                     or 'ambiguous' not in reasons.get(g, []) for g, code in held.items()):",
+     ' for g, code in held.items()):',
+     'test_startup.StartupChannelTests.test_channel_publishes_held_and_docker_and_never_the_interrupted_list'),
+    ('u34-held-code','host_action.py','code not in STARTUP_HELD','False',
+     'test_startup.StartupChannelTests.test_channel_publishes_held_and_docker_and_never_the_interrupted_list'),
+    ('u34-docker-bool','host_action.py','if docker is not None and type(docker) is not bool:','if False:',
+     'test_startup.StartupChannelTests.test_channel_publishes_held_and_docker_and_never_the_interrupted_list'),
+    ('u34-snapshot-identity','snapshot.py',"and (task['id'], task.get('created_at')) in stopped:",'and stopped:',
+     'test_startup.StartupChannelTests.test_snapshot_marks_only_listed_killed_rows_and_drops_the_list'),
+    ('u34-snapshot-keeps-list','snapshot.py',".pop('interrupted', None)",".get('interrupted', None)",
+     'test_startup.StartupChannelTests.test_snapshot_marks_only_listed_killed_rows_and_drops_the_list'),
+    ('u34-server-mark','serve.py',"(row['interrupted'] is not True or row['state'] != 'Done' or row.get('result') != 'Killed')",
+     "(row['interrupted'] is not True)",
+     'test_startup.StartupChannelTests.test_server_rejects_interrupted_marks_on_other_rows'),
+    ('u34-ui-mark','index.html','h.tasks.filter(t=>t.group===n && t.interrupted===true)',"h.tasks.filter(t=>t.group===n && t.result==='Killed')",
+     'test_startup.StartupChannelTests.test_production_ui_retained_group_interrupted_task_and_normal_desk'),
+    ('u34-ui-retained','index.html',"if(g.status==='Paused' && reasons.includes('ambiguous'))",'if(false)',
+     'test_startup.StartupChannelTests.test_production_ui_retained_group_interrupted_task_and_normal_desk'),
+    ('u34-ui-cut-default','index.html',' || h.tasks.some(t => t.group === n && t.interrupted === true)','',
+     'test_startup.StartupChannelTests.test_production_ui_retained_group_interrupted_task_and_normal_desk'),
 )
 
 
 def main():
+    import sys
+    prefix=sys.argv[1] if len(sys.argv)>1 else ''
     for name,filename,before,after,test in CASES:
+        if not name.startswith(prefix):continue
         with tempfile.TemporaryDirectory(prefix='rack-c3-mutation-',dir='/tmp') as folder:
             root=Path(folder)/'rack'
             shutil.copytree(BASE,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+            # test_startup loads the desk controller next to the rack.
+            shutil.copytree(BASE.parent/'pueue-desk',Path(folder)/'pueue-desk',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
             path=root/filename
             text=path.read_text()
             if text.count(before)!=1:raise AssertionError('Mutation anchor is no longer unique: '+name)
             path.write_text(text.replace(before,after))
             result=subprocess.run(['/usr/bin/python3','-B','-m','unittest',test,'-v'],cwd=str(root/'tests'),
                                   env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),capture_output=True,text=True,timeout=20)
-            if result.returncode!=1 or 'FAIL:' not in result.stderr:
+            if result.returncode!=1 or 'FAIL:' not in result.stderr or name.startswith('u34') and 'ERROR:' in result.stderr:
                 raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
             print(name+': caught (expected failure)')
             print('\n'.join(line for line in result.stderr.splitlines() if 'AssertionError:' in line or line.startswith('FAILED')))
-    print('All '+str(len(CASES))+' mutations caught; original tree untouched.')
+    print('All '+str(sum(n.startswith(prefix) for n,*_ in CASES))+' mutations caught; original tree untouched.')
 
 
 if __name__=='__main__':main()

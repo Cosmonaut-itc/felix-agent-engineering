@@ -438,6 +438,9 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home))
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
     cache, references = {}, {}
+    # Host-local list from preparar/parada; it marks rows and never leaves this host.
+    stopped = (output.get('control') or {}).pop('interrupted', None) if isinstance(output.get('control'), dict) else None
+    stopped = {(i.get('id'), i.get('created_at')) for i in stopped if isinstance(i, dict)} if isinstance(stopped, list) else set()
     if data:
         def tasks():
             output['groups'] = [dict(name=name, status=g['status'], slots=g['parallel_tasks']) for name, g in data['groups'].items()]
@@ -455,6 +458,8 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
                 jale = mode != 'macos' and re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
                 metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
+                if state == 'Done' and result == 'Killed' and (task['id'], task.get('created_at')) in stopped:
+                    row['interrupted'] = True  # «Interrumpida al reiniciar Pueue; relanzar manualmente»
                 row['control'] = task_control(task, home, state)
                 row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'))
                 if state == 'Running':
