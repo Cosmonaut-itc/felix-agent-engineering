@@ -43,6 +43,8 @@ DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
              '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
              '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
 DESK_TIMEOUT = 40
+# Local cancel: the previous 10 s plus up to 2 s for the origin probe (desk_action.send).
+LOCAL_CANCEL_TIMEOUT = 12
 # Reserve for the journal, backed by an independent HTTP wait deadline.
 RECEIPT_RESERVE = 1
 MIN_TRANSPORT = 1
@@ -158,16 +160,19 @@ class Executor:
             raise ValueError('Transporte deshabilitado')
         config = action_config(host.get('actions'))
         remote = config['transport'] == 'ssh'
-        limit = self.timeout if self.timeout is not None else DESK_TIMEOUT if remote else 10
+        limit = (self.timeout if self.timeout is not None else DESK_TIMEOUT if remote
+                 else LOCAL_CANCEL_TIMEOUT if request.get('op') == 'cancel' else 10)
         timeout = limit if timeout is None else min(limit, timeout)
+        env = {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}
         if remote:
+            # The envelope never carries origin: the desk dispatcher negotiates it locally.
             argv = list(config['argv'])
             request = dict(schema='rack-desk-action@1', launcher=launcher, request=request)
+            code, response = desk_channel.exchange(argv, request, self.runner, env, timeout)
         else:
             controller = self.home / config['controllers'][launcher][2:]
             argv = ['/usr/bin/python3', '-I', str(controller)]
-        code, response = desk_channel.exchange(argv, request, self.runner,
-            {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}, timeout)
+            code, response = desk_channel.send(argv, request, self.runner, env, timeout)
         if code not in ((0,) if remote else (0, 2)):
             raise ValueError('Respuesta inválida')
         return response
@@ -333,7 +338,8 @@ class Actions:
         remaining = deadline - self.timer() - RECEIPT_RESERVE
         if remaining < MIN_TRANSPORT:
             return result(request, 'rejected', 'deadline') if op != 'status' else result(request, 'unknown')
-        timeout = min(DESK_TIMEOUT if request['host'] == 'desk' else 10, remaining)
+        timeout = min(DESK_TIMEOUT if request['host'] == 'desk'
+                      else LOCAL_CANCEL_TIMEOUT if op == 'cancel' else 10, remaining)
         try:
             answer = sanitize(request, self.executor(self.hosts[request['host']], request['launcher'], wire,
                                                      timeout=timeout), op)

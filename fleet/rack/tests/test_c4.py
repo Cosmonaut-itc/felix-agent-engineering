@@ -203,7 +203,8 @@ print(json.dumps(a))
         with patch.object(desk.os,'read',side_effect=bounded):
             answer,code = self.handle(envelope())
         self.assertEqual((code,answer['status']), (5,'unknown'))
-        self.assertEqual(sum(sizes),16385)
+        # C5: the capabilities probe and the cancel are each bounded to 16 385 bytes.
+        self.assertEqual(sum(sizes),2*16385)
         self.controller('remote-run', 'import sys\nprint("PRIVATE /some/path")\nsys.exit(1)\n')
         # Invalid output is bounded and never forwarded, regardless of exit status.
         answer,code = self.handle(envelope())

@@ -1,6 +1,6 @@
 """Prove safety regressions are caught, without editing the working tree.
 
-TMPDIR=/tmp /usr/bin/python3 tests/check_mutations.py
+TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/check_mutations.py
 """
 import os
 from pathlib import Path
@@ -71,8 +71,8 @@ CASES=(
      'test_deadlines.DeadlineTests.test_inflight_status_cannot_overwrite_later_result_or_repeat_cancel'),
     ('request-minimum','accion.py','if remaining < MIN_TRANSPORT:', 'if False:',
      'test_deadlines.DeadlineTests.test_journal_time_is_subtracted_and_no_launch_without_minimum'),
-    ('request-remaining','accion.py',"timeout = min(DESK_TIMEOUT if request['host'] == 'desk' else 10, remaining)",
-     "timeout = DESK_TIMEOUT if request['host'] == 'desk' else 10",
+    ('request-remaining','accion.py',"else LOCAL_CANCEL_TIMEOUT if op == 'cancel' else 10, remaining)",
+     "else LOCAL_CANCEL_TIMEOUT if op == 'cancel' else 10, 99)",
      'test_deadlines.DeadlineTests.test_remaining_budget_reaches_executor_for_each_host_and_operation'),
     ('executor-request-remainder','accion.py','timeout = limit if timeout is None else min(limit, timeout)',
      'timeout = limit', 'test_c4.SSHTests.test_executor_caps_transport_by_request_remainder'),
@@ -111,6 +111,45 @@ CASES=(
      'test_r1fix.ExecutorRegressions.test_a2_deep_controller_response_is_http_unknown_and_reconciles'),
     ('open-run-journal','accion.py', "if response['status'] in OPEN and all(previous[k] == request[k] for k in ('host', 'launcher', 'ref')):",
      'if False:', 'test_r1fix.JournalRegressions.test_b2_open_action_blocks_other_id_and_capabilities_after_restart'),
+    # C5: origin "rack-panel" negotiated by the local channel next to the controller.
+    ('c5-mini-exchange','accion.py','code, response = desk_channel.send(argv, request, self.runner, env, timeout)',
+     'code, response = desk_channel.exchange(argv, request, self.runner, env, timeout)',
+     'test_c5.LocalChannelTests.test_mini_post_probes_then_one_cancel_with_origin'),
+    ('c5-desk-exchange','desk_action.py',"code, response = send(['/usr/bin/python3', '-I', str(controller)]",
+     "code, response = exchange(['/usr/bin/python3', '-I', str(controller)]",
+     'test_c5.LocalChannelTests.test_desk_dispatcher_adds_origin_and_ssh_envelope_never_carries_it'),
+    ('c5-origin-before-ssh','accion.py',"request = dict(schema='rack-desk-action@1', launcher=launcher, request=request)",
+     "request = dict(schema='rack-desk-action@1', launcher=launcher, request=dict(request, origin='rack-panel') if request.get('op') == 'cancel' else request)",
+     'test_c5.LocalChannelTests.test_desk_dispatcher_adds_origin_and_ssh_envelope_never_carries_it'),
+    ('c5-truthiness','desk_action.py',"and caps.get('cancel_origin') is True)","and caps.get('cancel_origin'))",
+     'test_c5.DegradationTests.test_only_exact_true_from_valid_answer_enables_origin'),
+    ('c5-probe-blocks-cancel','desk_action.py','        except Exception:\n            pass','        except Exception:\n            raise',
+     'test_c5.DegradationTests.test_only_exact_true_from_valid_answer_enables_origin'),
+    ('c5-parser-open','desk_action.py',"keys = {'schema', 'op', 'ref'}","keys = {'schema', 'op', 'ref'} | ({'origin'} & set(request))",
+     'test_c5.DispatcherScopeTests.test_parser_rejects_origin_in_envelope_and_inner_request'),
+    ('c5-probe-all-ops','desk_action.py',"if request.get('op') != 'cancel':\n        return exchange","if False:\n        return exchange",
+     'test_c5.DispatcherScopeTests.test_status_and_capabilities_make_exactly_one_call'),
+    ('c5-probe-no-margin','desk_action.py','probe = min(PROBE_LIMIT, max(0, timeout - min(CANCEL_RESERVE, timeout)))','probe = PROBE_LIMIT',
+     'test_c5.BudgetTests.test_slow_probe_keeps_cancel_window_and_reduced_budget_skips_probe'),
+    ('c5-probe-not-reaped','desk_action.py','            pass\n        process.wait()\n        raise','            pass\n        raise',
+     'test_c5.BudgetTests.test_probe_holding_stdout_and_lock_is_killed_and_reaped_before_cancel'),
+    ('c5-deadline-restart','desk_action.py','return exchange(argv, request, runner, env, remaining)','return exchange(argv, request, runner, env, timeout)',
+     'test_c5.BudgetTests.test_slow_probe_keeps_cancel_window_and_reduced_budget_skips_probe'),
+    ('c5-probe-kill-only-parent','desk_action.py','os.killpg(process.pid, signal.SIGKILL)', 'process.kill()',
+     'test_c5.BudgetTests.test_probe_descendant_holding_stdout_and_lock_is_killed_before_cancel'),
+    ('c5-exact-probe-budget','desk_action.py','probe = min(PROBE_LIMIT, max(0, timeout - min(CANCEL_RESERVE, timeout)))',
+     'probe = min(1, max(0, timeout - min(CANCEL_RESERVE, timeout)))',
+     'test_c5.BudgetTests.test_probe_uses_two_seconds_and_cancel_gets_ten_point_five'),
+    ('c5-resend-duplicate-post','accion.py','return 200, json.loads(row[1])',
+     "self.call(request, 'cancel', deadline)\n                            return 200, json.loads(row[1])",
+     'test_c5.JournalTests.test_one_cancel_per_action_id_across_duplicate_lost_answer_restart_and_capability_change'),
+    ('c5-local-cancel-limit','accion.py',"LOCAL_CANCEL_TIMEOUT = 12","LOCAL_CANCEL_TIMEOUT = 10",
+     'test_deadlines.DeadlineTests.test_full_budget_limits_mini_cancel_twelve_others_unchanged'),
+    ('c5-resend-get','accion.py',"return self.complete(request, 'status', done,","return self.complete(request, 'cancel', done,",
+     'test_c5.JournalTests.test_one_cancel_per_action_id_across_duplicate_lost_answer_restart_and_capability_change'),
+    ('c5-server-decides','accion.py',"request = dict(schema='rack-desk-action@1', launcher=launcher, request=request)",
+     "request = dict(schema='rack-desk-action@1', launcher=launcher, request=dict(request, origin='rack-panel') if request.get('op') == 'cancel' and desk_channel.origin_supported(desk_channel.exchange(list(config['argv']), dict(schema='rack-desk-action@1', launcher=launcher, request=dict(schema='rack-cancel@1', op='capabilities', ref=request['ref'])), self.runner, env, 2)[1], request['ref']) else request)",
+     'test_c5.CompatibilityTests.test_new_desk_channel_adds_origin_old_desk_channel_never_does'),
     ('snapshot-identity','accion.py', " or any(control[k] != request[k] for k in ('launcher', 'ref', 'expected'))", '',
      'test_actions.ActionsTests.test_b3_snapshot_identity_binding_rejects_foreign_ref_launcher_and_expected'),
 )
@@ -126,7 +165,7 @@ def main():
             if text.count(before)!=1:raise AssertionError('Mutation anchor is no longer unique: '+name)
             path.write_text(text.replace(before,after))
             result=subprocess.run(['/usr/bin/python3','-B','-m','unittest',test,'-v'],cwd=str(root/'tests'),
-                                  env=dict(os.environ,TMPDIR='/tmp'),capture_output=True,text=True,timeout=20)
+                                  env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),capture_output=True,text=True,timeout=20)
             if result.returncode!=1 or 'FAIL:' not in result.stderr:
                 raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
             print(name+': caught (expected failure)')
