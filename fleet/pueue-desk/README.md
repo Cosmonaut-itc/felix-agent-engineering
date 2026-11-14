@@ -333,7 +333,7 @@ intención aceptada. `maintenance` retiene también reconciliación/aperturas.
 Una autoridad ilegible/ausente con marcador nunca habilita la tabla por defecto:
 no hay aperturas ni aumentos; la guardia conserva su cierre protector y #118.
 Tras perder `parallel`, se repone el deseo sin abrir pausas ambiguas. Esta
-unidad mantiene `mode`, `reorder` y `restart_queue` en false.
+entrega mantiene `reorder` y `restart_queue` en false; U3.3 habilita `mode` sólo en el desk.
 Un controlador instalado que nunca fue adoptado responde `unsupported`, sin
 crear archivos; una consulta de recibo devuelve `unknown`. Un marcador o SQLite
 perdido/corrupto conserva el diagnóstico de recuperación, sin readoptar.
@@ -406,3 +406,59 @@ retiro de ajustes al evento, undo vencido sin RPC tras perder el timer y
 recuperación de otro evento por un clic ordinario (reloj/sensores inyectados,
 daemon stock real).
 No encola tareas y siempre espera al PID exacto de su daemon al terminar.
+
+### Día/Noche del dashboard (U3.3)
+
+La cabecera del desk permite elegir Día o Noche por el mismo canal
+`rack-host-control@1` (`op: "mode"`, `change: {"mode": "dia"|"noche"}`).
+Aplica la tabla completa del destino (14/18), retira los ajustes de lugares y
+verifica reducciones antes de aumentos. Reducir `parallel` deja seguir las tareas
+vivas. Pedir el modo vigente es `same_mode`, sin restablecer cuotas.
+La Mini conserva `fijo`, perfil 3/1/3, y rechaza `mode` sin mutar Pueue.
+`reorder` y `restart_queue` siguen deshabilitados.
+
+El host fija el vencimiento al próximo evento **estricto** 05:00/14:00 UTC;
+volver al modo automático retira el adelanto. Timer y guardia existentes resuelven
+el evento por identidad, también si no corrió el timer o confirma el mismo modo.
+Un adelanto nocturno a las 16:00 de México muestra «Adelantado · vuelve a día a
+las 08:00» y «Ajustes manuales hasta las 23:00». A las 23:00 vence y pasa a
+«Automático · cambia a día a las 08:00». Las notas vienen del host con
+`America/Mexico_City`; el reloj del navegador no decide la vigencia.
+
+El recibo conserva modo, adelanto y ajustes anteriores. Undo exige la revisión
+posterior exacta, vector y generación observados y ningún evento cruzado;
+restaura también los vencimientos originales. Si cambió algo devuelve
+`409 undo_conflict`: «El horario o los lugares cambiaron; no se puede deshacer
+este ajuste». Un adelanto o undo que aumente cualquier grupo se rechaza entero
+con `foreign_work` cuando hay trabajo vivo fuera de los seis grupos. Los cambios
+que sólo bajan pasan; reconciliar la tabla del evento conserva la excepción de U3.2.
+Un parcial conserva deseo/observado y se recupera por el mismo motor; un resultado
+incierto se consulta con su ID, nunca se repite. `slots.disabled` cubre modo y undo.
+
+**Instalación sobre U3.2 ya adoptada:** usar los mismos dos comandos de
+`install-desk.py --pid-file … --seco` y sin `--seco` documentados arriba, desde
+el checkout revisado en WSL. El preflight y la instalación toman `control.lock`.
+La única ampliación de la política JSON en SQLite es `mode_override: null`;
+no cambia tablas ni `policy_hash`, revisión, ajustes, vencimientos ni recibos.
+Ambos rechazan la migración si hay recibos `applying`, `partial` o `unknown`,
+sin apagar timers ni escribir archivos. La publicación conserva
+`control.pre-mode.py`; no reinicia, readopta ni borra la base de `pueued`.
+Después actualizar despachador/snapshot con `fleet/rack/instalar-desk.sh` y
+panel con `fleet/rack/instalar.sh`; verificar capacidades/ensayo antes del
+canario, que ejecuta el orquestador después del merge.
+
+**Reversión:** primero volver al panel/despachador anteriores, conservando esta
+autoridad/controlador para timer y guardia. Para retirar también el controlador,
+esperar a que venza el adelanto y que el reconciliador confirme tabla y recibos
+terminales; verificar `mode_override=null`, sin deriva ni pendientes. Bajo el
+mismo candado y con disparadores/oneshots detenidos como en el instalador,
+restaurar `control.pre-mode.py` y reactivar los timers. El campo nulo adicional y
+los recibos se conservan; U3.2 los tolera. No restaurar un SQLite viejo ni borrar
+recibos. Con un adelanto activo el controlador anterior falla cerrado: no usar
+ese procedimiento para cancelar un modo pendiente o desconocido.
+
+Pruebas dirigidas: `tests/test_mode.py`, `tests/mutate_slots.py --mode-only` y
+`tests/private_slots.py --run-private --host desk --mode`. La última se ejecuta
+sólo mediante `remote-run`: daemon/configuración propios, siete tareas sintéticas
+acotadas, reducción 18→14 sin detenerlas, evento 05Z y undo exacto, con limpieza
+por la puerta privada y espera del PID propio.

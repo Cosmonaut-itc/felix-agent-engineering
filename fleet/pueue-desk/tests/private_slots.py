@@ -3,6 +3,7 @@ import argparse
 import importlib.util
 import json
 import os
+import shlex
 from pathlib import Path
 import subprocess
 import sys
@@ -14,12 +15,14 @@ from unittest.mock import patch
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-private', action='store_true', required=True)
+    parser.add_argument('--mode', action='store_true', help='U3.3 private desk mode acceptance')
     parser.add_argument('--host', choices=('mini','desk'), default='mini')
     parser.add_argument('--pueue', default='/opt/homebrew/bin/pueue' if sys.platform == 'darwin' else str(Path.home()/'.local/bin/pueue'))
     parser.add_argument('--pueued', default='/opt/homebrew/bin/pueued' if sys.platform == 'darwin' else str(Path.home()/'.local/bin/pueued'))
     args = parser.parse_args()
+    if args.mode and args.host != 'desk':parser.error('--mode sólo en desk')
     base = Path.cwd().resolve()
-    root = base/('private-u32-sol' if args.host == 'desk' else 'private-u31-sol')
+    root = base/('private-u33-sol' if args.mode else 'private-u32-sol' if args.host == 'desk' else 'private-u31-sol')
     root.mkdir()  # refuse reuse
     config = root/'config.json'
     config.write_text(json.dumps(dict(shared=dict(pueue_directory=str(root),runtime_directory=str(root),
@@ -67,6 +70,9 @@ def main():
     try:
         emit('version', version=subprocess.check_output([args.pueue,'--config',str(config),'--version'],text=True).strip())
         start()
+        if args.mode:
+            mode_scenario(control, pueue, root, emit)
+            return
         if args.host == 'desk':
             desk_scenario(control, pueue, root, start, crash, emit)
             return
@@ -101,6 +107,18 @@ def main():
             emit('saved_parallel_survives',observed=persisted['slots'],desired=persisted['desired'])
             emit('PASS', assertions='parallel unsaved lost; saved survives; durable candidate reconciles both; no tasks')
     finally:
+        # All U3.3 tasks wait on this private gate and also have their own timeout.
+        (root/'release').touch()
+        if args.mode and daemon is not None and daemon.poll() is None:
+            until=time.monotonic()+5
+            while time.monotonic()<until:
+                live=control.live_tasks(pueue.status())
+                if not live:break
+                time.sleep(.05)
+            else:
+                # IDs come exclusively from this run's private daemon.
+                for task in live:pueue.call('kill',str(task['id']))
+            emit('private_tasks_finished', live=len(control.live_tasks(pueue.status())))
         if daemon is not None and daemon.poll() is None:
             try: pueue.call('shutdown')
             except subprocess.SubprocessError: pass
@@ -193,6 +211,77 @@ def desk_scenario(control, pueue, root, start, crash, emit):
     emit('missed_timer_applied_by_slots', status=click['status'], observed=engine.view()['slots'])
     emit('PASS', assertions='timer preserves override then expires; guard restores lost parallel; missed timer; '
          'expired undo no RPC; ordinary click recovers; 05:00Z with stashed default task')
+
+
+def mode_scenario(control, pueue, root, emit):
+    """Real 4.0.4 scheduler/parallel, only a private daemon and synthetic clock."""
+    now=[datetime(2026,11,14,22,0,0,tzinfo=timezone.utc).timestamp()]
+    for g,n in control.mode_profile('dia').items():pueue.call('group','add',g,'--parallel',n)
+    pueue.call('pause','--wait','-g','default')
+    directory=root/'control';directory.mkdir()
+    engine=control.MiniControl(pueue,directory,clock=lambda:now[0],host='desk')
+    def request(ident, mode=None, undo_of=None):
+        view=engine.view()
+        return dict(schema=control.HOST_SCHEMA,op='undo' if undo_of else 'mode',action_id=ident,dry_run=False,
+                    expected={k:view[k] for k in ('revision','policy_hash','generation','mode','slots')},
+                    **(dict(undo_of=undo_of) if undo_of else dict(change=dict(mode=mode))))
+    def apply(ident, mode=None, undo_of=None):
+        with control.locked(directory):return engine.handle(request(ident,mode,undo_of))
+    with control.locked(directory):
+        engine.adopt(root/'pid')
+        v=engine.view()
+        adjustment=dict(schema=control.HOST_SCHEMA,op='slots',action_id='mode-private-minus',dry_run=False,
+                        expected={k:v[k] for k in ('revision','policy_hash','generation','mode','slots')},
+                        change=dict(group='otros',delta=-1))
+        assert engine.handle(adjustment)['status']=='applied'
+        with engine.connect() as db:before=engine.state(db)
+    advanced=apply('mode-private-night','noche')
+    assert advanced['status']=='applied',advanced
+    assert advanced['result']['observed']==control.mode_profile('noche'),advanced
+    assert advanced['result']['mode_note']=='Adelantado · vuelve a día a las 08:00',advanced
+    assert advanced['result']['mode_detail']=='Ajustes manuales hasta las 23:00',advanced
+    emit('mode_advanced',mode='noche',observed=advanced['result']['observed'],expires_at=advanced['result']['expires_at'])
+    undone=apply('mode-private-undo1',undo_of='mode-private-night')
+    assert undone['status']=='applied',undone
+    with engine.connect() as db:restored=engine.state(db)
+    for key in ('mode_override','overrides','desired','schedule_event'):assert restored[key]==before[key],key
+    emit('undo_restored',mode=engine.view()['mode'],observed=undone['result']['observed'],original_expirations=True)
+    assert apply('mode-private-night2','noche')['status']=='applied'
+    # Seven bounded Python children in jale; no installed launchers, envs or bodies.
+    program="import pathlib,time; gate=pathlib.Path("+repr(str(root/'release'))+"); end=time.monotonic()+45; "
+    program+="exec('while not gate.exists() and time.monotonic()<end: time.sleep(0.05)')"
+    command=shlex.join([sys.executable,'-c',program])
+    ids=[int(pueue.call('add','--print-task-id','--group','jale','--',command).strip()) for _ in range(7)]
+    until=time.monotonic()+5
+    while True:
+        tasks=pueue.status()['tasks']
+        running=[i for i in ids if tasks[str(i)]['status']=='Running' or isinstance(tasks[str(i)]['status'],dict) and 'Running' in tasks[str(i)]['status']]
+        if len(running)==7:break
+        assert time.monotonic()<until,'private tasks did not start'
+        time.sleep(.05)
+    day=apply('mode-private-day','dia')
+    assert day['status']=='applied' and day['result']['observed']==control.mode_profile('dia'),day
+    tasks=pueue.status()['tasks']
+    for i in ids:assert tasks[str(i)]['status']=='Running' or 'Running' in tasks[str(i)]['status'],i
+    emit('18_to_14_with_live_tasks',observed=day['result']['observed'],running_jale=len(ids),jale_parallel=5,no_task_stopped=True)
+    undo=apply('mode-private-undo2',undo_of='mode-private-day')
+    assert undo['status']=='applied' and engine.view()['mode']=='noche',undo
+    emit('undo_live_tasks',observed=undo['result']['observed'],mode=undo['result']['mode'])
+    # Same-mode 05Z event removes the advance, including a later slots adjustment.
+    with control.locked(directory):
+        v=engine.view();adjustment.update(action_id='mode-private-slots2',expected={k:v[k] for k in ('revision','policy_hash','generation','mode','slots')})
+        assert engine.handle(adjustment)['status']=='applied'
+    now[0]=control.schedule_at(now[0])[1]
+    with control.locked(directory):assert engine.reconcile()
+    view=engine.view()
+    assert view['slots']==control.mode_profile('noche') and view['expires_at'] is None,view
+    assert view['mode_note']=='Automático · cambia a día a las 08:00',view
+    with engine.connect() as db:
+        state=engine.state(db);assert state['mode_override'] is None and state['overrides']=={}
+    expired=apply('mode-private-expired',undo_of='mode-private-undo2')
+    assert expired['error']['code']=='undo_conflict' and expired['effects'] is False,expired
+    emit('05Z_event_retires_advance',mode=view['mode'],note=view['mode_note'],expired_undo='undo_conflict')
+    emit('PASS',assertions='destination night table; exact undo; real 18->14 with 7 live tasks unchanged; 05Z clears advance and slots')
 
 
 if __name__ == '__main__': main()

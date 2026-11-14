@@ -286,7 +286,7 @@ class Actions:
         if operation == 'post':
             validate(value)
             identity = dict(value)
-            if value['op'] in ('cancel', 'slots', 'undo') and not value.get('dry_run'):
+            if value['op'] in ('cancel', 'slots', 'mode', 'undo') and not value.get('dry_run'):
                 with self.http_lock:
                     self.identities.setdefault(value['action_id'], identity)
         else:
