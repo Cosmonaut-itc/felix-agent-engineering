@@ -118,6 +118,16 @@ dialog p{margin:0 0 14px;font-size:14px}
 dialog .row{display:flex;gap:8px;justify-content:flex-end}
 dialog button{font:inherit;font-size:13px;border:1px solid var(--line);background:var(--panel);color:var(--ink);padding:6px 12px;border-radius:6px;cursor:pointer}
 dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
+.lane{grid-template-columns:150px minmax(0,1fr)}
+.step{display:inline-flex;align-items:center;gap:8px;margin-top:4px;position:relative}
+.step button{font:inherit;font-size:13px;line-height:1;width:44px;height:44px;border:1px solid var(--line);background:var(--panel);color:var(--ink2);border-radius:5px;cursor:pointer;padding:0}
+.step button:disabled{opacity:.35;cursor:default}
+.step b{min-width:34px;text-align:center;font-weight:500;font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.slot-help{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+.step:focus .slot-help,.step:focus-within .slot-help{position:absolute;left:0;top:100%;width:280px;max-width:calc(100vw - 80px);height:auto;clip-path:none;overflow:visible;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px;z-index:6;box-shadow:0 4px 12px rgba(0,0,0,.15)}
+.step:focus{outline:2px solid var(--accent);outline-offset:2px}
+#toast button{font:inherit;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
+@media(max-width:560px){.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 const PENDING = new Map();
@@ -158,7 +168,7 @@ function hostState(h){
   if (anyPaused) return `<span class="state"><span class="dot" style="background:var(--warn)"></span>Admisión pausada</span>`;
   return `<span class="state"><span class="dot" style="background:var(--good)"></span>Admitiendo corridas</span>`;
 }
-const groups = h => Object.entries(h.groups).filter(([n,g]) => n !== 'default' || h.tasks.some(t => t.group === n && t.state !== 'Done'));
+const groups = h => Object.entries(h.groups).filter(([n,g]) => h.id==='mini' || n !== 'default' || h.tasks.some(t => t.group === n && t.state !== 'Done'));
 const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
 const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>b.priority-a.priority || a.id-b.id);
 const slotsTotal = h => groups(h).reduce((a,[,g])=>a+g.slots,0);
@@ -176,7 +186,7 @@ function capacity(h){
       <div class="m-val">${Number.isFinite(GB(h.mem_avail)) ? GB(h.mem_avail).toFixed(0) : '—'} GB <span class="muted" style="font-size:12px;font-weight:400">libres</span></div>
       <div class="meter"><i style="width:${memPct*100}%;background:${memPct>.85?'var(--crit)':'var(--accent)'}"></i></div>
       <div class="m-note ink2">Swap ${Number.isFinite(GB(h.swap_used)) ? GB(h.swap_used).toFixed(1) : '—'} de ${Number.isFinite(GB(h.swap_total)) ? GB(h.swap_total).toFixed(0) : '—'} GB</div></div>
-    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total</span></div>
+    <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total${h.control?.cap ? ' · tope '+h.control.cap : ''}</span></div>
       <div class="m-val">${run} <span class="muted" style="font-size:12px;font-weight:400">ocupados</span></div>
       <div class="meter"><i style="width:${tot?run/tot*100:0}%;background:var(--accent)"></i></div>
       <div class="m-note ink2">${queued(h).length ? queued(h).length + ' en fila' : 'Fila vacía'}</div></div>
@@ -231,24 +241,106 @@ function resourceTable(h){
   return `<table class="usage"><caption>Consumo por corrida</caption><thead><tr><th scope="col">Corrida</th><th scope="col">CPU</th><th scope="col">RAM</th></tr></thead><tbody>${tasks.map(t=>row(`${t.ticket?`<strong>${esc(t.ticket)}</strong> · `:''}${esc(what(t))}<span class="usage-label">${esc(proj(t))} · ${esc(objective(t))} · ${esc(t.group)}</span>`,t.usage)).join('')}${row('Fuera de las corridas',h.usage.outside,'outside')}</tbody></table><p class="usage-note">Porcentajes del host completo. ${note}</p>`;
 }
 
+const HOST_CONFIRMED = new Map(), SLOT_MESSAGES = new Map();
+const slotKey = h => '@host/'+h.id;
+function slotControls(h,n,g,r){
+  const c=h.control, a=PENDING.get(slotKey(h));
+  const capable=h.id==='mini' && c?.capabilities?.slots===true && Object.hasOwn(c.slots,n);
+  const common=!capable ? c?.reason || c?.error?.message || 'Falta actualizar el control de este host.' : !h.fresh ? 'Actualiza la instantánea antes de decidir.'
+    : a ? 'Hay un ajuste pendiente; consulta su recibo.' : c.drift || c.recovery_pending ? 'Reconciliación pendiente.' : '';
+  const total=capable ? Object.values(c.slots).reduce((a,n)=>a+n,0) : 0;
+  const minus=common || (g.slots<=1 ? 'Mínimo de 1 lugar.' : '');
+  const plus=common || (g.slots>=8 ? 'Máximo de 8 lugares.' : total>=c.cap ? `Tope de ${c.cap} lugares. Quita un lugar a otro grupo para añadirlo aquí.` : '');
+  const count=g.slots;
+  const usage=`${r}/${g.slots} en uso${r>g.slots ? ` · no entran nuevas hasta bajar de ${g.slots}` : ''}`;
+  const name='slots-'+h.id+'-'+n;
+  return `<div class="muted slot-usage">${esc(usage)}</div><div class="step" tabindex="0" data-slot-focus="${esc(h.id+'/'+n)}" aria-label="Lugares de ${esc(n)}" aria-describedby="${esc(name)}"><button type="button" data-step="-1" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-label="Quitar un lugar a ${esc(n)}" title="${esc(minus || 'Quitar un lugar')}" ${minus?'disabled':''}>−</button><b>${esc(count)}</b><button type="button" data-step="1" data-host="${esc(h.id)}" data-group="${esc(n)}" aria-label="Añadir un lugar a ${esc(n)}" title="${esc(plus || 'Añadir un lugar')}" ${plus?'disabled':''}>+</button><span class="slot-help" id="${esc(name)}">${esc(plus || minus)}</span></div>`;
+}
+function hostControlState(h){
+  const a=PENDING.get(slotKey(h)), c=h.control;
+  let message=SLOT_MESSAGES.get(h.id) || (['recovery_error','busy'].includes(c?.status) ? c.error.message : '');
+  if(a) message=a.status==='partial' ? 'Aplicado parcialmente · intentando completar' : a.status==='unknown' ? 'Resultado desconocido · consultando…' : 'Aplicando…';
+  else if(c?.drift) message='Lugares observados distintos del ajuste guardado · reconciliación pendiente';
+  else if(c?.recovery_pending) message='Reconciliación pendiente';
+  const result=a?.result;
+  const desired=result?.desired || c?.desired, observed=result?.observed || c?.slots;
+  if((a?.status==='partial' || c?.drift) && desired){
+    message+=' · '+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
+  }
+  if(c?.pause_reasons && Object.values(c.pause_reasons).some(r=>r.includes('ambiguous')))
+    message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
+  return message ? `<p class="action-state" role="status">${esc(message)}</p>` : '';
+}
+function slotExpected(h){
+  const c=h.control;
+  return {revision:c.revision,policy_hash:c.policy_hash,generation:c.generation,mode:c.mode,slots:{...c.slots}};
+}
+function focusSlots(host,group){
+  [...document.querySelectorAll('[data-slot-focus]')].find(e=>e.dataset.slotFocus===host+'/'+group)?.focus();
+}
+function startSlots(h,change,undoOf){
+  if(PENDING.has(slotKey(h))) return;
+  const request={schema:'rack-action@1',op:undoOf?'undo':'slots',host:h.id,action_id:newActionId(),dry_run:false,expected:slotExpected(h)};
+  if(undoOf) request.undo_of=undoOf; else request.change=change;
+  const action={request,status:'applying',group:change?.group};
+  PENDING.set(slotKey(h),action);SLOT_MESSAGES.delete(h.id);persistActions();repaintActions();
+  if(action.group) focusSlots(h.id,action.group);
+  sendSlots(slotKey(h),action);
+}
+function acceptSlots(key,action,data){
+  const h=S?.hosts.find(h=>h.id===action.request.host);
+  if(['applying','partial','unknown'].includes(data.status)){
+    action.status=data.status;action.result=data.result;persistActions();repaintActions();
+    setTimeout(()=>pollAction(key,action),2000);return;
+  }
+  PENDING.delete(key);persistActions();
+  if(data.status==='applied' && h && data.result?.observed){
+    const c={...h.control,revision:data.revision,slots:{...data.result.observed},desired:{...data.result.desired},drift:false,recovery_pending:false};
+    HOST_CONFIRMED.set(h.id,c);h.control=c;
+    for(const [g,n] of Object.entries(c.slots)) if(h.groups[g]) h.groups[g].slots=n;
+    SLOT_MESSAGES.delete(h.id);
+    say(action.request.op==='undo' ? 'Lugares restaurados' : `${action.group}: ${c.slots[action.group]} lugares · hasta otro cambio manual`,
+      action.request.op==='undo' ? null : ()=>{
+        const current=S?.hosts.find(x=>x.id===h.id);
+        if(current) startSlots(current,{group:action.group},action.request.action_id);
+      });
+  }else{
+    SLOT_MESSAGES.set(action.request.host,data.error?.message || 'No se pudo confirmar el ajuste. Actualiza antes de decidir.');
+    say(SLOT_MESSAGES.get(action.request.host));
+  }
+  repaintActions();if(action.group) focusSlots(action.request.host,action.group);refresh();
+}
+async function sendSlots(key,action){
+  try{acceptSlots(key,action,await postAction(action.request));}
+  catch{action.status='unknown';persistActions();repaintActions();setTimeout(()=>pollAction(key,action),2000);}
+}
+document.addEventListener('click',ev=>{
+  const b=ev.target.closest('button[data-step]');
+  if(!b || b.disabled) return;
+  const h=S?.hosts.find(h=>h.id===b.dataset.host);
+  if(h?.control?.capabilities?.slots) startSlots(h,{group:b.dataset.group,delta:Number(b.dataset.step)});
+});
+
 function view(){
     return `<div class="stack">${S.hosts.map(h=>{
       const lanes = groups(h).map(([n,g])=>{
         const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
         const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
           const p=progress(t); return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}${pendingText(h,t)}</div>`;}).join('');
-        return `<div class="lane"><div class="g">${esc(n)}<div class="muted">${r.length}/${g.slots}</div></div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
+        return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}`;
       }).join('');
-      return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
+      return `<section class="host"><h2>${esc(h.name)}</h2>${hostState(h)}${capacity(h)}${hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
 function render(data){
   NOW = data.now;
   S = {hosts:data.hosts.map(h=>{
     const s=h.snapshot || {};
-    return {...h, guard:s.guard, usage:s.usage, cores:s.cpu?.cores, load:s.cpu?.load,
+    const confirmed=HOST_CONFIRMED.get(h.id);
+    const control=confirmed && (!s.control || s.control.revision<confirmed.revision) ? confirmed : s.control;
+    return {...h, control, guard:s.guard, usage:s.usage, cores:s.cpu?.cores, load:s.cpu?.load,
       mem_total:s.mem?.total, mem_avail:s.mem?.available, swap_used:s.mem?.swap_used, swap_total:s.mem?.swap_total,
-      groups:Object.fromEntries((s.groups || []).map(g=>[g.name,g])),
+      groups:Object.fromEntries((s.groups || []).map(g=>[g.name,{...g,slots:control?.slots?.[g.name] ?? g.slots}])),
       tasks:(s.tasks || []).filter(t=>!CANCELLED.has(runKey(h,t))).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
   for(const a of PENDING.values()){
@@ -268,9 +360,10 @@ document.getElementById('app').addEventListener('click', event=>{
   if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); syncMenu(); }
 });
 let menuTask = null, toastTimer;
-function say(text){
+function say(text,back){
   const toast = document.getElementById('toast');
-  toast.innerHTML = esc(text);
+  toast.innerHTML = esc(text)+(back ? '<button type="button">Deshacer</button>' : '');
+  if(back) toast.querySelector('button').onclick=back;
   clearTimeout(toastTimer); toastTimer = setTimeout(()=>toast.textContent='', 8000);
 }
 function findTask(el){
@@ -385,6 +478,7 @@ function actionMessage(data,action){
   return data.error?.message || 'No se pudo confirmar la cancelación.';
 }
 function acceptAction(key,action,data){
+  if(['slots','undo'].includes(action.request.op)) return acceptSlots(key,action,data);
   if(['cancelling','unknown','cancel_unconfirmed'].includes(data.status)){
     const changed=action.status!==data.status; action.status=data.status;
     persistActions(); repaintActions();
@@ -411,11 +505,14 @@ async function pollAction(key,action){
   try{
     const response=await fetch('/api/accion/'+encodeURIComponent(action.request.action_id),{cache:'no-store',signal:AbortSignal.timeout(action.request.host==='desk'?45000:15000)});
     const data=await response.json();
-    if(response.status===404 && data.schema==='rack-action@1' && data.action_id===action.request.action_id && !action.resent){
+    if(response.status===404 && data.schema==='rack-action@1' && data.action_id===action.request.action_id && !action.resent && action.request.op==='cancel'){
       action.resent=true; persistActions();
       await sendCancel(key,action); return;
     }
-    if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || !response.ok) throw Error('status');
+    const hostTerminal=['slots','undo'].includes(action.request.op) &&
+      (response.status===409 && ['conflict','rejected','unsupported'].includes(data.status) ||
+       response.status===403 && data.status==='rejected' && data.error?.code==='disabled' && data.effects===false);
+    if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || (!response.ok && !hostTerminal)) throw Error('status');
     acceptAction(key,action,data);
   }catch{const changed=action.status!=='unknown';action.status='unknown';persistActions();repaintActions();if(changed) say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}
 }

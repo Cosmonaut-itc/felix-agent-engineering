@@ -47,8 +47,9 @@ La tabla sale de la medición del 2026-11-13 sobre el historial de Pueue
 
 `jale` se queda en 5/7 con ese enrutamiento, por decisión de Felix: sus lugares
 quedan para las corridas cortas, que son las que hacen fila. En la Mini,
-`suites` queda en 3 y `rapidas` en 3; ahí la tabla no aplica y se fija con
-`/opt/homebrew/bin/pueue parallel 3 -g rapidas`.
+`suites` queda en 3 y `rapidas` en 3; ahí la tabla desk no aplica. Después
+de adoptar U3.1, los ajustes pasan exclusivamente por el panel/controlador
+durable descrito abajo; una llamada directa a `parallel` se considera deriva.
 
 Ver fila: `ssh desk '~/.local/bin/pueue status -g hasito'`.
 Pausar a mano, dejando terminar tareas:
@@ -153,3 +154,136 @@ REMOTE_RUN_HOST=mini ~/.local/bin/remote-run wait ID
 
 Mutaciones dirigidas (también dentro de `remote-run`):
 `/usr/bin/python3 -I fleet/pueue-desk/tests/mutate_mini.py`.
+
+## Lugares durables de la Mini (U3.1)
+
+El perfil administrado es `suites=3`, `default=1`, `rapidas=3`, tope **7**.
+Cada componente está entre 1 y 8; un grupo pausado sigue consumiendo su cuota.
+El controlador valida el vector entero visto, revisión, hash de perfil y generación
+del daemon. Un clic sólo admite delta −1/+1. Desde un exceso heredado permite
+bajar de forma monotónica; nunca aumentar sobre el tope. Reducir no mata tareas
+activas: sólo limita las admisiones siguientes.
+
+Tras la adopción, `~/.local/state/pao/pueue-mini/control.sqlite3` es la autoridad.
+Una transacción `synchronous=FULL`/`fullfsync=ON` guarda deseo, revisión y recibo
+antes de toda RPC. El ajuste dura **hasta otro cambio manual**, sin vencimiento.
+Los overrides incluyen actor fijo `Felix`, fecha e ID, y deshacer restaura los
+overrides anteriores, no sólo el número. El índice de ID/digest/resultado no se poda.
+Una revisión/vector distinto impide deshacer. El ensayo devuelve before/target,
+subidas, bajadas y argv previsto sin escribir, recuperar ni cambiar cuotas.
+
+La guardia existente de 60 s también reconcilia el deseo: reducciones primero,
+verificación de cada RPC y después aumentos. No hay otro timer o recuperador.
+Un fallo ofrece `partial` con observado/deseado, o `unknown` cuando no se puede
+leer el resultado; consultar el mismo recibo, sin enviar otra acción. El siguiente
+tick converge al deseo aceptado incluso con acciones nuevas apagadas. Se mantienen
+la histéresis y la escalera de `rapidas` (#118).
+
+El canal del panel espera hasta 1 s por `control.lock`: un tick breve de la
+guardia o del snapshot puede terminar antes de atender el ajuste. Si vence sin
+entrar, `slots` y `undo` devuelven `rejected/lock_busy`, `effects=false`, sin
+escribir deseo ni recibos en el host. El rack guarda ese rechazo terminal y
+permite una acción nueva. Las capacidades muestran «El control está ocupado.
+Vuelve a intentarlo.», sin atribuir una pausa. Consultar un recibo con el candado
+ocupado conserva `unknown`; nunca reenvía la mutación.
+
+Sólo las RPC de `control.py rack` en la Mini tienen límite de 3 s. Las guardias
+del desk y de la Mini, y `aplicar`, esperan a Pueue como antes: un `status` o una
+pausa lentos no cancelan el cierre protector por ese límite del panel.
+
+La propiedad de pausas vive separada del perfil: `pressure`, `manual` y
+`ambiguous`. La intención de pausar se guarda antes de la RPC. La adopción importa
+`guardia-state.json`, conserva como manual cualquier pausa sin dueño verificable,
+y retiene referencias legacy/ajenas con motivo, sin asignarles cuotas ni abrirlas.
+Si observa un grupo Running, suelta inmediatamente su razón `pressure`, incluso
+en la banda de histéresis. Una pausa posterior de otro actor no le pertenece;
+las pausas que siguen siendo propias por presión conservan su admisión habitual.
+El JSON anterior se renombra a `guardia-state.imported.json`; deja de ser escribible
+como autoridad. Una lectura corrupta o una base desaparecida nunca aplica la tabla
+por defecto ni permite abrir grupos. `control.adopted` impide reinicializarla.
+
+La protección por presión sigue cerrando los grupos Running existentes aunque
+la autoridad de cuotas sea ilegible, falte un grupo, haya una cuota inválida o
+falle una RPC. Conserva el diagnóstico y el deseo; no crea grupos ni aplica el
+perfil por defecto. No abre mientras falle la reconciliación, y un fallo al
+pausar un grupo no impide proteger los demás. Se conserva la escalera #118.
+Si no puede guardar propiedad en SQLite, una marca durable
+`pause-GRUPO.manual` retiene esa pausa como manual incluso después de reparar
+la autoridad. La marca no asigna cuotas ni concede permiso para abrir; sólo
+`control.py reanudar GRUPO --host mini`, con reconciliación y sensores frescos,
+la retira. No borrar estas marcas para recuperar admisión automáticamente.
+
+La generación se identifica con el `pid_path` configurado, su fecha y la identidad
+`ps` del PID concreto. No se buscan ni terminan procesos por nombre. Tras reiniciar
+`pueued`, se reponen cuotas, pero las pausas observadas quedan ambiguas y retenidas.
+**No se promete reapertura automática ni recuperación de tareas tras reboot**:
+`restart_queue=false`. Para resolver una pausa de un grupo administrado, Felix
+comprueba la causa por SSH y usa, por ejemplo:
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar suites --host mini
+```
+
+El comando reconcilia primero, exige presión fresca baja y vuelve a verificar
+vector/generación antes de admitir. No hay botón de reanudación en el panel.
+`pausar suites --host mini` toma propiedad manual antes de la pausa.
+
+### Instalar en la Mini (pasos; no forman parte de las pruebas)
+
+1. Desde el checkout verificado **en la Mini**, para la primera adopción comprobar
+   el perfil vivo 3/1/3,
+   Pueue estándar 4.0.4 y el `pid_path` de su configuración. El valor predeterminado
+   es `~/Library/Application Support/pueue/pueue.pid`; si la instalación lo
+   personaliza, añadir `--pid-file /ruta/configurada/pueue.pid` en ambos comandos.
+   No modificar la configuración de Pueue para ajustarla a esta suposición.
+2. Preparar copia de seguridad del controlador/plist anteriores y del estado de
+   guardia, con la guardia detenida o bajo `control.lock`. No copiar una SQLite
+   abierta con `cp`: usar la API SQLite `backup` bajo ese candado.
+3. Revisar el plan y luego ejecutar:
+
+   ```sh
+   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --cuotas --seco
+   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --cuotas
+   ```
+
+   El modo `--seco` sólo imprime el plan; no ejecuta el preflight. Al instalar,
+   el preflight de configuración/perfil ocurre antes de bootout o escrituras.
+   Después se bloquean sólo las cuotas con `slots.disabled`, se descarga la guardia,
+   se espera su candado, se adopta/importa y se reemplaza atómicamente el controlador.
+   Sólo tras `bootstrap` se retira el switch creado por esa instalación; uno anterior
+   se conserva. Las reinstalaciones detectan la autoridad ya adoptada aunque se
+   omita `--cuotas`, y conservan sus ajustes/recibos. No instala ni reinicia
+   `pueued`, ni cambia sus LaunchAgents.
+4. Instalar después el rack actualizado (`fleet/rack/instalar.sh`). Verificar
+   capacidades y ensayo por el canal existente. Leer también la guía del rack.
+   Si un intento falló, **conservar** SQLite, marcador y switch; reinstalar la misma
+   versión. Si el switch era del intento fallido, quitarlo a mano sólo después de
+   verificar guardia cargada, deseo legible y vector reconciliado. Nunca re-adoptar
+   una base ausente o corrupta: restaurar una copia verificada bajo el candado.
+
+### Revertir sin perder la intención de Felix
+
+Deshacer con el recibo original mientras la revisión/vector sigan iguales devuelve
+exactamente los valores y overrides anteriores; no reduce la revisión ni borra la
+auditoría. Para apagar esta entrega, crear `slots.disabled` en el directorio Mini:
+se apagan capacidades/cuotas nuevas, y siguen lectura, cancelación y reconciliación.
+Se puede restaurar la versión anterior del rack manteniendo **este controlador y
+su guardia**. No devolver la guardia antigua ni borrar SQLite mientras haya deseo
+durable: `desinstalar` lo rechaza antes de bootout. Una retirada completa requiere
+migrar explícitamente propiedad y deseo; no la simula abriendo grupos directamente.
+
+Canario de instalación, sólo supervisado por Felix: sin alerta, grupo vacío con
+cuota ≥2, guardar before completo y ensayar. Con tope lleno, bajar `suites 3→2`
+y **deshacer inmediatamente ese recibo** (`2→3`); comprobar valores y overrides
+originales. Así se ejercitan bajada, subida y undo sin dejar un override nuevo
+para el mismo número. Cada envío usa revisión/vector recién confirmados. Si se
+intercala otro ajuste, el undo estricto se rechaza: no encadenar undos antiguos
+ni forzar una restauración. Ante unknown, consultar el mismo ID, nunca lanzar la
+inversa a ciegas. Las pruebas del repositorio usan exclusivamente dobles y un
+daemon privado, sin este canario productivo.
+
+El guion `tests/private_slots.py --run-private` admite Mini y desk únicamente
+dentro de `remote-run`, con Pueue estándar y directorio/configuración propios.
+En Linux usa `~/.local/bin/{pueue,pueued}`; admite rutas explícitas con
+`--pueue` y `--pueued`. Comprueba tanto pérdida de `parallel` sin guardado como
+persistencia tras una operación guardadora y reconciliación en ambos casos.

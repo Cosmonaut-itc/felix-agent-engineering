@@ -19,7 +19,7 @@ class JournalRegressions(unittest.TestCase):
     fake_executor = T.ActionsTests.fake_executor
 
     def test_b2_open_action_blocks_other_id_and_capabilities_after_restart(self):
-        for status in accion.OPEN:
+        for status in accion.CANCEL_OPEN:
             with self.subTest(status=status):
                 self.response = status
                 self.actions.post(request())
