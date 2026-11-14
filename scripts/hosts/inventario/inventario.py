@@ -17,6 +17,8 @@ import time
 
 DIA = 86400
 REGLAS = {'copiaDias': 7, 'corridaDias': 30, 'ventanaInicioS': 120}
+# Claves que remote-run de Bodega escribe antes de cmd=; cualquier otra vuelve dudoso el registro.
+CLAVES_META = ('src', 'host', 'mirror', 'sub', 'carril', 'etiqueta', 'carril_origen', 'tope_min', 'silencio_min')
 
 
 def consultar_inicio(pid):
@@ -90,7 +92,7 @@ def espejo(ruta):
     # cmd puede ser multilínea: remote-run lo escribe literalmente al final.
     for linea in texto.splitlines():
         clave, separador, valor = linea.partition('=')
-        if not separador or clave in campos or clave not in ('src', 'host', 'mirror', 'sub'):
+        if not separador or clave in campos or clave not in CLAVES_META:
             raise ValueError('meta mal formado')
         campos[clave] = valor
     mirror = campos.get('mirror', '')

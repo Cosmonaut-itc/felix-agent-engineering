@@ -33,8 +33,11 @@ El motivo es «artefactos de preparación; runner no transferido; sin identidad
 de ejecución». Su edad usa el mtime; sólo es borrable con más de 30 días.
 Un lock que la señale sigue protegido como «preparación reconocida».
 
-Un `meta` mal formado o symlink en un registro lo vuelve dudoso. Si no se
-puede asociar una corrida viva o dudosa a una copia, todas las copias que no
+Antes de `cmd=`, `meta` admite sólo `src`, `host`, `mirror`, `sub`, `carril`,
+`etiqueta`, `carril_origen`, `tope_min` y `silencio_min`, una vez cada una:
+las que escribe el remote-run de Bodega. Otra clave o una repetida lo vuelve
+mal formado. Un `meta` mal formado o symlink en un registro lo vuelve dudoso.
+Si no se puede asociar una corrida viva o dudosa a una copia, todas las copias que no
 tengan evidencia de uso vivo se protegen por dueño desconocido. También se
 protegen cuando no se puede listar `runs`. Es una extensión conservadora:
 un registro ilegible no debe hacer desaparecer una posible asociación.
