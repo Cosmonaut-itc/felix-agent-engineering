@@ -261,10 +261,15 @@ def paso(estado, observacion):
         else:
             decision = (admision(vista, observacion) if vista else
                         Retenido(Motivo.INCIERTO))
-            entrada = replace(entrada, admision=decision,
-                              admitida=(entrada.admitida if entrada.admitida is not None
-                                        else observacion.ahora)
-                              if isinstance(decision, Admitido) else None,
+            if isinstance(decision, Admitido):
+                admitida = (entrada.admitida if entrada.admitida is not None
+                            else observacion.ahora)
+            elif decision == Retenido(Motivo.INCIERTO):
+                # A failed read is not negative evidence: keep window and FIFO place.
+                admitida = entrada.admitida
+            else:
+                admitida = None
+            entrada = replace(entrada, admision=decision, admitida=admitida,
                               solo=bool(vista and (vista.sensible or vista.alto_riesgo)))
         entradas.append(entrada)
     estado = replace(estado, entradas=tuple(entradas))

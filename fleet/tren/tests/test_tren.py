@@ -452,6 +452,28 @@ class ObservadorTests(Aislado):
         self.checks = [{"check_runs": []}]
         self.assertEqual(self.decision(), Retenido(Motivo.CI))
 
+    def test_timeout_conserva_ventana(self):
+        e = Estado(REPO, (Entrada(self.entrega, 1),))
+        e, _ = paso(e, self.observador().observar(e, 100))
+        original = self.ejecutar
+
+        def con_timeout(args, **kwargs):
+            if args[0] == "gh" and "/files?" in args[4]:
+                raise subprocess.TimeoutExpired(args, 60)
+            return original(args, **kwargs)
+        e, _ = paso(e, GitHubGit(self.config, ejecutar=con_timeout).observar(e, 200))
+        self.assertEqual(e.entradas[0].admision, Retenido(Motivo.INCIERTO))
+        self.assertEqual(e.entradas[0].admitida, 100)
+        e, efectos = paso(e, self.observador().observar(e, 3700))
+        self.assertEqual(len(e.trenes), 1)
+
+    def test_rechazadas_no_se_observan(self):
+        e = Estado(REPO, tuple(Entrada(replace(self.entrega, head=format(i, "040x")), i,
+                                       Rechazado(Motivo.HEAD)) for i in range(1, 51)))
+        obs = self.observador().observar(e, 100)
+        self.assertEqual(obs.prs, ())
+        self.assertEqual(sum(a[0] == "gh" for a in self.llamadas), 1)
+
     def test_ci_vacio_declarado_admite(self):
         self.checks = [{"check_runs": []}]
         self.config["checks_esperados"] = []

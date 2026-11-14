@@ -8,7 +8,7 @@ import subprocess
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import Observacion, VistaPR
+from dominio import Observacion, Rechazado, VistaPR
 
 
 class Observador(Protocol):
@@ -165,6 +165,9 @@ class GitHubGit:
             raise ValueError("main inválido")
         vistas = []
         for entrada in estado.entradas:
+            # Rejected entries are final; the ledger keeps them, GitHub is not re-read.
+            if isinstance(entrada.admision, Rechazado):
+                continue
             try:
                 vistas.append(self.vista(entrada.entrega))
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
