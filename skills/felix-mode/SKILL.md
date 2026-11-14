@@ -356,10 +356,17 @@ que demuestra:
 
 En un repo inscrito, sigue [Entrega al tren](references/merge.md#entrega-al-tren).
 El tren es el único camino a `main`. El ticket entrega con APTO, recibo de
-la dirigida y watch registrado, y termina su turno. Ante un comentario de
-rojo del tren, corrige, corre la dirigida y la ronda de revisión que
-corresponda, y entrega el head nuevo. Un PR de CI, gobierno o lockfile queda
-en merge-ready hasta que Felix autorice ese head; después viaja solo.
+la dirigida y watch registrado. Después corre `pao-tren tick --repo <r> --seco`
+y `pao-tren estado --repo <r>`. Si su PR quedó `Retenido` o `Rechazado`,
+resuelve el motivo o se lo informa a Felix antes de terminar el turno.
+Ante un comentario de rojo del tren, corrige, corre la dirigida y la ronda
+de revisión que corresponda, y entrega el head nuevo. Un PR de CI, gobierno,
+lockfile o alto riesgo queda en merge-ready hasta que Felix autorice ese
+head con AskUserQuestion. Con su OK, añade el head a `heads_autorizados` del
+repo en `${XDG_STATE_HOME:-~/.local/state}/pao-tren/config.json`, anota la
+cita de la decisión en el registro de su programa y después entrega. El PR
+viaja solo. [Entrega al tren](references/merge.md#entrega-al-tren) detalla
+la configuración y la comprobación de admisión.
 
 En un repo no inscrito, al abrir el PR de tu unidad, continúa hasta mergearlo con el
 [procedimiento de merge](references/merge.md), sin esperar otro pedido.

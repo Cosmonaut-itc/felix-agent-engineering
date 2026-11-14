@@ -26,9 +26,14 @@ en un programa. El tren es el único camino a `main`.
    recibo limpio de la dirigida y CI verde. La base del PR es `main`.
    En alto riesgo exige también **Verificado**. La suite completa la corre
    el tren sobre C, el commit candidato del lote.
-2. Si el PR toca CI, gobierno o lockfiles, queda en merge-ready hasta que
-   Felix autorice ese head. Después viaja solo. Los demás límites de
-   autorización del archivo siguen vigentes.
+2. Si el PR toca CI, gobierno o lockfiles, o es de alto riesgo, queda en
+   merge-ready hasta que Felix autorice ese head con AskUserQuestion.
+   Con su OK, añade el SHA40 a `repos["<owner/repo>"].heads_autorizados` en
+   `${XDG_STATE_HOME:-~/.local/state}/pao-tren/config.json`, la configuración
+   privada del tren. Conserva las demás claves y autorizaciones. Anota el
+   head y la cita de la decisión en el registro de tu programa. Después
+   entrega; el PR viaja solo. Los demás límites de autorización del archivo
+   siguen vigentes.
 3. Registra `watch_pull_request` antes de entregar. Ejecuta:
 
    ```sh
@@ -46,8 +51,17 @@ en un programa. El tren es el único camino a `main`.
 
    En alto riesgo el veredicto añade `"verificado":"Verificado"`. Un formato
    distinto deja la entrega retenida.
-   Guarda el recibo `estado=custodia` y termina el turno con el watch
-   registrado. Si la entrega falla, resuelve su motivo antes de terminar.
+   Guarda el recibo `estado=custodia`. Después ejecuta:
+
+   ```sh
+   pao-tren tick --repo <owner/repo> --seco
+   pao-tren estado --repo <owner/repo>
+   ```
+
+   Comprueba la admisión de tu PR y head en sombra, separada de la custodia.
+   Si quedó `Retenido` o `Rechazado`, resuelve el motivo o infórmaselo a
+   Felix antes de terminar el turno. Si la entrega falla, resuelve su motivo
+   o informa el bloqueo. Termina con el watch registrado.
 4. Ante un comentario de rojo del tren, lee el lote, B, C, unidad, firma,
    conjunto causal y comando de reproducción. Corrige con prueba dirigida,
    pasa la ronda de revisión correspondiente y entrega el head nuevo con
