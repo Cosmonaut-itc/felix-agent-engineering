@@ -15,7 +15,8 @@ def run(*argv):
     return subprocess.run(list(argv), check=True, capture_output=True, text=True)
 
 
-def install(home, pid_file, control):
+def preflight(home, pid_file, control):
+    """Read-only gates shared by --seco and installation; no lock or mkdir."""
     directory = home / '.local/state/pao/pueue-desk'
     library = home / '.local/lib/pao-pueue-desk'
     target = library / 'control.py'
@@ -30,7 +31,21 @@ def install(home, pid_file, control):
         observed, _ = engine.observed()
         if observed != control.desk_profile(engine.clock()):
             raise ValueError('El desk no coincide con la tabla vigente; no se instala')
-        control.mini_generation(pid_file)
+    control.mini_generation(pid_file)
+    return engine
+
+
+def install(home, pid_file, control, dry_run=False):
+    engine = preflight(home, pid_file, control)
+    if dry_run:
+        print('Comprobado (lectura): controlador existente, timers activos, autoridad o tabla vigente y PID de pueued.')
+        print('SECO, pendiente: apagar cuotas nuevas; detener timers/oneshots; bajo control.lock publicar, '
+              'adoptar/importar o conservar SQLite/recibos; reconciliar; reactivar timers y retirar sólo '
+              'el switch creado aquí. No reiniciar pueued.')
+        return
+    directory = engine.directory
+    library = home / '.local/lib/pao-pueue-desk'
+    target = library / 'control.py'
     directory.mkdir(parents=True, exist_ok=True)
     switch = directory / 'slots.disabled'
     enable_after = False
@@ -76,14 +91,9 @@ def main():
     parser.add_argument('--pid-file', required=True, type=Path, help='pid_path real configurado, no lo modifica')
     parser.add_argument('--seco', action='store_true')
     args = parser.parse_args()
-    if args.seco:
-        print('SECO: verificar timers, tabla vigente y PID; apagar cuotas nuevas; detener timers/oneshots; '
-              'bajo control.lock reemplazar control.py, adoptar/importar o conservar SQLite/recibos; '
-              'reconciliar; reactivar los mismos timers y retirar sólo el switch creado aquí. No reiniciar pueued.')
-        return
     spec = importlib.util.spec_from_file_location('desk_control_install', SOURCE / 'control.py')
     control = importlib.util.module_from_spec(spec); spec.loader.exec_module(control)
-    install(Path.home(), args.pid_file, control)
+    install(Path.home(), args.pid_file, control, dry_run=args.seco)
 
 
 if __name__ == '__main__':

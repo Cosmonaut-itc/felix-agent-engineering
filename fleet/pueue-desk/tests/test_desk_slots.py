@@ -8,6 +8,8 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import tempfile
+import threading
+from types import SimpleNamespace
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import patch
@@ -157,9 +159,133 @@ class DeskSlotsTests(DeskFixture):
         dry=self.request('ensayo-event-01',dry_run=True)
         self.assertEqual(self.engine.handle(dry)['status'],'conflict')
         self.assertEqual(self.fingerprint(),before)
-        self.assertEqual(self.engine.handle(stale)['status'],'conflict')
         self.assertEqual(self.p.calls,[])
         self.assertEqual(self.state()['overrides']['jale']['slots'],6)
+        self.assertEqual(self.engine.handle(stale)['status'],'conflict')
+        self.assertEqual(self.engine.view()['slots'],control.desk_profile(self.now))
+        self.assertEqual(self.state()['overrides'],{})
+
+    def foreign_status(self, tasks):
+        original = self.p.status
+        def status():
+            snapshot = original()
+            snapshot['tasks'] = copy.deepcopy(tasks)
+            return snapshot
+        return patch.object(self.p, 'status', side_effect=status)
+
+    def test_foreign_work_blocks_increases_but_allows_safe_reductions(self):
+        self.assertEqual(self.engine.handle(self.request())['status'], 'applied')
+        self.p.groups['ajeno']['parallel_tasks'] = 8
+        tasks = {'1': dict(group='ajeno', status={'Running': {}}, envs={'secret': 'never-publish'},
+                           command='never-publish')}
+        untouched = copy.deepcopy(self.p.groups['ajeno'])
+        with self.foreign_status(tasks):
+            view = self.engine.view()
+            self.p.calls.clear()
+            answer = self.engine.handle(self.request('foreign-up-0001', delta=1))
+            self.assertEqual((answer['status'], (answer.get('error') or {}).get('code'), answer.get('effects')),
+                             ('rejected', 'foreign_work', False))
+            self.assertEqual(view.get('foreign_work'), 1)
+            self.assertNotIn('never-publish', json.dumps(view))
+            self.assertEqual(self.p.calls, [])
+            down = self.engine.handle(self.request('foreign-down-01'))
+            self.assertEqual(down['status'], 'applied')
+            self.assertEqual(down['result']['observed']['jale'], 5)
+            undo = self.engine.handle(self.request('foreign-undo-01', undo_of='foreign-down-01'))
+            self.assertEqual((undo.get('error') or {}).get('code'), 'foreign_work')
+        self.assertEqual(self.p.groups['ajeno'], untouched)
+        self.assertEqual(self.engine.view().get('foreign_work'), 0)
+        self.assertEqual(self.engine.handle(self.request('foreign-gone-01', delta=1))['status'], 'applied')
+
+    def test_foreign_work_rechecked_before_recovery_increase(self):
+        self.set_desire(dict(control.desk_profile(self.now), jale=6, otros=3))
+        tasks = {}
+        original = self.p.parallel
+        def arriving(group, value):
+            original(group, value)
+            tasks['2'] = dict(group='default', status='Queued')
+        with self.foreign_status(tasks), patch.object(self.p, 'parallel', side_effect=arriving):
+            self.assertFalse(self.engine.reconcile())
+        self.assertEqual(self.p.calls, [('parallel', 'jale', 6)])
+        self.assertEqual(self.p.groups['otros']['parallel_tasks'], 2)
+        self.assertTrue(self.engine.view()['drift'])
+
+    def test_real_slots_recovers_missed_timer_before_judging_fresh_projection(self):
+        self.engine.handle(self.request())
+        self.now = utc('2026-11-14T14:00:00')
+        fresh = self.request('missed-timer-01')
+        self.p.calls.clear()
+        answer = self.engine.handle(fresh)
+        self.assertEqual(answer['status'], 'conflict')
+        self.assertEqual(self.engine.view()['slots'], control.desk_profile(self.now))
+        self.assertEqual(self.state()['overrides'], {})
+        self.assertFalse(self.engine.view()['drift'])
+        self.assertTrue(self.p.calls)
+        self.assertTrue(answer.get('effects'))
+        calls = copy.deepcopy(self.p.calls)
+        self.assertEqual(self.engine.handle(fresh), answer)
+        self.assertEqual(self.p.calls, calls)
+
+    def test_unadopted_cli_is_unsupported_but_lost_authority_stays_closed(self):
+        absent = self.root/'never-adopted'
+        caps = dict(schema=control.HOST_SCHEMA, op='capabilities')
+        status = dict(schema=control.HOST_SCHEMA, op='status', action_id='absent-000001')
+        request = self.request()
+        def invoke(body):
+            out = io.StringIO()
+            with patch.object(control, 'STATE_DIR', absent), patch.object(control, 'Pueue', return_value=self.p), \
+                 patch.object(control.sys, 'argv', ['control.py', 'rack', '--host', 'desk']), \
+                 patch.object(control.sys, 'stdin', io.TextIOWrapper(io.BytesIO(json.dumps(body).encode()))), redirect_stdout(out):
+                control.main()
+            return json.loads(out.getvalue())
+        before = self.fingerprint()
+        for body in (caps, request, dict(request, dry_run=True)):
+            answer = invoke(body)
+            self.assertEqual((answer['status'], (answer.get('error') or {}).get('code'), answer.get('effects')),
+                             ('unsupported', 'unsupported', False))
+        self.assertEqual(invoke(status)['status'], 'unknown')
+        self.assertEqual(self.fingerprint(), before)
+        self.assertFalse(absent.exists())
+        absent.mkdir()
+        for filename in ('control.adopted', 'control.sqlite3'):
+            marker = absent/filename
+            marker.write_bytes(b'corrupt-or-lost')
+            self.assertEqual(invoke(caps)['status'], 'recovery_error')
+            self.assertNotEqual(invoke(request)['status'], 'unsupported')
+            marker.unlink()
+        self.assertEqual(self.p.calls, [])
+
+    def test_expired_partial_never_becomes_terminal_before_new_table_verified(self):
+        r = self.pending()
+        self.now = utc('2026-11-14T14:00:00')
+        with patch.object(self.p, 'parallel', side_effect=OSError('still unavailable')):
+            self.assertFalse(self.engine.reconcile())
+        answer = self.status(r)
+        self.assertEqual(answer['status'], 'partial')
+        self.assertTrue(answer['result']['expired'])
+        self.assertEqual(answer['result']['desired'], control.desk_profile(self.now))
+        self.assertNotEqual(answer['result']['observed'], answer['result']['desired'])
+        self.assertTrue(self.engine.reconcile())
+        self.assertEqual(self.status(r)['status'], 'aborted')
+
+    def test_guard_crossing_event_in_fresh_sample_reconciles_before_opening(self):
+        self.engine.guard(dict(self.low, io=60))
+        self.p.calls.clear()
+        def sample(*a, **k):
+            self.now = utc('2026-11-14T14:00:00')
+            return self.low
+        original = self.p.call
+        def call(*args):
+            if args[0] == 'start':
+                self.assertEqual({g:self.p.groups[g]['parallel_tasks'] for g in control.GROUP_LIMITS},
+                                 control.desk_profile(self.now))
+            return original(*args)
+        with patch.object(control, 'pressure', side_effect=sample), patch.object(self.p, 'call', side_effect=call):
+            with self.assertRaises(ValueError):
+                self.engine.guard(self.low)
+            self.assertFalse(any(c[0] == 'start' for c in self.p.calls))
+            self.engine.guard(self.low)
+        self.assertEqual(self.engine.view()['slots'], control.desk_profile(self.now))
 
     def test_ensayo_valid_plan_has_expiry_but_no_receipts_or_effects(self):
         before=self.fingerprint()
@@ -334,6 +460,90 @@ class DeskSlotsTests(DeskFixture):
 
 
 class DeskInstallTests(DeskFixture):
+    def test_seco_runs_readonly_preflight_and_rejects_invalid_adoption(self):
+        spec = importlib.util.spec_from_file_location('install_desk_seco', Path(control.__file__).with_name('install-desk.py'))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        home = self.root/'seco-home'
+        library = home/'.local/lib/pao-pueue-desk'; library.mkdir(parents=True)
+        target = library/'control.py'; target.write_text('# old\n')
+        directory = home/'.local/state/pao/pueue-desk'
+        Original = control.MiniControl
+        factory = lambda p,d,**kw: Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
+        commands = []
+        loader = SimpleNamespace(loader=SimpleNamespace(exec_module=lambda m: None))
+        def invoke():
+            with patch.object(installer.importlib.util, 'spec_from_file_location', return_value=loader), \
+                 patch.object(installer.importlib.util, 'module_from_spec', return_value=control), \
+                 patch.object(installer.Path, 'home', return_value=home), \
+                 patch.object(control.sys, 'argv',
+                              ['install-desk.py', '--pid-file', str(self.root/'pid'), '--seco']):
+                with redirect_stdout(io.StringIO()) as out:
+                    installer.main()
+                return out.getvalue()
+        with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
+             patch.object(control, 'mini_generation', return_value=self.gen) as pid, \
+             patch.object(installer, 'run', side_effect=lambda *a:commands.append(a)) as run:
+            for invalid in ('table', 'pid', 'timer', 'corrupt', 'lost'):
+                with self.subTest(invalid=invalid):
+                    self.p.groups['jale']['parallel_tasks'] = 6 if invalid == 'table' else 7
+                    pid.side_effect = ValueError('wrong pid') if invalid == 'pid' else None
+                    run.side_effect = subprocess.CalledProcessError(3, ['fake-systemctl']) if invalid == 'timer' else lambda *a:commands.append(a)
+                    if invalid in ('corrupt', 'lost'):
+                        directory.mkdir(parents=True, exist_ok=True)
+                        (directory/('control.sqlite3' if invalid == 'corrupt' else 'control.adopted')).write_bytes(b'invalid')
+                    before = self.fingerprint()
+                    with self.assertRaises((ValueError, sqlite3.Error, subprocess.SubprocessError)):
+                        invoke()
+                    self.assertEqual(self.fingerprint(), before)
+                    for f in directory.glob('*'):
+                        f.unlink()
+            self.p.groups['jale']['parallel_tasks'] = 7
+            pid.side_effect = None; run.side_effect = lambda *a:commands.append(a)
+            commands.clear()
+            before = self.fingerprint()
+            output = invoke()
+            self.assertEqual(commands, [('systemctl','--user','is-active',n) for n in installer.TIMERS])
+            pid.assert_called_with(self.root/'pid')
+            self.assertIn('Comprobado (lectura)', output)
+            self.assertIn('pendiente:', output)
+            self.assertEqual(self.fingerprint(), before)
+            self.assertEqual(self.p.calls, [])
+
+    def test_installer_retires_old_worker_waiting_before_lock_before_adoption(self):
+        spec = importlib.util.spec_from_file_location('install_desk_worker', Path(control.__file__).with_name('install-desk.py'))
+        installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
+        home = self.root/'worker-home'; library = home/'.local/lib/pao-pueue-desk'; library.mkdir(parents=True)
+        target = library/'control.py'; target.write_text('# old\n')
+        directory = home/'.local/state/pao/pueue-desk'
+        waiting, retired, release = threading.Event(), threading.Event(), threading.Event()
+        effects = []
+        def old_worker():
+            waiting.set(); release.wait(3)
+            if not retired.is_set():
+                with control.locked(directory):
+                    effects.append('old apply_mode')
+        worker = threading.Thread(target=old_worker); worker.start()
+        self.assertTrue(waiting.wait(1))
+        Original = control.MiniControl
+        factory = lambda p,d,**kw: Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
+        def run(*argv):
+            if argv[2] == 'stop':
+                self.assertEqual(argv[3:], (*installer.TIMERS, *installer.SERVICES))
+                self.assertEqual(target.read_text(), '# old\n')
+                self.assertFalse(control.has_authority(directory))
+                self.assertTrue((directory/'slots.disabled').exists())
+                retired.set(); release.set(); worker.join(2)
+                self.assertFalse(worker.is_alive())
+        try:
+            with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
+                 patch.object(control, 'mini_generation', return_value=self.gen), patch.object(installer, 'run', side_effect=run):
+                installer.install(home, self.root/'pid', control)
+        finally:
+            release.set(); worker.join(3)
+        self.assertTrue(retired.is_set())
+        self.assertEqual(effects, [])
+        self.assertTrue(control.has_authority(directory))
+
     def test_legacy_deploy_withdraw_cannot_discard_adopted_desire(self):
         scope=dict(control.__dict__,STATE_DIR=self.engine.directory,FILES={})
         exec(Path(control.__file__).with_name('remote.py').read_text(),scope)

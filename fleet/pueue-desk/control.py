@@ -420,7 +420,11 @@ class MiniControl:
         return False
 
     def observed(self):
-        groups = self.pueue.status()['groups']
+        snapshot = self.pueue.status()
+        groups = snapshot['groups']
+        # Publish only a count, never task identities, commands or environments.
+        self.foreign_work = (sum(task['group'] not in self.profile for task in live_tasks(snapshot))
+                             if self.host == 'desk' else 0)
         vector = {g: groups[g]['parallel_tasks'] for g in self.profile}
         validate_vector(vector, self.host)
         if any(groups[g]['status'] not in ('Running', 'Paused') for g in self.profile):
@@ -496,6 +500,7 @@ class MiniControl:
             slots=enabled, undo=enabled, dry_run=enabled, mode=False, reorder=False, restart_queue=False),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
+            **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
             reason=None if enabled else 'Los ajustes de lugares están apagados en este host.',
             recovery_pending=bool(pending) or generation != state['generation'],
             pause_reasons=state['reasons'], pending_actions=[a['request']['action_id'] for a in pending], **extra)
@@ -510,12 +515,16 @@ class MiniControl:
                     'invalid_request': 'Ajuste inválido: cada grupo admite 1..8 y se respeta el tope del modo.',
                     'recovery_error': 'Estado de control ilegible o no disponible. Se conserva la pausa.',
                     'disabled': 'Los ajustes de lugares están apagados en este host.',
+                    'foreign_work': 'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.',
                     'unsupported': 'Falta actualizar el control de este host.'}
         return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
                     error=dict(code=code, message=messages[code]) if code else None, **fields)
 
     def handle(self, request):
         validate_host_request(request, self.host)
+        if self.host == 'desk' and not has_authority(self.directory):
+            return self.reply(request, 'unknown' if request['op'] == 'status' else 'unsupported',
+                              'unsupported', effects=False)
         try:
             response = self._handle(request)
             if request['op'] in ('slots', 'undo') and not request['dry_run']:
@@ -549,6 +558,15 @@ class MiniControl:
                         else json.loads(row[1])['response'])
             if self.disabled():
                 return self.reply(request, 'rejected', 'disabled', effects=False)
+            if self.host == 'desk' and op == 'slots' and not request['dry_run']:
+                stored = self.state(db)
+                if self.resolve(stored) != stored:
+                    # A missed timer is recovered by a real ordinary click too.
+                    # Undo and all pure entries deliberately bypass this path.
+                    self.reconcile()
+                    view = self.view()
+                    return self.reply(request, 'conflict', 'stale_state', control=view, effects=True,
+                                      schedule_recovery=view['schedule_event'])
             state = self.resolve(self.state(db))
             if op == 'undo':
                 prior = db.execute('SELECT body FROM host_actions WHERE action_id=?', (request['undo_of'],)).fetchone()
@@ -583,6 +601,8 @@ class MiniControl:
                 validate_target(before, target, self.host, self.cap(state))
             except ValueError:
                 return self.reply(request, 'rejected', 'invalid_request', effects=False)
+            if self.foreign_work and any(target[g] > before[g] for g in target):
+                return self.reply(request, 'rejected', 'foreign_work', control=self.view(), effects=False)
             plan = slot_plan(before, target)
             expires = schedule_at(state['schedule_event'])[1] if self.host == 'desk' and overrides else None
             if self.resolve(state) != state:
@@ -634,6 +654,8 @@ class MiniControl:
             for g, n in slot_plan(observed, state['desired']):
                 if self.resolve(state) != state:
                     return self.reconcile()
+                if n > observed[g] and self.foreign_work:
+                    raise ValueError('Trabajo fuera del reparto; aumento retenido')
                 self.pueue.parallel(g, n)
                 observed, _ = self.observed()
                 if observed[g] != n or self.generation(state) != generation:
@@ -831,13 +853,16 @@ def main():
             request = json.loads(raw, object_pairs_hook=unique)
             validate_host_request(request, args.host)
             # The lock is installed by adoption; even an ensayo cannot create it.
-            with (directory / 'control.lock').open('r') as handle:
-                if wait_rack_lock(handle):
-                    response = engine.handle(request)
-                else:
-                    status = ('rejected' if request['op'] in ('slots', 'undo') else
-                              'unknown' if request['op'] == 'status' else 'busy')
-                    response = engine.reply(request, status, 'lock_busy', effects=False)
+            if args.host == 'desk' and not has_authority(directory):
+                response = engine.handle(request)
+            else:
+                with (directory / 'control.lock').open('r') as handle:
+                    if wait_rack_lock(handle):
+                        response = engine.handle(request)
+                    else:
+                        status = ('rejected' if request['op'] in ('slots', 'undo') else
+                                  'unknown' if request['op'] == 'status' else 'busy')
+                        response = engine.reply(request, status, 'lock_busy', effects=False)
         except (OSError, ValueError, TypeError, sqlite3.Error):
             request = request if type(request) is dict else {}
             uncertain = request.get('op') == 'status' or request.get('op') in ('slots', 'undo') and request.get('dry_run') is False

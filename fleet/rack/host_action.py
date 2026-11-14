@@ -86,6 +86,10 @@ def control(value, host='mini'):
         raise ValueError('Pausas inválidas')
     result['pause_reasons'] = reasons
     if host == 'desk':
+        foreign = value.get('foreign_work', 0)
+        if type(foreign) is not int or foreign < 0:
+            raise ValueError('Trabajo ajeno inválido')
+        result['foreign_work'] = foreign
         event, next_event, expires = value.get('schedule_event'), value.get('next_event'), value.get('expires_at')
         if (type(event) not in (int, float) or type(next_event) not in (int, float)
                 or not 0 < event < next_event or next_event - event not in (9*3600, 15*3600)
@@ -115,7 +119,16 @@ def sanitize(request, response, op):
         wire['schema'] = 'rack-host-control@1'
         body = json.dumps(dict(host=request['host'], request=wire), sort_keys=True, separators=(',', ':'), ensure_ascii=True)
         digest = hashlib.sha256(body.encode()).hexdigest()
-        if response.get('receipt_digest') != digest or status != 'aborted' and response.get('effects') is not False:
+        # An ordinary desk click may recover the schedule before rejecting its
+        # vector. It is terminal only with its bound receipt and explicit event.
+        event = response.get('schedule_recovery')
+        scheduled = (request['host'] == 'desk' and request['op'] == 'slots' and request['dry_run'] is False
+                     and status == 'conflict' and (response.get('error') or {}).get('code') == 'stale_state'
+                     and response.get('effects') is True and type(event) in (int, float))
+        if scheduled:
+            view = control(response.get('control'), 'desk')
+            scheduled = view['status'] == 'ok' and event == view['schedule_event']
+        if response.get('receipt_digest') != digest or status != 'aborted' and response.get('effects') is not False and not scheduled:
             raise ValueError('Rechazo sin recibo vinculado y sin efectos')
         answer['receipt_verified'] = True
     error = response.get('error')
@@ -128,6 +141,7 @@ def sanitize(request, response, op):
                     idempotency_conflict='Ese ID ya pertenece a otra petición.',
                     recovery_error='Estado de control no disponible. Se conserva la pausa.',
                     disabled='Los ajustes de lugares están apagados en este host.',
+                    foreign_work='Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.',
                     unsupported='Falta actualizar el control de este host.')
     if error is not None:
         code = error.get('code') if type(error) is dict else None

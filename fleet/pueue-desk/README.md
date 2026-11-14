@@ -296,6 +296,9 @@ jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3 (día/noche).
 Suman **14/18**. `pg5434` fue retirado; `default` queda fuera del reparto y sin ±.
 No se absorben grupos ajenos en el perfil; su propiedad de pausa se conserva
 por separado, incluso cuando el grupo ya no existe.
+Si aparece trabajo no terminal fuera del reparto (incluido `default`), se publica
+sólo su conteo `foreign_work`: no se exponen tareas ni entornos. Bloquea aumentos
+en ±, undo y recuperación; permite reducciones seguras, sin tocar el grupo ajeno.
 
 Cada grupo admite 1..8 lugares, contando también las cuotas de grupos pausados.
 El host coteja revisión, hash de tabla/horarios, generación y vector vivo completo.
@@ -308,11 +311,14 @@ Un ± dura **hasta el próximo evento estricto 05:00/14:00 UTC**, no hasta que u
 timer consiga ejecutarse ni hasta que cambie el nombre del modo. Se guarda la
 identidad del evento y el vencimiento absoluto. Consulta y ensayo proyectan
 los eventos perdidos sin escribir ni recuperar. La guardia y `aplicar` retiran
-ajustes vencidos y reconcilian la tabla actual; una llamada anticipada a
+ajustes vencidos y reconcilian la tabla actual. Un `slots` real ordinario también
+recupera un evento perdido antes de juzgar el clic: responde conflicto y pide
+actualizar, indicando efectos de horario si hubo recuperación. Una llamada anticipada a
 `aplicar` conserva el ajuste vigente. Un undo tras el evento se rechaza sin RPC;
 antes del evento restaura números y metadatos originales, sin renovar vigencia.
-Una intención incompleta vencida termina `aborted/expired`, con la tabla actual
-como deseo, y jamás se presenta como el ajuste anterior aplicado.
+Una intención incompleta vencida conserva `partial`/`unknown` mientras falle la
+tabla nueva; termina `aborted/expired` sólo tras verificar su convergencia, y
+jamás se presenta como el ajuste anterior aplicado.
 
 `slots.disabled` apaga nuevos ± y undo; no impide consultar ni completar una
 intención aceptada. `maintenance` retiene también reconciliación/aperturas.
@@ -320,6 +326,9 @@ Una autoridad ilegible/ausente con marcador nunca habilita la tabla por defecto:
 no hay aperturas ni aumentos; la guardia conserva su cierre protector y #118.
 Tras perder `parallel`, se repone el deseo sin abrir pausas ambiguas. Esta
 unidad mantiene `mode`, `reorder` y `restart_queue` en false.
+Un controlador instalado que nunca fue adoptado responde `unsupported`, sin
+crear archivos; una consulta de recibo devuelve `unknown`. Un marcador o SQLite
+perdido/corrupto conserva el diagnóstico de recuperación, sin readoptar.
 
 ### Instalar U3.2 en un desk que ya tiene servicio y timers
 
@@ -337,8 +346,11 @@ Pasos para el operador, **no ejecutados por las pruebas**:
    /usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /ruta/configurada/pueue.pid
    ```
 
-   `--seco` sólo imprime el plan. La instalación comprueba perfil/autoridad antes
-   de detener nada; apaga cuotas nuevas, detiene los dos timers y espera sus
+   `--seco` y la instalación comparten el preflight de lectura: controlador
+   existente, ambos timers activos, autoridad válida o tabla vigente, y PID de
+   `pueued`. El ensayo no crea archivos y distingue lo comprobado de los pasos
+   pendientes. La instalación comprueba lo mismo antes de detener nada;
+   apaga cuotas nuevas, detiene los dos timers y espera sus
    oneshots, toma el candado, publica atómicamente el controlador y adopta/importa
    propiedad, o conserva la autoridad y sus recibos. Reconcilia, reactiva los
    mismos timers y retira sólo su propio switch. No reinicia `pueued`, no edita
@@ -362,6 +374,8 @@ controlador anterior sobre un deseo vigente. Una retirada completa exige una
 migración explícita de deseo/propiedad y queda fuera de U3.2.
 
 Prueba privada dirigida: `tests/private_slots.py --run-private --host desk`
-comprueba pérdida/reposición de `parallel`, guardado indirecto y aplicación de
-tabla de día con retiro de ajustes al evento (reloj inyectado, daemon stock real).
+comprueba pérdida/reposición de `parallel`, las entradas `aplicar` y `guardia`,
+retiro de ajustes al evento, undo vencido sin RPC tras perder el timer y
+recuperación de otro evento por un clic ordinario (reloj/sensores inyectados,
+daemon stock real).
 No encola tareas y siempre espera al PID exacto de su daemon al terminar.

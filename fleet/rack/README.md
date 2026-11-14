@@ -759,10 +759,21 @@ El desk ofrece los mismos controles −/+ y «Deshacer» que la Mini. Cada grupo
 admite 1..8 lugares y el tope es 14 de día / 18 de noche. Con el tope lleno,
 «+» explica que hay que quitar un lugar a otro grupo. Los grupos pausados
 consumen su cuota completa. El `default` del desk queda fuera del reparto.
+Su fila explica «Reservado · fuera del reparto». Si hay trabajo no terminal
+en grupos ajenos, el panel informa y bloquea «+», conservando «−» para reducir.
+El host aplica el mismo veto a aumentos y undo, también durante recuperación;
+el snapshot publica sólo un conteo saneado, sin identidades ni entornos.
 La tabla de `main` tiene seis grupos (incluido `otros=2`; `pg5434` ya retirado).
 
 Los ajustes del desk vencen en el próximo evento 05:00/14:00 UTC, aunque se
 pierda el timer. La nota y el toast indican «hasta las HH:mm», en México.
+Un clic real ordinario recupera primero el evento perdido y devuelve conflicto
+para actualizar; el undo vencido se rechaza antes de toda RPC. Consulta y ensayo
+proyectan la expiración sin recuperar ni escribir.
+Ese conflicto declara `effects=true` por la recuperación del horario. Si se
+pierde la respuesta, GET sólo lo acepta como terminal con digest vinculado y
+evento explícito igual al de la vista saneada; otros terminales con efectos
+siguen siendo inciertos.
 Deshacer restaura los valores y vencimientos exactos si no hubo otro cambio
 ni evento. Una respuesta demorada de un ajuste vencido no vuelve a confirmarlo
 ni ofrece undo. La Mini conserva su duración hasta otro cambio manual.
@@ -778,6 +789,8 @@ El snapshot incorpora la misma vista saneada de control en ambos hosts. No
 transmite entornos, rutas privadas ni metadatos de undo. Un host antiguo queda
 sin ± con «Falta actualizar el control de este host»; leer y cancelar siguen
 disponibles. `mode`, `reorder` y `restart_queue` continúan deshabilitados.
+Un desk sin primera adopción degrada igual, sin crear estado; perder una
+autoridad ya adoptada conserva el error de recuperación.
 
 Primero instalar la autoridad/guardia desk con
 [`install-desk.py`](../pueue-desk/install-desk.py), siguiendo el
@@ -787,8 +800,9 @@ rack de la Mini. Son pasos de despliegue; no forman parte de las pruebas.
 Verificar capacidades y ensayo antes de cualquier canario real.
 
 Ante parcial/unknown, consultar siempre el mismo ID: GET no repite la mutación.
-Un evento que sustituye una intención incompleta entrega `aborted/expired` y la
-tabla vigente; no ofrece undo. El candado ocupado devuelve `lock_busy` terminal
+Un evento que sustituye una intención incompleta conserva `partial`/`unknown`
+hasta verificar la tabla vigente, y entonces entrega `aborted/expired`, sin undo.
+El candado ocupado devuelve `lock_busy` terminal
 sin efectos si vence antes de entrar. Un `disabled` confirmado por GET también
 es terminal, mientras un 403 de autorización sigue cerrado.
 
