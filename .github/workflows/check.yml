@@ -27,6 +27,14 @@ jobs:
       - name: Test deskpolicy retirement (MacBook/Linux transport)
         if: runner.os != 'Windows'
         run: python3 -I -m unittest discover -s fleet/deskpolicy/tests -v
+      - name: Test pueue-vigilante
+        if: runner.os != 'Windows'
+        run: |
+          python3 -I -m unittest discover -s fleet/pueue-vigilante/tests -v
+          if [ "$RUNNER_OS" = macOS ]; then
+            /usr/bin/python3 --version
+            /usr/bin/python3 -I -m unittest discover -s fleet/pueue-vigilante/tests -v
+          fi
       - name: Validate and test
         run: |
           export HOME="$RUNNER_TEMP/pao-check-home"

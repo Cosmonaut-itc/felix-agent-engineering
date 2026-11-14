@@ -103,7 +103,10 @@ tocan CI, dependencias o la gobernanza de agentes.
 | Consejo | Sólo cuando pides «consejo», para un cambio o una decisión. | [Consejo](../skills/felix-mode/references/consejo.md): gpt-6.1-sol y opus-5.5 en `high`, y gpt-6-astra en `low`, con nota por ronda en el PR. |
 
 Cada hallazgo trae su probabilidad, su gravedad y el disparador real que
-lo produce, y una matriz decide si es critical, warning o nit. Lo
+lo produce, y una matriz decide si es critical, warning o nit. El revisor
+cita el llamador, el job o el dato que hoy produce el disparador. Sin esa
+cita la probabilidad es baja, y una carrera lo es mientras nada la genere.
+Lo de gravedad baja es nit aunque sea probable. Lo
 improbable de gravedad media o baja es nit y no bloquea. Lo grave e
 improbable bloquea en alto riesgo y en un cambio normal queda como riesgo
 asumido, con una línea en el cuerpo del PR. Cada critical o warning trae el

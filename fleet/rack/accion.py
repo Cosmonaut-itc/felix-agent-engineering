@@ -17,6 +17,9 @@ import time
 _spec = importlib.util.spec_from_file_location('rack_desk_channel', Path(__file__).with_name('desk_action.py'))
 desk_channel = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(desk_channel)
+_spec = importlib.util.spec_from_file_location('rack_host_channel', Path(__file__).with_name('host_action.py'))
+host_channel = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(host_channel)
 
 SCHEMA = 'rack-action@1'
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
@@ -33,7 +36,8 @@ ERRORS = {
     'manually_closed': 'Recibo cerrado a mano tras comprobar la corrida en Pueue. No acredita una cancelación.',
     'forbidden': 'No se pudo autorizar la petición.',
 }
-OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
+CANCEL_OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
+OPEN = (*CANCEL_OPEN, 'applying', 'partial')
 DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
              '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
              '-o', 'IdentityAgent=none', '-o', 'ConnectTimeout=10',
@@ -43,6 +47,8 @@ DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
              '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
              '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
 DESK_TIMEOUT = 40
+# Local cancel: the previous 10 s plus up to 2 s for the origin probe (desk_action.send).
+LOCAL_CANCEL_TIMEOUT = 12
 # Reserve for the journal, backed by an independent HTTP wait deadline.
 RECEIPT_RESERVE = 1
 MIN_TRANSPORT = 1
@@ -83,6 +89,8 @@ def expected(value):
 
 
 def validate(request):
+    if type(request) is dict and request.get('op') in host_channel.OPS:
+        return host_channel.validate(request)
     keys = {'schema', 'op', 'host', 'launcher', 'ref', 'expected'}
     if type(request) is not dict or request.get('op') not in ('cancel', 'capabilities'):
         raise ValueError()
@@ -147,6 +155,15 @@ def transport_reason(host, launcher):
     return None
 
 
+def host_http(response):
+    status = response['status']
+    if status == 'rejected':
+        return 403 if (response.get('error') or {}).get('code') == 'disabled' else 409
+    if status in ('conflict', 'unsupported', 'undo_conflict'):
+        return 409
+    return 202 if status in ('accepted', 'applying') else 200
+
+
 class Executor:
     """One transport seam, selected by host configuration; no caller-supplied argv."""
     def __init__(self, runner=subprocess.Popen, home=None, timeout=None):
@@ -154,20 +171,46 @@ class Executor:
         self.home = Path(home or pwd.getpwuid(os.getuid()).pw_dir)
 
     def __call__(self, host, launcher, request, timeout=None):
+        if launcher == 'host-control':
+            config = action_config(host.get('actions'))
+            if host['id'] == 'desk' and host['transport'] == 'ssh' and config['transport'] == 'ssh':
+                envelope = dict(schema='rack-desk-action@1', target='host-control', request=request)
+                argv = [a.replace('~/', str(self.home) + '/') for a in config['argv']]
+                code, response = desk_channel.exchange(argv, envelope, self.runner,
+                    {'HOME': str(self.home), 'PATH': '/usr/bin:/bin', 'TMPDIR': '/tmp'},
+                    min(DESK_TIMEOUT, timeout if timeout is not None else DESK_TIMEOUT))
+                if code != 0:
+                    raise ValueError('Respuesta inválida')
+                return response
+            if host['id'] != 'mini' or host['transport'] != 'local' or config['transport'] != 'local':
+                return host_channel.unavailable()
+            controller = self.home / '.local/lib/pao-pueue-mini/control.py'
+            if not controller.is_file():
+                return host_channel.unavailable()
+            code, response = desk_channel.exchange(
+                ['/usr/bin/python3', '-I', str(controller), 'rack', '--host', 'mini'], request,
+                self.runner, {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'},
+                min(10, timeout if timeout is not None else 10))
+            if code != 0:
+                raise ValueError('Respuesta inválida')
+            return response
         if transport_reason(host, launcher):
             raise ValueError('Transporte deshabilitado')
         config = action_config(host.get('actions'))
         remote = config['transport'] == 'ssh'
-        limit = self.timeout if self.timeout is not None else DESK_TIMEOUT if remote else 10
+        limit = (self.timeout if self.timeout is not None else DESK_TIMEOUT if remote
+                 else LOCAL_CANCEL_TIMEOUT if request.get('op') == 'cancel' else 10)
         timeout = limit if timeout is None else min(limit, timeout)
+        env = {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}
         if remote:
+            # The envelope never carries origin: the desk dispatcher negotiates it locally.
             argv = list(config['argv'])
             request = dict(schema='rack-desk-action@1', launcher=launcher, request=request)
+            code, response = desk_channel.exchange(argv, request, self.runner, env, timeout)
         else:
             controller = self.home / config['controllers'][launcher][2:]
             argv = ['/usr/bin/python3', '-I', str(controller)]
-        code, response = desk_channel.exchange(argv, request, self.runner,
-            {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}, timeout)
+            code, response = desk_channel.send(argv, request, self.runner, env, timeout)
         if code not in ((0,) if remote else (0, 2)):
             raise ValueError('Respuesta inválida')
         return response
@@ -190,7 +233,7 @@ def sanitize(request, response, op):
     if response.get('action_id') != request['action_id']:
         raise ValueError()
     status = response.get('status')
-    if status not in (*OPEN, 'cancelled', 'already_finished', 'rejected'):
+    if status not in (*CANCEL_OPEN, 'cancelled', 'already_finished', 'rejected'):
         raise ValueError()
     code, exit = None, None
     if status == 'rejected':
@@ -243,7 +286,7 @@ class Actions:
         if operation == 'post':
             validate(value)
             identity = dict(value)
-            if value['op'] == 'cancel':
+            if value['op'] in ('cancel', 'slots', 'undo') and not value.get('dry_run'):
                 with self.http_lock:
                     self.identities.setdefault(value['action_id'], identity)
         else:
@@ -310,6 +353,15 @@ class Actions:
         host = self.hosts.get(request['host'])
         if host is None:
             return 'Este host no tiene canal de escritura.'
+        if request['op'] in host_channel.OPS:
+            transport = action_config(host.get('actions'))['transport']
+            if not ((host['id'], host['transport'], transport) in (('mini','local','local'), ('desk','ssh','ssh'))):
+                return 'Falta actualizar el control de este host.'
+            payload = self.read()
+            current = next((h for h in payload['hosts'] if h['id'] == request['host']), None)
+            if not current or not current['fresh'] or current.get('age') is None or current['age'] > 45 or self.clock() - payload['now'] > 45:
+                return ERRORS['stale_state']
+            return None
         reason = transport_reason(host, request['launcher'])
         if reason:
             return reason
@@ -325,6 +377,24 @@ class Actions:
         return None
 
     def call(self, request, op, deadline):
+        if request['op'] in host_channel.OPS:
+            wire = {k: v for k, v in request.items() if k not in ('schema', 'host')}
+            wire.update(schema='rack-host-control@1', op='capabilities' if request['op'] == 'host_capabilities' else request['op'])
+            if op == 'status':
+                wire = dict(schema='rack-host-control@1', op='status', action_id=request['action_id'])
+            remaining = deadline - self.timer() - RECEIPT_RESERVE
+            if remaining < MIN_TRANSPORT:
+                return result(request, 'unknown')
+            try:
+                response = self.executor(self.hosts[request['host']], 'host-control', wire, timeout=min(10, remaining))
+                response = host_channel.sanitize(request, response, wire['op'])
+                verified = response.pop('receipt_verified', False)
+                if op == 'status' and response['status'] not in ('applied', 'applying', 'partial', 'unknown') and not verified:
+                    return result(request, 'unknown')
+                response.update(schema=SCHEMA, op=request['op'], host=request['host'])
+                return response if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')
+            except Exception:
+                return result(request, 'unknown')
         wire = dict(schema='rack-cancel@1', op=op, ref=request['ref'])
         if op != 'capabilities':
             wire['action_id'] = request['action_id']
@@ -333,7 +403,8 @@ class Actions:
         remaining = deadline - self.timer() - RECEIPT_RESERVE
         if remaining < MIN_TRANSPORT:
             return result(request, 'rejected', 'deadline') if op != 'status' else result(request, 'unknown')
-        timeout = min(DESK_TIMEOUT if request['host'] == 'desk' else 10, remaining)
+        timeout = min(DESK_TIMEOUT if request['host'] == 'desk'
+                      else LOCAL_CANCEL_TIMEOUT if op == 'cancel' else 10, remaining)
         try:
             answer = sanitize(request, self.executor(self.hosts[request['host']], request['launcher'], wire,
                                                      timeout=timeout), op)
@@ -379,6 +450,11 @@ class Actions:
         for body, answer in db.execute('SELECT request,response FROM actions WHERE action_id != ?',
                                        (request.get('action_id', ''),)):
             previous, response = json.loads(body), json.loads(answer)
+            if request['op'] in host_channel.OPS or previous['op'] in host_channel.OPS:
+                if (request['op'] in host_channel.OPS and previous['op'] in host_channel.OPS
+                        and response['status'] in OPEN and previous['host'] == request['host']):
+                    return 'Hay un ajuste pendiente en este host; consulta su recibo.'
+                continue
             if response['status'] in OPEN and all(previous[k] == request[k] for k in ('host', 'launcher', 'ref')):
                 return 'Esta corrida tiene una cancelación pendiente (' + previous['action_id'] + '); consulta su recibo.'
         return None
@@ -386,7 +462,7 @@ class Actions:
     def complete(self, request, op, done, deadline):
         try:
             response = self.call(request, op, deadline)
-            if op == 'status' and response['status'] == 'rejected':
+            if op == 'status' and response['status'] == 'rejected' and request['op'] not in host_channel.OPS:
                 response = result(request, 'unknown')
             try:
                 with self.journal(deadline):
@@ -395,7 +471,7 @@ class Actions:
             except TimeoutError:
                 # The committed intent still owns this ID and blocks a second cancel.
                 return 200, result(request, 'unknown')
-            return 200, response
+            return host_http(response) if request['op'] in host_channel.OPS else 200, response
         finally:
             # Event.set needs no journal lock. A failed commit can be reconciled by GET.
             done.set()
@@ -403,6 +479,15 @@ class Actions:
     def post(self, request, started=None):
         started = self.timer() if started is None else started
         validate(request)
+        if request['op'] == 'host_capabilities' or request.get('dry_run') is True:
+            reason = ERRORS['disabled'] if self.disabled() else self.eligible(request)
+            if reason:
+                response = result(request, 'unsupported', 'unsupported', reason=reason)
+                response['capabilities'] = host_channel.unavailable()['capabilities']
+                return host_http(response), response
+            response = self.call(request, 'capabilities' if request['op'] == 'host_capabilities' else request['op'],
+                                 started + request_budget(request['host']))
+            return host_http(response), response
         if request['op'] == 'cancel':
             with self.http_lock:
                 self.identities.setdefault(request['action_id'], dict(request))
@@ -423,7 +508,8 @@ class Actions:
                         if row:
                             if row[0] != digest:
                                 return 409, result(request, 'rejected', 'idempotency_conflict')
-                            return 200, json.loads(row[1])
+                            response = json.loads(row[1])
+                            return host_http(response) if request['op'] in host_channel.OPS else 200, response
                         intent = result(request, 'unknown')
                         db.execute('INSERT INTO actions (action_id,digest,request,response,created,updated) VALUES (?,?,?,?,?,?)',
                                    (request['action_id'], digest, body, json.dumps(intent), self.clock(), self.clock()))
@@ -462,7 +548,7 @@ class Actions:
                         return 404, result(identity, 'unknown')
                     request, response = map(json.loads, row[:2])
                     if response['status'] not in OPEN or self.active(action_id):
-                        return 200, response
+                        return host_http(response) if request['op'] in host_channel.OPS else 200, response
                     if request['host'] == 'desk':
                         now = self.clock()
                         interval = 2 if now - row[2] < 60 else 30

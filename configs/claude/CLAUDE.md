@@ -62,12 +62,19 @@ Roles de pstack con modelo Claude, generados desde el routing:
 
 La MacBook de Felix sólo edita código y sirve Metro. Gates, pruebas, builds,
 contenedores, bases de datos y servidores corren en la Mac Mini o en Felix
-DESKTOP, como diga el `AGENTS.md` del repositorio. Si no lo dice, una suite
-completa o una corrida de 15 minutos o más va a Felix DESKTOP por el lanzador
-con admisión del repositorio (`scripts/mini/run.sh --entorno desk` en Hasito,
-`run-remote.sh desktop` en Jale). Si el repositorio no tiene ese lanzador, o la
-admisión sale con 75, va a la Mac Mini. Lo demás corre en la Mini, igual que lo
-que exige macOS o nunca ha pasado en Linux.
+DESKTOP, como diga el `AGENTS.md` del repositorio. Si no lo dice, depende de
+si el repositorio tiene grupo propio en el Pueue del desk. En ambos casos
+corre en la Mini lo que exige macOS o nunca ha pasado en Linux.
+
+- **Con grupo propio (Hasito y Jale).** Una suite completa o una corrida de
+  15 minutos o más va a Felix DESKTOP por el lanzador con admisión del
+  repositorio (`scripts/mini/run.sh --entorno desk` en Hasito,
+  `run-remote.sh desktop` en Jale). Si la admisión sale con 75, va a la Mac
+  Mini. Lo demás corre en la Mini.
+- **Sin grupo propio (los demás).** Todo va al desk con
+  `REMOTE_RUN_HOST=desk remote-run start`. La prueba dirigida de menos de
+  10 min lleva `--carril rapido`; el resto se encola en el grupo `otros`.
+  Mientras el desk no responda, va a la Mini.
 
 En la MacBook no se borra nada: ni `/tmp`, ni logs, guiones, briefs o
 evidencia. Vale para orquestadores, trabajadores y revisores. La excepción son
@@ -78,10 +85,12 @@ sus artefactos regenerables (`node_modules`, salidas de build, cachés). Un
 worktree sucio o con commits sólo locales se lista para Felix.
 
 Hacia la Mini, `remote-run start` y `scripts/mini/run.sh` encolan la corrida
-en Pueue (grupo `suites`, 3 lugares) y `remote-run wait ID` espera su turno y
-devuelve su código. No reserves la Mini a mano ni esperes en un bucle. Mira la
-fila con `ssh mini pueue status -g suites`. Si la corrida usa algo que no admite
-dos usuarios a la vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
+en Pueue (grupo `suites`) y `remote-run wait ID` espera su turno y devuelve su
+código. El carril rápido (`--carril rapido` o `REMOTE_RUN_CARRIL=rapido`)
+encola en el grupo `rapidas` del host y corta la corrida a los 10 min.
+No reserves la Mini a mano ni esperes en un bucle. Mira la fila con
+`ssh mini pueue status`. Si la corrida usa algo que no admite dos usuarios a la
+vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
 `postgres:5434`).
 
 Una sesión que corre en Felix DESKTOP llega a la Mini con `ssh mini`, desde

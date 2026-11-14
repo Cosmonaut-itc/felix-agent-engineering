@@ -562,17 +562,23 @@ time.sleep(60)
         self.assertEqual(options['stderr'],subprocess.DEVNULL)
         self.assertTrue(options['start_new_session'])
         self.assertEqual(options['cwd'],'/')
-        self.assertEqual(calls[1][0],wire)
-        self.assertGreater(calls[1][1],0)
-        self.assertLessEqual(calls[1][1],10)
+        # C5: a capabilities probe of at most 2 s precedes the cancel; this answer
+        # does not declare cancel_origin, so the cancel body stays the previous one.
+        self.assertEqual(calls[1][0],dict(schema='rack-cancel@1',op='capabilities',ref=REF))
+        self.assertLessEqual(calls[1][1],2)
+        self.assertEqual(calls[2][0],argv)
+        self.assertEqual(calls[3][0],wire)
+        # Cancel keeps its reserved 10 s and receives the probe's unused remainder.
+        self.assertGreater(calls[3][1],9.5)
+        self.assertLessEqual(calls[3][1],12)
         self.assertEqual(response['status'],'cancelled')
         for host,launcher in ((HOSTS[1],'remote-run'),(HOSTS[0],'jale')):
             with self.assertRaises(ValueError):executor(host,launcher,wire)
-        self.assertEqual(len(calls),2)
+        self.assertEqual(len(calls),4)
         configured = dict(HOSTS[0], id='another-host', actions=dict(transport='local', reason=None,
                           controllers={'jale': accion.CONTROLLERS['jale']}))
         executor(configured, 'jale', dict(wire, ref='job-AbCd1234'))
-        self.assertEqual(calls[2][0], ['/usr/bin/python3','-I','/synthetic-home/.local/lib/jale/pueue-control.py'])
+        self.assertEqual(calls[4][0], ['/usr/bin/python3','-I','/synthetic-home/.local/lib/jale/pueue-control.py'])
 
     def test_timeout_kills_only_own_process_group_and_reaps(self):
         incoming, writer = os.pipe(); os.close(writer)

@@ -44,7 +44,7 @@ class MiniTests(Fixture):
 
     def reset_state(self):
         self.write_state({"groups": {g: {"status": "Running", "parallel_tasks": n}
-                                     for g, n in (("suites", 3), ("default", 1), ("ajeno", 7))},
+                                     for g, n in (("suites", 3), ("default", 1), ("rapidas", 1), ("ajeno", 7))},
                           "tasks": {"10": {"status": {"Running": {}}, "group": "suites"}}})
 
     def guard(self):
@@ -71,19 +71,47 @@ class MiniTests(Fixture):
             self.assertEqual([r["accion"] for r in records if r["evento"] == "decision"][-1], expected)
             self.assertEqual(self.owned(), owned)
         self.assertEqual(self.pueue.status(), before)
-        self.assertEqual(self.changes(), [["pueue", "pause", "--wait", "-g", g] for g in control.MINI_GROUPS]
-                         + [["pueue", "start", "-g", g] for g in control.MINI_GROUPS])
+        self.assertEqual(self.changes(), [["pueue", "pause", "--wait", "-g", g] for g in ("suites", "default")]
+                         + [["pueue", "start", "-g", g] for g in ("suites", "default")])
 
     def test_memory_warning_and_critical_pause(self):
         for level in ("2", "4"):
             self.level = level
             self.guard()
-            self.assertEqual(self.owned(), {"suites", "default"})
+            self.assertEqual(self.owned(), {"suites", "default", "rapidas"})
             self.level = "1"
             self.guard()
             self.assertEqual(self.owned(), set())
             self.assertTrue(all(self.pueue.status()["groups"][g]["status"] == "Running"
                                 for g in control.MINI_GROUPS))
+
+    def records(self):
+        return [json.loads(r) for r in (self.directory / "guardia.log").read_text().splitlines()]
+
+    def test_rapidas_pauses_last_and_resumes_with_the_rest(self):
+        for load, normal, rapid, owned in ((21, "pausar", "mantener", {"suites", "default"}),
+                                           (30, "pausar", "mantener", {"suites", "default"}),
+                                           (31, "pausar", "pausar", {"suites", "default", "rapidas"}),
+                                           (25, "pausar", "mantener", {"suites", "default", "rapidas"}),
+                                           (11.9, "reanudar", "reanudar", set())):
+            self.load = load
+            self.guard()
+            decision = [r for r in self.records() if r["evento"] == "decision"][-1]
+            self.assertEqual((decision["accion"], decision["accion_rapidas"]), (normal, rapid))
+            self.assertEqual(self.owned(), owned)
+        self.assertEqual({g: s["status"] for g, s in self.pueue.status()["groups"].items()},
+                         {"suites": "Running", "default": "Running", "rapidas": "Running", "ajeno": "Running"})
+
+    def test_missing_group_is_skipped_and_released(self):
+        control.save_owned(self.directory, {"rapidas"})
+        state = self.pueue.status()
+        del state["groups"]["rapidas"]
+        self.write_state(state)
+        self.load = 31
+        self.guard()
+        self.assertEqual(self.owned(), {"suites", "default"})
+        self.assertNotIn("rapidas", self.pueue.status()["groups"])
+        self.assertFalse(any(c[-1] == "rapidas" for c in self.changes()))
 
     def test_respects_manual_pause(self):
         self.pueue.call("pause", "--wait", "-g", "default")
@@ -286,7 +314,7 @@ class InstallerTests(Fixture):
                                                        "guardia", "--host", "mini"])
             for key in ("StandardOutPath", "StandardErrorPath"):
                 self.assertTrue(data[key].startswith(str(state) + "/"))
-        (state / "guardia-state.json").write_text('["suites"]\n')
+        (state / "guardia-state.json").write_text('["rapidas", "suites"]\n')
         (state / "guardia.log").write_text("registro conservado\n")
         for _ in range(2):
             self.install("desinstalar")
@@ -296,7 +324,8 @@ class InstallerTests(Fixture):
             self.assertEqual(json.loads((state / "guardia-state.json").read_text()), [])
             self.assertEqual((state / "guardia.log").read_text(), "registro conservado\n")
         self.assertEqual([a[1:] for a in self.actions if a[0] == installer.PUEUE],
-                         [["status", "--json"], ["status", "--json"], ["start", "-g", "suites"]])
+                         [["status", "--json"], ["status", "--json"], ["start", "-g", "rapidas"],
+                          ["start", "-g", "suites"]])
         self.assertEqual(len([a for a in self.actions if a[1] == "bootstrap"]), 2)
         self.assertEqual(len([a for a in self.actions if a[1] == "bootout"]), 2)
 

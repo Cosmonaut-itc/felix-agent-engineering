@@ -405,6 +405,15 @@ def collect_usage(output, references, mode, proc):
                              mem=max(0, used - sum(u['mem'] for u in attributed))))
 
 
+def read_control(controller, host='mini'):
+    answer = subprocess.run(['/usr/bin/python3', '-I', str(controller), 'rack', '--host', host],
+        input=json.dumps(dict(schema='rack-host-control@1', op='capabilities')),
+        check=True, text=True, capture_output=True, timeout=5)
+    if len(answer.stdout) > 16384:
+        raise ValueError('Respuesta excesiva')
+    return json.loads(answer.stdout)
+
+
 def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     home, now = home or Path.home(), time.time() if now is None else now
     output = dict(schema='rack-host@1', host=host, os=mode, taken=now, cpu=None, mem=None, disk=None, guard=None, groups=[], tasks=[], errors=[])
@@ -415,6 +424,10 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
         except Exception as error:
             output['errors'].append(dict(stage=stage, message='Lectura fallida: ' + type(error).__name__))
             return None
+
+    controller = home / ('.local/lib/pao-pueue-mini/control.py' if host == 'mini' else '.local/lib/pao-pueue-desk/control.py')
+    if controller.is_file() and (host, mode) in (('mini', 'macos'), ('desk', 'linux')):
+        output['control'] = attempt('control', lambda: read_control(controller) if host == 'mini' else read_control(controller, host))
 
     capacity = attempt('capacity', lambda: mac_capacity() if mode == 'macos' else linux_capacity(proc))
     if capacity:

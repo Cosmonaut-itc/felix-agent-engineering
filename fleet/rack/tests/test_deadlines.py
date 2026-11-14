@@ -160,6 +160,24 @@ class DeadlineTests(unittest.TestCase):
                     self.assertLessEqual(self.calls[0][2], min(limit,total-(self.now-1000)-1))
                     self.assertGreaterEqual(self.calls[0][2], 1)
 
+    def test_full_budget_limits_mini_cancel_twelve_others_unchanged(self):
+        # C5: only the local cancel gains the 2 s origin probe; status/capabilities keep 10 s.
+        expected = {('mini','cancel'):12, ('mini','capabilities'):10, ('mini','status'):10,
+                    ('desk','cancel'):40, ('desk','capabilities'):40, ('desk','status'):40}
+        for (host, op), limit in expected.items():
+            with self.subTest(host=host, op=op):
+                body = request(host=host, action_id='full-'+host+'-'+op)
+                self.now = 1000
+                if op == 'status':
+                    self.actions.post(body)
+                    self.actions.save(body, accion.result(body, 'unknown'))
+                self.calls.clear()
+                if op == 'status': self.actions.get(body['action_id'], started=1000)
+                else:
+                    if op == 'capabilities': body=dict(body,op=op);del body['action_id']
+                    self.actions.post(body, started=1000)
+                self.assertEqual(self.calls[0][2], limit)
+
     def test_late_effect_is_unknown_and_same_receipt_reconciles(self):
         def late(host, launcher, wire, timeout=None):
             self.calls.append(wire)

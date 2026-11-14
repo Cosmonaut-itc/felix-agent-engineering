@@ -17,7 +17,7 @@ def audit(event, args):
     values = [str(a) for a in argv]
     for value in values:
         name = Path(value).name.lower()
-        if name in ('ssh', 'pueue', 'tailscale', 'run-control.py', 'pueue-control.py', 'pao-rack-action'):
+        if name in ('ssh', 'pueue', 'tailscale', 'run-control.py', 'pueue-control.py', 'pao-rack-action', 'control.py'):
             # Only generated fixtures in /tmp, never the installed binary.
             if not str(Path(value).resolve()).startswith(str(Path('/tmp').resolve()) + '/'):
                 raise AssertionError('Attempt to execute a real host binary: ' + name)

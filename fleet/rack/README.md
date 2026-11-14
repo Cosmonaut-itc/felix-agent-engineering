@@ -210,12 +210,55 @@ El panel nunca ejecuta kill/remove/stash de Pueue. Envía `rack-cancel@1` por
 stdin a `/usr/bin/python3 -I ~/.local/lib/remote-run/run-control.py`, una ruta
 fija resuelta con el usuario Unix del servicio. No hay shell ni TTY. El único
 ejecutor (`Executor`, con el intercambio acotado compartido de `desk_action.py`) usa cwd `/`, un entorno nuevo con HOME del usuario Unix, PATH fijo y
-TMPDIR=/tmp; no hereda tokens ni configuración del panel. Tiene plazo de 10 s para Mini y 40 s para desk,
+TMPDIR=/tmp; no hereda tokens ni configuración del panel. Tiene plazo de 10 s para Mini (12 s para
+cancel, ver «Procedencia de la cancelación») y 40 s para desk,
 termina únicamente su grupo de procesos si vence, recoge al hijo y limita la
 respuesta JSON a 16 KiB durante la ejecución (como máximo 16 385 bytes
 capturados); si excede el límite, termina y recoge sólo su grupo propio.
 Un timeout, respuesta inválida o fallo de transporte
 significa `unknown`, porque el efecto pudo ocurrir antes del corte.
+
+### Procedencia de la cancelación (C5)
+
+`rack-cancel@1` admite en `cancel` la clave opcional `origin`, con el único
+valor `"rack-panel"`. Con ella el controlador guarda el origen junto al instante
+de aceptación, y la espera de la sesión, en la MacBook, añade la línea
+«Cancelada desde el panel del rack a las HH:MM; no la relances sin preguntar»
+en su hora local. La extensión es **por corrida**: el controlador anuncia
+`capabilities.cancel_origin: true` sólo si el manifiesto de esa corrida lo
+declara, y sólo lo declaran las corridas nuevas del productor actualizado.
+
+El navegador, la API HTTP, el diario SQLite y la envoltura SSH
+`rack-desk-action@1` no cambian ni llevan `origin`. Lo añade el canal local
+junto al controlador (`desk_action.send`): el ejecutor de la Mini, o el
+despachador del desk. Para un cancel, ese canal consulta antes `capabilities`
+de la misma corrida al mismo controlador y añade `origin` sólo si la respuesta
+es válida (esquema, `ref`, `queued`/`running` booleanos) y `cancel_origin` es
+exactamente `true`. Si falta, es falsa o inválida, el controlador falla o el
+sondeo vence, envía el cancel anterior sin origen. El sondeo nunca bloquea la
+cancelación ni cambia `expected`, y su proceso termina y se recoge antes del
+cancel, para no retener el candado del controlador. `status` y `capabilities`
+siguen siendo una sola llamada, sin sondeo.
+
+Presupuestos, con un único plazo monotónico: el cancel conserva su ventana
+de 10 s y el sondeo sólo usa el margen por encima, hasta 2 s. En la Mini el
+cancel local tiene hasta 12 s dentro del presupuesto HTTP de 14 s y su reserva
+de recibo; en el desk el despachador da 12 s interiores al cancel y el límite
+SSH exterior sigue en 40 s (presupuesto HTTP 44 s). Con menos margen se omite
+el sondeo. Si el plazo vence durante el sondeo, no se inicia el cancel y el
+resultado es `unknown`. No hay reintentos: cada `action_id` emite un único
+cancel, y un duplicado, un GET o un reinicio sólo consultan `status`.
+
+La compatibilidad se decide por camino. Un despachador del desk nuevo añade
+el origen aunque el servidor del panel sea anterior, porque la envoltura no
+cambió; un despachador anterior cancela sin origen. La Mini lo añade sólo con
+el ejecutor actualizado. Un controlador anterior, o una corrida sin la
+declaración, conserva la cancelación y el mensaje de siempre. La UI mantiene
+su promesa actual; no anuncia la procedencia, porque depende de la versión de
+cada pieza. Instalación: cerrar la admisión con el interruptor del host,
+esperar a que terminen las llamadas cancel/capabilities admitidas, instalar
+controladores y productores de Hasito y Jale, y después el canal de PAO en el
+desk (`desk_action.py`) y el servidor de la Mini, en cualquier orden; reabrir.
 
 La instantánea añade por tarea:
 
@@ -231,7 +274,7 @@ compatibilidad: sólo el controlador confirma capacidades. No añade lecturas
 de `body.sh`, `meta` ni logs. Sin lanzador reconocido, `launcher/ref` son null;
 fuera de Queued/Running, `expected` es null. `reason` explica por qué no hay
 acción. Instantáneas antiguas conservan lectura y deshabilitan cancelación.
-Los grupos `otros` y `pg5434` sin lanzador reconocido quedan deshabilitados;
+El grupo `otros` sin lanzador reconocido queda deshabilitado;
 una corrida reconocida consulta capacidades independientemente del grupo.
 Jale directo en la Mini fuera de Pueue no está cubierto por este contrato.
 Una tarea con la etiqueta de Pueue `apotheca-remote-run` es del remote-run de
@@ -390,7 +433,8 @@ con cwd `/` y un entorno nuevo: `HOME=/home/felix`, `PATH=/usr/bin:/bin`,
 `XDG_RUNTIME_DIR=/run/user/<uid>` si existe como directorio propiedad de esa
 cuenta. No transmite el entorno de SSH, tokens ni overrides de pruebas.
 Comparte con el ejecutor el intercambio acotado: stdout de hasta 16 KiB,
-plazo de 10 s para el controlador, terminación de su propio grupo y recogida.
+plazo de 10 s para el controlador (12 s para cancel, con el sondeo de
+procedencia), terminación de su propio grupo y recogida.
 Devuelve la respuesta del controlador, verificando esquema e identidad; el
 panel conserva además su saneamiento y validación semántica antes de la UI.
 
@@ -576,7 +620,7 @@ pruebas de este directorio.
 ```bash
 cd fleet/rack
 TMPDIR=/tmp /usr/bin/python3 -m unittest discover -s tests -v
-TMPDIR=/tmp /usr/bin/python3 tests/check_mutations.py
+TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/check_mutations.py
 TMPDIR=/tmp /usr/bin/python3 tests/browser_fixture.py --port 0
 ```
 
@@ -612,8 +656,160 @@ y unknown ante fallo SSH. También muta lstat, entorno/runtime, ausencia de
 controlador, admisión, mínimo/plazo restante, efecto tardío, transporte fuera
 del candado, exclusión de status/cancel, liberación tras fallo y origen del
 presupuesto HTTP; también la espera independiente de E/S, el espaciado
-del desk, la conservación del cierre manual y su fin de sondeo en la UI;
-borra las copias al salir.
+del desk, la conservación del cierre manual y su fin de sondeo en la UI.
+`tests/test_c5.py` cubre la procedencia: sondeo y un único cancel con
+`origin` en la Mini y en el desk, envoltura SSH sin `origin`, degradación ante
+controladores anteriores, corridas sin declaración y respuestas inválidas o
+vencidas, parser cerrado, presupuestos con reloj virtual, sondeo que retiene
+stdout y candado, duplicado/GET/reinicio sin reenviar cancel, y canales
+viejos y nuevos por camino. Sus mutaciones (`c5-*`) usan `exchange` en vez de
+`send`, añaden origen antes de SSH o en el servidor, aceptan valores
+truthy, bloquean el cancel ante un sondeo fallido, abren el parser, sondean
+toda operación, ignoran el margen, no recogen el sondeo, reinician el plazo o
+reenvían cancel en GET. Borra las copias al salir.
 
 `tests/rack-fixture.json` conserva la instantánea realista para las pruebas de
 lectura y render existentes, sin comandos ni rutas.
+
+## Botones −/+ de la Mini
+
+U3.1 habilita lugares y deshacer únicamente en la Mini con el controlador adoptado.
+Perfil `suites=3`, `default=1`, `rapidas=3`, tope 7; el tope cuenta `default` aun vacío.
+En los dos hosts, la fila de `default` sólo aparece mientras tiene trabajo.
+El «+» al llenar el tope explica: «Tope de 7 lugares. Quita un lugar a otro grupo
+para añadirlo aquí.» En 1/8 se deshabilita la dirección correspondiente. La cifra
+sigue siendo observada mientras se aplica; un parcial muestra observado/deseado,
+y unknown conserva el ID y consulta sin reenviar el POST, incluso tras recargar.
+El toast ofrece Deshacer durante 8 s desde la confirmación visible. Una instantánea
+anterior a la revisión confirmada no revierte visualmente el número.
+
+Se conserva `rack-action@1` y el mismo `POST /api/accion`/`GET /api/accion/<id>`:
+
+```json
+{"schema":"rack-action@1","op":"host_capabilities","host":"mini"}
+```
+
+`slots` usa claves exactas `schema,op,host,action_id,dry_run,expected,change`;
+`expected` contiene `revision,policy_hash,generation,mode:"fijo",slots` con el
+vector completo. `change` contiene `group` y `delta:-1|1`. `undo` sustituye
+`change` por `undo_of`; el before se obtiene del recibo durable del host.
+`dry_run:true` devuelve plan, bajadas y subidas sin crear recibos ni recuperar.
+El host vuelve a validar límites, tope y expectativas bajo `control.lock`.
+Los recibos del rack vinculan ID/cuerpo antes del transporte. Un mismo ID con
+otro cuerpo es conflicto; no se elimina su deduplicación al rotar logs.
+
+El nuevo destino lógico es `host-control`, con `rack-host-control@1` por stdin
+hacia la ruta fija `~/.local/lib/pao-pueue-mini/control.py rack --host mini`, usando
+Python aislado y transporte acotado. No acepta actor, comandos o rutas del navegador.
+Los contratos cancel/capabilities de lanzador de C3–C5 conservan su forma.
+Se mantienen whois fresco del dueño, tailnet, Host permitido y Origin exacto;
+ningún fallback abre SSH o ejecuta shell a partir de datos. La variante host del
+despachador desk responde no disponible. Día/Noche, reordenar y reinicios se
+anuncian `false`; un controlador antiguo deja cuotas deshabilitadas sin romper
+la lectura ni «Cancelar…».
+
+Instalar **primero** el controlador Mini siguiendo
+`fleet/pueue-desk/README.md`, con `install-mini.py instalar --cuotas`. Después
+instalar este rack con `instalar.sh`: ahora incluye `host_action.py` junto a los
+archivos anteriores. Sin adopción/capacidad válida no se habilitan los botones.
+`slots.disabled` en `~/.local/state/pao/pueue-mini` apaga sólo estos ajustes;
+`actions.disabled` del rack mantiene su significado de interruptor general.
+Ni uno ni otro abandona el deseo ya aceptado. Para revertir el panel se puede
+restaurar su versión anterior conservando controlador, SQLite y guardia nuevos.
+La pausa ambigua tras reinicio se resuelve por SSH con `control.py reanudar`,
+sin botón nuevo y sin promesa de reapertura automática todavía.
+
+Verificación dirigida: `tests/test_slots.py` ejecuta el canal con Pueue/reloj y
+transporte sintéticos, autorización HTTP y el JavaScript de producción mediante
+`tests/slots-ui-check.js`. Las mutaciones nuevas están en
+`fleet/pueue-desk/tests/mutate_slots.py`; nunca usan colas reales.
+
+### Recibos y presentación de lugares U3.1
+
+El control muestra `N/M en uso` separado de la cuota entera `− M +`, y la
+capacidad indica `· tope 7`. Los botones tienen 44 px; el contenedor enfocable
+explica el límite en una ayuda flotante sin ensanchar ni alargar la fila.
+Un parcial conserva los valores observados y deseados desde su primera respuesta.
+
+Conflictos y límites del host responden HTTP 409; `applying` responde 202,
+también al duplicar o consultar un recibo. La consulta del panel acepta un 409
+terminal como resultado confirmado. Si se perdió sólo la respuesta de un rechazo,
+GET puede cerrarlo únicamente con el mismo ID, digest del cuerpo original y
+`effects=false` desde el recibo durable del host. Un downgrade, ausencia de
+recibo, digest distinto o `unsupported` genérico conserva unknown. GET nunca
+reenvía un ajuste. Cancelar conserva sus contratos C3–C5.
+
+Un rechazo `disabled` recuperado por GET responde HTTP 403: con el mismo
+`action_id`, estado `rejected` y `effects=false`, el panel libera el bloqueo y
+muestra que los ajustes están apagados. Cuando vuelven las capacidades permite
+un clic nuevo con ID nuevo. Un 403 de autorización sin recibo sigue cerrado.
+
+`control.py rack` espera hasta 1 s por el candado de la Mini. Si vence antes de
+entrar, `slots`/`undo` reciben HTTP 409 `rejected/lock_busy`, sin efectos; el
+recibo terminal del rack permite el ajuste siguiente. El snapshot muestra
+«El control está ocupado. Vuelve a intentarlo.», sin afirmar que haya una pausa.
+Si se pierde la respuesta de transporte, sigue consultando el mismo ID; nunca
+reenvía el ajuste.
+
+Las pruebas de snapshot inyectan `read_control`; su guardia de subprocess veta
+además el `control.py` instalado fuera de temporales propios. El controlador
+sintético del canal sigue probándose por su ruta fija dentro de `/tmp`.
+# ± del desk y expiración (U3.2)
+
+El desk ofrece los mismos controles −/+ y «Deshacer» que la Mini. Cada grupo
+admite 1..8 lugares y el tope es 14 de día / 18 de noche. Con el tope lleno,
+«+» explica que hay que quitar un lugar a otro grupo. Los grupos pausados
+consumen su cuota completa. El `default` del desk queda fuera del reparto.
+Cuando tiene trabajo, su fila explica «Reservado · fuera del reparto». Si hay trabajo no terminal
+en grupos ajenos, el panel informa y bloquea «+», conservando «−» para reducir.
+El host veta sólo aumentos nuevos de ± y undo; la reconciliación del deseo
+durable sigue aplicando la tabla vigente o un ajuste ya aceptado. El panel
+nombra el trabajo ajeno también con deriva o recuperación pendiente y conserva
+«−». El snapshot publica sólo un conteo saneado, sin identidades ni entornos.
+La tabla de `main` tiene seis grupos (incluido `otros=2`; `pg5434` ya retirado).
+
+Los ajustes del desk vencen en el próximo evento 05:00/14:00 UTC, aunque se
+pierda el timer. La nota y el toast indican «hasta las HH:mm», en México.
+Un clic real ordinario recupera primero el evento perdido y devuelve conflicto
+para actualizar; el undo vencido se rechaza antes de toda RPC. Consulta y ensayo
+proyectan la expiración sin recuperar ni escribir.
+Ese conflicto declara `effects=true` por la recuperación del horario. Si se
+pierde la respuesta, GET sólo lo acepta como terminal con digest vinculado y
+evento explícito igual al de la vista saneada; otros terminales con efectos
+siguen siendo inciertos.
+Deshacer restaura los valores y vencimientos exactos si no hubo otro cambio
+ni evento. Una respuesta demorada de un ajuste vencido no vuelve a confirmarlo
+ni ofrece undo. La Mini conserva su duración hasta otro cambio manual.
+
+Se reutiliza POST `/api/accion`, GET del mismo ID, `rack-host-control@1` y el
+canal SSH forzado de C4/C5: envoltura cerrada con `target:"host-control"`, sin
+`launcher`. El despachador sólo ejecuta la ruta fija del controlador desk con
+`rack --host desk`, sin shell ni rutas del solicitante. Conserva las operaciones
+de cancelación. No hay llave ni listener nuevos. Dueño con whois fresco, Host
+permitido y Origin exacto siguen siendo obligatorios para mutar.
+
+El snapshot incorpora la misma vista saneada de control en ambos hosts. No
+transmite entornos, rutas privadas ni metadatos de undo. Un host antiguo queda
+sin ± con «Falta actualizar el control de este host»; leer y cancelar siguen
+disponibles. `mode`, `reorder` y `restart_queue` continúan deshabilitados.
+Un desk sin primera adopción degrada igual, sin crear estado; perder una
+autoridad ya adoptada conserva el error de recuperación.
+
+Primero instalar la autoridad/guardia desk con
+[`install-desk.py`](../pueue-desk/install-desk.py), siguiendo el
+[`README del controlador`](../pueue-desk/README.md), y luego ejecutar
+`fleet/rack/instalar-desk.sh` para snapshot/despachador y `instalar.sh` para el
+rack de la Mini. Son pasos de despliegue; no forman parte de las pruebas.
+Verificar capacidades y ensayo antes de cualquier canario real.
+
+Ante parcial/unknown, consultar siempre el mismo ID: GET no repite la mutación.
+Un evento que sustituye una intención incompleta conserva `partial`/`unknown`
+hasta verificar la tabla vigente, y entonces entrega `aborted/expired`, sin undo.
+El candado ocupado devuelve `lock_busy` terminal
+sin efectos si vence antes de entrar. Un `disabled` confirmado por GET también
+es terminal, mientras un 403 de autorización sigue cerrado.
+
+Para apagar nuevos ajustes, crear `slots.disabled` en el estado del desk;
+consultas y recuperación continúan. Puede revertirse el panel manteniendo la
+autoridad nueva y sus timers. Nunca retirar la base durable o restaurar la
+aplicación ciega de tabla para deshacer un cambio.
