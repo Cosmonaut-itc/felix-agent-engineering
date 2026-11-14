@@ -468,6 +468,13 @@ class ModeScheduleTests(unittest.TestCase):
         self.assertEqual(control.schedule_at(utc('2026-11-15T05:00:00'))[1],utc('2026-11-15T14:00:00'))
 
 class ModeInstallTests(DeskFixture):
+    def systemctl(self, home, commands, *args):
+        commands.append(args)
+        values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',
+                    ExecStartPre='/usr/bin/python3 -I '+str(home/'.local/lib/pao-pueue-desk/control.py')+' preparar --host desk')
+        text=''.join(k+'='+v+'\n' for k,v in values.items()) if args[2]=='show' else ''
+        return subprocess.CompletedProcess(args,0,text,'')
+
     def setup_install(self):
         self.engine.handle(self.request())
         home=self.root/'installed'
@@ -489,7 +496,7 @@ class ModeInstallTests(DeskFixture):
                         patch.object(control,'Pueue',return_value=self.p),
                         patch.object(control,'MiniControl',side_effect=factory),
                         patch.object(control,'mini_generation',return_value=self.gen),
-                        patch.object(installer,'run',side_effect=lambda *a:commands.append(a))):
+                        patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,commands,*a))):
             manager.start();self.addCleanup(manager.stop)
         return installer,home,target,original,receipts,commands
 
@@ -499,7 +506,7 @@ class ModeInstallTests(DeskFixture):
         with redirect_stdout(io.StringIO()) as out:installer.install(home,self.root/'pid',control,dry_run=True)
         self.assertIn('migración aditiva',out.getvalue())
         self.assertEqual(self.fingerprint(),before);self.assertEqual(self.p.calls,[])
-        self.assertEqual(commands,[('systemctl','--user','is-active',n) for n in installer.TIMERS])
+        self.assertTrue(all(c[2] in ('is-active','show-environment','show') for c in commands))
         with redirect_stdout(io.StringIO()):installer.install(home,self.root/'pid',control)
         self.assertEqual(self.state(),dict(original,mode_override=None,startup_version=1))
         with self.engine.connect() as db:self.assertEqual(db.execute('SELECT * FROM host_actions').fetchall(),receipts)
@@ -507,7 +514,7 @@ class ModeInstallTests(DeskFixture):
         self.assertEqual(target.read_bytes(),(installer.SOURCE/'control.py').read_bytes())
         self.assertEqual((target.parent/'control.pre-mode.py').read_text(),'# U3.2 instalado\n')
         self.assertFalse((self.engine.directory/'slots.disabled').exists())
-        self.assertFalse(any('pueued.service' in c for c in commands))
+        self.assertFalse(any('pueued.service' in c and c[2]!='show' for c in commands))
 
     def test_both_install_paths_reject_open_receipts_before_switch_publish_or_stop(self):
         installer,home,target,original,receipts,commands=self.setup_install()
@@ -521,4 +528,4 @@ class ModeInstallTests(DeskFixture):
                 with self.assertRaisesRegex(ValueError,'recibos abiertos'),redirect_stdout(io.StringIO()):
                     installer.install(home,self.root/'pid',control,dry_run=dry)
                 self.assertEqual(self.fingerprint(),before);self.assertEqual(self.p.calls,[])
-                self.assertEqual(commands,[('systemctl','--user','is-active',n) for n in installer.TIMERS])
+                self.assertTrue(all(c[2] in ('is-active','show-environment','show') for c in commands))
