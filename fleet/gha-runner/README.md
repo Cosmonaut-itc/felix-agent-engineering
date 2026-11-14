@@ -68,7 +68,11 @@ gh api -X POST repos/SEN-HASO/Jale/actions/runners/remove-token -q .token \
 ```
 
 Descarga el servicio, da de baja el registro y renombra el directorio y el
-plist a `.retirado-<fecha>`. No borra nada.
+plist a `.retirado-<fecha>`. No borra nada. Si GitHub ya no tiene el registro,
+avisa y termina el retiro local.
+
+GitHub borra el registro de un runner que pasa 14 días sin conectarse. Para
+recuperarlo, retíralo e instálalo de nuevo.
 
 ## Cambiar de versión
 

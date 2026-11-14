@@ -55,7 +55,10 @@ case "$modo" in
   --retirar)
     if [ -f "$dir/.runner" ]; then leer_token retiro; fi
     descargar
-    if [ -f "$dir/.runner" ]; then configurar remove; fi
+    # Si GitHub ya no tiene el registro, la baja falla; el retiro local sigue.
+    if [ -f "$dir/.runner" ] && ! configurar remove; then
+      echo 'gha-runner: GitHub no confirmó la baja; revisa que el runner ya no figure en el repositorio' >&2
+    fi
     for destino in "$plist" "$dir"; do
       if [ -e "$destino" ]; then
         mv "$destino" "$destino.retirado-$fecha"
@@ -77,6 +80,9 @@ if [ ! -f "$dir/.runner" ]; then
   configurar --unattended --url "$repo" --name "$nombre" --labels "$etiqueta" --work _work --replace
 fi
 
+# La actualización automática del runner busca este proceso por su ruta y mantiene la copia al día.
+cp "$dir/bin/runsvc.sh" "$dir/runsvc.sh"
+chmod u+x "$dir/runsvc.sh"
 mkdir -p "$(dirname "$plist")" "$(dirname "$log")"
 # Misma forma que la plantilla del runner, con KeepAlive: launchd lo levanta si cae.
 cat > "$plist.tmp" <<PLIST
@@ -85,7 +91,7 @@ cat > "$plist.tmp" <<PLIST
 <plist version="1.0">
 <dict>
     <key>Label</key><string>$label</string>
-    <key>ProgramArguments</key><array><string>$dir/bin/runsvc.sh</string></array>
+    <key>ProgramArguments</key><array><string>$dir/runsvc.sh</string></array>
     <key>WorkingDirectory</key><string>$dir</string>
     <key>RunAtLoad</key><true/>
     <key>KeepAlive</key><true/>

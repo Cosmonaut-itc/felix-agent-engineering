@@ -11,7 +11,7 @@ RUTA = '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'
 
 CONFIG = '''#!/bin/bash
 { printf 'args=%s\\n' "$*"; printf 'token=%s\\n' "$ACTIONS_RUNNER_INPUT_TOKEN"; printf 'path=%s\\n' "$PATH"; } >> "$FAKE_ROOT/config.log"
-if [ "$1" = remove ]; then rm .runner; else : > .runner; fi
+if [ "$1" = remove ]; then [ ! -e "$FAKE_ROOT/sin-registro" ] && rm .runner; else : > .runner; fi
 '''
 STUBS = {
     'uname': '#!/bin/bash\ncat "$FAKE_ROOT/uname"\n',
@@ -49,7 +49,7 @@ class Instalador(unittest.TestCase):
         (origen / 'bin').mkdir(parents=True)
         (origen / 'config.sh').write_text(CONFIG)
         (origen / 'config.sh').chmod(0o755)
-        (origen / 'bin/runsvc.sh').write_text('#!/bin/bash\n')
+        (origen / 'bin/runsvc.sh').write_text('#!/bin/bash\n# runsvc de prueba\n')
         with tarfile.open(self.fake / 'paquete.tgz', 'w:gz') as paquete:
             paquete.add(origen / 'config.sh', 'config.sh')
             paquete.add(origen / 'bin', 'bin')
@@ -78,7 +78,10 @@ class Instalador(unittest.TestCase):
         self.assertIn(f'path={RUTA}\n', registro)
         self.assertNotIn(TOKEN, registro.splitlines()[0])
         self.assertNotIn(TOKEN, resultado.stdout + resultado.stderr)
-        self.assertIn(f'{self.dir}/bin/runsvc.sh', self.plist.read_text())
+        # La actualización del runner localiza el servicio por <raíz>/runsvc.sh.
+        self.assertIn(f'<string>{self.dir}/runsvc.sh</string>', self.plist.read_text())
+        self.assertEqual((self.dir / 'runsvc.sh').read_text(), '#!/bin/bash\n# runsvc de prueba\n')
+        self.assertTrue(os.access(self.dir / 'runsvc.sh', os.X_OK))
         self.assertIn(f'bootstrap gui/{os.getuid()} {self.plist}', self.leer('launchctl.log'))
         self.assertEqual(list(self.dir.glob('*.tar.gz')), [])
 
@@ -86,10 +89,15 @@ class Instalador(unittest.TestCase):
         self.assertEqual(self.correr(token=TOKEN).returncode, 0)
         resultado = self.correr()
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        # El arranque anterior ya dejó «Listening» en el log: sólo cuenta lo que escribe éste.
+        (self.fake / 'mudo').touch()
+        self.assertEqual(self.correr().returncode, 1)
+        (self.fake / 'mudo').unlink()
+        self.assertEqual(self.correr().returncode, 0)
         self.assertEqual(len(self.leer('curl.log').splitlines()), 1)
         self.assertEqual(self.leer('config.log').count('args='), 1)
-        self.assertEqual(self.leer('launchctl.log').count('bootout'), 1)
-        self.assertEqual(self.leer('launchctl.log').count('bootstrap'), 2)
+        self.assertEqual(self.leer('launchctl.log').count('bootout'), 3)
+        self.assertEqual(self.leer('launchctl.log').count('bootstrap'), 4)
 
     def test_un_paquete_alterado_no_se_extrae(self):
         (self.fake / 'sha-mal').touch()
@@ -135,6 +143,17 @@ class Instalador(unittest.TestCase):
         self.assertFalse(self.plist.exists())
         self.assertEqual(len(list(self.home.glob('actions-runner-jale-guard.retirado-*'))), 1)
         self.assertEqual(len(list(self.plist.parent.glob('*.plist.retirado-*'))), 1)
+
+    def test_retirar_termina_aunque_github_ya_no_tenga_el_registro(self):
+        self.assertEqual(self.correr(token=TOKEN).returncode, 0)
+        (self.fake / 'sin-registro').touch()
+        resultado = self.correr('--retirar', token='token-de-retiro')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn('no confirmó la baja', resultado.stderr)
+        self.assertFalse(self.dir.exists())
+        (self.fake / 'sin-registro').unlink()
+        self.assertEqual(self.correr(token=TOKEN).returncode, 0)
+        self.assertIn('--replace', self.leer('config.log').splitlines()[-3])
 
     def test_retirar_sin_token_no_descarga_el_servicio(self):
         self.assertEqual(self.correr(token=TOKEN).returncode, 0)
