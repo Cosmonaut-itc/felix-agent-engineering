@@ -54,7 +54,7 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    await run('pollAction(key,a)');assert.equal(run('PENDING.size'),0);assert.match(elements.app.innerHTML,/Los lugares cambiaron/);
    run('SLOT_MESSAGES.clear();render(fixture)');
    context.answer={schema:'rack-action@1',action_id:'confirm-000001',status:'applied',revision:2,
-     result:{observed:{...run('h.control.slots'),jale:6},desired:{...run('h.control.slots'),jale:6},expires_at:1794664800}};
+     result:{observed:{...run('h.control.slots'),jale:6},desired:{...run('h.control.slots'),jale:6},expires_at:1794664800,slots_note:'Lugares ajustados · hasta las 08:00'}};
    run("acceptSlots(slotKey(h),{request:{op:'slots',host:'desk',action_id:'confirm-000001'},group:'jale'},answer)");
    assert.match(elements.toast.innerHTML,/hasta las 08:00/);assert.match(elements.toast.innerHTML,/Deshacer/);
    assert.doesNotMatch(elements.toast.innerHTML,/otro cambio manual/);

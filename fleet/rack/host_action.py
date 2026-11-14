@@ -3,7 +3,7 @@ import re
 import hashlib
 import json
 
-OPS = ('host_capabilities', 'slots', 'undo')
+OPS = ('host_capabilities', 'slots', 'mode', 'undo')
 GROUPS = {'suites', 'default', 'rapidas'}
 DESK_GROUPS = {'hasito', 'jale', 'jale-verify', 'otros', 'pesadas', 'rapidas'}
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
@@ -19,7 +19,7 @@ def validate(request):
         raise ValueError('Operación inválida')
     keys = {'schema', 'op', 'host'}
     if request['op'] != 'host_capabilities':
-        keys |= {'action_id', 'dry_run', 'expected', 'change' if request['op'] == 'slots' else 'undo_of'}
+        keys |= {'action_id', 'dry_run', 'expected', 'change' if request['op'] in ('slots', 'mode') else 'undo_of'}
         if (type(request.get('action_id')) is not str or not ACTION.fullmatch(request['action_id'])
                 or type(request.get('dry_run')) is not bool):
             raise ValueError('Identidad inválida')
@@ -37,6 +37,10 @@ def validate(request):
                     or type(c['group']) is not str or c['group'] not in (DESK_GROUPS if request.get('host') == 'desk' else GROUPS)
                     or type(c['delta']) is not int or c['delta'] not in (-1, 1)):
                 raise ValueError('Cambio inválido')
+        elif request['op'] == 'mode':
+            c = request.get('change')
+            if type(c) is not dict or set(c) != {'mode'} or c['mode'] not in ('dia', 'noche'):
+                raise ValueError('Modo inválido')
         elif type(request.get('undo_of')) is not str or not ACTION.fullmatch(request['undo_of']):
             raise ValueError('Recibo inválido')
     if (set(request) != keys or request['schema'] != 'rack-action@1'
@@ -49,6 +53,32 @@ def unavailable():
     return dict(schema='rack-host-result@1', status='unsupported', capabilities=dict(
         slots=False, undo=False, dry_run=False, mode=False, reorder=False, restart_queue=False),
         error=dict(code='unsupported', message='Falta actualizar el control de este host.'))
+
+
+
+def mode_fields(value):
+    result = {}
+    for key, pattern in (('mode_note', r'(?:Automático · cambia|Adelantado · vuelve) a (?:día|noche) a las [0-2][0-9]:[0-5][0-9]'),
+                         ('mode_detail', r'Ajustes manuales hasta las [0-2][0-9]:[0-5][0-9]'),
+                         ('slots_note', r'Lugares ajustados · hasta las [0-2][0-9]:[0-5][0-9]')):
+        item = value.get(key)
+        if item is not None and (type(item) is not str or not re.fullmatch(pattern, item)):
+            raise ValueError('Nota de horario inválida')
+        if key in value:
+            result[key] = item
+    pending = value.get('mode_pending')
+    expected = dict(dia='Aplicando horario de día…', noche='Aplicando horario de noche…')
+    if pending is not None:
+        if pending != expected:
+            raise ValueError('Estado de horario inválido')
+        result['mode_pending'] = expected
+    for key, expected in (('mode_partial', 'Horario aplicado parcialmente · revisando…'),
+                          ('mode_unknown', 'Cambio sin confirmar · consultando…')):
+        if key in value:
+            if value[key] != expected:
+                raise ValueError('Estado de horario inválido')
+            result[key] = expected
+    return result
 
 
 def control(value, host='mini'):
@@ -95,7 +125,7 @@ def control(value, host='mini'):
                 or not 0 < event < next_event or next_event - event not in (9*3600, 15*3600)
                 or expires is not None and (type(expires) not in (int, float) or expires != next_event)):
             raise ValueError('Evento inválido')
-        result.update(schedule_event=event, next_event=next_event, expires_at=expires)
+        result.update(schedule_event=event, next_event=next_event, expires_at=expires, **mode_fields(value))
     result['reason'] = None if caps['slots'] else 'Los ajustes de lugares están apagados en este host.'
     return result
 
@@ -122,7 +152,7 @@ def sanitize(request, response, op):
         # An ordinary desk click may recover the schedule before rejecting its
         # vector. It is terminal only with its bound receipt and explicit event.
         event = response.get('schedule_recovery')
-        scheduled = (request['host'] == 'desk' and request['op'] == 'slots' and request['dry_run'] is False
+        scheduled = (request['host'] == 'desk' and request['op'] in ('slots', 'mode') and request['dry_run'] is False
                      and status == 'conflict' and (response.get('error') or {}).get('code') == 'stale_state'
                      and response.get('effects') is True and type(event) in (int, float))
         if scheduled:
@@ -132,11 +162,11 @@ def sanitize(request, response, op):
             raise ValueError('Rechazo sin recibo vinculado y sin efectos')
         answer['receipt_verified'] = True
     error = response.get('error')
-    messages = dict(stale_state='Los lugares cambiaron. Actualiza antes de decidir.',
+    messages = dict(same_mode='Ese horario ya está vigente.', stale_state='Los lugares cambiaron. Actualiza antes de decidir.',
                     busy='Hay un ajuste pendiente; consulta su recibo.',
                     lock_busy='El control está ocupado. Vuelve a intentarlo.',
                     invalid_request='Cada grupo admite 1..8 lugares y se respeta el tope del modo.',
-                    undo_conflict='El horario o los lugares cambiaron. No se puede deshacer.',
+                    undo_conflict='El horario o los lugares cambiaron; no se puede deshacer este ajuste',
                     expired='El ajuste venció en el cambio de horario.',
                     idempotency_conflict='Ese ID ya pertenece a otra petición.',
                     recovery_error='Estado de control no disponible. Se conserva la pausa.',
@@ -164,6 +194,15 @@ def sanitize(request, response, op):
         if expires is not None and (request['host'] != 'desk' or type(expires) not in (int, float) or not 0 < expires < 10**11):
             raise ValueError('Vencimiento inválido')
         answer['result'].update(expires_at=expires, undo_of=request['action_id'] if status == 'applied' else None)
+        if request['host'] == 'desk' and 'mode' in payload:
+            if (payload['mode'], payload.get('cap')) not in (('dia', 14), ('noche', 18)):
+                raise ValueError('Modo inválido')
+            event, nxt = payload.get('schedule_event'), payload.get('next_event')
+            if (type(event) not in (int, float) or type(nxt) not in (int, float)
+                    or not 0 < event < nxt or nxt - event not in (9*3600, 15*3600)):
+                raise ValueError('Evento inválido')
+            answer['result'].update(mode=payload['mode'], cap=payload['cap'],
+                                    schedule_event=event, next_event=nxt, **mode_fields(payload))
         changed = [g for g in payload['desired'] if payload['before'][g] != payload['desired'][g]]
         observed = payload.get('observed')
         answer['result']['applied'] = [g for g in changed if observed is not None and observed[g] == payload['desired'][g]]
