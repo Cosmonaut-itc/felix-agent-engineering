@@ -23,10 +23,13 @@ jobs:
               Windows) choco install shellcheck --yes --no-progress ;;
             esac
           fi
-      - run: shellcheck --severity=warning skills/felix-mode/scripts/pstack-refs tests/pstack-refs-test.sh bin/pao tests/pao-test.sh skills/felix-mode/scripts/codex-run skills/felix-mode/scripts/laptop-guard skills/felix-mode/scripts/merge-guard skills/felix-mode/scripts/store-guard skills/felix-mode/scripts/risk-classify skills/felix-mode/scripts/apto-vigente tests/felix-mode-scripts-test.sh configs/claude/hooks/duplicate-session-guard tests/duplicate-session-guard-test.sh fleet/deskpolicy/deploy-desk.sh fleet/deskpolicy/withdraw-desk.sh
+      - run: shellcheck --severity=warning skills/felix-mode/scripts/pstack-refs tests/pstack-refs-test.sh bin/pao tests/pao-test.sh skills/felix-mode/scripts/codex-run skills/felix-mode/scripts/laptop-guard skills/felix-mode/scripts/merge-guard skills/felix-mode/scripts/store-guard skills/felix-mode/scripts/risk-classify skills/felix-mode/scripts/apto-vigente tests/felix-mode-scripts-test.sh configs/claude/hooks/duplicate-session-guard tests/duplicate-session-guard-test.sh fleet/deskpolicy/deploy-desk.sh fleet/deskpolicy/withdraw-desk.sh fleet/gha-runner/instalar.sh
       - name: Test deskpolicy retirement (MacBook/Linux transport)
         if: runner.os != 'Windows'
         run: python3 -I -m unittest discover -s fleet/deskpolicy/tests -v
+      - name: Test Mini GitHub Actions runner installer
+        if: runner.os != 'Windows'
+        run: python3 -I -m unittest discover -s fleet/gha-runner/tests -v
       - name: Test pueue-vigilante
         if: runner.os != 'Windows'
         run: |
