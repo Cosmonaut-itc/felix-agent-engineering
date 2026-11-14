@@ -53,7 +53,12 @@ case "$modo" in
     printf 'Escribir %s y cargarlo en %s\n' "$plist" "$dominio"
     exit ;;
   --retirar)
-    if [ -f "$dir/.runner" ]; then leer_token retiro; fi
+    if [ -f "$dir/.runner" ]; then
+      leer_token retiro
+    else
+      # Una instalación que falló a medias pudo registrar el runner sin dejar .runner.
+      echo 'gha-runner: sin registro local que dar de baja; si el runner figura en el repositorio, bórralo en GitHub' >&2
+    fi
     descargar
     # Si GitHub ya no tiene el registro, la baja falla; el retiro local sigue.
     if [ -f "$dir/.runner" ] && ! configurar remove; then

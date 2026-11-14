@@ -155,6 +155,14 @@ class Instalador(unittest.TestCase):
         self.assertEqual(self.correr(token=TOKEN).returncode, 0)
         self.assertIn('--replace', self.leer('config.log').splitlines()[-3])
 
+    def test_retirar_sin_registro_local_avisa_que_github_puede_tenerlo(self):
+        self.dir.mkdir()
+        resultado = self.correr('--retirar')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn('bórralo en GitHub', resultado.stderr)
+        self.assertEqual(self.leer('config.log'), '')
+        self.assertEqual(len(list(self.home.glob('actions-runner-jale-guard.retirado-*'))), 1)
+
     def test_retirar_sin_token_no_descarga_el_servicio(self):
         self.assertEqual(self.correr(token=TOKEN).returncode, 0)
         resultado = self.correr('--retirar')
