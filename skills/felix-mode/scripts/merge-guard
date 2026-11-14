@@ -55,6 +55,7 @@ CRASH = ("merge-guard falló al revisar este comando, que menciona gh pr merge. 
          "de agentes. ¿Lo ejecuto?")
 
 CAUSES = {
+    "tren": ("deny", "repo inscrito en el tren: usa pao-tren entregar"),
     "formato": ("deny", "comando bloqueado por formato; el agente debe corregirlo sin tu intervención"),
     "head": ("deny", "merge sin --match-head-commit"),
     "sensible": ("ask", "el PR toca CI, dependencias o gobernanza de agentes"),
@@ -256,6 +257,118 @@ def collect(command, cwd, inherited_env):
     return merges, found, doubtful
 
 
+def repository(value):
+    if not value:
+        return None
+    value = value.rstrip("/")
+    match = re.fullmatch(r"(?:https?://[^/]+/|ssh://(?:[^@/]+@)?[^/]+/|(?:[^@/]+@)?[^/:]+:)?([^/:]+/[^/]+)", value)
+    return match[1].removesuffix(".git").lower() if match else None
+
+
+def git_read(directory, args):
+    try:
+        result = subprocess.run(["git", "-C", directory] + args, text=True,
+                                capture_output=True, timeout=2)
+        return result.stdout.strip() if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+
+
+def origin_repo(directory):
+    return repository(git_read(directory, ["remote", "get-url", "--push", "origin"]))
+
+
+def train_guard(command, directory):
+    config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    registry = os.path.join(config, "pao-tren", "inscritos")
+    if not os.path.exists(registry):
+        return None
+    with open(registry, encoding="utf-8") as source:
+        enrolled = {line.split("#", 1)[0].strip().lower() for line in source}
+    enrolled.discard("")
+    reason = "repo inscrito en el tren: usa pao-tren entregar"
+    try:
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer.whitespace_split = True
+        tokens = list(lexer)
+    except ValueError:
+        if re.search(r"git\s+push\b", command) and re.search(r"\bmain\b", command):
+            return ("tren", "No puedo resolver el repo del push a main; " + reason)
+        return None
+    segments, segment = [], []
+    for token in tokens + [";"]:
+        if token and all(char in ";&|()" for char in token):
+            segments.append(segment)
+            segment = []
+        else:
+            segment.append(token)
+    for args in segments:
+        if not args:
+            continue
+        if args[0] == "cd" and len(args) == 2:
+            directory = os.path.abspath(os.path.join(directory, os.path.expanduser(args[1])))
+            continue
+        # Reconoce también env, command y rutas absolutas al ejecutable.
+        for start, token in enumerate(args):
+            tool = token.rsplit("/", 1)[-1]
+            if tool not in {"git", "gh"}:
+                continue
+            tail = args[start + 1:]
+            if tool == "gh" and tail[:2] == ["pr", "merge"]:
+                explicit = None
+                for index, arg in enumerate(tail):
+                    if arg in {"--repo", "-R"} and index + 1 < len(tail):
+                        explicit = tail[index + 1]
+                    elif arg.startswith("--repo="):
+                        explicit = arg.split("=", 1)[1]
+                    elif arg.startswith("-R") and len(arg) > 2:
+                        explicit = arg[2:]
+                resolved = repository(explicit) if explicit else origin_repo(directory)
+                if resolved in enrolled:
+                    return ("tren", reason)
+            if tool != "git":
+                continue
+            git_directory, index = directory, 0
+            while index < len(tail) and tail[index].startswith("-"):
+                flag = tail[index]
+                if flag in {"-C", "-c", "--git-dir", "--work-tree"} and index + 1 < len(tail):
+                    if flag == "-C":
+                        git_directory = os.path.abspath(os.path.join(git_directory, tail[index + 1]))
+                    index += 2
+                else:
+                    index += 1
+            if tail[index:index + 1] != ["push"]:
+                continue
+            positional, index = [], index + 1
+            broad = False
+            while index < len(tail):
+                arg = tail[index]
+                if arg in {"--all", "--mirror"}:
+                    broad = True
+                if arg in {"--repo", "--receive-pack", "--exec", "-o", "--push-option"}:
+                    if arg == "--repo" and index + 1 < len(tail):
+                        positional.insert(0, tail[index + 1])
+                    index += 2
+                    continue
+                if arg.startswith("--repo="):
+                    positional.insert(0, arg.split("=", 1)[1])
+                elif not arg.startswith("-"):
+                    positional.append(arg)
+                index += 1
+            refs = positional[1:]
+            if not refs and not broad:
+                refs = git_read(git_directory, ["config", "--get-all", "remote.origin.push"])
+                refs = refs.splitlines() if refs else [git_read(git_directory, ["symbolic-ref", "--short", "HEAD"]) or ""]
+            to_main = broad or any(ref.lstrip("+").rsplit(":", 1)[-1] in {"main", "refs/heads/main", "refs/heads/*", "*"} for ref in refs)
+            if to_main:
+                resolved = origin_repo(git_directory)
+                if resolved is None:
+                    return ("tren", "No puedo resolver el repo del push a main; " + reason)
+                if resolved in enrolled:
+                    return ("tren", reason)
+    return None
+
+
 def main():
     global mentions
     payload = json.load(sys.stdin)
@@ -263,6 +376,10 @@ def main():
     if not isinstance(command, str):
         return
     command = command.replace("\\\n", "")
+    train = train_guard(command, payload.get("cwd") or os.getcwd())
+    if train:
+        emit([train])
+        return
     mentions = len(re.findall(r"(?<![\w-])gh\s+pr\s+merge\b", command))
     if not mentions:
         return

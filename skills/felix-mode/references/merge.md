@@ -1,6 +1,7 @@
 # Mergear un PR APTO y verde
 
-Sigue este procedimiento en cada merge que autoriza **Merge** de felix-mode.
+En un repo no inscrito, sigue el procedimiento de merge de este archivo
+que autoriza **Merge** de felix-mode.
 Estos PR se detienen en merge-ready y esperan autorización explícita:
 
 - un PR ajeno, fuera de la cola o reservado por el usuario;
@@ -11,6 +12,40 @@ Estos PR se detienen en merge-ready y esperan autorización explícita:
 
 Un pedido de consultar estado o atender comentarios conserva su alcance.
 Una restricción del usuario o del `AGENTS.md` conserva su precedencia.
+
+## Entrega al tren
+
+Consulta la inscripción en
+`${XDG_CONFIG_HOME:-$HOME/.config}/pao-tren/inscritos`: una línea
+`owner/repo`, comparación sin distinguir mayúsculas y comentarios `#`.
+Sin archivo, ningún repo está inscrito y sigue el procedimiento habitual.
+En un repo inscrito, esta sección sustituye el merge del ticket, también
+en un programa. El tren es el único camino a `main`.
+
+1. Consigue APTO literal sobre el head actual, cero hallazgos abiertos,
+   recibo limpio de la dirigida y CI verde. La base del PR es `main`.
+   En alto riesgo exige también **Verificado**. La suite completa la corre
+   el tren sobre C, el commit candidato del lote.
+2. Si el PR toca CI, gobierno o lockfiles, queda en merge-ready hasta que
+   Felix autorice ese head. Después viaja solo. Los demás límites de
+   autorización del archivo siguen vigentes.
+3. Registra `watch_pull_request` antes de entregar. Ejecuta:
+
+   ```sh
+   pao-tren entregar --repo <owner/repo> --pr <n> --head <SHA40> \
+     --apto <ruta-del-veredicto-o-URL-del-comentario> --dirigida <ruta-del-recibo>
+   ```
+
+   Guarda el recibo `estado=custodia` y termina el turno con el watch
+   registrado. Si la entrega falla, resuelve su motivo antes de terminar.
+4. Ante un comentario de rojo del tren, lee el lote, B, C, unidad, firma,
+   conjunto causal y comando de reproducción. Corrige con prueba dirigida,
+   pasa la ronda de revisión correspondiente y entrega el head nuevo con
+   su APTO y recibo nuevos. Renueva la autorización de Felix si corresponde.
+
+El tick de launchd promueve C probado con push CAS fast-forward y comprueba
+`main == C` y su árbol. Las sesiones de Claude no mergean ni hacen push a
+`main` del repo inscrito; `merge-guard` lo niega sin excepción para el tick.
 
 ## Llevar el PR hasta verde
 

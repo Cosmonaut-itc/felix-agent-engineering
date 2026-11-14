@@ -8,6 +8,7 @@ SCRIPTS=${CODEX_RUN_TEST_SCRIPTS:-$REPO/skills/felix-mode/scripts}
 TEST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/felix-mode-test.XXXXXX") || exit 1
 TEST_TMP=$(cd "$TEST_TMP" && pwd -P) || exit 1
 export HOME=$TEST_TMP/home XDG_STATE_HOME=$TEST_TMP/state
+export XDG_CONFIG_HOME=$TEST_TMP/config XDG_CACHE_HOME=$TEST_TMP/cache XDG_DATA_HOME=$TEST_TMP/data
 export CODEX_RUN_HOME=$TEST_TMP/codex-home
 mkdir -p "$HOME" "$TEST_TMP/bin" "$TEST_TMP/cwd space" "$TEST_TMP/root space"
 printf 'Brief de prueba.\nSegunda línea.\n' > "$TEST_TMP/brief.md"
@@ -1252,6 +1253,101 @@ else:
 PY_MERGE
 }
 
+merge_train() {
+    python3 - "$SCRIPTS/merge-guard" "$TEST_TMP" "$BASH" <<'PY_TRAIN'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+script, temporary, bash = sys.argv[1:]
+base = Path(temporary) / "train"
+repo = base / "repo"
+repo.mkdir(parents=True)
+env = dict(os.environ, HOME=str(base / "home"), XDG_CONFIG_HOME=str(base / "config"),
+           XDG_STATE_HOME=str(base / "state"))
+registry = Path(env["XDG_CONFIG_HOME"]) / "pao-tren" / "inscritos"
+registry.parent.mkdir(parents=True)
+
+def git(*args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+
+git("init", "-q", "-b", "main")
+git("remote", "add", "origin", "git@github.com:SEN-HASO/Hasito.git")
+
+def invoke(command, denied):
+    payload = json.dumps({"cwd": str(repo), "tool_input": {"command": command}})
+    result = subprocess.run([bash, script], input=payload, text=True, capture_output=True, env=env)
+    assert result.returncode == 0 and not result.stderr, result
+    if denied:
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny", (command, output)
+        assert "repo inscrito en el tren: usa pao-tren entregar" in output["permissionDecisionReason"], (command, output)
+    else:
+        assert not result.stdout, (command, result.stdout)
+
+pushes = ["git push origin main", "git push origin HEAD:main",
+          "git push origin " + "a" * 40 + ":refs/heads/main",
+          "git push --force-with-lease origin HEAD:main",
+          "git push --force-with-lease=refs/heads/main:" + "b" * 40 + " origin HEAD:refs/heads/main",
+          "git push origin +HEAD:main", "git push origin :main",
+          "git push --delete origin main", "git push origin refs/heads/main",
+          "git push origin", "git push --all origin", "git push --mirror origin",
+          "git -C " + str(repo) + " push origin HEAD:main",
+          "cd " + str(repo) + " && git push origin HEAD:main"]
+# Sin archivo no interviene en pushes, ni siquiera si falta origin.
+for command in pushes:
+    invoke(command, False)
+registry.write_text("# piloto\n  sen-haso/HASITO  # inscrito\n\n", encoding="utf-8")
+for command in pushes:
+    invoke(command, True)
+for command in ["gh pr merge 1 --repo SEN-HASO/Hasito --squash --match-head-commit approved",
+                "gh pr merge 1 -Rsen-haso/hasito", "gh pr merge 1 --repo=sen-haso/hasito",
+                "gh pr merge 1 --squash --match-head-commit approved"]:
+    invoke(command, True)
+invoke("git push origin HEAD:feature", False)
+invoke("git push origin feature", False)
+# El repo explícito prevalece sobre origin y no requiere consultar GitHub.
+invoke("gh pr merge 1 --repo otro/repo --disable-auto", False)
+git("remote", "set-url", "origin", "https://github.com/otro/repo.git")
+for command in pushes:
+    invoke(command, False)
+invoke("gh pr merge 1 --disable-auto", False)
+git("remote", "remove", "origin")
+invoke("git push origin HEAD:main", True)
+invoke("git push origin HEAD:feature", False)
+# El fallback de HOME funciona cuando XDG_CONFIG_HOME no está fijado.
+env.pop("XDG_CONFIG_HOME")
+fallback = Path(env["HOME"]) / ".config" / "pao-tren" / "inscritos"
+fallback.parent.mkdir(parents=True)
+fallback.write_text("sen-haso/hasito\n", encoding="utf-8")
+git("remote", "add", "origin", "ssh://git@github.com/SEN-HASO/Hasito.git")
+invoke("git push origin HEAD:main", True)
+PY_TRAIN
+}
+
+apto_vigente_scratch() {
+    local repo state output scratch
+    repo=$(apto_repo)
+    state=$TEST_TMP/scratch-state
+    output=$(XDG_STATE_HOME=$state apto "$repo" destino revisado revisado)
+    assert test "${output%%:*}" = 'APTO vigente'
+    for scratch in "$state"/apto-vigente/*; do
+        assert test -f "$scratch/HEAD"
+        assert test -d "$scratch/objects"
+        assert test "$(git --git-dir="$scratch" rev-parse --is-bare-repository)" = true
+    done
+    # Una segunda invocación conserva ambos scratch.
+    XDG_STATE_HOME=$state apto "$repo" destino revisado revisado > "$TEST_TMP/scratch-output"
+    assert test "$(find "$state/apto-vigente" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 2
+    output=$(unset XDG_STATE_HOME; apto "$repo" destino revisado revisado)
+    assert test "${output%%:*}" = 'APTO vigente'
+    for scratch in "$HOME"/.local/state/apto-vigente/*; do
+        assert test -f "$scratch/HEAD"
+    done
+}
+
 merge_deny() { merge_cases deny; }
 merge_silent() { merge_cases silent; }
 merge_ask() { merge_cases ask; }
@@ -2145,7 +2241,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(merge_train apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
