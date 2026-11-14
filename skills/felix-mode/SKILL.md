@@ -156,6 +156,12 @@ que demuestra:
   cara. Detén la corrida al terminar la primera etapa con fallos que la
   rama de entrega no trae. Dentro de cada etapa conserva la lista completa
   de fallos para compararla con la de esa rama.
+- **Lanzador de suite.** Si el repositorio tiene lanzador de suite, como
+  `scripts/mini/run.sh --suite <SHA>` en Hasito, la suite completa corre
+  con él y no escribas guiones de suite. Su salida 75 marca un fallo del
+  arnés o de la infraestructura, y la misma corrida se relanza con su
+  opción de reanudar. La salida 75 no cuenta como ronda ni como suite roja,
+  y no pide corrección ni ronda delta.
 
 ## Modelos y transporte
 
