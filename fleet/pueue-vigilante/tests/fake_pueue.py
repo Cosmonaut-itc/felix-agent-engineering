@@ -1,5 +1,4 @@
 #!/usr/bin/python3 -I
-"""Dobles privados. Nunca reenvía llamadas a Pueue, SSH ni gestores reales."""
 from __future__ import annotations
 
 import json
@@ -18,7 +17,6 @@ def main() -> int:
         assert args[:4] == ['-o', 'BatchMode=yes', '-o', 'ControlPath=none']
         assert args[4] in ('mini', 'desk')
         assert args[5:] == ['/usr/bin/python3', '-I', '-']
-        # El host Mini usa un binario absoluto. Sólo este doble lo redirige.
         programa = sys.stdin.read()
         preambulo = '''
 import os, subprocess
@@ -63,7 +61,6 @@ subprocess.run = privado
     cola = json.loads(ruta.read_text())
     tarea = cola['tasks'][ident]
     detalle = tarea['status']['Running']
-    # Antes del fin no puede existir la marca; simular una última escritura del hijo.
     logs = root / ('Library/Application Support/pueue/task_logs' if os.environ.get('FAKE_HOST') == 'mini'
                    else '.local/share/pueue/task_logs')
     log = logs / (ident + '.log')

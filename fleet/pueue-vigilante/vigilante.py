@@ -18,7 +18,6 @@ import subprocess
 import time
 from typing import Callable, Optional, Union
 
-# Copia de TOPES_MIN U10: apotheca-u9 scripts/remote-run-pueue.py:214-216.
 TOPE_GRUPO_MIN = {'rapidas': 10, 'suites': 45, 'hasito': 45, 'otros': 45,
                  'jale': 45, 'pesadas': 150}
 TOPE_DESCONOCIDO_MIN = 45
@@ -172,7 +171,6 @@ def leer_cola(raw: bytes) -> tuple[list[Tarea], list[Ilegible]]:
             tareas.append(Tarea(ident, f"{ident}|{t['created_at']}|{inicio}", t['group'],
                                 estado, epoch(inicio), etiqueta, t['command'], t['path']))
         except (KeyError, TypeError, ValueError):
-            # No copiar campos arbitrarios ni el comando en diagnósticos.
             ilegibles.append(Ilegible(str(clave), 'forma de tarea inválida'))
     return tareas, ilegibles
 
@@ -254,7 +252,6 @@ def decidir(t: Tarea, lim: Limites, log_mtime: Optional[float],
 
 def bitacora(h: Host, evento: str, **campos) -> None:
     h.estado.mkdir(parents=True, exist_ok=True)
-    # Candado propio: incluso una pasada omitida puede registrar mientras otra corta.
     with (h.estado / 'bitacora.lock').open('a') as candado:
         fcntl.flock(candado, fcntl.LOCK_EX)
         ruta = h.estado / 'vigilante.log'
@@ -316,7 +313,6 @@ def cortar(p: Pueue, h: Host, c: Cortar, home: Path, gracia_s: float) -> Desenla
     estado = esperar_fin(p, c.tarea, home, gracia_s)
     desenlace = Desenlace.TERMINADA
     if estado == 'running':
-        # Releer identidad, estado y clase también inmediatamente antes de forzar.
         estado = observar(p, c.tarea, home)
         if estado == 'running':
             aceptada = p.kill(c.tarea.id, None)
@@ -330,7 +326,6 @@ def cortar(p: Pueue, h: Host, c: Cortar, home: Path, gracia_s: float) -> Desenla
         bitacora(h, 'persiste', tarea=c.tarea.id, huella=c.tarea.huella)
     bitacora(h, 'fin_corte', tarea=c.tarea.id, huella=c.tarea.huella,
              desenlace=desenlace.value, resultado_pueue=estado, aceptada=aceptada)
-    # Nunca marcar un id nuevo, desaparecido o que continúa Running/Paused.
     if estado == 'done':
         try:
             marcar_log(h, c.tarea.id, c)

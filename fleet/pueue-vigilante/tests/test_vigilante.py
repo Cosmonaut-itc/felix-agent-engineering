@@ -87,7 +87,6 @@ class Fixture(unittest.TestCase):
 
 class VigilanteTests(Fixture):
     def test_corta_manual_vencida_por_tope(self):
-        # La RED del contrato entra explícitamente en decidir.
         t = v.Tarea(7, 'huella', 'jale', 'Running', self.ahora - 46 * 60, None, 'bash run.sh', '/tmp')
         self.assertIsInstance(v.decidir(t, v.Limites(2700, 900, 'grupo', None),
                                        self.ahora, 0, self.ahora), v.Cortar)
@@ -151,7 +150,6 @@ class VigilanteTests(Fixture):
 
     def test_persiste_se_reintenta(self):
         (self.home / 'inmortal-7').touch()
-        # Reloj monotónico inyectado: sondear sin esperar 2 x 10 s reales.
         reloj = [0.0]
         def dormir(segundos):
             reloj[0] += segundos
@@ -212,7 +210,6 @@ class VigilanteTests(Fixture):
         self.assertEqual(self.pasar(), 0)
         self.assertEqual(self.kills(), [])
         inicio = self.ahora
-        # Pasadas cada minuto: no crear un segundo hueco artificial.
         for minuto in range(1, 16):
             self.ahora = inicio + minuto * 60
             self.assertEqual(self.pasar(), 0)
@@ -285,7 +282,6 @@ class VigilanteTests(Fixture):
         self.assertEqual(antes, despues)
 
     def test_no_fuerza_si_cambia_clase_durante_gracia(self):
-        # Misma huella, pero un actor cambia la etiqueta antes del segundo kill.
         manual = self.cola
         bodega = json.loads(json.dumps(manual))
         bodega['tasks']['7']['label'] = 'apotheca-remote-run'

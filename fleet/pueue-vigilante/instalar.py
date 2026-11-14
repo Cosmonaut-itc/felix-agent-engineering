@@ -20,6 +20,8 @@ from xml.sax.saxutils import escape
 LABEL = 'local.pao.pueue-vigilante'
 SERVICE = 'pao-pueue-vigilante.service'
 TIMER = 'pao-pueue-vigilante.timer'
+RESPALDO = '.bak-'
+ANTES_DE_VOLVER = '.antes-volver-'
 FILES = {}
 
 
@@ -104,7 +106,6 @@ def detener(nombre: str, home: Path) -> None:
         if ejecutar(['launchctl', 'print', servicio], comprobar=False).returncode == 0:
             ejecutar(['launchctl', 'bootout', servicio])
     else:
-        # No detener pueued ni ninguna guardia. Un oneshot vivo también se detiene.
         for unidad, accion in ((TIMER, ['disable', '--now']), (SERVICE, ['stop'])):
             if (destinos(nombre, home)[unidad].exists()
                     or ejecutar(['systemctl', '--user', 'is-active', '--quiet', unidad],
@@ -132,12 +133,12 @@ def bloquear(estado: Path) -> Iterator[None]:
 def respaldo_reciente(rutas: list[Path]) -> dict[Path, bytes]:
     juegos = None
     for ruta in rutas:
-        sellos = {p.name[len(ruta.name + '.bak-'):] for p in ruta.parent.glob(ruta.name + '.bak-*')}
+        sellos = {p.name[len(ruta.name + RESPALDO):] for p in ruta.parent.glob(ruta.name + RESPALDO + '*')}
         juegos = sellos if juegos is None else juegos.intersection(sellos)
     if not juegos:
         raise ValueError('no hay un juego completo de respaldos')
     ultimo = max(juegos)
-    return {p: p.with_name(p.name + '.bak-' + ultimo).read_bytes() for p in rutas}
+    return {p: p.with_name(p.name + RESPALDO + ultimo).read_bytes() for p in rutas}
 
 
 def remoto(accion: str, nombre: str, modo: Optional[str], seco: bool,
@@ -146,7 +147,6 @@ def remoto(accion: str, nombre: str, modo: Optional[str], seco: bool,
     rutas = list(destinos(nombre, home).values())
     print(json.dumps(dict(accion=accion, host=nombre, modo=modo, seco=seco,
                           archivos=[str(p) for p in rutas]), ensure_ascii=False), flush=True)
-    # También en seco: las comprobaciones y el censo son sólo lectura.
     previas(nombre, home, files)
     if accion == 'instalar':
         contenido = {p: s.encode('utf-8') for p, s in renderizar(nombre, home, modo, files).items()}
@@ -159,7 +159,6 @@ def remoto(accion: str, nombre: str, modo: Optional[str], seco: bool,
     existentes = [p for p in rutas if p.exists()]
     if accion == 'retirar' and not existentes:
         return 0
-    # Detener sólo el trabajo del vigilante; después esperar su candado.
     if existentes:
         detener(nombre, home)
     estado = home / '.local/state/pao/pueue-vigilante'
@@ -170,8 +169,7 @@ def remoto(accion: str, nombre: str, modo: Optional[str], seco: bool,
                 p.rename(p.with_name(p.name + '.retirado-' + marca))
         else:
             cambiado = any(not p.exists() or p.read_bytes() != s for p, s in contenido.items())
-            # volver respalda con otro sufijo para que el juego .bak- más reciente no cambie.
-            sufijo = '.bak-' if accion == 'instalar' else '.antes-volver-'
+            sufijo = RESPALDO if accion == 'instalar' else ANTES_DE_VOLVER
             if cambiado:
                 for p in existentes:
                     shutil.copy2(p, p.with_name(p.name + sufijo + marca))

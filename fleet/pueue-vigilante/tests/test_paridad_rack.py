@@ -7,7 +7,6 @@ import unittest
 
 from test_vigilante import ROOT, v
 
-# Sólo lectura por ruta. Nunca se ejecuta main ni se importa el paquete del rack.
 spec = importlib.util.spec_from_file_location('rack_snapshot_paridad', ROOT.parent / 'rack/snapshot.py')
 rack = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(rack)

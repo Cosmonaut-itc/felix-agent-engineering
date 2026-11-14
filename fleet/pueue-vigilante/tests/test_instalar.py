@@ -26,8 +26,6 @@ class InstalarTests(Fixture):
             argv.extend(['--modo', modo])
         if seco:
             argv.append('--seco')
-        # Entrar por la función del instalador mantiene la RED en NotImplementedError.
-        # El ssh falso ejecuta la carga completa con el mismo intérprete y -I.
         with patch.dict(os.environ, FAKE_HOST=host):
             return i.main(argv)
 
@@ -46,7 +44,6 @@ class InstalarTests(Fixture):
             llamada = transporte.call_args
             self.assertEqual(llamada.args[0], ['ssh', '-o', 'BatchMode=yes', '-o', 'ControlPath=none',
                                               host, '/usr/bin/python3', '-I', '-'])
-            # Inspeccionar además la salida con un segundo transporte falso privado.
             resultado = subprocess.run(llamada.args[0], input=llamada.kwargs['input'], text=True,
                                        capture_output=True)
             self.assertEqual(resultado.returncode, 0, resultado.stderr)

@@ -27,6 +27,10 @@ bitácora. Una persona debe revisarlas. Todo lo demás es MANUAL.
 | pesadas | 150 |
 | default y cualquier otro | 45 |
 
+Los topes y el silencio copian `TOPES_MIN` de los lanzadores U10: Bodega
+`scripts/remote-run-pueue.py`, Hasito `scripts/mini/pueue.py` y Jale
+`scripts/test-hosts/run-suite.sh`. Si cambian allí, se cambian aquí.
+
 El silencio permitido es 15 minutos. La etiqueta puede reemplazar ambos
 límites al encolar una tarea manual:
 
