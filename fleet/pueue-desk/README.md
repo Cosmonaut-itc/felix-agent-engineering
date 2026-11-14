@@ -24,6 +24,9 @@ todo `jale`, y `jale-verify` las sesiones de verify, que ya eran de una en una.
 Mientras el lanzador de Jale no las enrute, esos dos grupos quedan vacíos. Los timers
 y el arranque aplican el modo UTC vigente, sin interrumpir tareas vivas.
 Usar sólo esos grupos; `default` y otros grupos quedan fuera de estas cuotas.
+`otros` es de los repositorios sin grupo propio: `remote-run` encola ahí toda
+corrida normal sin `REMOTE_RUN_PROYECTO=hasito`, que sólo fija el lanzador de
+Hasito.
 El instalador elimina los grupos retirados, `suites` y `pg5434`, sólo si no
 tienen ninguna tarea. `pg5434` reservaba un lugar para el Postgres del puerto
 5434 y nunca recibió tareas: los lanzadores toman ese recurso con

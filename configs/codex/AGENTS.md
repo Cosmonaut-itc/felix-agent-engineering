@@ -53,9 +53,15 @@ contenedores, bases de datos y servidores corren en la Mac Mini o en Felix
 DESKTOP, como diga el `AGENTS.md` del repositorio. Si no lo dice, una suite
 completa o una corrida de 15 minutos o más va a Felix DESKTOP por el lanzador
 con admisión del repositorio (`scripts/mini/run.sh --entorno desk` en Hasito,
-`run-remote.sh desktop` en Jale). Si el repositorio no tiene ese lanzador, o la
-admisión sale con 75, va a la Mac Mini. Lo demás corre en la Mini, igual que lo
-que exige macOS o nunca ha pasado en Linux.
+`run-remote.sh desktop` en Jale). Si la admisión sale con 75, va a la Mac Mini.
+Lo demás corre en la Mini, igual que lo que exige macOS o nunca ha pasado en
+Linux.
+
+Un repositorio sin grupo propio en el Pueue del desk (todos menos Hasito y
+Jale) lanza con `remote-run`. Su prueba dirigida de menos de 10 min va en el
+carril rápido. Sus demás corridas van al desk con `REMOTE_RUN_HOST=desk`, que
+las encola en el grupo `otros`. A la Mini va lo que exige macOS o nunca ha
+pasado en Linux, y todo mientras el desk no responda.
 
 En la MacBook no se borra nada: ni `/tmp`, ni logs, guiones, briefs o
 evidencia. Vale para orquestadores, trabajadores y revisores. La excepción son
