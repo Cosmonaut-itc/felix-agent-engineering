@@ -138,7 +138,7 @@ class ControlTests(Fixture):
         self.metrics(io_value=41)
         self.guard()
         owned = json.loads((self.directory / "guardia-state.json").read_text())
-        self.assertEqual(set(owned), {"hasito", "jale-verify", "otros", "pesadas", "pg5434"})
+        self.assertEqual(set(owned), {"hasito", "jale-verify", "otros", "pesadas"})
         self.metrics(io_value=30, cpu=20, memory=5)
         before = self.calls()
         self.guard()
@@ -164,10 +164,10 @@ class ControlTests(Fixture):
                 self.assertEqual([r["accion"] for r in records if r["evento"] == "decision"][-1], expected)
 
     def test_quotas_per_mode(self):
-        expected = {"dia": {"hasito": 1, "jale": 5, "jale-verify": 1, "otros": 1, "pesadas": 2,
-                            "pg5434": 1, "rapidas": 3},
-                    "noche": {"hasito": 2, "jale": 7, "jale-verify": 1, "otros": 1, "pesadas": 3,
-                              "pg5434": 1, "rapidas": 3}}
+        expected = {"dia": {"hasito": 1, "jale": 5, "jale-verify": 1, "otros": 2, "pesadas": 2,
+                            "rapidas": 3},
+                    "noche": {"hasito": 2, "jale": 7, "jale-verify": 1, "otros": 2, "pesadas": 3,
+                              "rapidas": 3}}
         self.write_state({"groups": {}, "tasks": {}})
         for hour, mode in ((15, "dia"), (6, "noche")):
             control.apply_mode(self.pueue, datetime.fromisoformat(f"2026-11-12T{hour:02}:00:00+00:00"))
@@ -182,7 +182,7 @@ class ControlTests(Fixture):
             decision = [r for r in records if r["evento"] == "decision"][-1]
             self.assertEqual((decision["accion"], decision["accion_rapidas"]), (normal, rapid))
             self.assertEqual(set(json.loads((self.directory / "guardia-state.json").read_text())), owned)
-        busy = {"hasito", "jale", "jale-verify", "otros", "pesadas", "pg5434"}
+        busy = {"hasito", "jale", "jale-verify", "otros", "pesadas"}
         step(8, "pausar", "reanudar", busy, io_value=41, cpu=31)
         self.assertEqual(self.pueue.status()["groups"]["rapidas"]["status"], "Running")
         step(3, "pausar", "pausar", busy | {"rapidas"}, io_value=41)
@@ -199,7 +199,7 @@ class ControlTests(Fixture):
         self.metrics(memory=3)
         self.guard()
         self.assertEqual(set(json.loads((self.directory / "guardia-state.json").read_text())),
-                         {"hasito", "jale", "jale-verify", "otros", "pesadas", "pg5434"})
+                         {"hasito", "jale", "jale-verify", "otros", "pesadas"})
         self.assertNotIn("rapidas", self.pueue.status()["groups"])
 
     def test_manual_takeover_of_guard_pause(self):
@@ -333,6 +333,24 @@ class DeploymentTests(Fixture):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("suites tiene tareas; se conserva", result.stdout)
         self.assertIn("suites", self.pueue.status()["groups"])
+
+    def test_retired_pg5434_leaves_the_queue_and_the_guard(self):
+        state = self.pueue.status()
+        state["groups"]["pg5434"] = {"status": "Paused", "parallel_tasks": 1}
+        self.write_state(state)
+        guard_dir = self.root / ".local/state/pao/pueue-desk"
+        guard_dir.mkdir(parents=True)
+        (guard_dir / "guardia-state.json").write_text(json.dumps(["hasito", "pg5434"]))
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        groups = self.pueue.status()["groups"]
+        self.assertNotIn("pg5434", groups)
+        self.assertEqual(groups["otros"]["parallel_tasks"], 2)
+        self.assertEqual(json.loads((guard_dir / "guardia-state.json").read_text()), ["hasito"])
+        # Con pg5434 aún en su estado, el guardia abortaba cada minuto.
+        self.metrics()
+        with control.locked(guard_dir):
+            control.guard(self.pueue, self.proc, guard_dir)
 
 
 if __name__ == "__main__":

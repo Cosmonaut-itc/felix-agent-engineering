@@ -3,6 +3,10 @@ import os
 import pwd
 import sys
 
+# Grupos que la tabla ya no gestiona: `suites` pasó a los grupos por proyecto y
+# `pg5434` nunca recibió tareas (su lugar pasó a `otros`).
+RETIRED_GROUPS = ("suites", "pg5434")
+
 
 def run(*args, check=True):
     result = subprocess.run(list(args), text=True, capture_output=True)
@@ -42,7 +46,7 @@ def remote(action, dry):
                 print("SECO: pueue shutdown (daemon manual vacío)")
             print("SECO: loginctl enable-linger; systemctl --user daemon-reload")
             print("SECO: systemctl --user enable --now pueued.service pueue-desk-mode.timer pueue-desk-guard.timer")
-            print("SECO: aplicar y comprobar cuotas vigentes; retirar suites sólo si vacío")
+            print("SECO: aplicar y comprobar cuotas vigentes; retirar suites y pg5434 sólo si vacíos")
             return
         # Linger antes de detener nada: si se rechaza, el daemon manual sigue vivo.
         run("loginctl", "enable-linger", pwd.getpwuid(os.getuid()).pw_name)
@@ -96,10 +100,17 @@ def install(home, units, library, timers, pueue):
     with locked(STATE_DIR):
         apply_mode(pueue, datetime.now(timezone.utc))
         state = pueue.status()
-        if "suites" in state["groups"]:
-            if any(task["group"] == "suites" for task in state["tasks"].values()):
-                print("Aviso: suites tiene tareas; se conserva")
+        for group in RETIRED_GROUPS:
+            if group not in state["groups"]:
+                continue
+            if any(task["group"] == group for task in state["tasks"].values()):
+                print(f"Aviso: {group} tiene tareas; se conserva")
             else:
-                pueue.call("group", "remove", "suites")
-                print("Grupo suites vacío retirado")
+                pueue.call("group", "remove", group)
+                print(f"Grupo {group} vacío retirado")
+        # El guardia rechaza un grupo propio que ya no está en la tabla.
+        target = STATE_DIR / "guardia-state.json"
+        owned = set(json.loads(target.read_text())) if target.exists() else set()
+        if owned & set(RETIRED_GROUPS):
+            save_owned(STATE_DIR, owned - set(RETIRED_GROUPS))
     print("Servicio y timers habilitados; linger permite arrancar sin login interactivo")

@@ -274,7 +274,7 @@ compatibilidad: sólo el controlador confirma capacidades. No añade lecturas
 de `body.sh`, `meta` ni logs. Sin lanzador reconocido, `launcher/ref` son null;
 fuera de Queued/Running, `expected` es null. `reason` explica por qué no hay
 acción. Instantáneas antiguas conservan lectura y deshabilitan cancelación.
-Los grupos `otros` y `pg5434` sin lanzador reconocido quedan deshabilitados;
+El grupo `otros` sin lanzador reconocido queda deshabilitado;
 una corrida reconocida consulta capacidades independientemente del grupo.
 Jale directo en la Mini fuera de Pueue no está cubierto por este contrato.
 Una tarea con la etiqueta de Pueue `apotheca-remote-run` es del remote-run de

@@ -15,7 +15,7 @@ Linger inicia el servicio al arrancar la distro; el arranque de Windows debe
 iniciar WSL por su mecanismo habitual (SSH despierta la distro).
 
 `control.py` contiene la única tabla de cuotas (día/noche): hasito 1/2,
-jale 5/7, jale-verify 1/1, otros 1/1, pesadas 2/3, pg5434 1/1 y rapidas 3/3.
+jale 5/7, jale-verify 1/1, otros 2/2, pesadas 2/3 y rapidas 3/3.
 Noche: [05:00Z, 14:00Z). La suma es 14/18; Pueue no impone un máximo global.
 `rapidas` es el carril rápido que comparten Hasito, Jale y Bodega para la
 prueba dirigida; cada lanzador corta sus tareas a los 600 s. `pesadas` recibe
@@ -24,7 +24,10 @@ todo `jale`, y `jale-verify` las sesiones de verify, que ya eran de una en una.
 Mientras el lanzador de Jale no las enrute, esos dos grupos quedan vacíos. Los timers
 y el arranque aplican el modo UTC vigente, sin interrumpir tareas vivas.
 Usar sólo esos grupos; `default` y otros grupos quedan fuera de estas cuotas.
-El instalador elimina `suites` sólo si no tiene ninguna tarea.
+El instalador elimina los grupos retirados, `suites` y `pg5434`, sólo si no
+tienen ninguna tarea. `pg5434` reservaba un lugar para el Postgres del puerto
+5434 y nunca recibió tareas: los lanzadores toman ese recurso con
+`REMOTE_RUN_RECURSOS`. Su lugar pasó a `otros`.
 
 ### Reparto
 
