@@ -1264,6 +1264,7 @@ merge_train() {
 import json
 import os
 from pathlib import Path
+import shlex
 import subprocess
 import sys
 
@@ -1300,9 +1301,9 @@ pushes = ["git push origin main", "git push origin HEAD:main",
           "git push origin +HEAD:main", "git push origin :main",
           "git push --delete origin main", "git push origin refs/heads/main",
           "git push origin", "git push --all origin", "git push --mirror origin",
-          "git -C " + str(repo) + " push origin HEAD:main",
-          "cd " + str(repo) + " && git push origin HEAD:main",
-          "cd " + str(repo) + "\ngit push origin HEAD:main",
+          "git -C " + shlex.quote(str(repo)) + " push origin HEAD:main",
+          "cd " + shlex.quote(str(repo)) + " && git push origin HEAD:main",
+          "cd " + shlex.quote(str(repo)) + "\ngit push origin HEAD:main",
           "bash -c 'git push origin HEAD:main'",
           "sh -ec 'git push --force-with-lease origin HEAD:main'"]
 # Sin archivo no interviene en pushes, ni siquiera si falta origin.
@@ -2456,11 +2457,11 @@ apto_vigente_object_store() {
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
-        printf 'SKIP daemonización, grupos POSIX y store-guard en Windows (Git Bash).\n'
+        printf 'SKIP daemonización, grupos POSIX, store-guard y regresiones POSIX del tren en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent merge_train_regressions) ;;
 esac
-TEST_CASES+=(merge_train merge_train_regressions merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"
