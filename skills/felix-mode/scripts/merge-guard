@@ -55,6 +55,7 @@ CRASH = ("merge-guard falló al revisar este comando, que menciona gh pr merge. 
          "de agentes. ¿Lo ejecuto?")
 
 CAUSES = {
+    "tren": ("deny", "repo inscrito en el tren: usa pao-tren entregar"),
     "formato": ("deny", "comando bloqueado por formato; el agente debe corregirlo sin tu intervención"),
     "head": ("deny", "merge sin --match-head-commit"),
     "sensible": ("ask", "el PR toca CI, dependencias o gobernanza de agentes"),
@@ -256,6 +257,256 @@ def collect(command, cwd, inherited_env):
     return merges, found, doubtful
 
 
+def repository(value):
+    if not value:
+        return None
+    value = value.rstrip("/")
+    if "://" in value:
+        parsed = urlparse(value)
+        if not parsed.netloc:
+            return None
+        value = parsed.path.strip("/")
+    elif re.match(r"(?:[^@/]+@)?[^/:]+:", value):
+        value = value.split(":", 1)[1]
+    elif value.count("/") == 2:
+        value = value.split("/", 1)[1]
+    match = re.fullmatch(r"([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)", value)
+    return match[1].removesuffix(".git").lower() if match else None
+
+
+def git_read(directory, args, env, options=()):
+    # Missing config and detached HEAD return no value. Transport/read failures
+    # stay distinct so an implicit push cannot fall back after a timeout.
+    result = subprocess.run(["git", *options, *args], cwd=directory, env=env,
+                            text=True, capture_output=True, timeout=2)
+    if result.returncode == 0:
+        return result.stdout.strip()
+    if result.returncode == 1 and args[0] in {"config", "symbolic-ref"}:
+        return None
+    raise ValueError("lectura de git fallida")
+
+
+def origin_repo(directory, env):
+    return repository(git_read(directory, ["remote", "get-url", "--push", "origin"], env))
+
+
+def push_to_main(refs, broad, tags_only, read, remote):
+    branch = None
+
+    def current():
+        nonlocal branch
+        if branch is None:
+            branch = read(["symbolic-ref", "--short", "HEAD"]) or ""
+        if not branch:
+            raise ValueError("sin rama actual")
+        return branch
+
+    if broad:
+        return True
+    if not refs and not tags_only:
+        configured = read(["config", "--get-all", "remote." + remote + ".push"])
+        if configured:
+            refs = configured.splitlines()
+        else:
+            mode = read(["config", "--get", "push.default"]) or "simple"
+            if mode == "nothing":
+                return False
+            if mode == "matching":
+                raise ValueError("push.default=matching")
+            name = current()
+            if mode == "current":
+                refs = [name]
+            elif mode in {"upstream", "tracking", "simple"}:
+                upstream_remote = read(["config", "--get", "branch." + name + ".remote"])
+                upstream = read(["config", "--get-all", "branch." + name + ".merge"])
+                if upstream and upstream_remote == remote:
+                    refs = upstream.splitlines()
+                elif mode in {"upstream", "tracking"}:
+                    raise ValueError("upstream no resuelto")
+                else:
+                    refs = [name]
+            else:
+                raise ValueError("push.default desconocido")
+    for ref in refs:
+        ref = ref.lstrip("+")
+        target = ref.rsplit(":", 1)[-1]
+        if ":" not in ref and ref in {"HEAD", "@"}:
+            target = current()
+        if target == "" or target == ":":
+            raise ValueError("refspec sin destino")
+        if target in {"main", "refs/heads/main"}:
+            return True
+        if "*" in target and (fnmatch.fnmatchcase("main", target)
+                              or fnmatch.fnmatchcase("refs/heads/main", target)):
+            return True
+        if "$" in target or "`" in target:
+            raise ValueError("refspec dinámico")
+    return False
+
+
+def expand_home(path):
+    # Bash expands ~ from HOME; Python on Windows reads USERPROFILE instead.
+    if path == "~" or path.startswith("~/"):
+        return (os.environ.get("HOME") or os.path.expanduser("~")) + path[1:]
+    return os.path.expanduser(path)
+
+
+def strip_comments(command):
+    # shlex swallows the newline that ends a comment, merging two commands.
+    # Drop unquoted comments here and keep that newline; quotes may span lines.
+    out, quote, word_start, index = [], None, True, 0
+    while index < len(command):
+        char = command[index]
+        if char == "\\" and quote != "\x27" and index + 1 < len(command):
+            out.append(command[index:index + 2])
+            index, word_start = index + 2, False
+            continue
+        if quote:
+            quote = None if char == quote else quote
+        elif char in "\x27\"":
+            quote = char
+        elif char == "#" and word_start:
+            end = command.find("\n", index)
+            index = len(command) if end < 0 else end
+            continue
+        out.append(char)
+        word_start = not quote and char in " \t\r\n;&|()"
+        index += 1
+    return "".join(out)
+
+
+def train_guard(command, directory, inherited_env=None):
+    config = os.environ.get("XDG_CONFIG_HOME") or expand_home("~/.config")
+    registry = os.path.join(config, "pao-tren", "inscritos")
+    if not os.path.lexists(registry):
+        return None
+    enrolled, unreadable = set(), False
+    try:
+        # Check mode bits too: uid 0 must not make a 000 fixture readable.
+        if not os.stat(registry).st_mode & 0o444:
+            raise OSError("sin permisos de lectura")
+        with open(registry, encoding="utf-8") as source:
+            enrolled = {line.split("#", 1)[0].strip().lower() for line in source}
+        enrolled.discard("")
+    except (OSError, UnicodeError):
+        unreadable = True
+    reason = "repo inscrito en el tren: usa pao-tren entregar"
+    unresolved = "No puedo resolver el repo o la ref destino; " + reason
+    try:
+        lexer = shlex.shlex(strip_comments(command), posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        lexer.commenters = ""
+        tokens = list(lexer)
+    except ValueError:
+        if re.search(r"\bgit\b[^\n]*\bpush\b|\bgh\b[^\n]*\bmerge\b", command):
+            return ("tren", unresolved)
+        return None
+    segments, segment = [], []
+    for token in tokens + [";"]:
+        if token and all(char in ";&|()\n" for char in token):
+            segments.append(segment)
+            segment = []
+        else:
+            segment.append(token)
+    for args in segments:
+        if not args:
+            continue
+        if args[0] == "cd" and len(args) == 2:
+            directory = os.path.abspath(os.path.join(directory, expand_home(args[1])))
+            continue
+        env = (inherited_env if inherited_env is not None else os.environ).copy()
+        # Recognize env, command and absolute executable paths, conservatively
+        # including quoted commands as in the earlier train guard.
+        for start, token in enumerate(args):
+            if re.match(r"[A-Za-z_][A-Za-z0-9_]*=", token):
+                key, value = token.split("=", 1)
+                env[key] = value
+            tool = token.rsplit("/", 1)[-1]
+            if tool in {"bash", "sh", "zsh", "dash", "ksh"}:
+                for index in range(start + 1, len(args) - 1):
+                    if args[index].startswith("-") and "c" in args[index][1:]:
+                        finding = train_guard(args[index + 1], directory, env)
+                        if finding:
+                            return finding
+                        break
+            tail = args[start + 1:]
+            if tool == "gh" and tail[:2] == ["pr", "merge"]:
+                if unreadable:
+                    return ("tren", "Registro del tren ilegible; no puedo comprobar la inscripción")
+                explicit, selector = None, None
+                for index, arg in enumerate(tail[2:], 2):
+                    if arg in {"--repo", "-R"} and index + 1 < len(tail):
+                        explicit = tail[index + 1]
+                    elif arg.startswith("--repo="):
+                        explicit = arg.split("=", 1)[1]
+                    elif arg.startswith("-R") and len(arg) > 2:
+                        explicit = arg[2:]
+                    if re.match(r"https?://[^/]+/[^/]+/[^/]+/pull/", arg):
+                        selector = "/".join(urlparse(arg).path.strip("/").split("/")[:2])
+                try:
+                    named = selector or explicit or env.get("GH_REPO")
+                    resolved = repository(named) if named else origin_repo(directory, env)
+                except (OSError, ValueError, subprocess.TimeoutExpired):
+                    resolved = None
+                if resolved is None:
+                    return ("tren", "No puedo resolver el repo del merge; " + reason)
+                if resolved in enrolled:
+                    return ("tren", reason)
+            if tool != "git":
+                continue
+            index = 0
+            while index < len(tail) and tail[index].startswith("-"):
+                flag = tail[index]
+                index += 2 if flag in {"-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env"} else 1
+            if tail[index:index + 1] != ["push"]:
+                continue
+            if unreadable:
+                return ("tren", "Registro del tren ilegible; no puedo comprobar la inscripción")
+            options, positional, index = tail[:index], [], index + 1
+            broad, tags_only, remote, after_options = False, False, None, False
+            while index < len(tail):
+                arg = tail[index]
+                if arg == "--":
+                    after_options = True
+                elif not after_options and arg in {"--repo", "--receive-pack", "--exec", "-o", "--push-option"}:
+                    if index + 1 >= len(tail):
+                        return ("tren", unresolved)
+                    if arg == "--repo":
+                        remote = tail[index + 1]
+                    index += 1
+                elif not after_options and arg.startswith("--repo="):
+                    remote = arg.split("=", 1)[1]
+                elif after_options or not arg.startswith("-"):
+                    positional.append(arg)
+                elif arg in {"--all", "--mirror"}:
+                    broad = True
+                elif arg == "--tags":
+                    tags_only = True
+                index += 1
+            if remote is None:
+                remote = positional.pop(0) if positional else "origin"
+            read = lambda args: git_read(directory, args, env, options)
+            try:
+                # A configured remote wins over a URL reading, as in Git; its
+                # name may contain a slash.
+                configured = (read(["remote"]) or "").splitlines()
+                if remote not in configured and (":" in remote or "/" in remote):
+                    destinations = [repository(remote)]
+                else:
+                    urls = read(["remote", "get-url", "--push", "--all", remote])
+                    destinations = [repository(url) for url in (urls or "").splitlines()]
+                if not destinations or None in destinations:
+                    return ("tren", "No puedo resolver el repo del push; " + reason)
+                if not any(repo in enrolled for repo in destinations):
+                    continue
+                if push_to_main(positional, broad, tags_only, read, remote):
+                    return ("tren", reason)
+            except (OSError, ValueError, subprocess.TimeoutExpired):
+                return ("tren", unresolved)
+    return None
+
+
 def main():
     global mentions
     payload = json.load(sys.stdin)
@@ -264,23 +515,32 @@ def main():
         return
     command = command.replace("\\\n", "")
     mentions = len(re.findall(r"(?<![\w-])gh\s+pr\s+merge\b", command))
+    try:
+        train = train_guard(command, payload.get("cwd") or os.getcwd())
+    except Exception:
+        train = (("tren", "No puedo resolver la regla del tren")
+                 if re.search(r"\b(?:push|merge)\b", command) else None)
+    def report(findings):
+        emit(([train] if train else []) + findings)
     if not mentions:
+        if train:
+            report([])
         return
     if any(char.isspace() and char not in " \t\n" for char in command):
-        emit([("formato", FORMAT)])
+        report([("formato", FORMAT)])
         return
     merges, found, doubtful = collect(command, payload.get("cwd") or os.getcwd(), os.environ.copy())
     if doubtful or found != mentions or "<<" in command:
-        emit([("formato", FORMAT)])
+        report([("formato", FORMAT)])
         return
     unknown = [("formato", f"gh pr merge lleva un flag que merge-guard no admite: {flags[0]}. " + CANONICAL)
                for *_, flags in merges if flags]
     if unknown:
-        emit(unknown)
+        report(unknown)
         return
     denials = [("head", NO_HEAD) for _, _, head, _, _, _ in merges if not head]
     if denials:
-        emit(denials)
+        report(denials)
         return
     findings = []
     deadline = time.monotonic() + 10
@@ -288,8 +548,8 @@ def main():
         finding = inspect(selector, repo, env, directory, deadline)
         if finding:
             findings.append(finding)
-    if findings:
-        emit(findings)
+    if findings or train:
+        report(findings)
 
 
 try:

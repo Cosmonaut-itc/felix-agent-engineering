@@ -28,8 +28,10 @@ target=${commits[0]} reviewed=${commits[1]} new=${commits[2]}
 # objeto, como en un clon parcial, el script sale con 2.
 objects=$(git rev-parse --path-format=absolute --git-path objects) || fail 'no encuentro el almacén de objetos'
 format=$(git rev-parse --show-object-format) || fail 'no puedo leer el formato de objetos'
-scratch=$(mktemp -d "${TMPDIR:-/tmp}/apto-vigente.XXXXXX") || fail 'no puedo crear un directorio temporal'
-trap 'rm -rf "$scratch"' EXIT
+state=${XDG_STATE_HOME:-$HOME/.local/state}/apto-vigente
+mkdir -p "$state" || fail 'no puedo crear el directorio de estado'
+scratch=$state/$(date -u +%Y%m%dT%H%M%S)-$$
+mkdir "$scratch" || fail 'no puedo crear el scratch persistente'
 for name in $(compgen -v GIT_); do
     [ "$name" = GIT_ALTERNATE_OBJECT_DIRECTORIES ] || unset "$name"
 done

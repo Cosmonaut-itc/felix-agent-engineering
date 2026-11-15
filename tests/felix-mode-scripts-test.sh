@@ -8,6 +8,7 @@ SCRIPTS=${CODEX_RUN_TEST_SCRIPTS:-$REPO/skills/felix-mode/scripts}
 TEST_TMP=$(mktemp -d "${TMPDIR:-/tmp}/felix-mode-test.XXXXXX") || exit 1
 TEST_TMP=$(cd "$TEST_TMP" && pwd -P) || exit 1
 export HOME=$TEST_TMP/home XDG_STATE_HOME=$TEST_TMP/state
+export XDG_CONFIG_HOME=$TEST_TMP/config XDG_CACHE_HOME=$TEST_TMP/cache XDG_DATA_HOME=$TEST_TMP/data
 export CODEX_RUN_HOME=$TEST_TMP/codex-home
 mkdir -p "$HOME" "$TEST_TMP/bin" "$TEST_TMP/cwd space" "$TEST_TMP/root space"
 printf 'Brief de prueba.\nSegunda línea.\n' > "$TEST_TMP/brief.md"
@@ -902,6 +903,12 @@ if os.name != "nt":
     (stubs / "gh").write_text('#!/bin/bash\nexec python3 "$(dirname "$0")/gh-fake.py" "$@"\n', encoding="utf-8")
     (stubs / "gh").chmod(0o755)
 (stubs / "gh.cmd").write_text('@echo off\r\npython "%~dp0gh-fake.py" %*\r\n', encoding="utf-8")
+if os.environ.get("MERGE_TEST_ORIGIN"):
+    # These controls must resolve an actual unenrolled repo, not an unknown cwd.
+    subprocess.run(["git", "init", "-q", str(base)], check=True, capture_output=True)
+    subprocess.run(["git", "-C", str(base), "remote", "add", "origin",
+                    os.environ["MERGE_TEST_ORIGIN"]], check=True, capture_output=True)
+    (base / "repo").mkdir()
 log = base / "calls"
 env = dict(os.environ, PATH=str(stubs) + os.pathsep + os.environ["PATH"],
            MERGE_LOG=str(log), MERGE_EXIT="0", MERGE_SLEEP="0")
@@ -1250,6 +1257,315 @@ elif mode == "manifest":
 else:
     raise AssertionError(mode)
 PY_MERGE
+}
+
+merge_train() {
+    python3 - "$SCRIPTS/merge-guard" "$TEST_TMP" "$BASH" <<'PY_TRAIN'
+import json
+import os
+from pathlib import Path
+import shlex
+import subprocess
+import sys
+
+script, temporary, bash = sys.argv[1:]
+base = Path(temporary) / "train"
+repo = base / "repo"
+repo.mkdir(parents=True)
+env = dict(os.environ, HOME=str(base / "home"), XDG_CONFIG_HOME=str(base / "config"),
+           XDG_STATE_HOME=str(base / "state"))
+registry = Path(env["XDG_CONFIG_HOME"]) / "pao-tren" / "inscritos"
+registry.parent.mkdir(parents=True)
+
+def git(*args):
+    subprocess.run(["git", "-C", str(repo), *args], check=True, capture_output=True, env=env)
+
+git("init", "-q", "-b", "main")
+git("remote", "add", "origin", "git@github.com:SEN-HASO/Hasito.git")
+
+def invoke(command, denied):
+    payload = json.dumps({"cwd": str(repo), "tool_input": {"command": command}})
+    result = subprocess.run([bash, script], input=payload, text=True, capture_output=True, env=env)
+    assert result.returncode == 0 and not result.stderr, result
+    if denied:
+        output = json.loads(result.stdout)["hookSpecificOutput"]
+        assert output["permissionDecision"] == "deny", (command, output)
+        assert "repo inscrito en el tren: usa pao-tren entregar" in output["permissionDecisionReason"], (command, output)
+    else:
+        assert not result.stdout, (command, result.stdout)
+
+pushes = ["git push origin main", "git push origin HEAD:main",
+          "git push origin " + "a" * 40 + ":refs/heads/main",
+          "git push --force-with-lease origin HEAD:main",
+          "git push --force-with-lease=refs/heads/main:" + "b" * 40 + " origin HEAD:refs/heads/main",
+          "git push origin +HEAD:main", "git push origin :main",
+          "git push --delete origin main", "git push origin refs/heads/main",
+          "git push origin", "git push --all origin", "git push --mirror origin",
+          "git -C " + shlex.quote(str(repo)) + " push origin HEAD:main",
+          "cd " + shlex.quote(str(repo)) + " && git push origin HEAD:main",
+          "cd " + shlex.quote(str(repo)) + "\ngit push origin HEAD:main",
+          "bash -c 'git push origin HEAD:main'",
+          "sh -ec 'git push --force-with-lease origin HEAD:main'"]
+# Sin archivo no interviene en pushes, ni siquiera si falta origin.
+for command in pushes:
+    invoke(command, False)
+registry.write_text("# piloto\n  sen-haso/HASITO  # inscrito\n\n", encoding="utf-8")
+for command in pushes:
+    invoke(command, True)
+for command in ["gh pr merge 1 --repo SEN-HASO/Hasito --squash --match-head-commit approved",
+                "gh pr merge 1 -Rsen-haso/hasito", "gh pr merge 1 --repo=sen-haso/hasito",
+                "gh pr merge 1 --squash --match-head-commit approved"]:
+    invoke(command, True)
+invoke("git push origin HEAD:feature", False)
+invoke("git push origin feature", False)
+invoke("git push --tags origin", False)
+# El repo explícito prevalece sobre origin y no requiere consultar GitHub.
+invoke("gh pr merge 1 --repo otro/repo --disable-auto", False)
+git("remote", "set-url", "origin", "https://github.com/otro/repo.git")
+for command in pushes:
+    invoke(command, False)
+invoke("gh pr merge 1 --disable-auto", False)
+git("remote", "remove", "origin")
+invoke("git push origin HEAD:main", True)
+invoke("git push origin HEAD:feature", True)
+# El fallback de HOME funciona cuando XDG_CONFIG_HOME no está fijado.
+env.pop("XDG_CONFIG_HOME")
+fallback = Path(env["HOME"]) / ".config" / "pao-tren" / "inscritos"
+fallback.parent.mkdir(parents=True)
+fallback.write_text("sen-haso/hasito\n", encoding="utf-8")
+git("remote", "add", "origin", "ssh://git@github.com/SEN-HASO/Hasito.git")
+invoke("git push origin HEAD:main", True)
+PY_TRAIN
+}
+
+# Reproducciones Sol U5-1..5 y Opus 1,1b,2,2b,3,4,5,7,8,9.
+# Se acumulan los fallos para que la comparación con 523799a6 muestre cada fuga.
+merge_train_regressions() {
+    python3 - "$SCRIPTS/merge-guard" "$TEST_TMP" "$BASH" <<'PY_TRAIN_R1'
+import json
+import os
+from pathlib import Path
+import shlex
+import shutil
+import subprocess
+import sys
+
+script, temporary, bash = sys.argv[1:]
+base = Path(temporary) / "train-r1"
+base.mkdir()
+env = dict(os.environ, HOME=str(base / "home"), XDG_CONFIG_HOME=str(base / "config"),
+           XDG_STATE_HOME=str(base / "state"), XDG_CACHE_HOME=str(base / "cache"),
+           XDG_DATA_HOME=str(base / "data"))
+for key in list(env):
+    if key.startswith("GIT_") or key == "GH_REPO":
+        env.pop(key)
+for name in ("home", "config", "state", "cache", "data", "bin"):
+    (base / name).mkdir()
+real_git = shutil.which("git")
+registry = base / "config/pao-tren/inscritos"
+registry.parent.mkdir()
+# No GitHub writes: only the hook runs, with gh pr view simulated.
+gh = base / "bin/gh"
+gh.write_text("#!/usr/bin/env python3\nimport json\nprint(json.dumps({\"url\":\"https://github.com/otro/repo/pull/1\",\"files\":[{\"path\":\"src/plain.ts\"}],\"changedFiles\":1}))\n")
+gh.chmod(0o755)
+env["PATH"] = str(base / "bin") + ":" + env["PATH"]
+
+def git(repo, *args, input=None):
+    return subprocess.run([real_git, "-C", str(repo), *args], env=env, input=input,
+                          text=True, capture_output=True, check=True).stdout.strip()
+
+def mkrepo(name, remote, branch="feature"):
+    repo = base / name
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", branch)
+    git(repo, "remote", "add", "origin", remote)
+    return repo
+
+enrolled = mkrepo("enrolled", "git@github.com:SEN-HASO/Hasito.git")
+other = mkrepo("other", "https://github.com/otro/repo.git")
+hasito = mkrepo("hasito", "git@github.com:SEN-HASO/Hasito.git", "main")
+head = "a" * 40
+merge = "gh pr merge 1 --squash --match-head-commit " + head
+failures = []
+
+def probe(name, command, cwd=enrolled, expected="deny", reason=None, extra=None):
+    result = subprocess.run([bash, script], input=json.dumps({"cwd":str(cwd),
+                            "tool_input":{"command":command}}), text=True,
+                            capture_output=True, env=dict(env, **(extra or {})), timeout=20)
+    try:
+        output = json.loads(result.stdout)["hookSpecificOutput"] if result.stdout else {}
+        actual = output.get("permissionDecision", "allow")
+        assert result.returncode == 0 and not result.stderr, result
+        assert actual == expected, (actual, expected, output)
+        if reason:
+            assert reason in output.get("permissionDecisionReason", ""), output
+    except (AssertionError, ValueError, KeyError) as error:
+        failures.append(name)
+        print("FAIL", name, repr(command), cwd.name, str(error), flush=True)
+    else:
+        print("PASS", name, flush=True)
+
+# Controls: no registry retains the old guard, including head/flag/sensitive gates.
+probe("no-file-push", "git push origin HEAD:main", expected="allow")
+probe("no-file-merge-head", merge + " --repo SEN-HASO/Hasito", expected="allow")
+probe("no-file-merge-no-head", "gh pr merge 1 --repo SEN-HASO/Hasito --squash", reason="--match-head-commit")
+registry.write_text("sen-haso/hasito\n")
+probe("other-control-push", "git push origin HEAD:main", other, "allow")
+probe("other-control-merge", merge + " --repo otro/repo", other, "allow")
+probe("other-merge-no-head", "gh pr merge 1 --repo otro/repo --squash", other, reason="--match-head-commit")
+for name, command in [
+    ("Sol-U5-1-Opus-2-url-ssh", "git push git@github.com:SEN-HASO/Hasito.git HEAD:main"),
+    ("Opus-2b-url-https", "git push https://github.com/SEN-HASO/Hasito.git HEAD:main"),
+    ("Sol-U5-1-explicit-repo", "git push --repo=git@github.com:SEN-HASO/Hasito.git HEAD:main"),
+    ("explicit-repo-separated", "git push --repo git@github.com:SEN-HASO/Hasito.git HEAD:main"),
+    ("Sol-U5-2-compact-C", "git -C" + str(enrolled) + " push origin HEAD:main"),
+    ("Sol-U5-2-env-git-dir", "GIT_DIR=" + str(enrolled / ".git") + " git push origin HEAD:main"),
+    ("git-dir-separated", "git --git-dir " + str(enrolled / ".git") + " push origin HEAD:main"),
+    ("git-dir-equal", "git --git-dir=" + str(enrolled / ".git") + " push origin HEAD:main"),
+    ("work-tree-options", "git --git-dir=" + str(enrolled / ".git") + " --work-tree " + str(enrolled) + " push origin HEAD:main"),
+    ("work-tree-equal", "git --git-dir=" + str(enrolled / ".git") + " --work-tree=" + str(enrolled) + " push origin HEAD:main"),
+    ("env-wrapper", "env GIT_DIR=" + str(enrolled / ".git") + " GIT_WORK_TREE=" + str(enrolled) + " git push origin HEAD:main"),
+    ("env-work-tree", "GIT_WORK_TREE=" + str(enrolled) + " git --git-dir=" + str(enrolled / ".git") + " push origin HEAD:main"),
+    ("C-separated", "git -C " + str(enrolled) + " push origin HEAD:main"),
+]:
+    probe(name, command, other, reason="repo inscrito en el tren")
+probe("Sol-U5-1-other-destination", "git push https://github.com/otro/repo.git HEAD:main", expected="allow")
+git(other, "remote", "add", "train", "git@github.com:SEN-HASO/Hasito.git")
+git(enrolled, "remote", "add", "other", "https://github.com/otro/repo.git")
+probe("named-enrolled-remote", "git push train HEAD:main", other)
+probe("named-unenrolled-remote", "git push other HEAD:main", expected="allow")
+# U5-r3-1: a configured remote name may contain a slash; its URL decides.
+git(other, "remote", "add", "team/hasito", "git@github.com:SEN-HASO/Hasito.git")
+git(enrolled, "remote", "add", "team/otro", "https://github.com/otro/repo.git")
+probe("U5-r3-1-slash-enrolled-remote", "git push team/hasito HEAD:main", other)
+probe("U5-r3-1-slash-unenrolled-remote", "git push team/otro HEAD:main", expected="allow")
+# Push URL rather than fetch URL defines enrollment.
+git(other, "remote", "set-url", "--push", "origin", "git@github.com:SEN-HASO/Hasito.git")
+probe("push-url", "git push origin HEAD:main", other)
+git(other, "remote", "set-url", "--push", "origin", "https://github.com/otro/repo.git")
+probe("Sol-U5-3-Opus-3-pr-url", "gh pr merge https://github.com/SEN-HASO/Hasito/pull/1 --squash --match-head-commit " + head, other)
+probe("Sol-U5-3-GH_REPO", "GH_REPO=SEN-HASO/Hasito " + merge, other)
+probe("inherited-GH_REPO", merge, other, extra={"GH_REPO":"SEN-HASO/Hasito"})
+for flag in ("--repo github.com/SEN-HASO/Hasito", "-R SEN-HASO/Hasito", "--repo https://github.com/SEN-HASO/Hasito"):
+    probe("Opus-4-host-repo-" + flag, merge + " " + flag, other)
+probe("Opus-1-head", "git push origin HEAD", hasito)
+probe("Opus-1b-arroba", "git push -u origin @", hasito)
+probe("Opus-5-cd-comment", "cd " + str(hasito) + " # entra al repo\ngit push origin HEAD:main", other)
+# H8: quoted text that spans lines is ordinary work, not an unparseable push.
+heredoc_commit = "git commit -m \"$(cat <<'EOF'\nfix: merge-guard niega push a main\n\nEOF\n)\""
+heredoc_pr = "gh pr create --title t --body \"$(cat <<'EOF'\nNo hace push ni merge.\nEOF\n)\""
+for cwd in (other, hasito):
+    probe("H8-commit-heredoc-" + cwd.name, heredoc_commit, cwd, "allow")
+    probe("H8-pr-create-heredoc-" + cwd.name, heredoc_pr, cwd, "allow")
+    probe("H8-commit-multiline-" + cwd.name, "git commit -m \"uno\ndos sobre push\"", cwd, "allow")
+# A quoted or mid-word # is not a comment and must not hide the next command.
+probe("H8-quoted-hash", "git commit -m \"a # b\"\ngit push origin HEAD:main", hasito)
+probe("H8-echo-hash", "echo '#'; git push origin HEAD:main", hasito)
+probe("H8-word-hash", "echo a#b; git push origin HEAD:main", hasito)
+probe("feature-HEAD", "git push origin HEAD", expected="allow")
+probe("unknown-merge", merge, base, reason="No puedo resolver")
+probe("unknown-push", "git push origin HEAD:main", base, reason="No puedo resolver")
+
+# Sol block B: contrast actual Git push destinations through a local dry-run.
+tree = git(enrolled, "hash-object", "-t", "tree", "-w", "--stdin", input="")
+commit = git(enrolled, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit-tree", tree, input="fixture\n")
+git(enrolled, "update-ref", "refs/heads/feature", commit)
+bare = base / "transport.git"
+subprocess.run([real_git, "init", "-q", "--bare", str(bare)], check=True, env=env)
+git(enrolled, "config", "push.default", "upstream")
+git(enrolled, "config", "branch.feature.remote", "origin")
+git(enrolled, "config", "branch.feature.merge", "refs/heads/main")
+def dry_case(name, command, *args):
+    probe(name, command)
+    result = subprocess.run([real_git, "-C", str(enrolled), "-c", "url.file://" + str(bare) + ".insteadOf=git@github.com:SEN-HASO/Hasito.git", "push", "--dry-run", *args], env=env, text=True, capture_output=True, check=True)
+    assert "-> main" in result.stderr, result
+    print("GIT DRY-RUN", name, result.stderr.strip(), flush=True)
+dry_case("Sol-U5-4-implicit-upstream", "git push")
+dry_case("Sol-U5-4-implicit-upstream-origin", "git push origin", "origin")
+git(enrolled, "symbolic-ref", "HEAD", "refs/heads/main")
+git(enrolled, "update-ref", "refs/heads/main", commit)
+dry_case("Sol-U5-4-HEAD-on-main", "git push origin HEAD", "origin", "HEAD")
+git(enrolled, "symbolic-ref", "HEAD", "refs/heads/feature")
+git(enrolled, "config", "push.default", "current")
+probe("current-feature", "git push", expected="allow")
+git(enrolled, "config", "remote.origin.push", "HEAD:main")
+probe("remote-push-config", "git push")
+git(enrolled, "config", "--unset", "remote.origin.push")
+git(enrolled, "config", "push.default", "matching")
+probe("matching", "git push", reason="No puedo resolver")
+git(enrolled, "checkout", "--detach", "-q", commit)
+probe("detached-default", "git push", reason="No puedo resolver")
+probe("detached-HEAD", "git push origin HEAD", reason="No puedo resolver")
+git(enrolled, "symbolic-ref", "HEAD", "refs/heads/feature")
+# Every unreadable form must deny mutations and leave ordinary commands alone.
+for state in ("000", "utf8", "directory"):
+    if state == "000":
+        registry.chmod(0)
+    elif state == "utf8":
+        registry.chmod(0o600)
+        registry.write_bytes(b"sen-haso/hasito\n\xff")
+    else:
+        registry.rename(registry.with_name("saved"))
+        registry.mkdir()
+    probe("Sol-U5-5-Opus-7-8-9-" + state + "-push", "git push origin HEAD:main", hasito, reason="ilegible")
+    probe("Sol-U5-5-" + state + "-push", "git push origin HEAD:main", reason="ilegible")
+    probe("Sol-U5-5-" + state + "-merge-no-head", "gh pr merge 1 --repo SEN-HASO/Hasito --squash", reason="--match-head-commit")
+    probe(state + "-feature-push", "git push origin HEAD:feature", hasito, reason="ilegible")
+    probe(state + "-merge-head", merge + " --repo otro/repo", other, reason="ilegible")
+    # Legacy denies still run: their specific reason must remain in the output.
+    probe(state + "-other-merge-no-head", "gh pr merge 1 --repo otro/repo --squash", other, reason="--match-head-commit")
+    probe(state + "-unknown-flag", merge + " --repo otro/repo --admin", other, reason="flag")
+    probe(state + "-ordinary", "git status", other, "allow")
+# Preserve the directory fixture and restore a readable registry without deletion.
+registry.rename(registry.with_name("directory-fixture"))
+registry.with_name("saved").rename(registry)
+registry.write_text("sen-haso/hasito\n")
+gh.write_text(gh.read_text().replace("src/plain.ts", ".github/workflows/ci.yml"))
+registry.chmod(0)
+probe("unreadable-sensitive-keeps-legacy", merge + " --repo otro/repo", other, reason="toca CI")
+registry.chmod(0o600)
+gh.write_text(gh.read_text().replace(".github/workflows/ci.yml", "src/plain.ts"))
+# Timeout reproductions use the same sleeping git wrapper as Sol block A.
+wrapper = base / "bin/git"
+wrapper.write_text("#!/bin/sh\nsleep 3\nexit 1\n")
+wrapper.chmod(0o755)
+probe("Sol-U5-3-timeout-merge", merge, reason="No puedo resolver")
+probe("Sol-U5-3-timeout-push", "git push origin HEAD:main", reason="No puedo resolver")
+print(str(len(failures)) + " regresiones fallidas: " + ", ".join(failures), flush=True)
+assert not failures, failures
+PY_TRAIN_R1
+}
+
+merge_unenrolled() (
+    export TEST_TMP=$TEST_TMP/unenrolled
+    export XDG_CONFIG_HOME=$TEST_TMP/config
+    mkdir -p "$XDG_CONFIG_HOME/pao-tren"
+    printf 'otro/repo\n' > "$XDG_CONFIG_HOME/pao-tren/inscritos"
+    export MERGE_TEST_ORIGIN=https://github.com/Cosmonaut-itc/felix-agent-engineering.git
+    merge_cases silent
+    merge_cases ask
+    merge_cases deny
+)
+
+apto_vigente_scratch() {
+    local repo state output scratch
+    repo=$(apto_repo)
+    state=$TEST_TMP/scratch-state
+    output=$(XDG_STATE_HOME=$state apto "$repo" destino revisado revisado)
+    assert test "${output%%:*}" = 'APTO vigente'
+    for scratch in "$state"/apto-vigente/*; do
+        assert test -f "$scratch/HEAD"
+        assert test -d "$scratch/objects"
+        assert test "$(git --git-dir="$scratch" rev-parse --is-bare-repository)" = true
+    done
+    # Una segunda invocación conserva ambos scratch.
+    XDG_STATE_HOME=$state apto "$repo" destino revisado revisado > "$TEST_TMP/scratch-output"
+    assert test "$(find "$state/apto-vigente" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')" = 2
+    output=$(unset XDG_STATE_HOME; apto "$repo" destino revisado revisado)
+    assert test "${output%%:*}" = 'APTO vigente'
+    for scratch in "$HOME"/.local/state/apto-vigente/*; do
+        assert test -f "$scratch/HEAD"
+    done
 }
 
 merge_deny() { merge_cases deny; }
@@ -2141,11 +2457,11 @@ apto_vigente_object_store() {
 TEST_CASES=(validation)
 case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
-        printf 'SKIP daemonización, grupos POSIX y store-guard en Windows (Git Bash).\n'
+        printf 'SKIP daemonización, grupos POSIX, store-guard y regresiones POSIX del tren en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent merge_train_regressions) ;;
 esac
-TEST_CASES+=(risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

@@ -128,7 +128,14 @@ que demuestra:
   en cada candidato de `arena`, corre sólo lo que toca el cambio: los tests
   de los archivos y paquetes modificados, el typecheck y el lint de esos
   paquetes, y la reproducción de cada hallazgo. Lánzala en el carril rápido.
-- **Suite completa.** Los gates del `AGENTS.md` corren sobre el head que
+- **Suite completa en repo inscrito.** La inscripción se consulta en
+  `${XDG_CONFIG_HOME:-$HOME/.config}/pao-tren/inscritos`, una línea
+  `owner/repo`, sin distinguir mayúsculas y con comentarios `#`. Sin archivo,
+  ningún repo está inscrito. El tren corre los gates del `AGENTS.md` sobre
+  el commit candidato C del lote. El ticket corre la dirigida y entrega con
+  APTO sobre su head, recibo limpio y `watch_pull_request` registrado, como
+  indica [Entrega al tren](references/merge.md#entrega-al-tren).
+- **Suite completa en repo no inscrito.** Los gates del `AGENTS.md` corren sobre el head que
   recibió APTO, antes del merge. En `arena` corren sólo sobre la base
   elegida después del injerto, y en el acumulador en su paso 8. Si fallan,
   corrige con prueba dirigida; el head nuevo pasa por una ronda delta y
@@ -347,7 +354,21 @@ que demuestra:
 
 ## Merge
 
-Al abrir el PR de tu unidad, continúa hasta mergearlo con el
+En un repo inscrito, sigue [Entrega al tren](references/merge.md#entrega-al-tren).
+El tren es el único camino a `main`. El ticket entrega con APTO, recibo de
+la dirigida y watch registrado. Después corre `pao-tren tick --repo <r> --seco`
+y `pao-tren estado --repo <r>`. Si su PR quedó `Retenido` o `Rechazado`,
+resuelve el motivo o se lo informa a Felix antes de terminar el turno.
+Ante un comentario de rojo del tren, corrige, corre la dirigida y la ronda
+de revisión que corresponda, y entrega el head nuevo. Un PR de CI, gobierno,
+lockfile o alto riesgo queda en merge-ready hasta que Felix autorice ese
+head con AskUserQuestion. Con su OK, añade el head a `heads_autorizados` del
+repo en `${XDG_STATE_HOME:-~/.local/state}/pao-tren/config.json`, anota la
+cita de la decisión en el registro de su programa y después entrega. El PR
+viaja solo. [Entrega al tren](references/merge.md#entrega-al-tren) detalla
+la configuración y la comprobación de admisión.
+
+En un repo no inscrito, al abrir el PR de tu unidad, continúa hasta mergearlo con el
 [procedimiento de merge](references/merge.md), sin esperar otro pedido.
 También se aplica al acumulador y a los PR de la cola de tu programa.
 Mergea con APTO y verde sobre el head que aterriza, y verificado si el
