@@ -2,14 +2,15 @@
 import json
 from pathlib import Path
 import sys
-from test_startup import StartupPipelineTests
+from test_startup import StartupPipelineTests, MiniStartupPipelineTests
 from test_slots import BASE
 
 
 def main():
     interrupted=StartupPipelineTests().fixture()
     normal=StartupPipelineTests().fixture(normal=True)
-    scenarios=dict(interrumpida=interrupted,normal=normal)
+    mini=MiniStartupPipelineTests().fixture()
+    scenarios=dict(interrumpida=interrupted,normal=normal,mini=mini)
     script='''
 window.useStartupScenario=function(name){
   PENDING.clear();SLOT_MESSAGES.clear();HOST_CONFIRMED.clear();
@@ -17,6 +18,8 @@ window.useStartupScenario=function(name){
   return {scenario:name,width:innerWidth,scrollWidth:document.documentElement.scrollWidth,
     hold:[...document.querySelectorAll('.slot.held')].map(e=>e.textContent).find(t=>t.startsWith('Retenido al reiniciar')),
     waits:[...document.querySelectorAll('.slot.held')].filter(e=>e.textContent.startsWith('Esperando cuotas y Docker')).length,
+    sensorWaits:[...document.querySelectorAll('.slot.held')].filter(e=>e.textContent.startsWith('Esperando cuotas y sensores')).length,
+    groups:[...document.querySelectorAll('.lane > .g')].map(e=>e.firstChild.textContent.trim()),
     interrupted:document.querySelector('.interrupted')?.textContent};
 };
 window.fetch=async()=>{throw Error('Synthetic fixture: network forbidden')};

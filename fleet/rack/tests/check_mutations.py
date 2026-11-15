@@ -201,6 +201,20 @@ STARTUP_CASES += (
 )
 
 
+# U3.5: the Mini publishes restarts through the same authority, filter and UI.
+M = 'test_startup.MiniStartupPipelineTests.'
+STARTUP_CASES += (
+    ('startup-mini-sensor-text','index.html',"h.id==='mini' ? 'Esperando cuotas y sensores' : 'Esperando cuotas y Docker'","'Esperando cuotas y Docker'",
+     M+'test_mini_interruption_hold_and_sensor_wait_through_publication'),
+    ('startup-mini-authority','snapshot.py',"('mini' if host == 'mini' else 'desk')","'desk'",
+     M+'test_mini_interruption_hold_and_sensor_wait_through_publication'),
+    ('startup-mini-publication','serve.py',"if (host not in ('desk', 'mini') or row['state'] != 'Done'","if (host != 'desk' or row['state'] != 'Done'",
+     M+'test_mini_interruption_hold_and_sensor_wait_through_publication'),
+    ('startup-mini-handoff-vocabulary','../pueue-desk/control.py',"{'startup' if x == 'handoff' else x for x in r}","set(r)",
+     M+'test_handoff_pause_publishes_as_startup_only'),
+)
+
+
 def main():
     cases = STARTUP_CASES if '--startup-only' in sys.argv else CASES + STARTUP_CASES
     survivors = []

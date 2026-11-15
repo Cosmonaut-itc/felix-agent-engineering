@@ -30,6 +30,17 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    assert.doesNotMatch(elements.app.innerHTML,/Pausa tras reinicio: resolver por SSH|>Reanudar<|data-resume|startup-hold|startup-wait/);
    console.log('UI startup waits pipeline OK');return;
  }
+ if(input.scenario==='startup-mini'){
+   // U3.5: the Mini waits for quotas and its pressure sensor, never for Docker.
+   const html=elements.app.innerHTML;
+   assert.match(html,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
+   assert.match(html,/Esperando cuotas y sensores<\/span><span>reanudación automática/);
+   assert.doesNotMatch(html,/Docker/);
+   assert.match(html,/Retenido al reiniciar<\/span><span>pausa manual · resolver con <span class="mono">control.py reanudar rapidas<\/span>/);
+   assert.doesNotMatch(html,/>Reanudar<|data-resume/);
+   assert(!run('groups(h).some(([g])=>g==="default")'),'empty default stays hidden on the Mini');
+   console.log('UI startup mini OK');return;
+ }
  if(input.scenario==='ambiguous-cell'){
    // The cell explains an ambiguous pause without a group hold; the host line does not repeat it.
    run('h.control={...h.control,pause_reasons:{suites:["ambiguous"]},startup_holds:{},startup_waiting:{}}');

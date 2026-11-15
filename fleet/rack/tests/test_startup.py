@@ -183,4 +183,75 @@ class StartupPipelineTests(unittest.TestCase):
         finally:test.doCleanups()
 
 
+class MiniStartupPipelineTests(unittest.TestCase):
+    """U3.5: Mini restart through the same planner, view, collect, validation and publication."""
+    def fixture(self, handoff=False):
+        import tempfile, threading
+        from unittest.mock import Mock
+        from test_slots import control
+        tmp=tempfile.TemporaryDirectory(prefix='rack-u35-opus-',dir='/tmp')
+        try:
+            home=Path(tmp.name);now=1794664799.0
+            p=FakeMini()
+            engine=control.MiniControl(p,home/'.local/state/pao/pueue-mini',clock=lambda:now,generation=lambda:'gen-1')
+            p.groups['rapidas']['status']='Paused'
+            with control.locked(engine.directory):engine.adopt(home/'pueue.pid')
+            with engine.connect() as db:state=engine.state(db)
+            raw=dict(id=7,group='suites',created_at=STAMP,path=str(home/'synthetic'),envs={'SECRET':'x'},command='synthetic',original_command='synthetic',
+                     priority=0,dependencies=[],label=None,status={'Running':dict(enqueued_at=STAMP,start=STAMP)})
+            queue=dict(tasks={'7':raw},groups=copy.deepcopy(p.groups))
+            state,queue=control.startup_plan(queue,state,now,home,control.MINI_PROFILE)
+            state['startup']['phase']='prepared';state['startup_version']=1
+            if handoff:state['reasons']['default']=['handoff']
+            with engine.connect(write=True) as db:engine.store(db,state)
+            p.groups=copy.deepcopy(queue['groups'])
+            controller=home/'.local/lib/pao-pueue-mini/control.py'
+            controller.parent.mkdir(parents=True);controller.write_text('# injected read only')
+            view=engine.view()
+            with patch.object(snapshot,'command',return_value=json.dumps(queue)),patch.object(snapshot,'read_control',return_value=view), \
+                 patch.object(snapshot,'mac_capacity',return_value=(dict(cores=10,load=[1,1,1]),dict(total=16*1024**3,available=8*1024**3,swap_total=0,swap_used=0))), \
+                 patch.object(snapshot,'mini_guard',return_value=None),patch.object(snapshot,'disk',return_value=None), \
+                 patch.object(snapshot,'mini_metadata',return_value={}):
+                collected=snapshot.collect('macos','mini',pueue='/synthetic/pueue',home=home,now=now)
+            try:collected=serve.validate_snapshot(collected,'mini')
+            except ValueError as error:self.fail('Mini pipeline produced an invalid snapshot: '+str(error))
+            cache=serve.Rack.__new__(serve.Rack)
+            cache.hosts=[dict(id='mini',name='Mac Mini',transport='ssh')]
+            cache.good={'mini':collected};cache.errors={};cache.lock=threading.Lock();cache.tickets={}
+            cache.history=Mock();cache.history.estimate.return_value=None
+            cache.publish(now)
+            return cache.payload
+        finally:tmp.cleanup()
+
+    def render(self, fixture):
+        source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
+        result=subprocess.run(['node',str(BASE/'tests/slots-ui-check.js')],input=json.dumps(dict(js=source,fixture=fixture,scenario='startup-mini')),
+                              text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('UI startup mini OK',result.stdout)
+
+    def test_mini_interruption_hold_and_sensor_wait_through_publication(self):
+        payload=self.fixture()
+        snap=payload['hosts'][0]['snapshot']
+        self.assertEqual([(t['id'],t.get('interruption_reason')) for t in snap['tasks']],[(7,MESSAGE)])
+        self.assertEqual(snap['control']['startup_waiting'],dict(suites='cuotas_sensores',default='cuotas_sensores'))
+        self.assertEqual(snap['control']['startup_holds'],dict(rapidas='pausa manual'))
+        self.assertNotIn('SECRET',json.dumps(payload))
+        self.render(payload)
+
+    def test_handoff_pause_publishes_as_startup_only(self):
+        payload=self.fixture(handoff=True)
+        control=payload['hosts'][0]['snapshot']['control']
+        self.assertNotIn('handoff',json.dumps(control))
+        self.assertEqual(control['pause_reasons']['default'],['startup'])
+        self.render(payload)
+
+
+class FakeMini:
+    def __init__(self):
+        from test_slots import control
+        self.groups={g:dict(status='Running',parallel_tasks=n) for g,n in control.MINI_PROFILE.items()}
+    def status(self): return dict(tasks={},groups=copy.deepcopy(self.groups))
+
+
 if __name__=='__main__':unittest.main()
