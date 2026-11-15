@@ -32,9 +32,11 @@ Configurar fuera del repo una copia de [config.example.json](config.example.json
 (por defecto `pao-tren/config.json` en el directorio de estado). Las tres
 categorías sensibles son obligatorias y usan glob de `fnmatchcase` sobre la
 ruta completa. Revisar los patrones de gobierno propios del repo antes de
-usarlo. `git` debe apuntar a un checkout con los objetos de base/head ya
-disponibles. Sin ellos, retiene; no hace fetch. La lectura `merge-tree` legacy
-no escribe objetos; GitHub también debe acreditar `mergeable=true`.
+usarlo. Para la sombra y `tick --seco`, `git` debe apuntar a un checkout con
+los objetos de base/head ya disponibles. Sin ellos, retiene; estos modos no
+hacen fetch. La lectura `merge-tree` legacy no escribe objetos; GitHub
+también debe acreditar `mergeable=true`. El modo activo obtiene sus objetos
+en el bare propio del tren, como se describe abajo.
 
 Contrato de evidencia U1 (JSON UTF-8; sin Markdown alrededor):
 
@@ -297,6 +299,9 @@ eventos y continuación anteriores; jamás drena el outbox operativo.
 El feedback D6 está implementado. Siguen siendo requisitos de activación:
 
 - Acreditar la enmienda de gobierno D2 y la exclusividad cooperativa D8.
+- Dar al transporte git acceso de lectura a `remoto`, incluidos los heads
+  `refs/pull/<PR>/head`. El modo activo no requiere un sincronizador externo
+  del checkout de admisión.
 - Acreditar en el lanzador real deduplicación/reenganche durable por nombre
   o evidencia e intento para suite, reanudación y repetición. Hace falta una
   prueba de contrato con muerte después de aceptar trabajo y antes de
@@ -307,9 +312,19 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
 Esta unidad no activa repos, no instala tareas y no cambia el gobierno.
 
 Además de la configuración de admisión, el tick activo requiere `remoto`
-explícito (URL de git sin credenciales o ruta a un origen). `git` sigue siendo
-el checkout local con los objetos necesarios para observar admisión. Para
-usar Hasito, `lanzador_hasito` es la ruta absoluta a su lanzador existente;
+explícito (URL de git sin credenciales o ruta a un origen). En activo, el
+observador comparte el bare `pao-tren/git/` de `GitTren` con el ejecutor:
+antes de evaluar cada PR trae el SHA exacto de su base y la ref
+`refs/pull/<PR>/head` del remoto, también para PR de forks, y verifica que el
+head obtenido coincida con la API. Allí lee `merge-base` y `merge-tree`
+legacy. El bare conserva las garantías de aislamiento y transporte de U2.
+Esto permite observar el siguiente lote tras aterrizar C y rearmar tras un
+avance externo de main y la reanudación de Felix, sin sincronización externa.
+Un fallo de fetch o un SHA que no coincide deja la vista incompleta:
+retiene y reintenta en el siguiente tick, sin rojo ni devolución al dueño.
+`git` sigue configurando únicamente la lectura de sombra/`--seco`; el modo
+activo no toca su HEAD, ramas, índice ni árbol de trabajo. Para usar Hasito,
+`lanzador_hasito` es la ruta absoluta a su lanzador existente;
 sin adaptador, los efectos de suite quedan fallidos y visibles, reintentables.
 `costo_suite_sana_s` puede aportar el presupuesto de diagnóstico antes de que
 el ledger tenga una suite sana. Estos datos viven en el config privado:

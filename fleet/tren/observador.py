@@ -10,6 +10,7 @@ from urllib.parse import urlparse
 
 from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
                      VistaPR, rama_ci, recibo_ci)
+from git_ops import FalloGit, GitTren
 
 
 CONCLUSIONES_CI = {
@@ -57,11 +58,12 @@ def sha(valor):
 
 
 class GitHubGit:
-    def __init__(self, config, ejecutar=None, sombra=False, activo=False):
+    def __init__(self, config, ejecutar=None, sombra=False, activo=False, almacen=None):
         self.config = config
         self.ejecutar = ejecutar or subprocess.run
         self.sombra = sombra
         self.activo = activo
+        self.almacen = almacen
 
     def comando(self, args):
         return self.ejecutar(args, check=True, capture_output=True, text=True,
@@ -214,11 +216,16 @@ class GitHubGit:
             base = payload["base"]["sha"]
             if not sha(base):
                 raise ValueError("base inválida")
-            ancestro = self.git("merge-base", base, head)
-            if not sha(ancestro):
-                raise ValueError("ancestro inválido")
-            # Legacy merge-tree is read-only (no --write-tree / object creation).
-            fusion = self.git("merge-tree", ancestro, base, head)
+            if self.activo and not self.sombra:
+                if self.almacen is None:
+                    self.almacen = GitTren(self.config["remoto"])
+                fusion = self.almacen.fusion_lectura(base, pr, head)
+            else:
+                ancestro = self.git("merge-base", base, head)
+                if not sha(ancestro):
+                    raise ValueError("ancestro inválido")
+                # Legacy merge-tree is read-only (no --write-tree / object creation).
+                fusion = self.git("merge-tree", ancestro, base, head)
             conflicto = bool(re.search(r"^\+?<<<<<<< ", fusion, re.MULTILINE))
             # Both sources must be certain. A stale/unavailable local object retains.
             if payload.get("mergeable") is not True:
@@ -242,7 +249,7 @@ class GitHubGit:
                     or final["state"] != payload["state"]):
                 return replace(vista, completa=False)
             return vista
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        except (FalloGit, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             return replace(vista, completa=False)
 
     def observar(self, estado, ahora):

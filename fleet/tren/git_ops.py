@@ -123,6 +123,24 @@ class GitTren:
                    aislado=False)
         return self.texto("rev-parse", "--verify", "FETCH_HEAD^{commit}")
 
+    def fusion_lectura(self, base, pr, head):
+        """Admisión activa en el bare propio, sin tocar el checkout humano.
+
+        El head se obtiene por la ref de PR (también para forks) y debe seguir
+        coincidiendo con el SHA leído en la API. Un fallo deja la vista incompleta.
+        """
+        if not sha(base) or not sha(head) or type(pr) is not int or pr <= 0:
+            raise FalloGit("lectura-invalida")
+        self.preparar()
+        if self.traer(base) != base:
+            raise FalloGit("base-no-coincide")
+        if self.traer("refs/pull/{}/head".format(pr)) != head:
+            raise FalloGit("head-no-coincide")
+        ancestro = self.texto("merge-base", base, head)
+        if not sha(ancestro):
+            raise FalloGit("ancestro-invalido")
+        return self.texto("merge-tree", ancestro, base, head)
+
     def armar(self, B, miembros):
         """Fecha UTC = max(committer timestamp de B y todos los H) + índice (1..N).
 
