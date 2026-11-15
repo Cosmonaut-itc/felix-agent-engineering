@@ -86,8 +86,11 @@ class EscritorGitHub:
                 "unidad", "check", "conjunto_causal")},
                 "firma": "sha256:" + hashlib.sha256(f["firma"].encode("utf-8")).hexdigest()[:16],
                 "comando": comando_publico(f, payload["C"])} for f in payload["fallos"]]
+            if "juicio" in payload:
+                publico["juicio"] = payload["juicio"]
             detalle = json.dumps(publico, ensure_ascii=True, sort_keys=True, indent=2)
-            texto = "Entrega devuelta por fallos atribuidos al PR.\n\n" + "\n".join(
+            texto = ("Entrega devuelta por juicio.\n\n" if "juicio" in payload else
+                     "Entrega devuelta por fallos atribuidos al PR.\n\n") + "\n".join(
                 "    " + linea for linea in detalle.splitlines())
             descripcion = "Entrega devuelta; detalle y reproducción en el comentario"
         elif efecto.tipo == "avisar-caducidad":

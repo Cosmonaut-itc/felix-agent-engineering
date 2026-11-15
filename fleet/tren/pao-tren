@@ -8,10 +8,11 @@ import sqlite3
 import subprocess
 import sys
 import time
+import uuid
 
 # Script location is trusted, independent of cwd, including python -I invocations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dominio import (Admitido, Entrada, Entrega, Estado, Observacion,
+from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
 from ledger import Ledger, filas_medicion
@@ -39,6 +40,12 @@ def positivo(valor):
     return numero
 
 
+def motivo(valor):
+    if not valor.strip():
+        raise argparse.ArgumentTypeError("motivo no puede estar vacío")
+    return valor
+
+
 def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     comandos = cli.add_subparsers(dest="comando", required=True)
@@ -52,6 +59,17 @@ def parser():
     estado = comandos.add_parser("estado")
     estado.add_argument("--repo", required=True, type=repositorio)
     estado.add_argument("--juicio", action="store_true")
+    juicio = comandos.add_parser("juicio")
+    juicio.add_argument("--repo", required=True, type=repositorio)
+    juicio.add_argument("--tren")
+    juicio.add_argument("--decision", required=True,
+                        choices=("absolver", "expulsar", "reanudar", "abortar"))
+    juicio.add_argument("--pr", type=positivo)
+    juicio.add_argument("--motivo", required=True, type=motivo)
+    pausa = comandos.add_parser("pausa")
+    pausa.add_argument("--repo", required=True, type=repositorio)
+    pausa.add_argument("--levantar", action="store_true")
+    pausa.add_argument("--motivo", required=True, type=motivo)
     tick = comandos.add_parser("tick")
     tick.add_argument("--repo", required=True, type=repositorio)
     tick.add_argument("--seco", action="store_true")
@@ -65,10 +83,12 @@ def parser():
 
 def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=None,
              escritor=None):
-    if args.comando == "tick" and not args.seco:
+    if args.comando in ("juicio", "pausa") or args.comando == "tick" and not args.seco:
         inscripcion = activacion(args.repo)
         if inscripcion != "activo":
-            return 2, {"error": "tick activo requiere inscripción activa",
+            mensaje = ("tick activo requiere inscripción activa" if args.comando == "tick" else
+                       "comando activo requiere inscripción activa")
+            return 2, {"error": mensaje,
                        "inscripcion": inscripcion or "no-inscrito"}
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)
@@ -76,6 +96,27 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
     ledger = Ledger()
     ahora = time.time() if ahora is None else ahora
     try:
+        if args.comando in ("juicio", "pausa"):
+            from juicios import error_decision
+            with ledger.candado(args.repo):
+                if activacion(args.repo) != "activo":
+                    return 2, {"error": "comando activo requiere inscripción activa"}
+                estado = ledger.estado(args.repo, operativo=True)
+                decision = Decision(uuid.uuid4().hex, args.repo,
+                    args.tren if args.comando == "juicio" else None,
+                    args.decision if args.comando == "juicio" else
+                    "levantar" if args.levantar else "pausar",
+                    args.pr if args.comando == "juicio" else None,
+                    args.motivo, ahora, ledger.pausa_id(args.repo, estado), estado.pausa)
+                error = error_decision(estado, decision, decision.pausa_id)
+                if error:
+                    return 2, {"error": error}
+                if ledger.siguiente_decision(args.repo) is not None:
+                    return 2, {"error": "decision-pendiente"}
+                ledger.registrar_decision(decision)
+                if frontera:
+                    frontera("decision-guardada", None)
+                return 0, {"decision": datos(decision), "estado": "pendiente"}
         if args.comando == "entregar":
             # Freeze relative local references, so subsequent ticks can have another cwd.
             refs = [v if v.startswith("https://") else str(Path(v).resolve())
@@ -112,11 +153,15 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
             from operativo import resumen_outbox
             # Snapshot SQLite consistente, legible incluso con IO bajo flock.
             with ledger.transaccion(escritura=False):
-                return 0, {"estado": datos(ledger.estado(args.repo)),
+                resultado = {"estado": datos(ledger.estado(args.repo)),
                            "sombra": datos(ledger.estado(args.repo, sombra=True,
                                                          doble_camino=modo(args.repo) == "sombra")),
                            "outbox": resumen_outbox(ledger, args.repo),
                            "eventos": ledger.ultimos_eventos(args.repo)}
+                if args.juicio:
+                    from juicios import expediente
+                    resultado["juicio"] = expediente(ledger, args.repo)
+                return 0, resultado
         with ledger.candado(args.repo):
             if not args.seco:
                 # Releer tras esperar el flock: pudieron retirar la inscripción.
