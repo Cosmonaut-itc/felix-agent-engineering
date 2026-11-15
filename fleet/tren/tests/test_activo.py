@@ -75,7 +75,11 @@ class Contexto:
                 "in_progress" if pendiente else "completed", "conclusion":
                 None if pendiente else "success"}]}]
         elif "/statuses?" in endpoint:
-            valor = [[]]
+            head = endpoint.split("/")[4]
+            posts = self.raiz / "posts.log"
+            publicados = [json.loads(s) for s in posts.read_text().splitlines()] if posts.exists() else []
+            valor = [[p["payload"] for p in reversed(publicados)
+                      if p["endpoint"].endswith("/statuses/" + head)]]
         elif "/files?" in endpoint:
             valor = [[{"filename": "src/producto.py"}]]
         else:

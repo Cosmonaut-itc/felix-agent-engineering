@@ -399,7 +399,10 @@ coordinadora ni escrituras a repos externos durante esa verificación.
 
 ## Feedback al dueño (U14, D6)
 
-El dueño registra su watch del PR antes de entregar. El escritor
+El dueño registra su watch del PR antes de entregar. En modo activo,
+`pao-tren/resultado` es una señal al dueño y se excluye del gate de CI: un
+aviso de caducidad no impide reentregar el mismo head actual. Los demás
+checks/statuses conservan sus gates; la lectura de sombra no cambia. El escritor
 `feedback.EscritorGitHub`, separado del observador de sólo lectura, usa
 `gh api --method POST` para comentarios y statuses; la sesión de `gh`
 aporta las credenciales. No se publica configuración privada. Sólo el tick

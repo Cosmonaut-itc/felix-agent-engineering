@@ -93,6 +93,11 @@ class GitHubGit:
         # Status API returns newest first. A newer pending status supersedes green.
         ultimos = {}
         for status in statuses:
+            # D6 despierta al dueño; no es CI. Tras caducar, el head actual
+            # debe poder reentregarse sin que nuestro aviso lo retenga solo.
+            # Sombra conserva la política histórica de lectura de statuses.
+            if self.activo and status["context"] == "pao-tren/resultado":
+                continue
             ultimos.setdefault(status["context"], status["state"])
         esperados = self.config.get("checks_esperados")
         if esperados is not None and any(n not in checks for n in esperados):

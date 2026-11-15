@@ -138,7 +138,7 @@ c.tick(frontera=frontera)
         self.assertEqual(self.posts("/statuses/")[0], self.posts("/statuses/")[1])
 
     def test_caducidad_head_cambiado_sin_tren_status_en_head_actual(self):
-        nuevo = self.commit({"comun": "base\n", "nuevo": "head\n"}, (self.B,))
+        nuevo = self.commit({"comun": "base\n", "nuevo": "head\n"}, (self.miembros[0][1],))
         self.push(nuevo, "refs/pull/1/head")
         self.contexto.config["miembros"][0][1] = nuevo
         self.contexto.tick()
@@ -148,6 +148,8 @@ c.tick(frontera=frontera)
         self.assertTrue(self.posts("/statuses/")[0]["endpoint"].endswith(nuevo))
         self.contexto.tick(200)
         self.assertEqual(len(self.posts()), 2)
+        # El aviso failure despierta al dueño, pero no invalida CI de su head.
+        self.assertEqual(self.contexto.observador.ci(activo.REPO, nuevo), "verde")
 
     def test_caducidad_pr_cerrado_comenta_sin_status(self):
         self.hasta_fase(activo.Congelado)
@@ -207,7 +209,7 @@ c.tick(frontera=frontera)
         fallo.write_text("/statuses/")
         self.contexto.tick()
         self.assertTrue(all(f["estado"] == "fallido" for f in self.filas()))
-        nuevo = self.commit({"nuevo": "push\n"}, (self.B,))
+        nuevo = self.commit({"nuevo": "push\n"}, (self.miembros[0][1],))
         self.push(nuevo, "refs/pull/1/head")
         self.contexto.config["miembros"][0][1] = nuevo
         fallo.rename(self.raiz / "fallo-post-retirado")
@@ -215,6 +217,18 @@ c.tick(frontera=frontera)
         self.assertEqual(len(self.posts("/comments")), 2)  # uno por efecto
         self.assertEqual(json.loads(self.filas()[-1]["resultado"])["status_sha"], nuevo)
         self.assertTrue(all(f["estado"] == "completo" for f in self.filas()))
+
+    def test_contexto_feedback_no_es_ci_en_activo_y_sombra_conserva_su_regla(self):
+        self.sembrar_devoluciones(pausa=True)
+        self.contexto.tick()
+        head = self.miembros[0][1]
+        self.assertEqual(self.contexto.observador.ci(activo.REPO, head), "verde")
+        sombra = activo.GitHubGit(self.contexto.config, ejecutar=self.contexto.gh, sombra=True)
+        self.assertEqual(sombra.ci(activo.REPO, head), "pendiente")
+        self.contexto.feedback_gh(["gh", "api", "--method", "POST",
+            "repos/{}/statuses/{}".format(activo.REPO, head), "--input", "-"],
+            input=json.dumps({"context": "otro-check", "state": "failure"}))
+        self.assertEqual(self.contexto.observador.ci(activo.REPO, head), "pendiente")
 
     def test_seco_entregar_y_sombra_no_publican_aun_con_feedback_pendiente(self):
         self.sembrar_devoluciones(pausa=True)
