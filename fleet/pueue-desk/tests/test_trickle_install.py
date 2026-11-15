@@ -20,7 +20,13 @@ class AdmissionInstallTests(unittest.TestCase):
         before=self.f.fingerprint();out=self.f.install(True)
         self.assertEqual(before,self.f.fingerprint())
         self.assertIn('guard_admission',out)
-        self.f.install();row=self.table()
+        self.f.install();self.table()
+        attempt=dict(boot_id='12345678-1234-1234-1234-123456789abc',reserved_ns=100,completed_ns=None,
+            at='2026-11-14T16:00:00+00:00',generation=self.f.generation(),grupo='jale',id=1,
+            created_at='2026-11-14T15:00:00+00:00',enqueued_at='2026-11-14T15:01:00+00:00',outcome='unknown')
+        value=dict(version=1,last_attempt=attempt,last_confirmed=None)
+        row=control.canonical(value)
+        with self.f.engine.connect(write=True) as db:db.execute('UPDATE guard_admission SET body=?',(row,))
         self.f.install();self.assertEqual(self.table(),row)
         self.assertGreaterEqual(len(list(self.f.library.glob('control.py.pre-sen6417-*'))),2)
         self.assertEqual(self.f.p.calls,[])
