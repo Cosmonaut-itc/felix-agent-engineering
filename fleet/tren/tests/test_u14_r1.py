@@ -9,7 +9,7 @@ from unittest.mock import patch
 
 import test_activo as activo
 import test_feedback as feedback
-from dominio import Entrega, Pausa, Terminal, clave, desde_datos, paso
+from dominio import Entrega, Motivo, Pausa, Retenido, Terminal, clave, desde_datos, paso
 
 
 @contextmanager
@@ -162,6 +162,26 @@ sys.exit(9)
 
 
 class U14R1InvariantesTests(unittest.TestCase):
+    def test_eventos_sombra_historicos_y_gate_pending_sin_cambios(self):
+        with contexto() as c:
+            args = activo.cli.parser().parse_args(["tick", "--repo", activo.REPO, "--seco"])
+            _, salida = activo.cli.ejecutar(args, c.contexto.observador, 100)
+            self.assertEqual([e["tipo"] for e in salida["plan"]["efectos"]], ["armar-candidato"])
+            with c.ledger() as ledger:
+                evento = ledger.db.execute("SELECT payload FROM events WHERE tipo='sombra'").fetchone()[0]
+                self.assertEqual(json.loads(evento), salida["plan"])
+                self.assertEqual(ledger.outbox(activo.REPO), [])
+            c.contexto.tick(100)
+            self.assertEqual(len(c.posts("/statuses/")), 3)
+            c.inscritos.write_text(activo.REPO + " sombra\n")
+            sombra = activo.GitHubGit(c.contexto.config, ejecutar=c.contexto.gh, sombra=True)
+            _, salida = activo.cli.ejecutar(args, sombra, 101)
+            simulado = desde_datos(salida["plan"]["estado"])
+            self.assertFalse(simulado.trenes)
+            self.assertTrue(all(e.admision == Retenido(Motivo.CI) for e in simulado.entradas))
+            self.assertEqual(salida["plan"]["efectos"], [])
+            self.assertEqual(len(c.posts()), 3)
+
     def test_pending_retrasado_no_tapa_success_y_no_bloquea_otros_pr(self):
         with contexto() as c:
             head = c.miembros[0][1]

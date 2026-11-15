@@ -148,6 +148,10 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
             observacion = observador.observar(estado, ahora)
             reductor = paso_sombra if doble_camino else paso
             nuevo, efectos = reductor(estado, observacion)
+            # La simulación conserva sus eventos históricos: las señales de
+            # incorporación/aterrizaje sólo pertenecen al outbox operativo.
+            from feedback import STATUS_SOLO
+            efectos = tuple(e for e in efectos if e.tipo not in STATUS_SOLO)
             plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
             return 0, {"modo": "sombra", "plan": plan}
     finally:

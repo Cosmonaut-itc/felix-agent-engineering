@@ -437,6 +437,9 @@ status sobre el head entregado: `pending` («En el tren; lote …») y `success`
 que forman otra generación reciben otro `pending` con su lote y clave nuevos.
 La emisión es pura; el paso y su outbox comparten COMMIT, por lo que una muerte
 después de guardarlos deja el status pendiente para el tick siguiente.
+La simulación con `tick --seco` filtra estas dos señales antes de escribir
+su evento `sombra`; conserva sus efectos históricos. `paso_sombra` y los
+eventos `sombra-doble-camino` y `admision-entrega` mantienen su contrato.
 
 Cada `avisar-caducidad` resuelve su recibo contra la entrada durable y publica
 un comentario con el motivo exacto de `Rechazado` y la instrucción de volver
