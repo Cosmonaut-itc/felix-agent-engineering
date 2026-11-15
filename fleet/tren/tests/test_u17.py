@@ -13,6 +13,7 @@ from unittest.mock import patch
 import test_activo as activo
 import test_u16 as u16
 from dominio import Admitido, Armado, Certificado, Congelado, Retenido, Terminal, datos
+from git_ops import GitTren
 from observador import GitHubGit
 
 REPO = activo.REPO
@@ -125,11 +126,20 @@ class RegresionesTests(ContextoLectura):
         self.avanzar(lambda e: e.trenes and isinstance(e.trenes[0].fase, Certificado))
         # Crear fuera del checkout de admisión y fuera del bare del tren.
         ajeno = self.commit({'comun': 'base\n', 'externo': 'cambio\n'}, (self.B,))
-        self.push(ajeno, 'refs/heads/main')
+        self.push(ajeno, 'refs/heads/ajeno')
         self.sin_objeto_humano(ajeno)
+        promover = GitTren.promover
+        def avance_externo(git, *args):
+            # Mover main después de observar B y antes del CAS: ambos códigos
+            # deben pausar, y la regresión debe ser la readmisión al reanudar.
+            self.push(ajeno, 'refs/heads/main')
+            return promover(git, *args)
+        with patch.object(GitTren, 'promover', avance_externo):
+            self.tick_real()
         for _ in range(10):
             if self.tick_real().pausa:
                 break
+        self.assertIsNotNone(self.estado().pausa)
         self.assertEqual(self.estado().pausa.motivo, 'escritor-externo')
         self.juicio('reanudar')
         self.tick_real()
