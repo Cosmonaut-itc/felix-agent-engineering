@@ -422,5 +422,13 @@ class TrickleTests(DeskFixture):
         (self.engine.directory/'maintenance').touch()
         with self.assertRaises(ValueError):self.resolve_uncertain()
 
+    def test_execution_before_reservation_is_not_evidence(self):
+        self.uncertain(executed=True)
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.tasks['1']['status']['Running']['start']=self.iso(-1)
+        self.assertFalse(self.engine._execution_confirmed(value['last_attempt'],self.state()))
+        (self.engine.directory/'maintenance').touch()
+        with self.assertRaises(ValueError):self.resolve_uncertain()
+
 if __name__=='__main__':unittest.main()
 
