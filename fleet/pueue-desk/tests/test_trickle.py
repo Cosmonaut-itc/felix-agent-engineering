@@ -390,5 +390,20 @@ class TrickleTests(DeskFixture):
             except SystemExit as error:self.fail('CLI resolver-admision debe aceptarse: '+str(error))
         self.assertEqual(json.loads(output.getvalue())['resultado'],'not_sent')
 
+    def test_clock_unreadable_at_completion_keeps_uncertainty(self):
+        self.after=lambda task:setattr(self,'ns',self.ns+20_000_000_000)
+        def clock():
+            if self.starts():raise OSError('clock unavailable')
+            return BOOT,self.ns
+        self.engine.boot_clock=clock;self.run_guard()
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.assertIn(value['last_attempt']['outcome'],('reserved','unknown'))
+        self.assertIsNone(value['last_attempt']['completed_ns'])
+        self.after=None;self.engine.boot_clock=lambda:(BOOT,self.ns)
+        self.ns+=40_000_000_000;self.run_guard()
+        self.assertEqual(len(self.starts()),1)
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.assertEqual(value['last_attempt']['completed_ns'],self.ns)
+
 if __name__=='__main__':unittest.main()
 
