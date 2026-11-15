@@ -57,7 +57,7 @@ class StartupTests(DeskFixture):
     def boot(self):
         image = json.loads(self.path.read_text())
         self.p.groups = copy.deepcopy(image['groups'])
-        self.gen = 'desk-daemon-2'
+        self.gen = 'linux-proc-v1:2222222222222222222222222222222222222222222222222222222222222222'
         return image
 
     def test_s_w1_offsets_calendar_and_nested_reject_without_writes_or_start(self):
@@ -410,13 +410,14 @@ class InstallerStartupTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('u34_install',Path(control.__file__).with_name('install-desk.py'))
         self.installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(self.installer)
         self.config.write_text('{}')
+        self.pid.write_text('321\n')
         self.directory=self.home/'.local/state/pao/pueue-desk'
         self.library=self.home/'.local/lib/pao-pueue-desk';self.library.mkdir(parents=True)
         (self.library/'control.py').write_text('# previous controller\n')
         from test_slots import FakePueue
         self.p=FakePueue();self.now=utc('2026-11-14T13:59:59')
         self.p.groups={g:dict(status='Running',parallel_tasks=n) for g,n in control.desk_profile(self.now).items()}
-        self.engine=control.MiniControl(self.p,self.directory,host='desk',clock=lambda:self.now,generation=lambda:'live-original')
+        self.engine=control.MiniControl(self.p,self.directory,host='desk',clock=lambda:self.now,generation=lambda:'linux-proc-v1:3333333333333333333333333333333333333333333333333333333333333333')
         with control.locked(self.directory):self.engine.adopt(self.pid)
         (self.data/'state.json').write_text(json.dumps(dict(tasks={},groups=self.p.groups)))
         self.syscalls=[]
@@ -448,7 +449,7 @@ class InstallerStartupTests(unittest.TestCase):
         for manager in (patch.object(control,'validate_configuration',side_effect=validate),
                         patch.object(control,'Pueue',return_value=self.p),
                         patch.object(control,'MiniControl',return_value=self.engine),
-                        patch.object(control,'mini_generation',return_value='live-original'),
+                        patch.object(control,'desk_generation',return_value='linux-proc-v1:3333333333333333333333333333333333333333333333333333333333333333'),
                         patch.object(self.installer,'run',side_effect=systemctl)):
             manager.start();self.addCleanup(manager.stop)
 
@@ -473,7 +474,7 @@ class InstallerStartupTests(unittest.TestCase):
                 with self.assertRaises(ValueError):self.installer.install(self.home,self.pid,control,dry_run=dry)
                 self.assertEqual(self.fingerprint(),before)
                 self.assertTrue(all(c[2]=='show-environment' for c in self.syscalls))
-                self.assertEqual(self.engine.generation(None),'live-original')
+                self.assertEqual(self.engine.generation(None),'linux-proc-v1:3333333333333333333333333333333333333333333333333333333333333333')
                 self.assertEqual(self.p.calls,[])
 
     def test_all_pending_receipts_reject_even_when_schema_already_current(self):
@@ -502,7 +503,7 @@ class InstallerStartupTests(unittest.TestCase):
         stops=[c for c in self.syscalls if c[2]=='stop']
         self.assertEqual(stops,[('systemctl','--user','stop',*self.installer.TIMERS),('systemctl','--user','stop',*self.installer.SERVICES)])
         self.assertFalse((self.directory/'maintenance').exists())
-        self.assertEqual(self.engine.generation(None),'live-original')
+        self.assertEqual(self.engine.generation(None),'linux-proc-v1:3333333333333333333333333333333333333333333333333333333333333333')
         self.assertEqual(self.p.calls,[])
 
     def test_preexisting_maintenance_and_broken_symlink_are_never_removed(self):

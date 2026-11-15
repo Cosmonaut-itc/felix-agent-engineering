@@ -105,8 +105,6 @@ CASES += [
   'test_startup_injerto.InstallerGraftTests.test_timer_services_require_running_daemon_without_starting_it'),
 ]
 for key,condition in (
- ('pid',"loaded['MainPID'] != engine.install_unit_before['MainPID']"),
- ('active',"loaded['ActiveState'] != engine.install_unit_before['ActiveState']"),
  ('reload',"loaded['NeedDaemonReload'] != 'no'"),
  ('restart',"loaded['Restart'] != 'always'"),
  ('killmode',"loaded['KillMode'] != 'mixed'"),
@@ -129,6 +127,19 @@ CASES += [
  ('show-requires-every-property','install-desk.py',"    if set(values) != set(SHOWN):","    if False:",
   'InstallerStartupTests.test_pre_u34_unit_without_exec_start_pre_installs_and_missing_property_blocks'),
 ]
+
+
+# DESK-GEN: daemon_fence also guards MainPID and ActiveState before maintenance
+# lifts, so each mutant removes every comparison of its property, not just one.
+CASES.append(('loaded-unit-pid','install-desk.py',
+ ("if (loaded['MainPID'] != engine.install_unit_before['MainPID']","or loaded['MainPID'] != str(int(pid))",
+  "or loaded['MainPID'] != engine.install_unit_before['MainPID']):"),
+ ("if (False","or False","or False):"),
+ 'test_startup_injerto.InstallerGraftTests.test_loaded_unit_mismatch_retains_maintenance_and_no_timer_restart'))
+CASES.append(('loaded-unit-active','install-desk.py',
+ ("or loaded['ActiveState'] != engine.install_unit_before['ActiveState']","or loaded['ActiveState'] != 'active'"),
+ ("or False","or False"),
+ 'test_startup_injerto.InstallerGraftTests.test_loaded_unit_mismatch_retains_maintenance_and_no_timer_restart'))
 
 
 def main():

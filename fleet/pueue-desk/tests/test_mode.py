@@ -495,7 +495,7 @@ class ModeInstallTests(DeskFixture):
                         patch.object(control,'read_queue',return_value=dict(tasks={},groups={})),
                         patch.object(control,'Pueue',return_value=self.p),
                         patch.object(control,'MiniControl',side_effect=factory),
-                        patch.object(control,'mini_generation',return_value=self.gen),
+                        patch.object(control,'desk_generation',return_value=self.gen),
                         patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,commands,*a))):
             manager.start();self.addCleanup(manager.stop)
         return installer,home,target,original,receipts,commands

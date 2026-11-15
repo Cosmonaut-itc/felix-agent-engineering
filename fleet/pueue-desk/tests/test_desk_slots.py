@@ -26,8 +26,9 @@ class DeskFixture(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory(prefix='u32-sol-', dir='/tmp')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        (self.root/'pid').write_text('321\n')
         self.now = utc('2026-11-14T13:59:59')
-        self.gen = 'desk-daemon-1'
+        self.gen = 'linux-proc-v1:1111111111111111111111111111111111111111111111111111111111111111'
         self.p = FakePueue()
         self.p.groups = {g: dict(parallel_tasks=n, status='Running') for g, n in control.desk_profile(self.now).items()}
         self.p.groups.update(default=dict(parallel_tasks=1, status='Paused'), ajeno=dict(parallel_tasks=6, status='Paused'))
@@ -493,7 +494,7 @@ class DeskSlotsTests(DeskFixture):
         self.assertEqual(self.status(r)['receipt_digest'],hashlib.sha256(control.canonical(dict(host='desk',request=r)).encode()).hexdigest())
 
     def test_lost_parallel_reconciles_without_opening_reserved_foreign_or_ambiguous(self):
-        self.engine.handle(self.request());self.gen='desk-daemon-2'
+        self.engine.handle(self.request());self.gen='linux-proc-v1:2222222222222222222222222222222222222222222222222222222222222222'
         self.p.groups['jale'].update(parallel_tasks=7,status='Paused');self.p.calls.clear()
         self.engine.guard(self.low)
         self.assertEqual(self.p.groups['jale']['parallel_tasks'],6)
@@ -655,7 +656,7 @@ class DeskInstallTests(DeskFixture):
                         patch.object(new, 'read_queue', return_value=dict(tasks={},groups={})),
                         patch.object(new, 'Pueue', return_value=self.p),
                         patch.object(new, 'MiniControl', side_effect=factory),
-                        patch.object(new, 'mini_generation', return_value=self.gen),
+                        patch.object(new, 'desk_generation', return_value=self.gen),
                         patch.object(installer, 'SOURCE', candidate),
                         patch.object(installer, 'run', side_effect=lambda *a:self.systemctl(home,commands,*a))):
             manager.start(); self.addCleanup(manager.stop)
@@ -806,7 +807,7 @@ class DeskInstallTests(DeskFixture):
                     installer.main()
                 return out.getvalue()
         with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
-             patch.object(control, 'mini_generation', return_value=self.gen) as pid, \
+             patch.object(control, 'desk_generation', return_value=self.gen) as pid, \
              patch.object(installer, 'run', side_effect=lambda *a:self.systemctl(home,commands,*a)) as run:
             for invalid in ('table', 'pid', 'timer', 'corrupt', 'lost'):
                 with self.subTest(invalid=invalid):
@@ -864,7 +865,7 @@ class DeskInstallTests(DeskFixture):
             return self.systemctl(home, [], *argv)
         try:
             with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
-                 patch.object(control, 'mini_generation', return_value=self.gen), patch.object(installer, 'run', side_effect=run):
+                 patch.object(control, 'desk_generation', return_value=self.gen), patch.object(installer, 'run', side_effect=run):
                 installer.install(home, self.root/'pid', control)
         finally:
             release.set(); worker.join(3)
@@ -896,7 +897,7 @@ class DeskInstallTests(DeskFixture):
         factory=lambda p,d,**kw:Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         commands=[]
         with patch.object(control,'Pueue',return_value=self.p),patch.object(control,'MiniControl',side_effect=factory), \
-             patch.object(control,'mini_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,commands,*a)):
+             patch.object(control,'desk_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,commands,*a)):
             installer.install(home,self.root/'pid',control)
             directory=home/'.local/state/pao/pueue-desk'
             engine=factory(self.p,directory,host='desk')
@@ -926,7 +927,7 @@ class DeskInstallTests(DeskFixture):
         factory=lambda p,d,**kw:Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         self.p.groups['jale']['parallel_tasks']=6
         with patch.object(control,'Pueue',return_value=self.p),patch.object(control,'MiniControl',side_effect=factory), \
-             patch.object(control,'mini_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,[],*a)) as run:
+             patch.object(control,'desk_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,[],*a)) as run:
             with self.assertRaises(ValueError):installer.install(home,self.root/'pid',control)
             self.assertFalse((home/'.local/state').exists());self.assertEqual(target.read_text(),'# previous\n')
             self.p.groups['jale']['parallel_tasks']=7
