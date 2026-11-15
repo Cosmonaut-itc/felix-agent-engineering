@@ -670,10 +670,15 @@ def paso(estado, observacion):
     vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
     # A landed PR closes as merged; its delivery is settled, not expired.
     terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
+    # En pausa no se consume ni recupera promover: su push puede haber cerrado
+    # los PR. Diferir su readmisión hasta reconciliar main al reanudar.
+    promociones_pausadas = {t.id for t in activos
+                           if estado.pausa and isinstance(t.fase, Promoviendo)}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
-        if isinstance(entrada.admision, Rechazado) or entrada.tren in terminales:
+        if (isinstance(entrada.admision, Rechazado) or
+                entrada.tren in terminales | promociones_pausadas):
             entradas.append(entrada)
             continue
         decision = admision_entrada(entrada, vistas, observacion)

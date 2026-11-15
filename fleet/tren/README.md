@@ -534,6 +534,14 @@ muestra la orden pendiente y el snapshot anterior. El feedback sigue
 publicándose durante la pausa y respeta el orden de U14. `tick --seco` no
 consume decisiones ni cambia esta continuación operativa.
 
+Mientras el carril está en pausa, se conserva la admisión de los miembros
+de un tren en `Promoviendo`: el push puede haber aterrizado con su ACK aún
+guardado o perdido tras una muerte. Sus caducidades se difieren hasta la
+reconciliación de main al reanudar, antes de readmitirlos; si aterrizó, sus
+entregas quedan resueltas sin avisos falsos. La regla vale también para las
+pausas automáticas que conservan `Promoviendo`. Las demás entregas siguen
+readmitiéndose y el feedback pendiente sigue drenándose durante la pausa.
+
 La identidad de la pausa es la primera secuencia `operativo` de su aparición
 (más el caso de la pausa inicial), no sólo su texto. Ticks pausados conservan
 la identidad; levantar y volver a pausar la renueva. Los snapshots anteriores
