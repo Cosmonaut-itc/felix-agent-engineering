@@ -11,7 +11,7 @@ import subprocess
 from dominio import (Admitido, Incierto, Promoviendo, Terminal, admision_entrada,
                      datos, desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
-from feedback import FEEDBACK, EscritorGitHub
+from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
 
 
@@ -30,12 +30,30 @@ def resultado_observacion(efecto, observacion):
     return {k: datos(getattr(observacion, k)) for k in campos}
 
 
+def outbox_en_orden(ledger, repo, estado, completados):
+    """Primero incompleto por PR; el llamador confirma cierres durante el IO."""
+    anteriores = {}
+    for fila in ledger.outbox(repo):
+        efecto = desde_datos(json.loads(fila["payload"]))
+        espera = None
+        if efecto.tipo in FEEDBACK:
+            pr = pr_feedback(efecto, estado)
+            anterior = anteriores.get(pr)
+            if anterior is not None and anterior not in completados:
+                espera = {"motivo": "feedback-anterior-incompleto", "pr": pr,
+                          "clave": anterior}
+            else:
+                anteriores[pr] = efecto.clave
+        yield fila, efecto, espera
+
+
 def resumen_outbox(ledger, repo):
-    return [{"clave": r["clave"], "efecto": json.loads(r["payload"]),
+    estado = ledger.estado(repo, operativo=True)
+    return [{"clave": r["clave"], "efecto": datos(efecto),
              "estado": r["estado"],
-             "ejecutor": json.loads(r["payload"])["tipo"] in EJECUTABLES,
+             "ejecutor": efecto.tipo in EJECUTABLES, "espera": espera,
              "resultado": json.loads(r["resultado"]) if r["resultado"] else None}
-            for r in ledger.outbox(repo)]
+            for r, efecto, espera in outbox_en_orden(ledger, repo, estado, set())]
 
 
 def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
@@ -55,12 +73,16 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
     observacion = observador.observar(estado, ahora)
 
     def drenar(estado, observacion, recuperacion=False):
-        for fila in ledger.outbox(repo):
+        completados = set()
+        for fila, efecto, espera in outbox_en_orden(ledger, repo, estado, completados):
+            # Se comprueba antes de iniciar: esperar no es intento ni fallo.
+            # Recuperación también respeta predecesores pendientes/fallidos.
+            if espera is not None:
+                continue
             if fila["estado"] == "resultado" or fila["clave"] in intentados:
                 continue
             if recuperacion and fila["estado"] != "ejecutando":
                 continue
-            efecto = desde_datos(json.loads(fila["payload"]))
             if efecto.tipo not in EJECUTABLES:
                 continue
             feedback = efecto.tipo in FEEDBACK
@@ -81,8 +103,7 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
             frontera("antes-ejecutar", efecto)
             try:
                 if feedback:
-                    resultado = escritor.ejecutar_feedback(efecto, estado, frontera,
-                        lambda head: ledger.status_posterior(repo, efecto, head))
+                    resultado = escritor.ejecutar_feedback(efecto, estado, frontera)
                     completo = True
                 else:
                     ejecucion = ejecutar(efecto, estado, observacion, git, hasito)
@@ -100,6 +121,8 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
             frontera("antes-registrar", efecto)
             ledger.registrar_efecto(repo, efecto, ahora, resultado, completo,
                                     sin_consumo=feedback)
+            if feedback and completo:
+                completados.add(efecto.clave)
             frontera("resultado-guardado", efecto)
 
     # Una muerte con el marcador durable puede haber producido IO sin ACK.

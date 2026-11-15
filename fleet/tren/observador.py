@@ -95,8 +95,9 @@ class GitHubGit:
         for status in statuses:
             # D6 despierta al dueño; no es CI. Tras caducar, el head actual
             # debe poder reentregarse sin que nuestro aviso lo retenga solo.
-            # Sombra conserva la política histórica de lectura de statuses.
-            if self.activo and status["context"] == "pao-tren/resultado":
+            # Sólo la sombra con doble camino conserva la lectura histórica.
+            # También el --seco sin doble camino usa el gate del tren activo.
+            if not self.sombra and status["context"] == "pao-tren/resultado":
                 continue
             ultimos.setdefault(status["context"], status["state"])
         esperados = self.config.get("checks_esperados")

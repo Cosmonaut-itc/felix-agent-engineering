@@ -11,6 +11,7 @@ bin/pao check
 git version
 bash fleet/tren/tests/remoto-u13-injerto.sh
 bash fleet/tren/tests/remoto-u14-r1.sh
+bash fleet/tren/tests/remoto-u14-r2.sh
 encontrado=0
 resultado=0
 for interprete in python3.9 python3.10 python3; do
@@ -27,5 +28,6 @@ fi
 if [ "$resultado" -eq 0 ]; then
   echo 'U13 injerto: cuatro regresiones fallan sobre a8a82602 y pasan después; toda la suite del tren pasa.'
   echo 'U14 R1: seis regresiones fallan sobre 49fd41dc y pasan después; toda la suite del tren pasa.'
+  echo 'U14 R2: dos regresiones fallan sobre 0a1aabd8 y pasan después; toda la suite del tren pasa.'
 fi
 exit "$resultado"

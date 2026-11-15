@@ -405,7 +405,9 @@ aviso de caducidad no impide reentregar el mismo head actual. Su ciclo es
 `pending` al incorporarse a un lote, `failure` al devolver o caducar y
 `success` al aterrizar. Así una reentrega del head vigente reemplaza el rojo
 anterior y el siguiente resultado vuelve a cambiar la señal. Los demás
-checks/statuses conservan sus gates; la lectura de sombra no cambia. El escritor
+checks/statuses conservan sus gates. Todo observador sin doble camino excluye
+ese contexto, incluido `tick --seco` en un repo activo. La sombra con doble
+camino conserva su lectura histórica de statuses y sus gates. El escritor
 `feedback.EscritorGitHub`, separado del observador de sólo lectura, usa
 `gh api --method POST` para comentarios y statuses; la sesión de `gh`
 aporta las credenciales. No se publica configuración privada. Sólo el tick
@@ -467,13 +469,19 @@ No se actualiza un comentario ya publicado.
 El drenaje de feedback ignora pausa y fase del tren, admite efectos sin tren
 y no toca main ni lanza suites. Un POST o lectura fallidos deja la fila
 `fallido`, visible en `estado` con error de clase pública, sin argv ni stderr.
-No bloquea otros efectos y se reintenta en el siguiente tick. La observación
-global del tick conserva el contrato U13: si falla, el tick no despacha IO.
-Antes de escribir un status se comprueba si el ledger ya confirmó otro efecto
-posterior sobre ese mismo SHA. En ese caso el antiguo cierra `completo` con
-`superado_por` y `status_sha: null`, conservando su comentario si lo tiene.
-Así un `pending` retrasado no tapa un aterrizaje, ni una caducidad antigua
-tapa el `pending` de una reentrega; los otros efectos continúan drenando.
+Se reintenta en el siguiente tick. El feedback de cada PR se ejecuta en orden
+estricto de emisión (inserción durable del efecto), incluso durante recuperación:
+un efecto espera hasta que todos sus predecesores del mismo PR estén `completo`.
+Se ordena por PR y no por SHA, pues la caducidad resuelve el head al ejecutarse.
+No se descarta ninguna señal: un `pending` retrasado se publica antes del
+`failure` o `success` posterior. Si un efecto anterior falla siempre, todo el
+feedback posterior de ese PR queda bloqueado y visible; requiere resolver el
+fallo para avanzar. Esperar no inicia un intento ni registra un fallo: la fila
+conserva su estado y `estado` muestra `espera` con el motivo
+`feedback-anterior-incompleto`, el PR y la clave del predecesor que la bloquea.
+El feedback de otros PR y el resto del drenaje continúan sin esperar.
+La observación global del tick conserva el contrato U13: si falla, el tick
+no despacha IO.
 
 Un feedback exitoso guarda en `effect_results` sólo `comentario_url` y
 `status_sha` (null cuando se omite status; `comentario_url` es null para los
@@ -490,6 +498,11 @@ activa repos. Continúan pendientes los requisitos de activación listados arrib
 Las pruebas de U14 usan el mismo origen git local de U13, un escritor `gh`
 falso que registra cada POST, HOME/XDG temporales, paginación y muertes
 reales entre comentario/status/COMMIT. El guion `tests/remoto.sh` reproduce
-las seis regresiones de R1 contra `49fd41dc` y descubre la suite completa del tren.
+las seis regresiones de R1 contra `49fd41dc`, las dos de R2 contra `0a1aabd8`
+y descubre la suite completa del tren. R2 comprueba la secuencia aceptada
+`failure → pending → failure` con pending fallido hasta que el lote vuelve rojo,
+el avance de otro PR, la espera visible sin intentos y el observador del CLI
+con `--seco`, sin POST. También cubre orden por PR entre heads distintos y
+durante recuperación.
 Se ejecuta sólo en el host remoto de pruebas,
 con el head commiteado y empujado a la rama de trabajo.

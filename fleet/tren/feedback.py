@@ -19,6 +19,12 @@ FEEDBACK = frozenset(("devolver", "avisar-caducidad")) | frozenset(STATUS_SOLO)
 CONTEXTO = "pao-tren/resultado"
 
 
+def pr_feedback(efecto, estado):
+    """Ordenar por dueño, incluso si la caducidad aún no conoce su head."""
+    recibo = efecto.datos[0 if efecto.tipo == "avisar-caducidad" else 1]
+    return next(e.entrega.pr for e in estado.entradas if e.entrega.recibo == recibo)
+
+
 def comando_publico(fallo, candidato):
     # El argv observado contiene lanzador, worktree y evidencia privados.
     # Sólo se transporta su SHA; las rutas se sustituyen por parámetros locales.
@@ -56,11 +62,8 @@ class EscritorGitHub:
                     return comentario["html_url"]
         return self.api(endpoint, {"body": marcador + "\n" + texto})["html_url"]
 
-    def ejecutar_feedback(self, efecto, estado, frontera, posterior=None):
+    def ejecutar_feedback(self, efecto, estado, frontera):
         def status(head, payload, url=None):
-            superado = posterior(head) if head is not None and posterior else None
-            if superado:
-                return {"comentario_url": url, "status_sha": None, "superado_por": superado}
             if head is not None:
                 self.api("repos/{}/statuses/{}".format(estado.repo, head), payload)
             return {"comentario_url": url, "status_sha": head}

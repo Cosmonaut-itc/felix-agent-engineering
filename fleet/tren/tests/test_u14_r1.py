@@ -197,15 +197,13 @@ class U14R1InvariantesTests(unittest.TestCase):
             final = c.terminar()
             self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
             self.assertEqual([p["payload"]["state"] for p in c.posts("/statuses/")],
-                             ["pending"] * 2 + ["success"] * 3)
+                             ["pending"] * 2 + ["success"] * 2)
+            self.assertEqual([p for p in c.posts("/statuses/") if p["endpoint"].endswith(head)], [])
             c.contexto.escritor.ejecutar = original
             c.contexto.tick(9000)
             c.contexto.tick(9100)
             self.assertEqual([p["payload"]["state"] for p in c.posts("/statuses/")
-                              if p["endpoint"].endswith(head)], ["success"])
-            omitidos = [json.loads(f["resultado"]) for f in c.filas()
-                        if f["resultado"] and "superado_por" in json.loads(f["resultado"])]
-            self.assertEqual(len(omitidos), 1)
+                              if p["endpoint"].endswith(head)], ["pending", "success"])
             with c.ledger() as ledger:
                 self.assertEqual(ledger.outbox(activo.REPO), [])
 

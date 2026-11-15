@@ -211,7 +211,7 @@ c.tick(frontera=frontera)
         fallo = self.raiz / "fallo-post"
         fallo.write_text("/statuses/")
         self.contexto.tick()
-        self.assertTrue(all(f["estado"] == "fallido" for f in self.filas()))
+        self.assertEqual([f["estado"] for f in self.filas()], ["fallido", "pendiente"])
         nuevo = self.commit({"nuevo": "push\n"}, (self.miembros[0][1],))
         self.push(nuevo, "refs/pull/1/head")
         self.contexto.config["miembros"][0][1] = nuevo
