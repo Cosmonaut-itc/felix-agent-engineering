@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -368,11 +369,13 @@ class DeskSlotsTests(DeskFixture):
                 self.engine.manual('hasito')
                 self.p.calls.clear()
                 original = getattr(self.engine, source)
-                reads = [0]
                 def crossing(*args):
                     value = original(*args)
-                    reads[0] += 1
-                    if reads[0] == 3:
+                    # The event crosses right after manual's own final read.
+                    caller = sys._getframe(1)
+                    while caller.f_code.co_filename.endswith('mock.py'):
+                        caller = caller.f_back
+                    if caller.f_code.co_name == 'manual':
                         self.now = utc('2026-11-%dT14:00:00' % day)
                     return value
                 with patch.object(self.engine, source, side_effect=crossing), \
