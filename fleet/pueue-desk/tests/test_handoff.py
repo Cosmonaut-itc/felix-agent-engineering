@@ -379,6 +379,20 @@ class HandoffTests(unittest.TestCase):
              patch.object(control,'prepare_start',side_effect=AssertionError('unowned prepare')):
             with self.assertRaisesRegex(ValueError,'MainPID'):h.m.start(execute=lambda *_:self.fail('unowned exec'))
 
+    def test_async_bootout_waits_for_dead_pid_before_bootstrap(self):
+        h=self.h;launch=h.m.launch
+        def retiring(*args,**kwargs):
+            result=launch(*args,**kwargs)
+            if args==('bootout',h.m.domain+'/'+mini.BREW):h.p.online=True
+            return result
+        h.m.launch=retiring
+        h.m.change('install')
+        self.assertEqual(h.policy()['mini_handoff']['phase'],'switch')
+        self.assertNotIn(mini.LABEL,h.loaded)
+        self.assertFalse(any(c[0]=='bootstrap' and Path(c[-1]).stem==mini.LABEL for c in h.calls))
+        h.p.online=False;h.m.launch=launch;h.finish()
+        self.assertEqual(h.owner,mini.LABEL)
+
     def test_mini_task_matrix_offline_crashes_and_repeated_prepare(self):
         h=self.h
         h.p.tasks={str(i):task(i,status,group) for i,status,group in (

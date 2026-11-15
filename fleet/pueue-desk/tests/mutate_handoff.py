@@ -62,6 +62,8 @@ CASES=[
   'test_mini_clients_and_fixed_exec_share_home_cwd_and_clean_config_environment'),
  ('wrapper-mainpid','mini.py',"        if info is None or not re.search(r'^\\s*pid = ' + str(os.getpid()) + r'\\s*$', info, re.M):",'        if False:',
   'test_unowned_wrapper_cannot_prepare_or_exec'),
+ ('wait-for-bootout','mini.py',"            except ValueError:\n                return False  # bootout may return before its verified PID/socket has exited",'            except ValueError:\n                pass',
+  'test_async_bootout_waits_for_dead_pid_before_bootstrap'),
 ]
 
 

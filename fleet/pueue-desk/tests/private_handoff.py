@@ -203,13 +203,12 @@ def main():
         p.call('shutdown');wait_for(lambda:verified_pid()!=old)
         emit(root,'keepalive_successful_exit',restarted=True)
         # Maintenance blocks both the fixed wrapper and the existing recovery/sensor job.
-        marker=m.directory/'maintenance';marker.write_text('private-u35\n')
-        p.call('shutdown')
+        m.maintenance()
         time.sleep(12)
         try:p.status()
         except subprocess.CalledProcessError:pass
         else:raise AssertionError('daemon reopened during maintenance')
-        marker.unlink();wait_for(lambda:p.status())
+        m.maintenance(resume=True);wait_for(lambda:p.status());wait_for(lambda:settled('done'))
         emit(root,'maintenance',no_reopen=True)
         # Requester dies at the critical bootout→bootstrap gap; only the periodic job finishes.
         class RequesterDied(BaseException):pass

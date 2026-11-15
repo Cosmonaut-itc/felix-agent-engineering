@@ -258,7 +258,10 @@ class Manager:
                 value['phase'] = 'verify'
                 self.save(state, 'handoff:verify')
                 return False
-            control.assert_offline(self.pueue, config['pid_file'])
+            try:
+                control.assert_offline(self.pueue, config['pid_file'])
+            except ValueError:
+                return False  # bootout may return before its verified PID/socket has exited
             if target == BREW:
                 # Brew lacks a pre-start hook: prepare this one return, before enabling it.
                 control.prepare_start(self.engine, configuration=config)
