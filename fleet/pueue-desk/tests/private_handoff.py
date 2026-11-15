@@ -25,6 +25,11 @@ control=mini.control
 LOW=dict(load=.1,memory=1)
 
 
+def host_clock_ns():
+    # Unlike Python 3.9's macOS monotonic epoch, this OS clock is shared by workers.
+    return time.clock_gettime_ns(time.CLOCK_MONOTONIC)
+
+
 def emit(root,event,**fields):
     line=json.dumps(dict(event=event,**fields),sort_keys=True)
     with (root/'events.jsonl').open('a') as stream:stream.write(line+'\n')
@@ -59,9 +64,11 @@ def context(root):
     m.install_recoverer=lambda: (_ for _ in ()).throw(AssertionError('private guard absent')) if m.loaded(mini.GUARD) is None else None
     def checkpoint(phase):
         if phase.startswith('effect:bootout:') and phase.endswith(('.brew','.daemon')):
-            (root/'offline-since').write_text(str(time.monotonic()))
+            (root/'offline-since').write_text(str(host_clock_ns()))
         if phase=='handoff:complete' and (root/'offline-since').exists():
-            emit(root,'handoff_verified',seconds_since_bootout=round(time.monotonic()-float((root/'offline-since').read_text()),3))
+            elapsed=(host_clock_ns()-int((root/'offline-since').read_text()))/1e9
+            assert elapsed>=0,'shared monotonic clock moved backwards'
+            emit(root,'handoff_verified',seconds_since_bootout=round(elapsed,3))
         requested=root/'crash-phase'
         if requested.exists() and requested.read_text().strip()==phase:
             requested.rename(root/'crash-consumed')
