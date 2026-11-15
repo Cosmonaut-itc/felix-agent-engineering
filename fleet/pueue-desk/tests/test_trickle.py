@@ -414,5 +414,13 @@ class TrickleTests(DeskFixture):
         self.ns+=40_000_000_001;self.after=None;self.run_guard()
         self.assertEqual(len(self.starts()),1)
 
+    def test_future_execution_is_not_evidence(self):
+        self.uncertain(executed=True)
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.tasks['1']['status']['Running']['start']=self.iso(86400)
+        self.assertFalse(self.engine._execution_confirmed(value['last_attempt'],self.state()))
+        (self.engine.directory/'maintenance').touch()
+        with self.assertRaises(ValueError):self.resolve_uncertain()
+
 if __name__=='__main__':unittest.main()
 
