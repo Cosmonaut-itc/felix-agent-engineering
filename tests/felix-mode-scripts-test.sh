@@ -742,6 +742,142 @@ hook() {
     printf '%s' "$1" | LAPTOP_GUARD_LAPTOP=${2:-1} "$SCRIPTS/laptop-guard"
 }
 
+launcher_guard() {
+    python3 - "$SCRIPTS/launcher-guard" "$TEST_TMP/launcher" <<'PY_LAUNCHER'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+hook, base = sys.argv[1], Path(sys.argv[2])
+base.mkdir()
+env = dict(os.environ, GIT_AUTHOR_NAME='Test', GIT_AUTHOR_EMAIL='test@example.invalid',
+           GIT_COMMITTER_NAME='Test', GIT_COMMITTER_EMAIL='test@example.invalid')
+def git(repo, *args):
+    return subprocess.check_output(['git', '-C', str(repo), *args], env=env,
+                                   stderr=subprocess.DEVNULL, text=True).strip()
+def commit(repo, path, subject):
+    file = repo / path
+    file.parent.mkdir(parents=True, exist_ok=True)
+    with file.open('a') as stream:
+        stream.write(subject + '\n')
+    git(repo, 'add', '--', path)
+    git(repo, 'commit', '-qm', subject)
+    return git(repo, 'rev-parse', 'HEAD')
+def raw(payload, extra_env=None):
+    result = subprocess.run([hook], input=payload, text=True, capture_output=True,
+                            env=dict(env, **(extra_env or {})))
+    assert result.returncode == 0, result
+    assert result.stderr == '', result.stderr
+    return result.stdout
+
+def check(cwd, command, count=0, ref='origin/HEAD', sha=None, subject=None, path='scripts/mini/run.sh'):
+    output = raw(json.dumps({'cwd': str(cwd), 'tool_input': {'command': command}}))
+    if not count:
+        assert output == '', (command, output)
+        return
+    value = json.loads(output)  # También exige un único aviso.
+    noun = 'commit' if count == 1 else 'commits'
+    expected = (f'El lanzador de este checkout ({path}) va {count} {noun} detrás de {ref}; '
+                f'el más reciente es {sha[:7]} «{subject}». Un lanzador viejo no trae los arreglos '
+                'de fila, espera y cancelación, y el host no puede corregirlo. '
+                f'Incorpora {ref} en esta rama antes de lanzar, o di en tu respuesta por qué necesitas esta versión.')
+    assert value == {'hookSpecificOutput': {'hookEventName': 'PreToolUse', 'additionalContext': expected},
+                     'systemMessage': f'launcher-guard: lanzador detrás de {ref}'}, value
+
+origin, clone = base / 'origin', base / 'clone space'
+origin.mkdir()
+git(origin, 'init', '-q', '-b', 'main')
+initial = commit(origin, 'scripts/mini/run.sh', 'inicial')
+commit(origin, 'scripts/mini/remote-run', 'cliente')
+commit(origin, 'scripts/test-hosts/run-remote.sh', 'otro cliente')
+commit(origin, 'scripts/remote-run', 'directo')
+git(base, 'clone', '-q', str(origin), str(clone))
+command = 'bash scripts/mini/run.sh --suite X'
+check(clone, command)
+commit(origin, 'ajeno.txt', 'ajeno')
+git(clone, 'fetch', '-q', 'origin')
+check(clone, command)
+commit(origin, 'scripts/mini/helper', 'primero')
+latest = commit(origin, 'scripts/mini/run.sh', 'espera y cancelación')
+git(clone, 'fetch', '-q', 'origin')
+for cmd in (command, 'scripts/mini/remote-run start -- cmd',
+            'REMOTE_RUN_HOST=desk scripts/mini/remote-run wait ID',
+            'bash scripts/mini/run.sh; scripts/mini/remote-run start -- cmd',
+            f'cd "{clone}" && bash scripts/mini/run.sh',
+            'true\nbash scripts/mini/run.sh',
+            f'bash "{clone}/scripts/mini/run.sh"', 'scripts/mini/run.sh; true'):
+    check(base if cmd.startswith('cd ') else clone, cmd, 2, sha=latest, subject='espera y cancelación',
+          path='scripts/mini/remote-run' if 'scripts/mini/remote-run' in cmd and 'scripts/mini/run.sh' not in cmd else 'scripts/mini/run.sh')
+git(clone, 'worktree', 'add', '-qb', 'secondary', str(base / 'secondary'), 'HEAD')
+check(base / 'secondary', command, 2, sha=latest, subject='espera y cancelación')
+# Un candidato al día precede al primero atrasado.
+check(clone, './scripts/test-hosts/run-remote.sh desktop; ' + command, 2,
+      sha=latest, subject='espera y cancelación')
+other = commit(origin, 'scripts/test-hosts/run-remote.sh', 'hosts')
+git(clone, 'fetch', '-q', 'origin')
+check(clone, './scripts/test-hosts/run-remote.sh desktop', 1, sha=other,
+      subject='hosts', path='scripts/test-hosts/run-remote.sh')
+check(clone, 'scripts/remote-run start -- cmd')
+latest = commit(origin, 'scripts/remote-run', 'directo nuevo')
+git(clone, 'fetch', '-q', 'origin')
+check(clone, 'scripts/remote-run start -- cmd', 1, sha=latest,
+      subject='directo nuevo', path='scripts/remote-run')
+# origin/HEAD gana incluso cuando main tiene cambios posteriores.
+git(clone, 'update-ref', 'refs/remotes/origin/delivery', git(clone, 'rev-parse', 'HEAD'))
+git(clone, 'symbolic-ref', 'refs/remotes/origin/HEAD', 'refs/remotes/origin/delivery')
+check(clone, command)
+git(clone, 'symbolic-ref', '--delete', 'refs/remotes/origin/HEAD')
+check(clone, command, 2, ref='origin/main', sha=git(origin, 'log', '-1', '--format=%H', '--', 'scripts/mini'), subject='espera y cancelación')
+# Estos silencios se prueban con historia pendiente para evitar falsos positivos.
+(clone / 'scripts/mini/run-remote.sh').write_text('sin seguimiento\n')
+check(clone, 'scripts/mini/run-remote.sh desktop')
+check(clone, 'remote-run start -- cmd')
+for payload in ('invalid json', '{}', '{"tool_input":{"command":null}}'):
+    assert raw(payload) == ''
+for cmd in ('bash scripts/mini/run.sh "', 'cd "$UNKNOWN" && ' + command):
+    check(clone, cmd)
+git(clone, 'merge', '-q', '--ff-only', 'origin/main')
+check(clone, command)
+git(clone, 'switch', '-qc', 'feature')
+commit(clone, 'scripts/mini/run.sh', 'cambio de rama')
+check(clone, command)
+git(clone, 'checkout', '-q', '--detach', initial)
+check(clone, command)
+git(clone, 'switch', '-q', 'feature')
+git(clone, 'update-ref', '-d', 'refs/remotes/origin/main')
+check(clone, command)
+# Fuera de git, sin seguimiento, PATH y entrada inválida: silencio y exit 0.
+(base / 'remote-run').write_text('cliente\n')
+check(base, './remote-run start -- cmd')
+check(clone, 'remote-run start -- cmd')
+(base / 'bin').mkdir()
+(base / 'bin' / 'git').write_text('#!/bin/sh\nprintf called > "$GUARD_GIT_LOG"\nexit 1\n')
+(base / 'bin' / 'git').chmod(0o755)
+assert raw(json.dumps({'cwd': str(clone), 'tool_input': {'command': 'echo hola'}}),
+           {'PATH': str(base / 'bin') + os.pathsep + env['PATH'],
+            'GUARD_GIT_LOG': str(base / 'git-called')}) == ''
+assert not (base / 'git-called').exists()
+empty = base / 'empty'
+empty.mkdir()
+git(empty, 'init', '-q')
+(empty / 'run.sh').write_text('sin commits\n')
+check(empty, 'bash run.sh')
+assert raw(json.dumps({'cwd': str(clone), 'tool_input': {'command': command}}),
+           {'PATH': str(base / 'bin')}) == ''  # Sin python3.
+(base / 'bin' / 'python3').symlink_to(sys.executable)
+assert raw(json.dumps({'cwd': str(clone), 'tool_input': {'command': command}}),
+           {'PATH': str(base / 'bin'), 'GUARD_GIT_LOG': str(base / 'git-called')}) == ''  # git falla.
+assert (base / 'git-called').read_text() == 'called'
+(base / 'only-python').mkdir()
+(base / 'only-python' / 'python3').symlink_to(sys.executable)
+assert raw(json.dumps({'cwd': str(clone), 'tool_input': {'command': command}}),
+           {'PATH': str(base / 'only-python')}) == ''  # Sin git.
+print('launcher-guard: avisos, rutas, referencias y tolerancia a errores verificados')
+PY_LAUNCHER
+}
+
 laptop_warnings() {
     local command payload output
     for command in 'docker run alpine' 'docker compose up' 'docker start app' 'docker build .' orb orbctl 'open -a OrbStack' 'colima start' 'bun dev' 'pnpm run dev' 'npm run dev' 'yarn dev' 'next dev' vite 'bun test' 'pnpm test' 'npm run build' 'yarn e2e' 'pnpm gate' vitest jest 'playwright test' 'turbo run build' xcodebuild ./gradlew 'expo run:ios' postgres 'pg_ctl start' 'pnpm --filter web dev' 'scp file host:/tmp; npm test' 'ssh mini true; bun test' 'scp a mini:/tmp && npm run build' 'printf "ssh x"; docker compose up' $'ssh mini true\nbun test' $'ssh mini true &&\nbun test' $'ssh mini true;\n\nbun test' $'# Comprobar cambios\nbun test' $'echo "a\nb"\nbun test' $'npm run \\\nbuild'; do
@@ -2500,7 +2636,7 @@ case "$(uname)" in
     MINGW*|MSYS*|CYGWIN*)
         printf 'SKIP daemonización, grupos POSIX, store-guard y regresiones POSIX del tren en Windows (Git Bash).\n'
         ;;
-    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent merge_train_regressions) ;;
+    *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent launcher_guard merge_train_regressions) ;;
 esac
 TEST_CASES+=(merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
