@@ -27,3 +27,22 @@ if resultado.errors or resultado.testsRun != 4 or fallidos != esperados:
 for nombre in sorted(esperados):
     print("ANTES a8a82602 FALLO ESPERADO:", nombre, flush=True)
 PY
+
+# Ronda 1: la regresión de U13-sol-1 falla sobre el head revisado.
+tren_r1="$tren_pruebas/r1"
+mkdir -p "$tren_r1"
+git archive 912eb00e266ed77939064ed5d4d3c6e37faa2c01 | tar -x -C "$tren_r1"
+cp fleet/tren/tests/test_u13_injerto.py "$tren_r1/fleet/tren/tests/"
+python3 -I -B - "$tren_r1" <<'PY'
+from pathlib import Path
+import sys
+import unittest
+
+raiz = Path(sys.argv[1])
+sys.path.insert(0, str(raiz / "fleet/tren/tests"))
+suite = unittest.defaultTestLoader.loadTestsFromName("test_u13_injerto.U13R1Tests")
+resultado = unittest.TextTestRunner(verbosity=2).run(suite)
+if resultado.testsRun != 1 or resultado.wasSuccessful():
+    raise SystemExit("ANTES: no se reprodujo U13-sol-1")
+print("ANTES 912eb00e FALLO ESPERADO: U13R1Tests", flush=True)
+PY

@@ -305,6 +305,10 @@ También son requisitos de activación:
   publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
   crear otro. El lanzador falso cumple esa condición; estas pruebas no
   acreditan al lanzador real. Su implementación pertenece a otra unidad.
+- Los comandos `juicio` y `pausa`, de otra unidad. `paso` pausa el carril en
+  uso ordinario (un head que cambia dentro del tren, un escritor externo en
+  `main`, una decisión de juicio) y Jale nace en pausa `etapa-1`; hoy el CLI
+  no tiene cómo levantar una pausa sin editar el ledger.
 - Resolver en otra unidad la salida de CI rojo sobre C: hoy el reductor
   conserva `EsperandoCI` y puede ocupar el carril indefinidamente. El injerto
   no cambia esa transición.

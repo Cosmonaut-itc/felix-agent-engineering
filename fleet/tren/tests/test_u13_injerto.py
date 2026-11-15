@@ -2,11 +2,12 @@
 from contextlib import contextmanager
 from dataclasses import replace
 import json
+import subprocess
 import unittest
 from unittest.mock import patch
 
 import test_activo as activo
-from dominio import Certificado, Diagnosticando, Terminal, desde_datos
+from dominio import Armado, Certificado, Diagnosticando, EsperandoCI, Terminal, desde_datos
 from inscripcion import modo
 from observador import GitHubGit
 
@@ -191,3 +192,50 @@ class SeguridadRecuperacionTests(unittest.TestCase):
         # También protege la parte de la base que el otro candidato perdía.
         with contexto() as c:
             c.test_activar_conserva_muestras_de_admision_sin_importar_trenes_simulados()
+
+
+class U13R1Tests(unittest.TestCase):
+    def test_c_no_publicado_no_bloquea_reintento_de_publicacion(self):
+        for corte in ("timeout", "paso-guardado"):
+            with self.subTest(corte=corte), contexto() as c:
+                c.hasta_fase(Armado)
+                C = c.estado().trenes[0].fase.candidato.C
+                github = c.contexto.observador.ejecutar
+
+                def github_real(argv, **kwargs):
+                    # GitHub responde 422 por un commit que el origen no tiene.
+                    if argv[0] == "gh" and "/commits/" + C + "/" in argv[4] and subprocess.run(
+                            ["git", "--git-dir", str(c.origen), "cat-file", "-e", C],
+                            capture_output=True).returncode:
+                        raise subprocess.CalledProcessError(1, argv, stderr="HTTP 422")
+                    return github(argv, **kwargs)
+
+                c.contexto.observador.ejecutar = github_real
+                if corte == "timeout":
+                    transporte = c.contexto.git.ejecutar
+                    fallar = [True]
+
+                    def git(argv, **kwargs):
+                        if fallar[0] and "push" in argv and ":refs/heads/tren/" in argv[-1]:
+                            fallar[0] = False
+                            raise subprocess.TimeoutExpired(argv, 120)
+                        return transporte(argv, **kwargs)
+
+                    c.contexto.git.ejecutar = git
+                    c.contexto.tick(500)
+                else:
+                    class Corte(Exception):
+                        pass
+
+                    def cortar(nombre, efecto):
+                        if nombre == "paso-guardado":
+                            raise Corte()
+
+                    with self.assertRaises(Corte):
+                        c.contexto.tick(500, cortar)
+                self.assertIsInstance(c.estado().trenes[0].fase, EsperandoCI)
+                self.assertEqual(c.lineas("pushes.log"), [])
+                for n in range(3):
+                    c.contexto.tick(700 + n)
+                publicaciones = [p for p in c.lineas("pushes.log") if ":refs/heads/tren/" in p]
+                self.assertEqual(len(publicaciones), 1, c.lineas("pushes.log"))

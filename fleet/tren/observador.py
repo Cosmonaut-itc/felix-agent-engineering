@@ -187,7 +187,12 @@ class GitHubGit:
             tren = next((t for t in estado.trenes if isinstance(t.fase, EsperandoCI)), None)
             if tren:
                 # La publicación sólo solicita CI; leer checks sobre el C exacto.
-                ci = self.ci(repo, tren.fase.candidato.C)
+                # GitHub no conoce un C aún no publicado: CI pendiente, y el
+                # tick sigue hasta reintentar la publicación.
+                try:
+                    ci = self.ci(repo, tren.fase.candidato.C)
+                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                    ci = "pendiente"
                 observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci,
                                       ci_recibo="github:" + tren.fase.candidato.C)
         return observacion
