@@ -727,3 +727,7 @@ la tabla de conclusiones, la política exhaustiva de juicio, el aislamiento
 de C, la marca por entrega y muertes reales entre COMMIT y drenado, después
 del comentario y después del status. Todas las pruebas usan stdlib,
 HOME/XDG temporales canónicos, git local y transportes falsos sin red.
+El lanzador remoto solapa los injertos históricos con la suite actual,
+en procesos y temporales separados, para respetar el carril rápido de diez
+minutos. Espera ambos resultados y conserva el log completo de los injertos;
+un fallo en cualquiera de los dos caminos hace fallar la corrida.

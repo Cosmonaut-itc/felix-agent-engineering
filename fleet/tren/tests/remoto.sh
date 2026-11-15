@@ -9,13 +9,18 @@ export XDG_CACHE_HOME="$aislado/cache"
 mkdir -p "$HOME"
 bin/pao check
 git version
-bash fleet/tren/tests/remoto-u13-injerto.sh
-bash fleet/tren/tests/remoto-u14-r1.sh
-bash fleet/tren/tests/remoto-u14-r2.sh
-bash fleet/tren/tests/remoto-u15-injerto.sh
-bash fleet/tren/tests/remoto-u15-r1.sh
-bash fleet/tren/tests/remoto-u15-r2.sh
-bash fleet/tren/tests/remoto-u16.sh
+# Los injertos usan archivos/procesos temporales propios; no comparten
+# snapshots con la suite actual. Solaparlos permite completar el carril rápido.
+(
+  bash fleet/tren/tests/remoto-u13-injerto.sh
+  bash fleet/tren/tests/remoto-u14-r1.sh
+  bash fleet/tren/tests/remoto-u14-r2.sh
+  bash fleet/tren/tests/remoto-u15-injerto.sh
+  bash fleet/tren/tests/remoto-u15-r1.sh
+  bash fleet/tren/tests/remoto-u15-r2.sh
+  bash fleet/tren/tests/remoto-u16.sh
+) > "$aislado/antes.log" 2>&1 &
+tren_antes_pid=$!
 encontrado=0
 resultado=0
 for interprete in python3.9 python3.10 python3; do
@@ -25,6 +30,10 @@ for interprete in python3.9 python3.10 python3; do
     "$interprete" -I -m unittest discover -s fleet/tren/tests -v || resultado=1
   fi
 done
+if ! wait "$tren_antes_pid"; then
+  resultado=1
+fi
+cat "$aislado/antes.log"
 if [ "$encontrado" -eq 0 ]; then
   echo 'No hay intérprete Python disponible' >&2
   exit 2
