@@ -700,6 +700,229 @@ No reinicia WSL, Windows ni el servicio productivo. El arranque de Windows/WSL
 queda como verificación separada del orquestador. Reinicios de la Mini quedan
 para U3.5.
 
+### Reinicios de la Mini (U3.5)
+
+#### Arranque de la Mini
+
+Después del relevo, el daemon de la Mini es de
+`local.pao.pueue-mini.daemon` y ya no de `sh.brew.pueue`. Ese LaunchAgent
+ejecuta `control.py preparar --host mini --exec /opt/homebrew/bin/pueued`.
+Lleva `RunAtLoad`, `KeepAlive` y `ThrottleInterval` 10. El preparador es el
+mismo `prepare_start` de U3.4 y corre bajo `control.lock`:
+
+1. Valida configuración, binarios, cola y autoridad sin escribir.
+2. Confirma que el daemon anterior terminó. En la Mini, un PID del pid file
+   reutilizado por otro ejecutable tras un reinicio cuenta como terminado,
+   porque macOS conserva el pid file en Application Support. Un PID vivo de
+   `pueued` o ilegible bloquea.
+3. Guarda la intención en SQLite y reescribe `state.json`. Todos los grupos
+   quedan Paused con la razón `startup`.
+4. Sólo si todo eso sale bien, hace `exec` del `pueued` estándar 4.0.4.
+
+Si la preparación falla, el agente sale sin daemon y launchd lo reintenta cada
+10 s. Ningún grupo admite trabajo mientras tanto.
+
+La guardia de la Mini (`local.pao.pueue-mini.guard`, cada 60 s) es el único
+recuperador periódico. En cada tick ejecuta primero un tick del relevo. Mientras
+un relevo esté pendiente o su fila no se pueda leer, sólo cierra, nunca abre.
+Después reconcilia la nueva generación, reconoce la preparación confirmada como
+propia (`ready`) y abre los grupos `startup` con presión baja y cuotas 3/1/3
+verificadas. La Mini no tiene Docker: la espera se muestra como
+**«Esperando cuotas y sensores»**.
+
+#### Qué ve Felix tras un reinicio
+
+- Las tareas `Queued` conservan id, estado, prioridad, dependencias y lugar.
+- Las tareas `Running` y `Paused` quedan `Done/Killed` y no se reejecutan.
+  El rack las muestra con **«Interrumpida al reiniciar Pueue; relanzar
+  manualmente»**, como en el desk.
+- Un grupo sin otra razón muestra «Esperando cuotas y sensores · reanudación
+  automática» hasta que la guardia lo abre.
+- Un grupo con pausa manual, ambigua o fuera del reparto muestra
+  **«Retenido al reiniciar · <motivo> · resolver con control.py reanudar
+  <grupo>»** en la celda de lugares libres.
+- No hay botón. `default` vacío sigue oculto.
+
+#### Resolver un grupo retenido
+
+Felix revisa la causa y resuelve por SSH:
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar rapidas --host mini
+```
+
+La reanudación exige presión baja, cuotas y generación reconciliadas, ningún
+mantenimiento ni relevo pendiente, y el arranque en `ready`. Si algo falla, el
+grupo sigue cerrado. Una pausa ambigua nunca se abre sola. Para relanzar una
+tarea interrumpida hay que hacer una **corrida nueva del cliente**, nunca
+`pueue restart` del id anterior. Antes de relanzar, revisa si quedan procesos
+supervivientes: launchd no tiene el cgroup del desk, así que `Killed` no
+demuestra que los hijos hayan terminado.
+
+#### Mantenimiento
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py parar --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py parar
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py arrancar
+```
+
+`parar` sigue este orden:
+
+1. Bajo `control.lock`, crea `~/.local/state/pao/pueue-mini/maintenance`.
+2. Descarga la guardia.
+3. Registra las tareas en curso (`record_stop`), para que la próxima
+   preparación les atribuya la interrupción.
+4. Ejecuta `disable` y luego `bootout` del agente propio. Así un login dentro
+   del mantenimiento no carga ningún daemon.
+
+La marca bloquea la guardia, el relevo y el preparador: nada se abre ni
+arranca. Cola y autoridad quedan intactas.
+
+`arrancar` sigue este orden:
+
+1. Retira la marca.
+2. Comprueba que `sh.brew.pueue` está deshabilitado y descargado.
+3. Ejecuta `enable` y `bootstrap` del agente propio.
+4. Carga la guardia.
+
+Las dos órdenes rechazan un relevo pendiente. Si el daemon sigue siendo de
+Homebrew, se rechazan y remiten a `brew services`.
+
+#### Relevo desde Homebrew (instalación; no ejecutada en esta entrega)
+
+La instalación real reinicia el `pueued` de la Mini. Hazla en una ventana
+acordada con Felix, sin corridas activas:
+
+1. Desde el checkout revisado en la Mini, ejecuta el ensayo:
+
+   ```sh
+   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --relevo --seco
+   ```
+
+   Antes de cualquier efecto, el ensayo valida con la proyección del propio
+   preparador (`start_projection`): configuración, Pueue 4.0.4, `state.json`,
+   autoridad 3/1/3, pid file y la generación viva. También rechaza recibos
+   `applying`, `partial` o `unknown`, un relevo en la otra dirección, un
+   mantenimiento y un estado de launchd distinto de «Homebrew cargado y
+   habilitado, agente propio deshabilitado». Después describe cada paso.
+2. Respalda la SQLite con `backup` bajo `control.lock`, más el controlador y
+   los plists. No copies con `cp` una SQLite abierta.
+3. Ejecuta la instalación:
+
+   ```sh
+   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --relevo --esperar 30
+   ```
+
+   Bajo `control.lock`, el instalador hace lo siguiente:
+
+   1. Migra de forma aditiva `startup_version=1` y la fila `mini_handoff`.
+      Conserva deseo, ajustes, revisión y recibos.
+   2. Ejecuta `launchctl disable` del agente propio **antes** de escribir su
+      plist.
+   3. Publica `control.py`, el plist del daemon y el de la guardia, y recarga
+      la guardia. El recuperador queda instalado antes del relevo.
+
+   Después registra la intención durable y avanza por fases:
+
+   1. **drain:** pausa con la razón `handoff` los grupos Running y espera a
+      que no quede ninguna tarea `Running`, `Paused` o `Locked`. Sin
+      `--esperar`, una tarea en curso rechaza el relevo. Si vence la espera,
+      el relevo se aborta: Homebrew sigue a cargo y las pausas pasan a la
+      guardia como `pressure`.
+   2. **switch:** ejecuta `disable` y luego `bootout` de `sh.brew.pueue`, y
+      confirma el daemon detenido por pid file e identidad. El bootout de
+      launchd es asíncrono: el tick se queda en `switch` mientras el servicio
+      siga listado o el daemon responda.
+   3. **start:** ejecuta `enable` y luego `bootstrap` del agente propio, y
+      espera la preparación confirmada que está ligada a la generación
+      anterior.
+
+   En todo momento hay como máximo una etiqueta de daemon habilitada o cargada.
+   Si el instalador muere en cualquier frontera, incluso entre bootout y
+   bootstrap, la guardia retoma la fase durable en su próximo tick. Antes de
+   `switch` sigue drenando y aborta si vence la espera o si Homebrew reinició
+   el daemon. Desde `switch` completa el relevo.
+4. Comprueba sin leer `status --json` en público, porque contiene entornos con
+   secretos:
+
+   ```sh
+   launchctl print gui/$(id -u)/local.pao.pueue-mini.daemon | grep -E 'state|pid|path'
+   launchctl print-disabled gui/$(id -u) | grep -E 'sh.brew.pueue|local.pao.pueue-mini'
+   ```
+
+   Esperado: `sh.brew.pueue => disabled` y el agente propio `enabled` y en
+   ejecución. Que `brew services` muestre `sh.brew.pueue` como detenido es
+   lo correcto.
+
+**Tiempo sin daemon:** del `bootout` de Homebrew a la respuesta del daemon
+preparado pasaron entre 2.2 y 2.5 s en las tres corridas privadas de la Mini,
+sin contar el drain. En la reversión con el instalador muerto entre bootout y
+bootstrap, el tick de la guardia la completó en 1.8 s. En producción, ese caso
+puede esperar además hasta el próximo tick, como máximo 60 s. El drain dura lo que tarden las tareas en curso, hasta el
+límite de `--esperar`. Las tareas `Queued` esperan sin perder su lugar.
+
+Una reinstalación posterior sin `--relevo` actualiza controlador y plists y
+recarga la guardia. Nunca reinicia `pueued`.
+
+#### Reversión a Homebrew
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py desinstalar --relevo --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py desinstalar --relevo --esperar 30
+```
+
+La reversión recorre las mismas fases en sentido inverso:
+
+1. Drena.
+2. Ejecuta `disable` y `bootout` del agente propio.
+3. Ejecuta `enable` y `bootstrap` de `sh.brew.pueue` con el plist que se
+   guardó al instalar.
+4. Adopta la nueva generación sólo cuando la confirma. Los grupos que pausó
+   el relevo pasan a la guardia; un grupo pausado sin razón queda `ambiguous`.
+5. Por último retira el plist propio.
+
+Homebrew arranca el `pueued` estándar sin el preparador. Por eso la cola queda
+drenada y todos los grupos cerrados antes del cambio. Controlador, guardia y
+autoridad se conservan, y la guardia sigue siendo el recuperador. Repetirla es
+idempotente: si el daemon ya es de Homebrew, responde «nada que retirar». Un `desinstalar` sin `--relevo` sobre una
+autoridad adoptada sigue rechazándose.
+
+#### Riesgos raros aceptados y límites de la verificación
+
+Se mantienen los dos riesgos raros de stock que eligió Felix, igual que en el
+desk:
+
+- Stock puede lanzar una tarea antes de guardar Running y volverla a ejecutar
+  tras una caída. La comprobación de logs en `task_logs` reduce esa ventana,
+  pero no la elimina.
+- Un add confirmado puede perderse en un apagón, porque `State::save` no hace
+  fsync.
+
+SIGKILL no acredita durabilidad ante un apagón.
+
+Límites de esta verificación:
+
+- El modelo de login O-W3 se prueba con dobles. Un login carga sólo los plists
+  habilitados de `~/Library/LaunchAgents` y queda cubierto por mutación. Las
+  corridas privadas no hacen un login real.
+- En la corrida privada, `enable` y `disable` se registran en un archivo
+  privado. Así no quedan overrides persistentes de launchd con etiquetas de
+  prueba. `bootstrap`, `bootout`, `print`, KeepAlive y el `exec` del preparador
+  sí son reales.
+
+Pruebas dirigidas:
+
+- `tests/test_handoff.py`
+- `tests/mutate_handoff.py`, con 17 mutaciones
+- `fleet/rack/tests/test_startup.py`
+- `fleet/rack/tests/check_mutations.py --startup-only`
+
+`tests/private_handoff.py --run-private DIR` corre sólo dentro de remote-run
+en la Mini. Usa HOME, `pueue.yml`, daemon y autoridad privados, y los
+LaunchAgents `pao.u35.opus.{brew,daemon}` en `gui/$UID`. Al terminar hace
+`bootout` de ambos y comprueba que no quede ninguno.
+
 ### SEN-6417: una tarea en la banda media (sólo desk adoptado)
 
 Los umbrales anteriores no cambian. Cuando `decide` devuelve `mantener`, la
