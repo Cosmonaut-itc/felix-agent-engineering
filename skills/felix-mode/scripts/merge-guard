@@ -344,6 +344,13 @@ def push_to_main(refs, broad, tags_only, read, remote):
     return False
 
 
+def expand_home(path):
+    # Bash expands ~ from HOME; Python on Windows reads USERPROFILE instead.
+    if path == "~" or path.startswith("~/"):
+        return (os.environ.get("HOME") or os.path.expanduser("~")) + path[1:]
+    return os.path.expanduser(path)
+
+
 def strip_comments(command):
     # shlex swallows the newline that ends a comment, merging two commands.
     # Drop unquoted comments here and keep that newline; quotes may span lines.
@@ -369,7 +376,7 @@ def strip_comments(command):
 
 
 def train_guard(command, directory, inherited_env=None):
-    config = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    config = os.environ.get("XDG_CONFIG_HOME") or expand_home("~/.config")
     registry = os.path.join(config, "pao-tren", "inscritos")
     if not os.path.lexists(registry):
         return None
@@ -406,7 +413,7 @@ def train_guard(command, directory, inherited_env=None):
         if not args:
             continue
         if args[0] == "cd" and len(args) == 2:
-            directory = os.path.abspath(os.path.join(directory, os.path.expanduser(args[1])))
+            directory = os.path.abspath(os.path.join(directory, expand_home(args[1])))
             continue
         env = (inherited_env if inherited_env is not None else os.environ).copy()
         # Recognize env, command and absolute executable paths, conservatively
