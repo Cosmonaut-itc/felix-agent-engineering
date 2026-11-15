@@ -108,6 +108,7 @@ for key,condition in (
  ('reload',"loaded['NeedDaemonReload'] != 'no'"),
  ('restart',"loaded['Restart'] != 'always'"),
  ('killmode',"loaded['KillMode'] != 'mixed'"),
+ ('oompolicy',"loaded['OOMPolicy'] != 'continue'"),
  ('preparer',"str(home / '.local/lib/pao-pueue-desk/control.py') + ' preparar --host desk' not in loaded['ExecStartPre']")):
  CASES.append(('loaded-unit-'+key,'install-desk.py',condition,'False',
   'test_startup_injerto.InstallerGraftTests.test_loaded_unit_mismatch_retains_maintenance_and_no_timer_restart'))

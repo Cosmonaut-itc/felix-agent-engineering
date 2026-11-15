@@ -154,10 +154,11 @@ def main():
                 key,value=line.split('=',1);properties[key]=value
         assert properties['Restart']=='always' and properties['RestartSec']=='5'
         assert properties['KillMode']=='mixed' and properties['StartLimitIntervalSec']=='0'
+        assert properties['OOMPolicy']=='continue'
         assert 'control.py preparar --host desk' in properties['ExecStartPre']
         assert 'control.py parada --host desk' in properties['ExecStop']
-        emit('delivered_unit',properties={k:properties[k] for k in ('Restart','RestartSec','KillMode','StartLimitIntervalSec','ExecStartPre','ExecStop')})
-        props={k:properties[k] for k in ('Restart','RestartSec','KillMode','StartLimitIntervalSec','WorkingDirectory','StandardOutput','StandardError')}
+        emit('delivered_unit',properties={k:properties[k] for k in ('Restart','RestartSec','KillMode','OOMPolicy','StartLimitIntervalSec','ExecStartPre','ExecStop')})
+        props={k:properties[k] for k in ('Restart','RestartSec','KillMode','OOMPolicy','StartLimitIntervalSec','WorkingDirectory','StandardOutput','StandardError')}
         props.update(ExecStartPre=pre,ExecStop=stop,ConditionPathExists='!'+str(engine.directory/'maintenance'))
         (root/'unit.txt').write_text(delivered)
         units_created.append(unit)
@@ -181,6 +182,48 @@ def main():
         assert properties['RestartUSec']=='5s' and properties['Restart']=='always' and properties['KillMode']=='mixed'
         assert properties['NeedDaemonReload']=='no' and 'prepare' in properties['ExecStartPre']
         emit('systemd_PASS',pre_daemon_guard_order=True,successful_exit_restarted=True,properties=properties)
+        # OOMPolicy=continue: an OOM inside the unit kills only the process the kernel picks.
+        # A runtime-only memory cap (no swap) makes the OOM local to this private cgroup.
+        assert show('OOMPolicy')['OOMPolicy']=='continue'
+        subprocess.run(['systemctl','--user','set-property','--runtime',unit,'MemoryMax=384M','MemorySwapMax=0'],
+                       check=True,capture_output=True,text=True)
+        sibling_script=root/'oom-sibling.py'
+        sibling_script.write_text('import os,pathlib,time\np=pathlib.Path('+repr(str(root))+')\n(p/"oom-sibling-pid").write_text(str(os.getpid()))\nend=time.monotonic()+120\nwhile not (p/"oom-sibling-release").exists() and time.monotonic()<end:time.sleep(.1)\n')
+        hog_script=root/'oom-hog.py'
+        hog_script.write_text('b=[]\nwhile True:b.append(b"x"*(16<<20))\n')
+        restarts=show('NRestarts')['NRestarts'];main_before=verified_main_pid()
+        p.call('start','-g','jale')
+        sibling=add('python3 '+shlex.quote(str(sibling_script)))
+        wait_for(lambda:(root/'oom-sibling-pid').exists())
+        hog=add('python3 '+shlex.quote(str(hog_script)))
+        wait_for(lambda:'Done' in p.status()['tasks'][hog]['status'],seconds=60)
+        hog_result=p.status()['tasks'][hog]['status']['Done']['result']
+        time.sleep(2)
+        assert hog_result!='Success',hog_result
+        assert 'Running' in p.status()['tasks'][sibling]['status'],'sibling must survive the OOM'
+        assert verified_main_pid()==main_before and show('NRestarts')['NRestarts']==restarts
+        assert show('ActiveState')['ActiveState']=='active'
+        (root/'oom-sibling-release').touch()
+        wait_for(lambda:'Done' in p.status()['tasks'][sibling]['status'],seconds=20)
+        sibling_result=p.status()['tasks'][sibling]['status']['Done']['result']
+        assert sibling_result=='Success',sibling_result
+        subprocess.run(['systemctl','--user','set-property','--runtime',unit,'MemoryMax=infinity','MemorySwapMax=infinity'],
+                       check=True,capture_output=True,text=True)
+        p.call('pause','--wait','-g','jale')
+        emit('OOMPolicy_continue_PASS',hog_result=hog_result,sibling_result=sibling_result,
+             main_pid_kept=main_before,restarts=restarts)
+        # Contrast: the same OOM under OOMPolicy=stop takes the sibling down with it.
+        (root/'oom-sibling-pid').unlink();(root/'oom-sibling-release').unlink()
+        contrast=unit.replace('.service','-oomstop.service');units_created.append(contrast)
+        subprocess.run(['systemd-run','--user','--unit',contrast,'--property=OOMPolicy=stop',
+                        '--property=MemoryMax=256M','--property=MemorySwapMax=0','/bin/sh','-c',
+                        'python3 '+shlex.quote(str(sibling_script))+' & while [ ! -s '+shlex.quote(str(root/'oom-sibling-pid'))+' ]; do sleep .1; done; python3 '+shlex.quote(str(hog_script))+'; wait'],
+                       check=True,capture_output=True,text=True)
+        wait_for(lambda:subprocess.run(['systemctl','--user','show',contrast,'-p','Result','--value'],
+                                       capture_output=True,text=True).stdout.strip()=='oom-kill',seconds=60)
+        stopped_sibling=int((root/'oom-sibling-pid').read_text())
+        wait_for(lambda:not Path('/proc',str(stopped_sibling)).exists(),seconds=20)
+        emit('OOMPolicy_stop_contrast_PASS',result='oom-kill',sibling_killed=stopped_sibling)
         # A child in the service cgroup must be retired after MainPID SIGKILL.
         child=root/'child.py'
         child.write_text('import os,pathlib,time\np=pathlib.Path('+repr(str(root)) + ')\n(p/"child-pid").write_text(str(os.getpid()))\nend=time.monotonic()+90\nwhile not (p/"child-release").exists() and time.monotonic()<end:time.sleep(.1)\n')
@@ -234,7 +277,7 @@ def main():
         stop_process()
         assert cgroup_pids()==[],cgroup_pids()
         listing=subprocess.check_output(['systemctl','--user','list-units','pao-u34-*','--no-legend','--no-pager'],text=True)
-        own=[line for line in listing.splitlines() if unit in line or guard_unit in line]
+        own=[line for line in listing.splitlines() if any(name in line for name in [unit,guard_unit,*units_created])]
         emit('cleanup',popen_reaped=process is None or process.poll() is not None,own_units=own)
         assert not own,own
         output.close();events.close()

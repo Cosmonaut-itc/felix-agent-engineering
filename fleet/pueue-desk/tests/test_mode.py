@@ -470,7 +470,7 @@ class ModeScheduleTests(unittest.TestCase):
 class ModeInstallTests(DeskFixture):
     def systemctl(self, home, commands, *args):
         commands.append(args)
-        values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',
+        values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',OOMPolicy='continue',
                     ExecStartPre='/usr/bin/python3 -I '+str(home/'.local/lib/pao-pueue-desk/control.py')+' preparar --host desk')
         text=''.join(k+'='+v+'\n' for k,v in values.items()) if args[2]=='show' else ''
         return subprocess.CompletedProcess(args,0,text,'')

@@ -252,7 +252,7 @@ class GenerationInstallTests(GenerationFixture):
 
     def systemctl(self,*args):
         self.commands.append(args); self.hook(args)
-        values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',
+        values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',OOMPolicy='continue',
                     ExecStartPre='/usr/bin/python3 -I '+str(self.library/'control.py')+' preparar --host desk')
         text=''.join(k+'='+v+'\n' for k,v in values.items()) if args[2]=='show' else ''
         return subprocess.CompletedProcess(args,0,text,'')

@@ -526,7 +526,7 @@ conversión con todo Running; no es una reversión transparente de SQLite.
 
 `pueued.service` ejecuta `control.py preparar --host desk` como `ExecStartPre`,
 y después el **pueued estándar 4.0.4**. Usa `Restart=always`, `RestartSec=5`,
-`StartLimitIntervalSec=0` y `KillMode=mixed`. Guardia y modo se ordenan después
+`StartLimitIntervalSec=0`, `KillMode=mixed` y `OOMPolicy=continue`. Guardia y modo se ordenan después
 del daemon; la guardia existente es el único recuperador periódico. Un error
 al reconciliar deja los grupos cerrados, sin reiniciar el daemon.
 
@@ -610,6 +610,15 @@ del id anterior. Antes de relanzar hay que revisar procesos supervivientes;
 `KillMode=mixed` cubre el cgroup de la unidad del desk, sin buscar descendientes
 por un PID viejo ni prometer lo mismo en otros gestores.
 
+`OOMPolicy=continue` (OOM-DESK): cuando el kernel mata un proceso por falta de
+memoria, sólo muere ese proceso y su tarea falla; `pueued` y las demás corridas
+siguen. Con el valor de systemd por omisión (`stop`), un solo `next-server` sin
+memoria detenía toda la unidad con SIGKILL a todas las corridas, y el reinicio
+las marcaba interrumpidas (2026-11-15, 16 corridas en dos OOM). Si el elegido es
+el propio `pueued`, la unidad cae y `Restart=always` la levanta con el preparador.
+La prueba privada lo comprueba con un tope de memoria sólo en su unidad transitoria
+y un contraste con `OOMPolicy=stop`.
+
 #### Mantenimiento e instalación sobre U3.3 adoptada
 
 Los siguientes pasos son para el operador; las pruebas no los ejecutan en el
@@ -641,7 +650,8 @@ servicio compartido. Conservar respaldo SQLite mediante `backup` bajo
    guardia/modo. Publica controlador y las cinco unidades, guarda copias
    `.pre-u34`, hace `daemon-reload` y conserva el MainPID. No para ni reinicia
    `pueued`. Antes de retirar mantenimiento comprueba lo efectivamente cargado:
-   mismo MainPID y ActiveState, NeedDaemonReload=no, Restart=always, KillMode=mixed
+   mismo MainPID y ActiveState, NeedDaemonReload=no, Restart=always, KillMode=mixed,
+   OOMPolicy=continue
    y la ruta/argumentos del ExecStartPre entregado. Un drop-in divergente hace
    fallar la instalación y conserva mantenimiento. El preparador se estrenará
    en el siguiente arranque natural.
@@ -654,13 +664,14 @@ servicio compartido. Conservar respaldo SQLite mediante `backup` bajo
 4. Comprobar sin reiniciar:
 
    ```sh
-   systemctl --user show pueued.service -p MainPID -p ExecStartPre -p ExecStart -p ExecStop -p Restart -p RestartUSec -p KillMode -p StartLimitIntervalUSec -p NeedDaemonReload
+   systemctl --user show pueued.service -p MainPID -p ExecStartPre -p ExecStart -p ExecStop -p Restart -p RestartUSec -p KillMode -p OOMPolicy -p StartLimitIntervalUSec -p NeedDaemonReload
    systemctl --user cat pueued.service
    systemctl --user is-active pueue-desk-mode.timer pueue-desk-guard.timer
    ```
 
    Comparar MainPID antes/después y exigir NeedDaemonReload=no, Restart=always,
-   el ExecStartPre nuevo, KillMode=mixed y StartLimitIntervalUSec=0. No usar
+   el ExecStartPre nuevo, KillMode=mixed, OOMPolicy=continue y StartLimitIntervalUSec=0.
+   `OOMPolicy` rige desde el `daemon-reload`, sin reiniciar `pueued`. No usar
    `status --json` como evidencia pública: contiene entornos con secretos.
 5. Actualizar snapshot/despachador y panel con los instaladores del rack ya
    existentes. Conservar el canal forzado y las llaves actuales; verificar

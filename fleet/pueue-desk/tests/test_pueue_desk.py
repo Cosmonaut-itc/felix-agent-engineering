@@ -287,7 +287,7 @@ class DeploymentTests(Fixture):
     def test_service_prepares_offline_and_restarts_without_startlimit_cutoff(self):
         unit=(ROOT/'units/pueued.service').read_text()
         for setting in ('ExecStartPre=', 'control.py preparar --host desk','Restart=always','RestartSec=5',
-                        'KillMode=mixed','StartLimitIntervalSec=0','ConditionPathExists=!'):
+                        'KillMode=mixed','OOMPolicy=continue','StartLimitIntervalSec=0','ConditionPathExists=!'):
             self.assertIn(setting,unit)
         self.assertLess(unit.index('ExecStartPre='),unit.index('ExecStart='))
 
