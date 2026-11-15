@@ -33,6 +33,11 @@ class Queue(FakePueue):
         value = super().status(); value['tasks'] = copy.deepcopy(self.tasks)
         return value
 
+    def call(self,*args):
+        try:return super().call(*args)
+        finally:
+            if hasattr(self,'persist'):self.persist()  # stock pause/start save; parallel still doesn't
+
 
 class Harness:
     def __init__(self, test):
@@ -60,6 +65,7 @@ class Harness:
                               checkpoint=self.trace.append,configuration=self.config)
         self.m.engine = self.engine
         self.save_queue()
+        self.p.persist = self.save_queue
 
     def put_plist(self,label,argv):
         (self.agents/(label+'.plist')).write_bytes(plistlib.dumps(dict(Label=label,ProgramArguments=argv,RunAtLoad=True)))
@@ -210,6 +216,8 @@ class HandoffTests(unittest.TestCase):
                     self.assertIn(h.policy()['mini_handoff']['phase'],mini.TERMINAL)
                     self.assertEqual(h.owner,mini.LABEL if target=='install' else mini.BREW)
                     self.assertEqual(h.p.groups['suites']['status'],'Paused')
+                    self.assertEqual(h.p.groups['default']['status'],'Running')
+                    self.assertEqual(h.p.groups['rapidas']['status'],'Running')
                     self.assertEqual(h.policy()['desired'],control.MINI_PROFILE)
                     self.assertFalse(any('handoff' in r for r in h.policy()['reasons'].values()))
         print('W6 distinct checkpoints:',counts)
