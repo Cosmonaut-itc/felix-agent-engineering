@@ -23,8 +23,8 @@ class ContextoPausa(unittest.TestCase):
     cli = juicio.JuicioTests.cli
     posts = juicio.JuicioTests.posts
     hasta_pausa = juicio.JuicioTests.hasta_pausa
-    juicio = juicio.JuicioTests.juicio
     aterrizar_ultimo = juicio.JuicioTests.aterrizar_ultimo
+    juicio = juicio.JuicioTests.juicio
 
     def promocion_pendiente(self):
         with self.ledger() as ledger:
