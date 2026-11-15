@@ -1448,11 +1448,17 @@ class MiniControl:
             if decide(self.host,sample,threshold) != expected or time.monotonic()-started > GATE_SECONDS:
                 return 'fresh_sample', None, None, started
             stage = 'event'
-            if self.resolve(state) != state:
+            if self._event_stale(state):
                 return 'event', None, None, started
             return None, snapshot, sample, started
         except ADMISSION_ERRORS:
             return stage, None, None, started
+
+    def _event_stale(self, state):
+        try:
+            return self.resolve(state) != state
+        except ADMISSION_ERRORS:
+            return True
 
     def admission_ready(self, state, group=None, proc=Path('/proc')):
         if self.host == 'mini':
@@ -1656,6 +1662,10 @@ class MiniControl:
         except ADMISSION_ERRORS:
             self._finish_attempt(value,'not_sent');block('log',group)
             return
+        # The schedule event is checked last, after the intent write, right before the effect.
+        if self._event_stale(state):
+            self._finish_attempt(value,'not_sent');block('event',group)
+            return
         try:
             self.pueue.call('start',ident)
         except ADMISSION_ERRORS:
@@ -1753,7 +1763,7 @@ class MiniControl:
                     if cause:
                         block(cause,group,'resume')
                         if cause in ('event','generation','desired'):
-                            raise ValueError('Gate de reapertura: '+cause)
+                            can_open=False;failure=failure or ValueError('Gate de reapertura: '+cause)
                         continue
                     try:
                         log(self.directory,'apertura_intento',tick_id=tick,grupo=group)
@@ -1761,7 +1771,13 @@ class MiniControl:
                         block('log',group,'resume');continue
                     if time.monotonic()-started > GATE_SECONDS:
                         block('fresh_sample',group,'resume');continue
-                    self.pueue.call('start','-g',group)
+                    if self._event_stale(state):
+                        can_open=False;failure=failure or ValueError('Gate de reapertura: event')
+                        block('event',group,'resume');continue
+                    try:
+                        self.pueue.call('start','-g',group)
+                    except ADMISSION_ERRORS as error:
+                        can_open=False;failure=failure or error;block('rpc',group,'resume');continue
                     state['reasons'][group] = sorted(reasons-{'pressure','startup'})
                     state.get('startup',{}).get('holds',{}).pop(group,None)
                     with self.connect(write=True) as db:self.store(db,state)

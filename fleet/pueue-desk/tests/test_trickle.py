@@ -498,6 +498,43 @@ class TrickleTests(DeskFixture):
         with control.locked(self.engine.directory),patch.object(self.p,'call',side_effect=failing):
             with self.assertRaises(subprocess.SubprocessError):self.engine.guard(high)
 
+    def cross_event_after(self, target, action):
+        from test_desk_slots import utc
+        self.now=utc('2026-11-14T13:59:59');self.engine.reconcile()
+        original=control.log
+        def log(directory,event,**fields):
+            original(directory,event,**fields)
+            if event==target:self.now=utc('2026-11-14T14:00:00');self.ns+=1_000_000_000
+        with control.locked(self.engine.directory),patch.object(control,'log',side_effect=log):
+            self.engine.guard(action)
+
+    def test_schedule_event_after_admission_intent_never_starts(self):
+        for ident in range(10,15):
+            self.add_task(ident,'jale',status={'Running':{'enqueued_at':self.iso(-90),'start':self.iso(-60)}})
+        self.cross_event_after('admision_intento',self.mid)
+        self.assertEqual([c for c in self.p.calls if c[0]=='start'],[])
+        self.assertEqual(self.rows()[-1]['bloqueos'],[dict(grupo='jale',operacion='one',causa='event')])
+        with self.engine.connect() as db:attempt=control.admission_state(db)['last_attempt']
+        self.assertEqual((attempt['outcome'],attempt['id']),('not_sent',1))
+
+    def test_schedule_event_after_resume_intent_never_opens(self):
+        self.sample=self.low
+        with self.assertRaises(ValueError):self.cross_event_after('apertura_intento',self.low)
+        self.assertEqual([c for c in self.p.calls if c[0]=='start'],[])
+        self.assertEqual(self.rows()[-1]['bloqueos'],[dict(grupo='jale',operacion='resume',causa='event')])
+        self.assertEqual(self.p.groups['jale']['status'],'Paused')
+
+    def test_resume_rpc_failure_is_logged_per_group(self):
+        self.sample=self.low
+        call=self.p.call
+        def failing(*args):
+            if args[:2]==('start','-g'):raise subprocess.CalledProcessError(1,['double'],stderr='SECRET-SENTINEL')
+            return call(*args)
+        with control.locked(self.engine.directory),patch.object(self.p,'call',side_effect=failing):
+            with self.assertRaises(subprocess.SubprocessError):self.engine.guard(self.low)
+        self.assertEqual(self.rows()[-1]['bloqueos'],[dict(grupo='jale',operacion='resume',causa='rpc')])
+        self.assertNotIn('SECRET-SENTINEL',(self.engine.directory/'guardia.log').read_text())
+
     def test_main_exception_handler_never_logs_exception_text(self):
         import sys
         with patch.object(control,'STATE_DIR',self.engine.directory),patch.object(control,'Pueue',return_value=self.p),patch.object(control,'guard',side_effect=ValueError('SECRET-SENTINEL')),patch.object(sys,'argv',['control.py','guardia']):
