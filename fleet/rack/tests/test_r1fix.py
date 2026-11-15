@@ -67,7 +67,11 @@ class ExecutorRegressions(unittest.TestCase):
                 'else:\n print(json.dumps(dict(schema="rack-cancel-result@1",ref=r["ref"],'
                 'action_id=r["action_id"],status="cancelled",result=dict(exit=130),error=None)))\n')
             case.actions.executor=accion.Executor(home=case.root)
-            code,answer=case.handler()
+            # 3.12 decodes 1100 levels (and the 8191 that fit in 16 KiB); 3.9 raises.
+            # Pin the 3.9 failure so the boundary is checked on every version.
+            deep=RecursionError('maximum recursion depth exceeded while decoding a JSON array')
+            with patch.object(accion.desk_channel,'decode',side_effect=deep):
+                code,answer=case.handler()
             self.assertTrue(effect.exists())
             self.assertEqual((code,answer['status']),(200,'unknown'))
             with case.actions.connect() as db:

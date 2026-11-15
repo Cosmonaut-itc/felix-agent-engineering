@@ -203,7 +203,6 @@ STARTUP_CASES += (
 
 def main():
     cases = STARTUP_CASES if '--startup-only' in sys.argv else CASES + STARTUP_CASES
-    survivors = []
     for name,filename,before,after,test in cases:
         with tempfile.TemporaryDirectory(prefix='rack-c3-mutation-',dir='/tmp') as folder:
             root=Path(folder)/'rack'
@@ -216,15 +215,11 @@ def main():
             path.write_text(text.replace(before,after))
             result=subprocess.run(['/usr/bin/python3','-B','-m','unittest',test,'-v'],cwd=str(root/'tests'),
                                   env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),capture_output=True,text=True,timeout=20)
-            if name=='controller-decode-unknown' and sys.version_info >= (3,12) and result.returncode==0:
-                survivors.append(name)
-                print(name+': SURVIVES on Python 3.12 (preexisting on main; recorded, not corrected)')
-                continue
             if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:
                 raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
             print(name+': caught (expected failure)')
             print('\n'.join(line for line in result.stderr.splitlines() if 'AssertionError:' in line or line.startswith('FAILED')))
-    print(str(len(cases)-len(survivors))+'/'+str(len(cases))+' mutations caught; known preexisting survivors: '+str(survivors)+'; original tree untouched.')
+    print(str(len(cases))+'/'+str(len(cases))+' mutations caught; original tree untouched.')
 
 
 if __name__=='__main__':main()
