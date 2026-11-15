@@ -387,6 +387,7 @@ class InstallerTests(Fixture):
                 self.install("instalar")
         self.assertTrue(self.service_loaded)
         self.assertEqual((library / "control.py").read_bytes(), (ROOT / "control.py").read_bytes())
+        self.assertEqual((library / "mini.py").read_bytes(), (ROOT / "mini.py").read_bytes())
         self.assertEqual(json.loads((state / "guardia-state.json").read_text()), ["suites"])
         self.failing = set()
         self.install("desinstalar")

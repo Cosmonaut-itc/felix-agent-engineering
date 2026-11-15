@@ -8,6 +8,8 @@ import tempfile
 
 ROOT=Path(__file__).resolve().parents[1]
 CASES=[
+ ('mini-authority-dispatch','control.py',"if host == 'mini' and has_authority(directory):",'if False:',
+  'test_slots.SlotsTests.test_actual_guard_dispatch_never_falls_back_when_authority_corrupt'),
  ('login-disable','mini.py',"            self.command(state, 'disable', other)",'            pass',
   'test_o_w3_login_reconstructs_all_enabled_plists_at_bootstrap_boundary'),
  ('disable-before-publish','mini.py',"            self.command(state, 'disable', target)",'            pass',

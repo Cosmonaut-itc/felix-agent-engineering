@@ -56,12 +56,15 @@ class SlotsInstallTests(unittest.TestCase):
         self.assertFalse((self.state/'slots.disabled').exists())
         view=self.engine().view();self.assertTrue(view['capabilities']['slots'])
         before=(self.state/'control.sqlite3').read_bytes()
-        self.fake.actions.clear()
-        self.fake.install('instalar')  # adopted upgrades retain the loaded guard
-        self.assertFalse(any(a[1] in ('bootout','bootstrap') for a in self.fake.actions))
-        self.assertEqual((self.state/'control.sqlite3').read_bytes(),before)
-        self.assertTrue(self.fake.service_loaded)
-        self.assertFalse(any(a[1] in ('parallel','start') for a in self.fake.actions))
+        for flags in (('--cuotas',), ()):
+            with self.subTest(flags=flags):
+                self.fake.actions.clear()
+                self.fake.install('instalar', *flags)  # adopted upgrades retain the loaded guard
+                self.assertFalse(any(a[1] in ('bootout','bootstrap') for a in self.fake.actions))
+                self.assertEqual((self.state/'control.sqlite3').read_bytes(),before)
+                self.assertTrue(self.fake.service_loaded)
+                self.assertFalse(any(a[1] in ('parallel','start') for a in self.fake.actions))
+                self.assertEqual(self.bootstrap_switch, [True])
 
     def test_failed_bootstrap_retains_disable_and_never_opens_pauses_directly(self):
         self.fake.failing={'bootstrap'}

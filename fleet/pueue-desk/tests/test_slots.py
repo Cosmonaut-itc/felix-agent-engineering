@@ -403,10 +403,27 @@ sys.argv=['control.py','rack','--host','mini'];c.main()
 
     def test_actual_guard_dispatch_never_falls_back_when_authority_corrupt(self):
         self.engine.path.write_bytes(b'corrupt')
-        with patch.object(control, 'pressure_mini', return_value=dict(load=0,memory=1)):
-            with self.assertRaises(sqlite3.DatabaseError):
-                control.guard(self.p, None, self.root, host='mini')
-        self.assertEqual(self.p.calls, [])
+        for host in ('mini', 'desk'):
+            samples = (dict(load=0, memory=1), dict(load=4, memory=1)) if host == 'mini' else (
+                dict(io=0, cpu=0, memory=16 * 1024**3),)
+            for sample in samples:
+                with self.subTest(host=host, sample=sample):
+                    for group in self.p.groups.values():
+                        group['status'] = 'Running'
+                    # A fallback without authority would reopen this legacy-owned pause.
+                    self.p.groups['suites']['status'] = 'Paused'
+                    (self.root / 'guardia-state.json').write_text('["suites"]')
+                    self.p.calls.clear()
+                    with patch.object(control, 'pressure_mini', return_value=sample), \
+                         patch.object(control, 'pressure', return_value=sample), \
+                         patch.object(control, 'recover_mini', wraps=control.recover_mini) as recover:
+                        with self.assertRaises(sqlite3.DatabaseError):
+                            control.guard(self.p, None, self.root, host=host)
+                    self.assertEqual(recover.call_count, int(host == 'mini'))
+                    self.assertFalse(any(call[0] == 'start' for call in self.p.calls))
+                    self.assertEqual(self.p.groups['suites']['status'], 'Paused')
+                    expected = [('pause', '--wait', '-g', g) for g in ('default', 'rapidas')]
+                    self.assertEqual(self.p.calls, expected if host == 'mini' and sample['load'] == 4 else [])
 
     def test_broken_authority_marker_never_restores_legacy_guard(self):
         directory=self.root/'broken';directory.mkdir()
