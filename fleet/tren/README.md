@@ -535,11 +535,13 @@ publicándose durante la pausa y respeta el orden de U14. `tick --seco` no
 consume decisiones ni cambia esta continuación operativa.
 
 Mientras el carril está en pausa, se conserva la admisión de los miembros
-de un tren en `Promoviendo`: el push puede haber aterrizado con su ACK aún
-guardado o perdido tras una muerte. Sus caducidades se difieren hasta la
-reconciliación de main al reanudar, antes de readmitirlos; si aterrizó, sus
-entregas quedan resueltas sin avisos falsos. La regla vale también para las
-pausas automáticas que conservan `Promoviendo`. Las demás entregas siguen
+de un tren en `Promoviendo` cuyo último push no tiene resultado consumido:
+pudo aterrizar con su ACK aún guardado o perdido tras una muerte. Sus
+caducidades se difieren hasta la reconciliación de main al reanudar, antes de
+readmitirlos; si aterrizó, sus entregas quedan resueltas sin avisos falsos.
+Si el tick ya consumió que el push no aterrizó (`EnBase`), como en
+`promocion-rechazada`, nada se difiere: una caducidad real se publica durante
+la pausa y sobrevive a `abortar` o `expulsar`. Las demás entregas siguen
 readmitiéndose y el feedback pendiente sigue drenándose durante la pausa.
 
 La identidad de la pausa es la primera secuencia `operativo` de su aparición
