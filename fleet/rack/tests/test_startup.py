@@ -159,8 +159,8 @@ class StartupPipelineTests(unittest.TestCase):
     def test_a_w5_pipeline_six_waits_one_hold_and_no_redundant_ssh(self):
         self.render('startup-waits')
 
-    def test_ambiguous_pause_without_group_hold_keeps_the_ssh_notice(self):
-        self.render('ambiguous-notice')
+    def test_ambiguous_pause_without_group_hold_explains_in_its_cell(self):
+        self.render('ambiguous-cell')
 
     def test_wait_codes_are_closed_and_disjoint_from_holds(self):
         view=self.fixture()['hosts'][0]['snapshot']['control']

@@ -21,6 +21,11 @@ def utc(value):
     return datetime.fromisoformat(value + '+00:00').timestamp()
 
 
+def changed_files(before, after):
+    """Paths whose bytes differ. A byte diff of the whole tree is slow and unreadable (SEN-6417)."""
+    return sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+
+
 class DeskFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='u32-sol-', dir='/tmp')
@@ -163,7 +168,7 @@ class DeskSlotsTests(DeskFixture):
         self.status(r)
         dry=self.request('ensayo-event-01',dry_run=True)
         self.assertEqual(self.engine.handle(dry)['status'],'conflict')
-        self.assertEqual(self.fingerprint(),before)
+        self.assertEqual(changed_files(before, self.fingerprint()), [])
         self.assertEqual(self.p.calls,[])
         self.assertEqual(self.state()['overrides']['jale']['slots'],6)
         self.assertEqual(self.engine.handle(stale)['status'],'conflict')
@@ -249,7 +254,7 @@ class DeskSlotsTests(DeskFixture):
             self.assertEqual((answer['status'], (answer.get('error') or {}).get('code'), answer.get('effects')),
                              ('unsupported', 'unsupported', False))
         self.assertEqual(invoke(status)['status'], 'unknown')
-        self.assertEqual(self.fingerprint(), before)
+        self.assertEqual(changed_files(before, self.fingerprint()), [])
         self.assertFalse(absent.exists())
         absent.mkdir()
         for filename in ('control.adopted', 'control.sqlite3'):
@@ -428,7 +433,7 @@ class DeskSlotsTests(DeskFixture):
         self.assertEqual(answer['status'],'dry_run')
         self.assertEqual(answer['result']['expires_at'],utc('2026-11-14T14:00:00'))
         self.assertEqual(answer['result']['rpc'],[['parallel','6','-g','jale']])
-        self.assertEqual(self.fingerprint(),before);self.assertEqual(self.p.calls,[])
+        self.assertEqual(changed_files(before, self.fingerprint()), []);self.assertEqual(self.p.calls,[])
 
     def pending(self):
         r = self.request()
@@ -680,7 +685,7 @@ class DeskInstallTests(DeskFixture):
         self.assertIsNone(error, 'La tabla nueva debe tener preflight de migración: ' + str(error))
         self.assertIn('migración de tabla', out.getvalue())
         self.assertIn(new.DESK_POLICY_HASH, out.getvalue())
-        self.assertEqual(self.fingerprint(), fingerprint)
+        self.assertEqual(changed_files(fingerprint, self.fingerprint()), [])
         self.assertEqual(self.p.calls, [])
         stores = []
         store = engine.__class__.store
@@ -733,7 +738,7 @@ class DeskInstallTests(DeskFixture):
                     for dry_run in (True,False):
                         with self.assertRaises((ValueError, TypeError, sqlite3.Error)), redirect_stdout(io.StringIO()):
                             installer.install(home, self.root/'pid', new, dry_run=dry_run)
-                        self.assertEqual(self.fingerprint(), fingerprint)
+                        self.assertEqual(changed_files(fingerprint, self.fingerprint()), [])
                         self.assertEqual(self.p.calls, [])
                         self.assertTrue(all(c[2] in ('is-active','show-environment','show') for c in commands))
                 finally:
@@ -820,7 +825,7 @@ class DeskInstallTests(DeskFixture):
                     before = self.fingerprint()
                     with self.assertRaises((ValueError, sqlite3.Error, subprocess.SubprocessError)):
                         invoke()
-                    self.assertEqual(self.fingerprint(), before)
+                    self.assertEqual(changed_files(before, self.fingerprint()), [])
                     for f in directory.glob('*'):
                         f.unlink()
             self.p.groups['jale']['parallel_tasks'] = 7
@@ -833,7 +838,7 @@ class DeskInstallTests(DeskFixture):
             pid.assert_called_with(self.root/'pid')
             self.assertIn('Comprobado (lectura)', output)
             self.assertIn('pendiente:', output)
-            self.assertEqual(self.fingerprint(), before)
+            self.assertEqual(changed_files(before, self.fingerprint()), [])
             self.assertEqual(self.p.calls, [])
 
     def test_installer_retires_old_worker_waiting_before_lock_before_adoption(self):

@@ -15,8 +15,8 @@ window.useStartupScenario=function(name){
   PENDING.clear();SLOT_MESSAGES.clear();HOST_CONFIRMED.clear();
   render(structuredClone(STARTUP_SCENARIOS[name]));
   return {scenario:name,width:innerWidth,scrollWidth:document.documentElement.scrollWidth,
-    hold:document.querySelector('.startup-hold')?.textContent,
-    waits:document.querySelectorAll('.startup-wait').length,
+    hold:[...document.querySelectorAll('.slot.held')].map(e=>e.textContent).find(t=>t.startsWith('Retenido al reiniciar')),
+    waits:[...document.querySelectorAll('.slot.held')].filter(e=>e.textContent.startsWith('Esperando cuotas y Docker')).length,
     interrupted:document.querySelector('.interrupted')?.textContent};
 };
 window.fetch=async()=>{throw Error('Synthetic fixture: network forbidden')};
