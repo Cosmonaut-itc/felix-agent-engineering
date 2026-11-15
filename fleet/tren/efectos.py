@@ -1,4 +1,4 @@
-"""Ejecutor explícito para pruebas/integración futura; el CLI no lo importa.
+"""Ejecutor del outbox activo, repetible sobre la misma instantánea.
 
 La observación devuelta conserva las vistas de admisión del llamador. Publicar
 la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
@@ -6,7 +6,7 @@ la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 from dataclasses import dataclass, replace
 
 from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
-                     Corriendo, Diagnosticando, Efecto, EsperandoCI, Incierto,
+                     Corriendo, Diagnosticando, Efecto, EnBase, EsperandoCI, Incierto,
                      Observacion, Promoviendo, RamaOcupada, admision_entrada,
                      clave, efecto_diagnostico, efecto_promover)
 from git_ops import Publicado
@@ -122,7 +122,11 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
             return Ejecucion(replace(limpia, main=lectura,
                                     intento_promocion=fase.intentos),
                              not isinstance(lectura, Incierto))
-        lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
+        # Antes de repetir IO, reconciliar: un proceso muerto pudo aterrizar C.
+        # EnBase es el único caso que permite otro push del mismo intento.
+        lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+        if isinstance(lectura, EnBase):
+            lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
         return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
                          not isinstance(lectura, Incierto))
     raise ValueError("efecto o fase no soportados")

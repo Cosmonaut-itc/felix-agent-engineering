@@ -8,7 +8,7 @@ import subprocess
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import Observacion, Rechazado, VistaPR
+from dominio import EsperandoCI, Observacion, Rechazado, VistaPR
 
 
 class Observador(Protocol):
@@ -45,10 +45,11 @@ def sha(valor):
 
 
 class GitHubGit:
-    def __init__(self, config, ejecutar=None, sombra=False):
+    def __init__(self, config, ejecutar=None, sombra=False, activo=False):
         self.config = config
         self.ejecutar = ejecutar or subprocess.run
         self.sombra = sombra
+        self.activo = activo
 
     def comando(self, args):
         return self.ejecutar(args, check=True, capture_output=True, text=True,
@@ -176,8 +177,18 @@ class GitHubGit:
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 vistas.append(VistaPR(entrada.entrega.pr, entrada.entrega.head,
                                       completa=False, recibo=entrada.entrega.recibo))
-        return Observacion(ahora, base, tuple(vistas),
-                           self.config.get("excluir_alto_riesgo", True))
+        observacion = Observacion(ahora, base, tuple(vistas),
+                                 self.config.get("excluir_alto_riesgo", True),
+                                 costo_suite_sana_s=self.config.get("costo_suite_sana_s", 0)
+                                 if self.activo else 0)
+        if self.activo:
+            tren = next((t for t in estado.trenes if isinstance(t.fase, EsperandoCI)), None)
+            if tren:
+                # La publicación sólo solicita CI; leer checks sobre el C exacto.
+                ci = self.ci(repo, tren.fase.candidato.C)
+                observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci,
+                                      ci_recibo="github:" + tren.fase.candidato.C)
+        return observacion
 
 
 class Falso:

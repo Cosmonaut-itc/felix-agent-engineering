@@ -47,6 +47,11 @@ class Ledger:
                     ):
                         self.db.execute(sql)
                     self.db.execute("PRAGMA user_version=1")
+                # Extensión aditiva del esquema 1: los eventos/snapshots antiguos
+                # siguen leyéndose sin transformar la historia de sombra.
+                self.db.execute("CREATE TABLE IF NOT EXISTS effect_results ("
+                                "clave TEXT PRIMARY KEY REFERENCES effects(clave), "
+                                "payload TEXT NOT NULL)")
         except BaseException:
             self.db.close()
             raise
@@ -98,6 +103,12 @@ class Ledger:
 
     def estado(self, repo, sombra=False, doble_camino=False):
         estado = inicial(repo)
+        if not sombra:
+            row = self.db.execute(
+                "SELECT payload FROM events WHERE repo=? AND tipo='operativo' ORDER BY seq DESC LIMIT 1",
+                (repo,)).fetchone()
+            if row:
+                estado = desde_datos(json.loads(row[0])["estado"])
         if sombra:
             tipo = "sombra-doble-camino" if doble_camino else "sombra"
             for row in self.db.execute(
@@ -116,6 +127,53 @@ class Ledger:
             nuevas = tuple(iniciales.get(e.entrega.recibo, e) for e in nuevas)
         return replace(estado, entradas=estado.entradas + tuple(
             e for e in nuevas if e.entrega.recibo not in recibos))
+
+    def guardar_paso(self, estado, efectos, ahora, consumido=None):
+        """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
+        with self.transaccion():
+            for entrada in estado.entradas:
+                self.db.execute("UPDATE entries SET payload=? WHERE recibo=? AND repo=?",
+                                (codificar(entrada), entrada.entrega.recibo, estado.repo))
+            for tren in estado.trenes:
+                self.db.execute("INSERT INTO trains VALUES (?, ?, ?) ON CONFLICT(id) "
+                                "DO UPDATE SET payload=excluded.payload",
+                                (tren.id, estado.repo, codificar(tren)))
+            for efecto in efectos:
+                previo = self.db.execute("SELECT repo, payload FROM effects WHERE clave=?",
+                                         (efecto.clave,)).fetchone()
+                if previo and tuple(previo) != (estado.repo, codificar(efecto)):
+                    raise ValueError("colisión de clave de efecto")
+                self.db.execute("INSERT OR IGNORE INTO effects VALUES (?, ?, ?)",
+                                (efecto.clave, estado.repo, codificar(efecto)))
+                self.db.execute("INSERT OR IGNORE INTO outbox VALUES (?, 'pendiente')",
+                                (efecto.clave,))
+            if consumido is not None:
+                self.db.execute("UPDATE outbox SET estado='completo' WHERE clave=? AND estado='resultado'",
+                                (consumido,))
+            self.evento(estado.repo, "operativo", ahora,
+                        {"estado": datos(estado), "efectos": datos(efectos), "consumido": consumido})
+
+    def outbox(self, repo):
+        return [dict(r) for r in self.db.execute(
+            "SELECT e.clave, e.payload, o.estado, r.payload AS resultado FROM effects e "
+            "JOIN outbox o ON o.clave=e.clave LEFT JOIN effect_results r ON r.clave=e.clave "
+            "WHERE e.repo=? AND o.estado!='completo' ORDER BY e.rowid", (repo,))]
+
+    def iniciar_efecto(self, repo, efecto, ahora):
+        # Durable antes del IO: tras una muerte se reconcilia antes del paso.
+        with self.transaccion():
+            self.db.execute("UPDATE outbox SET estado='ejecutando' WHERE clave=?", (efecto.clave,))
+            self.evento(repo, "efecto-iniciado", ahora, {"clave": efecto.clave})
+
+    def registrar_efecto(self, repo, efecto, ahora, resultado, completo=False):
+        with self.transaccion():
+            self.db.execute("INSERT INTO effect_results VALUES (?, ?) ON CONFLICT(clave) "
+                            "DO UPDATE SET payload=excluded.payload",
+                            (efecto.clave, json.dumps(resultado, sort_keys=True)))
+            self.db.execute("UPDATE outbox SET estado=? WHERE clave=?",
+                            ("resultado" if completo else "fallido", efecto.clave))
+            self.evento(repo, "efecto-resultado" if completo else "efecto-fallido", ahora,
+                        {"clave": efecto.clave, "resultado": resultado})
 
     def sombra(self, estado, efectos, ahora, doble_camino=False):
         # Only the event is committed. No operational trains/effects/outbox rows.

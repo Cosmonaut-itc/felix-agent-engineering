@@ -3,6 +3,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
+import os
 from pathlib import Path
 import re
 import shlex
@@ -198,8 +199,19 @@ class Hasito:
         exigir(len(encontrados) == 1 and int(encontrados[0][1]) == resultado.returncode, "salida-sin-recibo")
         ruta = Path(encontrados[0][2])
         exigir(ruta.is_absolute() and ruta.is_file(), "resultado-ilegible")
-        recibo.write_text(json.dumps({"argv": list(argv), "ruta": str(ruta),
-                                     "codigo": resultado.returncode}), encoding="utf-8")
+        # Un recibo truncado por una muerte no debe impedir el reenganche.
+        temporal = registro / "recibo.tmp"
+        with temporal.open("w", encoding="utf-8") as archivo:
+            json.dump({"argv": list(argv), "ruta": str(ruta),
+                       "codigo": resultado.returncode}, archivo)
+            archivo.flush()
+            os.fsync(archivo.fileno())
+        os.replace(str(temporal), str(recibo))
+        descriptor = os.open(str(registro), os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
         return ruta, resultado.returncode
 
     def suite(self, candidato, tren_id, intento=0, reanudar=""):
