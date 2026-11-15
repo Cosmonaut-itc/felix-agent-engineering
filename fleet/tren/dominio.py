@@ -671,9 +671,11 @@ def paso(estado, observacion):
     # A landed PR closes as merged; its delivery is settled, not expired.
     terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
     # En pausa no se consume ni recupera promover: su push puede haber cerrado
-    # los PR. Diferir su readmisión hasta reconciliar main al reanudar.
+    # los PR. Diferir sólo si falta el resultado; reintento_pendiente guarda
+    # que ya se consumió EnBase y no hay un push cuyo aterrizaje sea incierto.
     promociones_pausadas = {t.id for t in activos
-                           if estado.pausa and isinstance(t.fase, Promoviendo)}
+                           if estado.pausa and isinstance(t.fase, Promoviendo)
+                           and not t.fase.reintento_pendiente}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))

@@ -112,8 +112,10 @@ class LimitesTests(ContextoPausa):
             self.contexto.config["miembros"][0][1] = nuevo
         for ahora in (9000, 9100):
             self.contexto.tick(ahora)
-            self.assertEqual(self.estado(), antes)
-            self.assertEqual(self.posts("/comments"), [])
+            self.assertEqual(self.estado().trenes, antes.trenes)
+            self.assertEqual(self.estado().pausa, antes.pausa)
+            self.assertIsInstance(self.estado().entradas[0].admision, Rechazado)
+            self.assertEqual(len(self.posts("/comments")), 1)
         self.juicio("reanudar")
         self.contexto.tick(9200)
         self.contexto.tick(9300)
@@ -133,7 +135,7 @@ class LimitesTests(ContextoPausa):
         self.assertEqual(sum(p.endswith(":refs/heads/main") for p in self.lineas("pushes.log")), 0)
         self.assertEqual(len(self.lineas("trabajos.log")), 1)
 
-    def test_pausa_del_reductor_difiere_caducidad_real_hasta_reconciliar(self):
+    def test_pausa_con_enbase_consumido_publica_caducidad_real_sin_esperar_juicio(self):
         self.caducidad_real(cerrado=False)
 
     def test_pr_cerrado_caduca_con_comentario_sin_status(self):
