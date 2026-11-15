@@ -218,6 +218,8 @@ def main():
         old=verified_pid()
         with control.locked(m.directory):m.engine.record_stop()
         p.call('shutdown');wait_for(lambda:verified_pid()!=old)
+        wait_for(lambda:p.status())
+        wait_for(lambda:m.state().get('startup',{}).get('phase')=='ready')
         emit(root,'keepalive_successful_exit',restarted=True)
         # Maintenance blocks both the fixed wrapper and the existing recovery/sensor job.
         m.maintenance()
