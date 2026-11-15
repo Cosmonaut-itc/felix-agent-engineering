@@ -63,7 +63,8 @@ def parser():
     return cli
 
 
-def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=None):
+def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=None,
+             escritor=None):
     if args.comando == "tick" and not args.seco:
         inscripcion = activacion(args.repo)
         if inscripcion != "activo":
@@ -137,7 +138,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
                         if not isinstance(lanzador, str) or not Path(lanzador).is_absolute():
                             raise ValueError("lanzador Hasito debe ser ruta absoluta")
                         hasito = Hasito(lanzador, git)
-                return 0, tick(ledger, args.repo, observador, ahora, git, hasito, frontera)
+                return 0, tick(ledger, args.repo, observador, ahora, git, hasito, frontera,
+                               escritor)
             doble_camino = modo(args.repo) == "sombra"
             estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
             if observador is None:
@@ -146,6 +148,10 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
             observacion = observador.observar(estado, ahora)
             reductor = paso_sombra if doble_camino else paso
             nuevo, efectos = reductor(estado, observacion)
+            # La simulación conserva sus eventos históricos: las señales de
+            # incorporación/aterrizaje sólo pertenecen al outbox operativo.
+            from feedback import STATUS_SOLO
+            efectos = tuple(e for e in efectos if e.tipo not in STATUS_SOLO)
             plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
             return 0, {"modo": "sombra", "plan": plan}
     finally:

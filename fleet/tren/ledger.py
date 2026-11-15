@@ -164,13 +164,16 @@ class Ledger:
             self.db.execute("UPDATE outbox SET estado='ejecutando' WHERE clave=?", (efecto.clave,))
             self.evento(repo, "efecto-iniciado", ahora, {"clave": efecto.clave})
 
-    def registrar_efecto(self, repo, efecto, ahora, resultado, completo=False):
+    def registrar_efecto(self, repo, efecto, ahora, resultado, completo=False,
+                         sin_consumo=False):
+        """Feedback cierra directamente: no produce observación para el reductor."""
         with self.transaccion():
             self.db.execute("INSERT INTO effect_results VALUES (?, ?) ON CONFLICT(clave) "
                             "DO UPDATE SET payload=excluded.payload",
                             (efecto.clave, json.dumps(resultado, sort_keys=True)))
             self.db.execute("UPDATE outbox SET estado=? WHERE clave=?",
-                            ("resultado" if completo else "fallido", efecto.clave))
+                            (("completo" if sin_consumo else "resultado")
+                             if completo else "fallido", efecto.clave))
             self.evento(repo, "efecto-resultado" if completo else "efecto-fallido", ahora,
                         {"clave": efecto.clave, "resultado": resultado})
 

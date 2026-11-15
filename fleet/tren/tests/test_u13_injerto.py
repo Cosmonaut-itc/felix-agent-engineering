@@ -68,7 +68,10 @@ class U13InjertoTests(unittest.TestCase):
             c.inscritos.write_text(activo.REPO + " sombra\n")
             args = activo.cli.parser().parse_args(["tick", "--repo", activo.REPO, "--seco"])
             sombra = GitHubGit(c.contexto.config, ejecutar=c.contexto.gh, sombra=True)
-            _, salida = activo.cli.ejecutar(args, sombra, 101)
+            # Este control requiere CI verde. U14 ahora publica pending en el
+            # tick activo, que la sombra correctamente interpreta como retención.
+            with patch.object(sombra, "ci", return_value="verde"):
+                _, salida = activo.cli.ejecutar(args, sombra, 101)
             simulado = desde_datos(salida["plan"]["estado"])
             self.assertEqual(len(simulado.trenes), 1, "sombra debe formar su propio lote")
             self.assertEqual(simulado.trenes[0].fase, Terminal("SIMULADO"))

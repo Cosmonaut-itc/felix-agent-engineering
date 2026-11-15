@@ -115,7 +115,11 @@ class U12FixR1Tests(Aislado):
         self.entregar(cuando=3750)
         _, resultado = self.tick(3800)
         self.assertEqual([e["tipo"] for e in resultado["plan"]["efectos"]], ["armar-candidato"])
-        self.assertEqual(resultado["plan"], {"estado": datos(esperado[0]), "efectos": datos(esperado[1])})
+        # Las nuevas señales sólo van al outbox operativo, no al evento sombra.
+        efectos_historicos = tuple(e for e in esperado[1] if e.tipo not in
+                                   ("avisar-en-tren", "avisar-aterrizaje"))
+        self.assertEqual(resultado["plan"], {"estado": datos(esperado[0]),
+                                            "efectos": datos(efectos_historicos)})
         self.assertEqual(ledger.db.execute(
             "SELECT tipo FROM events WHERE repo=? AND tipo LIKE 'sombra%' ORDER BY seq", (REPO,)
         ).fetchall()[0][0], "sombra-doble-camino")

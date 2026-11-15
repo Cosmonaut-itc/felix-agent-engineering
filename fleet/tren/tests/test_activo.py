@@ -24,6 +24,7 @@ from dominio import (Armado, Candidato, Certificado, Congelado,
                      Terminal, clave, datos, desde_datos)
 from adaptadores.hasito import Hasito
 from git_ops import GitTren
+from feedback import EscritorGitHub
 from ledger import Ledger
 from observador import GitHubGit
 
@@ -45,6 +46,7 @@ class Contexto:
         self.git = GitTren(self.config["remoto"], ejecutar=self.transporte)
         self.observador = GitHubGit(self.config, ejecutar=self.gh, activo=True)
         self.hasito = Hasito(self.raiz / "run.sh", self.git, self.lanzador)
+        self.escritor = EscritorGitHub(self.feedback_gh)
 
     def log(self, nombre, texto):
         with (self.raiz / nombre).open("a") as archivo:
@@ -73,7 +75,11 @@ class Contexto:
                 "in_progress" if pendiente else "completed", "conclusion":
                 None if pendiente else "success"}]}]
         elif "/statuses?" in endpoint:
-            valor = [[]]
+            head = endpoint.split("/")[4]
+            posts = self.raiz / "posts.log"
+            publicados = [json.loads(s) for s in posts.read_text().splitlines()] if posts.exists() else []
+            valor = [[p["payload"] for p in reversed(publicados)
+                      if p["endpoint"].endswith("/statuses/" + head)]]
         elif "/files?" in endpoint:
             valor = [[{"filename": "src/producto.py"}]]
         else:
@@ -86,6 +92,40 @@ class Contexto:
             valor = {"head": {"sha": head}, "base": {"ref": "main", "sha": main},
                      "state": "closed" if merged else "open", "merged": merged,
                      "changed_files": 1, "labels": [], "mergeable": True}
+            if (self.raiz / ("pr-cerrado-" + str(pr))).exists():
+                valor["state"] = "closed"
+        return subprocess.CompletedProcess(argv, 0, json.dumps(valor), "")
+
+    def feedback_gh(self, argv, **kwargs):
+        """Escritor falso independiente; persiste el POST antes de retornar."""
+        metodo, endpoint = argv[3:5]
+        ruta = self.raiz / "comentarios.json"
+        comentarios = json.loads(ruta.read_text()) if ruta.exists() else {}
+        if metodo == "GET":
+            if "/comments?" in endpoint:
+                pr = endpoint.split("/")[4]
+                todos = comentarios.get(pr, [])
+                valor = [todos[n:n + 100] for n in range(0, len(todos), 100)] or [[]]
+                self.log("feedback-lecturas.log", json.dumps(argv))
+                return subprocess.CompletedProcess(argv, 0, json.dumps(valor), "")
+            return self.gh(argv, **kwargs)
+        if metodo != "POST" or argv[5:] != ["--input", "-"]:
+            raise AssertionError("escritura inesperada")
+        payload = json.loads(kwargs["input"])
+        self.log("posts.log", json.dumps({"endpoint": endpoint, "payload": payload}))
+        fallo = self.raiz / "fallo-post"
+        if fallo.exists() and fallo.read_text() in endpoint:
+            raise subprocess.CalledProcessError(1, argv, stderr="dato privado")
+        if "/comments" in endpoint:
+            pr = endpoint.split("/")[4]
+            lista = comentarios.setdefault(pr, [])
+            valor = {"body": payload["body"], "html_url":
+                     "https://github.com/" + REPO + "/pull/" + pr +
+                     "#issuecomment-" + str(1 + len(lista))}
+            lista.append(valor)
+            ruta.write_text(json.dumps(comentarios))
+        else:
+            valor = {"state": payload["state"]}
         return subprocess.CompletedProcess(argv, 0, json.dumps(valor), "")
 
     def transporte(self, argv, **kwargs):
@@ -141,7 +181,8 @@ class Contexto:
 
     def tick(self, ahora=100, frontera=None):
         args = cli.parser().parse_args(["tick", "--repo", REPO])
-        return cli.ejecutar(args, self.observador, ahora, self.git, self.hasito, frontera)
+        return cli.ejecutar(args, self.observador, ahora, self.git, self.hasito, frontera,
+                            self.escritor)
 
 
 class ActivoTests(unittest.TestCase):
@@ -213,7 +254,7 @@ class ActivoTests(unittest.TestCase):
         self.assertIsNone(final.pausa)
         with self.ledger() as ledger:
             filas = ledger.db.execute("SELECT payload FROM effects ORDER BY rowid").fetchall()
-            self.assertEqual(len(filas), 4)
+            self.assertEqual(len(filas), 10)  # cuatro de trabajo y seis de status
             self.assertEqual(ledger.outbox(REPO), [])
             self.assertEqual(ledger.db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(ledger.db.execute("SELECT count(*) FROM trains").fetchone()[0], 1)
@@ -258,7 +299,7 @@ class ActivoTests(unittest.TestCase):
         helper = self.raiz / "frontera.py"
         helper.write_text("import sys\nsys.path[:0] = " + repr([str(RAIZ), str(RAIZ / "tests")]) + "\n"
             "from test_activo import Contexto\nc = Contexto(" + repr(str(self.ruta_contexto)) + ")\n"
-            "if sys.argv[1] == 'gh':\n    r = c.gh(['gh'] + sys.argv[2:])\n"
+            "if sys.argv[1] == 'gh':\n    kwargs = {'input': sys.stdin.read()} if '--input' in sys.argv else {}\n    r = c.feedback_gh(['gh'] + sys.argv[2:], **kwargs)\n"
             "else:\n    r = c.lanzador(['bash', c.config['lanzador_hasito']] + sys.argv[2:])\n"
             "print(r.stdout, end='')\nsys.exit(r.returncode)\n")
         for ruta, modo in ((ejecutables / "gh", "gh"), (lanzador, "suite")):
@@ -350,10 +391,11 @@ class ActivoTests(unittest.TestCase):
         self.assertEqual(final.trenes[0].fase, Terminal("DEVUELTO"))
         self.assertEqual(final.entradas[1].terminal, Terminal("DEVUELTO"))
         with self.ledger() as ledger:
-            pendientes = ledger.outbox(REPO)
-            self.assertEqual(len(pendientes), 1)
-            efecto = desde_datos(json.loads(pendientes[0]["payload"]))
-            self.assertEqual((efecto.tipo, pendientes[0]["estado"]), ("devolver", "pendiente"))
+            self.assertEqual(ledger.outbox(REPO), [])
+            fila = ledger.db.execute("SELECT e.payload, o.estado FROM effects e JOIN outbox o "
+                "ON e.clave=o.clave WHERE e.payload LIKE '%devolver%'").fetchone()
+            efecto = desde_datos(json.loads(fila["payload"]))
+            self.assertEqual((efecto.tipo, fila["estado"]), ("devolver", "completo"))
             payload = json.loads(efecto.datos[2])
             self.assertEqual(payload["pr"], 2)
             self.assertEqual(payload["fallos"][0]["conjunto_causal"], [2])
@@ -382,14 +424,14 @@ class ActivoTests(unittest.TestCase):
         with self.ledger() as ledger:
             estado = ledger.estado(REPO)
             feedback = tuple(Efecto(clave(tipo), tipo, ("recibo",))
-                             for tipo in ("devolver", "caduca", "avisar-caducidad", "feedback-futuro"))
+                             for tipo in ("caduca", "feedback-futuro"))
             ledger.guardar_paso(estado, feedback, 10)
             ledger.guardar_paso(estado, feedback, 11)
         final = self.terminar()
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
         with self.ledger() as ledger:
             pendientes = ledger.outbox(REPO)
-            self.assertEqual(len(pendientes), 4)
+            self.assertEqual(len(pendientes), 2)
             self.assertTrue(all(f["estado"] == "pendiente" for f in pendientes))
         args = cli.parser().parse_args(["estado", "--repo", REPO])
         self.assertTrue(all(not f["ejecutor"] for f in cli.ejecutar(args)[1]["outbox"]))

@@ -197,7 +197,8 @@ class HasitoTests(Aislado):
         self.assertEqual((payload["B"], payload["C"], payload["pr"]), (B, C, 2))
         self.assertEqual(payload["fallos"][0]["conjunto_causal"], [2])
         self.assertIn("--unidad", shlex.split(payload["fallos"][0]["comando"]))
-        self.assertEqual(efectos[-1].tipo, "armar-candidato")
+        self.assertEqual([e.tipo for e in efectos if e.tipo != "devolver"],
+                         ["armar-candidato", "avisar-en-tren", "avisar-en-tren"])
 
     def test_intermitente_pausa_sin_devolver(self):
         estado, efectos, solicitudes = self.diagnosticar(lambda objetivo:
@@ -213,7 +214,7 @@ class HasitoTests(Aislado):
         self.assertEqual(solicitudes, ["C", "B", (1,), (2,), (3,), (1, 2), (1, 3), (2, 3)])
         self.assertEqual(estado.trenes[1].recibos, (estado.entradas[2].entrega.recibo,))
         self.assertEqual(len([e for e in efectos if e.tipo == "devolver"]), 2)
-        for efecto in efectos[:-1]:
+        for efecto in (e for e in efectos if e.tipo == "devolver"):
             self.assertEqual(json.loads(efecto.datos[2])["fallos"][0]["conjunto_causal"], [1, 2])
 
     def test_presupuesto_no_despacha_si_no_cabe(self):
