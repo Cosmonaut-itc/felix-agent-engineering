@@ -306,6 +306,7 @@ class InstallerTests(Fixture):
             self.install("instalar")
             self.assertTrue(self.service_loaded)
             self.assertEqual((library / "control.py").read_bytes(), (ROOT / "control.py").read_bytes())
+            self.assertEqual((library / "mini.py").read_bytes(), (ROOT / "mini.py").read_bytes())
             data = plistlib.loads(agent.read_bytes())
             self.assertEqual(data["Label"], installer.LABEL)
             self.assertEqual(data["StartInterval"], 60)

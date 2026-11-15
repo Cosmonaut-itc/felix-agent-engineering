@@ -111,6 +111,7 @@ def main():
             print(f"SECO: comprobar {PUEUE} status --json (grupos suites y default)")
         print(f"SECO: si está cargado, {LAUNCHCTL} bootout {service}")
         if args.command == "instalar":
+            print(f"SECO: copiar {SOURCE / 'mini.py'} -> {library / 'mini.py'} antes del controlador")
             print(f"SECO: copiar {SOURCE / 'control.py'} -> {library / 'control.py'}")
             print(f"SECO: crear {state} y renderizar plist -> {agent}")
             print("SECO: " + shlex.join([LAUNCHCTL, "bootstrap", domain, str(agent)]))
@@ -170,7 +171,8 @@ def main():
                         engine.view()
                     else:
                         engine.adopt(args.pid_file)
-                for target, write in ((library / "control.py", lambda path: shutil.copy2(SOURCE / "control.py", path)),
+                for target, write in ((library / "mini.py", lambda path: shutil.copy2(SOURCE / "mini.py", path)),
+                                      (library / "control.py", lambda path: shutil.copy2(SOURCE / "control.py", path)),
                                       (agent, lambda path: path.write_bytes(plistlib.dumps(template)))):
                     temporary = target.with_name(target.name + ".tmp")
                     write(temporary)
@@ -189,7 +191,7 @@ def main():
         except Exception as error:
             keep_owned_guarded(state, domain, agent, error)
             raise
-        for target in (agent, library / "control.py"):
+        for target in (agent, library / "control.py", library / "mini.py"):
             target.unlink(missing_ok=True)
             target.with_name(target.name + ".tmp").unlink(missing_ok=True)
         if library.exists():

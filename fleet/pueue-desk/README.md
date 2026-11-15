@@ -276,7 +276,7 @@ auditoría. Para apagar esta entrega, crear `slots.disabled` en el directorio Mi
 se apagan capacidades/cuotas nuevas, y siguen lectura, cancelación y reconciliación.
 Se puede restaurar la versión anterior del rack manteniendo **este controlador y
 su guardia**. No devolver la guardia antigua ni borrar SQLite mientras haya deseo
-durable: `desinstalar` lo rechaza antes de bootout. Una retirada completa requiere
+durable: `desinstalar --solo-guardia` lo rechaza antes de bootout. Una retirada completa requiere
 migrar explícitamente propiedad y deseo; no la simula abriendo grupos directamente.
 
 Canario de instalación, sólo supervisado por Felix: sin alerta, grupo vacío con

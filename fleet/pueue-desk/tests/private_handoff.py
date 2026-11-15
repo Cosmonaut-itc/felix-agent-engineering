@@ -140,7 +140,12 @@ def main():
             process.kill();process.wait(timeout=5)
     def load(label):
         created.append(label)
-        mini.launchctl('bootstrap',m.domain,str(m.agents/(label+'.plist')))
+        def attempt():
+            result=mini.launchctl('bootstrap',m.domain,str(m.agents/(label+'.plist')),check=False)
+            if result.returncode==0:return True
+            if result.returncode==5 and m.loaded(label) is None:return False
+            raise subprocess.CalledProcessError(result.returncode,['private-launchctl','bootstrap'])
+        wait_for(attempt)
     def settled(phase):return m.state().get('mini_handoff',{}).get('phase')==phase
     def status(ident):return p.status()['tasks'][str(ident)]['status']
     def add(command,group='default',stashed=False):
@@ -177,6 +182,11 @@ def main():
         with control.locked(m.directory):
             for label in (mini.GUARD,mini.LABEL,mini.BREW):
                 mini.launchctl('bootout',m.domain+'/'+label,check=False)
+            wait_for(lambda:all(m.loaded(label) is None for label in labels))
+            def offline():
+                control.assert_offline(p,configuration['pid_file'])
+                return True
+            wait_for(offline)
             for label in labels:
                 if not m.disabled(label):load(label)
             assert sum(m.loaded(label) is not None for label in (mini.BREW,mini.LABEL))==1
