@@ -294,8 +294,10 @@ def admision(vista, observacion):
         return Retenido(Motivo.MERGE_READY)
     if vista.alto_riesgo and not vista.verificado:
         return Retenido(Motivo.VERIFICADO)
-    if vista.alto_riesgo and observacion.excluir_alto_riesgo:
-        return Retenido(Motivo.PILOTO)
+    # merge.md: Felix's per-head authorization admits high risk, even in the pilot.
+    if vista.alto_riesgo and not vista.autorizado:
+        return Retenido(Motivo.PILOTO if observacion.excluir_alto_riesgo
+                        else Motivo.MERGE_READY)
     return Admitido()
 
 
