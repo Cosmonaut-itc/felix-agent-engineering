@@ -63,6 +63,8 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
             if efecto.tipo == "iniciar-suite" and isinstance(fase, EsperandoCI):
                 if efecto != Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)):
                     raise ValueError("suite obsoleta")
+                if observacion.ci_candidato != "verde":
+                    return Ejecucion(limpia, False)
                 ruta, resultado = hasito.suite(fase.candidato, tren.id)
                 return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado), True)
             if efecto.tipo == "reanudar-suite" and isinstance(fase, Corriendo):
@@ -75,7 +77,8 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
                 return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado,
                                          suite_intento=fase.reanudaciones), True)
             if efecto.tipo == "repetir" and isinstance(fase, Diagnosticando):
-                if fase.pendiente is None or efecto != efecto_diagnostico(tren, fase):
+                if (fase.pendiente is None or fase.esperar_hasta is not None or
+                        efecto != efecto_diagnostico(tren, fase)):
                     raise ValueError("repetición obsoleta")
                 s = fase.pendiente
                 commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B

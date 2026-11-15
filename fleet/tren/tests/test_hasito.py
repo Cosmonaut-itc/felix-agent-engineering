@@ -18,6 +18,7 @@ from dominio import (Admitido, Candidato, Certificado, Completo, Congelado, Corr
                      Evidencia, Fallo, Incompleto, Intento, Observacion, Repeticion,
                      Terminal, Tren, UnidadRepetida, VistaPR, clave, datos, desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
+from git_ops import Publicado
 
 B, C, T = "b" * 40, "c" * 40, "d" * 40
 F = Fallo("tests/test_producto.py::test_caso[a, b=1]", "AssertionError: valor", "solo-candidato",
@@ -60,6 +61,9 @@ class GitFalso:
 
     def worktree(self, commit):
         return self.raiz / "worktrees" / commit
+
+    def publicar(self, tren_id, commit):
+        return Publicado("refs/heads/tren/" + tren_id, commit)
 
     def armar(self, base, miembros):
         miembros = tuple(miembros)
@@ -432,6 +436,85 @@ class HasitoTests(Aislado):
         self.assertIsNone(final.entradas[3].tren)
         self.assertIn("--suite", self.runner.llamadas[-1])
         self.assertIn("final", self.runner.llamadas[-1])
+
+
+    def test_rojo_con_restantes_fail_fast_sigue_siendo_rojo(self):
+        r = suite_fixture()
+        r["restantes"] = ["check-pendiente", {"parte": "parte-2", "motivo": "no-corrida"}]
+        self.assertEqual(leer_suite(r, C, B).veredicto, "rojo")
+        r["veredicto"] = 0
+        r["solo_candidato"] = []
+        with self.assertRaises(ResultadoInvalido):
+            leer_suite(r, C, B)
+
+    def test_presupuesto_se_agota_despues_de_confirmar_sin_armar_subconjuntos(self):
+        self.obs = replace(self.obs, costo_suite_sana_s=110)  # 55: C20 + B20, no cabe otro20.
+        estado, efectos, solicitudes = self.diagnosticar(lambda objetivo:
+            ("falla", "falla") if objetivo == "C" else ("pasa", "pasa"))
+        self.assertEqual(solicitudes, ["C", "B"])
+        self.assertFalse(self.git.armados)
+        self.assertEqual(estado.pausa.motivo, "necesita-juicio")
+        self.assertIn("presupuesto", estado.pausa.detalle)
+        self.assertEqual(efectos, ())
+
+    def test_repeticion_no_se_ejecuta_antes_de_espera_ni_sin_presupuesto(self):
+        self.obs = replace(self.obs, costo_suite_sana_s=60)
+        estado, efectos, _ = self.iniciar()
+        original = efectos[0]
+        def responder(argv):
+            r = repeticion_fixture(Path(argv[argv.index("--repetir") + 1]), C)
+            r.update(veredicto=75, completa=False)
+            return r
+        self.runner.responder = responder
+        llegada = ejecutar(original, estado, self.obs, self.git, self.adaptador)
+        estado, _ = paso(estado, llegada.observacion)
+        with self.assertRaises(ValueError):
+            ejecutar(original, estado, self.obs, self.git, self.adaptador)
+        final, efectos = paso(estado, replace(self.obs, ahora=400))
+        self.assertEqual(final.pausa.motivo, "necesita-juicio")
+        self.assertIn("presupuesto", final.pausa.detalle)
+        self.assertEqual(efectos, ())
+        self.assertEqual(len(self.runner.llamadas), 2)
+
+    def test_varias_unidades_agregan_una_devolucion_por_pr_con_comando_concreto(self):
+        f2 = replace(F, unidad="tests/test_otro.py::test_otro", firma="ValueError: otro")
+        self.runner.responder = lambda argv: suite_fixture(fallos=(F, f2))
+        estado, efectos = paso(self.estado, self.obs)
+        llegada = ejecutar(efectos[0], estado, self.obs, self.git, self.adaptador)
+        estado, efectos = paso(estado, llegada.observacion)
+        def responder(argv):
+            origen = Path(argv[argv.index("--repetir") + 1])
+            commit = argv[argv.index("--sha") + 1]
+            unidad = argv[argv.index("--unidad") + 1].split("=", 1)[1]
+            f = F if unidad == F.unidad else f2
+            grupo = self.git.commits.get(commit, ())
+            valores = ("falla", "falla") if commit == C or grupo == (1,) else ("pasa", "pasa")
+            return repeticion_fixture(origen, commit, fallo=f, valores=valores)
+        self.runner.responder = responder
+        for _ in range(30):
+            if isinstance(estado.trenes[0].fase, Terminal):
+                break
+            llegada = ejecutar(efectos[0], estado, self.obs, self.git, self.adaptador)
+            estado, efectos = paso(estado, llegada.observacion)
+        else:
+            self.fail("no concluyó el diagnóstico de dos unidades")
+        devoluciones = [e for e in efectos if e.tipo == "devolver"]
+        self.assertEqual(len(devoluciones), 1)
+        detalles = json.loads(devoluciones[0].datos[2])["fallos"]
+        self.assertEqual({f["unidad"] for f in detalles}, {F.unidad, f2.unidad})
+        for f in detalles:
+            argv = shlex.split(f["comando"])
+            wt = argv[argv.index("--worktree") + 1]
+            self.assertEqual(wt, str(self.git.worktree(argv[argv.index("--sha") + 1])))
+            self.assertNotIn("<", wt)
+            self.assertEqual(f["conjunto_causal"], [1])
+
+    def test_iniciar_suite_retiene_si_ci_candidato_no_es_verde(self):
+        estado, efectos = paso(self.estado, self.obs)
+        llegada = ejecutar(efectos[0], estado, replace(self.obs, ci_candidato="pendiente"),
+                           self.git, self.adaptador)
+        self.assertFalse(llegada.completo)
+        self.assertEqual(self.runner.llamadas, [])
 
 
 class IntegracionGitTests(git_fixtures.AterrizajeTests):

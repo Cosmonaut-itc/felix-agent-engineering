@@ -54,7 +54,8 @@ def leer_suite(r, commit, base):
     sobre(r, "suite-resultado@1", commit, base)
     campos = ("solo_candidato", "tambien_base", "sospecha_arnes", "restantes", "partes")
     exigir(all(isinstance(r.get(k), list) for k in campos))
-    exigir(all(isinstance(f, dict) for k in campos[:-1] for f in r[k]))
+    exigir(all(isinstance(f, dict) for k in campos[:3] for f in r[k]))
+    exigir(all(isinstance(f, (dict, str)) for f in r["restantes"]))
     if r["veredicto"] == 75:
         exigir(isinstance(r.get("reanudar"), str) and bool(r["reanudar"]))
         return Incompleto(75, r["reanudar"])
@@ -132,7 +133,8 @@ class Hasito:
         self.lanzador = str(Path(lanzador).resolve())
         self.git = git
         self.runner = runner or subprocess.run
-        self.estado = Path(estado) if estado is not None else directorio_estado() / "hasito"
+        self.estado = (Path(estado) if estado is not None else
+                       directorio_estado() / "hasito").expanduser().resolve()
 
     def argv_suite(self, candidato, worktree, evidencia, nombre):
         return ("bash", self.lanzador, "--suite", candidato.C, "--perfil", "final",
@@ -177,7 +179,9 @@ class Hasito:
         recibo = registro / "recibo.json"
         if recibo.exists():
             guardado = leer_json(recibo)
-            exigir(guardado.get("argv") == list(argv), "recibo-no-corresponde")
+            exigir(isinstance(guardado, dict) and guardado.get("argv") == list(argv), "recibo-no-corresponde")
+            exigir(isinstance(guardado.get("ruta"), str) and
+                   type(guardado.get("codigo")) is int and guardado["codigo"] in (0, 1, 75), "recibo-invalido")
             return Path(guardado["ruta"]), guardado["codigo"]
         try:
             resultado = self.runner(list(argv), capture_output=True, text=True, check=False)
