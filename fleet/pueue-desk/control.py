@@ -917,7 +917,10 @@ def validate_mini_handoff(value):
             or type(value.get('effect')) not in (str, type(None))
             or 'deadline' not in value
             or value['deadline'] is not None and (type(value['deadline']) not in (int, float) or not math.isfinite(value['deadline']))
-            or 'maintenance_owned' in value and type(value['maintenance_owned']) is not bool):
+            or 'maintenance_owned' in value and type(value['maintenance_owned']) is not bool
+            or 'retained_owner' in value and value['retained_owner'] not in ('homebrew', 'prepared')
+            or value.get('phase') == 'aborted' and 'retained_owner' in value
+            and value['retained_owner'] != ('homebrew' if value['target'] == 'install' else 'prepared')):
         raise ValueError('Relevo ilegible; conservar cierre y archivos')
 
 

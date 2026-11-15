@@ -759,6 +759,15 @@ Success/Failed y cancelaciones terminales previas se conservan. Un state.json
 ausente/corrupto o SQLite ilegible bloquea; no hay tabla por defecto de rescate.
 La intención de preparación precede al rename de cola y se recupera repetiblemente.
 
+Si `arrancar` bloquea, mirar `~/.local/state/pao/pueue-mini/arranque.log`
+(y `arranque.log.1`): fecha, fase y motivo seguro del rechazo. Cada archivo está
+acotado a 64 KiB, con permisos 0600; KeepAlive sigue reintentando cada 10 s.
+No contiene comandos, entornos ni el texto arbitrario de excepciones/subprocesos.
+La salida cruda de `pueued` sigue en `/dev/null`: Pueue 4.0.4 imprime el comando
+de una tarea en su log `info` (`spawn.rs:245`); redirigirlo al registro propio
+filtraría comandos y podría filtrar secretos. El registro propio diagnostica el
+preparador y la autorización, no los fallos internos posteriores al exec stock.
+
 La **misma guardia de 60 s** repara el relevo y los recibos aceptados del rack;
 conserva sensores, umbrales y escalera de rapidas. No se instala otro recuperador.
 Orden: control.lock → validar autoridad → deseo vigente → intenciones sin abrir →
@@ -809,6 +818,14 @@ de relanzar. No se busca ni se mata por nombre.
    antes de todo efecto. Usa el lock existente abierto en lectura y no crea
    directorios ni migra, recupera, copia, pausa o descarga servicios. Una
    configuración compleja no se arregla borrando campos.
+   Admite el plist de Homebrew 4.0.4 con el binario resuelto de pueued,
+   `--verbose`, `WorkingDirectory=/opt/homebrew/var` y sus rutas de log stock.
+   Rechaza otros argumentos, binarios y cualquier `EnvironmentVariables`.
+   `--verbose` sólo ajusta tracing; no selecciona configuración, socket ni PID.
+   El directorio de trabajo sí puede cambiar el fallback `pueue.yml`: el ensayo
+   exige que origen y destino elijan el mismo archivo (primero el estándar
+   `~/Library/Application Support/pueue/pueue.yml`, después el cwd), o que
+   ninguno tenga archivo. Si difieren, conserva el origen sin efectos.
 3. Sólo en la ventana aprobada, ejecutar el mismo comando sin `--seco`.
    Publica primero las dos plantillas launchagents en la biblioteca instalada,
    después mini.py/control.py y el plist de la guardia existente, con reemplazos
@@ -827,7 +844,13 @@ de relanzar. No se busca ni se mata por nombre.
    el relevo. Sin `--esperar` rechaza tareas Running o Paused antes de escribir.
    Para esperar explícitamente hasta 10 minutos: añadir `--esperar 10` al ensayo
    y al comando real (admite 0..120 minutos). Al vencer, marca aborted, conserva
-   el daemon origen y transfiere sólo razones handoff a pressure. Nunca abre
+   el daemon origen y registra `retained_owner` (`homebrew` o `prepared`). Un
+   retiro abortado conserva el wrapper con preparación offline para KeepAlive
+   y login, sin reactivar Homebrew; la guardia repara también un aborto anterior
+   que todavía no tenga ese campo. Transfiere las razones handoff a pressure
+   en el perfil y a ambiguous en grupos ajenos. Un grupo ajeno permanece cerrado
+   con motivo y se resuelve con `control.py reanudar <grupo> --host mini`, pasando
+   las mismas comprobaciones de cuotas y sensores. Nunca abre
    directamente: la guardia reconcilia y toma sensores frescos; las pausas
    manuales y de terceros permanecen. Una Paused no bloquea indefinidamente.
 5. Deshabilita Homebrew antes de bootout, verifica que terminó el PID anterior,
@@ -861,6 +884,9 @@ publica la intención de arranque cerrado, carga la guardia y retira sólo su pr
 marcador reconocido antes de completar el relevo. Un marcador ajeno, incluido un
 enlace roto, se conserva y exige resolución del operador. Tras una interrupción
 se puede repetir mantenimiento; continuar repara por el mismo diario.
+Tras un relevo abortado, mantenimiento/continuar conserva el gestor que retuvo
+el aborto; no completa el destino rechazado. Cambiar de gestor requiere de nuevo
+la petición explícita `instalar/desinstalar --relevo`.
 
 Para revertir el **gestor** desde la instalación sana:
 

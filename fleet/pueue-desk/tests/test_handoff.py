@@ -118,9 +118,10 @@ class Harness:
             self.p.groups=image['groups'];self.p.tasks=image['tasks'];self.p.online=True;self.owner=target
             self.serial+=1;self.gen='mini-generation-'+str(self.serial);self.pid.write_text('999999\n')
         if target==mini.LABEL:
-            # During withdrawal the fixed wrapper deliberately refuses to revive its source.
-            if self.policy()['mini_handoff']['target']=='withdraw':return
-            self.m.start(execute=execute)
+            # launchd retries a rejected wrapper, including while withdrawal is
+            # in flight. Never skip the wrapper based on the requested target.
+            try:self.m.start(execute=execute)
+            except ValueError:return
         else:
             image=control.read_queue(self.data/'state.json')
             # Stock restore: only Running/Paused become Killed; Queued closes its group.
@@ -250,7 +251,8 @@ class HandoffTests(unittest.TestCase):
         with patch.object(control,'prepare_start',side_effect=AssertionError('prepare under maintenance')):
             with self.assertRaises(ValueError):h.m.start(execute=lambda *_:self.fail('exec under maintenance'))
         with self.assertRaises(ValueError):h.m.change('withdraw')
-        self.assertTrue(h.fingerprint()==before,'Unexpected filesystem write')
+        after={k:v for k,v in h.fingerprint().items() if not k.endswith('/arranque.log')}
+        self.assertEqual(after,before,'Only a rejected-start diagnostic may be written')
         self.assertFalse(any(c[0] in ('enable','bootstrap','bootout','disable') for c in h.calls))
         marker.unlink();h.finish()
 

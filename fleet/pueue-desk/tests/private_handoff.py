@@ -1,6 +1,6 @@
 """Opt-in macOS acceptance in a remote-run directory. Never uses a shared daemon.
 
-Every Pueue process pins --config. All launchd labels are pao.u35.injerto.* and
+Every Pueue process pins --config. All launchd labels are pao.u35.injerto.* or pao.u35.r1.* and
 all plists live under this run, never the user's Library/LaunchAgents.
 """
 import argparse
@@ -42,7 +42,7 @@ def context(root, role="driver"):
     mini=importlib.util.module_from_spec(spec);spec.loader.exec_module(mini);control=mini.control
     info=json.loads((root/'info.json').read_text())
     prefix=info['prefix'];mini.LABEL=prefix+'.daemon';mini.GUARD=prefix+'.guard';mini.BREW=prefix+'.brew'
-    assert prefix.startswith('pao.u35.injerto.')
+    assert prefix.startswith(('pao.u35.injerto.','pao.u35.r1.'))
     data=root/'data';config=root/'config.json';pid=data/'pid'
     env=dict(os.environ,TMPDIR=str(root));env.pop('PUEUE_CONFIG_PATH',None)
     class Private(control.Pueue):
@@ -104,15 +104,16 @@ def main():
     parser.add_argument('--run-private',action='store_true',required=True)
     parser.add_argument('--worker',choices=('start','guard','install','withdraw'))
     parser.add_argument('--root',type=Path)
+    parser.add_argument('--r1',action='store_true',help='Directed abort/restart and bounded diagnostic acceptance')
     args=parser.parse_args()
     if args.worker:return worker(args.root,args.worker)
     assert sys.platform=='darwin','macOS required'
     ident=(Path.cwd()/'.remote-run.lock').read_text().strip()
     assert re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}',ident)
-    root=Path.home()/'remote-run/runs'/ident/'u35-ij';root.mkdir()
+    root=Path.home()/'remote-run/runs'/ident/('u35-r1' if args.r1 else 'u35-ij');root.mkdir()
     (root/'agents').mkdir();data=root/'data';data.mkdir()
     assert len(str(data/'socket').encode())<104
-    prefix='pao.u35.injerto.'+str(os.getpid())
+    prefix=('pao.u35.r1.' if args.r1 else 'pao.u35.injerto.')+str(os.getpid())
     (root/'info.json').write_text(json.dumps(dict(prefix=prefix)))
     (root/'config.json').write_text(json.dumps(dict(shared=dict(pueue_directory=str(data),runtime_directory=str(data),
         pid_path=str(data/'pid'),unix_socket_path=str(data/'socket'),use_unix_socket=True,
@@ -131,6 +132,13 @@ def main():
                         StandardErrorPath=str(root/(label+'.err')))
         template['ProgramArguments']=([mini.DAEMON,'--config',str(root/'config.json')] if operation is None else
             [python,'-I',str(script),'--run-private','--root',str(root),'--worker',operation])
+        if args.r1 and operation is None:
+            template['ProgramArguments'].append('--verbose')
+            template['WorkingDirectory']='/opt/homebrew/var'
+        if args.r1 and operation=='start':
+            # Exercise the delivered /dev/null sinks: only the safe, bounded
+            # preparer diagnostic may contain the blocked-start reason.
+            template.update(StandardOutPath='/dev/null',StandardErrorPath='/dev/null')
         if operation=='guard':template['StartInterval']=2  # accelerated private clock; delivered interval is asserted as 60
         rendered=plistlib.dumps(template)
         (m.agents/(label+'.plist')).write_bytes(rendered)
@@ -221,6 +229,67 @@ def main():
         wait_for(lambda:p.status())
         assert m.loaded(mini.BREW) is None and m.disabled(mini.BREW)
         emit(root,'login_reconstruction',one_enabled_daemon=True,homebrew_disabled=True)
+        if args.r1:
+            def assert_prepared_owner():
+                wait_for(lambda:p.status());wait_for(lambda:m.state().get('startup',{}).get('phase')=='ready')
+                assert m.loaded(mini.LABEL) is not None and m.loaded(mini.BREW) is None
+                assert m.disabled(mini.BREW) and not m.disabled(mini.LABEL)
+                assert p.status()['groups']['suites']['status']=='Paused'
+                assert {g:p.status()['groups'][g]['parallel_tasks'] for g in control.MINI_GROUPS}==control.MINI_PROFILE
+            active=add('/bin/sleep 5');wait_for(lambda:'Running' in status(active))
+            m.change('withdraw',wait=1);wait_for(lambda:settled('aborted'))
+            assert m.state()['mini_handoff']['retained_owner']=='prepared'
+            old=verified_pid();os.kill(old,signal.SIGKILL)
+            wait_for(lambda:verified_pid()!=old);assert_prepared_owner()
+            assert status(active).get('Done',{}).get('result')=='Killed'
+            emit(root,'r1_aborted_withdraw_keepalive',prepared_owner=True,brew_disabled=True,manual_preserved=True)
+            # Same enabled-plist reconstruction after an aborted withdrawal.
+            with control.locked(m.directory):
+                for label in (mini.GUARD,mini.LABEL,mini.BREW):
+                    mini.launchctl('bootout',m.domain+'/'+label,check=False)
+                wait_for(offline)
+                for label in labels:
+                    if not m.disabled(label):load(label)
+            assert_prepared_owner()
+            emit(root,'r1_aborted_withdraw_login',prepared_owner=True,online=True)
+            m.maintenance();m.maintenance(resume=True);wait_for(lambda:settled('done'));assert_prepared_owner()
+            emit(root,'r1_aborted_withdraw_maintenance',same_owner=True)
+            # A malformed queue blocks the actual launchd MainPID. KeepAlive
+            # retries with both stdout/stderr discarded, retaining a safe reason.
+            with control.locked(m.directory):
+                mini.launchctl('disable',m.domain+'/'+mini.GUARD)
+                mini.launchctl('bootout',m.domain+'/'+mini.GUARD)
+                mini.launchctl('bootout',m.domain+'/'+mini.LABEL)
+                wait_for(offline)
+                queue_path=data/'state.json';before=queue_path.read_bytes()
+                queue_path.write_text('{"invalid":')
+                load(mini.LABEL)
+            log=m.directory/'arranque.log'
+            wait_for(lambda:log.exists() and any(json.loads(line)['motivo']=='Cola JSON ilegible'
+                                                for line in log.read_text().splitlines()))
+            assert queue_path.read_text()=='{"invalid":','blocked start replaced corrupt queue'
+            assert log.stat().st_size<=65536 and log.stat().st_mode & 0o777==0o600
+            time.sleep(11)  # one real ThrottleInterval retry, never a rapid loop
+            assert len(log.read_text().splitlines())>=2
+            assert not any('cmd' in line or 'envs' in line for line in log.read_text().splitlines())
+            emit(root,'r1_blocked_start_diagnostic',reason='Cola JSON ilegible',mode='0600',bounded=True,
+                 retries=len(log.read_text().splitlines()),raw_daemon_output_discarded=True)
+            shutil.copyfile(log,Path.cwd()/'private-u35-r1-arranque.log')
+            queue_path.write_bytes(before)
+            mini.launchctl('enable',m.domain+'/'+mini.GUARD);load(mini.GUARD)
+            assert_prepared_owner()
+            # The symmetric maintenance path must restore Homebrew after an
+            # aborted installation, never finish that installation implicitly.
+            m.change('withdraw');wait_for(lambda:settled('withdrawn'));wait_for(lambda:p.status())
+            active=add('/bin/sleep 5');wait_for(lambda:'Running' in status(active))
+            m.change('install',wait=1);wait_for(lambda:settled('aborted'))
+            assert m.state()['mini_handoff']['retained_owner']=='homebrew'
+            m.maintenance();m.maintenance(resume=True);wait_for(lambda:settled('withdrawn'));wait_for(lambda:p.status())
+            assert m.loaded(mini.BREW) is not None and m.loaded(mini.LABEL) is None
+            assert p.status()['groups']['suites']['status']=='Paused'
+            emit(root,'r1_aborted_install_maintenance',same_owner=True,brew_verbose_cwd_private_config=True)
+            emit(root,'PASS',assertions='R1 abort KeepAlive/login; maintenance both owners; safe diagnostic with real launchd retries')
+            return
         # A killed standard daemon is restarted through the fixed offline preparation.
         program="import os,pathlib,time;pathlib.Path("+repr(str(root/'child.pid'))+").write_text(str(os.getpid()));time.sleep(20)"
         running=add(shlex.join(['/usr/bin/python3','-c',program]))

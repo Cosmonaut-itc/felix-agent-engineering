@@ -21,10 +21,31 @@ BREW = 'sh.brew.pueue'
 PUEUE = '/opt/homebrew/bin/pueue'
 DAEMON = '/opt/homebrew/bin/pueued'
 TERMINAL = ('done', 'withdrawn', 'aborted')
+START_LOG_BYTES = 65536
+# Only our fixed messages may reach diagnostics. Stock/subprocess exceptions
+# can contain task commands, environments, config contents or secrets.
+START_REASONS = {
+    'Host en mantenimiento', 'El arranque debe pertenecer al MainPID de launchd',
+    'Homebrew no está retirado; no se arranca otro daemon',
+    'Daemon responde; preparar exige daemon detenido',
+    'PID anterior vivo o ambiguo; no se prepara', 'PID ilegible; no se prepara',
+    'PID configurado difiere de la autoridad', 'Cola cambió durante preparación',
+    'Estado Pueue incompleto; arranque abortado sin reemplazar la cola',
+    'Cola Pueue incompatible; arranque abortado sin sustituirla',
+    'Relevo ilegible; conservar cierre y archivos', 'Se requiere Pueue estándar 4.0.4',
+}
 
 
 def daemon_environment(home):
     return control.mini_environment(home)
+
+
+def configuration_source(home, cwd):
+    # Pueue 4.0.4 settings.rs:393: standard macOS config, then cwd/pueue.yml.
+    for source in (home / 'Library/Application Support/pueue/pueue.yml', cwd / 'pueue.yml'):
+        if source.is_file():
+            return source.resolve()
+    return None
 
 
 def launchctl(*args, check=True):
@@ -137,11 +158,15 @@ class Manager:
         self.engine.view()
         brew = plistlib.loads((self.agents / (BREW + '.plist')).read_bytes())
         argv = brew.get('ProgramArguments', [])
-        if (brew.get('Label') != BREW or len(argv) != 1 or not Path(argv[0]).is_absolute()
+        brew_cwd = Path(brew.get('WorkingDirectory', str(self.home)))
+        if (brew.get('Label') != BREW or not isinstance(argv, list) or len(argv) not in (1, 2)
+                or argv[1:] not in ([], ['--verbose']) or not Path(argv[0]).is_absolute()
                 or Path(argv[0]).resolve() != Path(DAEMON).resolve()
-                or brew.get('WorkingDirectory', str(self.home)) != str(self.home)
-                or brew.get('EnvironmentVariables', {})):
+                or brew_cwd not in (self.home, Path('/opt/homebrew/var'))
+                or 'EnvironmentVariables' in brew):
             raise ValueError('LaunchAgent Homebrew incompatible; conservarlo')
+        if configuration_source(self.home, brew_cwd) != configuration_source(self.home, self.home):
+            raise ValueError('Homebrew y destino seleccionan configuración distinta; conservar origen')
         return state, config, {label: self.disabled(label) for label in (BREW, LABEL, GUARD)}
 
     def verify_owner(self, label, state):
@@ -230,12 +255,19 @@ class Manager:
         value = self.transaction(state)
         for group, reasons in state['reasons'].items():
             if 'handoff' in reasons:
-                state['reasons'][group] = sorted((set(reasons) - {'handoff'}) | {'pressure'})
+                state['reasons'][group] = sorted((set(reasons) - {'handoff'}) | {self.release_reason(group)})
         state.pop('stop_tasks', None)
-        value.update(phase='aborted', effect=None)
+        # Abort is only reached before switch: the source is still the owner.
+        value.update(phase='aborted', effect=None,
+                     retained_owner='homebrew' if value['target'] == 'install' else 'prepared')
         self.save(state, 'handoff:aborted')
         # No start here: the existing guard reconciles and samples fresh sensors.
         return True
+
+    def release_reason(self, group):
+        # The guard samples only its quota profile. Foreign groups must remain
+        # explicitly resolvable by control.py reanudar, not owned by that guard.
+        return 'pressure' if group in self.engine.profile else 'ambiguous'
 
     def _recover(self, config=None):
         """Caller holds control.lock. False means sensors/admission must wait."""
@@ -243,6 +275,10 @@ class Manager:
         value = self.transaction(state)
         if os.path.lexists(self.directory / 'maintenance') or value and value['phase'] == 'maintenance':
             return False
+        if value and value['phase'] == 'aborted' and 'retained_owner' not in value:
+            # Upgrade an R1 abort using its pre-switch source, never the target.
+            value['retained_owner'] = 'homebrew' if value['target'] == 'install' else 'prepared'
+            self.save(state, 'handoff:retained-owner')
         if value is None or value['phase'] in TERMINAL:
             return True
         config = config or self.configuration_for_host()
@@ -280,8 +316,10 @@ class Manager:
                 if value['deadline'] is None:
                     return self.abort()
                 return False
-            # Keep record_stop and any cooperative manual pause written since our first read.
+            # The final read proved all work terminal BEFORE bootout. The older
+            # record cannot attribute a cancellation during draining to this stop.
             state = self.state(); value = self.transaction(state)
+            state.pop('stop_tasks', None)
             value['phase'] = 'switch'
             self.save(state, 'handoff:switch')
         if value['phase'] == 'switch':
@@ -319,7 +357,7 @@ class Manager:
             state = self.state(); value = self.transaction(state)
             for group, reasons in state['reasons'].items():
                 if 'handoff' in reasons:
-                    state['reasons'][group] = sorted((set(reasons) - {'handoff'}) | {'pressure'})
+                    state['reasons'][group] = sorted((set(reasons) - {'handoff'}) | {self.release_reason(group)})
             if target == BREW and value['original_disabled'][BREW]:
                 self.command(state, 'disable', BREW)
             value['phase'] = 'done' if target == LABEL else 'withdrawn'
@@ -362,6 +400,10 @@ class Manager:
                 self._recover()
             else:
                 # Publication before any stop; a killed caller cannot leave a reopening job.
+                if value['phase'] == 'aborted':
+                    owner = value.get('retained_owner', 'homebrew' if value['target'] == 'install' else 'prepared')
+                    value['target'] = 'install' if owner == 'prepared' else 'withdraw'
+                    value.pop('retained_owner', None)
                 value['phase'] = 'maintenance'
                 value['maintenance_owned'] = value.get('maintenance_owned', False) or not os.path.lexists(marker)
                 self.save(state, 'maintenance:intent')
@@ -381,6 +423,37 @@ class Manager:
                         self.command(state, 'bootout', label)
 
     def start(self, execute=None):
+        try:
+            return self._start(execute)
+        except Exception as error:
+            try:
+                self.log_start_rejection(error)
+            except OSError:
+                pass  # Disk/permission failures must still reject the start.
+            raise
+
+    def log_start_rejection(self, error):
+        message = str(error)
+        reason = (message if message in START_REASONS else
+                  'Cola JSON ilegible' if isinstance(error, json.JSONDecodeError) else
+                  'Archivo inaccesible' if isinstance(error, OSError) else
+                  'Preparación o autorización rechazada; revisar cola, PID y autoridad')
+        record = dict(utc=control.datetime.now(control.timezone.utc).isoformat(),
+                      evento='arranque_rechazado', fase=getattr(self, '_start_stage', 'autorización'), motivo=reason)
+        line = (json.dumps(record, ensure_ascii=False) + '\n').encode('utf-8')
+        # Diagnostics are disposable, unlike authority. Rotation precedes append
+        # and bounds BOTH files, even across repeated KeepAlive failures.
+        with control.locked(self.directory, create=False):
+            target = self.directory / 'arranque.log'
+            if target.exists() and target.stat().st_size + len(line) > START_LOG_BYTES:
+                target.replace(self.directory / 'arranque.log.1')
+            descriptor = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(descriptor, 'ab') as stream:
+                os.fchmod(stream.fileno(), 0o600)
+                stream.write(line)
+
+    def _start(self, execute=None):
+        self._start_stage = 'autorización'
         if os.path.lexists(self.directory / 'maintenance'):
             raise ValueError('Host en mantenimiento')
         # Only launchd's unique MainPID may execute this wrapper. No inherited lock
@@ -391,12 +464,18 @@ class Manager:
         with control.locked(self.directory, create=False):
             state = self.state()
             value = self.transaction(state)
-            if (not value or value['target'] != 'install' or value['phase'] not in ('switch', 'verify', 'done')
+            authorized = value and ((value['target'] == 'install' and value['phase'] in ('switch', 'verify', 'done'))
+                                    or (value['target'] == 'withdraw' and value['phase'] == 'aborted'
+                                        and value.get('retained_owner') == 'prepared'))
+            if (not authorized
                     or self.loaded(BREW) is not None or not self.disabled(BREW)):
                 raise ValueError('Homebrew no está retirado; no se arranca otro daemon')
+            self._start_stage = 'configuración'
             config = self.configuration_for_host()
+            self._start_stage = 'preparación'
             control.prepare_start(self.engine, configuration=config)
             self.checkpoint('start:prepared')
+            self._start_stage = 'exec'
             # control.lock is close-on-exec; launchd owns the daemon, stock owns tasks.
             if execute is None:
                 os.execve(DAEMON, [DAEMON], daemon_environment(self.home))
