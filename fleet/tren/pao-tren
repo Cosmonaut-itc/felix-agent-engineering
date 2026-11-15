@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""CLI U1: entrega durable y planificación en sombra; activación deshabilitada."""
+"""CLI del tren: entrega durable, sombra y tick activo sólo en repos inscritos activos."""
 import argparse
 import json
 from pathlib import Path
@@ -13,8 +13,8 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dominio import (Admitido, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
-from inscripcion import modo
-from ledger import Ledger, filas_medicion
+from inscripcion import activacion, modo
+from ledger import Ledger, directorio_estado, filas_medicion
 from medicion import decision_json, instante_iso, medir
 from observador import GitHubGit, configuracion, sha
 from sombra import paso_sombra
@@ -63,9 +63,39 @@ def parser():
     return cli
 
 
+def puerta_activa(args):
+    """Antes de abrir el ledger: inscripción activa inequívoca y config completa."""
+    inscripcion = activacion(args.repo)
+    if inscripcion != "activo":
+        return None, {"error": "tick activo requiere inscripción activa",
+                      "inscripcion": inscripcion or "no-inscrito"}
+    config = configuracion(args.config or directorio_estado() / "config.json", args.repo)
+    if not all(isinstance(config.get(k), str) and config[k] for k in ("remoto", "lanzador")):
+        return None, {"error": "config activa requiere remoto y lanzador"}
+    return config, None
+
+
 def ejecutar(args, observador=None, ahora=None):
     if args.comando == "tick" and not args.seco:
-        return 2, {"error": "activación en una unidad posterior"}
+        config, error = puerta_activa(args)
+        if error:
+            return 2, error
+        # Sólo el carril activo importa el ejecutor, git de escritura y el lanzador.
+        from activo import PuertaCerrada, tick as tick_activo
+        from adaptadores.hasito import Hasito
+        from git_ops import GitTren
+        git = GitTren(config["remoto"])
+        hasito = Hasito(config["lanzador"], git)
+        ledger = Ledger()
+        try:
+            return 0, tick_activo(ledger, args.repo,
+                                  observador or GitHubGit(config, activo=True), git, hasito,
+                                  time.time() if ahora is None else ahora)
+        except PuertaCerrada as exc:
+            return 2, {"error": "tick activo requiere inscripción activa",
+                       "inscripcion": exc.inscripcion}
+        finally:
+            ledger.close()
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)
         return 0, medir(requests, events, args.repo, args.desde, args.hasta)
@@ -105,10 +135,16 @@ def ejecutar(args, observador=None, ahora=None):
                 return 0, {"recibo": recibo, "estado": "custodia",
                            "admision": decision_json(entrada.admision)}
         if args.comando == "estado":
-            return 0, {"estado": datos(ledger.estado(args.repo)),
-                       "sombra": datos(ledger.estado(args.repo, sombra=True,
-                                                     doble_camino=modo(args.repo) == "sombra")),
-                       "eventos": ledger.ultimos_eventos(args.repo)}
+            actual = modo(args.repo)
+            salida = {"estado": datos(ledger.estado(args.repo)),
+                      "sombra": datos(ledger.estado(args.repo, sombra=True,
+                                                    doble_camino=actual == "sombra")),
+                      "eventos": ledger.ultimos_eventos(args.repo)}
+            if actual == "activo" or ledger.tiene_operativo(args.repo):
+                from activo import efectos_abiertos, resumen
+                salida["operativo"] = dict(resumen(ledger.operativo(args.repo)),
+                                           efectos=efectos_abiertos(ledger, args.repo))
+            return 0, salida
         with ledger.candado(args.repo):
             doble_camino = modo(args.repo) == "sombra"
             estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)

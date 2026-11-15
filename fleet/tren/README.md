@@ -1,4 +1,4 @@
-# Tren — U1/U2/U4, desactivado
+# Tren — U1/U2/U4/U12/U13, sin repos activos
 
 Python stdlib 3.9+, SQLite y flock POSIX. El agente registra su watch antes
 de entregar; con el recibo durable termina su turno:
@@ -11,8 +11,8 @@ fleet/tren/pao-tren tick --repo owner/project --seco --config /ruta/config.json
 ```
 
 Respuestas operativas: JSON de una línea. Exit 0: registro, lectura o plan;
-exit 2: entrada/error o `activación en una unidad posterior` para tick sin
-`--seco` (no abre el ledger). `estado --juicio` incluye la pausa y sus causas;
+exit 2: entrada/error, o tick sin `--seco` en un repo que no está inscrito
+como activo (no abre el ledger; ver U13). `estado --juicio` incluye la pausa y sus causas;
 las decisiones de juicio llegan en otra unidad.
 
 Estado: `${XDG_STATE_HOME:-~/.local/state}/pao-tren/ledger.sqlite3`, esquema 1.
@@ -67,7 +67,7 @@ La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos;
 un sensible/alto riesgo al frente sale solo inmediatamente. No se adelanta
 un PR solo sobre tickets normales anteriores. Jale nace en pausa `etapa-1`.
 
-El CLI no ejecuta efectos; U4 añade el adaptador y el diagnóstico al ejecutor explícito.
+U4 añade el adaptador y el diagnóstico al ejecutor; U13 lo conecta al tick activo.
 
 ## Sombra con doble camino (U12)
 
@@ -97,7 +97,7 @@ Un PR que GitHub confirma mergeado en main con el head entregado termina
 `MERGEADO-FUERA`; cerrado sin merge sigue siendo rechazo. Los avances de
 main no pausan la sombra. La primera admisión se conserva incluso después
 del merge externo para reconstruir el contrafactual. No cambia el tick activo
-ni activa escrituras; tick sin `--seco` sigue saliendo con 2.
+ni activa escrituras; tick sin `--seco` sale con 2 en un repo en sombra.
 Un rechazo conserva esa admisión histórica y registra `caducada`, el instante
 en que se observó. La entrega sale de la fila desde entonces; un lote cerrado
 antes queda intacto. Si coincide con el cierre, la caducidad gana. El merge
@@ -216,7 +216,7 @@ Si vuelve a una B ya usada con los mismos recibos, el id incorpora la primera
 generación libre (1, 2, …); cada generación tiene sus propias claves estables
 y conserva el orden FIFO de sus miembros.
 Los campos añadidos tienen defaults; el encoding etiquetado y esquema 1
-del ledger siguen vigentes. Ningún camino del CLI importa este ejecutor.
+del ledger siguen vigentes. Sólo el tick activo de U13 importa este ejecutor.
 
 Pruebas sólo en desk, sin red y con HOME/XDG temporales:
 
@@ -275,8 +275,88 @@ es sólo un dato idempotente por PR, con lote, B, C, fallos, firmas, conjuntos
 causales y el argv dirigido observado, con la ruta concreta del worktree.
 Los sobrevivientes forman inmediatamente una generación fija sobre B,
 sin incorporar nuevas entregas, y recorren armado, CI y suite completa.
-No se publican statuses ni comentarios. Tick continúa desactivado.
+No se publican statuses ni comentarios.
 
 Las fixtures de U4 son sintéticas, sin invocar Hasito ni Pueue. El mismo
 guion remoto anterior descubre las pruebas U1/U2/U4; usar el nombre
 `dirigida-tren-u4` y el SHA completo, commiteado y empujado.
+
+## Tick activo y outbox (U13, ningún repo activo)
+
+```sh
+fleet/tren/pao-tren tick --repo owner/project --config /ruta/config.json
+```
+
+Sin `--seco`, el tick corre sólo si `inscritos` tiene la línea exacta
+`owner/project`. Sale con 2 sin abrir el ledger si el repo no está inscrito
+(`no-inscrito`), si está en `sombra` o si su registro es ambiguo (`ambiguo`).
+Ambiguo es cualquier otra línea del repo, un modo desconocido o separadores
+verticales. `merge-guard` resuelve esa duda como activo para negar merges; el
+tick la resuelve como cerrada para no escribir en main. La puerta se relee
+bajo el candado. El config activo añade `remoto` (URL de git, sin
+credenciales) y `lanzador` (`scripts/mini/run.sh` de un checkout del repo).
+`tick --seco` y la sombra no cambian. Los eventos `sombra`,
+`sombra-doble-camino` y `admision-entrega` y la tabla entries siguen igual.
+
+Un tick, sin soltar el flock del repo:
+
+1. Lee el estado operativo, observa con `GitHubGit(activo=True)` y aplica
+   `paso`. En una transacción guarda el estado y encola los efectos nuevos en
+   effects/outbox. Una clave ya guardada, en cualquier estado, no se encola
+   otra vez. La misma clave con otra carga es un error y revierte el paso.
+2. Recorre una vez y en orden los efectos ejecutables no confirmados
+   (`armar-candidato`, `solicitar-ci`, `iniciar-suite`, `reanudar-suite`,
+   `repetir`, `armar-subconjunto`, `promover`). Antes de cada uno confirma
+   `en-curso`. Con el carril pausado se detiene y no ejecuta nada.
+3. Ejecuta con `efectos.ejecutar` y aplica `paso(estado, observación del
+   efecto)`. El estado y los efectos que ese paso produce se guardan en la
+   misma transacción que confirma el efecto (`hecho` y un evento
+   `efecto-resultado`). Los efectos producidos así esperan al tick siguiente.
+
+El resultado vuelve al reductor como observación ligada al tren y al intento,
+el contrato que `paso` ya valida, en la transacción que confirma el efecto.
+Así ningún efecto queda confirmado sin su resultado y ningún resultado se
+aplica dos veces. El observador no necesita volver a descubrir resultados que
+GitHub no conoce, como el recibo de una suite.
+`completo=False` (Incierto o admisión perdida) registra `efecto-diferido`
+y deja el efecto `pendiente`. `EfectoFallido`, `ValueError` o un error de IO
+registran `efecto-fallido` con el error tipado y dejan el estado intacto. El
+efecto se reintenta en cada tick y no bloquea a los demás.
+
+El estado operativo es la instantánea del último evento `operativo`, que sólo
+se escribe cuando el estado cambia o se encola un efecto, más las entregas de
+entries que aún no figuran en él. La tabla trains es una proyección
+consultable de esa instantánea. Nada se borra.
+
+El observador activo lee además el CI de `C` mientras el tren está en
+`EsperandoCI`; los workflows del repo deben correr en `tren/**`, o hay que
+declarar `checks_esperados: []`. Un CI rojo sobre C se queda en `EsperandoCI`
+sin pausar, porque el reductor no tiene esa transición. Tampoco se releen los
+PR de un tren terminal.
+
+Muerte a mitad: un efecto sin confirmar se repite sobre la instantánea
+guardada y converge. El candidato es reproducible, la rama `tren/<id>` se
+publica con lease vacío, el adaptador reengancha su recibo por clave y
+promover es un CAS con lease. Un `promover` que quedó `en-curso` se
+reconcilia antes de volver a empujar. Con `main == C` aterrizó, con
+`main == B` se repite el mismo intento y con otro commit el carril se pausa
+`escritor-externo`. Si el tick muere dentro de una transacción, SQLite la
+revierte entera.
+
+`devolver`, `avisar-caducidad` y el feedback de D6 no tienen ejecutor:
+quedan `pendiente` en el outbox y `estado` los muestra con `ejecutor: false`.
+**Activar un repo requiere la unidad que los ejecuta**, además de la
+enmienda de gobierno de D2. Sin ella, un ticket devuelto o caducado no se
+entera.
+
+`estado` añade `operativo` en un repo activo o con estado operativo. Muestra
+la fila FIFO, el tren activo y su fase, la pausa con su causa, los últimos
+trenes terminales y cada efecto no confirmado con su estado, sus intentos y
+su último registro.
+
+Las pruebas de U13 (`tests/test_activo.py`) cubren la puerta, un lote hasta
+`ATERRIZADO` con `main == C` (también por el CLI, con `gh` y lanzador falsos
+en PATH), una muerte en cada frontera con conteo de actualizaciones reales de
+refs en el origen, dos ticks a la vez, un main movido durante promover y un
+efecto sin ejecutor. Corren con el mismo guion remoto, con el nombre
+`dirigida-tren-u13-<modelo>`.

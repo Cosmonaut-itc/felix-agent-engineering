@@ -1,4 +1,4 @@
-"""Ejecutor explícito para pruebas/integración futura; el CLI no lo importa.
+"""Ejecutor de efectos; sólo el tick activo (activo.py) lo usa, bajo el candado.
 
 La observación devuelta conserva las vistas de admisión del llamador. Publicar
 la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
@@ -25,20 +25,52 @@ class Ejecucion:
     completo: bool
 
 
+def limpiar(observacion, tren_id):
+    """Observación del llamador sin resultados ajenos, ligada al tren del efecto."""
+    return replace(observacion, candidato=None, conflicto_cadena=None, main=None,
+                   tren_id=tren_id, intento_promocion=0, rama_ocupada=None,
+                   resultado_suite=None, repeticion=None, reproduccion_id="",
+                   suite=None, suite_intento=0)
+
+
+def tren_de(efecto, estado):
+    if not efecto.datos:
+        raise ValueError("efecto sin tren")
+    tren = next((t for t in estado.trenes if t.id == efecto.datos[0]), None)
+    if tren is None:
+        raise ValueError("tren desconocido")
+    return tren
+
+
+def reconciliar(efecto, estado, observacion, git):
+    """Lee main sin empujar: Aterrizado, EnBase, EscritorExterno o Incierto.
+
+    Se usa cuando el intento pudo haber empujado ya (ACK perdido, muerte a
+    mitad o admisión perdida). Sólo una lectura cierta completa el efecto.
+    """
+    tren = tren_de(efecto, estado)
+    fase = tren.fase
+    if (efecto.tipo != "promover" or not isinstance(fase, Promoviendo) or
+            efecto != efecto_promover(tren.id, fase.intentos)):
+        raise ValueError("intento de promoción obsoleto")
+    cert = fase.certificado
+    entradas = {e.entrega.recibo: e for e in estado.entradas}
+    heads = tuple(entradas[r].entrega.head for r in tren.recibos)
+    lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+    return Ejecucion(replace(limpiar(observacion, tren.id), main=lectura,
+                             intento_promocion=fase.intentos),
+                     not isinstance(lectura, Incierto))
+
+
 def ejecutar(efecto, estado, observacion, git, hasito=None):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
     Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
     Incierto queda pendiente. Otros errores de IO quedan en EfectoFallido.
     """
-    if not efecto.datos:
-        raise ValueError("efecto sin tren")
-    tren = next(t for t in estado.trenes if t.id == efecto.datos[0])
+    tren = tren_de(efecto, estado)
     fase = tren.fase
-    limpia = replace(observacion, candidato=None, conflicto_cadena=None, main=None,
-                     tren_id=tren.id, intento_promocion=0, rama_ocupada=None,
-                     resultado_suite=None, repeticion=None, reproduccion_id="",
-                     suite=None, suite_intento=0)
+    limpia = limpiar(observacion, tren.id)
     if efecto.tipo in ("iniciar-suite", "reanudar-suite", "repetir", "armar-subconjunto"):
         vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
         entradas = {e.entrega.recibo: e for e in estado.entradas}
@@ -118,10 +150,7 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
         if any(not isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
                for r in tren.recibos):
             # Puede haber aterrizado antes de perder el ACK: leer sin empujar.
-            lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
-            return Ejecucion(replace(limpia, main=lectura,
-                                    intento_promocion=fase.intentos),
-                             not isinstance(lectura, Incierto))
+            return reconciliar(efecto, estado, observacion, git)
         lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
         return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
                          not isinstance(lectura, Incierto))

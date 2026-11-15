@@ -347,7 +347,8 @@ class CLITests(Aislado):
     def test_tick_sin_seco_no_abre_ledger(self):
         proc = self.cli("tick", "--repo", REPO)
         self.assertEqual(proc.returncode, 2)
-        self.assertEqual(json.loads(proc.stdout)["error"], "activación en una unidad posterior")
+        self.assertEqual(json.loads(proc.stdout), {"error": "tick activo requiere inscripción activa",
+                                                   "inscripcion": "no-inscrito"})
         self.assertFalse(directorio_estado().exists())
 
     def test_argumentos_invalidos(self):

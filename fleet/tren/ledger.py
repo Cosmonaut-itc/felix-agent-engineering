@@ -130,6 +130,88 @@ class Ledger:
         return [dict(r) for r in self.db.execute(
             "SELECT seq, tipo, instante, payload FROM events WHERE repo=? ORDER BY seq DESC LIMIT 10", (repo,))]
 
+    # Carril activo (U13). La instantánea del último evento `operativo` es el
+    # estado; entries conserva sólo la custodia, así la sombra no lo ve cambiar.
+    def operativo(self, repo):
+        estado = inicial(repo)
+        fila = self.db.execute("SELECT payload FROM events WHERE repo=? AND tipo='operativo' "
+                               "ORDER BY seq DESC LIMIT 1", (repo,)).fetchone()
+        if fila:
+            estado = desde_datos(json.loads(fila[0])["estado"])
+        recibos = {e.entrega.recibo for e in estado.entradas}
+        nuevas = tuple(desde_datos(json.loads(r[0])) for r in self.db.execute(
+            "SELECT payload FROM entries WHERE repo=? ORDER BY rowid", (repo,)))
+        return replace(estado, entradas=estado.entradas + tuple(
+            e for e in nuevas if e.entrega.recibo not in recibos))
+
+    def tiene_operativo(self, repo):
+        return self.db.execute("SELECT 1 FROM events WHERE repo=? AND tipo='operativo' LIMIT 1",
+                               (repo,)).fetchone() is not None
+
+    def avanzar(self, anterior, nuevo, efectos, ahora, origen, cierre=None):
+        """Una transacción: cierre opcional de un efecto, estado nuevo y efectos nuevos.
+
+        Una clave ya guardada, en cualquier estado del outbox, no se vuelve a
+        encolar. Devuelve las claves encoladas ahora.
+        """
+        repo = nuevo.repo
+        with self.transaccion():
+            if cierre is not None:
+                self._cerrar(repo, ahora, *cierre)
+            nuevas = []
+            for efecto in efectos:
+                payload = codificar(efecto)
+                fila = self.db.execute("SELECT payload FROM effects WHERE clave=?",
+                                       (efecto.clave,)).fetchone()
+                if fila:
+                    if fila[0] != payload:
+                        raise ValueError("efecto existente con datos distintos")
+                    continue
+                self.db.execute("INSERT INTO effects VALUES (?, ?, ?)", (efecto.clave, repo, payload))
+                self.db.execute("INSERT INTO outbox VALUES (?, 'pendiente')", (efecto.clave,))
+                nuevas.append(efecto.clave)
+            if nuevas or nuevo != anterior:
+                self.evento(repo, "operativo", ahora, {"estado": datos(nuevo),
+                                                       "efectos": nuevas, "origen": origen})
+                # Proyección consultable; la instantánea del evento manda.
+                for tren in nuevo.trenes:
+                    self.db.execute("INSERT INTO trains VALUES (?, ?, ?) ON CONFLICT(id) "
+                                    "DO UPDATE SET payload=excluded.payload",
+                                    (tren.id, repo, codificar(tren)))
+        return tuple(nuevas)
+
+    def _cerrar(self, repo, ahora, clave_efecto, estado_outbox, tipo_evento, payload):
+        cambio = self.db.execute(
+            "UPDATE outbox SET estado=? WHERE clave=? AND clave IN "
+            "(SELECT clave FROM effects WHERE repo=?)", (estado_outbox, clave_efecto, repo))
+        if cambio.rowcount != 1:
+            raise ValueError("efecto desconocido")
+        self.evento(repo, tipo_evento, ahora, dict(payload, clave=clave_efecto))
+
+    def marcar(self, repo, clave_efecto, estado_outbox, tipo_evento, payload, ahora):
+        with self.transaccion():
+            self._cerrar(repo, ahora, clave_efecto, estado_outbox, tipo_evento, payload)
+
+    def outbox(self, repo):
+        """Efectos no confirmados, en el orden en que se encolaron."""
+        return [(r[0], r[1], desde_datos(json.loads(r[2]))) for r in self.db.execute(
+            "SELECT o.clave, o.estado, e.payload FROM outbox o JOIN effects e ON e.clave=o.clave "
+            "WHERE e.repo=? AND o.estado != 'hecho' ORDER BY o.rowid", (repo,))]
+
+    def historial_efectos(self, repo):
+        """Intentos y último registro por clave, para `estado`."""
+        historial = {}
+        for tipo, payload in self.db.execute(
+                "SELECT tipo, payload FROM events WHERE repo=? AND tipo IN ('efecto-inicio', "
+                "'efecto-resultado', 'efecto-diferido', 'efecto-fallido') ORDER BY seq", (repo,)):
+            registro = json.loads(payload)
+            actual = historial.setdefault(registro["clave"], {"intentos": 0, "ultimo": None})
+            if tipo == "efecto-inicio":
+                actual["intentos"] += 1
+            else:
+                actual["ultimo"] = {"registro": tipo, "resultado": registro.get("resultado")}
+        return historial
+
 
 def filas_medicion(repo, directorio=None):
     """SQLite mode=ro: sin mkdir, migraciones, candado ni pragmas de escritura."""

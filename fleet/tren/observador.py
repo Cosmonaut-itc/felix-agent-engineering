@@ -8,7 +8,7 @@ import subprocess
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import Observacion, Rechazado, VistaPR
+from dominio import EsperandoCI, Observacion, Rechazado, Terminal, VistaPR
 
 
 class Observador(Protocol):
@@ -45,10 +45,12 @@ def sha(valor):
 
 
 class GitHubGit:
-    def __init__(self, config, ejecutar=None, sombra=False):
+    def __init__(self, config, ejecutar=None, sombra=False, activo=False):
         self.config = config
         self.ejecutar = ejecutar or subprocess.run
         self.sombra = sombra
+        # Sólo el tick activo lee CI del candidato y omite lotes ya terminados.
+        self.activo = activo and not sombra
 
     def comando(self, args):
         return self.ejecutar(args, check=True, capture_output=True, text=True,
@@ -166,18 +168,32 @@ class GitHubGit:
         if not sha(base):
             raise ValueError("main inválido")
         vistas = []
+        terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
         for entrada in estado.entradas:
             # En sombra se sigue un rechazo hasta observar su posible merge externo.
+            # paso ignora a los miembros de un tren terminal: no se releen sus PR.
             if ((self.sombra and entrada.terminal) or
-                    (isinstance(entrada.admision, Rechazado) and not self.sombra)):
+                    (isinstance(entrada.admision, Rechazado) and not self.sombra) or
+                    (self.activo and entrada.tren in terminales)):
                 continue
             try:
                 vistas.append(self.vista(entrada.entrega))
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 vistas.append(VistaPR(entrada.entrega.pr, entrada.entrega.head,
                                       completa=False, recibo=entrada.entrega.recibo))
-        return Observacion(ahora, base, tuple(vistas),
-                           self.config.get("excluir_alto_riesgo", True))
+        observacion = Observacion(ahora, base, tuple(vistas),
+                                  self.config.get("excluir_alto_riesgo", True))
+        activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
+        if self.activo and activos and isinstance(activos[0].fase, EsperandoCI):
+            C = activos[0].fase.candidato.C
+            try:
+                ci = self.ci(repo, C)
+            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                ci = "pendiente"
+            # Sin tren_id: una lectura fresca nunca es el resultado de un efecto.
+            observacion = replace(observacion, ci_candidato=ci, ci_recibo="checks-verdes@" + C
+                                  if ci == "verde" else observacion.ci_recibo)
+        return observacion
 
 
 class Falso:

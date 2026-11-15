@@ -2,6 +2,8 @@
   "repos": {
     "owner/project": {
       "git": "/path/to/local/checkout",
+      "remoto": "https://github.com/owner/project.git",
+      "lanzador": "/path/to/local/checkout/scripts/mini/run.sh",
       "excluir_alto_riesgo": true,
       "etiquetas_alto_riesgo": ["alto-riesgo"],
       "heads_autorizados": [],
