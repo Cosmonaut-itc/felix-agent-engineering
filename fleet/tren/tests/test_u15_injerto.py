@@ -115,12 +115,14 @@ class RegresionesTests(ContextoInjerto):
         self.assertEqual(self.estado().trenes[0].fase, Terminal("ABSUELTO"))
         self.assertEqual(self.estado().trenes[-1].fase, Armado(candidato))
         self.assertEqual(self.remoto(), self.B)
-        (self.raiz / "ci-pendiente").write_text("esperar CI nuevo")
+        ci_original = self.contexto.observador.ci
+        self.contexto.observador.ci = lambda repo, sha: (
+            "pendiente" if sha == candidato.C else ci_original(repo, sha))
         for n in range(3):
             self.contexto.tick(8100 + n)
         self.assertIsInstance(self.estado().trenes[-1].fase, EsperandoCI)
         self.assertEqual(len(self.lineas("trabajos.log")), 1)
-        (self.raiz / "ci-pendiente").rename(self.raiz / "ci-restablecido")
+        self.contexto.observador.ci = ci_original
         (self.raiz / "producto-rojo").rename(self.raiz / "rojo-retirado")
         self.aterrizar_ultimo()
         self.assertEqual(self.remoto(), candidato.C)
