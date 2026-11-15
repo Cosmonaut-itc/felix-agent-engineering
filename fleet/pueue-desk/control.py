@@ -909,7 +909,7 @@ def admission_state(db, migrate=False):
 
 
 def validate_mini_handoff(value):
-    if (type(value) is not dict or type(value.get('version')) is not int or value.get('version') != 1
+    if (type(value) is not dict or type(value.get('version')) is not int or value.get('version') not in (1, 2)
             or value.get('target') not in ('install', 'withdraw')
             or value.get('phase') not in ('stage', 'drain', 'switch', 'verify', 'maintenance', 'done', 'withdrawn', 'aborted')
             or type(value.get('original_disabled')) is not dict or len(value['original_disabled']) != 3
@@ -919,8 +919,15 @@ def validate_mini_handoff(value):
             or value['deadline'] is not None and (type(value['deadline']) not in (int, float) or not math.isfinite(value['deadline']))
             or 'maintenance_owned' in value and type(value['maintenance_owned']) is not bool
             or 'retained_owner' in value and value['retained_owner'] not in ('homebrew', 'prepared')
-            or value.get('phase') == 'aborted' and 'retained_owner' in value
-            and value['retained_owner'] != ('homebrew' if value['target'] == 'install' else 'prepared')):
+            or value['version'] == 1 and 'source' in value
+            or value['version'] == 2 and (
+                type(value.get('source')) is not dict
+                or set(value['source']) != {'owner', 'pid', 'generation'}
+                or value['source']['owner'] not in ('homebrew', 'prepared')
+                or type(value['source']['pid']) is not int or value['source']['pid'] < 1
+                or type(value['source']['generation']) is not str or not value['source']['generation']
+                or value.get('phase') == 'aborted' and 'retained_owner' in value
+                and value['retained_owner'] != value['source']['owner'])):
         raise ValueError('Relevo ilegible; conservar cierre y archivos')
 
 

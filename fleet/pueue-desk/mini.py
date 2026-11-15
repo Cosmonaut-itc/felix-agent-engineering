@@ -162,7 +162,7 @@ class Manager:
         if self.loaded(LABEL) is not None and self.loaded(BREW) is not None:
             raise ValueError('Dos gestores cargados; no se releva')
         # Check the exact PID owner, pinned file, identity/date, desired policy and live vector.
-        self.verify_owner(source, state)
+        identity = self.verify_owner(source, state)
         self.engine.view()
         brew = plistlib.loads((self.agents / (BREW + '.plist')).read_bytes())
         argv = brew.get('ProgramArguments', [])
@@ -175,14 +175,30 @@ class Manager:
             raise ValueError('LaunchAgent Homebrew incompatible; conservarlo')
         if configuration_source(self.home, brew_cwd) != configuration_source(self.home, self.home):
             raise ValueError('Homebrew y destino seleccionan configuración distinta; conservar origen')
-        return state, config, {label: self.disabled(label) for label in (BREW, LABEL, GUARD)}
+        return state, config, {label: self.disabled(label) for label in (BREW, LABEL, GUARD)}, identity
 
     def verify_owner(self, label, state):
         info = self.loaded(label)
         pid = Path(state['pid_file']).read_text().strip()
         if info is None or not pid.isdigit() or not re.search(r'^\s*pid = ' + re.escape(pid) + r'\s*$', info, re.M):
             raise ValueError('PID no pertenece al LaunchAgent esperado')
-        self.engine.generation(state)  # Mini formula: pid_path + mtime + ps lstart/comm, never /proc
+        generation = self.engine.generation(state)  # pid file date + ps lstart/comm, never /proc
+        return dict(owner='prepared' if label == LABEL else 'homebrew', pid=int(pid), generation=generation)
+
+    def source(self, state):
+        value = self.transaction(state)
+        if 'source' not in value:
+            # Legacy intentions have no trustworthy origin. Only a live, unique
+            # launchd/PID identity can upgrade them; target is never evidence.
+            owners = [label for label in (LABEL, BREW) if self.loaded(label) is not None]
+            if len(owners) != 1:
+                raise ValueError('Origen del relevo no verificable; conservar cierre')
+            value['source'] = self.verify_owner(owners[0], state)
+            value['version'] = 2
+            if value['phase'] == 'aborted':
+                value['retained_owner'] = value['source']['owner']
+            self.save(state, 'handoff:source')
+        return value['source']
 
     def publish(self, target, data):
         name = str(target.relative_to(self.home))
@@ -226,7 +242,24 @@ class Manager:
             raise ValueError('Espera inválida; usar entre 0 y 7200 segundos')
         # Even the dry branch takes the EXISTING lock read-only; never creates directories.
         with control.locked(self.directory, create=False):
-            state, config, original = self.preflight(target)
+            state, config, original, source = self.preflight(target)
+            previous = self.transaction(state)
+            same_owner = source['owner'] == ('prepared' if target == 'install' else 'homebrew')
+            if same_owner and previous:
+                if dry:
+                    print('SECO: destino ya es el gestor vivo verificado; sin relevo ni drenado')
+                    return
+                if os.path.lexists(self.directory / 'maintenance'):
+                    raise ValueError('Mantenimiento; no se inicia el relevo')
+                # No publication, launchd effects, pauses or drain: even a Running
+                # task is untouched. Persist the observed stable owner atomically.
+                phase = 'done' if target == 'install' else 'withdrawn'
+                if previous['phase'] != phase:
+                    state['mini_handoff'] = dict(version=2, target=target, phase=phase, effect=None,
+                        original_disabled=previous['original_disabled'], deadline=None,
+                        source=source, retained_owner=source['owner'])
+                    self.save(state, 'handoff:converged')
+                return
             if not wait and self.active(self.pueue.status()):
                 raise ValueError('Hay tareas en curso; indicar --esperar para drenar sin matarlas')
             if dry:
@@ -242,14 +275,11 @@ class Manager:
             if target == 'withdraw' and not state.get('mini_handoff'):
                 raise ValueError('No hay instalación U3.5 que retirar')
             self.install_recoverer()
-            previous = self.transaction(state)
-            if previous and previous['phase'] == ('done' if target == 'install' else 'withdrawn'):
-                return  # repeated request does not restart the daemon again
             # Reinstallation keeps the original Homebrew enable/disable state.
             if previous:
                 original = previous['original_disabled']
             state['startup_version'] = 1
-            state['mini_handoff'] = dict(version=1, target=target, phase='stage', effect=None,
+            state['mini_handoff'] = dict(version=2, target=target, phase='stage', effect=None, source=source,
                                         original_disabled=original, deadline=self.engine.clock() + wait if wait else None)
             self.save(state, 'handoff:intent')
             self._recover(config)
@@ -261,13 +291,14 @@ class Manager:
     def abort(self):
         state = self.state()
         value = self.transaction(state)
+        source = self.source(state)
         for group, reasons in state['reasons'].items():
             if 'handoff' in reasons:
                 state['reasons'][group] = sorted((set(reasons) - {'handoff'}) | {self.release_reason(group)})
         state.pop('stop_tasks', None)
         # Abort is only reached before switch: the source is still the owner.
         value.update(phase='aborted', effect=None,
-                     retained_owner='homebrew' if value['target'] == 'install' else 'prepared')
+                     retained_owner=source['owner'])
         self.save(state, 'handoff:aborted')
         # No start here: the existing guard reconciles and samples fresh sensors.
         return True
@@ -283,9 +314,10 @@ class Manager:
         value = self.transaction(state)
         if os.path.lexists(self.directory / 'maintenance') or value and value['phase'] == 'maintenance':
             return False
+        if value and value['phase'] == 'aborted' and value['version'] == 1:
+            self.source(state)
         if value and value['phase'] == 'aborted' and 'retained_owner' not in value:
-            # Upgrade an R1 abort using its pre-switch source, never the target.
-            value['retained_owner'] = 'homebrew' if value['target'] == 'install' else 'prepared'
+            value['retained_owner'] = self.source(state)['owner']
             self.save(state, 'handoff:retained-owner')
         if value is None or value['phase'] in TERMINAL:
             return True
@@ -409,7 +441,7 @@ class Manager:
             else:
                 # Publication before any stop; a killed caller cannot leave a reopening job.
                 if value['phase'] == 'aborted':
-                    owner = value.get('retained_owner', 'homebrew' if value['target'] == 'install' else 'prepared')
+                    owner = self.source(state)['owner']
                     value['target'] = 'install' if owner == 'prepared' else 'withdraw'
                     value.pop('retained_owner', None)
                 value['phase'] = 'maintenance'
@@ -475,7 +507,7 @@ class Manager:
             state = self.state()
             value = self.transaction(state)
             authorized = value and ((value['target'] == 'install' and value['phase'] in ('switch', 'verify', 'done'))
-                                    or (value['target'] == 'withdraw' and value['phase'] == 'aborted'
+                                    or (value['phase'] == 'aborted' and value.get('source', {}).get('owner') == 'prepared'
                                         and value.get('retained_owner') == 'prepared'))
             if (not authorized
                     or self.loaded(BREW) is not None or not self.disabled(BREW)):

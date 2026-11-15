@@ -844,10 +844,17 @@ de relanzar. No se busca ni se mata por nombre.
    el relevo. Sin `--esperar` rechaza tareas Running o Paused antes de escribir.
    Para esperar explícitamente hasta 10 minutos: añadir `--esperar 10` al ensayo
    y al comando real (admite 0..120 minutos). Al vencer, marca aborted, conserva
-   el daemon origen y registra `retained_owner` (`homebrew` o `prepared`). Un
+   el daemon origen y registra `retained_owner` (`homebrew` o `prepared`). La
+   intención versión 2 conserva `source`: gestor verificado, PID y generación
+   Mini (fecha del pid file e identidad de ps). El aborto retiene ese origen,
+   sin deducirlo del destino. Si se pide el gestor que ya sigue vivo, converge
+   a done/withdrawn sin publicar, pausar, drenar ni tocar launchd, incluso con
+   tareas Running; repetirlo no escribe. Un
    retiro abortado conserva el wrapper con preparación offline para KeepAlive
-   y login, sin reactivar Homebrew; la guardia repara también un aborto anterior
-   que todavía no tenga ese campo. Transfiere las razones handoff a pressure
+   y login, sin reactivar Homebrew; la guardia repara un dueño ausente desde
+   `source`. Una intención anterior sin origen sólo se migra si verifica un
+   único gestor vivo con su PID; si no puede acreditarlo, conserva el cierre.
+   Transfiere las razones handoff a pressure
    en el perfil y a ambiguous en grupos ajenos. Un grupo ajeno permanece cerrado
    con motivo y se resuelve con `control.py reanudar <grupo> --host mini`, pasando
    las mismas comprobaciones de cuotas y sensores. Nunca abre

@@ -20,7 +20,7 @@ CASES=[
   'test_running_drains_without_killing_then_recovery_owns_pause_before_rpc'),
  ('drain-before-stop','mini.py',"            if self.active(self.pueue.status()):",'            if False:',
   'test_running_drains_without_killing_then_recovery_owns_pause_before_rpc'),
- ('dry-before-writes','mini.py','            if dry:','            if False:',
+ ('dry-before-writes','mini.py',"            if dry:\n                print('SECO: validar","            if False:\n                print('SECO: validar",
   'test_seco_and_pending_receipts_reject_before_any_effect_or_write'),
  ('pending-blocks-install','mini.py',"in ('applying', 'partial', 'unknown')","in ()",
   'test_seco_and_pending_receipts_reject_before_any_effect_or_write'),
@@ -69,7 +69,8 @@ CASES=[
 ]
 
 CASES += [
- ('aborted-source-override','mini.py',"                self.command(state, 'enable', target)",'                pass',
+ ('aborted-source-override','mini.py',"        self.save(state, 'handoff:aborted')",
+  "        self.save(state, 'handoff:aborted')\n        self.command(state, 'disable', BREW if source['owner'] == 'homebrew' else LABEL)",
   'test_handoff.InjertoTests.test_withdraw_after_aborted_install_retains_source_enable_and_login'),
  ('wait-bounded','mini.py','or not 0 <= wait <= 7200','or False',
   'test_handoff.InjertoTests.test_wait_budget_invalid_rejects_without_writes'),
@@ -99,8 +100,13 @@ CASES += [
 
 
 CASES += [
- ('r1-retained-owner','mini.py',
+ ('r2-origin-not-target','mini.py',"value.update(phase='aborted', effect=None,\n                     retained_owner=source['owner'])",
   "value.update(phase='aborted', effect=None,\n                     retained_owner='homebrew' if value['target'] == 'install' else 'prepared')",
+  'test_abort_retains_verified_source_independently_of_target_and_validates_identity'),
+ ('r2-live-target-converges','mini.py',"            if same_owner and previous:","            if False:",
+  'test_opposite_withdraw_install_running_converges_and_login'),
+ ('r1-retained-owner','mini.py',
+  "value.update(phase='aborted', effect=None,\n                     retained_owner=source['owner'])",
   "value.update(phase='aborted', effect=None)",
   'test_handoff_r1.R1Tests.test_aborted_withdraw_restarts_prepared_owner_and_login'),
  ('r1-aborted-wrapper','mini.py',"and value.get('retained_owner') == 'prepared'","and False",

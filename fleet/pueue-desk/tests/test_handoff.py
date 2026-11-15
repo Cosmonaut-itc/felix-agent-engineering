@@ -166,6 +166,93 @@ class HandoffTests(unittest.TestCase):
         if argv[:1]==['/bin/ps']:return subprocess.CompletedProcess(argv,1,'','')
         raise AssertionError('Forbidden real subprocess: '+str(argv))
 
+    def opposite_aborts(self, first, maintenance=False):
+        h=self.h
+        if first=='withdraw':h.m.change('install');h.finish()
+        expected=h.owner;owner='prepared' if expected==mini.LABEL else 'homebrew'
+        h.p.tasks={'0':task(0,running(),'default')};h.save_queue()
+        h.m.change(first,wait=10);h.now+=11;h.m._recover(h.config)
+        self.assertEqual(h.policy()['mini_handoff']['phase'],'aborted')
+        self.assertEqual(h.policy()['mini_handoff']['retained_owner'],owner)
+        second='install' if first=='withdraw' else 'withdraw'
+        h.calls.clear();h.p.calls.clear();h.trace.clear();generation=h.gen
+        h.m.change(second,wait=10);h.now+=11;h.m._recover(h.config)
+        value=h.policy()['mini_handoff']
+        self.assertEqual(value['phase'],'done' if expected==mini.LABEL else 'withdrawn')
+        self.assertEqual(value.get('retained_owner'),owner)
+        self.assertEqual(h.gen,generation)
+        self.assertIn('Running',h.p.tasks['0']['status'],'same task survives both deadlines')
+        self.assertFalse(any(c[0] not in ('print','print-disabled') for c in h.calls))
+        self.assertEqual(h.p.calls,[],'convergence must not pause, drain or start')
+        self.assertEqual(h.trace,['handoff:converged'])
+        self.assertFalse(h.disabled.get(expected,False));self.assertTrue(h.disabled[mini.BREW if expected==mini.LABEL else mini.LABEL])
+        if maintenance:
+            h.m.maintenance();h.m.maintenance(resume=True);h.finish()
+            self.assertEqual(h.owner,expected)
+            self.assertEqual(h.policy()['mini_handoff']['phase'],'done' if expected==mini.LABEL else 'withdrawn')
+        h.login();h.recover()
+        self.assertEqual(h.owner,expected);self.assertTrue(h.p.online)
+        self.assertEqual(h.p.tasks['0']['status']['Done']['result'],'Killed')
+        self.assertEqual(h.loaded & {mini.LABEL,mini.BREW},{expected})
+        print('R2 opposite:',first,'->',second,'owner='+expected,'online=True maintenance='+str(maintenance))
+
+    def test_opposite_withdraw_install_running_converges_and_login(self):
+        self.opposite_aborts('withdraw')
+
+    def test_opposite_install_withdraw_running_converges_and_login(self):
+        self.opposite_aborts('install')
+
+    def test_opposite_aborts_maintenance_retains_each_owner(self):
+        for first in ('withdraw','install'):
+            self.h=Harness(self);self.opposite_aborts(first,maintenance=True)
+
+    def test_live_target_converges_without_stage_drain_or_publication(self):
+        for target in ('install','withdraw'):
+            h=Harness(self);h.m.change('install');h.finish()
+            if target=='withdraw':h.m.change('withdraw');h.finish()
+            h.p.tasks={'0':task(0,running(),'default')};h.save_queue()
+            before=h.fingerprint();h.calls.clear();h.p.calls.clear();h.trace.clear()
+            for wait in (0,10):
+                for dry in (True,False):
+                    try:
+                        with redirect_stdout(io.StringIO()):h.m.change(target,dry=dry,wait=wait)
+                    except ValueError as error:self.fail('live target rejected: '+str(error))
+            self.assertEqual(h.fingerprint(),before)
+            self.assertEqual(h.p.calls,[]);self.assertEqual(h.trace,[])
+            self.assertFalse(any(c[0] not in ('print','print-disabled') for c in h.calls))
+
+    def test_abort_retains_verified_source_independently_of_target_and_validates_identity(self):
+        h=self.h;h.p.tasks={'0':task(0,running(),'default')};h.save_queue()
+        h.m.change('install',wait=10)
+        source=h.policy()['mini_handoff'].get('source')
+        self.assertEqual(source,dict(owner='homebrew',pid=999999,generation=h.gen))
+        # A durable intention can describe the live target; abort must consume
+        # the evidence recorded at acceptance, regardless of the requested verb.
+        state=h.policy();state['mini_handoff']['target']='withdraw'
+        h.m.save(state,'test:source-equals-target')
+        try:h.m.abort()
+        except ValueError as error:self.fail('abort inferred a contradictory owner: '+str(error))
+        self.assertEqual(h.policy()['mini_handoff']['retained_owner'],'homebrew')
+        valid=h.policy()['mini_handoff']
+        for invalid in ({},dict(owner='homebrew',pid=True,generation=h.gen),
+                        dict(owner='homebrew',pid=0,generation=h.gen),
+                        dict(owner='homebrew',pid=999999,generation=''),
+                        dict(owner='prepared',pid=999999,generation=h.gen)):
+            value=copy.deepcopy(valid);value['source']=invalid
+            with self.assertRaises(ValueError):control.validate_mini_handoff(value)
+        value=copy.deepcopy(valid);value.pop('source')
+        with self.assertRaises(ValueError):control.validate_mini_handoff(value)
+
+    def test_legacy_abort_requires_live_origin_and_never_infers_target(self):
+        h=self.h;h.p.tasks={'0':task(0,running(),'default')};h.save_queue()
+        h.m.change('install',wait=10);h.now+=11;h.m._recover(h.config)
+        state=h.policy();value=state['mini_handoff'];value['version']=1;value.pop('source',None)
+        h.m.save(state,'test:legacy');before=h.fingerprint();h.p.online=False
+        with self.assertRaises(ValueError):h.m._recover(h.config)
+        self.assertEqual(h.fingerprint(),before,'no live identity must leave legacy files unchanged')
+        h.p.online=True;h.m._recover(h.config)
+        self.assertEqual(h.policy()['mini_handoff']['source'],dict(owner='homebrew',pid=999999,generation=h.gen))
+
     def test_install_login_disable_and_withdraw_idempotent_preserve_manual_guard_and_receipts(self):
         h=self.h;before=h.policy()
         h.m.change('install');h.finish()
@@ -711,7 +798,7 @@ class InjertoTests(unittest.TestCase):
         self.assertEqual(h.policy()['mini_handoff']['phase'],'aborted')
         h.p.tasks['0']['status']=done();h.save_queue()
         h.m.change('withdraw');h.finish()
-        self.assertFalse(h.disabled[mini.BREW])
+        self.assertFalse(h.disabled.get(mini.BREW,False))
         self.assertTrue(h.disabled[mini.LABEL])
         h.login();h.finish()
         self.assertEqual(h.owner,mini.BREW)

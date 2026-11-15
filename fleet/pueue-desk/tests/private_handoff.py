@@ -1,6 +1,6 @@
 """Opt-in macOS acceptance in a remote-run directory. Never uses a shared daemon.
 
-Every Pueue process pins --config. All launchd labels are pao.u35.injerto.* or pao.u35.r1.* and
+Every Pueue process pins --config. All launchd labels use private pao.u35 prefixes and
 all plists live under this run, never the user's Library/LaunchAgents.
 """
 import argparse
@@ -42,7 +42,7 @@ def context(root, role="driver"):
     mini=importlib.util.module_from_spec(spec);spec.loader.exec_module(mini);control=mini.control
     info=json.loads((root/'info.json').read_text())
     prefix=info['prefix'];mini.LABEL=prefix+'.daemon';mini.GUARD=prefix+'.guard';mini.BREW=prefix+'.brew'
-    assert prefix.startswith(('pao.u35.injerto.','pao.u35.r1.'))
+    assert prefix.startswith(('pao.u35.injerto.','pao.u35.r1.','pao.u35.r2.'))
     data=root/'data';config=root/'config.json';pid=data/'pid'
     env=dict(os.environ,TMPDIR=str(root));env.pop('PUEUE_CONFIG_PATH',None)
     class Private(control.Pueue):
@@ -60,8 +60,8 @@ def context(root, role="driver"):
         control.start_projection(m.engine,configuration,allow_pending=False)
         state=m.state();m.transaction(state)
         source=mini.LABEL if m.loaded(mini.LABEL) is not None else mini.BREW
-        m.verify_owner(source,state);m.engine.view()
-        return state,configuration,{label:m.disabled(label) for label in (mini.BREW,mini.LABEL,mini.GUARD)}
+        identity=m.verify_owner(source,state);m.engine.view()
+        return state,configuration,{label:m.disabled(label) for label in (mini.BREW,mini.LABEL,mini.GUARD)},identity
     m.preflight=preflight
     def checkpoint(phase):
         if phase.startswith('effect:bootout:') and phase.endswith(('.brew','.daemon')):
@@ -105,15 +105,17 @@ def main():
     parser.add_argument('--worker',choices=('start','guard','install','withdraw'))
     parser.add_argument('--root',type=Path)
     parser.add_argument('--r1',action='store_true',help='Directed abort/restart and bounded diagnostic acceptance')
+    parser.add_argument('--r2',action='store_true',help='Opposite abort convergence plus R1 acceptance')
     args=parser.parse_args()
+    args.r1 = args.r1 or args.r2
     if args.worker:return worker(args.root,args.worker)
     assert sys.platform=='darwin','macOS required'
     ident=(Path.cwd()/'.remote-run.lock').read_text().strip()
     assert re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}',ident)
-    root=Path.home()/'remote-run/runs'/ident/('u35-r1' if args.r1 else 'u35-ij');root.mkdir()
+    root=Path.home()/'remote-run/runs'/ident/('u35-r2' if args.r2 else 'u35-r1' if args.r1 else 'u35-ij');root.mkdir()
     (root/'agents').mkdir();data=root/'data';data.mkdir()
     assert len(str(data/'socket').encode())<104
-    prefix=('pao.u35.r1.' if args.r1 else 'pao.u35.injerto.')+str(os.getpid())
+    prefix=('pao.u35.r2.' if args.r2 else 'pao.u35.r1.' if args.r1 else 'pao.u35.injerto.')+str(os.getpid())
     (root/'info.json').write_text(json.dumps(dict(prefix=prefix)))
     (root/'config.json').write_text(json.dumps(dict(shared=dict(pueue_directory=str(data),runtime_directory=str(data),
         pid_path=str(data/'pid'),unix_socket_path=str(data/'socket'),use_unix_socket=True,
@@ -230,6 +232,49 @@ def main():
         assert m.loaded(mini.BREW) is None and m.disabled(mini.BREW)
         emit(root,'login_reconstruction',one_enabled_daemon=True,homebrew_disabled=True)
         if args.r1:
+            if args.r2:
+                for first in ('withdraw','install'):
+                    if first=='install':
+                        m.change('withdraw');wait_for(lambda:settled('withdrawn'));wait_for(lambda:p.status())
+                    expected=mini.LABEL if first=='withdraw' else mini.BREW
+                    owner='prepared' if first=='withdraw' else 'homebrew'
+                    launches=root/('launches-'+first)
+                    program="import pathlib,time;pathlib.Path("+repr(str(launches))+").open('a').write('launch\\n');time.sleep(90)"
+                    active=add(shlex.join([python,'-c',program]));wait_for(lambda:'Running' in status(active))
+                    old=verified_pid()
+                    m.change(first,wait=1);wait_for(lambda:settled('aborted'))
+                    value=m.state()['mini_handoff']
+                    assert value['source']['owner']==owner and value['source']['pid']==old
+                    assert value['retained_owner']==owner and 'Running' in status(active)
+                    second='install' if first=='withdraw' else 'withdraw'
+                    phase='done' if first=='withdraw' else 'withdrawn'
+                    m.change(second,wait=1);time.sleep(1.1)
+                    assert settled(phase) and verified_pid()==old and 'Running' in status(active)
+                    assert m.state()['mini_handoff']['retained_owner']==owner
+                    assert not m.disabled(expected)
+                    assert m.disabled(mini.BREW if expected==mini.LABEL else mini.LABEL)
+                    assert launches.read_text().splitlines()==['launch']
+                    emit(root,'r2_opposite_converged',first=first,phase=phase,owner=owner,
+                         same_pid=True,same_running_task=True,launches=1,owner_enabled=True)
+                    m.maintenance();m.maintenance(resume=True)
+                    wait_for(lambda:settled(phase));wait_for(lambda:p.status())
+                    assert m.loaded(expected) is not None
+                    assert status(active).get('Done',{}).get('result')=='Killed'
+                    # Reconstruct from enabled plists, as a new session does.
+                    with control.locked(m.directory):
+                        for label in (mini.GUARD,mini.LABEL,mini.BREW):
+                            mini.launchctl('bootout',m.domain+'/'+label,check=False)
+                        wait_for(offline)
+                        for label in labels:
+                            if not m.disabled(label):load(label)
+                    wait_for(lambda:p.status())
+                    assert m.loaded(expected) is not None
+                    assert sum(m.loaded(label) is not None for label in (mini.BREW,mini.LABEL))==1
+                    assert launches.read_text().splitlines()==['launch']
+                    assert p.status()['groups']['suites']['status']=='Paused'
+                    emit(root,'r2_opposite_maintenance_login',first=first,owner=owner,online=True,
+                         phase=phase,no_retry=True,manual_preserved=True)
+                m.change('install');wait_for(lambda:settled('done'));wait_for(lambda:p.status())
             def assert_prepared_owner():
                 wait_for(lambda:p.status());wait_for(lambda:m.state().get('startup',{}).get('phase')=='ready')
                 assert m.loaded(mini.LABEL) is not None and m.loaded(mini.BREW) is None
