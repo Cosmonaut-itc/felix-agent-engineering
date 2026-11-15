@@ -11,16 +11,17 @@ Dos runners en la Mini los corren sin costo.
 
 `instalar.sh` instala un runner por papel:
 
-| Papel | Trabajo de Jale | Etiqueta | Nombre |
+| Papel | Trabajo | Etiqueta | Nombre |
 |---|---|---|---|
 | `guard` | «Política de exportación a Boat» | `jale-guard` | `mini-jale-guard` |
 | `datos` | «Unitarias con datos o recursos excluidos de Boat» | `jale-datos` | `mini-jale-datos` |
+| `hasito-noche` | Gate completo nocturno de Hasito sobre `main` | `hasito-noche` | `mini-hasito-noche` |
 
 Cada runner toma un trabajo a la vez y GitHub guarda su fila. Van separados
 porque los trabajos de Boat esperan al guard, que tarda segundos: con un solo
 runner, el guard haría fila detrás de unitarias de varios minutos.
 
-Por cada papel instala:
+Para los papeles de Jale instala:
 
 - El runner oficial `actions/runner` 2.338.2 para macOS arm64, en
   `~/actions-runner-jale-<papel>`. `instalar.sh` fija su sha256 y no extrae un
@@ -76,6 +77,63 @@ o vuelve a instalarlo, que reemplaza el registro.
 GitHub borra el registro de un runner que pasa 14 días sin conectarse. Para
 recuperarlo, retíralo e instálalo de nuevo.
 
+## Gate nocturno de Hasito
+
+El tercer runner ejecuta el gate completo nocturno sobre la punta de `main`
+de `SEN-HASO/Hasito`. Usa la etiqueta `hasito-noche`, el directorio
+`~/actions-runner-hasito-noche`, el LaunchAgent
+`local.pao.gha-runner-hasito-noche` y el log
+`~/Library/Logs/pao-gha-runner-hasito-noche.log`.
+
+`solo-main.sh` sólo acepta `GITHUB_REPOSITORY=SEN-HASO/Hasito`, el ref exacto
+`SEN-HASO/Hasito/.github/workflows/gate-noche.yml@refs/heads/main` y los eventos
+`schedule` o `workflow_dispatch`. Cualquier otro valor o variable ausente
+hace fallar el trabajo antes de ejecutar sus pasos, con una sola línea que
+identifica el valor rechazado. El hook impide ramas, otros workflows y otros
+eventos; quien pueda cambiar ese workflow en `main` de Hasito sí ejecuta código
+en la Mini.
+
+Para instalar, con el checkout de la Mini al día:
+
+```sh
+gh api -X POST repos/SEN-HASO/Hasito/actions/runners/registration-token -q .token \
+  | ssh mini 'bash ~/.local/share/personal-agent-orchestration/fleet/gha-runner/instalar.sh hasito-noche'
+```
+
+El token llega por stdin y se pasa a `config.sh` sólo por entorno, igual que
+para Jale. `instalar.sh --seco hasito-noche` anuncia todos los pasos sin escribir.
+El instalador copia el hook con modo 0755 y reemplazo atómico a
+`~/.local/lib/pao-gha-runner/solo-main.sh`, fuera del directorio del runner.
+Conserva las demás líneas de `.env` y deja una sola línea
+`ACTIONS_RUNNER_HOOK_JOB_STARTED` con la ruta absoluta de esa copia antes de
+arrancar el servicio. Si falla la copia o la configuración, no carga launchd.
+Una reinstalación actualiza el hook y reinicia el servicio: `.env` se lee al
+arrancar. Los papeles `guard` y `datos` no reciben hook.
+
+Comprueba en la Mini que la copia es ejecutable y que `.env` apunta a ella:
+
+```sh
+test -x "$HOME/.local/lib/pao-gha-runner/solo-main.sh"
+grep '^ACTIONS_RUNNER_HOOK_JOB_STARTED=' "$HOME/actions-runner-hasito-noche/.env"
+launchctl print "gui/$(id -u)/local.pao.gha-runner-hasito-noche"
+```
+
+Después de instalar o reinstalar, el log debe mostrar un nuevo
+`Listening for Jobs`. Comprueba también que `mini-hasito-noche` aparece
+`online` con etiqueta `hasito-noche` en
+`gh api repos/SEN-HASO/Hasito/actions/runners`. Un despacho manual del workflow
+desde `main` debe pasar el hook; desde otra rama debe fallar antes de sus pasos.
+
+Para retirar:
+
+```sh
+gh api -X POST repos/SEN-HASO/Hasito/actions/runners/remove-token -q .token \
+  | ssh mini 'bash ~/.local/share/personal-agent-orchestration/fleet/gha-runner/instalar.sh --retirar hasito-noche'
+```
+
+Descarga el servicio y da de baja el registro como en Jale. Conserva el
+runner, el plist y la copia del hook renombrándolos a `.retirado-<fecha>`.
+
 ## Cambiar de versión
 
 El runner se actualiza solo: GitHub deja de asignar trabajos a una versión
@@ -94,8 +152,9 @@ en `github.com/actions/runner/releases`.
   runners a un usuario de macOS sin acceso al home del dueño.
 - **Fuera de Pueue.** Los trabajos no pasan por los grupos `suites` ni
   `rapidas` y la guardia de la Mini no los pausa. La carga queda acotada por
-  los propios runners: un trabajo a la vez cada uno, y sólo esos dos trabajos
-  los piden. Un trabajo pesado no va aquí; va a Boat o a `remote-run`.
+  los propios runners: un trabajo a la vez cada uno. Los de Jale se reservan
+  para esos dos trabajos; los pesados van a Boat o a `remote-run`. El tercer
+  runner `hasito-noche` se reserva para el gate nocturno completo de Hasito.
 - **Servicios de la Mini a la vista.** Un trabajo alcanza los puertos locales,
   como el Postgres de pruebas en `127.0.0.1:5435`. Un workflow que corre aquí
   no debe apuntar a ellos.
