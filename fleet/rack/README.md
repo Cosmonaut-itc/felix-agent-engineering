@@ -134,6 +134,44 @@ Los umbrales CPU de la guardia desk se leen del `control.py` instalado en
 vigentes al implementar. La guardia Mini tiene un solo
 punto de extensión, `mini_guard()`, y por ahora devuelve null.
 
+Desde SEN-6417 el bloque `guard` del desk publica además, cada parte por su
+cuenta (una ilegible queda null con su error en `errors`, nunca un valor viejo):
+
+- `action`: ahora también `mantener`.
+- `pressure`: `{cpu, io, memory, at}`, leído de `/proc` al tomar la instantánea.
+- `thresholds`: `{normal, rapidas}`. Viene de `PRESSURE_THRESHOLDS` y de la
+  entrada `desk` de `RAPIDAS_THRESHOLDS`, leídos del controlador instalado con
+  un AST limitado (literales, `*`, `**` y subíndices); nada se ejecuta.
+- `last_result`: el resumen de `guardia.log` del **mismo** `tick` que la última
+  decisión (`evento`, `causa`, `bloqueos`, `grupo`, `id`, `restante_ms`). Se lee
+  sólo la cola del archivo (256 KiB).
+- `last_admission`: `{at, grupo, id}` de `guard_admission.last_confirmed`, leído
+  en sólo lectura. Es null con un controlador anterior.
+
+`serve.py` valida esos campos con una lista blanca. Una instantánea anterior
+(sólo `action`, `at`, `cpu_pause`, `cpu_resume`) sigue siendo válida, con los
+campos nuevos en null. Un núcleo inválido descarta `guard`; un campo nuevo
+inválido se descarta solo.
+
+En un grupo Paused, los lugares libres se funden en **una celda** que dice por
+qué. Un grupo lleno no dice nada de la pausa; uno abierto muestra «Libre» como antes:
+
+| Estado | Celda |
+|---|---|
+| Presión alta | «Retenido por presión · CPU 34 % · entra de a una bajo 30» |
+| Banda media | «Entra de a una · CPU 22 % · abre bajo 15 · última hace 40 s» |
+| Gate que bloquea | «Retenido · Docker no responde» (la causa del resumen) |
+| Arranque | «Retenido al reiniciar · <motivo> · resolver con control.py reanudar <grupo>» o «Esperando cuotas y Docker · reanudación automática» |
+| Pausa ambigua | «Pausa de origen desconocido · resolver con control.py reanudar <grupo>» |
+| Sin datos frescos | «Retenido por presión · estado de la guardia desconocido» |
+
+La métrica nombrada es la que retiene, en el orden memoria, E/S, CPU; nunca se
+culpa a la CPU de un bloqueo por E/S o memoria. Sin decisión o presión de los
+últimos 180 s el estado es desconocido, nunca «Libre». «última hace» sólo
+aparece si la última admisión confirmada fue de ese grupo. La línea aparte de
+arranque y el aviso de cabecera por pausa ambigua ya no existen; la Mini, sin
+lectura de guardia publicada, muestra sólo «Retenido por presión».
+
 La página no agrega controles al prototipo. Sólo añade los estados mínimos
 pedidos: host antiguo, servidor sin respuesta, progreso sin estimado o
 excedido y tarea pausada; una lectura de capacidad ausente se muestra como
@@ -717,7 +755,8 @@ archivos anteriores. Sin adopción/capacidad válida no se habilitan los botones
 Ni uno ni otro abandona el deseo ya aceptado. Para revertir el panel se puede
 restaurar su versión anterior conservando controlador, SQLite y guardia nuevos.
 La pausa ambigua tras reinicio se resuelve por SSH con `control.py reanudar`,
-sin botón nuevo y sin promesa de reapertura automática todavía.
+sin botón nuevo y sin promesa de reapertura automática todavía; la celda del
+grupo lo indica.
 
 Verificación dirigida: `tests/test_slots.py` ejecuta el canal con Pueue/reloj y
 transporte sintéticos, autorización HTTP y el JavaScript de producción mediante

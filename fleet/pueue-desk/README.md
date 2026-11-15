@@ -578,9 +578,11 @@ El snapshot conserva para la tarea identificada por id + created_at el texto
 ni procedencia de cancelación. El panel conserva esas interrupciones mientras existan la tarea y su identidad
 atribuida, aunque sean terminales o tengan más de 24 h; no aplica un tope de 64.
 La espera automática de cuotas/Docker se muestra como espera con reanudación
-automática, sin instrucciones manuales. Junto al grupo realmente retenido muestra
-**«Retenido al reiniciar: <motivo> · resolver con control.py reanudar <grupo>»**.
-No incorpora botón ni repite la instrucción SSH en la cabecera. `default` vacío
+automática, sin instrucciones manuales. Desde SEN-6417 los lugares libres del grupo
+realmente retenido se funden en una celda **«Retenido al reiniciar · <motivo> ·
+resolver con control.py reanudar <grupo>»**; una pausa ambigua sin retención de
+grupo dice **«Pausa de origen desconocido · resolver con control.py reanudar
+<grupo>»** en su celda. No incorpora botón ni repite la instrucción SSH en la cabecera. `default` vacío
 sigue oculto; una terminal atribuida al reinicio lo hace visible.
 
 Felix revisa la causa y resuelve por el SSH existente, por ejemplo:
@@ -696,3 +698,118 @@ de esta corrida, nunca por prefijo.
 No reinicia WSL, Windows ni el servicio productivo. El arranque de Windows/WSL
 queda como verificación separada del orquestador. Reinicios de la Mini quedan
 para U3.5.
+
+### Admisión de a una en la banda media (SEN-6417)
+
+Sólo en el desk. Cuando la guardia decide `mantener` (ni pausar ni reanudar:
+por ejemplo CPU entre 15 y 30 % con E/S bajo 40 % y más de 4 GiB libres), un
+grupo pausado **sólo** por presión recibe a lo sumo **una tarea por minuto para
+todo el desk**. La guardia la arranca con `pueue start <id>`: en Pueue 4.0.4 eso
+arranca esa tarea y deja el grupo Paused, con su razón `pressure`. Umbrales,
+cuotas, horarios y la Mini no cambian.
+
+- Elegibles: grupos del reparto salvo `rapidas`, en Paused, con razones exactamente
+  `pressure`. `manual` (incluida la marca `pause-<grupo>.manual`), `ambiguous` y
+  `startup` nunca entran de a una.
+- Sólo tareas Queued, con todas sus dependencias Done/Success y con lugar libre:
+  Running + Paused + Locked por debajo de `parallel_tasks` observado.
+- Orden FIFO del desk por `(enqueued_at, id, grupo)`. Una sola por pasada y por minuto.
+- Presión alta no admite nada. Presión baja reabre como hoy, sin tope.
+
+El permiso vive en la tabla `guard_admission` de `control.sqlite3` (una fila):
+`last_attempt` (arranque, reserva y cierre en `CLOCK_BOOTTIME`, UTC, generación,
+grupo, id, `created_at` y resultado) y `last_confirmed`. El minuto se cuenta desde
+la **confirmación**, con el reloj de arranque; el reloj civil no lo abre. Otro
+arranque de WSL espera 60 s de uptime y un retroceso del reloj retiene (`clock`).
+Cada escritura es compare-and-swap.
+
+El orden de una admisión es: elegir, comprobar el permiso, gate final, **reservar
+de forma durable**, registrar `admision_reservada`, repetir el gate con presión
+fresca (debe seguir en `mantener`), arrancar en menos de 10 s desde la reserva,
+y leer el estado. La misma tarea (id, `created_at` y grupo) en Running, Paused o
+Done con inicio posterior a la reserva (5 s de holgura) confirma. Un gate fallido
+tras reservar cierra `not_sent` y consume el minuto. Una respuesta perdida o un
+error de `pueue start` sin evidencia deja `unknown`. Una caída entre reserva y
+confirmación deja `reserved`, que la pasada siguiente pasa a `unknown`.
+`reserved` y `unknown` **nunca se liberan solos**: retienen toda admisión de a una
+(`admission_unknown`) hasta que aparece la evidencia o Felix lo resuelve.
+
+El gate final es el de la reapertura más: recibos del panel abiertos
+(`applying`, `partial`, `unknown`) → `authority`, y muestra fresca en `mantener`
+→ `fresh_sample`. Comparte mantenimiento, arranque, Docker, deseo, generación,
+lectura de presión y evento de horario.
+
+#### Eventos de `guardia.log`
+
+`lectura` y `decision` llevan `tick`, el identificador de la pasada. Cada pasada
+del desk deja **un** resumen con ese `tick`:
+
+| Evento | Cuándo |
+|---|---|
+| `admision_una` | Se confirmó una admisión; `grupo` e `id` |
+| `tope_alcanzado` | El permiso retiene: `cooldown` (con `restante_ms`) o `admission_unknown` |
+| `retenido` | Hubo trabajo que esperaba y algo lo retuvo; también al fallar la pasada (`error` es sólo el tipo) |
+| `guard_fin` | Pasada sin retenciones |
+
+Campos del resumen: `decision`, `decision_rapidas`, `presion`, `presion_final`,
+`causa` y `bloqueos` (hasta 12 `{grupo, operacion: resume|one, causa}`; `grupo`
+null es global). Causas: `pressure_high`, `fresh_sample`, `sample_unreadable`,
+`docker`, `generation`, `desired`, `event`, `admission`, `maintenance`,
+`authority`, `pause_reason`, `not_paused`, `quota`, `dependencies`,
+`task_changed`, `start_failed`, `admission_unknown`, `cooldown`, `clock`,
+`global_one`, `unsupported`, `log`. Antes de cada efecto se escribe su
+intención: `admision_reservada` y `reanudacion_intento`; si no se puede escribir,
+el efecto no ocurre (`log`). `admision_resuelta` registra la resolución manual.
+Ningún evento lleva comandos, rutas, entornos ni etiquetas de tareas.
+
+#### Resolver una admisión `unknown`
+
+La causa `admission_unknown` en el resumen (o en el panel) indica una admisión
+sin confirmar. Primero comprobar, con `pueue status -g <grupo>` en texto (nunca
+`--json`, que trae secretos en `envs`), si la tarea anotada arrancó. Después,
+bajo mantenimiento propio:
+
+```sh
+touch ~/.local/state/pao/pueue-desk/maintenance
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py resolver-admision --host desk
+```
+
+Con evidencia de la misma tarea cierra `confirmed`. Tras otro arranque de WSL
+cierra `not_sent`, porque ya no puede llegar una respuesta tardía. Sin evidencia
+en el mismo arranque se niega y la retención sigue. Sólo si Felix certificó que
+la tarea no arrancó:
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py resolver-admision --host desk --sin-efecto
+```
+
+La fila nunca se borra; la resolución cuenta como intento y el minuto siguiente
+empieza ahí. Retirar sólo la marca `maintenance` propia al terminar.
+
+#### Instalar y revertir
+
+`install-desk.py --seco` muestra `SECO, permiso de admisión de a una: crear
+guard_admission vacía` o `conservar guard_admission (<resultado>|sin intentos)`
+sin escribir. La instalación crea la tabla vacía una sola vez, de forma aditiva y
+bajo `control.lock`. Al reinstalar la conserva tal cual. Una tabla o fila ilegible
+detiene también el ensayo, antes de cualquier efecto. Antes de publicar guarda
+el controlador vigente como `control.py.pre-<AAAAMMDDTHHMMSSZ>` en
+`~/.local/lib/pao-pueue-desk/`, junto a las copias `.pre-u34` que no toca. No
+cambia unidades, timers ni `pueued`. Los pasos son los de «Mantenimiento e
+instalación» de arriba, desde el checkout revisado en WSL:
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /run/user/1000/pueue.pid --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /run/user/1000/pueue.pid
+```
+
+Para revertir: crear o conservar `maintenance`, parar timers y después
+guardia/modo, tomar `control.lock`, restaurar el `control.py.pre-<UTC>` más
+reciente y retirar sólo las marcas propias. El controlador anterior ignora
+`guard_admission`, así que **la tabla se conserva** (nunca restaurar una base
+vieja). Los grupos siguen Paused por presión hasta que la presión baje, como
+antes. Una admisión `unknown` pendiente sigue anotada; revisarla con Felix
+antes de reinstalar.
+
+Pruebas dirigidas: `tests/test_trickle.py`, `tests/test_trickle_install.py`,
+`tests/mutate_trickle.py` y `fleet/rack/tests/test_trickle_panel.py`.
