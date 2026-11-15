@@ -431,6 +431,18 @@ class HandoffTests(unittest.TestCase):
             full.side_effect=OSError('disk')
             with self.assertRaises(OSError):control.sync_file(stream)
 
+    def test_launchd_disabled_words_and_booleans_and_unknown_fail_closed(self):
+        h=self.h
+        for word,expected in (('true',True),('false',False),('disabled',True),('enabled',False)):
+            output='disabled services = {\n "'+mini.BREW+'" => '+word+'\n}'
+            with patch.object(h.m,'launch',return_value=subprocess.CompletedProcess([],0,output,'')):
+                self.assertEqual(h.m.disabled(mini.BREW),expected)
+                self.assertFalse(h.m.disabled(mini.GUARD))
+        for output in ('disabled services = {\n "'+mini.BREW+'" => unknown\n}',
+                       'disabled services = {\n "'+mini.BREW+'" => true\n "'+mini.BREW+'" => false\n}'):
+            with patch.object(h.m,'launch',return_value=subprocess.CompletedProcess([],0,output,'')):
+                with self.assertRaises(ValueError):h.m.disabled(mini.BREW)
+
     def test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job(self):
         daemon=plistlib.loads((ROOT/'launchagents'/(mini.LABEL+'.plist')).read_bytes())
         guard=plistlib.loads((ROOT/'launchagents'/(mini.GUARD+'.plist')).read_bytes())

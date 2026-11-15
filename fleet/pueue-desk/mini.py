@@ -77,10 +77,17 @@ class Manager:
 
     def disabled(self, label):
         output = self.launch('print-disabled', self.domain).stdout
-        entries = re.findall(r'"([^"\n]+)"\s*=>\s*(true|false)', output)
         if not output.strip().startswith((self.domain + ' => {', 'disabled services = {')) or not output.strip().endswith('}'):
             raise ValueError('Estado disable de launchd ilegible')
-        return dict(entries).get(label, 'false') == 'true'
+        entries = {}
+        for line in output.strip().splitlines()[1:-1]:
+            if not line.strip():
+                continue
+            match = re.fullmatch(r'\s*"([^"\n]+)"\s*=>\s*(true|false|enabled|disabled)\s*,?\s*', line)
+            if not match or match[1] in entries:
+                raise ValueError('Entrada disable de launchd ilegible')
+            entries[match[1]] = match[2] in ('true', 'disabled')
+        return entries.get(label, False)
 
     def effect(self, state, name, operation):
         # Persist before EVERY external effect; replay is intentional and idempotent.

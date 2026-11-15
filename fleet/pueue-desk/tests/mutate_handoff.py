@@ -46,6 +46,8 @@ CASES=[
   'test_maintenance_command_stops_guard_first_and_resumes_only_own_marker'),
  ('maintenance-foreign-marker','mini.py',"or not marker.is_file() or marker.read_bytes() != signature",'or not marker.is_file()',
   'test_maintenance_command_stops_guard_first_and_resumes_only_own_marker'),
+ ('launchd-disable-words','mini.py',"match[2] in ('true', 'disabled')","match[2] == 'true'",
+  'test_launchd_disabled_words_and_booleans_and_unknown_fail_closed'),
 ]
 
 

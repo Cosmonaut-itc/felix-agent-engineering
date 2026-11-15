@@ -172,6 +172,17 @@ def main():
         assert p.status()['groups']['suites']['status']=='Paused'
         emit(root,'installed',elapsed_seconds=round(time.monotonic()-start,3),one_owner=m.loaded(mini.BREW) is None,
              queued_id=queued,stashed_id=stashed,manual_preserved=True)
+        # Equivalent service reconstruction: every private plist participates,
+        # including Homebrew, and real launchd retains its disable overrides.
+        with control.locked(m.directory):
+            for label in (mini.GUARD,mini.LABEL,mini.BREW):
+                mini.launchctl('bootout',m.domain+'/'+label,check=False)
+            for label in labels:
+                if not m.disabled(label):load(label)
+            assert sum(m.loaded(label) is not None for label in (mini.BREW,mini.LABEL))==1
+        wait_for(lambda:p.status())
+        assert m.loaded(mini.BREW) is None and m.disabled(mini.BREW)
+        emit(root,'login_reconstruction',one_enabled_daemon=True,homebrew_disabled=True)
         # A killed standard daemon is restarted through the fixed offline preparation.
         program="import os,pathlib,time;pathlib.Path("+repr(str(root/'child.pid'))+").write_text(str(os.getpid()));time.sleep(20)"
         running=add(shlex.join(['/usr/bin/python3','-c',program]))
@@ -241,8 +252,12 @@ def main():
             child=int((root/'child.pid').read_text());assert child>1
             # Its program has a 20 s bound; wait for its exact PID, never kill by name.
             wait_for(lambda:subprocess.run(['/bin/ps','-p',str(child),'-o','comm='],capture_output=True).returncode==1,22)
+        for label in labels:
+            assert mini.launchctl('print',m.domain+'/'+label,check=False).returncode==113,'private service still loaded'
         listing=mini.launchctl('print',m.domain).stdout
-        assert prefix not in listing,'private LaunchAgent survived cleanup'
+        # macOS also lists persistent disable overrides here; these aren't loaded jobs.
+        loaded_lines=[line for line in listing.splitlines() if prefix in line and '=>' not in line]
+        assert not loaded_lines,'private LaunchAgent survived cleanup'
         # Bounded synthetic child is allowed to exit naturally; no process-name killing.
         time.sleep(1)
         emit(root,'cleanup',no_private_launchagents=True,no_private_daemon=True,prefix=prefix)
