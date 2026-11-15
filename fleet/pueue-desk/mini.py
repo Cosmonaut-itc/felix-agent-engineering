@@ -29,10 +29,18 @@ START_REASONS = {
     'Homebrew no está retirado; no se arranca otro daemon',
     'Daemon responde; preparar exige daemon detenido',
     'PID anterior vivo o ambiguo; no se prepara', 'PID ilegible; no se prepara',
-    'PID configurado difiere de la autoridad', 'Cola cambió durante preparación',
+    'PID configurado difiere de la autoridad', 'Cola cambió durante preparación; conservar archivos',
+    'Intención de arranque inconsistente', 'Autoridad inválida', 'Deseo inconsistente',
+    'Propiedad inválida', 'Versión o propiedad de arranque inválida', 'Arranque durable inválido',
     'Estado Pueue incompleto; arranque abortado sin reemplazar la cola',
     'Cola Pueue incompatible; arranque abortado sin sustituirla',
     'Relevo ilegible; conservar cierre y archivos', 'Se requiere Pueue estándar 4.0.4',
+}
+JSON_REASONS = {
+    'Expecting value', 'Expecting property name enclosed in double quotes',
+    'Unterminated string starting at', 'Invalid control character at',
+    'Invalid \\escape', 'Invalid \\uXXXX escape', 'Expecting \',\' delimiter',
+    'Expecting \':\' delimiter', 'Extra data',
 }
 
 
@@ -440,6 +448,8 @@ class Manager:
                   'Preparación o autorización rechazada; revisar cola, PID y autoridad')
         record = dict(utc=control.datetime.now(control.timezone.utc).isoformat(),
                       evento='arranque_rechazado', fase=getattr(self, '_start_stage', 'autorización'), motivo=reason)
+        if isinstance(error, json.JSONDecodeError) and error.msg in JSON_REASONS:
+            record['detalle_json'] = error.msg  # fixed parser vocabulary, never its input document
         line = (json.dumps(record, ensure_ascii=False) + '\n').encode('utf-8')
         # Diagnostics are disposable, unlike authority. Rotation precedes append
         # and bounds BOTH files, even across repeated KeepAlive failures.

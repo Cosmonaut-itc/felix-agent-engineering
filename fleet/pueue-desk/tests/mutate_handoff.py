@@ -131,6 +131,8 @@ CASES += [
   'test_handoff_r1.R1Tests.test_blocked_start_records_safe_reason_and_bounded_log'),
  ('r1-start-log-private','mini.py',"'Preparación o autorización rechazada; revisar cola, PID y autoridad')","message)",
   'test_handoff_r1.R1Tests.test_blocked_start_records_safe_reason_and_bounded_log'),
+ ('r1-json-detail-private','mini.py',"and error.msg in JSON_REASONS:","and True:",
+  'test_handoff_r1.R1Tests.test_blocked_start_records_safe_reason_and_bounded_log'),
  ('r1-foreign-pause','mini.py',"return 'pressure' if group in self.engine.profile else 'ambiguous'","return 'pressure'",
   'test_handoff_r1.R1Tests.test_foreign_handoff_pause_is_resolvable_on_completion_and_abort'),
 ]

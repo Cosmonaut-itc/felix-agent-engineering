@@ -159,11 +159,17 @@ class R1Tests(unittest.TestCase):
         self.assertTrue(log.is_file(),'blocked start must retain a diagnostic')
         record=json.loads(log.read_text().splitlines()[-1])
         self.assertEqual(record['motivo'],'Cola JSON ilegible')
+        self.assertEqual(record.get('detalle_json'),'Expecting value')
         self.assertEqual(log.stat().st_mode & 0o777,0o600)
-        secret='cmd=SECRET envs=TOKEN'
-        with patch.object(control,'prepare_start',side_effect=ValueError(secret)):
+        message='Cola cambió durante preparación; conservar archivos'
+        with patch.object(control,'prepare_start',side_effect=ValueError(message)):
             with self.assertRaises(ValueError):h.m.start(execute=lambda *_:None)
-        self.assertNotIn(secret,log.read_text())
+        self.assertEqual(json.loads(log.read_text().splitlines()[-1])['motivo'],message)
+        secret='cmd=SECRET envs=TOKEN'
+        for error in (ValueError(secret),json.JSONDecodeError(secret,'',0)):
+            with patch.object(control,'prepare_start',side_effect=error):
+                with self.assertRaises(ValueError):h.m.start(execute=lambda *_:None)
+            self.assertNotIn(secret,log.read_text())
         with patch.object(h.m,'loaded',return_value=None):
             for _ in range(1200):
                 with self.assertRaises(ValueError):h.m.start(execute=lambda *_:None)
