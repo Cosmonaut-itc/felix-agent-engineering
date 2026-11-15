@@ -27,6 +27,7 @@ DOMAIN = 'gui/' + str(UID)
 def load_control(path):
     spec = importlib.util.spec_from_file_location('control_u35_private', path)
     control = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = control  # _handoff finds the module from the engine's class
     spec.loader.exec_module(control)
     # Same code, private labels: validate_handoff and every phase read these globals.
     control.BREW_LABEL, control.DAEMON_LABEL = BREW, OURS
@@ -220,7 +221,7 @@ def scenario(work, controller):
     emit(p, 'reinicio_keepalive', segundos=round(time.monotonic() - killed_at, 2),
          tareas={k: t['status'] for k, t in snapshot['tasks'].items()},
          grupos={g: r['status'] for g, r in snapshot['groups'].items()},
-         interrupciones=engine.view().get('startup_holds'),
+         retenidos=engine.view().get('startup_holds'),
          autoridad=_startup(engine).get('interruptions'))
     killed = [k for k, t in snapshot['tasks'].items() if t['status'].get('Done', {}).get('result') == 'Killed']
     assert killed and all(k in _startup(engine)['interruptions'] for k in killed)
