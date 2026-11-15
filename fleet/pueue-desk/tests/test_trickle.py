@@ -405,5 +405,14 @@ class TrickleTests(DeskFixture):
         with self.engine.connect() as db:value=control.admission_state(db)
         self.assertEqual(value['last_attempt']['completed_ns'],self.ns)
 
+    def test_clock_backwards_at_completion_keeps_uncertainty(self):
+        self.after=lambda task:setattr(self,'ns',self.ns-1)
+        self.run_guard()
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.assertEqual(value['last_attempt']['outcome'],'unknown')
+        self.assertIsNone(value['last_attempt']['completed_ns'])
+        self.ns+=40_000_000_001;self.after=None;self.run_guard()
+        self.assertEqual(len(self.starts()),1)
+
 if __name__=='__main__':unittest.main()
 
