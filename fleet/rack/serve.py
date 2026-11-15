@@ -187,7 +187,7 @@ def validate_snapshot(data, host):
     data = copy.deepcopy(data)
     for row in data['tasks']:
         if 'interruption_reason' in row:
-            if (host != 'desk' or row['state'] != 'Done' or row.get('result') != 'Killed'
+            if (host not in ('desk', 'mini') or row['state'] != 'Done' or row.get('result') != 'Killed'
                     or row['interruption_reason'] != 'Interrumpida al reiniciar Pueue; relanzar manualmente'):
                 raise ValueError('Motivo de interrupción inválido')
         if 'control' in row:

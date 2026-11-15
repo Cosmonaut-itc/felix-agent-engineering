@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+    <key>Label</key><string>local.pao.pueue-mini.daemon</string>
+    <key>ProgramArguments</key><array>
+        <string>/usr/bin/python3</string><string>-I</string>
+        <string>@HOME@/.local/lib/pao-pueue-mini/mini.py</string><string>arrancar</string>
+    </array>
+    <key>WorkingDirectory</key><string>@HOME@</string>
+    <key>RunAtLoad</key><true/>
+    <key>KeepAlive</key><true/>
+    <key>ThrottleInterval</key><integer>10</integer>
+    <key>StandardOutPath</key><string>/dev/null</string>
+    <key>StandardErrorPath</key><string>/dev/null</string>
+</dict></plist>

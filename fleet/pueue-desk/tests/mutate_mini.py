@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Mutaciones dirigidas en copias temporales; ejecutar exclusivamente en la Mini."""
+"""Mutaciones dirigidas contra dobles, en copias temporales (Python 3.9/3.12)."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -54,8 +54,14 @@ MUTATIONS = [
      'run(PUEUE, "status", "--json", check=False).stdout', "test_missing_brew_or_unresponsive_pueue_aborts_before_changes"),
     ("valida grupos y estado", "install-mini.py", 'if not isinstance(status.get("tasks"), dict) or not {"suites", "default"} <= status["groups"].keys():',
      'if False:', "test_invalid_status_aborts_before_changes"),
-    ("reinstala idempotente", "install-mini.py", 'if run(LAUNCHCTL, "print", service, check=False).returncode == 0:',
+    ("reinstala idempotente sin cuotas", "install-mini.py", 'if guard_loaded and not keep_guard:',
      'if False:', "test_install_twice_plist_and_withdraw_twice_resumes_owned_groups"),
+    ("reinstala con cuotas conserva guardia cargada", "install-mini.py",
+     "keep_guard = args.command == 'instalar' and args.cuotas and guard_loaded", 'keep_guard = False',
+     "test_slots_install.SlotsInstallTests.test_atomic_adoption_enables_only_after_bootstrap_and_reinstall_preserves_receipts"),
+    ("reinstala con cuotas no duplica bootstrap", "install-mini.py", '            if not keep_guard:',
+     '            if True:',
+     "test_slots_install.SlotsInstallTests.test_atomic_adoption_enables_only_after_bootstrap_and_reinstall_preserves_receipts"),
     ("retirada reanuda grupos propios", "install-mini.py", '            run(PUEUE, "start", "-g", group)\n',
      '', "test_install_twice_plist_and_withdraw_twice_resumes_owned_groups"),
     ("retirada vacía la propiedad tras reanudar", "install-mini.py", "- {group})", ")",
@@ -106,12 +112,19 @@ def main():
             if source.count(original) != 1:
                 raise ValueError(f"Mutación ambigua o caduca: {rule}")
             target.write_text(source.replace(original, replacement))
-            pattern = "test_pueue_desk.py" if test in ("test_thresholds", "test_rotation") else "test_pueue_mini.py"
+            if '.' in test:
+                module, _, method = test.split('.')
+                pattern = module + '.py'
+            else:
+                pattern = "test_pueue_desk.py" if test in ("test_thresholds", "test_rotation") else "test_pueue_mini.py"
+                method = test
             command = ["/usr/bin/python3", "-I", "-m", "unittest", "discover", "-s", str(copy / "tests"),
-                       "-p", pattern, "-k", test, "-v"]
+                       "-p", pattern, "-k", method, "-v"]
             result = subprocess.run(command, text=True, capture_output=True)
             output = result.stdout + result.stderr
-            rejected = result.returncode != 0 and ("FAIL: " + test in output or "ERROR: " + test in output)
+            rejected = result.returncode != 0 and ("FAIL: " + method in output or "ERROR: " + method in output)
+            if rule.startswith('reinstala'):
+                rejected = result.returncode == 1 and "FAIL: " + method in output and "ERROR:" not in output
             if not rejected:
                 print(output, flush=True)
                 raise AssertionError(f"Mutación sobrevivió o no ejecutó su prueba: {rule}")

@@ -14,6 +14,34 @@ vm.createContext(context);vm.runInContext(input.js,context);context.fixture=inpu
 const run=s=>vm.runInContext(s,context);
 run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
+ if(input.scenario==='mini-startup'||input.scenario==='mini-normal'){
+   assert.equal(run('h.id'),'mini');assert.equal(run('h.control.cap'),7);
+   assert.match(elements.app.innerHTML,/data-step="-1"/);
+   assert.doesNotMatch(elements.app.innerHTML,/data-mode|>Reanudar<|data-resume/);
+   assert(!run('groups(h).some(([g])=>g==="default")'));
+   if(input.scenario==='mini-startup'){
+     assert.match(elements.app.innerHTML,/2 interrumpidas por reinicio/);
+     assert.match(elements.app.innerHTML,/No vuelven solas · relanzar es corrida nueva/);
+     assert.match(elements.app.innerHTML,/Esperando cuotas y sensores/);
+     assert.doesNotMatch(elements.app.innerHTML,/Docker/);
+     const button=elements.app.innerHTML.match(/<button[^>]*data-interrupted="([^"]*)"[^>]*>/)[0];
+     const key=JSON.parse(button.match(/data-interrupted="([^"]*)"/)[1].replace(/&quot;/g,'"'));
+     const attrs={},fold={},classes={};
+     const box={classList:{toggle:(k,v)=>classes[k]=v},querySelector:()=>({setAttribute:(k,v)=>fold[k]=v})};
+     const toggle={dataset:{interrupted:JSON.stringify(key)},setAttribute:(k,v)=>attrs[k]=v,closest:()=>box};
+     elements.app.listeners.click({target:{closest:q=>q==='button[data-interrupted]'?toggle:null}});
+     assert.equal(attrs['aria-expanded'],'true');assert.equal(fold['aria-hidden'],'false');
+     run('render(structuredClone(fixture))');
+     assert.match(elements.app.innerHTML,/interrupted-summary[^>]*aria-expanded="true"/);
+     assert(run(`interrupted({...h,id:"desk"},"rapidas").includes('aria-expanded="false"')`));
+     assert(run(`interrupted({...h,tasks:h.tasks.map(t=>({...t,group:"suites"}))},"suites").includes('aria-expanded="false"')`));
+     assert.match(elements.app.innerHTML,/Retenido al reiniciar<\/span><span>pausa manual &lt;script&gt; · resolver con <span class="mono">control.py reanudar suites<\/span>/);
+   }else {
+     assert.doesNotMatch(elements.app.innerHTML,/Retenido al reiniciar|interrumpida por reinicio|interrumpidas por reinicio|Docker|Pausa manual/);
+     assert(run('Object.values(h.groups).every(g=>g.status==="Running")'));
+   }
+   console.log('UI Mini startup/normal OK');return;
+ }
  if(input.scenario==='startup-default'){
    assert(run('groups(h).some(([g])=>g==="default")'),'attributed default interruption must be visible');
    assert.match(elements.app.innerHTML,/1 interrumpida por reinicio/);
