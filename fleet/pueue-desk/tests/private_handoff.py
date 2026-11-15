@@ -233,11 +233,21 @@ def scenario(work, controller):
     # 4. Withdraw with SIGKILL between bootout and bootstrap; the guard alone finishes.
     child = subprocess.run([sys.executable, '-I', str(Path(__file__).resolve()), '--child-withdraw', str(work), str(controller)],
                            text=True, capture_output=True, timeout=120, env=dict(os.environ))
-    emit(p, 'hijo_retiro', rc=child.returncode, stderr=child.stderr[-400:],
-         cargados=[l for l in (BREW, OURS) if launchd.loaded(l)], fase=_handoff(engine)['phase'])
-    assert child.returncode == -signal.SIGKILL
-    # The switch is durable before disable/bootout; the source is gone, nothing runs.
-    assert not launchd.loaded(BREW) and not launchd.loaded(OURS) and _handoff(engine)['phase'] == 'switch'
+    events = [json.loads(line) for line in p['events'].read_text().splitlines()]
+    borders = [e['nombre'] for e in events if e['event'] == 'frontera_hijo']
+    # launchctl bootout is asynchronous: the job may still be listed while it stops.
+    # tick() stays in switch until it is unloaded and offline; observe that window.
+    listed = launchd.loaded(OURS)
+    waited = time.monotonic()
+    while launchd.loaded(OURS) and time.monotonic() - waited < 15:
+        time.sleep(.25)
+    emit(p, 'hijo_retiro', rc=child.returncode, stderr=child.stderr[-400:], fronteras=borders,
+         origen_listado_tras_bootout=listed, segundos_hasta_descarga=round(time.monotonic() - waited, 2),
+         cargados=[l for l in (BREW, OURS) if launchd.loaded(l)], fase=_handoff(engine)['phase'],
+         daemon_vivo=daemon_pid(p))
+    assert child.returncode == -signal.SIGKILL and borders[-1] == 'bootout:' + OURS
+    # The switch is durable before disable/bootout; Homebrew's job never started.
+    assert not launchd.loaded(BREW) and _handoff(engine)['phase'] == 'switch'
     killed_at = [json.loads(line)['t'] for line in p['events'].read_text().splitlines()
                  if json.loads(line).get('nombre') == 'bootout:' + OURS][-1]
     ticks = 0
