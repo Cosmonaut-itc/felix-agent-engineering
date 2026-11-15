@@ -4,7 +4,7 @@ import json
 import shlex
 
 from dominio import (Armado, Congelado, Corriendo, Diagnosticando,
-                     Efecto, EsperandoCI, Pausa, Promoviendo, Terminal, Tren,
+                     Efecto, EsperandoCI, Pausa, Promoviendo, Rechazado, Terminal, Tren,
                      cambiar_fase, clave, datos, efecto_diagnostico,
                      efecto_promover, efectos_status, separar_devueltos)
 
@@ -17,7 +17,7 @@ POLITICA = {
     ("certificado-sin-base", ""): {"abortar": "abortar"},
     ("escritor-externo", ""): {"reanudar": "continuar"},
     ("infraestructura", "tres-reanudaciones-agotadas"):
-        {"reanudar": "infraestructura", "abortar": "abortar"},
+        {"reanudar": "infraestructura", "absolver": "suite-nueva", "abortar": "abortar"},
     ("rama-tren-ocupada", ""): {"reanudar": "publicar", "abortar": "abortar"},
     ("conflicto-en-cadena", ""): {"expulsar": "devolver", "abortar": "abortar"},
     ("candidato-no-corresponde", ""): {"reanudar": "armar", "abortar": "abortar"},
@@ -99,8 +99,14 @@ def error_decision(estado, decision, pausa_id):
     elif decision.pr is not None:
         return "pr-solo-para-expulsar"
     fase = tren.fase if tren else None
-    if operacion == "suite-nueva" and candidato_de(tren) is None:
-        return "sin-candidato"
+    if operacion == "suite-nueva":
+        if not isinstance(fase, (Corriendo, Diagnosticando)):
+            return "fase-no-corresponde"
+        if candidato_de(tren) is None:
+            return "sin-candidato"
+        if any(isinstance(e.admision, Rechazado) for e in estado.entradas
+               if e.entrega.recibo in tren.recibos):
+            return "miembro-rechazado"
     if operacion == "infraestructura" and (
             not isinstance(fase, (Corriendo, Diagnosticando)) or not fase.reanudar):
         return "sin-reanudacion"

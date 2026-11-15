@@ -528,7 +528,8 @@ def separar_devueltos(estado, tren, base, culpables, efectos):
     """D5 compartido por atribución automática y expulsión por juicio."""
     efectos = list(efectos)
     entradas = {e.entrega.recibo: e for e in estado.entradas}
-    sobrevivientes = tuple(r for r in tren.recibos if entradas[r].entrega.pr not in culpables)
+    sobrevivientes = tuple(r for r in tren.recibos if entradas[r].entrega.pr not in culpables
+                           and not isinstance(entradas[r].admision, Rechazado))
     estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
     nuevo_id = clave("sobrevivientes", tren.id, sobrevivientes)
     estado = replace(estado, entradas=tuple(

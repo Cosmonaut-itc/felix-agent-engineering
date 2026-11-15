@@ -560,7 +560,9 @@ readmisión, publicación, CI verde y **otra suite completa** antes de certifica
 Nunca interpreta una absolución como verde. «Expulsar» emite `devolver` de
 U14 (comentario con juicio/motivo y `failure` sobre el head entregado), cierra
 el tren `DEVUELTO` y congela sólo sus sobrevivientes sobre B en otra
-generación, con `pending`, CI y suite completa. En un conflicto sin C todavía,
+generación, con `pending`, CI y suite completa. Los miembros ya rechazados
+no pasan a esa generación ni reciben otro `pending`; conservan su caducidad.
+En un conflicto sin C todavía,
 el feedback conserva B y deja C vacío; no inventa una unidad de prueba.
 «Abortar» cierra `ABORTADO`, libera sus entregas con custodia intacta y sin
 rojo, y las readmite por las reglas normales desde el tick siguiente.
@@ -570,7 +572,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `etapa-1` | vacío | `reanudar`: levantar la pausa del repo; siguen vigentes los permisos operativos externos para cada suite. |
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
 | `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
-| `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `abortar`: liberar entregas sin rojo. |
+| `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `absolver`: abandonar el diagnóstico o reenganche anterior y exigir CI y suite completa nuevos sobre el mismo C, incluso si el diagnóstico agotó D5. `abortar`: liberar entregas sin rojo. |
 | `rama-tren-ocupada` | vacío | `reanudar`: reintentar publicar el C guardado, sin forzar ni reemplazar la rama ajena; si sigue ocupada vuelve a pausar. `abortar`. |
 | `conflicto-en-cadena` | vacío; PR/archivos en la pausa | `expulsar`: sólo el PR en conflicto; sobrevivientes con suite completa. `abortar`. |
 | `candidato-no-corresponde` | vacío | `reanudar`: reintentar el armado sobre la B guardada, con clave nueva; no certificar el candidato rechazado. `abortar`. |
@@ -585,7 +587,10 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 Las decisiones admitidas se filtran también por la fase/evidencia guardada:
 no se reanuda infraestructura sin comando durable o fuera del presupuesto
 D5 de diagnóstico, ni promoción sin
-`Promoviendo`, ni se absuelve sin candidato. Una intervención nunca cambia
+`Promoviendo`. Sólo se absuelve en `Corriendo` o `Diagnosticando`, con
+candidato y sin miembros rechazados en el snapshot; el CLI sale con 2 sin
+registrar la decisión y el expediente la omite si no cumple esas condiciones.
+Una intervención nunca cambia
 heads, inventa una base o evita CI verde/suite verde. `absolver` y `abortar`
 no publican rojo; los miembros de una generación nueva reciben `pending`.
 
@@ -602,6 +607,12 @@ temporales canónicos, origen git local y los transportes falsos U13/U14.
 Cubren verde/rojo después de absolver, expulsión y sobrevivientes, aborto y
 custodia, escritor externo, decisiones inválidas y obsoletas, cada reintento
 operativo, pausa manual durante recuperación y muertes reales antes/después
-del consumo. Se incluyen en `tests/remoto.sh`; no se ejecutan en la máquina
+del consumo. Los injertos añaden expulsión con dos heads caducados, rechazo
+de absolución por snapshot/fase, salida de infraestructura con D5 agotado,
+sombra con decisión pendiente, cobertura de cada motivo/detalle del reductor
+y muerte durante el reintento de promoción con ACK perdido sobre git real
+(un aterrizaje y una sola suite). `tests/remoto-u15-injerto.sh` ejecuta las
+tres regresiones contra `185e7a46` y exige sus fallos antes de probar el head
+actual. Se incluyen en `tests/remoto.sh`; no se ejecutan en la máquina
 que sólo edita código. No se activó ningún repo. Siguen pendientes D2/D8,
 el contrato del lanzador real y la salida de CI rojo sobre C (U16).

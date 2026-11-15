@@ -433,7 +433,8 @@ class JuicioTests(unittest.TestCase):
         self.assertEqual(resultado["error"], "presupuesto-de-diagnostico-agotado")
         self.assertEqual(self.estado(), antes)
         self.assertEqual(self.decisiones(), [])
-        self.assertEqual([a["decision"] for a in self.cli("estado", "--juicio")[1]["juicio"]["admitidas"]], ["abortar"])
+        self.assertEqual([a["decision"] for a in self.cli("estado", "--juicio")[1]["juicio"]["admitidas"]],
+                         ["absolver", "abortar"])
 
     def test_head_cambiado_se_expulsa_sin_usar_su_suite_para_sobrevivientes(self):
         self.hasta_fase(Armado)
