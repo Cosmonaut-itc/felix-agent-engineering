@@ -97,7 +97,7 @@ class MergedCellTests(unittest.TestCase):
         fixture['now']=NOW
         entry=fixture['hosts'][0];fixture['hosts']=[entry];entry.update(id='desk',name='Felix DESKTOP',fresh=True)
         host=entry['snapshot']
-        host.update(host='desk',taken=NOW,tasks=[],control=dict(pause_reasons={'jale':['pressure']}),
+        host.update(host='desk',taken=NOW,tasks=[dict(id=101,group='jale',state='Running',priority=0,start=NOW-300,name='Dirigida',ticket='SEN-6417'),dict(id=102,group='jale',state='Queued',priority=0,start=None,enqueued=NOW-120,name='Dirigida',ticket='SEN-6417')],control=dict(pause_reasons={'jale':['pressure']}),
                     groups=[dict(name='jale',status='Paused',slots=5)])
         host['guard']=dict(action='pausar',at=AT,status='fresh',pressure=dict(at=AT,cpu=34,io=0,memory=8*1024**3),
             thresholds=dict(normal=dict(pause=dict(cpu=30,io=40,memory=4*1024**3),resume=dict(cpu=15,io=20,memory=6*1024**3)),

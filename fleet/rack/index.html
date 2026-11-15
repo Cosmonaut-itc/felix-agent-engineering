@@ -438,10 +438,10 @@ function heldCell(h,n,g,free){
         const label=metric==='memory' ? `Memoria ${fmt(p.memory/1024**3)} GiB libres` : `${metric==='io'?'E/S':'CPU'} ${fmt(p[metric])} %`;
         if(high){
           why='Retenido por presión';
-          how=label+(n==='rapidas' ? '' : metric==='memory' ? ` · entra de a una sobre ${fmt(t.pause.memory/1024**3)} GiB` : ` · entra de a una bajo ${t.pause[metric]}`);
+          how=label+(n==='rapidas' ? '' : metric==='memory' ? ` · entra de a una desde ${fmt(t.pause.memory/1024**3)} GiB` : ` · entra de a una bajo ${t.pause[metric]}`);
         }else if(!low && n!=='rapidas'){
           why='Entra de a una';flow=true;
-          how=label+(metric==='memory' ? ` · abre sobre ${fmt(t.resume.memory/1024**3)} GiB` : ` · abre bajo ${t.resume[metric]}`);
+          how=label+(metric==='memory' ? ` · abre con ${fmt(t.resume.memory/1024**3)} GiB` : ` · abre bajo ${t.resume[metric]}`);
           const last=guard.last_admission, ago=last ? NOW-Date.parse(last.at)/1000 : -1;
           if(last?.grupo===n && Number.isFinite(ago) && ago>=0) how+=` · última hace ${Math.floor(ago)} s`;
         }else {why='Esperando a la guardia';}

@@ -192,6 +192,10 @@ class TrickleTests(DeskFixture):
             return original()
         with patch.object(self.p,'status',side_effect=status):self.run_guard()
         self.assertEqual(len(self.starts()),1)
+        self.ns-=1;self.run_guard()
+        self.assertEqual(len(self.starts()),1)
+        with self.engine.connect() as db:v=control.admission_state(db)
+        self.assertEqual(v['last_attempt']['outcome'],'unknown')
         self.ns+=1000_000_000_000;self.run_guard()
         self.assertEqual(len(self.starts()),1)
         with self.engine.connect() as db:v=control.admission_state(db)
@@ -238,12 +242,27 @@ class TrickleTests(DeskFixture):
         self.run_guard();self.assertEqual(len(self.starts()),1)
         self.ns-=1;self.run_guard();self.assertEqual(len(self.starts()),1)
         self.assertIn('clock',self.causes())
+        for clock in ((BOOT,True),(BOOT,float('nan')),('bad',self.ns)):
+            self.engine.boot_clock=lambda:clock
+            self.run_guard();self.assertEqual(len(self.starts()),1)
+            self.assertIn('clock',self.causes())
 
     def test_manual_tombstone_startup_and_pending_receipt(self):
         for filename,cause in (('maintenance','maintenance'),):
             (self.engine.directory/filename).touch();self.run_guard()
             self.assertEqual(self.starts(),[]);self.assertIn(cause,self.causes())
             (self.engine.directory/filename).unlink()
+        original=self.state()
+        s=copy.deepcopy(original);s.update(startup_version=1,startup=dict(phase='prepared',statuses={},groups={},holds={},interruptions={},source_hash='a'*64,target_hash='b'*64))
+        with self.engine.connect(write=True) as db:self.engine.store(db,s)
+        with patch.object(self.engine,'reconcile',return_value=True):self.run_guard()
+        self.assertEqual(self.starts(),[]);self.assertIn('startup',self.causes())
+        with self.engine.connect(write=True) as db:
+            self.engine.store(db,original)
+            db.execute('INSERT INTO host_actions VALUES (?,?,?)',('pending-fixture','fixture',json.dumps(dict(response=dict(status='unknown')))))
+        with patch.object(self.engine,'reconcile',return_value=True):self.run_guard()
+        self.assertEqual(self.starts(),[]);self.assertIn('admission',self.causes())
+        with self.engine.connect(write=True) as db:db.execute('DELETE FROM host_actions')
         for g in ('jale','pesadas'):
             self.engine.fence_pause(g)
         self.run_guard();self.assertEqual(self.starts(),[]);self.assertIn('reason',self.causes())

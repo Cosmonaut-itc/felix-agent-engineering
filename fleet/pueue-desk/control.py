@@ -1476,6 +1476,13 @@ class MiniControl:
     def _candidate(self, snapshot, state, block):
         candidates = []
         tasks = snapshot['tasks']
+        if type(tasks) is not dict:
+            raise ValueError('Cola inválida')
+        for key, task in tasks.items():
+            if (type(task) is not dict or type(task.get('group')) is not str
+                    or type(task.get('id')) is not int or str(task['id']) != key
+                    or not 0 <= task['id'] < 2**64):
+                raise ValueError('Identidad de cola inválida')
         for group in self.profile:
             if group == 'rapidas':
                 continue
@@ -1535,9 +1542,16 @@ class MiniControl:
         return (detail.get('enqueued_at') == attempt['enqueued_at'] and
                 timestamp_key(attempt['at']) <= timestamp_key(detail['start']) <= timestamp_key(utc_at(self.clock())))
 
+    def _boot_sample(self):
+        boot, ns = self.boot_clock()
+        if (type(boot) is not str or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',boot)
+                or type(ns) is not int or ns < 0):
+            raise ValueError('Reloj de admisión inválido')
+        return boot, ns
+
     def _finish_attempt(self, value, outcome):
         attempt = value['last_attempt']
-        boot, ns = self.boot_clock()
+        boot, ns = self._boot_sample()
         if boot != attempt['boot_id'] or ns < attempt['reserved_ns']:
             outcome = 'unknown'
         attempt['outcome'] = outcome
@@ -1562,7 +1576,7 @@ class MiniControl:
             return
         attempt = value['last_attempt']
         try:
-            boot,ns = self.boot_clock()
+            boot,ns = self._boot_sample()
         except (AttributeError,) + ADMISSION_ERRORS:
             block('clock')
             return
@@ -1572,7 +1586,7 @@ class MiniControl:
                 attempt['outcome'] = 'unknown'
                 self._save_admission(value)
             try:
-                if self._execution_confirmed(attempt,state):
+                if (boot != attempt['boot_id'] or ns >= attempt['reserved_ns']) and self._execution_confirmed(attempt,state):
                     # After reboot, rebase only with actual execution evidence.
                     attempt.update(boot_id=boot,reserved_ns=ns)
                     self._finish_attempt(value,'confirmed')
@@ -1648,6 +1662,8 @@ class MiniControl:
                 with self.connect() as db:state=self.state(db)
             except ADMISSION_ERRORS as error:
                 block('authority');can_open=False;failure=error
+            if state and state.get('startup') and state['startup']['phase'] != 'ready':
+                block('startup');can_open=False
             readings = readings if readings is not None else pressure(proc)
             normal = decide('desk',readings,PRESSURE_THRESHOLDS)
             rapid = decide('desk',readings,RAPIDAS_THRESHOLDS['desk'])
