@@ -63,7 +63,8 @@ class ExecutorRegressions(unittest.TestCase):
             T.TransportTests().controller(case.root,
                 'import json,sys\nfrom pathlib import Path\nr=json.load(sys.stdin)\n'
                 'if r["op"]=="cancel":\n Path('+repr(str(effect))+').write_text("effect")\n'
-                ' sys.stdout.write("["*1100+"0"+"]"*1100)\n'
+                # Deepest array that fits the 16384-byte decode cap: RecursionError on 3.9 and 3.12.
+                ' sys.stdout.write("["*8191+"0"+"]"*8191)\n'
                 'else:\n print(json.dumps(dict(schema="rack-cancel-result@1",ref=r["ref"],'
                 'action_id=r["action_id"],status="cancelled",result=dict(exit=130),error=None)))\n')
             case.actions.executor=accion.Executor(home=case.root)
