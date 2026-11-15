@@ -546,7 +546,9 @@ class IntegracionGitTests(git_fixtures.AterrizajeTests):
         self.assertEqual(self.git.worktree(candidato.C), wt)
         self.assertEqual(self.comando(wt, "rev-parse", "HEAD"), candidato.C)
         self.assertEqual(self.comando(wt, "rev-parse", "--abbrev-ref", "HEAD"), "HEAD")
-        self.assertEqual(self.comando(wt, "rev-parse", "--git-common-dir"), str(self.git.ruta))
+        # macOS puede devolver /private/var donde tempfile usó su alias /var.
+        self.assertEqual(Path(self.comando(wt, "rev-parse", "--git-common-dir")).resolve(),
+                         self.git.ruta.resolve())
         self.assertTrue(self.git.worktree(candidato.B).is_dir())
         estado, efectos = paso(estado, obs)
         llegada = ejecutar(efectos[0], estado, obs, self.git)

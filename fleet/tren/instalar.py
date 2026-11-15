@@ -31,12 +31,16 @@ def etiqueta(repo: str) -> str:
 
 
 def entorno(home: Path) -> dict[str, str]:
-    rutas = []
+    detectadas = set()
     for programa in ("python3", "gh", "git"):
         ruta = shutil.which(programa)
         if ruta is None:
             raise ValueError("falta en PATH: " + programa)
-        rutas.append(str(Path(ruta).absolute().parent))
+        detectadas.add(str(Path(ruta).absolute().parent))
+    # Mantener la precedencia original: el directorio de python3 también puede
+    # contener otros gh/git y no debe adelantarse a los ejecutables detectados.
+    rutas = [str(Path(p).absolute()) for p in os.get_exec_path()
+             if str(Path(p).absolute()) in detectadas]
     rutas.extend(str(p) for p in (home / ".local/bin", Path("/opt/homebrew/bin"),
                   Path("/usr/local/bin"), Path("/usr/bin"), Path("/bin"),
                   Path("/usr/sbin"), Path("/sbin")))
