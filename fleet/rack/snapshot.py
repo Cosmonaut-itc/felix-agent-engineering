@@ -229,7 +229,7 @@ def validate_guard(value):
         guard_date(result['at'])
         for row in result['bloqueos']:
             if (type(row) is not dict or set(row) != {'grupo','operacion','causa'} or row['causa'] not in GUARD_CAUSES
-                    or row['operacion'] not in ('one','resume')
+                    or row['operacion'] not in ('one','resume','unknown')
                     or row['grupo'] not in (None,'hasito','jale','jale-verify','otros','pesadas','rapidas')):
                 raise ValueError('Bloqueo inválido')
     return value

@@ -8,6 +8,7 @@ import tempfile
 
 SOURCE=Path(__file__).resolve().parents[1]
 CASES=[
+ ('initial_sensor',"            block(stage)","            block('authority')",'test_initial_sensor_failure_has_no_inferred_operation'),
  ('omit_one',"            if normal == 'mantener' and can_open:","            if False:",'test_band_positive_fifo_and_property_then_low'),
  ('open_group',"self.pueue.call('start',ident)","self.pueue.call('start','-g',group)",'test_band_positive_fifo_and_property_then_low'),
  ('gap_58','ADMISSION_GAP_NS = 60_000_000_000','ADMISSION_GAP_NS = 58_000_000_000','test_global_cooldown_instances_59999_60'),

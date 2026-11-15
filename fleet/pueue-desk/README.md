@@ -740,11 +740,12 @@ el permiso desde el reloj actual, no desde el intento perdido.
 
 El JSONL conserva `lectura`/`decision` y añade `tick_id`. Siempre termina con un
 resumen `admision_una`, `tope_alcanzado`, `retenido` o `guard_fin`;
-`bloqueos` contiene `{grupo|null, operacion:one|resume, causa}`. Las causas son
+`bloqueos` contiene `{grupo|null, operacion:one|resume|unknown, causa}`. Las causas son
 `fresh_sample`, `docker`, `generation`, `desired`, `event`, `admission`,
 `startup`, `authority`, `maintenance`, `reason`, `pressure_high`, `dependency`,
 `quota`, `task_changed`, `cooldown`, `admission_unknown`, `clock`, `log`, `rpc`.
-Las causas globales no se repiten por grupo. Cada resumen tiene como máximo 16
+Antes de una decisión, una muestra ilegible usa `fresh_sample` y operación
+`unknown`, sin atribuir un fallo de autoridad. Las causas globales no se repiten por grupo. Cada resumen tiene como máximo 16
 bloqueos y menos de 4 KiB. Se mantiene la rotación a 1 MiB y `.1`.
 `admision_intento` y `apertura_intento` se escriben antes del efecto; si falla el
 registro se retienen aperturas/admisiones y aún se intentan cierres protectores.

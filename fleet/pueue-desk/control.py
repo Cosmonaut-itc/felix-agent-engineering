@@ -1646,10 +1646,11 @@ class MiniControl:
         blocks = []
         result = dict(evento='guard_fin')
         def block(cause, group=None, operation=None):
-            item = dict(grupo=group,operacion=operation or ('one' if normal == 'mantener' else 'resume'),causa=cause)
+            item = dict(grupo=group,operacion=operation or ('unknown' if normal is None else 'one' if normal == 'mantener' else 'resume'),causa=cause)
             if item not in blocks and len(blocks) < 16:
                 blocks.append(item)
         state, normal, can_open, failure = None, None, True, None
+        stage = 'authority'
         try:
             try:
                 if os.path.lexists(self.directory/'maintenance'):
@@ -1664,9 +1665,11 @@ class MiniControl:
                 block('authority');can_open=False;failure=error
             if state and state.get('startup') and state['startup']['phase'] != 'ready':
                 block('startup');can_open=False
+            stage = 'fresh_sample'
             readings = readings if readings is not None else pressure(proc)
             normal = decide('desk',readings,PRESSURE_THRESHOLDS)
             rapid = decide('desk',readings,RAPIDAS_THRESHOLDS['desk'])
+            stage = 'authority'
             for item in blocks:item['operacion']='one' if normal=='mantener' else 'resume'
             try:
                 log(self.directory,'lectura',tick_id=tick,**readings)
@@ -1735,7 +1738,7 @@ class MiniControl:
                 self._one(state,proc,block,tick,result)
         except ADMISSION_ERRORS as error:
             failure=error
-            block('authority')
+            block(stage)
         finally:
             event = result.pop('evento')
             if blocks and event == 'guard_fin':event='retenido'
