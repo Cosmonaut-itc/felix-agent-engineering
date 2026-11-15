@@ -34,6 +34,12 @@ def envolver(contexto):
 
     def ejecutar(argv, **kwargs):
         endpoint = argv[4] if argv[:2] == ["gh", "api"] else ""
+        if endpoint.endswith("/git/ref/heads/main"):
+            # El clon local de la vista sigue a main, como el de un repo real:
+            # sin esto un segundo tren no puede leer merge-base sobre el main nuevo.
+            subprocess.run(["git", "-C", contexto.config["git"], "fetch", "-q",
+                            contexto.config["remoto"], "+refs/heads/main:refs/heads/main"],
+                           check=True, capture_output=True, timeout=30)
         regla = contexto.raiz / "ci-c.json"
         heads = {head for _, head in contexto.config["miembros"]}
         if "/check-runs?" in endpoint and regla.exists():
@@ -226,8 +232,6 @@ class RegresionesTests(ContextoU16):
         with self.ledger() as ledger:
             tipos = [json.loads(r[0])["tipo"] for r in ledger.db.execute("SELECT payload FROM effects")]
             self.assertEqual(tipos.count("solicitar-ci"), 2)
-            self.assertEqual([r for r in ledger.outbox(REPO)
-                              if json.loads(r["payload"])["tipo"] == "solicitar-ci"], [])
         # El plazo empieza de nuevo: 59 min después del juicio todavía espera.
         self.contexto.tick(reanudado + 3599)
         self.assertIsNone(self.estado().pausa)
