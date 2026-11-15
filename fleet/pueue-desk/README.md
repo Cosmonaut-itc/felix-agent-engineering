@@ -218,8 +218,8 @@ la autoridad. La marca no asigna cuotas ni concede permiso para abrir; sólo
 `control.py reanudar GRUPO --host mini`, con reconciliación y sensores frescos,
 la retira. No borrar estas marcas para recuperar admisión automáticamente.
 
-La generación se identifica con el `pid_path` configurado, su fecha y la identidad
-`ps` del PID concreto. No se buscan ni terminan procesos por nombre. Tras reiniciar
+En la Mini, la generación se identifica con el `pid_path` configurado, su fecha y la identidad
+`ps` del PID concreto (el desk usa otra; ver «Identidad del daemon del desk»). No se buscan ni terminan procesos por nombre. Tras reiniciar
 `pueued`, se reponen cuotas, pero las pausas observadas quedan ambiguas y retenidas.
 **No se promete reapertura automática ni recuperación de tareas tras reboot**:
 `restart_queue=false`. Para resolver una pausa de un grupo administrado, Felix
@@ -642,3 +642,55 @@ de esta corrida, nunca por prefijo.
 No reinicia WSL, Windows ni el servicio productivo. El arranque de Windows/WSL
 queda como verificación separada del orquestador. Reinicios de la Mini quedan
 para U3.5.
+
+### Identidad del daemon del desk (DESK-GEN)
+
+En el desk, `ps lstart` no identifica al daemon: WSL ajusta el reloj y la hora de
+arranque del mismo proceso se mueve segundos enteros. Con la identidad anterior
+eso parecía un reinicio de `pueued` y la reconciliación marcaba `ambiguous` los
+grupos Paused. La generación del desk es ahora
+`linux-proc-v1:<sha256>` de: `/proc/sys/kernel/random/boot_id`, el PID del
+`pid_path`, el `starttime` en ticks de `/proc/<pid>/stat` (campo 22, tras el
+último `)`) y la firma del pid file (dispositivo, inodo, mtime, ctime, tamaño).
+No usa reloj de pared ni `ps`. Lee dos veces y falla cerrado si algo cambia
+entre lecturas, si el proceso no es `pueued` vivo o si un campo no es canónico.
+La Mini conserva su identidad sin cambios; la elección es por host, no por
+plataforma.
+
+Instalar esta versión convierte una sola vez la generación guardada con el
+formato anterior (64 hexadecimales) al nuevo, sin marcar nada `ambiguous` y en
+la misma transacción que una migración de tabla. Conserva razones, revisión,
+deseo, recibos e historial de arranque. **Sólo convierte si ningún grupo de
+Pueue del desk está Paused** (incluidos `default` y `rapidas`) y si el arranque
+durable no está a medias (`intent` o `prepared`). Lo comprueba en el
+preflight, bajo `control.lock` tras detener timers y guardia, justo antes del
+commit de la autoridad y antes de retirar el mantenimiento. Cuando la
+generación guardada ya tiene el formato nuevo, no hay conversión: si coincide
+no cambia nada y si difiere es otro daemon y se reconcilia como cualquier
+reinicio.
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file /run/user/1000/pueue.pid --seco
+```
+
+El ensayo imprime `SECO, generación: convertiría la anterior a linux-proc-v1:…` o
+`SECO, generación: se detendría antes de efectos: grupos Paused: …` y no escribe nada.
+Una instalación detenida tiene dos formas:
+
+- **Antes de efectos** (preflight o primer candado):
+  `Instalación detenida sin cambios: la generación anterior no se convierte con
+  grupos Paused: jale. Reanudar o esperar esos grupos y repetir --seco.`
+  No detuvo timers ni publicó nada.
+- **Con efectos** (un grupo pasó a Paused o cambió el daemon durante la
+  instalación): `Instalación detenida: la generación anterior no se convierte
+  con …` o `… la generación del daemon cambió durante la instalación`. Conserva
+  el mantenimiento y las cuotas apagadas, como cualquier fallo de U3.4; resolver
+  la pausa y repetir `--seco` e instalar.
+
+No hay reversión automática. Si se vuelve al controlador anterior después de
+convertir, éste no reconoce `linux-proc-v1:` como su generación: en la primera
+reconciliación los grupos Paused quedan `ambiguous` una vez. Felix comprueba la
+causa y los reanuda con
+`/usr/bin/python3 -I ~/.local/lib/pao-pueue-desk/control.py reanudar <grupo> --host desk`.
+
+Pruebas dirigidas: `tests/test_generation.py` y `tests/mutate_generation.py`.
