@@ -1,4 +1,4 @@
-# Tren — U1, desactivado
+# Tren — U1/U2, desactivado
 
 Python stdlib 3.9+, SQLite y flock POSIX. El agente registra su watch antes
 de entregar; con el recibo durable termina su turno:
@@ -65,14 +65,51 @@ La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos;
 un sensible/alto riesgo al frente sale solo inmediatamente. No se adelanta
 un PR solo sobre tickets normales anteriores. Jale nace en pausa `etapa-1`.
 
-Las transiciones posteriores a Corriendo son sólo tipos. U2 proveerá el
-candidato y CI, U4 el adaptador y resultado; el CLI U1 no los ejecuta.
+El adaptador y resultado de suite llegan en U4; el CLI no ejecuta efectos.
+
+## Aterrizaje (U2, sólo ejecutor explícito)
+
+`git_ops.GitTren(remoto, ruta=None)` usa un bare propio bajo `pao-tren/git/`
+o en la ruta indicada. `armar(B, [(pr, head), ...])` trae las refs de PR y
+comprueba sus heads; usa `merge-tree --write-tree` y `commit-tree` sin índice
+ni checkout. Requiere git >=2.38, con error tipado si falta. Un conflicto
+devuelve `ConflictoCadena(pr, archivos)` y pausa `conflicto-en-cadena`.
+El SHA es reproducible con las mismas entradas y versión de git: identidad
+y mensaje fijos, sin firma ni configuración global/sistema al construir.
+La fecha de cada merge es el máximo timestamp de committer de B y todos los
+heads, más su posición (1..N), en UTC. Sale de los objetos, nunca del reloj.
+Fetch/push conservan la configuración del usuario para credenciales.
+
+`efectos.ejecutar` implementa `armar-candidato`, `solicitar-ci` y `promover`
+para una instantánea guardada. Publicar crea `tren/<id>` con lease vacío;
+repetir con el mismo C converge, otro C produce `RamaOcupada`. Esto solicita
+CI sin declararlo verde. No abre PR ni corre suite. Los errores de armado o
+publicación quedan tipados en `EfectoFallido.resultado`, sin confirmar outbox.
+Serializar el ejecutor con el candado del carril; aún no hay drenaje real.
+
+`Certificado` añade B con default vacío para leer eventos U1; uno antiguo sin
+base pausa `certificado-sin-base`. Promover verifica árbol y ancestros antes
+de un único push a main con `--force-with-lease=refs/heads/main:<B40>`, sin
+hooks, tags ni submódulos. Siempre reconcilia leyendo el remoto después del
+push, también tras un fallo de transporte. `main == C` exige árbol igual al
+certificado y cada head ancestro de C. `Observacion.main` lleva ese resultado
+ligado a B, C, tren e intento; `Observacion.base` sigue siendo la base para
+congelar lotes, no evidencia de promoción.
+
+Con main en B hay hasta tres intentos totales, claves estables por intento;
+después pausa `promocion-rechazada`. Una lectura incierta conserva el estado.
+Otro SHA termina `REARMAR`, devuelve los miembros a la fila sin cambiar sus
+fechas FIFO y pausa `escritor-externo` con el SHA observado. Al reanudar, el
+reductor congela sobre la base nueva. La reconciliación de Promoviendo corre
+antes de readmitir PR, pues GitHub puede haberlos cerrado tras aterrizar.
+Los campos añadidos tienen defaults; el encoding etiquetado y esquema 1
+del ledger siguen vigentes. Ningún camino del CLI importa este ejecutor.
 
 Pruebas sólo en desk, sin red y con HOME/XDG temporales:
 
 ```sh
 REMOTE_RUN_HOST=desk remote-run start --carril rapido --sha <HEAD40> \
-  --name dirigida-tren-u1 --script fleet/tren/tests/remoto.sh
+  --name dirigida-tren-u2 --script fleet/tren/tests/remoto.sh
 REMOTE_RUN_HOST=desk remote-run wait <id>
 ```
 

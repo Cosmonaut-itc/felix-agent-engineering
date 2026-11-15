@@ -71,6 +71,9 @@ class Entrada:
 @dataclass(frozen=True)
 class Pausa:
     motivo: str
+    pr: Optional[int] = None
+    main: str = ""
+    archivos: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -79,6 +82,42 @@ class Candidato:
     eslabones: Tuple[Tuple[int, str, str], ...]
     C: str
     arbol: str
+
+
+@dataclass(frozen=True)
+class ConflictoCadena:
+    pr: int
+    archivos: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Aterrizado:
+    B: str
+    C: str
+    arbol: str
+
+
+@dataclass(frozen=True)
+class EnBase:
+    B: str
+    C: str
+
+
+@dataclass(frozen=True)
+class EscritorExterno:
+    B: str
+    C: str
+    main: str
+
+
+@dataclass(frozen=True)
+class Incierto:
+    B: str
+    C: str
+    motivo: str
+
+
+Reconciliacion = Union[Aterrizado, EnBase, EscritorExterno, Incierto]
 
 
 @dataclass(frozen=True)
@@ -135,6 +174,8 @@ class Certificado:
     arbol: str
     suite: str
     ci: str
+    # Defaults keep snapshots/events written by U1 readable.
+    B: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,6 +187,7 @@ class Diagnosticando:
 @dataclass(frozen=True)
 class Promoviendo:
     certificado: Certificado
+    intentos: int = 1
 
 
 @dataclass(frozen=True)
@@ -206,6 +248,10 @@ class Observacion:
     candidato: Optional[Candidato] = None
     ci_candidato: str = "pendiente"
     suite: Optional[str] = None
+    conflicto_cadena: Optional[ConflictoCadena] = None
+    main: Optional[Reconciliacion] = None
+    tren_id: str = ""
+    intento_promocion: int = 0
 
 
 @dataclass(frozen=True)
@@ -243,8 +289,56 @@ def admision(vista, observacion):
     return Admitido()
 
 
+LIMITE_PROMOCION = 3
+
+
+def efecto_promover(tren_id, intentos):
+    return Efecto(clave("promover", tren_id, intentos), "promover",
+                  (tren_id, str(intentos)))
+
+
+def aterrizaje(estado, tren, observacion):
+    """Reconciliar antes de admisión: un PR ya aterrizado puede estar cerrado."""
+    fase = tren.fase
+    efectos = ()
+    if isinstance(fase, Certificado):
+        if not fase.B:
+            return replace(estado, pausa=Pausa("certificado-sin-base")), ()
+        fase = Promoviendo(fase)
+        efectos = (efecto_promover(tren.id, fase.intentos),)
+    else:
+        cert = fase.certificado
+        lectura = observacion.main
+        # A delayed observation must not consume another attempt/train's result.
+        if (observacion.tren_id != tren.id or
+                observacion.intento_promocion != fase.intentos or
+                lectura is None or (lectura.B, lectura.C) != (cert.B, cert.C)):
+            return estado, ()
+        if isinstance(lectura, Aterrizado) and lectura.arbol == cert.arbol:
+            fase = Terminal("ATERRIZADO")
+        elif isinstance(lectura, EnBase):
+            if fase.intentos >= LIMITE_PROMOCION:
+                return replace(estado, pausa=Pausa("promocion-rechazada")), ()
+            fase = replace(fase, intentos=fase.intentos + 1)
+            efectos = (efecto_promover(tren.id, fase.intentos),)
+        elif isinstance(lectura, EscritorExterno):
+            fase = Terminal("REARMAR")
+            estado = replace(estado,
+                pausa=Pausa("escritor-externo", main=lectura.main),
+                entradas=tuple(replace(e, tren=None) if e.entrega.recibo in tren.recibos
+                               else e for e in estado.entradas))
+        else:
+            return estado, ()
+    return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
+                                       else t for t in estado.trenes)), efectos
+
+
 def paso(estado, observacion):
     """Un paso determinista. Congela a lo sumo un lote y emite sólo datos."""
+    activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
+    if not estado.pausa and activos and isinstance(activos[0].fase,
+                                                  (Certificado, Promoviendo)):
+        return aterrizaje(estado, activos[0], observacion)
     efectos = []
     entradas = []
     vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
@@ -284,6 +378,12 @@ def paso(estado, observacion):
         if any(not isinstance(e.admision, Admitido) for e in miembros):
             return estado, tuple(efectos)
         fase = tren.fase
+        if observacion.tren_id and observacion.tren_id != tren.id:
+            return estado, tuple(efectos)
+        if isinstance(fase, Congelado) and observacion.conflicto_cadena:
+            conflicto = observacion.conflicto_cadena
+            return replace(estado, pausa=Pausa("conflicto-en-cadena", pr=conflicto.pr,
+                                              archivos=conflicto.archivos)), tuple(efectos)
         if isinstance(fase, Congelado) and observacion.candidato:
             candidato = observacion.candidato
             por_recibo = {e.entrega.recibo: e for e in miembros}
@@ -331,7 +431,8 @@ def paso(estado, observacion):
 
 # Tagged encoding keeps the SQLite/event contract explicit and round-trippable.
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
-          Pausa, Candidato, Fallo, Completo, Incompleto, Atribucion, Congelado,
+          Pausa, Candidato, ConflictoCadena, Aterrizado, EnBase, EscritorExterno,
+          Incierto, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto)}
 
