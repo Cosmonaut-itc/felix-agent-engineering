@@ -1498,6 +1498,7 @@ probe("detached-default", "git push", reason="No puedo resolver")
 probe("detached-HEAD", "git push origin HEAD", reason="No puedo resolver")
 git(enrolled, "symbolic-ref", "HEAD", "refs/heads/feature")
 # U12: sombra deja pasar por el guard habitual; activo/desconocido prevalece.
+registry_before_shadow = registry.read_text()
 shadow_repo = mkrepo("shadow-u12", "https://github.com/owner/project.git", "main")
 shadow_merge = merge + " --repo owner/project"
 for contents, denied in (
@@ -1532,7 +1533,7 @@ registry.chmod(0)
 probe("U12-sombra-ilegible-push", "git push origin HEAD:main", shadow_repo, reason="ilegible")
 probe("U12-sombra-ilegible-merge", shadow_merge, shadow_repo, reason="ilegible")
 registry.chmod(0o600)
-registry.write_text("sen-haso/hasito\n")
+registry.write_text(registry_before_shadow)
 # Every unreadable form must deny mutations and leave ordinary commands alone.
 for state in ("000", "utf8", "directory"):
     if state == "000":
