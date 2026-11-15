@@ -241,8 +241,13 @@ def main():
             assert m.state()['mini_handoff']['retained_owner']=='prepared'
             old=verified_pid();os.kill(old,signal.SIGKILL)
             wait_for(lambda:verified_pid()!=old);assert_prepared_owner()
-            assert status(active).get('Done',{}).get('result')=='Killed'
-            emit(root,'r1_aborted_withdraw_keepalive',prepared_owner=True,brew_disabled=True,manual_preserved=True)
+            # The drain/launchd retries may outlast this bounded task. A task
+            # already completed before the stop must retain Success, not acquire
+            # Killed merely to satisfy the restart fixture.
+            result=status(active).get('Done',{}).get('result')
+            assert result in ('Killed','Success')
+            emit(root,'r1_aborted_withdraw_keepalive',prepared_owner=True,brew_disabled=True,
+                 manual_preserved=True,task_result=result)
             # Same enabled-plist reconstruction after an aborted withdrawal.
             with control.locked(m.directory):
                 for label in (mini.GUARD,mini.LABEL,mini.BREW):

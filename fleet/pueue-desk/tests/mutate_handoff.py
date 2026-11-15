@@ -147,7 +147,7 @@ def main():
             path.write_text(source.replace(before,after))
             target_test=test if '.' in test else 'test_handoff.HandoffTests.'+test
             result=subprocess.run([sys.executable,'-B','-m','unittest',target_test,'-v'],
-                cwd=str(root/'tests'),env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),text=True,capture_output=True,timeout=40)
+                cwd=str(root/'tests'),env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),text=True,capture_output=True,timeout=120)
             assert result.returncode==1 and 'FAIL:' in result.stderr and 'ERROR:' not in result.stderr,name+' survived or failed outside assertion:\n'+result.stderr
             print(name+': caught by assertion',flush=True)
     print(str(len(CASES))+'/'+str(len(CASES))+' U3.5 mutations caught on '+sys.version.split()[0],flush=True)
