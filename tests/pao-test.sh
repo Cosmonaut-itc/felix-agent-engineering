@@ -74,6 +74,11 @@ clean_install() {
         case "$kind" in
             file)
                 dest=$HOME/${dest#\~/}
+                if [ "$_extra" = si-existe ]; then
+                    assert test ! -e "$(dirname "$dest")"
+                    assert grep -F $'skipped\t'"$dest"$'\tdirectorio ausente' "$STATE/status"
+                    continue
+                fi
                 assert test -L "$dest"
                 assert test "$(readlink "$dest")" = "$PAO_ROOT/$src"
                 count=$((count + 1)) ;;
@@ -89,6 +94,19 @@ clean_install() {
     assert test ! -e "$HOME/Library/LaunchAgents/com.github.cosmonaut-itc.pao.plist"
     assert grep -q '^overall ok$' "$STATE/status"
     assert grep -F $'skipped\tpstack-refs\t--no-plugins' "$STATE/status"
+}
+
+file_if_present() {
+    fixture
+    mkdir -p "$HOME/.config/codex-cli"
+    install_pao
+    assert test "$(readlink "$HOME/.config/codex-cli/AGENTS.md")" = "$PAO_ROOT/configs/codex/AGENTS.md"
+    assert grep -q '^overall ok$' "$STATE/status"
+    install_pao > "$HOME/second"
+    assert grep -qx unchanged "$HOME/second"
+    pao uninstall
+    assert test ! -L "$HOME/.config/codex-cli/AGENTS.md"
+    assert test -d "$HOME/.config/codex-cli"
 }
 
 idempotent_install() {
@@ -235,7 +253,7 @@ update_conflict() {
 bad_manifest() {
     fixture
     local row
-    for row in 'unknown whatever' 'skill skills/felix-mode other-name' 'retire felix-mode' 'file README.md ~/.codex/AGENTS.md' 'file ../README.md ~/.bad' 'file README.md /tmp/escape' \
+    for row in 'unknown whatever' 'skill skills/felix-mode other-name' 'retire felix-mode' 'file README.md ~/.codex/AGENTS.md' 'file ../README.md ~/.bad' 'file README.md /tmp/escape' 'file README.md ~/.other/AGENTS.md siempre' 'file README.md ~/.other/AGENTS.md si-existe extra' \
         'ref skills/felix-mode felix-mode' 'ref vendor/emilkowalski/animate other-name' 'skill vendor/emilkowalski/animate animate' \
         'upstream mattpocock https://example.invalid/skills tags' 'upstream extra https://example.invalid/skills weekly' 'upstream extra ssh://example.invalid/skills head'; do
         cp "$PAO_ROOT/manifest" "$HOME/broken"
@@ -631,7 +649,7 @@ STUB
 
 if ! prepare_template > "$TEST_TMP/setup.log" 2>&1; then cat "$TEST_TMP/setup.log"; exit 1; fi
 FAILURES=0 CASE=0
-for test_case in pstack_refs_status clean_install idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored vendor_sync_upstreams vendor_links update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning uninstall_rm_failure windows_job_backup; do
+for test_case in pstack_refs_status clean_install file_if_present idempotent_install backup_real_files backup_real_directory held_file retire_both prune_removed update_clean update_conflict bad_manifest install_branch_guard lock_behavior update_feature_branch uninstall_safe sync_invalid_manifest update_divergence update_fetch_failure update_fetch_failure_recent install_locked uninstall_locked vendor_sync_dirty vendor_sync_ignored vendor_sync_upstreams vendor_links update_ignored_file prune_retry minimal_path held_directory_and_foreign_link status_and_duplicate_warning uninstall_rm_failure windows_job_backup; do
     CASE=$((CASE + 1))
     (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
     result=$?

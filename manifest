@@ -1,6 +1,7 @@
 # tipo fuente destino (o nombre)
 # upstream: directorio de vendor, repo y seguimiento (tags = último release semver, head = rama por defecto)
 # ref: skill copiada a vendor para consulta por ruta, sin instalar
+# file ... si-existe: enlaza sólo si el directorio del destino ya existe en este host
 file fleet/rack/rack-inspeccionar ~/.local/bin/rack-inspeccionar
 file fleet/tren/pao-tren ~/.local/bin/pao-tren
 file docs/orchestration.md ~/.agents/docs/orchestration.md
@@ -9,6 +10,7 @@ file docs/native-subagents.md ~/.agents/docs/native-subagents.md
 file docs/opencode-workers.md ~/.agents/docs/opencode-workers.md
 file docs/t3-delegation.md ~/.agents/docs/t3-delegation.md
 file configs/codex/AGENTS.md ~/.codex/AGENTS.md
+file configs/codex/AGENTS.md ~/.config/codex-cli/AGENTS.md si-existe
 file configs/codex/docs/claude-workers.md ~/.codex/docs/claude-workers.md
 file configs/codex/pstack-models.md ~/.codex/pstack-models.md
 file configs/claude/CLAUDE.md ~/.claude/CLAUDE.md

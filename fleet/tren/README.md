@@ -1,4 +1,4 @@
-# Tren — U1/U2/U4, desactivado
+# Tren — sombra y tick activo (U13), sin repos activados por defecto
 
 Python stdlib 3.9+, SQLite y flock POSIX. El agente registra su watch antes
 de entregar; con el recibo durable termina su turno:
@@ -10,9 +10,9 @@ fleet/tren/pao-tren estado --repo owner/project
 fleet/tren/pao-tren tick --repo owner/project --seco --config /ruta/config.json
 ```
 
-Respuestas operativas: JSON de una línea. Exit 0: registro, lectura o plan;
-exit 2: entrada/error o `activación en una unidad posterior` para tick sin
-`--seco` (no abre el ledger). `estado --juicio` incluye la pausa y sus causas;
+Respuestas operativas: JSON de una línea. Exit 0: registro, lectura o paso;
+exit 2: entrada/error o tick activo sin inscripción activa (no abre el ledger).
+`estado --juicio` incluye la pausa y sus causas;
 las decisiones de juicio llegan en otra unidad.
 
 Estado: `${XDG_STATE_HOME:-~/.local/state}/pao-tren/ledger.sqlite3`, esquema 1.
@@ -96,8 +96,8 @@ muestras iniciales, sin arrastrar lotes simulados.
 Un PR que GitHub confirma mergeado en main con el head entregado termina
 `MERGEADO-FUERA`; cerrado sin merge sigue siendo rechazo. Los avances de
 main no pausan la sombra. La primera admisión se conserva incluso después
-del merge externo para reconstruir el contrafactual. No cambia el tick activo
-ni activa escrituras; tick sin `--seco` sigue saliendo con 2.
+del merge externo para reconstruir el contrafactual. No activa escrituras;
+el tick sin `--seco` exige inscripción activa explícita.
 Un rechazo conserva esa admisión histórica y registra `caducada`, el instante
 en que se observó. La entrega sale de la fila desde entonces; un lote cerrado
 antes queda intacto. Si coincide con el cierre, la caducidad gana. El merge
@@ -183,7 +183,7 @@ declararlo verde. No abre PR ni corre suite. Devuelve
 outbox al guardar la observación. Una promoción `Incierto` queda pendiente
 para repetir el mismo intento. Los demás errores de armado o publicación
 quedan tipados en `EfectoFallido.resultado`, sin confirmar outbox.
-Serializar el ejecutor con el candado del carril; aún no hay drenaje real.
+El tick activo serializa el ejecutor con el candado del carril.
 El reductor incorpora el candidato o la pausa por conflicto/rama ocupada aun
 con admisión retenida; ésta bloquea solicitar CI o promover, sin perder el
 resultado completado al confirmar el outbox.
@@ -216,7 +216,7 @@ Si vuelve a una B ya usada con los mismos recibos, el id incorpora la primera
 generación libre (1, 2, …); cada generación tiene sus propias claves estables
 y conserva el orden FIFO de sus miembros.
 Los campos añadidos tienen defaults; el encoding etiquetado y esquema 1
-del ledger siguen vigentes. Ningún camino del CLI importa este ejecutor.
+del ledger siguen vigentes. Sólo el tick activo importa este ejecutor.
 
 Pruebas sólo en desk, sin red y con HOME/XDG temporales:
 
@@ -275,8 +275,123 @@ es sólo un dato idempotente por PR, con lote, B, C, fallos, firmas, conjuntos
 causales y el argv dirigido observado, con la ruta concreta del worktree.
 Los sobrevivientes forman inmediatamente una generación fija sobre B,
 sin incorporar nuevas entregas, y recorren armado, CI y suite completa.
-No se publican statuses ni comentarios. Tick continúa desactivado.
+No se publican statuses ni comentarios. Ningún repo se activa automáticamente.
 
 Las fixtures de U4 son sintéticas, sin invocar Hasito ni Pueue. El mismo
 guion remoto anterior descubre las pruebas U1/U2/U4; usar el nombre
 `dirigida-tren-u4` y el SHA completo, commiteado y empujado.
+
+## Tick activo y recuperación (U13)
+
+`pao-tren tick --repo owner/project` sólo corre si `inscripcion.activacion`
+confirma una inscripción explícita e inequívoca: `owner/project` o
+`owner/project activo`, sin distinguir mayúsculas y con comentarios `#`.
+Los duplicados idénticos son válidos; modos desconocidos, duplicados
+contradictorios o separadores ambiguos que afectan al repo cierran la puerta.
+`modo()` conserva la política conservadora del guard, donde la duda niega
+merges; nunca se usa como permiso de escritura del tick.
+Sin inscripción, en sombra o ante ambigüedad devuelve exit 2. Se comprueba antes de
+abrir el ledger y otra vez bajo el candado. `--seco` conserva sus reductores,
+eventos y continuación anteriores; jamás drena el outbox operativo.
+
+**Activar un repo requiere primero la unidad de feedback D6**, que todavía
+falta: devolver resultados al dueño, caducidades, statuses y comentarios.
+También son requisitos de activación:
+
+- Acreditar la enmienda de gobierno D2 y la exclusividad cooperativa D8.
+- Acreditar en el lanzador real deduplicación/reenganche durable por nombre
+  o evidencia e intento para suite, reanudación y repetición. Hace falta una
+  prueba de contrato con muerte después de aceptar trabajo y antes de
+  publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
+  crear otro. El lanzador falso cumple esa condición; estas pruebas no
+  acreditan al lanzador real. Su implementación pertenece a otra unidad.
+- Los comandos `juicio` y `pausa`, de otra unidad. `paso` pausa el carril en
+  uso ordinario (un head que cambia dentro del tren, un escritor externo en
+  `main`, una decisión de juicio) y Jale nace en pausa `etapa-1`; hoy el CLI
+  no tiene cómo levantar una pausa sin editar el ledger.
+- Resolver en otra unidad la salida de CI rojo sobre C: hoy el reductor
+  conserva `EsperandoCI` y puede ocupar el carril indefinidamente. El injerto
+  no cambia esa transición.
+
+Esta unidad no activa repos, no instala tareas y no cambia el gobierno.
+
+Además de la configuración de admisión, el tick activo requiere `remoto`
+explícito (URL de git sin credenciales o ruta a un origen). `git` sigue siendo
+el checkout local con los objetos necesarios para observar admisión. Para
+usar Hasito, `lanzador_hasito` es la ruta absoluta a su lanzador existente;
+sin adaptador, los efectos de suite quedan fallidos y visibles, reintentables.
+`costo_suite_sana_s` puede aportar el presupuesto de diagnóstico antes de que
+el ledger tenga una suite sana. Estos datos viven en el config privado:
+
+```json
+{
+  "remoto": "https://github.com/owner/project.git",
+  "lanzador_hasito": "/path/to/project/scripts/mini/run.sh",
+  "costo_suite_sana_s": 3600
+}
+```
+
+Son campos adicionales del objeto `repos["owner/project"]`, no otro archivo.
+El observador activo consulta el CI del C exacto cuando espera CI; publicar
+la rama nunca acredita que esté verde. Un error global de observación no
+guarda un paso parcial ni despacha trabajo. Los errores del ejecutor quedan
+registrados con datos tipados o clase pública, sin argv ni stderr privados.
+
+Todo el ciclo mantiene el flock del repo, incluido git y el adaptador:
+
+1. Lee la continuación operativa y observa GitHub/git en modo activo.
+   Al incorporar una entrega nueva conserva su muestra inicial de admisión;
+   ninguna generación simulada ni ningún evento de sombra se vuelve operativo.
+2. Recupera efectos marcados `ejecutando` por un proceso muerto, sobre esa
+   fase, antes de readmitir PR que nuestro push cerró. Un recibo de suite,
+   reanudación o repetición ya existente se valida y recupera aunque hoy haya
+   cambiado el head, APTO o CI; la admisión fresca sólo permite lanzar trabajo
+   nuevo. Para la suite inicial se conserva el contexto de CI verde del C con
+   el que se autorizó el lanzamiento, incluso si el CI actual cambió.
+3. Toma como máximo un resultado durable del buzón y aplica un solo `paso`.
+   Repone únicamente los campos de resultado ligados a tren/intento; hora,
+   base y vistas de admisión vienen de la observación actual. La suite inicial
+   conserva también el recibo de CI con el que fue lanzada sobre C.
+4. En una transacción guarda el evento `operativo` con la continuación
+   completa (incluidas entradas, pausa y costo sano), la proyección `trains`,
+   los efectos nuevos por clave y su outbox; confirma a la vez el resultado
+   consumido. `entries` conserva sólo custodia inmutable, y las muestras de
+   `admision-entrega` siguen importándose al incorporar entradas nuevas.
+   La sombra nunca se toma como estado operativo ni hereda su continuación.
+5. Drena en orden de inserción los efectos pendientes o fallidos conocidos,
+   una vez por clave en cada tick. Antes del IO marca `ejecutando`; después
+   guarda su resultado en `effect_results` y lo marca `resultado`. El tick
+   siguiente lo incorpora al reductor antes de marcarlo `completo`. Un fallo
+   o `completo=False` queda `fallido` para reintentar; no confirma el efecto.
+   Publicar CI también exige admisión actual, aunque su clave ya estuviera
+   pendiente o en ejecución antes de una muerte.
+
+`effect_results` es una extensión aditiva del esquema 1. Los eventos de
+sombra y su encoding no cambian. El ACK del resultado y el paso consumidor
+comparten COMMIT: una muerte deja ambos pendientes o ambos guardados.
+No se pierde un candidato construido aunque la nueva admisión retenga el PR.
+
+Ante una muerte tras el IO, armar reconstruye el mismo C; solicitar CI relee
+la rama con lease; Hasito reutiliza su recibo por clave, escrito con rename
+atómico y fsync. Si aún no hay recibo, vuelve a llamar al lanzador con los
+mismos nombre/evidencia para reenganchar su coordinador idempotente. Esto
+requiere ese contrato del lanzador: no se puede garantizar una sola suite
+con un lanzador que cree otro trabajo al recibir el mismo identificador.
+Promover primero reconcilia: `main == C` verifica árbol/ancestros y confirma
+sin otro push; `main == B` permite el CAS; otro SHA pausa por escritor externo.
+Una lectura incierta conserva el intento. La pausa impide despachar efectos.
+También se relee main al consumir un resultado de promoción ya guardado:
+un ACK antiguo no oculta un escritor externo entre dos ticks.
+Si la lectura previa al IO es incierta, se conserva el contrato U2: se puede
+intentar el CAS protegido por lease y sólo su reconciliación decide el resultado.
+
+Los efectos sin ejecutor (`devolver`, `avisar-caducidad`, `caduca` y feedback
+futuro) quedan pendientes y se saltan sin bloquear los demás. `estado` muestra
+las entradas, todos los trenes con su fase, pausa/causa y el `outbox` pendiente,
+en ejecución, con resultado por consumir o fallido, indicando si hay ejecutor.
+La lectura usa un snapshot SQLite y no espera el flock de una suite en ejecución.
+
+Las pruebas U13 usan un origen local, GitHub/lanzador falsos, HOME y XDG
+temporales, muertes reales en fronteras de COMMIT/IO y dos procesos con flock.
+Se ejecutan con el mismo guion remoto del tren, sin pruebas en la máquina
+coordinadora ni escrituras a repos externos durante esa verificación.

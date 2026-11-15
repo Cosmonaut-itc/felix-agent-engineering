@@ -11,7 +11,7 @@ init() {
     export GIT_HTTP_LOW_SPEED_LIMIT=${GIT_HTTP_LOW_SPEED_LIMIT:-1000}
     export GIT_HTTP_LOW_SPEED_TIME=${GIT_HTTP_LOW_SPEED_TIME:-60}
     TYPES=() SOURCES=() TARGETS=() MARKETS=()
-    DESTS=() LINK_SOURCES=() RETIRED=()
+    DESTS=() LINK_SOURCES=() RETIRED=() IF_PRESENT=()
     CHANGED=0 OVERALL=ok LOCKED=0
     NO_PLUGINS=${PAO_NO_PLUGINS:-0} NO_SCHEDULE=0
 }
@@ -47,7 +47,7 @@ load_manifest() {
         key='' dest=''
         case "$kind" in
             file)
-                if ! { [ -n "$target" ] && [ -z "$market$extra" ] && safe_relative "$src"; }; then fail "manifest:$n: fila file inválida"; return 1; fi
+                if ! { [ -n "$target" ] && [ -z "$extra" ] && { [ -z "$market" ] || [ "$market" = si-existe ]; } && safe_relative "$src"; }; then fail "manifest:$n: fila file inválida"; return 1; fi
                 # The manifest uses a literal tilde, expanded explicitly below.
                 # shellcheck disable=SC2088
                 case "$target" in '~/'*) safe_relative "${target#\~/}" || return 1 ;; *) fail "manifest:$n: destino fuera de HOME"; return 1 ;; esac
@@ -94,7 +94,9 @@ load_manifest() {
         TARGETS[${#TARGETS[@]}]=$target
         MARKETS[${#MARKETS[@]}]=$market
         case "$kind" in
-            file) DESTS[${#DESTS[@]}]=$dest; LINK_SOURCES[${#LINK_SOURCES[@]}]=$PAO_ROOT/$src ;;
+            file)
+                DESTS[${#DESTS[@]}]=$dest; LINK_SOURCES[${#LINK_SOURCES[@]}]=$PAO_ROOT/$src
+                [ "$market" != si-existe ] || IF_PRESENT[${#IF_PRESENT[@]}]=$dest ;;
             skill)
                 for dest in "$HOME/.agents/skills/$target" "$HOME/.claude/skills/$target"; do
                     contains "dest:$dest" "${keys[@]}" && { fail "manifest:$n: destino duplicado $dest"; return 1; }
@@ -239,6 +241,10 @@ link_items() {
     local mode=$1 i dest src
     for ((i=0; i<${#DESTS[@]}; i++)); do
         dest=${DESTS[$i]} src=${LINK_SOURCES[$i]}
+        # A si-existe row never creates the home of a tool this host lacks.
+        if contains "$dest" "${IF_PRESENT[@]}" && [ ! -d "$(dirname "$dest")" ]; then
+            record skipped "$dest" 'directorio ausente'; continue
+        fi
         if [ -L "$dest" ] && [ "$(readlink "$dest")" = "$src" ]; then
             record ok "$dest" "$src"; continue
         fi

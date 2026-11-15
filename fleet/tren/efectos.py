@@ -1,4 +1,4 @@
-"""Ejecutor explícito para pruebas/integración futura; el CLI no lo importa.
+"""Ejecutor del outbox activo, repetible sobre la misma instantánea.
 
 La observación devuelta conserva las vistas de admisión del llamador. Publicar
 la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
@@ -6,7 +6,7 @@ la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 from dataclasses import dataclass, replace
 
 from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
-                     Corriendo, Diagnosticando, Efecto, EsperandoCI, Incierto,
+                     Corriendo, Diagnosticando, Efecto, EnBase, EsperandoCI, Incierto,
                      Observacion, Promoviendo, RamaOcupada, admision_entrada,
                      clave, efecto_diagnostico, efecto_promover)
 from git_ops import Publicado
@@ -42,12 +42,13 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
     if efecto.tipo in ("iniciar-suite", "reanudar-suite", "repetir", "armar-subconjunto"):
         vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
         entradas = {e.entrega.recibo: e for e in estado.entradas}
-        if any(not isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
-               for r in tren.recibos):
-            return Ejecucion(limpia, False)
+        admitidos = all(isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
+                        for r in tren.recibos)
         if efecto.tipo == "armar-subconjunto" and isinstance(fase, Diagnosticando):
             if fase.pendiente is None or efecto != efecto_diagnostico(tren, fase):
                 raise ValueError("subconjunto obsoleto")
+            if not admitidos:
+                return Ejecucion(limpia, False)
             miembros = tuple((pr, head) for pr, head, _ in fase.candidato.eslabones
                              if pr in fase.pendiente.prs)
             resultado = git.armar(fase.candidato.B, miembros)
@@ -58,22 +59,33 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
                 return Ejecucion(replace(llegada, conflicto_cadena=resultado), True)
             raise EfectoFallido(resultado)
         if hasito is None:
+            if not admitidos:
+                return Ejecucion(limpia, False)
             raise ValueError("falta adaptador Hasito")
         try:
             if efecto.tipo == "iniciar-suite" and isinstance(fase, EsperandoCI):
                 if efecto != Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)):
                     raise ValueError("suite obsoleta")
-                if observacion.ci_candidato != "verde":
+                recibo = hasito.suite(fase.candidato, tren.id,
+                    permitir_lanzar=admitidos and observacion.ci_candidato == "verde")
+                if recibo is None:
                     return Ejecucion(limpia, False)
-                ruta, resultado = hasito.suite(fase.candidato, tren.id)
-                return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado), True)
+                ruta, resultado = recibo
+                # La clave sólo pudo lanzarse con CI verde sobre este C. Al
+                # recuperar no sustituir esa evidencia por el CI de hoy.
+                return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado,
+                    ci_candidato="verde", ci_recibo=observacion.ci_recibo
+                    if observacion.ci_candidato == "verde" else "github:" + fase.candidato.C), True)
             if efecto.tipo == "reanudar-suite" and isinstance(fase, Corriendo):
                 esperado = Efecto(clave("reanudar-suite", tren.id, fase.reanudaciones),
                     "reanudar-suite", (tren.id, str(fase.reanudaciones)))
                 if efecto != esperado or fase.esperar_hasta is not None or not fase.reanudar:
                     raise ValueError("reanudación obsoleta")
-                ruta, resultado = hasito.suite(fase.candidato, tren.id,
-                                             fase.reanudaciones, fase.reanudar)
+                recibo = hasito.suite(fase.candidato, tren.id,
+                    fase.reanudaciones, fase.reanudar, permitir_lanzar=admitidos)
+                if recibo is None:
+                    return Ejecucion(limpia, False)
+                ruta, resultado = recibo
                 return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado,
                                          suite_intento=fase.reanudaciones), True)
             if efecto.tipo == "repetir" and isinstance(fase, Diagnosticando):
@@ -84,7 +96,10 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
                 commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B
                           if s.objetivo == "B" else fase.subconjunto.C)
                 resultado = hasito.repetir(fase.candidato, fase.suite, s, commit,
-                                          tren.id, fase.reanudaciones, fase.reanudar)
+                                          tren.id, fase.reanudaciones, fase.reanudar,
+                                          permitir_lanzar=admitidos)
+                if resultado is None:
+                    return Ejecucion(limpia, False)
                 return Ejecucion(replace(limpia, repeticion=resultado, reproduccion_id=s.id,
                                          suite_intento=fase.reanudaciones), True)
         except ResultadoInvalido as exc:
@@ -122,7 +137,12 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
             return Ejecucion(replace(limpia, main=lectura,
                                     intento_promocion=fase.intentos),
                              not isinstance(lectura, Incierto))
-        lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
+        # Antes de repetir IO, reconciliar: un proceso muerto pudo aterrizar C.
+        # Una lectura incierta conserva el contrato U2: intentar el CAS sigue
+        # siendo seguro por el lease, y su lectura posterior decide el resultado.
+        lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+        if isinstance(lectura, (EnBase, Incierto)):
+            lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
         return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
                          not isinstance(lectura, Incierto))
     raise ValueError("efecto o fase no soportados")
