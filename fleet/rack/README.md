@@ -129,10 +129,31 @@ amarilla al superar p90. No se muestran tareas Done en la API.
 ciclo. Ambos archivos se reemplazan atómicamente. `--state-dir` y `--hosts`
 permiten usar ubicaciones independientes.
 
-Los umbrales CPU de la guardia desk se leen del `control.py` instalado en
-`~/.local/lib/pao-pueue-desk/`. Si falta, se usan 30/15, los valores
-vigentes al implementar. La guardia Mini tiene un solo
-punto de extensión, `mini_guard()`, y por ahora devuelve null.
+La guardia desk publica `action` (`pausar`, `mantener`, `reanudar` o null) y
+`at` ISO UTC, manteniendo `cpu_pause`/`cpu_resume`. Los umbrales instalados se
+leen con AST limitado (constantes, dict, multiplicación/potencia; sin ejecutar
+el controlador); si faltan o son inválidos son null y se declara error, sin
+inventar política vigente. `thresholds` contiene `normal` y `rapidas`, cada
+uno con `pause`/`resume`; memoria en bytes. `pressure` es la lectura actual
+CPU some avg60, E/S full avg60 y MemAvailable, con su propio `at` ISO UTC.
+
+`status` indica `fresh`, `stale`, `incomplete` o `unknown`. `last_result` es
+sólo el resumen del tick de la última decisión, con `evento`, `tick_id`, `at`
+y `bloqueos` saneados; no se reutilizan bloqueos con decisión >120 s, tick
+incompleto o una lectura nueva que cambió de banda. Los logs se leen acotados
+a 1 MiB por archivo, incluyendo `.1`. `last_admission:{at,grupo,id}` viene de
+SQLite en modo ro, no del log rotable; ausencia histórica es null y corrupción
+produce `errors.stage=guard_admission`. Las otras fuentes fallidas usan
+`guard_pressure`/`guard_thresholds`. Todos los campos nuevos son opcionales en
+`serve.validate_snapshot` para admitir snapshots anteriores, con tipos/rangos
+y whitelist estrictos cuando se proporcionan. La Mini sigue publicando null.
+
+Los lugares libres de un grupo Paused se funden en una celda con su causa.
+Presión alta indica la métrica que bloquea; mantener sano indica «Entra de a
+una» y la última admisión del grupo. Un gate cerrado muestra su causa, sin
+prometer admisión por CPU. Un grupo lleno no muestra pausa; ambiguous/startup
+quedan en la celda y no en una línea extra. Sin autoridad/sensor se muestra
+estado desconocido. Un grupo Running conserva «Libre».
 
 La página no agrega controles al prototipo. Sólo añade los estados mínimos
 pedidos: host antiguo, servidor sin respuesta, progreso sin estimado o

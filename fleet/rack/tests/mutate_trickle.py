@@ -1,0 +1,36 @@
+"""Directed snapshot/panel mutants; no browser/network/host state."""
+import os
+from pathlib import Path
+import shutil
+import subprocess
+import sys
+import tempfile
+
+SOURCE=Path(__file__).resolve().parents[1]
+CASES=[
+ ('maintain','snapshot.py',"row.get('accion') in ('pausar','mantener','reanudar')","row.get('accion') in ('pausar','reanudar')",'SnapshotTrickleTests.test_current_pressure_keep_iso_and_middle_band'),
+ ('whitelist','serve.py',"    _guard_snapshot.validate_guard(data.get('guard'))","    pass",'SnapshotTrickleTests.test_secret_fields_and_bool_pressure_are_rejected'),
+ ('history','snapshot.py',"return confirmed\n    finally:db.close()","return None\n    finally:db.close()",'SnapshotTrickleTests.test_durable_history_survives_log_rotation'),
+ ('merged','index.html',"const held=g.status==='Paused' && r.length<g.slots;","const held=false;",'MergedCellTests.test_high'),
+ ('cpu_attribution','index.html',"p.memory<t.pause.memory ? 'memory' : ['io','cpu'].find(k=>k in t.pause && p[k]>t.pause[k])","'cpu'",'MergedCellTests.test_io_memory_and_open'),
+]
+
+def run(root,test=None):
+    return subprocess.run([sys.executable,'-B','-m','unittest','test_trickle'+('.'+test if test else '')],cwd=str(root/'tests'),
+        env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),capture_output=True,text=True,timeout=30)
+
+def main():
+    result=run(SOURCE)
+    if result.returncode:raise AssertionError('Nominal: '+result.stderr)
+    print('Nominal: '+result.stderr.strip(),flush=True)
+    for name,file,anchor,replacement,test in CASES:
+        root=Path(tempfile.mkdtemp(prefix='sen6417-rack-mutant-',dir='/tmp'))/'fleet'
+        shutil.copytree(SOURCE.parent,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+        path=root/'rack'/file;source=path.read_text()
+        if source.count(anchor)!=1:raise AssertionError('Anchor '+name)
+        path.write_text(source.replace(anchor,replacement));result=run(root/'rack',test)
+        if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:raise AssertionError(name+': '+result.stderr)
+        print(name+': AssertionError; '+test,flush=True)
+    print(str(len(CASES))+'/'+str(len(CASES))+' killed by assertion',flush=True)
+
+if __name__=='__main__':main()

@@ -64,6 +64,8 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .slot{border:1px dashed var(--line);border-radius:8px;min-height:54px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;gap:4px}
 .slot.busy{border:1px solid var(--line);background:var(--bg)}
 .slot .r-top{font-size:13px}
+.slot.held{grid-column:span var(--held-span);font-size:12px;line-height:1.5;color:var(--ink2);overflow-wrap:anywhere;align-items:flex-start}.slot.held .why{font-weight:600;color:var(--ink)}.slot.held.idle,.slot.held.idle .why{color:var(--muted)}.slot.held .act::before{content:"";display:inline-block;width:6px;height:6px;border-radius:50%;margin-right:6px;background:var(--warn)}.slot.held .flow::before{background:var(--accent)}
+@media(max-width:560px){.slot.held{grid-column:1/-1}}
 .slot.empty{color:var(--muted);font-size:12px;align-items:center}
 .waiting{display:flex;flex-wrap:wrap;gap:4px;margin-top:8px}
 .chip{font-size:12px;padding:2px 8px;border-radius:10px;border:1px solid var(--line);color:var(--ink2);white-space:nowrap}
@@ -396,14 +398,69 @@ document.addEventListener('click',ev=>{
   if(h?.control?.capabilities?.slots) startSlots(h,{group:b.dataset.group,delta:Number(b.dataset.step)});
 });
 
+// Free capacity of a paused group is one cell, including unknown authority.
+function heldCell(h,n,g,free){
+  const c=h.control, guard=h.guard;
+  const reasons=c?.pause_reasons?.[n];
+  let why='', how='', flow=false;
+  const unknown=()=>{why='Estado de la guardia desconocido';how='';};
+  if(!Array.isArray(reasons)) unknown();
+  else if(reasons.includes('ambiguous') || reasons.includes('startup') || reasons.includes('manual')){
+    why=reasons.includes('startup') || reasons.includes('ambiguous') ? 'Retenido al reiniciar' : 'Pausa manual';
+    how=c?.startup_holds?.[n] || (reasons.includes('manual') ? 'pausa manual' : 'pausa de origen desconocido');
+    how+=` · resolver con control.py reanudar ${n}`;
+    if(reasons.length===1 && reasons[0]==='startup'){why='Esperando cuotas y Docker';how='';}
+  }else if(!reasons.includes('pressure') || !guard?.pressure || !guard?.thresholds || !h.fresh) unknown();
+  else {
+    const p=guard.pressure, t=guard.thresholds[n==='rapidas'?'rapidas':'normal'];
+    const age=NOW-Date.parse(p.at)/1000;
+    if(!t || !Number.isFinite(age) || age<0 || age>120) unknown();
+    else {
+      const high=p.memory<t.pause.memory || ['io','cpu'].some(k=>k in t.pause && p[k]>t.pause[k]);
+      const low=p.memory>=t.resume.memory && ['io','cpu'].every(k=>!(k in t.resume) || p[k]<t.resume[k]);
+      const result=guard.last_result;
+      const recent=guard.status==='fresh' && result && NOW-Date.parse(result.at)/1000>=0 && NOW-Date.parse(result.at)/1000<=120;
+      const blockers=recent ? result.bloqueos.filter(b=>b.grupo==null || b.grupo===n) : [];
+      const gate=blockers.find(b=>!['pressure_high','cooldown','quota'].includes(b.causa));
+      const causes={docker:'Esperando Docker',generation:'Esperando confirmar el daemon',desired:'Esperando cuotas',
+        event:'Esperando cambio de horario',admission:'Esperando admisión',startup:'Esperando cuotas y Docker',
+        authority:'Estado de la guardia desconocido',maintenance:'En mantenimiento',reason:'Pausa sin resolver',
+        dependency:'Esperando dependencia',task_changed:'Esperando confirmar la tarea',admission_unknown:'Admisión sin confirmar',
+        clock:'Reloj de admisión no disponible',log:'Registro de la guardia no disponible',rpc:'Admisión sin confirmar',
+        fresh_sample:'Esperando muestra de presión'};
+      if(gate){why=causes[gate.causa] || 'Estado de la guardia desconocido';}
+      else if(!high && !recent) unknown();
+      else {
+        const metric=high
+          ? p.memory<t.pause.memory ? 'memory' : ['io','cpu'].find(k=>k in t.pause && p[k]>t.pause[k])
+          : p.memory<t.resume.memory ? 'memory' : ['io','cpu'].find(k=>k in t.resume && p[k]>=t.resume[k]) || 'cpu';
+        const fmt=v=>Number.isInteger(v)?String(v):Number(v).toFixed(1);
+        const label=metric==='memory' ? `Memoria ${fmt(p.memory/1024**3)} GiB libres` : `${metric==='io'?'E/S':'CPU'} ${fmt(p[metric])} %`;
+        if(high){
+          why='Retenido por presión';
+          how=label+(n==='rapidas' ? '' : metric==='memory' ? ` · entra de a una sobre ${fmt(t.pause.memory/1024**3)} GiB` : ` · entra de a una bajo ${t.pause[metric]}`);
+        }else if(!low && n!=='rapidas'){
+          why='Entra de a una';flow=true;
+          how=label+(metric==='memory' ? ` · abre sobre ${fmt(t.resume.memory/1024**3)} GiB` : ` · abre bajo ${t.resume[metric]}`);
+          const last=guard.last_admission, ago=last ? NOW-Date.parse(last.at)/1000 : -1;
+          if(last?.grupo===n && Number.isFinite(ago) && ago>=0) how+=` · última hace ${Math.floor(ago)} s`;
+        }else {why='Esperando a la guardia';}
+      }
+    }
+  }
+  const waits=h.tasks.some(t=>t.group===n && t.state==='Queued');
+  return `<div class="slot held ${waits?'':'idle'}" style="--held-span:${Math.min(free,5)}"><span class="why ${waits?'act '+(flow?'flow':'warn'):''}">${esc(why)}</span>${how?`<span>${esc(how)}</span>`:''}</div>`;
+}
+
 function view(){
     return `<div class="stack">${S.hosts.map(h=>{
       const lanes = groups(h).map(([n,g])=>{
         const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
-        const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
+        const held=g.status==='Paused' && r.length<g.slots;
+        const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return held ? (i===r.length ? heldCell(h,n,g,g.slots-r.length) : '') : `<div class="slot empty">Libre</div>`;
           const p=progress(t); return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}${pendingText(h,t)}</div>`;}).join('');
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
-          ${startupHold(h,n) ? `<div class="lane"><div></div><div>${startupHold(h,n)}</div></div>` : ''}${fila(h,n,w)}${interrupted(h,n)}`;
+          ${fila(h,n,w)}${interrupted(h,n)}`;
       }).join('');
       return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
