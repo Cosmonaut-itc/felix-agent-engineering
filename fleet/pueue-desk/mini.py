@@ -388,6 +388,12 @@ class Manager:
             self.save(state, 'handoff:verify')
             return False  # the fixed start needs control.lock; release it first
         if value['phase'] == 'verify':
+            # bootout can finish after switch observed a still-loaded target.
+            # Replay switch's offline check and bootstrap on the next tick.
+            if self.loaded(target) is None:
+                value['phase'] = 'switch'
+                self.save(state, 'handoff:retry-switch')
+                return False
             # No kickstart/reset: KeepAlive owns retry; never a second daemon.
             if self.loaded(other) is not None or not self.disabled(other):
                 raise ValueError('Origen todavía habilitado o cargado')

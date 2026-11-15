@@ -100,6 +100,10 @@ CASES += [
 
 
 CASES += [
+ ('r2b-verify-retries-switch','mini.py',
+  "            if self.loaded(target) is None:\n                value['phase'] = 'switch'\n                self.save(state, 'handoff:retry-switch')\n                return False\n",
+  "",
+  'test_continue_stale_bootout_retries_prepared_owner'),
  ('r2-origin-not-target','mini.py',"value.update(phase='aborted', effect=None,\n                     retained_owner=source['owner'])",
   "value.update(phase='aborted', effect=None,\n                     retained_owner='homebrew' if value['target'] == 'install' else 'prepared')",
   'test_abort_retains_verified_source_independently_of_target_and_validates_identity'),

@@ -42,7 +42,7 @@ def context(root, role="driver"):
     mini=importlib.util.module_from_spec(spec);spec.loader.exec_module(mini);control=mini.control
     info=json.loads((root/'info.json').read_text())
     prefix=info['prefix'];mini.LABEL=prefix+'.daemon';mini.GUARD=prefix+'.guard';mini.BREW=prefix+'.brew'
-    assert prefix.startswith(('pao.u35.injerto.','pao.u35.r1.','pao.u35.r2.'))
+    assert prefix.startswith(('pao.u35.injerto.','pao.u35.r1.','pao.u35.r2.','pao.u35.r2b.'))
     data=root/'data';config=root/'config.json';pid=data/'pid'
     env=dict(os.environ,TMPDIR=str(root));env.pop('PUEUE_CONFIG_PATH',None)
     class Private(control.Pueue):
@@ -111,16 +111,18 @@ def main():
     parser.add_argument('--root',type=Path)
     parser.add_argument('--r1',action='store_true',help='Directed abort/restart and bounded diagnostic acceptance')
     parser.add_argument('--r2',action='store_true',help='Opposite abort convergence plus R1 acceptance')
+    parser.add_argument('--r2b',action='store_true',help='Full R2/R1 acceptance with private R2b labels')
     args=parser.parse_args()
+    args.r2 = args.r2 or args.r2b
     args.r1 = args.r1 or args.r2
     if args.worker:return worker(args.root,args.worker)
     assert sys.platform=='darwin','macOS required'
     ident=(Path.cwd()/'.remote-run.lock').read_text().strip()
     assert re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}',ident)
-    root=Path.home()/'remote-run/runs'/ident/('u35-r2' if args.r2 else 'u35-r1' if args.r1 else 'u35-ij');root.mkdir()
+    root=Path.home()/'remote-run/runs'/ident/('u35-r2b' if args.r2b else 'u35-r2' if args.r2 else 'u35-r1' if args.r1 else 'u35-ij');root.mkdir()
     (root/'agents').mkdir();data=root/'data';data.mkdir()
     assert len(str(data/'socket').encode())<104
-    prefix=('pao.u35.r2.' if args.r2 else 'pao.u35.r1.' if args.r1 else 'pao.u35.injerto.')+str(os.getpid())
+    prefix=('pao.u35.r2b.' if args.r2b else 'pao.u35.r2.' if args.r2 else 'pao.u35.r1.' if args.r1 else 'pao.u35.injerto.')+str(os.getpid())
     (root/'info.json').write_text(json.dumps(dict(prefix=prefix)))
     (root/'config.json').write_text(json.dumps(dict(shared=dict(pueue_directory=str(data),runtime_directory=str(data),
         pid_path=str(data/'pid'),unix_socket_path=str(data/'socket'),use_unix_socket=True,

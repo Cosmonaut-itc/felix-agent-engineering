@@ -496,6 +496,56 @@ class HandoffTests(unittest.TestCase):
         h.p.online=False;h.m.launch=launch;h.finish()
         self.assertEqual(h.owner,mini.LABEL)
 
+    def continue_after_stale_bootout(self, target):
+        h=self.h;h.m.change('install');h.finish()
+        if target==mini.BREW:h.m.change('withdraw');h.finish()
+        h.p.tasks={'0':task(0,running(),'default'),'1':task(1,queued(),'default')};h.save_queue()
+        waiting=copy.deepcopy(h.p.tasks['1'])
+        h.m.maintenance()
+        # launchd still lists the retiring service when continuar checks it.
+        h.loaded.add(target)
+        launch=h.m.launch;stale=[False];observed=[]
+        def asynchronous(*args,**kwargs):
+            if args==('print',h.m.domain+'/'+target) and stale[0]:
+                stale[0]=False;observed.append('stale-loaded')
+                return subprocess.CompletedProcess(args,0,'service {}','')
+            result=launch(*args,**kwargs)
+            if args==('bootout',h.m.domain+'/'+target):
+                stale[0]=True;h.pid.unlink();observed.append('bootout')
+            return result
+        h.m.launch=asynchronous;h.calls.clear();h.trace.clear()
+        h.m.maintenance(resume=True)
+        self.assertEqual(observed,['bootout','stale-loaded'])
+        self.assertEqual(h.policy()['mini_handoff']['phase'],'verify')
+        self.assertNotIn(target,h.loaded);self.assertFalse(h.pid.exists())
+        # A dead recoverer must leave the retry phase durable for its next tick.
+        def crash(phase):
+            h.trace.append(phase)
+            if phase=='handoff:retry-switch':raise Crash(phase)
+        h.m.checkpoint=crash
+        try:
+            with self.assertRaises(Crash):h.recover()
+        except Exception as error:self.fail('verify failed instead of saving switch: '+type(error).__name__)
+        self.assertEqual(h.policy()['mini_handoff']['phase'],'switch')
+        self.assertIn('handoff:retry-switch',h.trace)
+        h.m.checkpoint=h.trace.append
+        h.finish()
+        self.assertTrue(h.p.online);self.assertEqual(h.owner,target)
+        self.assertEqual(h.loaded & {mini.BREW,mini.LABEL},{target})
+        self.assertEqual(h.policy()['mini_handoff']['phase'],'done' if target==mini.LABEL else 'withdrawn')
+        self.assertFalse(h.disabled[target]);self.assertTrue(h.disabled[mini.BREW if target==mini.LABEL else mini.LABEL])
+        self.assertEqual(h.p.tasks['0']['status']['Done']['result'],'Killed')
+        self.assertEqual(h.p.tasks['1'],waiting,'queued identity and position survive the retry')
+        self.assertEqual(sum(c[0]=='bootstrap' and Path(c[-1]).stem==target for c in h.calls),1)
+        generation=h.gen;h.recover();self.assertEqual(h.gen,generation,'no second daemon or task retry')
+        print('R2b stale bootout:',target,'online=True retry_durable=True bootstraps=1 no_retry=True')
+
+    def test_continue_stale_bootout_retries_prepared_owner(self):
+        self.continue_after_stale_bootout(mini.LABEL)
+
+    def test_continue_stale_bootout_retries_homebrew_owner(self):
+        self.continue_after_stale_bootout(mini.BREW)
+
     def test_mini_task_matrix_offline_crashes_and_repeated_prepare(self):
         h=self.h
         h.p.tasks={str(i):task(i,status,group) for i,status,group in (
