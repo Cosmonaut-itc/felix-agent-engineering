@@ -56,7 +56,10 @@ class JuicioTests(unittest.TestCase):
             estado = self.estado()
             if hasta(estado):
                 return estado
-        self.fail("no converge: " + json.dumps(datos(self.estado()))[:2000])
+        estado = self.estado()
+        self.fail("no converge: " + json.dumps({
+            "pausa": datos(estado.pausa), "fases": [datos(t.fase) for t in estado.trenes],
+            "admision": [datos(e.admision) for e in estado.entradas]})[:4000])
 
     def posts(self, tipo=None):
         todos = [json.loads(s) for s in self.lineas("posts.log")]
@@ -198,6 +201,8 @@ class JuicioTests(unittest.TestCase):
         self.assertEqual(pausado.pausa, Pausa("escritor-externo", main=ajeno))
         self.retirar("escritor")
         self.assertEqual(self.remoto(), ajeno)
+        # El lanzador falso fecha su resultado contra la B del tren nuevo.
+        self.contexto.config["base"] = ajeno
         codigo, salida = self.juicio("--tren", pausado.trenes[0].id, "--decision", "reanudar",
                                      "--motivo", "merge manual de otra sesión")
         self.assertEqual((codigo, salida["error"]), (2, "tren-no-corresponde"))
@@ -218,7 +223,11 @@ class JuicioTests(unittest.TestCase):
 
     def test_head_cambiado_expulsar_al_rechazado_aterriza_el_resto(self):
         self.hasta_fase(EsperandoCI)
-        (self.raiz / "head-cambiado").write_text("a")
+        # Head real nuevo del PR 1 en GitHub; el ledger conserva el entregado.
+        nuevo = self.commit({"comun": "base\n", "pr-1": "ticket\n", "nuevo": "head\n"},
+                            (self.miembros[0][1],))
+        self.push(nuevo, "refs/pull/1/head")
+        self.contexto.config["miembros"][0][1] = nuevo
         pausado = self.ticks(lambda e: e.pausa is not None)
         self.assertEqual(pausado.pausa, Pausa("head-cambiado-en-tren"))
         self.assertEqual(pausado.entradas[0].admision, Rechazado(Motivo.HEAD))
