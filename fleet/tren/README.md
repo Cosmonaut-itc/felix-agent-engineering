@@ -317,6 +317,8 @@ registrados con datos tipados o clase pública, sin argv ni stderr privados.
 Todo el ciclo mantiene el flock del repo, incluido git y el adaptador:
 
 1. Lee la continuación operativa y observa GitHub/git en modo activo.
+   Al incorporar una entrega nueva conserva su muestra inicial de admisión;
+   ninguna generación simulada ni ningún evento de sombra se vuelve operativo.
 2. Recupera efectos marcados `ejecutando` por un proceso muerto, sobre esa
    fase y con admisión fresca, antes de readmitir PR que nuestro push cerró.
 3. Toma como máximo un resultado durable del buzón y aplica un solo `paso`.
@@ -361,4 +363,4 @@ La lectura usa un snapshot SQLite y no espera el flock de una suite en ejecució
 Las pruebas U13 usan un origen local, GitHub/lanzador falsos, HOME y XDG
 temporales, muertes reales en fronteras de COMMIT/IO y dos procesos con flock.
 Se ejecutan con el mismo guion remoto del tren, sin pruebas en la máquina
-coordinadora. No se abren PR ni se toca main durante esa verificación.
+coordinadora ni escrituras a repos externos durante esa verificación.

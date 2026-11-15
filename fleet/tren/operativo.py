@@ -45,7 +45,9 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None):
     """
     intentados = set()
     frontera = frontera or (lambda nombre, efecto: None)
-    estado = ledger.estado(repo)
+    # Sólo para entregas aún no incorporadas: conserva la primera admisión
+    # muestreada en custodia, sin importar ningún lote simulado de sombra.
+    estado = ledger.estado(repo, operativo=True)
     observacion = observador.observar(estado, ahora)
 
     def drenar(estado, observacion, recuperacion=False):

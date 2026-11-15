@@ -101,7 +101,7 @@ class Ledger:
         self.db.execute("INSERT INTO events(repo, tipo, instante, payload) VALUES (?, ?, ?, ?)",
                         (repo, tipo, ahora, json.dumps(payload, sort_keys=True)))
 
-    def estado(self, repo, sombra=False, doble_camino=False):
+    def estado(self, repo, sombra=False, doble_camino=False, operativo=False):
         estado = inicial(repo)
         if not sombra:
             row = self.db.execute(
@@ -119,7 +119,7 @@ class Ledger:
         recibos = {e.entrega.recibo for e in estado.entradas}
         nuevas = tuple(desde_datos(json.loads(r[0])) for r in self.db.execute(
             "SELECT payload FROM entries WHERE repo=? ORDER BY rowid", (repo,)))
-        if sombra:
+        if sombra or operativo:
             iniciales = {e.entrega.recibo: e for e in (
                 desde_datos(json.loads(r[0])) for r in self.db.execute(
                     "SELECT payload FROM events WHERE repo=? AND tipo='admision-entrega' ORDER BY seq",

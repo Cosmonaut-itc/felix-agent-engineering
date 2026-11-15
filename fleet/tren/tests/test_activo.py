@@ -18,9 +18,9 @@ import unittest
 from unittest.mock import patch
 
 import test_aterrizaje as fixtures
-from test_hasito import suite_fixture
+from test_hasito import F, repeticion_fixture, suite_fixture
 from dominio import (Armado, Candidato, Certificado, Congelado,
-                     Efecto, EsperandoCI, Promoviendo, Retenido,
+                     Corriendo, Efecto, EsperandoCI, Promoviendo, Retenido,
                      Terminal, clave, datos, desde_datos)
 from adaptadores.hasito import Hasito
 from git_ops import GitTren
@@ -109,16 +109,35 @@ class Contexto:
         # evidencia; un reenganche repite el argv pero no crea otro trabajo.
         evidencia = Path(argv[argv.index("--evidencia") + 1])
         evidencia.mkdir(parents=True, exist_ok=True)
-        recibo = evidencia / "resultado.json"
+        rep = "--repetir" in argv
+        reanudando = "--reanudar" in argv
+        recibo = evidencia / ("resultado-reanudado.json" if reanudando else "resultado.json")
         if not recibo.exists():
-            commit = argv[argv.index("--suite") + 1]
-            base = argv[argv.index("--base") + 1]
-            candidato = Candidato(base, (), commit, "d" * 40)
-            recibo.write_text(json.dumps(suite_fixture(candidato, 0, ())))
+            commit = argv[argv.index("--sha" if rep else "--suite") + 1]
+            base = self.config["base"]
+            head_causal = dict(self.config["miembros"])["2"]
+            contiene = self.git.git("merge-base", "--is-ancestor", head_causal, commit).returncode == 0
+            rojo = (self.raiz / "producto-rojo").exists() and contiene
+            if rep:
+                origen = Path(argv[argv.index("--repetir") + 1])
+                fuente = json.loads(origen.read_text())
+                candidato = Candidato(base, (), fuente["sha"], "d" * 40)
+                valores = ("falla", "falla") if rojo else ("pasa", "pasa")
+                resultado = repeticion_fixture(origen, commit, candidato, F, valores)
+            else:
+                candidato = Candidato(base, (), commit, "d" * 40)
+                codigo = 75 if (self.raiz / "suite-75").exists() and not reanudando else 1 if rojo else 0
+                resultado = suite_fixture(candidato, codigo, (F,) if rojo else ())
+                if codigo == 75:
+                    resultado["reanudar"] = shlex.join(argv + ["--reanudar"])
+            recibo.write_text(json.dumps(resultado))
             self.log("trabajos.log", argv[argv.index("--nombre") + 1])
         if self.muerte == "tras-lanzar":
             os._exit(77)
-        return subprocess.CompletedProcess(argv, 0, "SUITE veredicto=0 resultado=" + str(recibo) + "\n", "")
+        codigo = json.loads(recibo.read_text())["veredicto"]
+        etiqueta, campo = ("REPETICION", "repeticion") if rep else ("SUITE", "resultado")
+        return subprocess.CompletedProcess(argv, codigo,
+            "{} veredicto={} {}={}\n".format(etiqueta, codigo, campo, recibo), "")
 
     def tick(self, ahora=100, frontera=None):
         args = cli.parser().parse_args(["tick", "--repo", REPO])
@@ -145,7 +164,7 @@ class ActivoTests(unittest.TestCase):
         self.inscritos.parent.mkdir(parents=True)
         self.inscritos.write_text(REPO + " activo\n")
         self.ruta_contexto = self.raiz / "contexto.json"
-        config = {"git": str(self.fuente), "remoto": str(self.origen),
+        config = {"git": str(self.fuente), "remoto": str(self.origen), "base": self.B,
                   "miembros": [[str(pr), head] for pr, head in self.miembros],
                   "sensibles": {"ci": [".github/*"], "gobierno": ["AGENTS.md"],
                                 "lockfiles": ["*lock*"]}}
@@ -188,7 +207,7 @@ class ActivoTests(unittest.TestCase):
         ruta = self.raiz / nombre
         return ruta.read_text().splitlines() if ruta.exists() else []
 
-    def assert_aterrizado_una_vez(self):
+    def assert_aterrizado_una_vez(self, verificar_pushes=True):
         final = self.terminar()
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
         self.assertIsNone(final.pausa)
@@ -206,9 +225,10 @@ class ActivoTests(unittest.TestCase):
                          self.contexto.git.texto("rev-parse", main + "^{tree}"))
         for _, head in self.miembros:
             self.comando(self.origen, "merge-base", "--is-ancestor", head, main)
-        pushes = self.lineas("pushes.log")
-        self.assertEqual(sum(p.endswith(":refs/heads/main") for p in pushes), 1, pushes)
-        self.assertEqual(sum(":refs/heads/tren/" in p for p in pushes), 1, pushes)
+        if verificar_pushes:
+            pushes = self.lineas("pushes.log")
+            self.assertEqual(sum(p.endswith(":refs/heads/main") for p in pushes), 1, pushes)
+            self.assertEqual(sum(":refs/heads/tren/" in p for p in pushes), 1, pushes)
         self.assertEqual(len(self.lineas("trabajos.log")), 1)
 
     def hijo(self, codigo, *args, **kwargs):
@@ -225,6 +245,9 @@ class ActivoTests(unittest.TestCase):
         self.assertEqual(len(self.lineas("pushes.log")), 2)
 
     def test_cli_real_carga_config_y_adaptador_sin_inyeccion(self):
+        # El CLI usa transporte real, sin nuestro logger: verificar escrituras
+        # por el reflog del origen, activado sólo después de crear la fixture.
+        self.comando(self.origen, "config", "core.logAllRefUpdates", "true")
         ejecutables = self.raiz / "bin"
         ejecutables.mkdir()
         lanzador = self.raiz / "run.sh"
@@ -255,7 +278,11 @@ class ActivoTests(unittest.TestCase):
                 break
         else:
             self.fail("el CLI real no aterrizó")
-        self.assert_aterrizado_una_vez()
+        self.assert_aterrizado_una_vez(verificar_pushes=False)
+        self.assertEqual(len(self.comando(self.origen, "reflog", "show", "--format=%H", "main").splitlines()), 1)
+        rama = self.comando(self.origen, "for-each-ref", "--format=%(refname)", "refs/heads/tren/")
+        self.assertEqual(len(rama.splitlines()), 1)
+        self.assertEqual(len(self.comando(self.origen, "reflog", "show", "--format=%H", rama).splitlines()), 1)
 
     def test_puerta_no_inscrito_sombra_activo_y_seco(self):
         args = cli.parser().parse_args(["tick", "--repo", REPO])
@@ -271,6 +298,74 @@ class ActivoTests(unittest.TestCase):
         args.seco = True
         self.assertEqual(cli.ejecutar(args, self.contexto.observador, 200)[0], 0)
         self.assertEqual(self.estado(), antes)
+
+    def test_activar_conserva_muestras_de_admision_sin_importar_trenes_simulados(self):
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz / "state-nuevo")}):
+            self.inscritos.write_text(REPO + " sombra\n")
+            pr, head = self.miembros[0]
+            args = cli.parser().parse_args(["entregar", "--repo", REPO, "--pr", str(pr),
+                "--head", head, "--apto", str(self.raiz / "apto-1.json"),
+                "--dirigida", str(self.raiz / "dirigida-1.json")])
+            self.assertEqual(cli.ejecutar(args, self.contexto.observador, 100)[0], 0)
+            seco = cli.parser().parse_args(["tick", "--repo", REPO, "--seco"])
+            sombra = cli.ejecutar(seco, self.contexto.observador, 3700)[1]["plan"]["estado"]
+            self.assertEqual(sombra["trenes"][0]["fase"], datos(Terminal("SIMULADO")))
+            self.inscritos.write_text(REPO + " activo\n")
+            self.contexto.tick(3800)
+            estado = self.estado()
+            self.assertEqual(estado.entradas[0].admitida, 100)
+            self.assertEqual(len(estado.trenes), 1)
+            self.assertIsInstance(estado.trenes[0].fase, Congelado)
+            self.assertEqual(self.terminar().trenes[0].fase, Terminal("ATERRIZADO"))
+
+    def test_75_persistido_espera_y_reanuda_suite(self):
+        (self.raiz / "suite-75").write_text("75")
+        self.hasta_fase(Corriendo)
+        fase = self.estado().trenes[0].fase
+        self.assertIsNotNone(fase.esperar_hasta)
+        self.assertEqual(len(self.lineas("trabajos.log")), 1)
+        self.contexto.tick(fase.esperar_hasta - 1)
+        self.assertEqual(len(self.lineas("trabajos.log")), 1)
+        self.contexto.tick(fase.esperar_hasta)
+        self.assertEqual(len(self.lineas("trabajos.log")), 2)
+        final = self.terminar()
+        self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
+        with self.ledger() as ledger:
+            self.assertEqual(ledger.outbox(REPO), [])
+            efectos = [json.loads(r[0])["tipo"] for r in ledger.db.execute("SELECT payload FROM effects")]
+        self.assertEqual(efectos.count("reanudar-suite"), 1)
+
+    def test_rojo_atribuye_repite_subconjuntos_y_aterriza_sobrevivientes(self):
+        (self.raiz / "producto-rojo").write_text("causal: segundo PR")
+        self.contexto.config["costo_suite_sana_s"] = 10000
+        for n in range(30):
+            self.contexto.tick(1000 + 120 * n)
+            final = self.estado()
+            self.assertIsNone(final.pausa, datos(final.pausa))
+            if len(final.trenes) == 2 and final.trenes[-1].fase == Terminal("ATERRIZADO"):
+                break
+        else:
+            self.fail("el diagnóstico no convergió: " + str(datos(final)))
+        self.assertEqual(final.trenes[0].fase, Terminal("DEVUELTO"))
+        self.assertEqual(final.entradas[1].terminal, Terminal("DEVUELTO"))
+        with self.ledger() as ledger:
+            pendientes = ledger.outbox(REPO)
+            self.assertEqual(len(pendientes), 1)
+            efecto = desde_datos(json.loads(pendientes[0]["payload"]))
+            self.assertEqual((efecto.tipo, pendientes[0]["estado"]), ("devolver", "pendiente"))
+            payload = json.loads(efecto.datos[2])
+            self.assertEqual(payload["pr"], 2)
+            self.assertEqual(payload["fallos"][0]["conjunto_causal"], [2])
+            self.assertIn("--worktree", payload["fallos"][0]["comando"])
+            tipos = [json.loads(r[0])["tipo"] for r in ledger.db.execute("SELECT payload FROM effects")]
+        self.assertEqual(tipos.count("repetir"), 5)
+        self.assertEqual(tipos.count("armar-subconjunto"), 3)
+        main = self.remoto()
+        self.assertEqual(sum(p.endswith(":refs/heads/main") for p in self.lineas("pushes.log")), 1)
+        for indice in (0, 2):
+            self.comando(self.origen, "merge-base", "--is-ancestor", self.miembros[indice][1], main)
+        self.assertNotEqual(self.comando(self.origen, "merge-base", self.miembros[1][1], main),
+                            self.miembros[1][1])
 
     def test_estado_muestra_fila_fase_pausa_y_outbox(self):
         self.hasta_fase(Congelado)
