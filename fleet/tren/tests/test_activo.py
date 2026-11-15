@@ -510,6 +510,10 @@ class ActivoTests(unittest.TestCase):
                 raise subprocess.TimeoutExpired(argv, 1)
             return original(argv, **kwargs)
         self.contexto.git.ejecutar = sin_transporte
+        # Falla sólo el armado: la admisión trae los objetos con el transporte
+        # sano al mismo bare (U17 cubre la falla al observar).
+        self.contexto.observador.almacen = GitTren(self.contexto.config["remoto"],
+                                                   ejecutar=original)
         self.contexto.tick()
         with self.ledger() as ledger:
             fila = ledger.outbox(REPO)[0]
