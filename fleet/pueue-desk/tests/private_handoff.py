@@ -236,7 +236,7 @@ def main():
         assert p.status()['groups']['suites']['status']=='Paused'
         emit(root,'keepalive_sigkill',interrupted_id=running,queued_id=waiting,reason=reason,manual_preserved=True)
         # External SIGTERM, without record_stop: terminal, never retried and no
-        # invented interruption attribution (C-W1 remains a design decision).
+        # invented interruption attribution (C-W1 is an accepted owner limit).
         external=add('/bin/sleep 20')
         wait_for(lambda:'Running' in status(external))
         p.call('pause','--wait','-g','rapidas')
