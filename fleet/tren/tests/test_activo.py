@@ -447,15 +447,14 @@ class ActivoTests(unittest.TestCase):
             "veredicto": "APTO", "hallazgos_abiertos": 0}))
         self.assert_aterrizado_una_vez()
 
-    def test_error_github_no_guarda_paso_parcial_y_recupera(self):
+    def test_error_github_en_ci_es_pendiente_y_recupera(self):
         self.hasta_fase(EsperandoCI)
-        with self.ledger() as ledger:
-            antes = ledger.ultimos_eventos(REPO)
         (self.raiz / "fallo-ci").write_text("fallar")
-        with self.assertRaises(subprocess.CalledProcessError):
-            self.contexto.tick(500)
-        with self.ledger() as ledger:
-            self.assertEqual(ledger.ultimos_eventos(REPO), antes)
+        for n in range(3):
+            self.assertEqual(self.contexto.tick(500 + n)[0], 0)
+        # Sin CI legible no hay verde inventado ni suite lanzada.
+        self.assertIsInstance(self.estado().trenes[0].fase, EsperandoCI)
+        self.assertEqual(self.lineas("trabajos.log"), [])
         (self.raiz / "fallo-ci").rename(self.raiz / "fallo-ci-retirado")
         self.assert_aterrizado_una_vez()
 
