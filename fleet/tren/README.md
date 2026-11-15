@@ -79,16 +79,28 @@ y mensaje fijos, sin firma ni configuración global/sistema al construir.
 La fecha de cada merge es el máximo timestamp de committer de B y todos los
 heads, más su posición (1..N), en UTC. Sale de los objetos, nunca del reloj.
 Fetch/push conservan la configuración del usuario para credenciales.
+El bare sólo admite las claves y valores de configuración local que escribe
+`git init --bare` (incluidos sus probes de filesystem); una clave ajena,
+duplicada o `info/attributes` produce error tipado antes del fetch. Los
+includes locales se rechazan sin seguirlos. Cada C queda anclado en
+`refs/tren/candidatos/<C>` y el fetch desactiva el mantenimiento automático.
 
 `efectos.ejecutar` implementa `armar-candidato`, `solicitar-ci` y `promover`
 para una instantánea guardada. Publicar crea `tren/<id>` con lease vacío;
-repetir con el mismo C converge, otro C produce `RamaOcupada`. Esto solicita
-CI sin declararlo verde. No abre PR ni corre suite. Los errores de armado o
-publicación quedan tipados en `EfectoFallido.resultado`, sin confirmar outbox.
+repetir con el mismo C converge, otro C produce `RamaOcupada`, ligada al tren,
+ref y C esperado; el reductor pausa `rama-tren-ocupada`. Esto solicita CI sin
+declararlo verde. No abre PR ni corre suite. Devuelve
+`Ejecucion(observacion, completo)`: sólo `completo=True` permite confirmar el
+outbox al guardar la observación. Una promoción `Incierto` queda pendiente
+para repetir el mismo intento. Los demás errores de armado o publicación
+quedan tipados en `EfectoFallido.resultado`, sin confirmar outbox.
 Serializar el ejecutor con el candado del carril; aún no hay drenaje real.
 
 `Certificado` añade B con default vacío para leer eventos U1; uno antiguo sin
-base pausa `certificado-sin-base`. Promover verifica árbol y ancestros antes
+base pausa `certificado-sin-base`. Antes de pasar a `Promoviendo` se revalida
+la admisión de cada miembro; un head cambiado caduca y pausa como en U1, y
+una evidencia que ya no admite retiene el certificado sin emitir promoción.
+Promover verifica árbol y ancestros antes
 de un único push a main con `--force-with-lease=refs/heads/main:<B40>`, sin
 hooks, tags ni submódulos. Siempre reconcilia leyendo el remoto después del
 push, también tras un fallo de transporte. `main == C` exige árbol igual al
@@ -102,6 +114,9 @@ Otro SHA termina `REARMAR`, devuelve los miembros a la fila sin cambiar sus
 fechas FIFO y pausa `escritor-externo` con el SHA observado. Al reanudar, el
 reductor congela sobre la base nueva. La reconciliación de Promoviendo corre
 antes de readmitir PR, pues GitHub puede haberlos cerrado tras aterrizar.
+Si vuelve a una B ya usada con los mismos recibos, el id incorpora la primera
+generación libre (1, 2, …); cada generación tiene sus propias claves estables
+y conserva el orden FIFO de sus miembros.
 Los campos añadidos tienen defaults; el encoding etiquetado y esquema 1
 del ledger siguen vigentes. Ningún camino del CLI importa este ejecutor.
 

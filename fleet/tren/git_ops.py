@@ -12,7 +12,7 @@ import subprocess
 from urllib.parse import urlsplit
 
 from dominio import (Aterrizado, Candidato, ConflictoCadena, EnBase,
-                     EscritorExterno, Incierto, clave)
+                     EscritorExterno, Incierto, RamaOcupada, clave)
 from ledger import directorio_estado
 
 
@@ -26,13 +26,6 @@ class ErrorGit:
 class Publicado:
     ref: str
     C: str
-
-
-@dataclass(frozen=True)
-class RamaOcupada:
-    ref: str
-    esperado: str
-    actual: str
 
 
 class FalloGit(Exception):
@@ -102,11 +95,31 @@ class GitTren:
         self.ruta.mkdir(parents=True, exist_ok=True, mode=0o700)
         if not (self.ruta / "HEAD").exists():
             self.texto("init", "--bare", "--object-format=sha1", str(self.ruta))
+        # Sólo configuración escrita por init, incluidos sus probes de filesystem.
+        # No seguir includes: su propia clave se rechaza antes de leer su destino.
+        permitidos = {"core.repositoryformatversion": {"0"},
+                      "core.filemode": {"true", "false"}, "core.bare": {"true"},
+                      "core.ignorecase": {"true", "false"},
+                      "core.precomposeunicode": {"true", "false"}}
+        config = self.texto("config", "--local", "--no-includes", "--null", "--list")
+        vistos = set()
+        for entrada in config.split("\0"):
+            if not entrada:
+                continue
+            nombre, separador, valor = entrada.partition("\n")
+            if (not separador or nombre in vistos or
+                    valor not in permitidos.get(nombre, ())):
+                raise FalloGit("config-local-no-permitida")
+            vistos.add(nombre)
+        atributos = self.ruta / "info" / "attributes"
+        if atributos.exists() or atributos.is_symlink():
+            raise FalloGit("atributos-locales-no-permitidos")
         if self.texto("rev-parse", "--is-bare-repository") != "true":
             raise FalloGit("repositorio-del-tren-debe-ser-bare")
 
     def traer(self, ref):
-        self.texto("fetch", "--no-tags", "--no-recurse-submodules", self.remoto, ref,
+        self.texto("fetch", "--no-tags", "--no-recurse-submodules",
+                   "--no-auto-maintenance", self.remoto, ref,
                    aislado=False)
         return self.texto("rev-parse", "--verify", "FETCH_HEAD^{commit}")
 
@@ -163,6 +176,7 @@ class GitTren:
                 if not sha(C):
                     return ErrorGit("commit-tree-fallido", pr_actual)
                 eslabones.append((pr_actual, head, C))
+            self.texto("update-ref", "refs/tren/candidatos/" + C, C)
             return Candidato(B, tuple(eslabones), C, arbol)
         except (FalloGit, ValueError) as exc:
             return ErrorGit(str(exc) if isinstance(exc, FalloGit) else "entradas-invalidas", pr_actual)

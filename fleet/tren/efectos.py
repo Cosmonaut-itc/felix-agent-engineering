@@ -3,10 +3,11 @@
 La observación devuelta conserva las vistas de admisión del llamador. Publicar
 la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 """
-from dataclasses import replace
+from dataclasses import dataclass, replace
 
 from dominio import (Armado, Candidato, ConflictoCadena, Congelado,
-                     EsperandoCI, Promoviendo, efecto_promover)
+                     EsperandoCI, Incierto, Observacion, Promoviendo, RamaOcupada,
+                     efecto_promover)
 from git_ops import Publicado
 
 
@@ -16,33 +17,42 @@ class EfectoFallido(Exception):
         self.resultado = resultado
 
 
+@dataclass(frozen=True)
+class Ejecucion:
+    observacion: Observacion
+    completo: bool
+
+
 def ejecutar(efecto, estado, observacion, git):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
-    Errores tipados de armado/publicación quedan en EfectoFallido.resultado;
-    no producen evidencia positiva ni completan el efecto en el outbox.
+    Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
+    Incierto queda pendiente. Otros errores de IO quedan en EfectoFallido.
     """
     if not efecto.datos:
         raise ValueError("efecto sin tren")
     tren = next(t for t in estado.trenes if t.id == efecto.datos[0])
     fase = tren.fase
     limpia = replace(observacion, candidato=None, conflicto_cadena=None, main=None,
-                     tren_id=tren.id, intento_promocion=0)
+                     tren_id=tren.id, intento_promocion=0, rama_ocupada=None)
     if efecto.tipo == "armar-candidato" and isinstance(fase, Congelado):
         entradas = {e.entrega.recibo: e for e in estado.entradas}
         miembros = tuple((entradas[r].entrega.pr, entradas[r].entrega.head)
                          for r in tren.recibos)
         resultado = git.armar(fase.B, miembros)
         if isinstance(resultado, Candidato):
-            return replace(limpia, candidato=resultado)
+            return Ejecucion(replace(limpia, candidato=resultado), True)
         if isinstance(resultado, ConflictoCadena):
-            return replace(limpia, conflicto_cadena=resultado)
+            return Ejecucion(replace(limpia, conflicto_cadena=resultado), True)
         raise EfectoFallido(resultado)
     if efecto.tipo == "solicitar-ci" and isinstance(fase, (Armado, EsperandoCI)):
         resultado = git.publicar(tren.id, fase.candidato.C)
+        if isinstance(resultado, RamaOcupada):
+            return Ejecucion(replace(limpia, rama_ocupada=resultado,
+                                    ci_candidato="pendiente", suite=None), True)
         if not isinstance(resultado, Publicado):
             raise EfectoFallido(resultado)
-        return replace(limpia, ci_candidato="pendiente", suite=None)
+        return Ejecucion(replace(limpia, ci_candidato="pendiente", suite=None), True)
     if efecto.tipo == "promover" and isinstance(fase, Promoviendo):
         if efecto != efecto_promover(tren.id, fase.intentos):
             raise ValueError("intento de promoción obsoleto")
@@ -50,5 +60,6 @@ def ejecutar(efecto, estado, observacion, git):
         entradas = {e.entrega.recibo: e for e in estado.entradas}
         heads = tuple(entradas[r].entrega.head for r in tren.recibos)
         lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
-        return replace(limpia, main=lectura, intento_promocion=fase.intentos)
+        return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
+                         not isinstance(lectura, Incierto))
     raise ValueError("efecto o fase no soportados")

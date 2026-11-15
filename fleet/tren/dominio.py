@@ -91,6 +91,13 @@ class ConflictoCadena:
 
 
 @dataclass(frozen=True)
+class RamaOcupada:
+    ref: str
+    esperado: str
+    actual: str
+
+
+@dataclass(frozen=True)
 class Aterrizado:
     B: str
     C: str
@@ -252,6 +259,7 @@ class Observacion:
     main: Optional[Reconciliacion] = None
     tren_id: str = ""
     intento_promocion: int = 0
+    rama_ocupada: Optional[RamaOcupada] = None
 
 
 @dataclass(frozen=True)
@@ -298,7 +306,7 @@ def efecto_promover(tren_id, intentos):
 
 
 def aterrizaje(estado, tren, observacion):
-    """Reconciliar antes de admisión: un PR ya aterrizado puede estar cerrado."""
+    """Promover tras admisión; reconciliar antes, pues el PR puede estar cerrado."""
     fase = tren.fase
     efectos = ()
     if isinstance(fase, Certificado):
@@ -336,8 +344,7 @@ def aterrizaje(estado, tren, observacion):
 def paso(estado, observacion):
     """Un paso determinista. Congela a lo sumo un lote y emite sólo datos."""
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
-    if not estado.pausa and activos and isinstance(activos[0].fase,
-                                                  (Certificado, Promoviendo)):
+    if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
         return aterrizaje(estado, activos[0], observacion)
     efectos = []
     entradas = []
@@ -380,6 +387,15 @@ def paso(estado, observacion):
         fase = tren.fase
         if observacion.tren_id and observacion.tren_id != tren.id:
             return estado, tuple(efectos)
+        if isinstance(fase, Certificado):
+            nuevo, promocion = aterrizaje(estado, tren, observacion)
+            return nuevo, tuple(efectos) + promocion
+        ocupada = observacion.rama_ocupada
+        if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
+                observacion.tren_id == tren.id and
+                ocupada.ref == "refs/heads/tren/" + tren.id and
+                ocupada.esperado == fase.candidato.C):
+            return replace(estado, pausa=Pausa("rama-tren-ocupada")), tuple(efectos)
         if isinstance(fase, Congelado) and observacion.conflicto_cadena:
             conflicto = observacion.conflicto_cadena
             return replace(estado, pausa=Pausa("conflicto-en-cadena", pr=conflicto.pr,
@@ -421,6 +437,11 @@ def paso(estado, observacion):
         return estado, tuple(efectos)
     recibos = tuple(e.entrega.recibo for e in lote)
     tren_id = clave("tren", estado.repo, observacion.base, recibos)
+    generacion = 0
+    usados = {t.id for t in estado.trenes}
+    while tren_id in usados:
+        generacion += 1
+        tren_id = clave("tren", estado.repo, observacion.base, recibos, generacion)
     tren = Tren(tren_id, recibos, Congelado(observacion.base))
     estado = replace(estado, entradas=tuple(replace(e, tren=tren_id)
                      if e.entrega.recibo in recibos else e for e in entradas),
@@ -431,7 +452,7 @@ def paso(estado, observacion):
 
 # Tagged encoding keeps the SQLite/event contract explicit and round-trippable.
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
-          Pausa, Candidato, ConflictoCadena, Aterrizado, EnBase, EscritorExterno,
+          Pausa, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
           Incierto, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto)}
