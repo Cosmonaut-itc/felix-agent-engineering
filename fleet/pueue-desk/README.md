@@ -796,3 +796,12 @@ reinstalar esta versión la valida sin reiniciar el permiso. Observar una
 admisión real en mantener, su cooldown, y una reapertura con presión baja
 natural; no provocar carga ajena. Medir espera por causa y recaída de presión:
 los escenarios del sondeo son condicionados, no ahorro medido ni pronóstico.
+
+Ensayo SEN-6417 (sólo remote-run autorizado): `tests/private_trickle.py
+--run-private` crea configuración, socket y daemon propios. Usa `shlex.join`
+para las tareas sintéticas, comprueba Pueue 4.0.4, `start <id>` con Paused y
+exceso de parallel=1, luego admisión en mantener, cooldown y reapertura baja con
+la guardia de esta versión. Sólo emite grupos, ids y estados; verifica el PID
+de su Popen y su config antes de terminarlo. El ensayo no instala ni demuestra
+reducción de espera real. `tests/test_private_trickle.py` valida la integración
+del arnés con el contrato A mediante dobles, sin daemon.
