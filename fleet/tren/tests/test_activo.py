@@ -254,7 +254,7 @@ class ActivoTests(unittest.TestCase):
         self.assertIsNone(final.pausa)
         with self.ledger() as ledger:
             filas = ledger.db.execute("SELECT payload FROM effects ORDER BY rowid").fetchall()
-            self.assertEqual(len(filas), 4)
+            self.assertEqual(len(filas), 10)  # cuatro de trabajo y seis de status
             self.assertEqual(ledger.outbox(REPO), [])
             self.assertEqual(ledger.db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(ledger.db.execute("SELECT count(*) FROM trains").fetchone()[0], 1)
@@ -299,7 +299,7 @@ class ActivoTests(unittest.TestCase):
         helper = self.raiz / "frontera.py"
         helper.write_text("import sys\nsys.path[:0] = " + repr([str(RAIZ), str(RAIZ / "tests")]) + "\n"
             "from test_activo import Contexto\nc = Contexto(" + repr(str(self.ruta_contexto)) + ")\n"
-            "if sys.argv[1] == 'gh':\n    r = c.gh(['gh'] + sys.argv[2:])\n"
+            "if sys.argv[1] == 'gh':\n    kwargs = {'input': sys.stdin.read()} if '--input' in sys.argv else {}\n    r = c.feedback_gh(['gh'] + sys.argv[2:], **kwargs)\n"
             "else:\n    r = c.lanzador(['bash', c.config['lanzador_hasito']] + sys.argv[2:])\n"
             "print(r.stdout, end='')\nsys.exit(r.returncode)\n")
         for ruta, modo in ((ejecutables / "gh", "gh"), (lanzador, "suite")):

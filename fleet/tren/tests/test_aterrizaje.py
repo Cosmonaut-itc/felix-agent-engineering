@@ -15,7 +15,7 @@ sys.path.insert(0, str(RAIZ))
 from dominio import (Aterrizado, Armado, Candidato, Certificado, ConflictoCadena,
                      Congelado, EnBase, Entrada, Entrega, EscritorExterno, Estado,
                      Incierto, LIMITE_PROMOCION, Observacion, Pausa, Promoviendo,
-                     Terminal, VistaPR, datos, desde_datos, paso)
+                     Terminal, VistaPR, clave, datos, desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
 from git_ops import ErrorGit, GitTren, Publicado, RamaOcupada
 from ledger import Ledger, codificar
@@ -103,6 +103,12 @@ class AterrizajeTests(unittest.TestCase):
         self.assertIsInstance(estado.trenes[0].fase, Promoviendo)
         return estado, efectos[0]
 
+    def assert_status_aterrizaje(self, estado, efectos):
+        tren = estado.trenes[-1]
+        self.assertEqual([(e.tipo, e.clave, e.datos) for e in efectos], [
+            ("avisar-aterrizaje", clave("avisar-aterrizaje", tren.id, r), (tren.id, r))
+            for r in tren.recibos])
+
     def test_feliz_tres_pr_ci_cas_postcondicion_y_reductor(self):
         estado, candidato, obs = self.armar()
         self.assertEqual(candidato.B, self.B)
@@ -123,7 +129,7 @@ class AterrizajeTests(unittest.TestCase):
             self.comando(self.origen, "merge-base", "--is-ancestor", head, "main")
         final, efectos = paso(estado, replace(llegada, prs=()))
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
-        self.assertEqual(efectos, ())
+        self.assert_status_aterrizaje(final, efectos)
 
     def test_reproducible_otro_bare_global_sistema_fechas_y_firma(self):
         primero = self.git.armar(self.B, self.miembros)

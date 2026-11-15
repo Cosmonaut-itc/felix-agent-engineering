@@ -405,6 +405,12 @@ def efecto_promover(tren_id, intentos):
                   (tren_id, str(intentos)))
 
 
+def efectos_status(tren, tipo):
+    """Una señal durable por entrega y generación, sin IO ni comentario."""
+    return tuple(Efecto(clave(tipo, tren.id, recibo), tipo, (tren.id, recibo))
+                 for recibo in tren.recibos)
+
+
 def aterrizaje(estado, tren, observacion):
     """Promover tras admisión; reconciliar antes, pues el PR puede estar cerrado."""
     fase = tren.fase
@@ -424,6 +430,7 @@ def aterrizaje(estado, tren, observacion):
             return estado, ()
         if isinstance(lectura, Aterrizado) and lectura.arbol == cert.arbol:
             fase = Terminal("ATERRIZADO")
+            efectos = efectos_status(tren, "avisar-aterrizaje")
         elif isinstance(lectura, EnBase):
             fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
@@ -509,6 +516,7 @@ def devolver_atribuidos(estado, tren, fase, causas):
         nuevo = Tren(nuevo_id, sobrevivientes, Congelado(fase.candidato.B))
         estado = replace(estado, trenes=estado.trenes + (nuevo,))
         efectos.append(Efecto(clave("armar", nuevo_id), "armar-candidato", (nuevo_id,)))
+        efectos.extend(efectos_status(nuevo, "avisar-en-tren"))
     return estado, tuple(efectos)
 
 
@@ -765,6 +773,7 @@ def paso(estado, observacion):
                      if e.entrega.recibo in recibos else e for e in entradas),
                      trenes=estado.trenes + (tren,))
     efectos.append(Efecto(clave("armar", tren_id), "armar-candidato", (tren_id,)))
+    efectos.extend(efectos_status(tren, "avisar-en-tren"))
     return estado, tuple(efectos)
 
 

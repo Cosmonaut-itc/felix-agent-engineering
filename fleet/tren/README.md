@@ -401,7 +401,10 @@ coordinadora ni escrituras a repos externos durante esa verificación.
 
 El dueño registra su watch del PR antes de entregar. En modo activo,
 `pao-tren/resultado` es una señal al dueño y se excluye del gate de CI: un
-aviso de caducidad no impide reentregar el mismo head actual. Los demás
+aviso de caducidad no impide reentregar el mismo head actual. Su ciclo es
+`pending` al incorporarse a un lote, `failure` al devolver o caducar y
+`success` al aterrizar. Así una reentrega del head vigente reemplaza el rojo
+anterior y el siguiente resultado vuelve a cambiar la señal. Los demás
 checks/statuses conservan sus gates; la lectura de sombra no cambia. El escritor
 `feedback.EscritorGitHub`, separado del observador de sólo lectura, usa
 `gh api --method POST` para comentarios y statuses; la sesión de `gh`
@@ -409,7 +412,13 @@ aporta las credenciales. No se publica configuración privada. Sólo el tick
 activo drena feedback: `entregar`, la sombra y `tick --seco` no hacen POST.
 
 Cada `devolver` publica primero un comentario en el PR culpable con lote,
-B, C, head entregado, unidad, check, firma, conjunto causal y comando dirigido.
+B, C, head entregado, unidad, check, firma como digest `sha256:<16 hex>`,
+conjunto causal y comando dirigido. El digest se calcula sobre el texto original
+UTF-8; el mensaje completo del fallo sólo permanece en el ledger privado.
+Unidad y check siguen siendo los identificadores públicos del test (el productor
+debe mantener secretos fuera de esos identificadores). El resto de la proyección
+contiene IDs de lote/entrega, SHAs y números de PR, motivos de un enum y texto
+fijo; no se transportan otros campos del diagnóstico ni del config privado.
 Las rutas privadas del lanzador, resultado y worktree se reemplazan por la
 plantilla pública `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
@@ -418,7 +427,16 @@ observado de la reproducción; argumentos extra de entorno, nombre o evidencia
 no se publican. El payload durable original permanece intacto en el ledger.
 Después publica un status `failure`, contexto **`pao-tren/resultado`**, sobre
 el **head entregado culpable**, con `target_url` al comentario y descripción
-corta que remite a él. Los sobrevivientes no reciben ese feedback.
+corta que remite a él. Los sobrevivientes no reciben una devolución.
+
+`paso` emite `avisar-en-tren` por cada entrega que incorpora a un tren y
+`avisar-aterrizaje` por cada entrega cuyo aterrizaje confirma. Cada efecto
+lleva `(lote, recibo)` y la clave `clave(tipo, lote, recibo)`. Sólo publican
+status sobre el head entregado: `pending` («En el tren; lote …») y `success`
+(«Aterrizado; lote …»), sin comentario ni `target_url`. Los sobrevivientes
+que forman otra generación reciben otro `pending` con su lote y clave nuevos.
+La emisión es pura; el paso y su outbox comparten COMMIT, por lo que una muerte
+después de guardarlos deja el status pendiente para el tick siguiente.
 
 Cada `avisar-caducidad` resuelve su recibo contra la entrada durable y publica
 un comentario con el motivo exacto de `Rechazado` y la instrucción de volver
@@ -448,9 +466,15 @@ y no toca main ni lanza suites. Un POST o lectura fallidos deja la fila
 `fallido`, visible en `estado` con error de clase pública, sin argv ni stderr.
 No bloquea otros efectos y se reintenta en el siguiente tick. La observación
 global del tick conserva el contrato U13: si falla, el tick no despacha IO.
+Antes de escribir un status se comprueba si el ledger ya confirmó otro efecto
+posterior sobre ese mismo SHA. En ese caso el antiguo cierra `completo` con
+`superado_por` y `status_sha: null`, conservando su comentario si lo tiene.
+Así un `pending` retrasado no tapa un aterrizaje, ni una caducidad antigua
+tapa el `pending` de una reentrega; los otros efectos continúan drenando.
 
 Un feedback exitoso guarda en `effect_results` sólo `comentario_url` y
-`status_sha` (null cuando se omite status) y marca su outbox directamente
+`status_sha` (null cuando se omite status; `comentario_url` es null para los
+efectos que sólo publican status) y marca su outbox directamente
 `completo` en la misma transacción. No pasa por `resultado` ni contiene una
 `observacion`: el reductor y el consumo de resultados U13 no lo consumen.
 Los eventos `efecto-iniciado` y `efecto-resultado` conservan su evidencia.
@@ -462,6 +486,7 @@ activa repos. Continúan pendientes los requisitos de activación listados arrib
 
 Las pruebas de U14 usan el mismo origen git local de U13, un escritor `gh`
 falso que registra cada POST, HOME/XDG temporales, paginación y muertes
-reales entre comentario/status/COMMIT. El guion `tests/remoto.sh` descubre
-la suite completa del tren. Se ejecuta sólo en el host remoto de pruebas,
+reales entre comentario/status/COMMIT. El guion `tests/remoto.sh` reproduce
+las seis regresiones de R1 contra `49fd41dc` y descubre la suite completa del tren.
+Se ejecuta sólo en el host remoto de pruebas,
 con el head commiteado y empujado a la rama de trabajo.

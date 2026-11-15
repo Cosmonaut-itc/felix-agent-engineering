@@ -3,7 +3,9 @@
 El flock del tick serializa los escritores del repo. La clave viaja a GitHub,
 no depende del ACK local para sobrevivir a una muerte tras publicar.
 """
+import hashlib
 import json
+import re
 import shlex
 import subprocess
 
@@ -11,7 +13,9 @@ from dominio import Rechazado
 from observador import sha
 
 
-FEEDBACK = frozenset(("devolver", "avisar-caducidad"))
+STATUS_SOLO = {"avisar-en-tren": ("pending", "En el tren; lote {}"),
+               "avisar-aterrizaje": ("success", "Aterrizado; lote {}")}
+FEEDBACK = frozenset(("devolver", "avisar-caducidad")) | frozenset(STATUS_SOLO)
 CONTEXTO = "pao-tren/resultado"
 
 
@@ -52,14 +56,32 @@ class EscritorGitHub:
                     return comentario["html_url"]
         return self.api(endpoint, {"body": marcador + "\n" + texto})["html_url"]
 
-    def ejecutar_feedback(self, efecto, estado, frontera):
+    def ejecutar_feedback(self, efecto, estado, frontera, posterior=None):
+        def status(head, payload, url=None):
+            superado = posterior(head) if head is not None and posterior else None
+            if superado:
+                return {"comentario_url": url, "status_sha": None, "superado_por": superado}
+            if head is not None:
+                self.api("repos/{}/statuses/{}".format(estado.repo, head), payload)
+            return {"comentario_url": url, "status_sha": head}
+
+        if efecto.tipo in STATUS_SOLO:
+            lote, recibo = efecto.datos
+            entrega = next(e.entrega for e in estado.entradas if e.entrega.recibo == recibo)
+            if not sha(entrega.head) or not re.fullmatch(r"[0-9a-f]{64}", lote):
+                raise ValueError("head o lote inválido")
+            valor, descripcion = STATUS_SOLO[efecto.tipo]
+            return status(entrega.head, {
+                "state": valor, "context": CONTEXTO,
+                "description": descripcion.format(lote)})
         if efecto.tipo == "devolver":
             payload = json.loads(efecto.datos[2])
             pr, head = payload["pr"], payload["head"]
             # Lista explícita: nunca serializar la configuración ni argv privado.
             publico = {k: payload[k] for k in ("lote", "B", "C", "pr", "head")}
             publico["fallos"] = [{**{k: f[k] for k in (
-                "unidad", "check", "firma", "conjunto_causal")},
+                "unidad", "check", "conjunto_causal")},
+                "firma": "sha256:" + hashlib.sha256(f["firma"].encode("utf-8")).hexdigest()[:16],
                 "comando": comando_publico(f, payload["C"])} for f in payload["fallos"]]
             detalle = json.dumps(publico, ensure_ascii=True, sort_keys=True, indent=2)
             texto = "Entrega devuelta por fallos atribuidos al PR.\n\n" + "\n".join(
@@ -89,8 +111,5 @@ class EscritorGitHub:
                 head = actual["head"]["sha"]
                 if not sha(head):
                     raise ValueError("head vigente inválido")
-        if head is not None:
-            self.api("repos/{}/statuses/{}".format(estado.repo, head), {
-                "state": "failure", "context": CONTEXTO,
-                "description": descripcion, "target_url": url})
-        return {"comentario_url": url, "status_sha": head}
+        return status(head, {"state": "failure", "context": CONTEXTO,
+                             "description": descripcion, "target_url": url}, url)

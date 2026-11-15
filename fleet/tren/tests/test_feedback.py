@@ -64,15 +64,17 @@ class FeedbackTests(unittest.TestCase):
         activo.ActivoTests.test_rojo_atribuye_repite_subconjuntos_y_aterriza_sobrevivientes(self)
         comentarios, statuses = self.posts("/comments"), self.posts("/statuses/")
         self.assertEqual(len(comentarios), 1)
-        self.assertEqual(len(statuses), 1)
+        self.assertEqual([p["payload"]["state"] for p in statuses],
+                         ["pending"] * 3 + ["failure"] + ["pending"] * 2 + ["success"] * 2)
         self.assertIn("/issues/2/comments", comentarios[0]["endpoint"])
-        status = statuses[0]
+        status = next(p for p in statuses if p["payload"]["state"] == "failure")
         self.assertTrue(status["endpoint"].endswith(self.miembros[1][1]))
         self.assertEqual(status["payload"]["context"], "pao-tren/resultado")
         self.assertEqual(status["payload"]["state"], "failure")
         self.assertEqual(status["payload"]["target_url"],
             "https://github.com/" + activo.REPO + "/pull/2#issuecomment-1")
-        self.assertEqual(["/comments" in p["endpoint"] for p in self.posts()], [True, False])
+        fallo = self.posts().index(comentarios[0])
+        self.assertEqual(self.posts()[fallo + 1], status)
         cuerpo = comentarios[0]["payload"]["body"]
         for dato in ("lote", '"B"', '"C"', "unidad", "firma", "conjunto_causal", "--worktree"):
             self.assertIn(dato, cuerpo)
@@ -157,8 +159,9 @@ c.tick(frontera=frontera)
         self.contexto.tick(500)
         self.assertEqual(self.estado().entradas[0].admision, Rechazado(Motivo.CERRADO))
         self.assertEqual(len(self.posts("/comments")), 1)
-        self.assertIn("pr-no-abierto", self.posts()[0]["payload"]["body"])
-        self.assertEqual(self.posts("/statuses/"), [])
+        self.assertIn("pr-no-abierto", self.posts("/comments")[0]["payload"]["body"])
+        self.assertEqual([p["payload"]["state"] for p in self.posts("/statuses/")],
+                         ["pending"] * 3)
         fila = next(f for f in self.filas() if "avisar-caducidad" in f["payload"])
         self.assertIsNone(json.loads(fila["resultado"])["status_sha"])
 

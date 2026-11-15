@@ -81,7 +81,8 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
             frontera("antes-ejecutar", efecto)
             try:
                 if feedback:
-                    resultado = escritor.ejecutar_feedback(efecto, estado, frontera)
+                    resultado = escritor.ejecutar_feedback(efecto, estado, frontera,
+                        lambda head: ledger.status_posterior(repo, efecto, head))
                     completo = True
                 else:
                     ejecucion = ejecutar(efecto, estado, observacion, git, hasito)

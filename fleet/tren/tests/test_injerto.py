@@ -131,7 +131,7 @@ class InjertoTests(fixtures.AterrizajeTests):
         self.assertTrue(recuperada.completo)
         final, efectos = paso(estado, recuperada.observacion)
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
-        self.assertEqual(efectos, ())
+        self.assert_status_aterrizaje(final, efectos)
 
     def test_bare_config_local_ajena_no_arma(self):
         self.git.preparar()

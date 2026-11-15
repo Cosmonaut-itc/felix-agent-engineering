@@ -158,6 +158,17 @@ class Ledger:
             "JOIN outbox o ON o.clave=e.clave LEFT JOIN effect_results r ON r.clave=e.clave "
             "WHERE e.repo=? AND o.estado!='completo' ORDER BY e.rowid", (repo,))]
 
+    def status_posterior(self, repo, efecto, head):
+        """Un reintento antiguo no puede tapar una señal posterior confirmada."""
+        for fila in self.db.execute(
+                "SELECT e.clave, r.payload FROM effects e JOIN outbox o ON o.clave=e.clave "
+                "JOIN effect_results r ON r.clave=e.clave WHERE e.repo=? "
+                "AND e.rowid > (SELECT rowid FROM effects WHERE clave=?) "
+                "AND o.estado='completo' ORDER BY e.rowid DESC", (repo, efecto.clave)):
+            if json.loads(fila["payload"]).get("status_sha") == head:
+                return fila["clave"]
+        return None
+
     def iniciar_efecto(self, repo, efecto, ahora):
         # Durable antes del IO: tras una muerte se reconcilia antes del paso.
         with self.transaccion():

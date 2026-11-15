@@ -78,7 +78,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
         llegada = ejecutar(efectos[0], siguiente, sana, self.git)
         final, efectos = paso(siguiente, llegada.observacion)
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
-        self.assertEqual(efectos, ())
+        self.assert_status_aterrizaje(final, efectos)
         self.assertEqual(self.remoto(), candidato.C)
 
     def test_retencion_incompleta_recupera_sin_repetir_resultado_io(self):
@@ -147,7 +147,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
         cerradas = tuple(replace(v, abierto=False) for v in obs.prs)
         estado, efectos = paso(estado, replace(llegada.observacion, prs=cerradas))
         self.assertEqual(estado.trenes[0].fase, Terminal("ATERRIZADO"))
-        self.assertEqual(efectos, ())
+        self.assert_status_aterrizaje(estado, efectos)
         admisiones = tuple(e.admision for e in estado.entradas)
         fresca = replace(obs, base=candidato.C, prs=cerradas, candidato=None,
                          tren_id="", intento_promocion=0, main=None)
@@ -184,7 +184,7 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
         final, efectos = paso(estado, llegada.observacion)
         self.assertEqual(final.trenes[0].fase, Terminal("ATERRIZADO"))
         self.assertIsNone(final.pausa)
-        self.assertEqual(efectos, ())
+        self.assert_status_aterrizaje(final, efectos)
 
     def test_candidato_con_lectura_incompleta_se_conserva_y_solicita_ci(self):
         estado, efecto, obs = self.congelar()
