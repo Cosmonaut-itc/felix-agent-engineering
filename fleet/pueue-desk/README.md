@@ -218,8 +218,8 @@ la autoridad. La marca no asigna cuotas ni concede permiso para abrir; sólo
 `control.py reanudar GRUPO --host mini`, con reconciliación y sensores frescos,
 la retira. No borrar estas marcas para recuperar admisión automáticamente.
 
-La generación se identifica con el `pid_path` configurado, su fecha y la identidad
-`ps` del PID concreto. No se buscan ni terminan procesos por nombre. Tras reiniciar
+En la Mini, la generación se identifica con el `pid_path` configurado, su fecha y la identidad
+`ps` del PID concreto (el desk usa otra; ver «Identidad del daemon del desk»). No se buscan ni terminan procesos por nombre. Tras reiniciar
 `pueued`, se reponen cuotas, pero las pausas observadas quedan ambiguas y retenidas.
 **No se promete reapertura automática ni recuperación de tareas tras reboot**:
 `restart_queue=false`. Para resolver una pausa de un grupo administrado, Felix

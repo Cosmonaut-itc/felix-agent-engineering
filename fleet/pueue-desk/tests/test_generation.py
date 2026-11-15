@@ -347,6 +347,35 @@ class GenerationInstallTests(GenerationFixture):
         with self.assertRaisesRegex(ValueError,'MainPID'):self.install()
         self.assertEqual(self.fingerprint(),before)
 
+    def test_prepared_with_current_generation_refuses_without_effects(self):
+        startup=dict(phase='prepared',previous_generation=self.generation(),statuses={},groups={},holds={},
+                     interruptions={},source_hash='a'*64,target_hash='b'*64)
+        self.save(dict(self.state(),generation=self.generation(),startup=startup)); before=self.fingerprint()
+        for dry in (True,False):
+            with self.assertRaisesRegex(ValueError,'prepared'):self.install(dry)
+            self.assertEqual(self.fingerprint(),before)
+        self.assertFalse(any(c[2] in ('stop','start') for c in self.commands))
+
+    def test_mainpid_change_after_workers_stop_refuses_before_publishing(self):
+        stopped=[False]; properties=self.installer.unit_properties
+        def hook(args):
+            if args[2]=='stop' and args[3:]==self.installer.SERVICES:stopped[0]=True
+        def changed():
+            return dict(properties(),MainPID='999') if stopped[0] else properties()
+        self.hook=hook; before=self.state()
+        with patch.object(self.installer,'unit_properties',side_effect=changed):
+            with self.assertRaisesRegex(ValueError,'MainPID'):self.install()
+        self.assertEqual(self.state(),before)
+        self.assertEqual((self.library/'control.py').read_text(),'# old\n')
+        self.assertTrue((self.engine.directory/'maintenance').exists())
+        self.assertFalse(any(c[2]=='start' for c in self.commands))
+
+    def test_unknown_group_status_refuses_legacy_conversion(self):
+        self.p.groups['default']['status']='Unknown'; before=self.fingerprint()
+        for dry in (True,False):
+            with self.assertRaisesRegex(ValueError,'desconocida'):self.install(dry)
+            self.assertEqual(self.fingerprint(),before)
+
     def test_new_distinct_generation_uses_normal_restart_reconciliation(self):
         # New format is never converted to hide a real restart.
         self.save(dict(self.state(),generation=PREFIX+'a'*64))
