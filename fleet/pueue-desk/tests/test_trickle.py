@@ -4,6 +4,7 @@ Pueue, sensores, Docker y el reloj de arranque son falsos. `start <id>` del dobl
 arranca la tarea sin tocar el estado del grupo, como Pueue 4.0.4.
 """
 import copy
+from datetime import datetime, timezone
 import json
 from pathlib import Path
 import sqlite3
@@ -22,6 +23,10 @@ SECRET = 'CENTINELA-SECRETO-6417'
 SUMMARIES = ('admision_una', 'tope_alcanzado', 'retenido', 'guard_fin')
 BOOT = '0f0e0d0c-0b0a-4908-8706-050403020100'
 SECOND = 10**9
+
+
+def iso(timestamp):
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
 
 
 def stamp(minute, second=0):
@@ -53,6 +58,7 @@ class TaskPueue(FakePueue):
         self.tasks = {}
         self.start_fault = None  # None, 'before', 'after', 'crash', 'noop'
         self.on_start = None
+        self.clock = None  # inicio civil que Pueue escribe al arrancar
 
     def status(self):
         self.boundary()
@@ -72,7 +78,7 @@ class TaskPueue(FakePueue):
             row = self.tasks[str(args[1])]
             if self.start_fault != 'noop' and 'Queued' in row['status']:
                 row['status'] = {'Running': dict(enqueued_at=row['status']['Queued']['enqueued_at'],
-                                                 start='2026-11-14T10:00:00+00:00')}
+                                                 start=iso(self.clock()))}
             if self.start_fault == 'after':
                 raise subprocess.CalledProcessError(1, ['fake-pueue'])
             return ''
@@ -90,6 +96,7 @@ class TrickleFixture(unittest.TestCase):
         self.boot, self.ns = BOOT, 3600 * SECOND
         self.docker_ok = True
         self.p = TaskPueue()
+        self.p.clock = lambda: self.now
         self.p.groups = {g: dict(parallel_tasks=n, status='Running') for g, n in control.desk_profile(self.now).items()}
         self.p.groups.update(default=dict(parallel_tasks=1, status='Paused'))
         self.engine = self.new_engine()
@@ -266,7 +273,7 @@ class TrickleRedTests(TrickleFixture):
             row = self.summary()
             self.assertEqual((row['evento'], row['causa']), ('tope_alcanzado', 'admission_unknown'))
         # Evidencia: la misma identidad aparece Running. Se confirma y se espera un minuto desde ahí.
-        self.p.tasks['10']['status'] = running(9)
+        self.p.tasks['10']['status'] = {'Running': dict(enqueued_at=stamp(1), start=iso(self.now - 600))}
         self.advance(1)
         self.tick(MID)
         self.assertEqual(self.starts(), [])
@@ -390,6 +397,49 @@ class TrickleRegressionTests(TrickleFixture):
         self.assertEqual(p.calls, [])
         events = [json.loads(l)['evento'] for l in (self.root / 'mini/guardia.log').read_text().splitlines()]
         self.assertEqual(set(events), {'lectura', 'decision'})
+
+
+class TrickleRecoveryTests(TrickleFixture):
+    """`control.py resolver-admision`: sólo bajo mantenimiento; sin evidencia sigue retenida."""
+
+    def unknown(self):
+        self.p.tasks = {'10': task(10, queued(1)), '11': task(11, queued(2))}
+        self.p.start_fault = 'before'
+        self.tick(MID)
+        self.p.start_fault = None
+        self.p.calls.clear()
+        return self.engine.admission()
+
+    def test_needs_maintenance_and_evidence_or_explicit_no_effect(self):
+        before = self.unknown()
+        self.assertEqual(before['last_attempt']['outcome'], 'unknown')
+        with self.assertRaises(ValueError):
+            self.engine.resolve_admission()
+        (self.engine.directory / 'maintenance').write_text('')
+        with self.assertRaises(ValueError):
+            self.engine.resolve_admission()
+        self.assertEqual(self.engine.admission(), before, 'Sin evidencia la fila no cambia')
+        self.assertEqual(self.engine.resolve_admission(no_effect=True), 'not_sent')
+        (self.engine.directory / 'maintenance').unlink()
+        self.tick(MID)
+        self.assertEqual(self.starts(), [], 'La resolución cuenta como intento: un minuto desde ahí')
+        self.advance(60)
+        self.tick(MID)
+        self.assertEqual(self.starts(), [('start', 10)])
+
+    def test_evidence_confirms_and_reboot_closes_as_not_sent(self):
+        self.unknown()
+        (self.engine.directory / 'maintenance').write_text('')
+        self.p.tasks['10']['status'] = {'Running': dict(enqueued_at=stamp(1), start=iso(self.now))}
+        self.assertEqual(self.engine.resolve_admission(), 'confirmed')
+        self.assertEqual(self.engine.admission()['last_confirmed']['id'], 10)
+        self.setUp()
+        self.unknown()
+        (self.engine.directory / 'maintenance').write_text('')
+        self.boot, self.ns = 'aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee', 90 * SECOND
+        self.assertEqual(self.engine.resolve_admission(), 'not_sent')
+        self.assertEqual(self.engine.admission()['last_attempt']['boot_id'], self.boot)
+        self.doCleanups()
 
 
 if __name__ == '__main__':
