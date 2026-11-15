@@ -85,11 +85,28 @@ class StartupUITests(unittest.TestCase):
         finally:test.doCleanups()
 
     def test_production_ui_interruption_hold_resolution_escape_and_normal_host(self):
+        self.check_ui('startup')
+
+    def check_ui(self, scenario, fixture=None):
         source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
-        result=subprocess.run(['node',str(BASE/'tests/slots-ui-check.js')],input=json.dumps(dict(js=source,fixture=self.fixture(),scenario='startup')),
+        result=subprocess.run(['node',str(BASE/'tests/slots-ui-check.js')],input=json.dumps(dict(js=source,fixture=fixture or self.fixture(),scenario=scenario)),
                               text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
-        self.assertIn('UI startup OK',result.stdout)
+        self.assertIn('UI startup',result.stdout)
+
+    def test_interrupted_grouping_toggle_snapshot_times_and_escape(self):
+        fixture=self.fixture()
+        fixture['hosts'][0]['snapshot']['tasks']=[
+            row_task(id=1,group='jale',state='Done',name='e2e',ticket='SEN-100',subject='Asunto <script>alert(1)</script>',end=1794702960,interruption_reason=MESSAGE),
+            row_task(id=2,group='jale',state='Done',name='contract',branch='feat/sin-ticket',end=1794706860,interruption_reason=MESSAGE),
+            row_task(id=3,group='jale',state='Done',name='e2e',subject='Otro corte',end=1794706860,interruption_reason=MESSAGE),
+            row_task(id=4,group='jale',state='Done',subject='No atribuida'),
+            row_task(id=5,group='jale',state='Stashed',subject='Todavía en fila',interruption_reason=MESSAGE),
+        ]
+        self.check_ui('startup-grouping',fixture)
+
+    def test_pause_manual_unknown_and_ambiguous_launch_labels(self):
+        self.check_ui('startup-pauses')
 
     def test_sanitizer_retains_only_valid_hold_strings(self):
         c=self.fixture()['hosts'][0]['snapshot']['control']

@@ -577,12 +577,22 @@ El snapshot conserva para la tarea identificada por id + created_at el texto
 **«Interrumpida al reiniciar Pueue; relanzar manualmente»**. No fabrica recibos
 ni procedencia de cancelación. El panel conserva esas interrupciones mientras existan la tarea y su identidad
 atribuida, aunque sean terminales o tengan más de 24 h; no aplica un tope de 64.
+Las agrupa bajo cada carril en una sola fila plegable: **«N interrumpidas por
+reinicio»** y **«No vuelven solas · relanzar es corrida nueva»**. Al abrirla
+muestra la hora local del corte, ticket (o «Sin ticket»), asunto o rama y
+alcance de cada corrida. Arranca plegada y recuerda el despliegue por host y
+grupo durante los refrescos de la instantánea; no ofrece relanzar ni limpiar.
 La espera automática de cuotas/Docker se muestra como espera con reanudación
 automática, sin instrucciones manuales. Junto al grupo realmente retenido muestra
 **«Retenido al reiniciar · <motivo> · resolver con control.py reanudar <grupo>»**
 en la celda de lugares libres, sin repetir instrucciones en el host. La espera
 conserva «reanudación automática»; una pausa ambigua de la Mini también se
 explica allí. Un grupo lleno no muestra el aviso de pausa.
+Los motivos `pausa manual` y `pausa de origen desconocido` se muestran como
+**«Pausa manual»** y **«Pausa de origen desconocido»**, con la misma instrucción
+`resolver con control.py reanudar <grupo>`, sin atribuir la pausa al reinicio.
+El lanzamiento ambiguo con log previo conserva **«Retenido al reiniciar»** y
+su motivo.
 No incorpora botón ni repite la instrucción SSH en la cabecera. `default` vacío
 sigue oculto; una terminal atribuida al reinicio lo hace visible.
 

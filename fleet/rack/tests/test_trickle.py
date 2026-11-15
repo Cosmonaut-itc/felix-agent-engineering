@@ -148,8 +148,8 @@ class MergedCellTests(unittest.TestCase):
 
     def test_ambiguous_in_cell(self):
         f,h=self.fixture();h['control'].update(pause_reasons={'jale':['ambiguous','startup']},startup_holds={'jale':'pausa de origen desconocido'})
-        out=self.check(f,'Retenido al reiniciar',('Libre',))
-        self.assertEqual(out.count('Retenido al reiniciar'),1)
+        out=self.check(f,'Pausa de origen desconocido',('Libre','Retenido al reiniciar'))
+        self.assertEqual(out.count('Pausa de origen desconocido'),1)
 
     def test_unknown(self):
         f,h=self.fixture();h['control']=None;h['guard']=None
