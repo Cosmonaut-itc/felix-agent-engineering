@@ -68,6 +68,50 @@ def policy_plan(engine):
                 overrides={}, mode_override=None, schedule_event=event, revision=state['revision'] + 1)
 
 
+def generation_plan(engine, control, state, planned=None):
+    """Caller holds control.lock. Felix, 2026-11-15: the legacy lstart hash cannot prove
+    «same daemon», so it is converted only while no desk group is Paused. reconcile marks
+    only Paused groups ambiguous; with every group Running conversion hides nothing.
+
+    With `planned`, revalidates an earlier plan: any change in the daemon or the decision stops.
+    """
+    current = engine.generation(state)
+    if planned is not None and current != planned['current']:
+        raise ValueError('Instalación detenida: la generación del daemon cambió durante la instalación')
+    converting = control.generation_kind(state['generation']) == 'legacy' or (
+        planned is not None and planned['kind'] == 'convert')
+    if not converting:
+        # A stored stable generation: equal is the same daemon, different is a restart for reconcile.
+        plan = dict(kind='unchanged' if state['generation'] == current else 'restart', current=current, reason=None)
+    else:
+        blockers = []
+        phase = (state.get('startup') or {}).get('phase')
+        if phase not in (None, 'ready'):
+            blockers.append('arranque durable en fase ' + str(phase))
+        paused = sorted(g for g, row in engine.pueue.status()['groups'].items() if row['status'] == 'Paused')
+        if paused:
+            blockers.append('grupos Paused: ' + ', '.join(paused))
+        plan = dict(kind='blocked' if blockers else 'convert', current=current, reason='; '.join(blockers) or None)
+    if plan['kind'] == 'blocked' and planned is not None:
+        raise ValueError('Instalación detenida: la generación anterior no se convierte con ' + plan['reason'])
+    if planned is not None and plan['kind'] != planned['kind']:
+        raise ValueError('Instalación detenida: la autoridad cambió durante la instalación')
+    return plan
+
+
+def refuse_blocked(plan):
+    if plan is not None and plan['kind'] == 'blocked':
+        raise ValueError('Instalación detenida sin cambios: la generación anterior no se convierte con '
+                         + plan['reason'] + '. Reanudar o esperar esos grupos y repetir --seco.')
+
+
+def current_state(engine, migration):
+    if migration is not None:
+        return migration
+    with engine.connect() as db:
+        return engine.state(db)
+
+
 def preflight(home, pid_file, control):
     """Read-only gates shared by --seco and installation; no file creation."""
     manager = control.manager_environment(run('systemctl', '--user', 'show-environment').stdout)
@@ -87,30 +131,52 @@ def preflight(home, pid_file, control):
         client_env.pop(key, None)
     client_env.update(manager)
     engine = control.MiniControl(control.Pueue(home / '.local/bin/pueue', env=client_env, cwd=home), directory, host='desk')
+    engine.install_generation = None
     if control.has_authority(directory):
         with authority_lock(directory):
             migration = policy_plan(engine)
             if migration is None:
                 engine.view()  # unreadable authority never grants re-adoption
             with engine.connect() as db:
-                if Path(engine.state(db, policy_migration=True)['pid_file']).resolve() != pid_file.resolve():
-                    raise ValueError('pid_path difiere de la autoridad')
+                stored = engine.state(db, policy_migration=True)
+            if Path(stored['pid_file']).resolve() != pid_file.resolve():
+                raise ValueError('pid_path difiere de la autoridad')
             engine.install_migration = migration
+            # Independent of policy_plan, which is None when the table is current.
+            engine.install_generation = generation_plan(engine, control, migration or stored)
     else:
         observed, _ = engine.observed()
         if observed != control.desk_profile(engine.clock()):
             raise ValueError('El desk no coincide con la tabla vigente; no se instala')
-    control.mini_generation(pid_file)
+    control.desk_generation(pid_file)
     engine.install_unit_before = unit_properties()
     if (not engine.install_unit_before['MainPID'].isdigit() or int(engine.install_unit_before['MainPID']) < 1
             or engine.install_unit_before['ActiveState'] != 'active'):
         raise ValueError('Se requiere pueued activo con MainPID verificable')
+    if pid_file.read_text().strip() != engine.install_unit_before['MainPID']:
+        raise ValueError('El pid file no es el MainPID de pueued.service')
     return engine
+
+
+def describe_generation(plan):
+    if plan is None:
+        return 'SECO, generación: sin autoridad; la adopción guarda la generación estable.'
+    if plan['kind'] == 'convert':
+        return ('SECO, generación: convertiría la anterior a ' + plan['current']
+                + '; ningún grupo Paused; conserva motivos, revisión, deseo y recibos.')
+    if plan['kind'] == 'blocked':
+        return 'SECO, generación: se detendría antes de efectos: ' + plan['reason'] + '.'
+    if plan['kind'] == 'restart':
+        return 'SECO, generación: otro daemon; la reconciliación marcará ambiguous los grupos Paused.'
+    return 'SECO, generación: vigente, sin conversión.'
 
 
 def install(home, pid_file, control, dry_run=False, sources=None):
     engine = preflight(home, pid_file, control)
+    planned = getattr(engine, 'install_generation', None)
     if dry_run:
+        print(describe_generation(planned))
+        refuse_blocked(planned)
         if getattr(engine, 'install_migration', None) is not None:
             plan = engine.install_migration
             print('SECO, autoridad: añadir mode_override=null si falta; conservar recibos y vencimientos.')
@@ -132,9 +198,11 @@ def install(home, pid_file, control, dry_run=False, sources=None):
     maintenance = directory / 'maintenance'
     own_maintenance = False
     enable_after = False
+    refuse_blocked(planned)
     with control.locked(directory):
         if control.has_authority(directory):
-            policy_plan(engine)  # refuse pending/corrupt authority before even the switch
+            # Refuse pending/corrupt authority or a newly Paused group before even the switch.
+            refuse_blocked(generation_plan(engine, control, current_state(engine, policy_plan(engine)), planned))
         if not os.path.lexists(switch):
             with switch.open('x') as stream:
                 stream.write('instalación en curso\n'); stream.flush(); os.fsync(stream.fileno())
@@ -151,6 +219,9 @@ def install(home, pid_file, control, dry_run=False, sources=None):
         run('systemctl', '--user', 'stop', *SERVICES)
         with control.locked(directory):
             migration = policy_plan(engine) if control.has_authority(directory) else None
+            if control.has_authority(directory):
+                # Timers and guard are stopped: decide again, never from the preflight plan.
+                generation_plan(engine, control, current_state(engine, migration), planned)
             if not control.has_authority(directory):
                 backup = library / 'control.pre-slots.py'
                 if not backup.exists():
@@ -173,9 +244,13 @@ def install(home, pid_file, control, dry_run=False, sources=None):
             finally:
                 os.close(folder)
             if control.has_authority(directory):
-                if migration is not None:
+                state = current_state(engine, migration)
+                plan = generation_plan(engine, control, state, planned)  # immediately before the commit
+                if plan['kind'] == 'convert':
+                    state = dict(state, generation=plan['current'])  # same revision: desire is unchanged
+                if migration is not None or plan['kind'] == 'convert':
                     with engine.connect(write=True) as db:
-                        engine.store(db, migration)  # one transaction: hash, desire, overrides, revision
+                        engine.store(db, state)  # one transaction: hash, desire, overrides, revision, generation
                 engine.view()
             else:
                 engine.adopt(pid_file)
@@ -205,6 +280,8 @@ def install(home, pid_file, control, dry_run=False, sources=None):
                     or loaded['KillMode'] != 'mixed'
                     or str(home / '.local/lib/pao-pueue-desk/control.py') + ' preparar --host desk' not in loaded['ExecStartPre']):
                 raise ValueError('La unidad cargada no coincide o cambió MainPID; conservar mantenimiento')
+            if planned is not None:
+                generation_plan(engine, control, current_state(engine, None), planned)
             if own_maintenance:
                 maintenance.unlink(); control.sync_directory(directory)
                 if not engine.reconcile():
