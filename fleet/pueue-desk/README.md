@@ -766,8 +766,10 @@ reducciones/aumentos → verificar vector/generación → sensores frescos → r
 sólo razones propias. La Mini no recibe la admisión de una tarea de SEN-6417.
 `slots.disabled`, mantenimiento y las pausas manuales siguen siendo independientes.
 
-El panel muestra «Interrumpida al reiniciar Pueue; relanzar manualmente» para la
-identidad atribuida. Un grupo retenido muestra «Retenido al reiniciar · motivo ·
+El snapshot conserva «Interrumpida al reiniciar Pueue; relanzar manualmente» para
+la identidad atribuida. El panel agrupa las interrumpidas en un plegable por grupo,
+con conteo, consecuencia y horas/detalles; abrirlo persiste tras cada snapshot y
+queda aislado por host/grupo. Un grupo retenido muestra «Retenido al reiniciar · motivo ·
 resolver con control.py reanudar grupo», sin botón. Default vacío sigue oculto.
 Para resolver por el SSH existente, después de revisar el motivo y posibles
 procesos supervivientes:
@@ -814,7 +816,8 @@ de relanzar. No se busca ni se mata por nombre.
    control.lock: conserva deseos, revisión, ajustes, pausas y todos los recibos.
    No borra ni readopta SQLite. Una reinstalación terminada no reinicia otra vez.
 4. `mini_handoff` conserva destino, fase, enable/disable originales y el efecto
-   pendiente y una deadline absoluta durable. Cada disable/bootout/enable/bootstrap del relevo tiene intención
+   pendiente y una deadline absoluta durable (nula cuando no se pidió espera).
+   Cada disable/bootout/enable/bootstrap del relevo tiene intención
    FULL previa. Publica el plist nuevo **deshabilitado**, reclama sólo grupos
    Running con razón handoff antes de pause --wait y deja drenar las activas.
    Mientras drena, no acepta ajustes nuevos del rack. No mata trabajo para acelerar
