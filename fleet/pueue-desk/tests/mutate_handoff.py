@@ -56,6 +56,10 @@ CASES=[
   'test_recovery_error_still_closes_pressure_but_never_opens'),
  ('never-open-on-recovery-failure','control.py',"failure, state = recovery_error, None","failure, state = None, None",
   'test_recovery_error_still_closes_pressure_but_never_opens'),
+ ('mini-config-environment','control.py',"        env.pop(key, None)",'        pass',
+  'test_mini_clients_and_fixed_exec_share_home_cwd_and_clean_config_environment'),
+ ('mini-client-cwd','control.py',"        pueue.context = dict(env=mini_environment(Path.home()), cwd=Path.home())",'        pass',
+  'test_mini_clients_and_fixed_exec_share_home_cwd_and_clean_config_environment'),
 ]
 
 

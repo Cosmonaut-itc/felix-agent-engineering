@@ -346,6 +346,18 @@ class HandoffTests(unittest.TestCase):
             self.assertEqual(h.p.groups['default']['status'],'Paused')
             self.assertEqual(h.p.groups['rapidas']['status'],'Paused')
 
+    def test_mini_clients_and_fixed_exec_share_home_cwd_and_clean_config_environment(self):
+        h=self.h
+        with patch.dict(os.environ,{key:'/another-queue' for key in control.MANAGER_KEYS}), \
+             patch.object(control.Path,'home',return_value=h.home),patch.object(control,'Pueue',return_value=h.p), \
+             patch.object(control,'guard'),patch.object(control.sys,'argv',['control.py','guardia','--host','mini']):
+            control.main()
+            env=mini.daemon_environment(h.home)
+        self.assertEqual(getattr(h.p,'context',{}).get('cwd'),h.home)
+        self.assertEqual(getattr(h.p,'context',{}).get('env'),env)
+        self.assertEqual(env['HOME'],str(h.home))
+        for key in control.MANAGER_KEYS:self.assertNotIn(key,env)
+
     def test_two_daemons_and_alive_pid_are_rejected_without_overwriting_queue(self):
         h=self.h;h.m.change('install');h.finish()
         before=(h.data/'state.json').read_bytes()

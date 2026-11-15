@@ -547,6 +547,13 @@ def default_data(home=None):
 MANAGER_KEYS = ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'PUEUE_CONFIG_PATH')
 
 
+def mini_environment(home):
+    env = dict(os.environ, HOME=str(home))
+    for key in MANAGER_KEYS:
+        env.pop(key, None)
+    return env
+
+
 def manager_environment(text):
     """Only path settings from systemctl show-environment; never log its contents."""
     env = {}
@@ -2028,6 +2035,8 @@ def main():
     if args.host == "mini" and args.command == "aplicar":
         parser.error("La Mini sólo admite guardia y pausa manual")
     pueue = Pueue("/opt/homebrew/bin/pueue") if args.host == "mini" else Pueue()
+    if args.host == 'mini':
+        pueue.context = dict(env=mini_environment(Path.home()), cwd=Path.home())
     directory = Path.home() / ".local/state/pao/pueue-mini" if args.host == "mini" else STATE_DIR
     if args.command == 'rack':
         # Only panel RPCs have a deadline. Guards and aplicar wait for Pueue.

@@ -24,10 +24,7 @@ TERMINAL = ('done', 'withdrawn', 'aborted')
 
 
 def daemon_environment(home):
-    env = dict(os.environ, HOME=str(home))
-    for key in control.MANAGER_KEYS:
-        env.pop(key, None)
-    return env
+    return control.mini_environment(home)
 
 
 def launchctl(*args, check=True):
