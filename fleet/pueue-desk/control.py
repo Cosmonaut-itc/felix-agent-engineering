@@ -358,6 +358,71 @@ def mini_generation(pid_file):
     return hashlib.sha256((pid + ':' + str(pid_file.stat().st_mtime_ns) + ':' + identity).encode()).hexdigest()
 
 
+PROC = Path('/proc')
+DESK_GENERATION = 'linux-proc-v1:'
+
+
+def generation_kind(value):
+    """Desk authority accepts only the legacy digest or the versioned Linux digest."""
+    if type(value) is str:
+        if re.fullmatch(r'[0-9a-f]{64}', value):
+            return 'legacy'
+        if re.fullmatch(r'linux-proc-v1:[0-9a-f]{64}', value):
+            return 'linux-proc-v1'
+    raise ValueError('Generación desk inválida')
+
+
+def _pid_signature(info):
+    return [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size]
+
+
+def linux_identity(pid_file, *, proc=None):
+    """Two coherent Linux snapshots, with the configured pid file pinned each time.
+
+    starttime is in boot ticks: no ps, btime, wall time or conversion to a date.
+    This fences reads; it cannot make a later Pueue RPC atomic with the snapshot.
+    """
+    if proc is None and sys.platform != 'linux':
+        raise ValueError('La identidad del desk requiere Linux')
+    proc = PROC if proc is None else Path(proc)
+    pid_file = Path(pid_file)
+
+    def snapshot():
+        with pid_file.open('r', encoding='ascii') as handle:
+            signature = _pid_signature(os.fstat(handle.fileno()))
+            text = handle.read()
+            pid_text = text.strip()
+            if not re.fullmatch(r'[0-9]+', pid_text) or int(pid_text) < 1:
+                raise ValueError('PID inválido')
+            pid = int(pid_text)
+            boot = (proc / 'sys/kernel/random/boot_id').read_text(encoding='ascii').strip()
+            if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot):
+                raise ValueError('boot_id inválido')
+            record = (proc / str(pid) / 'stat').read_text(encoding='ascii')
+            head, closing, tail = record.rpartition(')')
+            fields = tail.split()  # field 3 begins the suffix; field 22 is index 19
+            if (not closing or head != str(pid) + ' (pueued' or len(fields) < 20
+                    or fields[0] not in ('R', 'S', 'D', 'T', 't', 'W', 'K', 'P', 'I')
+                    or not re.fullmatch(r'[0-9]+', fields[19]) or int(fields[19]) >= 2**64):
+                raise ValueError('Daemon no identificado en proc')
+            handle.seek(0)
+            if (handle.read() != text or _pid_signature(os.fstat(handle.fileno())) != signature
+                    or _pid_signature(pid_file.stat()) != signature):
+                raise ValueError('El pid file cambió durante la lectura')
+            return dict(boot=boot, pid=pid, ticks=int(fields[19]), file=signature)
+
+    first, second = snapshot(), snapshot()
+    if first != second:
+        raise ValueError('La identidad del daemon cambió durante la lectura')
+    return first
+
+
+def desk_generation(pid_file, *, proc=None):
+    identity = linux_identity(pid_file, proc=proc)
+    seed = ['linux-proc-v1', identity['boot'], identity['pid'], identity['ticks'], identity['file']]
+    return DESK_GENERATION + hashlib.sha256(canonical(seed).encode()).hexdigest()
+
+
 INTERRUPTED = 'Interrumpida al reiniciar Pueue; relanzar manualmente'
 
 
@@ -791,6 +856,7 @@ class MiniControl:
             raise ValueError('Ajustes inválidos')
         calculated = dict(MINI_PROFILE)
         if self.host == 'desk':
+            generation_kind(value['generation'])
             event = value.get('schedule_event')
             if type(event) not in (int, float) or not math.isfinite(event) or schedule_at(event)[0] != event:
                 raise ValueError('Evento inválido')
@@ -834,6 +900,8 @@ class MiniControl:
                     or any(type(g) is not str or type(reason) is not str for g, reason in startup['holds'].items())
                     or any(not re.fullmatch('[0-9a-f]{64}', startup.get(k, '')) for k in ('source_hash', 'target_hash'))):
                 raise ValueError('Arranque durable inválido')
+            if self.host == 'desk' and 'previous_generation' in startup:
+                generation_kind(startup['previous_generation'])
             for ident, item in startup['interruptions'].items():
                 if not ident.isdigit() or type(item) is not dict or item.get('message') != INTERRUPTED:
                     raise ValueError('Interrupción inválida')
@@ -844,7 +912,10 @@ class MiniControl:
         db.execute('UPDATE policy SET body=? WHERE id=1', (canonical(state),))
 
     def generation(self, state):
-        return self.generation_source() if self.generation_source else mini_generation(Path(state['pid_file']))
+        if self.generation_source:
+            return self.generation_source()
+        reader = mini_generation if self.host == 'mini' else desk_generation
+        return reader(Path(state['pid_file']))
 
     def disabled(self):
         for target in (self.directory / 'slots.disabled', self.directory / 'maintenance', self.directory.parent / 'rack/actions.disabled'):

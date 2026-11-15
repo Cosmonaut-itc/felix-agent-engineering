@@ -20,7 +20,7 @@ class DeskChannelTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory(prefix='rack-u32-',dir='/tmp');self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.now=1794664799.0  # 2026-11-14 13:59:59 UTC
         self.p=FakePueue();self.p.groups={g:dict(status='Running',parallel_tasks=n) for g,n in control.desk_profile(self.now).items()}
-        self.engine=control.MiniControl(self.p,self.root/'host',clock=lambda:self.now,generation=lambda:'desk-1',host='desk')
+        self.engine=control.MiniControl(self.p,self.root/'host',clock=lambda:self.now,generation=lambda:'linux-proc-v1:1111111111111111111111111111111111111111111111111111111111111111',host='desk')
         with control.locked(self.engine.directory):self.engine.adopt()
         self.host=dict(id='desk',transport='ssh',actions=dict(transport='ssh',reason=None,
                        controllers=copy.deepcopy(accion.CONTROLLERS),argv=list(accion.DESK_ARGV)))
@@ -230,7 +230,7 @@ assert sys.argv[1:]==['rack','--host','desk'],sys.argv
 assert sys.flags.isolated==1
 (root/'seen.json').write_text(json.dumps(dict(argv=sys.argv,isolated=sys.flags.isolated)))
 c.Pueue=lambda *a:fake.FilePueue(root/'pueue.json')
-c.mini_generation=lambda *a:'daemon-1'
+c.desk_generation=lambda *a:'linux-proc-v1:2222222222222222222222222222222222222222222222222222222222222222'
 Original=c.MiniControl
 c.MiniControl=lambda p,d,**kw:Original(p,d,clock=lambda:1794664799.,**kw)
 c.main()
@@ -253,7 +253,7 @@ class DeskForcedChannelTests(unittest.TestCase):
         fake=importlib.util.module_from_spec(spec);spec.loader.exec_module(fake)
         self.directory=self.root/'home/.local/state/pao/pueue-desk'
         self.engine=control.MiniControl(fake.FilePueue(self.root/'pueue.json'),self.directory,
-                                       clock=lambda:1794664799.,generation=lambda:'daemon-1',host='desk')
+                                       clock=lambda:1794664799.,generation=lambda:'linux-proc-v1:2222222222222222222222222222222222222222222222222222222222222222',host='desk')
         with control.locked(self.directory):self.engine.adopt()
         shim=self.root/'fake_ssh.py'
         shim.write_text("import importlib.util,json,sys,subprocess\nfrom pathlib import Path\n"
@@ -328,7 +328,7 @@ class DeskForcedChannelTests(unittest.TestCase):
         self.assertEqual(caps['status'],'unsupported')
         self.assertFalse(caps['capabilities']['slots'])
         r=dict(schema=accion.SCHEMA,op='slots',host='desk',action_id='forced-absent-01',dry_run=False,
-               expected=dict(revision=1,policy_hash=control.DESK_POLICY_HASH,generation='daemon-1',mode='noche',slots=self.table),
+               expected=dict(revision=1,policy_hash=control.DESK_POLICY_HASH,generation='linux-proc-v1:2222222222222222222222222222222222222222222222222222222222222222',mode='noche',slots=self.table),
                change=dict(group='jale',delta=-1))
         self.assertEqual(self.actions.post(r)[1]['status'],'unsupported')
         self.assertFalse(self.directory.exists())

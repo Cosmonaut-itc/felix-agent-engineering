@@ -468,6 +468,60 @@ acotadas, reducción 18→14 sin detenerlas, evento 05Z y undo exacto, con limpi
 por la puerta privada y espera del PID propio.
 
 
+### Identidad del daemon del desk (DESK-GEN)
+
+El desk guarda `linux-proc-v1:` seguido de 64 hexadecimales SHA-256. Identifica
+el `pueued` del `pid_path` configurado con `boot_id`, PID, campo 22 (`starttime`,
+ticks desde el arranque) de `/proc/PID/stat` y la firma del pid file
+`dev/ino/mtime_ns/ctime_ns/size`. No depende de `ps lstart`, `btime` ni del reloj
+de pared: un ajuste de reloj en WSL no simula un reinicio. El lector valida
+nombre, PID, estado vivo y formato, fija el archivo abierto y compara dos
+lecturas coherentes. Cualquier lectura ilegible o incoherente detiene la admisión.
+La Mini conserva su fórmula y validación anteriores, sin leer `/proc`.
+
+La firma detecta cambios observables, incluida una reescritura con mtime
+restaurado mediante ctime/inode. No demuestra un historial que termine con
+exactamente las mismas observaciones. El boot_id es del kernel/VM de WSL;
+un reinicio de distro con VM viva se distingue también por ticks y firma.
+
+La conversión de un hash anterior (64 hex) ocurre sólo en `install-desk.py`,
+incluso si la tabla ya está vigente, y exige **todos los grupos Running**,
+incluidos `default`, `rapidas` y grupos ajenos al reparto. No prueba continuidad
+histórica del daemon: es la política explícita para convertir cuando ninguna
+pausa puede quedar oculta. Conserva razones, revisión, deseo, ajustes, actor,
+fechas y recibos. Convierte `startup.previous_generation` sólo si coincide con
+la generación sustituida; un enlace histórico distinto se conserva. No hay
+testigo ni ventana temporal, ni conversión desde consultas, guardia o panel.
+
+Antes de instalar, resolver deliberadamente cualquier pausa con el controlador
+vigente y comprobar presión baja. Usar los comandos de instalación de abajo,
+primero con `--seco`: anuncia `convertir legado con todos los grupos Running`,
+`vigente` o `reinicio`, sin escribir. Un arranque durable distinto de ausente o
+`ready` (por ejemplo `intent` o `prepared`) también impide instalar.
+
+El instalador comprueba identidad completa y MainPID antes de efectos, bajo
+`control.lock` después de detener timers y guardia, antes del commit de SQLite
+y antes de retirar mantenimiento. Repite la condición Running durante una
+conversión. Si aparece una pausa, indica `Conversión detenida; grupos Paused:`
+con sus nombres. Antes de efectos no escribe nada; después conserva
+`maintenance` y `slots.disabled`, no reactiva timers y requiere recuperación
+deliberada. Si el fallo fue después de publicar código, conservarlo y la
+autoridad, resolver la causa bajo mantenimiento y reinstalar; retirar sólo las
+marcas del intento fallido después de verificar el deseo reconciliado. No
+readoptar, borrar razones ni restaurar una SQLite antigua sobre otro daemon.
+
+Una generación ya nueva igual a la actual no se convierte; una distinta sigue
+la reconciliación de reinicios de U3.4, incluidas pausas `ambiguous`. El panel
+transporta el token completo y compara exactamente: una petición anterior al
+cambio se rechaza como `stale_state` y requiere refrescar.
+
+La reversión al código anterior no se automatiza. Hacerla bajo mantenimiento
+con un respaldo verificado de esta instalación (los `.pre-u34` pueden ser más
+antiguos). Tras volver, los grupos `Paused` quedan `ambiguous` una vez y se
+resuelven deliberadamente con `control.py reanudar <grupo> --host desk`, con
+las comprobaciones habituales. Volver después al código nuevo requiere otra
+conversión con todo Running; no es una reversión transparente de SQLite.
+
 ### Reinicios del desk (U3.4)
 
 `pueued.service` ejecuta `control.py preparar --host desk` como `ExecStartPre`,
