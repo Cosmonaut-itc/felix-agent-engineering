@@ -1,4 +1,4 @@
-# Tren — sombra, tick activo y feedback (U14), sin repos activados por defecto
+# Tren — sombra, tick activo, feedback y juicio (U15), sin repos activados por defecto
 
 Python stdlib 3.9+, SQLite y flock POSIX. El agente registra su watch antes
 de entregar; con el recibo durable termina su turno:
@@ -12,8 +12,8 @@ fleet/tren/pao-tren tick --repo owner/project --seco --config /ruta/config.json
 
 Respuestas operativas: JSON de una línea. Exit 0: registro, lectura o paso;
 exit 2: entrada/error o tick activo sin inscripción activa (no abre el ledger).
-`estado --juicio` incluye la pausa y sus causas;
-las decisiones de juicio llegan en otra unidad.
+`estado --juicio` incluye el expediente, los comandos admitidos y el historial
+durable de decisiones con su resultado; véase U15 al final.
 
 Estado: `${XDG_STATE_HOME:-~/.local/state}/pao-tren/ledger.sqlite3`, esquema 1.
 Se conserva todo: requests, entries, trains, effects, events y outbox. Cada
@@ -303,10 +303,6 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
   publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
   crear otro. El lanzador falso cumple esa condición; estas pruebas no
   acreditan al lanzador real. Su implementación pertenece a otra unidad.
-- Los comandos `juicio` y `pausa`, de otra unidad. `paso` pausa el carril en
-  uso ordinario (un head que cambia dentro del tren, un escritor externo en
-  `main`, una decisión de juicio) y Jale nace en pausa `etapa-1`; hoy el CLI
-  no tiene cómo levantar una pausa sin editar el ledger.
 - Resolver en otra unidad la salida de CI rojo sobre C: hoy el reductor
   conserva `EsperandoCI` y puede ocupar el carril indefinidamente. El injerto
   no cambia esa transición.
@@ -492,8 +488,8 @@ Los eventos `efecto-iniciado` y `efecto-resultado` conservan su evidencia.
 Git/suite mantienen su buzón y ACK transaccional de U13.
 
 El PR del tren, el aviso de salida 75 en ese PR y la notificación de macOS
-pertenecen a las unidades `juicio` y `pausa`; U14 no los implementa ni
-activa repos. Continúan pendientes los requisitos de activación listados arriba.
+siguen como mejoras pendientes. Continúan pendientes los requisitos de
+activación listados arriba.
 
 Las pruebas de U14 usan el mismo origen git local de U13, un escritor `gh`
 falso que registra cada POST, HOME/XDG temporales, paginación y muertes
@@ -506,3 +502,105 @@ con `--seco`, sin POST. También cubre orden por PR entre heads distintos y
 durante recuperación.
 Se ejecuta sólo en el host remoto de pruebas,
 con el head commiteado y empujado a la rama de trabajo.
+
+## Juicio y pausa manual (U15)
+
+```sh
+pao-tren estado --repo owner/project --juicio
+pao-tren juicio --repo owner/project --tren <id> --decision absolver --motivo 'Repetir el lote'
+pao-tren juicio --repo owner/project --tren <id> --decision expulsar --pr 123 --motivo 'Devolver al dueño'
+pao-tren juicio --repo owner/project --tren <id> --decision abortar --motivo 'Readmitir las entregas'
+pao-tren juicio --repo owner/project --tren <id> --decision reanudar --motivo 'Causa resuelta'
+pao-tren pausa --repo owner/project --motivo 'Mantenimiento'
+pao-tren pausa --repo owner/project --levantar --motivo 'Mantenimiento terminado'
+```
+
+`juicio` y `pausa` exigen `activacion(repo) == activo`, antes de abrir el
+ledger y bajo su flock. En sombra, sin inscripción o con inscripción ambigua
+salen con 2. No activan repos, ejecutan efectos, leen recibos ni llaman a
+GitHub. El motivo es obligatorio y no puede estar vacío. `--tren` es
+obligatorio cuando la pausa corresponde a un tren; se omite para `etapa-1`.
+`--pr` es obligatorio para expulsar y se rechaza en las otras decisiones.
+Una pausa automática no puede sustituirse ni levantarse con `pausa`.
+
+Los comandos registran una entrada `pendiente` en la tabla aditiva
+`decisions` y el evento `juicio-registrado`: id, repo, tren, acción, PR,
+motivo, instante y copia/identidad de la pausa que resuelve. Admiten una
+entrada pendiente por repo. El siguiente tick activo consume esa entrada
+**antes de recuperar cualquier efecto git/suite** y dedica el paso entero a
+ella. Así, una pausa manual registrada ya impide el siguiente despacho,
+incluso de un efecto que quedó `ejecutando`. Hasta ese tick, `estado --juicio`
+muestra la orden pendiente y el snapshot anterior. El feedback sigue
+publicándose durante la pausa y respeta el orden de U14. `tick --seco` no
+consume decisiones ni cambia esta continuación operativa.
+
+La identidad de la pausa es la primera secuencia `operativo` de su aparición
+(más el caso de la pausa inicial), no sólo su texto. Ticks pausados conservan
+la identidad; levantar y volver a pausar la renueva. Los snapshots anteriores
+y los contratos de `Estado`, `Pausa` y eventos de sombra no añaden campos.
+`paso` recibe la decisión y la identidad vigente en su observación y vuelve a
+validar repo, pausa, tren, miembro, fase y política. Un juicio ya obsoleto se
+registra `rechazada` sin modificar el estado. Si el CLI puede determinar el
+error, devuelve 2 sin registrarlo. Detalles desconocidos cierran la puerta.
+
+`resolver-juicio` es un resultado interno del reductor, no un efecto de IO:
+`guardar_paso` guarda en una sola transacción su resultado (`aplicada` o
+`rechazada`), `juicio-resuelto`, el snapshot, las proyecciones y el outbox.
+Una muerte tras registrar la decisión conserva la entrada pendiente; una
+muerte tras reducir pero antes de COMMIT la vuelve a intentar; después del
+COMMIT no la vuelve a consumir. El outbox git/suite de trenes terminales se
+marca `cancelado` en esa misma transacción, conservando payload y resultados.
+Nunca se cancela su feedback. Un resultado anterior no puede contaminar una
+generación nueva.
+
+La tabla siguiente es la política completa de `juicios.POLITICA`.
+«Suite nueva» conserva exactamente C, cierra la generación anterior como
+`ABSUELTO` y crea otra en `Armado`, con identidad nueva de rama/recibos:
+readmisión, publicación, CI verde y **otra suite completa** antes de certificar.
+Nunca interpreta una absolución como verde. «Expulsar» emite `devolver` de
+U14 (comentario con juicio/motivo y `failure` sobre el head entregado), cierra
+el tren `DEVUELTO` y congela sólo sus sobrevivientes sobre B en otra
+generación, con `pending`, CI y suite completa. En un conflicto sin C todavía,
+el feedback conserva B y deja C vacío; no inventa una unidad de prueba.
+«Abortar» cierra `ABORTADO`, libera sus entregas con custodia intacta y sin
+rojo, y las readmite por las reglas normales desde el tick siguiente.
+
+| Motivo de pausa | Detalle | Decisiones admitidas y efecto |
+|---|---|---|
+| `etapa-1` | vacío | `reanudar`: levantar la pausa del repo; siguen vigentes los permisos operativos externos para cada suite. |
+| `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
+| `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
+| `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `abortar`: liberar entregas sin rojo. |
+| `rama-tren-ocupada` | vacío | `reanudar`: reintentar publicar el C guardado, sin forzar ni reemplazar la rama ajena; si sigue ocupada vuelve a pausar. `abortar`. |
+| `conflicto-en-cadena` | vacío; PR/archivos en la pausa | `expulsar`: sólo el PR en conflicto; sobrevivientes con suite completa. `abortar`. |
+| `candidato-no-corresponde` | vacío | `reanudar`: reintentar el armado sobre la B guardada, con clave nueva; no certificar el candidato rechazado. `abortar`. |
+| `head-cambiado-en-tren` | vacío | `expulsar`: un miembro del tren; los sobrevivientes pasan de nuevo por admisión y suite completa. `abortar`. |
+| `promocion-rechazada` | vacío | `reanudar`: un intento CAS adicional, con el certificado guardado y nueva readmisión/reconciliación; no vuelve a correr una suite ya verde. Otro rechazo vuelve a pausar. `abortar`. |
+| `necesita-juicio` | `incompleto-invalido`, `resultado-desconocido`, `verde-incoherente` | `absolver`: suite nueva sobre C. `expulsar`: devolver un miembro. `abortar`. |
+| `necesita-juicio` | `subconjunto-no-corresponde`, `conflicto-en-subconjunto`, `repeticion-no-corresponde`, `origen-distinto` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
+| `necesita-juicio` | `presupuesto-agotado-en-reanudacion`, `suite-incompleta`, `tamano-de-lote-no-soportado`, `sin-costo-de-suite-sana` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
+| `necesita-juicio` | `sin-duracion:<unidad>`, `presupuesto-agotado:<unidad>`, `confirmacion-candidato:<unidad>`, `definicion-distinta:<unidad>`, `confirmacion-base:<unidad>`, `reproduccion-incierta:<unidad>` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
+| `manual` | motivo humano | Sólo `pausa --levantar`: continuar desde la fase guardada. `juicio` no la levanta. |
+
+Las decisiones admitidas se filtran también por la fase/evidencia guardada:
+no se reanuda infraestructura sin comando durable, ni promoción sin
+`Promoviendo`, ni se absuelve sin candidato. Una intervención nunca cambia
+heads, inventa una base o evita CI verde/suite verde. `absolver` y `abortar`
+no publican rojo; los miembros de una generación nueva reciben `pending`.
+
+`estado --juicio` añade `juicio` al JSON habitual: identidad, motivo/detalle,
+tren y fase, miembros con PR/head, resultados durables de suite/repetición y
+las decisiones admitidas con cada comando exacto (uno por PR cuando aplica).
+Incluye todas las decisiones registradas del repo y su estado, motivo de
+rechazo e instante de consumo. El expediente manual muestra también el tren
+que quedó detenido, aunque la orden manual tenga alcance de repo.
+No requiere red y conserva la lectura consistente de U13 bajo SQLite.
+
+Las pruebas U15 invocan el CLI real y avanzan con `tick`, con HOME/XDG
+temporales canónicos, origen git local y los transportes falsos U13/U14.
+Cubren verde/rojo después de absolver, expulsión y sobrevivientes, aborto y
+custodia, escritor externo, decisiones inválidas y obsoletas, cada reintento
+operativo, pausa manual durante recuperación y muertes reales antes/después
+del consumo. Se incluyen en `tests/remoto.sh`; no se ejecutan en la máquina
+que sólo edita código. No se activó ningún repo. Siguen pendientes D2/D8,
+el contrato del lanzador real y la salida de CI rojo sobre C (U16).

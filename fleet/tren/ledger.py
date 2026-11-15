@@ -52,6 +52,9 @@ class Ledger:
                 self.db.execute("CREATE TABLE IF NOT EXISTS effect_results ("
                                 "clave TEXT PRIMARY KEY REFERENCES effects(clave), "
                                 "payload TEXT NOT NULL)")
+                self.db.execute("CREATE TABLE IF NOT EXISTS decisions ("
+                                "id TEXT PRIMARY KEY, repo TEXT NOT NULL, payload TEXT NOT NULL, "
+                                "estado TEXT NOT NULL, resultado TEXT)")
         except BaseException:
             self.db.close()
             raise
@@ -138,6 +141,18 @@ class Ledger:
                                 "DO UPDATE SET payload=excluded.payload",
                                 (tren.id, estado.repo, codificar(tren)))
             for efecto in efectos:
+                if efecto.tipo == "resolver-juicio":
+                    identificador, resultado, motivo = efecto.datos
+                    actualizado = self.db.execute(
+                        "UPDATE decisions SET estado=?, resultado=? "
+                        "WHERE id=? AND repo=? AND estado='pendiente'",
+                        (resultado, json.dumps({"motivo": motivo, "instante": ahora}),
+                         identificador, estado.repo))
+                    if actualizado.rowcount != 1:
+                        raise ValueError("decisión no pendiente")
+                    self.evento(estado.repo, "juicio-resuelto", ahora,
+                                {"id": identificador, "resultado": resultado, "motivo": motivo})
+                    continue
                 previo = self.db.execute("SELECT repo, payload FROM effects WHERE clave=?",
                                          (efecto.clave,)).fetchone()
                 if previo and tuple(previo) != (estado.repo, codificar(efecto)):
@@ -149,6 +164,20 @@ class Ledger:
             if consumido is not None:
                 self.db.execute("UPDATE outbox SET estado='completo' WHERE clave=? AND estado='resultado'",
                                 (consumido,))
+            # Una nueva generación no puede consumir ni recuperar IO de la
+            # anterior. El feedback conserva el orden y se drena igualmente.
+            from dominio import Terminal
+            from feedback import FEEDBACK
+            terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
+            cancelados = []
+            for fila in self.outbox(estado.repo):
+                efecto = desde_datos(json.loads(fila["payload"]))
+                if (efecto.tipo not in FEEDBACK and efecto.datos and
+                        efecto.datos[0] in terminales):
+                    self.db.execute("UPDATE outbox SET estado='cancelado' WHERE clave=?", (efecto.clave,))
+                    cancelados.append(efecto.clave)
+            if cancelados:
+                self.evento(estado.repo, "efectos-cancelados", ahora, {"claves": cancelados})
             self.evento(estado.repo, "operativo", ahora,
                         {"estado": datos(estado), "efectos": datos(efectos), "consumido": consumido})
 
@@ -156,7 +185,48 @@ class Ledger:
         return [dict(r) for r in self.db.execute(
             "SELECT e.clave, e.payload, o.estado, r.payload AS resultado FROM effects e "
             "JOIN outbox o ON o.clave=e.clave LEFT JOIN effect_results r ON r.clave=e.clave "
-            "WHERE e.repo=? AND o.estado!='completo' ORDER BY e.rowid", (repo,))]
+            "WHERE e.repo=? AND o.estado NOT IN ('completo', 'cancelado') ORDER BY e.rowid", (repo,))]
+
+    def pausa_id(self, repo, estado=None):
+        """Identidad de la aparición de una pausa, aun si se repite su texto.
+
+        No añade campos al contrato de Estado/Pausa ni a eventos de sombra.
+        Una sucesión de ticks pausados conserva la primera secuencia.
+        """
+        from juicios import tren_pausado
+        estado = estado or self.estado(repo, operativo=True)
+        if estado.pausa is None:
+            return ""
+        def firma(e):
+            tren = tren_pausado(e)
+            return (e.pausa, tren.id if tren else None)
+        actual = firma(estado)
+        identificador = clave("pausa-inicial", repo, datos(estado.pausa))
+        for fila in self.db.execute(
+                "SELECT seq, payload FROM events WHERE repo=? AND tipo='operativo' ORDER BY seq DESC",
+                (repo,)):
+            anterior = desde_datos(json.loads(fila["payload"])["estado"])
+            if firma(anterior) != actual:
+                break
+            identificador = clave("pausa", repo, fila["seq"])
+        return identificador
+
+    def registrar_decision(self, decision):
+        """El llamador conserva el flock; sólo datos, ningún efecto externo."""
+        with self.transaccion():
+            self.db.execute("INSERT INTO decisions VALUES (?, ?, ?, 'pendiente', NULL)",
+                            (decision.id, decision.repo, codificar(decision)))
+            self.evento(decision.repo, "juicio-registrado", decision.instante, datos(decision))
+
+    def decisiones(self, repo):
+        return [{"decision": json.loads(r["payload"]), "estado": r["estado"],
+                 "resultado": json.loads(r["resultado"]) if r["resultado"] else None}
+                for r in self.db.execute("SELECT * FROM decisions WHERE repo=? ORDER BY rowid", (repo,))]
+
+    def siguiente_decision(self, repo):
+        fila = self.db.execute("SELECT payload FROM decisions WHERE repo=? AND estado='pendiente' "
+                               "ORDER BY rowid LIMIT 1", (repo,)).fetchone()
+        return desde_datos(json.loads(fila[0])) if fila else None
 
     def iniciar_efecto(self, repo, efecto, ahora):
         # Durable antes del IO: tras una muerte se reconcilia antes del paso.

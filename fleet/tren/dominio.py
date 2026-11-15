@@ -81,6 +81,19 @@ class Pausa:
 
 
 @dataclass(frozen=True)
+class Decision:
+    id: str
+    repo: str
+    tren: Optional[str]
+    decision: str
+    pr: Optional[int]
+    motivo: str
+    instante: float
+    pausa_id: str
+    pausa: Optional[Pausa]
+
+
+@dataclass(frozen=True)
 class Candidato:
     B: str
     eslabones: Tuple[Tuple[int, str, str], ...]
@@ -345,6 +358,8 @@ class Observacion:
     reproduccion_id: str = ""
     costo_suite_sana_s: float = 0
     ci_recibo: str = "verde"
+    decision: Optional[Decision] = None
+    pausa_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -465,6 +480,7 @@ def esperar_infraestructura(estado, tren, fase, resultado, ahora):
     if resultado.codigo != 75 or not resultado.reanudar:
         return replace(estado, pausa=Pausa("necesita-juicio", detalle="incompleto-invalido")), ()
     if fase.reanudaciones >= len(ESPERAS_SUITE):
+        estado = cambiar_fase(estado, tren, replace(fase, reanudar=resultado.reanudar))
         return replace(estado, pausa=Pausa("infraestructura", detalle="tres-reanudaciones-agotadas")), ()
     fase = replace(fase, esperar_hasta=ahora + ESPERAS_SUITE[fase.reanudaciones],
                    reanudar=resultado.reanudar)
@@ -505,6 +521,13 @@ def devolver_atribuidos(estado, tren, fase, causas):
         payload = json.dumps({"lote": tren.id, "B": fase.candidato.B, "C": fase.candidato.C,
                               "pr": entrega.pr, "head": entrega.head, "fallos": detalles}, sort_keys=True)
         efectos.append(Efecto(clave("devolver", tren.id, recibo), "devolver", (tren.id, recibo, payload)))
+    return separar_devueltos(estado, tren, fase.candidato.B, culpables, efectos)
+
+
+def separar_devueltos(estado, tren, base, culpables, efectos):
+    """D5 compartido por atribución automática y expulsión por juicio."""
+    efectos = list(efectos)
+    entradas = {e.entrega.recibo: e for e in estado.entradas}
     sobrevivientes = tuple(r for r in tren.recibos if entradas[r].entrega.pr not in culpables)
     estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
     nuevo_id = clave("sobrevivientes", tren.id, sobrevivientes)
@@ -513,7 +536,7 @@ def devolver_atribuidos(estado, tren, fase, causas):
         e.entrega.pr in culpables else replace(e, tren=nuevo_id) if
         e.entrega.recibo in sobrevivientes else e for e in estado.entradas))
     if sobrevivientes:
-        nuevo = Tren(nuevo_id, sobrevivientes, Congelado(fase.candidato.B))
+        nuevo = Tren(nuevo_id, sobrevivientes, Congelado(base))
         estado = replace(estado, trenes=estado.trenes + (nuevo,))
         efectos.append(Efecto(clave("armar", nuevo_id), "armar-candidato", (nuevo_id,)))
         efectos.extend(efectos_status(nuevo, "avisar-en-tren"))
@@ -624,6 +647,9 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
 
 def paso(estado, observacion):
     """Un paso determinista. Congela a lo sumo un lote y emite sólo datos."""
+    if observacion.decision is not None:
+        from juicios import resolver
+        return resolver(estado, observacion)
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
     if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
         tren = activos[0]
@@ -779,7 +805,7 @@ def paso(estado, observacion):
 
 # Tagged encoding keeps the SQLite/event contract explicit and round-trippable.
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
-          Pausa, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
+          Pausa, Decision, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
           Incierto, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,

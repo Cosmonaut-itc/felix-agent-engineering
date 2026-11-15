@@ -127,6 +127,20 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
 
     # Una muerte con el marcador durable puede haber producido IO sin ACK.
     # Recuperarlo antes del paso evita caducar PR cerrados por nuestro push.
+    decision = ledger.siguiente_decision(repo)
+    if decision is not None:
+        # Antes de recuperar IO: una pausa manual ya registrada lo impide.
+        # El juicio ocupa este paso entero; no mezcla un ACK de otra generación.
+        observacion = replace(observacion, decision=decision,
+                              pausa_id=ledger.pausa_id(repo, estado))
+        frontera("decision-observada", None)
+        nuevo, efectos = paso(estado, observacion)
+        frontera("decision-reducida", None)
+        ledger.guardar_paso(nuevo, efectos, ahora)
+        frontera("paso-guardado", None)
+        drenar(nuevo, observacion)
+        return {"modo": "activo", "estado": datos(nuevo),
+                "efectos": datos(efectos), "outbox": resumen_outbox(ledger, repo)}
     drenar(estado, observacion, recuperacion=True)
     consumido = None
     if not estado.pausa:
