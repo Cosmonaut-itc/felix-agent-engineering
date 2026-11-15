@@ -13,7 +13,14 @@ REPO = activo.REPO
 
 
 class ContextoCI(unittest.TestCase):
-    setUp = activo.ActivoTests.setUp
+    def setUp(self):
+        activo.ActivoTests.setUp(self)
+        # El contrato de config.git exige los objetos del main observado.
+        # Este espejo local conoce cada C publicado, incluso tras aterrizar
+        # el primer tren; fuente.git sólo contiene los heads originales.
+        self.contexto.config['git'] = str(self.origen)
+        self.ruta_contexto.write_text(json.dumps(self.contexto.config))
+
     comando = activo.ActivoTests.comando
     commit = activo.ActivoTests.commit
     push = activo.ActivoTests.push
