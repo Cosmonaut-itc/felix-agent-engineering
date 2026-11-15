@@ -2,6 +2,7 @@
 """Migra sólo el controlador desk instalado; no reinicia ni configura pueued."""
 import argparse
 from contextlib import contextmanager
+from datetime import datetime, timezone
 import fcntl
 import json
 import importlib.util
@@ -68,6 +69,40 @@ def policy_plan(engine):
                 overrides={}, mode_override=None, schedule_event=event, revision=state['revision'] + 1)
 
 
+def admission_plan(engine, control):
+    """Read-only. The trickle permit is created empty once and never reinitialized."""
+    with engine.connect() as db:
+        row = db.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='guard_admission'").fetchone()
+    if row is None:
+        return 'crear guard_admission vacía'
+    if row[0] != control.ADMISSION_TABLE:
+        raise ValueError('Tabla guard_admission inesperada; conservar mantenimiento')
+    attempt = engine.admission()['last_attempt']  # an unreadable permit stops the installation
+    return 'conservar guard_admission (' + (attempt['outcome'] if attempt else 'sin intentos') + ')'
+
+
+def ensure_admission(engine, control):
+    with engine.connect(write=True) as db:
+        db.execute(control.ADMISSION_TABLE.replace('CREATE TABLE', 'CREATE TABLE IF NOT EXISTS', 1))
+        db.execute('INSERT OR IGNORE INTO guard_admission VALUES (1,?)', (control.canonical(control.ADMISSION_EMPTY),))
+    admission_plan(engine, control)
+
+
+def dated_backup(library, previous):
+    """The immediately previous controller, whatever earlier backups already hold."""
+    stamp = 'control.py.pre-' + datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')
+    for suffix in [''] + ['-' + str(n) for n in range(1, 100)]:
+        backup = library / (stamp + suffix)
+        if backup.exists() and backup.read_bytes() == previous:
+            return backup  # a retry in the same second already kept these bytes
+        try:
+            with backup.open('xb') as stream:
+                stream.write(previous); stream.flush(); os.fsync(stream.fileno())
+            return backup
+        except FileExistsError:
+            continue
+    raise ValueError('Sin nombre libre para el respaldo fechado')
+
 
 def generation_plan(engine, control, state, *, require_running=False):
     """Installer-only conversion. Legacy hashes cannot prove daemon continuity."""
@@ -112,7 +147,9 @@ def installation_plan(engine, control, pid_file, *, expected=None, require_runni
     migration = None
     current = daemon_fence(engine, control, pid_file, expected)
     kind = 'adoptar identidad Linux v1'
+    engine.install_admission_action = 'crear guard_admission vacía al adoptar'
     if control.has_authority(engine.directory):
+        engine.install_admission_action = admission_plan(engine, control)
         migration = policy_plan(engine)
         with engine.connect() as db:
             state = engine.state(db, policy_migration=True)
@@ -179,6 +216,8 @@ def install(home, pid_file, control, dry_run=False, sources=None):
             kind = 'migración de tabla: retirar ajustes' if old_hash != plan['policy_hash'] else 'migración aditiva'
             print('SECO, ' + kind + '; revisión ' + str(plan['revision'])
                   + '; policy_hash ' + plan['policy_hash'] + '; desired ' + json.dumps(plan['desired'], sort_keys=True))
+        print('SECO, permiso de admisión de a una: ' + getattr(engine, 'install_admission_action', 'sin comprobar')
+              + '; respaldo fechado control.py.pre-<UTC> del controlador vigente.')
         print('Comprobado (lectura): controlador existente, timers activos, autoridad o tabla vigente y PID de pueued.')
         print('SECO, pendiente: apagar cuotas nuevas; detener timers/oneshots; bajo control.lock publicar, '
               'adoptar/importar o conservar SQLite/recibos; reconciliar; reactivar timers y retirar sólo '
@@ -226,6 +265,7 @@ def install(home, pid_file, control, dry_run=False, sources=None):
             backup_u34 = library / 'control.py.pre-u34'
             if not backup_u34.exists():
                 backup_u34.write_bytes(target.read_bytes())
+            dated_backup(library, target.read_bytes())
             temporary = target.with_suffix('.nuevo')
             with temporary.open('wb') as stream:
                 stream.write(sources['control.py'].encode() if sources else (SOURCE / 'control.py').read_bytes()); stream.flush(); os.fsync(stream.fileno())
@@ -242,6 +282,7 @@ def install(home, pid_file, control, dry_run=False, sources=None):
                         # Recheck after the write but before SQLite commits; failure rolls it back.
                         generation_plan(engine, control, engine.state(db), require_running=legacy_conversion)
                         daemon_fence(engine, control, pid_file, engine.install_generation)
+                ensure_admission(engine, control)  # additive; an existing permit is kept as is
                 engine.view()
             else:
                 engine.adopt(pid_file)
