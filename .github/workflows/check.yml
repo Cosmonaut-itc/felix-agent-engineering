@@ -48,3 +48,29 @@ jobs:
           tests/pao-test.sh
           tests/felix-mode-scripts-test.sh
           tests/duplicate-session-guard-test.sh
+  tren:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test tren (Python default and macOS system 3.9)
+        run: |
+          export HOME="$RUNNER_TEMP/pao-tren-home"
+          export XDG_STATE_HOME="$HOME/state"
+          export XDG_CONFIG_HOME="$HOME/config"
+          export XDG_DATA_HOME="$HOME/data"
+          export XDG_CACHE_HOME="$HOME/cache"
+          mkdir -p "$HOME"
+          git version
+          python3 --version
+          python3 -I -m unittest discover -s fleet/tren/tests -v
+          if [ "$RUNNER_OS" = macOS ]; then
+            /usr/bin/python3 --version
+            /usr/bin/python3 -I -m unittest discover -s fleet/tren/tests -v
+          fi

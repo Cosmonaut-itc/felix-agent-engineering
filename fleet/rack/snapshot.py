@@ -158,30 +158,200 @@ def desk_interruptions(home):
         db.close()
 
 
-def desk_guard(home):
-    thresholds = {'pause': {'cpu': 30}, 'resume': {'cpu': 15}}
-    source = home / '.local/lib/pao-pueue-desk/control.py'
-    if source.exists():
-        for node in ast.parse(source.read_text()).body:
-            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PRESSURE_THRESHOLDS' for t in node.targets):
-                # El archivo usa multiplicaciones; sólo se necesitan los literales CPU.
-                thresholds = {k.value: {'cpu': next(v.value for a, v in zip(d.keys, d.values) if a.value == 'cpu')}
-                              for k, d in zip(node.value.keys, node.value.values)}
-    last = None
-    path = home / '.local/state/pao/pueue-desk/guardia.log'
-    if path.exists():
-        with path.open() as stream:
-            for line in stream:
-                try:
-                    row = json.loads(line)
-                    if row.get('evento') == 'decision':
-                        last = row
-                except ValueError:
-                    continue
-    if last and last.get('accion') in ('pausar', 'reanudar'):
-        return dict(action=last['accion'], at=last['utc'], cpu_pause=thresholds['pause']['cpu'], cpu_resume=thresholds['resume']['cpu'])
-    return None
+GUARD_CAUSES = {'fresh_sample','docker','generation','desired','event','admission','startup','authority',
+                'maintenance','reason','pressure_high','dependency','quota','task_changed','cooldown',
+                'admission_unknown','clock','log','rpc'}
+GUARD_EVENTS = {'admision_una','tope_alcanzado','retenido','guard_fin'}
 
+
+def guard_number(value, maximum=None):
+    return type(value) in (int,float) and math.isfinite(value) and value >= 0 and (maximum is None or value <= maximum)
+
+
+def guard_date(value):
+    if type(value) is not str or len(value) > 40 or not value.endswith(('Z','+00:00')):
+        raise ValueError('Fecha de guardia inválida')
+    stamp = epoch(value)
+    if not math.isfinite(stamp):
+        raise ValueError('Fecha de guardia inválida')
+    return stamp
+
+
+def guard_identity(row):
+    if (type(row) is not dict or set(row) != {'at','grupo','id'} or type(row['id']) is not int
+            or not 0 <= row['id'] < 2**64 or row['grupo'] not in ('hasito','jale','jale-verify','otros','pesadas')):
+        raise ValueError('Identidad de admisión inválida')
+    guard_date(row['at'])
+    return dict(row)
+
+
+def validate_guard(value):
+    """Strict new contract, with optional fields for rack-host@1 older senders."""
+    if value is None:
+        return None
+    allowed = {'action','at','cpu_pause','cpu_resume','pressure','thresholds','last_result','last_admission','status'}
+    if type(value) is not dict or set(value)-allowed:
+        raise ValueError('Guardia inválida')
+    if value.get('action') not in (None,'pausar','mantener','reanudar'):
+        raise ValueError('Decisión inválida')
+    if value.get('at') is not None:guard_date(value['at'])
+    for k in ('cpu_pause','cpu_resume'):
+        if value.get(k) is not None and not guard_number(value[k],100):raise ValueError('Umbral CPU inválido')
+    if 'status' in value and value['status'] not in ('fresh','stale','incomplete','unknown'):
+        raise ValueError('Vigencia inválida')
+    pressure = value.get('pressure')
+    if pressure is not None:
+        if type(pressure) is not dict or set(pressure) != {'at','cpu','io','memory'}:
+            raise ValueError('Presión inválida')
+        guard_date(pressure['at'])
+        if not all(guard_number(pressure[k],None if k=='memory' else 100) for k in ('cpu','io','memory')):
+            raise ValueError('Presión inválida')
+    thresholds = value.get('thresholds')
+    if thresholds is not None:
+        if type(thresholds) is not dict or set(thresholds) != {'normal','rapidas'}:
+            raise ValueError('Umbrales inválidos')
+        for group in ('normal','rapidas'):
+            item=thresholds[group]
+            if type(item) is not dict or set(item) != {'pause','resume'}:raise ValueError('Umbrales inválidos')
+            for phase in ('pause','resume'):
+                row=item[phase];keys={'cpu','io','memory'} if group=='normal' else {'memory'}
+                if type(row) is not dict or set(row) != keys or not all(guard_number(row[k],None if k=='memory' else 100) for k in keys):
+                    raise ValueError('Umbrales inválidos')
+            if item['pause']['memory'] > item['resume']['memory'] or any(item['pause'][k] <= item['resume'][k] for k in ('cpu','io') if k in item['pause']):
+                raise ValueError('Histéresis inválida')
+    if value.get('last_admission') is not None:guard_identity(value['last_admission'])
+    result=value.get('last_result')
+    if result is not None:
+        if (type(result) is not dict or set(result) != {'evento','tick_id','at','bloqueos'}
+                or result['evento'] not in GUARD_EVENTS or type(result['tick_id']) is not str
+                or not re.fullmatch('[0-9a-f]{24}',result['tick_id']) or type(result['bloqueos']) is not list
+                or len(result['bloqueos'])>16):raise ValueError('Resultado inválido')
+        guard_date(result['at'])
+        for row in result['bloqueos']:
+            if (type(row) is not dict or set(row) != {'grupo','operacion','causa'} or row['causa'] not in GUARD_CAUSES
+                    or row['operacion'] not in ('one','resume','unknown')
+                    or row['grupo'] not in (None,'hasito','jale','jale-verify','otros','pesadas','rapidas')):
+                raise ValueError('Bloqueo inválido')
+    return value
+
+
+def installed_thresholds(home):
+    source = home / '.local/lib/pao-pueue-desk/control.py'
+    def literal(node, depth=0):
+        if depth>8:raise ValueError('AST demasiado profundo')
+        if isinstance(node,ast.Constant) and type(node.value) in (int,float,str):return node.value
+        if isinstance(node,ast.Dict):return {literal(k,depth+1):literal(v,depth+1) for k,v in zip(node.keys,node.values)}
+        if isinstance(node,ast.BinOp) and isinstance(node.op,(ast.Mult,ast.Pow)):
+            a,b=literal(node.left,depth+1),literal(node.right,depth+1)
+            if not guard_number(a,2**40) or not guard_number(b,2**40) or isinstance(node.op,ast.Pow) and b>40:
+                raise ValueError('AST numérico inválido')
+            return a*b if isinstance(node.op,ast.Mult) else a**b
+        raise ValueError('AST no permitido')
+    tree=ast.parse(source.read_text())
+    values=[literal(n.value) for n in tree.body if isinstance(n,ast.Assign) and any(isinstance(t,ast.Name) and t.id=='PRESSURE_THRESHOLDS' for t in n.targets)]
+    if len(values)!=1:raise ValueError('Faltan umbrales instalados')
+    return values[0]
+
+
+def current_pressure(proc, now):
+    result=dict(at=datetime.datetime.fromtimestamp(now,datetime.timezone.utc).isoformat())
+    for name,kind in (('cpu','some'),('io','full')):
+        lines=(proc/'pressure'/name).read_text().splitlines()
+        line=next(s for s in lines if s.split()[0]==kind)
+        result[name]=float(dict(p.split('=',1) for p in line.split()[1:])['avg60'])
+    mem=dict(line.split(':',1) for line in (proc/'meminfo').read_text().splitlines())
+    amount,unit=mem['MemAvailable'].split()
+    if unit!='kB':raise ValueError('Memoria inválida')
+    result['memory']=int(amount)*1024
+    validate_guard(dict(pressure=result))
+    return result
+
+
+def durable_admission(home):
+    path=home/'.local/state/pao/pueue-desk/control.sqlite3'
+    if not os.path.lexists(path):return None
+    db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.2)
+    try:
+        if not db.execute("SELECT name FROM sqlite_master WHERE name='guard_admission' AND type='table'").fetchone():return None
+        rows=db.execute('SELECT id,body FROM guard_admission').fetchall()
+        if len(rows)!=1 or rows[0][0]!=1:raise ValueError('Permiso inválido')
+        value=json.loads(rows[0][1])
+        if type(value) is not dict or set(value) != {'version','last_attempt','last_confirmed'} or type(value['version']) is not int or value['version']!=1:
+            raise ValueError('Permiso inválido')
+        attempt=value['last_attempt'];confirmed=value['last_confirmed']
+        if confirmed is not None:guard_identity(confirmed)
+        if attempt is None:
+            if confirmed is not None:raise ValueError('Confirmación sin intento')
+        else:
+            fields={'boot_id','reserved_ns','completed_ns','at','generation','grupo','id','created_at','enqueued_at','outcome'}
+            if type(attempt) is not dict or set(attempt)!=fields:raise ValueError('Intento inválido')
+            guard_identity({k:attempt[k] for k in ('at','grupo','id')})
+            for k in ('created_at','enqueued_at'):
+                if type(attempt[k]) is not str or epoch(attempt[k]) is None:raise ValueError('Identidad inválida')
+            if (type(attempt['reserved_ns']) is not int or attempt['reserved_ns']<0
+                    or type(attempt['boot_id']) is not str or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',attempt['boot_id'])
+                    or type(attempt['generation']) is not str or not re.fullmatch(r'linux-proc-v1:[0-9a-f]{64}',attempt['generation'])
+                    or attempt['outcome'] not in ('reserved','unknown','confirmed','not_sent')):raise ValueError('Intento inválido')
+            end=attempt['completed_ns']
+            if ((attempt['outcome'] in ('confirmed','not_sent')) != (end is not None)
+                    or end is not None and (type(end) is not int or end<attempt['reserved_ns'])
+                    or attempt['outcome']=='confirmed' and (confirmed is None or any(confirmed[k]!=attempt[k] for k in ('grupo','id')))):
+                raise ValueError('Finalización inválida')
+        return confirmed
+    finally:db.close()
+
+
+def desk_guard(home, proc=Path('/proc'), now=None, errors=None):
+    now=time.time() if now is None else now
+    def attempt(stage,fn):
+        try:return fn()
+        except Exception as error:
+            if errors is not None:errors.append(dict(stage=stage,message='Lectura fallida: '+type(error).__name__))
+            return None
+    normal=attempt('guard_thresholds',lambda:installed_thresholds(home))
+    thresholds=None
+    if normal is not None:
+        try:
+            thresholds=dict(normal=normal,rapidas={k:dict(memory=normal[k]['memory']) for k in ('pause','resume')})
+            validate_guard(dict(thresholds=thresholds))
+        except (KeyError,ValueError,TypeError):
+            thresholds=None
+            if errors is not None:errors.append(dict(stage='guard_thresholds',message='Umbrales inválidos'))
+    pressure=attempt('guard_pressure',lambda:current_pressure(proc,now))
+    admission=attempt('guard_admission',lambda:durable_admission(home))
+    last,result=None,None
+    directory=home/'.local/state/pao/pueue-desk'
+    for name in ('guardia.log.1','guardia.log'):
+        path=directory/name
+        try:
+            with path.open('rb') as stream:
+                stream.seek(max(0,path.stat().st_size-1024*1024))
+                lines=stream.read(1024*1024+4096).splitlines()
+        except FileNotFoundError:continue
+        for line in lines:
+            if len(line)>4096:continue
+            try:
+                row=json.loads(line)
+                if row.get('evento')=='decision' and row.get('accion') in ('pausar','mantener','reanudar'):
+                    guard_date(row['utc']);last=row;result=None
+                elif last and row.get('evento') in GUARD_EVENTS and row.get('tick_id')==last.get('tick_id'):
+                    candidate={k:row[k] for k in ('evento','tick_id','bloqueos')};candidate['at']=row['utc']
+                    validate_guard(dict(last_result=candidate));result=candidate
+            except (ValueError,KeyError,TypeError):continue
+    status='unknown' if not last else 'stale' if not 0<=now-guard_date(last['utc'])<=120 else 'fresh' if result else 'incomplete'
+    if status!='fresh':result=None
+    # A new sensor sample cannot turn a prior tick's blockers into a current gate.
+    if result and pressure and thresholds:
+        high,low=thresholds['normal']['pause'],thresholds['normal']['resume']
+        action=('pausar' if pressure['memory']<high['memory'] or any(pressure[k]>high[k] for k in ('cpu','io')) else
+                'reanudar' if pressure['memory']>=low['memory'] and all(pressure[k]<low[k] for k in ('cpu','io')) else 'mantener')
+        if action!=last['accion']:result=None;status='incomplete'
+    def cpu(phase):
+        value=normal.get(phase,{}).get('cpu') if type(normal) is dict else None
+        return value if guard_number(value,100) else None
+    return validate_guard(dict(action=last['accion'] if last else None,at=last['utc'] if last else None,
+        cpu_pause=cpu('pause'),cpu_resume=cpu('resume'),pressure=pressure,thresholds=thresholds,
+        last_result=result,last_admission=admission,status=status))
 
 def mini_guard():
     return None
@@ -449,7 +619,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     if mode == 'linux' and output['cpu']:
         output['cpu']['psi_avg60'] = attempt('psi', lambda: float(re.search(r'^some .*avg60=([\d.]+)', (proc / 'pressure/cpu').read_text())[1]))
     output['disk'] = attempt('disk', lambda: disk('/System/Volumes/Data' if mode == 'macos' and Path('/System/Volumes/Data').exists() else '/'))
-    output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home))
+    output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home, proc, now, output['errors']))
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
     interruptions = (attempt('startup', lambda: desk_interruptions(home)) or {}) if host == 'desk' else {}
     cache, references = {}, {}

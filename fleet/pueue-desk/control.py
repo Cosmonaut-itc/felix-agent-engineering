@@ -358,6 +358,73 @@ def mini_generation(pid_file):
     return hashlib.sha256((pid + ':' + str(pid_file.stat().st_mtime_ns) + ':' + identity).encode()).hexdigest()
 
 
+PROC = Path('/proc')
+DESK_GENERATION = 'linux-proc-v1:'
+
+
+def generation_kind(value):
+    """Desk authority accepts only the legacy digest or the versioned Linux digest."""
+    if type(value) is str:
+        if re.fullmatch(r'[0-9a-f]{64}', value):
+            return 'legacy'
+        if re.fullmatch(r'linux-proc-v1:[0-9a-f]{64}', value):
+            return 'linux-proc-v1'
+    raise ValueError('Generación desk inválida')
+
+
+def _pid_signature(info):
+    return [info.st_dev, info.st_ino, info.st_mtime_ns, info.st_ctime_ns, info.st_size]
+
+
+def linux_identity(pid_file, *, proc=None):
+    """Two coherent Linux snapshots, with the configured pid file pinned each time.
+
+    starttime is in boot ticks: no ps, btime, wall time or conversion to a date.
+    This fences reads; it cannot make a later Pueue RPC atomic with the snapshot.
+    """
+    if proc is None and sys.platform != 'linux':
+        raise ValueError('La identidad del desk requiere Linux')
+    proc = PROC if proc is None else Path(proc)
+    pid_file = Path(pid_file)
+
+    def snapshot():
+        with pid_file.open('r', encoding='ascii') as handle:
+            signature = _pid_signature(os.fstat(handle.fileno()))
+            if _pid_signature(pid_file.stat()) != signature:
+                raise ValueError('La ruta del pid file cambió al abrirlo')
+            text = handle.read()
+            pid_text = text.strip()
+            if not re.fullmatch(r'[0-9]+', pid_text) or int(pid_text) < 1:
+                raise ValueError('PID inválido')
+            pid = int(pid_text)
+            boot = (proc / 'sys/kernel/random/boot_id').read_text(encoding='ascii').strip()
+            if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot):
+                raise ValueError('boot_id inválido')
+            record = (proc / str(pid) / 'stat').read_text(encoding='ascii')
+            head, closing, tail = record.rpartition(')')
+            fields = tail.split()  # field 3 begins the suffix; field 22 is index 19
+            if (not closing or head != str(pid) + ' (pueued' or len(fields) < 20
+                    or fields[0] not in ('R', 'S', 'D', 'T', 't', 'W', 'K', 'P', 'I')
+                    or not re.fullmatch(r'[0-9]+', fields[19]) or int(fields[19]) >= 2**64):
+                raise ValueError('Daemon no identificado en proc')
+            handle.seek(0)
+            if (handle.read() != text or _pid_signature(os.fstat(handle.fileno())) != signature
+                    or _pid_signature(pid_file.stat()) != signature):
+                raise ValueError('El pid file cambió durante la lectura')
+            return dict(boot=boot, pid=pid, ticks=int(fields[19]), file=signature)
+
+    first, second = snapshot(), snapshot()
+    if first != second:
+        raise ValueError('La identidad del daemon cambió durante la lectura')
+    return first
+
+
+def desk_generation(pid_file, *, proc=None):
+    identity = linux_identity(pid_file, proc=proc)
+    seed = ['linux-proc-v1', identity['boot'], identity['pid'], identity['ticks'], identity['file']]
+    return DESK_GENERATION + hashlib.sha256(canonical(seed).encode()).hexdigest()
+
+
 INTERRUPTED = 'Interrumpida al reiniciar Pueue; relanzar manualmente'
 
 
@@ -719,6 +786,87 @@ def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, bo
     return image
 
 
+ADMISSION_ERRORS = (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError)
+ADMISSION_GAP_NS = 60_000_000_000
+GATE_SECONDS = 10
+ADMISSION_CAUSES = {'fresh_sample', 'docker', 'generation', 'desired', 'event', 'admission',
+                    'startup', 'authority', 'maintenance', 'reason', 'pressure_high', 'dependency',
+                    'quota', 'task_changed', 'cooldown', 'admission_unknown', 'clock', 'log', 'rpc'}
+
+
+def utc_at(timestamp):
+    return datetime.fromtimestamp(timestamp, timezone.utc).isoformat()
+
+
+def timestamp_key(value):
+    validate_timestamp(value)
+    # Preserve Chrono's nanoseconds; datetime truncates after microseconds.
+    base = re.sub(r'\.[0-9]+', '', value).replace('Z', '+00:00')
+    fraction = re.search(r'\.([0-9]+)', value)
+    return (int(datetime.fromisoformat(base).timestamp()),
+            int(fraction[1].ljust(9, '0')) if fraction else 0)
+
+
+def admission_clock():
+    boot = Path('/proc/sys/kernel/random/boot_id').read_text(encoding='ascii').strip()
+    ns = time.clock_gettime_ns(time.CLOCK_BOOTTIME)
+    if not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}', boot) or type(ns) is not int or ns < 0:
+        raise ValueError('Reloj de admisión inválido')
+    return boot, ns
+
+
+def validate_admission(value):
+    if type(value) is not dict or set(value) != {'version', 'last_attempt', 'last_confirmed'} or type(value['version']) is not int or value['version'] != 1:
+        raise ValueError('Permiso inválido')
+    attempt, confirmed = value['last_attempt'], value['last_confirmed']
+    def identity(row):
+        if (type(row['id']) is not int or not 0 <= row['id'] < 2**64 or type(row['grupo']) is not str
+                or row['grupo'] not in GROUP_LIMITS or row['grupo'] == 'rapidas'):
+            raise ValueError('Identidad de permiso inválida')
+        validate_timestamp(row['at'])
+        if not row['at'].endswith(('+00:00','Z')):
+            raise ValueError('UTC de permiso inválido')
+    if confirmed is not None:
+        if type(confirmed) is not dict or set(confirmed) != {'at','grupo','id'}:
+            raise ValueError('Confirmación inválida')
+        identity(confirmed)
+    if attempt is not None:
+        fields = {'boot_id','reserved_ns','completed_ns','at','generation','grupo','id','created_at','enqueued_at','outcome'}
+        if type(attempt) is not dict or set(attempt) != fields:
+            raise ValueError('Intento inválido')
+        identity(attempt)
+        if (type(attempt['boot_id']) is not str or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',attempt['boot_id'])
+                or type(attempt['reserved_ns']) is not int or attempt['reserved_ns'] < 0
+                or attempt['outcome'] not in ('reserved','confirmed','not_sent','unknown')):
+            raise ValueError('Reserva inválida')
+        generation_kind(attempt['generation'])
+        validate_timestamp(attempt['created_at']); validate_timestamp(attempt['enqueued_at'])
+        end = attempt['completed_ns']
+        if end is not None and (type(end) is not int or end < attempt['reserved_ns']):
+            raise ValueError('Finalización inválida')
+        if (attempt['outcome'] in ('confirmed','not_sent')) != (end is not None):
+            raise ValueError('Resultado incoherente')
+        if attempt['outcome'] == 'confirmed' and (confirmed is None or any(confirmed[k] != attempt[k] for k in ('grupo','id'))):
+            raise ValueError('Confirmación incoherente')
+    elif confirmed is not None:
+        raise ValueError('Confirmación sin intento')
+    return value
+
+
+def admission_state(db, migrate=False):
+    exists = db.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='guard_admission'").fetchone()
+    if not exists:
+        if not migrate:
+            return None  # compatible read-only preflight; never a runtime permission
+        db.execute('CREATE TABLE guard_admission (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL)')
+        value = dict(version=1,last_attempt=None,last_confirmed=None)
+        db.execute('INSERT INTO guard_admission VALUES (1,?)',(canonical(value),))
+    rows = db.execute('SELECT id,body FROM guard_admission').fetchall()
+    if len(rows) != 1 or rows[0][0] != 1:
+        raise ValueError('Fila de permiso inválida')
+    return validate_admission(json.loads(rows[0][1],object_pairs_hook=unique_object))
+
+
 class MiniControl:
     """Caller holds control.lock. Queries/ensayos open SQLite read-only, never recover.
 
@@ -734,6 +882,7 @@ class MiniControl:
         self.pueue, self.directory, self.clock = pueue, Path(directory), clock
         self.path = self.directory / 'control.sqlite3'
         self.generation_source = generation
+        self.boot_clock = admission_clock
 
     def mode(self, state):
         return 'fijo' if self.host == 'mini' else (state['mode_override']['mode'] if state['mode_override'] else
@@ -791,6 +940,7 @@ class MiniControl:
             raise ValueError('Ajustes inválidos')
         calculated = dict(MINI_PROFILE)
         if self.host == 'desk':
+            generation_kind(value['generation'])
             event = value.get('schedule_event')
             if type(event) not in (int, float) or not math.isfinite(event) or schedule_at(event)[0] != event:
                 raise ValueError('Evento inválido')
@@ -834,6 +984,8 @@ class MiniControl:
                     or any(type(g) is not str or type(reason) is not str for g, reason in startup['holds'].items())
                     or any(not re.fullmatch('[0-9a-f]{64}', startup.get(k, '')) for k in ('source_hash', 'target_hash'))):
                 raise ValueError('Arranque durable inválido')
+            if self.host == 'desk' and 'previous_generation' in startup:
+                generation_kind(startup['previous_generation'])
             for ident, item in startup['interruptions'].items():
                 if not ident.isdigit() or type(item) is not dict or item.get('message') != INTERRUPTED:
                     raise ValueError('Interrupción inválida')
@@ -844,7 +996,10 @@ class MiniControl:
         db.execute('UPDATE policy SET body=? WHERE id=1', (canonical(state),))
 
     def generation(self, state):
-        return self.generation_source() if self.generation_source else mini_generation(Path(state['pid_file']))
+        if self.generation_source:
+            return self.generation_source()
+        reader = mini_generation if self.host == 'mini' else desk_generation
+        return reader(Path(state['pid_file']))
 
     def disabled(self):
         for target in (self.directory / 'slots.disabled', self.directory / 'maintenance', self.directory.parent / 'rack/actions.disabled'):
@@ -857,6 +1012,7 @@ class MiniControl:
 
     def observed(self):
         snapshot = self.pueue.status()
+        self._status_snapshot = snapshot  # private; never published or logged
         groups = snapshot['groups']
         # Publish only a count, never task identities, commands or environments.
         self.foreign_work = (sum(task['group'] not in self.profile for task in live_tasks(snapshot))
@@ -908,6 +1064,8 @@ class MiniControl:
                 db.execute('CREATE TABLE policy (id INTEGER PRIMARY KEY, body TEXT NOT NULL)')
                 db.execute('CREATE TABLE host_actions (action_id TEXT PRIMARY KEY, digest TEXT NOT NULL, body TEXT NOT NULL)')
                 db.execute('INSERT INTO policy VALUES (1,?)', (canonical(state),))
+                if self.host == 'desk':
+                    admission_state(db, migrate=True)
         finally:
             db.close()
         self.path.chmod(0o600)
@@ -1252,7 +1410,396 @@ class MiniControl:
         finally:
             os.close(folder)
 
+    def _admission_gate(self, state, group=None, proc=Path('/proc'), operation='resume'):
+        """One bounded sequence, repeated once after reservation; no retry loop.
+
+        The caller owns control.lock. External Pueue writers remain outside it.
+        No SQLite transaction spans Docker/Pueue. Returned status is private.
+        """
+        started = time.monotonic()
+        stage = 'authority'
+        try:
+            if os.path.lexists(self.directory / 'maintenance'):
+                return 'maintenance', None, None, started
+            if state.get('startup') and state['startup']['phase'] != 'ready':
+                return 'startup', None, None, started
+            with self.connect() as db:
+                current = self.state(db)
+                if current != state:
+                    return 'authority', None, None, started
+                receipts = [json.loads(r[0]) for r in db.execute('SELECT body FROM host_actions')]
+            if any(a['response']['status'] in ('applying','partial','unknown') for a in receipts):
+                return 'admission', None, None, started
+            if self.host == 'desk' and state.get('startup_version') == 1:
+                stage = 'docker'
+                subprocess.run(['/usr/bin/docker','info'],check=True,capture_output=True,timeout=5)
+            stage = 'desired'
+            vector, _ = self.observed()
+            snapshot = self._status_snapshot
+            if vector != state['desired'] or any(snapshot['groups'][g]['status'] not in ('Running','Paused') for g in self.profile):
+                return 'desired', None, None, started
+            stage = 'generation'
+            if self.generation(state) != state['generation']:
+                return 'generation', None, None, started
+            stage = 'fresh_sample'
+            sample = pressure_mini() if self.host == 'mini' else pressure(proc)
+            threshold = RAPIDAS_THRESHOLDS[self.host] if group == 'rapidas' else (MINI_THRESHOLDS if self.host == 'mini' else PRESSURE_THRESHOLDS)
+            expected = 'mantener' if operation == 'one' else 'reanudar'
+            if decide(self.host,sample,threshold) != expected or time.monotonic()-started > GATE_SECONDS:
+                return 'fresh_sample', None, None, started
+            stage = 'event'
+            if self._event_stale(state):
+                return 'event', None, None, started
+            return None, snapshot, sample, started
+        except ADMISSION_ERRORS:
+            return stage, None, None, started
+
+    def _event_stale(self, state):
+        try:
+            return self.resolve(state) != state
+        except ADMISSION_ERRORS:
+            return True
+
+    def admission_ready(self, state, group=None, proc=Path('/proc')):
+        if self.host == 'mini':
+            return self._legacy_admission_ready(state,group,proc)
+        # group=None historically checks Docker/vector/event, without a sensor.
+        if group is None:
+            return self._legacy_admission_ready(state,group,proc)
+        return self._admission_gate(state,group,proc)[0] is None
+
+    def admission_plan(self, db):
+        return admission_state(db)
+
+    def _save_admission(self, value):
+        validate_admission(value)
+        with self.connect(write=True) as db:
+            # Never create/reset at runtime. Only installation/adoption migrates.
+            if admission_state(db) is None:
+                raise ValueError('Permiso sin migrar')
+            db.execute('UPDATE guard_admission SET body=? WHERE id=1',(canonical(value),))
+
+    def _candidate(self, snapshot, state, block):
+        candidates = []
+        tasks = snapshot['tasks']
+        if type(tasks) is not dict:
+            raise ValueError('Cola inválida')
+        for key, task in tasks.items():
+            if (type(task) is not dict or type(task.get('group')) is not str
+                    or type(task.get('id')) is not int or str(task['id']) != key
+                    or not 0 <= task['id'] < 2**64):
+                raise ValueError('Identidad de cola inválida')
+        for group in self.profile:
+            if group == 'rapidas':
+                continue
+            row = snapshot['groups'][group]
+            waiting = [t for t in tasks.values() if t.get('group') == group and type(t.get('status')) is dict and 'Queued' in t['status']]
+            if not waiting:
+                continue
+            reasons = set(state['reasons'].get(group,[]))
+            if os.path.lexists(self.pause_fence(group)):
+                reasons.add('manual')
+            if row['status'] != 'Paused':
+                continue  # open group: waits on its own Pueue quota, not on the guard
+            if reasons != {'pressure'}:
+                block('reason',group)
+                continue
+            occupied = 0
+            for task in tasks.values():
+                if task.get('group') != group:
+                    continue
+                status = task.get('status')
+                if type(status) is not dict or len(status) != 1 or next(iter(status)) not in ('Queued','Stashed','Locked','Running','Paused','Done'):
+                    raise ValueError('Estado desconocido')
+                occupied += bool(set(status) & {'Running','Paused','Locked'})
+            if occupied >= row['parallel_tasks']:
+                block('quota',group)
+                continue
+            for task in waiting:
+                try:
+                    ident = task['id']
+                    if type(ident) is not int or not 0 <= ident < 2**64 or tasks.get(str(ident)) != task or len(task['status']) != 1:
+                        raise ValueError('Identidad inválida')
+                    timestamp_key(task['created_at'])
+                    enqueue = task['status']['Queued']['enqueued_at']
+                    order = timestamp_key(enqueue)
+                    dependencies = task['dependencies']
+                    if type(dependencies) is not list or any(type(d) is not int or not 0 <= d < 2**64 for d in dependencies):
+                        raise ValueError('Dependencia inválida')
+                    if any(tasks.get(str(d),{}).get('status',{}).get('Done',{}).get('result') != 'Success' for d in dependencies):
+                        block('dependency',group)
+                        continue
+                    candidates.append((order,ident,group,task['created_at'],enqueue,occupied,row['parallel_tasks']))
+                except ADMISSION_ERRORS:
+                    block('task_changed',group)
+        return min(candidates) if candidates else None
+
+    def _execution_confirmed(self, attempt, state):
+        if self.generation(state) != attempt['generation']:
+            return False
+        snapshot = self.pueue.status()
+        if snapshot['groups'][attempt['grupo']]['status'] != 'Paused':
+            return False
+        task = snapshot['tasks'].get(str(attempt['id']))
+        if not task or any(task.get(k) != attempt[v] for k,v in (('id','id'),('group','grupo'),('created_at','created_at'))):
+            return False
+        status = task['status']
+        if type(status) is not dict or len(status) != 1 or not set(status) <= {'Running','Done'}:
+            return False
+        detail = next(iter(status.values()))
+        return (detail.get('enqueued_at') == attempt['enqueued_at'] and
+                timestamp_key(attempt['at']) <= timestamp_key(detail['start']) <= timestamp_key(utc_at(self.clock())))
+
+    def _boot_sample(self):
+        boot, ns = self.boot_clock()
+        if (type(boot) is not str or not re.fullmatch(r'[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}',boot)
+                or type(ns) is not int or ns < 0):
+            raise ValueError('Reloj de admisión inválido')
+        return boot, ns
+
+    def _finish_attempt(self, value, outcome, minimum=None):
+        attempt = value['last_attempt']
+        boot, ns = self._boot_sample()
+        if (boot != attempt['boot_id'] or ns < attempt['reserved_ns']
+                or minimum is not None and (boot != minimum[0] or ns < minimum[1])):
+            outcome = 'unknown'
+        attempt['outcome'] = outcome
+        attempt['completed_ns'] = ns if outcome in ('confirmed','not_sent') else None
+        if outcome == 'confirmed':
+            value['last_confirmed'] = dict(at=utc_at(self.clock()),grupo=attempt['grupo'],id=attempt['id'])
+        self._save_admission(value)
+        return outcome
+
+    def resolve_admission(self, no_effect=False):
+        """Caller holds control.lock; --sin-efecto certifies absence of any late effect.
+
+        Maintenance, a new boot or a Queued observation alone never grant permission.
+        Keep the durable identity/history and start a full minute at resolution.
+        """
+        if self.host != 'desk' or not os.path.lexists(self.directory/'maintenance'):
+            raise ValueError('Resolver la admisión exige el desk en mantenimiento')
+        with self.connect() as db:
+            value = admission_state(db)
+            state = self.state(db)
+        if value is None or value['last_attempt'] is None or value['last_attempt']['outcome'] not in ('reserved','unknown'):
+            raise ValueError('No hay admisión incierta que resolver')
+        attempt = value['last_attempt']
+        boot, ns = self._boot_sample()
+        if boot == attempt['boot_id'] and ns < attempt['reserved_ns']:
+            raise ValueError('Reloj anterior a la reserva')
+        confirmed = self._execution_confirmed(attempt,state)
+        if not confirmed and not no_effect:
+            raise ValueError('Sin evidencia; certificar ausencia de efecto tardío o mantener retenida')
+        outcome = 'confirmed' if confirmed else 'not_sent'
+        log(self.directory,'admision_resolucion_intento',grupo=attempt['grupo'],id=attempt['id'],resultado=outcome)
+        if boot != attempt['boot_id']:
+            attempt.update(boot_id=boot,reserved_ns=ns)
+        if self._finish_attempt(value,outcome,minimum=(boot,ns)) != outcome:
+            raise ValueError('Reloj no fiable al finalizar resolución')
+        log(self.directory,'admision_resuelta',grupo=attempt['grupo'],id=attempt['id'],resultado=outcome)
+        return outcome
+
+    def _one(self, state, proc, block, tick, result):
+        cause,snapshot,sample,_ = self._admission_gate(state,proc=proc,operation='one')
+        if cause:
+            block(cause)
+            return
+        candidate = self._candidate(snapshot,state,block)
+        if candidate is None:
+            return
+        with self.connect() as db:
+            value = admission_state(db)
+        if value is None:
+            block('authority')
+            return
+        attempt = value['last_attempt']
+        try:
+            boot,ns = self._boot_sample()
+        except (AttributeError,) + ADMISSION_ERRORS:
+            block('clock')
+            return
+        if attempt and attempt['outcome'] in ('reserved','unknown'):
+            # A crash cannot grant a new permit. Observe only the durable identity.
+            if attempt['outcome'] == 'reserved':
+                attempt['outcome'] = 'unknown'
+                self._save_admission(value)
+            try:
+                if (boot != attempt['boot_id'] or ns >= attempt['reserved_ns']) and self._execution_confirmed(attempt,state):
+                    # After reboot, rebase only with actual execution evidence.
+                    attempt.update(boot_id=boot,reserved_ns=ns)
+                    self._finish_attempt(value,'confirmed')
+            except ADMISSION_ERRORS:
+                pass
+            block('admission_unknown')
+            return
+        if attempt:
+            elapsed = ns-attempt['completed_ns'] if boot == attempt['boot_id'] else ns
+            if elapsed < ADMISSION_GAP_NS:
+                block('clock' if elapsed < 0 else 'cooldown')
+                result['evento'] = 'tope_alcanzado'
+                return
+        _,ident,group,created,enqueue,occupied,quota = candidate
+        attempt = dict(boot_id=boot,reserved_ns=ns,completed_ns=None,at=utc_at(self.clock()),
+                       generation=state['generation'],grupo=group,id=ident,created_at=created,
+                       enqueued_at=enqueue,outcome='reserved')
+        value['last_attempt'] = attempt
+        self._save_admission(value)  # FULL commit, no transaction held across RPC
+        cause,final,sample,started = self._admission_gate(state,group,proc,operation='one')
+        if not cause:
+            try:
+                final_candidate = self._candidate(final,state,lambda *args:None)
+                # Never switch to a replacement candidate after reserving.
+                if final_candidate != candidate:
+                    cause = 'task_changed'
+            except ADMISSION_ERRORS:
+                cause = 'task_changed'
+        if cause:
+            self._finish_attempt(value,'not_sent');block(cause,group)
+            return
+        try:
+            log(self.directory,'admision_intento',tick_id=tick,grupo=group,id=ident)
+            if time.monotonic()-started > GATE_SECONDS:
+                self._finish_attempt(value,'not_sent');block('fresh_sample',group)
+                return
+        except ADMISSION_ERRORS:
+            self._finish_attempt(value,'not_sent');block('log',group)
+            return
+        # The schedule event is checked last, after the intent write, right before the effect.
+        if self._event_stale(state):
+            self._finish_attempt(value,'not_sent');block('event',group)
+            return
+        try:
+            self.pueue.call('start',ident)
+        except ADMISSION_ERRORS:
+            pass  # RPC failure never proves no effect
+        confirmed = False
+        try:
+            confirmed = self._execution_confirmed(attempt,state)
+        except ADMISSION_ERRORS:
+            pass
+        outcome = self._finish_attempt(value,'confirmed' if confirmed else 'unknown')
+        if outcome == 'confirmed':
+            result.update(evento='admision_una',grupo=group,id=ident,resultado='confirmed',
+                          presion=sample,cuota=quota,ocupados_antes=occupied)
+        else:
+            block('admission_unknown',group)
+
     def guard(self, readings, proc=Path('/proc')):
+        if self.host == 'mini':
+            return self._legacy_guard(readings,proc)
+        tick = os.urandom(12).hex()
+        blocks = []
+        result = dict(evento='guard_fin')
+        def block(cause, group=None, operation=None):
+            item = dict(grupo=group,operacion=operation or ('unknown' if normal is None else 'one' if normal == 'mantener' else 'resume'),causa=cause)
+            if item not in blocks and len(blocks) < 16:
+                blocks.append(item)
+        state, normal, can_open, failure = None, None, True, None
+        stage = 'authority'
+        try:
+            try:
+                if os.path.lexists(self.directory/'maintenance'):
+                    block('maintenance');can_open=False;failure=ValueError('Mantenimiento')
+                elif not self.reconcile():
+                    block('admission');can_open=False;failure=ValueError('Admisión sin reconciliar')
+            except ADMISSION_ERRORS as error:
+                block('authority');can_open=False;failure=error
+            try:
+                with self.connect() as db:state=self.state(db)
+            except ADMISSION_ERRORS as error:
+                block('authority');can_open=False;failure=error
+            if state and state.get('startup') and state['startup']['phase'] != 'ready':
+                block('startup');can_open=False
+            stage = 'fresh_sample'
+            readings = readings if readings is not None else pressure(proc)
+            normal = decide('desk',readings,PRESSURE_THRESHOLDS)
+            rapid = decide('desk',readings,RAPIDAS_THRESHOLDS['desk'])
+            stage = 'authority'
+            for item in blocks:item['operacion']='one' if normal=='mantener' else 'resume'
+            try:
+                log(self.directory,'lectura',tick_id=tick,**readings)
+                log(self.directory,'decision',tick_id=tick,accion=normal,accion_rapidas=rapid)
+            except ADMISSION_ERRORS:
+                block('log');can_open=False
+            groups = self.pueue.status()['groups']
+            for group in self.profile:
+                if group not in groups:
+                    continue
+                reasons = set(state['reasons'].get(group,[])) if state else set()
+                if os.path.lexists(self.pause_fence(group)):
+                    reasons.add('manual')
+                status = groups[group]['status']
+                decision = rapid if group == 'rapidas' else normal
+                if status == 'Running' and reasons & {'pressure','startup'}:
+                    reasons -= {'pressure','startup'}
+                    state.get('startup',{}).get('holds',{}).pop(group,None)
+                    state['reasons'][group] = sorted(reasons)
+                    try:
+                        with self.connect(write=True) as db:self.store(db,state)
+                    except ADMISSION_ERRORS as error:
+                        can_open=False;failure=failure or error;block('authority')
+                        try:self.fence_pause(group)
+                        except ADMISSION_ERRORS:pass
+                if decision == 'pausar':
+                    if group != 'rapidas':block('pressure_high')
+                    if status == 'Running' or 'pressure' in reasons:
+                        try:
+                            if can_open:
+                                state['reasons'][group] = sorted(reasons | {'pressure'})
+                                with self.connect(write=True) as db:self.store(db,state)
+                            else:self.fence_pause(group)
+                        except ADMISSION_ERRORS as error:
+                            can_open=False;failure=failure or error;block('authority')
+                            try:self.fence_pause(group)
+                            except ADMISSION_ERRORS:pass
+                        try:self.pueue.call('pause','--wait','-g',group)
+                        except ADMISSION_ERRORS as error:
+                            can_open=False;failure=failure or error;block('rpc',group)
+                    continue
+                if decision == 'reanudar' and reasons & {'pressure','startup'}:
+                    if not can_open:continue
+                    if not reasons <= {'pressure','startup'}:
+                        block('reason',group,'resume');continue
+                    if status != 'Paused':continue
+                    cause,_,_,started = self._admission_gate(state,group,proc)
+                    if cause:
+                        block(cause,group,'resume')
+                        if cause in ('event','generation','desired'):
+                            can_open=False;failure=failure or ValueError('Gate de reapertura: '+cause)
+                        continue
+                    try:
+                        log(self.directory,'apertura_intento',tick_id=tick,grupo=group)
+                    except ADMISSION_ERRORS:
+                        block('log',group,'resume');continue
+                    if time.monotonic()-started > GATE_SECONDS:
+                        block('fresh_sample',group,'resume');continue
+                    if self._event_stale(state):
+                        can_open=False;failure=failure or ValueError('Gate de reapertura: event')
+                        block('event',group,'resume');continue
+                    try:
+                        self.pueue.call('start','-g',group)
+                    except ADMISSION_ERRORS as error:
+                        can_open=False;failure=failure or error;block('rpc',group,'resume');continue
+                    state['reasons'][group] = sorted(reasons-{'pressure','startup'})
+                    state.get('startup',{}).get('holds',{}).pop(group,None)
+                    with self.connect(write=True) as db:self.store(db,state)
+                elif can_open and status == 'Paused' and not reasons:
+                    state['reasons'][group]=['manual']
+                    with self.connect(write=True) as db:self.store(db,state)
+            if normal == 'mantener' and can_open:
+                self._one(state,proc,block,tick,result)
+        except ADMISSION_ERRORS as error:
+            failure=error
+            block(stage)
+        finally:
+            event = result.pop('evento')
+            if blocks and event == 'guard_fin':event='retenido'
+            # Fixed whitelist, six managed groups, bounded to <4 KiB per summary.
+            log(self.directory,event,tick_id=tick,bloqueos=blocks,**result)
+        if failure is not None:
+            raise failure
+
+    def _legacy_guard(self, readings, proc=Path('/proc')):
         failure, state = None, None
         # Any unreadable authority, including numeric overflow, keeps protective closing.
         errors = (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError)
@@ -1346,7 +1893,7 @@ class MiniControl:
             log(self.directory, 'sin_reconciliar', detalle=type(failure).__name__)
             raise failure
 
-    def admission_ready(self, state, group=None, proc=Path('/proc')):
+    def _legacy_admission_ready(self, state, group=None, proc=Path('/proc')):
         if os.path.lexists(self.directory / 'maintenance'):
             return False
         if state.get('startup') and state['startup']['phase'] != 'ready':
@@ -1409,12 +1956,17 @@ class MiniControl:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "preparar", "retirar", "parada"])
+    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "preparar", "retirar", "parada", "resolver-admision"])
     parser.add_argument("group", nargs="?")
     parser.add_argument("--host", choices=["desk", "mini"], default="desk")
     parser.add_argument('--pid-file', type=Path)
     parser.add_argument('--seco', action='store_true')
+    parser.add_argument('--sin-efecto', action='store_true', help='Certifica que no existe efecto pendiente ni tardío de la admisión')
     args = parser.parse_args()
+    if args.sin_efecto and args.command != 'resolver-admision':
+        parser.error('--sin-efecto sólo para resolver-admision')
+    if args.command == 'resolver-admision' and (args.host != 'desk' or args.group is not None):
+        parser.error('resolver-admision sólo para desk, sin grupo')
     if args.seco and args.command != 'preparar':
         parser.error('--seco sólo para preparar; rack usa dry_run')
     groups = MINI_GROUPS if args.host == "mini" else GROUP_LIMITS
@@ -1463,7 +2015,9 @@ def main():
     with locked(directory, create=args.command != 'preparar'):
         try:
             engine = MiniControl(pueue, directory, host=args.host)
-            if args.command == 'preparar':
+            if args.command == 'resolver-admision':
+                print(json.dumps(dict(resultado=engine.resolve_admission(no_effect=args.sin_efecto))))
+            elif args.command == 'preparar':
                 prepare_start(engine, dry_run=args.seco)
             elif args.command == 'parada':
                 engine.record_stop()
@@ -1505,7 +2059,8 @@ def main():
                 log(directory, "pausa_manual", grupo=args.group)
         except Exception as error:
             if args.command != 'preparar':
-                log(directory, "error", detalle=str(error))
+                detalle = type(error).__name__ if args.host == 'desk' else str(error)
+                log(directory, "error", detalle=detalle)
             raise
 
 

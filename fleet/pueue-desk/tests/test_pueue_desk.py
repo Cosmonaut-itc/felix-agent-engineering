@@ -23,7 +23,9 @@ root = Path(os.environ["FAKE_ROOT"])
 args = sys.argv[1:]
 if name == "ssh":
     import subprocess
-    sys.exit(subprocess.run(["/usr/bin/python3", "-I", "-"], input=sys.stdin.read(), text=True).returncode)
+    program = sys.stdin.read()
+    (root / "ssh-stdin").write_text(program, encoding="utf-8")
+    sys.exit(subprocess.run(["/usr/bin/python3", "-I", "-"], input=program, text=True).returncode)
 with (root / "calls").open("a") as f:
     f.write(json.dumps([name, *args]) + "\n")
 state_file = root / "pueue.json"
@@ -263,6 +265,9 @@ class DeploymentTests(Fixture):
                     result=self.deploy(*args)
                     self.assertNotEqual(result.returncode,0)
                     self.assertIn('requiere desk adoptado',result.stderr)
+                    long_lines=[l for l in (self.root/'ssh-stdin').read_text(encoding='utf-8').splitlines() if len(l)>1024]
+                    self.assertTrue(long_lines)
+                    self.assertTrue(all(l.isascii() for l in long_lines))
                     self.assertEqual(self.pueue.status(),before)
                     self.assertFalse((self.root/'.config').exists())
                     self.assertFalse(any(c==['pueue','shutdown'] for c in self.calls()))

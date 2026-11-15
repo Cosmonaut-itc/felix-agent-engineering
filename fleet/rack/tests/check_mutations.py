@@ -161,8 +161,7 @@ STARTUP_CASES = (
      'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
     ('startup-hold-visible','index.html',"const reason=h.control?.startup_holds?.[n];","const reason=null;",
      'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
-    ('startup-hold-escaped','index.html',"${esc('Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n)}",
-     "${'Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n}",
+    ('startup-hold-escaped','index.html',"how=esc(reason)+' · '+resolve;","how=reason+' · '+resolve;",
      'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
     ('startup-publish-terminal','serve.py',"if t['state'] != 'Done' or t.get('interruption_reason')","if t['state'] != 'Done'",
      'test_startup.StartupPublicationTests.test_publish_retains_only_attributed_interruption_and_snapshot_rejects_false_origin'),
@@ -195,10 +194,10 @@ STARTUP_CASES += (
     ('startup-old-terminal-before-metadata','snapshot.py',
      "                if state == 'Done' and (end is None or end < now - 86400) and not attributed:\n                    continue\n",'',
      'test_startup.StartupSnapshotTests.test_old_terminal_is_dropped_before_reading_its_metadata'),
-    ('startup-ambiguous-notice','index.html',"r.includes('ambiguous') && !c.startup_holds?.[g]",'false',
-     'test_startup.StartupPipelineTests.test_ambiguous_pause_without_group_hold_keeps_the_ssh_notice'),
-    ('startup-ambiguous-notice-hold','index.html'," && !c.startup_holds?.[g]",'',
-     'test_startup.StartupPipelineTests.test_ambiguous_pause_without_group_hold_keeps_the_ssh_notice'),
+    ('startup-ambiguous-cell','index.html',"else if(r.includes('ambiguous')){why='Pausa de origen desconocido';how=resolve;}",'',
+     'test_startup.StartupPipelineTests.test_ambiguous_pause_without_group_hold_explains_in_its_cell'),
+    ('startup-hold-before-ambiguous','index.html',"if(reason){why='Retenido al reiniciar';","if(reason && !r.includes('ambiguous')){why='Retenido al reiniciar';",
+     'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
 )
 
 

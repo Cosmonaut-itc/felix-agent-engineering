@@ -45,9 +45,10 @@ def sha(valor):
 
 
 class GitHubGit:
-    def __init__(self, config, ejecutar=None):
+    def __init__(self, config, ejecutar=None, sombra=False):
         self.config = config
         self.ejecutar = ejecutar or subprocess.run
+        self.sombra = sombra
 
     def comando(self, args):
         return self.ejecutar(args, check=True, capture_output=True, text=True,
@@ -109,7 +110,8 @@ class GitHubGit:
         if not sha(head):
             raise ValueError("head inválido")
         vista = VistaPR(pr, head, base=payload["base"]["ref"],
-                        abierto=payload["state"] == "open", recibo=entrega.recibo)
+                        abierto=payload["state"] == "open", recibo=entrega.recibo,
+                        mergeado=payload.get("merged") is True)
         if head != entrega.head or vista.base != "main" or not vista.abierto:
             return vista
         try:
@@ -165,8 +167,9 @@ class GitHubGit:
             raise ValueError("main inválido")
         vistas = []
         for entrada in estado.entradas:
-            # Rejected entries are final; the ledger keeps them, GitHub is not re-read.
-            if isinstance(entrada.admision, Rechazado):
+            # En sombra se sigue un rechazo hasta observar su posible merge externo.
+            if ((self.sombra and entrada.terminal) or
+                    (isinstance(entrada.admision, Rechazado) and not self.sombra)):
                 continue
             try:
                 vistas.append(self.vista(entrada.entrega))

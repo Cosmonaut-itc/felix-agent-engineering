@@ -1,7 +1,7 @@
 # Mergear un PR APTO y verde
 
-En un repo no inscrito, sigue el procedimiento de merge de este archivo
-que autoriza **Merge** de felix-mode.
+En un repo no inscrito, o después de entregar en sombra, sigue el
+procedimiento de merge de este archivo que autoriza **Merge** de felix-mode.
 Estos PR se detienen en merge-ready y esperan autorización explícita:
 
 - un PR ajeno, fuera de la cola o reservado por el usuario;
@@ -17,16 +17,21 @@ Una restricción del usuario o del `AGENTS.md` conserva su precedencia.
 
 Consulta la inscripción en
 `${XDG_CONFIG_HOME:-$HOME/.config}/pao-tren/inscritos`: una línea
-`owner/repo`, comparación sin distinguir mayúsculas y comentarios `#`.
-Sin archivo, ningún repo está inscrito y sigue el procedimiento habitual.
-En un repo inscrito, esta sección sustituye el merge del ticket, también
-en un programa. El tren es el único camino a `main`.
+`owner/repo` (activo) o `owner/repo sombra`, comparación sin distinguir
+mayúsculas y comentarios `#`. Un modo desconocido es activo; entre duplicados
+prevalece activo. Sin archivo, sigue el procedimiento habitual.
+En modo activo esta sección sustituye el merge del ticket, también en un
+programa: el tren es el único camino a `main`. En sombra cumple los pasos
+1 y 3 y después continúa en «Llevar el PR hasta verde» con los gates y las
+autorizaciones habituales; la suite completa sigue a cargo del ticket.
+Anota `Retenido` o `Rechazado` y su motivo en tu registro sin frenar el merge.
+En sombra no edites `heads_autorizados`.
 
 1. Consigue APTO literal sobre el head actual, cero hallazgos abiertos,
    recibo limpio de la dirigida y CI verde. La base del PR es `main`.
    En alto riesgo exige también **Verificado**. La suite completa la corre
-   el tren sobre C, el commit candidato del lote.
-2. Si el PR toca CI, gobierno o lockfiles, o es de alto riesgo, queda en
+   el tren sobre C, el commit candidato del lote, sólo en modo activo.
+2. En modo activo, un PR de CI, gobierno, lockfiles o alto riesgo queda en
    merge-ready hasta que Felix autorice ese head con AskUserQuestion.
    Con su OK, añade el SHA40 a `repos["<owner/repo>"].heads_autorizados` en
    `${XDG_STATE_HOME:-~/.local/state}/pao-tren/config.json`, la configuración
@@ -59,9 +64,9 @@ en un programa. El tren es el único camino a `main`.
    ```
 
    Comprueba la admisión de tu PR y head en sombra, separada de la custodia.
-   Si quedó `Retenido` o `Rechazado`, resuelve el motivo o infórmaselo a
-   Felix antes de terminar el turno. Si la entrega falla, resuelve su motivo
-   o informa el bloqueo. Termina con el watch registrado.
+   En modo activo, si quedó `Retenido` o `Rechazado`, resuelve el motivo
+   o infórmaselo a Felix antes de terminar el turno. Si la entrega falla,
+   resuelve su motivo o informa el bloqueo. Termina con el watch registrado.
 4. Ante un comentario de rojo del tren, lee el lote, B, C, unidad, firma,
    conjunto causal y comando de reproducción. Corrige con prueba dirigida,
    pasa la ronda de revisión correspondiente y entrega el head nuevo con
@@ -69,7 +74,8 @@ en un programa. El tren es el único camino a `main`.
 
 El tick de launchd promueve C probado con push CAS fast-forward y comprueba
 `main == C` y su árbol. Las sesiones de Claude no mergean ni hacen push a
-`main` del repo inscrito; `merge-guard` lo niega sin excepción para el tick.
+`main` del repo inscrito activo; `merge-guard` lo niega sin excepción para el tick.
+En sombra el tren sólo observa y el guard conserva las reglas habituales de merge.
 
 ## Llevar el PR hasta verde
 

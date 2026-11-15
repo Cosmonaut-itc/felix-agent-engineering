@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 import subprocess
+import sys
 import tempfile
 import threading
 from types import SimpleNamespace
@@ -21,13 +22,19 @@ def utc(value):
     return datetime.fromisoformat(value + '+00:00').timestamp()
 
 
+def changed_files(before, after):
+    """Paths whose bytes differ. A byte diff of the whole tree is slow and unreadable (SEN-6417)."""
+    return sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k))
+
+
 class DeskFixture(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory(prefix='u32-sol-', dir='/tmp')
         self.addCleanup(self.tmp.cleanup)
         self.root = Path(self.tmp.name)
+        (self.root/'pid').write_text('321\n')
         self.now = utc('2026-11-14T13:59:59')
-        self.gen = 'desk-daemon-1'
+        self.gen = 'linux-proc-v1:1111111111111111111111111111111111111111111111111111111111111111'
         self.p = FakePueue()
         self.p.groups = {g: dict(parallel_tasks=n, status='Running') for g, n in control.desk_profile(self.now).items()}
         self.p.groups.update(default=dict(parallel_tasks=1, status='Paused'), ajeno=dict(parallel_tasks=6, status='Paused'))
@@ -162,7 +169,7 @@ class DeskSlotsTests(DeskFixture):
         self.status(r)
         dry=self.request('ensayo-event-01',dry_run=True)
         self.assertEqual(self.engine.handle(dry)['status'],'conflict')
-        self.assertEqual(self.fingerprint(),before)
+        self.assertEqual(changed_files(before, self.fingerprint()), [])
         self.assertEqual(self.p.calls,[])
         self.assertEqual(self.state()['overrides']['jale']['slots'],6)
         self.assertEqual(self.engine.handle(stale)['status'],'conflict')
@@ -248,7 +255,7 @@ class DeskSlotsTests(DeskFixture):
             self.assertEqual((answer['status'], (answer.get('error') or {}).get('code'), answer.get('effects')),
                              ('unsupported', 'unsupported', False))
         self.assertEqual(invoke(status)['status'], 'unknown')
-        self.assertEqual(self.fingerprint(), before)
+        self.assertEqual(changed_files(before, self.fingerprint()), [])
         self.assertFalse(absent.exists())
         absent.mkdir()
         for filename in ('control.adopted', 'control.sqlite3'):
@@ -362,11 +369,13 @@ class DeskSlotsTests(DeskFixture):
                 self.engine.manual('hasito')
                 self.p.calls.clear()
                 original = getattr(self.engine, source)
-                reads = [0]
                 def crossing(*args):
                     value = original(*args)
-                    reads[0] += 1
-                    if reads[0] == 3:
+                    # The event crosses right after manual's own final read.
+                    caller = sys._getframe(1)
+                    while caller.f_code.co_filename.endswith('mock.py'):
+                        caller = caller.f_back
+                    if caller.f_code.co_name == 'manual':
                         self.now = utc('2026-11-%dT14:00:00' % day)
                     return value
                 with patch.object(self.engine, source, side_effect=crossing), \
@@ -427,7 +436,7 @@ class DeskSlotsTests(DeskFixture):
         self.assertEqual(answer['status'],'dry_run')
         self.assertEqual(answer['result']['expires_at'],utc('2026-11-14T14:00:00'))
         self.assertEqual(answer['result']['rpc'],[['parallel','6','-g','jale']])
-        self.assertEqual(self.fingerprint(),before);self.assertEqual(self.p.calls,[])
+        self.assertEqual(changed_files(before, self.fingerprint()), []);self.assertEqual(self.p.calls,[])
 
     def pending(self):
         r = self.request()
@@ -493,7 +502,7 @@ class DeskSlotsTests(DeskFixture):
         self.assertEqual(self.status(r)['receipt_digest'],hashlib.sha256(control.canonical(dict(host='desk',request=r)).encode()).hexdigest())
 
     def test_lost_parallel_reconciles_without_opening_reserved_foreign_or_ambiguous(self):
-        self.engine.handle(self.request());self.gen='desk-daemon-2'
+        self.engine.handle(self.request());self.gen='linux-proc-v1:2222222222222222222222222222222222222222222222222222222222222222'
         self.p.groups['jale'].update(parallel_tasks=7,status='Paused');self.p.calls.clear()
         self.engine.guard(self.low)
         self.assertEqual(self.p.groups['jale']['parallel_tasks'],6)
@@ -655,7 +664,7 @@ class DeskInstallTests(DeskFixture):
                         patch.object(new, 'read_queue', return_value=dict(tasks={},groups={})),
                         patch.object(new, 'Pueue', return_value=self.p),
                         patch.object(new, 'MiniControl', side_effect=factory),
-                        patch.object(new, 'mini_generation', return_value=self.gen),
+                        patch.object(new, 'desk_generation', return_value=self.gen),
                         patch.object(installer, 'SOURCE', candidate),
                         patch.object(installer, 'run', side_effect=lambda *a:self.systemctl(home,commands,*a))):
             manager.start(); self.addCleanup(manager.stop)
@@ -679,7 +688,7 @@ class DeskInstallTests(DeskFixture):
         self.assertIsNone(error, 'La tabla nueva debe tener preflight de migración: ' + str(error))
         self.assertIn('migración de tabla', out.getvalue())
         self.assertIn(new.DESK_POLICY_HASH, out.getvalue())
-        self.assertEqual(self.fingerprint(), fingerprint)
+        self.assertEqual(changed_files(fingerprint, self.fingerprint()), [])
         self.assertEqual(self.p.calls, [])
         stores = []
         store = engine.__class__.store
@@ -732,7 +741,7 @@ class DeskInstallTests(DeskFixture):
                     for dry_run in (True,False):
                         with self.assertRaises((ValueError, TypeError, sqlite3.Error)), redirect_stdout(io.StringIO()):
                             installer.install(home, self.root/'pid', new, dry_run=dry_run)
-                        self.assertEqual(self.fingerprint(), fingerprint)
+                        self.assertEqual(changed_files(fingerprint, self.fingerprint()), [])
                         self.assertEqual(self.p.calls, [])
                         self.assertTrue(all(c[2] in ('is-active','show-environment','show') for c in commands))
                 finally:
@@ -806,7 +815,7 @@ class DeskInstallTests(DeskFixture):
                     installer.main()
                 return out.getvalue()
         with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
-             patch.object(control, 'mini_generation', return_value=self.gen) as pid, \
+             patch.object(control, 'desk_generation', return_value=self.gen) as pid, \
              patch.object(installer, 'run', side_effect=lambda *a:self.systemctl(home,commands,*a)) as run:
             for invalid in ('table', 'pid', 'timer', 'corrupt', 'lost'):
                 with self.subTest(invalid=invalid):
@@ -819,7 +828,7 @@ class DeskInstallTests(DeskFixture):
                     before = self.fingerprint()
                     with self.assertRaises((ValueError, sqlite3.Error, subprocess.SubprocessError)):
                         invoke()
-                    self.assertEqual(self.fingerprint(), before)
+                    self.assertEqual(changed_files(before, self.fingerprint()), [])
                     for f in directory.glob('*'):
                         f.unlink()
             self.p.groups['jale']['parallel_tasks'] = 7
@@ -832,7 +841,7 @@ class DeskInstallTests(DeskFixture):
             pid.assert_called_with(self.root/'pid')
             self.assertIn('Comprobado (lectura)', output)
             self.assertIn('pendiente:', output)
-            self.assertEqual(self.fingerprint(), before)
+            self.assertEqual(changed_files(before, self.fingerprint()), [])
             self.assertEqual(self.p.calls, [])
 
     def test_installer_retires_old_worker_waiting_before_lock_before_adoption(self):
@@ -864,7 +873,7 @@ class DeskInstallTests(DeskFixture):
             return self.systemctl(home, [], *argv)
         try:
             with patch.object(control, 'Pueue', return_value=self.p), patch.object(control, 'MiniControl', side_effect=factory), \
-                 patch.object(control, 'mini_generation', return_value=self.gen), patch.object(installer, 'run', side_effect=run):
+                 patch.object(control, 'desk_generation', return_value=self.gen), patch.object(installer, 'run', side_effect=run):
                 installer.install(home, self.root/'pid', control)
         finally:
             release.set(); worker.join(3)
@@ -896,7 +905,7 @@ class DeskInstallTests(DeskFixture):
         factory=lambda p,d,**kw:Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         commands=[]
         with patch.object(control,'Pueue',return_value=self.p),patch.object(control,'MiniControl',side_effect=factory), \
-             patch.object(control,'mini_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,commands,*a)):
+             patch.object(control,'desk_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,commands,*a)):
             installer.install(home,self.root/'pid',control)
             directory=home/'.local/state/pao/pueue-desk'
             engine=factory(self.p,directory,host='desk')
@@ -926,7 +935,7 @@ class DeskInstallTests(DeskFixture):
         factory=lambda p,d,**kw:Original(p,d,clock=lambda:self.now,generation=lambda:self.gen,**kw)
         self.p.groups['jale']['parallel_tasks']=6
         with patch.object(control,'Pueue',return_value=self.p),patch.object(control,'MiniControl',side_effect=factory), \
-             patch.object(control,'mini_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,[],*a)) as run:
+             patch.object(control,'desk_generation',return_value=self.gen),patch.object(installer,'run',side_effect=lambda *a:self.systemctl(home,[],*a)) as run:
             with self.assertRaises(ValueError):installer.install(home,self.root/'pid',control)
             self.assertFalse((home/'.local/state').exists());self.assertEqual(target.read_text(),'# previous\n')
             self.p.groups['jale']['parallel_tasks']=7

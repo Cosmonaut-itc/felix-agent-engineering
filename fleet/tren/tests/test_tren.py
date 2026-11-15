@@ -103,7 +103,8 @@ class DominioTests(Aislado):
                  ({"abierto": False}, Rechazado(Motivo.CERRADO)),
                  ({"sensible": True}, Retenido(Motivo.MERGE_READY)),
                  ({"alto_riesgo": True}, Retenido(Motivo.VERIFICADO)),
-                 ({"alto_riesgo": True, "verificado": True}, Retenido(Motivo.PILOTO))]
+                 ({"alto_riesgo": True, "verificado": True}, Retenido(Motivo.PILOTO)),
+                 ({"alto_riesgo": True, "verificado": True, "autorizado": True}, Admitido())]
         for cambios, esperado in casos:
             with self.subTest(cambios=cambios):
                 nuevo, _ = paso(estado(), replace(observacion(), prs=(vista(**cambios),)))
@@ -144,7 +145,23 @@ class DominioTests(Aislado):
 
     def test_alto_riesgo_solo(self):
         obs = replace(observacion(3, excluir_alto_riesgo=False),
-                      prs=(vista(1, alto_riesgo=True, verificado=True), vista(2), vista(3)))
+                      prs=(vista(1, alto_riesgo=True, verificado=True, autorizado=True),
+                           vista(2), vista(3)))
+        nuevo, _ = paso(estado(3), obs)
+        self.assertEqual(nuevo.trenes[0].recibos, (entrega().recibo,))
+
+    def test_alto_riesgo_sin_autorizar_queda_en_merge_ready_fuera_del_piloto(self):
+        obs = replace(observacion(excluir_alto_riesgo=False),
+                      prs=(vista(1, alto_riesgo=True, verificado=True),))
+        nuevo, _ = paso(estado(), obs)
+        self.assertEqual(nuevo.entradas[0].admision, Retenido(Motivo.MERGE_READY))
+        self.assertFalse(nuevo.trenes)
+
+    def test_alto_riesgo_autorizado_viaja_solo_en_el_piloto(self):
+        obs = replace(observacion(3),
+                      prs=(vista(1, alto_riesgo=True, verificado=True, autorizado=True),
+                           vista(2), vista(3)))
+        self.assertTrue(obs.excluir_alto_riesgo)
         nuevo, _ = paso(estado(3), obs)
         self.assertEqual(nuevo.trenes[0].recibos, (entrega().recibo,))
 
