@@ -52,7 +52,8 @@ class SoloMain(unittest.TestCase):
     def como_worker(self, cambios):
         # El runner lanza el hook desde Runner.Worker y después sigue con los pasos del trabajo.
         entorno = dict(os.environ, GITHUB_REPOSITORY='SEN-HASO/Hasito',
-                       GITHUB_WORKFLOW_REF=REF, GITHUB_EVENT_NAME='schedule', **cambios)
+                       GITHUB_WORKFLOW_REF=REF, GITHUB_EVENT_NAME='schedule')
+        entorno.update(cambios)
         with tempfile.TemporaryDirectory() as carpeta:
             worker = Path(carpeta) / 'Runner.Worker'
             shutil.copy2(shutil.which('bash'), worker)
