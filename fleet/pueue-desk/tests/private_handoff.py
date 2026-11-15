@@ -42,7 +42,7 @@ def context(root, role="driver"):
     mini=importlib.util.module_from_spec(spec);spec.loader.exec_module(mini);control=mini.control
     info=json.loads((root/'info.json').read_text())
     prefix=info['prefix'];mini.LABEL=prefix+'.daemon';mini.GUARD=prefix+'.guard';mini.BREW=prefix+'.brew'
-    assert prefix.startswith(('pao.u35.injerto.','pao.u35.r1.','pao.u35.r2.','pao.u35.r2b.'))
+    assert prefix.startswith(('pao.u35.injerto.','pao.u35.r1.','pao.u35.r2.','pao.u35.r2b.','pao.u35.r2c.'))
     data=root/'data';config=root/'config.json';pid=data/'pid'
     env=dict(os.environ,TMPDIR=str(root));env.pop('PUEUE_CONFIG_PATH',None)
     class Private(control.Pueue):
@@ -54,6 +54,14 @@ def context(root, role="driver"):
         pueue=mini.PUEUE,daemon=mini.DAEMON,env={},cwd=root)
     m=mini.Manager(home=root,pueue=p,directory=root/'control',configuration=configuration)
     m.agents=root/'agents'
+    def diagnostic_launch(*argv,check=True):
+        result=mini.launchctl(*argv,check=False)
+        if result.returncode and argv[0] in ('bootout','bootstrap','enable','disable'):
+            emit(root,'launchctl_result',verb=argv[0],target=argv[-1],code=result.returncode,
+                 stderr=result.stderr.strip())
+        if check:result.check_returncode()
+        return result
+    m.launch=diagnostic_launch
     def preflight(target):
         # Real private paths differ from the production preflight's fixed Homebrew plist.
         # Its conservative production validation is covered separately by the doubles.
@@ -112,17 +120,18 @@ def main():
     parser.add_argument('--r1',action='store_true',help='Directed abort/restart and bounded diagnostic acceptance')
     parser.add_argument('--r2',action='store_true',help='Opposite abort convergence plus R1 acceptance')
     parser.add_argument('--r2b',action='store_true',help='Full R2/R1 acceptance with private R2b labels')
+    parser.add_argument('--r2c',action='store_true',help='Full R2/R1 plus absent launchd service codes')
     args=parser.parse_args()
-    args.r2 = args.r2 or args.r2b
+    args.r2 = args.r2 or args.r2b or args.r2c
     args.r1 = args.r1 or args.r2
     if args.worker:return worker(args.root,args.worker)
     assert sys.platform=='darwin','macOS required'
     ident=(Path.cwd()/'.remote-run.lock').read_text().strip()
     assert re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}',ident)
-    root=Path.home()/'remote-run/runs'/ident/('u35-r2b' if args.r2b else 'u35-r2' if args.r2 else 'u35-r1' if args.r1 else 'u35-ij');root.mkdir()
+    root=Path.home()/'remote-run/runs'/ident/('u35-r2c' if args.r2c else 'u35-r2b' if args.r2b else 'u35-r2' if args.r2 else 'u35-r1' if args.r1 else 'u35-ij');root.mkdir()
     (root/'agents').mkdir();data=root/'data';data.mkdir()
     assert len(str(data/'socket').encode())<104
-    prefix=('pao.u35.r2b.' if args.r2b else 'pao.u35.r2.' if args.r2 else 'pao.u35.r1.' if args.r1 else 'pao.u35.injerto.')+str(os.getpid())
+    prefix=('pao.u35.r2c.' if args.r2c else 'pao.u35.r2b.' if args.r2b else 'pao.u35.r2.' if args.r2 else 'pao.u35.r1.' if args.r1 else 'pao.u35.injerto.')+str(os.getpid())
     (root/'info.json').write_text(json.dumps(dict(prefix=prefix)))
     (root/'config.json').write_text(json.dumps(dict(shared=dict(pueue_directory=str(data),runtime_directory=str(data),
         pid_path=str(data/'pid'),unix_socket_path=str(data/'socket'),use_unix_socket=True,
@@ -134,6 +143,15 @@ def main():
     installed_driver=library/'private_handoff.py'
     shutil.copyfile(Path(__file__).resolve(),installed_driver)
     labels=[mini.BREW,mini.LABEL,mini.GUARD]
+    if args.r2c:
+        absent=m.domain+'/'+prefix+'.absent'
+        for verb,expected in (('print',113),('bootout',3)):
+            result=mini.launchctl(verb,absent,check=False)
+            decoded=mini.launchctl('error',str(result.returncode)).stdout.strip()
+            emit(root,'launchctl_absent_service',verb=verb,code=result.returncode,
+                 stderr=result.stderr.strip(),decoded=decoded)
+            assert result.returncode==expected,(verb,result.returncode,result.stderr)
+        assert mini.launchctl('print',absent,check=False).returncode==113
     script=installed_driver;python='/usr/bin/python3'
     for label,operation in ((mini.BREW,None),(mini.LABEL,'start'),(mini.GUARD,'guard')):
         template=plistlib.loads((BASE/'launchagents'/('local.pao.pueue-mini.guard.plist' if operation=='guard' else 'local.pao.pueue-mini.daemon.plist')).read_bytes())

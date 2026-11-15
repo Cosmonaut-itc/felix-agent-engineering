@@ -10,6 +10,7 @@ import plistlib
 import re
 import subprocess
 import sys
+import time
 
 ROOT = Path(__file__).resolve().parent
 spec = importlib.util.spec_from_file_location('mini_control', ROOT / 'control.py')
@@ -123,6 +124,19 @@ class Manager:
     def command(self, state, verb, label):
         self.effect(state, verb + ':' + label,
                     lambda: self.launch(verb, self.domain + '/' + label))
+
+    def bootout(self, state, label):
+        def unload():
+            result = self.launch('bootout', self.domain + '/' + label, check=False)
+            if result.returncode not in (0, 3, 113):
+                result.check_returncode()
+            deadline = time.monotonic() + 5
+            while self.loaded(label) is not None:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError('launchd no descargó el servicio: ' + label)
+                time.sleep(min(.1, remaining))
+        self.effect(state, 'bootout:' + label, unload)
 
     def bootstrap(self, state, label):
         if self.loaded(label) is None:
@@ -365,8 +379,7 @@ class Manager:
         if value['phase'] == 'switch':
             # Mandatory even if bootout already happened: login reconstructs from enabled plists.
             self.command(state, 'disable', other)
-            if self.loaded(other) is not None:
-                self.command(state, 'bootout', other)
+            self.bootout(state, other)
             if self.loaded(target) is not None:
                 # An aborted opposite handoff may have kept this daemon alive.
                 # stage disabled it; restore its override without restarting it.
@@ -432,8 +445,7 @@ class Manager:
                 if present or value['phase'] == 'maintenance':
                     for label in (BREW, LABEL):
                         self.command(state, 'disable', label)
-                        if self.loaded(label) is not None:
-                            self.command(state, 'bootout', label)
+                        self.bootout(state, label)
                     value['phase'] = 'switch'
                     self.save(state, 'maintenance:restart-intent')
                 self.command(state, 'enable', GUARD)
@@ -456,8 +468,7 @@ class Manager:
                 if not os.path.lexists(marker):
                     self.effect(state, 'maintenance:create', lambda: self.publish(marker, signature))
                 self.command(state, 'disable', GUARD)
-                if self.loaded(GUARD) is not None:
-                    self.command(state, 'bootout', GUARD)
+                self.bootout(state, GUARD)
                 try:
                     self.engine.record_stop()
                 except subprocess.CalledProcessError:
@@ -465,8 +476,7 @@ class Manager:
                 state = self.state()
                 for label in (BREW, LABEL):
                     self.command(state, 'disable', label)
-                    if self.loaded(label) is not None:
-                        self.command(state, 'bootout', label)
+                    self.bootout(state, label)
 
     def start(self, execute=None):
         try:

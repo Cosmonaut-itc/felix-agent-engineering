@@ -8,6 +8,7 @@ from pathlib import Path
 import plistlib
 import subprocess
 import tempfile
+import time
 import unittest
 from contextlib import redirect_stdout
 from unittest.mock import Mock, patch
@@ -86,8 +87,8 @@ class Harness:
                     out='service {\n pid = '+str(os.getpid())+'\n}'
             elif verb in ('disable','enable'):self.disabled[label]=verb=='disable'
             elif verb=='bootout':
-                assert label in self.loaded
-                self.loaded.remove(label)
+                code=0 if label in self.loaded else 113
+                self.loaded.discard(label)
                 if self.owner==label:
                     self.save_queue();self.p.online=False;self.owner=None
             elif verb=='bootstrap':
@@ -374,7 +375,7 @@ class HandoffTests(unittest.TestCase):
         h=self.h;h.m.change('install');h.finish();h.calls.clear()
         h.m.maintenance()
         bootouts=[call[-1].split('/')[-1] for call in h.calls if call[0]=='bootout']
-        self.assertEqual(bootouts,[mini.GUARD,mini.LABEL])
+        self.assertEqual(bootouts,[mini.GUARD,mini.BREW,mini.LABEL])
         self.assertTrue((h.directory/'maintenance').is_file())
         self.assertFalse(h.m._recover(h.config))
         self.assertTrue(h.engine.disabled())
@@ -511,9 +512,15 @@ class HandoffTests(unittest.TestCase):
                 return subprocess.CompletedProcess(args,0,'service {}','')
             result=launch(*args,**kwargs)
             if args==('bootout',h.m.domain+'/'+target):
-                stale[0]=True;h.pid.unlink();observed.append('bootout')
+                h.pid.unlink();observed.append('bootout')
             return result
         h.m.launch=asynchronous;h.calls.clear();h.trace.clear()
+        # Preserve verify's fallback independently of the synchronous bootout:
+        # model a stale read at switch after the unload was acknowledged.
+        def stale_at_switch(phase):
+            h.trace.append(phase)
+            if phase=='maintenance:restart-intent':stale[0]=True
+        h.m.checkpoint=stale_at_switch
         h.m.maintenance(resume=True)
         self.assertEqual(observed,['bootout','stale-loaded'])
         self.assertEqual(h.policy()['mini_handoff']['phase'],'verify')
@@ -545,6 +552,101 @@ class HandoffTests(unittest.TestCase):
 
     def test_continue_stale_bootout_retries_homebrew_owner(self):
         self.continue_after_stale_bootout(mini.BREW)
+
+    def continue_with_bootout_race(self, target, delayed=False):
+        h=self.h;h.m.change('install');h.finish()
+        if target==mini.BREW:h.m.change('withdraw');h.finish()
+        h.p.tasks={'0':task(0,running(),'default'),'1':task(1,queued(),'default')};h.save_queue()
+        waiting=copy.deepcopy(h.p.tasks['1'])
+        h.m.maintenance();h.loaded.add(target)
+        launch=h.m.launch;pending=[False];clock=[0.];observed=[]
+        def race(*args,**kwargs):
+            if args==('bootout',h.m.domain+'/'+target):
+                self.assertEqual(h.policy()['mini_handoff']['effect'],'bootout:'+target)
+                result=launch(*args,check=False)
+                if delayed:
+                    pending[0]=True;h.loaded.add(target)
+                else:
+                    result=subprocess.CompletedProcess(args,3,'','Boot-out failed: 3: No such process')
+                    if kwargs.get('check',True):result.check_returncode()
+                observed.append('bootout')
+                return result
+            return launch(*args,**kwargs)
+        def sleep(seconds):
+            self.assertTrue(pending[0]);self.assertEqual(h.policy()['mini_handoff']['phase'],'maintenance')
+            self.assertTrue((h.directory/'maintenance').exists())
+            self.assertEqual(h.policy()['mini_handoff']['effect'],'bootout:'+target)
+            self.assertFalse(any(c[0] in ('enable','bootstrap') for c in h.calls))
+            clock[0]+=seconds;observed.append('wait')
+            if clock[0]>=.3:
+                h.loaded.remove(target);pending[0]=False;observed.append('unloaded')
+        h.calls.clear();h.m.launch=race
+        with patch.object(time,'monotonic',side_effect=lambda:clock[0]),patch.object(time,'sleep',side_effect=sleep):
+            try:h.m.maintenance(resume=True)
+            except Exception as error:self.fail('continuar failed: '+type(error).__name__)
+        if delayed:
+            self.assertIn('wait',observed,'bootout must wait while print still reports loaded')
+            self.assertIn('unloaded',observed)
+        else:self.assertEqual(observed,['bootout'])
+        h.finish()
+        self.assertTrue(h.p.online);self.assertEqual(h.owner,target)
+        self.assertEqual(h.loaded & {mini.BREW,mini.LABEL},{target})
+        self.assertEqual(h.policy()['mini_handoff']['phase'],'done' if target==mini.LABEL else 'withdrawn')
+        self.assertEqual(h.p.tasks['0']['status']['Done']['result'],'Killed');self.assertEqual(h.p.tasks['1'],waiting)
+        generation=h.gen;h.recover();self.assertEqual(h.gen,generation)
+        print('R2c continuar:',target,'delayed='+str(delayed),'online=True no_retry=True')
+
+    def test_continue_bootout_absent_3_prepared(self):
+        self.continue_with_bootout_race(mini.LABEL)
+
+    def test_continue_bootout_absent_3_homebrew(self):
+        self.continue_with_bootout_race(mini.BREW)
+
+    def test_continue_bootout_waits_prepared(self):
+        self.continue_with_bootout_race(mini.LABEL,delayed=True)
+
+    def test_continue_bootout_waits_homebrew(self):
+        self.continue_with_bootout_race(mini.BREW,delayed=True)
+
+    def bootout_failure_at_each_site(self, timeout=False):
+        for site in ('switch','resume','guard-stop','daemon-stop'):
+            with self.subTest(site=site):
+                h=Harness(self);h.m.change('install');h.finish()
+                if site=='resume':h.m.maintenance()
+                label=mini.GUARD if site=='guard-stop' else mini.LABEL
+                launch=h.m.launch;clock=[0.];hit=[False]
+                def fail(*args,**kwargs):
+                    if args==('bootout',h.m.domain+'/'+label):
+                        hit[0]=True
+                        result=subprocess.CompletedProcess(args,0 if timeout else 5,'','Input/output error')
+                        if kwargs.get('check',True):result.check_returncode()
+                        return result
+                    return launch(*args,**kwargs)
+                def sleep(seconds):clock[0]+=seconds
+                h.m.launch=fail;h.calls.clear();h.trace.clear()
+                operation=(lambda:h.m.change('withdraw')) if site=='switch' else lambda:h.m.maintenance(resume=site=='resume')
+                # A stale loaded service persists for the entire bounded wait.
+                h.loaded.add(label)
+                with patch.object(time,'monotonic',side_effect=lambda:clock[0]),patch.object(time,'sleep',side_effect=sleep):
+                    with self.assertRaises(TimeoutError if timeout else subprocess.CalledProcessError):operation()
+                self.assertTrue(hit[0]);value=h.policy()['mini_handoff']
+                self.assertEqual(value['phase'],'switch' if site=='switch' else 'maintenance')
+                self.assertEqual(value['effect'],'bootout:'+label)
+                self.assertFalse(any(c[0] in ('enable','bootstrap') for c in h.calls))
+                self.assertNotIn('complete:bootout:'+label,h.trace)
+                if timeout:
+                    self.assertGreaterEqual(clock[0],5);self.assertLess(clock[0],5.1)
+                    h.loaded.discard(label)
+                h.m.launch=launch;h.m.checkpoint=h.trace.append
+                if site=='switch':h.finish()
+                else:h.m.maintenance();h.m.maintenance(resume=True);h.finish()
+                self.assertTrue(h.p.online)
+
+    def test_bootout_other_code_keeps_phase_at_each_site(self):
+        self.bootout_failure_at_each_site()
+
+    def test_bootout_timeout_keeps_phase_and_retries_at_each_site(self):
+        self.bootout_failure_at_each_site(timeout=True)
 
     def test_mini_task_matrix_offline_crashes_and_repeated_prepare(self):
         h=self.h

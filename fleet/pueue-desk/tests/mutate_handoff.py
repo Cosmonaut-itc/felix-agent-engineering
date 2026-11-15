@@ -42,7 +42,7 @@ CASES=[
   'test_fullfsync_is_required_for_own_files_on_macos'),
  ('maintenance-reconcile','control.py',"    def reconcile(self):\n        if os.path.lexists(self.directory / 'maintenance'):\n            return False",'    def reconcile(self):\n        if False:\n            return False',
   'test_maintenance_stops_installer_recoverer_wrapper_and_guard_without_reopening'),
- ('maintenance-stop-order','mini.py',"                if self.loaded(GUARD) is not None:\n                    self.command(state, 'bootout', GUARD)","                pass",
+ ('maintenance-stop-order','mini.py',"                self.bootout(state, GUARD)","                pass",
   'test_maintenance_command_stops_guard_first_and_resumes_only_own_marker'),
  ('maintenance-foreign-marker','mini.py',"or not marker.is_file() or marker.read_bytes() != signature",'or not marker.is_file()',
   'test_maintenance_marker_changed_after_publication_is_never_removed'),
@@ -100,6 +100,10 @@ CASES += [
 
 
 CASES += [
+ ('r2c-bootout-accepts-3','mini.py',"result.returncode not in (0, 3, 113)","result.returncode not in (0, 113)",
+  'test_continue_bootout_absent_3_prepared'),
+ ('r2c-bootout-waits-unloaded','mini.py',"while self.loaded(label) is not None:","while False:",
+  'test_continue_bootout_waits_prepared'),
  ('r2b-verify-retries-switch','mini.py',
   "            if self.loaded(target) is None:\n                value['phase'] = 'switch'\n                self.save(state, 'handoff:retry-switch')\n                return False\n",
   "",
