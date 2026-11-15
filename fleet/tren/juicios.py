@@ -3,7 +3,7 @@ from dataclasses import replace
 import json
 import shlex
 
-from dominio import (Armado, Certificado, Congelado, Corriendo, Diagnosticando,
+from dominio import (Armado, Congelado, Corriendo, Diagnosticando,
                      Efecto, EsperandoCI, Pausa, Promoviendo, Terminal, Tren,
                      cambiar_fase, clave, datos, efecto_diagnostico,
                      efecto_promover, efectos_status, separar_devueltos)
@@ -62,6 +62,12 @@ def candidato_de(tren):
     return getattr(tren.fase, "candidato", None) if tren else None
 
 
+def base_y_commit(tren):
+    fase = tren.fase
+    evidencia = candidato_de(tren) or (fase.certificado if isinstance(fase, Promoviendo) else fase)
+    return getattr(evidencia, "B", ""), getattr(evidencia, "C", "")
+
+
 def error_decision(estado, decision, pausa_id):
     """También valida el CLI; el reductor repite la validación al consumir."""
     if decision.repo != estado.repo or not decision.motivo.strip():
@@ -88,6 +94,8 @@ def error_decision(estado, decision, pausa_id):
             return "pr-no-miembro"
         if estado.pausa.motivo == "conflicto-en-cadena" and decision.pr != estado.pausa.pr:
             return "pr-no-es-conflicto"
+        if not base_y_commit(tren)[0]:
+            return "sin-base"
     elif decision.pr is not None:
         return "pr-solo-para-expulsar"
     fase = tren.fase if tren else None
@@ -96,6 +104,14 @@ def error_decision(estado, decision, pausa_id):
     if operacion == "infraestructura" and (
             not isinstance(fase, (Corriendo, Diagnosticando)) or not fase.reanudar):
         return "sin-reanudacion"
+    if operacion == "infraestructura" and isinstance(fase, Diagnosticando):
+        gastado = sum(max(e.solicitud.costo_s,
+            sum(i.duracion_s for u in e.resultado.unidades for i in u.intentos))
+            for e in fase.evidencias)
+        if fase.pendiente is None:
+            return "sin-reproduccion"
+        if gastado + fase.costo_infra_s + 2 * fase.pendiente.costo_s > fase.presupuesto_s:
+            return "presupuesto-de-diagnostico-agotado"
     if operacion == "publicar" and not isinstance(fase, (Armado, EsperandoCI)):
         return "fase-no-corresponde"
     if operacion == "armar" and not isinstance(fase, Congelado):
@@ -135,9 +151,7 @@ def resolver(estado, observacion):
             for e in estado.entradas))
         efectos = efectos_status(nuevo, "avisar-en-tren")
     elif operacion == "devolver":
-        candidato = candidato_de(tren)
-        base = candidato.B if candidato else getattr(tren.fase, "B", "")
-        commit = candidato.C if candidato else ""
+        base, commit = base_y_commit(tren)
         entrada = next(e for e in estado.entradas
                        if e.entrega.recibo in tren.recibos and e.entrega.pr == decision.pr)
         fallos = []
@@ -159,6 +173,8 @@ def resolver(estado, observacion):
     elif operacion == "infraestructura":
         fase = replace(tren.fase, reanudaciones=tren.fase.reanudaciones + 1,
                        esperar_hasta=None)
+        if isinstance(fase, Diagnosticando):
+            fase = replace(fase, costo_infra_s=fase.costo_infra_s + fase.pendiente.costo_s)
         estado = cambiar_fase(estado, tren, fase)
         efectos = ((Efecto(clave("reanudar-suite", tren.id, fase.reanudaciones),
             "reanudar-suite", (tren.id, str(fase.reanudaciones))),)

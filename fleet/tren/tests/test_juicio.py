@@ -9,9 +9,9 @@ import unittest
 
 import test_activo as activo
 from dominio import (Armado, Certificado, ConflictoCadena, Congelado, Corriendo,
-                     Decision, Diagnosticando, EsperandoCI, Observacion, Pausa,
-                     Terminal, clave, datos, paso)
-from juicios import POLITICA, error_decision, politica, tren_pausado
+                     Diagnosticando, EsperandoCI, Pausa, Reproduccion,
+                     Terminal, clave, datos)
+from juicios import politica, tren_pausado
 
 REPO = activo.REPO
 
@@ -292,6 +292,26 @@ class JuicioTests(unittest.TestCase):
         self.aterrizar_ultimo()
         self.assertEqual(len(self.lineas("trabajos.log")), 1)
 
+    def test_manual_impide_recuperar_lanzamiento_de_suite_hasta_levantar(self):
+        self.hasta_fase(EsperandoCI)
+        class Muerte(Exception):
+            pass
+        def detener(nombre, efecto):
+            if nombre == "antes-ejecutar" and efecto.tipo == "iniciar-suite":
+                raise Muerte()
+        with self.assertRaises(Muerte):
+            self.contexto.tick(2000, detener)
+        self.assertEqual(self.lineas("trabajos.log"), [])
+        self.assertEqual(self.cli("pausa", "--motivo", "esperar")[0], 0)
+        self.contexto.tick(2100)
+        self.contexto.tick(2200)
+        self.assertEqual(self.lineas("trabajos.log"), [])
+        self.assertEqual(self.remoto(), self.B)
+        self.assertEqual(self.cli("pausa", "--levantar", "--motivo", "seguir")[0], 0)
+        self.contexto.tick(2300)
+        self.aterrizar_ultimo()
+        self.assertEqual(len(self.lineas("trabajos.log")), 1)
+
     def test_rollback_consumo_y_estado_y_efectos_juntos(self):
         antes = self.rojo()
         self.juicio("expulsar", 2)
@@ -348,7 +368,8 @@ class JuicioTests(unittest.TestCase):
         self.assertEqual(self.remoto(), self.B)
         self.assertEqual(self.hasta_pausa().pausa.motivo, "rama-tren-ocupada")
         # Intervención explícita que arregla la rama; el tren jamás la fuerza.
-        self.comando(self.origen, "update-ref", ref, tren.fase.candidato.C)
+        intervencion = self.contexto.git.git("push", str(self.origen), tren.fase.candidato.C + ":" + ref)
+        self.assertEqual(intervencion.returncode, 0, intervencion.stderr)
         self.juicio("reanudar")
         self.contexto.tick(9000)
         self.aterrizar_ultimo()
@@ -398,6 +419,22 @@ class JuicioTests(unittest.TestCase):
         self.contexto.tick(81000)
         self.assertEqual(self.estado().pausa.motivo, "infraestructura")
 
+    def test_infraestructura_de_diagnostico_respeta_presupuesto_d5(self):
+        estado = self.rojo()
+        tren = estado.trenes[0]
+        fase = replace(tren.fase, reanudaciones=3, reanudar="comando guardado",
+            presupuesto_s=39, pendiente=Reproduccion("reproduccion", tren.fase.fallos[0], "C", costo_s=20))
+        with self.ledger() as ledger:
+            ledger.guardar_paso(replace(estado, trenes=(replace(tren, fase=fase),),
+                pausa=Pausa("infraestructura", detalle="tres-reanudaciones-agotadas")), (), 7000)
+        antes = self.estado()
+        codigo, resultado = self.cli("juicio", "--tren", tren.id, "--decision", "reanudar", "--motivo", "prueba")
+        self.assertEqual(codigo, 2)
+        self.assertEqual(resultado["error"], "presupuesto-de-diagnostico-agotado")
+        self.assertEqual(self.estado(), antes)
+        self.assertEqual(self.decisiones(), [])
+        self.assertEqual([a["decision"] for a in self.cli("estado", "--juicio")[1]["juicio"]["admitidas"]], ["abortar"])
+
     def test_head_cambiado_se_expulsa_sin_usar_su_suite_para_sobrevivientes(self):
         self.hasta_fase(Armado)
         nuevo = self.commit({"comun": "base\n", "nuevo": "head\n"}, (self.miembros[0][1],))
@@ -410,6 +447,18 @@ class JuicioTests(unittest.TestCase):
         self.assertEqual(self.estado().entradas[0].terminal, Terminal("DEVUELTO"))
         self.assertNotEqual(self.comando(self.origen, "merge-base", nuevo, self.remoto()), nuevo)
         self.assertEqual(len(self.lineas("trabajos.log")), 1)
+
+    def test_expulsar_head_cambiado_despues_del_certificado_conserva_base(self):
+        self.hasta_fase(Certificado)
+        nuevo = self.commit({"comun": "base\n", "nuevo": "head\n"}, (self.miembros[0][1],))
+        self.push(nuevo, "refs/pull/1/head")
+        self.contexto.config["miembros"][0][1] = nuevo
+        self.assertEqual(self.hasta_pausa().pausa.motivo, "head-cambiado-en-tren")
+        self.juicio("expulsar", 1)
+        self.contexto.tick(8000)
+        self.assertEqual(self.estado().trenes[-1].fase, Congelado(self.B))
+        self.aterrizar_ultimo()
+        self.assertEqual(len(self.lineas("trabajos.log")), 2)
 
     def test_tabla_cierra_detalles_desconocidos_y_certificado_sin_base(self):
         self.hasta_fase(Certificado)

@@ -86,7 +86,9 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
     if args.comando in ("juicio", "pausa") or args.comando == "tick" and not args.seco:
         inscripcion = activacion(args.repo)
         if inscripcion != "activo":
-            return 2, {"error": "comando activo requiere inscripción activa",
+            mensaje = ("tick activo requiere inscripción activa" if args.comando == "tick" else
+                       "comando activo requiere inscripción activa")
+            return 2, {"error": mensaje,
                        "inscripcion": inscripcion or "no-inscrito"}
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)

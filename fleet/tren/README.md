@@ -583,7 +583,8 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `manual` | motivo humano | Sólo `pausa --levantar`: continuar desde la fase guardada. `juicio` no la levanta. |
 
 Las decisiones admitidas se filtran también por la fase/evidencia guardada:
-no se reanuda infraestructura sin comando durable, ni promoción sin
+no se reanuda infraestructura sin comando durable o fuera del presupuesto
+D5 de diagnóstico, ni promoción sin
 `Promoviendo`, ni se absuelve sin candidato. Una intervención nunca cambia
 heads, inventa una base o evita CI verde/suite verde. `absolver` y `abortar`
 no publican rojo; los miembros de una generación nueva reciben `pending`.
