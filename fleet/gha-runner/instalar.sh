@@ -1,24 +1,38 @@
 #!/usr/bin/env bash
-# Runners de GitHub Actions de la Mini para los trabajos ligeros de Jale.
-# Uso, en la Mini: instalar.sh [--seco|--retirar] guard|datos. El token de GitHub llega por stdin.
+# Runners de GitHub Actions de la Mini para Jale y el gate nocturno de Hasito.
+# Uso, en la Mini: instalar.sh [--seco|--retirar] guard|datos|hasito-noche. El token de GitHub llega por stdin.
 set -euo pipefail
 modo=instalar
 case "${1:-}" in --seco|--retirar) modo=$1; shift ;; esac
 # Un runner por papel: el guard abre paso a Boat y no espera detrás de las unitarias.
 papel=${1:-}
 case "$#:$papel" in
-  1:guard|1:datos) ;;
-  *) echo 'Uso: instalar.sh [--seco|--retirar] guard|datos' >&2; exit 2 ;;
+  1:guard|1:datos|1:hasito-noche) ;;
+  *) echo 'Uso: instalar.sh [--seco|--retirar] guard|datos|hasito-noche' >&2; exit 2 ;;
 esac
 version=2.338.2
 sha256=25a065af409ffa317ab4d5a3b614dd15fc9c40f2172bc1b35a1b1258e919a388
-repo=https://github.com/SEN-HASO/Jale
-nombre=mini-jale-$papel
-etiqueta=jale-$papel
-label=local.pao.gha-runner-jale-$papel
-dir="$HOME/actions-runner-jale-$papel"
+hook=
+case "$papel" in
+  guard|datos)
+    repo=https://github.com/SEN-HASO/Jale
+    nombre=mini-jale-$papel
+    etiqueta=jale-$papel
+    label=local.pao.gha-runner-jale-$papel
+    dir="$HOME/actions-runner-jale-$papel"
+    log="$HOME/Library/Logs/pao-gha-runner-jale-$papel.log"
+    ;;
+  hasito-noche)
+    repo=https://github.com/SEN-HASO/Hasito
+    nombre=mini-hasito-noche
+    etiqueta=hasito-noche
+    label=local.pao.gha-runner-hasito-noche
+    dir="$HOME/actions-runner-hasito-noche"
+    log="$HOME/Library/Logs/pao-gha-runner-hasito-noche.log"
+    hook="$HOME/.local/lib/pao-gha-runner/solo-main.sh"
+    ;;
+esac
 plist="$HOME/Library/LaunchAgents/$label.plist"
-log="$HOME/Library/Logs/pao-gha-runner-jale-$papel.log"
 paquete="actions-runner-osx-arm64-$version.tar.gz"
 # Los trabajos reciben esta ruta fija; no heredan la del shell que instala.
 ruta=/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin
@@ -46,10 +60,37 @@ descargar() {
   fallo 'launchd no soltó el servicio en 10 s'
 }
 
+instalar_hook() {
+  local origen temporal linea
+  origen="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/solo-main.sh"
+  temporal="$hook.tmp-$fecha"
+  [ ! -d "$hook" ] && mkdir -p "$(dirname "$hook")" &&
+    cp "$origen" "$temporal" && chmod 0755 "$temporal" && mv "$temporal" "$hook" \
+    || fallo 'no se pudo instalar el hook'
+  if [ -e "$dir/.env" ] && { [ ! -f "$dir/.env" ] || [ ! -r "$dir/.env" ]; }; then
+    fallo 'no se pudo leer .env para configurar el hook'
+  fi
+  temporal="$dir/.env.tmp-$fecha"
+  {
+    if [ -e "$dir/.env" ]; then
+      while IFS= read -r linea || [ -n "$linea" ]; do
+        case "$linea" in ACTIONS_RUNNER_HOOK_JOB_STARTED=*) continue ;; esac
+        printf '%s\n' "$linea" || return 1
+      done < "$dir/.env" || return 1
+    fi
+    printf 'ACTIONS_RUNNER_HOOK_JOB_STARTED=%s\n' "$hook"
+  } > "$temporal" && mv "$temporal" "$dir/.env" \
+    || fallo 'no se pudo configurar el hook en .env'
+}
+
 case "$modo" in
   --seco)
     printf 'Descargar %s, comprobar su sha256 y extraerlo en %s\n' "$paquete" "$dir"
     printf 'Registrar %s en %s con la etiqueta %s\n' "$nombre" "$repo" "$etiqueta"
+    if [ -n "$hook" ]; then
+      printf 'Copiar solo-main.sh con modo 0755 en %s de forma atómica\n' "$hook"
+      printf 'Conservar %s/.env y escribir ACTIONS_RUNNER_HOOK_JOB_STARTED=%s sin duplicados\n' "$dir" "$hook"
+    fi
     printf 'Escribir %s y cargarlo en %s\n' "$plist" "$dominio"
     exit ;;
   --retirar)
@@ -64,7 +105,7 @@ case "$modo" in
     if [ -f "$dir/.runner" ] && ! configurar remove; then
       echo 'gha-runner: GitHub no confirmó la baja; revisa que el runner ya no figure en el repositorio' >&2
     fi
-    for destino in "$plist" "$dir"; do
+    for destino in "$plist" "$dir" "$hook"; do
       if [ -e "$destino" ]; then
         mv "$destino" "$destino.retirado-$fecha"
         printf 'Retirado: %s.retirado-%s\n' "$destino" "$fecha"
@@ -84,6 +125,8 @@ if [ ! -f "$dir/.runner" ]; then
   rm -f "$dir/$paquete"
   configurar --unattended --url "$repo" --name "$nombre" --labels "$etiqueta" --work _work --replace
 fi
+
+[ -z "$hook" ] || instalar_hook
 
 # La actualización automática del runner busca este proceso por su ruta y mantiene la copia al día.
 cp "$dir/bin/runsvc.sh" "$dir/runsvc.sh"

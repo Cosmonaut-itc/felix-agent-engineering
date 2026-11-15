@@ -11,7 +11,7 @@ RUTA = '/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'
 
 CONFIG = '''#!/bin/bash
 { printf 'args=%s\\n' "$*"; printf 'token=%s\\n' "$ACTIONS_RUNNER_INPUT_TOKEN"; printf 'path=%s\\n' "$PATH"; } >> "$FAKE_ROOT/config.log"
-if [ "$1" = remove ]; then [ ! -e "$FAKE_ROOT/sin-registro" ] && rm .runner; else : > .runner; fi
+if [ "$1" = remove ]; then [ ! -e "$FAKE_ROOT/sin-registro" ] && rm .runner; else : > .runner; printf 'PREVIA=con espacios\\nOTRA=valor\\n' > .env; fi
 '''
 STUBS = {
     'uname': '#!/bin/bash\ncat "$FAKE_ROOT/uname"\n',
@@ -24,8 +24,15 @@ case "$1" in
   print) [ -e "$FAKE_ROOT/cargado" ] ;;
   bootout) rm "$FAKE_ROOT/cargado" ;;
   bootstrap)
+    case "$3" in
+      *hasito-noche.plist)
+        hook="$HOME/.local/lib/pao-gha-runner/solo-main.sh"
+        [ -x "$hook" ] && grep -Fx "ACTIONS_RUNNER_HOOK_JOB_STARTED=$hook" "$HOME/actions-runner-hasito-noche/.env" >/dev/null || exit 1 ;;
+    esac
     : > "$FAKE_ROOT/cargado"
-    [ -e "$FAKE_ROOT/mudo" ] || echo 'Listening for Jobs' >> "$HOME/Library/Logs/pao-gha-runner-jale-guard.log" ;;
+    papel=${3##*/local.pao.gha-runner-}
+    papel=${papel%.plist}
+    [ -e "$FAKE_ROOT/mudo" ] || echo 'Listening for Jobs' >> "$HOME/Library/Logs/pao-gha-runner-$papel.log" ;;
 esac
 ''',
 }
@@ -175,6 +182,86 @@ class Instalador(unittest.TestCase):
         self.assertIn('--name mini-jale-datos --labels jale-datos', self.leer('config.log'))
         self.assertTrue((self.home / 'actions-runner-jale-datos/.runner').exists())
         self.assertFalse(self.dir.exists())
+
+    def test_jale_conserva_su_salida_seca_y_no_recibe_hook(self):
+        for papel in ('guard', 'datos'):
+            with self.subTest(papel=papel):
+                resultado = self.correr('--seco', papel=papel)
+                self.assertEqual(resultado.returncode, 0, resultado.stderr)
+                self.assertEqual(resultado.stdout,
+                    f'Descargar actions-runner-osx-arm64-2.338.2.tar.gz, comprobar su sha256 y extraerlo en {self.home}/actions-runner-jale-{papel}\n'
+                    f'Registrar mini-jale-{papel} en https://github.com/SEN-HASO/Jale con la etiqueta jale-{papel}\n'
+                    f'Escribir {self.home}/Library/LaunchAgents/local.pao.gha-runner-jale-{papel}.plist y cargarlo en gui/{os.getuid()}\n')
+                self.assertEqual(self.correr(token=TOKEN, papel=papel).returncode, 0)
+                env = self.home / f'actions-runner-jale-{papel}/.env'
+                self.assertEqual(env.read_text(), 'PREVIA=con espacios\nOTRA=valor\n')
+                self.assertFalse((self.home / '.local/lib/pao-gha-runner').exists())
+
+    def test_hasito_instala_hook_y_conserva_env_al_reinstalar(self):
+        resultado = self.correr(token=TOKEN, papel='hasito-noche')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        registro = self.leer('config.log')
+        self.assertIn('--url https://github.com/SEN-HASO/Hasito', registro)
+        self.assertIn('--name mini-hasito-noche --labels hasito-noche', registro)
+        self.assertIn(f'token={TOKEN}\n', registro)
+        self.assertNotIn(TOKEN, registro.splitlines()[0])
+        self.assertNotIn(TOKEN, resultado.stdout + resultado.stderr)
+        hook = self.home / '.local/lib/pao-gha-runner/solo-main.sh'
+        self.assertEqual(hook.read_bytes(), SCRIPT.with_name('solo-main.sh').read_bytes())
+        self.assertEqual(hook.stat().st_mode & 0o777, 0o755)
+        env = self.home / 'actions-runner-hasito-noche/.env'
+        self.assertEqual(self.correr(papel='hasito-noche').returncode, 0)
+        self.assertEqual(env.read_text(),
+                         f'PREVIA=con espacios\nOTRA=valor\nACTIONS_RUNNER_HOOK_JOB_STARTED={hook}\n')
+        plist = self.home / 'Library/LaunchAgents/local.pao.gha-runner-hasito-noche.plist'
+        self.assertIn(f'{self.home}/actions-runner-hasito-noche/runsvc.sh', plist.read_text())
+        self.assertIn(f'{self.home}/Library/Logs/pao-gha-runner-hasito-noche.log', plist.read_text())
+
+    def test_hasito_seco_anuncia_hook_sin_escribir(self):
+        resultado = self.correr('--seco', papel='hasito-noche')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn('Copiar solo-main.sh con modo 0755', resultado.stdout)
+        self.assertIn('ACTIONS_RUNNER_HOOK_JOB_STARTED=', resultado.stdout)
+        self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_hasito_no_arranca_si_no_puede_copiar_hook(self):
+        (self.home / '.local').write_text('impide crear el directorio')
+        resultado = self.correr(token=TOKEN, papel='hasito-noche')
+        self.assertNotEqual(resultado.returncode, 0)
+        self.assertIn('no se pudo instalar el hook', resultado.stderr)
+        self.assertNotIn('bootstrap', self.leer('launchctl.log'))
+
+    def test_hasito_no_arranca_si_el_destino_del_hook_es_directorio(self):
+        hook = self.home / '.local/lib/pao-gha-runner/solo-main.sh'
+        hook.mkdir(parents=True)
+        resultado = self.correr(token=TOKEN, papel='hasito-noche')
+        self.assertNotEqual(resultado.returncode, 0)
+        self.assertIn('no se pudo instalar el hook', resultado.stderr)
+        self.assertNotIn('bootstrap', self.leer('launchctl.log'))
+
+    def test_hasito_no_arranca_si_no_puede_escribir_env(self):
+        self.assertEqual(self.correr(token=TOKEN, papel='hasito-noche').returncode, 0)
+        env = self.home / 'actions-runner-hasito-noche/.env'
+        env.rename(env.with_name('.env.anterior'))
+        env.mkdir()
+        resultado = self.correr(papel='hasito-noche')
+        self.assertNotEqual(resultado.returncode, 0)
+        self.assertEqual(self.leer('launchctl.log').count('bootstrap'), 1)
+
+    def test_hasito_retirar_renombra_hook_runner_y_plist(self):
+        self.assertEqual(self.correr(token=TOKEN, papel='hasito-noche').returncode, 0)
+        hook = self.home / '.local/lib/pao-gha-runner/solo-main.sh'
+        contenido = hook.read_bytes()
+        resultado = self.correr('--retirar', token=TOKEN, papel='hasito-noche')
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertFalse(hook.exists())
+        retirados = list(hook.parent.glob('solo-main.sh.retirado-*'))
+        self.assertEqual(len(retirados), 1)
+        self.assertEqual(retirados[0].read_bytes(), contenido)
+        self.assertEqual(len(list(self.home.glob('actions-runner-hasito-noche.retirado-*'))), 1)
+        self.assertEqual(len(list((self.home / 'Library/LaunchAgents').glob(
+            'local.pao.gha-runner-hasito-noche.plist.retirado-*'))), 1)
+        self.assertFalse((self.fake / 'cargado').exists())
 
     def test_argumentos_invalidos(self):
         for args in (['--otro', 'guard'], ['--seco', '--retirar', 'guard'], ['guard', 'datos'], ['otro'], []):
