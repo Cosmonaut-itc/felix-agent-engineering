@@ -95,7 +95,7 @@ sys.exit(9)
 
 
 class LimitesTests(ContextoPausa):
-    def test_pausa_del_reductor_difiere_caducidad_real_hasta_reconciliar(self):
+    def caducidad_real(self, cerrado):
         self.hasta_fase(Certificado)
         (self.raiz / "rechazar-push").write_text("rechazar")
         antes = self.hasta_pausa()
@@ -103,7 +103,13 @@ class LimitesTests(ContextoPausa):
         self.assertIsInstance(antes.trenes[0].fase, Promoviendo)
         # El reductor consumió EnBase antes de pausar: no queda ACK pendiente.
         self.assertEqual(self.promocion_pendiente(), [])
-        (self.raiz / "pr-cerrado-1").write_text("cerrado sin merge")
+        if cerrado:
+            (self.raiz / "pr-cerrado-1").write_text("cerrado sin merge")
+        else:
+            nuevo = self.commit({"comun": "base\n", "nuevo": "head\n"},
+                                (self.miembros[0][1],))
+            self.push(nuevo, "refs/pull/1/head")
+            self.contexto.config["miembros"][0][1] = nuevo
         for ahora in (9000, 9100):
             self.contexto.tick(ahora)
             self.assertEqual(self.estado(), antes)
@@ -117,10 +123,21 @@ class LimitesTests(ContextoPausa):
         self.assertTrue(all(isinstance(e.admision, Admitido) for e in despues.entradas[1:]))
         self.assertEqual(len(self.posts("/comments")), 1)
         self.assertEqual([p["payload"]["state"] for p in self.posts("/statuses/")],
-                         ["pending"] * 3 + ["failure"])
+                         ["pending"] * 3 + ([] if cerrado else ["failure"]))
+        if not cerrado:
+            self.assertTrue(self.posts("/statuses/")[-1]["endpoint"].endswith(nuevo))
+        # Un PR cerrado recibe comentario, sin status: ése es el contrato U14.
+        with self.ledger() as ledger:
+            self.assertEqual(ledger.outbox(REPO), [])
         self.assertEqual(self.remoto(), self.B)
         self.assertEqual(sum(p.endswith(":refs/heads/main") for p in self.lineas("pushes.log")), 0)
         self.assertEqual(len(self.lineas("trabajos.log")), 1)
+
+    def test_pausa_del_reductor_difiere_caducidad_real_hasta_reconciliar(self):
+        self.caducidad_real(cerrado=False)
+
+    def test_pr_cerrado_caduca_con_comentario_sin_status(self):
+        self.caducidad_real(cerrado=True)
 
 
 if __name__ == "__main__":
