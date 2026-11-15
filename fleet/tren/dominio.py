@@ -66,11 +66,18 @@ class Entrada:
     admitida: Optional[float] = None
     solo: bool = False
     tren: Optional[str] = None
+    terminal: Optional['Terminal'] = None
+    # Sólo doble camino: instante observado de caducidad, sin borrar admisión.
+    caducada: Optional[float] = None
 
 
 @dataclass(frozen=True)
 class Pausa:
     motivo: str
+    pr: Optional[int] = None
+    main: str = ""
+    archivos: Tuple[str, ...] = ()
+    detalle: str = ""
 
 
 @dataclass(frozen=True)
@@ -82,22 +89,120 @@ class Candidato:
 
 
 @dataclass(frozen=True)
+class ConflictoCadena:
+    pr: int
+    archivos: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class RamaOcupada:
+    ref: str
+    esperado: str
+    actual: str
+
+
+@dataclass(frozen=True)
+class Aterrizado:
+    B: str
+    C: str
+    arbol: str
+
+
+@dataclass(frozen=True)
+class EnBase:
+    B: str
+    C: str
+
+
+@dataclass(frozen=True)
+class EscritorExterno:
+    B: str
+    C: str
+    main: str
+
+
+@dataclass(frozen=True)
+class Incierto:
+    B: str
+    C: str
+    motivo: str
+
+
+Reconciliacion = Union[Aterrizado, EnBase, EscritorExterno, Incierto]
+
+
+@dataclass(frozen=True)
 class Fallo:
     unidad: str
     firma: str
     clase: str
+    check: str = ""
+    etapa: str = ""
+    parte: str = ""
+    duracion_s: float = 0
 
 
 @dataclass(frozen=True)
 class Completo:
     veredicto: str
     fallos: Tuple[Fallo, ...] = ()
+    costo_s: float = 0
+    restantes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Incompleto:
     codigo: int = 75
     reanudar: str = ""
+
+
+@dataclass(frozen=True)
+class Intento:
+    n: int
+    veredicto: str
+    firma: str
+    duracion_s: float
+    ensayo: str = ""
+
+
+@dataclass(frozen=True)
+class UnidadRepetida:
+    check: str
+    unidad: str
+    parte: str
+    definicion: str
+    intentos: Tuple[Intento, ...]
+
+
+@dataclass(frozen=True)
+class Repeticion:
+    sha: str
+    origen_sha: str
+    base: str
+    origen_sha256: str
+    unidades: Tuple[UnidadRepetida, ...]
+    comando: Tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class Reproduccion:
+    id: str
+    fallo: Fallo
+    objetivo: str
+    prs: Tuple[int, ...] = ()
+    costo_s: float = 0
+
+
+@dataclass(frozen=True)
+class Evidencia:
+    solicitud: Reproduccion
+    resultado: Repeticion
+
+
+@dataclass(frozen=True)
+class Causa:
+    fallo: Fallo
+    minimos: Tuple[Tuple[int, ...], ...]
 
 
 ResultadoSuite = Union[Completo, Incompleto]
@@ -127,6 +232,10 @@ class EsperandoCI:
 class Corriendo:
     candidato: Candidato
     suite: str
+    ci: str = "verde"
+    reanudaciones: int = 0
+    esperar_hasta: Optional[float] = None
+    reanudar: str = ""
 
 
 @dataclass(frozen=True)
@@ -135,17 +244,33 @@ class Certificado:
     arbol: str
     suite: str
     ci: str
+    # Defaults keep snapshots/events written by U1 readable.
+    B: str = ""
 
 
 @dataclass(frozen=True)
 class Diagnosticando:
     candidato: Candidato
     fallos: Tuple[Fallo, ...]
+    suite: str = ""
+    ci: str = "verde"
+    presupuesto_s: float = 0
+    evidencias: Tuple[Evidencia, ...] = ()
+    pendiente: Optional[Reproduccion] = None
+    subconjunto: Optional[Candidato] = None
+    reanudaciones: int = 0
+    esperar_hasta: Optional[float] = None
+    reanudar: str = ""
+    costo_infra_s: float = 0
+    restantes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class Promoviendo:
     certificado: Certificado
+    intentos: int = 1
+    # EnBase ya recibido; la admisión puede diferir el siguiente intento.
+    reintento_pendiente: bool = False
 
 
 @dataclass(frozen=True)
@@ -170,6 +295,7 @@ class Estado:
     entradas: Tuple[Entrada, ...] = ()
     trenes: Tuple[Tren, ...] = ()
     pausa: Optional[Pausa] = None
+    costo_suite_sana_s: float = 0
 
 
 def inicial(repo):
@@ -195,6 +321,8 @@ class VistaPR:
     completa: bool = True
     # A bound view cannot be reused for a new delivery of the same PR.
     recibo: str = ""
+    # Sólo la sombra interpreta un merge externo; default compatible con U1.
+    mergeado: bool = False
 
 
 @dataclass(frozen=True)
@@ -206,6 +334,17 @@ class Observacion:
     candidato: Optional[Candidato] = None
     ci_candidato: str = "pendiente"
     suite: Optional[str] = None
+    conflicto_cadena: Optional[ConflictoCadena] = None
+    main: Optional[Reconciliacion] = None
+    tren_id: str = ""
+    intento_promocion: int = 0
+    rama_ocupada: Optional[RamaOcupada] = None
+    resultado_suite: Optional[ResultadoSuite] = None
+    suite_intento: int = 0
+    repeticion: Optional[Union[Repeticion, Incompleto]] = None
+    reproduccion_id: str = ""
+    costo_suite_sana_s: float = 0
+    ci_recibo: str = "verde"
 
 
 @dataclass(frozen=True)
@@ -238,29 +377,279 @@ def admision(vista, observacion):
         return Retenido(Motivo.MERGE_READY)
     if vista.alto_riesgo and not vista.verificado:
         return Retenido(Motivo.VERIFICADO)
-    if vista.alto_riesgo and observacion.excluir_alto_riesgo:
-        return Retenido(Motivo.PILOTO)
+    # merge.md: Felix's per-head authorization admits high risk, even in the pilot.
+    if vista.alto_riesgo and not vista.autorizado:
+        return Retenido(Motivo.PILOTO if observacion.excluir_alto_riesgo
+                        else Motivo.MERGE_READY)
     return Admitido()
+
+
+def admision_entrada(entrada, vistas, observacion):
+    """Misma regla para el reductor y la barrera previa al push."""
+    if isinstance(entrada.admision, Rechazado):
+        return entrada.admision
+    entrega = entrada.entrega
+    vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
+    if vista is None:
+        return Retenido(Motivo.INCIERTO)
+    if vista.head != entrega.head:
+        return Rechazado(Motivo.HEAD)
+    return admision(vista, observacion)
+
+
+LIMITE_PROMOCION = 3
+
+
+def efecto_promover(tren_id, intentos):
+    return Efecto(clave("promover", tren_id, intentos), "promover",
+                  (tren_id, str(intentos)))
+
+
+def aterrizaje(estado, tren, observacion):
+    """Promover tras admisión; reconciliar antes, pues el PR puede estar cerrado."""
+    fase = tren.fase
+    efectos = ()
+    if isinstance(fase, Certificado):
+        if not fase.B:
+            return replace(estado, pausa=Pausa("certificado-sin-base")), ()
+        fase = Promoviendo(fase)
+        efectos = (efecto_promover(tren.id, fase.intentos),)
+    else:
+        cert = fase.certificado
+        lectura = observacion.main
+        # A delayed observation must not consume another attempt/train's result.
+        if (observacion.tren_id != tren.id or
+                observacion.intento_promocion != fase.intentos or
+                lectura is None or (lectura.B, lectura.C) != (cert.B, cert.C)):
+            return estado, ()
+        if isinstance(lectura, Aterrizado) and lectura.arbol == cert.arbol:
+            fase = Terminal("ATERRIZADO")
+        elif isinstance(lectura, EnBase):
+            fase = replace(fase, reintento_pendiente=True)
+        elif isinstance(lectura, EscritorExterno):
+            fase = Terminal("REARMAR")
+            estado = replace(estado,
+                pausa=Pausa("escritor-externo", main=lectura.main),
+                entradas=tuple(replace(e, tren=None) if e.entrega.recibo in tren.recibos
+                               else e for e in estado.entradas))
+        else:
+            return estado, ()
+    return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
+                                       else t for t in estado.trenes)), efectos
+
+
+ESPERAS_SUITE = (300, 900, 3600)
+
+
+def cambiar_fase(estado, tren, fase):
+    return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id else t
+                                       for t in estado.trenes))
+
+
+def efecto_diagnostico(tren, fase):
+    solicitud = fase.pendiente
+    tipo = ("armar-subconjunto" if solicitud.objetivo == "subconjunto" and
+            fase.subconjunto is None else "repetir")
+    return Efecto(clave(tipo, tren.id, solicitud.id, fase.reanudaciones), tipo,
+                  (tren.id, solicitud.id, str(fase.reanudaciones)))
+
+
+def esperar_infraestructura(estado, tren, fase, resultado, ahora):
+    if resultado.codigo != 75 or not resultado.reanudar:
+        return replace(estado, pausa=Pausa("necesita-juicio", detalle="incompleto-invalido")), ()
+    if fase.reanudaciones >= len(ESPERAS_SUITE):
+        return replace(estado, pausa=Pausa("infraestructura", detalle="tres-reanudaciones-agotadas")), ()
+    fase = replace(fase, esperar_hasta=ahora + ESPERAS_SUITE[fase.reanudaciones],
+                   reanudar=resultado.reanudar)
+    return cambiar_fase(estado, tren, fase), ()
+
+
+def devolver_atribuidos(estado, tren, fase, causas):
+    """Un efecto por entrega; todos los fallos conservan sus conjuntos causales."""
+    import shlex
+    culpables = {pr for causa in causas for grupo in causa.minimos for pr in grupo}
+    entradas = {e.entrega.recibo: e for e in estado.entradas}
+    efectos = []
+    for recibo in tren.recibos:
+        entrega = entradas[recibo].entrega
+        if entrega.pr not in culpables:
+            continue
+        detalles = []
+        for causa in causas:
+            for grupo in causa.minimos:
+                if entrega.pr not in grupo:
+                    continue
+                f = causa.fallo
+                # Plantilla dirigida: el SHA/árbol causal se resuelve en el
+                # expediente de armar-subconjunto. No incorpora una shell.
+                solicitud = Reproduccion(clave("reproduccion", (f.parte, f.check, f.unidad),
+                                               "subconjunto", grupo), f, "subconjunto", grupo)
+                evidencia = next((e for e in fase.evidencias if e.solicitud.id == solicitud.id), None)
+                if evidencia is None:
+                    evidencia = next(e for e in fase.evidencias if
+                        e.solicitud.objetivo == "C" and e.solicitud.fallo.unidad == f.unidad
+                        and e.solicitud.fallo.check == f.check and e.solicitud.fallo.parte == f.parte)
+                commit = evidencia.resultado.sha if evidencia else fase.candidato.C
+                comando = shlex.join(evidencia.resultado.comando or ["bash", "scripts/mini/run.sh", "--repetir", fase.suite,
+                    "--sha", commit, "--worktree", "<worktree-desacoplado-en-" + commit + ">",
+                    "--veces", "2", "--unidad", f.check + "=" + f.unidad])
+                detalles.append({"unidad": f.unidad, "check": f.check, "firma": f.firma,
+                                 "conjunto_causal": grupo, "comando": comando})
+        payload = json.dumps({"lote": tren.id, "B": fase.candidato.B, "C": fase.candidato.C,
+                              "pr": entrega.pr, "head": entrega.head, "fallos": detalles}, sort_keys=True)
+        efectos.append(Efecto(clave("devolver", tren.id, recibo), "devolver", (tren.id, recibo, payload)))
+    sobrevivientes = tuple(r for r in tren.recibos if entradas[r].entrega.pr not in culpables)
+    estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
+    nuevo_id = clave("sobrevivientes", tren.id, sobrevivientes)
+    estado = replace(estado, entradas=tuple(
+        replace(e, terminal=Terminal("DEVUELTO")) if e.entrega.recibo in tren.recibos and
+        e.entrega.pr in culpables else replace(e, tren=nuevo_id) if
+        e.entrega.recibo in sobrevivientes else e for e in estado.entradas))
+    if sobrevivientes:
+        nuevo = Tren(nuevo_id, sobrevivientes, Congelado(fase.candidato.B))
+        estado = replace(estado, trenes=estado.trenes + (nuevo,))
+        efectos.append(Efecto(clave("armar", nuevo_id), "armar-candidato", (nuevo_id,)))
+    return estado, tuple(efectos)
+
+
+def avanzar_suite(estado, tren, observacion, despachar=True):
+    """Incorpora resultados ligados al intento antes de requerir readmisión."""
+    from atribucion import planificar
+    fase = tren.fase
+    ligada = observacion.tren_id == tren.id
+    if isinstance(fase, Corriendo):
+        resultado = observacion.resultado_suite if (ligada and
+            observacion.suite_intento == fase.reanudaciones and
+            (observacion.suite == fase.suite or
+             fase.reanudaciones > 0 and observacion.suite)) else None
+        if resultado is not None and fase.esperar_hasta is None:
+            fase = replace(fase, suite=observacion.suite)
+            if isinstance(resultado, Incompleto):
+                return esperar_infraestructura(estado, tren, fase, resultado, observacion.ahora)
+            if not isinstance(resultado, Completo):
+                return replace(estado, pausa=Pausa("necesita-juicio", detalle="resultado-desconocido")), ()
+            if resultado.veredicto in ("verde", "verde-contra-base"):
+                if any(f.clase != "también-base" for f in resultado.fallos):
+                    return replace(estado, pausa=Pausa("necesita-juicio", detalle="verde-incoherente")), ()
+                c = fase.candidato
+                cert = Certificado(c.C, c.arbol, fase.suite, fase.ci, c.B)
+                nuevo = cambiar_fase(estado, tren, cert)
+                if resultado.veredicto == "verde" and resultado.costo_s > 0:
+                    nuevo = replace(nuevo, costo_suite_sana_s=resultado.costo_s)
+                return nuevo, ()
+            if resultado.veredicto != "rojo" or not resultado.fallos:
+                return replace(estado, pausa=Pausa("necesita-juicio", detalle="resultado-desconocido")), ()
+            costo_sano = observacion.costo_suite_sana_s or estado.costo_suite_sana_s
+            fase = Diagnosticando(fase.candidato, resultado.fallos, fase.suite, fase.ci,
+                                   min(3600, 0.5 * costo_sano), restantes=resultado.restantes)
+            estado = cambiar_fase(estado, tren, fase)
+        elif fase.esperar_hasta is not None:
+            if observacion.ahora < fase.esperar_hasta or not despachar:
+                return estado, ()
+            fase = replace(fase, esperar_hasta=None, reanudaciones=fase.reanudaciones + 1)
+            estado = cambiar_fase(estado, tren, fase)
+        if isinstance(fase, Corriendo):
+            if fase.reanudaciones and fase.esperar_hasta is None and despachar:
+                efecto = Efecto(clave("reanudar-suite", tren.id, fase.reanudaciones),
+                    "reanudar-suite", (tren.id, str(fase.reanudaciones)))
+                return estado, (efecto,)
+            return estado, ()
+    if fase.pendiente:
+        s = fase.pendiente
+        ligada = ligada and observacion.reproduccion_id == s.id
+        if ligada and observacion.candidato and fase.subconjunto is None and s.objetivo == "subconjunto":
+            c = observacion.candidato
+            esperados = tuple((pr, head) for pr, head, _ in fase.candidato.eslabones if pr in s.prs)
+            if c.B != fase.candidato.B or tuple((pr, head) for pr, head, _ in c.eslabones) != esperados:
+                return replace(estado, pausa=Pausa("necesita-juicio", detalle="subconjunto-no-corresponde")), ()
+            fase = replace(fase, subconjunto=c)
+        if ligada and observacion.conflicto_cadena:
+            return replace(estado, pausa=Pausa("necesita-juicio", detalle="conflicto-en-subconjunto")), ()
+        resultado = observacion.repeticion if ligada and observacion.suite_intento == fase.reanudaciones else None
+        if resultado is not None and fase.esperar_hasta is None:
+            if isinstance(resultado, Incompleto):
+                return esperar_infraestructura(estado, tren, fase, resultado, observacion.ahora)
+            commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B if
+                      s.objetivo == "B" else fase.subconjunto.C if fase.subconjunto else "")
+            if (not isinstance(resultado, Repeticion) or resultado.sha != commit or
+                    resultado.origen_sha != fase.candidato.C or resultado.base != fase.candidato.B):
+                return replace(estado, pausa=Pausa("necesita-juicio", detalle="repeticion-no-corresponde")), ()
+            if fase.evidencias and resultado.origen_sha256 != fase.evidencias[0].resultado.origen_sha256:
+                return replace(estado, pausa=Pausa("necesita-juicio", detalle="origen-distinto")), ()
+            fase = replace(fase, evidencias=fase.evidencias + (Evidencia(s, resultado),),
+                pendiente=None, subconjunto=None, reanudaciones=0, esperar_hasta=None, reanudar="")
+        elif fase.esperar_hasta is not None:
+            if observacion.ahora < fase.esperar_hasta or not despachar:
+                return cambiar_fase(estado, tren, fase), ()
+            gastado = sum(max(e.solicitud.costo_s,
+                sum(i.duracion_s for u in e.resultado.unidades for i in u.intentos))
+                for e in fase.evidencias)
+            if gastado + fase.costo_infra_s + 2 * s.costo_s > fase.presupuesto_s:
+                return replace(cambiar_fase(estado, tren, fase), pausa=Pausa(
+                    "necesita-juicio", detalle="presupuesto-agotado-en-reanudacion")), ()
+            fase = replace(fase, esperar_hasta=None, reanudaciones=fase.reanudaciones + 1,
+                           costo_infra_s=fase.costo_infra_s + s.costo_s)
+    if fase.pendiente is None:
+        prs = tuple(pr for pr, _, _ in fase.candidato.eslabones)
+        plan = planificar(fase.fallos, prs, fase.evidencias,
+                          fase.presupuesto_s - fase.costo_infra_s)
+        if plan.incierto:
+            return replace(cambiar_fase(estado, tren, fase),
+                           pausa=Pausa("necesita-juicio", detalle=plan.incierto)), ()
+        if plan.terminado:
+            if not plan.causas:
+                # Confirmar fallos preexistentes no acredita los checks que el fail-fast no corrió.
+                if fase.restantes:
+                    return replace(cambiar_fase(estado, tren, fase),
+                                   pausa=Pausa("necesita-juicio", detalle="suite-incompleta")), ()
+                c = fase.candidato
+                return cambiar_fase(estado, tren, Certificado(c.C, c.arbol, fase.suite, fase.ci, c.B)), ()
+            if not despachar:
+                return cambiar_fase(estado, tren, fase), ()
+            return devolver_atribuidos(estado, tren, fase, plan.causas)
+        fase = replace(fase, pendiente=plan.siguiente)
+    estado = cambiar_fase(estado, tren, fase)
+    if fase.esperar_hasta is not None or not despachar:
+        return estado, ()
+    return estado, (efecto_diagnostico(tren, fase),)
 
 
 def paso(estado, observacion):
     """Un paso determinista. Congela a lo sumo un lote y emite sólo datos."""
+    activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
+    if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
+        tren = activos[0]
+        fase = tren.fase
+        if not (fase.reintento_pendiente and observacion.main is None):
+            estado, efectos = aterrizaje(estado, tren, observacion)
+            # Sólo EnBase del intento vigente permite readmitir y reintentar.
+            lectura = observacion.main
+            cert = fase.certificado
+            if (estado.pausa or not isinstance(lectura, EnBase) or
+                    observacion.tren_id != tren.id or
+                    observacion.intento_promocion != fase.intentos or
+                    (lectura.B, lectura.C) != (cert.B, cert.C)):
+                return estado, efectos
     efectos = []
     entradas = []
     vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+    # A landed PR closes as merged; its delivery is settled, not expired.
+    terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
-        if isinstance(entrada.admision, Rechazado):
+        if isinstance(entrada.admision, Rechazado) or entrada.tren in terminales:
             entradas.append(entrada)
             continue
-        if vista is not None and vista.head != entrega.head:
+        decision = admision_entrada(entrada, vistas, observacion)
+        if decision == Rechazado(Motivo.HEAD):
             entrada = replace(entrada, admision=Rechazado(Motivo.HEAD))
             efectos.append(Efecto(clave("caduca", entrega.recibo),
                                   "avisar-caducidad", (entrega.recibo,)))
         else:
-            decision = (admision(vista, observacion) if vista else
-                        Retenido(Motivo.INCIERTO))
+            if isinstance(decision, Rechazado) and entrada.tren is not None:
+                efectos.append(Efecto(clave("caduca", entrega.recibo),
+                                      "avisar-caducidad", (entrega.recibo,)))
             if isinstance(decision, Admitido):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
@@ -279,11 +668,19 @@ def paso(estado, observacion):
     if activos:
         tren = activos[0]
         miembros = [e for e in entradas if e.entrega.recibo in tren.recibos]
-        if any(isinstance(e.admision, Rechazado) for e in miembros):
-            return replace(estado, pausa=Pausa("head-cambiado-en-tren")), tuple(efectos)
-        if any(not isinstance(e.admision, Admitido) for e in miembros):
-            return estado, tuple(efectos)
         fase = tren.fase
+        if observacion.tren_id and observacion.tren_id != tren.id:
+            return estado, tuple(efectos)
+        ocupada = observacion.rama_ocupada
+        if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
+                observacion.tren_id == tren.id and
+                ocupada.ref == "refs/heads/tren/" + tren.id and
+                ocupada.esperado == fase.candidato.C):
+            return replace(estado, pausa=Pausa("rama-tren-ocupada")), tuple(efectos)
+        if isinstance(fase, Congelado) and observacion.conflicto_cadena:
+            conflicto = observacion.conflicto_cadena
+            return replace(estado, pausa=Pausa("conflicto-en-cadena", pr=conflicto.pr,
+                                              archivos=conflicto.archivos)), tuple(efectos)
         if isinstance(fase, Congelado) and observacion.candidato:
             candidato = observacion.candidato
             por_recibo = {e.entrega.recibo: e for e in miembros}
@@ -293,13 +690,50 @@ def paso(estado, observacion):
                     tuple((pr, head) for pr, head, _ in candidato.eslabones) != esperados):
                 return replace(estado, pausa=Pausa("candidato-no-corresponde")), tuple(efectos)
             fase = Armado(candidato)
+            estado = replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
+                                                 else t for t in estado.trenes))
+        if isinstance(fase, (Corriendo, Diagnosticando)):
+            nuevo, suite_efectos = avanzar_suite(estado, tren, observacion,
+                all(isinstance(e.admision, Admitido) for e in miembros))
+            if any(isinstance(e.admision, Rechazado) for e in miembros):
+                nuevo = replace(nuevo, pausa=Pausa("head-cambiado-en-tren"))
+            return nuevo, tuple(efectos) + suite_efectos
+        if (isinstance(fase, EsperandoCI) and observacion.tren_id == tren.id and
+                observacion.ci_candidato == "verde" and observacion.suite and
+                observacion.resultado_suite is not None):
+            fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
+            estado = cambiar_fase(estado, tren, fase)
+            nuevo, suite_efectos = avanzar_suite(estado, replace(tren, fase=fase), observacion,
+                all(isinstance(e.admision, Admitido) for e in miembros))
+            if any(isinstance(e.admision, Rechazado) for e in miembros):
+                nuevo = replace(nuevo, pausa=Pausa("head-cambiado-en-tren"))
+            return nuevo, tuple(efectos) + suite_efectos
+        # Los resultados completados quedan incorporados antes de esta puerta.
+        if any(isinstance(e.admision, Rechazado) for e in miembros):
+            return replace(estado, pausa=Pausa("head-cambiado-en-tren")), tuple(efectos)
+        if any(not isinstance(e.admision, Admitido) for e in miembros):
+            return estado, tuple(efectos)
+        if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
+            return estado, tuple(efectos)
+        if isinstance(fase, Certificado):
+            nuevo, promocion = aterrizaje(estado, tren, observacion)
+            return nuevo, tuple(efectos) + promocion
+        if isinstance(fase, Promoviendo) and fase.reintento_pendiente:
+            if fase.intentos >= LIMITE_PROMOCION:
+                return replace(estado, pausa=Pausa("promocion-rechazada")), tuple(efectos)
+            fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False)
+            efectos.append(efecto_promover(tren.id, fase.intentos))
         elif isinstance(fase, Armado):
             fase = EsperandoCI(fase.candidato)
             efectos.append(Efecto(clave("ci", tren.id), "solicitar-ci", (tren.id,)))
         elif isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde":
-            efectos.append(Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)))
+            if observacion.resultado_suite is None:
+                efectos.append(Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)))
             if observacion.suite:
-                fase = Corriendo(fase.candidato, observacion.suite)
+                fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
+                estado = cambiar_fase(estado, tren, fase)
+                nuevo, suite_efectos = avanzar_suite(estado, replace(tren, fase=fase), observacion)
+                return nuevo, tuple(efectos) + suite_efectos
         estado = replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                              else t for t in estado.trenes))
         return estado, tuple(efectos)
@@ -321,6 +755,11 @@ def paso(estado, observacion):
         return estado, tuple(efectos)
     recibos = tuple(e.entrega.recibo for e in lote)
     tren_id = clave("tren", estado.repo, observacion.base, recibos)
+    generacion = 0
+    usados = {t.id for t in estado.trenes}
+    while tren_id in usados:
+        generacion += 1
+        tren_id = clave("tren", estado.repo, observacion.base, recibos, generacion)
     tren = Tren(tren_id, recibos, Congelado(observacion.base))
     estado = replace(estado, entradas=tuple(replace(e, tren=tren_id)
                      if e.entrega.recibo in recibos else e for e in entradas),
@@ -331,9 +770,11 @@ def paso(estado, observacion):
 
 # Tagged encoding keeps the SQLite/event contract explicit and round-trippable.
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
-          Pausa, Candidato, Fallo, Completo, Incompleto, Atribucion, Congelado,
+          Pausa, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
+          Incierto, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
-          Promoviendo, Terminal, Tren, Estado, Efecto)}
+          Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,
+          Repeticion, Reproduccion, Evidencia, Causa)}
 
 
 def datos(valor):

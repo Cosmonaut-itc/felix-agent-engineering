@@ -17,7 +17,7 @@ def main():
     files = {"control.py": (root / "control.py").read_text()}
     files.update({path.name: path.read_text() for path in sorted((root / "units").iterdir())})
     installer = (root / "install-desk.py").read_text()
-    program = (core + "\nINSTALLER = " + repr(installer) + "\nFILES = " + repr(files) + "\n" + (root / "remote.py").read_text()
+    program = (core + "\nINSTALLER = " + ascii(installer) + "\nFILES = " + ascii(files) + "\n" + (root / "remote.py").read_text()
                + f"\nremote({json.dumps(args.action)}, {args.seco!r})\n")
     result = subprocess.run(["ssh", "desk", "/usr/bin/python3", "-I", "-"], input=program, text=True)
     sys.exit(result.returncode)

@@ -1,5 +1,5 @@
 """Ledger local, transacciones atómicas y simulación de sombra separada."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 import fcntl
 import json
@@ -74,7 +74,7 @@ class Ledger:
             finally:
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
-    def entregar(self, entrega, ahora):
+    def entregar(self, entrega, ahora, sombra_entrega=None):
         with self.transaccion():
             existente = self.db.execute("SELECT payload FROM requests WHERE recibo=?",
                                        (entrega.recibo,)).fetchone()
@@ -88,33 +88,60 @@ class Ledger:
             self.db.execute("INSERT INTO entries VALUES (?, ?, ?)",
                             (entrega.recibo, entrega.repo, codificar(Entrada(entrega, ahora))))
             self.evento(entrega.repo, "custodia", ahora, {"recibo": entrega.recibo})
+            if sombra_entrega is not None:
+                self.evento(entrega.repo, "admision-entrega", ahora, datos(sombra_entrega))
         return entrega.recibo
 
     def evento(self, repo, tipo, ahora, payload):
         self.db.execute("INSERT INTO events(repo, tipo, instante, payload) VALUES (?, ?, ?, ?)",
                         (repo, tipo, ahora, json.dumps(payload, sort_keys=True)))
 
-    def estado(self, repo, sombra=False):
+    def estado(self, repo, sombra=False, doble_camino=False):
         estado = inicial(repo)
         if sombra:
-            row = self.db.execute("SELECT payload FROM events WHERE repo=? AND tipo='sombra' ORDER BY seq DESC LIMIT 1",
-                                  (repo,)).fetchone()
-            if row:
+            tipo = "sombra-doble-camino" if doble_camino else "sombra"
+            for row in self.db.execute(
+                    "SELECT payload FROM events WHERE repo=? AND tipo=? ORDER BY seq DESC",
+                    (repo, tipo)):
                 estado = desde_datos(json.loads(row[0])["estado"])
+                break
         recibos = {e.entrega.recibo for e in estado.entradas}
         nuevas = tuple(desde_datos(json.loads(r[0])) for r in self.db.execute(
             "SELECT payload FROM entries WHERE repo=? ORDER BY rowid", (repo,)))
+        if sombra:
+            iniciales = {e.entrega.recibo: e for e in (
+                desde_datos(json.loads(r[0])) for r in self.db.execute(
+                    "SELECT payload FROM events WHERE repo=? AND tipo='admision-entrega' ORDER BY seq",
+                    (repo,)))}
+            nuevas = tuple(iniciales.get(e.entrega.recibo, e) for e in nuevas)
         return replace(estado, entradas=estado.entradas + tuple(
             e for e in nuevas if e.entrega.recibo not in recibos))
 
-    def sombra(self, estado, efectos, ahora):
+    def sombra(self, estado, efectos, ahora, doble_camino=False):
         # Only the event is committed. No operational trains/effects/outbox rows.
         # Its tagged snapshot feeds the next shadow tick, preserving the 60m clock.
         plan = {"estado": datos(estado), "efectos": datos(efectos)}
         with self.transaccion():
-            self.evento(estado.repo, "sombra", ahora, plan)
+            self.evento(estado.repo, "sombra-doble-camino" if doble_camino else "sombra",
+                        ahora, plan)
         return plan
 
     def ultimos_eventos(self, repo):
         return [dict(r) for r in self.db.execute(
             "SELECT seq, tipo, instante, payload FROM events WHERE repo=? ORDER BY seq DESC LIMIT 10", (repo,))]
+
+
+def filas_medicion(repo, directorio=None):
+    """SQLite mode=ro: sin mkdir, migraciones, candado ni pragmas de escritura."""
+    raiz = Path(directorio) if directorio is not None else directorio_estado()
+    ruta = (raiz / "ledger.sqlite3").resolve()
+    with closing(sqlite3.connect(ruta.as_uri() + "?mode=ro", uri=True)) as db:
+        db.row_factory = sqlite3.Row
+        db.execute("BEGIN")
+        if db.execute("PRAGMA user_version").fetchone()[0] != Ledger.VERSION:
+            raise ValueError("versión de ledger no soportada")
+        requests = [dict(r) for r in db.execute(
+            "SELECT * FROM requests WHERE repo=? ORDER BY recibida, recibo", (repo,))]
+        events = [dict(r) for r in db.execute(
+            "SELECT * FROM events WHERE repo=? ORDER BY seq", (repo,))]
+    return requests, events

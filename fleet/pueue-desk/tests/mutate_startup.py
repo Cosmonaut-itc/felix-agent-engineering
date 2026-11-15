@@ -11,7 +11,7 @@ CASES=[
  ('chrono-offset','control.py',"if not match or any(int(n or 0) > limit for n, limit in zip(match.groups(), (23, 59, 59, 23, 59))):",
   'if not match:', 'StartupTests.test_s_w1_offsets_calendar_and_nested_reject_without_writes_or_start'),
  ('queue-schema','control.py','            validate_task(task_id, task)','            pass','StartupTests.test_s_w1_offsets_calendar_and_nested_reject_without_writes_or_start'),
- ('queue-duplicate','control.py','object_pairs_hook=unique_object','object_pairs_hook=dict','StartupTests.test_strict_queue_and_missing_initialized_state_preserve_every_file'),
+ ('queue-duplicate','control.py','json.loads(path.read_text(), object_pairs_hook=unique_object)','json.loads(path.read_text(), object_pairs_hook=dict)','StartupTests.test_strict_queue_and_missing_initialized_state_preserve_every_file'),
  ('queue-reset','control.py','group.get("status") not in ("Running", "Paused")','group.get("status") not in ("Running", "Paused", "Reset")',
   'StartupTests.test_strict_queue_and_missing_initialized_state_preserve_every_file'),
  ('queue-gzip','control.py','if os.path.lexists(path.with_suffix(".json.gz")):','if False:',
@@ -46,7 +46,7 @@ CASES=[
   'StartupTests.test_event_crosses_prepare_and_expired_advance_adjustments_are_not_reinstated'),
  ('startup-generation','control.py',"prepared = (startup.get('phase') == 'prepared' and","prepared = (False and",
   'StartupTests.test_guard_reconciles_before_ready_sensors_then_only_releases_owned_startup'),
- ('docker-gate','control.py',"if self.host == 'desk' and state.get('startup_version') == 1:","if False:",
+ ('docker-gate','control.py',"            if self.host == 'desk' and state.get('startup_version') == 1:","            if False:",
   'StartupTests.test_docker_failure_and_new_pressure_prevent_admission_and_explicit_resume'),
  ('prepare-maintenance','control.py',"    if os.path.lexists(engine.directory / 'maintenance'):","    if False:",
   'StartupTests.test_unreadable_authority_no_fallback_and_maintenance_no_open_or_prepare'),
@@ -67,7 +67,7 @@ CASES=[
   'InstallerStartupTests.test_additive_install_keeps_pid_desire_receipts_and_loads_unit_without_restart'),
  ('graceful-stop-identity','control.py',"state.get('stop_tasks', {}).get(ident) == task['created_at']","True",
   'StartupTests.test_graceful_stop_marks_only_active_identities_before_terminal_killed'),
- ('fresh-after-docker','control.py',"                    if decide('desk', current, threshold) != 'reanudar':","                    if False:",
+ ('fresh-after-docker','control.py',"if decide(self.host,sample,threshold) != expected or time.monotonic()-started > GATE_SECONDS:","if time.monotonic()-started > GATE_SECONDS:",
   'StartupTests.test_pressure_and_generation_are_fresh_after_docker'),
  ('validated-reconstructed-image','control.py',("    validate_queue(queue)  # an intent reconstructed from authority is validated too","    validate_queue(image)  # validate the exact bytes to be published, before intent"),("    pass","    pass"),
   'StartupTests.test_reconstructed_intent_must_pass_same_queue_validator_before_writes'),
@@ -83,9 +83,9 @@ CASES=[
 
 
 CASES += [
- ('external-running-startup','control.py',"                reasons.discard('startup')\n                state.get('startup', {}).get('holds', {}).pop(g, None)","                state.get('startup', {}).get('holds', {}).pop(g, None)",
+ ('external-running-startup','control.py',"reasons -= {'pressure','startup'}","reasons -= {'pressure'}",
   'test_startup_injerto.StartupGraftTests.test_a_w2_external_running_releases_startup_and_second_pause_is_manual'),
- ('external-running-hold','control.py',"                reasons.discard('startup')\n                state.get('startup', {}).get('holds', {}).pop(g, None)","                reasons.discard('startup')",
+ ('external-running-hold','control.py',"reasons -= {'pressure','startup'}\n                    state.get('startup',{}).get('holds',{}).pop(group,None)","reasons -= {'pressure','startup'}",
   'test_startup_injerto.StartupGraftTests.test_a_w2_external_running_releases_startup_and_second_pause_is_manual'),
  ('foreign-resume-cli','control.py',"foreign_resume = args.host == 'desk' and args.command == 'reanudar'",'foreign_resume = False',
   'test_startup_injerto.StartupGraftTests.test_a_w1_cli_resolves_existing_foreign_without_changing_profile'),
@@ -105,8 +105,6 @@ CASES += [
   'test_startup_injerto.InstallerGraftTests.test_timer_services_require_running_daemon_without_starting_it'),
 ]
 for key,condition in (
- ('pid',"loaded['MainPID'] != engine.install_unit_before['MainPID']"),
- ('active',"loaded['ActiveState'] != engine.install_unit_before['ActiveState']"),
  ('reload',"loaded['NeedDaemonReload'] != 'no'"),
  ('restart',"loaded['Restart'] != 'always'"),
  ('killmode',"loaded['KillMode'] != 'mixed'"),
@@ -129,6 +127,19 @@ CASES += [
  ('show-requires-every-property','install-desk.py',"    if set(values) != set(SHOWN):","    if False:",
   'InstallerStartupTests.test_pre_u34_unit_without_exec_start_pre_installs_and_missing_property_blocks'),
 ]
+
+
+# DESK-GEN: daemon_fence also guards MainPID and ActiveState before maintenance
+# lifts, so each mutant removes every comparison of its property, not just one.
+CASES.append(('loaded-unit-pid','install-desk.py',
+ ("if (loaded['MainPID'] != engine.install_unit_before['MainPID']","or loaded['MainPID'] != str(int(pid))",
+  "or loaded['MainPID'] != engine.install_unit_before['MainPID']):"),
+ ("if (False","or False","or False):"),
+ 'test_startup_injerto.InstallerGraftTests.test_loaded_unit_mismatch_retains_maintenance_and_no_timer_restart'))
+CASES.append(('loaded-unit-active','install-desk.py',
+ ("or loaded['ActiveState'] != engine.install_unit_before['ActiveState']","or loaded['ActiveState'] != 'active'"),
+ ("or False","or False"),
+ 'test_startup_injerto.InstallerGraftTests.test_loaded_unit_mismatch_retains_maintenance_and_no_timer_restart'))
 
 
 def main():

@@ -1,5 +1,14 @@
 #!/usr/bin/env bash
 set -eu
+aislado=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-remoto.XXXXXX")
+export HOME="$aislado/home"
+export XDG_STATE_HOME="$aislado/state"
+export XDG_CONFIG_HOME="$aislado/config"
+export XDG_DATA_HOME="$aislado/data"
+export XDG_CACHE_HOME="$aislado/cache"
+mkdir -p "$HOME"
+bin/pao check
+git version
 encontrado=0
 resultado=0
 for interprete in python3.9 python3.10 python3; do

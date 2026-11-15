@@ -22,24 +22,26 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    console.log('UI startup default pipeline OK');return;
  }
  if(input.scenario==='startup-waits'){
-   assert.equal((elements.app.innerHTML.match(/Esperando cuotas y Docker · reanudación automática/g)||[]).length,6);
-   assert.match(elements.app.innerHTML,/Retenido al reiniciar: pausa de origen desconocido &lt;script&gt; · resolver con control.py reanudar suites/);
+   // SEN-6417: each wait and hold lives in the fused free-slot cell, never in a separate line.
+   assert.equal((elements.app.innerHTML.match(/Esperando cuotas y Docker<\/span><span>reanudación automática/g)||[]).length,6);
+   assert.match(elements.app.innerHTML,/Retenido al reiniciar<\/span><span>pausa de origen desconocido &lt;script&gt; · resolver con <span class="mono">control.py reanudar suites<\/span>/);
    for(const g of ['hasito','jale','jale-verify','otros','pesadas','rapidas'])
-     assert(!elements.app.innerHTML.includes('resolver con control.py reanudar '+g));
-   assert.doesNotMatch(elements.app.innerHTML,/Pausa tras reinicio: resolver por SSH|>Reanudar<|data-resume/);
+     assert(!elements.app.innerHTML.includes('control.py reanudar '+g+'<'));
+   assert.doesNotMatch(elements.app.innerHTML,/Pausa tras reinicio: resolver por SSH|>Reanudar<|data-resume|startup-hold|startup-wait/);
    console.log('UI startup waits pipeline OK');return;
  }
- if(input.scenario==='ambiguous-notice'){
-   const notice=/Pausa tras reinicio: resolver por SSH con control.py/;
-   assert.match(run('hostControlMessage({id:"mini",control:{pause_reasons:{suites:["ambiguous"]}}})'),notice);
-   assert.match(run('hostControlMessage({id:"desk",control:{pause_reasons:{suites:["ambiguous"]}}})'),notice);
-   assert.doesNotMatch(run('hostControlMessage({id:"desk",control:{pause_reasons:{suites:["ambiguous","startup"]},startup_holds:{suites:"x"}}})'),notice);
-   console.log('UI ambiguous notice OK');return;
+ if(input.scenario==='ambiguous-cell'){
+   // The cell explains an ambiguous pause without a group hold; the host line does not repeat it.
+   run('h.control={...h.control,pause_reasons:{suites:["ambiguous"]},startup_holds:{},startup_waiting:{}}');
+   assert.match(run('view()'),/Pausa de origen desconocido<\/span><span>resolver con <span class="mono">control.py reanudar suites<\/span>/);
+   for(const id of ['mini','desk'])
+     assert.doesNotMatch(run(`hostControlMessage({id:"${id}",control:{pause_reasons:{suites:["ambiguous"]}}})`),/Pausa|control\.py/);
+   console.log('UI ambiguous cell OK');return;
  }
  if(input.scenario==='startup'){
    assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
-   assert.match(elements.app.innerHTML,/Retenido al reiniciar: pausa de origen desconocido &lt;script&gt;/);
-   assert.match(elements.app.innerHTML,/resolver con control.py reanudar jale/);
+   assert.match(elements.app.innerHTML,/Retenido al reiniciar<\/span><span>pausa de origen desconocido &lt;script&gt;/);
+   assert.match(elements.app.innerHTML,/resolver con <span class="mono">control.py reanudar jale<\/span>/);
    assert(!elements.app.innerHTML.includes('<script>'));
    assert.doesNotMatch(elements.app.innerHTML,/>Reanudar<|data-resume/);
    assert(!run('groups(h).some(([g])=>g==="default")'));
