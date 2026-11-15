@@ -438,5 +438,13 @@ class TrickleTests(DeskFixture):
         (self.engine.directory/'maintenance').touch()
         with self.assertRaises(ValueError):self.resolve_uncertain()
 
+    def test_confirmation_without_attempt_is_rejected(self):
+        value=dict(version=1,last_attempt=None,last_confirmed=dict(at=self.iso(),grupo='jale',id=1))
+        with self.assertRaises(ValueError):control.validate_admission(value)
+        with self.engine.connect(write=True) as db:
+            db.execute('UPDATE guard_admission SET body=?',(json.dumps(value),))
+        self.run_guard();self.assertEqual(self.starts(),[])
+        self.assertIn('authority',self.causes())
+
 if __name__=='__main__':unittest.main()
 
