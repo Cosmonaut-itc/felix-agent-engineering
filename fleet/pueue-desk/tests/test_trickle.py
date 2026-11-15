@@ -301,4 +301,19 @@ class TrickleTests(DeskFixture):
         self.assertEqual(self.starts(),[])
         self.assertNotIn('SECRET-SENTINEL',(self.engine.directory/'guardia.log').read_text())
 
+    def test_final_unknown_state_finishes_not_sent(self):
+        save=self._save_method()
+        def change(value):
+            save(value)
+            if value['last_attempt']['outcome']=='reserved':
+                self.add_task(99,'jale',status={'FutureState':{}})
+        with patch.object(self.engine,'_save_admission',side_effect=change):self.run_guard()
+        self.assertEqual(self.starts(),[])
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.assertEqual(value['last_attempt']['outcome'],'not_sent')
+        self.assertIn('task_changed',self.causes())
+        self.tasks.pop('99');self.run_guard()
+        self.assertEqual(self.starts(),[])
+        self.assertIn('cooldown',self.causes())
+
 if __name__=='__main__':unittest.main()
