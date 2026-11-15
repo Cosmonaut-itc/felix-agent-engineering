@@ -23,7 +23,8 @@ from ledger import Ledger, codificar
 
 class AterrizajeTests(unittest.TestCase):
     def setUp(self):
-        self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-u2-"))
+        # Canónica como las referencias que congela `entregar` (macOS: /var -> /private/var).
+        self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-u2-")).resolve()
         self.home = self.raiz / "home"
         self.home.mkdir()
         self.env = patch.dict(os.environ, {"HOME": str(self.home),
