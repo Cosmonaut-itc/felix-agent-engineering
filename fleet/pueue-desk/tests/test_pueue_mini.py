@@ -272,7 +272,7 @@ class InstallerTests(Fixture):
         return subprocess.CompletedProcess(argv, code, output, "")
 
     def install(self, *args):
-        with patch.object(sys, "argv", ["install-mini.py", *args]):
+        with patch.object(sys, "argv", ["install-mini.py", '--solo-guardia', *args]):
             installer.main()
 
     def test_dry_run_has_no_actions(self):

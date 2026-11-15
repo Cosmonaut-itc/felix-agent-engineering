@@ -1,0 +1,375 @@
+#!/usr/bin/python3 -I
+"""Arranque fijo y relevo Mini. El llamador toma control.lock; no hay otro job."""
+import argparse
+import fcntl
+import importlib.util
+import json
+import os
+from pathlib import Path
+import plistlib
+import re
+import subprocess
+import sys
+
+ROOT = Path(__file__).resolve().parent
+spec = importlib.util.spec_from_file_location('mini_control', ROOT / 'control.py')
+control = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(control)
+LABEL = 'local.pao.pueue-mini.daemon'
+GUARD = 'local.pao.pueue-mini.guard'
+BREW = 'sh.brew.pueue'
+PUEUE = '/opt/homebrew/bin/pueue'
+DAEMON = '/opt/homebrew/bin/pueued'
+TERMINAL = ('done', 'withdrawn', 'aborted')
+
+
+def daemon_environment(home):
+    env = dict(os.environ, HOME=str(home))
+    for key in control.MANAGER_KEYS:
+        env.pop(key, None)
+    return env
+
+
+def launchctl(*args, check=True):
+    return subprocess.run(['/bin/launchctl', *args], check=check, text=True,
+                          capture_output=True, timeout=8)
+
+
+class Manager:
+    def __init__(self, home=None, pueue=None, directory=None, launch=launchctl,
+                 checkpoint=lambda phase: None, configuration=None):
+        self.home = Path(home or Path.home())
+        self.directory = Path(directory or self.home / '.local/state/pao/pueue-mini')
+        self.library = self.home / '.local/lib/pao-pueue-mini'
+        self.agents = self.home / 'Library/LaunchAgents'
+        self.domain = 'gui/' + str(os.getuid())
+        self.pueue = pueue or control.Pueue(PUEUE, env=daemon_environment(self.home), cwd=self.home)
+        self.engine = control.MiniControl(self.pueue, self.directory)
+        self.launch, self.checkpoint = launch, checkpoint
+        self.configuration = configuration
+
+    def state(self):
+        with self.engine.connect() as db:
+            return self.engine.state(db)
+
+    def save(self, state, phase):
+        with self.engine.connect(write=True) as db:
+            self.engine.store(db, state)
+        self.checkpoint(phase)
+
+    def transaction(self, state):
+        value = state.get('mini_handoff')
+        if value is not None and (type(value) is not dict or value.get('version') != 1
+                or value.get('target') not in ('install', 'withdraw')
+                or value.get('phase') not in ('stage', 'drain', 'switch', 'verify', 'maintenance', *TERMINAL)
+                or type(value.get('original_disabled')) is not dict
+                or set(value['original_disabled']) != {BREW, LABEL, GUARD}
+                or any(type(v) is not bool for v in value['original_disabled'].values())
+                or type(value.get('effect')) not in (str, type(None))):
+            raise ValueError('Relevo ilegible; conservar cierre y archivos')
+        return value
+
+    def loaded(self, label):
+        result = self.launch('print', self.domain + '/' + label, check=False)
+        if result.returncode not in (0, 113):
+            raise ValueError('No se pudo consultar launchd')
+        return result.stdout if result.returncode == 0 else None
+
+    def disabled(self, label):
+        output = self.launch('print-disabled', self.domain).stdout
+        entries = re.findall(r'"([^"\n]+)"\s*=>\s*(true|false)', output)
+        if not output.strip().startswith((self.domain + ' => {', 'disabled services = {')) or not output.strip().endswith('}'):
+            raise ValueError('Estado disable de launchd ilegible')
+        return dict(entries).get(label, 'false') == 'true'
+
+    def effect(self, state, name, operation):
+        # Persist before EVERY external effect; replay is intentional and idempotent.
+        state['mini_handoff']['effect'] = name
+        self.save(state, 'intent:' + name)
+        operation()
+        self.checkpoint('effect:' + name)
+        state['mini_handoff']['effect'] = None
+        self.save(state, 'complete:' + name)
+
+    def command(self, state, verb, label):
+        self.effect(state, verb + ':' + label,
+                    lambda: self.launch(verb, self.domain + '/' + label))
+
+    def bootstrap(self, state, label):
+        if self.loaded(label) is None:
+            self.effect(state, 'bootstrap:' + label,
+                        lambda: self.launch('bootstrap', self.domain, str(self.agents / (label + '.plist'))))
+
+    def configuration_for_host(self):
+        # Production always shares this validator with preparar; explicit paths only in private tests.
+        return self.configuration or control.validate_configuration(home=self.home, env={}, cwd=self.home,
+                                                                    pueue=PUEUE, daemon=DAEMON)
+
+    def preflight(self, target):
+        config = self.configuration_for_host()
+        queue = control.read_queue(config['data'] / 'state.json')
+        state = self.state()
+        self.transaction(state)
+        if Path(state['pid_file']).resolve() != config['pid_file'].resolve():
+            raise ValueError('PID configurado distinto de la autoridad')
+        with self.engine.connect() as db:
+            if any(json.loads(row[0])['response']['status'] in ('applying', 'partial', 'unknown')
+                   for row in db.execute('SELECT body FROM host_actions')):
+                raise ValueError('Hay recibos pendientes; no se releva')
+        previous = self.transaction(state)
+        if previous and previous['phase'] not in TERMINAL:
+            raise ValueError('Relevo pendiente; lo atiende la guardia')
+        if control.MINI_PROFILE != dict(suites=3, default=1, rapidas=3) or control.MINI_GROUPS != ('suites', 'default', 'rapidas'):
+            raise ValueError('Perfil Mini incompatible')
+        for g in control.MINI_GROUPS:
+            if g not in queue['groups']:
+                raise ValueError('Falta un grupo Mini en la cola; no readoptar')
+        source = LABEL if self.loaded(LABEL) is not None else BREW
+        if self.loaded(source) is None:
+            raise ValueError('No hay un daemon gestionado que relevar')
+        if self.loaded(LABEL) is not None and self.loaded(BREW) is not None:
+            raise ValueError('Dos gestores cargados; no se releva')
+        # Check the exact PID owner, pinned file, identity/date, desired policy and live vector.
+        self.verify_owner(source, state)
+        self.engine.view()
+        brew = plistlib.loads((self.agents / (BREW + '.plist')).read_bytes())
+        argv = brew.get('ProgramArguments', [])
+        if (brew.get('Label') != BREW or len(argv) != 1 or not Path(argv[0]).is_absolute()
+                or Path(argv[0]).resolve() != Path(DAEMON).resolve()
+                or brew.get('WorkingDirectory', str(self.home)) != str(self.home)
+                or brew.get('EnvironmentVariables', {})):
+            raise ValueError('LaunchAgent Homebrew incompatible; conservarlo')
+        return state, config, {label: self.disabled(label) for label in (BREW, LABEL, GUARD)}
+
+    def verify_owner(self, label, state):
+        info = self.loaded(label)
+        pid = Path(state['pid_file']).read_text().strip()
+        if info is None or not pid.isdigit() or not re.search(r'^\s*pid = ' + re.escape(pid) + r'\s*$', info, re.M):
+            raise ValueError('PID no pertenece al LaunchAgent esperado')
+        self.engine.generation(state)  # Mini formula: pid_path + mtime + ps lstart/comm, never /proc
+
+    def publish(self, target, data):
+        target.parent.mkdir(parents=True, exist_ok=True)
+        temporary = target.with_name(target.name + '.u35-tmp')
+        with temporary.open('wb') as stream:
+            stream.write(data)
+            control.sync_file(stream)
+        os.replace(temporary, target)
+        control.sync_directory(target.parent)
+
+    def render(self, label):
+        value = plistlib.loads((ROOT / 'launchagents' / (label + '.plist')).read_bytes())
+        for key, item in list(value.items()):
+            if type(item) is str:
+                value[key] = item.replace('@HOME@', str(self.home))
+            elif type(item) is list:
+                value[key] = [v.replace('@HOME@', str(self.home)) for v in item]
+        return plistlib.dumps(value)
+
+    def install_recoverer(self):
+        # No daemon/plist candidate is changed before the recoverer is available.
+        # The existing guard executes control.py afresh every tick, so no bootout gap.
+        for name in ('mini.py', 'control.py'):
+            self.publish(self.library / name, (ROOT / name).read_bytes())
+        self.publish(self.agents / (GUARD + '.plist'), self.render(GUARD))
+        if self.disabled(GUARD):
+            raise ValueError('Guardia deshabilitada; resolver antes del relevo')
+        if self.loaded(GUARD) is None:
+            self.launch('bootstrap', self.domain, str(self.agents / (GUARD + '.plist')))
+        if self.loaded(GUARD) is None:
+            raise ValueError('No hay recuperador cargado; no se releva')
+
+    def change(self, target, dry=False):
+        # Even the dry branch takes the EXISTING lock read-only; never creates directories.
+        with control.locked(self.directory, create=False):
+            state, config, original = self.preflight(target)
+            if dry:
+                print('SECO: validar configuración/cola/autoridad/PID y recibos sin efectos')
+                print('SECO: publicar recuperador existente; migrar aditivamente bajo control.lock')
+                print('SECO: intención durable; deshabilitar destino antes de publicar su plist; cerrar y drenar')
+                print('SECO: disable origen → bootout → verificar PID muerto → preparar → enable/bootstrap destino')
+                print('SECO: verificar dueño/cuotas; sensores frescos; retirar sólo pausas propias')
+                return
+            if os.path.lexists(self.directory / 'maintenance'):
+                raise ValueError('Mantenimiento; no se inicia el relevo')
+            if target == 'withdraw' and not state.get('mini_handoff'):
+                raise ValueError('No hay instalación U3.5 que retirar')
+            self.install_recoverer()
+            previous = self.transaction(state)
+            if previous and previous['phase'] == ('done' if target == 'install' else 'withdrawn'):
+                return  # repeated request does not restart the daemon again
+            # Reinstallation keeps the original Homebrew enable/disable state.
+            if previous:
+                original = previous['original_disabled']
+            state['startup_version'] = 1
+            state['mini_handoff'] = dict(version=1, target=target, phase='stage', effect=None,
+                                        original_disabled=original)
+            self.save(state, 'handoff:intent')
+            self._recover(config)
+
+    def _recover(self, config=None):
+        """Caller holds control.lock. False means sensors/admission must wait."""
+        state = self.state()
+        value = self.transaction(state)
+        if os.path.lexists(self.directory / 'maintenance') or value and value['phase'] == 'maintenance':
+            return False
+        if value is None or value['phase'] in TERMINAL:
+            return True
+        config = config or self.configuration_for_host()
+        control.read_queue(config['data'] / 'state.json')  # never replace dubious files
+        target = LABEL if value['target'] == 'install' else BREW
+        other = BREW if target == LABEL else LABEL
+        if value['phase'] == 'stage':
+            self.command(state, 'disable', target)
+            if target == LABEL:
+                self.effect(state, 'publish:' + LABEL,
+                            lambda: self.publish(self.agents / (LABEL + '.plist'), self.render(LABEL)))
+            value['phase'] = 'drain'
+            self.save(state, 'handoff:drain')
+        if value['phase'] == 'drain':
+            # Idempotent pause ownership precedes each RPC, including the pause→reply gap.
+            try:
+                snapshot = self.pueue.status()
+            except subprocess.CalledProcessError:
+                control.assert_offline(self.pueue, config['pid_file'])
+                value['phase'] = 'switch'
+                self.save(state, 'handoff:source-exited')
+                return False
+            for group, row in snapshot['groups'].items():
+                reasons = set(state['reasons'].get(group, []))
+                if row['status'] == 'Running' or 'handoff' in reasons:
+                    reasons.add('handoff')
+                    state['reasons'][group] = sorted(reasons)
+                    self.save(state, 'pause:intent:' + group)
+                    self.pueue.call('pause', '--wait', '-g', group)
+                    self.checkpoint('pause:effect:' + group)
+            self.engine.record_stop()
+            if any(set(t['status']) & {'Running', 'Paused'} for t in self.pueue.status()['tasks'].values()):
+                return False  # no deadline kills another session's running work
+            # Keep record_stop and any cooperative manual pause written since our first read.
+            state = self.state(); value = self.transaction(state)
+            value['phase'] = 'switch'
+            self.save(state, 'handoff:switch')
+        if value['phase'] == 'switch':
+            # Mandatory even if bootout already happened: login reconstructs from enabled plists.
+            self.command(state, 'disable', other)
+            if self.loaded(other) is not None:
+                self.command(state, 'bootout', other)
+            if self.loaded(target) is not None:
+                value['phase'] = 'verify'
+                self.save(state, 'handoff:verify')
+                return False
+            control.assert_offline(self.pueue, config['pid_file'])
+            if target == BREW:
+                # Brew lacks a pre-start hook: prepare this one return, before enabling it.
+                control.prepare_start(self.engine, configuration=config)
+                state = self.state(); value = self.transaction(state)
+            self.command(state, 'enable', target)
+            self.bootstrap(state, target)
+            value['phase'] = 'verify'
+            self.save(state, 'handoff:verify')
+            return False  # the fixed start needs control.lock; release it first
+        if value['phase'] == 'verify':
+            # No kickstart/reset: KeepAlive owns retry; never a second daemon.
+            if self.loaded(other) is not None or not self.disabled(other):
+                raise ValueError('Origen todavía habilitado o cargado')
+            self.verify_owner(target, state)
+            if not self.engine.reconcile():
+                return False
+            state = self.state(); value = self.transaction(state)
+            for group, reasons in state['reasons'].items():
+                if 'handoff' in reasons:
+                    state['reasons'][group] = sorted((set(reasons) - {'handoff'}) | {'pressure'})
+            if target == BREW and value['original_disabled'][BREW]:
+                self.command(state, 'disable', BREW)
+            value['phase'] = 'done' if target == LABEL else 'withdrawn'
+            self.save(state, 'handoff:complete')
+            # Authority, guard and both disabled plists survive withdrawal. No orphaned pause.
+            return True
+        return False
+
+    def maintenance(self, resume=False):
+        """Operator entry: marker → guard → daemon; inverse publishes a closed start."""
+        with control.locked(self.directory, create=False):
+            state = self.state()
+            value = self.transaction(state)
+            if value is None:
+                raise ValueError('Mantenimiento U3.5 requiere el relevo instalado')
+            marker = self.directory / 'maintenance'
+            signature = b'pao-mini-maintenance@1\n'
+            if resume:
+                if (value['phase'] != 'maintenance' or marker.is_symlink()
+                        or not marker.is_file() or marker.read_bytes() != signature):
+                    raise ValueError('No se retira un mantenimiento ajeno; conservar el marcador')
+                for label in (BREW, LABEL):
+                    self.command(state, 'disable', label)
+                    if self.loaded(label) is not None:
+                        self.command(state, 'bootout', label)
+                value['phase'] = 'switch'
+                self.save(state, 'maintenance:restart-intent')
+                self.command(state, 'enable', GUARD)
+                self.bootstrap(state, GUARD)
+                def remove_marker():
+                    marker.unlink()
+                    control.sync_directory(marker.parent)
+                self.effect(state, 'maintenance:remove', remove_marker)
+                self._recover()
+            else:
+                # Publication before any stop; a killed caller cannot leave a reopening job.
+                value['phase'] = 'maintenance'
+                self.save(state, 'maintenance:intent')
+                if not os.path.lexists(marker):
+                    self.effect(state, 'maintenance:create', lambda: self.publish(marker, signature))
+                self.command(state, 'disable', GUARD)
+                if self.loaded(GUARD) is not None:
+                    self.command(state, 'bootout', GUARD)
+                try:
+                    self.engine.record_stop()
+                except subprocess.CalledProcessError:
+                    control.assert_offline(self.pueue, self.configuration_for_host()['pid_file'])
+                state = self.state()
+                for label in (BREW, LABEL):
+                    self.command(state, 'disable', label)
+                    if self.loaded(label) is not None:
+                        self.command(state, 'bootout', label)
+
+    def start(self, execute=None):
+        if os.path.lexists(self.directory / 'maintenance'):
+            raise ValueError('Host en mantenimiento')
+        # Serialize wrappers throughout the daemon lifetime; the fd survives exec.
+        with (self.directory / 'daemon.lock').open('a') as lifetime:
+            fcntl.flock(lifetime, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            os.set_inheritable(lifetime.fileno(), True)
+            with control.locked(self.directory, create=False):
+                state = self.state()
+                value = self.transaction(state)
+                if (not value or value['target'] != 'install' or value['phase'] not in ('switch', 'verify', 'done')
+                        or self.loaded(BREW) is not None or not self.disabled(BREW)):
+                    raise ValueError('Homebrew no está retirado; no se arranca otro daemon')
+                config = self.configuration_for_host()
+                control.prepare_start(self.engine, configuration=config)
+                self.checkpoint('start:prepared')
+                # fcntl lock closes on exec; lifetime lock remains with the stock daemon.
+                if execute is None:
+                    os.execve(DAEMON, [DAEMON], daemon_environment(self.home))
+                else:
+                    execute(DAEMON, [DAEMON])
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('command', choices=('arrancar', 'recuperar', 'mantenimiento', 'continuar'))
+    args = parser.parse_args()
+    manager = Manager()
+    if args.command == 'arrancar':
+        manager.start()
+    elif args.command in ('mantenimiento', 'continuar'):
+        manager.maintenance(resume=args.command == 'continuar')
+    else:
+        with control.locked(manager.directory, create=False):
+            if manager._recover():
+                control.MiniControl(manager.pueue, manager.directory).guard(None)
+
+
+if __name__ == '__main__':
+    main()

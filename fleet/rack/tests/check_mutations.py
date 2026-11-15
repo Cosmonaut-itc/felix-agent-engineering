@@ -157,6 +157,10 @@ CASES=(
 
 
 STARTUP_CASES = (
+    ('startup-mini-authority','snapshot.py',"desk_interruptions(home, host)","desk_interruptions(home)",
+     'test_mini_startup.MiniStartupTests.test_mini_snapshot_reads_own_authority_and_preserves_old_attributed_task'),
+    ('startup-mini-hold','index.html',"const reason=h.control?.startup_holds?.[n];","const reason=h.id==='mini'?null:h.control?.startup_holds?.[n];",
+     'test_mini_startup.MiniStartupTests.test_mini_ui_interruption_hold_and_normal_unchanged'),
     ('startup-task-visible','index.html',"${interrupted(h,n)}",'',
      'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
     ('startup-hold-visible','index.html',"const reason=h.control?.startup_holds?.[n];","const reason=null;",

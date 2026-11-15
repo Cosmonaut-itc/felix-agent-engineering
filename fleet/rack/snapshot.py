@@ -145,9 +145,9 @@ def task_control(task, home, state):
                 reason=reason)
 
 
-def desk_interruptions(home):
+def desk_interruptions(home, host='desk'):
     # Same authority, read-only. Never infer cancellation from Killed or a log.
-    path = home / '.local/state/pao/pueue-desk/control.sqlite3'
+    path = home / ('.local/state/pao/pueue-mini/control.sqlite3' if host == 'mini' else '.local/state/pao/pueue-desk/control.sqlite3')
     if not os.path.lexists(path):
         return {}
     db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)
@@ -621,7 +621,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     output['disk'] = attempt('disk', lambda: disk('/System/Volumes/Data' if mode == 'macos' and Path('/System/Volumes/Data').exists() else '/'))
     output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home, proc, now, output['errors']))
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
-    interruptions = (attempt('startup', lambda: desk_interruptions(home)) or {}) if host == 'desk' else {}
+    interruptions = attempt('startup', lambda: desk_interruptions(home, host)) or {}
     cache, references = {}, {}
     if data:
         def tasks():

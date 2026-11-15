@@ -14,6 +14,17 @@ vm.createContext(context);vm.runInContext(input.js,context);context.fixture=inpu
 const run=s=>vm.runInContext(s,context);
 run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
+ if(input.scenario==='mini-startup'||input.scenario==='mini-normal'){
+   assert.equal(run('h.id'),'mini');assert.equal(run('h.control.cap'),7);
+   assert.match(elements.app.innerHTML,/data-step="-1"/);
+   assert.doesNotMatch(elements.app.innerHTML,/data-mode|>Reanudar<|data-resume/);
+   assert(!run('groups(h).some(([g])=>g==="default")'));
+   if(input.scenario==='mini-startup'){
+     assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
+     assert.match(elements.app.innerHTML,/Retenido al reiniciar<\/span><span>pausa manual &lt;script&gt; · resolver con <span class="mono">control.py reanudar suites<\/span>/);
+   }else assert.doesNotMatch(elements.app.innerHTML,/Retenido al reiniciar|Interrumpida al reiniciar/);
+   console.log('UI Mini startup/normal OK');return;
+ }
  if(input.scenario==='startup-default'){
    assert(run('groups(h).some(([g])=>g==="default")'),'attributed default interruption must be visible');
    assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);

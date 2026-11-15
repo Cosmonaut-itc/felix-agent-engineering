@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Instala o retira sólo la guardia local de la Mini; nunca administra pueued."""
+"""Relevo U3.5 del daemon Mini; --solo-guardia conserva el instalador legacy."""
 import argparse
 import fcntl
 import importlib.util
@@ -10,6 +10,7 @@ import plistlib
 import shlex
 import shutil
 import subprocess
+import sys
 
 LABEL = "local.pao.pueue-mini.guard"
 SOURCE = Path(__file__).resolve().parent
@@ -70,7 +71,18 @@ def keep_owned_guarded(state, domain, agent, error):
 
 
 def main():
+    if '--solo-guardia' not in sys.argv:
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument('command', choices=('instalar', 'desinstalar'))
+        parser.add_argument('--seco', action='store_true')
+        args = parser.parse_args()
+        spec = importlib.util.spec_from_file_location('mini_install', SOURCE / 'mini.py')
+        mini = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mini)
+        mini.Manager().change('install' if args.command == 'instalar' else 'withdraw', args.seco)
+        return
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--solo-guardia', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument("command", choices=["instalar", "desinstalar"])
     parser.add_argument("--seco", action="store_true")
     parser.add_argument('--cuotas', action='store_true', help='Adoptar el deseo durable Mini 3/1/3')
@@ -79,6 +91,12 @@ def main():
     home = Path.home()
     library = home / ".local/lib/pao-pueue-mini"
     state = home / ".local/state/pao/pueue-mini"
+    if os.path.lexists(state / 'control.sqlite3'):
+        import sqlite3
+        with sqlite3.connect((state / 'control.sqlite3').as_uri() + '?mode=ro', uri=True) as db:
+            policy = json.loads(db.execute('SELECT body FROM policy WHERE id=1').fetchone()[0])
+        if 'mini_handoff' in policy:
+            raise ValueError('Instalación U3.5: usar el relevo, no el instalador legacy')
     agent = home / "Library/LaunchAgents" / (LABEL + ".plist")
     # Equivalente a id -u, sin ejecutar comandos tampoco en --seco.
     domain = f"gui/{os.getuid()}"
