@@ -1,5 +1,5 @@
 """Contrato de datos del tren. Sin reloj, IO ni ejecución de efectos."""
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from enum import Enum
 import hashlib
 import json
@@ -69,6 +69,9 @@ class Entrada:
     terminal: Optional['Terminal'] = None
     # Sólo doble camino: instante observado de caducidad, sin borrar admisión.
     caducada: Optional[float] = None
+    # U16: id del tren partido por CI rojo. Viaja sola hasta su desenlace;
+    # se omite en los datos mientras sea None (la sombra no cambia).
+    partida: Optional[str] = field(default=None, metadata={"aditivo": True})
 
 
 @dataclass(frozen=True)
@@ -239,6 +242,10 @@ class Armado:
 @dataclass(frozen=True)
 class EsperandoCI:
     candidato: Candidato
+    # U16: inicio del plazo de CI (entrada en la fase o `reanudar`) y primer
+    # verde observado. None en snapshots anteriores: el plazo empieza al leerlos.
+    desde: Optional[float] = None
+    verde: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -360,6 +367,9 @@ class Observacion:
     ci_recibo: str = "verde"
     decision: Optional[Decision] = None
     pausa_id: str = ""
+    # U16: commit cuyo CI se leyó y checks rojos de esa lectura.
+    ci_sha: str = ""
+    ci_rojos: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -646,6 +656,84 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
     return estado, (efecto_diagnostico(tren, fase),)
 
 
+PLAZO_CI = 3600
+
+
+def pedir_suite(estado, tren, fase, observacion):
+    """CI verde: la suite se pide con clave estable y el plazo deja de correr."""
+    fase = replace(fase, desde=observacion.ahora if fase.desde is None else fase.desde,
+                   verde=observacion.ahora if fase.verde is None else fase.verde)
+    efectos = ()
+    if observacion.resultado_suite is None:
+        efectos = (Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)),)
+    estado = cambiar_fase(estado, tren, fase)
+    if not observacion.suite:
+        return estado, efectos
+    corriendo = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
+    estado = cambiar_fase(estado, tren, corriendo)
+    nuevo, suite_efectos = avanzar_suite(estado, replace(tren, fase=corriendo), observacion)
+    return nuevo, efectos + suite_efectos
+
+
+def esperar_ci(estado, tren, fase, observacion):
+    if fase.desde is None:
+        return cambiar_fase(estado, tren, replace(fase, desde=observacion.ahora)), ()
+    return estado, ()
+
+
+def partir_tren(estado, tren, fase, observacion):
+    """Sin culpa, feedback ni escritura en main: cada miembro vuelve a la fila
+    con su custodia y su admisión (orden de llegada), marcado para viajar solo."""
+    estado = cambiar_fase(estado, tren, Terminal("PARTIDO"))
+    return replace(estado, entradas=tuple(
+        replace(e, tren=None, partida=tren.id) if e.entrega.recibo in tren.recibos else e
+        for e in estado.entradas)), ()
+
+
+def devolver_ci(estado, tren, fase, observacion):
+    """Feedback U14 con los checks rojos; el efecto se guarda con el paso."""
+    recibo, = tren.recibos
+    entrega = next(e.entrega for e in estado.entradas if e.entrega.recibo == recibo)
+    c = fase.candidato
+    payload = json.dumps({"lote": tren.id, "B": c.B, "C": c.C, "pr": entrega.pr,
+                          "head": entrega.head, "fallos": [],
+                          "checks_rojos": list(observacion.ci_rojos)}, sort_keys=True)
+    efecto = Efecto(clave("devolver", tren.id, recibo), "devolver", (tren.id, recibo, payload))
+    return separar_devueltos(estado, tren, c.B, {entrega.pr}, (efecto,))
+
+
+def pausar_ci(estado, tren, fase, observacion):
+    return replace(estado, pausa=Pausa("infraestructura", detalle="ci-sin-resultado")), ()
+
+
+# U16. (lectura del CI sobre C, tamaño del tren) -> transición. «vencido» es
+# un CI pendiente a PLAZO_CI o más de `desde`, sin verde visto.
+SALIDAS_CI = {
+    ("verde", "uno"): pedir_suite, ("verde", "varios"): pedir_suite,
+    ("rojo", "uno"): devolver_ci, ("rojo", "varios"): partir_tren,
+    ("pendiente", "uno"): esperar_ci, ("pendiente", "varios"): esperar_ci,
+    ("vencido", "uno"): pausar_ci, ("vencido", "varios"): pausar_ci,
+}
+
+
+def salida_ci(tren, fase, observacion):
+    """Un rojo sólo cuenta ligado a este tren y a su C, y con checks nombrados."""
+    lectura = observacion.ci_candidato
+    if lectura == "rojo" and not (observacion.tren_id == tren.id and
+                                  observacion.ci_sha == fase.candidato.C and
+                                  observacion.ci_rojos):
+        lectura = "pendiente"
+    if lectura not in ("verde", "rojo"):
+        vencido = (fase.verde is None and fase.desde is not None and
+                   observacion.ahora - fase.desde >= PLAZO_CI)
+        lectura = "vencido" if vencido else "pendiente"
+    return lectura, "varios" if len(tren.recibos) > 1 else "uno"
+
+
+def viaja_solo(entrada):
+    return entrada.solo or entrada.partida is not None
+
+
 def paso(estado, observacion):
     """Un paso determinista. Congela a lo sumo un lote y emite sólo datos."""
     if observacion.decision is not None:
@@ -757,6 +845,10 @@ def paso(estado, observacion):
             return estado, tuple(efectos)
         if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
             return estado, tuple(efectos)
+        if isinstance(fase, EsperandoCI):
+            nuevo, propios = SALIDAS_CI[salida_ci(tren, fase, observacion)](
+                estado, tren, fase, observacion)
+            return nuevo, tuple(efectos) + propios
         if isinstance(fase, Certificado):
             nuevo, promocion = aterrizaje(estado, tren, observacion)
             return nuevo, tuple(efectos) + promocion
@@ -766,16 +858,8 @@ def paso(estado, observacion):
             fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False)
             efectos.append(efecto_promover(tren.id, fase.intentos))
         elif isinstance(fase, Armado):
-            fase = EsperandoCI(fase.candidato)
+            fase = EsperandoCI(fase.candidato, desde=observacion.ahora)
             efectos.append(Efecto(clave("ci", tren.id), "solicitar-ci", (tren.id,)))
-        elif isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde":
-            if observacion.resultado_suite is None:
-                efectos.append(Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)))
-            if observacion.suite:
-                fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
-                estado = cambiar_fase(estado, tren, fase)
-                nuevo, suite_efectos = avanzar_suite(estado, replace(tren, fase=fase), observacion)
-                return nuevo, tuple(efectos) + suite_efectos
         estado = replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                              else t for t in estado.trenes))
         return estado, tuple(efectos)
@@ -783,7 +867,7 @@ def paso(estado, observacion):
                    and e.tren is None), key=lambda e: (e.admitida, e.recibida))
     lote = []
     for entrada in fila:
-        if entrada.solo:
+        if viaja_solo(entrada):
             if not lote:
                 lote.append(entrada)
             break
@@ -792,7 +876,7 @@ def paso(estado, observacion):
             break
     if not lote or not observacion.base:
         return estado, tuple(efectos)
-    if not (lote[0].solo or len(lote) == 3 or
+    if not (viaja_solo(lote[0]) or len(lote) == 3 or
             observacion.ahora - lote[0].admitida >= 3600):
         return estado, tuple(efectos)
     recibos = tuple(e.entrega.recibo for e in lote)
@@ -823,8 +907,11 @@ _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrad
 def datos(valor):
     from dataclasses import fields, is_dataclass
     if is_dataclass(valor):
+        # Un campo aditivo en su default no se escribe: snapshots y eventos
+        # anteriores (incluida la sombra) conservan sus bytes.
         return dict({"_tipo": type(valor).__name__},
-                    **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)})
+                    **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
+                       if not (f.metadata.get("aditivo") and getattr(valor, f.name) == f.default)})
     if isinstance(valor, tuple):
         return [datos(v) for v in valor]
     return valor.value if isinstance(valor, Enum) else valor

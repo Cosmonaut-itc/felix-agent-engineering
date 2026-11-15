@@ -1,4 +1,4 @@
-# Tren — sombra, tick activo, feedback y juicio (U15), sin repos activados por defecto
+# Tren — sombra, tick activo, feedback, juicio (U15) y salida del CI (U16), sin repos activados por defecto
 
 Python stdlib 3.9+, SQLite y flock POSIX. El agente registra su watch antes
 de entregar; con el recibo durable termina su turno:
@@ -303,9 +303,9 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
   publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
   crear otro. El lanzador falso cumple esa condición; estas pruebas no
   acreditan al lanzador real. Su implementación pertenece a otra unidad.
-- Resolver en otra unidad la salida de CI rojo sobre C: hoy el reductor
-  conserva `EsperandoCI` y puede ocupar el carril indefinidamente. El injerto
-  no cambia esa transición.
+
+La salida de `EsperandoCI` con CI rojo o sin resultado está implementada
+(U16, sección «Salida del CI sobre C»).
 
 Esta unidad no activa repos, no instala tareas y no cambia el gobierno.
 
@@ -583,6 +583,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
 | `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
 | `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `absolver`: abandonar el diagnóstico o reenganche anterior y exigir CI y suite completa nuevos sobre el mismo C, incluso si el diagnóstico agotó D5. `abortar`: liberar entregas sin rojo. |
+| `infraestructura` | `ci-sin-resultado` | `reanudar`: volver a solicitar CI sobre el mismo C (otro `solicitar-ci` con clave nueva) y reiniciar el plazo de 60 min. `abortar`. No admite `absolver`: no hay veredicto que descartar (U16). |
 | `rama-tren-ocupada` | vacío | `reanudar`: reintentar publicar el C guardado, sin forzar ni reemplazar la rama ajena; si sigue ocupada vuelve a pausar. `abortar`. |
 | `conflicto-en-cadena` | vacío; PR/archivos en la pausa | `expulsar`: sólo el PR en conflicto; sobrevivientes con suite completa. `abortar`. |
 | `candidato-no-corresponde` | vacío | `reanudar`: reintentar el armado sobre la B guardada, con clave nueva; no certificar el candidato rechazado. `abortar`. |
@@ -597,7 +598,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 Las decisiones admitidas se filtran también por la fase/evidencia guardada:
 no se reanuda infraestructura sin comando durable o fuera del presupuesto
 D5 de diagnóstico, ni promoción sin
-`Promoviendo`. Sólo se absuelve en `Corriendo` o `Diagnosticando`, con
+`Promoviendo`, ni se vuelve a pedir CI fuera de `EsperandoCI`. Sólo se absuelve en `Corriendo` o `Diagnosticando`, con
 candidato y sin miembros rechazados en el snapshot; el CLI sale con 2 sin
 registrar la decisión y el expediente la omite si no cumple esas condiciones.
 Una intervención nunca cambia
@@ -625,4 +626,109 @@ y muerte durante el reintento de promoción con ACK perdido sobre git real
 tres regresiones contra `185e7a46` y exige sus fallos antes de probar el head
 actual. Se incluyen en `tests/remoto.sh`; no se ejecutan en la máquina
 que sólo edita código. No se activó ningún repo. Siguen pendientes D2/D8,
-el contrato del lanzador real y la salida de CI rojo sobre C (U16).
+el contrato del lanzador real; la salida de CI rojo sobre C está en U16.
+
+
+## Salida del CI sobre C (U16)
+
+El tick lee el CI de GitHub sobre el C exacto del tren en `EsperandoCI` y
+lo reduce a `verde`, `rojo` o `pendiente`, con los nombres de los checks
+rojos. Se conservan las reglas anteriores: sólo cuenta la corrida más reciente
+por nombre (el id mayor) y el status más reciente por contexto; todos los
+`checks_esperados` de la config deben existir; cero checks sólo es verde con
+`checks_esperados: []`; `pao-tren/resultado` no es CI salvo en la sombra con
+doble camino. En el tick activo, la misma lectura decide el CI del head en
+la admisión, donde cualquier valor distinto de `verde` sigue reteniendo con
+`ci-no-verde`. La sombra (con o sin doble camino), `tick --seco` y `entregar`
+en sombra conservan la regla anterior: verde sólo si todo está en `success`,
+y si no, `pendiente`. Así sus admisiones y sus eventos no cambian.
+
+| Fuente | Valor | Lectura | Motivo |
+|---|---|---|---|
+| check run | `success` | `verde` | Pasó. |
+| check run | `neutral`, `skipped` | `verde` | GitHub las cuenta como aprobadas en sus reglas de merge; no son evidencia contra el código. Si el check está en `checks_esperados` la lectura es `pendiente`: un check exigido tiene que correr. |
+| check run | `failure`, `timed_out` | `rojo` | El check corrió sobre el árbol de C y lo juzgó. Un timeout es un cuelgue o un exceso del propio trabajo. |
+| check run | `cancelled` | `pendiente` | Lo canceló una persona o la concurrencia; no juzgó el código. |
+| check run | `action_required` | `pendiente` | Espera una aprobación humana para correr. |
+| check run | `startup_failure` | `pendiente` | El flujo no llegó a arrancar (configuración o plataforma). Un PR que toca CI ya viaja solo y con autorización. |
+| check run | `stale` | `pendiente` | GitHub lo dio por vencido sin terminar. |
+| check run | `queued`, `in_progress` u otro status distinto de `completed`; conclusión desconocida | `pendiente` | Sin veredicto. |
+| status | `success` | `verde` | Pasó. |
+| status | `failure` | `rojo` | El sistema externo juzgó el commit. |
+| status | `error` | `pendiente` | Falló el sistema de CI, no el código. |
+| status | `pending` o estado desconocido | `pendiente` | Sin veredicto. |
+
+Un check rojo decide aunque otros sigan pendientes o falten esperados; la
+lectura sólo es `verde` si todo lo leído es verde y no falta ninguno. Lo que
+no deja veredicto nunca devuelve el PR: espera, y a los 60 minutos pausa el
+carril. Así ningún dueño recibe un rojo de infraestructura. Un error al leer
+GitHub también es `pendiente`. El observador relee el CI para nombrar los
+checks rojos; si la relectura ya no es roja, el tick espera.
+
+El reductor consume un rojo sólo si la observación está ligada a este tren
+(`tren_id`) y a su C (`ci_sha`) y trae checks nombrados; un rojo de otro C se
+lee como `pendiente`. Las salidas son una tabla, `dominio.SALIDAS_CI`, con
+clave (lectura, tamaño del tren), y se evalúan después de las puertas de
+admisión: un head cambiado sigue pausando con `head-cambiado-en-tren` y un
+miembro retenido sigue esperando.
+
+| Lectura del CI sobre C | Tren de un PR | Tren de dos o más |
+|---|---|---|
+| `verde` | `iniciar-suite`, como antes | igual |
+| `rojo` | Devolver al dueño | Partir en trenes de uno |
+| `pendiente`, menos de 60 min | Esperar | igual |
+| `pendiente`, 60 min o más sin verde visto | Pausa `infraestructura` / `ci-sin-resultado` | igual |
+
+- **Partir.** El tren termina `PARTIDO` sin culpar a nadie, sin feedback ni
+  escritura en main. Cada miembro vuelve a la fila con su custodia y su
+  admisión intactas (conserva el orden de llegada) y con `partida` = id del
+  tren partido. Una entrada con `partida` viaja sola, como una sensible, y
+  forma su tren de uno en cuanto el carril está libre: su propio C, CI,
+  suite y aterrizaje. La marca dura lo que dura la entrega, no sólo hasta su
+  primer tren: si ese tren de uno se aborta o se rearma antes de un veredicto,
+  vuelve a viajar sola en vez de reunirse otra vez con el rojo sin resolver.
+  La marca vive en la entrada, que se identifica por (repo, PR, head): no
+  afecta a otras entregas y un head nuevo del dueño es otra entrega, sin
+  marca. Ese head es otro código y el dueño no recibió ningún rojo. Si
+  vuelve a fallar en un lote, el lote se parte otra vez.
+- **Devolver.** El tren y la entrega terminan `DEVUELTO` con el `devolver` de
+  U14. El comentario nombra los checks rojos (`checks_rojos`) y el status
+  `failure` apunta al comentario. El carril queda libre en ese mismo paso, y
+  la siguiente entrega forma tren en el tick siguiente.
+- **Pausar.** El plazo de 60 min se mide con el reloj de la observación,
+  desde que el tren entró en `EsperandoCI` (`EsperandoCI.desde`). Se detiene
+  la primera vez que el CI se ve verde (`EsperandoCI.verde`), porque la
+  suite pudo lanzarse. Un snapshot anterior a U16 empieza su plazo en la
+  primera lectura. La pausa sigue contando el plazo; al levantarla, un CI aún
+  pendiente pausa de nuevo.
+
+Juicio de `infraestructura` / `ci-sin-resultado`:
+
+- `reanudar` emite otro `solicitar-ci` con clave nueva sobre el mismo C y
+  reinicia el plazo con la hora del tick que consume la decisión. Publicar es
+  idempotente: si la rama `tren/<id>` ya apunta a C, GitHub no vuelve a correr
+  sus flujos. Si los checks quedaron colgados, hay que relanzarlos en GitHub;
+  el tren no relanza checks.
+- `abortar` termina `ABORTADO` como en U15.
+- `absolver` no se admite. En la tabla equivale a «suite nueva», que sólo
+  existe para descartar un veredicto en `Corriendo` o `Diagnosticando`. Sin
+  veredicto de CI no hay nada que absolver, y reanudar ya da un plazo nuevo
+  sobre el mismo C.
+
+Una muerte entre guardar el paso y drenar sus efectos no pierde nada. El
+`devolver` se guarda en el outbox en la misma transacción que el estado
+terminal, con clave por (tren, entrega), y el comentario se reconcilia por
+marcador antes del POST. En un tren partido, las entradas quedan en la fila
+dentro de ese mismo COMMIT. `partida` es un campo aditivo: con valor `None`
+no se escribe, así que los eventos de sombra y los snapshots anteriores
+conservan sus bytes.
+
+Las pruebas U16 (`tests/test_u16.py`) cubren la tabla de conclusiones, el
+tren de tres partido en trenes de uno con un rojo devuelto, el tren de uno
+devuelto con un solo feedback, el plazo de 59 y 60 min con `reanudar` y la
+muerte entre guardar el paso y drenar. `tests/remoto-u16.sh` exige que las
+tres regresiones (tren partido, tren de uno y plazo) fallen sobre `85138706`,
+y que los eventos de la sombra y de `tick --seco` sean idénticos byte a byte
+a los de ese commit.
+No se activó ningún repo. Siguen pendientes D2/D8 y el contrato del lanzador
+real.

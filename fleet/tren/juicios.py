@@ -18,6 +18,9 @@ POLITICA = {
     ("escritor-externo", ""): {"reanudar": "continuar"},
     ("infraestructura", "tres-reanudaciones-agotadas"):
         {"reanudar": "infraestructura", "absolver": "suite-nueva", "abortar": "abortar"},
+    # U16. Sin veredicto de CI no hay nada que absolver (suite-nueva exige
+    # Corriendo/Diagnosticando): reanudar vuelve a pedir CI sobre el mismo C.
+    ("infraestructura", "ci-sin-resultado"): {"reanudar": "pedir-ci", "abortar": "abortar"},
     ("rama-tren-ocupada", ""): {"reanudar": "publicar", "abortar": "abortar"},
     ("conflicto-en-cadena", ""): {"expulsar": "devolver", "abortar": "abortar"},
     ("candidato-no-corresponde", ""): {"reanudar": "armar", "abortar": "abortar"},
@@ -120,6 +123,8 @@ def error_decision(estado, decision, pausa_id):
             return "presupuesto-de-diagnostico-agotado"
     if operacion == "publicar" and not isinstance(fase, (Armado, EsperandoCI)):
         return "fase-no-corresponde"
+    if operacion == "pedir-ci" and not isinstance(fase, EsperandoCI):
+        return "fase-no-corresponde"
     if operacion == "armar" and not isinstance(fase, Congelado):
         return "fase-no-corresponde"
     if operacion == "promover" and not isinstance(fase, Promoviendo):
@@ -173,9 +178,12 @@ def resolver(estado, observacion):
         efecto = Efecto(clave("devolver", tren.id, entrada.entrega.recibo), "devolver",
                         (tren.id, entrada.entrega.recibo, payload))
         estado, efectos = separar_devueltos(estado, tren, base, {decision.pr}, (efecto,))
-    elif operacion in ("armar", "publicar"):
+    elif operacion in ("armar", "publicar", "pedir-ci"):
         tipo = "armar-candidato" if operacion == "armar" else "solicitar-ci"
         efectos = (Efecto(clave(tipo, tren.id, decision.id), tipo, (tren.id,)),)
+        if operacion == "pedir-ci":
+            # Mismo C, plazo nuevo desde el reloj del tick que consume el juicio.
+            estado = cambiar_fase(estado, tren, replace(tren.fase, desde=observacion.ahora))
     elif operacion == "infraestructura":
         fase = replace(tren.fase, reanudaciones=tren.fase.reanudaciones + 1,
                        esperar_hasta=None)

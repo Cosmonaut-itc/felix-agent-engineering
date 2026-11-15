@@ -88,11 +88,23 @@ class EscritorGitHub:
                 "comando": comando_publico(f, payload["C"])} for f in payload["fallos"]]
             if "juicio" in payload:
                 publico["juicio"] = payload["juicio"]
+            if "checks_rojos" in payload:
+                # U16: tren de uno con CI rojo sobre C; nombres de GitHub, sin argv.
+                publico["checks_rojos"] = [str(n) for n in payload["checks_rojos"]]
+                if not publico["checks_rojos"]:
+                    raise ValueError("CI rojo sin checks")
             detalle = json.dumps(publico, ensure_ascii=True, sort_keys=True, indent=2)
-            texto = ("Entrega devuelta por juicio.\n\n" if "juicio" in payload else
-                     "Entrega devuelta por fallos atribuidos al PR.\n\n") + "\n".join(
-                "    " + linea for linea in detalle.splitlines())
-            descripcion = "Entrega devuelta; detalle y reproducción en el comentario"
+            if "juicio" in payload:
+                encabezado = "Entrega devuelta por juicio.\n\n"
+            elif "checks_rojos" in payload:
+                encabezado = ("Entrega devuelta: el CI de GitHub sobre C (este PR solo sobre B) "
+                              "falló en: " + ", ".join(publico["checks_rojos"]) + ".\n\n")
+            else:
+                encabezado = "Entrega devuelta por fallos atribuidos al PR.\n\n"
+            texto = encabezado + "\n".join("    " + linea for linea in detalle.splitlines())
+            descripcion = ("Entrega devuelta por CI rojo sobre C; detalle en el comentario"
+                           if "checks_rojos" in payload else
+                           "Entrega devuelta; detalle y reproducción en el comentario")
         elif efecto.tipo == "avisar-caducidad":
             entrada = next(e for e in estado.entradas if e.entrega.recibo == efecto.datos[0])
             if not isinstance(entrada.admision, Rechazado):

@@ -1,11 +1,11 @@
 """Lectura de GitHub/git. Evidencia estructurada y decisiones fail-closed."""
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from fnmatch import fnmatchcase
 import json
 from pathlib import Path
 import re
 import subprocess
-from typing import Protocol
+from typing import Protocol, Tuple
 from urllib.parse import urlparse
 
 from dominio import EsperandoCI, Observacion, Rechazado, Terminal, VistaPR
@@ -38,6 +38,27 @@ def es_sensible(archivos, config):
     return any(fnmatchcase(archivo, patron)
                for patrones in config["sensibles"].values()
                for patron in patrones for archivo in archivos)
+
+
+# U16. Conclusión de un check run terminado -> lectura; README «Salida del CI
+# sobre C». Rojo sólo si el check corrió y juzgó el código. Lo que no deja
+# veredicto espera: a los 60 min el tren pausa por infraestructura.
+CONCLUSIONES = {
+    "success": "verde", "neutral": "verde", "skipped": "verde",
+    "failure": "rojo", "timed_out": "rojo",
+    "cancelled": "pendiente", "action_required": "pendiente",
+    "startup_failure": "pendiente", "stale": "pendiente",
+}
+ESTADOS_STATUS = {"success": "verde", "failure": "rojo",
+                  "error": "pendiente", "pending": "pendiente"}
+
+
+@dataclass(frozen=True)
+class LecturaCI:
+    valor: str
+    rojos: Tuple[str, ...] = ()
+    # Regla anterior a U16 (todo en success), que la sombra conserva.
+    estricta: bool = False
 
 
 def sha(valor):
@@ -80,6 +101,14 @@ class GitHubGit:
         return json.loads(Path(referencia).read_text())
 
     def ci(self, repo, head):
+        lectura = self.lectura_ci(repo, head)
+        if not self.activo:
+            # Sombra y --seco conservan su lectura de dos valores: sus
+            # admisiones y eventos no cambian con U16.
+            return "verde" if lectura.estricta else "pendiente"
+        return lectura.valor
+
+    def lectura_ci(self, repo, head):
         # --slurp retains every page of both APIs, including >100 checks/statuses.
         paginas = self.api("repos/{}/commits/{}/check-runs?per_page=100".format(repo, head), True)
         # A re-run leaves the superseded run (often cancelled) on the same head;
@@ -101,14 +130,27 @@ class GitHubGit:
                 continue
             ultimos.setdefault(status["context"], status["state"])
         esperados = self.config.get("checks_esperados")
+        lecturas = []
+        for nombre, c in checks.items():
+            valor = (CONCLUSIONES.get(c["conclusion"], "pendiente")
+                     if c["status"] == "completed" else "pendiente")
+            # Un check exigido debe correr: neutral/skipped no acreditan que corrió.
+            if valor == "verde" and c["conclusion"] != "success" and nombre in (esperados or ()):
+                valor = "pendiente"
+            lecturas.append((nombre, valor))
+        lecturas += [(contexto, ESTADOS_STATUS.get(estado, "pendiente"))
+                     for contexto, estado in ultimos.items()]
+        rojos = tuple(sorted({nombre for nombre, valor in lecturas if valor == "rojo"}))
+        if rojos:
+            return LecturaCI("rojo", rojos)
         if esperados is not None and any(n not in checks for n in esperados):
-            return "pendiente"
+            return LecturaCI("pendiente")
         # Zero checks counts as green only when the repo declares an empty CI.
         if not checks and not ultimos and esperados != []:
-            return "pendiente"
-        return "verde" if (all(c["status"] == "completed" and c["conclusion"] == "success"
-                               for c in checks.values())
-                           and all(s == "success" for s in ultimos.values())) else "pendiente"
+            return LecturaCI("pendiente")
+        verde = all(v == "verde" for _, v in lecturas)
+        return LecturaCI("verde" if verde else "pendiente", estricta=verde and all(
+            c["conclusion"] == "success" for c in checks.values()))
 
     def vista(self, entrega):
         repo, pr = entrega.repo, entrega.pr
@@ -195,12 +237,19 @@ class GitHubGit:
                 # La publicación sólo solicita CI; leer checks sobre el C exacto.
                 # GitHub no conoce un C aún no publicado: CI pendiente, y el
                 # tick sigue hasta reintentar la publicación.
+                C = tren.fase.candidato.C
                 try:
-                    ci = self.ci(repo, tren.fase.candidato.C)
+                    ci, rojos = self.ci(repo, C), ()
+                    if ci == "rojo":
+                        # `ci` decide; los nombres que viajan al dueño salen de
+                        # una relectura, y si ya no es roja el tren espera.
+                        lectura = self.lectura_ci(repo, C)
+                        ci, rojos = ((lectura.valor, lectura.rojos) if lectura.valor == "rojo"
+                                     else ("pendiente", ()))
                 except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                    ci = "pendiente"
+                    ci, rojos = "pendiente", ()
                 observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci,
-                                      ci_recibo="github:" + tren.fase.candidato.C)
+                                      ci_recibo="github:" + C, ci_sha=C, ci_rojos=rojos)
         return observacion
 
 

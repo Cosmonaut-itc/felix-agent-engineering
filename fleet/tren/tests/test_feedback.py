@@ -231,7 +231,7 @@ c.tick(frontera=frontera)
         self.contexto.feedback_gh(["gh", "api", "--method", "POST",
             "repos/{}/statuses/{}".format(activo.REPO, head), "--input", "-"],
             input=json.dumps({"context": "otro-check", "state": "failure"}))
-        self.assertEqual(self.contexto.observador.ci(activo.REPO, head), "pendiente")
+        self.assertEqual(self.contexto.observador.ci(activo.REPO, head), "rojo")
 
     def test_seco_entregar_y_sombra_no_publican_aun_con_feedback_pendiente(self):
         self.sembrar_devoluciones(pausa=True)
