@@ -208,6 +208,7 @@ c.tick(frontera=frontera)
         self.contexto.tick()
         self.assertTrue(all(f["estado"] == "fallido" for f in self.filas()))
         nuevo = self.commit({"nuevo": "push\n"}, (self.B,))
+        self.push(nuevo, "refs/pull/1/head")
         self.contexto.config["miembros"][0][1] = nuevo
         fallo.rename(self.raiz / "fallo-post-retirado")
         self.contexto.tick(200)
