@@ -1,5 +1,5 @@
 """Frontera Hasito: argv sin shell y recibos tipados. No importa el tick."""
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
@@ -222,6 +222,9 @@ class Hasito:
             ruta, codigo = self.correr(argv, raiz / ("intento-" + str(intento)), True)
             r = leer_json(ruta)
             exigir(isinstance(r, dict) and r.get("veredicto") == codigo, "salida-no-corresponde")
-            return leer_repeticion(r, commit, suite, candidato.C, candidato.B, solicitud.fallo)
+            resultado = leer_repeticion(r, commit, suite, candidato.C, candidato.B, solicitud.fallo)
+            if isinstance(resultado, Repeticion):
+                resultado = replace(resultado, comando=tuple(a for a in argv if a != "--reanudar"))
+            return resultado
         except (FalloGit, OSError) as exc:
             raise ResultadoInvalido(str(exc) if isinstance(exc, FalloGit) else "origen-ilegible") from None

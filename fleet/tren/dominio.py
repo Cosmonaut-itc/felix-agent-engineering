@@ -178,6 +178,7 @@ class Repeticion:
     base: str
     origen_sha256: str
     unidades: Tuple[UnidadRepetida, ...]
+    comando: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -476,8 +477,12 @@ def devolver_atribuidos(estado, tren, fase, causas):
                 solicitud = Reproduccion(clave("reproduccion", (f.parte, f.check, f.unidad),
                                                "subconjunto", grupo), f, "subconjunto", grupo)
                 evidencia = next((e for e in fase.evidencias if e.solicitud.id == solicitud.id), None)
+                if evidencia is None:
+                    evidencia = next(e for e in fase.evidencias if
+                        e.solicitud.objetivo == "C" and e.solicitud.fallo.unidad == f.unidad
+                        and e.solicitud.fallo.check == f.check and e.solicitud.fallo.parte == f.parte)
                 commit = evidencia.resultado.sha if evidencia else fase.candidato.C
-                comando = shlex.join(["bash", "scripts/mini/run.sh", "--repetir", fase.suite,
+                comando = shlex.join(evidencia.resultado.comando or ["bash", "scripts/mini/run.sh", "--repetir", fase.suite,
                     "--sha", commit, "--worktree", "<worktree-desacoplado-en-" + commit + ">",
                     "--veces", "2", "--unidad", f.check + "=" + f.unidad])
                 detalles.append({"unidad": f.unidad, "check": f.check, "firma": f.firma,
@@ -507,8 +512,10 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
     if isinstance(fase, Corriendo):
         resultado = observacion.resultado_suite if (ligada and
             observacion.suite_intento == fase.reanudaciones and
-            observacion.suite == fase.suite) else None
+            (observacion.suite == fase.suite or
+             fase.reanudaciones > 0 and observacion.suite)) else None
         if resultado is not None and fase.esperar_hasta is None:
+            fase = replace(fase, suite=observacion.suite)
             if isinstance(resultado, Incompleto):
                 return esperar_infraestructura(estado, tren, fase, resultado, observacion.ahora)
             if not isinstance(resultado, Completo):
@@ -679,6 +686,16 @@ def paso(estado, observacion):
             if any(isinstance(e.admision, Rechazado) for e in miembros):
                 nuevo = replace(nuevo, pausa=Pausa("head-cambiado-en-tren"))
             return nuevo, tuple(efectos) + suite_efectos
+        if (isinstance(fase, EsperandoCI) and observacion.tren_id == tren.id and
+                observacion.ci_candidato == "verde" and observacion.suite and
+                observacion.resultado_suite is not None):
+            fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
+            estado = cambiar_fase(estado, tren, fase)
+            nuevo, suite_efectos = avanzar_suite(estado, replace(tren, fase=fase), observacion,
+                all(isinstance(e.admision, Admitido) for e in miembros))
+            if any(isinstance(e.admision, Rechazado) for e in miembros):
+                nuevo = replace(nuevo, pausa=Pausa("head-cambiado-en-tren"))
+            return nuevo, tuple(efectos) + suite_efectos
         # Los resultados completados quedan incorporados antes de esta puerta.
         if any(isinstance(e.admision, Rechazado) for e in miembros):
             return replace(estado, pausa=Pausa("head-cambiado-en-tren")), tuple(efectos)
@@ -698,7 +715,8 @@ def paso(estado, observacion):
             fase = EsperandoCI(fase.candidato)
             efectos.append(Efecto(clave("ci", tren.id), "solicitar-ci", (tren.id,)))
         elif isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde":
-            efectos.append(Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)))
+            if observacion.resultado_suite is None:
+                efectos.append(Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)))
             if observacion.suite:
                 fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
                 estado = cambiar_fase(estado, tren, fase)

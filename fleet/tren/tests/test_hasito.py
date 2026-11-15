@@ -315,6 +315,124 @@ class HasitoTests(Aislado):
         self.assertEqual(desde_datos({"_tipo": "Fallo", "unidad": "u", "firma": "f", "clase": "c"}),
                          Fallo("u", "f", "c"))
 
+    def evidencia_pura(self, solicitud, valores, firma=None, duracion=3):
+        fallo = solicitud.fallo
+        u = UnidadRepetida(fallo.check, fallo.unidad, fallo.parte, "f" * 64,
+            tuple(Intento(n, v, (fallo.firma if firma is None else firma) if v == "falla" else "", duracion)
+                  for n, v in enumerate(valores, 1)))
+        return Evidencia(solicitud, Repeticion(C, C, B, "a" * 64, (u,)))
+
+    def test_puro_archivos_solo_ordenan_no_deciden_culpa(self):
+        evidencias = []
+        orden = []
+        for _ in range(10):
+            plan = planificar((F,), (1, 2, 3), tuple(evidencias), 3600,
+                              ((3, ("tests/test_producto.py",)),))
+            self.assertEqual(plan, planificar((F,), (1, 2, 3), tuple(evidencias), 3600,
+                              ((3, ("tests/test_producto.py",)),)))
+            if plan.terminado:
+                self.assertEqual(plan.causas[0].minimos, ((2,),))
+                break
+            self.assertFalse(plan.incierto)
+            s = plan.siguiente
+            orden.append((s.objetivo, s.prs))
+            valores = ("falla", "falla") if s.objetivo == "C" or s.prs == (2,) else ("pasa", "pasa")
+            evidencias.append(self.evidencia_pura(s, valores))
+        self.assertEqual(orden[2:], [("subconjunto", (3,)), ("subconjunto", (1,)), ("subconjunto", (2,))])
+
+    def test_minimo_triple_y_varios_minimos_sin_atajos_por_archivos(self):
+        for fallan in (((1, 2), (1, 3)), ()):
+            evidencias = []
+            for _ in range(12):
+                plan = planificar((F,), (1, 2, 3), tuple(evidencias), 3600)
+                if plan.terminado:
+                    esperados = fallan or ((1, 2, 3),)
+                    self.assertEqual(plan.causas[0].minimos, esperados)
+                    break
+                s = plan.siguiente
+                valores = ("falla", "falla") if s.objetivo == "C" or s.prs in fallan else ("pasa", "pasa")
+                evidencias.append(self.evidencia_pura(s, valores))
+            else:
+                self.fail("no encontró todos los mínimos")
+
+    def test_duracion_actual_aumenta_estimacion_y_presupuesto_limita_siguiente(self):
+        primero = planificar((F,), (1, 2, 3), (), 60)
+        self.assertEqual(primero.siguiente.costo_s, 20)
+        evidencia = self.evidencia_pura(primero.siguiente, ("falla", "falla"), duracion=20)
+        siguiente = planificar((F,), (1, 2, 3), (evidencia,), 60)
+        self.assertIsNone(siguiente.siguiente)
+        self.assertIn("presupuesto-agotado", siguiente.incierto)
+        exacto = planificar((F,), (1, 2, 3), (evidencia,), 80)
+        self.assertEqual(exacto.siguiente.costo_s, 40)
+
+    def test_ausente_omitida_firma_distinta_y_base_mixta_pasan_a_juicio(self):
+        c = planificar((F,), (1, 2, 3), (), 3600).siguiente
+        ec = self.evidencia_pura(c, ("falla", "falla"))
+        b = planificar((F,), (1, 2, 3), (ec,), 3600).siguiente
+        for valores, firma in ((("ausente", "ausente"), None), (("omitida", "omitida"), None),
+                               (("falla", "pasa"), None), (("falla", "falla"), "otra firma")):
+            plan = planificar((F,), (1, 2, 3), (ec, self.evidencia_pura(b, valores, firma)), 3600)
+            self.assertTrue(plan.incierto)
+            self.assertFalse(plan.terminado)
+
+    def test_firma_origen_vacia_usa_confirmacion_y_no_atribuye_firma_vacia(self):
+        f = replace(F, firma="")
+        c = planificar((f,), (1,), (), 3600).siguiente
+        ec = self.evidencia_pura(c, ("falla", "falla"), firma="firma-nueva")
+        b = planificar((f,), (1,), (ec,), 3600).siguiente
+        plan = planificar((f,), (1,), (ec, self.evidencia_pura(b, ("pasa", "pasa"))), 3600)
+        self.assertEqual(plan.causas[0].fallo.firma, "firma-nueva")
+        self.assertEqual(plan.causas[0].minimos, ((1,),))
+
+    def test_observacion_incompleta_guarda_resultado_y_retiene_efectos(self):
+        esperando, efectos = paso(self.estado, self.obs)
+        self.runner.responder = lambda argv: suite_fixture()
+        llegada = ejecutar(efectos[0], esperando, self.obs, self.git, self.adaptador).observacion
+        incompleta = replace(llegada, prs=(replace(self.obs.prs[0], completa=False),) + self.obs.prs[1:])
+        # El recibo completo llega con la admisión retenida.
+        diagnosticando, efectos = paso(esperando, incompleta)
+        self.assertIsInstance(diagnosticando.trenes[0].fase, Diagnosticando)
+        self.assertEqual(efectos, ())
+        recuperado, efectos = paso(diagnosticando, self.obs)
+        self.assertEqual(efectos[0].tipo, "repetir")
+        self.assertEqual(len(self.runner.llamadas), 1)
+
+    def test_reanudar_puede_cambiar_carpeta_por_traslado_sin_perder_resultado(self):
+        fase = Corriendo(CANDIDATO, "recibo-anterior", reanudaciones=1, reanudar="comando")
+        estado = replace(self.estado, trenes=(replace(self.estado.trenes[0], fase=fase),))
+        final, _ = paso(estado, replace(self.obs, tren_id="lote", suite_intento=1,
+                         suite="recibo-trasladado", resultado_suite=Completo("verde")))
+        self.assertIsInstance(final.trenes[0].fase, Certificado)
+        self.assertEqual(final.trenes[0].fase.suite, "recibo-trasladado")
+
+    def test_sobrevivientes_no_agregan_ticket_nuevo_y_reciben_suite_completa(self):
+        extra = Entrada(Entrega("example/project", 4, "9" * 40, "apto", "dirigida"), 4)
+        self.estado = replace(self.estado, entradas=self.estado.entradas + (extra,))
+        self.obs = replace(self.obs, prs=self.obs.prs + (VistaPR(4, "9" * 40, apto=True,
+                           hallazgos=0, dirigida=True, ci="verde", conflicto=False),))
+        estado, efectos, _ = self.diagnosticar(lambda objetivo:
+            ("falla", "falla") if objetivo in ("C", (2,)) else ("pasa", "pasa"))
+        self.assertIsNone(estado.entradas[3].tren)
+        for _ in range(4):
+            efecto = next(e for e in efectos if e.tipo != "devolver")
+            if efecto.tipo == "iniciar-suite":
+                break
+            llegada = ejecutar(efecto, estado, self.obs, self.git, self.adaptador)
+            estado, efectos = paso(estado, llegada.observacion)
+            if not efectos:  # Armado conserva el resultado antes de solicitar CI.
+                estado, efectos = paso(estado, self.obs)
+        else:
+            self.fail("no llegó a la suite completa")
+        candidato = estado.trenes[1].fase.candidato
+        self.runner.responder = lambda argv: suite_fixture(candidato, 0, ())
+        llegada = ejecutar(efecto, estado, self.obs, self.git, self.adaptador)
+        final, _ = paso(estado, llegada.observacion)
+        self.assertIsInstance(final.trenes[1].fase, Certificado)
+        self.assertEqual(final.trenes[1].recibos, estado.trenes[1].recibos)
+        self.assertIsNone(final.entradas[3].tren)
+        self.assertIn("--suite", self.runner.llamadas[-1])
+        self.assertIn("final", self.runner.llamadas[-1])
+
 
 class IntegracionGitTests(git_fixtures.AterrizajeTests):
     def test_verde_adaptador_hasta_cas_aterrizado_y_worktrees_durables(self):

@@ -181,7 +181,7 @@ saldo, no despacha la reproducción. Cada reanudación reserva otro ensayo.
 
 Los culpables reciben `Entrada.terminal=Terminal("DEVUELTO")`; `devolver`
 es sólo un dato idempotente por PR, con lote, B, C, fallos, firmas, conjuntos
-causales y comando dirigido (su `--worktree` indica el SHA que debe montarse).
+causales y el argv dirigido observado, con la ruta concreta del worktree.
 Los sobrevivientes forman inmediatamente una generación fija sobre B,
 sin incorporar nuevas entregas, y recorren armado, CI y suite completa.
 No se publican statuses ni comentarios. Tick continúa desactivado.
