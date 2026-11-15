@@ -21,7 +21,9 @@ class SoloMain(unittest.TestCase):
         cls.carpeta = tempfile.TemporaryDirectory()
         cls.addClassCleanup(cls.carpeta.cleanup)
         cls.worker = Path(cls.carpeta.name) / 'Runner.Worker'
-        shutil.copy2(shutil.which('bash'), cls.worker)
+        # copyfile y no copy2: macOS no deja copiar los flags de un binario del sistema.
+        shutil.copyfile(shutil.which('bash'), cls.worker)
+        cls.worker.chmod(0o755)
 
     def entorno(self, cambios):
         entorno = dict(os.environ, GITHUB_REPOSITORY='SEN-HASO/Hasito',
