@@ -64,6 +64,11 @@ corre en la Mini lo que exige macOS o nunca ha pasado en Linux.
   10 min lleva `--carril rapido`; el resto se encola en el grupo `otros`.
   Mientras el desk no responda, va a la Mini.
 
+Si un lanzador del repositorio falla en segundos con un código de política o de
+admisión (64, o 75 sin haber esperado turno), la rama puede ser anterior al
+último cambio de la infraestructura de pruebas. Actualízala con `origin/main`
+antes de reintentar o de cambiar de host.
+
 En la MacBook no se borra nada: ni `/tmp`, ni logs, guiones, briefs o
 evidencia. Vale para orquestadores, trabajadores y revisores. La excepción son
 los worktrees y copias del repositorio propios o de hilos archivados: se quitan
@@ -77,9 +82,17 @@ en Pueue (grupo `suites`) y `remote-run wait ID` espera su turno y devuelve su
 código. El carril rápido (`--carril rapido` o `REMOTE_RUN_CARRIL=rapido`)
 encola en el grupo `rapidas` del host y corta la corrida a los 10 min.
 No reserves la Mini a mano ni esperes en un bucle. Mira la fila con
-`ssh mini pueue status`. Si la corrida usa algo que no admite dos usuarios a la
-vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
+`ssh mini pueue status` y, en el desk, con
+`ssh desk '~/.local/bin/pueue status'`. Si la corrida usa algo que no admite
+dos usuarios a la vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
 `postgres:5434`).
+
+Una espera en segundo plano lleva el plazo máximo de tu herramienta. Si el
+plazo la corta con la corrida todavía en fila, la corrida se cancela. Si ya
+corría, la espera sale con 79 y la corrida sigue en el host: retómala con el
+comando que imprime la espera al cortarse, que conserva el host
+(`REMOTE_RUN_HOST=desk remote-run wait ID` en el desk, `remote-run wait ID` en
+la Mini).
 
 Una sesión que corre en Felix DESKTOP llega a la Mini con `ssh mini`, desde
 Windows y desde WSL. Lanza `remote-run` desde un clon en WSL: el checkout de
