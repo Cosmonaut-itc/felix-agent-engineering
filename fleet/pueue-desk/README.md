@@ -759,13 +759,20 @@ created_at/enqueued_at e inicio; nunca volcar `status --json` ni envs a logs.
 Si la ejecución de esa identidad queda probada, conservar `last_confirmed` y
 finalizar `confirmed` con boot/CLOCK_BOOTTIME actuales. Si se prueba que no se
 envió, o que el cliente ya terminó y no existe posibilidad de efecto tardío,
-finalizar `not_sent` con esos relojes. Hacer el UPDATE con validación y
-transacción FULL bajo el candado; en otro boot rebasar reserva/finalización a
-ahora, conservando la identidad y UTC original del intento. Sin evidencia
-suficiente sigue `unknown`: no borrarlo, restaurar una DB antigua, vencerlo por
-60 s ni cambiar la generación para liberarlo. La reapertura normal con presión
-baja permanece disponible con sus gates. No se añade una resolución automática
-basada sólo en que la tarea siga en fila.
+finalizar `not_sent` con esos relojes. Usar `control.py resolver-admision` bajo mantenimiento: el comando toma
+`control.lock`, valida la fila y la evidencia de A (identidad creada/encolada,
+generación, grupo Paused, Running/Done e inicio entre reserva y ahora) y finaliza
+con CLOCK_BOOTTIME fiable. Si no hay evidencia, sólo
+`control.py resolver-admision --sin-efecto` permite cerrar `not_sent`: el operador
+certifica que el cliente terminó y que no puede llegar ningún efecto tardío;
+ver Queued o estar en otro boot no lo demuestra. El cambio de boot sólo rebasa
+reserva/finalización tras esa certificación. Conserva fila, UTC original e
+historial; una ejecución confirmada actualiza `last_confirmed`. Exige 60 s
+completos desde resolución y rechaza reloj ilegible o retroceso al finalizar.
+Registra `admision_resolucion_intento` y `admision_resuelta` sin metadatos de tarea.
+Sin evidencia suficiente sigue retenida: no borrarla, restaurar una DB antigua,
+vencerla por 60 s ni cambiar la generación para liberarla. La reapertura normal
+con presión baja permanece disponible con sus gates.
 
 **Instalación y reversión (operador; no son comandos automáticos del panel).**
 En el checkout del desk ejecutar primero

@@ -1549,16 +1549,46 @@ class MiniControl:
             raise ValueError('Reloj de admisión inválido')
         return boot, ns
 
-    def _finish_attempt(self, value, outcome):
+    def _finish_attempt(self, value, outcome, minimum=None):
         attempt = value['last_attempt']
         boot, ns = self._boot_sample()
-        if boot != attempt['boot_id'] or ns < attempt['reserved_ns']:
+        if (boot != attempt['boot_id'] or ns < attempt['reserved_ns']
+                or minimum is not None and (boot != minimum[0] or ns < minimum[1])):
             outcome = 'unknown'
         attempt['outcome'] = outcome
         attempt['completed_ns'] = ns if outcome in ('confirmed','not_sent') else None
         if outcome == 'confirmed':
             value['last_confirmed'] = dict(at=utc_at(self.clock()),grupo=attempt['grupo'],id=attempt['id'])
         self._save_admission(value)
+        return outcome
+
+    def resolve_admission(self, no_effect=False):
+        """Caller holds control.lock; --sin-efecto certifies absence of any late effect.
+
+        Maintenance, a new boot or a Queued observation alone never grant permission.
+        Keep the durable identity/history and start a full minute at resolution.
+        """
+        if self.host != 'desk' or not os.path.lexists(self.directory/'maintenance'):
+            raise ValueError('Resolver la admisión exige el desk en mantenimiento')
+        with self.connect() as db:
+            value = admission_state(db)
+            state = self.state(db)
+        if value is None or value['last_attempt'] is None or value['last_attempt']['outcome'] not in ('reserved','unknown'):
+            raise ValueError('No hay admisión incierta que resolver')
+        attempt = value['last_attempt']
+        boot, ns = self._boot_sample()
+        if boot == attempt['boot_id'] and ns < attempt['reserved_ns']:
+            raise ValueError('Reloj anterior a la reserva')
+        confirmed = self._execution_confirmed(attempt,state)
+        if not confirmed and not no_effect:
+            raise ValueError('Sin evidencia; certificar ausencia de efecto tardío o mantener retenida')
+        outcome = 'confirmed' if confirmed else 'not_sent'
+        log(self.directory,'admision_resolucion_intento',grupo=attempt['grupo'],id=attempt['id'],resultado=outcome)
+        if boot != attempt['boot_id']:
+            attempt.update(boot_id=boot,reserved_ns=ns)
+        if self._finish_attempt(value,outcome,minimum=(boot,ns)) != outcome:
+            raise ValueError('Reloj no fiable al finalizar resolución')
+        log(self.directory,'admision_resuelta',grupo=attempt['grupo'],id=attempt['id'],resultado=outcome)
         return outcome
 
     def _one(self, state, proc, block, tick, result):
@@ -1907,12 +1937,17 @@ class MiniControl:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "preparar", "retirar", "parada"])
+    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "preparar", "retirar", "parada", "resolver-admision"])
     parser.add_argument("group", nargs="?")
     parser.add_argument("--host", choices=["desk", "mini"], default="desk")
     parser.add_argument('--pid-file', type=Path)
     parser.add_argument('--seco', action='store_true')
+    parser.add_argument('--sin-efecto', action='store_true', help='Certifica que no existe efecto pendiente ni tardío de la admisión')
     args = parser.parse_args()
+    if args.sin_efecto and args.command != 'resolver-admision':
+        parser.error('--sin-efecto sólo para resolver-admision')
+    if args.command == 'resolver-admision' and (args.host != 'desk' or args.group is not None):
+        parser.error('resolver-admision sólo para desk, sin grupo')
     if args.seco and args.command != 'preparar':
         parser.error('--seco sólo para preparar; rack usa dry_run')
     groups = MINI_GROUPS if args.host == "mini" else GROUP_LIMITS
@@ -1961,7 +1996,9 @@ def main():
     with locked(directory, create=args.command != 'preparar'):
         try:
             engine = MiniControl(pueue, directory, host=args.host)
-            if args.command == 'preparar':
+            if args.command == 'resolver-admision':
+                print(json.dumps(dict(resultado=engine.resolve_admission(no_effect=args.sin_efecto))))
+            elif args.command == 'preparar':
                 prepare_start(engine, dry_run=args.seco)
             elif args.command == 'parada':
                 engine.record_stop()
