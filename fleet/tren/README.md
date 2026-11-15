@@ -92,8 +92,7 @@ los lotes pasan directamente a `SIMULADO`, sin efectos ni espera de suite.
 Su continuación se guarda en eventos `sombra-doble-camino`; los eventos
 `sombra` de U1/U2/U4 siguen perteneciendo al reductor activo. Al cambiar la
 inscripción a activo, los PR abiertos se readmiten desde custodia y sus
-muestras iniciales, sin arrastrar lotes simulados. Los terminales U12
-`SIMULADO`/`MERGEADO-FUERA` de eventos antiguos tampoco alimentan ese reductor.
+muestras iniciales, sin arrastrar lotes simulados.
 Un PR que GitHub confirma mergeado en main con el head entregado termina
 `MERGEADO-FUERA`; cerrado sin merge sigue siendo rechazo. Los avances de
 main no pausan la sombra. La primera admisión se conserva incluso después
