@@ -220,9 +220,11 @@ class TrickleRedTests(TrickleFixture):
         self.assertIn(('pesadas', 'one', 'quota'), self.causes(self.summary()))
 
     def test_every_hold_cause_is_logged_for_resume_and_for_one(self):
-        cases = ('fresh_sample', 'docker', 'generation', 'desired', 'event', 'admission')
+        cases = ('fresh_sample', 'docker', 'generation', 'desired', 'event', 'admission', 'authority')
         for operation, readings, other in (('resume', LOW, MID), ('one', MID, HIGH)):
             for cause in cases:
+                if cause == 'authority' and operation == 'resume':
+                    continue  # an open panel receipt holds only the trickle; reopening keeps today's gate
                 with self.subTest(operation=operation, cause=cause):
                     self.setUp()
                     self.p.tasks = {'10': task(10, queued(1))}
@@ -236,6 +238,10 @@ class TrickleRedTests(TrickleFixture):
                         reconcile.start(); self.p.groups['otros']['parallel_tasks'] = 1
                     elif cause == 'event':
                         reconcile.start(); self.now = utc('2026-11-14T14:00:01')
+                    elif cause == 'authority':
+                        reconcile.start()  # keep the receipt open, as while the panel applies a change
+                        with self.engine.connect(write=True) as db:
+                            db.execute('INSERT INTO host_actions VALUES (?,?,?)', ('a1', '0' * 64, json.dumps(dict(response=dict(status='applying')))))
                     elif cause == 'admission':
                         state = self.state()
                         state['startup'] = dict(phase='prepared', statuses={}, groups={}, holds={}, interruptions={},
@@ -244,7 +250,7 @@ class TrickleRedTests(TrickleFixture):
                     try:
                         self.tick(readings, fresh=fresh, swallow=(ValueError,))
                     finally:
-                        reconcile.stop() if cause in ('generation', 'desired', 'event') else None
+                        reconcile.stop() if cause in ('generation', 'desired', 'event', 'authority') else None
                     self.assertEqual(self.starts() + self.group_starts(), [])
                     row = self.summary()
                     self.assertEqual(row['evento'], 'retenido')
@@ -261,6 +267,7 @@ class TrickleRedTests(TrickleFixture):
     def test_failed_start_stays_unknown_and_blocks_until_evidence(self):
         self.p.tasks = {'10': task(10, queued(1)), '11': task(11, queued(2))}
         self.p.start_fault = 'before'
+        reserved_at = self.now
         self.tick(MID, swallow=(subprocess.CalledProcessError,))
         self.assertEqual(self.starts(), [('start', 10)])
         self.assertIn((None, 'one', 'start_failed'), {(None, b['operacion'], b['causa']) for b in self.summary()['bloqueos']})
@@ -272,6 +279,11 @@ class TrickleRedTests(TrickleFixture):
             self.assertEqual(self.starts(), [], 'Un resultado incierto no se repite ni libera otro permiso')
             row = self.summary()
             self.assertEqual((row['evento'], row['causa']), ('tope_alcanzado', 'admission_unknown'))
+        # A start older than the reservation is not this attempt's effect.
+        self.p.tasks['10']['status'] = {'Running': dict(enqueued_at=stamp(1), start=iso(reserved_at - 60))}
+        self.advance(1)
+        self.tick(MID)
+        self.assertEqual((self.starts(), self.summary()['causa']), ([], 'admission_unknown'))
         # Evidencia: la misma identidad aparece Running. Se confirma y se espera un minuto desde ahí.
         self.p.tasks['10']['status'] = {'Running': dict(enqueued_at=stamp(1), start=iso(self.now - 600))}
         self.advance(1)
@@ -299,7 +311,9 @@ class TrickleRedTests(TrickleFixture):
         self.p.start_fault = 'before'
         self.tick(MID, swallow=(subprocess.CalledProcessError,))
         self.p.start_fault = None
-        self.p.tasks = {'10': task(10, running(9), created=stamp(8)), '11': task(11, queued(2))}
+        # Another task reused id 10 and started after the reservation: only its creation tells them apart.
+        reused = {'Running': dict(enqueued_at=stamp(9), start=iso(self.now + 60))}
+        self.p.tasks = {'10': task(10, reused, created=stamp(8)), '11': task(11, queued(2))}
         self.p.calls.clear()
         self.advance(120)
         self.tick(MID)
@@ -382,7 +396,9 @@ class TrickleRegressionTests(TrickleFixture):
         self.store(state)
         self.p.tasks = {'10': task(10, queued(1), 'rapidas'), '11': task(11, queued(2), 'jale'),
                         '12': task(12, queued(3), 'pesadas')}
-        self.tick(MID)
+        # 5 GiB free keeps rapidas in its own middle band too, so it stays Paused by pressure.
+        self.tick(dict(MID, memory=5 * GIB))
+        self.assertEqual(self.p.groups['rapidas']['status'], 'Paused')
         self.assertEqual(self.starts(), [])
 
     def test_mini_mid_band_is_unchanged(self):
@@ -414,7 +430,8 @@ class TrickleRecoveryTests(TrickleFixture):
         before = self.unknown()
         self.assertEqual(before['last_attempt']['outcome'], 'unknown')
         with self.assertRaises(ValueError):
-            self.engine.resolve_admission()
+            self.engine.resolve_admission(no_effect=True)  # not even explicit, outside maintenance
+        self.assertEqual(self.engine.admission(), before)
         (self.engine.directory / 'maintenance').write_text('')
         with self.assertRaises(ValueError):
             self.engine.resolve_admission()

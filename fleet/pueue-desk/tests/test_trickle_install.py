@@ -38,7 +38,8 @@ class TrickleInstallTests(unittest.TestCase):
         out = io.StringIO()
         with redirect_stdout(out):
             self.installer.install(self.home, self.pid, control, dry_run=True)
-        self.assertIn('SECO, permiso de admisión de a una: crear guard_admission vacía', out.getvalue())
+        # An existing authority without the table: created on install, not deferred to adoption.
+        self.assertIn('SECO, permiso de admisión de a una: crear guard_admission vacía;', out.getvalue())
         self.assertUnchanged(before)
         self.assertIsNone(self.permit())
 
