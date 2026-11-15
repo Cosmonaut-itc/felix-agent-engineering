@@ -58,9 +58,11 @@ reemplazó no cuenta. Ausencia, skipped o neutral retienen. `checks_esperados`
 (opcional) lista nombres que deben existir; `[]` declara un repo sin CI, y
 sólo entonces cero checks cuenta como verde. Todas las páginas se leen. Un
 inventario de archivos truncado retiene. El head se relee antes de terminar.
-Alto riesgo queda excluido por defecto en el piloto; deshabilitar
-`excluir_alto_riesgo` permite planearlo solo y con Verificado. Sensibles
-permanecen en merge-ready hasta autorización del head y después viajan solos.
+Alto riesgo exige Verificado y la autorización de su head en
+`heads_autorizados`; sin ella queda retenido (`alto-riesgo-excluido-del-piloto`
+mientras `excluir_alto_riesgo` sea verdadero, `merge-ready` si no). Sensibles
+permanecen en merge-ready hasta autorización del head. Autorizados, ambos
+viajan solos.
 La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos;
 un sensible/alto riesgo al frente sale solo inmediatamente. No se adelanta
 un PR solo sobre tickets normales anteriores. Jale nace en pausa `etapa-1`.
