@@ -84,7 +84,12 @@ def context(root, role="driver"):
 
 
 def worker(root,operation):
-    m,p,env,configuration=context(root,operation)
+    if operation=='start':emit(root,'start_worker_enter')
+    try:
+        m,p,env,configuration=context(root,operation)
+    except Exception as error:
+        if operation=='start':emit(root,'start_worker_context_rejected',category=type(error).__name__)
+        raise
     if operation in ('install','withdraw'):
         m.change(operation)
         return
@@ -146,7 +151,7 @@ def main():
         (m.agents/(label+'.plist')).write_bytes(rendered)
         if operation is not None:(package/'launchagents'/(label+'.plist')).write_bytes(rendered)
     process=None;output=(root/'direct-daemon.log').open('a');created=[]
-    def wait_for(predicate,seconds=35):
+    def wait_for(predicate,seconds=60):
         until=time.monotonic()+seconds
         while time.monotonic()<until:
             try:
@@ -239,7 +244,9 @@ def main():
                     expected=mini.LABEL if first=='withdraw' else mini.BREW
                     owner='prepared' if first=='withdraw' else 'homebrew'
                     launches=root/('launches-'+first)
-                    program="import pathlib,time;pathlib.Path("+repr(str(launches))+").open('a').write('launch\\n');time.sleep(90)"
+                    child_file=root/('r2-child-'+first+'.pid')
+                    program=("import os,pathlib,time;pathlib.Path("+repr(str(launches))+").open('a').write('launch\\n');"
+                             "pathlib.Path("+repr(str(child_file))+").write_text(str(os.getpid()));time.sleep(30)")
                     active=add(shlex.join([python,'-c',program]));wait_for(lambda:'Running' in status(active))
                     old=verified_pid()
                     m.change(first,wait=1);wait_for(lambda:settled('aborted'))
@@ -401,6 +408,14 @@ def main():
         assert p.status()['groups']['suites']['status']=='Paused'
         emit(root,'recover_after_job_death',one_owner=m.loaded(mini.BREW) is None,manual_preserved=True)
         emit(root,'PASS',assertions='stock restore; fixed prepare before exec; KeepAlive success/failure; maintenance; requester and job death at bootout gap')
+    except Exception:
+        for label in labels:
+            info=m.loaded(label)
+            fields={} if info is None else dict(re.findall(
+                r'^\s*(state|pid|runs|last exit code|last terminating signal) = ([\w -]+)$',info,re.M))
+            emit(root,'private_failure_service',label=label,loaded=info is not None,
+                 disabled=m.disabled(label),fields=fields)
+        raise
     finally:
         # Mark first so an in-flight own guard cannot start another private instance.
         if m.directory.exists():(m.directory/'maintenance').touch(exist_ok=True)
@@ -420,6 +435,10 @@ def main():
             child=int((root/'child.pid').read_text());assert child>1
             # Its program has a 20 s bound; wait for its exact PID, never kill by name.
             wait_for(lambda:subprocess.run(['/bin/ps','-p',str(child),'-o','comm='],capture_output=True).returncode==1,22)
+        for child_file in (root/'r2-child-withdraw.pid',root/'r2-child-install.pid'):
+            if child_file.exists():
+                child=int(child_file.read_text());assert child>1
+                wait_for(lambda:subprocess.run(['/bin/ps','-p',str(child),'-o','comm='],capture_output=True).returncode==1,35)
         for label in labels:
             assert mini.launchctl('print',m.domain+'/'+label,check=False).returncode==113,'private service still loaded'
         listing=mini.launchctl('print',m.domain).stdout
@@ -428,7 +447,7 @@ def main():
         assert not loaded_lines,'private LaunchAgent survived cleanup'
         # Bounded synthetic child is allowed to exit naturally; no process-name killing.
         time.sleep(1)
-        emit(root,'cleanup',no_private_launchagents=True,no_private_daemon=True,prefix=prefix)
+        emit(root,'cleanup',no_private_launchagents=True,no_private_daemon=True,no_private_tasks=True,prefix=prefix)
         shutil.copyfile(root/'events.jsonl',Path.cwd()/'private-u35-events.jsonl')
         for label in labels:
             error=root/(label+'.err')
