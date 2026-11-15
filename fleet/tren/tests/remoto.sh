@@ -15,6 +15,7 @@ bash fleet/tren/tests/remoto-u14-r2.sh
 bash fleet/tren/tests/remoto-u15-injerto.sh
 bash fleet/tren/tests/remoto-u15-r1.sh
 bash fleet/tren/tests/remoto-u15-r2.sh
+bash fleet/tren/tests/remoto-u16.sh
 encontrado=0
 resultado=0
 for interprete in python3.9 python3.10 python3; do
@@ -35,5 +36,6 @@ if [ "$resultado" -eq 0 ]; then
   echo 'U15 injerto: tres regresiones fallan sobre 185e7a46 y pasan después; sombra, tabla exhaustiva y muerte en reintento de promoción con ACK perdido pasan; toda la suite del tren pasa.'
   echo 'U15 R1: dos regresiones fallan sobre e74bfdb1 y pasan después; pausa con ACK guardado o perdido aterriza sin caducidades ni push adicional; toda la suite del tren pasa.'
   echo 'U15 R2: tres regresiones fallan sobre a7ce4de3 y pasan después; EnBase consumido permite caducidad en pausa sin perderla al abortar o expulsar; reanudar conserva el aviso; toda la suite del tren pasa.'
+  echo 'U16: tres regresiones fallan sobre 85138706 y pasan después; CI rojo, partición FIFO, timeout, juicio, recuperación y sombra pasan.'
 fi
 exit "$resultado"

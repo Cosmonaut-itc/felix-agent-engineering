@@ -8,7 +8,17 @@ import subprocess
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import EsperandoCI, Observacion, Rechazado, Terminal, VistaPR
+from dominio import EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal, VistaPR
+
+
+CONCLUSIONES_CI = {
+    "success": "verde",
+    "failure": "rojo", "timed_out": "rojo", "cancelled": "rojo",
+    "action_required": "rojo", "startup_failure": "rojo", "stale": "rojo",
+    "skipped": "pendiente", "neutral": "pendiente",
+}
+STATUS_CI = {"success": "verde", "failure": "rojo", "error": "rojo",
+             "pending": "pendiente"}
 
 
 class Observador(Protocol):
@@ -87,6 +97,8 @@ class GitHubGit:
         checks = {}
         for c in sorted((c for pagina in paginas for c in pagina["check_runs"]),
                         key=lambda c: c["id"]):
+            if not self.sombra and c["name"] == "pao-tren/resultado":
+                continue
             checks[c["name"]] = c
         paginas_status = self.api("repos/{}/commits/{}/statuses?per_page=100".format(repo, head), True)
         statuses = [s for pagina in paginas_status for s in pagina]
@@ -101,14 +113,24 @@ class GitHubGit:
                 continue
             ultimos.setdefault(status["context"], status["state"])
         esperados = self.config.get("checks_esperados")
-        if esperados is not None and any(n not in checks for n in esperados):
-            return "pendiente"
+        faltan = esperados is not None and any(n not in checks for n in esperados)
+        valores = {n: CONCLUSIONES_CI.get(c.get("conclusion"), "pendiente")
+                   if c["status"] == "completed" else "pendiente"
+                   for n, c in checks.items()}
+        estados = {n: STATUS_CI.get(s, "pendiente") for n, s in ultimos.items()}
+        rojos = tuple(sorted({n for n, v in list(valores.items()) + list(estados.items())
+                              if v == "rojo"}))
+        # La sombra conserva exactamente su contrato histórico: sólo success
+        # acredita CI y cualquier otro valor retiene sin cambiar sus eventos.
+        if rojos and not self.sombra:
+            return ResultadoCI("rojo", rojos)
+        if faltan:
+            return ResultadoCI("pendiente")
         # Zero checks counts as green only when the repo declares an empty CI.
         if not checks and not ultimos and esperados != []:
-            return "pendiente"
-        return "verde" if (all(c["status"] == "completed" and c["conclusion"] == "success"
-                               for c in checks.values())
-                           and all(s == "success" for s in ultimos.values())) else "pendiente"
+            return ResultadoCI("pendiente")
+        return ResultadoCI("verde" if all(v == "verde" for v in valores.values())
+                           and all(v == "verde" for v in estados.values()) else "pendiente")
 
     def vista(self, entrega):
         repo, pr = entrega.repo, entrega.pr
@@ -149,7 +171,7 @@ class GitHubGit:
                 hallazgos=apto.get("hallazgos_abiertos")
                 if type(apto.get("hallazgos_abiertos")) is int else None,
                 dirigida=dirigida.get("head") == head and dirigida.get("resultado") == "limpio",
-                ci=self.ci(repo, head), conflicto=conflicto,
+                ci=self.ci(repo, head).estado, conflicto=conflicto,
                 sensible=es_sensible(nombres, self.config),
                 alto_riesgo=bool(etiquetas.intersection(
                     self.config.get("etiquetas_alto_riesgo", ["alto-riesgo"]))),
@@ -198,8 +220,9 @@ class GitHubGit:
                 try:
                     ci = self.ci(repo, tren.fase.candidato.C)
                 except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                    ci = "pendiente"
-                observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci,
+                    ci = ResultadoCI("pendiente")
+                observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci.estado,
+                                      ci_rojos=ci.rojos,
                                       ci_recibo="github:" + tren.fase.candidato.C)
         return observacion
 

@@ -63,9 +63,18 @@ class EscritorGitHub:
         return self.api(endpoint, {"body": marcador + "\n" + texto})["html_url"]
 
     def ejecutar_feedback(self, efecto, estado, frontera):
-        def status(head, payload, url=None):
+        def status(head, payload, url=None, reconciliar=False):
             if head is not None:
-                self.api("repos/{}/statuses/{}".format(estado.repo, head), payload)
+                publicado = False
+                if reconciliar:
+                    paginas = self.api("repos/{}/commits/{}/statuses?per_page=100".format(
+                        estado.repo, head), paginado=True)
+                    ultimo = next((s for pagina in paginas for s in pagina
+                                   if s["context"] == CONTEXTO), None)
+                    publicado = ultimo is not None and all(
+                        ultimo.get(k) == v for k, v in payload.items())
+                if not publicado:
+                    self.api("repos/{}/statuses/{}".format(estado.repo, head), payload)
             return {"comentario_url": url, "status_sha": head}
 
         if efecto.tipo in STATUS_SOLO:
@@ -88,8 +97,12 @@ class EscritorGitHub:
                 "comando": comando_publico(f, payload["C"])} for f in payload["fallos"]]
             if "juicio" in payload:
                 publico["juicio"] = payload["juicio"]
+            if "ci_rojos" in payload:
+                publico["ci_rojos"] = payload["ci_rojos"]
             detalle = json.dumps(publico, ensure_ascii=True, sort_keys=True, indent=2)
-            texto = ("Entrega devuelta por juicio.\n\n" if "juicio" in payload else
+            texto = ("Entrega devuelta por CI rojo sobre el candidato individual.\n\n"
+                     if "ci_rojos" in payload else
+                     "Entrega devuelta por juicio.\n\n" if "juicio" in payload else
                      "Entrega devuelta por fallos atribuidos al PR.\n\n") + "\n".join(
                 "    " + linea for linea in detalle.splitlines())
             descripcion = "Entrega devuelta; detalle y reproducción en el comentario"
@@ -118,4 +131,5 @@ class EscritorGitHub:
                 if not sha(head):
                     raise ValueError("head vigente inválido")
         return status(head, {"state": "failure", "context": CONTEXTO,
-                             "description": descripcion, "target_url": url}, url)
+                             "description": descripcion, "target_url": url}, url,
+                      reconciliar=efecto.tipo == "devolver" and "ci_rojos" in payload)

@@ -91,7 +91,7 @@ class JuicioTests(unittest.TestCase):
         self.assertNotEqual(nuevo.id, antes.trenes[0].id)
         # Una absolución no inventa CI verde ni un certificado.
         ci_original = self.contexto.observador.ci
-        self.contexto.observador.ci = lambda repo, sha: "pendiente" if sha == candidato.C else ci_original(repo, sha)
+        self.contexto.observador.ci = lambda repo, sha: type(ci_original(repo, sha))("pendiente") if sha == candidato.C else ci_original(repo, sha)
         for n in range(3):
             self.contexto.tick(8200 + n)
         self.assertIsInstance(self.estado().trenes[-1].fase, EsperandoCI)

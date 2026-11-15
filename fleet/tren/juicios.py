@@ -18,6 +18,8 @@ POLITICA = {
     ("escritor-externo", ""): {"reanudar": "continuar"},
     ("infraestructura", "tres-reanudaciones-agotadas"):
         {"reanudar": "infraestructura", "absolver": "suite-nueva", "abortar": "abortar"},
+    ("infraestructura", "ci-sin-resultado"):
+        {"reanudar": "ci-nuevo", "abortar": "abortar"},
     ("rama-tren-ocupada", ""): {"reanudar": "publicar", "abortar": "abortar"},
     ("conflicto-en-cadena", ""): {"expulsar": "devolver", "abortar": "abortar"},
     ("candidato-no-corresponde", ""): {"reanudar": "armar", "abortar": "abortar"},
@@ -120,6 +122,8 @@ def error_decision(estado, decision, pausa_id):
             return "presupuesto-de-diagnostico-agotado"
     if operacion == "publicar" and not isinstance(fase, (Armado, EsperandoCI)):
         return "fase-no-corresponde"
+    if operacion == "ci-nuevo" and not isinstance(fase, EsperandoCI):
+        return "fase-no-corresponde"
     if operacion == "armar" and not isinstance(fase, Congelado):
         return "fase-no-corresponde"
     if operacion == "promover" and not isinstance(fase, Promoviendo):
@@ -173,6 +177,12 @@ def resolver(estado, observacion):
         efecto = Efecto(clave("devolver", tren.id, entrada.entrega.recibo), "devolver",
                         (tren.id, entrada.entrega.recibo, payload))
         estado, efectos = separar_devueltos(estado, tren, base, {decision.pr}, (efecto,))
+    elif operacion == "ci-nuevo":
+        fase = replace(tren.fase, desde=observacion.ahora,
+                       solicitud=tren.fase.solicitud + 1)
+        estado = cambiar_fase(estado, tren, fase)
+        efectos = (Efecto(clave("ci", tren.id, fase.solicitud),
+                          "solicitar-ci", (tren.id,)),)
     elif operacion in ("armar", "publicar"):
         tipo = "armar-candidato" if operacion == "armar" else "solicitar-ci"
         efectos = (Efecto(clave(tipo, tren.id, decision.id), tipo, (tren.id,)),)

@@ -125,7 +125,7 @@ sys.exit(9)
                     if cambio.startswith("CI-"):
                         ci_original = c.contexto.observador.ci
                         c.contexto.observador.ci = lambda repo, sha: (
-                            "rojo" if cambio == "CI-rojo" else "pendiente") if (
+                            type(ci_original(repo, sha))("rojo" if cambio == "CI-rojo" else "pendiente")) if (
                                 sha == candidato.C or tipo == "repetir") else ci_original(repo, sha)
                     trabajos = c.lineas("trabajos.log")
                     pushes = c.lineas("pushes.log")

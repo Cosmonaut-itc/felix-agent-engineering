@@ -8,7 +8,7 @@ from dataclasses import dataclass, replace
 from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      Corriendo, Diagnosticando, Efecto, EnBase, EsperandoCI, Incierto,
                      Observacion, Promoviendo, RamaOcupada, admision_entrada,
-                     clave, efecto_diagnostico, efecto_promover)
+                     clave, efecto_diagnostico, efecto_promover, rama_ci)
 from git_ops import Publicado
 from adaptadores.hasito import ResultadoInvalido
 
@@ -116,7 +116,7 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
             return Ejecucion(replace(limpia, conflicto_cadena=resultado), True)
         raise EfectoFallido(resultado)
     if efecto.tipo == "solicitar-ci" and isinstance(fase, (Armado, EsperandoCI)):
-        resultado = git.publicar(tren.id, fase.candidato.C)
+        resultado = git.publicar(rama_ci(tren), fase.candidato.C)
         if isinstance(resultado, RamaOcupada):
             return Ejecucion(replace(limpia, rama_ocupada=resultado,
                                     ci_candidato="pendiente", suite=None), True)

@@ -455,7 +455,7 @@ class ActivoTests(unittest.TestCase):
         candidato = self.estado().trenes[0].fase.candidato
         # Retener sólo el CI de C, sin invalidar los heads de admisión.
         original = self.contexto.observador.ci
-        self.contexto.observador.ci = lambda repo, sha: "pendiente" if sha == candidato.C else original(repo, sha)
+        self.contexto.observador.ci = lambda repo, sha: type(original(repo, sha))("pendiente") if sha == candidato.C else original(repo, sha)
         for n in range(3):
             self.contexto.tick(1000 + n)
         self.assertEqual(self.lineas("trabajos.log"), [])
