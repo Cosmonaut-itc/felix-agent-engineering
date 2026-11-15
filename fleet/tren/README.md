@@ -32,9 +32,11 @@ Configurar fuera del repo una copia de [config.example.json](config.example.json
 (por defecto `pao-tren/config.json` en el directorio de estado). Las tres
 categorías sensibles son obligatorias y usan glob de `fnmatchcase` sobre la
 ruta completa. Revisar los patrones de gobierno propios del repo antes de
-usarlo. `git` debe apuntar a un checkout con los objetos de base/head ya
-disponibles. Sin ellos, retiene; no hace fetch. La lectura `merge-tree` legacy
-no escribe objetos; GitHub también debe acreditar `mergeable=true`.
+usarlo. En sombra, `entregar` y `tick --seco`, `git` debe apuntar a un
+checkout con los objetos de base/head ya disponibles. Sin ellos, retiene; no
+hace fetch. El tick activo no lee ese checkout: usa el bare del tren y trae
+lo que falte (véase U17). La lectura `merge-tree` legacy no escribe objetos;
+GitHub también debe acreditar `mergeable=true`.
 
 Contrato de evidencia U1 (JSON UTF-8; sin Markdown alrededor):
 
@@ -304,11 +306,16 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
   crear otro. El lanzador falso cumple esa condición; estas pruebas no
   acreditan al lanzador real. Su implementación pertenece a otra unidad.
 
+Un sincronizador externo del checkout `git` no es requisito de activación:
+desde U17 el tick activo trae al bare del tren la base y los heads que le
+falten (véase U17).
+
 Esta unidad no activa repos, no instala tareas y no cambia el gobierno.
 
 Además de la configuración de admisión, el tick activo requiere `remoto`
-explícito (URL de git sin credenciales o ruta a un origen). `git` sigue siendo
-el checkout local con los objetos necesarios para observar admisión. Para
+explícito (URL de git sin credenciales o ruta a un origen). La admisión del
+tick activo lee el bare del tren de ese `remoto`; `git` sólo lo usan la sombra
+y `tick --seco`. Para
 usar Hasito, `lanzador_hasito` es la ruta absoluta a su lanzador existente;
 sin adaptador, los efectos de suite quedan fallidos y visibles, reintentables.
 `costo_suite_sana_s` puede aportar el presupuesto de diagnóstico antes de que
@@ -787,3 +794,42 @@ El lanzador remoto solapa los injertos históricos con la suite actual,
 en procesos y temporales separados, para respetar el carril rápido de diez
 minutos. Espera ambos resultados y conserva el log completo de los injertos;
 un fallo en cualquiera de los dos caminos hace fallar la corrida.
+
+
+## Admisión activa sobre el bare del tren (U17)
+
+El tick activo observa la admisión en el mismo almacén con que arma y
+promueve: `pao-tren` construye `GitTren(remoto)` y lo entrega como `almacen`
+a `GitHubGit(config, activo=True, almacen=git)`. Antes de `merge-base` y
+`merge-tree`, `GitHubGit.lector` prepara ese bare y comprueba con
+`cat-file -e` la base y el head de cada PR. Sólo trae lo que falte: la base
+por SHA y el head por `refs/pull/<n>/head`, con el mismo `traer` de U2 y el
+mismo flock del carril. El C que acaba de aterrizar ya está en el bare,
+porque allí se armó. El main que movió un escritor externo, y que Felix
+reanudó, se trae por SHA en el tick siguiente.
+
+Por qué el bare y no un fetch acotado en `config["git"]`: es un checkout de
+uso humano. Un fetch allí escribe `FETCH_HEAD` y objetos sin ref, que su
+propio `gc` puede podar, en un repositorio que el tren no serializa. El bare
+ya es propiedad del tren, sólo se toca bajo el candado y ya contiene C y los
+heads armados. Nada mueve `HEAD`, ramas ni el árbol de trabajo de `git`.
+
+Un fallo al traer, un objeto que no coincide o un bare inválido dejan la
+vista del PR incompleta. La entrega queda retenida por `observacion-incompleta`,
+sin rojo, comentario ni status, y el tick siguiente reintenta. Los errores
+no guardan argv ni stderr.
+
+La sombra, `entregar` y `tick --seco` no reciben almacén: un `GitHubGit` con
+almacén fuera del tick activo es un error. Siguen leyendo `config["git"]`
+sin fetch, y sus eventos `sombra`, `sombra-doble-camino` y `admision-entrega`
+no cambian.
+
+`tests/test_u17.py` usa como `config["git"]` un clon no bare, separado del
+origen y del bare del tren, sincronizado una sola vez antes del primer tick.
+Cada tick pasa por la construcción real de `pao-tren`; sólo se sustituye el
+transporte de gh. Cubre dos lotes sucesivos, el main ajeno tras reanudar y
+la falla al traer objetos. En los tres casos el checkout conserva `HEAD`,
+ramas, árbol de trabajo y `FETCH_HEAD`, y nunca recibe C. `tests/remoto-u17.sh`,
+llamado por `tests/remoto.sh`, exige que las tres regresiones fallen por
+aserción sobre `0f7fff27` y pasen después. También compara byte a byte los
+eventos de sombra, `entregar` y `--seco` de ambos árboles.

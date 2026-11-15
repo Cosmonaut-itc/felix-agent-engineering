@@ -44,7 +44,9 @@ class Contexto:
         self.raiz = self.ruta.parent
         self.muerte = muerte
         self.git = GitTren(self.config["remoto"], ejecutar=self.transporte)
-        self.observador = GitHubGit(self.config, ejecutar=self.gh, activo=True)
+        # Como pao-tren: la admisión activa lee el bare del ejecutor.
+        self.observador = GitHubGit(self.config, ejecutar=self.gh, activo=True,
+                                    almacen=self.git)
         self.hasito = Hasito(self.raiz / "run.sh", self.git, self.lanzador)
         self.escritor = EscritorGitHub(self.feedback_gh)
 
