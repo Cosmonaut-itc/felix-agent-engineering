@@ -67,6 +67,7 @@ class GitHubGit:
         self.sombra = sombra
         self.activo = activo
         self.almacen = almacen
+        self.preparado = False
 
     def comando(self, args):
         return self.ejecutar(args, check=True, capture_output=True, text=True,
@@ -94,7 +95,9 @@ class GitHubGit:
         """
         if self.almacen is None:
             return self.git
-        self.almacen.preparar()
+        if not self.preparado:
+            self.almacen.preparar()
+            self.preparado = True
         for objeto, ref in ((base, base), (head, "refs/pull/{}/head".format(pr))):
             if (self.almacen.git("cat-file", "-e", objeto + "^{commit}", aislado=True).returncode
                     and self.almacen.traer(ref) != objeto):
@@ -271,6 +274,8 @@ class GitHubGit:
             return replace(vista, completa=False)
 
     def observar(self, estado, ahora):
+        # El bare se valida una vez por observación, no por PR.
+        self.preparado = False
         repo = estado.repo
         rama = self.api("repos/{}/git/ref/heads/main".format(repo))
         base = rama["object"]["sha"]
