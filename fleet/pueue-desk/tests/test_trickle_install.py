@@ -13,6 +13,11 @@ class TrickleInstallTests(unittest.TestCase):
     setUp = InstallerStartupTests.setUp
     fingerprint = InstallerStartupTests.fingerprint
 
+    def assertUnchanged(self, before):
+        # Name the changed paths: a full byte diff of the tree is unreadable and can exhaust difflib.
+        after = self.fingerprint()
+        self.assertEqual(sorted(k for k in set(before) | set(after) if before.get(k) != after.get(k)), [])
+
     def without_permit(self):
         with self.engine.connect(write=True) as db:
             db.execute('DROP TABLE IF EXISTS guard_admission')  # autoridad anterior a SEN-6417
@@ -34,7 +39,7 @@ class TrickleInstallTests(unittest.TestCase):
         with redirect_stdout(out):
             self.installer.install(self.home, self.pid, control, dry_run=True)
         self.assertIn('SECO, permiso de admisión de a una: crear guard_admission vacía', out.getvalue())
-        self.assertEqual(self.fingerprint(), before)
+        self.assertUnchanged(before)
         self.assertIsNone(self.permit())
 
     def test_install_creates_empty_permit_and_reinstall_keeps_it(self):
@@ -59,7 +64,7 @@ class TrickleInstallTests(unittest.TestCase):
                 except ValueError:
                     rejected = True
                 self.assertTrue(rejected, 'Un permiso ilegible detiene la instalación')
-            self.assertEqual(self.fingerprint(), before)
+            self.assertUnchanged(before)
 
     def test_dated_backup_keeps_the_immediately_previous_controller(self):
         (self.library / 'control.py.pre-u34').write_text('# controlador U3.4\n')
