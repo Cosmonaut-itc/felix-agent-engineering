@@ -1497,6 +1497,42 @@ git(enrolled, "checkout", "--detach", "-q", commit)
 probe("detached-default", "git push", reason="No puedo resolver")
 probe("detached-HEAD", "git push origin HEAD", reason="No puedo resolver")
 git(enrolled, "symbolic-ref", "HEAD", "refs/heads/feature")
+# U12: sombra deja pasar por el guard habitual; activo/desconocido prevalece.
+shadow_repo = mkrepo("shadow-u12", "https://github.com/owner/project.git", "main")
+shadow_merge = merge + " --repo owner/project"
+for contents, denied in (
+    ("OWNER/PROJECT SoMbRa # doble camino\n", False),
+    ("owner/project\n", True),
+    ("owner/project activo\n", True),
+    ("owner/project desconocido\n", True),
+    ("owner/project sombra extra\n", True),
+    ("owner/project sombra\nowner/project\n", True),
+    ("owner/project otro\nowner/project sombra\n", True),
+):
+    registry.write_text(contents)
+    expected = "deny" if denied else "allow"
+    for command in ("git push origin HEAD:main", "git push", "git push origin main",
+                    "git push https://github.com/owner/project.git HEAD:main",
+                    "git -C " + str(shadow_repo) + " push origin HEAD:main", shadow_merge):
+        probe("U12-modo-" + repr(contents) + "-" + command, command, shadow_repo, expected)
+registry.write_text("owner/project sombra\n")
+probe("U12-sombra-head-obligatorio", "gh pr merge 1 --repo owner/project --squash",
+      shadow_repo, reason="--match-head-commit")
+probe("U12-sombra-flags", shadow_merge + " --admin", shadow_repo, reason="flag")
+gh.write_text(gh.read_text().replace("src/plain.ts", ".github/workflows/ci.yml"))
+probe("U12-sombra-sensible", shadow_merge, shadow_repo, "ask", reason="toca CI")
+gh.write_text(gh.read_text().replace(".github/workflows/ci.yml", "src/plain.ts"))
+# Un destino activo entre varias push URLs sigue negado aunque otro sea sombra.
+registry.write_text("owner/project sombra\nactive/project\n")
+git(shadow_repo, "remote", "set-url", "--add", "--push", "origin", "https://github.com/owner/project.git")
+git(shadow_repo, "remote", "set-url", "--add", "--push", "origin", "https://github.com/active/project.git")
+probe("U12-destino-mixto", "git push origin HEAD:main", shadow_repo)
+registry.write_text("owner/project sombra\n")
+registry.chmod(0)
+probe("U12-sombra-ilegible-push", "git push origin HEAD:main", shadow_repo, reason="ilegible")
+probe("U12-sombra-ilegible-merge", shadow_merge, shadow_repo, reason="ilegible")
+registry.chmod(0o600)
+registry.write_text("sen-haso/hasito\n")
 # Every unreadable form must deny mutations and leave ordinary commands alone.
 for state in ("000", "utf8", "directory"):
     if state == "000":

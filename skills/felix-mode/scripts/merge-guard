@@ -386,8 +386,11 @@ def train_guard(command, directory, inherited_env=None):
         if not os.stat(registry).st_mode & 0o444:
             raise OSError("sin permisos de lectura")
         with open(registry, encoding="utf-8") as source:
-            enrolled = {line.split("#", 1)[0].strip().lower() for line in source}
-        enrolled.discard("")
+            for line in source:
+                fields = line.split("#", 1)[0].lower().split()
+                if fields and fields[1:] != ["sombra"]:
+                    # Duplicados: activo/desconocido prevalece sobre sombra.
+                    enrolled.add(fields[0])
     except (OSError, UnicodeError):
         unreadable = True
     reason = "repo inscrito en el tren: usa pao-tren entregar"

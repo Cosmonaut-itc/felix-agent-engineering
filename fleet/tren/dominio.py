@@ -319,6 +319,8 @@ class VistaPR:
     completa: bool = True
     # A bound view cannot be reused for a new delivery of the same PR.
     recibo: str = ""
+    # Sólo la sombra interpreta un merge externo; default compatible con U1.
+    mergeado: bool = False
 
 
 @dataclass(frozen=True)

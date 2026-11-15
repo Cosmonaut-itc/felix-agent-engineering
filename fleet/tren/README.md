@@ -69,6 +69,48 @@ un PR solo sobre tickets normales anteriores. Jale nace en pausa `etapa-1`.
 
 El CLI no ejecuta efectos; U4 añade el adaptador y el diagnóstico al ejecutor explícito.
 
+## Sombra con doble camino (U12)
+
+El registro `${XDG_CONFIG_HOME:-~/.config}/pao-tren/inscritos` admite
+`owner/project` (activo) y `owner/project sombra`, sin distinguir mayúsculas
+y con comentarios `#`. Modo desconocido o duplicado activo prevalece sobre
+sombra. Registro ilegible conserva la negación del guard. En sombra el ticket
+entrega con APTO, recibo y watch, consulta `tick --seco` y `estado` y después
+completa los gates y merge habituales. Una retención/rechazo se anota y no
+frena ese merge; el ticket no edita `heads_autorizados`.
+
+`entregar` observa la admisión D7 en ese momento y la guarda atómicamente
+con la custodia en un evento `admision-entrega`. Acepta `--config` como tick;
+sin lectura/config válida conserva custodia y registra retención por
+observación incompleta. Reentregar el mismo head no cambia esa muestra.
+Sólo para un repo inscrito en sombra, `tick --seco` usa un reductor separado:
+los lotes pasan directamente a `SIMULADO`, sin efectos ni espera de suite.
+Un PR que GitHub confirma mergeado en main con el head entregado termina
+`MERGEADO-FUERA`; cerrado sin merge sigue siendo rechazo. Los avances de
+main no pausan la sombra. La primera admisión se conserva incluso después
+del merge externo para reconstruir el contrafactual. No cambia el tick activo
+ni activa escrituras; tick sin `--seco` sigue saliendo con 2.
+
+```sh
+fleet/tren/pao-tren medir --repo owner/project \
+  --desde 2026-11-01T00:00:00Z --hasta 2026-11-08T00:00:00Z
+```
+
+`medir` abre SQLite en modo de sólo lectura, sin crear directorios ni ledger.
+Imprime una línea JSON determinista: entregas en `[desde, hasta)`, admisión
+al entregar y motivo, primera admisión observada, lotes, distribución 1/2/3,
+pendientes y `suites_ahorradas_estimadas = admitidas - lotes`. Los eventos U1
+se leen igual; sin muestra al entregar se informa custodia y fuente
+`sin-observacion-al-entregar`, sin inventar evidencia retroactiva.
+Los lotes usan los tiempos de primera admisión, FIFO hasta 3 o 60 min;
+sensibles y alto riesgo admitidos viajan solos sin adelantar al primero.
+A los 60 min vence la ventana antes de incorporar una llegada simultánea.
+La ventana selecciona la cohorte de entregas y sólo sus observaciones
+anteriores a `hasta`; un lote aún sin vencer figura en pendientes. El ahorro
+es provisional mientras haya pendientes. No estima duración ni resultado
+de suites: supone disponibilidad inmediata entre lotes, incluso si el merge
+externo ocurrió antes de que se cerrara la ventana virtual.
+
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
 `git_ops.GitTren(remoto, ruta=None)` usa un bare propio bajo `pao-tren/git/`
