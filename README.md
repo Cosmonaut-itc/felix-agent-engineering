@@ -291,6 +291,8 @@ skill, así que van en la configuración global. Cada comando sale sin efecto si
 "PreToolUse": [{"matcher": "Bash", "hooks": [{"type": "command", "timeout": 15,
   "command": "f=\"$HOME/.claude/skills/felix-mode/scripts/laptop-guard\"; [ ! -f \"$f\" ] || bash \"$f\""}]},
   {"matcher": "Bash", "hooks": [{"type": "command", "timeout": 15,
+  "command": "f=\"$HOME/.claude/skills/felix-mode/scripts/launcher-guard\"; [ ! -f \"$f\" ] || bash \"$f\""}]},
+  {"matcher": "Bash", "hooks": [{"type": "command", "timeout": 15,
   "command": "f=\"$HOME/.claude/skills/felix-mode/scripts/merge-guard\"; [ ! -f \"$f\" ] || bash \"$f\""}]}],
 "PostToolUse": [{"matcher": "Bash|Write|Edit|MultiEdit", "hooks": [{"type": "command", "timeout": 15,
   "command": "f=\"$HOME/.claude/skills/felix-mode/scripts/store-guard\"; [ ! -f \"$f\" ] || bash \"$f\""}]}]

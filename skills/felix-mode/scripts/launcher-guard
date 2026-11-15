@@ -1,0 +1,98 @@
+#!/bin/bash
+# Sólo avisa; no consulta la red ni modifica el checkout.
+set -uo pipefail
+command -v python3 >/dev/null 2>&1 || exit 0
+command -v git >/dev/null 2>&1 || exit 0
+
+python3 -c '
+import json
+import os
+import re
+import shlex
+import subprocess
+import sys
+
+
+def git(cwd, *args):
+    return subprocess.check_output(["git", "-C", cwd, *args], stderr=subprocess.DEVNULL,
+                                   text=True, timeout=2).strip()
+
+
+def warning(path):
+    directory = os.path.dirname(path)
+    root, branch = git(directory, "rev-parse", "--show-toplevel", "--abbrev-ref", "HEAD").splitlines()
+    if branch == "HEAD":
+        return None
+    relative = os.path.relpath(path, root)
+    git(root, "ls-files", "--error-unmatch", "--", relative)
+    ref = "origin/HEAD"
+    try:
+        git(root, "rev-parse", "--verify", ref + "^{commit}")
+    except subprocess.CalledProcessError:
+        ref = "origin/main"
+        git(root, "rev-parse", "--verify", ref + "^{commit}")
+    parent = os.path.dirname(relative)
+    scope = relative if parent in ("", "scripts") else parent
+    commits = git(root, "log", "--format=%H%x00%s", "HEAD.." + ref, "--", ":(literal)" + scope).splitlines()
+    if not commits:
+        return None
+    sha, subject = commits[0].split("\0", 1)
+    count = len(commits)
+    noun = "commit" if count == 1 else "commits"
+    context = (f"El lanzador de este checkout ({relative}) va {count} {noun} detrás de {ref}; "
+               f"el más reciente es {sha[:7]} «{subject}». Un lanzador viejo no trae los arreglos "
+               "de fila, espera y cancelación, y el host no puede corregirlo. "
+               f"Incorpora {ref} en esta rama antes de lanzar, o di en tu respuesta por qué necesitas esta versión.")
+    return {"hookSpecificOutput": {"hookEventName": "PreToolUse", "additionalContext": context},
+            "systemMessage": f"launcher-guard: lanzador detrás de {ref}"}
+
+
+try:
+    payload = json.load(sys.stdin)
+    command = payload["tool_input"]["command"]
+    cwd = payload["cwd"]
+    if not isinstance(command, str) or not isinstance(cwd, str) or not os.path.isabs(cwd):
+        sys.exit(0)
+    if not re.search(r"(?:run\.sh|remote-run|run-remote\.sh)(?:\s|$|[;&|()\"\x27])", command):
+        sys.exit(0)
+    lexer = shlex.shlex(command.replace("\\\n", " "), posix=True, punctuation_chars=";&|()\n")
+    lexer.whitespace = " \t\r"
+    lexer.whitespace_split = True
+    tokens = list(lexer) + [";"]  # Tokeniza todo antes de emitir, incluso si el final es inválido.
+    segment = []
+    candidates = []
+    for token in tokens:
+        if token and all(char in ";&|()\n" for char in token):
+            args = segment
+            while args and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", args[0]):
+                args = args[1:]
+            if args and args[0] == "cd":
+                target = args[1:] if args[1:2] != ["--"] else args[2:]
+                if len(target) != 1 or any(c in target[0] for c in "$`~"):
+                    sys.exit(0)
+                cwd = os.path.abspath(os.path.join(cwd, target[0]))
+            else:
+                for index, arg in enumerate(args):
+                    if os.path.basename(arg) not in {"run.sh", "remote-run", "run-remote.sh"}:
+                        continue
+                    # Un nombre sin ruta sólo es local como argumento de un intérprete.
+                    if "/" not in arg and (index == 0 or os.path.basename(args[index - 1]) not in {"bash", "sh"}):
+                        continue
+                    path = os.path.abspath(os.path.join(cwd, arg))
+                    if os.path.isfile(path):
+                        candidates.append(path)
+            segment = []
+        else:
+            segment.append(token)
+    for path in candidates:
+        try:
+            result = warning(path)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+        if result:
+            print(json.dumps(result, ensure_ascii=False))
+            break
+except Exception:
+    pass
+' 2>/dev/null || true
+exit 0
