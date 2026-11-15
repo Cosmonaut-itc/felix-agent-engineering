@@ -9,6 +9,7 @@ export XDG_CACHE_HOME="$aislado/cache"
 mkdir -p "$HOME"
 bin/pao check
 git version
+bash fleet/tren/tests/remoto-u13-injerto.sh
 encontrado=0
 resultado=0
 for interprete in python3.9 python3.10 python3; do
@@ -21,5 +22,8 @@ done
 if [ "$encontrado" -eq 0 ]; then
   echo 'No hay intérprete Python disponible' >&2
   exit 2
+fi
+if [ "$resultado" -eq 0 ]; then
+  echo 'U13 injerto: cuatro regresiones fallan sobre a8a82602 y pasan después; toda la suite del tren pasa.'
 fi
 exit "$resultado"

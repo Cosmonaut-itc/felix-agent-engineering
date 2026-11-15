@@ -131,9 +131,8 @@ class Ledger:
     def guardar_paso(self, estado, efectos, ahora, consumido=None):
         """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
         with self.transaccion():
-            for entrada in estado.entradas:
-                self.db.execute("UPDATE entries SET payload=? WHERE recibo=? AND repo=?",
-                                (codificar(entrada), entrada.entrega.recibo, estado.repo))
+            # entries es custodia inmutable: la sombra también la importa.
+            # La continuación operativa completa vive sólo en su evento.
             for tren in estado.trenes:
                 self.db.execute("INSERT INTO trains VALUES (?, ?, ?) ON CONFLICT(id) "
                                 "DO UPDATE SET payload=excluded.payload",

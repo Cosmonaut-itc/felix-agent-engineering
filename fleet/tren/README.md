@@ -283,13 +283,32 @@ guion remoto anterior descubre las pruebas U1/U2/U4; usar el nombre
 
 ## Tick activo y recuperación (U13)
 
-`pao-tren tick --repo owner/project` sólo corre si `inscripcion.modo` devuelve
-`activo`. Sin inscripción o en sombra devuelve exit 2. Se comprueba antes de
+`pao-tren tick --repo owner/project` sólo corre si `inscripcion.activacion`
+confirma una inscripción explícita e inequívoca: `owner/project` o
+`owner/project activo`, sin distinguir mayúsculas y con comentarios `#`.
+Los duplicados idénticos son válidos; modos desconocidos, duplicados
+contradictorios o separadores ambiguos que afectan al repo cierran la puerta.
+`modo()` conserva la política conservadora del guard, donde la duda niega
+merges; nunca se usa como permiso de escritura del tick.
+Sin inscripción, en sombra o ante ambigüedad devuelve exit 2. Se comprueba antes de
 abrir el ledger y otra vez bajo el candado. `--seco` conserva sus reductores,
 eventos y continuación anteriores; jamás drena el outbox operativo.
 
 **Activar un repo requiere primero la unidad de feedback D6**, que todavía
 falta: devolver resultados al dueño, caducidades, statuses y comentarios.
+También son requisitos de activación:
+
+- Acreditar la enmienda de gobierno D2 y la exclusividad cooperativa D8.
+- Acreditar en el lanzador real deduplicación/reenganche durable por nombre
+  o evidencia e intento para suite, reanudación y repetición. Hace falta una
+  prueba de contrato con muerte después de aceptar trabajo y antes de
+  publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
+  crear otro. El lanzador falso cumple esa condición; estas pruebas no
+  acreditan al lanzador real. Su implementación pertenece a otra unidad.
+- Resolver en otra unidad la salida de CI rojo sobre C: hoy el reductor
+  conserva `EsperandoCI` y puede ocupar el carril indefinidamente. El injerto
+  no cambia esa transición.
+
 Esta unidad no activa repos, no instala tareas y no cambia el gobierno.
 
 Además de la configuración de admisión, el tick activo requiere `remoto`
@@ -320,15 +339,21 @@ Todo el ciclo mantiene el flock del repo, incluido git y el adaptador:
    Al incorporar una entrega nueva conserva su muestra inicial de admisión;
    ninguna generación simulada ni ningún evento de sombra se vuelve operativo.
 2. Recupera efectos marcados `ejecutando` por un proceso muerto, sobre esa
-   fase y con admisión fresca, antes de readmitir PR que nuestro push cerró.
+   fase, antes de readmitir PR que nuestro push cerró. Un recibo de suite,
+   reanudación o repetición ya existente se valida y recupera aunque hoy haya
+   cambiado el head, APTO o CI; la admisión fresca sólo permite lanzar trabajo
+   nuevo. Para la suite inicial se conserva el contexto de CI verde del C con
+   el que se autorizó el lanzamiento, incluso si el CI actual cambió.
 3. Toma como máximo un resultado durable del buzón y aplica un solo `paso`.
    Repone únicamente los campos de resultado ligados a tren/intento; hora,
    base y vistas de admisión vienen de la observación actual. La suite inicial
    conserva también el recibo de CI con el que fue lanzada sobre C.
 4. En una transacción guarda el evento `operativo` con la continuación
-   completa (incluidas pausa y costo sano), las proyecciones `entries` y
-   `trains`, los efectos nuevos por clave y su outbox; confirma a la vez el
-   resultado consumido. La sombra nunca se toma como estado operativo.
+   completa (incluidas entradas, pausa y costo sano), la proyección `trains`,
+   los efectos nuevos por clave y su outbox; confirma a la vez el resultado
+   consumido. `entries` conserva sólo custodia inmutable, y las muestras de
+   `admision-entrega` siguen importándose al incorporar entradas nuevas.
+   La sombra nunca se toma como estado operativo ni hereda su continuación.
 5. Drena en orden de inserción los efectos pendientes o fallidos conocidos,
    una vez por clave en cada tick. Antes del IO marca `ejecutando`; después
    guarda su resultado en `effect_results` y lo marca `resultado`. El tick

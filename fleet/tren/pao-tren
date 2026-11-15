@@ -13,7 +13,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dominio import (Admitido, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
-from inscripcion import modo
+from inscripcion import activacion, modo
 from ledger import Ledger, filas_medicion
 from medicion import decision_json, instante_iso, medir
 from observador import GitHubGit, configuracion, sha
@@ -65,7 +65,7 @@ def parser():
 
 def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=None):
     if args.comando == "tick" and not args.seco:
-        inscripcion = modo(args.repo)
+        inscripcion = activacion(args.repo)
         if inscripcion != "activo":
             return 2, {"error": "tick activo requiere inscripción activa",
                        "inscripcion": inscripcion or "no-inscrito"}
@@ -119,7 +119,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
         with ledger.candado(args.repo):
             if not args.seco:
                 # Releer tras esperar el flock: pudieron retirar la inscripción.
-                if modo(args.repo) != "activo":
+                if activacion(args.repo) != "activo":
                     return 2, {"error": "tick activo requiere inscripción activa"}
                 from adaptadores.hasito import Hasito
                 from git_ops import GitTren

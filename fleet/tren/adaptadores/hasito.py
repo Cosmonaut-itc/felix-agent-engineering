@@ -176,7 +176,7 @@ class Hasito:
         exigir(nuevo.count("--reanudar") == 1 and normalizar(nuevo) == normalizar(anterior), "reanudar-no-corresponde")
         return nuevo
 
-    def correr(self, argv, registro, repeticion=False):
+    def correr(self, argv, registro, repeticion=False, permitir_lanzar=True):
         """Una clave de efecto conserva su recibo; un crash se reengancha al lanzador."""
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
         recibo = registro / "recibo.json"
@@ -186,6 +186,9 @@ class Hasito:
             exigir(isinstance(guardado.get("ruta"), str) and
                    type(guardado.get("codigo")) is int and guardado["codigo"] in (0, 1, 75), "recibo-invalido")
             return Path(guardado["ruta"]), guardado["codigo"]
+        # Recuperar evidencia ya producida no requiere permiso para trabajo nuevo.
+        if not permitir_lanzar:
+            return None
         try:
             resultado = self.runner(list(argv), capture_output=True, text=True, check=False)
         except (OSError, subprocess.SubprocessError):
@@ -214,21 +217,26 @@ class Hasito:
             os.close(descriptor)
         return ruta, resultado.returncode
 
-    def suite(self, candidato, tren_id, intento=0, reanudar=""):
+    def suite(self, candidato, tren_id, intento=0, reanudar="", permitir_lanzar=True):
         try:
             wt = self.git.worktree(candidato.C)
             raiz = self.estado / clave("suite", tren_id)
             argv = self.argv_suite(candidato, wt, raiz / "evidencia", "suite-" + tren_id)
             if reanudar:
                 argv = self.reanudacion(reanudar, argv)
-            ruta, codigo = self.correr(argv, raiz / ("intento-" + str(intento)))
+            recibo = self.correr(argv, raiz / ("intento-" + str(intento)),
+                                 permitir_lanzar=permitir_lanzar)
+            if recibo is None:
+                return None
+            ruta, codigo = recibo
             r = leer_json(ruta)
             exigir(isinstance(r, dict) and r.get("veredicto") == codigo, "salida-no-corresponde")
             return str(ruta), leer_suite(r, candidato.C, candidato.B)
         except FalloGit as exc:
             raise ResultadoInvalido(str(exc)) from None
 
-    def repetir(self, candidato, suite, solicitud, commit, tren_id, intento=0, reanudar=""):
+    def repetir(self, candidato, suite, solicitud, commit, tren_id, intento=0, reanudar="",
+                permitir_lanzar=True):
         try:
             wt = self.git.worktree(commit)
             raiz = self.estado / clave("repetir", tren_id, solicitud.id)
@@ -237,7 +245,11 @@ class Hasito:
                                     prefijo + solicitud.id, solicitud.fallo)
             if reanudar:
                 argv = self.reanudacion(reanudar, argv)
-            ruta, codigo = self.correr(argv, raiz / ("intento-" + str(intento)), True)
+            recibo = self.correr(argv, raiz / ("intento-" + str(intento)), True,
+                                 permitir_lanzar=permitir_lanzar)
+            if recibo is None:
+                return None
+            ruta, codigo = recibo
             r = leer_json(ruta)
             exigir(isinstance(r, dict) and r.get("veredicto") == codigo, "salida-no-corresponde")
             resultado = leer_repeticion(r, commit, suite, candidato.C, candidato.B, solicitud.fallo)

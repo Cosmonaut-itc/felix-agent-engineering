@@ -8,7 +8,7 @@ import subprocess
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import EsperandoCI, Observacion, Rechazado, VistaPR
+from dominio import EsperandoCI, Observacion, Rechazado, Terminal, VistaPR
 
 
 class Observador(Protocol):
@@ -167,10 +167,12 @@ class GitHubGit:
         if not sha(base):
             raise ValueError("main inválido")
         vistas = []
+        terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
         for entrada in estado.entradas:
             # En sombra se sigue un rechazo hasta observar su posible merge externo.
             if ((self.sombra and entrada.terminal) or
-                    (isinstance(entrada.admision, Rechazado) and not self.sombra)):
+                    (isinstance(entrada.admision, Rechazado) and not self.sombra) or
+                    (self.activo and entrada.tren in terminales)):
                 continue
             try:
                 vistas.append(self.vista(entrada.entrega))

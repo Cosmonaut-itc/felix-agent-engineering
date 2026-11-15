@@ -20,7 +20,7 @@ from unittest.mock import patch
 import test_aterrizaje as fixtures
 from test_hasito import F, repeticion_fixture, suite_fixture
 from dominio import (Armado, Candidato, Certificado, Congelado,
-                     Corriendo, Efecto, EsperandoCI, Promoviendo, Retenido,
+                     Corriendo, Efecto, Entrada, EsperandoCI, Promoviendo, Retenido,
                      Terminal, clave, datos, desde_datos)
 from adaptadores.hasito import Hasito
 from git_ops import GitTren
@@ -218,7 +218,8 @@ class ActivoTests(unittest.TestCase):
             self.assertEqual(ledger.db.execute("PRAGMA integrity_check").fetchone()[0], "ok")
             self.assertEqual(ledger.db.execute("SELECT count(*) FROM trains").fetchone()[0], 1)
             for row in ledger.db.execute("SELECT payload FROM entries"):
-                self.assertIn(desde_datos(json.loads(row[0])), final.entradas)
+                custodia = desde_datos(json.loads(row[0]))
+                self.assertEqual(custodia, Entrada(custodia.entrega, custodia.recibida))
         main = self.remoto()
         self.assertNotEqual(main, self.B)
         self.assertEqual(self.comando(self.origen, "rev-parse", main + "^{tree}"),
