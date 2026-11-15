@@ -316,4 +316,79 @@ class TrickleTests(DeskFixture):
         self.assertEqual(self.starts(),[])
         self.assertIn('cooldown',self.causes())
 
+    def uncertain(self, executed=False):
+        if not executed:
+            def no_effect(*args):
+                self.p.calls.append(args)
+                raise OSError('SECRET-SENTINEL')
+            with patch.object(self.p,'call',side_effect=no_effect):self.run_guard()
+        else:
+            with patch.object(self.engine,'_execution_confirmed',return_value=False):self.run_guard()
+        with self.engine.connect() as db:return control.admission_state(db)
+
+    def resolve_uncertain(self, no_effect=False):
+        method=getattr(self.engine,'resolve_admission',None)
+        self.assertTrue(callable(method),'Debe existir recuperación operativa segura')
+        with control.locked(self.engine.directory):return method(no_effect=no_effect)
+
+    def test_recovery_requires_maintenance_and_explicit_no_late_effect(self):
+        original=self.uncertain()
+        with self.assertRaises(ValueError):self.resolve_uncertain(no_effect=True)
+        (self.engine.directory/'maintenance').touch()
+        with self.assertRaises(ValueError):self.resolve_uncertain()
+        with self.engine.connect() as db:self.assertEqual(control.admission_state(db),original)
+        self.ns+=20_000_000_000
+        self.assertEqual(self.resolve_uncertain(no_effect=True),'not_sent')
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.assertEqual(value['last_attempt']['completed_ns'],self.ns)
+        self.assertIsNone(value['last_confirmed'])
+        (self.engine.directory/'maintenance').unlink()
+        self.ns+=59_999_000_000;self.run_guard();self.assertEqual(len(self.starts()),1)
+        self.ns+=1_000_000;self.run_guard();self.assertEqual(len(self.starts()),2)
+
+    def test_recovery_confirms_only_observed_execution_and_preserves_history(self):
+        self.uncertain(executed=True)
+        (self.engine.directory/'maintenance').touch();self.ns+=20_000_000_000
+        self.assertEqual(self.resolve_uncertain(),'confirmed')
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.assertEqual(value['last_attempt']['completed_ns'],self.ns)
+        self.assertEqual(value['last_confirmed'],dict(at=self.iso(),grupo='jale',id=1))
+        with self.assertRaises(ValueError):self.resolve_uncertain(no_effect=True)
+
+    def test_recovery_other_boot_requires_certification_without_evidence(self):
+        original=self.uncertain();(self.engine.directory/'maintenance').touch()
+        boot='87654321-1234-1234-1234-123456789abc'
+        self.engine.boot_clock=lambda:(boot,self.ns)
+        with self.assertRaises(ValueError):self.resolve_uncertain()
+        with self.engine.connect() as db:self.assertEqual(control.admission_state(db),original)
+        self.assertEqual(self.resolve_uncertain(no_effect=True),'not_sent')
+        with self.engine.connect() as db:value=control.admission_state(db)
+        self.assertEqual(value['last_attempt']['boot_id'],boot)
+        self.assertEqual(value['last_attempt']['reserved_ns'],self.ns)
+
+    def test_recovery_clock_failure_or_rollback_does_not_release(self):
+        original=self.uncertain();(self.engine.directory/'maintenance').touch()
+        for clock in (OSError('SECRET-SENTINEL'),(BOOT,self.ns-1)):
+            with self.subTest(clock=type(clock).__name__):
+                with patch.object(self.engine,'boot_clock',side_effect=clock if isinstance(clock,Exception) else lambda:clock):
+                    with self.assertRaises((OSError,ValueError)):self.resolve_uncertain(no_effect=True)
+                with self.engine.connect() as db:self.assertEqual(control.admission_state(db),original)
+        self.ns+=20_000_000_000
+        with patch.object(self.engine,'boot_clock',side_effect=[(BOOT,self.ns),(BOOT,self.ns-1)]):
+            with self.assertRaises(ValueError):self.resolve_uncertain(no_effect=True)
+        with self.engine.connect() as db:self.assertIn(control.admission_state(db)['last_attempt']['outcome'],('reserved','unknown'))
+
+    def test_recovery_cli_runs_under_lock(self):
+        import sys
+        original=self.uncertain();(self.engine.directory/'maintenance').touch()
+        argv=['control.py','resolver-admision','--sin-efecto']
+        import io
+        from contextlib import redirect_stdout
+        output=io.StringIO()
+        with patch.object(control,'STATE_DIR',self.engine.directory),patch.object(control,'MiniControl',return_value=self.engine),patch.object(control,'Pueue',return_value=self.p),patch.object(sys,'argv',argv),redirect_stdout(output):
+            try:control.main()
+            except SystemExit as error:self.fail('CLI resolver-admision debe aceptarse: '+str(error))
+        self.assertEqual(json.loads(output.getvalue())['resultado'],'not_sent')
+
 if __name__=='__main__':unittest.main()
+
