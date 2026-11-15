@@ -64,6 +64,8 @@ CASES=[
   'test_unowned_wrapper_cannot_prepare_or_exec'),
  ('wait-for-bootout','mini.py',"            except ValueError:\n                return False  # bootout may return before its verified PID/socket has exited",'            except ValueError:\n                pass',
   'test_async_bootout_waits_for_dead_pid_before_bootstrap'),
+ ('legacy-publishes-recoverer','install-mini.py','shutil.copy2(SOURCE / "mini.py", path)','shutil.copy2(SOURCE / "control.py", path)',
+  'test_pueue_mini.InstallerTests.test_install_twice_plist_and_withdraw_twice_resumes_owned_groups'),
 ]
 
 
@@ -75,7 +77,8 @@ def main():
             path=root/relative;source=path.read_text()
             assert source.count(before)==1,(name,'nonunique anchor')
             path.write_text(source.replace(before,after))
-            result=subprocess.run([sys.executable,'-B','-m','unittest','test_handoff.HandoffTests.'+test,'-v'],
+            target_test=test if '.' in test else 'test_handoff.HandoffTests.'+test
+            result=subprocess.run([sys.executable,'-B','-m','unittest',target_test,'-v'],
                 cwd=str(root/'tests'),env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),text=True,capture_output=True,timeout=40)
             assert result.returncode==1 and 'FAIL:' in result.stderr and 'ERROR:' not in result.stderr,name+' survived or failed outside assertion:\n'+result.stderr
             print(name+': caught by assertion',flush=True)
