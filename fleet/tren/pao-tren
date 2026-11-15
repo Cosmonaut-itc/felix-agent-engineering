@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Entrega durable, planificación en sombra y tick de repos inscritos activos."""
+"""Entrega durable, sombra, tick activo, juicio y pausa de repos inscritos activos."""
 import argparse
 import json
 from pathlib import Path
@@ -11,9 +11,10 @@ import time
 
 # Script location is trusted, independent of cwd, including python -I invocations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dominio import (Admitido, Entrada, Entrega, Estado, Observacion,
-                     admision_entrada, datos, paso)
+from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
+                     admision_entrada, clave, datos, paso)
 from inscripcion import activacion, modo
+from juicio import JUICIO, expediente, rechazo
 from ledger import Ledger, filas_medicion
 from medicion import decision_json, instante_iso, medir
 from observador import GitHubGit, configuracion, sha
@@ -39,6 +40,12 @@ def positivo(valor):
     return numero
 
 
+def motivo(valor):
+    if not valor.strip():
+        raise argparse.ArgumentTypeError("motivo obligatorio")
+    return valor.strip()
+
+
 def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     comandos = cli.add_subparsers(dest="comando", required=True)
@@ -56,6 +63,16 @@ def parser():
     tick.add_argument("--repo", required=True, type=repositorio)
     tick.add_argument("--seco", action="store_true")
     tick.add_argument("--config", help="JSON privado por repo; por defecto state/config.json")
+    juicio = comandos.add_parser("juicio")
+    juicio.add_argument("--repo", required=True, type=repositorio)
+    juicio.add_argument("--tren", default="")
+    juicio.add_argument("--decision", required=True, choices=JUICIO)
+    juicio.add_argument("--pr", type=positivo)
+    juicio.add_argument("--motivo", required=True, type=motivo)
+    pausa = comandos.add_parser("pausa")
+    pausa.add_argument("--repo", required=True, type=repositorio)
+    pausa.add_argument("--motivo", required=True, type=motivo)
+    pausa.add_argument("--levantar", action="store_true")
     medicion = comandos.add_parser("medir")
     medicion.add_argument("--repo", required=True, type=repositorio)
     medicion.add_argument("--desde", required=True, type=instante_iso)
@@ -69,6 +86,11 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
         inscripcion = activacion(args.repo)
         if inscripcion != "activo":
             return 2, {"error": "tick activo requiere inscripción activa",
+                       "inscripcion": inscripcion or "no-inscrito"}
+    if args.comando in ("juicio", "pausa"):
+        inscripcion = activacion(args.repo)
+        if inscripcion != "activo":
+            return 2, {"error": "juicio y pausa requieren inscripción activa",
                        "inscripcion": inscripcion or "no-inscrito"}
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)
@@ -112,11 +134,35 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
             from operativo import resumen_outbox
             # Snapshot SQLite consistente, legible incluso con IO bajo flock.
             with ledger.transaccion(escritura=False):
-                return 0, {"estado": datos(ledger.estado(args.repo)),
-                           "sombra": datos(ledger.estado(args.repo, sombra=True,
-                                                         doble_camino=modo(args.repo) == "sombra")),
-                           "outbox": resumen_outbox(ledger, args.repo),
-                           "eventos": ledger.ultimos_eventos(args.repo)}
+                salida = {"estado": datos(ledger.estado(args.repo)),
+                          "sombra": datos(ledger.estado(args.repo, sombra=True,
+                                                        doble_camino=modo(args.repo) == "sombra")),
+                          "outbox": resumen_outbox(ledger, args.repo),
+                          "eventos": ledger.ultimos_eventos(args.repo)}
+                if args.juicio:
+                    salida["juicio"] = expediente(args.repo, ledger.estado(args.repo, operativo=True),
+                                                  ledger.decisiones(args.repo))
+                return 0, salida
+        if args.comando in ("juicio", "pausa"):
+            with ledger.candado(args.repo):
+                # Releer bajo el candado, como el tick: pudieron retirarla.
+                if activacion(args.repo) != "activo":
+                    return 2, {"error": "juicio y pausa requieren inscripción activa"}
+                estado = ledger.estado(args.repo, operativo=True)
+                if ledger.decision_pendiente(args.repo) is not None:
+                    return 2, {"error": "decision-pendiente"}
+                if args.comando == "juicio":
+                    nombre, tren, pr = args.decision, args.tren, args.pr
+                else:
+                    nombre, tren, pr = ("levantar" if args.levantar else "pausar"), "", None
+                decision = Decision(clave("decision", args.repo, nombre, tren, pr, args.motivo, ahora),
+                                    args.repo, nombre, args.motivo, ahora, estado.pausa, tren, pr)
+                razon = rechazo(estado, decision)
+                if razon:
+                    return 2, {"error": razon, "pausa": datos(estado.pausa)}
+                ledger.registrar_decision(decision)
+                # El efecto lo aplica el próximo tick dentro de su paso.
+                return 0, {"decision": decision.id, "estado": "pendiente"}
         with ledger.candado(args.repo):
             if not args.seco:
                 # Releer tras esperar el flock: pudieron retirar la inscripción.

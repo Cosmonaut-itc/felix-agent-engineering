@@ -13,6 +13,7 @@ from dominio import (Admitido, Incierto, Promoviendo, Terminal, admision_entrada
 from efectos import EfectoFallido, ejecutar
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
+from juicio import rechazo
 
 
 EJECUTABLES = frozenset(("armar-candidato", "solicitar-ci", "iniciar-suite",
@@ -129,7 +130,12 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
     # Recuperarlo antes del paso evita caducar PR cerrados por nuestro push.
     drenar(estado, observacion, recuperacion=True)
     consumido = None
-    if not estado.pausa:
+    # Una decisión ocupa su paso entero: no comparte observación con el buzón.
+    # Queda pendiente hasta el COMMIT de ese paso, así una muerte la repite.
+    decision = ledger.decision_pendiente(repo)
+    if decision is not None:
+        observacion = replace(observacion, decision=decision)
+    elif not estado.pausa:
         for fila in ledger.outbox(repo):
             if fila["estado"] == "resultado":
                 recibida = json.loads(fila["resultado"])["observacion"]
@@ -155,8 +161,13 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
                 consumido = fila["clave"]
                 break
     nuevo, efectos = paso(estado, observacion)
-    ledger.guardar_paso(nuevo, efectos, ahora, consumido)
+    motivo = rechazo(estado, decision) if decision is not None else ""
+    frontera("antes-guardar-paso", None)
+    ledger.guardar_paso(nuevo, efectos, ahora, consumido, decision, motivo)
     frontera("paso-guardado", None)
     drenar(nuevo, observacion)
-    return {"modo": "activo", "estado": datos(nuevo),
-            "efectos": datos(efectos), "outbox": resumen_outbox(ledger, repo)}
+    salida = {"modo": "activo", "estado": datos(nuevo),
+              "efectos": datos(efectos), "outbox": resumen_outbox(ledger, repo)}
+    if decision is not None:
+        salida["decision"] = {"id": decision.id, "rechazo": motivo or None}
+    return salida

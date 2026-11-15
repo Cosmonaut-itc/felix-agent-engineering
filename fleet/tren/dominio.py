@@ -81,6 +81,19 @@ class Pausa:
 
 
 @dataclass(frozen=True)
+class Decision:
+    """Juicio o pausa manual durable; `pausa` es la que resuelve (None al pausar)."""
+    id: str
+    repo: str
+    decision: str
+    motivo: str
+    instante: float
+    pausa: Optional[Pausa] = None
+    tren: str = ""
+    pr: Optional[int] = None
+
+
+@dataclass(frozen=True)
 class Candidato:
     B: str
     eslabones: Tuple[Tuple[int, str, str], ...]
@@ -345,6 +358,8 @@ class Observacion:
     reproduccion_id: str = ""
     costo_suite_sana_s: float = 0
     ci_recibo: str = "verde"
+    # Una decisión pendiente se consume sola en su paso; nunca la sombra.
+    decision: Optional[Decision] = None
 
 
 @dataclass(frozen=True)
@@ -624,6 +639,9 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
 
 def paso(estado, observacion):
     """Un paso determinista. Congela a lo sumo un lote y emite sólo datos."""
+    if observacion.decision is not None:
+        from juicio import aplicar
+        return aplicar(estado, observacion.decision)
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
     if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
         tren = activos[0]
@@ -783,7 +801,7 @@ _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrad
           Incierto, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,
-          Repeticion, Reproduccion, Evidencia, Causa)}
+          Repeticion, Reproduccion, Evidencia, Causa, Decision)}
 
 
 def datos(valor):

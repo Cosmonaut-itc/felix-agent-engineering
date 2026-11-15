@@ -52,6 +52,12 @@ class Ledger:
                 self.db.execute("CREATE TABLE IF NOT EXISTS effect_results ("
                                 "clave TEXT PRIMARY KEY REFERENCES effects(clave), "
                                 "payload TEXT NOT NULL)")
+                # U15, también aditiva: decisiones de juicio y pausa manual.
+                # `pendiente` hasta el COMMIT del paso que la consume.
+                self.db.execute("CREATE TABLE IF NOT EXISTS decisions ("
+                                "id TEXT PRIMARY KEY, repo TEXT NOT NULL, "
+                                "payload TEXT NOT NULL, estado TEXT NOT NULL, "
+                                "resultado TEXT)")
         except BaseException:
             self.db.close()
             raise
@@ -128,9 +134,36 @@ class Ledger:
         return replace(estado, entradas=estado.entradas + tuple(
             e for e in nuevas if e.entrega.recibo not in recibos))
 
-    def guardar_paso(self, estado, efectos, ahora, consumido=None):
-        """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
+    def registrar_decision(self, decision):
+        """Una sola pendiente por repo; el llamador mantiene el candado del repo."""
         with self.transaccion():
+            if self.decision_pendiente(decision.repo) is not None:
+                raise ValueError("decisión pendiente")
+            self.db.execute("INSERT INTO decisions VALUES (?, ?, ?, 'pendiente', NULL)",
+                            (decision.id, decision.repo, codificar(decision)))
+            self.evento(decision.repo, "decision", decision.instante, datos(decision))
+
+    def decision_pendiente(self, repo):
+        row = self.db.execute("SELECT payload FROM decisions WHERE repo=? AND "
+                              "estado='pendiente' ORDER BY rowid LIMIT 1", (repo,)).fetchone()
+        return desde_datos(json.loads(row[0])) if row else None
+
+    def decisiones(self, repo):
+        return [{"decision": json.loads(r["payload"]), "estado": r["estado"],
+                 "resultado": r["resultado"]} for r in self.db.execute(
+            "SELECT payload, estado, resultado FROM decisions WHERE repo=? ORDER BY rowid",
+            (repo,))]
+
+    def guardar_paso(self, estado, efectos, ahora, consumido=None, decision=None,
+                     rechazo=""):
+        """Snapshot, proyecciones, outbox, ACK y decisión consumida: un solo COMMIT."""
+        with self.transaccion():
+            if decision is not None:
+                cambio = self.db.execute(
+                    "UPDATE decisions SET estado=?, resultado=? WHERE id=? AND estado='pendiente'",
+                    ("rechazada" if rechazo else "aplicada", rechazo or None, decision.id))
+                if cambio.rowcount != 1:
+                    raise ValueError("decisión ya consumida")
             # entries es custodia inmutable: la sombra también la importa.
             # La continuación operativa completa vive sólo en su evento.
             for tren in estado.trenes:
@@ -149,8 +182,10 @@ class Ledger:
             if consumido is not None:
                 self.db.execute("UPDATE outbox SET estado='completo' WHERE clave=? AND estado='resultado'",
                                 (consumido,))
-            self.evento(estado.repo, "operativo", ahora,
-                        {"estado": datos(estado), "efectos": datos(efectos), "consumido": consumido})
+            plan = {"estado": datos(estado), "efectos": datos(efectos), "consumido": consumido}
+            if decision is not None:
+                plan["decision"] = {"id": decision.id, "rechazo": rechazo or None}
+            self.evento(estado.repo, "operativo", ahora, plan)
 
     def outbox(self, repo):
         return [dict(r) for r in self.db.execute(

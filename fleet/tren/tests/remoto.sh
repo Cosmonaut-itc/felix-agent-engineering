@@ -29,5 +29,6 @@ if [ "$resultado" -eq 0 ]; then
   echo 'U13 injerto: cuatro regresiones fallan sobre a8a82602 y pasan después; toda la suite del tren pasa.'
   echo 'U14 R1: seis regresiones fallan sobre 49fd41dc y pasan después; toda la suite del tren pasa.'
   echo 'U14 R2: dos regresiones fallan sobre 0a1aabd8 y pasan después; toda la suite del tren pasa.'
+  echo 'U15: juicio y pausa por CLI y tick, incluida test_juicio.py; toda la suite del tren pasa.'
 fi
 exit "$resultado"

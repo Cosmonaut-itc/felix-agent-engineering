@@ -1,4 +1,4 @@
-# Tren — sombra, tick activo y feedback (U14), sin repos activados por defecto
+# Tren — sombra, tick activo, feedback (U14) y juicio (U15), sin repos activados por defecto
 
 Python stdlib 3.9+, SQLite y flock POSIX. El agente registra su watch antes
 de entregar; con el recibo durable termina su turno:
@@ -12,8 +12,8 @@ fleet/tren/pao-tren tick --repo owner/project --seco --config /ruta/config.json
 
 Respuestas operativas: JSON de una línea. Exit 0: registro, lectura o paso;
 exit 2: entrada/error o tick activo sin inscripción activa (no abre el ledger).
-`estado --juicio` incluye la pausa y sus causas;
-las decisiones de juicio llegan en otra unidad.
+`estado --juicio` añade el expediente de la pausa vigente; `juicio` y
+`pausa` la resuelven (sección U15).
 
 Estado: `${XDG_STATE_HOME:-~/.local/state}/pao-tren/ledger.sqlite3`, esquema 1.
 Se conserva todo: requests, entries, trains, effects, events y outbox. Cada
@@ -294,7 +294,8 @@ Sin inscripción, en sombra o ante ambigüedad devuelve exit 2. Se comprueba ant
 abrir el ledger y otra vez bajo el candado. `--seco` conserva sus reductores,
 eventos y continuación anteriores; jamás drena el outbox operativo.
 
-El feedback D6 está implementado. Siguen siendo requisitos de activación:
+El feedback D6 (U14) y el juicio y la pausa (U15) están implementados.
+Siguen siendo requisitos de activación:
 
 - Acreditar la enmienda de gobierno D2 y la exclusividad cooperativa D8.
 - Acreditar en el lanzador real deduplicación/reenganche durable por nombre
@@ -303,10 +304,6 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
   publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
   crear otro. El lanzador falso cumple esa condición; estas pruebas no
   acreditan al lanzador real. Su implementación pertenece a otra unidad.
-- Los comandos `juicio` y `pausa`, de otra unidad. `paso` pausa el carril en
-  uso ordinario (un head que cambia dentro del tren, un escritor externo en
-  `main`, una decisión de juicio) y Jale nace en pausa `etapa-1`; hoy el CLI
-  no tiene cómo levantar una pausa sin editar el ledger.
 - Resolver en otra unidad la salida de CI rojo sobre C: hoy el reductor
   conserva `EsperandoCI` y puede ocupar el carril indefinidamente. El injerto
   no cambia esa transición.
@@ -492,8 +489,8 @@ Los eventos `efecto-iniciado` y `efecto-resultado` conservan su evidencia.
 Git/suite mantienen su buzón y ACK transaccional de U13.
 
 El PR del tren, el aviso de salida 75 en ese PR y la notificación de macOS
-pertenecen a las unidades `juicio` y `pausa`; U14 no los implementa ni
-activa repos. Continúan pendientes los requisitos de activación listados arriba.
+siguen pendientes como mejora (sección U15); U14 no activa repos. Continúan
+pendientes los requisitos de activación listados arriba.
 
 Las pruebas de U14 usan el mismo origen git local de U13, un escritor `gh`
 falso que registra cada POST, HOME/XDG temporales, paginación y muertes
@@ -506,3 +503,137 @@ con `--seco`, sin POST. También cubre orden por PR entre heads distintos y
 durante recuperación.
 Se ejecuta sólo en el host remoto de pruebas,
 con el head commiteado y empujado a la rama de trabajo.
+
+
+## Juicio y pausa (U15)
+
+Cuando el tick no puede decidir, pausa el carril. Quien juzga lee el
+expediente y registra una decisión; el tick siguiente la aplica:
+
+```sh
+fleet/tren/pao-tren estado --repo owner/project --juicio
+fleet/tren/pao-tren juicio --repo owner/project --tren <id> \
+  --decision absolver|expulsar|reanudar|abortar [--pr N] --motivo "..."
+fleet/tren/pao-tren pausa --repo owner/project --motivo "..."
+fleet/tren/pao-tren pausa --repo owner/project --levantar --motivo "..."
+```
+
+`juicio` y `pausa` sólo corren con `activacion()` en `activo`; en sombra, sin
+inscripción o ante ambigüedad salen con 2 sin abrir el ledger, y lo releen
+bajo el candado. Bajo el candado del repo escriben la decisión y salen: no
+ejecutan efectos, no tocan git ni GitHub ni el estado guardado. `--motivo`
+es obligatorio y no vacío. `--tren` es el id del tren pausado y se exige
+sólo para `absolver`, `expulsar` y `abortar`; `--pr` sólo para `expulsar`.
+Responden `{"decision": <id>, "estado": "pendiente"}` con exit 0, o exit 2
+con `error`: `sin-pausa`, `carril-pausado`, `decision-no-admitida`,
+`tren-no-corresponde` (otro tren, terminal o ausente), `pr-no-expulsable`,
+`falta-pr`, `pr-no-corresponde`, `sin-candidato`, `miembro-rechazado` o
+`decision-pendiente`. Hay a lo sumo una decisión pendiente por repo.
+
+**Decisión como observación.** La tabla `decisions` (id, repo, payload,
+estado, resultado) es una extensión aditiva del esquema 1, como
+`effect_results`; registrar escribe además un evento `decision`. El payload
+guarda repo, tren, decisión, PR, motivo, instante y la `Pausa` que resuelve.
+El tick toma la pendiente más antigua como `Observacion.decision` y ese paso
+sólo la aplica: no consume un resultado del buzón en el mismo paso. `paso`
+sigue puro: `juicio.aplicar` consulta `juicio.rechazo`, la misma función que
+usa el CLI. Si la decisión ya no corresponde (la pausa cambió, el tren no es
+el activo, el PR no es miembro), el estado no cambia y la fila queda
+`rechazada` con ese motivo; si corresponde, `aplicada`. El cambio de estado
+de la fila comparte COMMIT con el evento `operativo` del paso, que añade
+`decision: {id, rechazo}`. Una muerte antes del COMMIT deja la decisión
+pendiente y el estado intacto; después, aplicada una sola vez. La sombra,
+`tick --seco` y sus eventos (`sombra`, `sombra-doble-camino`,
+`admision-entrega`) no leen ni producen decisiones.
+
+**Tabla motivo × decisión** (`juicio.TABLA`, una fila por motivo; para
+`necesita-juicio`, por familia de detalle, el prefijo antes de `:`):
+
+| Motivo | Detalle | Fase del tren | Admite |
+|---|---|---|---|
+| `etapa-1` | — | sin tren | `reanudar` |
+| `escritor-externo` | — (`main` ajeno en la pausa) | tren `REARMAR`, miembros en la fila | `reanudar` |
+| `manual` | motivo del operador | cualquiera | `pausa --levantar` |
+| `certificado-sin-base` | — | `Certificado` sin B (U1) | `abortar` |
+| `infraestructura` | `tres-reanudaciones-agotadas` | `Corriendo` o `Diagnosticando` | `absolver`, `abortar` |
+| `rama-tren-ocupada` | — | `Armado` o `EsperandoCI` | `abortar` |
+| `conflicto-en-cadena` | — (PR y archivos en la pausa) | `Congelado` | `expulsar` (sólo el PR en conflicto), `abortar` |
+| `candidato-no-corresponde` | — | `Congelado` | `abortar` |
+| `head-cambiado-en-tren` | — | cualquiera no terminal | `expulsar` (cualquier miembro), `abortar` |
+| `promocion-rechazada` | — | `Promoviendo`, tres intentos | `abortar` |
+| `necesita-juicio` | `incompleto-invalido`, `resultado-desconocido`, `verde-incoherente` | `Corriendo` (o `Diagnosticando` para el primero) | `absolver`, `expulsar` (cualquier miembro), `abortar` |
+| `necesita-juicio` | `subconjunto-no-corresponde`, `conflicto-en-subconjunto`, `repeticion-no-corresponde`, `origen-distinto`, `presupuesto-agotado-en-reanudacion`, `suite-incompleta` | `Diagnosticando` | `absolver`, `expulsar` (cualquier miembro), `abortar` |
+| `necesita-juicio` | `tamano-de-lote-no-soportado`, `sin-costo-de-suite-sana`, `sin-duracion`, `presupuesto-agotado`, `confirmacion-candidato`, `definicion-distinta`, `confirmacion-base`, `reproduccion-incierta` (de `atribucion.planificar`) | `Diagnosticando` | `absolver`, `expulsar` (cualquier miembro), `abortar` |
+| motivo futuro sin fila | — | — | `abortar` |
+
+Qué hace cada decisión:
+
+- `reanudar` levanta la pausa y el tick sigue desde el estado guardado. Sólo
+  figura donde eso avanza. En `escritor-externo` el tren ya terminó
+  `REARMAR` y sus miembros volvieron a la fila con su fecha FIFO: el tick
+  siguiente congela un tren nuevo sobre la `main` observada, la ajena. Nunca
+  sobrescribe ese `main` ni lo da por aterrizado; la promoción sigue siendo
+  el CAS con lease sobre esa base. En las demás pausas, seguir desde el
+  estado guardado volvería a pausar (reanudaciones agotadas, plan de
+  atribución determinista, tres intentos de promoción) o se quedaría sin
+  efecto que despachar (rama ocupada, candidato o publicación ya consumidos);
+  por eso no se admite.
+- `absolver` descarta el resultado del tren pausado, lo cierra
+  `Terminal("ABSUELTO")` y crea una generación con los mismos recibos en
+  `EsperandoCI` con el mismo candidato: el mismo B y el mismo C. Esa
+  generación vuelve a leer el CI de C y lanza otra suite completa con su
+  propia clave; sólo una suite verde la certifica. Otro rojo vuelve a
+  diagnóstico y, en su caso, a juicio. Se rechaza si algún miembro tiene la
+  entrega rechazada (`miembro-rechazado`), pues el C ya no le corresponde.
+  Cada miembro recibe su `pending` del lote nuevo; no se publica rojo.
+- `expulsar --pr N` cierra el tren `Terminal("EXPULSADO")`, marca a N
+  `Entrada.terminal=Terminal("DEVUELTO")` y emite el mismo efecto `devolver`
+  de U14: comentario y status `failure` sobre el head entregado. El payload
+  lleva lote, B, C (vacío si el tren aún no tenía candidato), PR, head y los
+  fallos de la suite roja con N como conjunto causal y el comando de
+  reproducción sobre C; fuera de `Diagnosticando` la lista de fallos va
+  vacía. El campo `juicio` con el id de la decisión queda en el ledger, el
+  escritor no lo publica. Los demás miembros forman, como los sobrevivientes
+  de D5, una generación nueva sobre el mismo B con armado, CI y suite
+  completa, y reciben su `pending`. Un miembro con la entrega ya rechazada
+  (head cambiado) no sigue ni recibe otra devolución: ya tuvo su caducidad.
+- `abortar` cierra el tren `Terminal("ABORTADO")` sin culpar a nadie. Sus
+  entregas vuelven a la fila con `tren=None`, la misma admisión y la misma
+  fecha FIFO; `entries` no cambia. No publica feedback y no escribe `main`.
+  El tick siguiente las readmite por las reglas normales y forma otro tren,
+  con otro id y por tanto otra rama, armado y suite.
+- `pausa --motivo` registra `Pausa("manual", detalle=<motivo>)` si el
+  carril no está pausado; `pausa --levantar` levanta sólo una pausa
+  `manual`. Una pausa del reductor se levanta con `juicio`. Como cualquier
+  pausa, detiene el consumo de resultados y el drenaje de efectos de git y
+  suite; el feedback sigue publicándose. El tick que aplica la pausa ya
+  recuperó antes del paso un efecto marcado `ejecutando`, como en U13.
+
+Ninguna decisión certifica, promueve ni emite `iniciar-suite` o `promover`:
+un C llega a `main` sólo por `Certificado` tras suite verde y CI verde. Un
+efecto ya despachado del tren cerrado (una suite en curso) no se cancela; su
+resultado queda en el buzón y el tick lo descarta por id de tren.
+
+`estado --juicio` añade `juicio` a la salida: pausa (motivo, detalle, PR,
+`main`, archivos), tren y fase, B y C, miembros con PR, head, recibo y
+admisión, la causa (ruta del resultado de suite, CI y, en diagnóstico,
+fallos, evidencias, ensayo pendiente, presupuesto y checks restantes), cada
+decisión admitida con su comando exacto (uno por PR expulsable; sólo falta
+sustituir `<motivo>`) y las decisiones registradas con su estado y motivo de
+rechazo. Sin pausa, ofrece el comando de `pausa`.
+
+Mejoras pendientes, fuera de U15: notificación de macOS al pausar,
+comentario con la pausa y el expediente en un PR de tren (y el aviso de una
+salida 75 allí), reintentar una promoción rechazada sin repetir la suite
+(hoy sólo `abortar`) y la salida de CI rojo sobre C, que es U16.
+
+Las pruebas U15 (`tests/test_juicio.py`) usan el origen git local de U13 y
+los transportes falsos de U13/U14, con HOME y XDG temporales, invocan el CLI
+(`juicio`, `pausa`, `estado --juicio`) y avanzan con `tick`. Cubren
+`absolver` con otro rojo y después verde, `expulsar` en un lote de tres y
+tras un head cambiado, `abortar`, `escritor-externo` con `reanudar`,
+decisiones inválidas en CLI y reductor, sombra, muertes antes y después del
+COMMIT que consume la decisión, la pausa manual y una comprobación de que
+la tabla cubre cada `Pausa` y cada detalle literal de `dominio.py` y
+`atribucion.py`. Se ejecutan con el mismo `tests/remoto.sh`, sólo en el
+host remoto de pruebas.
