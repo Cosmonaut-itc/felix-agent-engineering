@@ -714,8 +714,8 @@ ambos usan HOME, cwd HOME y configuración estándar previamente validada.
 
 El preparador comprueba socket y PID anterior muerto, configuración, cola y
 SQLite antes de escribir. Conserva la fórmula Mini de identidad (pid_path, su
-mtime y `ps lstart/comm`); no lee `/proc`. Un candado de vida `daemon.lock`
-sobrevive al exec. Además exige que Homebrew esté descargado **y deshabilitado**.
+mtime y `ps lstart/comm`); no lee `/proc`. Sólo el MainPID único de su LaunchAgent
+puede preparar y hacer exec. Además exige que Homebrew esté descargado **y deshabilitado**.
 No arranca un segundo daemon si el socket falla pero el PID o su dueño son dudosos.
 Sus archivos propios usan fsync, F_FULLFSYNC en macOS, rename y fsync de directorio;
 SQLite sigue usando synchronous=FULL/fullfsync. Esto no modifica State::save stock.

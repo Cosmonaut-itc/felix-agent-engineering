@@ -1,7 +1,6 @@
 #!/usr/bin/python3 -I
 """Arranque fijo y relevo Mini. El llamador toma control.lock; no hay otro job."""
 import argparse
-import fcntl
 import importlib.util
 import json
 import os
@@ -343,24 +342,25 @@ class Manager:
     def start(self, execute=None):
         if os.path.lexists(self.directory / 'maintenance'):
             raise ValueError('Host en mantenimiento')
-        # Serialize wrappers throughout the daemon lifetime; the fd survives exec.
-        with (self.directory / 'daemon.lock').open('a') as lifetime:
-            fcntl.flock(lifetime, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            os.set_inheritable(lifetime.fileno(), True)
-            with control.locked(self.directory, create=False):
-                state = self.state()
-                value = self.transaction(state)
-                if (not value or value['target'] != 'install' or value['phase'] not in ('switch', 'verify', 'done')
-                        or self.loaded(BREW) is not None or not self.disabled(BREW)):
-                    raise ValueError('Homebrew no está retirado; no se arranca otro daemon')
-                config = self.configuration_for_host()
-                control.prepare_start(self.engine, configuration=config)
-                self.checkpoint('start:prepared')
-                # fcntl lock closes on exec; lifetime lock remains with the stock daemon.
-                if execute is None:
-                    os.execve(DAEMON, [DAEMON], daemon_environment(self.home))
-                else:
-                    execute(DAEMON, [DAEMON])
+        # Only launchd's unique MainPID may execute this wrapper. No inherited lock
+        # can escape into tasks and block a restart while a stock child survives.
+        info = self.loaded(LABEL)
+        if info is None or not re.search(r'^\s*pid = ' + str(os.getpid()) + r'\s*$', info, re.M):
+            raise ValueError('El arranque debe pertenecer al MainPID de launchd')
+        with control.locked(self.directory, create=False):
+            state = self.state()
+            value = self.transaction(state)
+            if (not value or value['target'] != 'install' or value['phase'] not in ('switch', 'verify', 'done')
+                    or self.loaded(BREW) is not None or not self.disabled(BREW)):
+                raise ValueError('Homebrew no está retirado; no se arranca otro daemon')
+            config = self.configuration_for_host()
+            control.prepare_start(self.engine, configuration=config)
+            self.checkpoint('start:prepared')
+            # control.lock is close-on-exec; launchd owns the daemon, stock owns tasks.
+            if execute is None:
+                os.execve(DAEMON, [DAEMON], daemon_environment(self.home))
+            else:
+                execute(DAEMON, [DAEMON])
 
 
 def main():

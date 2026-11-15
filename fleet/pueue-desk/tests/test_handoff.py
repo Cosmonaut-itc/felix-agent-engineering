@@ -76,6 +76,8 @@ class Harness:
             if verb=='print':
                 code=0 if label in self.loaded else 113
                 out='service {\n pid = 999999\n}' if self.p.online and self.owner==label else 'service {}'
+                if label==mini.LABEL and label in self.loaded and not self.p.online:
+                    out='service {\n pid = '+str(os.getpid())+'\n}'
             elif verb in ('disable','enable'):self.disabled[label]=verb=='disable'
             elif verb=='bootout':
                 assert label in self.loaded
@@ -232,6 +234,7 @@ class HandoffTests(unittest.TestCase):
         marker=h.directory/'maintenance';marker.symlink_to(h.directory/'absent')
         before=h.fingerprint();h.calls.clear()
         self.assertFalse(h.m._recover(h.config));self.assertFalse(h.engine.reconcile())
+        h.p.online=False  # model the owned wrapper waiting to exec, not the old daemon
         with patch.object(control,'prepare_start',side_effect=AssertionError('prepare under maintenance')):
             with self.assertRaises(ValueError):h.m.start(execute=lambda *_:self.fail('exec under maintenance'))
         with self.assertRaises(ValueError):h.m.change('withdraw')
@@ -369,6 +372,12 @@ class HandoffTests(unittest.TestCase):
         with patch.object(control.subprocess,'run',return_value=subprocess.CompletedProcess([],0,'pueued','')):
             with self.assertRaises(ValueError):h.m.start(execute=lambda *_:self.fail('live pid'))
         self.assertEqual((h.data/'state.json').read_bytes(),before)
+
+    def test_unowned_wrapper_cannot_prepare_or_exec(self):
+        h=self.h;h.m.change('install')
+        with patch.object(h.m,'loaded',side_effect=lambda label:'service {\n pid = 2\n}' if label==mini.LABEL else None), \
+             patch.object(control,'prepare_start',side_effect=AssertionError('unowned prepare')):
+            with self.assertRaisesRegex(ValueError,'MainPID'):h.m.start(execute=lambda *_:self.fail('unowned exec'))
 
     def test_mini_task_matrix_offline_crashes_and_repeated_prepare(self):
         h=self.h

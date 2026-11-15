@@ -36,7 +36,7 @@ CASES=[
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
  ('throttle','launchagents/local.pao.pueue-mini.daemon.plist','<integer>10</integer>','<integer>0</integer>',
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
- ('fixed-preparer','mini.py',"                control.prepare_start(self.engine, configuration=config)\n                self.checkpoint('start:prepared')","                self.checkpoint('start:prepared')",
+ ('fixed-preparer','mini.py',"            control.prepare_start(self.engine, configuration=config)\n            self.checkpoint('start:prepared')","            self.checkpoint('start:prepared')",
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
  ('fullfsync','control.py','        fcntl.fcntl(stream.fileno(), 51)','        pass # fcntl.fcntl(stream.fileno(), 51)',
   'test_fullfsync_is_required_for_own_files_on_macos'),
@@ -60,6 +60,8 @@ CASES=[
   'test_mini_clients_and_fixed_exec_share_home_cwd_and_clean_config_environment'),
  ('mini-client-cwd','control.py',"        pueue.context = dict(env=mini_environment(Path.home()), cwd=Path.home())",'        pass',
   'test_mini_clients_and_fixed_exec_share_home_cwd_and_clean_config_environment'),
+ ('wrapper-mainpid','mini.py',"        if info is None or not re.search(r'^\\s*pid = ' + str(os.getpid()) + r'\\s*$', info, re.M):",'        if False:',
+  'test_unowned_wrapper_cannot_prepare_or_exec'),
 ]
 
 
