@@ -59,14 +59,10 @@ class Manager:
 
     def transaction(self, state):
         value = state.get('mini_handoff')
-        if value is not None and (type(value) is not dict or value.get('version') != 1
-                or value.get('target') not in ('install', 'withdraw')
-                or value.get('phase') not in ('stage', 'drain', 'switch', 'verify', 'maintenance', *TERMINAL)
-                or type(value.get('original_disabled')) is not dict
-                or set(value['original_disabled']) != {BREW, LABEL, GUARD}
-                or any(type(v) is not bool for v in value['original_disabled'].values())
-                or type(value.get('effect')) not in (str, type(None))):
-            raise ValueError('Relevo ilegible; conservar cierre y archivos')
+        if value is not None:
+            control.validate_mini_handoff(value)
+            if set(value['original_disabled']) != {BREW, LABEL, GUARD}:
+                raise ValueError('Gestores de relevo desconocidos')
         return value
 
     def loaded(self, label):
@@ -126,6 +122,8 @@ class Manager:
         previous = self.transaction(state)
         if previous and previous['phase'] not in TERMINAL:
             raise ValueError('Relevo pendiente; lo atiende la guardia')
+        if self.loaded(GUARD) is None or self.disabled(GUARD):
+            raise ValueError('La guardia existente debe estar cargada y habilitada antes del relevo')
         if control.MINI_PROFILE != dict(suites=3, default=1, rapidas=3) or control.MINI_GROUPS != ('suites', 'default', 'rapidas'):
             raise ValueError('Perfil Mini incompatible')
         for g in control.MINI_GROUPS:
@@ -181,8 +179,6 @@ class Manager:
         self.publish(self.agents / (GUARD + '.plist'), self.render(GUARD))
         if self.disabled(GUARD):
             raise ValueError('Guardia deshabilitada; resolver antes del relevo')
-        if self.loaded(GUARD) is None:
-            self.launch('bootstrap', self.domain, str(self.agents / (GUARD + '.plist')))
         if self.loaded(GUARD) is None:
             raise ValueError('No hay recuperador cargado; no se releva')
 
@@ -290,6 +286,7 @@ class Manager:
             if target == BREW and value['original_disabled'][BREW]:
                 self.command(state, 'disable', BREW)
             value['phase'] = 'done' if target == LABEL else 'withdrawn'
+            value['maintenance_owned'] = False
             self.save(state, 'handoff:complete')
             # Authority, guard and both disabled plists survive withdrawal. No orphaned pause.
             return True
@@ -305,25 +302,31 @@ class Manager:
             marker = self.directory / 'maintenance'
             signature = b'pao-mini-maintenance@1\n'
             if resume:
-                if (value['phase'] != 'maintenance' or marker.is_symlink()
-                        or not marker.is_file() or marker.read_bytes() != signature):
+                present = os.path.lexists(marker)
+                if not present and value['phase'] in TERMINAL:
+                    return
+                if (not value.get('maintenance_owned') or value['phase'] not in ('maintenance', 'switch', 'verify')
+                        or present and (marker.is_symlink() or not marker.is_file() or marker.read_bytes() != signature)):
                     raise ValueError('No se retira un mantenimiento ajeno; conservar el marcador')
-                for label in (BREW, LABEL):
-                    self.command(state, 'disable', label)
-                    if self.loaded(label) is not None:
-                        self.command(state, 'bootout', label)
-                value['phase'] = 'switch'
-                self.save(state, 'maintenance:restart-intent')
+                if present or value['phase'] == 'maintenance':
+                    for label in (BREW, LABEL):
+                        self.command(state, 'disable', label)
+                        if self.loaded(label) is not None:
+                            self.command(state, 'bootout', label)
+                    value['phase'] = 'switch'
+                    self.save(state, 'maintenance:restart-intent')
                 self.command(state, 'enable', GUARD)
                 self.bootstrap(state, GUARD)
-                def remove_marker():
-                    marker.unlink()
-                    control.sync_directory(marker.parent)
-                self.effect(state, 'maintenance:remove', remove_marker)
+                if present:
+                    def remove_marker():
+                        marker.unlink()
+                        control.sync_directory(marker.parent)
+                    self.effect(state, 'maintenance:remove', remove_marker)
                 self._recover()
             else:
                 # Publication before any stop; a killed caller cannot leave a reopening job.
                 value['phase'] = 'maintenance'
+                value['maintenance_owned'] = value.get('maintenance_owned', False) or not os.path.lexists(marker)
                 self.save(state, 'maintenance:intent')
                 if not os.path.lexists(marker):
                     self.effect(state, 'maintenance:create', lambda: self.publish(marker, signature))

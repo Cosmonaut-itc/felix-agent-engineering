@@ -281,6 +281,71 @@ class HandoffTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'ajeno'):h.m.maintenance(resume=True)
         self.assertEqual(marker.read_text(),'someone else\n');self.assertEqual(h.calls,[])
 
+    def test_maintenance_marker_changed_after_publication_is_never_removed(self):
+        h=self.h;h.m.change('install');h.finish();h.m.maintenance()
+        marker=h.directory/'maintenance';marker.write_text('another maintenance\n');h.calls.clear()
+        with self.assertRaisesRegex(ValueError,'ajeno'):h.m.maintenance(resume=True)
+        self.assertEqual(marker.read_text(),'another maintenance\n');self.assertEqual(h.calls,[])
+
+    def test_maintenance_stop_and_continue_replay_after_each_boundary(self):
+        counts={}
+        for resume in (False,True):
+            baseline=Harness(self);baseline.m.change('install');baseline.finish()
+            if resume:baseline.m.maintenance()
+            baseline.trace.clear();baseline.m.maintenance(resume=resume)
+            if resume:baseline.finish()
+            phases=list(dict.fromkeys(baseline.trace));counts[str(resume)]=len(phases)
+            for phase in phases:
+                with self.subTest(resume=resume,phase=phase):
+                    h=Harness(self);h.m.change('install');h.finish()
+                    if resume:h.m.maintenance()
+                    fired=[False]
+                    def crash(name):
+                        if name==phase and not fired[0]:fired[0]=True;raise Crash(name)
+                    h.m.checkpoint=crash
+                    try:
+                        h.m.maintenance(resume=resume)
+                        if resume:h.finish()
+                    except Crash:pass
+                    self.assertTrue(fired[0]);h.m.checkpoint=lambda _:None
+                    if not resume:h.m.maintenance()
+                    if not os.path.lexists(h.directory/'maintenance'):h.boot()
+                    try:h.m.maintenance(resume=True);h.finish()
+                    except Exception as error:self.fail('Maintenance replay '+phase+': '+type(error).__name__)
+                    self.assertFalse(os.path.lexists(h.directory/'maintenance'))
+                    self.assertEqual(h.owner,mini.LABEL)
+                    self.assertEqual(h.p.groups['suites']['status'],'Paused')
+        print('Maintenance distinct checkpoints:',counts)
+
+    def test_corrupt_handoff_blocks_queries_and_recovery_without_effects(self):
+        h=self.h;h.m.change('install');h.finish();original=h.policy()
+        for field,value in (('version',True),('phase','unrecognized'),('maintenance_owned',1),('original_disabled',{}),('effect',42)):
+            changed=copy.deepcopy(original);changed['mini_handoff'][field]=value
+            with h.engine.connect(write=True) as db:h.engine.store(db,changed)
+            before=h.fingerprint();h.calls.clear()
+            with self.assertRaises(ValueError):h.engine.view()
+            with self.assertRaises(ValueError):h.m._recover(h.config)
+            self.assertEqual(h.calls,[]);self.assertTrue(h.fingerprint()==before)
+
+    def test_existing_recoverer_is_required_before_any_publication(self):
+        h=self.h;h.loaded.remove(mini.GUARD);before=h.fingerprint()
+        for dry in (True,False):
+            with self.assertRaisesRegex(ValueError,'guardia existente'):h.m.change('install',dry)
+            self.assertTrue(h.fingerprint()==before)
+            self.assertFalse(any(call[0] not in ('print','print-disabled') for call in h.calls))
+
+    def test_recovery_error_still_closes_pressure_but_never_opens(self):
+        h=self.h
+        for sample in (dict(load=4,memory=1),LOW):
+            h.p.calls.clear()
+            with patch.object(control,'recover_mini',side_effect=ValueError('recovery failed')), \
+                 patch.object(control,'MiniControl',return_value=h.engine),patch.object(control,'pressure_mini',return_value=sample):
+                with self.assertRaisesRegex(ValueError,'recovery failed'):
+                    control.guard(h.p,Path('/no-proc'),h.directory,host='mini')
+            self.assertFalse(any(c[0]=='start' for c in h.p.calls))
+            self.assertEqual(h.p.groups['default']['status'],'Paused')
+            self.assertEqual(h.p.groups['rapidas']['status'],'Paused')
+
     def test_two_daemons_and_alive_pid_are_rejected_without_overwriting_queue(self):
         h=self.h;h.m.change('install');h.finish()
         before=(h.data/'state.json').read_bytes()

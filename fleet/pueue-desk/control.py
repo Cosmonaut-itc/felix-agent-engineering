@@ -241,8 +241,13 @@ def recover_mini(pueue, directory):
 def guard(pueue, proc, directory, *, host="desk"):
     if host == 'mini' and has_authority(directory):
         # The existing 60 s job also owns handoff recovery. No second timer.
-        if not recover_mini(pueue, directory):
-            return
+        try:
+            if not recover_mini(pueue, directory):
+                return
+        except ADMISSION_ERRORS as error:
+            # Recovery cannot bypass the old protective pressure close on corrupt DBs.
+            # Carry its failure into the guard so even valid quotas cannot reopen.
+            return MiniControl(pueue, directory)._legacy_guard(None, proc=proc, recovery_error=error)
     if has_authority(directory):
         engine = MiniControl(pueue, directory) if host == 'mini' else MiniControl(pueue, directory, host='desk')
         return engine.guard(None, proc=proc)
@@ -886,6 +891,17 @@ def admission_state(db, migrate=False):
     return validate_admission(json.loads(rows[0][1],object_pairs_hook=unique_object))
 
 
+def validate_mini_handoff(value):
+    if (type(value) is not dict or type(value.get('version')) is not int or value.get('version') != 1
+            or value.get('target') not in ('install', 'withdraw')
+            or value.get('phase') not in ('stage', 'drain', 'switch', 'verify', 'maintenance', 'done', 'withdrawn', 'aborted')
+            or type(value.get('original_disabled')) is not dict or len(value['original_disabled']) != 3
+            or any(type(k) is not str or type(v) is not bool for k, v in value['original_disabled'].items())
+            or type(value.get('effect')) not in (str, type(None))
+            or 'maintenance_owned' in value and type(value['maintenance_owned']) is not bool):
+        raise ValueError('Relevo ilegible; conservar cierre y archivos')
+
+
 class MiniControl:
     """Caller holds control.lock. Queries/ensayos open SQLite read-only, never recover.
 
@@ -993,6 +1009,8 @@ class MiniControl:
         if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous', 'startup', 'handoff'}
                for g, r in value['reasons'].items()):
             raise ValueError('Propiedad inválida')
+        if self.host == 'mini' and 'mini_handoff' in value:
+            validate_mini_handoff(value['mini_handoff'])
         startup = value.get('startup')
         if ('startup_version' in value and (type(value['startup_version']) is not int or value['startup_version'] != 1)
                 or any('startup' in r for r in value['reasons'].values()) and startup is None):
@@ -1822,8 +1840,8 @@ class MiniControl:
         if failure is not None:
             raise failure
 
-    def _legacy_guard(self, readings, proc=Path('/proc')):
-        failure, state = None, None
+    def _legacy_guard(self, readings, proc=Path('/proc'), recovery_error=None):
+        failure, state = recovery_error, None
         # Any unreadable authority, including numeric overflow, keeps protective closing.
         errors = (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError)
         try:

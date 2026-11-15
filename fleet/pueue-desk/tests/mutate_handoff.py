@@ -45,9 +45,17 @@ CASES=[
  ('maintenance-stop-order','mini.py',"                if self.loaded(GUARD) is not None:\n                    self.command(state, 'bootout', GUARD)","                pass",
   'test_maintenance_command_stops_guard_first_and_resumes_only_own_marker'),
  ('maintenance-foreign-marker','mini.py',"or not marker.is_file() or marker.read_bytes() != signature",'or not marker.is_file()',
-  'test_maintenance_command_stops_guard_first_and_resumes_only_own_marker'),
+  'test_maintenance_marker_changed_after_publication_is_never_removed'),
  ('launchd-disable-words','mini.py',"match[2] in ('true', 'disabled')","match[2] == 'true'",
   'test_launchd_disabled_words_and_booleans_and_unknown_fail_closed'),
+ ('maintenance-replay','mini.py',"value['phase'] not in ('maintenance', 'switch', 'verify')","value['phase'] != 'maintenance'",
+  'test_maintenance_stop_and_continue_replay_after_each_boundary'),
+ ('handoff-authority','control.py',"if self.host == 'mini' and 'mini_handoff' in value:","if False:",
+  'test_corrupt_handoff_blocks_queries_and_recovery_without_effects'),
+ ('protect-on-recovery-failure','control.py',"            return MiniControl(pueue, directory)._legacy_guard(None, proc=proc, recovery_error=error)",'            raise',
+  'test_recovery_error_still_closes_pressure_but_never_opens'),
+ ('never-open-on-recovery-failure','control.py',"failure, state = recovery_error, None","failure, state = None, None",
+  'test_recovery_error_still_closes_pressure_but_never_opens'),
 ]
 
 
