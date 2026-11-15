@@ -230,9 +230,11 @@ class HandoffTests(unittest.TestCase):
         # the evidence recorded at acceptance, regardless of the requested verb.
         state=h.policy();state['mini_handoff']['target']='withdraw'
         h.m.save(state,'test:source-equals-target')
-        try:h.m.abort()
+        try:
+            h.m.abort()
+            retained=h.policy()['mini_handoff']['retained_owner']
         except ValueError as error:self.fail('abort inferred a contradictory owner: '+str(error))
-        self.assertEqual(h.policy()['mini_handoff']['retained_owner'],'homebrew')
+        self.assertEqual(retained,'homebrew')
         valid=h.policy()['mini_handoff']
         for invalid in ({},dict(owner='homebrew',pid=True,generation=h.gen),
                         dict(owner='homebrew',pid=0,generation=h.gen),
