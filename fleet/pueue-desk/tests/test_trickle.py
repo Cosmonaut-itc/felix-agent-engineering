@@ -446,5 +446,46 @@ class TrickleTests(DeskFixture):
         self.run_guard();self.assertEqual(self.starts(),[])
         self.assertIn('authority',self.causes())
 
+    def test_fifo_uses_enqueue_time_before_id_or_group(self):
+        self.tasks.clear();self.add_task(1,'jale',offset=10);self.add_task(99,'pesadas',offset=-10)
+        self.run_guard();self.assertEqual(self.starts(),[('start',99)])
+
+    def test_rapidas_stays_paused_without_incremental_start_in_memory_band(self):
+        self.tasks.clear();self.add_task(1,'rapidas')
+        self.p.groups['rapidas']['status']='Paused'
+        state=self.state();state['reasons']['rapidas']=['pressure']
+        with self.engine.connect(write=True) as db:self.engine.store(db,state)
+        self.sample=dict(self.low,memory=5*1024**3);self.run_guard(self.sample)
+        self.assertEqual(self.starts(),[])
+        self.assertEqual(self.p.groups['rapidas']['status'],'Paused')
+        self.assertIsNone(self.engine._candidate(self.p.status(),self.state(),lambda *args:None))
+
+    def test_mini_uses_existing_guard_and_never_reserves(self):
+        from test_slots import SlotsTests
+        f=SlotsTests();f.setUp();self.addCleanup(f.doCleanups)
+        with patch.object(f.engine,'_legacy_guard',return_value='legacy') as legacy,patch.object(f.engine,'_one',side_effect=AssertionError('Mini no usa one')):
+            self.assertEqual(f.engine.guard(self.mid),'legacy')
+            legacy.assert_called_once()
+        with f.engine.connect() as db:self.assertIsNone(control.admission_state(db))
+
+    def test_resume_intent_expiration_does_not_open_groups(self):
+        original=control.log
+        elapsed=[0]
+        def log(directory,event,**fields):
+            result=original(directory,event,**fields)
+            if event=='apertura_intento':elapsed[0]+=11
+            return result
+        self.sample=self.low
+        with patch.object(control,'log',side_effect=log),patch.object(control.time,'monotonic',side_effect=lambda:elapsed[0]):self.run_guard(self.low)
+        self.assertFalse([c for c in self.p.calls if c[:2]==('start','-g')])
+        self.assertIn('fresh_sample',self.causes())
+
+    def test_main_exception_handler_never_logs_exception_text(self):
+        import sys
+        with patch.object(control,'STATE_DIR',self.engine.directory),patch.object(control,'Pueue',return_value=self.p),patch.object(control,'guard',side_effect=ValueError('SECRET-SENTINEL')),patch.object(sys,'argv',['control.py','guardia']):
+            with self.assertRaises(ValueError):control.main()
+        self.assertNotIn('SECRET-SENTINEL',(self.engine.directory/'guardia.log').read_text())
+        self.assertEqual(self.rows()[-1]['detalle'],'ValueError')
+
 if __name__=='__main__':unittest.main()
 

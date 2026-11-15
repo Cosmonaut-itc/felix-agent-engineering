@@ -82,6 +82,25 @@ class SnapshotTrickleTests(unittest.TestCase):
         self.log.write_text('')
         self.assertEqual(self.guard()['last_admission'],confirmed)
 
+    def test_incoherent_permit_and_multiple_rows_do_not_publish_history(self):
+        path=self.log.parent/'control.sqlite3'
+        value=dict(version=1,last_attempt=None,last_confirmed=dict(at=AT,grupo='jale',id=1))
+        with sqlite3.connect(str(path)) as db:
+            db.execute('CREATE TABLE guard_admission (id INTEGER PRIMARY KEY,body TEXT)')
+            db.execute('INSERT INTO guard_admission VALUES (1,?)',(json.dumps(value),))
+        errors=[];guard=self.read_guard(errors=errors)
+        self.assertIsNone(guard['last_admission'])
+        self.assertIn('guard_admission',[e['stage'] for e in errors])
+        with sqlite3.connect(str(path)) as db:db.execute('INSERT INTO guard_admission VALUES (2,?)',(json.dumps(value),))
+        errors=[];guard=self.read_guard(errors=errors)
+        self.assertIsNone(guard['last_admission'])
+        self.assertIn('guard_admission',[e['stage'] for e in errors])
+
+    def test_unknown_operation_is_accepted_without_inventing_decision(self):
+        guard=self.guard();guard['last_result']['bloqueos']=[dict(grupo=None,operacion='unknown',causa='fresh_sample')]
+        data=sample();data.update(host='desk',guard=guard)
+        serve.validate_snapshot(data,'desk')
+
     def test_bad_sensor_and_unsafe_threshold_ast_no_fallback(self):
         self.assertIsNotNone(self.guard())
         (self.proc/'pressure/io').write_text('full avg60=nan\n')
@@ -135,6 +154,19 @@ class MergedCellTests(unittest.TestCase):
     def test_unknown(self):
         f,h=self.fixture();h['control']=None;h['guard']=None
         self.check(f,'Estado de la guardia desconocido',('Libre',))
+
+    def test_adverse_freshness_and_local_dependency(self):
+        f,h=self.fixture();g=h['guard'];g['pressure']['cpu']=22;g['action']='mantener'
+        g['last_result']['bloqueos']=[dict(grupo='jale',operacion='one',causa='dependency')]
+        self.check(f,'Esperando dependencia',('Entra de a una','Libre'))
+        for change in ('incomplete','thresholds','future'):
+            f,h=self.fixture();g=h['guard'];g['pressure']['cpu']=22;g['action']='mantener'
+            if change=='incomplete':g['last_result']=None
+            if change=='thresholds':g['thresholds']=None
+            if change=='future':g['pressure']['at']='2026-11-15T16:00:00+00:00'
+            self.check(f,'Estado de la guardia desconocido',('Entra de a una','Libre'))
+        f,h=self.fixture();h['guard']['action']='mantener'
+        self.check(f,'Retenido por presión',('Entra de a una','Libre'))
 
     def test_io_memory_and_open(self):
         for kind,value,label in (('io',42,'E/S 42'),('memory',3*1024**3,'Memoria 3')):

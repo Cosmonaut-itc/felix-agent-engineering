@@ -38,4 +38,22 @@ class AdmissionInstallTests(unittest.TestCase):
         with self.assertRaises((ValueError,KeyError)):self.f.install()
         self.assertEqual(before,self.f.fingerprint())
 
+    def test_backup_is_exact_immediately_previous_controller_each_time(self):
+        for content in (b'# previous one\n',b'# previous two\n'):
+            (self.f.library/'control.py').write_bytes(content)
+            previous=set(self.f.library.glob('control.py.pre-sen6417-*'))
+            self.f.install()
+            backups=set(self.f.library.glob('control.py.pre-sen6417-*'))-previous
+            self.assertEqual(len(backups),1)
+            self.assertEqual(next(iter(backups)).read_bytes(),content)
+
+    def test_incoherent_confirmation_refuses_even_dry_run_without_writes(self):
+        value=dict(version=1,last_attempt=None,last_confirmed=dict(at='2026-11-14T16:00:00+00:00',grupo='jale',id=1))
+        with self.f.engine.connect(write=True) as db:
+            db.execute('UPDATE guard_admission SET body=?',(control.canonical(value),))
+        for dry in (True,False):
+            before=self.f.fingerprint()
+            with self.assertRaises(ValueError):self.f.install(dry)
+            self.assertEqual(before,self.f.fingerprint())
+
 if __name__=='__main__':unittest.main()

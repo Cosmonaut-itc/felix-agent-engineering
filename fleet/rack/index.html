@@ -231,11 +231,6 @@ function fila(h, n, w){
   </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
 }
 
-function startupHold(h,n){
-  const reason=h.control?.startup_holds?.[n];
-  if(reason) return `<p class="startup-hold muted" role="status">${esc('Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n)}</p>`;
-  return h.control?.startup_waiting?.[n]==='cuotas_sensores' ? '<p class="startup-wait muted" role="status">Esperando cuotas y Docker · reanudación automática</p>' : '';
-}
 function interrupted(h,n){
   const rows=h.tasks.filter(t=>t.group===n && t.state==='Done' && t.interruption_reason);
   return rows.length ? `<div class="lane"><div></div><div class="fila interrupted" role="status">${rows.map(t=>`<p>${esc(what(t))} · ${esc(t.interruption_reason)}</p>`).join('')}</div></div>` : '';
