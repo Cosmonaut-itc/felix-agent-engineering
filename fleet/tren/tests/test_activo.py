@@ -388,6 +388,8 @@ class TickTests(Base):
     def test_efecto_sin_ejecutor_queda_pendiente_y_no_bloquea(self):
         self.entregar((1, 2, 3, 4))
         otro = self.commit({"comun": "base\n", "pr-4": "otro head\n"}, (self.B,), "ticket 4 bis")
+        # El ticket reescribe su PR: GitHub acepta el force-push del head.
+        self.comando(self.fuente, "push", "--force", str(self.origen), otro + ":refs/pull/4/head")
         self.heads_gh[4] = otro
         self.hasta_terminal()
         self.assert_aterrizo_una_vez(pendientes=("avisar-caducidad",))
