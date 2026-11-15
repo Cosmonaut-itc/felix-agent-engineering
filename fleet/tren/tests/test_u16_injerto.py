@@ -97,7 +97,7 @@ class RegresionesTests(u16.ContextoCI):
     def test_reductor_rechaza_rojo_sin_nombres(self):
         antes = self.individual()
         obs = self.contexto.observador.observar(antes, 1000)
-        for nombres in ((), ('',), (' ',), (None,)):
+        for nombres in ((), ('',), (' ',), (None,), 'gate', None):
             with self.subTest(nombres=nombres):
                 despues, efectos = paso(antes, replace(obs, ci_candidato='rojo', ci_rojos=nombres))
                 self.assertEqual(despues.trenes, antes.trenes)

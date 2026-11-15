@@ -499,7 +499,8 @@ def avanzar_ci(estado, tren, observacion):
     ligada = (observacion.tren_id == tren.id and
               observacion.ci_recibo == "github:" + fase.candidato.C)
     lectura = observacion.ci_candidato if ligada else "pendiente"
-    if lectura == "rojo" and not (observacion.ci_rojos and all(
+    if lectura == "rojo" and not (isinstance(observacion.ci_rojos, (tuple, list)) and
+            observacion.ci_rojos and all(
             isinstance(n, str) and n.strip() for n in observacion.ci_rojos)):
         lectura = "pendiente"
     salida = SALIDAS_CI.get(lectura, "esperar")

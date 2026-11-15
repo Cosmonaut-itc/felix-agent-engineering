@@ -417,8 +417,10 @@ class SombraTests(unittest.TestCase):
         def gh(argv, **kwargs):
             if argv[:2] == ["gh", "api"] and argv[4].startswith(
                     "repos/{}/commits/{}/check-runs?".format(REPO, pr2)):
-                valor = [{"check_runs": [{'id': 1, 'name': 'check', 'status': 'completed', 'conclusion': 'success'}, {"id": 2, "name": "opcional",
-                                                 "status": "completed", "conclusion": "skipped"}]}]
+                valor = [{'check_runs': [
+                    {'id': 1, 'name': 'check', 'status': 'completed', 'conclusion': 'success'},
+                    {'id': 2, 'name': 'opcional', 'status': 'completed', 'conclusion': 'skipped'},
+                    {'id': 3, 'name': 'neutral', 'status': 'completed', 'conclusion': 'neutral'}]}]
                 return subprocess.CompletedProcess(argv, 0, json.dumps(valor), "")
             return original(argv, **kwargs)
 
