@@ -122,7 +122,10 @@ class GitHubGit:
 
     def ci(self, repo, head, rama=None):
         # --slurp retains every page of both APIs, including >100 checks/statuses.
-        paginas = self.api("repos/{}/commits/{}/check-runs?per_page=100".format(repo, head), True)
+        endpoint = "repos/{}/commits/{}/check-runs?per_page=100".format(repo, head)
+        # latest se filtra por completed_at en GitHub: una finalización vieja
+        # tardía no debe ocultar los checks de la ref que acabamos de solicitar.
+        paginas = self.api(endpoint + ("&filter=all" if rama is not None else ""), True)
         suites = None
         if rama is not None:
             # El check-run sólo garantiza check_suite.id; head_branch pertenece

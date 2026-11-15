@@ -1,7 +1,6 @@
 """R1 U16: solicitud vigente y preparación de runner; sólo host remoto."""
 from dataclasses import replace
 import json
-import os
 import subprocess
 import unittest
 
@@ -200,6 +199,35 @@ class ContratoTests(CasosCI):
 
 
 class LecturaActionsTests(unittest.TestCase):
+    def test_solicitud_filtra_ref_y_c_antes_de_agrupar_en_todas_las_paginas(self):
+        lector = GitHubGit({'checks_esperados': ['gate de integración']}, activo=True)
+        viejo, nuevo = check('failure'), check('success', suite=2, identidad=2)
+        ajeno = check('failure', suite=2, identidad=100)
+        ajeno['head_sha'] = 'b' * 40
+        def api(endpoint, paginado=False):
+            self.assertTrue(paginado)
+            if '/check-runs?' in endpoint:
+                self.assertIn('&filter=all', endpoint)
+                return [{'check_runs': [viejo, ajeno]}, {'check_runs': [nuevo]}]
+            if '/check-suites?' in endpoint:
+                return [{'check_suites': [{'id': 1, 'head_sha': 'a' * 40,
+                                          'head_branch': 'tren/otra'}]},
+                        {'check_suites': [{'id': 2, 'head_sha': 'a' * 40,
+                                          'head_branch': 'tren/actual-ci-1'}]}]
+            return [[{'context': 'legacy', 'state': 'failure'}]]
+        lector.api = api
+        self.assertEqual(lector.ci(REPO, 'a' * 40, 'tren/actual-ci-1').estado, 'verde')
+
+    def test_status_solo_no_autoriza_solicitud_ni_con_ci_configurado_vacio(self):
+        for estado in ('success', 'failure'):
+            with self.subTest(estado=estado):
+                lector = GitHubGit({'checks_esperados': []}, activo=True)
+                lector.api = lambda endpoint, paginado=False: (
+                    [{'check_runs': []}] if '/check-runs?' in endpoint else
+                    [{'check_suites': []}] if '/check-suites?' in endpoint else
+                    [[{'context': 'legacy', 'state': estado}]])
+                self.assertEqual(lector.ci(REPO, 'a' * 40, 'tren/actual-ci-1').estado, 'pendiente')
+
     def leer(self, checks, datos=None, error=None):
         llamadas = []
         lector = GitHubGit({}, activo=True)

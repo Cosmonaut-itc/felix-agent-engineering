@@ -724,7 +724,8 @@ consultan también todas las páginas de
 [check suites del commit](https://docs.github.com/en/rest/checks/suites#list-check-suites-for-a-git-reference):
 la API garantiza `head_branch`, `head_sha` e `id` en cada suite, mientras el
 [check-run](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)
-sólo garantiza `check_suite.id`. Se cruzan por ese id y se exigen C y la ref
+sólo garantiza `check_suite.id`. Se piden los checks con `filter=all` (el
+default `latest` filtra por `completed_at`), se cruzan por ese id y se exigen C y la ref
 publicada exactos **antes** de elegir el mayor id por nombre. Un check de la
 ref anterior, aunque termine después de reanudar, no sirve. Hasta observar
 checks de la solicitud vigente, la lectura es pendiente y corre el plazo
