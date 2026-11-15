@@ -151,7 +151,7 @@ c.tick(frontera=frontera)
         self.contexto.tick(200)
         self.assertEqual(len(self.posts()), 2)
         # El aviso failure despierta al dueño, pero no invalida CI de su head.
-        self.assertEqual(self.contexto.observador.ci(activo.REPO, nuevo), "verde")
+        self.assertEqual(self.contexto.observador.ci(activo.REPO, nuevo).estado, "verde")
 
     def test_caducidad_pr_cerrado_comenta_sin_status(self):
         self.hasta_fase(activo.Congelado)
@@ -225,13 +225,13 @@ c.tick(frontera=frontera)
         self.sembrar_devoluciones(pausa=True)
         self.contexto.tick()
         head = self.miembros[0][1]
-        self.assertEqual(self.contexto.observador.ci(activo.REPO, head), "verde")
+        self.assertEqual(self.contexto.observador.ci(activo.REPO, head).estado, "verde")
         sombra = activo.GitHubGit(self.contexto.config, ejecutar=self.contexto.gh, sombra=True)
-        self.assertEqual(sombra.ci(activo.REPO, head), "pendiente")
+        self.assertEqual(sombra.ci(activo.REPO, head).estado, "pendiente")
         self.contexto.feedback_gh(["gh", "api", "--method", "POST",
             "repos/{}/statuses/{}".format(activo.REPO, head), "--input", "-"],
             input=json.dumps({"context": "otro-check", "state": "failure"}))
-        self.assertEqual(self.contexto.observador.ci(activo.REPO, head), "pendiente")
+        self.assertEqual(self.contexto.observador.ci(activo.REPO, head).estado, "rojo")
 
     def test_seco_entregar_y_sombra_no_publican_aun_con_feedback_pendiente(self):
         self.sembrar_devoluciones(pausa=True)

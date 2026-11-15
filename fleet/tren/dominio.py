@@ -69,6 +69,8 @@ class Entrada:
     terminal: Optional['Terminal'] = None
     # Sólo doble camino: instante observado de caducidad, sin borrar admisión.
     caducada: Optional[float] = None
+    # Ligada al recibo: conserva el aislamiento hasta resolver la entrega.
+    partida: bool = False
 
 
 @dataclass(frozen=True)
@@ -239,6 +241,14 @@ class Armado:
 @dataclass(frozen=True)
 class EsperandoCI:
     candidato: Candidato
+    desde: Optional[float] = None
+    solicitud: int = 0
+
+
+@dataclass(frozen=True)
+class ResultadoCI:
+    estado: str
+    rojos: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -360,6 +370,7 @@ class Observacion:
     ci_recibo: str = "verde"
     decision: Optional[Decision] = None
     pausa_id: str = ""
+    ci_rojos: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -466,6 +477,59 @@ ESPERAS_SUITE = (300, 900, 3600)
 def cambiar_fase(estado, tren, fase):
     return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id else t
                                        for t in estado.trenes))
+
+
+def rama_ci(tren):
+    """Otra solicitud manual publica otra ref sin modificar el C probado."""
+    solicitud = getattr(tren.fase, "solicitud", 0)
+    return tren.id + ("-ci-" + str(solicitud) if solicitud else "")
+
+
+def recibo_ci(tren):
+    """Identidad durable de C y, al reanudar, de la solicitud publicada."""
+    return "github:" + tren.fase.candidato.C + (
+        ":tren/" + rama_ci(tren) if tren.fase.solicitud else "")
+
+
+SALIDAS_CI = {"verde": "suite", "rojo": "separar-o-devolver", "pendiente": "esperar"}
+PLAZO_CI = 3600
+
+
+def avanzar_ci(estado, tren, observacion):
+    """Salida pura de EsperandoCI; el rojo exige identidad de tren y C."""
+    fase = tren.fase
+    if fase.desde is None:
+        # Snapshots anteriores a U16: empezar el plazo al primer tick nuevo.
+        fase = replace(fase, desde=observacion.ahora)
+        estado = cambiar_fase(estado, tren, fase)
+    ligada = (observacion.tren_id == tren.id and
+              observacion.ci_recibo == recibo_ci(tren))
+    lectura = observacion.ci_candidato if ligada else "pendiente"
+    if lectura == "rojo" and not (isinstance(observacion.ci_rojos, (tuple, list)) and
+            observacion.ci_rojos and all(
+            isinstance(n, str) and n.strip() for n in observacion.ci_rojos)):
+        lectura = "pendiente"
+    salida = SALIDAS_CI.get(lectura, "esperar")
+    if salida == "separar-o-devolver":
+        if len(tren.recibos) > 1:
+            estado = cambiar_fase(estado, tren, Terminal("PARTIDO"))
+            return replace(estado, entradas=tuple(
+                replace(e, tren=None, solo=True, partida=True)
+                if e.entrega.recibo in tren.recibos else e for e in estado.entradas)), ()
+        entrada = next(e for e in estado.entradas if e.entrega.recibo == tren.recibos[0])
+        entrega = entrada.entrega
+        payload = json.dumps({"lote": tren.id, "B": fase.candidato.B,
+            "C": fase.candidato.C, "pr": entrega.pr, "head": entrega.head,
+            "fallos": [], "ci_rojos": observacion.ci_rojos}, sort_keys=True)
+        efecto = Efecto(clave("devolver", tren.id, entrega.recibo), "devolver",
+                        (tren.id, entrega.recibo, payload))
+        estado = cambiar_fase(estado, tren, Terminal("DEVUELTO"))
+        return replace(estado, entradas=tuple(
+            replace(e, terminal=Terminal("DEVUELTO")) if e == entrada else e
+            for e in estado.entradas)), (efecto,)
+    if salida == "esperar" and observacion.ahora - fase.desde >= PLAZO_CI:
+        return replace(estado, pausa=Pausa("infraestructura", detalle="ci-sin-resultado")), ()
+    return estado, ()
 
 
 def efecto_diagnostico(tren, fase):
@@ -676,6 +740,7 @@ def paso(estado, observacion):
     promociones_pausadas = {t.id for t in activos
                            if estado.pausa and isinstance(t.fase, Promoviendo)
                            and not t.fase.reintento_pendiente}
+    esperando_ci = {t.id for t in activos if isinstance(t.fase, EsperandoCI)}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
@@ -695,13 +760,15 @@ def paso(estado, observacion):
             if isinstance(decision, Admitido):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
-            elif decision == Retenido(Motivo.INCIERTO):
-                # A failed read is not negative evidence: keep window and FIFO place.
+            elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
+                  entrada.tren in esperando_ci):
+                # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
             else:
                 admitida = None
             entrada = replace(entrada, admision=decision, admitida=admitida,
-                              solo=bool(vista and (vista.sensible or vista.alto_riesgo)))
+                              solo=entrada.partida or bool(vista and (
+                                  vista.sensible or vista.alto_riesgo)))
         entradas.append(entrada)
     estado = replace(estado, entradas=tuple(entradas))
     if estado.pausa:
@@ -716,7 +783,7 @@ def paso(estado, observacion):
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
                 observacion.tren_id == tren.id and
-                ocupada.ref == "refs/heads/tren/" + tren.id and
+                ocupada.ref == "refs/heads/tren/" + rama_ci(tren) and
                 ocupada.esperado == fase.candidato.C):
             return replace(estado, pausa=Pausa("rama-tren-ocupada")), tuple(efectos)
         if isinstance(fase, Congelado) and observacion.conflicto_cadena:
@@ -740,7 +807,15 @@ def paso(estado, observacion):
             if any(isinstance(e.admision, Rechazado) for e in miembros):
                 nuevo = replace(nuevo, pausa=Pausa("head-cambiado-en-tren"))
             return nuevo, tuple(efectos) + suite_efectos
+        if (isinstance(fase, EsperandoCI) and
+                not any(isinstance(e.admision, Rechazado) for e in miembros)):
+            estado, ci_efectos = avanzar_ci(estado, tren, observacion)
+            tren = next(t for t in estado.trenes if t.id == tren.id)
+            fase = tren.fase
+            if estado.pausa or isinstance(fase, Terminal):
+                return estado, tuple(efectos) + ci_efectos
         if (isinstance(fase, EsperandoCI) and observacion.tren_id == tren.id and
+                (not fase.solicitud or observacion.ci_recibo == recibo_ci(tren)) and
                 observacion.ci_candidato == "verde" and observacion.suite and
                 observacion.resultado_suite is not None):
             fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
@@ -766,9 +841,11 @@ def paso(estado, observacion):
             fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False)
             efectos.append(efecto_promover(tren.id, fase.intentos))
         elif isinstance(fase, Armado):
-            fase = EsperandoCI(fase.candidato)
+            fase = EsperandoCI(fase.candidato, observacion.ahora)
             efectos.append(Efecto(clave("ci", tren.id), "solicitar-ci", (tren.id,)))
-        elif isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde":
+        elif (isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde" and
+              (not fase.solicitud or (observacion.tren_id == tren.id and
+                                     observacion.ci_recibo == recibo_ci(tren)))):
             if observacion.resultado_suite is None:
                 efectos.append(Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)))
             if observacion.suite:
@@ -817,14 +894,17 @@ _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrad
           Incierto, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,
-          Repeticion, Reproduccion, Evidencia, Causa)}
+          Repeticion, Reproduccion, Evidencia, Causa, ResultadoCI)}
 
 
 def datos(valor):
     from dataclasses import fields, is_dataclass
     if is_dataclass(valor):
         return dict({"_tipo": type(valor).__name__},
-                    **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)})
+                    **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
+                       # Conservar payloads históricos de sombra/custodia.
+                       if not (isinstance(valor, Entrada) and f.name == "partida"
+                               and not valor.partida)})
     if isinstance(valor, tuple):
         return [datos(v) for v in valor]
     return valor.value if isinstance(valor, Enum) else valor

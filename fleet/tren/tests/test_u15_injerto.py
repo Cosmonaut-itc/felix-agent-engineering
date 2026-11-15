@@ -117,7 +117,7 @@ class RegresionesTests(ContextoInjerto):
         self.assertEqual(self.remoto(), self.B)
         ci_original = self.contexto.observador.ci
         self.contexto.observador.ci = lambda repo, sha: (
-            "pendiente" if sha == candidato.C else ci_original(repo, sha))
+            type(ci_original(repo, sha))("pendiente") if sha == candidato.C else ci_original(repo, sha))
         for n in range(3):
             self.contexto.tick(8100 + n)
         self.assertIsInstance(self.estado().trenes[-1].fase, EsperandoCI)

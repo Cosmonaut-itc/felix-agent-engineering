@@ -70,7 +70,9 @@ class U13InjertoTests(unittest.TestCase):
             sombra = GitHubGit(c.contexto.config, ejecutar=c.contexto.gh, sombra=True)
             # Este control requiere CI verde. U14 ahora publica pending en el
             # tick activo, que la sombra correctamente interpreta como retención.
-            with patch.object(sombra, "ci", return_value="verde"):
+            # El injerto también corre sobre versiones donde CI era un str.
+            verde = type(sombra.ci(activo.REPO, c.miembros[0][1]))("verde")
+            with patch.object(sombra, "ci", return_value=verde):
                 _, salida = activo.cli.ejecutar(args, sombra, 101)
             simulado = desde_datos(salida["plan"]["estado"])
             self.assertEqual(len(simulado.trenes), 1, "sombra debe formar su propio lote")
@@ -125,7 +127,7 @@ sys.exit(9)
                     if cambio.startswith("CI-"):
                         ci_original = c.contexto.observador.ci
                         c.contexto.observador.ci = lambda repo, sha: (
-                            "rojo" if cambio == "CI-rojo" else "pendiente") if (
+                            type(ci_original(repo, sha))("rojo" if cambio == "CI-rojo" else "pendiente")) if (
                                 sha == candidato.C or tipo == "repetir") else ci_original(repo, sha)
                     trabajos = c.lineas("trabajos.log")
                     pushes = c.lineas("pushes.log")

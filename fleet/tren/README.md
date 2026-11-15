@@ -1,4 +1,4 @@
-# Tren — sombra, tick activo, feedback y juicio (U15), sin repos activados por defecto
+# Tren — sombra, tick activo, feedback, juicio y CI sobre C (U16), sin repos activados por defecto
 
 Python stdlib 3.9+, SQLite y flock POSIX. El agente registra su watch antes
 de entregar; con el recibo durable termina su turno:
@@ -303,9 +303,6 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
   publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
   crear otro. El lanzador falso cumple esa condición; estas pruebas no
   acreditan al lanzador real. Su implementación pertenece a otra unidad.
-- Resolver en otra unidad la salida de CI rojo sobre C: hoy el reductor
-  conserva `EsperandoCI` y puede ocupar el carril indefinidamente. El injerto
-  no cambia esa transición.
 
 Esta unidad no activa repos, no instala tareas y no cambia el gobierno.
 
@@ -583,6 +580,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
 | `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
 | `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `absolver`: abandonar el diagnóstico o reenganche anterior y exigir CI y suite completa nuevos sobre el mismo C, incluso si el diagnóstico agotó D5. `abortar`: liberar entregas sin rojo. |
+| `infraestructura` | `ci-sin-resultado` | `reanudar`: solicitar CI sobre el mismo C con ref/clave nuevas y reiniciar los 60 minutos; `abortar`: liberar entregas sin rojo. No admite `absolver`. |
 | `rama-tren-ocupada` | vacío | `reanudar`: reintentar publicar el C guardado, sin forzar ni reemplazar la rama ajena; si sigue ocupada vuelve a pausar. `abortar`. |
 | `conflicto-en-cadena` | vacío; PR/archivos en la pausa | `expulsar`: sólo el PR en conflicto; sobrevivientes con suite completa. `abortar`. |
 | `candidato-no-corresponde` | vacío | `reanudar`: reintentar el armado sobre la B guardada, con clave nueva; no certificar el candidato rechazado. `abortar`. |
@@ -624,5 +622,168 @@ y muerte durante el reintento de promoción con ACK perdido sobre git real
 (un aterrizaje y una sola suite). `tests/remoto-u15-injerto.sh` ejecuta las
 tres regresiones contra `185e7a46` y exige sus fallos antes de probar el head
 actual. Se incluyen en `tests/remoto.sh`; no se ejecutan en la máquina
-que sólo edita código. No se activó ningún repo. Siguen pendientes D2/D8,
-el contrato del lanzador real y la salida de CI rojo sobre C (U16).
+que sólo edita código. No se activó ningún repo. Siguen pendientes D2/D8
+y el contrato del lanzador real. La salida de CI rojo sobre C queda cubierta
+por U16.
+
+
+## CI sobre el candidato y salida del carril (U16)
+
+`GitHubGit.ci` devuelve `ResultadoCI(estado, rojos)`: tres valores y los
+nombres de checks/statuses rojos, ordenados y sin duplicados. La admisión
+sigue exigiendo verde en cada head; la lectura del candidato consulta su C
+exacto y liga el resultado a `tren_id` y `ci_recibo=github:<C>`. Un rojo de
+otro tren o de otro C no produce partición ni devolución. Al reanudar, el
+recibo incluye además `:tren/<id>-ci-<n>` y sólo acepta esa solicitud.
+
+| Fuente | Conclusión / estado | Lectura |
+|---|---|---|
+| Check terminado | `success`, `skipped`, `neutral` | `verde` |
+| Check terminado (salvo la excepción Actions siguiente) | `failure`, `timed_out` | `rojo` |
+| Actions terminado en `failure` | falla `Set up job` o `Set up runner` antes de ejecutar un paso del workflow | `pendiente` |
+| Actions terminado en `failure` | pasos no disponibles, incompletos o job no verificable | `pendiente` |
+| Actions terminado en `failure` | el workflow llegó a ejecutar pasos y no hubo ese fallo previo de preparación | `rojo` |
+| Check terminado | `cancelled`, `action_required`, `startup_failure`, `stale` | `pendiente` |
+| Check no terminado | cualquiera, incluido `success` prematuro | `pendiente` |
+| Check terminado | conclusión ausente o desconocida | `pendiente` |
+| Commit status | `success` | `verde` |
+| Commit status | `failure` | `rojo` |
+| Commit status | `error`, `pending`, estado desconocido | `pendiente` |
+
+En modo activo, `success` acredita aprobación; `skipped` y `neutral` son
+conclusiones aceptadas por GitHub, incluso si el check figura en
+`checks_esperados`. La configuración exige presencia: un workflow que nunca
+emite su check sigue pendiente. `failure` y `timed_out` informan el resultado
+negativo observado, sin afirmar una causa de producto D5. Una cancelación
+humana o por concurrencia, una intervención requerida, un fallo de arranque,
+evidencia vencida o un status `error` no acreditan un fallo del cambio:
+esperan hasta el plazo de infraestructura. Valores desconocidos también
+esperan sin inventar éxito ni culpa.
+
+Para un `failure` de la app `github-actions`, se hace una sola consulta extra
+al [job de Actions](https://docs.github.com/en/rest/actions/workflow-jobs#get-a-job-for-a-workflow-run),
+no por cada check verde o pendiente. Se toma el id del job de `details_url`
+(`https://github.com/<repo>/actions/runs/<run>/job/<job>`), sin suponer que
+coincida con el id del check. Su `head_sha` y `check_run_url` deben corresponder
+al C y al check consultados. Los pasos se recorren por `number`: un fallo de
+`Set up job` o `Set up runner` antes de cualquier paso del workflow no
+saltado conserva `pendiente`, incluso si aparecen `failure` sintéticos más
+adelante (p. ej. tras checkout e instalación saltados). `Complete job` no
+cuenta como ejecución del workflow. Un fallo de un paso del workflow después
+de una preparación correcta sigue rojo. Si falla la consulta, la URL no
+identifica un job verificable o no hay pasos terminados suficientes, se
+espera al plazo de infraestructura: no se inventa rojo. Los checks de otras
+apps y `timed_out` conservan la tabla anterior. La sombra y `--seco` no
+consultan jobs.
+
+Se conservan todas las páginas. Sólo decide el check-run con mayor id por
+nombre y el status más reciente por contexto. Un rojo explícito prima sobre
+pendientes y esperados ausentes; un faltante sólo impide **verde**. Verde
+exige que todos los checks/statuses vigentes sean aceptables y que existan
+todos los esperados. Sin observaciones se espera, salvo CI declarado vacío
+(`checks_esperados: []`). `pao-tren/resultado` se excluye tanto en checks
+como en statuses; sólo la sombra de doble camino conserva su inclusión.
+La sombra y `tick --seco` mantienen su lectura histórica: únicamente
+`success` es verde, cualquier otra conclusión retiene.
+
+La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
+
+- **Verde:** mantiene el camino existente de suite y promoción de C.
+- **Rojo con dos o tres miembros:** cierra el tren `PARTIDO`, sin comentario,
+  status rojo, suite ni escritura en main. En el mismo snapshot libera todas
+  las entregas con `partida=True` y `solo=True`. Los ticks posteriores forman
+  trenes individuales en su orden FIFO, cada uno sobre el main entonces
+  vigente, con candidato, CI y suite propios. No se atribuye el fallo del lote.
+- **Rojo con un miembro:** cierra `DEVUELTO`, resuelve esa entrega y deja
+  libre el carril inmediatamente. Un efecto `devolver` de U14 publica un
+  comentario marcado con lote, B, C, head y `ci_rojos`, seguido de `failure`
+  enlazado al comentario. No inventa unidad ni comando de reproducción de
+  Hasito para un fallo de GitHub. Otra entrega puede formar tren en el
+  siguiente tick, aun si queda feedback pendiente.
+- **Pendiente:** a los 59 minutos sigue esperando; desde los 60 minutos
+  pausa `infraestructura` / `ci-sin-resultado`, sin rojo al dueño. El plazo
+  usa `observacion.ahora` desde la transición a `EsperandoCI`, aunque falten
+  checks o la admisión esté retenida, y se evalúa cuando el tick puede
+  observar. Un fallo al leer el CI cuenta como pendiente. Una caída que
+  impide leer `main` hace fallar el tick hasta que vuelva GitHub; el primer
+  tick que pueda observar evalúa el plazo vencido. Un snapshot anterior sin
+  `desde` comienza a contar en el primer tick de U16.
+  Un verde observado sin suite lanzada **no detiene el plazo**: si el CI
+  vuelve a pendiente se cuenta desde la entrada original. Una pausa manual
+  tampoco descuenta tiempo. Un recibo durable de suite sí permite recuperar
+  su lanzamiento con el CI verde guardado y salir de `EsperandoCI`, aunque
+  la lectura fresca haya vuelto a pendiente.
+
+`reanudar` conserva el tren y C, reinicia `desde` al consumir el juicio y
+emite `solicitar-ci` con contador/clave nuevos. Publica una ref
+`tren/<id>-ci-<n>` sobre ese mismo C: repetir la publicación de la ref
+original sería un no-op de git y no pediría otra ejecución. Una muerte
+reutiliza exactamente la ref del contador guardado. Se sigue leyendo el CI
+por C y se exige verde antes de la suite. Para esta nueva solicitud se
+consultan también todas las páginas de
+[check suites del commit](https://docs.github.com/en/rest/checks/suites#list-check-suites-for-a-git-reference):
+la API garantiza `head_branch`, `head_sha` e `id` en cada suite, mientras el
+[check-run](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)
+sólo garantiza `check_suite.id`. Se piden los checks con `filter=all` (el
+default `latest` filtra por `completed_at`), se cruzan por ese id y se exigen C y la ref
+publicada exactos **antes** de elegir el mayor id por nombre. Un check de la
+ref anterior, aunque termine después de reanudar, no sirve. Hasta observar
+checks de la solicitud vigente, la lectura es pendiente y corre el plazo
+nuevo, incluso con `checks_esperados: []`. Los commit statuses no informan
+la ref solicitante: al reanudar no se consumen, ni como verde ni como rojo.
+Un proveedor que sólo publique statuses o no exponga la suite con esa ref
+queda pendiente hasta el plazo; debe publicar checks ligados a la solicitud
+para habilitar la suite. El recibo incluye la ref también en el buzón de
+recuperación; un recibo anterior no autoriza una suite de la nueva solicitud.
+No relanza automáticamente checks fallidos.
+`abortar` conserva el comportamiento U15: cierra `ABORTADO`, libera
+la custodia sin rojo y permite readmisión desde el tick siguiente.
+
+**No aplica `absolver` a `ci-sin-resultado`.** En `juicios.POLITICA` esa fila
+sólo contiene `reanudar -> ci-nuevo` y `abortar -> abortar`. `suite-nueva`,
+la operación de absolución U15, exige `Corriendo` o `Diagnosticando`: aquí
+no existe suite ni diagnóstico que absolver y omitir CI sería un certificado
+falso. El validador exige `EsperandoCI` para `ci-nuevo`; el expediente sólo
+ofrece las decisiones que pasan esa validación.
+
+La marca `partida` pertenece al recibo `(repo, PR, head)` y resiste cada
+readmisión, incluida una retención transitoria, conservando `recibida` y la
+primera `admitida`. Dura hasta resolver la entrega: formar un individual no
+la consume; si se aborta o rearma, vuelve a formar un tren de uno. Un head nuevo
+caduca la entrega anterior por las reglas existentes y **no hereda** la
+marca: no es la entrega que participó en el lote rojo y tendrá su propio
+APTO/dirigida/CI. Los atributos sensible y alto riesgo siguen imponiendo
+viaje individual por su propia política.
+
+El reductor ignora un rojo sin nombres válidos y lo trata como pendiente;
+no parte ni devuelve sin evidencia nominada. El escritor de feedback también
+rechaza ese payload antes de consultar o publicar en GitHub.
+
+Snapshot, devoluciones a la fila, cierre y efectos se guardan en el mismo
+COMMIT de U13/U15. La recuperación del comentario usa el marcador U14; en
+esta devolución por CI se reconcilia además el último status del contexto
+contra el payload y URL antes de repetir un POST tras perder su ACK. Las
+claves y el orden por PR impiden adelantar un `pending` posterior al feedback
+anterior incompleto. Los efectos de trabajo del tren terminal se cancelan
+sin cancelar su feedback. La extensión aditiva omite `partida=False` al
+serializar: custodia y eventos `sombra`, `sombra-doble-camino` y
+`admision-entrega` conservan su contrato. `tick --seco` usa la sombra sin
+consumir el CI operativo ni ejecutar efectos.
+
+`tests/remoto-u16.sh`, llamado por `tests/remoto.sh`, injerta las tres
+regresiones de partición, devolución individual y plazo/reanudación sobre
+`85138706`: exige tres fallos de aserción, cero errores, y conserva la
+salida. Después, la suite completa comprueba el comportamiento corregido,
+la tabla de conclusiones, la política exhaustiva de juicio, el aislamiento
+de C, la marca por entrega y muertes reales entre COMMIT y drenado, después
+del comentario y después del status. Todas las pruebas usan stdlib,
+HOME/XDG temporales canónicos, git local y transportes falsos sin red.
+`tests/remoto-u16-injerto.sh` exige siete regresiones de aserción sobre
+`50cb5cda` (cancelación/infraestructura, skips esperados, rojo con faltantes,
+partición tras aborto y rearme, rojo sin nombres en reductor y feedback), y
+las ejecuta después sobre el código actual. La comparación contra `85138706`
+exige igualdad byte a byte de eventos de sombra de doble camino y `--seco`.
+El lanzador remoto solapa los injertos históricos con la suite actual,
+en procesos y temporales separados, para respetar el carril rápido de diez
+minutos. Espera ambos resultados y conserva el log completo de los injertos;
+un fallo en cualquiera de los dos caminos hace fallar la corrida.

@@ -9,12 +9,20 @@ export XDG_CACHE_HOME="$aislado/cache"
 mkdir -p "$HOME"
 bin/pao check
 git version
-bash fleet/tren/tests/remoto-u13-injerto.sh
-bash fleet/tren/tests/remoto-u14-r1.sh
-bash fleet/tren/tests/remoto-u14-r2.sh
-bash fleet/tren/tests/remoto-u15-injerto.sh
-bash fleet/tren/tests/remoto-u15-r1.sh
-bash fleet/tren/tests/remoto-u15-r2.sh
+# Los injertos usan archivos/procesos temporales propios; no comparten
+# snapshots con la suite actual. Solaparlos permite completar el carril rápido.
+(
+  bash fleet/tren/tests/remoto-u13-injerto.sh
+  bash fleet/tren/tests/remoto-u14-r1.sh
+  bash fleet/tren/tests/remoto-u14-r2.sh
+  bash fleet/tren/tests/remoto-u15-injerto.sh
+  bash fleet/tren/tests/remoto-u15-r1.sh
+  bash fleet/tren/tests/remoto-u15-r2.sh
+  bash fleet/tren/tests/remoto-u16.sh
+  bash fleet/tren/tests/remoto-u16-injerto.sh
+  bash fleet/tren/tests/remoto-u16-r1.sh
+) > "$aislado/antes.log" 2>&1 &
+tren_antes_pid=$!
 encontrado=0
 resultado=0
 for interprete in python3.9 python3.10 python3; do
@@ -24,6 +32,10 @@ for interprete in python3.9 python3.10 python3; do
     "$interprete" -I -m unittest discover -s fleet/tren/tests -v || resultado=1
   fi
 done
+if ! wait "$tren_antes_pid"; then
+  resultado=1
+fi
+cat "$aislado/antes.log"
 if [ "$encontrado" -eq 0 ]; then
   echo 'No hay intérprete Python disponible' >&2
   exit 2
@@ -35,5 +47,8 @@ if [ "$resultado" -eq 0 ]; then
   echo 'U15 injerto: tres regresiones fallan sobre 185e7a46 y pasan después; sombra, tabla exhaustiva y muerte en reintento de promoción con ACK perdido pasan; toda la suite del tren pasa.'
   echo 'U15 R1: dos regresiones fallan sobre e74bfdb1 y pasan después; pausa con ACK guardado o perdido aterriza sin caducidades ni push adicional; toda la suite del tren pasa.'
   echo 'U15 R2: tres regresiones fallan sobre a7ce4de3 y pasan después; EnBase consumido permite caducidad en pausa sin perderla al abortar o expulsar; reanudar conserva el aviso; toda la suite del tren pasa.'
+  echo 'U16 injerto: siete regresiones fallan sobre 50cb5cda y pasan después; sombra y tick --seco idénticos a 85138706; toda la suite del tren pasa.'
+  echo 'U16: tres regresiones fallan sobre 85138706 y pasan después; CI rojo, partición FIFO, timeout, juicio, recuperación y sombra pasan.'
+  echo 'U16 R1: cuatro regresiones fallan sobre 48748009 y pasan después; solicitud de CI vigente, recuperación y fallo de preparación del runner pasan.'
 fi
 exit "$resultado"

@@ -154,7 +154,8 @@ class Contexto:
         recibo = evidencia / ("resultado-reanudado.json" if reanudando else "resultado.json")
         if not recibo.exists():
             commit = argv[argv.index("--sha" if rep else "--suite") + 1]
-            base = self.config["base"]
+            # Una segunda generación puede correr sobre otro main.
+            base = argv[argv.index("--base") + 1] if "--base" in argv else self.config["base"]
             head_causal = dict(self.config["miembros"])["2"]
             contiene = self.git.git("merge-base", "--is-ancestor", head_causal, commit).returncode == 0
             rojo = (self.raiz / "producto-rojo").exists() and contiene
@@ -455,7 +456,7 @@ class ActivoTests(unittest.TestCase):
         candidato = self.estado().trenes[0].fase.candidato
         # Retener sólo el CI de C, sin invalidar los heads de admisión.
         original = self.contexto.observador.ci
-        self.contexto.observador.ci = lambda repo, sha: "pendiente" if sha == candidato.C else original(repo, sha)
+        self.contexto.observador.ci = lambda repo, sha: type(original(repo, sha))("pendiente") if sha == candidato.C else original(repo, sha)
         for n in range(3):
             self.contexto.tick(1000 + n)
         self.assertEqual(self.lineas("trabajos.log"), [])

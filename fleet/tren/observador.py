@@ -8,7 +8,19 @@ import subprocess
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import EsperandoCI, Observacion, Rechazado, Terminal, VistaPR
+from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
+                     VistaPR, rama_ci, recibo_ci)
+
+
+CONCLUSIONES_CI = {
+    "success": "verde",
+    "failure": "rojo", "timed_out": "rojo",
+    "cancelled": "pendiente", "action_required": "pendiente",
+    "startup_failure": "pendiente", "stale": "pendiente",
+    "skipped": "verde", "neutral": "verde",
+}
+STATUS_CI = {"success": "verde", "failure": "rojo", "error": "pendiente",
+             "pending": "pendiente"}
 
 
 class Observador(Protocol):
@@ -79,36 +91,103 @@ class GitHubGit:
             return json.loads(respuesta["body"])
         return json.loads(Path(referencia).read_text())
 
-    def ci(self, repo, head):
+    def fallo_actions(self, repo, head, check):
+        """Una sola lectura del job; sin pasos verificables no atribuir rojo."""
+        try:
+            url = urlparse(check.get("details_url") or "")
+            job = re.fullmatch(r"/" + re.escape(repo) +
+                               r"/actions/runs/\d+/job/(\d+)", url.path)
+            if url.scheme != "https" or url.netloc != "github.com" or not job:
+                return "pendiente"
+            datos = self.api("repos/{}/actions/jobs/{}".format(repo, job[1]))
+            if (datos["head_sha"] != head or datos["check_run_url"] !=
+                    "https://api.github.com/repos/{}/check-runs/{}".format(repo, check["id"])):
+                return "pendiente"
+            pasos = sorted(datos["steps"], key=lambda p: p["number"])
+            if not pasos:
+                return "pendiente"
+            workflow_iniciado = False
+            for p in pasos:
+                if p["status"] != "completed" or p["conclusion"] is None:
+                    return "pendiente"
+                if p["name"] in ("Set up job", "Set up runner"):
+                    if p["conclusion"] == "failure" and not workflow_iniciado:
+                        # Los fallos sintéticos posteriores no prueban ejecución.
+                        return "pendiente"
+                elif p["name"] != "Complete job" and p["conclusion"] != "skipped":
+                    workflow_iniciado = True
+            return "rojo" if workflow_iniciado else "pendiente"
+        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+            return "pendiente"
+
+    def ci(self, repo, head, rama=None):
         # --slurp retains every page of both APIs, including >100 checks/statuses.
-        paginas = self.api("repos/{}/commits/{}/check-runs?per_page=100".format(repo, head), True)
+        endpoint = "repos/{}/commits/{}/check-runs?per_page=100".format(repo, head)
+        # latest se filtra por completed_at en GitHub: una finalización vieja
+        # tardía no debe ocultar los checks de la ref que acabamos de solicitar.
+        paginas = self.api(endpoint + ("&filter=all" if rama is not None else ""), True)
+        suites = None
+        if rama is not None:
+            # El check-run sólo garantiza check_suite.id; head_branch pertenece
+            # al recurso check-suite. No inferir una ref a partir del SHA.
+            paginas_suites = self.api(
+                "repos/{}/commits/{}/check-suites?per_page=100".format(repo, head), True)
+            suites = {s["id"] for p in paginas_suites for s in p["check_suites"]
+                      if s["head_sha"] == head and s["head_branch"] == rama}
         # A re-run leaves the superseded run (often cancelled) on the same head;
         # only the newest run per check name decides.
         checks = {}
         for c in sorted((c for pagina in paginas for c in pagina["check_runs"]),
                         key=lambda c: c["id"]):
+            if not self.sombra and c["name"] == "pao-tren/resultado":
+                continue
+            if suites is not None and (c.get("head_sha") != head or
+                    (c.get("check_suite") or {}).get("id") not in suites):
+                continue
             checks[c["name"]] = c
         paginas_status = self.api("repos/{}/commits/{}/statuses?per_page=100".format(repo, head), True)
         statuses = [s for pagina in paginas_status for s in pagina]
         # Status API returns newest first. A newer pending status supersedes green.
         ultimos = {}
         for status in statuses:
+            # Los commit statuses no identifican la ref que los solicitó.
+            if rama is not None:
+                continue
             # D6 despierta al dueño; no es CI. Tras caducar, el head actual
             # debe poder reentregarse sin que nuestro aviso lo retenga solo.
             # Sólo la sombra con doble camino conserva la lectura histórica.
-            # También el --seco sin doble camino usa el gate del tren activo.
+            # --seco sin doble camino conserva la exclusión de este contexto.
             if not self.sombra and status["context"] == "pao-tren/resultado":
                 continue
             ultimos.setdefault(status["context"], status["state"])
         esperados = self.config.get("checks_esperados")
-        if esperados is not None and any(n not in checks for n in esperados):
-            return "pendiente"
-        # Zero checks counts as green only when the repo declares an empty CI.
-        if not checks and not ultimos and esperados != []:
-            return "pendiente"
-        return "verde" if (all(c["status"] == "completed" and c["conclusion"] == "success"
-                               for c in checks.values())
-                           and all(s == "success" for s in ultimos.values())) else "pendiente"
+        faltan = esperados is not None and any(n not in checks for n in esperados)
+        # Sólo el tick activo interpreta la tabla U16. Sombra y --seco
+        # conservan success como único verde, incluido el doble camino.
+        if self.sombra or not self.activo:
+            verde = (not faltan and
+                     (bool(checks or ultimos) or esperados == []) and
+                     all(c["status"] == "completed" and c.get("conclusion") == "success"
+                         for c in checks.values()) and
+                     all(s == "success" for s in ultimos.values()))
+            return ResultadoCI("verde" if verde else "pendiente")
+        valores = {n: CONCLUSIONES_CI.get(c.get("conclusion"), "pendiente")
+                   if c["status"] == "completed" else "pendiente"
+                   for n, c in checks.items()}
+        for n, c in checks.items():
+            if (valores[n] == "rojo" and c.get("conclusion") == "failure" and
+                    (c.get("app") or {}).get("slug") == "github-actions"):
+                valores[n] = self.fallo_actions(repo, head, c)
+        estados = {n: STATUS_CI.get(s, "pendiente") for n, s in ultimos.items()}
+        rojos = tuple(sorted({n for n, v in list(valores.items()) + list(estados.items())
+                              if v == "rojo"}))
+        # Un esperado ausente impide verde, pero no oculta un rojo presente.
+        if rojos:
+            return ResultadoCI("rojo", rojos)
+        if faltan or (not checks and not ultimos and (esperados != [] or rama is not None)):
+            return ResultadoCI("pendiente")
+        return ResultadoCI("verde" if all(v == "verde" for v in valores.values())
+                           and all(v == "verde" for v in estados.values()) else "pendiente")
 
     def vista(self, entrega):
         repo, pr = entrega.repo, entrega.pr
@@ -149,7 +228,7 @@ class GitHubGit:
                 hallazgos=apto.get("hallazgos_abiertos")
                 if type(apto.get("hallazgos_abiertos")) is int else None,
                 dirigida=dirigida.get("head") == head and dirigida.get("resultado") == "limpio",
-                ci=self.ci(repo, head), conflicto=conflicto,
+                ci=self.ci(repo, head).estado, conflicto=conflicto,
                 sensible=es_sensible(nombres, self.config),
                 alto_riesgo=bool(etiquetas.intersection(
                     self.config.get("etiquetas_alto_riesgo", ["alto-riesgo"]))),
@@ -196,11 +275,13 @@ class GitHubGit:
                 # GitHub no conoce un C aún no publicado: CI pendiente, y el
                 # tick sigue hasta reintentar la publicación.
                 try:
-                    ci = self.ci(repo, tren.fase.candidato.C)
+                    ci = self.ci(repo, tren.fase.candidato.C,
+                                 "tren/" + rama_ci(tren) if tren.fase.solicitud else None)
                 except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                    ci = "pendiente"
-                observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci,
-                                      ci_recibo="github:" + tren.fase.candidato.C)
+                    ci = ResultadoCI("pendiente")
+                observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci.estado,
+                                      ci_rojos=ci.rojos,
+                                      ci_recibo=recibo_ci(tren))
         return observacion
 
 
