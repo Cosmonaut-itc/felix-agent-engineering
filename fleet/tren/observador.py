@@ -8,7 +8,7 @@ import subprocess
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import Observacion, Rechazado, VistaPR
+from dominio import EsperandoCI, Observacion, Rechazado, Terminal, VistaPR
 
 
 class Observador(Protocol):
@@ -45,10 +45,11 @@ def sha(valor):
 
 
 class GitHubGit:
-    def __init__(self, config, ejecutar=None, sombra=False):
+    def __init__(self, config, ejecutar=None, sombra=False, activo=False):
         self.config = config
         self.ejecutar = ejecutar or subprocess.run
         self.sombra = sombra
+        self.activo = activo
 
     def comando(self, args):
         return self.ejecutar(args, check=True, capture_output=True, text=True,
@@ -166,18 +167,35 @@ class GitHubGit:
         if not sha(base):
             raise ValueError("main inválido")
         vistas = []
+        terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
         for entrada in estado.entradas:
             # En sombra se sigue un rechazo hasta observar su posible merge externo.
             if ((self.sombra and entrada.terminal) or
-                    (isinstance(entrada.admision, Rechazado) and not self.sombra)):
+                    (isinstance(entrada.admision, Rechazado) and not self.sombra) or
+                    (self.activo and entrada.tren in terminales)):
                 continue
             try:
                 vistas.append(self.vista(entrada.entrega))
             except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
                 vistas.append(VistaPR(entrada.entrega.pr, entrada.entrega.head,
                                       completa=False, recibo=entrada.entrega.recibo))
-        return Observacion(ahora, base, tuple(vistas),
-                           self.config.get("excluir_alto_riesgo", True))
+        observacion = Observacion(ahora, base, tuple(vistas),
+                                 self.config.get("excluir_alto_riesgo", True),
+                                 costo_suite_sana_s=self.config.get("costo_suite_sana_s", 0)
+                                 if self.activo else 0)
+        if self.activo:
+            tren = next((t for t in estado.trenes if isinstance(t.fase, EsperandoCI)), None)
+            if tren:
+                # La publicación sólo solicita CI; leer checks sobre el C exacto.
+                # GitHub no conoce un C aún no publicado: CI pendiente, y el
+                # tick sigue hasta reintentar la publicación.
+                try:
+                    ci = self.ci(repo, tren.fase.candidato.C)
+                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                    ci = "pendiente"
+                observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci,
+                                      ci_recibo="github:" + tren.fase.candidato.C)
+        return observacion
 
 
 class Falso:
