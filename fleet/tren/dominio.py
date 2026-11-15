@@ -485,6 +485,12 @@ def rama_ci(tren):
     return tren.id + ("-ci-" + str(solicitud) if solicitud else "")
 
 
+def recibo_ci(tren):
+    """Identidad durable de C y, al reanudar, de la solicitud publicada."""
+    return "github:" + tren.fase.candidato.C + (
+        ":tren/" + rama_ci(tren) if tren.fase.solicitud else "")
+
+
 SALIDAS_CI = {"verde": "suite", "rojo": "separar-o-devolver", "pendiente": "esperar"}
 PLAZO_CI = 3600
 
@@ -497,7 +503,7 @@ def avanzar_ci(estado, tren, observacion):
         fase = replace(fase, desde=observacion.ahora)
         estado = cambiar_fase(estado, tren, fase)
     ligada = (observacion.tren_id == tren.id and
-              observacion.ci_recibo == "github:" + fase.candidato.C)
+              observacion.ci_recibo == recibo_ci(tren))
     lectura = observacion.ci_candidato if ligada else "pendiente"
     if lectura == "rojo" and not (isinstance(observacion.ci_rojos, (tuple, list)) and
             observacion.ci_rojos and all(
@@ -809,6 +815,7 @@ def paso(estado, observacion):
             if estado.pausa or isinstance(fase, Terminal):
                 return estado, tuple(efectos) + ci_efectos
         if (isinstance(fase, EsperandoCI) and observacion.tren_id == tren.id and
+                (not fase.solicitud or observacion.ci_recibo == recibo_ci(tren)) and
                 observacion.ci_candidato == "verde" and observacion.suite and
                 observacion.resultado_suite is not None):
             fase = Corriendo(fase.candidato, observacion.suite, observacion.ci_recibo)
@@ -836,7 +843,9 @@ def paso(estado, observacion):
         elif isinstance(fase, Armado):
             fase = EsperandoCI(fase.candidato, observacion.ahora)
             efectos.append(Efecto(clave("ci", tren.id), "solicitar-ci", (tren.id,)))
-        elif isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde":
+        elif (isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde" and
+              (not fase.solicitud or (observacion.tren_id == tren.id and
+                                     observacion.ci_recibo == recibo_ci(tren)))):
             if observacion.resultado_suite is None:
                 efectos.append(Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)))
             if observacion.suite:

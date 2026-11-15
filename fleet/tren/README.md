@@ -633,12 +633,16 @@ por U16.
 nombres de checks/statuses rojos, ordenados y sin duplicados. La admisión
 sigue exigiendo verde en cada head; la lectura del candidato consulta su C
 exacto y liga el resultado a `tren_id` y `ci_recibo=github:<C>`. Un rojo de
-otro tren o de otro C no produce partición ni devolución.
+otro tren o de otro C no produce partición ni devolución. Al reanudar, el
+recibo incluye además `:tren/<id>-ci-<n>` y sólo acepta esa solicitud.
 
 | Fuente | Conclusión / estado | Lectura |
 |---|---|---|
 | Check terminado | `success`, `skipped`, `neutral` | `verde` |
-| Check terminado | `failure`, `timed_out` | `rojo` |
+| Check terminado (salvo la excepción Actions siguiente) | `failure`, `timed_out` | `rojo` |
+| Actions terminado en `failure` | falla `Set up job` o `Set up runner` antes de ejecutar un paso del workflow | `pendiente` |
+| Actions terminado en `failure` | pasos no disponibles, incompletos o job no verificable | `pendiente` |
+| Actions terminado en `failure` | el workflow llegó a ejecutar pasos y no hubo ese fallo previo de preparación | `rojo` |
 | Check terminado | `cancelled`, `action_required`, `startup_failure`, `stale` | `pendiente` |
 | Check no terminado | cualquiera, incluido `success` prematuro | `pendiente` |
 | Check terminado | conclusión ausente o desconocida | `pendiente` |
@@ -655,6 +659,22 @@ humana o por concurrencia, una intervención requerida, un fallo de arranque,
 evidencia vencida o un status `error` no acreditan un fallo del cambio:
 esperan hasta el plazo de infraestructura. Valores desconocidos también
 esperan sin inventar éxito ni culpa.
+
+Para un `failure` de la app `github-actions`, se hace una sola consulta extra
+al [job de Actions](https://docs.github.com/en/rest/actions/workflow-jobs#get-a-job-for-a-workflow-run),
+no por cada check verde o pendiente. Se toma el id del job de `details_url`
+(`https://github.com/<repo>/actions/runs/<run>/job/<job>`), sin suponer que
+coincida con el id del check. Su `head_sha` y `check_run_url` deben corresponder
+al C y al check consultados. Los pasos se recorren por `number`: un fallo de
+`Set up job` o `Set up runner` antes de cualquier paso del workflow no
+saltado conserva `pendiente`, incluso si aparecen `failure` sintéticos más
+adelante (p. ej. tras checkout e instalación saltados). `Complete job` no
+cuenta como ejecución del workflow. Un fallo de un paso del workflow después
+de una preparación correcta sigue rojo. Si falla la consulta, la URL no
+identifica un job verificable o no hay pasos terminados suficientes, se
+espera al plazo de infraestructura: no se inventa rojo. Los checks de otras
+apps y `timed_out` conservan la tabla anterior. La sombra y `--seco` no
+consultan jobs.
 
 Se conservan todas las páginas. Sólo decide el check-run con mayor id por
 nombre y el status más reciente por contexto. Un rojo explícito prima sobre
@@ -682,9 +702,12 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
   siguiente tick, aun si queda feedback pendiente.
 - **Pendiente:** a los 59 minutos sigue esperando; desde los 60 minutos
   pausa `infraestructura` / `ci-sin-resultado`, sin rojo al dueño. El plazo
-  usa `observacion.ahora` desde la transición a `EsperandoCI`, también si
-  GitHub falla, faltan checks o la admisión está retenida. Un snapshot
-  anterior sin `desde` comienza a contar en el primer tick de U16.
+  usa `observacion.ahora` desde la transición a `EsperandoCI`, aunque falten
+  checks o la admisión esté retenida, y se evalúa cuando el tick puede
+  observar. Un fallo al leer el CI cuenta como pendiente. Una caída que
+  impide leer `main` hace fallar el tick hasta que vuelva GitHub; el primer
+  tick que pueda observar evalúa el plazo vencido. Un snapshot anterior sin
+  `desde` comienza a contar en el primer tick de U16.
   Un verde observado sin suite lanzada **no detiene el plazo**: si el CI
   vuelve a pendiente se cuenta desde la entrada original. Una pausa manual
   tampoco descuenta tiempo. Un recibo durable de suite sí permite recuperar
@@ -696,8 +719,23 @@ emite `solicitar-ci` con contador/clave nuevos. Publica una ref
 `tren/<id>-ci-<n>` sobre ese mismo C: repetir la publicación de la ref
 original sería un no-op de git y no pediría otra ejecución. Una muerte
 reutiliza exactamente la ref del contador guardado. Se sigue leyendo el CI
-por C y se exige verde antes de la suite. No relanza automáticamente checks
-fallidos. `abortar` conserva el comportamiento U15: cierra `ABORTADO`, libera
+por C y se exige verde antes de la suite. Para esta nueva solicitud se
+consultan también todas las páginas de
+[check suites del commit](https://docs.github.com/en/rest/checks/suites#list-check-suites-for-a-git-reference):
+la API garantiza `head_branch`, `head_sha` e `id` en cada suite, mientras el
+[check-run](https://docs.github.com/en/rest/checks/runs#list-check-runs-for-a-git-reference)
+sólo garantiza `check_suite.id`. Se cruzan por ese id y se exigen C y la ref
+publicada exactos **antes** de elegir el mayor id por nombre. Un check de la
+ref anterior, aunque termine después de reanudar, no sirve. Hasta observar
+checks de la solicitud vigente, la lectura es pendiente y corre el plazo
+nuevo, incluso con `checks_esperados: []`. Los commit statuses no informan
+la ref solicitante: al reanudar no se consumen, ni como verde ni como rojo.
+Un proveedor que sólo publique statuses o no exponga la suite con esa ref
+queda pendiente hasta el plazo; debe publicar checks ligados a la solicitud
+para habilitar la suite. El recibo incluye la ref también en el buzón de
+recuperación; un recibo anterior no autoriza una suite de la nueva solicitud.
+No relanza automáticamente checks fallidos.
+`abortar` conserva el comportamiento U15: cierra `ABORTADO`, libera
 la custodia sin rojo y permite readmisión desde el tick siguiente.
 
 **No aplica `absolver` a `ci-sin-resultado`.** En `juicios.POLITICA` esa fila

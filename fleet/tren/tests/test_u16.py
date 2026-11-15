@@ -42,14 +42,23 @@ class ContextoCI(unittest.TestCase):
         """Cambiar sólo la API de checks, nunca el dominio ni su lectura de CI."""
         original = self.contexto.observador.ejecutar
         def transporte(argv, **kwargs):
-            resultado = original(argv, **kwargs)
-            if argv[0] == 'gh' and '/check-runs?' in argv[4]:
+            suites = argv[0] == 'gh' and '/check-suites?' in argv[4]
+            resultado = (subprocess.CompletedProcess(argv, 0, '', '') if suites
+                         else original(argv, **kwargs))
+            if argv[0] == 'gh' and ('/check-runs?' in argv[4] or suites):
                 head = argv[4].split('/')[4]
                 conclusion = resolver(head)
                 if conclusion is not None:
+                    ramas = self.contexto.observador.git('for-each-ref', '--points-at', head,
+                        '--format=%(refname:short)', 'refs/heads/tren/').splitlines()
+                    rama = max(ramas, key=lambda r: (
+                        int(r.rsplit('-ci-', 1)[1]) if '-ci-' in r else 0, r), default=None)
                     valor = [{'check_runs': [{'id': 1, 'name': 'gate de integración',
+                        'head_sha': head, 'check_suite': {'id': 1},
                         'status': 'in_progress' if conclusion == 'pending' else 'completed',
                         'conclusion': None if conclusion == 'pending' else conclusion}]}]
+                    if suites:
+                        valor = [{'check_suites': [{'id': 1, 'head_sha': head, 'head_branch': rama}]}]
                     resultado.stdout = json.dumps(valor)
             return resultado
         self.contexto.observador.ejecutar = transporte

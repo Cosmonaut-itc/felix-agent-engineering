@@ -20,6 +20,7 @@ git version
   bash fleet/tren/tests/remoto-u15-r2.sh
   bash fleet/tren/tests/remoto-u16.sh
   bash fleet/tren/tests/remoto-u16-injerto.sh
+  bash fleet/tren/tests/remoto-u16-r1.sh
 ) > "$aislado/antes.log" 2>&1 &
 tren_antes_pid=$!
 encontrado=0
@@ -48,5 +49,6 @@ if [ "$resultado" -eq 0 ]; then
   echo 'U15 R2: tres regresiones fallan sobre a7ce4de3 y pasan después; EnBase consumido permite caducidad en pausa sin perderla al abortar o expulsar; reanudar conserva el aviso; toda la suite del tren pasa.'
   echo 'U16 injerto: siete regresiones fallan sobre 50cb5cda y pasan después; sombra y tick --seco idénticos a 85138706; toda la suite del tren pasa.'
   echo 'U16: tres regresiones fallan sobre 85138706 y pasan después; CI rojo, partición FIFO, timeout, juicio, recuperación y sombra pasan.'
+  echo 'U16 R1: cuatro regresiones fallan sobre 48748009 y pasan después; solicitud de CI vigente, recuperación y fallo de preparación del runner pasan.'
 fi
 exit "$resultado"
