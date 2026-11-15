@@ -110,6 +110,18 @@ class ClockShiftTests(DeskWorld):
         self.desk.lstart = 'Sat Nov 14 08:44:11 2026'
         self.assertEqual(self.real.handle(request)['status'], 'applied')
 
+    def test_panel_rejects_expected_from_previous_daemon(self):
+        v = self.real.view()
+        request = dict(schema=control.HOST_SCHEMA, op='slots', action_id='desk-gen-00002', dry_run=False,
+                       expected={k: v[k] for k in ('revision', 'policy_hash', 'generation', 'mode', 'slots')},
+                       change=dict(group='jale', delta=-1))
+        self.desk.process(363); self.desk.pid_file.write_text('363')
+        self.assertTrue(self.real.reconcile())
+        answer = self.real.handle(request)
+        self.assertEqual(answer['status'], 'conflict')
+        self.assertEqual(answer['error']['code'], 'stale_state')
+        self.assertEqual(self.p.groups['jale']['parallel_tasks'], control.desk_profile(self.now)['jale'])
+
     def test_real_restart_still_marks_paused_groups_ambiguous(self):
         self.real.guard(HIGH)
         self.desk.process(363); self.desk.pid_file.write_text('363')
@@ -131,13 +143,15 @@ class IdentityTests(unittest.TestCase):
     def generation(self):
         return control.desk_generation(self.desk.pid_file)
 
-    def perturbed(self, field):
-        """Stat results of the pid file with exactly one signature field changed."""
+    def perturbed(self, field=None, frozen=None):
+        """Stat results of the pid file with exactly one signature field changed, or frozen."""
         real_stat, real_fstat = os.stat, os.fstat
         target = real_stat(self.desk.pid_file).st_ino
         def shift(st):
-            values = {k: getattr(st, k) for k in ('st_mode', 'st_dev', 'st_ino', 'st_mtime_ns', 'st_ctime_ns', 'st_size')}
-            values[field] += 1
+            source = frozen or st
+            values = {k: getattr(source, k) for k in ('st_mode', 'st_dev', 'st_ino', 'st_mtime_ns', 'st_ctime_ns', 'st_size')}
+            if field:
+                values[field] += 1
             return SimpleNamespace(**values)
         def stat(path, *a, **k):
             st = real_stat(path, *a, **k)
@@ -162,6 +176,8 @@ class IdentityTests(unittest.TestCase):
         self.assertEqual(self.generation(), base)
         stamp = self.desk.pid_file.stat()
         self.desk.process(363); self.desk.pid_file.write_text('363')
+        with self.perturbed(frozen=stamp):
+            changed('pid alone, with the original pid file signature')
         os.utime(self.desk.pid_file, ns=(stamp.st_atime_ns, stamp.st_mtime_ns))
         changed('pid')
         self.desk.pid_file.write_text('362')
@@ -234,7 +250,7 @@ class IdentityTests(unittest.TestCase):
         calls = []
         def fstat(fd):
             st = real_fstat(fd); calls.append(fd)
-            return replaced(st) if len(calls) % 2 == 0 else st
+            return replaced(st) if len(calls) % 2 == 1 else st  # only the fstat before reading
         with patch.object(control.os, 'fstat', fstat):
             with self.assertRaisesRegex(ValueError, 'pid file cambió'):
                 self.generation()
@@ -267,7 +283,9 @@ class IdentityTests(unittest.TestCase):
 
 class StoredGenerationTests(DeskFixture):
     def stored(self, value, startup=False):
-        state = self.state()
+        if not hasattr(self, 'valid'):
+            self.valid = self.state()
+        state = copy.deepcopy(self.valid)  # each case starts from a valid authority, never the previous case
         state['generation'] = value
         if startup:
             state['generation'] = CURRENT
@@ -448,6 +466,38 @@ class ConversionInstallTests(DeskFixture):
     def test_group_paused_before_lifting_maintenance_keeps_it(self):
         target, state = self.assert_paused_between_checks_keeps_maintenance('daemon-reload')
         self.assertEqual(state['generation'], CURRENT)
+
+    def test_group_paused_while_publishing_stops_before_commit(self):
+        installer, home, engine, target = self.install_fixture()
+        real_replace = os.replace
+        def replace(source, destination):
+            if Path(destination) == target:
+                self.p.groups['pesadas']['status'] = 'Paused'
+            return real_replace(source, destination)
+        with patch.object(installer.os, 'replace', replace), \
+             self.assertRaisesRegex(ValueError, 'grupos Paused: pesadas'), redirect_stdout(io.StringIO()):
+            installer.install(home, self.root / 'pid', control)
+        self.assertEqual(self.authority(engine)[0]['generation'], LEGACY)
+        self.assertTrue((engine.directory / 'maintenance').exists())
+
+    def test_group_paused_after_preflight_stops_before_marks(self):
+        installer, home, engine, target = self.install_fixture()
+        def pause(args):
+            self.p.groups['hasito']['status'] = 'Paused'
+        self.hooks['show'] = pause  # the preflight's last read
+        before = self.fingerprint()
+        with self.assertRaisesRegex(ValueError, 'grupos Paused: hasito'), redirect_stdout(io.StringIO()):
+            installer.install(home, self.root / 'pid', control)
+        self.assert_no_effects(before)
+
+    def test_pid_file_must_be_main_pid_before_effects(self):
+        installer, home, engine, target = self.install_fixture()
+        (self.root / 'pid').write_text('999\n')
+        before = self.fingerprint()
+        for dry in (True, False):
+            with self.assertRaisesRegex(ValueError, 'MainPID'), redirect_stdout(io.StringIO()):
+                installer.install(home, self.root / 'pid', control, dry_run=dry)
+            self.assert_no_effects(before)
 
     def test_daemon_change_during_install_keeps_maintenance(self):
         installer, home, engine, target = self.install_fixture()
