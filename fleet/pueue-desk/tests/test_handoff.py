@@ -702,6 +702,18 @@ class InjertoTests(unittest.TestCase):
             with h.engine.connect(write=True) as db:db.execute('UPDATE policy SET body=? WHERE id=1',(json.dumps(state),))
             with self.assertRaises(ValueError):h.m._recover(h.config)
 
+    def test_withdraw_after_aborted_install_retains_source_enable_and_login(self):
+        h=self.h;h.p.tasks={'0':task(0,running(),'default')};h.save_queue()
+        h.m.change('install',wait=10);h.now+=11
+        self.assertTrue(h.m._recover(h.config))
+        self.assertEqual(h.policy()['mini_handoff']['phase'],'aborted')
+        h.p.tasks['0']['status']=done();h.save_queue()
+        h.m.change('withdraw');h.finish()
+        self.assertFalse(h.disabled[mini.BREW])
+        self.assertTrue(h.disabled[mini.LABEL])
+        h.login();h.finish()
+        self.assertEqual(h.owner,mini.BREW)
+
     def test_wait_budget_invalid_rejects_without_writes(self):
         for wait in (True,-1,7201,float('nan'),float('inf'),'60'):
             before=self.h.fingerprint()

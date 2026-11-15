@@ -290,6 +290,9 @@ class Manager:
             if self.loaded(other) is not None:
                 self.command(state, 'bootout', other)
             if self.loaded(target) is not None:
+                # An aborted opposite handoff may have kept this daemon alive.
+                # stage disabled it; restore its override without restarting it.
+                self.command(state, 'enable', target)
                 value['phase'] = 'verify'
                 self.save(state, 'handoff:verify')
                 return False

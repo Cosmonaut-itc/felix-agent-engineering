@@ -69,6 +69,8 @@ CASES=[
 ]
 
 CASES += [
+ ('aborted-source-override','mini.py',"                self.command(state, 'enable', target)",'                pass',
+  'test_handoff.InjertoTests.test_withdraw_after_aborted_install_retains_source_enable_and_login'),
  ('wait-bounded','mini.py','or not 0 <= wait <= 7200','or False',
   'test_handoff.InjertoTests.test_wait_budget_invalid_rejects_without_writes'),
  ('deadline-validator','control.py',"or value['deadline'] is not None and (type(value['deadline']) not in (int, float) or not math.isfinite(value['deadline']))",'or False',
