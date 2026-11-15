@@ -121,9 +121,18 @@ def main():
         assert all(g['status']=='Paused' for g in restored['groups'].values())
         with control.locked(engine.directory),patch.object(control,'pressure',return_value=dict(io=0,cpu=0,memory=64*1024**3)):
             # Exercise Docker failure and success without depending on desk readiness.
-            with patch.object(engine,'admission_ready',return_value=False):engine.guard(dict(io=0,cpu=0,memory=64*1024**3))
+            # The double sits on the Docker probe itself: every admission path reaches it.
+            real_run=subprocess.run
+            def docker(ok):
+                def run(argv,*args,**kwargs):
+                    if list(argv)[:1]==['/usr/bin/docker']:
+                        if not ok:raise subprocess.CalledProcessError(1,argv)
+                        return subprocess.CompletedProcess(argv,0,b'',b'')
+                    return real_run(argv,*args,**kwargs)
+                return patch.object(control.subprocess,'run',run)
+            with docker(False):engine.guard(dict(io=0,cpu=0,memory=64*1024**3))
             assert 'Queued' in p.status()['tasks'][queued_id]['status']
-            with patch.object(engine,'admission_ready',return_value=True):engine.guard(dict(io=0,cpu=0,memory=64*1024**3))
+            with docker(True):engine.guard(dict(io=0,cpu=0,memory=64*1024**3))
         wait_for(lambda:'Done' in p.status()['tasks'][queued_id]['status'])
         assert p.status()['groups']['otros']['status']=='Paused'
         assert p.status()['groups']['hasito']['status']=='Paused'
