@@ -158,29 +158,136 @@ def desk_interruptions(home):
         db.close()
 
 
-def desk_guard(home):
+GUARD_LOG_TAIL = 256 * 1024  # a few hours of passes; never the whole 1 MiB log
+GUARD_SUMMARIES = ('admision_una', 'tope_alcanzado', 'retenido', 'guard_fin')
+
+
+def installed_thresholds(source):
+    """Limited AST: number literals, `*`, `**` and subscripts of names read before. Nothing runs."""
+    names = {}
+
+    def value(node):
+        if isinstance(node, ast.Constant) and type(node.value) in (int, float):
+            return node.value
+        if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Mult, ast.Pow)):
+            left, right = value(node.left), value(node.right)
+            if isinstance(node.op, ast.Pow):
+                if type(right) is not int or not 0 <= right <= 64:
+                    raise ValueError('Potencia no admitida')
+                return left ** right
+            return left * right
+        if isinstance(node, ast.Dict):
+            if any(not isinstance(k, ast.Constant) or not isinstance(k.value, str) for k in node.keys):
+                raise ValueError('Clave no literal')
+            return {k.value: value(v) for k, v in zip(node.keys, node.values)}
+        if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+            return value(node.value)[node.slice.value]
+        if isinstance(node, ast.Name) and node.id in names:
+            return names[node.id]
+        raise ValueError('Umbral no literal')
+
+    found = {}
+    for node in ast.parse(source).body:
+        if not isinstance(node, ast.Assign) or len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
+            continue
+        name = node.targets[0].id
+        if name == 'PRESSURE_THRESHOLDS':
+            names[name] = found['normal'] = value(node.value)
+        elif name == 'RAPIDAS_THRESHOLDS' and isinstance(node.value, ast.Dict):
+            # Only the desk entry; the Mini one uses dict unpacking, which is never evaluated.
+            for k, v in zip(node.value.keys, node.value.values):
+                if isinstance(k, ast.Constant) and k.value == 'desk':
+                    found['rapidas'] = value(v)
+    return found
+
+
+def guard_rows(path):
+    """Last decision and the summary of that same pass, from the log tail only."""
+    with path.open('rb') as stream:
+        size = stream.seek(0, os.SEEK_END)
+        stream.seek(max(0, size - GUARD_LOG_TAIL))
+        lines = stream.read().splitlines()[1 if size > GUARD_LOG_TAIL else 0:]
+    decision, summaries = None, {}
+    for line in lines:
+        try:
+            row = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(row, dict):
+            continue
+        if row.get('evento') == 'decision':
+            decision = row
+        elif row.get('evento') in GUARD_SUMMARIES and isinstance(row.get('tick'), str):
+            summaries[row['tick']] = row
+    tick = decision.get('tick') if decision else None
+    return decision, summaries.get(tick) if isinstance(tick, str) else None
+
+
+def desk_pressure(proc, now):
+    def psi(name, kind):
+        for line in (proc / 'pressure' / name).read_text().splitlines():
+            parts = line.split()
+            if parts and parts[0] == kind:
+                return float(dict(part.split('=') for part in parts[1:])['avg60'])
+        raise ValueError('PSI incompleto')
+    memory = dict(line.split(':', 1) for line in (proc / 'meminfo').read_text().splitlines() if ':' in line)
+    amount, unit = memory['MemAvailable'].split()
+    if unit != 'kB':
+        raise ValueError('MemAvailable inválido')
+    return dict(cpu=psi('cpu', 'some'), io=psi('io', 'full'), memory=int(amount) * 1024, at=iso(now))
+
+
+def last_admission(home):
+    path = home / '.local/state/pao/pueue-desk/control.sqlite3'
+    if not os.path.lexists(path):
+        return None
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)
+    try:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='guard_admission'").fetchone():
+            return None  # controller older than SEN-6417
+        confirmed = json.loads(db.execute('SELECT body FROM guard_admission WHERE id=1').fetchone()[0])['last_confirmed']
+    finally:
+        db.close()
+    return None if confirmed is None else dict(at=confirmed['utc'], grupo=confirmed['grupo'], id=confirmed['id'])
+
+
+def iso(timestamp):
+    return datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc).isoformat()
+
+
+def desk_guard(home, proc=Path('/proc'), now=None, errors=None):
+    """Each source fails on its own: an unreadable one is null with its error, never a stale value."""
+    now = time.time() if now is None else now
+    errors = [] if errors is None else errors
+
+    def part(stage, fn):
+        try:
+            return fn()
+        except Exception as error:
+            errors.append(dict(stage=stage, message='Lectura fallida: ' + type(error).__name__))
+            return None
+
     thresholds = {'pause': {'cpu': 30}, 'resume': {'cpu': 15}}
+    installed = None
     source = home / '.local/lib/pao-pueue-desk/control.py'
     if source.exists():
-        for node in ast.parse(source.read_text()).body:
-            if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'PRESSURE_THRESHOLDS' for t in node.targets):
-                # El archivo usa multiplicaciones; sólo se necesitan los literales CPU.
-                thresholds = {k.value: {'cpu': next(v.value for a, v in zip(d.keys, d.values) if a.value == 'cpu')}
-                              for k, d in zip(node.value.keys, node.value.values)}
-    last = None
+        installed = part('guard_thresholds', lambda: installed_thresholds(source.read_text()))
+        if installed and 'normal' in installed:
+            thresholds = installed['normal']
     path = home / '.local/state/pao/pueue-desk/guardia.log'
-    if path.exists():
-        with path.open() as stream:
-            for line in stream:
-                try:
-                    row = json.loads(line)
-                    if row.get('evento') == 'decision':
-                        last = row
-                except ValueError:
-                    continue
-    if last and last.get('accion') in ('pausar', 'reanudar'):
-        return dict(action=last['accion'], at=last['utc'], cpu_pause=thresholds['pause']['cpu'], cpu_resume=thresholds['resume']['cpu'])
-    return None
+    last, summary = guard_rows(path) if path.exists() else (None, None)
+    if not last or last.get('accion') not in ('pausar', 'reanudar', 'mantener'):
+        return None
+    result = None
+    if summary is not None:
+        result = dict(evento=summary['evento'], causa=summary.get('causa'), bloqueos=summary.get('bloqueos', []),
+                      at=summary.get('utc'), grupo=summary.get('grupo'), id=summary.get('id'),
+                      restante_ms=summary.get('restante_ms'))
+    return dict(action=last['accion'], at=last['utc'], cpu_pause=thresholds['pause']['cpu'], cpu_resume=thresholds['resume']['cpu'],
+                pressure=part('guard_pressure', lambda: desk_pressure(proc, now)),
+                thresholds=None if not installed or 'normal' not in installed else
+                dict(normal=installed['normal'], rapidas=installed.get('rapidas')),
+                last_result=result, last_admission=part('guard_admission', lambda: last_admission(home)))
 
 
 def mini_guard():
@@ -449,7 +556,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     if mode == 'linux' and output['cpu']:
         output['cpu']['psi_avg60'] = attempt('psi', lambda: float(re.search(r'^some .*avg60=([\d.]+)', (proc / 'pressure/cpu').read_text())[1]))
     output['disk'] = attempt('disk', lambda: disk('/System/Volumes/Data' if mode == 'macos' and Path('/System/Volumes/Data').exists() else '/'))
-    output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home))
+    output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home, proc, now, output['errors']))
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
     interruptions = (attempt('startup', lambda: desk_interruptions(home)) or {}) if host == 'desk' else {}
     cache, references = {}, {}

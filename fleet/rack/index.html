@@ -89,6 +89,11 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .fila .d{display:flex;gap:8px;align-items:baseline;justify-content:flex-end}
 .act{font-size:12px;color:var(--ink2)}
 .act.warn::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);margin-right:6px;vertical-align:1px}
+.act.flow::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--accent);margin-right:6px;vertical-align:1px}
+.slot.held{align-items:flex-start;font-size:12px;color:var(--ink2);gap:2px}
+.slot.held .why{color:var(--ink);font-size:13px}
+.slot.held.idle,.slot.held.idle .why{color:var(--muted)}
+@media(max-width:560px){.slot.held{grid-column:auto!important}}
 .menu{position:absolute;z-index:5;background:var(--panel);border:1px solid var(--line);border-radius:8px;box-shadow:0 8px 24px rgba(0,0,0,.18);padding:4px;min-width:190px}
 .menu button{display:block;width:100%;text-align:left;font:inherit;font-size:13px;border:0;background:none;color:var(--ink);padding:7px 10px;border-radius:5px;cursor:pointer}
 .menu button:hover{background:var(--bg)}
@@ -229,10 +234,49 @@ function fila(h, n, w){
   </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
 }
 
-function startupHold(h,n){
+// SEN-6417: los lugares libres de un grupo pausado se funden en una celda que dice por qué.
+const CAUSE_TEXT={fresh_sample:'la presión subió antes de admitir',sample_unreadable:'presión ilegible',docker:'Docker no responde',
+  generation:'Pueue cambió de daemon',desired:'lugares sin reconciliar',event:'cambio de horario en curso',admission:'arranque sin verificar',
+  maintenance:'mantenimiento en curso',authority:'control sin reconciliar',log:'registro de la guardia sin escribir',
+  start_failed:'arranque sin confirmar',admission_unknown:'admisión sin confirmar · resolver con control.py resolver-admision',
+  clock:'reloj de arranque no fiable',unsupported:'falta actualizar el control'};
+const GUARD_FRESH=180;
+// Only a recent decision with its own pressure reading describes the group; otherwise the state is unknown.
+function guardNow(h){
+  const g=h.guard;
+  return g?.pressure && NOW-Date.parse(g.at)/1000<=GUARD_FRESH && NOW-Date.parse(g.pressure.at)/1000<=GUARD_FRESH ? g : null;
+}
+// The metric that holds the group, in this order: memory, I/O, CPU. Never blame CPU for another one.
+function pressureHow(p,lim,verb,pausing){
+  if(lim.memory!=null && (p.memory<lim.memory || lim.cpu==null)) return `memoria libre ${GB(p.memory).toFixed(1)} GB · ${verb} sobre ${GB(lim.memory).toFixed(0)} GB`;
+  if(lim.io!=null && (pausing ? p.io>lim.io : p.io>=lim.io)) return `E/S ${Math.round(p.io)} % · ${verb} bajo ${lim.io}`;
+  return `CPU ${Math.round(p.cpu)} % · ${verb} bajo ${lim.cpu}`;
+}
+function heldCell(h,n,span,waits){
+  const c=h.control, r=c?.pause_reasons?.[n] || [], resolve='resolver con <span class="mono">control.py reanudar '+esc(n)+'</span>';
+  let why='Pausado', how=esc(c ? 'motivo desconocido' : 'estado de la guardia desconocido'), dot='warn';
   const reason=h.control?.startup_holds?.[n];
-  if(reason) return `<p class="startup-hold muted" role="status">${esc('Retenido al reiniciar: '+reason+' · resolver con control.py reanudar '+n)}</p>`;
-  return h.control?.startup_waiting?.[n]==='cuotas_sensores' ? '<p class="startup-wait muted" role="status">Esperando cuotas y Docker · reanudación automática</p>' : '';
+  if(reason){why='Retenido al reiniciar';how=esc(reason)+' · '+resolve;}
+  else if(c?.startup_waiting?.[n]==='cuotas_sensores'){why='Esperando cuotas y Docker';how='reanudación automática';}
+  else if(r.includes('manual')){why='Pausa manual';how=resolve;}
+  else if(r.includes('ambiguous')){why='Pausa de origen desconocido';how=resolve;}
+  else if(r.length===1 && r[0]==='pressure'){
+    why='Retenido por presión';how='';  // the Mini publishes no guard reading: the reason is all it knows
+    if(h.id==='desk') [why,how,dot]=pressureCell(h,n);
+  }
+  return `<div class="slot held ${waits?'':'idle'}" style="grid-column:span ${span}" role="status"><span class="why ${waits?'act '+dot:''}">${esc(why)}</span>${how ? `<span>${how}</span>` : ''}</div>`;
+}
+function pressureCell(h,n){
+  const g=guardNow(h), t=g?.thresholds, p=g?.pressure;
+  const lim=phase=>t?.normal?.[phase] || {cpu:phase==='pause' ? g.cpu_pause : g.cpu_resume};
+  const blocked=g?.last_result?.bloqueos?.find(b=>b.grupo===null && b.operacion===(g.action==='reanudar' ? 'resume' : 'one') && CAUSE_TEXT[b.causa]);
+  if(!g) return ['Retenido por presión','estado de la guardia desconocido','warn'];
+  if(n==='rapidas') return ['Retenido por presión',esc(t?.rapidas ? pressureHow(p,t.rapidas.resume,'abre',false) : 'estado de la guardia desconocido'),'warn'];
+  if(blocked) return ['Retenido',esc(CAUSE_TEXT[blocked.causa]),'warn'];
+  if(g.action==='pausar') return ['Retenido por presión',esc(pressureHow(p,lim('pause'),'entra de a una',true)),'warn'];
+  if(g.action!=='mantener') return ['Abriendo',esc(pressureHow(p,lim('resume'),'abre',false)),'warn'];
+  const last=g.last_admission, ago=last?.grupo===n ? Math.max(1,Math.round(NOW-Date.parse(last.at)/1000)) : null;
+  return ['Entra de a una',esc(pressureHow(p,lim('resume'),'abre',false)+(ago==null ? '' : ' · última hace '+(ago<90 ? ago+' s' : fmtMin(ago)))),'flow'];
 }
 function interrupted(h,n){
   const rows=h.tasks.filter(t=>t.group===n && t.state==='Done' && t.interruption_reason);
@@ -318,9 +362,6 @@ function hostControlMessage(h){
   if((a?.status==='partial' || c?.drift) && desired){
     message+=' · '+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
   }
-  // The Mini has no per-group startup hold yet; this is its only explanation of an ambiguous pause.
-  if(c?.pause_reasons && Object.entries(c.pause_reasons).some(([g,r])=>r.includes('ambiguous') && !c.startup_holds?.[g]))
-    message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
   return message;
 }
 function hostControlState(h){
@@ -400,10 +441,12 @@ function view(){
     return `<div class="stack">${S.hosts.map(h=>{
       const lanes = groups(h).map(([n,g])=>{
         const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
-        const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return `<div class="slot empty">Libre</div>`;
+        const free = Math.max(0,g.slots-r.length), cols = Math.min(g.slots,5);
+        const cells = Array.from({length:g.status==='Paused' && free ? r.length+1 : Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i];
+          if(!t) return g.status==='Paused' ? heldCell(h,n,Math.min(free,cols-r.length%cols),w.length>0) : `<div class="slot empty">Libre</div>`;
           const p=progress(t); return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}${pendingText(h,t)}</div>`;}).join('');
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
-          ${startupHold(h,n) ? `<div class="lane"><div></div><div>${startupHold(h,n)}</div></div>` : ''}${fila(h,n,w)}${interrupted(h,n)}`;
+          ${fila(h,n,w)}${interrupted(h,n)}`;
       }).join('');
       return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }

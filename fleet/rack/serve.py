@@ -3,6 +3,7 @@
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 import copy
+import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import importlib.util
 import ipaddress
@@ -159,6 +160,64 @@ def valid_usage(value, host=False):
     return copy.deepcopy(value)
 
 
+GUARD_CAUSES = ('fresh_sample', 'pressure_high', 'sample_unreadable', 'docker', 'generation', 'desired', 'event',
+                'admission', 'maintenance', 'authority', 'pause_reason', 'not_paused', 'quota', 'dependencies',
+                'task_changed', 'start_failed', 'admission_unknown', 'cooldown', 'clock', 'global_one', 'unsupported', 'log')
+GUARD_EVENTS = ('admision_una', 'tope_alcanzado', 'retenido', 'guard_fin')
+
+
+def valid_guard(value):
+    """Whitelist of the desk guard; pre-SEN-6417 snapshots (action, at, cpu_*) stay valid."""
+    def number(n):
+        return not isinstance(n, bool) and isinstance(n, (int, float)) and math.isfinite(n) and n >= 0
+
+    def instant(text):
+        try:
+            return isinstance(text, str) and len(text) <= 40 and datetime.datetime.fromisoformat(text.replace('Z', '+00:00')).tzinfo is not None
+        except ValueError:
+            return False
+
+    def limits(row, keys):
+        return (isinstance(row, dict) and set(row) <= {'pause', 'resume'} and len(row) == 2
+                and all(isinstance(v, dict) and v and set(v) <= keys and all(number(x) for x in v.values()) for v in row.values()))
+
+    def group(name):
+        return isinstance(name, str) and re.fullmatch(r'[A-Za-z0-9_.-]{1,64}', name) is not None
+
+    def ident(n):
+        return type(n) is int and 0 <= n < 2**64
+
+    if value is None:
+        return None
+    if (not isinstance(value, dict) or value.get('action') not in ('pausar', 'reanudar', 'mantener') or not instant(value.get('at'))
+            or not number(value.get('cpu_pause')) or not number(value.get('cpu_resume'))):
+        return None
+    out = dict(action=value['action'], at=value['at'], cpu_pause=value['cpu_pause'], cpu_resume=value['cpu_resume'],
+               pressure=None, thresholds=None, last_result=None, last_admission=None)
+    pressure = value.get('pressure')
+    if (isinstance(pressure, dict) and set(pressure) == {'cpu', 'io', 'memory', 'at'} and instant(pressure['at'])
+            and all(number(pressure[k]) for k in ('cpu', 'io', 'memory'))):
+        out['pressure'] = dict(pressure)
+    thresholds = value.get('thresholds')
+    if (isinstance(thresholds, dict) and set(thresholds) == {'normal', 'rapidas'} and limits(thresholds['normal'], {'cpu', 'io', 'memory'})
+            and (thresholds['rapidas'] is None or limits(thresholds['rapidas'], {'memory'}))):
+        out['thresholds'] = copy.deepcopy(thresholds)
+    result = value.get('last_result')
+    if (isinstance(result, dict) and set(result) == {'evento', 'causa', 'bloqueos', 'at', 'grupo', 'id', 'restante_ms'}
+            and result['evento'] in GUARD_EVENTS and (result['causa'] is None or result['causa'] in GUARD_CAUSES)
+            and instant(result['at']) and (result['grupo'] is None or group(result['grupo']))
+            and (result['id'] is None or ident(result['id']))
+            and (result['restante_ms'] is None or type(result['restante_ms']) is int and 0 <= result['restante_ms'] <= 60000)
+            and isinstance(result['bloqueos'], list) and len(result['bloqueos']) <= 12
+            and all(isinstance(b, dict) and set(b) == {'grupo', 'operacion', 'causa'} and (b['grupo'] is None or group(b['grupo']))
+                    and b['operacion'] in ('resume', 'one') and b['causa'] in GUARD_CAUSES for b in result['bloqueos'])):
+        out['last_result'] = copy.deepcopy(result)
+    admission = value.get('last_admission')
+    if isinstance(admission, dict) and set(admission) == {'at', 'grupo', 'id'} and instant(admission['at']) and group(admission['grupo']) and ident(admission['id']):
+        out['last_admission'] = dict(admission)
+    return out
+
+
 def validate_snapshot(data, host):
     if not isinstance(data, dict) or data.get('schema') != 'rack-host@1' or data.get('host') != host:
         raise ValueError('Esquema o host inválido')
@@ -194,6 +253,7 @@ def validate_snapshot(data, host):
             row['usage'] = valid_usage(row['usage']) if row['state'] == 'Running' else None
     if 'usage' in data:
         data['usage'] = valid_usage(data['usage'], host=True)
+    data['guard'] = valid_guard(data.get('guard'))
     json.dumps(data, allow_nan=False)
     for group in data['groups']:
         if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
