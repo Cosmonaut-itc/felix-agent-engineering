@@ -103,13 +103,17 @@ tenerlo como propio. Los bordes mantienen el estado. Una lectura ausente,
 no finita, negativa o un nivel de memoria desconocido causa error, se registra
 y no decide ni modifica grupos.
 
-En la Mini, desde este checkout (no instala Pueue):
+Instalador histórico de **sólo guardia**, antes de adoptar U3.5 (no instala Pueue).
+El relevo del daemon se describe en «Reinicios de la Mini (U3.5)»; los comandos
+con `--relevo` administran ese relevo. Sin ese flag se conserva la actualización
+de guardia de U3.1, sin drenar ni reiniciar el daemon; una guardia adoptada ya
+cargada permanece cargada durante la publicación atómica de su código.
 
 ```sh
-/usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --seco
-/usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar
-/usr/bin/python3 -I fleet/pueue-desk/install-mini.py desinstalar --seco
-/usr/bin/python3 -I fleet/pueue-desk/install-mini.py desinstalar
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --solo-guardia --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --solo-guardia
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py desinstalar --solo-guardia --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py desinstalar --solo-guardia
 ```
 
 `--seco` imprime el plan sin ejecutar comandos ni escribir; las comprobaciones
@@ -247,8 +251,8 @@ vector/generación antes de admitir. No hay botón de reanudación en el panel.
 3. Revisar el plan y luego ejecutar:
 
    ```sh
-   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --cuotas --seco
-   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --cuotas
+   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --solo-guardia --cuotas --seco
+   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --solo-guardia --cuotas
    ```
 
    El modo `--seco` sólo imprime el plan; no ejecuta el preflight. Al instalar,
@@ -274,7 +278,7 @@ auditoría. Para apagar esta entrega, crear `slots.disabled` en el directorio Mi
 se apagan capacidades/cuotas nuevas, y siguen lectura, cancelación y reconciliación.
 Se puede restaurar la versión anterior del rack manteniendo **este controlador y
 su guardia**. No devolver la guardia antigua ni borrar SQLite mientras haya deseo
-durable: `desinstalar` lo rechaza antes de bootout. Una retirada completa requiere
+durable: `desinstalar --solo-guardia` lo rechaza antes de bootout. Una retirada completa requiere
 migrar explícitamente propiedad y deseo; no la simula abriendo grupos directamente.
 
 Canario de instalación, sólo supervisado por Felix: sin alerta, grupo vacío con
@@ -725,8 +729,161 @@ verificado, retiro de hijos de su cgroup y cola corrupta que reintenta. La vacie
 del cgroup tras detener se exige por aserción; se limpian sólo nombres exactos
 de esta corrida, nunca por prefijo.
 No reinicia WSL, Windows ni el servicio productivo. El arranque de Windows/WSL
-queda como verificación separada del orquestador. Reinicios de la Mini quedan
-para U3.5.
+queda como verificación separada del orquestador.
+
+### Reinicios de la Mini (U3.5)
+
+La Mini conserva `MINI_GROUPS=(suites, default, rapidas)`, perfil 3/1/3 y tope 7.
+No se readopta su autoridad ni se alteran los ajustes de Felix. `mini.py arrancar`
+es el arranque fijo del LaunchAgent `local.pao.pueue-mini.daemon`: toma el candado,
+llama al mismo `prepare_start` de `control.py preparar --host mini` y hace `exec`
+del **pueued estándar 4.0.4 de Homebrew**. Tiene RunAtLoad, KeepAlive incondicional
+y ThrottleInterval=10; una salida correcta también vuelve a pasar por preparar.
+Las rutas de entorno XDG/PUEUE de la consola no se propagan al cliente/daemon:
+ambos usan HOME, cwd HOME y configuración estándar previamente validada.
+
+El preparador comprueba socket y PID anterior muerto, configuración, cola y
+SQLite antes de escribir. Conserva la fórmula Mini de identidad (pid_path, su
+mtime y `ps lstart/comm`); no lee `/proc`. Sólo el MainPID único de su LaunchAgent
+puede preparar y hacer exec. Además exige que Homebrew esté descargado **y deshabilitado**.
+No arranca un segundo daemon si el socket falla pero el PID o su dueño son dudosos.
+Sus archivos propios usan fsync, F_FULLFSYNC en macOS, rename y fsync de directorio;
+SQLite sigue usando synchronous=FULL/fullfsync. Esto no modifica State::save stock.
+
+Todos los grupos, incluidos vacíos, default y ajenos, se publican Paused offline
+con las cuotas deseadas vigentes. Queued sin log conserva id/lugar/prioridad y
+dependencias; Running/Paused fallan como Done/Killed. Queued con log (también
+enlace roto) falla y retiene su grupo por lanzamiento ambiguo. Locked desconocido
+queda retenido, nunca se reencola; stock lo convierte en Stashed. Stashed,
+Success/Failed y cancelaciones terminales previas se conservan. Un state.json
+ausente/corrupto o SQLite ilegible bloquea; no hay tabla por defecto de rescate.
+La intención de preparación precede al rename de cola y se recupera repetiblemente.
+
+La **misma guardia de 60 s** repara el relevo y los recibos aceptados del rack;
+conserva sensores, umbrales y escalera de rapidas. No se instala otro recuperador.
+Orden: control.lock → validar autoridad → deseo vigente → intenciones sin abrir →
+reducciones/aumentos → verificar vector/generación → sensores frescos → retirar
+sólo razones propias. La Mini no recibe la admisión de una tarea de SEN-6417.
+`slots.disabled`, mantenimiento y las pausas manuales siguen siendo independientes.
+
+El panel muestra «Interrumpida al reiniciar Pueue; relanzar manualmente» para la
+identidad atribuida. Un grupo retenido muestra «Retenido al reiniciar · motivo ·
+resolver con control.py reanudar grupo», sin botón. Default vacío sigue oculto.
+Para resolver por el SSH existente, después de revisar el motivo y posibles
+procesos supervivientes:
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar suites --host mini
+```
+
+Esto verifica cuotas/generación/presión; no hace un start directo ni reinicia ids.
+Relanzar una interrumpida significa una corrida nueva del cliente. Una parada
+administrada registra identidades antes del bootout. Un shutdown/bootout externo
+que stock alcance a guardar como Killed antes de que nadie registre la identidad
+es indistinguible de una cancelación previa: se conserva Killed sin inventar motivo
+ni recibo. **C-W1 sigue pendiente de una decisión del dueño:** este caso externo
+no tiene atribución de interrupción y U3.5 no se declara completa por estas pruebas.
+El negativo SIGTERM sin record_stop acredita terminalidad y ausencia de reejecución;
+no resuelve esa atribución. SIGKILL no prueba el retiro de descendientes en macOS; revisarlos antes
+de relanzar. No se busca ni se mata por nombre.
+
+#### Instalar el relevo (operador; reinicia el daemon, no ejecutado por las pruebas)
+
+1. Partir de U3.1 adoptada y sana. Guardar respaldos del controlador/plists y de
+   SQLite mediante `backup` bajo `control.lock`; no copiar una SQLite abierta.
+   La primera adopción sigue siendo explícita por `--solo-guardia --cuotas`.
+2. Desde este checkout **en la Mini**, ejecutar primero el ensayo:
+
+   ```sh
+   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --relevo --seco
+   ```
+
+   El ensayo sí llama al validador y a la proyección pura comunes con preparar,
+   valida la imagen exacta y rechaza preparación pendiente, lee cola/autoridad/perfil/PID y dueño
+   launchd, comprueba ambos binarios 4.0.4 y rechaza recibos applying/partial/unknown
+   antes de todo efecto. Usa el lock existente abierto en lectura y no crea
+   directorios ni migra, recupera, copia, pausa o descarga servicios. Una
+   configuración compleja no se arregla borrando campos.
+3. Sólo en la ventana aprobada, ejecutar el mismo comando sin `--seco`.
+   Publica primero las dos plantillas launchagents en la biblioteca instalada,
+   después mini.py/control.py y el plist de la guardia existente, con reemplazos
+   atómicos, sin descargar la guardia, y comprueba que siga cargada. El paquete
+   instalado es autosuficiente: el próximo job no requiere este checkout. Si se interrumpe esa
+   publicación inicial, el daemon original sigue vivo; repetir el instalador.
+   Después migra aditivamente `startup_version` y `mini_handoff` en policy bajo
+   control.lock: conserva deseos, revisión, ajustes, pausas y todos los recibos.
+   No borra ni readopta SQLite. Una reinstalación terminada no reinicia otra vez.
+4. `mini_handoff` conserva destino, fase, enable/disable originales y el efecto
+   pendiente y una deadline absoluta durable. Cada disable/bootout/enable/bootstrap del relevo tiene intención
+   FULL previa. Publica el plist nuevo **deshabilitado**, reclama sólo grupos
+   Running con razón handoff antes de pause --wait y deja drenar las activas.
+   Mientras drena, no acepta ajustes nuevos del rack. No mata trabajo para acelerar
+   el relevo. Sin `--esperar` rechaza tareas Running o Paused antes de escribir.
+   Para esperar explícitamente hasta 10 minutos: añadir `--esperar 10` al ensayo
+   y al comando real (admite 0..120 minutos). Al vencer, marca aborted, conserva
+   el daemon origen y transfiere sólo razones handoff a pressure. Nunca abre
+   directamente: la guardia reconcilia y toma sensores frescos; las pausas
+   manuales y de terceros permanecen. Una Paused no bloquea indefinidamente.
+5. Deshabilita Homebrew antes de bootout, verifica que terminó el PID anterior,
+   habilita y carga el nuevo. Si el instalador o el propio job muere entre bootout
+   y bootstrap, la siguiente pasada del job continúa desde SQLite; también tras
+   login. Verifica dueño/cuotas y entrega sólo su pausa a la guardia. Una pausa
+   manual agregada durante el drenado no se pierde.
+6. Actualizar snapshot/validador/panel con el despliegue del rack existente.
+   Conservar llaves/canal y acceso sólo tailnet del dueño. No añade listener.
+
+**Tiempo sin daemon:** desde que termina el origen hasta que prepara y hace exec
+el destino; normalmente no incluye un tick entero de guardia porque el solicitante
+ejecuta bootstrap. Tras morir justo en ese hueco, la siguiente pasada nominal de
+60 s lo repara, más preparación/arranque. La apertura de grupos puede esperar otro
+tick/sensores. No hay cota finita si launchd, disco o sensores fallan. La medición
+privada acelera sólo el job a 2 s y registra tiempos; no convertirlos en un SLA.
+La instalación normal drena activas; un reinicio/crash con Running persistido las
+deja fallidas, sin reejecución. Las pendientes conservan su id y orden.
+
+#### Mantenimiento y vuelta a Homebrew
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/mini.py mantenimiento
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/mini.py continuar
+```
+
+Mantenimiento registra primero su intención y marcador durable, detiene/deshabilita
+la guardia y después los daemons. Registra identidades activas antes de pararlos.
+Ni wrapper ni recuperador reabren aunque una sesión relance el job. Continuar
+publica la intención de arranque cerrado, carga la guardia y retira sólo su propio
+marcador reconocido antes de completar el relevo. Un marcador ajeno, incluido un
+enlace roto, se conserva y exige resolución del operador. Tras una interrupción
+se puede repetir mantenimiento; continuar repara por el mismo diario.
+
+Para revertir el **gestor** desde la instalación sana:
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py desinstalar --relevo --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py desinstalar --relevo
+```
+
+Repite validación/drenado, deshabilita y descarga el daemon nuevo, prepara offline
+esa vuelta y habilita/carga Homebrew. Restaura su disable original, deja el plist
+nuevo deshabilitado y conserva la guardia, código, autoridad y evidencia: siguen
+siendo dueños de pausas/recibos. No elimina grupos, historia ni SQLite. Después
+de retirar U3.5, los arranques futuros de Homebrew vuelven a carecer de preparador;
+las pausas ambiguas se resuelven por control.py. No retirar también el controlador
+mientras existan razones startup/interrupciones. `--solo-guardia` rechaza una
+autoridad que ya tiene mini_handoff para impedir ese downgrade accidental.
+
+Los LaunchAgents de gui/$UID existen después del login. RunAtLoad no crea esa
+sesión tras reboot; no se promete servicio antes del login ni se cambia autologin.
+Se conservan los dos riesgos raros aceptados: spawn antes de guardar Running puede
+repetir una tarea y un add confirmado puede perderse ante apagón porque stock no
+hace fsync. Nuestros fsync/SIGKILL no eliminan ni certifican esas ventanas.
+
+Aceptación dirigida: `tests/test_handoff.py`, `tests/mutate_handoff.py`,
+`fleet/rack/tests/test_mini_startup.py`, `check_mutations.py --startup-only` y
+`mini_startup_browser_fixture.py`. `tests/private_handoff.py --run-private` requiere
+remote-run autorizado en macOS: daemon/config/cola/PID propios y etiquetas
+`pao.u35.injerto.*` dentro de la corrida; limpia etiquetas exactas y verifica PID,
+comm y --config antes de terminar el daemon. No toca los LaunchAgents reales.
 
 ### SEN-6417: una tarea en la banda media (sólo desk adoptado)
 

@@ -230,7 +230,24 @@ def decide(host, readings, thresholds):
     return "mantener"
 
 
+def recover_mini(pueue, directory):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location('mini_recovery', Path(__file__).with_name('mini.py'))
+    recovery = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(recovery)
+    return recovery.Manager(pueue=pueue, directory=directory)._recover()
+
+
 def guard(pueue, proc, directory, *, host="desk"):
+    if host == 'mini' and has_authority(directory):
+        # The existing 60 s job also owns handoff recovery. No second timer.
+        try:
+            if not recover_mini(pueue, directory):
+                return
+        except ADMISSION_ERRORS as error:
+            # Recovery cannot bypass the old protective pressure close on corrupt DBs.
+            # Carry its failure into the guard so even valid quotas cannot reopen.
+            return MiniControl(pueue, directory)._legacy_guard(None, proc=proc, recovery_error=error)
     if has_authority(directory):
         engine = MiniControl(pueue, directory) if host == 'mini' else MiniControl(pueue, directory, host='desk')
         return engine.guard(None, proc=proc)
@@ -523,11 +540,18 @@ def validate_queue(value):
 def default_data(home=None):
     home = home or Path.home()
     if sys.platform == "darwin":
-        return Path.home() / "Library/Application Support/pueue"
+        return home / "Library/Application Support/pueue"
     return Path(os.environ.get("XDG_DATA_HOME", str(home / ".local/share"))) / "pueue"
 
 
 MANAGER_KEYS = ('XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_RUNTIME_DIR', 'PUEUE_CONFIG_PATH')
+
+
+def mini_environment(home):
+    env = dict(os.environ, HOME=str(home))
+    for key in MANAGER_KEYS:
+        env.pop(key, None)
+    return env
 
 
 def manager_environment(text):
@@ -567,7 +591,7 @@ def validate_configuration(home=None, config_path=None, data=None, pid_file=None
     for key in ("XDG_DATA_HOME", "XDG_CONFIG_HOME", "XDG_RUNTIME_DIR"):
         if key in env and not Path(env[key]).is_absolute():
             raise ValueError(f"{key} debe ser absoluto para compartir rutas con Pueue")
-    config_dir = (default_data() if sys.platform == "darwin" else
+    config_dir = (default_data(home) if sys.platform == "darwin" else
                   Path(env.get("XDG_CONFIG_HOME", str(home / ".config"))) / "pueue")
     standard = config_dir / "pueue.yml"
     if config_path is None and env.get("PUEUE_CONFIG_PATH"):
@@ -648,12 +672,19 @@ def sync_directory(path):
         os.close(descriptor)
 
 
+def sync_file(stream):
+    stream.flush()
+    os.fsync(stream.fileno())
+    if sys.platform == 'darwin':
+        fcntl.fcntl(stream.fileno(), 51)  # F_FULLFSYNC, propagate a failed durability barrier
+
+
 def atomic_json(path, value):
     temporary = path.with_name(path.name + '.startup-tmp')
     with temporary.open('w') as stream:
         os.chmod(temporary, 0o600)
         stream.write(canonical(value) + '\n')
-        stream.flush(); os.fsync(stream.fileno())
+        sync_file(stream)
     os.replace(temporary, path)
     sync_directory(path.parent)
 
@@ -726,16 +757,8 @@ def startup_plan(queue, state, now, data, profile):
     return state, image
 
 
-def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, boundary=lambda phase: None):
-    """Caller holds control.lock. Intention -> queue rename -> repeatable completion.
-
-    configuration is an already validated private fixture only in tests; production
-    and install-desk call exactly the same validator, before any write.
-    """
-    if engine.host != 'desk':
-        raise ValueError('Preparación Mini pendiente de U3.5')
-    config = configuration if configuration is not None else validate_configuration()
-    queue_path = queue_path or config['data'] / 'state.json'
+def start_inputs(engine, config, queue_path):
+    """Read-only gates shared by the installer and the offline preparer."""
     queue = read_queue(queue_path)  # adopted host: absent is never a fresh queue
     with engine.connect() as db:
         stored = engine.state(db)
@@ -743,10 +766,17 @@ def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, bo
         raise ValueError('Host en mantenimiento')
     if config['pid_file'].resolve() != Path(stored['pid_file']).resolve():
         raise ValueError('PID configurado difiere de la autoridad')
-    assert_offline(engine.pueue, config['pid_file'])
+    return queue, stored
+
+
+def start_projection(engine, config, queue_path=None, allow_pending=True):
+    """Validate the exact preparation image without changing files or the daemon."""
+    queue, stored = start_inputs(engine, config, queue_path or config['data'] / 'state.json')
     state = engine.resolve(stored)
     state['startup_version'] = 1
     prior = state.get('startup', {})
+    if prior.get('phase') == 'intent' and not allow_pending:
+        raise ValueError('Preparación incompleta; recuperar antes de instalar')
     disk_hash = queue_hash(queue)
     if prior.get('phase') == 'intent':
         digest = queue_hash(queue)
@@ -767,6 +797,17 @@ def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, bo
     # Carry recovered statuses forward if the disk still contains the old image.
     if prior.get('phase') == 'intent':
         state['startup']['statuses'] = dict(prior['statuses'], **state['startup']['statuses'])
+    return state, image
+
+
+def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, boundary=lambda phase: None):
+    """Caller holds control.lock. Intention -> queue rename -> repeatable completion."""
+    config = configuration if configuration is not None else (
+        validate_configuration(pueue='/opt/homebrew/bin/pueue', daemon='/opt/homebrew/bin/pueued',
+                               env={}, cwd=Path.home()) if engine.host == 'mini' else validate_configuration())
+    queue_path = queue_path or config['data'] / 'state.json'
+    state, image = start_projection(engine, config, queue_path)
+    assert_offline(engine.pueue, config['pid_file'])
     if dry_run:
         return image
     with engine.connect(write=True) as db:
@@ -865,6 +906,19 @@ def admission_state(db, migrate=False):
     if len(rows) != 1 or rows[0][0] != 1:
         raise ValueError('Fila de permiso inválida')
     return validate_admission(json.loads(rows[0][1],object_pairs_hook=unique_object))
+
+
+def validate_mini_handoff(value):
+    if (type(value) is not dict or type(value.get('version')) is not int or value.get('version') != 1
+            or value.get('target') not in ('install', 'withdraw')
+            or value.get('phase') not in ('stage', 'drain', 'switch', 'verify', 'maintenance', 'done', 'withdrawn', 'aborted')
+            or type(value.get('original_disabled')) is not dict or len(value['original_disabled']) != 3
+            or any(type(k) is not str or type(v) is not bool for k, v in value['original_disabled'].items())
+            or type(value.get('effect')) not in (str, type(None))
+            or 'deadline' not in value
+            or value['deadline'] is not None and (type(value['deadline']) not in (int, float) or not math.isfinite(value['deadline']))
+            or 'maintenance_owned' in value and type(value['maintenance_owned']) is not bool):
+        raise ValueError('Relevo ilegible; conservar cierre y archivos')
 
 
 class MiniControl:
@@ -971,9 +1025,11 @@ class MiniControl:
         if calculated != value['desired'] and not migrating:
             raise ValueError('Deseo inconsistente')
         # Ownership is independent of the quota profile (including foreign groups).
-        if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous', 'startup'}
+        if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous', 'startup', 'handoff'}
                for g, r in value['reasons'].items()):
             raise ValueError('Propiedad inválida')
+        if self.host == 'mini' and 'mini_handoff' in value:
+            validate_mini_handoff(value['mini_handoff'])
         startup = value.get('startup')
         if ('startup_version' in value and (type(value['startup_version']) is not int or value['startup_version'] != 1)
                 or any('startup' in r for r in value['reasons'].values()) and startup is None):
@@ -1002,6 +1058,10 @@ class MiniControl:
         return reader(Path(state['pid_file']))
 
     def disabled(self):
+        if self.host == 'mini':
+            with self.connect() as db:
+                if self.state(db).get('mini_handoff', {}).get('phase') not in (None, 'done', 'withdrawn', 'aborted'):
+                    return True
         for target in (self.directory / 'slots.disabled', self.directory / 'maintenance', self.directory.parent / 'rack/actions.disabled'):
             try:
                 target.lstat()
@@ -1300,7 +1360,7 @@ class MiniControl:
             self.store(db, state)
 
     def reconcile(self):
-        if self.host == 'desk' and os.path.lexists(self.directory / 'maintenance'):
+        if os.path.lexists(self.directory / 'maintenance'):
             return False
         with self.connect() as db:
             stored = self.state(db)
@@ -1799,8 +1859,8 @@ class MiniControl:
         if failure is not None:
             raise failure
 
-    def _legacy_guard(self, readings, proc=Path('/proc')):
-        failure, state = None, None
+    def _legacy_guard(self, readings, proc=Path('/proc'), recovery_error=None):
+        failure, state = recovery_error, None
         # Any unreadable authority, including numeric overflow, keeps protective closing.
         errors = (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError)
         try:
@@ -1898,6 +1958,17 @@ class MiniControl:
             return False
         if state.get('startup') and state['startup']['phase'] != 'ready':
             return False
+        if self.host == 'mini' and state.get('startup_version') == 1:
+            try:
+                observed, _ = self.observed()
+                if observed != state['desired'] or self.generation(state) != state['generation']:
+                    return False
+                current = pressure_mini()
+                threshold = RAPIDAS_THRESHOLDS['mini'] if group == 'rapidas' else MINI_THRESHOLDS
+                if decide('mini', current, threshold) != 'reanudar':
+                    return False
+            except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+                return False
         if self.host == 'desk' and state.get('startup_version') == 1:
             try:
                 subprocess.run(['/usr/bin/docker', 'info'], check=True, capture_output=True, timeout=5)
@@ -1915,7 +1986,7 @@ class MiniControl:
 
     def manual(self, group, resume=False):
         # Existing foreign groups may be resolved without joining the quota profile.
-        if self.host == 'desk' and group not in self.pueue.status()['groups']:
+        if group not in self.pueue.status()['groups']:
             raise ValueError('Grupo inexistente; no se crea al reanudar')
         with self.connect() as db:
             state = self.state(db)
@@ -1970,12 +2041,14 @@ def main():
     if args.seco and args.command != 'preparar':
         parser.error('--seco sólo para preparar; rack usa dry_run')
     groups = MINI_GROUPS if args.host == "mini" else GROUP_LIMITS
-    foreign_resume = args.host == 'desk' and args.command == 'reanudar'
+    foreign_resume = args.command == 'reanudar'
     if args.group is not None and args.group not in groups and not foreign_resume and not (args.command == 'retirar' and args.group in ('suites', 'pg5434')):
         parser.error("grupo desconocido para el host")
     if args.host == "mini" and args.command == "aplicar":
         parser.error("La Mini sólo admite guardia y pausa manual")
     pueue = Pueue("/opt/homebrew/bin/pueue") if args.host == "mini" else Pueue()
+    if args.host == 'mini':
+        pueue.context = dict(env=mini_environment(Path.home()), cwd=Path.home())
     directory = Path.home() / ".local/state/pao/pueue-mini" if args.host == "mini" else STATE_DIR
     if args.command == 'rack':
         # Only panel RPCs have a deadline. Guards and aplicar wait for Pueue.

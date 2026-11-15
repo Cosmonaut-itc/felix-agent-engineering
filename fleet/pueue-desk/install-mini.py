@@ -1,15 +1,17 @@
 #!/usr/bin/python3 -I
-"""Instala o retira sólo la guardia local de la Mini; nunca administra pueued."""
+"""Actualización de guardia; --relevo solicita explícitamente el relevo U3.5."""
 import argparse
 import fcntl
 import importlib.util
 import json
+import math
 import os
 from pathlib import Path
 import plistlib
 import shlex
 import shutil
 import subprocess
+import sys
 
 LABEL = "local.pao.pueue-mini.guard"
 SOURCE = Path(__file__).resolve().parent
@@ -70,7 +72,24 @@ def keep_owned_guarded(state, domain, agent, error):
 
 
 def main():
+    if '--relevo' in sys.argv:
+        parser = argparse.ArgumentParser(description=__doc__)
+        parser.add_argument('command', choices=('instalar', 'desinstalar'))
+        parser.add_argument('--seco', action='store_true')
+        parser.add_argument('--relevo', action='store_true', required=True)
+        parser.add_argument('--esperar', type=float, default=0, metavar='MIN',
+                            help='Drenar tareas hasta este plazo (0..120 minutos); después abortar')
+        args = parser.parse_args()
+        if not math.isfinite(args.esperar) or not 0 <= args.esperar <= 120:
+            parser.error('--esperar entre 0 y 120 minutos')
+        spec = importlib.util.spec_from_file_location('mini_install', SOURCE / 'mini.py')
+        mini = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mini)
+        mini.Manager().change('install' if args.command == 'instalar' else 'withdraw', args.seco,
+                              wait=args.esperar * 60)
+        return
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--solo-guardia', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument("command", choices=["instalar", "desinstalar"])
     parser.add_argument("--seco", action="store_true")
     parser.add_argument('--cuotas', action='store_true', help='Adoptar el deseo durable Mini 3/1/3')
@@ -79,6 +98,12 @@ def main():
     home = Path.home()
     library = home / ".local/lib/pao-pueue-mini"
     state = home / ".local/state/pao/pueue-mini"
+    if os.path.lexists(state / 'control.sqlite3'):
+        import sqlite3
+        with sqlite3.connect((state / 'control.sqlite3').as_uri() + '?mode=ro', uri=True) as db:
+            policy = json.loads(db.execute('SELECT body FROM policy WHERE id=1').fetchone()[0])
+        if 'mini_handoff' in policy:
+            raise ValueError('Instalación U3.5: usar el relevo, no el instalador legacy')
     agent = home / "Library/LaunchAgents" / (LABEL + ".plist")
     # Equivalente a id -u, sin ejecutar comandos tampoco en --seco.
     domain = f"gui/{os.getuid()}"
@@ -91,11 +116,15 @@ def main():
         if args.command == "instalar":
             print(f"SECO: comprobar {LAUNCHCTL} print {domain}/sh.brew.pueue")
             print(f"SECO: comprobar {PUEUE} status --json (grupos suites y default)")
-        print(f"SECO: si está cargado, {LAUNCHCTL} bootout {service}")
+        if args.command == 'instalar' and args.cuotas:
+            print('SECO: conservar la guardia cargada; bootstrap sólo si todavía no está cargada')
+        else:
+            print(f"SECO: si está cargado, {LAUNCHCTL} bootout {service}")
         if args.command == "instalar":
+            print(f"SECO: copiar {SOURCE / 'mini.py'} -> {library / 'mini.py'} antes del controlador")
             print(f"SECO: copiar {SOURCE / 'control.py'} -> {library / 'control.py'}")
             print(f"SECO: crear {state} y renderizar plist -> {agent}")
-            print("SECO: " + shlex.join([LAUNCHCTL, "bootstrap", domain, str(agent)]))
+            print("SECO: si está ausente: " + shlex.join([LAUNCHCTL, "bootstrap", domain, str(agent)]))
             if args.cuotas:
                 print('SECO: bajo control.lock verificar perfil 3/1/3, adoptar deseo/propiedad y conservar recibos')
         else:
@@ -137,7 +166,9 @@ def main():
                 with switch.open('x') as stream:
                     stream.write('instalación en curso\n'); stream.flush(); os.fsync(stream.fileno())
                 enable_after = True
-    if run(LAUNCHCTL, "print", service, check=False).returncode == 0:
+    guard_loaded = run(LAUNCHCTL, "print", service, check=False).returncode == 0
+    keep_guard = args.command == 'instalar' and args.cuotas and guard_loaded
+    if guard_loaded and not keep_guard:
         run(LAUNCHCTL, "bootout", service)
     if args.command == "instalar":
         try:
@@ -152,12 +183,14 @@ def main():
                         engine.view()
                     else:
                         engine.adopt(args.pid_file)
-                for target, write in ((library / "control.py", lambda path: shutil.copy2(SOURCE / "control.py", path)),
+                for target, write in ((library / "mini.py", lambda path: shutil.copy2(SOURCE / "mini.py", path)),
+                                      (library / "control.py", lambda path: shutil.copy2(SOURCE / "control.py", path)),
                                       (agent, lambda path: path.write_bytes(plistlib.dumps(template)))):
                     temporary = target.with_name(target.name + ".tmp")
                     write(temporary)
                     os.replace(temporary, target)
-            run(LAUNCHCTL, "bootstrap", domain, str(agent))
+            if not keep_guard:
+                run(LAUNCHCTL, "bootstrap", domain, str(agent))
             if enable_after:
                 with (state / 'control.lock').open('a') as handle:
                     fcntl.flock(handle, fcntl.LOCK_EX)
@@ -171,7 +204,7 @@ def main():
         except Exception as error:
             keep_owned_guarded(state, domain, agent, error)
             raise
-        for target in (agent, library / "control.py"):
+        for target in (agent, library / "control.py", library / "mini.py"):
             target.unlink(missing_ok=True)
             target.with_name(target.name + ".tmp").unlink(missing_ok=True)
         if library.exists():

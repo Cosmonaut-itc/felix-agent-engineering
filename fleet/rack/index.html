@@ -420,6 +420,7 @@ document.addEventListener('click',ev=>{
 });
 
 // Free capacity of a paused group is one cell, including unknown authority.
+const startupWait=h=>h.id==='mini' ? 'Esperando cuotas y sensores' : 'Esperando cuotas y Docker';
 function heldCell(h,n,g,free){
   const c=h.control, guard=h.guard;
   const reasons=c?.pause_reasons?.[n];
@@ -435,10 +436,10 @@ function heldCell(h,n,g,free){
       else if(reason==='pausa de origen desconocido'){why='Pausa de origen desconocido';how=resolve;}
       else {why='Retenido al reiniciar';how=esc(reason)+' · '+resolve;}
     }
-    else if(c?.startup_waiting?.[n]==='cuotas_sensores'){why='Esperando cuotas y Docker';how='reanudación automática';}
+    else if(c?.startup_waiting?.[n]==='cuotas_sensores'){why=startupWait(h);how='reanudación automática';}
     else if(r.includes('manual')){why='Pausa manual';how=resolve;}
     else if(r.includes('ambiguous')){why='Pausa de origen desconocido';how=resolve;}
-    else {why='Esperando cuotas y Docker';how='reanudación automática';}
+    else {why=startupWait(h);how='reanudación automática';}
   }else if(!reasons.includes('pressure') || !guard?.pressure || !guard?.thresholds || !h.fresh) unknown();
   else {
     const p=guard.pressure, t=guard.thresholds[n==='rapidas'?'rapidas':'normal'];
@@ -452,7 +453,7 @@ function heldCell(h,n,g,free){
       const blockers=recent ? result.bloqueos.filter(b=>b.grupo==null || b.grupo===n) : [];
       const gate=blockers.find(b=>!['pressure_high','cooldown','quota'].includes(b.causa));
       const causes={docker:'Esperando Docker',generation:'Esperando confirmar el daemon',desired:'Esperando cuotas',
-        event:'Esperando cambio de horario',admission:'Esperando admisión',startup:'Esperando cuotas y Docker',
+        event:'Esperando cambio de horario',admission:'Esperando admisión',startup:startupWait(h),
         authority:'Estado de la guardia desconocido',maintenance:'En mantenimiento',reason:'Pausa sin resolver',
         dependency:'Esperando dependencia',task_changed:'Esperando confirmar la tarea',admission_unknown:'Admisión sin confirmar',
         clock:'Reloj de admisión no disponible',log:'Registro de la guardia no disponible',rpc:'Admisión sin confirmar',

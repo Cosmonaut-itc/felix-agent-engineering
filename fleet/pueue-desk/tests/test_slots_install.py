@@ -56,7 +56,9 @@ class SlotsInstallTests(unittest.TestCase):
         self.assertFalse((self.state/'slots.disabled').exists())
         view=self.engine().view();self.assertTrue(view['capabilities']['slots'])
         before=(self.state/'control.sqlite3').read_bytes()
-        self.fake.install('instalar')  # adoption remains opt-in across later upgrades
+        self.fake.actions.clear()
+        self.fake.install('instalar')  # adopted upgrades retain the loaded guard
+        self.assertFalse(any(a[1] in ('bootout','bootstrap') for a in self.fake.actions))
         self.assertEqual((self.state/'control.sqlite3').read_bytes(),before)
         self.assertTrue(self.fake.service_loaded)
         self.assertFalse(any(a[1] in ('parallel','start') for a in self.fake.actions))

@@ -157,6 +157,12 @@ CASES=(
 
 
 STARTUP_CASES = (
+    ('startup-mini-sensors','index.html',"h.id==='mini' ? 'Esperando cuotas y sensores' : 'Esperando cuotas y Docker'","'Esperando cuotas y Docker'",
+     'test_mini_startup.MiniStartupTests.test_mini_ui_interruption_hold_and_normal_unchanged'),
+    ('startup-mini-authority','snapshot.py',"desk_interruptions(home, host)","desk_interruptions(home)",
+     'test_mini_startup.MiniStartupTests.test_mini_snapshot_reads_own_authority_and_preserves_old_attributed_task'),
+    ('startup-mini-hold','index.html',"const reason=h.control?.startup_holds?.[n];","const reason=h.id==='mini'?null:h.control?.startup_holds?.[n];",
+     'test_mini_startup.MiniStartupTests.test_mini_ui_interruption_hold_and_normal_unchanged'),
     ('startup-task-visible','index.html',"${interrupted(h,n)}",'',
      'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
     ('startup-task-grouping','index.html',"  if(!rows.length) return '';",
@@ -216,7 +222,7 @@ def main():
             text=path.read_text()
             if text.count(before)!=1:raise AssertionError('Mutation anchor is no longer unique: '+name)
             path.write_text(text.replace(before,after))
-            result=subprocess.run(['/usr/bin/python3','-B','-m','unittest',test,'-v'],cwd=str(root/'tests'),
+            result=subprocess.run([sys.executable,'-B','-m','unittest',test,'-v'],cwd=str(root/'tests'),
                                   env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),capture_output=True,text=True,timeout=20)
             if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:
                 raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
