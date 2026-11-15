@@ -87,11 +87,25 @@ de `SEN-HASO/Hasito`. Usa la etiqueta `hasito-noche`, el directorio
 
 `solo-main.sh` sólo acepta `GITHUB_REPOSITORY=SEN-HASO/Hasito`, el ref exacto
 `SEN-HASO/Hasito/.github/workflows/gate-noche.yml@refs/heads/main` y los eventos
-`schedule` o `workflow_dispatch`. Cualquier otro valor o variable ausente
-hace fallar el trabajo antes de ejecutar sus pasos, con una sola línea que
-identifica el valor rechazado. El hook impide ramas, otros workflows y otros
-eventos; quien pueda cambiar ese workflow en `main` de Hasito sí ejecuta código
-en la Mini.
+`schedule` o `workflow_dispatch`. Con cualquier otro valor o variable ausente
+imprime una línea que identifica el valor rechazado y termina al proceso
+`Runner.Worker` del trabajo. Salir con error no basta: el runner marca el
+trabajo como fallido y sigue con los pasos `if: always()`. Con el proceso
+terminado no corre ningún paso y GitHub muestra el trabajo como fallido. Si el
+hook no encuentra ese proceso entre sus ancestros, lo dice en una segunda línea
+y sale con 1.
+
+El hook impide ramas, otros workflows y otros eventos. Dos límites quedan fuera:
+
+- Quien pueda cambiar ese workflow en `main` de Hasito sí ejecuta código en la
+  Mini.
+- Un workflow reutilizable hereda la identidad de quien lo llama. Si
+  `gate-noche.yml` llamara a uno, sus trabajos pasarían el hook. Por eso
+  `gate-noche.yml` define sus trabajos en el propio archivo y no llama a
+  workflows reutilizables.
+
+GitHub restringe un grupo de runners a workflows concretos sólo en sus planes
+Enterprise, así que el hook es la única barrera de este runner.
 
 Para instalar, con el checkout de la Mini al día:
 
@@ -122,7 +136,8 @@ Después de instalar o reinstalar, el log debe mostrar un nuevo
 `Listening for Jobs`. Comprueba también que `mini-hasito-noche` aparece
 `online` con etiqueta `hasito-noche` en
 `gh api repos/SEN-HASO/Hasito/actions/runners`. Un despacho manual del workflow
-desde `main` debe pasar el hook; desde otra rama debe fallar antes de sus pasos.
+desde `main` debe pasar el hook. Desde otra rama debe fallar sin ejecutar ningún
+paso, tampoco uno con `if: always()`.
 
 Para retirar:
 
