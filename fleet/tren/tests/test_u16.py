@@ -1,6 +1,10 @@
 """U16: CI sobre C, partición FIFO, juicio y recuperación; sólo host remoto."""
 from dataclasses import replace
 import json
+import os
+from pathlib import Path
+import subprocess
+from unittest.mock import patch
 import unittest
 
 import test_activo as activo
@@ -190,7 +194,7 @@ class RegresionesTests(ContextoCI):
 class LecturaTests(unittest.TestCase):
     def leer(self, checks=(), statuses=(), esperados=None, sombra=False):
         observador = GitHubGit({'checks_esperados': esperados} if esperados is not None else {},
-                              sombra=sombra)
+                              sombra=sombra, activo=not sombra)
         observador.api = lambda endpoint, paginado: (
             [{'check_runs': list(checks)}] if '/check-runs?' in endpoint else [list(statuses)])
         return observador.ci(REPO, 'a' * 40)
@@ -200,8 +204,8 @@ class LecturaTests(unittest.TestCase):
 
     def test_tabla_completa_de_conclusiones_y_statuses(self):
         esperados = {'success': 'verde', 'failure': 'rojo', 'timed_out': 'rojo',
-            'cancelled': 'rojo', 'skipped': 'pendiente', 'neutral': 'pendiente',
-            'action_required': 'rojo', 'startup_failure': 'rojo', 'stale': 'rojo'}
+            'cancelled': 'pendiente', 'skipped': 'verde', 'neutral': 'verde',
+            'action_required': 'pendiente', 'startup_failure': 'pendiente', 'stale': 'pendiente'}
         for conclusion, esperado in esperados.items():
             with self.subTest(conclusion=conclusion):
                 resultado = self.leer([self.check(conclusion)])
@@ -210,14 +214,14 @@ class LecturaTests(unittest.TestCase):
                 self.assertEqual(self.leer([self.check(conclusion)], sombra=True).estado,
                                  'verde' if conclusion == 'success' else 'pendiente')
         for status, esperado in [('success', 'verde'), ('failure', 'rojo'),
-                                 ('error', 'rojo'), ('pending', 'pendiente')]:
+                                 ('error', 'pendiente'), ('pending', 'pendiente')]:
             with self.subTest(status=status):
                 resultado = self.leer(statuses=[{'context': 'status', 'state': status}])
                 self.assertEqual(resultado.estado, esperado)
                 self.assertEqual(resultado.rojos, ('status',) if esperado == 'rojo' else ())
 
     def test_ultima_corrida_por_nombre_y_todas_las_paginas(self):
-        observador = GitHubGit({})
+        observador = GitHubGit({}, activo=True)
         observador.api = lambda endpoint, paginado: (
             [{'check_runs': [self.check('success', id=9)]},
              {'check_runs': [self.check('failure', id=2)]}] if '/check-runs?' in endpoint else
@@ -236,7 +240,7 @@ class LecturaTests(unittest.TestCase):
         self.assertEqual(self.leer(statuses=[{'context': 'legacy', 'state': 'futuro'}]).estado, 'pendiente')
         self.assertEqual(self.leer([self.check('failure', 'pao-tren/resultado')],
             [{'context': 'pao-tren/resultado', 'state': 'failure'}], esperados=[]).estado, 'verde')
-        self.assertEqual(self.leer([self.check('failure')], esperados=['otro']).estado, 'pendiente')
+        self.assertEqual(self.leer([self.check('failure')], esperados=['otro']).estado, 'rojo')
 
 
 class InvariantesTests(ContextoCI):
@@ -303,7 +307,7 @@ class InvariantesTests(ContextoCI):
         self.contexto.tick(1501)
         actual = self.estado()
         self.assertEqual(actual.trenes[-1].recibos, (actual.entradas[1].entrega.recibo,))
-        self.assertFalse(actual.entradas[1].partida)
+        self.assertTrue(actual.entradas[1].partida)
         self.assertTrue(actual.entradas[2].partida)
         self.assertEqual(desde_datos(datos(actual)), actual)
 
@@ -384,6 +388,63 @@ c.contexto.tick(1000, frontera)
 
     def test_muerte_tras_status(self):
         self.morir('antes-registrar', True)
+
+
+class SombraTests(unittest.TestCase):
+    """Eventos de sombra con heads rojo, skipped y verde; `remoto-u16.sh` los
+    compara byte a byte con los de 85138706."""
+    comando = juicio.JuicioTests.comando
+    commit = juicio.JuicioTests.commit
+    push = juicio.JuicioTests.push
+    remoto = juicio.JuicioTests.remoto
+    ledger = juicio.JuicioTests.ledger
+
+    def setUp(self):
+        # Fechas fijas: mismos SHA, recibos e ids de tren en ambos árboles.
+        fechas = patch.dict(os.environ, {"GIT_AUTHOR_DATE": "2026-01-01T00:00:00Z",
+                                         "GIT_COMMITTER_DATE": "2026-01-01T00:00:00Z"})
+        fechas.start()
+        self.addCleanup(fechas.stop)
+        juicio.JuicioTests.setUp(self)
+
+    def test_eventos_de_sombra_no_cambian(self):
+        pr1, pr2 = self.miembros[0][1], self.miembros[1][1]
+        posts = self.raiz / "posts.log"
+        posts.write_text(json.dumps({"endpoint": "repos/{}/statuses/{}".format(REPO, pr1),
+                                     "payload": {"context": "otro-check", "state": "failure"}}) + "\n")
+        original = self.contexto.gh
+
+        def gh(argv, **kwargs):
+            if argv[:2] == ["gh", "api"] and argv[4].startswith(
+                    "repos/{}/commits/{}/check-runs?".format(REPO, pr2)):
+                valor = [{"check_runs": [{'id': 1, 'name': 'check', 'status': 'completed', 'conclusion': 'success'}, {"id": 2, "name": "opcional",
+                                                 "status": "completed", "conclusion": "skipped"}]}]
+                return subprocess.CompletedProcess(argv, 0, json.dumps(valor), "")
+            return original(argv, **kwargs)
+
+        args = activo.cli.parser().parse_args(["tick", "--repo", REPO, "--seco"])
+        for inscripcion, doble in (("sombra", True), ("activo", False)):
+            self.inscritos.write_text(REPO + " " + inscripcion + "\n")
+            observador = GitHubGit(self.contexto.config, ejecutar=gh, sombra=doble)
+            for ahora in (100, 3700, 7300):
+                self.assertEqual(activo.cli.ejecutar(args, observador=observador, ahora=ahora)[0], 0)
+        with self.ledger() as ledger:
+            eventos = [(r["tipo"], r["instante"], json.loads(r["payload"])) for r in ledger.db.execute(
+                "SELECT tipo, instante, payload FROM events WHERE tipo IN "
+                "('sombra', 'sombra-doble-camino', 'admision-entrega') ORDER BY seq")]
+        self.assertEqual(sum(t in ("sombra", "sombra-doble-camino") for t, _, _ in eventos), 6)
+        for tipo, _, plan in eventos:
+            if tipo == "admision-entrega":
+                continue
+            admisiones = [e["admision"] for e in plan["estado"]["entradas"]]
+            # Rojo y skipped en el head siguen siendo «no verde» para la sombra.
+            self.assertEqual([a["_tipo"] for a in admisiones[:2]], ["Retenido", "Retenido"])
+            self.assertEqual({a["motivo"] for a in admisiones[:2]}, {"ci-no-verde"})
+            self.assertEqual(admisiones[2]["_tipo"], "Admitido")
+        texto = json.dumps(eventos, sort_keys=True).replace(str(self.raiz), "<raiz>")
+        destino = os.environ.get("PAO_TREN_U16_SOMBRA")
+        if destino:
+            Path(destino).write_text(texto)
 
 
 if __name__ == '__main__':

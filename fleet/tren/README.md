@@ -637,32 +637,34 @@ otro tren o de otro C no produce partición ni devolución.
 
 | Fuente | Conclusión / estado | Lectura |
 |---|---|---|
-| Check terminado | `success` | `verde` |
-| Check terminado | `failure`, `timed_out`, `cancelled`, `action_required`, `startup_failure`, `stale` | `rojo` |
-| Check terminado | `skipped`, `neutral` | `pendiente` |
+| Check terminado | `success`, `skipped`, `neutral` | `verde` |
+| Check terminado | `failure`, `timed_out` | `rojo` |
+| Check terminado | `cancelled`, `action_required`, `startup_failure`, `stale` | `pendiente` |
 | Check no terminado | cualquiera, incluido `success` prematuro | `pendiente` |
 | Check terminado | conclusión ausente o desconocida | `pendiente` |
 | Commit status | `success` | `verde` |
-| Commit status | `failure`, `error` | `rojo` |
-| Commit status | `pending`, estado desconocido | `pendiente` |
+| Commit status | `failure` | `rojo` |
+| Commit status | `error`, `pending`, estado desconocido | `pendiente` |
 
-Sólo `success` acredita ejecución aprobada. Las conclusiones de fallo,
-interrupción o intervención requerida son un resultado negativo de CI;
-no se presentan como una atribución de fallo de producto de D5. `skipped`
-y `neutral` no afirman un fallo ni una ejecución aprobada: esperan evidencia
-hasta el plazo de infraestructura, evitando devolver falsamente al dueño
-por un check que no evaluó su cambio. Una conclusión desconocida tampoco
-inventa éxito ni culpa.
+En modo activo, `success` acredita aprobación; `skipped` y `neutral` son
+conclusiones aceptadas por GitHub, incluso si el check figura en
+`checks_esperados`. La configuración exige presencia: un workflow que nunca
+emite su check sigue pendiente. `failure` y `timed_out` informan el resultado
+negativo observado, sin afirmar una causa de producto D5. Una cancelación
+humana o por concurrencia, una intervención requerida, un fallo de arranque,
+evidencia vencida o un status `error` no acreditan un fallo del cambio:
+esperan hasta el plazo de infraestructura. Valores desconocidos también
+esperan sin inventar éxito ni culpa.
 
 Se conservan todas las páginas. Sólo decide el check-run con mayor id por
-nombre y el status más reciente por contexto. Si falta algún
-`checks_esperados` configurado, la lectura sigue `pendiente`, conservando
-esa barrera existente. Con los esperados presentes, un rojo explícito prima
-sobre pendientes; **verde** exige que todos los checks/statuses vigentes
-sean verdes. Sin observaciones se espera, salvo CI declarado vacío
+nombre y el status más reciente por contexto. Un rojo explícito prima sobre
+pendientes y esperados ausentes; un faltante sólo impide **verde**. Verde
+exige que todos los checks/statuses vigentes sean aceptables y que existan
+todos los esperados. Sin observaciones se espera, salvo CI declarado vacío
 (`checks_esperados: []`). `pao-tren/resultado` se excluye tanto en checks
-como en statuses; la sombra de doble camino conserva su lectura histórica
-y su retención ante cualquier conclusión distinta de `success`.
+como en statuses; sólo la sombra de doble camino conserva su inclusión.
+La sombra y `tick --seco` mantienen su lectura histórica: únicamente
+`success` es verde, cualquier otra conclusión retiene.
 
 La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
 
@@ -683,6 +685,11 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
   usa `observacion.ahora` desde la transición a `EsperandoCI`, también si
   GitHub falla, faltan checks o la admisión está retenida. Un snapshot
   anterior sin `desde` comienza a contar en el primer tick de U16.
+  Un verde observado sin suite lanzada **no detiene el plazo**: si el CI
+  vuelve a pendiente se cuenta desde la entrada original. Una pausa manual
+  tampoco descuenta tiempo. Un recibo durable de suite sí permite recuperar
+  su lanzamiento con el CI verde guardado y salir de `EsperandoCI`, aunque
+  la lectura fresca haya vuelto a pendiente.
 
 `reanudar` conserva el tren y C, reinicia `desde` al consumir el juicio y
 emite `solicitar-ci` con contador/clave nuevos. Publica una ref
@@ -702,11 +709,16 @@ ofrece las decisiones que pasan esa validación.
 
 La marca `partida` pertenece al recibo `(repo, PR, head)` y resiste cada
 readmisión, incluida una retención transitoria, conservando `recibida` y la
-primera `admitida`. Se consume al formar su tren individual. Un head nuevo
+primera `admitida`. Dura hasta resolver la entrega: formar un individual no
+la consume; si se aborta o rearma, vuelve a formar un tren de uno. Un head nuevo
 caduca la entrega anterior por las reglas existentes y **no hereda** la
 marca: no es la entrega que participó en el lote rojo y tendrá su propio
 APTO/dirigida/CI. Los atributos sensible y alto riesgo siguen imponiendo
 viaje individual por su propia política.
+
+El reductor ignora un rojo sin nombres válidos y lo trata como pendiente;
+no parte ni devuelve sin evidencia nominada. El escritor de feedback también
+rechaza ese payload antes de consultar o publicar en GitHub.
 
 Snapshot, devoluciones a la fila, cierre y efectos se guardan en el mismo
 COMMIT de U13/U15. La recuperación del comentario usa el marcador U14; en
@@ -727,6 +739,11 @@ la tabla de conclusiones, la política exhaustiva de juicio, el aislamiento
 de C, la marca por entrega y muertes reales entre COMMIT y drenado, después
 del comentario y después del status. Todas las pruebas usan stdlib,
 HOME/XDG temporales canónicos, git local y transportes falsos sin red.
+`tests/remoto-u16-injerto.sh` exige siete regresiones de aserción sobre
+`50cb5cda` (cancelación/infraestructura, skips esperados, rojo con faltantes,
+partición tras aborto y rearme, rojo sin nombres en reductor y feedback), y
+las ejecuta después sobre el código actual. La comparación contra `85138706`
+exige igualdad byte a byte de eventos de sombra de doble camino y `--seco`.
 El lanzador remoto solapa los injertos históricos con la suite actual,
 en procesos y temporales separados, para respetar el carril rápido de diez
 minutos. Espera ambos resultados y conserva el log completo de los injertos;

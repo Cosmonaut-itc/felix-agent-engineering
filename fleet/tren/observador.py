@@ -13,11 +13,12 @@ from dominio import EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal, 
 
 CONCLUSIONES_CI = {
     "success": "verde",
-    "failure": "rojo", "timed_out": "rojo", "cancelled": "rojo",
-    "action_required": "rojo", "startup_failure": "rojo", "stale": "rojo",
-    "skipped": "pendiente", "neutral": "pendiente",
+    "failure": "rojo", "timed_out": "rojo",
+    "cancelled": "pendiente", "action_required": "pendiente",
+    "startup_failure": "pendiente", "stale": "pendiente",
+    "skipped": "verde", "neutral": "verde",
 }
-STATUS_CI = {"success": "verde", "failure": "rojo", "error": "rojo",
+STATUS_CI = {"success": "verde", "failure": "rojo", "error": "pendiente",
              "pending": "pendiente"}
 
 
@@ -108,26 +109,31 @@ class GitHubGit:
             # D6 despierta al dueño; no es CI. Tras caducar, el head actual
             # debe poder reentregarse sin que nuestro aviso lo retenga solo.
             # Sólo la sombra con doble camino conserva la lectura histórica.
-            # También el --seco sin doble camino usa el gate del tren activo.
+            # --seco sin doble camino conserva la exclusión de este contexto.
             if not self.sombra and status["context"] == "pao-tren/resultado":
                 continue
             ultimos.setdefault(status["context"], status["state"])
         esperados = self.config.get("checks_esperados")
         faltan = esperados is not None and any(n not in checks for n in esperados)
+        # Sólo el tick activo interpreta la tabla U16. Sombra y --seco
+        # conservan success como único verde, incluido el doble camino.
+        if self.sombra or not self.activo:
+            verde = (not faltan and
+                     (bool(checks or ultimos) or esperados == []) and
+                     all(c["status"] == "completed" and c.get("conclusion") == "success"
+                         for c in checks.values()) and
+                     all(s == "success" for s in ultimos.values()))
+            return ResultadoCI("verde" if verde else "pendiente")
         valores = {n: CONCLUSIONES_CI.get(c.get("conclusion"), "pendiente")
                    if c["status"] == "completed" else "pendiente"
                    for n, c in checks.items()}
         estados = {n: STATUS_CI.get(s, "pendiente") for n, s in ultimos.items()}
         rojos = tuple(sorted({n for n, v in list(valores.items()) + list(estados.items())
                               if v == "rojo"}))
-        if faltan:
-            return ResultadoCI("pendiente")
-        # La sombra conserva exactamente su contrato histórico: sólo success
-        # acredita CI y cualquier otro valor retiene sin cambiar sus eventos.
-        if rojos and not self.sombra:
+        # Un esperado ausente impide verde, pero no oculta un rojo presente.
+        if rojos:
             return ResultadoCI("rojo", rojos)
-        # Zero checks counts as green only when the repo declares an empty CI.
-        if not checks and not ultimos and esperados != []:
+        if faltan or (not checks and not ultimos and esperados != []):
             return ResultadoCI("pendiente")
         return ResultadoCI("verde" if all(v == "verde" for v in valores.values())
                            and all(v == "verde" for v in estados.values()) else "pendiente")

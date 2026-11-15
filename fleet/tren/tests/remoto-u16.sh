@@ -23,3 +23,19 @@ for nombre in sorted(esperados):
     print('ANTES 85138706 FALLO ESPERADO:', nombre, flush=True)
 print('Evidencia U16 anterior:', raiz, flush=True)
 PY
+# Sombra de doble camino y tick --seco: mismos bytes que antes de U16.
+for arbol in anterior actual; do
+  if [ "$arbol" = anterior ]; then pruebas="$tren_anterior/fleet/tren/tests"; else pruebas="$PWD/fleet/tren/tests"; fi
+  PAO_TREN_U16_SOMBRA="$tren_pruebas/sombra-$arbol.json" python3 -I -B - "$pruebas" <<'PY'
+import sys
+import unittest
+
+sys.path.insert(0, sys.argv[1])
+suite = unittest.defaultTestLoader.loadTestsFromName('test_u16.SombraTests')
+resultado = unittest.TextTestRunner(verbosity=2).run(suite)
+if not resultado.wasSuccessful() or resultado.testsRun != 1:
+    raise SystemExit('SOMBRA: la prueba de eventos no pasó en ' + sys.argv[1])
+PY
+done
+cmp "$tren_pruebas/sombra-anterior.json" "$tren_pruebas/sombra-actual.json"
+echo "U16 sombra y tick --seco: eventos idénticos a 85138706 ($tren_pruebas)"

@@ -98,7 +98,11 @@ class EscritorGitHub:
             if "juicio" in payload:
                 publico["juicio"] = payload["juicio"]
             if "ci_rojos" in payload:
-                publico["ci_rojos"] = payload["ci_rojos"]
+                nombres = payload["ci_rojos"]
+                if not isinstance(nombres, list) or not nombres or not all(
+                        isinstance(n, str) and n.strip() for n in nombres):
+                    raise ValueError("CI rojo sin nombres de checks válidos")
+                publico["ci_rojos"] = nombres
             detalle = json.dumps(publico, ensure_ascii=True, sort_keys=True, indent=2)
             texto = ("Entrega devuelta por CI rojo sobre el candidato individual.\n\n"
                      if "ci_rojos" in payload else

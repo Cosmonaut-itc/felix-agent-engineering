@@ -69,7 +69,7 @@ class Entrada:
     terminal: Optional['Terminal'] = None
     # Sólo doble camino: instante observado de caducidad, sin borrar admisión.
     caducada: Optional[float] = None
-    # Ligada al recibo, sólo hasta formar el tren individual tras CI rojo.
+    # Ligada al recibo: conserva el aislamiento hasta resolver la entrega.
     partida: bool = False
 
 
@@ -499,6 +499,9 @@ def avanzar_ci(estado, tren, observacion):
     ligada = (observacion.tren_id == tren.id and
               observacion.ci_recibo == "github:" + fase.candidato.C)
     lectura = observacion.ci_candidato if ligada else "pendiente"
+    if lectura == "rojo" and not (observacion.ci_rojos and all(
+            isinstance(n, str) and n.strip() for n in observacion.ci_rojos)):
+        lectura = "pendiente"
     salida = SALIDAS_CI.get(lectura, "esperar")
     if salida == "separar-o-devolver":
         if len(tren.recibos) > 1:
@@ -867,7 +870,7 @@ def paso(estado, observacion):
         generacion += 1
         tren_id = clave("tren", estado.repo, observacion.base, recibos, generacion)
     tren = Tren(tren_id, recibos, Congelado(observacion.base))
-    estado = replace(estado, entradas=tuple(replace(e, tren=tren_id, partida=False)
+    estado = replace(estado, entradas=tuple(replace(e, tren=tren_id)
                      if e.entrega.recibo in recibos else e for e in entradas),
                      trenes=estado.trenes + (tren,))
     efectos.append(Efecto(clave("armar", tren_id), "armar-candidato", (tren_id,)))
