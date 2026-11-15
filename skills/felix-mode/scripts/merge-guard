@@ -388,8 +388,17 @@ def train_guard(command, directory, inherited_env=None):
         if not os.stat(registry).st_mode & 0o444:
             raise OSError("sin permisos de lectura")
         with open(registry, encoding="utf-8") as source:
-            enrolled = {line.split("#", 1)[0].strip().lower() for line in source}
-        enrolled.discard("")
+            for line in source:
+                # Igual que inscripcion.py: sólo CR/LF separan registros. Una
+                # línea ambigua activa todos sus tokens owner/repo, aun tras #.
+                if any(c in line for c in "\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
+                    enrolled.update(c for c in line.lower().split()
+                                    if re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", c))
+                    continue
+                fields = line.split("#", 1)[0].lower().split()
+                if fields and fields[1:] != ["sombra"]:
+                    # Duplicados: activo/desconocido prevalece sobre sombra.
+                    enrolled.add(fields[0])
     except (OSError, UnicodeError):
         unreadable = True
     reason = "repo inscrito en el tren: usa pao-tren entregar"

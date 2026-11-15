@@ -69,6 +69,64 @@ un PR solo sobre tickets normales anteriores. Jale nace en pausa `etapa-1`.
 
 El CLI no ejecuta efectos; U4 añade el adaptador y el diagnóstico al ejecutor explícito.
 
+## Sombra con doble camino (U12)
+
+El registro `${XDG_CONFIG_HOME:-~/.config}/pao-tren/inscritos` admite
+`owner/project` (activo) y `owner/project sombra`, sin distinguir mayúsculas
+y con comentarios `#`. Modo desconocido o duplicado activo prevalece sobre
+sombra. Registro ilegible conserva la negación del guard. En sombra el ticket
+entrega con APTO, recibo y watch, consulta `tick --seco` y `estado` y después
+completa los gates y merge habituales. Una retención/rechazo se anota y no
+frena ese merge; el ticket no edita `heads_autorizados`.
+Ambos lectores separan registros sólo por CR/LF. Si una línea contiene
+separadores verticales o Unicode (`VT`, `FF`, U+001C–U+001E, U+0085,
+U+2028/U+2029), todos sus tokens `owner/repo` cuentan como activos, incluso
+tras `#`: una línea ambigua nunca concede sombra.
+
+`entregar` observa la admisión D7 en ese momento y la guarda atómicamente
+con la custodia en un evento `admision-entrega`. Acepta `--config` como tick;
+sin lectura/config válida conserva custodia y registra retención por
+observación incompleta. Reentregar el mismo head no cambia esa muestra.
+Sólo para un repo inscrito en sombra, `tick --seco` usa un reductor separado:
+los lotes pasan directamente a `SIMULADO`, sin efectos ni espera de suite.
+Su continuación se guarda en eventos `sombra-doble-camino`; los eventos
+`sombra` de U1/U2/U4 siguen perteneciendo al reductor activo. Al cambiar la
+inscripción a activo, los PR abiertos se readmiten desde custodia y sus
+muestras iniciales, sin arrastrar lotes simulados.
+Un PR que GitHub confirma mergeado en main con el head entregado termina
+`MERGEADO-FUERA`; cerrado sin merge sigue siendo rechazo. Los avances de
+main no pausan la sombra. La primera admisión se conserva incluso después
+del merge externo para reconstruir el contrafactual. No cambia el tick activo
+ni activa escrituras; tick sin `--seco` sigue saliendo con 2.
+Un rechazo conserva esa admisión histórica y registra `caducada`, el instante
+en que se observó. La entrega sale de la fila desde entonces; un lote cerrado
+antes queda intacto. Si coincide con el cierre, la caducidad gana. El merge
+externo confirmado conserva su muestra. El campo tiene default para leer
+eventos anteriores; en medición, su ausencia usa el primer rechazo observado.
+
+```sh
+fleet/tren/pao-tren medir --repo owner/project \
+  --desde 2026-11-01T00:00:00Z --hasta 2026-11-08T00:00:00Z
+```
+
+`medir` abre SQLite en modo de sólo lectura, sin crear directorios ni ledger.
+Imprime una línea JSON determinista: entregas en `[desde, hasta)`, admisión
+al entregar y motivo, primera admisión observada, lotes, distribución 1/2/3,
+pendientes y `suites_ahorradas_estimadas = muestras en lotes o pendientes - lotes`.
+`admitidas` conserva la cuenta histórica; las entregas caducadas antes de un
+lote no producen ahorro. Simulación y medición usan la misma cola temporal.
+Los eventos U1
+se leen igual; sin muestra al entregar se informa custodia y fuente
+`sin-observacion-al-entregar`, sin inventar evidencia retroactiva.
+Los lotes usan los tiempos de primera admisión, FIFO hasta 3 o 60 min;
+sensibles y alto riesgo admitidos viajan solos sin adelantar al primero.
+A los 60 min vence la ventana antes de incorporar una llegada simultánea.
+La ventana selecciona la cohorte de entregas y sólo sus observaciones
+anteriores a `hasta`; un lote aún sin vencer figura en pendientes. El ahorro
+es provisional mientras haya pendientes. No estima duración ni resultado
+de suites: supone disponibilidad inmediata entre lotes, incluso si el merge
+externo ocurrió antes de que se cerrara la ventana virtual.
+
 ## Instalación en macOS (U7, sombra)
 
 Desde un checkout estable de PAO, `bin/pao sync --no-plugins --no-schedule`

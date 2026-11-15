@@ -67,6 +67,8 @@ class Entrada:
     solo: bool = False
     tren: Optional[str] = None
     terminal: Optional['Terminal'] = None
+    # Sólo doble camino: instante observado de caducidad, sin borrar admisión.
+    caducada: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -319,6 +321,8 @@ class VistaPR:
     completa: bool = True
     # A bound view cannot be reused for a new delivery of the same PR.
     recibo: str = ""
+    # Sólo la sombra interpreta un merge externo; default compatible con U1.
+    mergeado: bool = False
 
 
 @dataclass(frozen=True)

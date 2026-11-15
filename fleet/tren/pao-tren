@@ -11,9 +11,13 @@ import time
 
 # Script location is trusted, independent of cwd, including python -I invocations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from dominio import Entrega, datos, paso
-from ledger import Ledger
+from dominio import (Admitido, Entrada, Entrega, Estado, Observacion,
+                     admision_entrada, datos, paso)
+from inscripcion import modo
+from ledger import Ledger, filas_medicion
+from medicion import decision_json, instante_iso, medir
 from observador import GitHubGit, configuracion, sha
+from sombra import paso_sombra
 
 
 def repositorio(valor):
@@ -44,6 +48,7 @@ def parser():
     entregar.add_argument("--head", required=True, type=head)
     entregar.add_argument("--apto", required=True)
     entregar.add_argument("--dirigida", required=True)
+    entregar.add_argument("--config", help="JSON privado por repo para observar la entrega en sombra")
     estado = comandos.add_parser("estado")
     estado.add_argument("--repo", required=True, type=repositorio)
     estado.add_argument("--juicio", action="store_true")
@@ -51,12 +56,19 @@ def parser():
     tick.add_argument("--repo", required=True, type=repositorio)
     tick.add_argument("--seco", action="store_true")
     tick.add_argument("--config", help="JSON privado por repo; por defecto state/config.json")
+    medicion = comandos.add_parser("medir")
+    medicion.add_argument("--repo", required=True, type=repositorio)
+    medicion.add_argument("--desde", required=True, type=instante_iso)
+    medicion.add_argument("--hasta", required=True, type=instante_iso)
     return cli
 
 
 def ejecutar(args, observador=None, ahora=None):
     if args.comando == "tick" and not args.seco:
         return 2, {"error": "activación en una unidad posterior"}
+    if args.comando == "medir":
+        requests, events = filas_medicion(args.repo)
+        return 0, medir(requests, events, args.repo, args.desde, args.hasta)
     ledger = Ledger()
     ahora = time.time() if ahora is None else ahora
     try:
@@ -65,20 +77,48 @@ def ejecutar(args, observador=None, ahora=None):
             refs = [v if v.startswith("https://") else str(Path(v).resolve())
                     for v in (args.apto, args.dirigida)]
             entrega = Entrega(args.repo, args.pr, args.head, *refs)
-            recibo = ledger.entregar(entrega, ahora)
-            return 0, {"recibo": recibo, "estado": "custodia"}
+            if modo(args.repo) != "sombra":
+                recibo = ledger.entregar(entrega, ahora)
+                return 0, {"recibo": recibo, "estado": "custodia"}
+            with ledger.candado(args.repo):
+                existente = ledger.db.execute("SELECT payload FROM requests WHERE recibo=?",
+                                             (entrega.recibo,)).fetchone()
+                if existente:
+                    recibo = ledger.entregar(entrega, ahora)
+                    return 0, {"recibo": recibo, "estado": "custodia"}
+                estado = Estado(args.repo, (Entrada(entrega, ahora),))
+                try:
+                    if observador is None:
+                        ruta = args.config or ledger.directorio / "config.json"
+                        observador = GitHubGit(configuracion(ruta, args.repo), sombra=True)
+                    observacion = observador.observar(estado, ahora)
+                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+                    # Custodia durable aun sin observación; no inventa admisión.
+                    observacion = Observacion(ahora, "", ())
+                vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+                decision = admision_entrada(estado.entradas[0], vistas, observacion)
+                vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
+                entrada = Entrada(entrega, ahora, decision,
+                                  ahora if isinstance(decision, Admitido) else None,
+                                  bool(vista and (vista.sensible or vista.alto_riesgo)))
+                recibo = ledger.entregar(entrega, ahora, entrada)
+                return 0, {"recibo": recibo, "estado": "custodia",
+                           "admision": decision_json(entrada.admision)}
         if args.comando == "estado":
             return 0, {"estado": datos(ledger.estado(args.repo)),
-                       "sombra": datos(ledger.estado(args.repo, sombra=True)),
+                       "sombra": datos(ledger.estado(args.repo, sombra=True,
+                                                     doble_camino=modo(args.repo) == "sombra")),
                        "eventos": ledger.ultimos_eventos(args.repo)}
         with ledger.candado(args.repo):
-            estado = ledger.estado(args.repo, sombra=True)
+            doble_camino = modo(args.repo) == "sombra"
+            estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
             if observador is None:
                 ruta = args.config or ledger.directorio / "config.json"
-                observador = GitHubGit(configuracion(ruta, args.repo))
+                observador = GitHubGit(configuracion(ruta, args.repo), sombra=doble_camino)
             observacion = observador.observar(estado, ahora)
-            nuevo, efectos = paso(estado, observacion)
-            plan = ledger.sombra(nuevo, efectos, ahora)
+            reductor = paso_sombra if doble_camino else paso
+            nuevo, efectos = reductor(estado, observacion)
+            plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
             return 0, {"modo": "sombra", "plan": plan}
     finally:
         ledger.close()
