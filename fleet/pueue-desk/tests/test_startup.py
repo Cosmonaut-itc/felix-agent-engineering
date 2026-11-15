@@ -436,12 +436,12 @@ class InstallerStartupTests(unittest.TestCase):
             if args[2]=='show-environment':return subprocess.CompletedProcess(args,0,self.manager,'')
             if args[2]=='show':
                 if any(c[2]=='daemon-reload' for c in self.syscalls):
-                    values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',
+                    values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='always',KillMode='mixed',OOMPolicy='continue',
                         ExecStartPre='/usr/bin/python3 -I '+str(self.library/'control.py')+' preparar --host desk')
                     values.update(self.loaded_overrides)
                 else:
                     # The desk's pre-U3.4 unit as systemd 255 prints it: an empty ExecStartPre has no line.
-                    values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='on-failure',KillMode='control-group')
+                    values=dict(MainPID='321',ActiveState='active',NeedDaemonReload='no',Restart='on-failure',KillMode='control-group',OOMPolicy='stop')
                     values.update(self.before_overrides)
                 return subprocess.CompletedProcess(args,0,''.join(k+'='+v+'\n' for k,v in values.items() if v is not None),'')
             return subprocess.CompletedProcess(args,0,'','')

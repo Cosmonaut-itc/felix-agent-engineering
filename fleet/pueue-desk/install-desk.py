@@ -13,7 +13,7 @@ import subprocess
 SOURCE = Path(__file__).resolve().parent
 TIMERS = ('pueue-desk-mode.timer', 'pueue-desk-guard.timer')
 SERVICES = ('pueue-desk-mode.service', 'pueue-desk-guard.service')
-SHOWN = ('MainPID', 'ActiveState', 'NeedDaemonReload', 'Restart', 'KillMode', 'ExecStartPre')
+SHOWN = ('MainPID', 'ActiveState', 'NeedDaemonReload', 'Restart', 'KillMode', 'OOMPolicy', 'ExecStartPre')
 
 
 def unit_properties():
@@ -283,7 +283,7 @@ def install(home, pid_file, control, dry_run=False, sources=None):
             if (loaded['MainPID'] != engine.install_unit_before['MainPID']
                     or loaded['ActiveState'] != engine.install_unit_before['ActiveState']
                     or loaded['NeedDaemonReload'] != 'no' or loaded['Restart'] != 'always'
-                    or loaded['KillMode'] != 'mixed'
+                    or loaded['KillMode'] != 'mixed' or loaded['OOMPolicy'] != 'continue'
                     or str(home / '.local/lib/pao-pueue-desk/control.py') + ' preparar --host desk' not in loaded['ExecStartPre']):
                 raise ValueError('La unidad cargada no coincide o cambió MainPID; conservar mantenimiento')
             installation_plan(engine, control, pid_file, expected=engine.install_generation,
