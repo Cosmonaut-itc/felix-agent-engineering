@@ -293,4 +293,12 @@ class TrickleTests(DeskFixture):
         self.sample=self.low;self.run_guard(self.low)
         self.assertEqual(self.p.groups['jale']['status'],'Running')
 
+    def test_initial_sensor_failure_has_no_inferred_operation(self):
+        with patch.object(control,'pressure',side_effect=OSError('SECRET-SENTINEL')):
+            with self.assertRaises(OSError):self.engine.guard(None)
+        self.assertEqual(self.rows()[-1]['bloqueos'],[
+            dict(grupo=None,operacion='unknown',causa='fresh_sample')])
+        self.assertEqual(self.starts(),[])
+        self.assertNotIn('SECRET-SENTINEL',(self.engine.directory/'guardia.log').read_text())
+
 if __name__=='__main__':unittest.main()
