@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 """Migra sólo el controlador desk instalado; no reinicia ni configura pueued."""
 import argparse
+from datetime import datetime, timezone
 from contextlib import contextmanager
 import fcntl
 import json
@@ -47,6 +48,8 @@ def policy_plan(engine):
     with engine.connect() as db:
         original = json.loads(db.execute('SELECT body FROM policy WHERE id=1').fetchone()[0])
         state = engine.state(db, policy_migration=True)
+        # Read-only plan must validate the permit before engine.view or publication.
+        engine.admission_plan(db)
         fields_missing = 'mode_override' not in original or original.get('startup_version') != 1
         state['startup_version'] = 1
         actions = [json.loads(row[0]) for row in db.execute('SELECT body FROM host_actions')]
@@ -171,6 +174,7 @@ def install(home, pid_file, control, dry_run=False, sources=None):
     engine = preflight(home, pid_file, control)
     if dry_run:
         print("SECO, generación: " + engine.install_generation_action)
+        print("SECO, guard_admission: crear sólo si falta; validar y conservar permiso existente, incluso unknown.")
         if getattr(engine, 'install_policy_migration', None) is not None:
             plan = engine.install_policy_migration
             print('SECO, autoridad: añadir mode_override=null si falta; conservar recibos y vencimientos.')
@@ -214,6 +218,16 @@ def install(home, pid_file, control, dry_run=False, sources=None):
             migration, _, action = installation_plan(engine, control, pid_file, expected=engine.install_generation,
                                                      require_running=legacy_conversion)
             legacy_conversion = legacy_conversion or action.startswith('convertir')
+            if control.has_authority(directory):
+                with engine.connect(write=True) as db:
+                    control.admission_state(db, migrate=True)
+            # Always back up the immediately preceding controller, not a historic release.
+            stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+            dated = library / ('control.py.pre-sen6417-' + stamp)
+            with dated.open('xb') as stream:
+                stream.write(target.read_bytes()); stream.flush(); os.fsync(stream.fileno())
+            control.sync_directory(library)
+
             if not control.has_authority(directory):
                 backup = library / 'control.pre-slots.py'
                 if not backup.exists():

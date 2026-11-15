@@ -26,6 +26,9 @@ BASE = Path(__file__).resolve().parent
 _spec = importlib.util.spec_from_file_location('rack_accion', BASE / 'accion.py')
 accion = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(accion)
+_guard_spec = importlib.util.spec_from_file_location('rack_guard_snapshot', BASE / 'snapshot.py')
+_guard_snapshot = importlib.util.module_from_spec(_guard_spec)
+_guard_spec.loader.exec_module(_guard_snapshot)
 TAIL4 = ipaddress.ip_network('100.64.0.0/10')
 TAIL6 = ipaddress.ip_network('fd7a:115c:a1e0::/48')
 TASK_STATES = ('Queued', 'Stashed', 'Locked', 'Running', 'Paused', 'Done')
@@ -178,6 +181,7 @@ def validate_snapshot(data, host):
             raise ValueError('Tarea inválida')
     if any(not isinstance(data.get(k), (dict, type(None))) for k in ('cpu', 'mem', 'disk', 'guard')):
         raise ValueError('Capacidad inválida')
+    _guard_snapshot.validate_guard(data.get('guard'))
     if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in data.get('errors') or []):
         raise ValueError('Pueue no se pudo leer')
     data = copy.deepcopy(data)
