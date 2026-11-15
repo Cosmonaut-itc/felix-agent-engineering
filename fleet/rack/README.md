@@ -5,6 +5,17 @@ por lanzador en ambos hosts, con la variante
 «C · Lugares». Python 3.9 y biblioteca estándar; sin dependencias de frontend.
 Cada host entrega `rack-host@1`; el servidor sirve `rack@1` cada 15 segundos.
 
+Las corridas terminales atribuidas a un reinicio se agrupan bajo su carril en
+una fila plegable: «N interrumpidas por reinicio» y «No vuelven solas · relanzar
+es corrida nueva». Al abrirla se ven la hora local del corte, ticket o «Sin
+ticket», asunto o rama y alcance. Empieza plegada y recuerda el despliegue por
+host y grupo al refrescar el snapshot. No incluye acciones de relanzar o limpiar.
+La celda de lugares libres distingue «Pausa manual» y «Pausa de origen
+desconocido», con `resolver con control.py reanudar <grupo>`. Las retenciones
+por lanzamiento ambiguo conservan «Retenido al reiniciar · <motivo>» y esa
+instrucción; la espera automática de cuotas/Docker conserva su reanudación
+automática.
+
 ## Preparación e instalación
 
 Estos pasos son manuales, después de revisar y fusionar el cambio. No publicar

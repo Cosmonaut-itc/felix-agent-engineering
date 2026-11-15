@@ -130,7 +130,27 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 .step:focus{outline:2px solid var(--accent);outline-offset:2px}
 #toast button{font:inherit;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
 @media(max-width:560px){.host-heading{flex-direction:column}.mode-control{text-align:left}.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
-.startup-hold,.interrupted p{overflow-wrap:anywhere;font-size:13px;line-height:1.5;margin:6px 0}
+.interrupted{--ease-out:cubic-bezier(0.23,1,0.32,1);margin:2px 0 6px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.interrupted-summary{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:8px 10px;border:0;background:none;color:var(--ink);font:inherit;text-align:left;cursor:pointer;touch-action:manipulation}
+.interrupted-summary:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
+.interrupted-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
+.interrupted-count{font-size:13px;font-weight:600}
+.interrupted-count::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--warn);margin-right:6px;vertical-align:1px}
+.interrupted-sub{font-size:12px;color:var(--ink2)}
+.interrupted .chev{flex:none;width:7px;height:7px;margin:0 4px 3px 0;border-right:1.5px solid var(--muted);border-bottom:1.5px solid var(--muted);transform:rotate(45deg);transition:transform 200ms var(--ease-out)}
+.interrupted [aria-expanded="true"] .chev{transform:translateY(3px) rotate(-135deg)}
+.interrupted-fold{display:grid;grid-template-rows:0fr;transition:grid-template-rows 200ms var(--ease-out)}
+.interrupted.open>.interrupted-fold{grid-template-rows:1fr}
+.interrupted-fold>div{overflow:hidden;min-height:0}
+.interrupted ol{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.interrupted li{display:grid;grid-template-columns:38px 68px minmax(0,1fr) auto;column-gap:10px;align-items:baseline;padding:6px 10px;border-top:1px solid var(--line);font-size:13px}
+.interrupted li:first-child{border-top:0}
+.interrupted .it{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
+.interrupted .tk{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.interrupted .tk.none{font-weight:400;color:var(--muted)}
+.interrupted .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
+.interrupted .o{font-size:12px;color:var(--ink2);white-space:nowrap}
+@media(prefers-reduced-motion:reduce){.interrupted-fold,.interrupted .chev{transition:none}}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 const PENDING = new Map();
@@ -232,8 +252,16 @@ function fila(h, n, w){
 }
 
 function interrupted(h,n){
-  const rows=h.tasks.filter(t=>t.group===n && t.state==='Done' && t.interruption_reason);
-  return rows.length ? `<div class="lane"><div></div><div class="fila interrupted" role="status">${rows.map(t=>`<p>${esc(what(t))} · ${esc(t.interruption_reason)}</p>`).join('')}</div></div>` : '';
+  const rows=h.tasks.filter(t=>t.group===n && t.state==='Done' && t.interruption_reason).sort((a,b)=>a.end-b.end);
+  if(!rows.length) return '';
+  const key=JSON.stringify(['interrupted',h.id,n]), open=!!OPEN[key], id='interruptions-'+encodeURIComponent(key);
+  const count=rows.length===1 ? '1 interrumpida' : rows.length+' interrumpidas';
+  const consequence=rows.length===1 ? 'No vuelve sola · relanzarla es corrida nueva' : 'No vuelven solas · relanzar es corrida nueva';
+  const time=t=>t.end==null ? '—' : new Date(t.end*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+  return `<div class="lane"><div></div><div class="interrupted ${open?'open':''}">
+    <button type="button" class="interrupted-summary" data-interrupted="${esc(key)}" aria-expanded="${open}" aria-controls="${esc(id)}"><span class="interrupted-text"><span class="interrupted-count">${esc(count+' por reinicio')}</span><span class="interrupted-sub">${esc(consequence)}</span></span><span class="chev" aria-hidden="true"></span></button>
+    <div class="interrupted-fold" id="${esc(id)}" aria-hidden="${!open}"><div><ol>${rows.map(t=>`<li><span class="it">${esc(time(t))}</span><span class="tk ${t.ticket?'':'none'}">${esc(t.ticket||'Sin ticket')}</span><span class="t${!t.title && !t.subject && t.branch?' mono':''}">${esc(what(t))}</span><span class="o">${esc(objective(t))}</span></li>`).join('')}</ol></div></div>
+  </div></div>`;
 }
 
 function resourceTable(h){
@@ -402,7 +430,11 @@ function heldCell(h,n,g,free){
   if(!Array.isArray(reasons)) unknown();
   else if(reason || c?.startup_waiting?.[n] || r.some(x=>['ambiguous','startup','manual'].includes(x))){
     markup=true;
-    if(reason){why='Retenido al reiniciar';how=esc(reason)+' · '+resolve;}
+    if(reason){
+      if(reason==='pausa manual'){why='Pausa manual';how=resolve;}
+      else if(reason==='pausa de origen desconocido'){why='Pausa de origen desconocido';how=resolve;}
+      else {why='Retenido al reiniciar';how=esc(reason)+' · '+resolve;}
+    }
     else if(c?.startup_waiting?.[n]==='cuotas_sensores'){why='Esperando cuotas y Docker';how='reanudación automática';}
     else if(r.includes('manual')){why='Pausa manual';how=resolve;}
     else if(r.includes('ambiguous')){why='Pausa de origen desconocido';how=resolve;}
@@ -485,6 +517,16 @@ function render(data){
   document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 document.getElementById('app').addEventListener('click', event=>{
+  const toggle = event.target.closest('button[data-interrupted]');
+  if(toggle){
+    const open=!(OPEN[toggle.dataset.interrupted] || false);
+    OPEN[toggle.dataset.interrupted]=open;
+    toggle.setAttribute('aria-expanded',String(open));
+    const box=toggle.closest('.interrupted');
+    box.classList.toggle('open',open);
+    box.querySelector('.interrupted-fold').setAttribute('aria-hidden',String(!open));
+    return;
+  }
   const button = event.target.closest('button[data-open]');
   if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); syncMenu(); }
 });

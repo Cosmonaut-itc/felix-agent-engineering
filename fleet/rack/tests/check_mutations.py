@@ -159,6 +159,9 @@ CASES=(
 STARTUP_CASES = (
     ('startup-task-visible','index.html',"${interrupted(h,n)}",'',
      'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
+    ('startup-task-grouping','index.html',"  if(!rows.length) return '';",
+     "  if(!rows.length) return '';\n  if(rows.length>1) return rows.map(t=>interrupted({...h,tasks:[t]},n)).join('');",
+     'test_startup.StartupUITests.test_interrupted_grouping_toggle_snapshot_times_and_escape'),
     ('startup-hold-visible','index.html',"const reason=h.control?.startup_holds?.[n];","const reason=null;",
      'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
     ('startup-hold-escaped','index.html',"how=esc(reason)+' · '+resolve;","how=reason+' · '+resolve;",
@@ -196,7 +199,7 @@ STARTUP_CASES += (
      'test_startup.StartupSnapshotTests.test_old_terminal_is_dropped_before_reading_its_metadata'),
     ('startup-ambiguous-cell','index.html',"else if(r.includes('ambiguous')){why='Pausa de origen desconocido';how=resolve;}",'',
      'test_startup.StartupPipelineTests.test_ambiguous_pause_without_group_hold_explains_in_its_cell'),
-    ('startup-hold-before-ambiguous','index.html',"if(reason){why='Retenido al reiniciar';","if(reason && !r.includes('ambiguous')){why='Retenido al reiniciar';",
+    ('startup-hold-before-ambiguous','index.html',"if(reason){\n      if(reason==='pausa manual')", "if(reason && !r.includes('ambiguous')){\n      if(reason==='pausa manual')",
      'test_startup.StartupUITests.test_production_ui_interruption_hold_resolution_escape_and_normal_host'),
 )
 

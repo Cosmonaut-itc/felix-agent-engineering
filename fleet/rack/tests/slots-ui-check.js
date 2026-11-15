@@ -2,8 +2,8 @@
 const vm=require('vm'),assert=require('assert'),fs=require('fs');
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
 const elements={},storage={},timers=[],requests=[],listeners=[];
-const el=()=>({innerHTML:'',textContent:'',addEventListener(){},focus(){},querySelector(){return {onclick:null}}});
-const context={console,Intl,Date,Number,Object,String,Math,Map,Set,Uint8Array,JSON,
+const el=()=>({innerHTML:'',textContent:'',listeners:{},addEventListener(type,fn){this.listeners[type]=fn},focus(){},querySelector(){return {onclick:null}}});
+const context={console,Intl,Date,Number,Object,String,Math,Map,Set,Uint8Array,JSON,structuredClone,
  crypto:require('crypto').webcrypto,AbortSignal:{timeout(){}},
  document:{getElementById:id=>elements[id] ||= el(),addEventListener(type,fn){listeners.push([type,fn])},querySelector:()=>null,querySelectorAll:()=>[]},
  window:{addEventListener(){}},setInterval(){},clearTimeout(){},
@@ -16,7 +16,7 @@ run('render(fixture);globalThis.h=S.hosts[0]');
 (async()=>{
  if(input.scenario==='startup-default'){
    assert(run('groups(h).some(([g])=>g==="default")'),'attributed default interruption must be visible');
-   assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
+   assert.match(elements.app.innerHTML,/1 interrumpida por reinicio/);
    run('h.tasks=[]');
    assert(!run('groups(h).some(([g])=>g==="default")'),'empty default remains hidden');
    console.log('UI startup default pipeline OK');return;
@@ -39,17 +39,67 @@ run('render(fixture);globalThis.h=S.hosts[0]');
    console.log('UI ambiguous cell OK');return;
  }
  if(input.scenario==='startup'){
-   assert.match(elements.app.innerHTML,/Interrumpida al reiniciar Pueue; relanzar manualmente/);
+   assert.match(elements.app.innerHTML,/1 interrumpida por reinicio/);
+   assert.match(elements.app.innerHTML,/No vuelve sola · relanzarla es corrida nueva/);
    assert.match(elements.app.innerHTML,/Retenido al reiniciar<\/span><span>pausa de origen desconocido &lt;script&gt;/);
    assert.match(elements.app.innerHTML,/resolver con <span class="mono">control.py reanudar jale<\/span>/);
    assert(!elements.app.innerHTML.includes('<script>'));
    assert.doesNotMatch(elements.app.innerHTML,/>Reanudar<|data-resume/);
    assert(!run('groups(h).some(([g])=>g==="default")'));
    run('h.control.startup_holds={};h.tasks=[]');
-   assert.doesNotMatch(run('view()'),/Retenido al reiniciar|Interrumpida al reiniciar/);
+   assert.doesNotMatch(run('view()'),/Retenido al reiniciar|interrumpida por reinicio/);
    assert.match(run('view()'),/data-mode="dia"/);
    assert.match(run('view()'),/data-step="-1"/);
    console.log('UI startup OK: interruption, hold, SSH resolution, escaping, default hidden, normal host unchanged');return;
+ }
+ if(input.scenario==='startup-grouping'){
+   const html=()=>elements.app.innerHTML;
+   const summary=()=>html().match(/<button[^>]*class="interrupted-summary"[^>]*>/g)||[];
+   assert.equal(summary().length,1,'one summary for N attributed interruptions');
+   assert.match(html(),/3 interrumpidas por reinicio/);
+   assert.match(html(),/No vuelven solas · relanzar es corrida nueva/);
+   assert.match(summary()[0],/aria-expanded="false"/);
+   assert.equal((html().match(/<li>/g)||[]).length,3,'one detail per attributed Done task');
+   for(const end of input.fixture.hosts[0].snapshot.tasks.slice(0,3).map(t=>t.end)){
+     const time=new Date(end*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',hourCycle:'h23'});
+     assert(html().includes(`<span class="it">${time}</span>`),'local cut time '+time);
+   }
+   assert.match(html(),/Sin ticket/);
+   assert.match(html(),/Asunto &lt;script&gt;alert\(1\)&lt;\/script&gt;/);
+   assert.match(html(),/feat\/sin-ticket/);
+   assert.match(html(),/>Contrato<|>E2E</);
+   assert.doesNotMatch(html(),/<script>|No atribuida|Todavía en fila/);
+   // Exercise the production click listener, then a fresh snapshot, without touching OPEN directly.
+   const key=JSON.parse(summary()[0].match(/data-interrupted="([^"]*)"/)[1].replace(/&quot;/g,'"'));
+   const attrs={},foldAttrs={},classes={};
+   const box={classList:{toggle(name,value){classes[name]=value}},querySelector(){return {setAttribute:(k,v)=>foldAttrs[k]=v}}};
+   const toggle={dataset:{interrupted:JSON.stringify(key)},setAttribute:(k,v)=>attrs[k]=v,closest:()=>box};
+   const click=()=>elements.app.listeners.click({target:{closest:selector=>selector==='button[data-interrupted]'?toggle:null}});
+   click();
+   assert.equal(attrs['aria-expanded'],'true');assert.equal(foldAttrs['aria-hidden'],'false');assert.equal(classes.open,true);
+   run('render(structuredClone(fixture))');
+   assert.match(summary()[0],/aria-expanded="true"/,'open survives snapshot render');
+   assert.match(html(),/class="interrupted-fold"[^>]*aria-hidden="false"/);
+   assert.equal((html().match(/<li>/g)||[]).length,3);
+   assert.equal(run('interrupted({...h,id:"mini"},"jale").includes(\'aria-expanded="false"\')'),true,'host state isolated');
+   assert.equal(run('interrupted({...h,tasks:h.tasks.map(t=>({...t,group:"otros"}))},"otros").includes(\'aria-expanded="false"\')'),true,'group state isolated');
+   click();run('render(fixture)');assert.match(summary()[0],/aria-expanded="false"/,'close survives render');
+   assert.equal(run('interrupted(h,"pesadas")'),'','no interruptions means no row');
+   assert.doesNotMatch(html(),/>Relanzar<|>Limpiar<|data-resume/);
+   console.log('UI startup grouping OK: count, consequence, local times, click, snapshot, isolation, escaping, empty group');return;
+ }
+ if(input.scenario==='startup-pauses'){
+   for(const [reason,label] of [['pausa manual','Pausa manual'],['pausa de origen desconocido','Pausa de origen desconocido'],
+     ['tarea en fila con log previo; lanzamiento ambiguo','Retenido al reiniciar']]){
+     context.reason=reason;
+     run('h.control.startup_holds.jale=reason');
+     const out=run('view()');
+     assert(out.includes(label+'</span>'));
+     assert.match(out,/resolver con <span class="mono">control.py reanudar jale<\/span>/);
+     if(reason.startsWith('pausa '))assert.doesNotMatch(out,/Retenido al reiniciar/);
+     else assert(out.includes(reason+' · resolver con'));
+   }
+   console.log('UI startup pauses OK: manual, unknown origin and ambiguous launch');return;
  }
  if(input.scenario==='desk'){
    for(const [mode,cap,slots] of [['dia',14,{hasito:1,jale:5,'jale-verify':1,otros:2,pesadas:2,rapidas:3}],
