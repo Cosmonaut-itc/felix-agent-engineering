@@ -85,7 +85,9 @@ def leer_suite(r, commit, base):
                                 f["parte"], tiempos.get((f["parte"], f["check"]), 0)))
     exigir(len({(f.parte, f.check, f.unidad) for f in fallos}) == len(fallos))
     return Completo("verde-contra-base" if r["veredicto"] == 0 and fallos else
-                    "verde" if r["veredicto"] == 0 else "rojo", tuple(fallos), sum(tiempos.values()))
+                    "verde" if r["veredicto"] == 0 else "rojo", tuple(fallos), sum(tiempos.values()),
+                    tuple(f if isinstance(f, str) else json.dumps(f, sort_keys=True)
+                          for f in r["restantes"]))
 
 
 def leer_repeticion(r, commit, origen, origen_sha, base, fallo):

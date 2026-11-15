@@ -145,6 +145,7 @@ class Completo:
     veredicto: str
     fallos: Tuple[Fallo, ...] = ()
     costo_s: float = 0
+    restantes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -259,6 +260,7 @@ class Diagnosticando:
     esperar_hasta: Optional[float] = None
     reanudar: str = ""
     costo_infra_s: float = 0
+    restantes: Tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -533,7 +535,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                 return replace(estado, pausa=Pausa("necesita-juicio", detalle="resultado-desconocido")), ()
             costo_sano = observacion.costo_suite_sana_s or estado.costo_suite_sana_s
             fase = Diagnosticando(fase.candidato, resultado.fallos, fase.suite, fase.ci,
-                                   min(3600, 0.5 * costo_sano))
+                                   min(3600, 0.5 * costo_sano), restantes=resultado.restantes)
             estado = cambiar_fase(estado, tren, fase)
         elif fase.esperar_hasta is not None:
             if observacion.ahora < fase.esperar_hasta or not despachar:
@@ -590,6 +592,10 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                            pausa=Pausa("necesita-juicio", detalle=plan.incierto)), ()
         if plan.terminado:
             if not plan.causas:
+                # Confirmar fallos preexistentes no acredita los checks que el fail-fast no corrió.
+                if fase.restantes:
+                    return replace(cambiar_fase(estado, tren, fase),
+                                   pausa=Pausa("necesita-juicio", detalle="suite-incompleta")), ()
                 c = fase.candidato
                 return cambiar_fase(estado, tren, Certificado(c.C, c.arbol, fase.suite, fase.ci, c.B)), ()
             if not despachar:

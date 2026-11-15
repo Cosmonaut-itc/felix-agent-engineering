@@ -169,6 +169,8 @@ no vacías. Ausencia, omisión, mezcla o definición distinta pasan a juicio.
 Luego prueba todos los tickets solos y, si ninguno reproduce, los pares
 (N<=3); C ya confirmado acredita el conjunto completo. Los archivos sólo
 pueden ordenar los ensayos. Se guardan todos los mínimos observados.
+Sin culpables, certifica sólo si la suite no dejó `restantes`; si el
+fail-fast cortó checks, pausa `necesita-juicio` con `suite-incompleta`.
 
 Presupuesto: `min(3600 s-máquina, 0.5 * costo_suite_sana_s)`. La medida sana
 viene de `Observacion.costo_suite_sana_s` o de la última suite verde limpia

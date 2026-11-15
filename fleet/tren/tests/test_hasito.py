@@ -26,7 +26,7 @@ F = Fallo("tests/test_producto.py::test_caso[a, b=1]", "AssertionError: valor", 
 CANDIDATO = Candidato(B, tuple((i, str(i) * 40, str(i + 3) * 40) for i in (1, 2, 3)), C, T)
 
 
-def suite_fixture(candidato=CANDIDATO, codigo=1, fallos=(F,)):
+def suite_fixture(candidato=CANDIDATO, codigo=1, fallos=(F,), restantes=()):
     filas = [dict(unidad=f.unidad, check=f.check, etapa=f.etapa, parte=f.parte,
                   clase=f.clase, firma=f.firma, detalle=f.firma) for f in fallos]
     parte = dict(esquema="suite-resultado@1", sha=candidato.C, base=candidato.B,
@@ -34,10 +34,10 @@ def suite_fixture(candidato=CANDIDATO, codigo=1, fallos=(F,)):
         veredicto=codigo, etapas=[dict(id="validar", estado="producto" if codigo == 1 else "verde",
             checks=[dict(id="prueba", segundos=10, estado="producto" if codigo == 1 else "verde")])],
         solo_candidato=filas if codigo == 1 else [], tambien_base=filas if codigo == 0 else [],
-        sospecha_arnes=[], restantes=[])
+        sospecha_arnes=[], restantes=list(restantes))
     return dict(esquema="suite-resultado@1", sha=candidato.C, base=candidato.B,
         veredicto=codigo, partes=[parte], solo_candidato=parte["solo_candidato"],
-        tambien_base=parte["tambien_base"], sospecha_arnes=[], restantes=[], reanudar=None)
+        tambien_base=parte["tambien_base"], sospecha_arnes=[], restantes=list(restantes), reanudar=None)
 
 
 def repeticion_fixture(origen, commit, candidato=CANDIDATO, fallo=F, valores=("falla", "falla")):
@@ -111,16 +111,17 @@ class HasitoTests(Aislado):
             apto=True, hallazgos=0, dirigida=True, ci="verde", conflicto=False) for e in entradas),
             ci_candidato="verde", costo_suite_sana_s=10000, ci_recibo="recibo-ci")
 
-    def iniciar(self, codigo=1):
-        self.runner.responder = lambda argv: suite_fixture(codigo=codigo, fallos=(F,) if codigo == 1 else ())
+    def iniciar(self, codigo=1, restantes=()):
+        self.runner.responder = lambda argv: suite_fixture(
+            codigo=codigo, fallos=(F,) if codigo == 1 else (), restantes=restantes)
         esperando, efectos = paso(self.estado, self.obs)
         llegada = ejecutar(efectos[0], esperando, self.obs, self.git, self.adaptador)
         self.assertTrue(llegada.completo)
         estado, efectos = paso(esperando, llegada.observacion)
         return estado, efectos, llegada.observacion
 
-    def diagnosticar(self, funcion):
-        estado, efectos, obs = self.iniciar()
+    def diagnosticar(self, funcion, restantes=()):
+        estado, efectos, obs = self.iniciar(restantes=restantes)
         original = estado
         solicitudes = []
         def responder(argv):
@@ -171,6 +172,16 @@ class HasitoTests(Aislado):
         self.assertIsInstance(estado.trenes[0].fase, Certificado)
         self.assertEqual(efectos, ())
         self.assertFalse(self.git.armados)
+
+    def test_preexistente_con_checks_sin_correr_pausa_sin_certificar(self):
+        estado, efectos, solicitudes = self.diagnosticar(lambda _: ("falla", "falla"),
+                                                         restantes=("gate-pendiente",))
+        self.assertEqual(solicitudes, ["C", "B"])
+        self.assertIsInstance(estado.trenes[0].fase, Diagnosticando)
+        self.assertEqual(estado.trenes[0].fase.restantes, ("gate-pendiente",))
+        self.assertEqual((estado.pausa.motivo, estado.pausa.detalle), ("necesita-juicio", "suite-incompleta"))
+        self.assertEqual(efectos, ())
+        self.assertEqual(paso(estado, self.obs)[1], ())
 
     def test_rojo_unico_dos_mas_dos_devuelve_y_sobreviven_dos(self):
         estado, efectos, solicitudes = self.diagnosticar(lambda objetivo:
@@ -442,6 +453,8 @@ class HasitoTests(Aislado):
         r = suite_fixture()
         r["restantes"] = ["check-pendiente", {"parte": "parte-2", "motivo": "no-corrida"}]
         self.assertEqual(leer_suite(r, C, B).veredicto, "rojo")
+        self.assertEqual(leer_suite(r, C, B).restantes,
+                         ("check-pendiente", '{"motivo": "no-corrida", "parte": "parte-2"}'))
         r["veredicto"] = 0
         r["solo_candidato"] = []
         with self.assertRaises(ResultadoInvalido):
