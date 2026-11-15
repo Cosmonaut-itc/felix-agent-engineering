@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-from dominio import Entrada, Terminal, clave, datos, desde_datos, inicial
+from dominio import Entrada, clave, datos, desde_datos, inicial
 
 
 def directorio_estado():
@@ -103,15 +103,7 @@ class Ledger:
             for row in self.db.execute(
                     "SELECT payload FROM events WHERE repo=? AND tipo=? ORDER BY seq DESC",
                     (repo, tipo)):
-                candidato = desde_datos(json.loads(row[0])["estado"])
-                # Compatibilidad U12 anterior: sus terminales inequívocos nunca
-                # son continuación del reductor activo. No reescribe eventos.
-                legado_doble = (any(t.fase == Terminal("SIMULADO") for t in candidato.trenes)
-                                or any(e.terminal == Terminal("MERGEADO-FUERA")
-                                       for e in candidato.entradas))
-                if not doble_camino and legado_doble:
-                    continue
-                estado = candidato
+                estado = desde_datos(json.loads(row[0])["estado"])
                 break
         recibos = {e.entrega.recibo for e in estado.entradas}
         nuevas = tuple(desde_datos(json.loads(r[0])) for r in self.db.execute(

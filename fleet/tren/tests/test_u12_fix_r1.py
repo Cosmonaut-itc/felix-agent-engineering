@@ -119,9 +119,3 @@ class U12FixR1Tests(Aislado):
         self.assertEqual(ledger.db.execute(
             "SELECT tipo FROM events WHERE repo=? AND tipo LIKE 'sombra%' ORDER BY seq", (REPO,)
         ).fetchall()[0][0], "sombra-doble-camino")
-        # Un evento U12 de la versión anterior tampoco puede varar la fila activa.
-        ledger.sombra(simulado, (), 3900)
-        _, resultado = self.tick(4000)
-        self.assertEqual(resultado["plan"]["estado"], datos(esperado[0]))
-        self.assertFalse(any(t["fase"] == datos(Terminal("SIMULADO"))
-                             for t in resultado["plan"]["estado"]["trenes"]))
