@@ -535,6 +535,66 @@ class TrickleTests(DeskFixture):
         self.assertEqual(self.rows()[-1]['bloqueos'],[dict(grupo='jale',operacion='resume',causa='rpc')])
         self.assertNotIn('SECRET-SENTINEL',(self.engine.directory/'guardia.log').read_text())
 
+    def test_open_full_group_is_not_reported_as_retained(self):
+        for g in control.GROUP_LIMITS:self.p.groups[g]['status']='Running'
+        s=self.state();s['reasons']={}
+        with self.engine.connect(write=True) as db:self.engine.store(db,s)
+        self.tasks.clear()
+        for i in range(self.p.groups['jale']['parallel_tasks']):
+            self.add_task(10+i,'jale',status={'Running':{'enqueued_at':self.iso(-200),'start':self.iso(-150)}})
+        self.add_task(1,'jale')
+        self.run_guard()
+        self.assertEqual((self.rows()[-1]['evento'],self.rows()[-1]['bloqueos']),('guard_fin',[]))
+        self.assertEqual(self.starts(),[])
+
+    def test_failed_pause_rpc_on_desk_still_pauses_other_groups(self):
+        high=dict(self.low,cpu=90);self.sample=high
+        for g in control.GROUP_LIMITS:self.p.groups[g]['status']='Running'
+        call=self.p.call
+        def failing(*args):
+            if args[:1]==('pause',) and args[-1]=='hasito':raise subprocess.CalledProcessError(1,['double'])
+            return call(*args)
+        with control.locked(self.engine.directory),patch.object(self.p,'call',side_effect=failing):
+            with self.assertRaises(subprocess.SubprocessError):self.engine.guard(high)
+        self.assertEqual(sorted(g for g in control.GROUP_LIMITS if self.p.groups[g]['status']=='Paused' and g!='rapidas'),
+                         ['jale','jale-verify','otros','pesadas'])
+
+    def test_unreconciled_authority_never_opens_or_admits(self):
+        for sample in (self.mid,self.low):
+            with self.subTest(cpu=sample['cpu']):
+                self.sample=sample;self.p.calls.clear()
+                with patch.object(self.engine,'reconcile',side_effect=OSError('receipt not recovered')):
+                    self.run_guard(sample)
+                self.assertEqual([c for c in self.p.calls if c[0]=='start'],[])
+                self.assertIn('authority',self.causes())
+
+    def test_slow_admission_intent_never_starts(self):
+        offset=[0];real_mono=control.time.monotonic;real_log=control.log
+        def slow_log(directory,event,**fields):
+            real_log(directory,event,**fields)
+            if event=='admision_intento':offset[0]+=11
+        with patch.object(control.time,'monotonic',side_effect=lambda:real_mono()+offset[0]),patch.object(control,'log',side_effect=slow_log):
+            self.run_guard()
+        self.assertEqual(self.starts(),[])
+        with self.engine.connect() as db:self.assertEqual(control.admission_state(db)['last_attempt']['outcome'],'not_sent')
+        self.assertIn('fresh_sample',self.causes())
+
+    def unknown_attempt(self):
+        self.rpc_error=True
+        with patch.object(self.engine,'_execution_confirmed',return_value=False):self.run_guard()
+        with self.engine.connect() as db:attempt=control.admission_state(db)['last_attempt']
+        self.assertEqual(attempt['outcome'],'unknown')
+        self.assertTrue(self.engine._execution_confirmed(attempt,self.state()))
+        return attempt
+
+    def test_unknown_evidence_requires_paused_group(self):
+        attempt=self.unknown_attempt();self.p.groups['jale']['status']='Running'
+        self.assertFalse(self.engine._execution_confirmed(attempt,self.state()))
+
+    def test_unknown_evidence_requires_same_generation(self):
+        attempt=self.unknown_attempt();self.gen='linux-proc-v1:'+'3'*64
+        self.assertFalse(self.engine._execution_confirmed(attempt,self.state()))
+
     def test_main_exception_handler_never_logs_exception_text(self):
         import sys
         with patch.object(control,'STATE_DIR',self.engine.directory),patch.object(control,'Pueue',return_value=self.p),patch.object(control,'guard',side_effect=ValueError('SECRET-SENTINEL')),patch.object(sys,'argv',['control.py','guardia']):

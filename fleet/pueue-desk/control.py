@@ -1499,7 +1499,9 @@ class MiniControl:
             reasons = set(state['reasons'].get(group,[]))
             if os.path.lexists(self.pause_fence(group)):
                 reasons.add('manual')
-            if row['status'] != 'Paused' or reasons != {'pressure'}:
+            if row['status'] != 'Paused':
+                continue  # open group: waits on its own Pueue quota, not on the guard
+            if reasons != {'pressure'}:
                 block('reason',group)
                 continue
             occupied = 0
