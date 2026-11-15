@@ -6,9 +6,11 @@ la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 from dataclasses import dataclass, replace
 
 from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
-                     EsperandoCI, Incierto, Observacion, Promoviendo, RamaOcupada,
-                     admision_entrada, efecto_promover)
+                     Corriendo, Diagnosticando, Efecto, EsperandoCI, Incierto,
+                     Observacion, Promoviendo, RamaOcupada, admision_entrada,
+                     clave, efecto_diagnostico, efecto_promover)
 from git_ops import Publicado
+from adaptadores.hasito import ResultadoInvalido
 
 
 class EfectoFallido(Exception):
@@ -23,7 +25,7 @@ class Ejecucion:
     completo: bool
 
 
-def ejecutar(efecto, estado, observacion, git):
+def ejecutar(efecto, estado, observacion, git, hasito=None):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
     Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
@@ -34,7 +36,60 @@ def ejecutar(efecto, estado, observacion, git):
     tren = next(t for t in estado.trenes if t.id == efecto.datos[0])
     fase = tren.fase
     limpia = replace(observacion, candidato=None, conflicto_cadena=None, main=None,
-                     tren_id=tren.id, intento_promocion=0, rama_ocupada=None)
+                     tren_id=tren.id, intento_promocion=0, rama_ocupada=None,
+                     resultado_suite=None, repeticion=None, reproduccion_id="",
+                     suite=None, suite_intento=0)
+    if efecto.tipo in ("iniciar-suite", "reanudar-suite", "repetir", "armar-subconjunto"):
+        vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+        entradas = {e.entrega.recibo: e for e in estado.entradas}
+        if any(not isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
+               for r in tren.recibos):
+            return Ejecucion(limpia, False)
+        if efecto.tipo == "armar-subconjunto" and isinstance(fase, Diagnosticando):
+            if fase.pendiente is None or efecto != efecto_diagnostico(tren, fase):
+                raise ValueError("subconjunto obsoleto")
+            miembros = tuple((pr, head) for pr, head, _ in fase.candidato.eslabones
+                             if pr in fase.pendiente.prs)
+            resultado = git.armar(fase.candidato.B, miembros)
+            llegada = replace(limpia, reproduccion_id=fase.pendiente.id)
+            if isinstance(resultado, Candidato):
+                return Ejecucion(replace(llegada, candidato=resultado), True)
+            if isinstance(resultado, ConflictoCadena):
+                return Ejecucion(replace(llegada, conflicto_cadena=resultado), True)
+            raise EfectoFallido(resultado)
+        if hasito is None:
+            raise ValueError("falta adaptador Hasito")
+        try:
+            if efecto.tipo == "iniciar-suite" and isinstance(fase, EsperandoCI):
+                if efecto != Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)):
+                    raise ValueError("suite obsoleta")
+                if observacion.ci_candidato != "verde":
+                    return Ejecucion(limpia, False)
+                ruta, resultado = hasito.suite(fase.candidato, tren.id)
+                return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado), True)
+            if efecto.tipo == "reanudar-suite" and isinstance(fase, Corriendo):
+                esperado = Efecto(clave("reanudar-suite", tren.id, fase.reanudaciones),
+                    "reanudar-suite", (tren.id, str(fase.reanudaciones)))
+                if efecto != esperado or fase.esperar_hasta is not None or not fase.reanudar:
+                    raise ValueError("reanudación obsoleta")
+                ruta, resultado = hasito.suite(fase.candidato, tren.id,
+                                             fase.reanudaciones, fase.reanudar)
+                return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado,
+                                         suite_intento=fase.reanudaciones), True)
+            if efecto.tipo == "repetir" and isinstance(fase, Diagnosticando):
+                if (fase.pendiente is None or fase.esperar_hasta is not None or
+                        efecto != efecto_diagnostico(tren, fase)):
+                    raise ValueError("repetición obsoleta")
+                s = fase.pendiente
+                commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B
+                          if s.objetivo == "B" else fase.subconjunto.C)
+                resultado = hasito.repetir(fase.candidato, fase.suite, s, commit,
+                                          tren.id, fase.reanudaciones, fase.reanudar)
+                return Ejecucion(replace(limpia, repeticion=resultado, reproduccion_id=s.id,
+                                         suite_intento=fase.reanudaciones), True)
+        except ResultadoInvalido as exc:
+            raise EfectoFallido(exc.resultado) from None
+        raise ValueError("efecto de suite incompatible con fase")
     if efecto.tipo == "armar-candidato" and isinstance(fase, Congelado):
         entradas = {e.entrega.recibo: e for e in estado.entradas}
         miembros = tuple((entradas[r].entrega.pr, entradas[r].entrega.head)

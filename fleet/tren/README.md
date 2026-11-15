@@ -1,4 +1,4 @@
-# Tren — U1/U2, desactivado
+# Tren — U1/U2/U4, desactivado
 
 Python stdlib 3.9+, SQLite y flock POSIX. El agente registra su watch antes
 de entregar; con el recibo durable termina su turno:
@@ -67,7 +67,7 @@ La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos;
 un sensible/alto riesgo al frente sale solo inmediatamente. No se adelanta
 un PR solo sobre tickets normales anteriores. Jale nace en pausa `etapa-1`.
 
-El adaptador y resultado de suite llegan en U4; el CLI no ejecuta efectos.
+El CLI no ejecuta efectos; U4 añade el adaptador y el diagnóstico al ejecutor explícito.
 
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
@@ -141,3 +141,55 @@ REMOTE_RUN_HOST=desk remote-run wait <id>
 
 El guion prueba cada intérprete disponible de los tres solicitados. Las
 fixtures se conservan deliberadamente: el código nuevo no borra archivos.
+
+## Suite y atribución (U4)
+
+`Hasito(lanzador, git, runner=...)` ejecuta argv sin shell: `--suite C --perfil
+final --base B`, y `--repetir resultado.json --sha SHA --worktree ARBOL
+--veces 2 --unidad CHECK=UNIDAD`. El lanzador se configura fuera del repo;
+las pruebas usan siempre un runner falso. Cada clave conserva un recibo
+local; un intento interrumpido se reengancha al coordinador existente.
+`GitTren.worktree(SHA)` crea desde su bare un checkout desacoplado en
+`pao-tren/worktrees/<hash-del-bare>/<SHA40>`, valida HEAD, almacén y limpieza
+antes de reutilizarlo y nunca lo retira. La evidencia vive en `pao-tren/hasito`.
+
+Los lectores aceptan `suite-resultado@1` y `suite-repeticion@1`. Cruzan SHA,
+base, origen, código de salida, selección, cobertura e intentos; los errores
+son `ErrorResultado` dentro de `EfectoFallido` y dejan pendiente el outbox.
+Los recibos anteriores sin `firma` usan `detalle`. `Completo` verde guarda
+B, C, árbol, suite y recibo de CI en `Certificado`; rojo entra al diagnóstico.
+Un verde contra base también certifica. Un 75 conserva `Incompleto`, nunca
+se usa como fallo: espera 5, 15 y 60 minutos según `Observacion.ahora`, y
+pausa `infraestructura` al agotarse las tres reanudaciones. La misma regla
+se aplica a las repeticiones; su costo también consume el presupuesto.
+
+`atribucion.planificar` es puro y emite un ensayo por vez. Confirma cada
+unidad con dos intentos sobre C y dos sobre B. Exige la misma firma estable
+en C y pases positivos en B para atribuir; la misma firma estable en B es
+preexistente. Una firma vacía del origen requiere firmas nuevas estables y
+no vacías. Ausencia, omisión, mezcla o definición distinta pasan a juicio.
+Luego prueba todos los tickets solos y, si ninguno reproduce, los pares
+(N<=3); C ya confirmado acredita el conjunto completo. Los archivos sólo
+pueden ordenar los ensayos. Se guardan todos los mínimos observados.
+Sin culpables, certifica sólo si la suite no dejó `restantes`; si el
+fail-fast cortó checks, pausa `necesita-juicio` con `suite-incompleta`.
+
+Presupuesto: `min(3600 s-máquina, 0.5 * costo_suite_sana_s)`. La medida sana
+viene de `Observacion.costo_suite_sana_s` o de la última suite verde limpia
+guardada en `Estado`; si falta, pausa para juicio. No se estima una suite
+sana desde una suite roja cortada. Cada ensayo reserva dos veces el máximo
+entre segundos del check original y duraciones por intento ya observadas;
+el consumo es el máximo entre reserva y costo observado. Es conservador al
+no existir tiempos por unidad en el recibo original. Sin duración o sin
+saldo, no despacha la reproducción. Cada reanudación reserva otro ensayo.
+
+Los culpables reciben `Entrada.terminal=Terminal("DEVUELTO")`; `devolver`
+es sólo un dato idempotente por PR, con lote, B, C, fallos, firmas, conjuntos
+causales y el argv dirigido observado, con la ruta concreta del worktree.
+Los sobrevivientes forman inmediatamente una generación fija sobre B,
+sin incorporar nuevas entregas, y recorren armado, CI y suite completa.
+No se publican statuses ni comentarios. Tick continúa desactivado.
+
+Las fixtures de U4 son sintéticas, sin invocar Hasito ni Pueue. El mismo
+guion remoto anterior descubre las pruebas U1/U2/U4; usar el nombre
+`dirigida-tren-u4` y el SHA completo, commiteado y empujado.

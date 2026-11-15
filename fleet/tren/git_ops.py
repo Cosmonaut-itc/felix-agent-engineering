@@ -195,6 +195,33 @@ class GitTren:
             raise FalloGit("lectura-remota-invalida")
         return campos[0]
 
+    def worktree(self, commit):
+        """Checkout desacoplado durable por almacén/SHA; sin borrar ni moverlo."""
+        if not sha(commit):
+            raise FalloGit("worktree-sha-invalido")
+        self.preparar()
+        ruta = directorio_estado() / "worktrees" / clave(str(self.ruta.resolve())) / commit
+        ruta.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if not ruta.exists():
+            self.texto("worktree", "add", "--detach", str(ruta), commit)
+        def leer(*args):
+            resultado = self.ejecutar(["git", "--no-replace-objects", "-c",
+                "core.hooksPath=" + os.devnull, "-C", str(ruta), *args],
+                capture_output=True, text=True, timeout=120, check=False,
+                env=entorno(True))
+            if resultado.returncode:
+                raise FalloGit("worktree-no-valido")
+            return resultado.stdout.strip()
+        try:
+            if (leer("rev-parse", "HEAD") != commit or
+                    Path(leer("rev-parse", "--git-common-dir")).resolve() != self.ruta.resolve() or
+                    leer("status", "--porcelain", "--untracked-files=no") or
+                    leer("rev-parse", "--abbrev-ref", "HEAD") != "HEAD"):
+                raise FalloGit("worktree-no-valido")
+        except (OSError, subprocess.SubprocessError):
+            raise FalloGit("worktree-no-disponible") from None
+        return ruta
+
     def publicar(self, tren_id, C):
         if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", tren_id) or not sha(C):
             return ErrorGit("publicacion-invalida")
