@@ -5,9 +5,9 @@ la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 """
 from dataclasses import dataclass, replace
 
-from dominio import (Armado, Candidato, ConflictoCadena, Congelado,
+from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      EsperandoCI, Incierto, Observacion, Promoviendo, RamaOcupada,
-                     efecto_promover)
+                     admision_entrada, efecto_promover)
 from git_ops import Publicado
 
 
@@ -59,6 +59,14 @@ def ejecutar(efecto, estado, observacion, git):
         cert = fase.certificado
         entradas = {e.entrega.recibo: e for e in estado.entradas}
         heads = tuple(entradas[r].entrega.head for r in tren.recibos)
+        vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+        if any(not isinstance(admision_entrada(entradas[r], vistas, observacion), Admitido)
+               for r in tren.recibos):
+            # Puede haber aterrizado antes de perder el ACK: leer sin empujar.
+            lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+            return Ejecucion(replace(limpia, main=lectura,
+                                    intento_promocion=fase.intentos),
+                             not isinstance(lectura, Incierto))
         lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
         return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
                          not isinstance(lectura, Incierto))

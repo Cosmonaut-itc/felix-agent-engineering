@@ -195,6 +195,8 @@ class Diagnosticando:
 class Promoviendo:
     certificado: Certificado
     intentos: int = 1
+    # EnBase ya recibido; la admisión puede diferir el siguiente intento.
+    reintento_pendiente: bool = False
 
 
 @dataclass(frozen=True)
@@ -297,6 +299,19 @@ def admision(vista, observacion):
     return Admitido()
 
 
+def admision_entrada(entrada, vistas, observacion):
+    """Misma regla para el reductor y la barrera previa al push."""
+    if isinstance(entrada.admision, Rechazado):
+        return entrada.admision
+    entrega = entrada.entrega
+    vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
+    if vista is None:
+        return Retenido(Motivo.INCIERTO)
+    if vista.head != entrega.head:
+        return Rechazado(Motivo.HEAD)
+    return admision(vista, observacion)
+
+
 LIMITE_PROMOCION = 3
 
 
@@ -325,10 +340,7 @@ def aterrizaje(estado, tren, observacion):
         if isinstance(lectura, Aterrizado) and lectura.arbol == cert.arbol:
             fase = Terminal("ATERRIZADO")
         elif isinstance(lectura, EnBase):
-            if fase.intentos >= LIMITE_PROMOCION:
-                return replace(estado, pausa=Pausa("promocion-rechazada")), ()
-            fase = replace(fase, intentos=fase.intentos + 1)
-            efectos = (efecto_promover(tren.id, fase.intentos),)
+            fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
             fase = Terminal("REARMAR")
             estado = replace(estado,
@@ -345,7 +357,18 @@ def paso(estado, observacion):
     """Un paso determinista. Congela a lo sumo un lote y emite sólo datos."""
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
     if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
-        return aterrizaje(estado, activos[0], observacion)
+        tren = activos[0]
+        fase = tren.fase
+        if not (fase.reintento_pendiente and observacion.main is None):
+            estado, efectos = aterrizaje(estado, tren, observacion)
+            # Sólo EnBase del intento vigente permite readmitir y reintentar.
+            lectura = observacion.main
+            cert = fase.certificado
+            if (estado.pausa or not isinstance(lectura, EnBase) or
+                    observacion.tren_id != tren.id or
+                    observacion.intento_promocion != fase.intentos or
+                    (lectura.B, lectura.C) != (cert.B, cert.C)):
+                return estado, efectos
     efectos = []
     entradas = []
     vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
@@ -355,13 +378,15 @@ def paso(estado, observacion):
         if isinstance(entrada.admision, Rechazado):
             entradas.append(entrada)
             continue
-        if vista is not None and vista.head != entrega.head:
+        decision = admision_entrada(entrada, vistas, observacion)
+        if decision == Rechazado(Motivo.HEAD):
             entrada = replace(entrada, admision=Rechazado(Motivo.HEAD))
             efectos.append(Efecto(clave("caduca", entrega.recibo),
                                   "avisar-caducidad", (entrega.recibo,)))
         else:
-            decision = (admision(vista, observacion) if vista else
-                        Retenido(Motivo.INCIERTO))
+            if isinstance(decision, Rechazado) and entrada.tren is not None:
+                efectos.append(Efecto(clave("caduca", entrega.recibo),
+                                      "avisar-caducidad", (entrega.recibo,)))
             if isinstance(decision, Admitido):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
@@ -380,16 +405,9 @@ def paso(estado, observacion):
     if activos:
         tren = activos[0]
         miembros = [e for e in entradas if e.entrega.recibo in tren.recibos]
-        if any(isinstance(e.admision, Rechazado) for e in miembros):
-            return replace(estado, pausa=Pausa("head-cambiado-en-tren")), tuple(efectos)
-        if any(not isinstance(e.admision, Admitido) for e in miembros):
-            return estado, tuple(efectos)
         fase = tren.fase
         if observacion.tren_id and observacion.tren_id != tren.id:
             return estado, tuple(efectos)
-        if isinstance(fase, Certificado):
-            nuevo, promocion = aterrizaje(estado, tren, observacion)
-            return nuevo, tuple(efectos) + promocion
         ocupada = observacion.rama_ocupada
         if (isinstance(fase, (Armado, EsperandoCI)) and ocupada and
                 observacion.tren_id == tren.id and
@@ -409,6 +427,23 @@ def paso(estado, observacion):
                     tuple((pr, head) for pr, head, _ in candidato.eslabones) != esperados):
                 return replace(estado, pausa=Pausa("candidato-no-corresponde")), tuple(efectos)
             fase = Armado(candidato)
+            estado = replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
+                                                 else t for t in estado.trenes))
+        # Los resultados completados quedan incorporados antes de esta puerta.
+        if any(isinstance(e.admision, Rechazado) for e in miembros):
+            return replace(estado, pausa=Pausa("head-cambiado-en-tren")), tuple(efectos)
+        if any(not isinstance(e.admision, Admitido) for e in miembros):
+            return estado, tuple(efectos)
+        if isinstance(tren.fase, Congelado) and isinstance(fase, Armado):
+            return estado, tuple(efectos)
+        if isinstance(fase, Certificado):
+            nuevo, promocion = aterrizaje(estado, tren, observacion)
+            return nuevo, tuple(efectos) + promocion
+        if isinstance(fase, Promoviendo) and fase.reintento_pendiente:
+            if fase.intentos >= LIMITE_PROMOCION:
+                return replace(estado, pausa=Pausa("promocion-rechazada")), tuple(efectos)
+            fase = replace(fase, intentos=fase.intentos + 1, reintento_pendiente=False)
+            efectos.append(efecto_promover(tren.id, fase.intentos))
         elif isinstance(fase, Armado):
             fase = EsperandoCI(fase.candidato)
             efectos.append(Efecto(clave("ci", tren.id), "solicitar-ci", (tren.id,)))

@@ -95,6 +95,9 @@ outbox al guardar la observación. Una promoción `Incierto` queda pendiente
 para repetir el mismo intento. Los demás errores de armado o publicación
 quedan tipados en `EfectoFallido.resultado`, sin confirmar outbox.
 Serializar el ejecutor con el candado del carril; aún no hay drenaje real.
+El reductor incorpora el candidato o la pausa por conflicto/rama ocupada aun
+con admisión retenida; ésta bloquea solicitar CI o promover, sin perder el
+resultado completado al confirmar el outbox.
 
 `Certificado` añade B con default vacío para leer eventos U1; uno antiguo sin
 base pausa `certificado-sin-base`. Antes de pasar a `Promoviendo` se revalida
@@ -109,7 +112,13 @@ ligado a B, C, tren e intento; `Observacion.base` sigue siendo la base para
 congelar lotes, no evidencia de promoción.
 
 Con main en B hay hasta tres intentos totales, claves estables por intento;
-después pausa `promocion-rechazada`. Una lectura incierta conserva el estado.
+antes de cada reintento se readmiten los miembros. Un rechazo caduca y pausa;
+una retención conserva `reintento_pendiente` sin gastar otro intento. Al
+recuperarse la admisión, una lectura fresca basta para emitir el reintento.
+Después de tres intentos pausa `promocion-rechazada`. El ejecutor aplica la
+misma admisión antes de empujar: si no admite, sólo reconcilia, de modo que
+un ACK perdido todavía puede terminar `ATERRIZADO` con los PR ya cerrados.
+Una lectura incierta conserva el estado.
 Otro SHA termina `REARMAR`, devuelve los miembros a la fila sin cambiar sus
 fechas FIFO y pausa `escritor-externo` con el SHA observado. Al reanudar, el
 reductor congela sobre la base nueva. La reconciliación de Promoviendo corre
