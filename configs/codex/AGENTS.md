@@ -77,9 +77,15 @@ en Pueue (grupo `suites`) y `remote-run wait ID` espera su turno y devuelve su
 código. El carril rápido (`--carril rapido` o `REMOTE_RUN_CARRIL=rapido`)
 encola en el grupo `rapidas` del host y corta la corrida a los 10 min.
 No reserves la Mini a mano ni esperes en un bucle. Mira la fila con
-`ssh mini pueue status`. Si la corrida usa algo que no admite dos usuarios a la
-vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
+`ssh mini pueue status` y, en el desk, con
+`ssh desk '~/.local/bin/pueue status'`. Si la corrida usa algo que no admite
+dos usuarios a la vez, decláralo en `REMOTE_RUN_RECURSOS` (p. ej.
 `postgres:5434`).
+
+Una espera en segundo plano lleva el plazo máximo de tu herramienta. Si el
+plazo la corta con la corrida todavía en fila, la corrida se cancela. Si ya
+corría, la espera sale con 79 y la corrida sigue en el host: retómala con
+`remote-run wait ID`.
 
 Una sesión que corre en Felix DESKTOP llega a la Mini con `ssh mini`, desde
 Windows y desde WSL. Lanza `remote-run` desde un clon en WSL: el checkout de
