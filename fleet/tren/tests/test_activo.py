@@ -1,4 +1,4 @@
-"""U13: procesos reales, origen local, gh/lanzador falsos; sólo en desk.
+"""U13: procesos reales, origen local, gh/lanzador falsos; sólo en host de pruebas.
 
 No se retiran fixtures. Los fallos de muerte usan os._exit, no excepciones
 que pudieran limpiar o confirmar accidentalmente una transacción.
@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import selectors
+import shlex
 import sqlite3
 import subprocess
 import sys
@@ -18,12 +19,12 @@ from unittest.mock import patch
 
 import test_aterrizaje as fixtures
 from test_hasito import suite_fixture
-from dominio import (Admitido, Armado, Candidato, Certificado, Congelado,
-                     Efecto, EsperandoCI, Estado, Promoviendo, Retenido,
+from dominio import (Armado, Candidato, Certificado, Congelado,
+                     Efecto, EsperandoCI, Promoviendo, Retenido,
                      Terminal, clave, datos, desde_datos)
 from adaptadores.hasito import Hasito
 from git_ops import GitTren
-from ledger import Ledger, directorio_estado
+from ledger import Ledger
 from observador import GitHubGit
 
 RAIZ = Path(__file__).resolve().parents[1]
@@ -223,6 +224,39 @@ class ActivoTests(unittest.TestCase):
         self.assertEqual(self.estado().trenes[0].fase, Terminal("ATERRIZADO"))
         self.assertEqual(len(self.lineas("pushes.log")), 2)
 
+    def test_cli_real_carga_config_y_adaptador_sin_inyeccion(self):
+        ejecutables = self.raiz / "bin"
+        ejecutables.mkdir()
+        lanzador = self.raiz / "run.sh"
+        config = self.contexto.config
+        config["lanzador_hasito"] = str(lanzador)
+        self.ruta_contexto.write_text(json.dumps(config))
+        helper = self.raiz / "frontera.py"
+        helper.write_text("import sys\nsys.path[:0] = " + repr([str(RAIZ), str(RAIZ / "tests")]) + "\n"
+            "from test_activo import Contexto\nc = Contexto(" + repr(str(self.ruta_contexto)) + ")\n"
+            "if sys.argv[1] == 'gh':\n    r = c.gh(['gh'] + sys.argv[2:])\n"
+            "else:\n    r = c.lanzador(['bash', c.config['lanzador_hasito']] + sys.argv[2:])\n"
+            "print(r.stdout, end='')\nsys.exit(r.returncode)\n")
+        for ruta, modo in ((ejecutables / "gh", "gh"), (lanzador, "suite")):
+            ruta.write_text("#!/bin/sh\nexec " + shlex.join([sys.executable, "-I", str(helper), modo]) + ' "$@"\n')
+            ruta.chmod(0o700)
+        privada = self.raiz / "config.json"
+        privada.write_text(json.dumps({"repos": {REPO: config}}))
+        env = dict(os.environ, PATH=str(ejecutables) + os.pathsep + os.environ["PATH"])
+        for n in range(10):
+            proc = subprocess.run([sys.executable, "-I", str(RAIZ / "pao-tren"),
+                "tick", "--repo", REPO, "--config", str(privada)],
+                env=env, capture_output=True, text=True, timeout=30)
+            self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+            payload = json.loads(proc.stdout)
+            self.assertEqual(payload["modo"], "activo")
+            trenes = payload["estado"]["trenes"]
+            if trenes and trenes[0]["fase"] == datos(Terminal("ATERRIZADO")):
+                break
+        else:
+            self.fail("el CLI real no aterrizó")
+        self.assert_aterrizado_una_vez()
+
     def test_puerta_no_inscrito_sombra_activo_y_seco(self):
         args = cli.parser().parse_args(["tick", "--repo", REPO])
         for texto, modo in (("", "no-inscrito"), (REPO + " sombra\n", "sombra")):
@@ -346,6 +380,35 @@ class ActivoTests(unittest.TestCase):
             efectos = [json.loads(r[0]) for r in ledger.db.execute("SELECT payload FROM effects")]
         self.assertEqual(len([e for e in efectos if e["tipo"] == "promover"]), 3)
 
+    def test_main_se_relee_antes_de_consumir_ack_guardado(self):
+        self.hasta_fase(Promoviendo)  # Push y resultado guardados, aún sin ACK.
+        aterrizado = self.remoto()
+        self.assertNotEqual(aterrizado, self.B)
+        ajeno = self.commit({"comun": "base\n", "externo": "otro main\n"}, (self.B,))
+        self.push(ajeno, "refs/heads/ajeno")
+        self.comando(self.origen, "update-ref", "refs/heads/main", ajeno)
+        self.contexto.tick(3000)
+        final = self.estado()
+        self.assertEqual(final.pausa.motivo, "escritor-externo")
+        self.assertEqual(final.pausa.main, ajeno)
+        self.assertEqual(final.trenes[0].fase, Terminal("REARMAR"))
+        self.assertEqual(len(self.lineas("pushes.log")), 2)
+
+    def test_ack_guardado_con_lectura_main_incierta_no_se_confirma(self):
+        self.hasta_fase(Promoviendo)
+        original = self.contexto.git.ejecutar
+        def sin_lectura(argv, **kwargs):
+            if "ls-remote" in argv:
+                raise subprocess.TimeoutExpired(argv, 1)
+            return original(argv, **kwargs)
+        self.contexto.git.ejecutar = sin_lectura
+        self.contexto.tick(3000)
+        self.assertIsInstance(self.estado().trenes[0].fase, Promoviendo)
+        with self.ledger() as ledger:
+            self.assertEqual(ledger.outbox(REPO)[0]["estado"], "fallido")
+        self.contexto.git.ejecutar = original
+        self.assert_aterrizado_una_vez()
+
     def test_paso_y_ack_hacen_rollback_juntos(self):
         self.hasta_fase(Congelado)
         antes = self.estado()
@@ -378,6 +441,10 @@ print(resultado['estado']['trenes'][0]['fase']['_tipo'], flush=True)
             selector.register(uno.stdout, selectors.EVENT_READ)
             self.assertTrue(selector.select(30), "el primer tick no tomó el candado")
         self.assertEqual(uno.stdout.readline().strip(), "candado")
+        estado_cli = subprocess.run([sys.executable, "-I", str(RAIZ / "pao-tren"),
+            "estado", "--repo", REPO], capture_output=True, text=True, timeout=10)
+        self.assertEqual(estado_cli.returncode, 0, estado_cli.stderr)
+        self.assertEqual(json.loads(estado_cli.stdout)["outbox"][0]["estado"], "ejecutando")
         dos = self.hijo("from test_activo import Contexto\nc=Contexto(sys.argv[3])\n"
                         "print(c.tick()[1]['estado']['trenes'][0]['fase']['_tipo'], flush=True)\n")
         self.addCleanup(lambda: dos.poll() is None and dos.kill())

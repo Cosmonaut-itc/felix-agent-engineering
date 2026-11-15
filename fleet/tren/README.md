@@ -347,11 +347,16 @@ con un lanzador que cree otro trabajo al recibir el mismo identificador.
 Promover primero reconcilia: `main == C` verifica árbol/ancestros y confirma
 sin otro push; `main == B` permite el CAS; otro SHA pausa por escritor externo.
 Una lectura incierta conserva el intento. La pausa impide despachar efectos.
+También se relee main al consumir un resultado de promoción ya guardado:
+un ACK antiguo no oculta un escritor externo entre dos ticks.
+Si la lectura previa al IO es incierta, se conserva el contrato U2: se puede
+intentar el CAS protegido por lease y sólo su reconciliación decide el resultado.
 
 Los efectos sin ejecutor (`devolver`, `avisar-caducidad`, `caduca` y feedback
 futuro) quedan pendientes y se saltan sin bloquear los demás. `estado` muestra
 las entradas, todos los trenes con su fase, pausa/causa y el `outbox` pendiente,
 en ejecución, con resultado por consumir o fallido, indicando si hay ejecutor.
+La lectura usa un snapshot SQLite y no espera el flock de una suite en ejecución.
 
 Las pruebas U13 usan un origen local, GitHub/lanzador falsos, HOME y XDG
 temporales, muertes reales en fronteras de COMMIT/IO y dos procesos con flock.

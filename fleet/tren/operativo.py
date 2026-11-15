@@ -8,7 +8,7 @@ from dataclasses import replace
 import json
 import subprocess
 
-from dominio import Terminal, datos, desde_datos, paso
+from dominio import Incierto, Promoviendo, Terminal, datos, desde_datos, paso
 from efectos import EfectoFallido, ejecutar
 from git_ops import FalloGit
 
@@ -94,6 +94,23 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None):
         for fila in ledger.outbox(repo):
             if fila["estado"] == "resultado":
                 recibida = json.loads(fila["resultado"])["observacion"]
+                efecto = desde_datos(json.loads(fila["payload"]))
+                if efecto.tipo == "promover":
+                    tren = next(t for t in estado.trenes if t.id == efecto.datos[0])
+                    if not isinstance(tren.fase, Promoviendo):
+                        continue
+                    cert = tren.fase.certificado
+                    heads = tuple(e.entrega.head for e in estado.entradas
+                                  if e.entrega.recibo in tren.recibos)
+                    # main es mutable: el ACK guardado no sustituye la lectura
+                    # actual, aunque ningún efecto nuevo vaya a ejecutarse.
+                    lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+                    recibida["main"] = datos(lectura)
+                    if isinstance(lectura, Incierto):
+                        ledger.registrar_efecto(repo, efecto, ahora,
+                            {"error": "reconciliacion-incierta", "observacion": recibida})
+                        intentados.add(efecto.clave)
+                        continue
                 observacion = replace(observacion, **{
                     k: desde_datos(v) for k, v in recibida.items()})
                 consumido = fila["clave"]

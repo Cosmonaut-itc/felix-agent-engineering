@@ -64,9 +64,11 @@ def parser():
 
 
 def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=None):
-    if args.comando == "tick" and not args.seco and modo(args.repo) != "activo":
-        return 2, {"error": "tick activo requiere inscripción activa",
-                   "inscripcion": modo(args.repo) or "no-inscrito"}
+    if args.comando == "tick" and not args.seco:
+        inscripcion = modo(args.repo)
+        if inscripcion != "activo":
+            return 2, {"error": "tick activo requiere inscripción activa",
+                       "inscripcion": inscripcion or "no-inscrito"}
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)
         return 0, medir(requests, events, args.repo, args.desde, args.hasta)
@@ -107,7 +109,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
                            "admision": decision_json(entrada.admision)}
         if args.comando == "estado":
             from operativo import resumen_outbox
-            with ledger.candado(args.repo):
+            # Snapshot SQLite consistente, legible incluso con IO bajo flock.
+            with ledger.transaccion(escritura=False):
                 return 0, {"estado": datos(ledger.estado(args.repo)),
                            "sombra": datos(ledger.estado(args.repo, sombra=True,
                                                          doble_camino=modo(args.repo) == "sombra")),

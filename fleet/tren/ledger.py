@@ -60,8 +60,8 @@ class Ledger:
         self.db.close()
 
     @contextmanager
-    def transaccion(self):
-        self.db.execute("BEGIN IMMEDIATE")
+    def transaccion(self, escritura=True):
+        self.db.execute("BEGIN IMMEDIATE" if escritura else "BEGIN")
         try:
             yield
             self.db.execute("COMMIT")

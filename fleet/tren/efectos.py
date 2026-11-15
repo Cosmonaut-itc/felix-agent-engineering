@@ -123,9 +123,10 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
                                     intento_promocion=fase.intentos),
                              not isinstance(lectura, Incierto))
         # Antes de repetir IO, reconciliar: un proceso muerto pudo aterrizar C.
-        # EnBase es el único caso que permite otro push del mismo intento.
+        # Una lectura incierta conserva el contrato U2: intentar el CAS sigue
+        # siendo seguro por el lease, y su lectura posterior decide el resultado.
         lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
-        if isinstance(lectura, EnBase):
+        if isinstance(lectura, (EnBase, Incierto)):
             lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
         return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
                          not isinstance(lectura, Incierto))
