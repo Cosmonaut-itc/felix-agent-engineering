@@ -326,11 +326,11 @@ footer { margin-top: 56px; color: var(--muted); font-size: 13px; border-top: 1px
     <tbody>
       <tr><td><b>Claude Code</b></td><td><code>~/.claude</code></td><td>Sí</td><td>Sí, por <code>CLAUDE.md</code></td><td>Orquestar.</td></tr>
       <tr><td><b>App de Codex</b></td><td><code>~/.codex</code>, ChatGPT directo</td><td>Sí</td><td>Sí, por <code>AGENTS.md</code></td><td>Orquestar.</td></tr>
-      <tr><td><b>CLI de Codex con proxy</b></td><td><code>~/.config/codex-cli</code>, pasa por el proxy de DESKTOP en el puerto 8317</td><td>No</td><td>No, no tiene <code>AGENTS.md</code> global</td><td>Trabajadores GPT y reviews de sol que despacha Claude. Comando <code>codex</code> con <code>CODEX_HOME</code>.</td></tr>
+      <tr><td><b>CLI de Codex con proxy</b></td><td><code>~/.config/codex-cli</code>, pasa por el proxy de DESKTOP en el puerto 8317</td><td>No</td><td>Sólo como orquestador. Lee el mismo <code>AGENTS.md</code> global que la app</td><td>Trabajadores GPT y reviews de sol que despacha Claude. Comando <code>codex</code> con <code>CODEX_HOME</code>.</td></tr>
       <tr><td><b>OpenCode Go</b></td><td>Perfiles de <code>opencode-workers.md</code></td><td>No aplica</td><td>No</td><td>DeepSeek, MiniMax y Kimi para encargos acotados.</td></tr>
     </tbody>
   </table>
-  <p class="note">Los trabajadores no activan <code>felix-mode</code>, así que a la CLI con proxy no le falta nada para su papel. Sólo importaría si la usas como orquestador.</p>
+  <p class="note">Los trabajadores no activan <code>felix-mode</code>: el <code>AGENTS.md</code> global lo dice. La CLI con proxy lo recibe por una fila <code>si-existe</code> del manifest, para que trabajadores y revisores lean también la regla de «Máquinas». Esa fila no crea <code>~/.config/codex-cli</code> donde no existe.</p>
 </section>
 
 <section id="verificacion">
