@@ -158,4 +158,120 @@ class TrickleTests(DeskFixture):
         for readings in (dict(self.low,cpu=15),dict(self.low,cpu=30),dict(self.low,memory=5*1024**3)):
             self.assertEqual(control.decide('desk',readings,control.PRESSURE_THRESHOLDS),'mantener')
 
+    def test_reboot_and_civil_clock_do_not_reset_cooldown(self):
+        self.run_guard();self.assertEqual(len(self.starts()),1)
+        self.now-=60;self.ns+=59_999_000_000;self.run_guard();self.assertEqual(len(self.starts()),1)
+        self.engine.boot_clock=lambda:('87654321-1234-1234-1234-123456789abc',self.ns)
+        self.ns=59_999_000_000;self.run_guard();self.assertEqual(len(self.starts()),1)
+        self.ns=60_000_000_000;self.run_guard();self.assertEqual(len(self.starts()),2)
+
+    def test_reserved_crash_and_unknown_survive_reinstall_migration(self):
+        real=self._save_method()
+        def interrupted(value):
+            real(value)
+            if value['last_attempt']['outcome']=='reserved':raise OSError('crash')
+        with patch.object(self.engine,'_save_admission',side_effect=interrupted):self.run_guard()
+        self.assertEqual(self.starts(),[])
+        self.ns+=1000_000_000_000
+        with self.engine.connect(write=True) as db:control.admission_state(db,migrate=True)
+        self.run_guard();self.assertEqual(self.starts(),[])
+        self.assertIn('admission_unknown',self.causes())
+        self.sample=self.low;self.run_guard(self.low)
+        self.assertEqual(self.p.groups['jale']['status'],'Running')
+
+    def _save_method(self):
+        self.assertTrue(hasattr(self.engine,'_save_admission'),'Reserva durable requerida antes del efecto')
+        return self.engine._save_admission
+
+    def test_unknown_can_recover_only_same_executed_identity(self):
+        original=self.p.status;calls=[0]
+        def status():
+            if self.starts():
+                calls[0]+=1
+                if calls[0]==1:raise OSError('response unavailable')
+            return original()
+        with patch.object(self.p,'status',side_effect=status):self.run_guard()
+        self.assertEqual(len(self.starts()),1)
+        self.ns+=1000_000_000_000;self.run_guard()
+        self.assertEqual(len(self.starts()),1)
+        with self.engine.connect() as db:v=control.admission_state(db)
+        self.assertEqual(v['last_attempt']['outcome'],'confirmed')
+        self.assertEqual(v['last_attempt']['completed_ns'],self.ns)
+
+    def test_final_gate_failure_consumes_permission_without_replacement(self):
+        save=self._save_method()
+        def change(value):
+            save(value)
+            if value['last_attempt']['outcome']=='reserved':self.p.groups['jale']['status']='Running'
+        with patch.object(self.engine,'_save_admission',side_effect=change):self.run_guard()
+        self.assertEqual(self.starts(),[])
+        self.assertIn('task_changed',self.causes())
+        self.run_guard();self.assertEqual(self.starts(),[])
+        self.assertIn('cooldown',self.causes())
+
+    def test_log_failure_still_closes_but_never_opens(self):
+        def broken(*args,**kwargs):raise OSError('SECRET-SENTINEL')
+        with patch.object(control,'log',side_effect=broken):
+            self.run_guard()
+            self.assertEqual(self.starts(),[])
+            for row in self.p.groups.values():row['status']='Running'
+            self.run_guard(dict(self.low,cpu=40))
+        self.assertEqual(self.p.groups['jale']['status'],'Paused')
+
+    def test_done_immediate_and_failed_without_effect(self):
+        def finish(task):
+            detail=task['status']['Running'];task['status']={'Done':dict(detail,end=self.iso(),result='Success')}
+        self.after=finish;self.run_guard()
+        self.assertTrue(any(r['evento']=='admision_una' for r in self.rows()))
+        self.ns+=60_000_000_000
+        def failed(*args):
+            self.p.calls.append(args);raise OSError('SECRET-SENTINEL')
+        with patch.object(self.p,'call',side_effect=failed):self.run_guard()
+        self.assertEqual(len(self.starts()),2)
+        self.assertIn('admission_unknown',self.causes())
+        self.ns+=1000_000_000_000;self.run_guard();self.assertEqual(len(self.starts()),2)
+
+    def test_freshness_budget_and_clock_rollback(self):
+        with patch.object(control.time,'monotonic',side_effect=[0,11]):self.run_guard()
+        self.assertEqual(self.starts(),[])
+        self.assertIn('fresh_sample',self.causes())
+        self.run_guard();self.assertEqual(len(self.starts()),1)
+        self.ns-=1;self.run_guard();self.assertEqual(len(self.starts()),1)
+        self.assertIn('clock',self.causes())
+
+    def test_manual_tombstone_startup_and_pending_receipt(self):
+        for filename,cause in (('maintenance','maintenance'),):
+            (self.engine.directory/filename).touch();self.run_guard()
+            self.assertEqual(self.starts(),[]);self.assertIn(cause,self.causes())
+            (self.engine.directory/filename).unlink()
+        for g in ('jale','pesadas'):
+            self.engine.fence_pause(g)
+        self.run_guard();self.assertEqual(self.starts(),[]);self.assertIn('reason',self.causes())
+
+    def test_nan_boolean_or_incoherent_permission_is_rejected(self):
+        self.run_guard();self.assertEqual(len(self.starts()),1)
+        with self.engine.connect() as db:original=control.admission_state(db)
+        for key,value in (('reserved_ns',True),('completed_ns',float('nan')),('created_at','bad'),('outcome','free')):
+            row=copy.deepcopy(original);row['last_attempt'][key]=value
+            with self.subTest(key=key),self.assertRaises((ValueError,TypeError)):control.validate_admission(row)
+
+    def test_numeric_id_tie_and_utc_fifo(self):
+        self.tasks.clear();self.add_task(10,'jale');self.add_task(2,'pesadas')
+        self.run_guard();self.assertEqual(self.starts(),[('start',2)])
+
+    def test_low_and_rapidas_never_use_incremental_permission(self):
+        self.tasks.clear();self.add_task(1,'rapidas')
+        self.p.groups['rapidas']['status']='Paused'
+        s=self.state();s['reasons']['rapidas']=['pressure']
+        with self.engine.connect(write=True) as db:self.engine.store(db,s)
+        self.run_guard();self.assertEqual(self.starts(),[])
+        self.assertEqual(self.p.groups['rapidas']['status'],'Running')
+
+    def test_running_task_keeps_pressure_on_next_pass_already_green(self):
+        self.tasks['1']['status']={'Running':dict(enqueued_at=self.iso(-90),start=self.iso(-60))}
+        self.tasks['2']['status']={'Running':dict(enqueued_at=self.iso(-90),start=self.iso(-60))}
+        self.run_guard();self.assertEqual(self.state()['reasons']['jale'],['pressure'])
+        self.sample=self.low;self.run_guard(self.low)
+        self.assertEqual(self.p.groups['jale']['status'],'Running')
+
 if __name__=='__main__':unittest.main()

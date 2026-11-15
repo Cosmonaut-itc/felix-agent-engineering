@@ -696,3 +696,92 @@ de esta corrida, nunca por prefijo.
 No reinicia WSL, Windows ni el servicio productivo. El arranque de Windows/WSL
 queda como verificación separada del orquestador. Reinicios de la Mini quedan
 para U3.5.
+
+### SEN-6417: una tarea en la banda media (sólo desk adoptado)
+
+Los umbrales anteriores no cambian. Cuando `decide` devuelve `mantener`, la
+Guardia intenta **una candidatura global**, sin abrir el grupo: `pueue start
+<id>`. Sólo participan grupos administrados excepto `rapidas`, Paused y con
+razones efectivas exactamente `pressure` (un tombstone manual también bloquea).
+La Mini y la vía legacy no obtienen admisión incremental. Por debajo de los
+umbrales de reanudar se abren grupos como antes, sin consultar este permiso.
+
+Se elige FIFO global por fecha `enqueued_at` UTC, id numérico y grupo; esto no
+reproduce las prioridades de Pueue. Sólo Queued, con identidad y dependencias
+presentes Done/Success. Running, Paused y Locked cuentan contra el
+`parallel_tasks` vigente. No se alteran cuotas ni se mata trabajo. Pueue 4.0.4
+arranca por id aun en Paused y omite su cuota; el candado PAO sólo serializa
+escritores cooperantes. Un cliente directo entre la última lectura y start
+puede superar cuota: stock Pueue no ofrece compare-and-start atómico.
+
+`control.sqlite3.guard_admission`, fila 1, JSON versión 1, conserva el último
+intento y la última confirmación independientemente de policy/revisión. El
+intento incluye boot id, CLOCK_BOOTTIME en ns de reserva/finalización, UTC,
+generación, grupo/id, created_at/enqueued_at y resultado. No se exportan los
+metadatos de identidad al registro. La reserva FULL se confirma antes del RPC,
+sin mantener transacción durante Docker/Pueue. Tras ella se repite una sola vez
+el gate final: mantenimiento/arranque/recibos, Docker cuando aplica, vector,
+generación, muestra y evento. Toda la secuencia tiene presupuesto de 10 s;
+la escritura previa al efecto también debe caber. No hay bucle de revalidación.
+Permanece la ventana no atómica con otros clientes del daemon.
+
+Entre intentos terminados se exigen 60 segundos completos desde la finalización
+observada, también si no se envió el RPC (`not_sent`). Un RPC lento no adelanta
+el permiso siguiente. Otro boot exige 60 s de uptime; retroceso/reloj ilegible
+retiene. Cambiar reloj civil, generación, horario o reinstalar no borra el
+permiso. Un fallo/timeout después de invocar el cliente puede haber tenido
+efecto: sólo la misma identidad Running/Done, inicio compatible y grupo aún
+Paused permiten `confirmed`; lo demás queda `unknown`. Al recuperar,
+`reserved` se trata como `unknown`. Confirmar una ejecución recuperada consume
+el permiso desde el reloj actual, no desde el intento perdido.
+
+El JSONL conserva `lectura`/`decision` y añade `tick_id`. Siempre termina con un
+resumen `admision_una`, `tope_alcanzado`, `retenido` o `guard_fin`;
+`bloqueos` contiene `{grupo|null, operacion:one|resume, causa}`. Las causas son
+`fresh_sample`, `docker`, `generation`, `desired`, `event`, `admission`,
+`startup`, `authority`, `maintenance`, `reason`, `pressure_high`, `dependency`,
+`quota`, `task_changed`, `cooldown`, `admission_unknown`, `clock`, `log`, `rpc`.
+Las causas globales no se repiten por grupo. Cada resumen tiene como máximo 16
+bloqueos y menos de 4 KiB. Se mantiene la rotación a 1 MiB y `.1`.
+`admision_intento` y `apertura_intento` se escriben antes del efecto; si falla el
+registro se retienen aperturas/admisiones y aún se intentan cierres protectores.
+Sólo se registran campos operativos permitidos: nunca tareas crudas, envs,
+comandos, rutas ni mensajes arbitrarios de excepciones.
+
+**Recuperación operativa de unknown.** Primero mantener `maintenance`, detener
+los dos timers/oneshots y tomar el mismo `control.lock`. Inspeccionar una
+proyección privada de la fila y de la tarea: generación, id, grupo,
+created_at/enqueued_at e inicio; nunca volcar `status --json` ni envs a logs.
+Si la ejecución de esa identidad queda probada, conservar `last_confirmed` y
+finalizar `confirmed` con boot/CLOCK_BOOTTIME actuales. Si se prueba que no se
+envió, o que el cliente ya terminó y no existe posibilidad de efecto tardío,
+finalizar `not_sent` con esos relojes. Hacer el UPDATE con validación y
+transacción FULL bajo el candado; en otro boot rebasar reserva/finalización a
+ahora, conservando la identidad y UTC original del intento. Sin evidencia
+suficiente sigue `unknown`: no borrarlo, restaurar una DB antigua, vencerlo por
+60 s ni cambiar la generación para liberarlo. La reapertura normal con presión
+baja permanece disponible con sus gates. No se añade una resolución automática
+basada sólo en que la tarea siga en fila.
+
+**Instalación y reversión (operador; no son comandos automáticos del panel).**
+En el checkout del desk ejecutar primero
+`/usr/bin/python3 -I fleet/pueue-desk/install-desk.py --pid-file <pid_path configurado> --seco`,
+y después el mismo comando sin `--seco`. El plan valida la tabla antes de
+`engine.view`, sin crear nada. La migración aditiva ocurre bajo mantenimiento,
+con timers/oneshots detenidos y `control.lock`; crea sólo si falta y rechaza
+corrupción. Conserva policy, recibos y permiso existente, incluso unknown.
+Antes de publicar respalda el controlador inmediatamente anterior en
+`control.py.pre-sen6417-<UTC con microsegundos>`, además de los respaldos viejos.
+Se mantienen los fences DESK-GEN, `--pid-file` configurado, daemon-reload y
+MainPID/generación constantes: no se reinicia ni configura pueued. Fallos
+conservan mantenimiento. Actualizar después snapshot/validador/panel del rack.
+
+Para revertir, detener timers/oneshots bajo mantenimiento, tomar control.lock y
+restaurar ese respaldo fechado y los archivos del rack anteriores. Conservar
+SQLite completa, tabla guard_admission y recibos; nunca restaurar una DB
+histórica. Recargar unidades si cambiaron y retirar sólo las marcas propias
+tras comprobar deseo/generación/cola. El código anterior ignora la tabla extra;
+reinstalar esta versión la valida sin reiniciar el permiso. Observar una
+admisión real en mantener, su cooldown, y una reapertura con presión baja
+natural; no provocar carga ajena. Medir espera por causa y recaída de presión:
+los escenarios del sondeo son condicionados, no ahorro medido ni pronóstico.

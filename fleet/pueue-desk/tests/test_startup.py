@@ -179,7 +179,7 @@ class StartupTests(DeskFixture):
         self.queue['groups']=copy.deepcopy(self.p.groups);self.write()
         self.prepare();self.boot()
         self.p.groups['jale']['parallel_tasks']=8
-        with patch.object(control,'pressure',return_value=self.low),patch.object(self.engine,'admission_ready',return_value=False):
+        with patch.object(control,'pressure',return_value=self.low),patch.object(self.engine,'_admission_gate',return_value=('admission',None,None,0)):
             self.engine.guard(self.low)
         self.assertEqual(self.p.groups['jale']['parallel_tasks'],7)
         self.assertFalse(any(c[0]=='start' for c in self.p.calls))
