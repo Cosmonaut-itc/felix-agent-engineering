@@ -71,6 +71,8 @@ class Entrada:
 @dataclass(frozen=True)
 class Pausa:
     motivo: str
+    # Defaults keep events stored before U2 decodable.
+    detalle: str = ""
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,52 @@ class Candidato:
     eslabones: Tuple[Tuple[int, str, str], ...]
     C: str
     arbol: str
+
+
+@dataclass(frozen=True)
+class ConflictoCadena:
+    """Armar C falló al mezclar el PR `pr` sobre el eslabón anterior."""
+    B: str
+    pr: int
+    archivos: Tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class Publicado:
+    C: str
+
+
+@dataclass(frozen=True)
+class RamaOcupada:
+    C: str
+    observado: str
+
+
+Publicacion = Union[Publicado, RamaOcupada]
+
+
+@dataclass(frozen=True)
+class Aterrizado:
+    C: str
+
+
+@dataclass(frozen=True)
+class EnBase:
+    B: str
+
+
+@dataclass(frozen=True)
+class EscritorExterno:
+    main: str
+
+
+@dataclass(frozen=True)
+class Incierto:
+    motivo: str
+
+
+# Lectura de refs/heads/main del remoto tras cada intento de promoción.
+Reconciliacion = Union[Aterrizado, EnBase, EscritorExterno, Incierto]
 
 
 @dataclass(frozen=True)
@@ -135,6 +183,7 @@ class Certificado:
     arbol: str
     suite: str
     ci: str
+    B: str = ""
 
 
 @dataclass(frozen=True)
@@ -146,6 +195,7 @@ class Diagnosticando:
 @dataclass(frozen=True)
 class Promoviendo:
     certificado: Certificado
+    intentos: int = 1
 
 
 @dataclass(frozen=True)
@@ -203,9 +253,12 @@ class Observacion:
     base: str
     prs: Tuple[VistaPR, ...]
     excluir_alto_riesgo: bool = True
-    candidato: Optional[Candidato] = None
+    candidato: Optional[Union[Candidato, ConflictoCadena]] = None
     ci_candidato: str = "pendiente"
     suite: Optional[str] = None
+    publicacion: Optional[Publicacion] = None
+    # Sólo el ejecutor de `promover` la llena; Observacion.base no se reutiliza.
+    promocion: Optional[Reconciliacion] = None
 
 
 @dataclass(frozen=True)
@@ -213,6 +266,39 @@ class Efecto:
     clave: str
     tipo: str
     datos: Tuple[str, ...]
+
+
+LIMITE_PROMOCION = 3
+
+
+def _con_fase(estado, tren, fase, **cambios):
+    return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id else t
+                                        for t in estado.trenes), **cambios)
+
+
+def _promoviendo(estado, tren, observacion, efectos):
+    """Sólo la lectura de main decide: el push pudo haber llegado ya."""
+    fase = tren.fase
+    cert = fase.certificado
+    lectura = observacion.promocion
+    if lectura is None or isinstance(lectura, Incierto):
+        return estado, tuple(efectos)
+    if isinstance(lectura, Aterrizado) and lectura.C == cert.C:
+        return _con_fase(estado, tren, Terminal("ATERRIZADO")), tuple(efectos)
+    if isinstance(lectura, EnBase) and lectura.B == cert.B:
+        if fase.intentos >= LIMITE_PROMOCION:
+            return replace(estado, pausa=Pausa("promocion-rechazada",
+                                               "intentos={}".format(fase.intentos))), tuple(efectos)
+        intento = fase.intentos + 1
+        efectos.append(Efecto(clave("promover", tren.id, intento), "promover", (tren.id,)))
+        return _con_fase(estado, tren, Promoviendo(cert, intento)), tuple(efectos)
+    if isinstance(lectura, EscritorExterno) and lectura.main not in (cert.B, cert.C):
+        # Members keep `admitida`, so the FIFO order survives the rearm.
+        entradas = tuple(replace(e, tren=None) if e.tren == tren.id else e
+                         for e in estado.entradas)
+        return _con_fase(estado, tren, Terminal("REARMAR"), entradas=entradas,
+                         pausa=Pausa("escritor-externo", "main=" + lectura.main)), tuple(efectos)
+    return replace(estado, pausa=Pausa("observacion-no-corresponde")), tuple(efectos)
 
 
 def admision(vista, observacion):
@@ -278,6 +364,8 @@ def paso(estado, observacion):
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
     if activos:
         tren = activos[0]
+        if isinstance(tren.fase, Promoviendo):
+            return _promoviendo(estado, tren, observacion, efectos)
         miembros = [e for e in entradas if e.entrega.recibo in tren.recibos]
         if any(isinstance(e.admision, Rechazado) for e in miembros):
             return replace(estado, pausa=Pausa("head-cambiado-en-tren")), tuple(efectos)
@@ -289,6 +377,11 @@ def paso(estado, observacion):
             por_recibo = {e.entrega.recibo: e for e in miembros}
             esperados = tuple((por_recibo[r].entrega.pr, por_recibo[r].entrega.head)
                               for r in tren.recibos)
+            if isinstance(candidato, ConflictoCadena):
+                if candidato.B != fase.B or candidato.pr not in {pr for pr, _ in esperados}:
+                    return replace(estado, pausa=Pausa("candidato-no-corresponde")), tuple(efectos)
+                return replace(estado, pausa=Pausa("conflicto-en-cadena", "pr={} archivos={}".format(
+                    candidato.pr, ",".join(candidato.archivos)))), tuple(efectos)
             if (candidato.B != fase.B or
                     tuple((pr, head) for pr, head, _ in candidato.eslabones) != esperados):
                 return replace(estado, pausa=Pausa("candidato-no-corresponde")), tuple(efectos)
@@ -296,13 +389,21 @@ def paso(estado, observacion):
         elif isinstance(fase, Armado):
             fase = EsperandoCI(fase.candidato)
             efectos.append(Efecto(clave("ci", tren.id), "solicitar-ci", (tren.id,)))
+        elif (isinstance(fase, EsperandoCI) and isinstance(observacion.publicacion, RamaOcupada)
+              and observacion.publicacion.C == fase.candidato.C):
+            return replace(estado, pausa=Pausa("rama-tren-ocupada",
+                                               "sha=" + observacion.publicacion.observado)), tuple(efectos)
         elif isinstance(fase, EsperandoCI) and observacion.ci_candidato == "verde":
             efectos.append(Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)))
             if observacion.suite:
                 fase = Corriendo(fase.candidato, observacion.suite)
-        estado = replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
-                                             else t for t in estado.trenes))
-        return estado, tuple(efectos)
+        elif isinstance(fase, Certificado):
+            # U4 builds Certificado; a pre-U2 one without B cannot promote.
+            if not fase.B:
+                return replace(estado, pausa=Pausa("certificado-sin-base")), tuple(efectos)
+            fase = Promoviendo(fase, 1)
+            efectos.append(Efecto(clave("promover", tren.id, 1), "promover", (tren.id,)))
+        return _con_fase(estado, tren, fase), tuple(efectos)
     fila = sorted((e for e in entradas if isinstance(e.admision, Admitido)
                    and e.tren is None), key=lambda e: (e.admitida, e.recibida))
     lote = []
@@ -321,6 +422,9 @@ def paso(estado, observacion):
         return estado, tuple(efectos)
     recibos = tuple(e.entrega.recibo for e in lote)
     tren_id = clave("tren", estado.repo, observacion.base, recibos)
+    if any(t.id == tren_id for t in estado.trenes):
+        # A rearm over the same main (main came back to B) needs fresh effect keys.
+        tren_id = clave("tren", estado.repo, observacion.base, recibos, len(estado.trenes))
     tren = Tren(tren_id, recibos, Congelado(observacion.base))
     estado = replace(estado, entradas=tuple(replace(e, tren=tren_id)
                      if e.entrega.recibo in recibos else e for e in entradas),
@@ -333,7 +437,8 @@ def paso(estado, observacion):
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
           Pausa, Candidato, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
-          Promoviendo, Terminal, Tren, Estado, Efecto)}
+          Promoviendo, Terminal, Tren, Estado, Efecto, ConflictoCadena,
+          Publicado, RamaOcupada, Aterrizado, EnBase, EscritorExterno, Incierto)}
 
 
 def datos(valor):

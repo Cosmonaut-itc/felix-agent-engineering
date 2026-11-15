@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -eu
+git version
 encontrado=0
 resultado=0
 for interprete in python3.9 python3.10 python3; do

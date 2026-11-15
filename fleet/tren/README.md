@@ -65,8 +65,47 @@ La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos;
 un sensible/alto riesgo al frente sale solo inmediatamente. No se adelanta
 un PR solo sobre tickets normales anteriores. Jale nace en pausa `etapa-1`.
 
-Las transiciones posteriores a Corriendo son sólo tipos. U2 proveerá el
-candidato y CI, U4 el adaptador y resultado; el CLI U1 no los ejecuta.
+Las transiciones de Corriendo a Certificado/Diagnosticando son sólo tipos:
+U4 aporta el adaptador y el resultado de la suite.
+
+## Aterrizaje (U2)
+
+[git_ops.py](git_ops.py) opera sobre un clon bare propio
+(`${XDG_STATE_HOME:-~/.local/state}/pao-tren/git/<repo>.git`) y un remoto
+explícito. Necesita git 2.38 o posterior; si no, `GitAntiguo`.
+
+- **Armar.** Trae `refs/pull/<n>/head` y exige que coincida con el head
+  entregado. `C_0 = B`, `C_i = merge(C_{i-1}, H_i)` con
+  `merge-tree --write-tree` y `commit-tree`, sin índice ni working tree.
+  Autor y committer `pao-tren`, sin firma, mensaje derivado de `B`, PR y
+  head. La fecha de cada eslabón es la mayor fecha de committer de sus dos
+  padres, en UTC: sale sólo de objetos direccionados por contenido. La
+  construcción ignora la configuración global, de sistema y la inyectada por
+  entorno, así que otro clon da el mismo `C`. Un choque devuelve
+  `ConflictoCadena(B, pr, archivos)` y pausa `conflicto-en-cadena`.
+- **Publicar para CI.** `C` a `refs/heads/tren/<id>` con lease de creación.
+  Si ya apunta a `C`, éxito; si apunta a otro commit, `RamaOcupada` y pausa
+  `rama-tren-ocupada`. No se sobrescribe.
+- **Promover.** Un solo push:
+  `--force-with-lease=refs/heads/main:<B40> <remoto> <C40>:refs/heads/main`,
+  con `--no-verify`, sin tags ni hooks locales. Fetch y push usan la
+  configuración del usuario por las credenciales; ningún token va en argv.
+- **Reconciliar.** Tras todo push, incluso fallido, lee `main` con
+  `ls-remote`: `Aterrizado` (`main == C`, árbol certificado y cada head
+  ancestro de `C`), `EnBase`, `EscritorExterno(sha)` o `Incierto`.
+
+En el reductor, `Certificado(…, B)` pasa a `Promoviendo(intentos=1)` y emite
+`promover`. En `Promoviendo` decide sólo la lectura de `main`, porque el push
+pudo haber llegado ya: aterrizado termina `ATERRIZADO`; en base reintenta con
+clave nueva hasta 3 intentos y después pausa `promocion-rechazada`; escritor
+externo termina el tren `REARMAR`, devuelve sus miembros a la fila con su
+`admitida` (orden FIFO intacto) y pausa `escritor-externo` con `main=<sha>`.
+Al levantar la pausa, el lote se forma de nuevo sobre el `main` nuevo.
+Incierto no cambia nada; el outbox repite el efecto (`Ejecucion.completo`).
+
+`Ejecutor` corre `armar-candidato`, `solicitar-ci` y `promover` y devuelve la
+observación del paso siguiente. Sólo lo llaman las pruebas: `tick` sin
+`--seco` sigue saliendo con 2 y ningún camino del CLI escribe en un remoto.
 
 Pruebas sólo en desk, sin red y con HOME/XDG temporales:
 
