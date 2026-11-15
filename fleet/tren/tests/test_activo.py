@@ -422,6 +422,30 @@ class ActivoTests(unittest.TestCase):
         self.assertTrue(any("/commits/" + candidato.C + "/check-runs" in p
                             for p in self.lineas("github.log")))
 
+    def test_publicacion_pendiente_o_interrumpida_readmite_antes_de_publicar(self):
+        self.hasta_fase(Armado)
+        class Muerte(Exception):
+            pass
+        def detener(nombre, efecto):
+            if nombre == "paso-guardado":
+                raise Muerte()
+        with self.assertRaises(Muerte):
+            self.contexto.tick(500, detener)
+        (self.raiz / "apto-1.json").write_text("{}")
+        for interrumpido in (False, True):
+            if interrumpido:
+                with self.ledger() as ledger:
+                    fila = ledger.outbox(REPO)[0]
+                    efecto = desde_datos(json.loads(fila["payload"]))
+                    self.assertEqual(efecto.tipo, "solicitar-ci")
+                    ledger.iniciar_efecto(REPO, efecto, 600)
+            self.contexto.tick(700)
+            self.assertEqual(self.lineas("pushes.log"), [])
+            self.assertIsInstance(self.estado().entradas[0].admision, Retenido)
+        (self.raiz / "apto-1.json").write_text(json.dumps({"head": self.miembros[0][1],
+            "veredicto": "APTO", "hallazgos_abiertos": 0}))
+        self.assert_aterrizado_una_vez()
+
     def test_error_github_no_guarda_paso_parcial_y_recupera(self):
         self.hasta_fase(EsperandoCI)
         with self.ledger() as ledger:

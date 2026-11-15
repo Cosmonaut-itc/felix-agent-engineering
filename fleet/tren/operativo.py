@@ -8,7 +8,8 @@ from dataclasses import replace
 import json
 import subprocess
 
-from dominio import Incierto, Promoviendo, Terminal, datos, desde_datos, paso
+from dominio import (Admitido, Incierto, Promoviendo, Terminal, admision_entrada,
+                     datos, desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
 from git_ops import FalloGit
 
@@ -66,6 +67,13 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None):
                          t.id == efecto.datos[0]), None)
             if tren is None or isinstance(tren.fase, Terminal):
                 continue
+            if efecto.tipo == "solicitar-ci":
+                # La clave puede preceder una muerte/cambio de evidencia. La
+                # emisión pasada no autoriza publicar con admisión hoy retenida.
+                vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+                if any(not isinstance(admision_entrada(e, vistas, observacion), Admitido)
+                       for e in estado.entradas if e.entrega.recibo in tren.recibos):
+                    continue
             intentados.add(efecto.clave)
             ledger.iniciar_efecto(repo, efecto, ahora)
             frontera("antes-ejecutar", efecto)

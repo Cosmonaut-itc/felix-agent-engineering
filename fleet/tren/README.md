@@ -334,6 +334,8 @@ Todo el ciclo mantiene el flock del repo, incluido git y el adaptador:
    guarda su resultado en `effect_results` y lo marca `resultado`. El tick
    siguiente lo incorpora al reductor antes de marcarlo `completo`. Un fallo
    o `completo=False` queda `fallido` para reintentar; no confirma el efecto.
+   Publicar CI también exige admisión actual, aunque su clave ya estuviera
+   pendiente o en ejecución antes de una muerte.
 
 `effect_results` es una extensión aditiva del esquema 1. Los eventos de
 sombra y su encoding no cambian. El ACK del resultado y el paso consumidor
