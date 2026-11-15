@@ -480,6 +480,24 @@ class TrickleTests(DeskFixture):
         self.assertFalse([c for c in self.p.calls if c[:2]==('start','-g')])
         self.assertIn('fresh_sample',self.causes())
 
+    def test_protective_pause_failures_exit_nonzero(self):
+        high=dict(self.low,cpu=90);self.sample=high
+        original=self.engine.store
+        def store(db,state):
+            if 'pressure' in state['reasons'].get('hasito',[]):raise OSError('disk failure before pause')
+            return original(db,state)
+        with control.locked(self.engine.directory),patch.object(self.engine,'store',side_effect=store):
+            with self.assertRaises(OSError):self.engine.guard(high)
+        self.assertTrue(self.engine.pause_fence('hasito').exists())
+        self.assertEqual(self.p.groups['hasito']['status'],'Paused')
+        self.p.groups['otros']['status']='Running'
+        call=self.p.call
+        def failing(*args):
+            if args[:1]==('pause',):raise subprocess.CalledProcessError(1,['double'])
+            return call(*args)
+        with control.locked(self.engine.directory),patch.object(self.p,'call',side_effect=failing):
+            with self.assertRaises(subprocess.SubprocessError):self.engine.guard(high)
+
     def test_main_exception_handler_never_logs_exception_text(self):
         import sys
         with patch.object(control,'STATE_DIR',self.engine.directory),patch.object(control,'Pueue',return_value=self.p),patch.object(control,'guard',side_effect=ValueError('SECRET-SENTINEL')),patch.object(sys,'argv',['control.py','guardia']):

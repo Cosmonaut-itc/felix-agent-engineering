@@ -1724,8 +1724,8 @@ class MiniControl:
                     state['reasons'][group] = sorted(reasons)
                     try:
                         with self.connect(write=True) as db:self.store(db,state)
-                    except ADMISSION_ERRORS:
-                        can_open=False;block('authority')
+                    except ADMISSION_ERRORS as error:
+                        can_open=False;failure=failure or error;block('authority')
                         try:self.fence_pause(group)
                         except ADMISSION_ERRORS:pass
                 if decision == 'pausar':
@@ -1736,12 +1736,13 @@ class MiniControl:
                                 state['reasons'][group] = sorted(reasons | {'pressure'})
                                 with self.connect(write=True) as db:self.store(db,state)
                             else:self.fence_pause(group)
-                        except ADMISSION_ERRORS:
-                            can_open=False;block('authority')
+                        except ADMISSION_ERRORS as error:
+                            can_open=False;failure=failure or error;block('authority')
                             try:self.fence_pause(group)
                             except ADMISSION_ERRORS:pass
                         try:self.pueue.call('pause','--wait','-g',group)
-                        except ADMISSION_ERRORS:block('rpc',group)
+                        except ADMISSION_ERRORS as error:
+                            can_open=False;failure=failure or error;block('rpc',group)
                     continue
                 if decision == 'reanudar' and reasons & {'pressure','startup'}:
                     if not can_open:continue
@@ -2040,7 +2041,8 @@ def main():
                 log(directory, "pausa_manual", grupo=args.group)
         except Exception as error:
             if args.command != 'preparar':
-                log(directory, "error", detalle=type(error).__name__)
+                detalle = type(error).__name__ if args.host == 'desk' else str(error)
+                log(directory, "error", detalle=detalle)
             raise
 
 
