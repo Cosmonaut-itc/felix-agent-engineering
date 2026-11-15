@@ -140,6 +140,22 @@ class RevisionR1Tests(fixtures.AterrizajeTests):
         self.assertEqual(self.remoto(), self.B)
         self.assertEqual(resultado.observacion.main, EnBase(self.B, candidato.C))
 
+    def test_tick_tras_aterrizar_no_caduca_pr_merged(self):
+        estado, candidato, obs = self.armar()
+        estado, efecto = self.certificar(estado, candidato, obs)
+        llegada = ejecutar(efecto, estado, obs, self.git)
+        cerradas = tuple(replace(v, abierto=False) for v in obs.prs)
+        estado, efectos = paso(estado, replace(llegada.observacion, prs=cerradas))
+        self.assertEqual(estado.trenes[0].fase, Terminal("ATERRIZADO"))
+        self.assertEqual(efectos, ())
+        admisiones = tuple(e.admision for e in estado.entradas)
+        fresca = replace(obs, base=candidato.C, prs=cerradas, candidato=None,
+                         tren_id="", intento_promocion=0, main=None)
+        siguiente, efectos = paso(estado, fresca)
+        self.assertEqual(efectos, ())
+        self.assertIsNone(siguiente.pausa)
+        self.assertEqual(tuple(e.admision for e in siguiente.entradas), admisiones)
+
     def test_ejecutor_pendiente_reconcilia_ack_perdido_con_pr_cerrados(self):
         estado, candidato, obs = self.armar()
         estado, efecto = self.certificar(estado, candidato, obs)

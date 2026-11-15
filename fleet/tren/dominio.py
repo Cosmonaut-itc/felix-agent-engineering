@@ -372,10 +372,12 @@ def paso(estado, observacion):
     efectos = []
     entradas = []
     vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+    # A landed PR closes as merged; its delivery is settled, not expired.
+    terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
-        if isinstance(entrada.admision, Rechazado):
+        if isinstance(entrada.admision, Rechazado) or entrada.tren in terminales:
             entradas.append(entrada)
             continue
         decision = admision_entrada(entrada, vistas, observacion)
