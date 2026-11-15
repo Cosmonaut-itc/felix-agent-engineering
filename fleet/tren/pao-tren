@@ -106,18 +106,19 @@ def ejecutar(args, observador=None, ahora=None):
                            "admision": decision_json(entrada.admision)}
         if args.comando == "estado":
             return 0, {"estado": datos(ledger.estado(args.repo)),
-                       "sombra": datos(ledger.estado(args.repo, sombra=True)),
+                       "sombra": datos(ledger.estado(args.repo, sombra=True,
+                                                     doble_camino=modo(args.repo) == "sombra")),
                        "eventos": ledger.ultimos_eventos(args.repo)}
         with ledger.candado(args.repo):
-            estado = ledger.estado(args.repo, sombra=True)
             doble_camino = modo(args.repo) == "sombra"
+            estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
             if observador is None:
                 ruta = args.config or ledger.directorio / "config.json"
                 observador = GitHubGit(configuracion(ruta, args.repo), sombra=doble_camino)
             observacion = observador.observar(estado, ahora)
             reductor = paso_sombra if doble_camino else paso
             nuevo, efectos = reductor(estado, observacion)
-            plan = ledger.sombra(nuevo, efectos, ahora)
+            plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
             return 0, {"modo": "sombra", "plan": plan}
     finally:
         ledger.close()

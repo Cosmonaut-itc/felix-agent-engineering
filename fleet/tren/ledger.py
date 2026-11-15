@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 import sqlite3
 
-from dominio import Entrada, clave, datos, desde_datos, inicial
+from dominio import Entrada, Terminal, clave, datos, desde_datos, inicial
 
 
 def directorio_estado():
@@ -96,13 +96,23 @@ class Ledger:
         self.db.execute("INSERT INTO events(repo, tipo, instante, payload) VALUES (?, ?, ?, ?)",
                         (repo, tipo, ahora, json.dumps(payload, sort_keys=True)))
 
-    def estado(self, repo, sombra=False):
+    def estado(self, repo, sombra=False, doble_camino=False):
         estado = inicial(repo)
         if sombra:
-            row = self.db.execute("SELECT payload FROM events WHERE repo=? AND tipo='sombra' ORDER BY seq DESC LIMIT 1",
-                                  (repo,)).fetchone()
-            if row:
-                estado = desde_datos(json.loads(row[0])["estado"])
+            tipo = "sombra-doble-camino" if doble_camino else "sombra"
+            for row in self.db.execute(
+                    "SELECT payload FROM events WHERE repo=? AND tipo=? ORDER BY seq DESC",
+                    (repo, tipo)):
+                candidato = desde_datos(json.loads(row[0])["estado"])
+                # Compatibilidad U12 anterior: sus terminales inequívocos nunca
+                # son continuación del reductor activo. No reescribe eventos.
+                legado_doble = (any(t.fase == Terminal("SIMULADO") for t in candidato.trenes)
+                                or any(e.terminal == Terminal("MERGEADO-FUERA")
+                                       for e in candidato.entradas))
+                if not doble_camino and legado_doble:
+                    continue
+                estado = candidato
+                break
         recibos = {e.entrega.recibo for e in estado.entradas}
         nuevas = tuple(desde_datos(json.loads(r[0])) for r in self.db.execute(
             "SELECT payload FROM entries WHERE repo=? ORDER BY rowid", (repo,)))
@@ -115,12 +125,13 @@ class Ledger:
         return replace(estado, entradas=estado.entradas + tuple(
             e for e in nuevas if e.entrega.recibo not in recibos))
 
-    def sombra(self, estado, efectos, ahora):
+    def sombra(self, estado, efectos, ahora, doble_camino=False):
         # Only the event is committed. No operational trains/effects/outbox rows.
         # Its tagged snapshot feeds the next shadow tick, preserving the 60m clock.
         plan = {"estado": datos(estado), "efectos": datos(efectos)}
         with self.transaccion():
-            self.evento(estado.repo, "sombra", ahora, plan)
+            self.evento(estado.repo, "sombra-doble-camino" if doble_camino else "sombra",
+                        ahora, plan)
         return plan
 
     def ultimos_eventos(self, repo):

@@ -1,6 +1,7 @@
 """Registro cooperativo: sólo un modo sombra inequívoco relaja el guard."""
 import os
 from pathlib import Path
+import re
 
 
 def modo(repo):
@@ -11,11 +12,20 @@ def modo(repo):
     if not ruta.stat().st_mode & 0o444:
         raise OSError("registro ilegible")
     resultado = None
-    for linea in ruta.read_text(encoding="utf-8").splitlines():
-        campos = linea.split("#", 1)[0].lower().split()
-        if campos and campos[0] == repo.lower():
-            actual = "sombra" if campos[1:] == ["sombra"] else "activo"
-            if actual == "activo":
-                return actual
-            resultado = actual
+    with ruta.open(encoding="utf-8") as source:
+        for linea in source:
+            # Igual que merge-guard: sólo CR/LF separan registros. Una línea
+            # ambigua activa todos sus tokens owner/repo, incluso tras #.
+            if any(c in linea for c in "\v\f\x1c\x1d\x1e\x85\u2028\u2029"):
+                repos = {c for c in linea.lower().split()
+                         if re.fullmatch(r"[a-z0-9_.-]+/[a-z0-9_.-]+", c)}
+                if repo.lower() in repos:
+                    return "activo"
+                continue
+            campos = linea.split("#", 1)[0].lower().split()
+            if campos and campos[0] == repo.lower():
+                actual = "sombra" if campos[1:] == ["sombra"] else "activo"
+                if actual == "activo":
+                    return actual
+                resultado = actual
     return resultado
