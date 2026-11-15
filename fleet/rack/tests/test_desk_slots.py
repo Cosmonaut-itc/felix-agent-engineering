@@ -47,6 +47,20 @@ class DeskChannelTests(unittest.TestCase):
         self.assertEqual(self.actions.post(undo)[1]['status'],'applied')
         self.assertEqual(self.p.calls,[('jale',6),('jale',7)])
 
+    def test_linux_generation_token_roundtrips_and_legacy_expected_is_stale(self):
+        _, caps=self.actions.post(dict(schema=accion.SCHEMA,op='host_capabilities',host='desk'))
+        token=caps['generation']
+        self.assertRegex(token,'^linux-proc-v1:[0-9a-f]{64}$')
+        request=self.request('linux-token-0001',dry_run=True)
+        request['expected']['generation']=token
+        self.assertEqual(self.actions.post(request)[1]['status'],'dry_run')
+        self.assertEqual(self.calls[-1]['expected']['generation'],token)
+        request=self.request('legacy-token-0001')
+        request['expected']['generation']='a'*64
+        _, answer=self.actions.post(request)
+        self.assertEqual((answer['status'],answer['error']['code']),('conflict','stale_state'))
+        self.assertEqual(self.p.calls,[])
+
     def test_lost_post_queries_same_id_then_event_aborts_pending(self):
         def lost(*a,**kw):
             with patch.object(self.engine,'reconcile',side_effect=OSError('RPC lost')):self.execute(*a,**kw)

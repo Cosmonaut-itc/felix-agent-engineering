@@ -95,6 +95,14 @@ class DeskGenerationTests(GenerationFixture):
         self.pid.write_text('322\n')
         self.assertNotEqual(self.generation(), original, 'pid')
 
+    def test_pid_alone_changes_identity_with_fixed_file_signature(self):
+        signature = [1, 2, 3, 4, 4]
+        with patch.object(control, '_pid_signature', return_value=signature, create=True):
+            original = self.generation()
+            other = self.proc/'322/stat'; other.parent.mkdir(); other.write_text(self.record(pid='322'))
+            self.pid.write_text('322\n')
+            self.assertNotEqual(self.generation(), original)
+
     def test_each_pid_file_signal_changes_identity(self):
         original = self.generation()
         stat, fstat = Path.stat, os.fstat
@@ -128,7 +136,9 @@ class DeskGenerationTests(GenerationFixture):
         self.ps = 'Sat Nov 14 08:44:12 2026 pueued'
         self.assertEqual(self.engine.handle(request)['status'], 'applied')
         request = self.request('generation-slots-002')
+        request['change']['group'] = 'jale'
         self.stat.write_text(self.record(ticks='999'))
+        self.assertTrue(self.engine.reconcile())
         self.p.calls.clear()
         self.assertNotEqual(self.engine.handle(request)['status'], 'applied')
         self.assertEqual(self.p.calls, [])
@@ -154,6 +164,14 @@ class DeskGenerationTests(GenerationFixture):
         self.pid.write_text('321\n'); self.stat.unlink()
         with self.assertRaises((OSError,ValueError)):self.generation()
 
+    def test_proc_io_error_never_falls_back_to_ps(self):
+        read = Path.read_text
+        def denied(path,*a,**kw):
+            if path == self.stat:raise PermissionError('private proc double')
+            return read(path,*a,**kw)
+        with patch.object(Path,'read_text',denied):
+            with self.assertRaises((OSError,ValueError)):self.generation()
+
     def test_snapshot_race_and_pid_path_replacement_fail_closed(self):
         read = Path.read_text
         for replacement in (False, True):
@@ -169,6 +187,21 @@ class DeskGenerationTests(GenerationFixture):
                 return text
             with self.subTest(replacement=replacement), patch.object(Path,'read_text',racing):
                 with self.assertRaises((OSError,ValueError)):self.generation()
+
+    def test_pid_route_metadata_must_match_open_file(self):
+        stat, fstat = Path.stat, os.fstat
+        reads=[]
+        def pinned(fd):
+            reads.append(fd)
+            return fstat(fd)
+        def replaced(path,*a,**kw):
+            value=stat(path,*a,**kw)
+            if path != self.pid or len(reads) % 2:return value
+            fields={k:getattr(value,k) for k in ('st_dev','st_ino','st_mtime_ns','st_ctime_ns','st_size')}
+            fields['st_ino']+=1
+            return SimpleNamespace(**fields)
+        with patch.object(Path,'stat',replaced), patch.object(os,'fstat',pinned):
+            with self.assertRaises((OSError,ValueError)):self.generation()
 
     def test_mini_golden_never_reads_proc(self):
         expected = hashlib.sha256(('321:'+str(self.pid.stat().st_mtime_ns)+':'+self.ps).encode()).hexdigest()
@@ -186,10 +219,14 @@ class DeskGenerationTests(GenerationFixture):
             self.save(dict(original,generation=value))
             with self.subTest(value=value), self.assertRaises(ValueError):self.state()
         self.save(original)
-        mini = control.MiniControl(self.p,self.engine.directory,host='mini')
-        # Mini's longstanding acceptance of opaque tokens remains untouched.
         self.assertEqual(control.mini_generation(self.pid), hashlib.sha256(
             ('321:'+str(self.pid.stat().st_mtime_ns)+':'+self.ps).encode()).hexdigest())
+
+    def test_mini_opaque_authority_still_accepted_on_linux(self):
+        p = FakePueue()
+        mini = control.MiniControl(p,self.root/'mini',host='mini',generation=lambda:'opaque-token')
+        with control.locked(mini.directory):mini.adopt(self.pid)
+        self.assertEqual(mini.view()['generation'],'opaque-token')
 
 
 class GenerationInstallTests(GenerationFixture):
@@ -314,9 +351,75 @@ class GenerationInstallTests(GenerationFixture):
         # New format is never converted to hide a real restart.
         self.save(dict(self.state(),generation=PREFIX+'a'*64))
         self.p.groups['default']['status']='Paused'
-        self.install()
+        try:self.install()
+        except ValueError as error:self.fail('New-format restart must retain normal reconciliation: '+str(error))
         self.assertEqual(self.state()['generation'],self.generation())
         self.assertIn('ambiguous',self.state()['reasons']['default'])
+
+    def test_ready_startup_links_convert_only_matching_reference(self):
+        original=self.state()
+        for previous in (self.legacy, 'b'*64):
+            startup=dict(phase='ready',previous_generation=previous,statuses={},groups={},holds={},interruptions={},
+                         source_hash='a'*64,target_hash='b'*64)
+            self.save(dict(original,startup=startup))
+            self.install()
+            expected=self.generation() if previous == self.legacy else previous
+            self.assertEqual(self.state()['startup']['previous_generation'],expected)
+
+    def test_conversion_transaction_failure_preserves_both_references(self):
+        startup=dict(phase='ready',previous_generation=self.legacy,statuses={},groups={},holds={},interruptions={},
+                     source_hash='a'*64,target_hash='b'*64)
+        self.save(dict(self.state(),startup=startup)); before=self.state()
+        with self.engine.connect(write=True) as db:
+            db.execute("CREATE TRIGGER refuse_generation BEFORE UPDATE ON policy BEGIN SELECT RAISE(ABORT, 'fixture'); END")
+        import sqlite3
+        with self.assertRaises(sqlite3.Error):self.install()
+        self.assertEqual(self.state(),before)
+        self.assertTrue((self.engine.directory/'maintenance').exists())
+
+    def test_view_and_ensayo_never_convert_legacy_authority(self):
+        before=self.fingerprint()
+        view=self.engine.handle(dict(schema=control.HOST_SCHEMA,op='capabilities'))
+        request=self.request(); request['dry_run']=True
+        self.engine.handle(request)
+        self.assertTrue(view['recovery_pending'])
+        self.assertEqual(self.fingerprint(),before)
+        self.assertEqual(self.p.calls,[])
+
+    def test_preflight_plan_is_not_reused_after_workers_stop(self):
+        def hook(args):
+            if args[2]=='stop' and args[3:] == self.installer.SERVICES:
+                self.save(dict(self.state(),revision=7,reasons={'otros':['manual']}))
+        self.hook=hook
+        self.install()
+        self.assertEqual(self.state()['revision'],7)
+        self.assertEqual(self.state()['reasons'],{'otros':['manual']})
+
+    def test_pause_after_preflight_refuses_before_marks(self):
+        preflight=self.installer.preflight
+        def racing(*a,**kw):
+            engine=preflight(*a,**kw); self.p.groups['default']['status']='Paused'; return engine
+        before=self.fingerprint()
+        with patch.object(self.installer,'preflight',side_effect=racing):
+            with self.assertRaisesRegex(ValueError,'default'):self.install()
+        self.assertEqual(self.fingerprint(),before)
+        self.assertFalse(any(c[2]=='stop' for c in self.commands))
+
+    def test_daemon_change_at_commit_rolls_back(self):
+        store=self.engine.store; before=self.state()
+        def racing(db,state):
+            store(db,state); self.stat.write_text(self.record(ticks='999'))
+        with patch.object(self.engine,'store',side_effect=racing):
+            with self.assertRaises(ValueError):self.install()
+        self.assertEqual(self.state(),before)
+        self.assertTrue((self.engine.directory/'maintenance').exists())
+
+    def test_invalid_previous_generation_is_rejected_without_writes(self):
+        startup=dict(phase='ready',previous_generation='unknown',statuses={},groups={},holds={},interruptions={},
+                     source_hash='a'*64,target_hash='b'*64)
+        self.save(dict(self.state(),startup=startup)); before=self.fingerprint()
+        with self.assertRaises(ValueError):self.install()
+        self.assertEqual(self.fingerprint(),before)
 
 
 if __name__ == '__main__':unittest.main()

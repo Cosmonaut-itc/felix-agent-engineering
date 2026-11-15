@@ -390,6 +390,8 @@ def linux_identity(pid_file, *, proc=None):
     def snapshot():
         with pid_file.open('r', encoding='ascii') as handle:
             signature = _pid_signature(os.fstat(handle.fileno()))
+            if _pid_signature(pid_file.stat()) != signature:
+                raise ValueError('La ruta del pid file cambió al abrirlo')
             text = handle.read()
             pid_text = text.strip()
             if not re.fullmatch(r'[0-9]+', pid_text) or int(pid_text) < 1:
