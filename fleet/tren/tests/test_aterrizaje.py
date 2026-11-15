@@ -425,6 +425,14 @@ class GuardaEstaticaTests(unittest.TestCase):
         self.assertIn("self._push(C, MAIN, B)", fuente)
         self.assertEqual(len(re.findall(r"self\._push\(", fuente)), 2)
 
+    def test_push_a_main_sin_lease_sobre_b_no_sale(self):
+        ordenes = []
+        git = GitTren("/nada", "/origen", ejecutar=lambda a, **k: ordenes.append(a))
+        for lease in ("", "B", "b" * 39):
+            with self.assertRaises(ValueError):
+                git._push("c" * 40, "refs/heads/main", lease)
+        self.assertEqual(ordenes, [])
+
 
 if __name__ == "__main__":
     unittest.main()

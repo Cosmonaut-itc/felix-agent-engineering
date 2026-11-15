@@ -194,7 +194,7 @@ class GitTren:
 
     def _push(self, C, ref, lease):
         # The only push shape: one explicit ref, always with a lease.
-        if not sha40(C) or not (lease == "" or sha40(lease)):
+        if not sha40(C) or not (lease == "" or sha40(lease)) or (ref == MAIN and not sha40(lease)):
             raise ValueError("push inválido")
         try:
             proc = self._git(["push", "--porcelain", "--no-verify", "--no-follow-tags",
