@@ -783,8 +783,11 @@ Relanzar una interrumpida significa una corrida nueva del cliente. Una parada
 administrada registra identidades antes del bootout. Un shutdown/bootout externo
 que stock alcance a guardar como Killed antes de que nadie registre la identidad
 es indistinguible de una cancelación previa: se conserva Killed sin inventar motivo
-ni recibo. **C-W1 sigue pendiente de una decisión del dueño:** este caso externo
-no tiene atribución de interrupción y U3.5 no se declara completa por estas pruebas.
+ni recibo. **Límite aceptado (C-W1, decisión del dueño del 2026-11-15):** este
+caso externo, que incluye el reinicio de macOS, el cierre de sesión, `kill` al PID
+de `pueued` y `pueue shutdown`, deja la tarea `Killed` sin el motivo de reinicio. La
+tarea sigue terminal y no se reejecuta. Un envoltorio que intercepte la parada se
+retomará sólo si la medición del orden real de señales en un reinicio lo justifica.
 El negativo SIGTERM sin record_stop acredita terminalidad y ausencia de reejecución;
 no resuelve esa atribución. SIGKILL no prueba el retiro de descendientes en macOS; revisarlos antes
 de relanzar. No se busca ni se mata por nombre.
