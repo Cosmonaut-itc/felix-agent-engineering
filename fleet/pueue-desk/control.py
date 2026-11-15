@@ -1608,9 +1608,12 @@ class MiniControl:
         self._save_admission(value)  # FULL commit, no transaction held across RPC
         cause,final,sample,started = self._admission_gate(state,group,proc,operation='one')
         if not cause:
-            final_candidate = self._candidate(final,state,lambda *args:None)
-            # Never switch to a replacement candidate after reserving.
-            if final_candidate != candidate:
+            try:
+                final_candidate = self._candidate(final,state,lambda *args:None)
+                # Never switch to a replacement candidate after reserving.
+                if final_candidate != candidate:
+                    cause = 'task_changed'
+            except ADMISSION_ERRORS:
                 cause = 'task_changed'
         if cause:
             self._finish_attempt(value,'not_sent');block(cause,group)
