@@ -1250,6 +1250,10 @@ elif mode == "manifest":
         if not columns or columns[0] not in {"file", "skill"}:
             continue
         paths = [columns[1]] if columns[0] == "file" else [columns[1] + "/SKILL.md", columns[1] + "/otro.md"]
+        if columns[1] == "fleet/tren/pao-tren":
+            # El CLI instalado ejecuta también sus módulos y adaptadores.
+            paths += ["fleet/tren/" + m for m in ("dominio.py", "ledger.py", "observador.py",
+                                                  "instalar.py", "adaptadores/hasito.py")]
         for path in paths:
             files([path])
             reason = decision(invoke(f"gh pr merge 30 {head}"), "sensible")

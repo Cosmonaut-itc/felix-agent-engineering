@@ -110,6 +110,7 @@ class InstallerGraftTests(unittest.TestCase):
         effective_data=self.home/'.local/share/pueue';effective_data.mkdir(parents=True)
         (effective_data/'state.json').write_bytes((self.data/'state.json').read_bytes())
         self.pid=effective_data/'pueue.pid'
+        self.pid.write_text('321\n')  # MainPID of the fake pueued.service
         with self.engine.connect(write=True) as db:
             state=self.engine.state(db);state['pid_file']=str(self.pid);self.engine.store(db,state)
         manager_config=self.home/'manager-config';(manager_config/'pueue').mkdir(parents=True)

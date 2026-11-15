@@ -128,6 +128,35 @@ es provisional mientras haya pendientes. No estima duración ni resultado
 de suites: supone disponibilidad inmediata entre lotes, incluso si el merge
 externo ocurrió antes de que se cerrara la ventana virtual.
 
+## Instalación en macOS (U7, sombra)
+
+Desde un checkout estable de PAO, `bin/pao sync --no-plugins --no-schedule`
+enlaza `~/.local/bin/pao-tren` al CLI; éste resuelve sus módulos incluso con
+`python3 -I ~/.local/bin/pao-tren --help`. Preparar primero el config privado
+descrito arriba, con un checkout que ya contenga los objetos necesarios.
+El instalador necesita `python3`, `gh` y `git` en PATH:
+
+```sh
+python3 -I fleet/tren/instalar.py --repo owner/project
+# Revisar el plist y ejecutar el launchctl bootstrap impreso, o usar:
+python3 -I fleet/tren/instalar.py --repo owner/project --cargar
+# Retirar sin borrar el plist, los logs ni el ledger:
+python3 -I fleet/tren/instalar.py --repo owner/project --retirar
+```
+
+Cada repo tiene un label `local.pao.tren.<sha256-del-repo>` en
+`~/Library/LaunchAgents/`. Corre `pao-tren tick --repo owner/project --seco`
+al cargar y cada 120 segundos. El plist fija HOME, XDG y PATH, incluidos los
+directorios de los ejecutables detectados; los logs quedan bajo
+`${XDG_STATE_HOME:-~/.local/state}/pao-tren/launchd/<label>/`.
+No se carga por defecto; `--cargar` recarga si ya está cargado, para aplicar
+también cambios preparados antes. Repetir una instalación idéntica conserva el plist;
+un cambio guarda `.bak-*` antes del reemplazo atómico. `--retirar` hace
+bootout si está cargado y renombra a `.retirado-*`. Nada se borra.
+La activación y los siete días de sombra requieren una decisión posterior.
+CI prueba la suite en Ubuntu y macOS, también con `/usr/bin/python3` en macOS;
+Windows queda fuera por flock POSIX.
+
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
 `git_ops.GitTren(remoto, ruta=None)` usa un bare propio bajo `pao-tren/git/`
