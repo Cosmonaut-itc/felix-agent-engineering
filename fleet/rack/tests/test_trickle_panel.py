@@ -23,14 +23,14 @@ def iso(seconds):
     return datetime.datetime.fromtimestamp(seconds, datetime.timezone.utc).isoformat()
 
 
-def guard(action='mantener', cpu=22, io=5, memory=20 * GIB, bloqueos=(), admitted=None, age=10):
+def guard(action='mantener', cpu=22, io=5, memory=20 * GIB, bloqueos=(), admitted=None, age=10, admitted_group='otros'):
     """A guard block as serve publishes it, with the installed desk thresholds."""
     return dict(action=action, at=iso(NOW - age), cpu_pause=30, cpu_resume=15,
                 pressure=dict(cpu=cpu, io=io, memory=memory, at=iso(NOW - age)),
                 thresholds=dict(normal={'pause': {'io': 40, 'cpu': 30, 'memory': 4 * GIB}, 'resume': {'io': 20, 'cpu': 15, 'memory': 6 * GIB}},
                                 rapidas={'pause': {'memory': 4 * GIB}, 'resume': {'memory': 6 * GIB}}),
                 last_result=dict(evento='retenido', causa=None, bloqueos=list(bloqueos), at=iso(NOW - age), grupo=None, id=None, restante_ms=None),
-                last_admission=None if admitted is None else dict(at=iso(NOW - admitted), grupo='otros', id=41))
+                last_admission=None if admitted is None else dict(at=iso(NOW - admitted), grupo=admitted_group, id=41))
 
 
 def task(ident, state):
@@ -77,6 +77,8 @@ class GuardCellTests(GuardCellBase):
         lane, _, _ = self.render(guard('mantener', cpu=22, admitted=40))
         self.assertIn('Entra de a una CPU 22 % · abre bajo 15 · última hace 40 s', lane)
         self.assertNotIn('Libre', lane)
+        lane, _, _ = self.render(guard('mantener', cpu=22, admitted=40, admitted_group='jale'))
+        self.assertNotIn('última', lane, 'An admission in another group is not this group\'s')
         lane, _, _ = self.render(guard('mantener', cpu=10, io=25))
         self.assertIn('Entra de a una E/S 25 % · abre bajo 20', lane)
         self.assertNotIn('CPU', lane)
@@ -90,7 +92,9 @@ class GuardCellTests(GuardCellBase):
         self.assertIn('admisión sin confirmar · resolver con control.py resolver-admision', lane)
 
     def test_without_guard_data_the_state_is_unknown_never_free(self):
-        for block in (None, guard(age=600), dict(guard(), pressure=None)):
+        stale_decision = dict(guard(age=600), pressure=guard()['pressure'])
+        stale_pressure = dict(guard(), pressure=guard(age=600)['pressure'])
+        for block in (None, stale_decision, stale_pressure, dict(guard(), pressure=None)):
             lane, _, _ = self.render(block)
             self.assertIn('Retenido por presión estado de la guardia desconocido', lane)
             self.assertNotIn('Libre', lane)
@@ -165,8 +169,7 @@ class GuardSnapshotTests(unittest.TestCase):
         data, published = self.collect(proc)
         self.assertEqual(published['action'], 'mantener')
         self.assertEqual(published['pressure'], dict(cpu=22.5, io=4.0, memory=20000000 * 1024, at=iso(NOW)))
-        self.assertEqual(published['thresholds']['normal']['resume'], {'io': 20, 'cpu': 15, 'memory': 6 * GIB})
-        self.assertEqual(published['thresholds']['rapidas'], {'pause': {'memory': 4 * GIB}, 'resume': {'memory': 6 * GIB}})
+        self.assertEqual(published['thresholds'], guard()['thresholds'], 'The installed controller, desk entry of rapidas included')
         self.assertEqual((published['last_result']['evento'], published['last_result']['bloqueos']), ('admision_una', []))
         self.assertEqual(published['last_admission'], dict(at=iso(NOW - 40), grupo='otros', id=41))
         self.assertEqual([e for e in data['errors'] if e['stage'].startswith('guard')], [])
