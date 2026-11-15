@@ -187,10 +187,24 @@ def main():
         assert show('OOMPolicy')['OOMPolicy']=='continue'
         subprocess.run(['systemctl','--user','set-property','--runtime',unit,'MemoryMax=384M','MemorySwapMax=0'],
                        check=True,capture_output=True,text=True)
+        def memory(name):
+            group=subprocess.run(['systemctl','--user','show',name,'-p','ControlGroup','--value'],
+                                 capture_output=True,text=True,check=True).stdout.strip()
+            return Path('/sys/fs/cgroup')/group.lstrip('/')
+        def capped(name,limit):
+            # The hog runs on the shared desk: never launch it unless this cgroup enforces the cap.
+            folder=memory(name)
+            assert (folder/'memory.max').read_text().strip()==str(limit),(folder/'memory.max').read_text()
+            assert (folder/'memory.swap.max').read_text().strip()=='0',(folder/'memory.swap.max').read_text()
+            return folder
+        def oom_kills(folder):
+            return int(dict(line.split() for line in (folder/'memory.events').read_text().splitlines())['oom_kill'])
+        group_folder=capped(unit,384<<20);kills_before=oom_kills(group_folder)
         sibling_script=root/'oom-sibling.py'
         sibling_script.write_text('import os,pathlib,time\np=pathlib.Path('+repr(str(root))+')\n(p/"oom-sibling-pid").write_text(str(os.getpid()))\nend=time.monotonic()+120\nwhile not (p/"oom-sibling-release").exists() and time.monotonic()<end:time.sleep(.1)\n')
         hog_script=root/'oom-hog.py'
-        hog_script.write_text('b=[]\nwhile True:b.append(b"x"*(16<<20))\n')
+        # Bounded at 1 GiB and exits 0: without an OOM the assertions below fail instead of the desk.
+        hog_script.write_text('b=[]\nfor _ in range(64):b.append(b"x"*(16<<20))\n')
         restarts=show('NRestarts')['NRestarts'];main_before=verified_main_pid()
         p.call('start','-g','jale')
         sibling=add('python3 '+shlex.quote(str(sibling_script)))
@@ -199,7 +213,8 @@ def main():
         wait_for(lambda:'Done' in p.status()['tasks'][hog]['status'],seconds=60)
         hog_result=p.status()['tasks'][hog]['status']['Done']['result']
         time.sleep(2)
-        assert hog_result!='Success',hog_result
+        assert hog_result=={'Failed':137},hog_result
+        assert oom_kills(group_folder)>kills_before,'the kill must be an OOM inside this private cgroup'
         assert 'Running' in p.status()['tasks'][sibling]['status'],'sibling must survive the OOM'
         assert verified_main_pid()==main_before and show('NRestarts')['NRestarts']==restarts
         assert show('ActiveState')['ActiveState']=='active'
@@ -215,10 +230,12 @@ def main():
         # Contrast: the same OOM under OOMPolicy=stop takes the sibling down with it.
         (root/'oom-sibling-pid').unlink();(root/'oom-sibling-release').unlink()
         contrast=unit.replace('.service','-oomstop.service');units_created.append(contrast)
+        go=root/'oom-contrast-go'
         subprocess.run(['systemd-run','--user','--unit',contrast,'--property=OOMPolicy=stop',
                         '--property=MemoryMax=256M','--property=MemorySwapMax=0','/bin/sh','-c',
-                        'python3 '+shlex.quote(str(sibling_script))+' & while [ ! -s '+shlex.quote(str(root/'oom-sibling-pid'))+' ]; do sleep .1; done; python3 '+shlex.quote(str(hog_script))+'; wait'],
+                        'while [ ! -e '+shlex.quote(str(go))+' ]; do sleep .1; done; python3 '+shlex.quote(str(sibling_script))+' & while [ ! -s '+shlex.quote(str(root/'oom-sibling-pid'))+' ]; do sleep .1; done; python3 '+shlex.quote(str(hog_script))+'; wait'],
                        check=True,capture_output=True,text=True)
+        capped(contrast,256<<20);go.touch()
         wait_for(lambda:subprocess.run(['systemctl','--user','show',contrast,'-p','Result','--value'],
                                        capture_output=True,text=True).stdout.strip()=='oom-kill',seconds=60)
         stopped_sibling=int((root/'oom-sibling-pid').read_text())

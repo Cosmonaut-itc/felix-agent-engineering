@@ -619,6 +619,13 @@ el propio `pueued`, la unidad cae y `Restart=always` la levanta con el preparado
 La prueba privada lo comprueba con un tope de memoria sólo en su unidad transitoria
 y un contraste con `OOMPolicy=stop`.
 
+Residuo conocido: si el kernel elige al proceso líder de una tarea, Pueue la marca
+terminada y libera su lugar, pero los hijos de ese líder siguen vivos dentro de
+`pueued.service`, sin tarea, hasta que terminen solos o pare la unidad. Es el mismo
+caso de una tarea que termina dejando hijos en segundo plano, que ya ocurría antes de
+este cambio. Para detectarlos, comparar `cgroup.procs` de la unidad con los árboles
+de procesos de las tareas `Running`. Retirarlos es la unidad ORFANOS-DESK.
+
 #### Mantenimiento e instalación sobre U3.3 adoptada
 
 Los siguientes pasos son para el operador; las pruebas no los ejecutan en el
