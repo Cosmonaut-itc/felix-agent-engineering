@@ -320,9 +320,7 @@ function hostControlMessage(h){
   if((a?.status==='partial' || c?.drift) && desired){
     message+=' · '+Object.entries(desired).map(([g,n])=>`${g}: ${observed?.[g] ?? '—'} observado / ${n} deseado`).join(' · ');
   }
-  // The Mini has no per-group startup hold yet; this is its only explanation of an ambiguous pause.
-  if(c?.pause_reasons && Object.entries(c.pause_reasons).some(([g,r])=>r.includes('ambiguous') && !c.startup_holds?.[g]))
-    message+=(message?' · ':'')+'Pausa tras reinicio: resolver por SSH con control.py';
+  // Ambiguous pauses are explained in the free-slot cell on both hosts.
   return message;
 }
 function hostControlState(h){
@@ -402,14 +400,18 @@ document.addEventListener('click',ev=>{
 function heldCell(h,n,g,free){
   const c=h.control, guard=h.guard;
   const reasons=c?.pause_reasons?.[n];
-  let why='', how='', flow=false;
+  let why='', how='', flow=false, markup=false;
   const unknown=()=>{why='Estado de la guardia desconocido';how='';};
+  const r=reasons || [], resolve='resolver con <span class="mono">control.py reanudar '+esc(n)+'</span>';
+  const reason=h.control?.startup_holds?.[n];
   if(!Array.isArray(reasons)) unknown();
-  else if(reasons.includes('ambiguous') || reasons.includes('startup') || reasons.includes('manual')){
-    why=reasons.includes('startup') || reasons.includes('ambiguous') ? 'Retenido al reiniciar' : 'Pausa manual';
-    how=c?.startup_holds?.[n] || (reasons.includes('manual') ? 'pausa manual' : 'pausa de origen desconocido');
-    how+=` · resolver con control.py reanudar ${n}`;
-    if(reasons.length===1 && reasons[0]==='startup'){why='Esperando cuotas y Docker';how='';}
+  else if(reason || c?.startup_waiting?.[n] || r.some(x=>['ambiguous','startup','manual'].includes(x))){
+    markup=true;
+    if(reason){why='Retenido al reiniciar';how=esc(reason)+' · '+resolve;}
+    else if(c?.startup_waiting?.[n]==='cuotas_sensores'){why='Esperando cuotas y Docker';how='reanudación automática';}
+    else if(r.includes('manual')){why='Pausa manual';how=resolve;}
+    else if(r.includes('ambiguous')){why='Pausa de origen desconocido';how=resolve;}
+    else {why='Esperando cuotas y Docker';how='reanudación automática';}
   }else if(!reasons.includes('pressure') || !guard?.pressure || !guard?.thresholds || !h.fresh) unknown();
   else {
     const p=guard.pressure, t=guard.thresholds[n==='rapidas'?'rapidas':'normal'];
@@ -449,7 +451,7 @@ function heldCell(h,n,g,free){
     }
   }
   const waits=h.tasks.some(t=>t.group===n && t.state==='Queued');
-  return `<div class="slot held ${waits?'':'idle'}" style="--held-span:${Math.min(free,5)}"><span class="why ${waits?'act '+(flow?'flow':'warn'):''}">${esc(why)}</span>${how?`<span>${esc(how)}</span>`:''}</div>`;
+  return `<div class="slot held ${waits?'':'idle'}" style="--held-span:${Math.min(free,5)}"><span class="why ${waits?'act '+(flow?'flow':'warn'):''}">${esc(why)}</span>${how?`<span>${markup?how:esc(how)}</span>`:''}</div>`;
 }
 
 function view(){

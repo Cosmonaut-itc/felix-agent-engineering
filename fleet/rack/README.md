@@ -887,3 +887,7 @@ Pruebas de contrato y UI: `tests/test_mode.py` y `tests/mode-ui-check.js`.
 `tests/mode_browser_fixture.py OUTPUT.html` genera una página sin servidor ni
 collector, sólo con datos sintéticos, para los 18 estados, incluidas combinaciones de conflicto con lugares, undo en
 ambos sentidos y unknown recargado, con capturas a 1280/390 px.
+
+U3.4: `startup_holds` y `startup_waiting` se presentan en la celda fusionada de
+lugares libres. La espera indica «reanudación automática»; las pausas ambiguas
+de ambos hosts se resuelven desde esa celda, sin duplicación en la cabecera.

@@ -579,7 +579,10 @@ ni procedencia de cancelación. El panel conserva esas interrupciones mientras e
 atribuida, aunque sean terminales o tengan más de 24 h; no aplica un tope de 64.
 La espera automática de cuotas/Docker se muestra como espera con reanudación
 automática, sin instrucciones manuales. Junto al grupo realmente retenido muestra
-**«Retenido al reiniciar: <motivo> · resolver con control.py reanudar <grupo>»**.
+**«Retenido al reiniciar · <motivo> · resolver con control.py reanudar <grupo>»**
+en la celda de lugares libres, sin repetir instrucciones en el host. La espera
+conserva «reanudación automática»; una pausa ambigua de la Mini también se
+explica allí. Un grupo lleno no muestra el aviso de pausa.
 No incorpora botón ni repite la instrucción SSH en la cabecera. `default` vacío
 sigue oculto; una terminal atribuida al reinicio lo hace visible.
 
