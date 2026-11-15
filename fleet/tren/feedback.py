@@ -106,6 +106,8 @@ class EscritorGitHub:
                      "Entrega devuelta por fallos atribuidos al PR.\n\n") + "\n".join(
                 "    " + linea for linea in detalle.splitlines())
             descripcion = "Entrega devuelta; detalle y reproducción en el comentario"
+            if "ci_rojos" in payload:
+                descripcion = "CI rojo sobre candidato individual; checks en el comentario"
         elif efecto.tipo == "avisar-caducidad":
             entrada = next(e for e in estado.entradas if e.entrega.recibo == efecto.datos[0])
             if not isinstance(entrada.admision, Rechazado):

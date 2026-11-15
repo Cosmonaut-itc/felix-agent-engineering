@@ -120,12 +120,12 @@ class GitHubGit:
         estados = {n: STATUS_CI.get(s, "pendiente") for n, s in ultimos.items()}
         rojos = tuple(sorted({n for n, v in list(valores.items()) + list(estados.items())
                               if v == "rojo"}))
+        if faltan:
+            return ResultadoCI("pendiente")
         # La sombra conserva exactamente su contrato histórico: sólo success
         # acredita CI y cualquier otro valor retiene sin cambiar sus eventos.
         if rojos and not self.sombra:
             return ResultadoCI("rojo", rojos)
-        if faltan:
-            return ResultadoCI("pendiente")
         # Zero checks counts as green only when the repo declares an empty CI.
         if not checks and not ultimos and esperados != []:
             return ResultadoCI("pendiente")

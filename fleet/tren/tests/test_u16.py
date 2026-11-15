@@ -1,9 +1,7 @@
 """U16: CI sobre C, partición FIFO, juicio y recuperación; sólo host remoto."""
 from dataclasses import replace
 import json
-import os
 import unittest
-from unittest.mock import patch
 
 import test_activo as activo
 import test_juicio as juicio
@@ -151,6 +149,7 @@ class RegresionesTests(ContextoCI):
         # Funciona también sobre main para que ANTES falle por la transición,
         # no por la ausencia del nuevo campo desde.
         desde = getattr(antes.trenes[0].fase, 'desde', 340)
+        (self.raiz / 'apto-1.json').write_text('{}')
         self.contexto.tick(desde + 59 * 60)
         self.assertIsNone(self.estado().pausa)
         self.contexto.tick(desde + 60 * 60)
@@ -159,6 +158,8 @@ class RegresionesTests(ContextoCI):
         self.assertEqual(self.posts('/comments'), [])
         self.assertEqual(self.cli('juicio', '--tren', antes.trenes[0].id,
             '--decision', 'absolver', '--motivo', 'no hay prueba')[0], 2)
+        (self.raiz / 'apto-1.json').write_text(json.dumps({
+            'head': self.miembros[0][1], 'veredicto': 'APTO', 'hallazgos_abiertos': 0}))
         self.juicio('reanudar')
         reanudado = desde + 4000
         self.contexto.tick(reanudado)
@@ -228,10 +229,28 @@ class LecturaTests(unittest.TestCase):
         self.assertEqual(self.leer(statuses=[{'context': 'legacy', 'state': 'futuro'}]).estado, 'pendiente')
         self.assertEqual(self.leer([self.check('failure', 'pao-tren/resultado')],
             [{'context': 'pao-tren/resultado', 'state': 'failure'}], esperados=[]).estado, 'verde')
-        self.assertEqual(self.leer([self.check('failure')], esperados=['otro']).estado, 'rojo')
+        self.assertEqual(self.leer([self.check('failure')], esperados=['otro']).estado, 'pendiente')
 
 
 class InvariantesTests(ContextoCI):
+    def test_retencion_previa_a_partir_conserva_el_orden_fifo(self):
+        antes = self.hasta_fase(EsperandoCI)
+        candidato = antes.trenes[0].fase.candidato.C
+        primero = self.miembros[0][1]
+        self.ci_en(lambda head: 'pending' if head in (candidato, primero) else None)
+        self.contexto.tick(400)
+        self.assertEqual(self.estado().entradas[0].admitida, antes.entradas[0].admitida)
+        self.ci_en(lambda head: 'failure' if head == candidato else
+                   'pending' if head == primero else None)
+        self.contexto.tick(500)
+        partido = self.estado()
+        self.assertEqual(partido.trenes[0].fase, Terminal('PARTIDO'))
+        self.assertEqual([e.admitida for e in partido.entradas],
+                         [e.admitida for e in antes.entradas])
+        self.ci_en(lambda head: 'success')
+        self.contexto.tick(600)
+        self.assertEqual(self.estado().trenes[-1].recibos, (antes.entradas[0].entrega.recibo,))
+
     def test_rojo_de_otro_c_o_tren_no_se_consume(self):
         antes = self.hasta_fase(EsperandoCI)
         obs = self.contexto.observador.observar(antes, 1000)

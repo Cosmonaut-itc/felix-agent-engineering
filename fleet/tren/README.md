@@ -622,8 +622,9 @@ y muerte durante el reintento de promoción con ACK perdido sobre git real
 (un aterrizaje y una sola suite). `tests/remoto-u15-injerto.sh` ejecuta las
 tres regresiones contra `185e7a46` y exige sus fallos antes de probar el head
 actual. Se incluyen en `tests/remoto.sh`; no se ejecutan en la máquina
-que sólo edita código. No se activó ningún repo. Siguen pendientes D2/D8,
-y el contrato del lanzador real. La salida de CI rojo sobre C queda cubierta por U16.
+que sólo edita código. No se activó ningún repo. Siguen pendientes D2/D8
+y el contrato del lanzador real. La salida de CI rojo sobre C queda cubierta
+por U16.
 
 
 ## CI sobre el candidato y salida del carril (U16)
@@ -654,9 +655,10 @@ por un check que no evaluó su cambio. Una conclusión desconocida tampoco
 inventa éxito ni culpa.
 
 Se conservan todas las páginas. Sólo decide el check-run con mayor id por
-nombre y el status más reciente por contexto. Un rojo explícito prima sobre
-pendientes o checks esperados ausentes; **verde** exige que existan todos
-los `checks_esperados` configurados y que todos los checks/statuses vigentes
+nombre y el status más reciente por contexto. Si falta algún
+`checks_esperados` configurado, la lectura sigue `pendiente`, conservando
+esa barrera existente. Con los esperados presentes, un rojo explícito prima
+sobre pendientes; **verde** exige que todos los checks/statuses vigentes
 sean verdes. Sin observaciones se espera, salvo CI declarado vacío
 (`checks_esperados: []`). `pao-tren/resultado` se excluye tanto en checks
 como en statuses; la sombra de doble camino conserva su lectura histórica

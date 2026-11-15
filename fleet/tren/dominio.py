@@ -730,6 +730,7 @@ def paso(estado, observacion):
     promociones_pausadas = {t.id for t in activos
                            if estado.pausa and isinstance(t.fase, Promoviendo)
                            and not t.fase.reintento_pendiente}
+    esperando_ci = {t.id for t in activos if isinstance(t.fase, EsperandoCI)}
     for entrada in estado.entradas:
         entrega = entrada.entrega
         vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
@@ -749,8 +750,9 @@ def paso(estado, observacion):
             if isinstance(decision, Admitido):
                 admitida = (entrada.admitida if entrada.admitida is not None
                             else observacion.ahora)
-            elif decision == Retenido(Motivo.INCIERTO) or entrada.partida:
-                # A failed read is not negative evidence: keep window and FIFO place.
+            elif (decision == Retenido(Motivo.INCIERTO) or entrada.partida or
+                  entrada.tren in esperando_ci):
+                # No perder FIFO al retener antes o después de una partición.
                 admitida = entrada.admitida
             else:
                 admitida = None
