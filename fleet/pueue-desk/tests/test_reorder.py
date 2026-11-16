@@ -710,12 +710,17 @@ def test_one_paused_snapshot_replaces_parent_status_reads_per_id(self):
     client.poll.assert_called_once()
     plan=next(self.root.glob('edit-*/plan.json'))
     self.assertIn('fingerprint',json.loads(plan.read_text()))
+    trace=json.loads(plan.with_name('trace-controller.json').read_text())
+    phases=('plan_created','popen_begin','popen_end','client_identity','plan_written','client_ready','gate_released','client_finished')
+    self.assertEqual(set(trace),set(phases))
+    self.assertEqual([trace[k] for k in phases],sorted(trace.values()))
     client.poll.side_effect=[None,0]
     with patch.object(self.p,'status',side_effect=AssertionError('redundant full status read')),patch.object(control.subprocess,'Popen',return_value=client),patch.object(control.priority_helper(),'birth',return_value='proof'),patch.object(control.priority_helper(),'remaining',side_effect=[1,1,TimeoutError('expired')]),patch.object(control.time,'sleep'),patch.object(self.engine,'stop_editor',return_value=True) as stop:
         with self.assertRaises(TimeoutError):actual(action,1,5,control.time.monotonic()+1)
     stop.assert_called_once_with(action)
     self.assertEqual((action.get('editor_failure') or {}).get('stage'),'wait')
     self.assertEqual((action.get('editor_failure') or {}).get('kind'),'TimeoutError')
+    self.assertEqual(len(list(self.root.glob('edit-*/trace-controller.json'))),2)
 
 
 
@@ -737,6 +742,40 @@ for name,fn in list(globals().items()):
 
 
 class HelperTests(unittest.TestCase):
+    def test_trace_contains_only_shared_clock_and_retains_identity_failure(self):
+        import tempfile,sys
+        helper=control.priority_helper()
+        with tempfile.TemporaryDirectory(prefix='u36-trace-',dir='/tmp') as folder:
+            root=Path(folder)
+            control.atomic_json(root/'plan.json',dict(client=dict(pid=42,birth='proof'),private='NEVER_LOG'))
+            with patch.object(sys,'argv',[helper.__file__,str(root/'plan.json'),'unused']),patch.object(helper,'birth',return_value='wrong'),patch.object(helper,'host_clock',side_effect=[100,101,102,103]):
+                with self.assertRaises(ValueError):helper.main()
+            marks=json.loads((root/'trace-helper.json').read_text())
+            self.assertEqual(marks.get('identity_begin'),103)
+            self.assertEqual(marks['plan_validated'],102)
+            self.assertNotIn('client_identity',marks)
+            self.assertNotIn('NEVER_LOG',json.dumps(marks))
+            self.assertTrue(all(type(n) in (int,float) for n in marks.values()))
+            self.assertEqual((root/'trace-helper.json').stat().st_mode & 0o077,0)
+
+    def test_process_creation_uses_kernel_uptime_without_wall_clock(self):
+        import ctypes
+        from unittest.mock import Mock
+        helper=control.priority_helper()
+        library=Mock()
+        def usage(pid,flavor,pointer):
+            self.assertEqual(flavor,0)
+            pointer._obj.start=2000
+            return 0
+        def scale(pointer):
+            pointer._obj.numer=2;pointer._obj.denom=1
+            return 0
+        library.proc_pid_rusage.side_effect=usage
+        library.mach_timebase_info.side_effect=scale
+        library.mach_absolute_time.return_value=3000
+        with patch.object(helper.sys,'platform','darwin'),patch.object(ctypes,'CDLL',return_value=library),patch.object(helper,'host_clock',return_value=10),patch.object(helper.time,'time',side_effect=AssertionError('wall clock forbidden')):
+            self.assertAlmostEqual(helper.process_started(),10-.000002)
+
     def test_multiline_unicode_whitespace_null_and_bytes(self):
         helper=control.priority_helper()
         for quote in ('"""', "'''", '"', "'"):
@@ -818,6 +857,21 @@ class HarnessTests(unittest.TestCase):
         spec=importlib.util.spec_from_file_location('u36_private_metrics',path)
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
         return module
+
+    def test_cli_observer_keeps_only_fixed_markers_never_payload(self):
+        import io,tempfile
+        from unittest.mock import Mock
+        h=self.module()
+        for line,name in ((b'Sending message: EditRequest([1])','request'),(b'Received message: Edit(', 'response'),(b'message="Prepared command before spawn" command=PRIVATE','spawn_prepared'),(b'command: PRIVATE',None),(b'Sending message: EditedTasks(',None)):
+            self.assertEqual(h.cli_phase(line),name)
+        with tempfile.TemporaryDirectory(prefix='u36-cli-',dir='/tmp') as folder:
+            process=Mock(stderr=io.BytesIO(b'Sending message: EditRequest([1])\ncommand: PRIVATE\nReceived message: Edit(\nPrepared command before spawn\n'))
+            with patch.object(h.subprocess,'Popen',return_value=process) as launch:
+                with h.observe_cli():h.subprocess.Popen(['python','--client'],env=dict(TMPDIR=folder),stderr=h.subprocess.DEVNULL)
+            marks=json.loads((Path(folder)/'trace-cli.json').read_text())
+            self.assertEqual(set(marks),{'request','response','spawn_prepared'})
+            self.assertNotIn('PRIVATE',json.dumps(marks))
+            self.assertEqual(launch.call_args.kwargs['stderr'],h.subprocess.PIPE)
 
     def test_intervals_use_rpc_envelope_and_keep_partial_evidence(self):
         h=self.module()

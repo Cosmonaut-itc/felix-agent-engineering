@@ -13,6 +13,7 @@ from pathlib import Path
 import signal
 import subprocess
 import time
+import threading
 from unittest.mock import patch
 
 BASE=Path(__file__).resolve().parents[1]
@@ -49,6 +50,49 @@ def step(name, run):
 
 
 class Crash(BaseException):pass
+
+
+def cli_phase(line):
+    # Raw stock tracing is consumed only in memory, never forwarded or saved.
+    # In particular, discard every continuation containing editable fields.
+    for needle, name in ((b'Sending message: EditRequest', 'request'),
+                         (b'Received message: Edit(', 'response'),
+                         (b'Prepared command before spawn', 'spawn_prepared')):
+        if needle in line:
+            return name
+    return None
+
+
+@contextmanager
+def observe_cli():
+    """Private stock CLI only: no custom binary, socket proxy or listener."""
+    original = subprocess.Popen
+    observers = []
+    def launch(argv, *args, **kwargs):
+        if '--client' not in argv:
+            return original(argv, *args, **kwargs)
+        env = dict(kwargs['env'], RUST_LOG='pueue_lib::network::protocol=debug,pueue::process_helper=debug')
+        process = original(argv, *args, **dict(kwargs, env=env, stderr=subprocess.PIPE))
+        root = Path(env['TMPDIR'])
+        def drain():
+            marks = {}
+            with process.stderr as stream:
+                for line in stream:
+                    phase = cli_phase(line)
+                    if phase is not None and phase not in marks:
+                        marks[phase] = c.priority_helper().host_clock()
+                        c.atomic_json(root/'trace-cli.json', marks)
+            c.atomic_json(root/'trace-cli.json', marks)
+        observer = threading.Thread(target=drain)
+        observer.start(); observers.append(observer)
+        return process
+    with patch.object(subprocess, 'Popen', side_effect=launch):
+        try:
+            yield
+        finally:
+            for observer in observers:
+                observer.join(timeout=2)
+                assert not observer.is_alive(), 'private CLI observer still alive'
 
 
 class Sandbox:
@@ -175,6 +219,7 @@ class Sandbox:
 
     def action(self,request,label):
         self.marks.clear();self.measurements.clear();self.rpcs.clear();self.estimates.clear()
+        prior_folders = set(self.engine.directory.glob('edit-*'))
         begun=time.monotonic();answer=None
         try:
             answer=self.engine.handle(request)
@@ -187,6 +232,13 @@ class Sandbox:
                 admission_estimates=self.estimates,
                 pause_budget=self.engine.reorder_budget,rpc_budget=self.engine.reorder_rpc,private_synthetic_admission=True)
             metrics['normal_budget_met']=metrics['pause_start_envelope_seconds'] is not None and metrics['pause_start_envelope_seconds']<=self.engine.reorder_budget
+            metrics['editor_traces'] = []
+            for folder in sorted(self.engine.directory.glob('edit-*')):
+                if folder in prior_folders:
+                    continue
+                trace = {p.stem:json.loads(p.read_text()) for p in folder.glob('trace-*.json')}
+                if trace:
+                    metrics['editor_traces'].append(trace)
             emit('pipeline',**metrics)
             (self.root/(label+'.json')).write_text(json.dumps(metrics,indent=2))
 
@@ -311,10 +363,26 @@ def main():
         assert answer['error']['code']=='pause_budget',answer['status']
         assert not any(r['op'] in ('pause','edit','start') for r in box.rpcs)
         emit('64_rejected_before_pause',status=answer['status'])
+    def diagnostic(box):
+        box.seed()
+        before = box.p.status()
+        for number in range(6):
+            request = box.request('private-diag-%04d' % number)
+            result = box.action(request, 'diag-%04d' % number)
+            if result['status'] != 'applied':
+                box.recover(request)
+                raise AssertionError('diagnostic edit exceeded unchanged budget')
+            undo = box.request('private-back-%04d' % number, undo=request['action_id'])
+            result = box.action(undo, 'back-%04d' % number)
+            if result['status'] != 'applied':
+                box.recover(undo)
+                raise AssertionError('diagnostic undo exceeded unchanged budget')
+            assert box.p.status() == before
     cases=dict(normal=lambda b:normal(b),large=lambda b:normal(b,True),aliases=aliases,orphan=orphan,restart=lambda b:orphan(b,True),**{'64':sixtyfour})
+    cases['diagnostic'] = diagnostic
     signal.signal(signal.SIGTERM,lambda a,b:(_ for _ in ()).throw(SystemExit(143)))
     emit('version',value=subprocess.check_output(['/opt/homebrew/bin/pueue','--version'],text=True).strip())
-    with patch.object(c,'pressure_mini',side_effect=measured_sensor):
+    with observe_cli(), patch.object(c,'pressure_mini',side_effect=measured_sensor):
         for name in args.only.split(','):
             box=Sandbox(root/name)
             try:

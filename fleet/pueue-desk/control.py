@@ -1821,25 +1821,31 @@ class MiniControl:
                    str(Path(__file__).with_name('editor_prioridad.py')), str(root/'plan.json')]))
         self.reorder_measure('prepare_edit',time.monotonic()-begun)
         launch_begun=time.monotonic()
+        trace = dict(plan_created=plan['launched'], popen_begin=helper.host_clock())
         helper.remaining(plan)
         client = subprocess.Popen(['/usr/bin/python3','-I',str(Path(__file__).with_name('editor_prioridad.py')),
                                    '--client',str(root/'plan.json')], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, env=env, cwd=str(root))
+        trace['popen_end'] = helper.host_clock()
         self.reorder_measure('launch_client',time.monotonic()-launch_begun)
         signature = helper.birth(client.pid)
+        trace['client_identity'] = helper.host_clock()
         if not signature:
             client.stdin.close()
             client.wait(timeout=1)
             raise ValueError('No se acreditó el cliente propio')
         plan['client'] = dict(pid=client.pid, birth=signature)
         atomic_json(root/'plan.json', plan)
+        trace['plan_written'] = helper.host_clock()
         action['process']['client'] = plan['client']
         self.reorder_save(action, 'client_ready')
+        trace['client_ready'] = helper.host_clock()
         stage='release'
         try:
             helper.remaining(plan)
             cli_begun=time.monotonic()
             client.stdin.write(b'1'); client.stdin.close()
+            trace['gate_released'] = helper.host_clock()
             self.reorder_boundary('client_sent')
             stage='wait'
             # Popen.wait(timeout) backs off to 50 ms; keep the same deadline
@@ -1862,6 +1868,9 @@ class MiniControl:
             self.stop_editor(action)
             # Keep durable ownership until all identified processes have exited.
             raise
+        finally:
+            trace['client_finished'] = helper.host_clock()
+            atomic_json(root/'trace-controller.json', trace)
         self.reorder_boundary('edit_effect')
         action['process'] = None
         self.reorder_save(action, 'editing')

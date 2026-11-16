@@ -9,6 +9,10 @@ import tempfile
 SOURCE=Path(__file__).resolve().parents[1]
 T='test_reorder.ReorderTests.'
 CASES=[
+ ('controller gate timing retained','control.py',"trace['gate_released'] = helper.host_clock()","pass",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
+ ('helper partial identity timing','editor_prioridad.py',"trace_mark(root, marks, 'identity_begin')","pass",'test_reorder.HelperTests.test_trace_contains_only_shared_clock_and_retains_identity_failure'),
+ ('kernel process creation conversion','editor_prioridad.py','(now - usage.start) * scale.numer / scale.denom / 1e9','0','test_reorder.HelperTests.test_process_creation_uses_kernel_uptime_without_wall_clock'),
+ ('stock CLI response boundary','tests/private_reorder.py',"(b'Received message: Edit(', 'response')","(b'Received message: Edit(', 'request')",'test_reorder.HarnessTests.test_cli_observer_keeps_only_fixed_markers_never_payload'),
  ('coordinated clients','control.py','        if not self.coordinated_reorder:\n','        if False:\n',T+'test_paused_reasons_manual_guard_ambiguous_and_startup'),
  ('pause intent owner','control.py',"        state['reasons'][g] = ['reorder']","        state['reasons'][g] = []",T+'test_prepared_intent_precedes_pause'),
  ('prepared durable before pause','control.py',"revision=state['revision'], phase='prepared', at=self.clock(), process=None, pause_owner=request['action_id'],","revision=state['revision'], phase='paused', at=self.clock(), process=None, pause_owner=request['action_id'],",T+'test_prepared_intent_precedes_pause'),

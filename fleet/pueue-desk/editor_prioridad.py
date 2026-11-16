@@ -1,5 +1,7 @@
 #!/usr/bin/python3 -I
 """Restricted Pueue 4.0.4 TOML editor. Never log the editing document."""
+import time
+_ENTRY = time.clock_gettime(time.CLOCK_MONOTONIC)
 import json
 import hashlib
 import subprocess
@@ -8,7 +10,7 @@ from pathlib import Path
 import re
 import stat
 import sys
-import time
+_IMPORTED = time.clock_gettime(time.CLOCK_MONOTONIC)
 
 
 def birth(pid):
@@ -258,23 +260,58 @@ def remaining(plan):
     return left
 
 
+def trace_mark(root, marks, name):
+    """Only fixed phase names and shared kernel timestamps; retain partial traces."""
+    marks[name] = host_clock()
+    path = root / ('trace-client.json' if '--client' in sys.argv else 'trace-helper.json')
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, 'w') as stream:
+        json.dump(marks, stream)
+
+
+def process_started():
+    """Darwin creation instant, converted between two kernel uptime clocks."""
+    if sys.platform != 'darwin':
+        return None
+    import ctypes
+    class Usage(ctypes.Structure):
+        _fields_ = [('uuid', ctypes.c_char * 16)] + [(n, ctypes.c_uint64) for n in
+            ('user','system','idle','interrupt','pageins','wired','resident','physical','start','exit')]
+    class Timebase(ctypes.Structure):
+        _fields_ = [('numer', ctypes.c_uint32), ('denom', ctypes.c_uint32)]
+    library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+    kernel = ctypes.CDLL('/usr/lib/libSystem.B.dylib')
+    kernel.mach_absolute_time.restype = ctypes.c_uint64
+    usage, scale = Usage(), Timebase()
+    if library.proc_pid_rusage(os.getpid(), 0, ctypes.byref(usage)) or kernel.mach_timebase_info(ctypes.byref(scale)):
+        return None  # diagnostics never establish ownership
+    now = kernel.mach_absolute_time()
+    return host_clock() - (now - usage.start) * scale.numer / scale.denom / 1e9
+
+
 def main():
     begun=host_clock()
+    marks = dict(entry=_ENTRY, imports=_IMPORTED, main=begun)
     if sys.argv[1] == '--client' and sys.stdin.buffer.read(1) != b'1':
         return
+    marks['gate_read'] = host_clock()
     plan_path = Path(sys.argv[2] if sys.argv[1] == '--client' else sys.argv[1]).resolve()
     private_file(plan_path)
     plan = json.loads(plan_path.read_text())
     root = plan_path.parent
     if root.stat().st_mode & 0o077 or (root/'revoked').exists():
         raise ValueError('edit_unsafe')
+    trace_mark(root, marks, 'plan_validated')
     if sys.argv[1] == '--client':
         # No RPC before the controller commits our PID + birth and opens stdin.
         remaining(plan)
+        trace_mark(root, marks, 'cli_exec')
         os.execve(plan['binary'], [plan['binary'], '--config', plan['config'],
                                   'edit', str(plan['id'])], dict(os.environ))
+    trace_mark(root, marks, 'identity_begin')
     if birth(plan['client']['pid']) != plan['client']['birth']:
         raise ValueError('edit_unsafe')
+    trace_mark(root, marks, 'client_identity')
     target = Path(sys.argv[2]).resolve()
     if target.name != 'tasks.toml' or root not in target.parents:
         raise ValueError('edit_unsafe')
@@ -284,10 +321,13 @@ def main():
     with os.fdopen(fd, 'w') as stream:
         json.dump(dict(pid=os.getpid(), birth=birth(os.getpid())), stream)
         stream.flush(); os.fsync(stream.fileno())
+    trace_mark(root, marks, 'self_identity')
+    marks['created'] = process_started()
     if (root/'revoked').exists():
         raise ValueError('edit_unsafe')
     if birth(plan['daemon']['pid']) != plan['daemon']['birth']:
         raise ValueError('edit_unsafe')
+    trace_mark(root, marks, 'daemon_identity')
     status_begun=host_clock()
     reply=subprocess.run([plan['binary'],'--config',plan['config'],'status','--json'],
                          check=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,
