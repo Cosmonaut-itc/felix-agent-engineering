@@ -978,7 +978,13 @@ push de promoción hasta confirmar `cancelado` o acreditar que C ya aterrizó.
 No crea una pausa del carril. `reanudar` no la borra; armado, CI, suite,
 decisiones y feedback de los demás trenes siguen avanzando hasta antes del
 push. Se reintenta en cada tick y, al resolverse, el carril sigue sin otra
-decisión humana. `pao-tren estado` muestra las obligaciones pendientes en
+decisión humana. Esto también vale para una lectura incierta después del CAS:
+al acreditar C se cierra el diario y sale su aviso de éxito sin cancelar.
+Si el push no aterrizó y la cancelación falla, al confirmarla en otro tick se
+vuelve a verificar el gancho antes de reintentar el push, sin decisión humana.
+Una cancelación fallida no sustituye la lectura ni el motivo original de un
+gancho o una ventana que sí exigían pausa. `pao-tren estado` muestra las
+obligaciones pendientes en
 `cancelaciones_pre_aterrizaje`, con id, tren, B, C y `ultimo_error`, sin argv ni
 salida privada del gancho. Se hace **a lo sumo una tentativa de cancelación por id
 y tick**, incluida su reconciliación; el fallo de una no impide intentar las

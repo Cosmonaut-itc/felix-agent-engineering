@@ -301,9 +301,9 @@ class Previo:
         heads = tuple(e.entrega.head for e in estado.entradas if e.entrega.recibo in tren.recibos)
         lectura = self.git.reconciliar(B, C, cert.arbol, heads)
         if not isinstance(lectura, EnBase):
-            if registro and not self.cancelar(registro, lectura):
-                return BloqueoPrevia(B, C, "cancelacion-incierta")
-            return lectura if not isinstance(lectura, Incierto) else BloqueoPrevia(B, C, "base-incierta")
+            if registro:
+                self.cancelar(registro, lectura)
+            return lectura
         ventana = self.ventana(tren, observacion)
         impedimento = None
         if resultado not in ("seguir", "esperar"):
@@ -314,16 +314,16 @@ class Previo:
         elif resultado == "esperar":
             return EsperaPrevia(B, C)
         if impedimento is not None:
-            if registro and not self.cancelar(registro, lectura):
-                return BloqueoPrevia(B, C, "cancelacion-incierta")
+            if registro:
+                self.cancelar(registro, lectura)
             return impedimento
         self.frontera("pre-aterrizaje-verificado", efecto)
         # Última lectura local antes de devolver el control al push. El CAS
         # protege B, pero no impone un límite horario en el servidor remoto.
         ventana = self.ventana(tren, observacion)
         if ventana != "seguir":
-            if registro and not self.cancelar(registro, lectura):
-                return BloqueoPrevia(B, C, "cancelacion-incierta")
+            if registro:
+                self.cancelar(registro, lectura)
             return (EsperaPrevia(B, C) if ventana == "esperar" else
                     BloqueoPrevia(B, C, ventana))
         return None
@@ -334,7 +334,7 @@ class Previo:
             return lectura
         for registro in self.pendientes(estado.repo):
             if registro["solicitud"]["tren"] == tren.id:
-                if not self.cancelar(registro, lectura):
-                    return BloqueoPrevia(tren.fase.certificado.B,
-                                        tren.fase.certificado.C, "cancelacion-incierta")
+                # El diario bloquea nuevos pushes hasta resolver la obligación;
+                # no sustituir la lectura ni su recuperación por una pausa.
+                self.cancelar(registro, lectura)
         return lectura

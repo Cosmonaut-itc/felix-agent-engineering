@@ -38,10 +38,13 @@ class ContextoR1(ContextoInjerto):
                 return Incierto(B, C, 'lectura-remota-fallida')
             return original(B, C, arbol, heads)
         self.contexto.git.reconciliar = reconciliar
-        self.hasta(lambda: self.estado().pausa is not None)
+        self.hasta(lambda: self.pushes_main() == 1)
         self.assertEqual(self.pushes_main(), 1)
         self.assertNotEqual(self.remoto(), self.B)
         self.assertIsInstance(self.estado().trenes[0].fase, Promoviendo)
+        # El fallo transitorio ya no crea pausa. El aborto se ensaya bajo una
+        # pausa manual explícita, también en las bases que sí pausaban por él.
+        self.assertEqual(self.cli('pausa', '--motivo', 'examinar CAS incierto')[0], 0)
 
     def comprobar_exito_recuperado(self):
         self.assertEqual(self.estado().trenes[0].fase, Terminal('ATERRIZADO'))
