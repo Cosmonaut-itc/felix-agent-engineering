@@ -269,13 +269,14 @@ que demuestra:
   `git show <base>:<archivo>`, y su salida. `raro`: la probabilidad es
   media, el daño es un fallo que pide intervención y se recupera, y ni el
   objetivo ni la condición de terminado del brief nombran ese caso. Un
-  warning lleva `Diferible: no` si el PR deja en rojo un gate o una
-  prueba que la base pasa, o rompe un caso que la base resuelve. En nivel
-  alto el brief omite esta regla y todo warning bloquea. En el veto
-  confirmas la razón. Para `previo` corres el comando sobre la base. Para
-  `raro` lees el brief y la salida del hallazgo. Si la razón se sostiene,
-  el warning queda `diferido`. Abres un issue con el hallazgo, su comando
-  y su salida, el PR sigue sin corregirlo y su arreglo sigue
+  warning lleva `Diferible: no` si explica un gate o una prueba en rojo,
+  aunque ya fallara en la base, o si el PR rompe un caso que la base
+  resuelve. En nivel alto el brief omite esta regla y todo warning
+  bloquea. En el veto confirmas la razón. Para `previo` corres el comando
+  sobre la base. Para `raro` lees el brief y la salida del hallazgo. Si
+  la razón se sostiene, el warning queda `diferido`. Abres un issue con
+  el hallazgo, su comando y su salida, y con la regla que lo impide si es
+  mecánico. El PR sigue sin corregirlo, y el arreglo y la regla siguen
   **Unidades**. Si no se sostiene, queda `abierto`, lo corriges y el head
   nuevo pasa por **Ronda delta**. El revisor delta reabre un `diferido`
   sólo si el delta cambia su razón.
@@ -327,7 +328,7 @@ que demuestra:
   `nits-r<ronda>`, `-` en probabilidad y gravedad, severidad `nit`, estado
   `declinado` y la cuenta en `evidencia`. El brief de la ronda delta omite
   esas filas.
-- **Regla por hallazgo.** Si un critical o warning aceptado es mecánico, como un
+- **Regla por hallazgo.** Si un critical o warning que corriges es mecánico, como un
   patrón de sintaxis, una API prohibida, una forma de import o una regla de
   ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
   el orden de `pstack:correct`: arquitectura, tipos, un lint cuyo error
