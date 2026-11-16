@@ -326,11 +326,11 @@ que demuestra:
   **Alto riesgo**, o un diseño cuyos dos candidatos de opus-5.5 empatan en la
   rúbrica sin un ganador claro. En alto riesgo, `arena` corre desde el inicio
   con opus-5.5 y gpt-6.1-sol. En un empate, conserva los dos candidatos de
-  opus-5.5 y suma uno de gpt-6.1-sol. En ambos casos, gpt-6-astra es el juez
-  único de todos los candidatos. En todo diseño disputado corre además el
-  `arena` de implementación del paso 4 del playbook Feature, con opus-5.5 y
-  gpt-6.1-sol, y produce dos implementaciones completas aunque no veas
-  varias formas válidas. Fuera de ese caso, un solo delegado implementa
+  opus-5.5 y suma uno de gpt-6.1-sol. En ambos casos, fable-5.2 en `high` es
+  el juez único de todos los candidatos, con el fallback del routing. En
+  todo diseño disputado corre además el `arena` de implementación del paso 4
+  del playbook Feature, con opus-5.5 y gpt-6.1-sol, y produce dos
+  implementaciones completas aunque no veas varias formas válidas. Fuera de ese caso, un solo delegado implementa
   contra el sketch elegido.
 - **Sin revisor.** Si no puede correr ningún revisor independiente, la
   puerta sigue cerrada, como dice `poteto-mode`. Tu propia lectura no cuenta como review.
