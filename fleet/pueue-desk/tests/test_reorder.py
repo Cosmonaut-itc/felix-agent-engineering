@@ -221,7 +221,7 @@ def test_limits_permutation_i32_booleans_and_budget(self):
         if delta=='priority':r['expected']['queue'][0]['priority']=2**31
         if delta=='extra':r['script']='attack'
         with self.assertRaises(ValueError):self.engine.handle(r)
-    self.engine.reorder_cost=1
+    self.engine.reorder_cost=2
     result=self.engine.handle(self.order_request('budget-0000001'))
     self.assertEqual((result.get('error') or {}).get('code'),'pause_budget');self.assertEqual(self.p.calls,[])
 
@@ -248,6 +248,34 @@ def test_calibrated_admission_rejects_64_before_pause_and_accepts_five(self):
     answer=self.engine.handle(r)
     self.assertEqual((answer.get('error') or {}).get('code'),'pause_budget',answer)
     self.assertEqual(self.p.calls,[])
+
+
+def test_status_size_rejects_before_pause_and_accepts_small_control(self):
+    self.engine.reorder_overhead=control.MiniControl.reorder_overhead
+    self.engine.reorder_cost=control.MiniControl.reorder_cost
+    self.tasks={str(i):task(i) for i in range(1,9)}
+    small=copy.deepcopy(self.tasks)
+    self.assertEqual(self.engine.reorder_budget,6)
+    self.assertTrue(self.engine.view()['reorder_groups']['suites']['enabled'])
+    request=self.order_request('size-control-001')
+    request['change']['order']=list(range(8,0,-1))
+    self.assertEqual(self.engine.handle(request)['status'],'applied')
+    self.assertIn(('pause','--wait','-g','suites'),self.p.calls)
+    self.p.calls.clear()
+    self.tasks=small
+    # History in another group also enlarges every helper status response.
+    self.tasks['100']=dict(task(100,group='default'),status={'Stashed':dict(enqueued_at=STAMP)})
+    self.tasks['100']['envs']['PAD']='x'*9_430_000
+    before=copy.deepcopy(self.tasks)
+    self.assertFalse(self.engine.view()['reorder_groups']['suites']['enabled'])
+    request=self.order_request('size-large-001')
+    request['change']['order']=list(range(8,0,-1))
+    answer=self.engine.handle(request)
+    self.assertEqual((answer.get('error') or {}).get('code'),'pause_budget',answer)
+    self.assertFalse(answer['effects'])
+    self.assertEqual(self.p.calls,[])
+    self.assertEqual(self.tasks,before)
+    self.assertEqual([a['request']['action_id'] for a in self.engine.reorder_actions()],['size-control-001'])
 
 
 

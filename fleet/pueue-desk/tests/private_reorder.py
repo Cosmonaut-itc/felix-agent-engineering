@@ -159,6 +159,13 @@ class Sandbox:
         self.engine.connect=connect
         self.engine.reorder_boundary=lambda phase:self.marks.append((phase,time.monotonic()))
         self.engine.reorder_measure=lambda event,seconds:self.measurements.append((event,seconds))
+        self.estimates=[]
+        estimate=self.engine.reorder_estimate
+        def measured_estimate(edits,state_bytes):
+            seconds=estimate(edits,state_bytes)
+            self.estimates.append(dict(edits=edits,state_bytes=state_bytes,seconds=seconds))
+            return seconds
+        self.engine.reorder_estimate=measured_estimate
 
     def request(self,ident,undo=None):
         expected=self.engine.view()['reorder_groups']['suites']['expected']
@@ -167,7 +174,7 @@ class Sandbox:
             **(dict(undo_of=undo) if undo else dict(change=dict(order=order))))
 
     def action(self,request,label):
-        self.marks.clear();self.measurements.clear();self.rpcs.clear()
+        self.marks.clear();self.measurements.clear();self.rpcs.clear();self.estimates.clear()
         begun=time.monotonic();answer=None
         try:
             answer=self.engine.handle(request)
@@ -177,8 +184,9 @@ class Sandbox:
             metrics=dict(label=label,status=answer['status'] if answer else None,handle_seconds=time.monotonic()-begun,
                 **mark_times(self.marks),steps=totals,step_samples=self.measurements,rpcs=self.rpcs,
                 load=os.getloadavg(),state_bytes=(self.data/'state.json').stat().st_size,
+                admission_estimates=self.estimates,
                 pause_budget=self.engine.reorder_budget,rpc_budget=self.engine.reorder_rpc,private_synthetic_admission=True)
-            metrics['normal_budget_met']=metrics['pause_start_envelope_seconds'] is not None and metrics['pause_start_envelope_seconds']<=3
+            metrics['normal_budget_met']=metrics['pause_start_envelope_seconds'] is not None and metrics['pause_start_envelope_seconds']<=self.engine.reorder_budget
             emit('pipeline',**metrics)
             (self.root/(label+'.json')).write_text(json.dumps(metrics,indent=2))
 
@@ -227,8 +235,15 @@ def main():
         before=box.p.status()
         r=box.request('private-normal-001')
         result=box.action(r,'normal')
+        if result['status']=='rejected' and (result.get('error') or {}).get('code')=='pause_budget':
+            assert history,'small control must fit'
+            assert not any(r['op'] in ('pause','edit','start') for r in box.rpcs)
+            assert box.p.status()==before
+            emit('large_rejected_before_pause',status=result['status'],reason=result['error']['code'],undo='not_applicable')
+            return
         if result['status']=='unknown':box.recover(r)
         assert result['status']=='applied',dict(status=result['status'],stage='normal')
+        assert json.loads((box.root/'normal.json').read_text())['normal_budget_met'],'normal pause budget exceeded'
         snapshot=box.p.status()
         for ident,task in before['tasks'].items():
             after=snapshot['tasks'][ident]
@@ -241,6 +256,7 @@ def main():
         snapshot=box.p.status()
         assert [snapshot['tasks'][i]['priority'] for i in before['tasks']]==[before['tasks'][i]['priority'] for i in before['tasks']]
         assert undo['status']=='applied',undo['status']  # recovery is not a normal-budget PASS
+        assert json.loads((box.root/'undo.json').read_text())['normal_budget_met'],'undo pause budget exceeded'
     def aliases(box):
         box.seed(alias=True)
         ident=max(t['id'] for t in box.p.status()['tasks'].values() if t['original_command']=='new_after_add')

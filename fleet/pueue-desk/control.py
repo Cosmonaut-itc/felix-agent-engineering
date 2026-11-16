@@ -1477,15 +1477,20 @@ class MiniControl:
     # encenderá en este fuente después de acreditar TODOS sus escritores Mini.
     # No existe habilitación por entorno, JSON, instalador ni CLI de producción.
     coordinated_reorder = False
-    reorder_budget = 3.0
+    reorder_budget = 6.0
     reorder_rpc = 1.0
-    # Admisión calibrada con cinco y 9.43 MB: coste medio por edición ~.38 s,
-    # resto de envolvente ~.79 s (corrida 2). Margen en el resto y redondeo.
+    # Máximos por edición bajo carga: .380 s pequeño / .717 s con 9.43 MB
+    # (corridas 2 y 4). Margen sobre ambos; MB decimales del snapshot completo.
     # Es una estimación: los límites de fase/RPC siguen siendo efectivos.
     reorder_overhead = .95
     reorder_cost = .40
+    reorder_size_cost = .05
     reorder_boundary = staticmethod(lambda phase: None)
     reorder_measure = staticmethod(lambda event, seconds: None)
+
+    def reorder_estimate(self, edits, state_bytes):
+        size_cost = self.reorder_size_cost * state_bytes / 1_000_000
+        return self.reorder_overhead + size_cost + edits * (self.reorder_cost + size_cost)
 
     def reorder_host_ready(self, state):
         handoff=state.get('mini_handoff',{})
@@ -1520,6 +1525,7 @@ class MiniControl:
 
     def reorder_view(self, state, snapshot, enabled):
         generation = self.generation(state)
+        state_bytes = len(canonical(snapshot).encode())
         pending = [a for a in self.reorder_actions() if a['phase'] != 'terminal']
         result = {}
         for g in self.profile:
@@ -1542,7 +1548,7 @@ class MiniControl:
                       'Fila demasiado larga para reordenar de una vez' if len(queue) > 64 else
                       'Se necesitan al menos dos pendientes.' if len(queue)<2 else
                       'Esta fila no se puede editar con seguridad.' if unsafe else
-                      'La fila supera el presupuesto de pausa medido.' if self.reorder_overhead + len(queue)*self.reorder_cost > self.reorder_budget else
+                      'La fila supera el presupuesto de pausa medido.' if self.reorder_estimate(len(queue), state_bytes) > self.reorder_budget else
                       'Hay un ajuste pendiente o el host no está preparado.' if not enabled else None)
             result[g] = dict(enabled=reason is None, reason=reason, owner=recovery,
                              expected=dict(revision=state['revision'], admission_revision=state['revision'],
@@ -1681,7 +1687,7 @@ class MiniControl:
             by_id = {t['id']:t for t in rows}
             target = [dict(by_id[ident], priority=len(rows)-i) for i, ident in enumerate(request['change']['order'])]
         changes = [t for t in target if next(r['priority'] for r in rows if r['id'] == t['id']) != t['priority']]
-        if self.reorder_overhead + len(changes)*self.reorder_cost > self.reorder_budget:
+        if self.reorder_estimate(len(changes), len(canonical(snapshot).encode())) > self.reorder_budget:
             return reject('pause_budget')
         try:
             aliases = self.reorder_aliases(state)

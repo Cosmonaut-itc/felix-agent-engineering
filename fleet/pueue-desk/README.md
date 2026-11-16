@@ -196,7 +196,8 @@ permite una acción nueva. Las capacidades muestran «El control está ocupado.
 Vuelve a intentarlo.», sin atribuir una pausa. Consultar un recibo con el candado
 ocupado conserva `unknown`; nunca reenvía la mutación.
 
-Sólo las RPC de `control.py rack` en la Mini tienen límite de 3 s. Las guardias
+Las RPC ordinarias de `control.py rack` en la Mini tienen límite de 3 s;
+reorder aplica ≤1 s/restante por RPC y fases de 6 s (véase U3.6). Las guardias
 del desk y de la Mini, y `aplicar`, esperan a Pueue como antes: un `status` o una
 pausa lentos no cancelan el cierre protector por ese límite del panel.
 
@@ -1170,7 +1171,7 @@ Si sube la presión durante el reordenado, el orden queda aplicado y la pausa
 pasa a la guardia; no se abre sólo porque la pausa empezó siendo nuestra.
 
 Los límites de entrada son 64 pendientes y 16 KiB. La fase normal pausada
-conserva 3 s y cada RPC de reorder ≤1 s y el tiempo restante de su fase,
+usa 6 s (constante `reorder_budget`) y cada RPC de reorder ≤1 s y el tiempo restante de su fase,
 incluidas lecturas, reparación y reconciliación. Una recuperación tiene su
 propio presupuesto acotado y puede continuar en otro tick; el vencimiento no
 es un recibo terminal de aborto. El ámbito se restaura al salir: las lecturas
@@ -1197,12 +1198,18 @@ Las cifras anteriores de A, 3,082 s sin historial y 5,382 s con historial, eran
 5,663 s. Su unknown de 64 ocurrió en client_ready de la edición 36 y no guardó
 la clase de error: process=None por sí solo no distingue salida no-cero de
 timeout. El motor actual conserva fase/clase/rc sin argv, stderr ni documentos.
-La admisión calibrada rechaza los planes que no caben antes de pause. La fórmula
-es `0,95 s + 0,40 s × escrituras necesarias`: hasta cinco caben en la
-estimación (2,95 s); seis (3,35 s) y 64 (26,55 s) se rechazan antes de pause.
-El margen se obtiene del pipeline de cinco con historial: edición media ~0,38 s
-y resto de envolvente ~0,79 s en la corrida 2. Se omiten escrituras que ya
-coinciden; el panel usa el tamaño completo de la fila como previsión conservadora.
+La admisión calibrada rechaza los planes que no caben antes de pause. Usa
+`0,95 + 0,05 × MB + escrituras × (0,40 + 0,05 × MB)` segundos, donde MB son
+millones de bytes del snapshot completo serializado en memoria, incluido
+historial de otros grupos. No se registra su contenido ni se hace otra RPC.
+Se omiten escrituras que ya coinciden; el panel usa el tamaño completo de la
+fila como previsión conservadora y comparte estimador con la admisión/undo.
+Con unos 6 KB caben 12 escrituras (5,754 s); 13 (6,154 s) se rechazan. Con
+9,43 MB caben cinco (5,779 s); seis (6,651 s) se rechazan antes de pausar.
+El coste por edición parte del máximo observado bajo carga: 0,380 s pequeño
+y 0,717 s grande (corridas 2 y 4), con margen de redondeo y tamaño, más reserva
+para pausa, lecturas, verificación y admisión. El detalle reproducible está en
+la evidencia del encargo, `evidencia-injerto/calibracion-admision.txt`.
 No es una garantía bajo cualquier carga: los plazos efectivos siguen activos.
 
 La guardia actual tiene cadencia de 60 s; no se promete recuperación ≤10 s ni

@@ -995,7 +995,7 @@ conserva el orden aplicado y entrega la pausa a la guardia.
 
 El límite es 64 pendientes; una fila mayor explica «Fila demasiado larga para
 reordenar de una vez». Además, el host rechaza antes de pausar un plan que
-excede el presupuesto medido de 3 s; las RPC tienen límite de 1 s.
+excede el presupuesto de 6 s; las RPC tienen límite de 1 s.
 La envolvente `pause_start_envelope_seconds` del arnés va desde antes de la
 RPC pause hasta después de start; handle completo incluye más trabajo. Se
 miden aparte aceptación→pause, verificación, admisión y recibo. Las antiguas
@@ -1016,6 +1016,13 @@ la acción, el recibo marca el observado incompleto y la UI espera al snapshot;
 no elimina filas a partir de un vector truncado. El host valida cualquier
 intento de deshacer contra la fila completa y devuelve conflicto si cambió.
 
-La admisión temporal U3.6 usa `0,95 s + 0,40 s × escrituras`: hasta cinco (2,95 s); seis o más se rechazan antes de pause. Es una estimación medida, con fase efectiva de 3 s y RPC de 1 s/restante.
+La admisión temporal U3.6 usa `0,95 + 0,05 × MB + escrituras × (0,40 + 0,05 × MB)`
+segundos: MB decimales del snapshot completo, incluido el historial de otros
+grupos. Con unos 6 KB caben 12 escrituras (5,754 s); con 9,43 MB, cinco
+(5,779 s). Un plan de seis con ese historial (6,651 s) se rechaza antes de
+pause. Panel, reorder y undo comparten estimación; el panel prevé tantas
+escrituras como filas. Se calibró con máximos por edición bajo carga de las
+corridas 2 y 4, conservando fase efectiva de 6 s y RPC de 1 s/restante.
+La compuerta de clientes permanece apagada.
 
 La aceptación privada bajo carga del injerto sigue pendiente: hubo muestras de cinco dentro de 3 s, pero la última corrida devolvió unknown en client_ready. La UI mantiene propietario/consulta y la compuerta de clientes continúa apagada. Véase el informe del encargo para las tres corridas, cleanup y corrección final de salidas de proceso, cubierta con dobles.
