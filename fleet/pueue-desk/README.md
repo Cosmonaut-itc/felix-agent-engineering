@@ -1030,8 +1030,9 @@ Nunca usa `start <id>`, `restart`, `remove`/`add` ni cambia de gestor. Una
 tarea añadida después de la comparación conserva su id y queda al final, fuera
 del plan, y el recibo marca `undo=false`. Antes de cada edición el host proyecta
 lo que falta con el más lento entre la estimación y el ritmo medido en esa
-pausa; si no cabe en 3 s, deja de editar y revierte lo hecho. Cada RPC tiene
-un plazo de 1 s.
+pausa. Si no cabe en 3 s menos la mitad de la parte fija, que reserva para la
+verificación y el `start -g`, deja de editar y revierte lo hecho. Cada RPC
+tiene un plazo de 1 s.
 
 **Un solo recuperador.** Si `control.py` muere a mitad, el recibo queda
 `applying` con su fase. Lo cierran la guardia de 60 s
@@ -1095,6 +1096,53 @@ Aceptación dirigida: `tests/test_reorder.py`, `tests/mutate_reorder.py`,
 `tests/private_reorder.sh` corre `tests/private_reorder.py --run-private` en la
 Mini sólo por `remote-run`, con un `pueued` 4.0.4 propio, configuración, socket,
 pid file y tareas inocuas dentro de la corrida, sin LaunchAgents.
+
+#### Mediciones U3.6
+
+Pueue 4.0.4 privado en la Mini, por `remote-run`. Corrida 1
+`20261116-093049-68d58f` (SHA `565e0895`) y corrida 3 `20261116-102351-c6d3da`
+(SHA `f84c6b59`). La carga es `os.getloadavg()[0]` de la Mini, que compartía la
+máquina con otras suites.
+
+| Caso | Carga | Escrituras | Pausa | Por edición (prom./máx.) |
+|---|---|---|---|---|
+| Normal, 5 filas (c3) | 9.5 | 5 | 1783 ms | 340 / 589 ms |
+| Deshacer, 5 filas (c3) | 9.5 | 5 | 1177 ms | 221 / 377 ms |
+| Ayudante, 5 filas difíciles (c3) | 9.5 | 5 | 1276 ms | 239 / 259 ms |
+| Normal, 5 filas (c1) | ~2 | 5 | 2357 ms | 426 / 548 ms |
+| 64 filas, sin tope (c3) | 12 | 64 | 19138 ms | 297 / 788 ms |
+| 64 filas, producción (c3) | 9.6 | — | sin pausa | rechazo `too_long` en 26 ms |
+| MO2 7.1 MB, 5 filas (c3) | 15 | 0 | 13997 ms | abortó antes de editar |
+| MO2, 20 y 64 filas (c3) | 40 | — | sin pausa | rechazo `too_long` |
+| MO2, 64 filas, sin tope (c3) | 44 | 1 | 19212 ms | la primera edición pasó de 1 s; abortó |
+
+Desglose con carga 10 (mediana, estado de 7.5 KB y de MO2 7.1 MB):
+
+- `pueue edit` con `/usr/bin/true`: 28 y 31 ms.
+- `pueue edit` con un editor Python: 108 y 97 ms.
+- Arranque de Python: 53 y 65 ms.
+- Cargar el ayudante: 1 a 2 ms.
+- Escritura SQLite FULL: menos de 1 ms.
+- `status --json`: 13 y 121 ms.
+
+Lo que se sigue de estas cifras:
+
+- Pueue no es el costo principal: una edición completa cuesta 220-470 ms y el
+  `pueue edit` desnudo unos 30 ms. Con el historial MO2 la edición casi no
+  cambia; lo que crece es la lectura de `status`.
+- `REORDER_EDIT_SECONDS = 0.45` cubre los promedios medidos. Con un id por
+  llamada caben **5 escrituras** en 3 s. Como los destinos son N..1, una fila
+  nueva (todo en 0) se puede reordenar sólo con hasta 5 pendientes. Una fila ya
+  ordenada sólo reescribe las tareas cuya prioridad cambia, pero un `add`
+  posterior obliga a reescribirla entera. Lo que no cabe se rechaza antes de
+  pausar.
+- Bajo carga 15-44 con MO2, el aborto previo funcionó, pero el grupo quedó
+  14-19 s pausado. Las lecturas de `status` (7 MB) que necesitan la
+  verificación y la liberación no están bajo el plazo de 1 s por RPC. Ese es el
+  peor caso honesto: «En pausa recuperando…» con su propietario.
+- El arranque fue verificado (c3): la tarea Locked del diario volvió a Queued
+  en la imagen, y la guardia cerró el recibo `aborted/interrupted` en su primer
+  tick con las prioridades `before`.
 
 ### SEN-6417: una tarea en la banda media (sólo desk adoptado)
 

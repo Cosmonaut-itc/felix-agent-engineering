@@ -973,7 +973,10 @@ traduce a `unsupported`, sin efectos.
   pausado» y el motivo; durante una recuperación, «en pausa recuperando…».
 - Una fila de más de 64 pendientes, un plan que no cabe en la pausa o una
   petición de más de 16 KiB muestran «Fila demasiado larga para reordenar de
-  una vez» antes de enviar.
+  una vez» antes de enviar. Con el costo medido en la Mini (unos 0.45 s por
+  tarea reescrita) caben 5 reescrituras por acción. Por eso una fila nueva de
+  más de 5 pendientes se rechaza sin pausar. Las cifras están en «Mediciones
+  U3.6» de `fleet/pueue-desk/README.md`.
 - Con `prefers-reduced-motion`, no hay deslizamiento ni animación; el resaltado
   es un fondo fijo.
 
