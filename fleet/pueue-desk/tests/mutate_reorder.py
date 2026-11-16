@@ -9,6 +9,7 @@ import tempfile
 SOURCE=Path(__file__).resolve().parents[1]
 T='test_reorder.ReorderTests.'
 CASES=[
+ ('interrupted trace retains complete boundary','editor_prioridad.py',"temporary = path.with_suffix('.pending')",'temporary = path','test_reorder.HelperTests.test_interrupted_trace_keeps_previous_complete_boundary'),
  ('gated client skips editor imports','editor_prioridad.py',"if __name__ != '__main__' or '--client' not in sys.argv:",'if True:','test_reorder.HelperTests.test_gated_client_does_not_import_editor_only_dependencies'),
  ('client uses running isolated interpreter','control.py',"subprocess.Popen([sys.executable,'-I','-S',","subprocess.Popen(['/usr/bin/python3','-I','-S',",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
  ('client skips site on running interpreter','control.py',"subprocess.Popen([sys.executable,'-I','-S',","subprocess.Popen([sys.executable,'-I',",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),

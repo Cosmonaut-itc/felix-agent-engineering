@@ -745,6 +745,24 @@ for name,fn in list(globals().items()):
 
 
 class HelperTests(unittest.TestCase):
+    def test_interrupted_trace_keeps_previous_complete_boundary(self):
+        import tempfile
+        helper=control.priority_helper()
+        with tempfile.TemporaryDirectory(prefix='u36-trace-cut-',dir='/tmp') as folder:
+            root=Path(folder);marks={}
+            with patch.object(helper,'host_clock',side_effect=[1,2]):
+                helper.trace_mark(root,marks,'plan_validated')
+                path=root/'trace-helper.json'
+                self.assertTrue(path.is_file())
+                prior=path.read_bytes()
+                def interrupted(value,stream):
+                    stream.write('incomplete')
+                    raise OSError('synthetic write interrupted')
+                with patch.object(helper.json,'dump',side_effect=interrupted):
+                    with self.assertRaises(OSError):helper.trace_mark(root,marks,'identity_begin')
+                self.assertEqual(path.read_bytes(),prior)
+                self.assertEqual(json.loads(prior),dict(plan_validated=1))
+
     def test_gated_client_does_not_import_editor_only_dependencies(self):
         import builtins,io,sys
         from types import SimpleNamespace

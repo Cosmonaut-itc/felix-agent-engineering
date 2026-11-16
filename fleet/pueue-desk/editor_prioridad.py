@@ -267,9 +267,11 @@ def trace_mark(root, marks, name):
     """Only fixed phase names and shared kernel timestamps; retain partial traces."""
     marks[name] = host_clock()
     path = root / ('trace-client.json' if '--client' in sys.argv else 'trace-helper.json')
-    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    temporary = path.with_suffix('.pending')
+    fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as stream:
         json.dump(marks, stream)
+    os.replace(temporary, path)
 
 
 def process_started():
