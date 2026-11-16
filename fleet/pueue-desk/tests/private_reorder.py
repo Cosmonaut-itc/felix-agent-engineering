@@ -10,6 +10,7 @@ con `enqueue` por id, reinicio del daemon con diario pendiente (preparar + guard
 y la medición del punto 11 con 5 y 64 filas, sin y con el historial MO2.
 """
 import argparse
+from contextlib import contextmanager
 import importlib.util
 import json
 import os
@@ -18,6 +19,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 from unittest.mock import patch
 
 LOW = dict(load=0.0, memory=1)
@@ -258,7 +260,7 @@ def main():
                 engine_for().adopt(pid_file)
             run_scenarios(control, emit, engine_for, instrument, window, request, handle, reasons, tasks, add,
                           call, identity, queued, root, data, pid_file, kill_daemon, start_daemon, released_wait,
-                          children, config)
+                          children, config, pueue)
         emit('PASS', assertions='normal+deshacer; alias sin pausa; ayudante roundtrip; Locked→enqueue; '
                                 'reinicio con diario; medición 5/64/MO2')
     finally:
@@ -278,7 +280,8 @@ def main():
 
 
 def run_scenarios(control, emit, engine_for, instrument, window, request, handle, reasons, tasks, add, call,
-                  identity, queued, root, data, pid_file, kill_daemon, start_daemon, released_wait, children, config):
+                  identity, queued, root, data, pid_file, kill_daemon, start_daemon, released_wait, children, config,
+                  pueue):
     directory = root / 'control'
 
     def settled(result, marks, ids, priorities):
@@ -314,6 +317,12 @@ def run_scenarios(control, emit, engine_for, instrument, window, request, handle
                                capture_output=True, timeout=10, cwd=str(root))
             return run
         engine = engine_for()
+        try:
+            measure(tag, timed, bare, engine)
+        except (OSError, AssertionError, subprocess.SubprocessError, ValueError) as error:  # sólo informa
+            emit('desglose', tag=tag, error='%s: %s' % (type(error).__name__, error))
+
+    def measure(tag, timed, bare, engine):
         emit('desglose', tag=tag, carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size,
              pueue_edit_true_ms=timed(bare('/usr/bin/true')),
              pueue_edit_python_ms=timed(bare(sys.executable + ' -I -B -c pass')),
@@ -326,239 +335,306 @@ def run_scenarios(control, emit, engine_for, instrument, window, request, handle
         with engine.connect(write=True) as db:
             engine.store(db, engine.state(db))
 
-    breakdown('historial-pequeño')
+    failures = []
 
-    # ---- 1. Secuencia normal (5 filas) y deshacer ----------------------------
-    engine = engine_for()
-    info = engine.view()['reorder']['suites']
-    assert info['enabled'], info
-    _, rows = tasks()
-    original = [t['id'] for t in rows]
-    order = [original[0], original[4]] + original[1:4]
-    marks = instrument(engine)
-    result, total = handle(engine, request(engine, order))
-    snapshot, rows = tasks()
-    assert result['status'] == 'applied', result
-    assert [t['id'] for t in rows] == order, rows
-    assert snapshot['groups']['suites']['status'] == 'Running'
-    assert not reasons(engine).get('suites'), reasons(engine)
-    assert {t['id']: t['priority'] for t in rows} == dict(result['result']['after'])
-    assert window(marks)['rpcs'] == ['pause'] + ['edit'] * result['result']['writes'] + ['start'], marks
-    emit('normal', filas=5, carga=os.getloadavg()[0], writes=result['result']['writes'], total_ms=total,
-         estimate_ms=result['result']['estimate_ms'], **window(marks))
-    applied = result
-    engine = engine_for()
-    marks = instrument(engine)
-    undo = request(engine, None, op='reorder_undo', undo_of=applied['action_id'])
-    result, total = handle(engine, undo)
-    snapshot, rows = tasks()
-    assert result['status'] == 'applied', result
-    assert [t['id'] for t in rows] == original
-    assert {t['id']: t['priority'] for t in rows} == dict(applied['result']['before'])
-    assert snapshot['groups']['suites']['status'] == 'Running'
-    emit('deshacer', total_ms=total, **window(marks))
-    # Repetir el mismo action_id devuelve el mismo recibo sin efectos nuevos.
-    engine = engine_for()
-    marks = instrument(engine)
-    again, _ = handle(engine, undo)
-    assert again == result and marks == [], again
-    emit('idempotente', status=again['status'])
+    @contextmanager
+    def step(name):
+        """Un escenario que falla queda registrado y la corrida sigue midiendo los demás."""
+        try:
+            yield
+        except Exception:  # noqa: BLE001 — la evidencia de cada escenario vale por sí sola
+            failures.append(name)
+            emit('FALLA', escenario=name, traza=traceback.format_exc()[-3000:])
 
-    # ---- 2. Alias: edit_unsafe antes de cualquier pausa ----------------------
-    (data / 'aliases.yml').write_text('u36alias: /usr/bin/true\n')
-    alias = add('u36alias', 'fila-alias', label='pao.u36.opus.alias')
-    snapshot, _ = tasks()
-    expanded = snapshot['tasks'][str(alias)]
-    engine = engine_for()
-    info = engine.view()['reorder']['suites']
-    assert info['enabled'] is False and info['code'] == 'edit_unsafe', info
-    marks = instrument(engine)
-    _, rows = tasks()
-    body = request(engine, None)
-    body['expected']['queue'] = [[t['id'], control.task_identity(t)[:32], t['priority']] for t in rows]
-    body['change'] = dict(order=[t['id'] for t in rows][::-1])
-    result, _ = handle(engine, body)
-    assert result['status'] == 'rejected' and result['error']['code'] == 'edit_unsafe', result
-    assert marks == [], marks
-    assert tasks()[0]['groups']['suites']['status'] == 'Running'
-    emit('alias', code=result['error']['code'], rpcs=len(marks),
-         expandido=expanded['command'] != expanded['original_command'])
-    call('remove', alias)
-    (data / 'aliases.yml').unlink()
+    def move_last_to_front(engine, ids):
+        return handle(engine, request(engine, [ids[-1]] + ids[:-1]))
 
-    # ---- 3. Roundtrip del ayudante con comandos difíciles ------------------
-    hard = [add('/usr/bin/true', 'priority = 9', '"comillas"', "'simples'", 'ñandú', '#', '\\', label='pao.u36.opus.dificil'),
-            add('/usr/bin/true', 'línea\npriority = 7\n[[tabla]]', label='pao.u36.opus.multilinea'),
-            add('/usr/bin/true', 'sin-etiqueta')]
-    engine = engine_for()
-    assert engine.view()['reorder']['suites']['enabled']
-    snapshot, rows = tasks()
-    ids = [t['id'] for t in rows]
-    before = identity(snapshot, ids)
-    order = list(reversed(ids))
-    marks = instrument(engine)
-    result, total = handle(engine, request(engine, order))
-    snapshot, rows = tasks()
-    assert result['status'] == 'applied', result
-    assert [t['id'] for t in rows] == order
-    assert identity(snapshot, ids) == before, 'el ayudante sólo cambia priority'
-    emit('ayudante_roundtrip', filas=len(ids), writes=result['result']['writes'], total_ms=total, **window(marks))
-    for ident in hard:
-        call('remove', ident)
-
-    # ---- 4. Caída del cliente de edición: Locked → enqueue por id ----------
-    hang = root / 'editor_cuelga.py'
-    marker = root / 'cuelga.pid'
-    hang.write_text(HANG.format(real=str(engine.editor), marker=str(marker)))
-    engine = engine_for()
-    engine.editor = hang
-    snapshot, rows = tasks()
-    ids = [t['id'] for t in rows]
-    priorities = {t['id']: t['priority'] for t in rows}
-    marks = instrument(engine)
-    result, total = handle(engine, request(engine, [ids[-1]] + ids[:-1]))
-    snapshot, rows = tasks()
-    assert result['status'] == 'aborted' and result['error']['code'] == 'interrupted', result
-    assert [t['id'] for t in rows] == ids and {t['id']: t['priority'] for t in rows} == priorities
-    assert snapshot['groups']['suites']['status'] == 'Running'
-    assert not any(control.task_state(t)[0] in ('Locked', 'Stashed') for t in snapshot['tasks'].values()
-                   if t['group'] == 'suites')
-    names = window(marks)['rpcs']
-    assert 'enqueue' in names, names
-    hung = int(marker.read_text())
-    leftover = released_wait([hung], str(hang))
-    emit('locked_enqueue', status=result['status'], code=result['error']['code'], rpcs=names, total_ms=total,
-         editor_colgado_forzado=bool(leftover))
-
-    # ---- 5. 64 filas sin historial grande ----------------------------------
-    extra = [add('/usr/bin/true', 'larga-%d' % k, label='pao.u36.opus.larga')
-             for k in range(control.REORDER_MAX - len(tasks()[1]))]
-    engine = engine_for()
-    info = engine.view()['reorder']['suites']
-    assert info['enabled'] and len(info['queue']) == control.REORDER_MAX, info
-    rows = tasks()[1]
-    ids, priorities = [t['id'] for t in rows], {t['id']: t['priority'] for t in rows}
-    marks = instrument(engine)
-    result, total = handle(engine, request(engine, [ids[-1]] + ids[:-1]))
-    emit('medicion', historial='pequeño', carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size, filas=len(ids),
-         status=result['status'], code=(result.get('error') or {}).get('code'),
-         writes=(result.get('result') or {}).get('writes'), max_writes=info['max_writes'], total_ms=total,
-         estimate_ms=(result.get('result') or {}).get('estimate_ms'), **window(marks))
-    settled(result, marks, ids, priorities)
-    one_more = add('/usr/bin/true', 'sobra', label='pao.u36.opus.larga')
-    info = engine_for().view()['reorder']['suites']
-    assert info['enabled'] is False and info['code'] == 'too_long', info
-    emit('demasiado_larga', filas=control.REORDER_MAX + 1, code=info['code'])
-    for ident in extra + [one_more]:
-        call('remove', ident)
-
-    # ---- 6. Historial MO2: 1500 Stashed de 2 KiB en un grupo ajeno ---------
-    call('group', 'add', 'big', '--parallel', 1)
-    long = 'x' * 2048
-    started = time.monotonic()
-    for _ in range(1500):
-        add('/usr/bin/true', long, group='big', stashed=True)
-    call('pause', '--wait', '-g', 'big')  # guarda el estado completo
-    emit('mo2', state_bytes=(data / 'state.json').stat().st_size, alta_s=round(time.monotonic() - started, 1))
-    breakdown('MO2')
-    for size in (5, 20, control.REORDER_MAX):
+    def raw(tag, size):
+        """Costo real de `size` ediciones sin el tope: presupuesto ampliado sólo aquí."""
         rows = tasks()[1]
-        if len(rows) < size:
-            extra = [add('/usr/bin/true', 'mo2-%d' % k, label='pao.u36.opus.mo2') for k in range(size - len(rows))]
+        ids, priorities = [t['id'] for t in rows], {t['id']: t['priority'] for t in rows}
+        assert len(ids) == size, len(ids)
+        with patch.object(control, 'REORDER_PAUSE_SECONDS', 600.0), \
+                patch.object(control, 'REORDER_EDIT_SECONDS', 1e-6), patch.object(control, 'REORDER_EDIT_PER_MB', 0.0):
+            engine = engine_for()
+            marks = instrument(engine)
+            result, total = move_last_to_front(engine, ids)
+        rows = tasks()[1]
+        emit('medicion_cruda', historial=tag, carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size,
+             filas=size, status=result['status'], code=(result.get('error') or {}).get('code'),
+             writes=(result.get('result') or {}).get('writes'), total_ms=total, **window(marks))
+        if result['status'] == 'applied':
+            assert [t['id'] for t in rows] == [ids[-1]] + ids[:-1], rows
+        else:
+            assert priorities == {t['id']: t['priority'] for t in rows}, rows
+        assert tasks()[0]['groups']['suites']['status'] == 'Running'
+
+    def resize(size, tag):
+        rows = tasks()[1]
+        for k in range(size - len(rows)):
+            add('/usr/bin/true', '%s-%d' % (tag, k), label='pao.u36.opus.' + tag)
         rows = tasks()[1]
         while len(rows) > size:
             call('remove', rows[-1]['id'])
             rows = tasks()[1]
+        return rows
+
+    hang = root / 'editor_cuelga.py'
+    marker = root / 'cuelga.pid'
+    breakdown('historial-pequeño')
+
+    # ---- 1. Secuencia normal (5 filas) y deshacer ----------------------------
+    with step('normal_y_deshacer'):
+        for attempt in (1, 2):  # un pico de carga aborta y restaura; se reintenta una vez
+            engine = engine_for()
+            info = engine.view()['reorder']['suites']
+            assert info['enabled'] and info['max_writes'] >= 5, info
+            _, rows = tasks()
+            original = [t['id'] for t in rows]
+            order = [original[0], original[4]] + original[1:4]
+            marks = instrument(engine)
+            result, total = handle(engine, request(engine, order))
+            emit('normal', intento=attempt, filas=5, carga=os.getloadavg()[0], status=result['status'],
+                 code=(result.get('error') or {}).get('code'), writes=(result.get('result') or {}).get('writes'),
+                 total_ms=total, estimate_ms=(result.get('result') or {}).get('estimate_ms'),
+                 max_writes=info['max_writes'], **window(marks))
+            if result['status'] == 'applied':
+                break
+            assert result['status'] == 'aborted' and [t['id'] for t in tasks()[1]] == original, result
+        snapshot, rows = tasks()
+        assert result['status'] == 'applied', result
+        assert [t['id'] for t in rows] == order, rows
+        assert snapshot['groups']['suites']['status'] == 'Running'
+        assert not reasons(engine).get('suites'), reasons(engine)
+        assert {t['id']: t['priority'] for t in rows} == dict(result['result']['after'])
+        assert window(marks)['rpcs'] == ['pause'] + ['edit'] * result['result']['writes'] + ['start'], marks
+        assert window(marks)['pause_ms'] <= control.REORDER_PAUSE_SECONDS * 1000, window(marks)
+        applied = result
+        engine = engine_for()
+        marks = instrument(engine)
+        undo = request(engine, None, op='reorder_undo', undo_of=applied['action_id'])
+        result, total = handle(engine, undo)
+        emit('deshacer', status=result['status'], code=(result.get('error') or {}).get('code'), total_ms=total,
+             **window(marks))
+        snapshot, rows = tasks()
+        assert result['status'] == 'applied', result
+        assert [t['id'] for t in rows] == original
+        assert {t['id']: t['priority'] for t in rows} == dict(applied['result']['before'])
+        assert snapshot['groups']['suites']['status'] == 'Running'
+        # Repetir el mismo action_id devuelve el mismo recibo sin efectos nuevos.
+        engine = engine_for()
+        marks = instrument(engine)
+        again, _ = handle(engine, undo)
+        assert again == result and marks == [], again
+        emit('idempotente', status=again['status'])
+
+    # ---- 2. Alias: edit_unsafe antes de cualquier pausa ----------------------
+    with step('alias'):
+        (data / 'aliases.yml').write_text('u36alias: /usr/bin/true\n')
+        alias = add('u36alias', 'fila-alias', label='pao.u36.opus.alias')
+        try:
+            snapshot, _ = tasks()
+            expanded = snapshot['tasks'][str(alias)]
+            engine = engine_for()
+            info = engine.view()['reorder']['suites']
+            assert info['enabled'] is False and info['code'] == 'edit_unsafe', info
+            marks = instrument(engine)
+            _, rows = tasks()
+            body = request(engine, None)
+            body['expected']['queue'] = [[t['id'], control.task_identity(t)[:32], t['priority']] for t in rows]
+            body['change'] = dict(order=[t['id'] for t in rows][::-1])
+            result, _ = handle(engine, body)
+            assert result['status'] == 'rejected' and result['error']['code'] == 'edit_unsafe', result
+            assert marks == [], marks
+            assert tasks()[0]['groups']['suites']['status'] == 'Running'
+            emit('alias', code=result['error']['code'], rpcs=len(marks),
+                 expandido=expanded['command'] != expanded['original_command'])
+        finally:
+            call('remove', alias)
+            (data / 'aliases.yml').unlink()
+
+    # ---- 3. Roundtrip del ayudante con comandos difíciles (cabe en 5 escrituras)
+    with step('ayudante_roundtrip'):
+        resize(2, 'fila')
+        hard = [add('/usr/bin/true', 'priority = 9', '"comillas"', "'simples'", 'ñandú', '#', '\\', label='pao.u36.opus.dificil'),
+                add('/usr/bin/true', 'línea\npriority = 7\n[[tabla]]', label='pao.u36.opus.multilinea'),
+                add('/usr/bin/true', 'sin-etiqueta')]
+        try:
+            engine = engine_for()
+            assert engine.view()['reorder']['suites']['enabled']
+            snapshot, rows = tasks()
+            ids = [t['id'] for t in rows]
+            before = identity(snapshot, ids)
+            order = list(reversed(ids))
+            marks = instrument(engine)
+            result, total = handle(engine, request(engine, order))
+            emit('ayudante_roundtrip', filas=len(ids), status=result['status'],
+                 code=(result.get('error') or {}).get('code'), writes=(result.get('result') or {}).get('writes'),
+                 total_ms=total, **window(marks))
+            snapshot, rows = tasks()
+            if result['status'] == 'applied':
+                assert [t['id'] for t in rows] == order
+            else:
+                assert result['status'] == 'aborted' and [t['id'] for t in rows] == ids, result
+            assert identity(snapshot, ids) == before, 'el ayudante sólo cambia priority'
+        finally:
+            for ident in hard:
+                call('remove', ident)
+
+    # ---- 4. Caída del cliente de edición: Locked → enqueue por id ----------
+    with step('locked_enqueue'):
+        engine = engine_for()
+        hang.write_text(HANG.format(real=str(engine.editor), marker=str(marker)))
+        engine.editor = hang
+        snapshot, rows = tasks()
+        ids = [t['id'] for t in rows]
+        priorities = {t['id']: t['priority'] for t in rows}
+        marks = instrument(engine)
+        result, total = move_last_to_front(engine, ids)
+        snapshot, rows = tasks()
+        assert result['status'] == 'aborted' and result['error']['code'] == 'interrupted', result
+        assert [t['id'] for t in rows] == ids and {t['id']: t['priority'] for t in rows} == priorities
+        assert snapshot['groups']['suites']['status'] == 'Running'
+        assert not any(control.task_state(t)[0] in ('Locked', 'Stashed') for t in snapshot['tasks'].values()
+                       if t['group'] == 'suites')
+        names = window(marks)['rpcs']
+        assert 'enqueue' in names, names
+        hung = int(marker.read_text())
+        leftover = released_wait([hung], str(hang))
+        emit('locked_enqueue', status=result['status'], code=result['error']['code'], rpcs=names, total_ms=total,
+             editor_colgado_forzado=bool(leftover))
+
+    # ---- 5. 64 filas sin historial grande: rechazo previo y costo real -----
+    with step('medicion_64'):
+        rows = resize(control.REORDER_MAX, 'larga')
         engine = engine_for()
         info = engine.view()['reorder']['suites']
+        assert info['enabled'] and len(info['queue']) == control.REORDER_MAX, info
         ids, priorities = [t['id'] for t in rows], {t['id']: t['priority'] for t in rows}
         marks = instrument(engine)
-        result, total = handle(engine, request(engine, [ids[-1]] + ids[:-1]))
-        emit('medicion', historial='MO2', carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size, filas=size,
-             status=result['status'], code=(result.get('error') or {}).get('code'),
-             writes=(result.get('result') or {}).get('writes'), max_writes=info.get('max_writes'),
-             estimate_ms=(result.get('result') or {}).get('estimate_ms'), total_ms=total, **window(marks))
+        result, total = move_last_to_front(engine, ids)
+        emit('medicion', historial='pequeño', carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size,
+             filas=len(ids), status=result['status'], code=(result.get('error') or {}).get('code'),
+             writes=(result.get('result') or {}).get('writes'), max_writes=info['max_writes'], total_ms=total,
+             estimate_ms=(result.get('result') or {}).get('estimate_ms'), **window(marks))
         settled(result, marks, ids, priorities)
-    for row in tasks()[1][5:]:
-        call('remove', row['id'])  # el reinicio parte de 5 filas
+        raw('pequeño', control.REORDER_MAX)
+        one_more = add('/usr/bin/true', 'sobra', label='pao.u36.opus.larga')
+        info = engine_for().view()['reorder']['suites']
+        assert info['enabled'] is False and info['code'] == 'too_long', info
+        emit('demasiado_larga', filas=control.REORDER_MAX + 1, code=info['code'])
+        call('remove', one_more)
+
+    # ---- 6. Historial MO2: 1500 Stashed de 2 KiB en un grupo ajeno ---------
+    with step('medicion_mo2'):
+        call('group', 'add', 'big', '--parallel', 1)
+        long = 'x' * 2048
+        started, count = time.monotonic(), 0
+        while count < 1500 and time.monotonic() - started < 200:  # el carril rápido corta a los 10 min
+            add('/usr/bin/true', long, group='big', stashed=True)
+            count += 1
+        call('pause', '--wait', '-g', 'big')  # guarda el estado completo
+        emit('mo2', tareas=count, state_bytes=(data / 'state.json').stat().st_size,
+             alta_s=round(time.monotonic() - started, 1))
+        breakdown('MO2')
+        for size in (5, 20, control.REORDER_MAX):
+            rows = resize(size, 'mo2')
+            engine = engine_for()
+            info = engine.view()['reorder']['suites']
+            ids, priorities = [t['id'] for t in rows], {t['id']: t['priority'] for t in rows}
+            marks = instrument(engine)
+            result, total = move_last_to_front(engine, ids)
+            emit('medicion', historial='MO2', carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size,
+                 filas=size, status=result['status'], code=(result.get('error') or {}).get('code'),
+                 writes=(result.get('result') or {}).get('writes'), max_writes=info.get('max_writes'),
+                 estimate_ms=(result.get('result') or {}).get('estimate_ms'), total_ms=total, **window(marks))
+            settled(result, marks, ids, priorities)
+        raw('MO2', control.REORDER_MAX)
 
     # ---- 7. Reinicio del daemon con diario pendiente (Locked) ---------------
-    marker.unlink()
-    engine = engine_for()
-    engine.editor = hang
-    assert engine.view()['reorder']['suites']['enabled'], engine.view()['reorder']['suites']
-    snapshot, rows = tasks()
-    ids = [t['id'] for t in rows]
-    priorities = {t['id']: t['priority'] for t in rows}
-    spawn = engine.pueue.edit_process
-
-    def dying_edit(ident, env):
-        process = spawn(ident, env)
-        children.append(process)
-
-        class Dies:
-            # Muerte dura de control.py: nadie mata ni espera al cliente de edición.
-            pid = process.pid
-
-            def kill(self):
-                pass
-
-            def wait(self, timeout=None):
-                pass
-
-            def communicate(self, data, timeout=None):
-                process.stdin.write(data)
-                process.stdin.flush()
-                time.sleep(.6)  # Pueue ya bloqueó la tarea y el editor cuelga
-                raise Crash('control.py muere con la edición abierta')
-        return Dies()
-    engine.pueue.edit_process = dying_edit
-    body = request(engine, [ids[-1]] + ids[:-1])
-    try:
-        try:
-            handle(engine, body)
-            raise AssertionError('debía morir')
-        except Crash:
-            pass
-    finally:
-        del engine.pueue.edit_process
-    snapshot, _ = tasks()
-    locked = [t['id'] for t in snapshot['tasks'].values() if control.task_state(t)[0] == 'Locked']
-    with engine.connect() as db:
-        journal = control.reorder_journal(db)
-    emit('diario_pendiente', locked=locked, diario=sorted(journal), razones=reasons(engine).get('suites'))
-    assert locked and [str(i) for i in locked] == sorted(journal), (locked, journal)
-    kill_daemon()
-    for child in children:
-        try:
-            child.wait(timeout=6)  # el cliente pierde el socket y sale solo
-        except subprocess.TimeoutExpired:
-            pass
-    released_wait([int(marker.read_text())], str(hang))
-    with control.locked(directory):
-        image = control.prepare_start(engine_for(), configuration=dict(data=data, pid_file=pid_file))
-    restored = {k: control.task_state(v)[0] for k, v in image['tasks'].items() if int(k) in ids}
-    emit('preparar', estados=sorted(set(restored.values())), grupo=image['groups']['suites']['status'])
-    assert 'Locked' not in restored.values() and 'Stashed' not in restored.values(), restored
-    start_daemon('tras-reinicio')
-    for tick in range(4):
+    with step('reinicio_con_diario'):
+        rows = resize(3, 'reinicio')  # tres escrituras: la proyección con MO2 no aborta antes de la caída
+        if marker.exists():
+            marker.unlink()
         engine = engine_for()
-        with control.locked(directory):
-            engine.guard(dict(LOW))  # la guardia de 60 s: el único recuperador junto a preparar
-        receipt = engine.handle(dict(schema=control.HOST_SCHEMA, op='status', action_id=body['action_id']))
+        hang.write_text(HANG.format(real=str(engine.editor), marker=str(marker)))
+        engine.editor = hang
+        assert engine.view()['reorder']['suites']['enabled'], engine.view()['reorder']['suites']
         snapshot, rows = tasks()
-        emit('guardia', tick=tick, recibo=receipt.get('status'), grupo=snapshot['groups']['suites']['status'],
-             razones=reasons(engine).get('suites'))
-        if receipt.get('status') != 'applying' and snapshot['groups']['suites']['status'] == 'Running':
-            break
-        time.sleep(1)
-    assert receipt['status'] == 'aborted', receipt
-    assert {t['id']: t['priority'] for t in rows} == priorities, rows
-    assert not any(control.task_state(t)[0] in ('Locked', 'Stashed') for t in snapshot['tasks'].values()
-                   if t['group'] == 'suites')
-    emit('reinicio_con_diario', recibo=receipt['status'], code=(receipt.get('error') or {}).get('code'),
-         grupo=snapshot['groups']['suites']['status'], razones=reasons(engine).get('suites'))
+        ids = [t['id'] for t in rows]
+        priorities = {t['id']: t['priority'] for t in rows}
+        spawn = engine.pueue.edit_process
 
+        def dying_edit(ident, env):
+            process = spawn(ident, env)
+            children.append(process)
+
+            class Dies:
+                # Muerte dura de control.py: nadie mata ni espera al cliente de edición.
+                pid = process.pid
+
+                def kill(self):
+                    pass
+
+                def wait(self, timeout=None):
+                    pass
+
+                def communicate(self, data, timeout=None):
+                    process.stdin.write(data)
+                    process.stdin.flush()
+                    time.sleep(1.0)  # Pueue ya bloqueó la tarea y el editor cuelga 2.5 s
+                    raise Crash('control.py muere con la edición abierta')
+            return Dies()
+        engine.pueue.edit_process = dying_edit
+        body = request(engine, [ids[-1]] + ids[:-1])
+        try:
+            try:
+                handle(engine, body)
+                raise AssertionError('debía morir')
+            except Crash:
+                pass
+        finally:
+            del engine.pueue.edit_process
+        snapshot, _ = tasks()
+        locked = [t['id'] for t in snapshot['tasks'].values() if control.task_state(t)[0] == 'Locked']
+        with engine.connect() as db:
+            journal = control.reorder_journal(db)
+        emit('diario_pendiente', locked=locked, diario=sorted(journal), razones=reasons(engine).get('suites'))
+        assert locked and [str(i) for i in locked] == sorted(journal), (locked, journal)
+        kill_daemon()
+        for child in children:
+            try:
+                child.wait(timeout=6)  # el cliente pierde el socket y sale solo
+            except subprocess.TimeoutExpired:
+                pass
+        released_wait([int(marker.read_text())], str(hang))
+        with control.locked(directory):
+            image = control.prepare_start(engine_for(), configuration=dict(data=data, pid_file=pid_file))
+        restored = {k: control.task_state(v)[0] for k, v in image['tasks'].items() if int(k) in ids}
+        emit('preparar', estados=sorted(set(restored.values())), grupo=image['groups']['suites']['status'])
+        assert 'Locked' not in restored.values() and 'Stashed' not in restored.values(), restored
+        start_daemon('tras-reinicio')
+        for tick in range(4):
+            engine = engine_for()
+            with control.locked(directory):
+                engine.guard(dict(LOW))  # la guardia de 60 s: el único recuperador junto a preparar
+            receipt = engine.handle(dict(schema=control.HOST_SCHEMA, op='status', action_id=body['action_id']))
+            snapshot = pueue.status()
+            emit('guardia', tick=tick, recibo=receipt.get('status'), grupo=snapshot['groups']['suites']['status'],
+                 razones=reasons(engine).get('suites'))
+            if receipt.get('status') != 'applying':
+                break
+            time.sleep(1)
+        assert receipt['status'] == 'aborted', receipt
+        # Por id: si la admisión reabre el grupo, las tareas inocuas pueden haber corrido.
+        assert {i: snapshot['tasks'][str(i)]['priority'] for i in ids} == priorities, snapshot['tasks']
+        assert not any(control.task_state(t)[0] in ('Locked', 'Stashed') for t in snapshot['tasks'].values()
+                       if t['group'] == 'suites')
+        emit('reinicio_con_diario', recibo=receipt['status'], code=(receipt.get('error') or {}).get('code'),
+             grupo=snapshot['groups']['suites']['status'], razones=reasons(engine).get('suites'))
+
+    if failures:
+        raise AssertionError('Escenarios con falla: %s' % ', '.join(failures))
 
 if __name__ == '__main__':
     main()

@@ -137,7 +137,13 @@ sigue en pausa, ahora como pausa manual:
 /usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py pausar suites --host mini
 ```
 
-Para reanudarlo después: `/opt/homebrew/bin/pueue start -g suites`.
+Para reanudarlo después, también por el controlador y nunca con `pueue start -g`
+directo, que saltaría sensores, recibos y diarios pendientes:
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar suites --host mini
+```
+
 Una segunda pausa directa de Pueue no expresa ese relevo. El estado
 `guardia-state.json`, `control.lock` y el log JSONL UTC viven en
 `~/.local/state/pao/pueue-mini`. Verlo con
@@ -975,6 +981,120 @@ Aceptación dirigida: `tests/test_handoff.py`, `tests/mutate_handoff.py`,
 remote-run autorizado en macOS: daemon/config/cola/PID propios y etiquetas
 `pao.u35.injerto.*` dentro de la corrida; limpia etiquetas exactas y verifica PID,
 comm y --config antes de terminar el daemon. No toca los LaunchAgents reales.
+
+### Reordenar y deshacer en la Mini (U3.6)
+
+Desde el rack, Felix arrastra una fila pendiente de un grupo de la Mini, o la
+mueve con Alt+↑/↓. El host reescribe sólo el campo `priority` de las tareas
+Queued de ese grupo para que el orden de Pueue (prioridad descendente, id
+ascendente) sea el pedido. Los destinos son N..1 sobre la fila completa. No se
+escribe una tarea cuyo valor ya coincide, y el recibo guarda el `before` exacto.
+Deshacer restaura ese `before` por el mismo camino. El panel lo ofrece 8 s; el
+host lo acepta hasta 60 s si la fila sigue exactamente como la dejó el
+reordenar. El desk nunca reordena: responde `unsupported` y anuncia `false`.
+
+**Cuándo está deshabilitado.** La vista `control.py rack` publica por grupo
+`reorder[grupo]` con `enabled` y un código; el panel muestra el texto fijo del rack:
+
+| Código | Cuándo |
+|---|---|
+| `reorder_disabled` | `actions.disabled` del rack, `slots.disabled`, mantenimiento o un relevo U3.5 en curso |
+| `paused` | el grupo está en pausa; el panel muestra «No se puede reordenar mientras el grupo está pausado» y el motivo (manual, presión, arranque, ambigua o «en pausa recuperando…») |
+| `busy` | otra acción del host sigue `applying`, `partial` o `unknown` |
+| `not_ready` | arranque sin verificar, generación o cuotas distintas de lo adoptado |
+| `held_tasks` | hay una tarea Locked, Stashed o Paused en el grupo (una edición o una cancelación en curso) |
+| `too_long` | más de 64 pendientes, o un plan cuyo presupuesto no cabe en la pausa |
+| `edit_unsafe` | alias en la primera palabra, comando expandido, caracteres de control, `edit_mode` distinto de `toml`, o falta el ayudante |
+
+Con menos de dos pendientes no hay nada que reordenar. Todos estos rechazos
+ocurren antes de pausar: ninguno toca el daemon.
+
+**Contrato de la pausa.** Bajo `control.lock`, y siempre en este orden:
+
+1. Intención durable: el recibo `applying` con identidades `{id, created_at}` y
+   huella, `before`, destinos y la razón `reorder` del grupo, en la misma
+   transacción FULL de SQLite, antes de cualquier RPC.
+2. `pueue pause --wait -g <grupo>`; se confirma que quedó Paused.
+3. Relectura exacta: si una tarea arrancó, se canceló o llegó otra antes de esta
+   comparación, no se edita nada y el recibo es `conflict/stale_queue`.
+4. Por cada id: intención con el PID del editor y después `pueue edit <id>`
+   con `EDITOR` fijo en `editor_prioridad.py`. Un solo id por llamada. El
+   ayudante sólo cambia `priority` y rechaza cualquier formato que no reconozca.
+5. Verificación de las prioridades con un `status` nuevo.
+6. Admisión fresca: `pueue start -g` sólo si no queda otra razón, el arranque
+   está verificado y los sensores frescos lo permiten. Si sube la presión, el
+   orden queda y la guardia toma la pausa como `pressure`.
+7. Recibo terminal `applied`, `conflict`, `aborted` o `rejected`.
+
+Nunca usa `start <id>`, `restart`, `remove`/`add` ni cambia de gestor. Una
+tarea añadida después de la comparación conserva su id y queda al final, fuera
+del plan, y el recibo marca `undo=false`. Antes de cada edición el host proyecta
+lo que falta con el más lento entre la estimación y el ritmo medido en esa
+pausa; si no cabe en 3 s, deja de editar y revierte lo hecho. Cada RPC tiene
+un plazo de 1 s.
+
+**Un solo recuperador.** Si `control.py` muere a mitad, el recibo queda
+`applying` con su fase. Lo cierran la guardia de 60 s
+(`local.pao.pueue-mini.guard`), `reanudar` y el siguiente reordenar. El
+preparador del arranque (`mini.py arrancar` → `prepare_start`) lee el mismo
+diario: una tarea Locked de nuestra edición vuelve a Queued en la imagen, y
+cualquier otro Locked se conserva. El recuperador sólo actúa sobre su editor (mismo PID e
+instante de inicio) y sólo hace `enqueue <id>` de su propia tarea Locked, o de la
+Stashed que dejó el reinicio, sin log. Como `enqueue` de stock no guarda, la
+recuperación termina con un `start -g` o un `pause --wait` que sí persiste. Ni un
+cierre HTTP ni `actions.disabled` abandonan una acción aceptada. Lo que no puede
+atribuir queda cerrado como `ambiguous` con recibo `aborted/reorder_unverified`,
+nunca como éxito.
+
+**Pausa manual.** Siempre por el controlador, para que la razón quede en SQLite
+y la guardia no la reabra:
+
+```sh
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py pausar suites --host mini
+/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar suites --host mini
+```
+
+Auditoría de pausas directas fuera de este controlador (2026-11-16): el
+`pueue.py` de Hasito pausa con `stash` y cancela con `remove`/`kill` (cubierto
+por `held_tasks`) y arranca una tarea con `start <id>` (cubierto por la
+comparación exacta y la verificación). `remote-run` sólo lee `status`. El
+`run-suite.sh` de Jale no llama a Pueue. El `start -g` de `install-mini.py` es
+del camino legado previo a la adopción.
+
+**Límites medidos.** Ver «Mediciones U3.6» más abajo.
+
+#### Instalar U3.6 en la Mini (operador; no lo ejecutan las pruebas)
+
+Parte de U3.5 instalada (`mini_handoff` en `done`). La instalación sólo publica
+la biblioteca; nunca reinicia `pueued`, no pausa grupos ni toca launchd.
+
+1. Desde este checkout **en la Mini**, el ensayo:
+
+   ```sh
+   /usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --relevo --seco
+   ```
+
+   Debe decir `SECO: destino ya es el gestor vivo verificado; sin relevo ni drenado`.
+2. El mismo comando sin `--seco`. Con el gestor vivo, publica bajo
+   `control.lock` una intención durable y luego, con reemplazos atómicos,
+   `mini.py`, `control.py` y `editor_prioridad.py` en
+   `~/.local/lib/pao-pueue-mini/`, más el plist de la guardia. La guardia ya
+   cargada usa el `control.py` nuevo en su siguiente tick. Repetirlo no escribe.
+   Una intención anterior a U3.6, sin el ayudante, también se recupera.
+3. Instalar el rack (`fleet/rack/README.md`). Hasta entonces el panel no
+   muestra la manija.
+
+Para **revertir**, apagar primero con
+`touch ~/.local/state/pao/pueue-mini/slots.disabled`; esto no abandona una acción
+aceptada. Después, reinstalar desde el checkout anterior con el mismo
+procedimiento: ese `control.py` anuncia `reorder=false`. Los recibos U3.6 quedan
+en SQLite. No retirar el controlador mientras un recibo siga `applying`.
+
+Aceptación dirigida: `tests/test_reorder.py`, `tests/mutate_reorder.py`,
+`tests/test_mini_table.py` y `fleet/rack/tests/test_reorder.py`.
+`tests/private_reorder.sh` corre `tests/private_reorder.py --run-private` en la
+Mini sólo por `remote-run`, con un `pueued` 4.0.4 propio, configuración, socket,
+pid file y tareas inocuas dentro de la corrida, sin LaunchAgents.
 
 ### SEN-6417: una tarea en la banda media (sólo desk adoptado)
 

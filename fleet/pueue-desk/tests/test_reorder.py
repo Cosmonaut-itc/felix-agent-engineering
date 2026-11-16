@@ -592,6 +592,18 @@ class LimitTests(ReorderFixture):
         self.assertEqual(outcome(result), ('rejected', 'too_long'))
         self.assertEqual(self.p.calls, [])
 
+    def test_calibrated_budget_fits_five_writes_and_rejects_six(self):
+        # Measured on the Mini: about 0.45 s per edit, so five writes fit in 3 s.
+        self.queue([0] * 6)
+        self.assertEqual(self.engine.view()['reorder']['suites']['max_writes'], 5)
+        result = self.engine.handle(self.request([6, 5, 4, 3, 2, 1]))
+        self.assertEqual(outcome(result), ('rejected', 'too_long'))
+        self.assertEqual(self.p.calls, [])
+        del self.p.tasks['6']
+        result = self.engine.handle(self.request([5, 4, 3, 2, 1], ident='reorder-00000002'))
+        self.assertEqual(result['status'], 'applied')
+        self.assertEqual(result['result']['writes'], 5)
+
     def test_budget_expiry_mid_action_aborts_and_restores(self):
         self.queue([0] * 5)
         request = self.request([5, 4, 3, 2, 1])
@@ -614,6 +626,18 @@ class LimitTests(ReorderFixture):
         self.assertEqual(outcome(result), ('aborted', 'interrupted'))
         self.assertEqual(self.p.priorities(), {i: 0 for i in range(1, 6)})
         self.assertLessEqual(len(self.p.edits), 2, 'una edición y su reversión, no cuatro y cuatro')
+        self.assertEqual(self.p.groups['suites']['status'], 'Running')
+
+    def test_last_edit_leaves_room_to_verify_and_reopen(self):
+        # 0.58 s per edit: five edits end at 2.9 s, with no room for the check and `start -g`.
+        self.queue([0] * 5)
+        request = self.request([5, 4, 3, 2, 1])
+        self.p.events.clear()
+        pace = lambda: setattr(self, 'mono', self.mono + 0.58)
+        self.p.hooks = {('edit_done', n): pace for n in range(1, 12)}
+        result = self.engine.handle(request)
+        self.assertEqual(outcome(result), ('aborted', 'interrupted'))
+        self.assertEqual(self.p.priorities(), {i: 0 for i in range(1, 6)})
         self.assertEqual(self.p.groups['suites']['status'], 'Running')
 
 
@@ -658,11 +682,11 @@ class PressureTests(ReorderFixture):
 
 class UndoTests(ReorderFixture):
     def test_exact_undo_with_negatives_and_ties(self):
-        self.queue([5, -3, -3, 0, 7, -(2**31)])
+        self.queue([5, -3, -3, 7, -(2**31)])
         before = self.p.priorities()
         order = self.p.order()
-        self.assertEqual(order, [5, 1, 4, 2, 3, 6])
-        applied = self.engine.handle(self.request([2, 5, 1, 4, 3, 6]))
+        self.assertEqual(order, [4, 1, 2, 3, 5])
+        applied = self.engine.handle(self.request([2, 4, 1, 3, 5]))
         self.assertEqual(applied['status'], 'applied')
         self.assertIs(applied['result']['undo'], True)
         self.now += 7

@@ -779,7 +779,7 @@ Los contratos cancel/capabilities de lanzador de C3–C5 conservan su forma.
 Se mantienen whois fresco del dueño, tailnet, Host permitido y Origin exacto;
 ningún fallback abre SSH o ejecuta shell a partir de datos. La variante host del
 despachador desk admite el mismo control con `--host desk`. La Mini no tiene
-Día/Noche; reordenar y reinicios se anuncian `false`; un controlador antiguo deja cuotas deshabilitadas sin romper
+Día/Noche; reinicios se anuncian `false` y reordenar sólo con U3.6 (ver «Reordenar la fila de la Mini»); un controlador antiguo deja cuotas deshabilitadas sin romper
 la lectura ni «Cancelar…».
 
 Instalar **primero** el controlador Mini siguiendo
@@ -944,3 +944,71 @@ ambos sentidos y unknown recargado, con capturas a 1280/390 px.
 U3.4: `startup_holds` y `startup_waiting` se presentan en la celda fusionada de
 lugares libres. La espera indica «reanudación automática»; las pausas ambiguas
 de ambos hosts se resuelven desde esa celda, sin duplicación en la cabecera.
+
+## Reordenar la fila de la Mini (U3.6)
+
+Sólo en la Mini, con el controlador U3.6 instalado, la tabla «Fila» de cada
+grupo admite arrastrar una pendiente a otro lugar. El host anuncia
+`capabilities.reorder=true` y `reorder[grupo]`. El desk sigue en `false`, y un
+host anterior que responde `recovery_error` a una operación desconocida se
+traduce a `unsupported`, sin efectos.
+
+**Qué ve Felix.**
+
+- Con el puntero, la fila levantada sigue al cursor y las vecinas se apartan.
+  En el teléfono, el arrastre empieza desde la manija `⋮⋮` para no robar el
+  desplazamiento.
+- Con el teclado, Alt+↑/↓ mueve la fila enfocada un lugar y el foco la sigue.
+- Escape o un `pointercancel` devuelven la fila a su sitio sin enviar nada.
+- Mientras el host trabaja, la cabecera dice «Reordenando…», el grupo queda
+  bloqueado y la fila muestra `desde→hasta`.
+- Al confirmar, la fila movida se resalta 2,5 s y un aviso dice «`<ticket>`
+  pasó al lugar N de la fila de `<grupo>`» con «Deshacer» durante 8 s, contados
+  desde la confirmación. Deshacer responde «Orden anterior restaurado» o
+  «La fila cambió; no se puede deshacer».
+- Si la respuesta se pierde, la cabecera dice «No se pudo confirmar el orden ·
+  consultando» y el panel consulta el mismo id sin reenviar. No muestra éxito.
+  Una confirmación tardía llega sin «Deshacer».
+- Un grupo pausado muestra «No se puede reordenar mientras el grupo está
+  pausado» y el motivo; durante una recuperación, «en pausa recuperando…».
+- Una fila de más de 64 pendientes, un plan que no cabe en la pausa o una
+  petición de más de 16 KiB muestran «Fila demasiado larga para reordenar de
+  una vez» antes de enviar.
+- Con `prefers-reduced-motion`, no hay deslizamiento ni animación; el resaltado
+  es un fondo fijo.
+
+Los textos del host que no son pausas se sustituyen por los textos fijos del
+rack; los avisos usan `textContent`, nunca HTML.
+
+**Canal.** Mismo `POST /api/accion` y `rack-host-control@1`, con acceso sólo
+tailnet del dueño, Host, Origin, `X-Rack-Action` y whois fresco. `reorder`
+lleva `expected={group, generation, queue_etag, queue}` y `change.order`, una
+permutación exacta de los ids servidos. `queue` contiene `[id, token, prioridad]`,
+donde el token es opaco y no revela el comando. `queue_etag` cubre la fila
+completa y la generación. `reorder_undo` lleva `undo_of`. El rack registra el
+id y el cuerpo antes del transporte; repetir un id devuelve el mismo recibo.
+Antes de cruzar al host, el rack rechaza un grupo que el snapshot no muestra
+abierto. El host vuelve a juzgarlo todo bajo `control.lock`.
+
+**Instalar.** Primero el controlador según «Instalar U3.6 en la Mini» de
+`fleet/pueue-desk/README.md`. Después, en la Mini, `bash instalar.sh` como de
+costumbre: los archivos del panel (`index.html`, `accion.py`,
+`host_action.py`) ya están en su lista y no hay archivos nuevos de servicio.
+Para revertir sólo el panel, restaurar su versión anterior; el controlador y
+sus recibos quedan. `actions.disabled` o `slots.disabled` apagan la manija sin
+abandonar una acción aceptada.
+
+**Pruebas.** `tests/test_reorder.py` ejecuta el canal contra el `control.py`
+real con Pueue sintético, la elegibilidad del rack y `tests/reorder-ui-check.js`
+(JavaScript de producción con DOM falso). Las mutaciones del rack corren con
+`tests/check_mutations.py --reorder-only`. En un navegador real, sin servidor ni red:
+
+```sh
+TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/reorder_browser_fixture.py /tmp/u36-reorder.html
+NODE_PATH=<node_modules con playwright> node tests/reorder-browser-check.js /tmp/u36-reorder.html <DIR_CAPTURAS>
+```
+
+El chequeo usa el Chrome instalado (`channel: 'chrome'`) y nunca descarga uno.
+Recorre 1280 y 390 px en claro y oscuro: Escape, `pointercancel`, arrastre,
+«Reordenando…», aviso y resaltado, deshacer, Alt+↑ con foco, conflicto,
+desconocido, pausado y movimiento reducido.

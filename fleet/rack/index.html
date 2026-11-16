@@ -507,14 +507,14 @@ function keepConfirmedOrder(h,data){
 function startReorder(h,n,order,moved){
   const key=reorderKey(h.id,n), r=reorderInfo(h,n);
   if(PENDING.has(key) || !r?.enabled) return paint();
-  if(r.queue.length!==order.length || r.queue.some(x=>!order.includes(x[0]))){say('La fila cambió. Actualiza antes de decidir.');return paint();}
+  if(r.queue.length!==order.length || r.queue.some(x=>!order.includes(x[0]))){sayText('La fila cambió. Actualiza antes de decidir.');return paint();}
   if(order.every((id,i)=>id===r.queue[i][0])) return paint();
   const target=reorderTargets(order), writes=r.queue.filter(x=>target[x[0]]!==x[2]).length;
   const request={schema:'rack-action@1',op:'reorder',host:h.id,action_id:newActionId(),dry_run:false,
     expected:{group:n,generation:h.control.generation,queue_etag:r.queue_etag,queue:r.queue.map(x=>[...x])},change:{order}};
   // Rejected here, before anything pauses: the host would refuse it too.
   if(order.length>REORDER_MAX || writes>r.max_writes || JSON.stringify(request).length>REORDER_BYTES){
-    say('Fila demasiado larga para reordenar de una vez');return paint();
+    sayText('Fila demasiado larga para reordenar de una vez');return paint();
   }
   sendReorder(key,{request,status:'applying',order,moved});
 }
@@ -556,12 +556,12 @@ function acceptReorder(key,action,data){
     const t=h?.tasks.find(t=>t.id===moved?.id);
     const to=moved ? r.order.indexOf(moved.id)+1 : 0;
     // The 8 s window starts now, when the confirmation reached this browser.
-    if(req.op==='reorder_undo') say('Orden anterior restaurado');
-    else say(`${t?.ticket || objective(t || {})} pasó al lugar ${to} de la fila de ${group}`,
+    if(req.op==='reorder_undo') sayText('Orden anterior restaurado');
+    else sayText(`${t?.ticket || objective(t || {})} pasó al lugar ${to} de la fila de ${group}`,
       r.undo && r.undo_of && !late ? ()=>{const now=S?.hosts.find(x=>x.id===req.host);if(now) startReorderUndo(now,r,req.expected.generation);} : null);
   }else{
     paint();
-    say(data.error?.message || 'No se pudo confirmar el orden. Actualiza antes de decidir.');
+    sayText(data.error?.message || 'No se pudo confirmar el orden. Actualiza antes de decidir.');
   }
   refresh();
 }
@@ -739,6 +739,13 @@ document.getElementById('app').addEventListener('click', event=>{
 });
 let menuTask = null, toastTimer;
 function say(text,back){
+  const toast = document.getElementById('toast');
+  toast.innerHTML = esc(text)+(back ? '<button type="button">Deshacer</button>' : '');
+  if(back) toast.querySelector('button').onclick=back;
+  clearTimeout(toastTimer); toastTimer = setTimeout(()=>toast.textContent='', 8000);
+}
+// Reorder notices carry task titles: text nodes only, never markup.
+function sayText(text,back){
   const toast = document.getElementById('toast');
   toast.textContent = text;
   if(back){

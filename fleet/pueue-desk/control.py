@@ -65,8 +65,10 @@ REORDER_OPS = ('reorder', 'reorder_undo')
 REORDER_MAX = 64
 REORDER_PAUSE_SECONDS = 3.0      # sección con el grupo cerrado
 REORDER_RPC_SECONDS = 1.0        # cada RPC de Pueue dentro de la acción
+# Medido en la Mini con un pueued privado (corrida 1, carga 2.15): por edición
+# 290-471 ms de promedio y 639 ms de máximo; la parte fija, 116-227 ms.
 REORDER_FIXED_SECONDS = 0.35     # pause + dos lecturas + start, con historial grande
-REORDER_EDIT_SECONDS = 0.03      # un `pueue edit` con estado pequeño...
+REORDER_EDIT_SECONDS = 0.45      # una edición completa (intención FULL + pueue edit + ayudante)...
 REORDER_EDIT_PER_MB = 0.008      # ...más el guardado de Pueue por MB de state.json
 REORDER_UNDO_SECONDS = 60        # el panel ofrece 8 s; el host tolera la latencia
 REORDER_REAP_SECONDS = 2.0       # espera a un editor huérfano propio antes de matarlo
@@ -2427,7 +2429,9 @@ class MiniControl:
     def _reorder_execute(self, key):
         r = self._reorder_load(key)['reorder']
         group = r['group']
-        deadline = self.monotonic() + REORDER_PAUSE_SECONDS
+        # The last edit must leave room for the verifying read and `start -g`
+        # (half of the fixed part), so the closed section stays within 3 s.
+        deadline = self.monotonic() + REORDER_PAUSE_SECONDS - REORDER_FIXED_SECONDS / 2
         try:
             self._rpc('pause', '--wait', '-g', group)
             snapshot = self.pueue.status()
