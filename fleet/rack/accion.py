@@ -286,7 +286,7 @@ class Actions:
         if operation == 'post':
             validate(value)
             identity = dict(value)
-            if value['op'] in ('cancel', 'slots', 'mode', 'undo') and not value.get('dry_run'):
+            if value['op'] in ('cancel', 'slots', 'mode', 'undo', 'reorder') and not value.get('dry_run'):
                 with self.http_lock:
                     self.identities.setdefault(value['action_id'], identity)
         else:
@@ -456,6 +456,10 @@ class Actions:
                                        (request.get('action_id', ''),)):
             previous, response = json.loads(body), json.loads(answer)
             if request['op'] in host_channel.OPS or previous['op'] in host_channel.OPS:
+                if (response['status'] in OPEN and previous['host']==request['host']
+                        and (request['op']=='reorder' or previous['op']=='reorder'
+                             or 'queue' in request.get('expected',{}) or 'queue' in previous.get('expected',{}))):
+                    return 'Hay una acción pendiente en este host; consulta su recibo.'
                 if (request['op'] in host_channel.OPS and previous['op'] in host_channel.OPS
                         and response['status'] in OPEN and previous['host'] == request['host']):
                     return 'Hay un ajuste pendiente en este host; consulta su recibo.'

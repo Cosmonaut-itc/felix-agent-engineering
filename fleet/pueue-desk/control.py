@@ -17,6 +17,7 @@ import re
 import shlex
 import sys
 import time
+import importlib.util
 
 # Reparto medido el 2026-11-13 (README, «Reparto»). `pesadas` y `jale-verify`
 # sacan de `jale` las corridas de horas y las sesiones de verify.
@@ -301,10 +302,55 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
+def priority_helper():
+    spec = importlib.util.spec_from_file_location('priority_editor', Path(__file__).with_name('editor_prioridad.py'))
+    helper = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(helper)
+    return helper
+
+
+def validate_reorder_request(request, host, allow_short=False):
+    e = request.get('expected')
+    fields = {'revision','admission_revision','policy_hash','generation','group','queue_etag','queue'}
+    if (type(e) is not dict or set(e) != fields or type(e['revision']) is not int or e['revision'] < 1
+            or type(e['admission_revision']) is not int or e['admission_revision'] < 1
+            or type(e['group']) is not str or e['group'] not in (MINI_PROFILE if host=='mini' else GROUP_LIMITS)
+            or type(e['generation']) is not str or not 1 <= len(e['generation']) <= 160
+            or any(type(e[k]) is not str or not re.fullmatch('[0-9a-f]{64}',e[k]) for k in ('policy_hash','queue_etag'))
+            or type(e['queue']) is not list or not (0 if allow_short else 2) <= len(e['queue']) <= 64):
+        raise ValueError('Fila inválida')
+    ids = []
+    for row in e['queue']:
+        if (type(row) is not dict or set(row) != {'id','identity','priority'}
+                or type(row['id']) is not int or not 0 <= row['id'] < 2**64
+                or type(row['priority']) is not int or not -(2**31) <= row['priority'] < 2**31
+                or type(row['identity']) is not str or not re.fullmatch('[0-9a-f]{64}',row['identity'])):
+            raise ValueError('Identidad inválida')
+        ids.append(row['id'])
+    if len(set(ids)) != len(ids):
+        raise ValueError('Fila duplicada')
+    if request['op'] == 'reorder':
+        c = request.get('change')
+        if (type(c) is not dict or set(c) != {'order'} or type(c['order']) is not list
+                or len(c['order']) != len(ids) or any(type(n) is not int for n in c['order'])
+                or set(c['order']) != set(ids)):
+            raise ValueError('Permutación inválida')
+    elif type(request.get('undo_of')) is not str or not ID.fullmatch(request['undo_of']):
+        raise ValueError('Recibo inválido')
+    if len(canonical(request).encode()) > 16384:
+        raise ValueError('Fila demasiado larga para reordenar de una vez')
+
+
 def validate_host_request(request, host='mini'):
     if type(request) is not dict or request.get('schema') != HOST_SCHEMA:
         raise ValueError('Petición inválida')
     op = request.get('op')
+    if op == 'reorder' or op == 'undo' and type(request.get('expected')) is dict and 'queue' in request['expected']:
+        keys = {'schema','op','action_id','dry_run','expected', 'change' if op=='reorder' else 'undo_of'}
+        if set(request) != keys or type(request.get('action_id')) is not str or not ID.fullmatch(request['action_id']) or type(request.get('dry_run')) is not bool:
+            raise ValueError('Petición inválida')
+        validate_reorder_request(request,host)
+        return request
     keys = {'schema', 'op'}
     if op in ('slots', 'mode', 'undo', 'status'):
         keys.add('action_id')
@@ -785,18 +831,25 @@ def start_projection(engine, config, queue_path=None, allow_pending=True, policy
             queue['groups'] = prior['groups']
             for ident, status in prior['statuses'].items():
                 queue['tasks'][ident]['status'] = status
+            for ident, priority in prior.get('priorities', {}).items():
+                queue['tasks'][ident]['priority'] = priority
             if queue_hash(queue) != prior['target_hash']:
                 raise ValueError('Intención de arranque inconsistente')
         elif digest != prior['target_hash']:
             raise ValueError('Cola cambió durante preparación; conservar archivos')
     validate_queue(queue)  # an intent reconstructed from authority is validated too
     # Re-project even after a crash: an event may have expired overrides meanwhile.
-    state, image = startup_plan(queue, state, engine.clock(), config['data'], engine.profile)
+    recovered = engine.reorder_offline(queue, state, config['data'])
+    state, image = startup_plan(recovered, state, engine.clock(), config['data'], engine.profile)
+    state['startup']['statuses'].update({ident:t['status'] for ident,t in image['tasks'].items() if t['status'] != queue['tasks'][ident]['status']})
+    state['startup']['priorities'] = {ident:t['priority'] for ident,t in image['tasks'].items() if t['priority'] != queue['tasks'][ident]['priority']}
+    state['startup']['target_hash'] = queue_hash(image)
     validate_queue(image)  # validate the exact bytes to be published, before intent
     state['startup']['source_hash'] = disk_hash
     # Carry recovered statuses forward if the disk still contains the old image.
     if prior.get('phase') == 'intent':
         state['startup']['statuses'] = dict(prior['statuses'], **state['startup']['statuses'])
+        state['startup']['priorities'] = dict(prior.get('priorities',{}), **state['startup']['priorities'])
     return state, image
 
 
@@ -1035,7 +1088,7 @@ class MiniControl:
         if calculated != value['desired'] and not migrating:
             raise ValueError('Deseo inconsistente')
         # Ownership is independent of the quota profile (including foreign groups).
-        if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous', 'startup', 'handoff'}
+        if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous', 'startup', 'handoff', 'reorder'}
                for g, r in value['reasons'].items()):
             raise ValueError('Propiedad inválida')
         if self.host == 'mini' and 'mini_handoff' in value:
@@ -1163,8 +1216,11 @@ class MiniControl:
                      next_event=schedule_at(state['schedule_event'])[1], schedule_event=state['schedule_event'],
                      tables={m: mode_profile(m) for m in ('dia', 'noche')}, **self.notes(state)) if self.host == 'desk' else dict(
                          slots_note='Lugares ajustados · hasta otro cambio manual' if state['overrides'] else None)
-        return dict(schema='rack-host-result@1', status='ok', capabilities=dict(
-            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=False, restart_queue=False),
+        reorder_ready = (self.host=='mini' and enabled and not pending and observed==state['desired']
+                         and generation==state['generation'] and state.get('startup',{}).get('phase') in (None,'ready'))
+        reorder_groups = self.reorder_view(state, self._status_snapshot, reorder_ready) if self.host=='mini' else {}
+        return dict(schema='rack-host-result@1', status='ok', reorder_groups=reorder_groups, capabilities=dict(
+            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=any(g['enabled'] for g in reorder_groups.values()), restart_queue=False),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
@@ -1199,7 +1255,7 @@ class MiniControl:
                               'unsupported', effects=False)
         try:
             response = self._handle(request)
-            if request['op'] in ('slots', 'mode', 'undo') and not request['dry_run']:
+            if request['op'] in ('slots', 'mode', 'undo', 'reorder') and not request['dry_run']:
                 # Rejected IDs are bound too; a later refresh cannot turn a retry
                 # of the same ID into a previously unaccepted effect.
                 digest = hashlib.sha256(canonical(dict(host=self.host, request=request)).encode()).hexdigest()
@@ -1210,7 +1266,7 @@ class MiniControl:
                                (request['action_id'], digest, canonical(dict(request=request, response=response))))
             return response
         except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError):
-            uncertain = request['op'] == 'status' or request['op'] in ('slots', 'mode', 'undo') and not request['dry_run']
+            uncertain = request['op'] == 'status' or request['op'] in ('slots', 'mode', 'undo', 'reorder') and not request['dry_run']
             return self.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
 
     def _handle(self, request):
@@ -1222,6 +1278,8 @@ class MiniControl:
             with self.connect() as db:
                 row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
             return dict(json.loads(row[1])['response'], receipt_digest=row[0]) if row else self.reply(request, 'unknown')
+        if op == 'reorder' or op == 'undo' and 'queue' in request['expected']:
+            return self.reorder_handle(request)
         digest = hashlib.sha256(canonical(dict(host=self.host, request=request)).encode()).hexdigest()
         with self.connect() as db:
             row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
@@ -1323,6 +1381,408 @@ class MiniControl:
         self.reconcile()
         return self._handle(dict(schema=HOST_SCHEMA, op='status', action_id=request['action_id']))
 
+    # Reorder uses this controller's existing lock, durable index and guard job.
+    # The installed remote-run currently force-starts cancelled Stashed tasks.
+    # No JSON flag can waive that contract. Private acceptance injects True.
+    coordinated_reorder = False
+    reorder_budget = 3.0
+    reorder_rpc = 1.0
+    reorder_cost = .055  # provisional; re-measured against private large history
+    reorder_boundary = staticmethod(lambda phase: None)
+
+    def reorder_rows(self, snapshot, group, generation):
+        rows = []
+        for ident, task in snapshot['tasks'].items():
+            if task['group'] != group or task['status'] == 'Done':
+                continue
+            name = next(iter(task['status'])) if type(task['status']) is dict else task['status']
+            if name != 'Queued':
+                continue
+            validate_task(str(ident), task)
+            rows.append(dict(id=task['id'], identity=self.task_identity(task), priority=task['priority']))
+        return sorted(rows, key=lambda t: (-t['priority'], t['id']))
+
+    @staticmethod
+    def task_identity(task):
+        fields = ('id','created_at','group','command','original_command','path','envs','dependencies','label')
+        return hashlib.sha256(canonical({k:task[k] for k in fields}).encode()).hexdigest()
+
+    @staticmethod
+    def reorder_etag(rows, generation):
+        return hashlib.sha256(canonical(dict(generation=generation, state='Queued', queue=rows)).encode()).hexdigest()
+
+    def reorder_actions(self):
+        with self.connect() as db:
+            return [json.loads(r[0]) for r in db.execute('SELECT body FROM host_actions')
+                    if json.loads(r[0]).get('kind') == 'reorder']
+
+    def reorder_view(self, state, snapshot, enabled):
+        generation = self.generation(state)
+        pending = [a for a in self.reorder_actions() if a['phase'] != 'terminal']
+        result = {}
+        for g in self.profile:
+            queue = self.reorder_rows(snapshot, g, generation)
+            reasons = list(state['reasons'].get(g, []))
+            paused = snapshot['groups'][g]['status'] != 'Running' or bool(reasons)
+            recovery = next((a['request']['action_id'] for a in pending if a['group'] == g), None)
+            reason = ('En pausa recuperando… · ' + recovery if recovery else
+                      'No se puede reordenar mientras el grupo está pausado · ' + ', '.join(reasons or ['manual']) if paused else
+                      'La coordinación de pausas de los clientes no está acreditada.' if not self.coordinated_reorder else
+                      'Fila demasiado larga para reordenar de una vez' if len(queue) > 64 else
+                      'Se necesitan al menos dos pendientes.' if len(queue)<2 else
+                      'Hay un ajuste pendiente o el host no está preparado.' if not enabled else None)
+            result[g] = dict(enabled=reason is None, reason=reason, owner=recovery,
+                             expected=dict(revision=state['revision'], admission_revision=state['revision'],
+                                 policy_hash=self.policy_hash, generation=generation, group=g,
+                                 queue_etag=self.reorder_etag(queue, generation), queue=queue if len(queue)<=64 else []))
+        return result
+
+    def reorder_save(self, action, phase=None, state=None):
+        if phase:
+            action['phase'] = phase
+        with self.connect(write=True) as db:
+            if state is not None:
+                self.store(db, state)
+            db.execute('UPDATE host_actions SET body=? WHERE action_id=?',
+                       (canonical(action), action['request']['action_id']))
+        self.reorder_boundary(phase or action['phase'])
+
+    def reorder_reply(self, request, status, code=None, **fields):
+        messages = dict(queue_conflict='La fila cambió. Actualiza antes de reordenar.',
+                        undo_conflict='La fila cambió; no se puede deshacer',
+                        paused='No se puede reordenar mientras el grupo está pausado',
+                        uncoordinated='La coordinación de pausas de los clientes no está acreditada.',
+                        edit_unsafe='Esta fila no se puede editar con seguridad.',
+                        queue_too_long='Fila demasiado larga para reordenar de una vez',
+                        pause_budget='La fila supera el presupuesto de pausa medido.',
+                        recovery_error='En pausa recuperando…')
+        if code not in messages:
+            return self.reply(request, status, code, **fields)
+        return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
+                    error=dict(code=code, message=messages[code]), **fields)
+
+    def reorder_handle(self, request):
+        digest = hashlib.sha256(canonical(dict(host=self.host, request=request)).encode()).hexdigest()
+        with self.connect() as db:
+            row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
+            state = self.state(db)
+            previous = db.execute('SELECT body FROM host_actions WHERE action_id=?', (request.get('undo_of',''),)).fetchone()
+            previous = json.loads(previous[0]) if previous else None
+            pending = any(json.loads(r[0])['response']['status'] in ('applying','partial','unknown') or
+                          json.loads(r[0]).get('kind') == 'reorder' and json.loads(r[0])['phase'] != 'terminal'
+                          for r in db.execute('SELECT body FROM host_actions'))
+        if row:
+            return (self.reply(request, 'conflict', 'idempotency_conflict') if row[0] != digest else json.loads(row[1])['response'])
+        def reject(code, status='rejected', **extra):
+            return self.reorder_reply(request, status, code, effects=False, **extra)
+        if self.host != 'mini':
+            return reject('unsupported')
+        if self.disabled():
+            return reject('disabled')
+        if not self.coordinated_reorder:
+            return reject('uncoordinated')
+        if pending:
+            return reject('busy')
+        g = request['expected']['group']
+        before, groups = self.observed()
+        snapshot = self._status_snapshot
+        gen = self.generation(state)
+        rows = self.reorder_rows(snapshot, g, gen)
+        expected = dict(revision=state['revision'], admission_revision=state['revision'], policy_hash=self.policy_hash,
+                        generation=gen, group=g, queue_etag=self.reorder_etag(rows, gen), queue=rows)
+        undo = request['op'] == 'undo'
+        conflict = 'undo_conflict' if undo else 'queue_conflict'
+        if request['expected'] != expected or gen != state['generation'] or before != state['desired']:
+            return reject(conflict, 'conflict')
+        reasons = state['reasons'].get(g, [])
+        if groups[g]['status'] != 'Running' or reasons or os.path.lexists(self.pause_fence(g)):
+            return reject('paused', pause_reasons=reasons or ['manual'])
+        if (state.get('startup', {}).get('phase') not in (None, 'ready') or
+                any(t['group'] == g and (next(iter(t['status'])) if isinstance(t['status'],dict) else t['status'])
+                    in ('Paused','Locked','Stashed') for t in snapshot['tasks'].values())):
+            return reject('edit_unsafe')
+        if not 2 <= len(rows) <= 64:
+            return reject('queue_too_long')
+        if undo:
+            if (not previous or previous.get('kind') != 'reorder' or previous['response']['status'] != 'applied'
+                    or previous['revision'] != state['revision'] or previous['generation'] != gen
+                    or self.clock() > previous.get('undo_until', 0) or previous['target'] != rows
+                    or previous['group'] != g):
+                return reject('undo_conflict', 'conflict')
+            target = deepcopy(previous['before'])
+        else:
+            by_id = {t['id']:t for t in rows}
+            target = [dict(by_id[ident], priority=len(rows)-i) for i, ident in enumerate(request['change']['order'])]
+        changes = [t for t in target if next(r['priority'] for r in rows if r['id'] == t['id']) != t['priority']]
+        if .4 + len(changes)*self.reorder_cost > self.reorder_budget:
+            return reject('pause_budget')
+        try:
+            helper = priority_helper()
+            for row in rows:
+                helper.preflight(snapshot['tasks'][str(row['id'])])
+        except (ValueError, OSError):
+            return reject('edit_unsafe')
+        payload = dict(group=g, before=rows, desired=target, observed=rows,
+                       queue_etag=self.reorder_etag(target, gen), undo_of=request['action_id'])
+        if request['dry_run']:
+            return self.reorder_reply(request, 'dry_run', effects=False, result=payload)
+        state['revision'] += 1
+        state['reasons'][g] = ['reorder']
+        action = dict(kind='reorder', request=request, generation=gen, group=g, before=rows, target=target,
+                      enqueued={str(t['id']):snapshot['tasks'][str(t['id'])]['status']['Queued']['enqueued_at'] for t in rows},
+                      revision=state['revision'], phase='prepared', at=self.clock(), process=None,
+                      response=self.reorder_reply(request, 'applying', result=payload, revision=state['revision']))
+        with self.connect(write=True) as db:
+            self.store(db, state)
+            db.execute('INSERT INTO host_actions VALUES (?,?,?)', (request['action_id'], digest, canonical(action)))
+        self.reorder_boundary('prepared')
+        deadline = time.monotonic() + self.reorder_budget
+        old_timeout = getattr(self.pueue, 'timeout', None)
+        self.pueue.timeout = self.reorder_rpc
+        try:
+            self.pueue.call('pause','--wait','-g',g)
+            self.reorder_boundary('pause_effect')
+            self.reorder_save(action, 'paused')
+            snap = self.pueue.status()
+            if (snap['groups'][g]['status'] != 'Paused' or self.generation(state) != gen or
+                    self.reorder_rows(snap,g,gen) != rows):
+                action['outcome'] = 'aborted'
+                self.reorder_save(action, 'releasing')
+            else:
+                for row in changes:
+                    if time.monotonic() >= deadline:
+                        raise TimeoutError('pause_budget')
+                    self.edit_priority(action, row['id'], row['priority'], deadline)
+                snap = self.pueue.status()
+                self.verify_reorder(action, snap, target)
+                self.reorder_save(action, 'edited')
+            self.reconcile()
+        except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
+            # Durable intent stays owned. The existing guard repairs it even if
+            # slots.disabled/actions.disabled is set after acceptance.
+            return self.reorder_reply(request, 'unknown', 'recovery_error')
+        finally:
+            self.pueue.timeout = old_timeout
+        return self._handle(dict(schema=HOST_SCHEMA, op='status', action_id=request['action_id']))
+
+    def verify_reorder(self, action, snapshot, target, allow_missing=False):
+        for row in target:
+            task = snapshot['tasks'].get(str(row['id']))
+            if task is None and allow_missing:
+                continue
+            if (task is None or self.task_identity(task) != row['identity'] or
+                    set(task['status']) != {'Queued'} or task['priority'] != row['priority']):
+                raise ValueError('recovery_error')
+
+    def edit_priority(self, action, ident, priority, deadline):
+        import tempfile
+        helper = priority_helper()
+        root = Path(tempfile.mkdtemp(prefix='edit-', dir=str(self.directory)))
+        root.chmod(0o700)
+        # A new config changes only this private client's edit mode / aliases.
+        # Connection paths originate in authority, never in a JSON request.
+        with self.connect() as db:
+            data = Path(self.state(db)['pid_file']).parent
+        settings = dict(shared=dict(pueue_directory=str(data), runtime_directory=str(data),
+                         pid_path=str(data/'pueue.pid'), unix_socket_path=str(data/'pueue.sock'),
+                         shared_secret_path=str(data/'shared_secret'), alias_file=str(root/'aliases.yml')),
+                        client=dict(edit_mode='toml'))
+        if hasattr(self.pueue, 'edit_settings'):
+            settings = deepcopy(self.pueue.edit_settings)  # private harness seam, no wire input
+            settings.setdefault('client', {})['edit_mode'] = 'toml'
+            settings['shared']['alias_file'] = str(root/'aliases.yml')
+        atomic_json(root/'config.json', settings)
+        (root/'aliases.yml').write_text('{}\n'); (root/'aliases.yml').chmod(0o600)
+        plan = dict(id=ident, priority=priority, binary=self.pueue.binary)
+        atomic_json(root/'plan.json', plan)
+        action['editing_id'] = ident
+        action['process'] = dict(root=str(root), client=None)
+        self.reorder_save(action, 'edit_intent')
+        env = dict(os.environ, TMPDIR=str(root), EDITOR=shlex.join(['/usr/bin/python3','-I',
+                   str(Path(__file__).with_name('editor_prioridad.py')), str(root/'plan.json')]))
+        client = subprocess.Popen(['/usr/bin/python3','-I',str(Path(__file__).with_name('editor_prioridad.py')),
+                                   '--client',str(root/'plan.json')], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                  stderr=subprocess.DEVNULL, env=env, cwd=str(root))
+        signature = helper.birth(client.pid)
+        if not signature:
+            client.stdin.close()
+            client.wait(timeout=1)
+            raise ValueError('No se acreditó el cliente propio')
+        plan['client'] = dict(pid=client.pid, birth=signature)
+        atomic_json(root/'plan.json', plan)
+        action['process']['client'] = plan['client']
+        self.reorder_save(action, 'client_ready')
+        try:
+            client.stdin.write(b'1'); client.stdin.close()
+            self.reorder_boundary('client_sent')
+            client.wait(timeout=max(.001, min(self.reorder_rpc,deadline-time.monotonic())))
+            if client.returncode != 0:
+                raise ValueError('edit_unsafe')
+        except BaseException:
+            # Keep durable process ownership for the independent recoverer.
+            raise
+        self.reorder_boundary('edit_effect')
+        action['process'] = None
+        self.reorder_save(action, 'editing')
+
+    def stop_editor(self, action):
+        info = action.get('process')
+        if not info:
+            return True
+        helper = priority_helper()
+        root = Path(info['root'])
+        if root.parent != self.directory or root.is_symlink():
+            raise ValueError('recovery_error')
+        atomic_json(root/'revoked', dict(revoked=True))
+        identities = [info.get('client')]
+        editor = root/'editor.json'
+        if editor.exists():
+            identities.append(json.loads(editor.read_text()))
+        for identity in identities:
+            if identity is None:
+                # Spawn was not released through stdin before client_ready commit.
+                continue
+            if helper.birth(identity['pid']) == identity['birth']:
+                os.kill(identity['pid'], 15)
+                # No second edit until every recorded process has exited.
+                return False
+        action['process'] = None
+        self.reorder_save(action)
+        return True
+
+    def recover_reorders(self, release=False):
+        if self.host != 'mini':
+            return True
+        for action in self.reorder_actions():
+            if action['phase'] == 'terminal':
+                continue
+            if not self.stop_editor(action):
+                return False
+            with self.connect() as db:
+                state = self.state(db)
+            g = action['group']
+            snap = self.pueue.status()
+            if action['phase'] not in ('edited','releasing'):
+                # The old process is dead; only attributable Locked/Stashed may
+                # be enqueued. Never restore a missing or terminal cancellation.
+                for row in action['before']:
+                    task = snap['tasks'].get(str(row['id']))
+                    if task is None:
+                        continue
+                    if self.task_identity(task) != row['identity']:
+                        raise ValueError('recovery_error')
+                    name = next(iter(task['status'])) if isinstance(task['status'],dict) else task['status']
+                    owned_lock = name == 'Locked' and row['id']==action.get('editing_id') and set(task['status']['Locked']['previous_status']) == {'Queued'}
+                    own_stash = name == 'Stashed' and row['id']==action.get('editing_id') and action['generation'] != self.generation(state)
+                    if owned_lock or own_stash:
+                        data = Path(state['pid_file']).parent
+                        if os.path.lexists(data/'task_logs'/(str(row['id'])+'.log')):
+                            raise ValueError('recovery_error')
+                        self.pueue.call('enqueue',str(row['id']))
+                snap = self.pueue.status()
+                try:
+                    self.verify_reorder(action,snap,action['target'])
+                    action['outcome'] = 'applied'
+                except ValueError:
+                    action['outcome'] = 'aborted'
+                    for row in action['before']:
+                        task = snap['tasks'].get(str(row['id']))
+                        if task is None or set(task['status']) != {'Queued'}:
+                            continue
+                        if self.task_identity(task) != row['identity']:
+                            raise ValueError('recovery_error')
+                        if task['priority'] not in (row['priority'], next(t['priority'] for t in action['target'] if t['id']==row['id'])):
+                            raise ValueError('recovery_error')
+                        if task['priority'] != row['priority']:
+                            if snap['groups'][g]['status'] != 'Paused':
+                                raise ValueError('recovery_error')
+                            self.edit_priority(action,row['id'],row['priority'],time.monotonic()+self.reorder_budget)
+                    self.verify_reorder(action,self.pueue.status(),action['before'],allow_missing=True)
+                self.reorder_save(action,'releasing')
+            if not release:
+                continue
+            # Quotas/generation have been reconciled by reconcile() first.
+            snap = self.pueue.status()
+            applied = action.get('outcome', 'applied') == 'applied'
+            if applied:
+                # An execution after an already-sent start is a historic success.
+                if action.get('start_intent') and snap['groups'][g]['status'] == 'Running':
+                    pass
+                else:
+                    self.verify_reorder(action,snap,action['target'])
+            reasons = set(state['reasons'].get(g,[])) - {'reorder'}
+            if os.path.lexists(self.pause_fence(g)):
+                reasons.add('manual')
+            # Transfer ownership before opening, so a crash here remains recoverable.
+            reasons.add('pressure')
+            state['reasons'][g] = sorted(reasons)
+            self.reorder_save(action,'releasing',state)
+            fresh = pressure_mini()
+            threshold = RAPIDAS_THRESHOLDS['mini'] if g == 'rapidas' else MINI_THRESHOLDS
+            before, _ = self.observed()
+            can_open = (reasons <= {'pressure'} and decide('mini',fresh,threshold) == 'reanudar'
+                        and before == state['desired'] and self.generation(state) == state['generation']
+                        and not os.path.lexists(self.directory/'maintenance')
+                        and state.get('startup',{}).get('phase') in (None,'ready'))
+            if can_open and snap['groups'][g]['status'] == 'Paused':
+                # No individual Paused tasks may be resumed by start -g.
+                if any(t['group']==g and isinstance(t['status'],dict) and set(t['status'])=={'Paused'} for t in self._status_snapshot['tasks'].values()):
+                    raise ValueError('recovery_error')
+                action['start_intent'] = True
+                self.reorder_save(action,'releasing')
+                self.pueue.call('start','-g',g)
+                self.reorder_boundary('start_effect')
+                state['reasons'][g] = []
+            elif snap['groups'][g]['status'] == 'Paused':
+                # enqueue doesn't persist; save under our existing pause only.
+                self.pueue.call('pause','--wait','-g',g)
+            elif snap['groups'][g]['status'] == 'Running':
+                state['reasons'][g] = sorted(reasons - {'pressure'})
+            else:
+                raise ValueError('recovery_error')
+            final = self.pueue.status()
+            action['undo_until'] = self.clock()+60
+            observed = self.reorder_rows(final,g,self.generation(state))
+            action['response'] = self.reorder_reply(action['request'],'applied' if applied else 'aborted',
+                None if applied else 'queue_conflict', revision=action['revision'],
+                result=dict(group=g,before=action['before'],desired=action['target'],observed=observed,
+                            queue_etag=self.reorder_etag(observed,self.generation(state)),
+                            undo_of=action['request']['action_id'] if applied else None))
+            self.reorder_save(action,'terminal',state)
+        return True
+
+    def reorder_offline(self, queue, state, data):
+        image = deepcopy(queue)
+        for action in self.reorder_actions():
+            if action['phase'] == 'terminal':
+                continue
+            info = action.get('process')
+            if info:
+                identities = [info.get('client')]
+                editor = Path(info['root'])/'editor.json'
+                if editor.exists():
+                    identities.append(json.loads(editor.read_text()))
+                if any(p and priority_helper().birth(p['pid']) == p['birth'] for p in identities):
+                    raise ValueError('Editor propio aún vivo; conservar cierre')
+            target = action['target'] if action['phase'] in ('edited','releasing') and action.get('outcome','applied')=='applied' else action['before']
+            for row in target:
+                ident = str(row['id'])
+                task = image['tasks'].get(ident)
+                if task is None:
+                    continue
+                if self.task_identity(task) != row['identity']:
+                    raise ValueError('Identidad de reorder cambió; conservar cierre')
+                name, detail = next(iter(task['status'].items()))
+                if name == 'Locked' and row['id'] == action.get('editing_id'):
+                    if set(detail['previous_status']) != {'Queued'} or os.path.lexists(data/'task_logs'/(ident+'.log')):
+                        raise ValueError('Locked de reorder sin atribución segura')
+                    task['status'] = deepcopy(detail['previous_status'])
+                    name = 'Queued'
+                if name == 'Queued' and not os.path.lexists(data/'task_logs'/(ident+'.log')):
+                    task['priority'] = row['priority']
+            # Action remains pending until online reconciliation and fresh admission.
+        return image
+
     def record_stop(self):
         with self.connect() as db:
             state = self.state(db)
@@ -1375,6 +1835,10 @@ class MiniControl:
         with self.connect() as db:
             stored = self.state(db)
             state = self.resolve(stored)
+        if not self.recover_reorders():
+            return False
+        with self.connect() as db:
+            state = self.resolve(self.state(db))
         if state.get('startup', {}).get('phase') == 'intent':
             raise ValueError('Preparación incompleta; no se admite trabajo')
         if state != stored:
@@ -1436,6 +1900,8 @@ class MiniControl:
                     crossed_event = True
                     break
                 action = json.loads(body)
+                if action.get('kind') == 'reorder':
+                    continue
                 if action['response']['status'] not in ('applying', 'partial', 'unknown'):
                     continue
                 status = 'unknown' if observed is None else 'partial' if failure else 'applied'
@@ -1464,6 +1930,8 @@ class MiniControl:
                 db.execute('UPDATE host_actions SET body=? WHERE action_id=?', (canonical(action), key))
         if crossed_event:
             return self.reconcile()  # release the receipt transaction before recovering
+        if not failure and not self.recover_reorders(release=True):
+            return False
         return not failure
 
     def pause_fence(self, group):
@@ -2086,7 +2554,7 @@ def main():
                     if wait_rack_lock(handle):
                         response = engine.handle(request)
                     else:
-                        status = ('rejected' if request['op'] in ('slots', 'mode', 'undo') else
+                        status = ('rejected' if request['op'] in ('slots', 'mode', 'undo', 'reorder') else
                                   'unknown' if request['op'] == 'status' else 'busy')
                         response = engine.reply(request, status, 'lock_busy', effects=False)
         except (OSError, ValueError, TypeError, sqlite3.Error):
