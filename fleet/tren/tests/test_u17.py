@@ -458,7 +458,11 @@ class ObjetosTests(ContextoU17):
         self.tick(5300)
         self.assertEqual(self.entrada(self.estado(), nuevo).admision, Admitido())
         self.assertFalse(self.tiene(self.checkout, nuevo))
-        self.assertEqual(self.posts("/comments"), [])
+        # Único aviso: la entrega de viejo caducó porque la API ya informa nuevo.
+        comentarios = self.posts("/comments")[len([p for p in posts if "/comments" in p["endpoint"]]):]
+        self.assertEqual(len(comentarios), 1, comentarios)
+        self.assertIn("caducó: head-cambiado", comentarios[0]["payload"]["body"])
+        self.assertFalse(any(p["payload"].get("state") == "failure" for p in self.posts("/statuses/")))
         self.assertEqual(self.huella(), self.huella_inicial)
 
     def test_head_presente_no_consulta_la_ref_y_el_armado_retiene(self):
@@ -472,7 +476,8 @@ class ObjetosTests(ContextoU17):
         self.push(nuevo, "refs/pull/4/head")
         self.entregar(pr, viejo, 5000)
         argv = self.registrar()
-        for ahora in (5100, 5220, 5340):
+        # Un PR solo forma tren una hora después de admitirse.
+        for ahora in (5100, 8800, 8920):
             self.tick(ahora)
         estado = self.estado()
         self.assertEqual(self.entrada(estado, viejo).admision, Admitido())
