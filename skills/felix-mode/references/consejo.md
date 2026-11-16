@@ -23,8 +23,9 @@ puerta del nivel sigue **Revisión** con los miembros que sí corrieron.
 
 1. Prepara la ronda como pide **Revisión**: riesgo, pre-vuelo y registro.
 2. Envía a cada miembro el mismo brief. En alto riesgo usa el brief de
-   `interrogate` y añade la línea `Clase`, el formato de hallazgo de abajo,
-   `Nits descartados` y la línea `NOTA`. En nivel normal usa este:
+   `interrogate` y añade la línea `Clase`, el formato de hallazgo de abajo
+   sin `Diferible`, `Nits descartados` y la línea `NOTA`. En nivel normal
+   usa este:
 
    ```
    Nivel: <normal o alto> por <señal o ruta>
@@ -37,13 +38,14 @@ puerta del nivel sigue **Revisión** con los miembros que sí corrieron.
    Diff: git diff <base> [-- <rutas>]; lee también los archivos sin seguimiento.
    Registro: <id, estado y evidencia de cada hallazgo previo> (desde la ronda 2)
    Clase: <matriz y definiciones de **Clase**>
+   Diferible: <regla de **Diferible**>
    Reporta critical, warning y nits de gravedad alta. Cada critical o
    warning trae el comando que corriste, la salida que imprimió y la salida
    que exige el objetivo.
    VEREDICTO: APTO o NO APTO
    NOTA: <1 a 10>
    Nits descartados: <n>
-   <id> [critical|warning|nit] <archivo>:<línea> <hallazgo>. Probabilidad: <alta|media|baja>. Gravedad: <alta|media|baja>. Disparador: <qué lo produce>. Arreglo: <propuesta>
+   <id> [critical|warning|nit] <archivo>:<línea> <hallazgo>. Probabilidad: <alta|media|baja>. Gravedad: <alta|media|baja>. Disparador: <qué lo produce>. Diferible: <no | sí, previo | sí, raro>. Arreglo: <propuesta>
    ```
 
 3. Veta los hallazgos con **Prueba** y atiéndelos con **Hallazgos**. Un
