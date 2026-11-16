@@ -2007,7 +2007,9 @@ class MiniControl:
             fresh = pressure_mini(timeout=min(self.reorder_rpc,max(.001,self.pueue.deadline-time.monotonic())))
             threshold = RAPIDAS_THRESHOLDS['mini'] if g == 'rapidas' else MINI_THRESHOLDS
             before, _ = self.observed()
-            can_open = (reasons <= {'pressure'} and decide('mini',fresh,threshold) == 'reanudar'
+            # This action paused a Running group. Hysteresis preserves that
+            # prior state; only fresh high pressure transfers our pause.
+            can_open = (reasons <= {'pressure'} and decide('mini',fresh,threshold) != 'pausar'
                         and before == state['desired'] and self.generation(state) == state['generation']
                         and not os.path.lexists(self.directory/'maintenance')
                         and state.get('startup',{}).get('phase') in (None,'ready'))
@@ -2019,7 +2021,7 @@ class MiniControl:
                 self.reorder_save(action,'releasing')
                 sampled = time.monotonic()
                 fresh = pressure_mini(timeout=min(self.reorder_rpc,max(.001,self.pueue.deadline-time.monotonic())))
-                if decide('mini',fresh,threshold) != 'reanudar' or time.monotonic()-sampled > self.reorder_rpc:
+                if decide('mini',fresh,threshold) == 'pausar' or time.monotonic()-sampled > self.reorder_rpc:
                     self.pueue.call('pause','--wait','-g',g)
                 else:
                     self.pueue.call('start','-g',g)

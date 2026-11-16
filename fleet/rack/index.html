@@ -225,7 +225,7 @@ function acceptOrder(key,action,data){
     h.control.pause_reasons={...h.control.pause_reasons,[action.group]:result.pause_reasons || []};
     h.control.reorder_groups[action.group]={enabled:!paused && result.queue_complete!==false,reason:paused?'No se puede reordenar mientras el grupo está pausado · '+(result.pause_reasons || []).map(r=>({pressure:'presión',manual:'pausa manual',ambiguous:'origen desconocido',startup:'retenido al reiniciar',handoff:'relevo',reorder:'recuperación del orden'})[r]).join(', '):result.queue_complete===false?'Fila demasiado larga para reordenar de una vez':null,owner:null,expected};
     HOST_CONFIRMED.set(h.id,{...h.control,reorder_groups:{...h.control.reorder_groups}});
-    ORDER_RECEIPTS.set(JSON.stringify([h.id,action.group]),{host:h.id,group:action.group,revision:data.revision,generation:expected.generation,queue:result.observed,before:result.before,complete:result.queue_complete!==false,groupStatus:result.group_status});
+    ORDER_RECEIPTS.set(JSON.stringify([h.id,action.group]),{host:h.id,group:action.group,actionId:action.request.action_id,revision:data.revision,generation:expected.generation,queue:result.observed,before:result.before,complete:result.queue_complete!==false,groupStatus:result.group_status});
     const marker=JSON.stringify([h.id,action.group,action.id]), until=Date.now()+2500;
     const highlight={until,from:action.from,to:action.to};
     ORDER_HIGHLIGHT.set(marker,highlight);
@@ -702,12 +702,24 @@ function view(){
       }).join('');
       return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}${orphanSlot(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
+function snapshotBeforeOrder(source,receipt){
+  return source && source.generation===receipt.generation && (source.revision<receipt.revision ||
+    (source.revision===receipt.revision && source.reorder_groups?.[receipt.group]?.owner===receipt.actionId));
+}
 function render(data){
   NOW = data.now;
   S = {hosts:data.hosts.map(h=>{
     const s=h.snapshot || {};
     const confirmed=HOST_CONFIRMED.get(h.id);
-    const control=confirmed && (!s.control || s.control.revision<confirmed.revision) ? confirmed : s.control;
+    let control=confirmed && (!s.control || s.control.revision<confirmed.revision) ? confirmed : s.control;
+    for(const receipt of ORDER_RECEIPTS.values()){
+      // A cached pending phase has the terminal revision but still names the
+      // completed action as owner. Overlay only that group, preserving new pauses.
+      if(receipt.host===h.id && confirmed && snapshotBeforeOrder(control,receipt)){
+        control={...control,reorder_groups:{...control.reorder_groups,[receipt.group]:confirmed.reorder_groups[receipt.group]},
+          pause_reasons:{...control.pause_reasons,[receipt.group]:confirmed.pause_reasons?.[receipt.group] || []}};
+      }
+    }
     return {...h, control, guard:s.guard, usage:s.usage, cores:s.cpu?.cores, load:s.cpu?.load,
       mem_total:s.mem?.total, mem_avail:s.mem?.available, swap_used:s.mem?.swap_used, swap_total:s.mem?.swap_total,
       orphans:s.orphans, orphans_total:s.orphans_total,
@@ -716,7 +728,7 @@ function render(data){
   })};
   for(const receipt of ORDER_RECEIPTS.values()){
     const host=S.hosts.find(h=>h.id===receipt.host),source=data.hosts.find(h=>h.id===receipt.host)?.snapshot?.control;
-    if(!host || !source || source.generation!==receipt.generation || source.revision>=receipt.revision) continue;
+    if(!host || !snapshotBeforeOrder(source,receipt)) continue;
     const oldRows=source.reorder_groups?.[receipt.group]?.expected?.queue || [];
     if(receipt.complete) host.tasks=host.tasks.filter(t=>t.group!==receipt.group || t.state!=='Queued' || !receipt.before.some(r=>r.id===t.id) || receipt.queue.some(r=>r.id===t.id));
     for(const task of host.tasks){

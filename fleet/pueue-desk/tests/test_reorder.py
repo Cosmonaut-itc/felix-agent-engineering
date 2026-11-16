@@ -199,6 +199,43 @@ def test_new_pressure_transfers_pause_without_start(self):
     with self.engine.connect() as db:self.assertEqual(self.engine.state(db)['reasons']['suites'],['pressure'])
 
 
+def test_hysteresis_reopens_only_our_pause_with_two_fresh_samples(self):
+    self.pressure.stop()
+    for g in ('suites', 'rapidas'):
+        for samples in ((1.5, 1.5), (0, 1.5)):
+            with self.subTest(group=g, samples=samples):
+                self.change_state(reasons={})
+                self.p.groups[g]['status']='Running'
+                self.tasks={str(i):task(i, -i, g) for i in range(1,6)}
+                r=self.order_request('hysteresis-'+g+'-'+str(samples[0]).replace('.','-')) if g=='suites' else None
+                if r is None:
+                    expected=self.engine.view()['reorder_groups'][g]['expected']
+                    r=dict(schema=control.HOST_SCHEMA,op='reorder',action_id='hysteresis-'+g+'-'+str(samples[0]).replace('.','-'),
+                           dry_run=False,expected=expected,change=dict(order=[1,5,2,3,4]))
+                started=__import__('time').monotonic()
+                with patch.object(control,'pressure_mini',side_effect=[dict(load=v,memory=1) for v in samples]):
+                    answer=self.engine.handle(r)
+                self.assertEqual(answer['status'],'applied',answer)
+                self.assertEqual(self.p.groups[g]['status'],'Running','mantener preserves the pre-action running state')
+                self.assertLess(__import__('time').monotonic()-started,self.engine.reorder_budget)
+                self.assertEqual(answer['result']['pause_reasons'],[])
+                self.assertIn(('start','-g',g),self.p.calls)
+    # A pause recorded by another owner during editing is never ours to open.
+    self.change_state(reasons={})
+    self.p.groups['suites']['status']='Running'
+    self.tasks={str(i):task(i,-i) for i in range(1,6)}
+    def fence(phase):
+        if phase=='edited':self.engine.pause_fence('suites').touch()
+    self.engine.reorder_boundary=fence
+    with patch.object(control,'pressure_mini',return_value=dict(load=1.5,memory=1)):
+        before=len(self.p.calls)
+        answer=self.engine.handle(self.order_request('hysteresis-manual-001'))
+    self.assertEqual(answer['status'],'applied',answer)
+    self.assertEqual(self.p.groups['suites']['status'],'Paused')
+    self.assertIn('manual',answer['result']['pause_reasons'])
+    self.assertNotIn(('start','-g','suites'),self.p.calls[before:])
+
+
 def test_aliases_and_individual_paused_stashed_reject_before_pause(self):
     for scenario in ('alias','Paused','Stashed','Locked'):
         base=copy.deepcopy(self.tasks)

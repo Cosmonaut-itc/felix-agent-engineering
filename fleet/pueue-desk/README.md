@@ -1169,6 +1169,9 @@ vencimiento, devuelven `undo_conflict` sin efectos: «La fila cambió; no se pue
 deshacer». Una tarea que empezó al abrir el grupo puede invalidarlo enseguida.
 Si sube la presión durante el reordenado, el orden queda aplicado y la pausa
 pasa a la guardia; no se abre sólo porque la pausa empezó siendo nuestra.
+En la banda de histéresis (`mantener`), se restaura el estado Running anterior
+con las dos muestras frescas de admisión; sólo `pausar` transfiere la pausa a
+la guardia. Una pausa manual o de otro propietario sigue cerrada.
 
 Los límites de entrada son 64 pendientes y 16 KiB. La fase normal pausada
 usa 6 s (constante `reorder_budget`) y cada RPC de reorder ≤1 s y el tiempo restante de su fase,

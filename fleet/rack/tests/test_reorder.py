@@ -112,19 +112,57 @@ class ReorderChannelTests(unittest.TestCase):
             self.assertEqual(self.actions.get(r['action_id'])[1]['status'],'unsupported')
         self.assertEqual(self.p.calls if hasattr(self.p,'calls') else [],[])
 
-    def test_current_unknown_after_probe_and_probe_failure_remain_unknown(self):
+    def test_current_unknown_after_dispatch_remains_unknown(self):
         original=self.executor
-        for case in ('uncertain','probe_timeout','corrupt'):
-            r=self.request('current-'+case+'-001')
+        for op in ('reorder','undo'):
+            r=self.request('current-'+op+'-001',undo='previous-order-001' if op=='undo' else None)
+            sent=[]
             def executor(host,target,wire,timeout):
+                sent.append(wire['op'])
                 if wire['op']=='capabilities':
-                    if case=='probe_timeout':raise TimeoutError('slow')
-                    if case=='corrupt':return {'broken':True}
                     return original(host,target,wire,timeout)
                 return dict(schema='rack-host-result@1',action_id=r['action_id'],status='unknown',
                             error=dict(code='recovery_error'))
             self.actions.executor=executor
             self.assertEqual(self.actions.call(r,r['op'],self.actions.timer()+20)['status'],'unknown')
+            self.assertEqual(sent,['capabilities',op])
+
+    def test_probe_failure_is_terminal_without_dispatch_and_releases_host(self):
+        original=self.executor
+        for op in ('reorder','undo'):
+            for case in ('timeout','transport','corrupt','unavailable','deadline'):
+                with self.subTest(op=op,case=case):
+                    r=self.request('probe-'+op+'-'+case+'-001',undo='previous-order-001' if op=='undo' else None)
+                    sent=[];timeouts=[]
+                    def executor(host,target,wire,timeout):
+                        sent.append(wire['op'])
+                        timeouts.append(timeout)
+                        if case=='timeout':raise TimeoutError('synthetic busy host')
+                        if case=='transport':raise OSError('synthetic transport')
+                        if case=='corrupt':return {'broken':True}
+                        if case=='unavailable':return dict(schema='rack-host-result@1',status='recovery_error')
+                        caps=original(host,target,wire,timeout)
+                        self.actions.timer=lambda:12.5
+                        return caps
+                    old_timer=self.actions.timer
+                    if case=='deadline':self.actions.timer=lambda:0
+                    self.actions.executor=executor
+                    try:answer=self.actions.post(r)[1]
+                    finally:self.actions.timer=old_timer
+                    self.assertEqual(answer['status'],'rejected',answer)
+                    self.assertIs(answer.get('effects'),False)
+                    self.assertEqual(answer['error']['code'],'preflight_unavailable')
+                    self.assertIn('no se envió',answer['error']['message'])
+                    self.assertEqual(sent,['capabilities'])
+                    self.assertLessEqual(max(timeouts),.5)
+                    self.actions.executor=original
+                    self.assertEqual(self.actions.get(r['action_id'])[1],answer)
+                    self.assertEqual(self.actions.post(r)[1],answer)
+                    with self.engine.connect() as db:
+                        self.assertIsNone(db.execute('SELECT action_id FROM host_actions WHERE action_id=?',(r['action_id'],)).fetchone())
+                    # A new ID can proceed, even on the same host.
+                    next_request=self.request('after-'+op+'-'+case+'-001')
+                    self.assertEqual(self.actions.post(next_request)[1]['status'],'applied')
 
     def test_old_capabilities_without_reorder_metadata_never_dispatch(self):
         self.payload['hosts'][0]['snapshot']['control'].pop('reorder_groups')
@@ -195,6 +233,29 @@ class ReorderChannelTests(unittest.TestCase):
         result=subprocess.run(['node',str(BASE/'tests/reorder-ui-check.js')],input=json.dumps(dict(js=source,css=(BASE/'index.html').read_text().split('<style>',1)[1].split('</style>',1)[0],fixture=fixture)),text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('UI reorder OK',result.stdout)
+
+    def test_recovery_receipt_survives_its_cached_pending_snapshot(self):
+        class Crash(BaseException):pass
+        initial=browser_fixture(self.engine.view())
+        r=self.request('recovery-ui-00001')
+        wire={k:v for k,v in dict(r,schema='rack-host-control@1').items() if k!='host'}
+        self.engine.reorder_boundary=lambda phase:(_ for _ in ()).throw(Crash()) if phase=='edited' else None
+        with self.assertRaises(Crash):self.engine.handle(wire)
+        pending=browser_fixture(self.engine.view())
+        for row in pending['hosts'][0]['snapshot']['tasks']:row['priority']=self.tasks[str(row['id'])]['priority']
+        pending['hosts'][0]['snapshot']['groups'][0]['status']='Paused'
+        self.engine.reorder_boundary=lambda phase:None
+        self.assertTrue(self.engine.reconcile())
+        answer=self.engine.handle(wire)
+        self.assertEqual(answer['status'],'applied')
+        self.assertEqual(pending['hosts'][0]['snapshot']['control']['revision'],answer['revision'])
+        source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
+        harness=(BASE/'tests/reorder-ui-check.js').read_text().split('(async()=>{',1)[0]
+        script=harness+(BASE/'tests/recovery-ui-check.js').read_text()
+        result=subprocess.run(['node','-e',script],input=json.dumps(dict(js=source,fixture=initial,pending=pending,answer=answer)),
+                              text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('Recovery snapshot OK',result.stdout)
 
 
 def browser_fixture(control=None):

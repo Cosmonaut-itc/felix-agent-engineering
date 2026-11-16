@@ -992,6 +992,17 @@ host rechazó el undo exacto sin efectos: puede haber empezado una tarea o
 haber entrado otra. Las pausas muestran el motivo concreto. Una recuperación
 pendiente muestra «En pausa recuperando…» y su propietario. La presión nueva
 conserva el orden aplicado y entrega la pausa a la guardia.
+La banda de histéresis conserva el estado abierto anterior al reorder; sólo
+una decisión fresca `pausar` entrega la pausa a la guardia. Una instantánea
+de recuperación que aún nombra la acción ya confirmada no reemplaza su
+recibo terminal, aunque tenga igual revisión. Una pausa nueva observada con
+esa misma revisión sí se muestra.
+
+Si falla el sondeo de capacidades antes de enviar reorder o undo, el rack
+guarda un rechazo terminal `preflight_unavailable`, `effects=false`, con el
+motivo «la acción no se envió». GET conserva ese rechazo y otra acción puede
+continuar. El sondeo tiene plazo de 0,5 s, menor que la espera del candado del
+host; `unknown` se conserva si la mutación pudo llegar al controlador.
 
 El límite es 64 pendientes; una fila mayor explica «Fila demasiado larga para
 reordenar de una vez». Además, el host rechaza antes de pausar un plan que

@@ -63,9 +63,16 @@ run('render(structuredClone(fixture));globalThis.h=S.hosts[0]');
  assert.equal(run('cancelled[0]'),true);
  // Touch outside the handle preserves vertical scroll and never captures.
  run('DRAG=null');
- for(const fn of listeners.pointerdown) fn({target:{closest:s=>s==='.fila li[data-reorder="true"]'?li:null},button:0,pointerType:'touch',pointerId:4,clientY:100,preventDefault(){throw Error('scroll captured')}});
- assert.equal(run('DRAG'),null,'touch on row body must scroll');
+ const touch={captured:0,prevented:0};
+ // Complete every field used by a permitted pointerdown before testing denial.
  li.getBoundingClientRect=()=>({top:100});li.focus=()=>{};ol.children=[li];
+ li.setPointerCapture=()=>touch.captured++;
+ const postsBeforeTouch=requests.filter(r=>r[1]?.method==='POST').length;
+ for(const fn of listeners.pointerdown) fn({target:{closest:s=>s==='.fila li[data-reorder="true"]'?li:null},button:0,pointerType:'touch',pointerId:4,clientY:100,preventDefault(){touch.prevented++}});
+ assert.equal(touch.captured,0,'touch body must not capture the pointer');
+ assert.equal(touch.prevented,0,'touch body preserves native scrolling');
+ assert.equal(run('DRAG'),null,'touch on row body must scroll');
+ assert.equal(requests.filter(r=>r[1]?.method==='POST').length,postsBeforeTouch,'touch body never POSTs');
  for(const fn of listeners.pointerdown) fn({target:{closest:s=>s==='button'?null:li},button:0,pointerId:3,clientY:100,preventDefault(){}});
  for(const fn of listeners.pointercancel || []) fn({pointerId:99});
  assert(run('DRAG!==null'),'another pointer cannot cancel the drag');

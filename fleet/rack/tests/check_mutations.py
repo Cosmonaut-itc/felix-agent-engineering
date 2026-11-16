@@ -3,6 +3,7 @@
 TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1 /usr/bin/python3 tests/check_mutations.py
 """
 import os
+import re
 from pathlib import Path
 import shutil
 import subprocess
@@ -225,6 +226,12 @@ STARTUP_CASES += (
 
 
 REORDER_CASES = (
+    ('order-probe-lock-budget','accion.py','timeout=min(.5,remaining)','timeout=min(1,remaining)','test_reorder.ReorderChannelTests.test_probe_failure_is_terminal_without_dispatch_and_releases_host'),
+    ('order-probe-not-sent','accion.py','            mutation_sent = False','            mutation_sent = True','test_reorder.ReorderChannelTests.test_probe_failure_is_terminal_without_dispatch_and_releases_host'),
+    ('order-probe-invalid-terminal','accion.py',"if current['status']!='ok':\n                        return unsent()","if current['status']!='ok':\n                        return result(request, 'unknown')",'test_reorder.ReorderChannelTests.test_probe_failure_is_terminal_without_dispatch_and_releases_host'),
+    ('order-cached-recovery-owner','index.html','source.reorder_groups?.[receipt.group]?.owner===receipt.actionId','false','test_reorder.ReorderChannelTests.test_recovery_receipt_survives_its_cached_pending_snapshot'),
+    ('order-real-pause-same-revision','index.html','source.reorder_groups?.[receipt.group]?.owner===receipt.actionId','true','test_reorder.ReorderChannelTests.test_recovery_receipt_survives_its_cached_pending_snapshot'),
+    ('order-node-crash-is-not-kill','tests/check_mutations.py',"if any(error!"+"='AssertionError' for error in errors):",'if False:','test_mutation_runner.MutationRunnerTests.test_wrapped_node_exceptions_are_not_assertion_kills'),
     ('order-coordination-visible','index.html',' || h.control?.capabilities?.reason_reorder ? order.reason', ' ? order.reason','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-context-toast','index.html',"`${action.ticket||'Sin ticket'} en lugar ${action.to} · ${action.group}`","'Orden actualizado'",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-lateral-marker','index.html',';box-shadow:inset 3px 0 var(--accent)','', 'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
@@ -248,6 +255,20 @@ REORDER_CASES = (
 )
 
 
+def assert_mutation_failure(name, result):
+    output=result.stdout+result.stderr
+    # unittest can wrap Node's crash in its own AssertionError. That wrapper
+    # does not turn a broken DOM double into evidence of the intended behavior.
+    errors=re.findall(r'(?m)^AssertionError: \d+ != \d+ : ([A-Za-z_$][\w.$]*)(?: \[[^\]\n]+\])?:[ \t]',output)
+    node_output=re.sub(r'(?m)^AssertionError: \d+ != \d+ : ', '', output)
+    errors+=re.findall(r'(?m)^([A-Za-z_$][\w.$]*)(?: \[[^\]\n]+\])?:[^\n]*\n\s+at\s',node_output)
+    if any(error!='AssertionError' for error in errors):
+        raise AssertionError(name+': excepción no capturada de Node u otro error del arnés; '
+                             'completar el doble o afirmar la conducta:\n'+output)
+    if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:
+        raise AssertionError(name+' did not fail as expected:\n'+output)
+
+
 def main():
     cases = REORDER_CASES if '--reorder-only' in sys.argv else STARTUP_CASES if '--startup-only' in sys.argv else CASES + STARTUP_CASES + REORDER_CASES
     for name,filename,before,after,test in cases:
@@ -262,8 +283,7 @@ def main():
             path.write_text(text.replace(before,after))
             result=subprocess.run([sys.executable,'-B','-m','unittest',test,'-v'],cwd=str(root/'tests'),
                                   env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),capture_output=True,text=True,timeout=20)
-            if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:
-                raise AssertionError(name+' did not fail as expected:\n'+result.stderr)
+            assert_mutation_failure(name,result)
             print(name+': caught (expected failure)')
             print('\n'.join(line for line in result.stderr.splitlines() if 'AssertionError:' in line or line.startswith('FAILED')))
     print(str(len(cases))+'/'+str(len(cases))+' mutations caught; original tree untouched.')
