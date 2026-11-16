@@ -123,7 +123,8 @@ Las reviews de cambios las hace un revisor independiente con gpt-6.1-sol en
 esfuerzo `high`. En un cambio de alto riesgo, según lo juzgue el orquestador,
 se suma opus-5.5 en `high` como segundo revisor independiente de las rondas
 completas. Cuando el usuario pide consejo, revisan juntos gpt-6.1-sol en
-`high`, opus-5.5 en `high` y gpt-6-astra en `low`, como define `felix-mode`.
+`high`, opus-5.5 en `high` y fable-5.2 en `high`, con el fallback de «Roles de
+pstack», como define `felix-mode`.
 Ningún otro modelo revisa cambios. El orquestador veta el cambio y los hallazgos.
 
 UI/UX: primero un prototipo de fidelidad baja o media aprobado por el dueño.
@@ -139,16 +140,22 @@ defaults de pstack. A partir de ahí rigen Esfuerzo y Escalado.
 | Rol de pstack | Punto de partida |
 |---------------|------------------|
 | `feature, refactoring`, `bug-fix`, `perf-issue`, `hillclimb` | Selección normal de ejecución según Modelos. En el entorno Claude, sonnet-5.5. |
-| `strongest judgment` | gpt-6-astra en `low`; opus-5.5 si la decisión es de producto. |
+| `strongest judgment` | opus-5.5 en `medium`. |
 | `judgment and prose` | El orquestador (`inherit-parent`). |
 | `how explorer`, `why investigators`, `swarm workers`, `reflect tooling` | haiku-5.5 en `low`, o DeepSeek en Go. |
 | `how explainer`, `why synthesizer`, `reflect judgment, divergent, synthesizer` | sonnet-5.5 en `medium`. |
 | `architect runners`, `arena runners` | opus-5.5; en diseño disputado (alto riesgo o empate entre los candidatos de opus-5.5, según `felix-mode`), también gpt-6.1-sol. |
-| `arena cross-judge pool` | Familia distinta del autor: gpt-6-astra si el autor es Claude, opus-5.5 si es GPT. Un panel mixto opus-5.5 y gpt-6.1-sol tiene un juez único, gpt-6-astra. |
+| `arena cross-judge pool` | fable-5.2 en `high`, juez único de todo `arena`, sea cual sea la familia de los runners. |
 | `interrogate reviewers` | Según Revisión: gpt-6.1-sol en `high`; en alto riesgo, también opus-5.5 en `high`. |
 | `thermos reviewers` | opus-5.5 en `high`. `felix-mode` no usa `thermos` para revisar cambios; la fila sólo fija el asiento si alguien lo invoca. |
 | `no-comments reviewer` | sonnet-5.5 en `medium`. Limpia comentarios antes de la review y no cuenta como revisor de cambios. |
-| Revisor del rastro de `show-me-your-work` | gpt-6-astra. |
+| Revisor del rastro de `show-me-your-work` | fable-5.2 en `high`. |
+
+**Fallback de fable-5.2.** Si el `Agent` rechaza el modelo `fable`, o el
+despacho termina sin dictamen por cuota o error, el mismo encargo pasa a
+gpt-6-astra en `high` por Transporte. Vale para el juez de `arena`, el
+revisor del rastro y el miembro fable-5.2 del Consejo. Registra la
+sustitución y su motivo.
 
 El `Agent` de pstack en Claude Code sólo acepta modelos Claude, así que la
 hoja `~/.claude/pstack-models.md` lleva el asiento Claude de cada rol. Un rol
