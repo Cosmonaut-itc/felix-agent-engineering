@@ -170,7 +170,7 @@ div.interrupted-summary{cursor:default}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="order-live" class="sr-only" aria-live="polite" aria-atomic="true"></div><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 let DRAG=null;
-const ORDER_HIGHLIGHT=new Map();
+const ORDER_HIGHLIGHT=new Map(), ORDER_RECEIPTS=new Map();
 function orderInfo(h,n){
   const info=h.control?.reorder_groups?.[n];
   const pending=PENDING.get(slotKey(h));
@@ -188,10 +188,11 @@ function announceOrder(text){
 }
 function startOrder(h,group,order,id,undoOf){
   const {info,enabled}=orderInfo(h,group);
-  if(!enabled) return;
+  if(!info || PENDING.has(slotKey(h)) || !undoOf && !enabled) return;
   const request={schema:'rack-action@1',op:undoOf?'undo':'reorder',host:h.id,action_id:newActionId(),
     dry_run:false,expected:structuredClone(info.expected)};
   if(undoOf) request.undo_of=undoOf; else request.change={order};
+  if(!undoOf && order.indexOf(id)>=8) OPEN[h.id+'/'+group]=true;
   const action={request,order:true,group,id,status:'applying'};
   PENDING.set(slotKey(h),action);persistActions();repaintActions();focusOrder(h.id,group,id);
   announceOrder('Reordenando…');sendOrder(slotKey(h),action);
@@ -212,22 +213,27 @@ function acceptOrder(key,action,data){
     const result=data.result;
     const observed=new Map(result.observed.map(t=>[t.id,t]));
     for(const t of h.tasks) if(t.group===action.group && t.state==='Queued' && observed.has(t.id)) t.priority=observed.get(t.id).priority;
+    if(result.queue_complete!==false) h.tasks=h.tasks.filter(t=>t.group!==action.group || t.state!=='Queued' || !result.before.some(r=>r.id===t.id) || observed.has(t.id));
     h.control.revision=data.revision;
     const expected={...action.request.expected,revision:data.revision,admission_revision:data.revision,
       queue_etag:result.queue_etag,queue:result.observed};
     const paused=result.group_status==='Paused';
     if(result.group_status) h.groups[action.group].status=result.group_status;
     h.control.pause_reasons={...h.control.pause_reasons,[action.group]:result.pause_reasons || []};
-    h.control.reorder_groups[action.group]={enabled:!paused,reason:paused?'No se puede reordenar mientras el grupo está pausado · '+(result.pause_reasons || []).join(', '):null,owner:null,expected};
+    h.control.reorder_groups[action.group]={enabled:!paused && result.queue_complete!==false,reason:paused?'No se puede reordenar mientras el grupo está pausado · '+(result.pause_reasons || []).map(r=>({pressure:'presión',manual:'pausa manual',ambiguous:'origen desconocido',startup:'retenido al reiniciar',handoff:'relevo',reorder:'recuperación del orden'})[r]).join(', '):result.queue_complete===false?'Fila demasiado larga para reordenar de una vez':null,owner:null,expected};
+    HOST_CONFIRMED.set(h.id,{...h.control,reorder_groups:{...h.control.reorder_groups}});
+    ORDER_RECEIPTS.set(JSON.stringify([h.id,action.group]),{host:h.id,group:action.group,revision:data.revision,generation:expected.generation,queue:result.observed,before:result.before,complete:result.queue_complete!==false,groupStatus:result.group_status});
     const marker=JSON.stringify([h.id,action.group,action.id]), until=Date.now()+2500;
     ORDER_HIGHLIGHT.set(marker,until);
     setTimeout(()=>{if(ORDER_HIGHLIGHT.get(marker)===until){ORDER_HIGHLIGHT.delete(marker);repaintActions();}},2500);
-    const text=paused?'Orden aplicado · grupo en pausa por presión':action.request.op==='undo'?'Orden restaurado':'Orden actualizado';
+    const text=paused?(result.pause_reasons?.every(r=>r==='pressure')?'Orden aplicado · grupo en pausa por presión':'Orden aplicado · grupo en pausa'):action.request.op==='undo'?'Orden restaurado':'Orden actualizado';
     announceOrder(text);
     say(text,action.request.op==='undo'?null:()=>{
       const current=S?.hosts.find(x=>x.id===h.id);
       if(current) startOrder(current,action.group,null,action.id,action.request.action_id);
     });
+  }else if(data.status==='applied'){
+    say('Orden actualizado · la fila ya avanzó');announceOrder('Orden actualizado · la fila ya avanzó');
   }else{
     const text=data.error?.code==='undo_conflict'?'La fila cambió; no se puede deshacer':data.error?.message || 'No se pudo confirmar el orden. Actualiza antes de decidir.';
     say(text);announceOrder(text);
@@ -239,7 +245,7 @@ function finishDrag(cancel=false){
   DRAG=null;
   document.removeEventListener('pointermove',d.move);document.removeEventListener('pointerup',d.up);
   document.removeEventListener('pointercancel',d.cancel);
-  const order=[...d.ol.children].map(li=>Number(li.dataset.id));
+  const order=[...d.ol.children].map(li=>Number(li.dataset.id)),visualTop=d.row.getBoundingClientRect().top;
   if(cancel) for(const li of d.initial) d.ol.appendChild(li);
   for(const li of d.ol.children){li.classList.remove('drag');li.style.transform='';li.style.transition='';}
   if(d.row.hasPointerCapture?.(d.pointer)) d.row.releasePointerCapture(d.pointer);
@@ -248,6 +254,11 @@ function finishDrag(cancel=false){
     const complete=d.info.expected.queue.map(t=>t.id);
     complete.splice(0,order.length,...order);
     startOrder(d.h,d.group,complete,Number(d.row.dataset.id));
+    const settled=[...document.querySelectorAll('.fila li')].find(li=>li.dataset.id===d.row.dataset.id && li.parentElement.dataset.host===d.h.id && li.parentElement.dataset.group===d.group);
+    if(settled && !window.matchMedia?.('(prefers-reduced-motion: reduce)').matches){
+      const dy=visualTop-settled.getBoundingClientRect().top;
+      settled.animate?.([{transform:`translateY(${dy}px)`},{transform:'translateY(0)'}],{duration:140,easing:'ease-out'});
+    }
   }else{repaintActions();focusOrder(d.h.id,d.group,Number(d.row.dataset.id));}
 }
 document.addEventListener('pointerdown',ev=>{
@@ -383,10 +394,16 @@ function activity(t){
 const dots = () => `<button type="button" class="dots" aria-label="${esc('Acciones')}" aria-expanded="false">${esc('⋯')}</button>`;
 function fila(h, n, w){
   if (!w.length) return '';
+  const pending=PENDING.get(slotKey(h)),current=h.control?.reorder_groups?.[n]?.expected;
+  if(pending?.order && pending.group===n && pending.request.op==='reorder' && current?.generation===pending.request.expected.generation &&
+      pending.request.expected.queue.every(row=>current.queue.some(r=>r.id===row.id && r.identity===row.identity))){
+    const positions=new Map(pending.request.change.order.map((id,i)=>[id,i])),old=new Map(w.map((t,i)=>[t.id,i]));
+    w=[...w].sort((a,b)=>(positions.get(a.id) ?? positions.size+old.get(a.id))-(positions.get(b.id) ?? positions.size+old.get(b.id)));
+  }
   const key = h.id+'/'+n, shown = OPEN[key] ? w : w.slice(0, 8);
   const order=orderInfo(h,n);
   const message=PENDING.get(slotKey(h))?.order || order.info?.owner || h.groups[n]?.status==='Paused' ? order.reason : '';
-  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}${message?` <span class="order-state" role="status">${esc(message)}</span>`:''}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li class="${order.info?'reorder-row':''} ${pendingClass(h,t)} ${ORDER_HIGHLIGHT.has(JSON.stringify([h.id,n,t.id]))?'order-done':''}" data-id="${esc(t.id)}" tabindex="0" data-reorder="${order.enabled}" aria-disabled="${!order.enabled}" title="${esc(order.reason || 'Arrastra o usa Alt+↑/↓ para reordenar')}" aria-busy="${PENDING.has(actionKey(h,t)) || !!PENDING.get(slotKey(h))?.order}">
+  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}${message?` <span class="order-state" role="status" data-order-host="${esc(h.id)}" data-order-group="${esc(n)}"></span>`:''}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li class="${order.info?'reorder-row':''} ${pendingClass(h,t)} ${ORDER_HIGHLIGHT.has(JSON.stringify([h.id,n,t.id]))?'order-done':''}" data-id="${esc(t.id)}" tabindex="0" data-reorder="${order.enabled}" aria-disabled="${!order.enabled}" title="${esc(order.reason || 'Arrastra o usa Alt+↑/↓ para reordenar')}" aria-busy="${PENDING.has(actionKey(h,t)) || !!PENDING.get(slotKey(h))?.order}">
     ${order.info?'<span class="h" aria-hidden="true">⠿</span>':''}<span class="pos">${i+1}</span>
     <div class="l1"><span class="tk">${esc(t.ticket||'Sin ticket')}</span><span class="t" title="${esc(what(t))}">${esc(what(t))}</span></div>
     <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}${dots()}</span>
@@ -440,6 +457,10 @@ function paint(){
   const focused=document.activeElement?.closest?.('.fila li');
   const identity=focused && [focused.parentElement.dataset.host,focused.parentElement.dataset.group,Number(focused.dataset.id)];
   document.getElementById('app').innerHTML=view();
+  for(const label of document.querySelectorAll('[data-order-host]')){
+    const host=S.hosts.find(h=>h.id===label.dataset.orderHost);
+    label.textContent=host ? orderInfo(host,label.dataset.orderGroup).reason : '';
+  }
   for(const box of document.querySelectorAll('[data-orphans]')) fillOrphans(box,S.hosts.find(h=>h.id===box.dataset.orphans));
   syncMenu();
   if(identity) focusOrder(...identity);
@@ -688,6 +709,17 @@ function render(data){
       groups:Object.fromEntries((s.groups || []).map(g=>[g.name,{...g,slots:control?.slots?.[g.name] ?? g.slots}])),
       tasks:(s.tasks || []).filter(t=>!CANCELLED.has(runKey(h,t))).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
+  for(const receipt of ORDER_RECEIPTS.values()){
+    const host=S.hosts.find(h=>h.id===receipt.host),source=data.hosts.find(h=>h.id===receipt.host)?.snapshot?.control;
+    if(!host || !source || source.generation!==receipt.generation || source.revision>=receipt.revision) continue;
+    const oldRows=source.reorder_groups?.[receipt.group]?.expected?.queue || [];
+    if(receipt.complete) host.tasks=host.tasks.filter(t=>t.group!==receipt.group || t.state!=='Queued' || !receipt.before.some(r=>r.id===t.id) || receipt.queue.some(r=>r.id===t.id));
+    for(const task of host.tasks){
+      const row=receipt.queue.find(r=>r.id===task.id);
+      if(task.state==='Queued' && task.group===receipt.group && row && oldRows.some(r=>r.id===row.id && r.identity===row.identity)) task.priority=row.priority;
+    }
+    if(receipt.groupStatus && host.groups[receipt.group]) host.groups[receipt.group].status=receipt.groupStatus;
+  }
   for(const a of PENDING.values()){
     const h=S.hosts.find(h=>h.id===a.request.host);
     if(h && a.task){

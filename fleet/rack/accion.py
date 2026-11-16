@@ -364,6 +364,8 @@ class Actions:
             current = next((h for h in payload['hosts'] if h['id'] == request['host']), None)
             if not current or not current['fresh'] or current.get('age') is None or current['age'] > 45 or self.clock() - payload['now'] > 45:
                 return ERRORS['stale_state']
+            if (request['op']=='reorder' or 'queue' in request.get('expected',{})) and not isinstance(((current.get('snapshot') or {}).get('control') or {}).get('reorder_groups'),dict):
+                return 'Falta actualizar el control de este host.'
             if request['op'] == 'mode' and ((current.get('snapshot') or {}).get('control') or {}).get('capabilities', {}).get('mode') is not True:
                 return 'Falta actualizar el control de este host.'
             return None

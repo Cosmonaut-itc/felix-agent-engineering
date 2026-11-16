@@ -1081,3 +1081,93 @@ la guardia de esta versión. Sólo emite grupos, ids y estados; verifica el PID
 de su Popen y su config antes de terminarlo. El ensayo no instala ni demuestra
 reducción de espera real. `tests/test_private_trickle.py` valida la integración
 del arnés con el contrato A mediante dobles, sin daemon.
+
+### Reordenar la Mini y deshacer (U3.6)
+
+El motor comparte `control.lock`, la autoridad y el índice durable `host_actions`
+con lugares y horario. No usa `switch`, no retira tareas ni crea ids nuevos.
+El desk conserva `reorder=false` hasta U3.7. La Mini conserva también la
+capacidad **deshabilitada mientras no se acredite el contrato de clientes**:
+el cliente inspeccionado `~/.local/bin/pueue.py:1925` hace `start <id>` durante
+una cancelación en fila. No hay una opción JSON, variable de entorno ni botón
+para eludir este cierre. El daemon privado de aceptación inyecta el contrato;
+no se ejecuta un canario sobre la fila compartida. El primer uso real será de
+Felix desde el panel después de cerrar esa dependencia y pasar aceptación.
+
+Las pausas y aperturas manuales pasan por `control.py pausar GRUPO --host mini`
+y `control.py reanudar GRUPO --host mini`. Los clientes pueden hacer `add`
+ordinario, pero no `add --immediate`, `start ID`, pausa/apertura directa de grupo
+ni editar prioridades durante una acción. Stock no permite atribuir una pausa
+redundante externa. Una pausa manual, por presión, ambigua o retenida al arrancar
+impide reordenar y se muestra con su motivo. El instalador legacy también tiene
+`start -g`, pero rechaza la autoridad adoptada antes de llegar a ese camino.
+
+La petición `rack-host-control@1` lleva revisión, generación, revisión de
+admisión, grupo, `queue_etag`, identidades opacas y la permutación completa de
+Queued. El token se calcula en el host con id, creación, grupo, comandos, path,
+label, entorno y dependencias; esos campos privados no salen en el recibo.
+El destino inicial asigna N..1, omitiendo prioridades que ya coinciden. Antes
+conserva el vector exacto, incluidos negativos y empates. Las dependencias
+siguen decidiendo qué tareas son elegibles.
+
+La secuencia es intención durable con propietario → `pause --wait` → confirmar
+pausa y cotejar fila exacta → intención por edición → helper TOML fijo por id →
+verificar identidad/campos/prioridades → reconciliar cuotas → sensores frescos
+→ admitir por grupo → recibo durable. Un alta posterior al cotejo conserva su
+id y prioridad y queda fuera del plan; invalida Deshacer estricto. No se edita
+una tarea con alias expandido ni formatos que el helper no reconoce: se devuelve
+`edit_unsafe` antes de pausar. El helper reconoce la clave serializada `command`
+de Pueue 4.0.4, consume completas las cadenas TOML multilínea y sólo sustituye
+el entero de `priority`; no registra el documento ni acepta rutas del navegador.
+Usa directorio 0700, plan 0600 y TMPDIR privado.
+
+El mismo recuperador de `control.py` atiende acciones desde la guardia existente
+`local.pao.pueue-mini.guard` (60 s) y desde `preparar`; no se agrega job ni bucle.
+El preparador resuelve Locked propio antes del restore stock, con identidad,
+previous_status Queued y ausencia de log. Stashed ajeno y tareas terminales no
+se reviven. Si queda un cliente/editor vivo, se revoca su plan y sólo se señala
+un PID cuyo inicio de kernel coincide (microsegundos Darwin, boot/ticks Linux).
+No se inicia otra edición hasta confirmar su salida. `enqueue ID` se limita al
+id anotado y se persiste con edit, apertura o repetición de nuestra propia pausa.
+La incertidumbre conserva el grupo cerrado y muestra «En pausa recuperando…»
+y el action_id propietario. Los switches de acciones nuevas no abandonan una
+acción aceptada; consultas y ensayos no recuperan ni escriben. El índice de
+id/digest/resultado no se poda.
+
+Deshacer usa otro action_id, el recibo anterior y el estado actual completo;
+restaura las prioridades anteriores exactas. La ventana del host es 60 s.
+Cambios de conjunto, identidad, estado, prioridades, revisión o generación, o
+vencimiento, devuelven `undo_conflict` sin efectos: «La fila cambió; no se puede
+deshacer». Una tarea que empezó al abrir el grupo puede invalidarlo enseguida.
+Si sube la presión durante el reordenado, el orden queda aplicado y la pausa
+pasa a la guardia; no se abre sólo porque la pausa empezó siendo nuestra.
+
+Los límites de entrada son 64 pendientes y 16 KiB. La pausa tiene presupuesto
+común de 3 s y RPC de hasta 1 s; antes de pausar se estima el coste de las
+ediciones necesarias y se rechaza si no cabe. Las cifras y el margen se
+contrastan en `tests/private_reorder.py` con 5/64 pendientes y una fixture de
+1500 Stashed de al menos 9,4 MB; ese guion amplía el presupuesto **sólo dentro
+del daemon privado para medir**, nunca desde el protocolo. No se promete que
+64 escrituras quepan en 3 s. La cadencia de 60 s impide prometer recuperación
+≤10 s; disco/socket averiados, procesos ambiguos o presión sostenida no tienen
+un peor caso finito. Véase la evidencia del encargo U3.6 antes de habilitar.
+
+Actualización sin reiniciar `pueued`, a ejecutar sólo en la Mini adoptada:
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-reorder.py --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-reorder.py
+```
+
+El ensayo valida configuración, autoridad, generación, cuotas e intenciones
+antes de cualquier copia. La publicación conserva `control.py.u36-before`,
+publica el helper y después el controlador bajo el mismo candado. No releva
+Brew, no toca LaunchAgents y no cambia cuotas ni modo. La UI/canal del rack se
+actualizan con su procedimiento existente; el daemon Pueue sigue vivo. No se
+ha ejecutado esta instalación como parte del encargo.
+
+Para revertir: `install-reorder.py --retirar --seco`, después
+`install-reorder.py --retirar`. Si hay acciones pendientes se rechaza la
+reversión: primero recuperarlas con la versión que las entiende. Se conserva
+el helper inerte, los recibos y la autoridad. Restaurar además la UI del rack
+con la versión anterior si se revierte su publicación.

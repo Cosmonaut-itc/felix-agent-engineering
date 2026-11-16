@@ -1,6 +1,8 @@
 #!/usr/bin/python3 -I
 """Restricted Pueue 4.0.4 TOML editor. Never log the editing document."""
 import json
+import hashlib
+import subprocess
 import os
 from pathlib import Path
 import re
@@ -142,6 +144,19 @@ def preflight(task):
     document(raw, task['id'], task['priority'])
 
 
+def verify_locked(plan, snapshot):
+    task=snapshot['tasks'].get(str(plan['id']))
+    fields=('id','created_at','group','command','original_command','path','envs','dependencies','label')
+    if (task is None or set(task['status'])!={'Locked'}
+            or set(task['status']['Locked']['previous_status'])!={'Queued'}
+            or snapshot['groups'][task['group']]['status']!='Paused'
+            or task['priority']!=plan['expected_priority']):
+        raise ValueError('edit_unsafe')
+    identity=hashlib.sha256(json.dumps({k:task[k] for k in fields},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+    if identity!=plan['identity']:
+        raise ValueError('edit_unsafe')
+
+
 def private_file(path):
     info = path.lstat()
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
@@ -174,8 +189,17 @@ def main():
         stream.flush(); os.fsync(stream.fileno())
     if (root/'revoked').exists():
         raise ValueError('edit_unsafe')
+    if birth(plan['daemon']['pid']) != plan['daemon']['birth']:
+        raise ValueError('edit_unsafe')
+    reply=subprocess.run([plan['binary'],'--config',str(root/'config.json'),'status','--json'],
+                         check=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=1)
+    verify_locked(plan,json.loads(reply.stdout))
+    if birth(plan['daemon']['pid']) != plan['daemon']['birth']:
+        raise ValueError('edit_unsafe')
     raw = target.read_bytes()
     changed = document(raw, plan['id'], plan['priority'])
+    if (root/'revoked').exists() or birth(plan['client']['pid'])!=plan['client']['birth']:
+        raise ValueError('edit_unsafe')
     with target.open('wb') as stream:
         stream.write(changed); stream.flush(); os.fsync(stream.fileno())
 

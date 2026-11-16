@@ -225,6 +225,8 @@ STARTUP_CASES += (
 
 
 REORDER_CASES = (
+    ('order-reply-64k','desk_action.py',"limit = 65536 if request.get('schema')","limit = 16384 if request.get('schema')",'test_reorder.ReorderChannelTests.test_64_receipt_crosses_transport_and_cancel_keeps_16k'),
+    ('order-wire-limit','accion.py','if len(raw) > 16384:', 'if False:', 'test_reorder.ReorderChannelTests.test_closed_fields_budget_and_old_host_translation'),
     ('order-unknown-no-toast','index.html',"    announceOrder('No se pudo confirmar el orden · consultando');", "    say('Orden actualizado');announceOrder('No se pudo confirmar el orden · consultando');", 'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-confirmation-highlight','index.html','}},2500);','}},25);','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-toast-eight-seconds','index.html',"setTimeout(()=>toast.textContent='', 8000)","setTimeout(()=>toast.textContent='', 1000)",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),

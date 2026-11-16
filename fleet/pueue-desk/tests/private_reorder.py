@@ -38,10 +38,17 @@ def main():
         def __init__(self):
             super().__init__('/opt/homebrew/bin/pueue',env=env,cwd=str(root))
             self.edit_settings=settings
+            self.timings=[]
         def call(self,*argv):
-            return subprocess.run([self.binary,'--config',str(cfg),*map(str,argv)],text=True,
+            begun=time.monotonic()
+            try:return subprocess.run([self.binary,'--config',str(cfg),*map(str,argv)],text=True,
                 capture_output=True,check=True,timeout=self.timeout or 5,env=env,cwd=str(root)).stdout
-    p=Private();daemon=None
+            finally:self.timings.append((str(argv[0]),time.monotonic()-begun))
+    p=Private();daemon=None;owned_processes=[];sensor_times=[];edit_times=[]
+    sensor=c.pressure_mini
+    def measured_sensor(*args,**kwargs):
+        begun=time.monotonic();sensor(timeout=1);sensor_times.append(time.monotonic()-begun)
+        return dict(load=0,memory=1)  # private admission is synthetic; real sampling cost is included
     out=(root/'daemon.log').open('a')
     def emit(event,**fields):print(json.dumps(dict(event=event,**fields),sort_keys=True),flush=True)
     def start():
@@ -54,12 +61,22 @@ def main():
             try:p.status();return
             except subprocess.SubprocessError:time.sleep(.03)
         raise RuntimeError('private startup timeout')
+    def descendants():
+        rows=subprocess.check_output(['/bin/ps','-axo','pid=,ppid='],text=True).splitlines()
+        parents={int(a):int(b) for a,b in (row.split() for row in rows)}
+        found={daemon.pid};changed=True
+        while changed:
+            prior=set(found);found.update(pid for pid,parent in parents.items() if parent in found);changed=found!=prior
+        return [dict(pid=pid,birth=c.priority_helper().birth(pid)) for pid in found if pid!=daemon.pid]
     def stop(hard=False):
         if daemon is None or daemon.poll() is not None:return
         assert int(pid.read_text())==daemon.pid
         comm=subprocess.check_output(['/bin/ps','-p',str(daemon.pid),'-o','comm='],text=True).strip()
         cmd=subprocess.check_output(['/bin/ps','-p',str(daemon.pid),'-o','command='],text=True)
         assert Path(comm).name=='pueued' and str(cfg) in cmd
+        for group,row in p.status()['groups'].items():
+            if row['status']=='Running':p.call('pause','--wait','-g',group)
+        owned_processes.extend(descendants())
         for ident,t in p.status()['tasks'].items():
             if isinstance(t['status'],dict) and set(t['status']) & {'Running','Paused'}:p.call('kill',ident)
         daemon.kill() if hard else daemon.terminate();daemon.wait(timeout=5)
@@ -71,6 +88,12 @@ def main():
         order=[r['id'] for r in expected['queue']];order.insert(1,order.pop())
         return dict(schema=c.HOST_SCHEMA,op='undo' if undo else 'reorder',action_id=ident,
              dry_run=False,expected=expected,**(dict(undo_of=undo) if undo else dict(change=dict(order=order))))
+    def wait_running(ids):
+        end=time.monotonic()+5
+        while time.monotonic()<end:
+            if all('Running' in p.status()['tasks'][str(i)]['status'] for i in ids):return
+            time.sleep(.03)
+        raise AssertionError('private blockers did not run')
     def add(command='true',priority=0,label=None,stash=False):
         argv=['add','-g','suites','--priority='+str(priority)]
         if stash:argv+=['--stashed']
@@ -87,20 +110,27 @@ def main():
         directory=root/'control';directory.mkdir(mode=0o700)
         engine=c.MiniControl(p,directory,generation=lambda:'private-'+str(daemon.pid))
         engine.coordinated_reorder=True
+        engine.reorder_host_ready=lambda state:True  # private daemon has no launchd owner
         # Benchmark acceptance explicitly measures beyond the provisional bound.
-        engine.reorder_budget=60;engine.reorder_rpc=5;engine.reorder_cost=.001
-        with c.locked(directory),patch.object(c,'pressure_mini',return_value=dict(load=0,memory=1)):
+        engine.reorder_budget=180;engine.reorder_rpc=5;engine.reorder_cost=.001
+        with c.locked(directory),patch.object(c,'pressure_mini',side_effect=measured_sensor):
             engine.adopt(pid)
+            original_edit=engine.edit_priority
+            def timed_edit(*args):
+                begun=time.monotonic()
+                try:return original_edit(*args)
+                finally:edit_times.append(time.monotonic()-begun)
+            engine.edit_priority=timed_edit
             blockers=[add('sleep 400') for _ in range(3)]
-            end=time.monotonic()+3
-            while time.monotonic()<end:
-                if all('Running' in p.status()['tasks'][str(i)]['status'] for i in blockers):break
-                time.sleep(.03)
+            wait_running(blockers)
             for i in range(5):add("printf '  α\npriority = 777\n  '",[-2,-2,-8,-12,0][i], '  unicode α  ' if i%2 else None)
             before=p.status()
-            r=request('private-order-0001');started=time.monotonic();answer=engine.handle(r);elapsed=time.monotonic()-started
+            marks=[]
+            engine.reorder_boundary=lambda phase:marks.append((phase,time.monotonic()))
+            r=request('private-order-0001');rpc_begin=len(p.timings);sensor_begin=len(sensor_times);edit_begin=len(edit_times);started=time.monotonic();answer=engine.handle(r);elapsed=time.monotonic()-started
             assert answer['status']=='applied',answer
-            emit('pipeline',pending=5,history=0,seconds=elapsed,status=answer['status'])
+            phase_times=dict(marks)
+            emit('pipeline',pending=5,history=0,seconds=elapsed,paused_seconds=phase_times.get('start_effect',phase_times['terminal'])-phase_times['prepared'],accepted_to_receipt_seconds=phase_times['terminal']-phase_times['prepared'],status=answer['status'],max_rpc_seconds=max([v for _,v in p.timings[rpc_begin:]] or [0]),max_edit_seconds=max(edit_times[edit_begin:] or [0]),sensor_seconds=sum(sensor_times[sensor_begin:]),pause_budget=180,rpc_budget=5,private_synthetic_admission=True)
             for ident,task in before['tasks'].items():
                 after=p.status()['tasks'][ident]
                 assert {k:v for k,v in task.items() if k!='priority'}=={k:v for k,v in after.items() if k!='priority'}
@@ -133,6 +163,9 @@ def main():
                 time.sleep(.03)
             else:raise AssertionError('no private Locked')
             editor_pid=int((own/'pid').read_text());editor_birth=c.priority_helper().birth(editor_pid)
+            owned_processes.append(dict(pid=editor_pid,birth=editor_birth))
+            editor_parent=int(subprocess.check_output(['/bin/ps','-p',str(editor_pid),'-o','ppid='],text=True))
+            if editor_parent not in (1,cli.pid):owned_processes.append(dict(pid=editor_parent,birth=c.priority_helper().birth(editor_parent)))
             c.atomic_json(own/'editor.json',dict(pid=editor_pid,birth=editor_birth))
             # root must be a direct child of the private authority for recovery.
             inside=directory/'orphan';own.rename(inside)
@@ -180,16 +213,20 @@ def main():
             # Startup intentionally retained Paused groups; open only our groups
             # in the synthetic authority with fresh readings and no real queue.
             for group in c.MINI_PROFILE:engine.manual(group,resume=True)
+            engine.guard(dict(load=0,memory=1))  # pressure ownership is released by the guard, never manual()
             blockers=[add('sleep 400') for _ in range(3)]
-            time.sleep(.2)
+            wait_running(blockers)
             for count in (5,64):
                 queued=[t for t in p.status()['tasks'].values() if t['group']=='suites' and 'Queued' in t['status']]
                 while len(queued)<count:
                     add();queued=[t for t in p.status()['tasks'].values() if t['group']=='suites' and 'Queued' in t['status']]
+                marks=[]
+                engine.reorder_boundary=lambda phase:marks.append((phase,time.monotonic()))
                 r=request('private-large-'+str(count).zfill(3))
-                started=time.monotonic();answer=engine.handle(r);elapsed=time.monotonic()-started
+                rpc_begin=len(p.timings);sensor_begin=len(sensor_times);edit_begin=len(edit_times);started=time.monotonic();answer=engine.handle(r);elapsed=time.monotonic()-started
                 assert answer['status']=='applied',answer
-                emit('pipeline',pending=count,history=1500,state_bytes=(data/'state.json').stat().st_size,seconds=elapsed,status=answer['status'])
+                phase_times=dict(marks)
+                emit('pipeline',pending=count,history=1500,state_bytes=(data/'state.json').stat().st_size,seconds=elapsed,paused_seconds=phase_times.get('start_effect',phase_times['terminal'])-phase_times['prepared'],accepted_to_receipt_seconds=phase_times['terminal']-phase_times['prepared'],status=answer['status'],max_rpc_seconds=max([v for _,v in p.timings[rpc_begin:]] or [0]),max_edit_seconds=max(edit_times[edit_begin:] or [0]),sensor_seconds=sum(sensor_times[sensor_begin:]),pause_budget=180,rpc_budget=5,private_synthetic_admission=True)
             emit('PASS',private_daemon=True,no_launchagents_created=True)
     finally:
         if daemon and daemon.poll() is None:
@@ -198,7 +235,14 @@ def main():
                 for ident,t in p.status()['tasks'].items():
                     if isinstance(t['status'],dict) and set(t['status']) & {'Running','Paused'}:p.call('kill',ident)
             finally:stop()
-        emit('cleanup',daemon_exited=daemon is None or daemon.poll() is not None,launchagents_created=0)
+        time.sleep(.1)
+        for identity in owned_processes:
+            if identity['birth'] and c.priority_helper().birth(identity['pid'])==identity['birth']:
+                os.kill(identity['pid'],signal.SIGTERM)
+        time.sleep(.1)
+        remaining=[p['pid'] for p in owned_processes if p['birth'] and c.priority_helper().birth(p['pid'])==p['birth']]
+        emit('cleanup',daemon_exited=daemon is None or daemon.poll() is not None,launchagents_created=0,remaining_owned_pids=remaining)
+        assert not remaining,'private owned child still alive'
         out.close()
 
 

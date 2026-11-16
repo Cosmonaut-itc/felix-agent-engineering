@@ -24,12 +24,14 @@ class ReorderChannelTests(unittest.TestCase):
         self.p.call=lambda *args:self.p.groups['suites'].update(status='Paused' if args[0]=='pause' else 'Running')
         self.p.binary='fake-no-real-binary'
         self.engine.coordinated_reorder=True
+        self.engine.reorder_host_ready=lambda state:True
         def edit(action,ident,priority,deadline):
             self.engine.reorder_save(action,'edit_intent');self.tasks[str(ident)]['priority']=priority
             self.engine.reorder_save(action,'editing')
         self.engine.edit_priority=edit
         self.pressure=patch.object(c,'pressure_mini',return_value=dict(load=0,memory=1))
         self.pressure.start();self.addCleanup(self.pressure.stop)
+        self.payload['hosts'][0]['snapshot']['control']=self.engine.view()
 
     def request(self,ident='public-order-0001',undo=None,dry_run=False):
         expected=self.engine.view()['reorder_groups']['suites']['expected']
@@ -78,6 +80,12 @@ class ReorderChannelTests(unittest.TestCase):
         r['expected']['queue'][0]['id']=True
         with self.assertRaises(ValueError):a.validate(r)
 
+    def test_old_capabilities_without_reorder_metadata_never_dispatch(self):
+        self.payload['hosts'][0]['snapshot']['control'].pop('reorder_groups')
+        result=self.actions.post(self.request())[1]
+        self.assertEqual((result.get('error') or {}).get('code'),'unsupported',result)
+        self.assertEqual(self.calls,[])
+
     def test_view_sanitization_and_disabled_reason(self):
         v=a.host_channel.control(self.engine.view())
         self.assertTrue(v['capabilities']['reorder'])
@@ -97,6 +105,42 @@ class ReorderChannelTests(unittest.TestCase):
         self.assertEqual(self.calls,[])
         self.assertEqual(handler()[1]['status'],'applied')
         self.owner.allows.assert_called_with('100.100.0.2',fresh=True)
+
+    def test_64_receipt_crosses_transport_and_cancel_keeps_16k(self):
+        self.tasks={str(i):dict(copy.deepcopy(self.tasks['1']),id=i,priority=-i) for i in range(1,65)}
+        self.engine.reorder_cost=.001
+        self.engine.reorder_budget=60  # serialization/transport test, not a timing benchmark
+        r=self.request();r['change']['order']=list(range(64,0,-1))
+        answer=self.actions.post(r)[1]
+        self.assertEqual(answer['status'],'applied',answer)
+        self.assertGreater(len(json.dumps(answer)),16384)
+        controller=self.root/'.local/lib/pao-pueue-mini/control.py';controller.parent.mkdir(parents=True)
+        wire_answer=dict(answer,schema='rack-host-result@1')
+        controller.write_text('import json\nprint('+repr(json.dumps(wire_answer))+')\n')
+        wire=dict(schema='rack-host-control@1',op='status',action_id=r['action_id'])
+        try:result=a.Executor(home=self.root)(self.host,'host-control',wire,timeout=3)
+        except Exception as error:self.fail('El recibo válido de 64 filas debe atravesar el transporte: '+str(error))
+        self.assertEqual(result['status'],'applied')
+        self.assertEqual(len(result['result']['before']),64)
+        with self.assertRaises(ValueError):
+            a.desk_channel.exchange(['/usr/bin/python3','-I',str(controller)],dict(schema='rack-cancel@1',op='status'),subprocess.Popen,{},3)
+
+    def test_recovery_age_chain_identity_and_readonly(self):
+        import sqlite3
+        from test_rack import snapshot
+        home=self.root/'age-home';path=home/'.local/state/pao/pueue-mini/control.sqlite3';path.parent.mkdir(parents=True)
+        task=self.tasks['1'];identity=c.MiniControl.task_identity(task)
+        stamps=['2026-11-16T12:00:00Z','2026-11-16T12:01:00Z','2026-11-16T12:02:00Z']
+        with sqlite3.connect(path) as db:
+            db.execute('CREATE TABLE host_actions (body TEXT)')
+            for before,after in zip(stamps,stamps[1:]):
+                db.execute('INSERT INTO host_actions VALUES (?)',(json.dumps(dict(kind='reorder',recovered_enqueued={'1':dict(identity=identity,before=before,after=after)})),))
+        before=path.read_bytes();links=snapshot.mini_reorder_ages(home)
+        self.assertEqual(path.read_bytes(),before)
+        self.assertEqual(snapshot.original_queue_age(task,stamps[-1],links),snapshot.epoch(stamps[0]))
+        changed=dict(task,command='different')
+        self.assertEqual(snapshot.original_queue_age(changed,stamps[-1],links),snapshot.epoch(stamps[-1]))
+        self.assertEqual(snapshot.original_queue_age(task,'2026-11-16T12:03:00Z',links),snapshot.epoch('2026-11-16T12:03:00Z'))
 
     def test_production_ui_reorder(self):
         fixture=browser_fixture(self.engine.view())

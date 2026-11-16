@@ -34,6 +34,7 @@ for _name in dir(test_slots.SlotsTests):
 
 def setup(self):
     test_slots.SlotsTests.setUp(self)
+    self.change_state(pid_file=str(self.root/'pueue.pid'))
     old_call=self.p.call
     def call(*args):
         if args[0]=='enqueue':
@@ -45,6 +46,7 @@ def setup(self):
     self.tasks = {str(i):task(i,p) for i,p in enumerate([0,-2,-2,-8,-12],1)}
     self.p.status = lambda: dict(groups=copy.deepcopy(self.p.groups),tasks=copy.deepcopy(self.tasks))
     self.engine.coordinated_reorder = True
+    self.engine.reorder_host_ready=lambda state:True
     self.engine.reorder_cost = .001
     self.engine.edit_priority = lambda *a: fake_edit(self,*a)
     self.pressure = patch.object(control,'pressure_mini',return_value=dict(load=0,memory=1))
@@ -52,6 +54,7 @@ def setup(self):
 
 
 def fake_edit(self, action, ident, priority, deadline):
+    if set(self.tasks[str(ident)]['status'])!={'Queued'}:raise ValueError('fake stale task')
     action['editing_id'] = ident
     self.engine.reorder_save(action,'edit_intent')
     t=self.tasks[str(ident)]; t['status']={'Locked':dict(previous_status=t['status'])}
@@ -132,6 +135,7 @@ def test_dry_capabilities_have_no_effect_even_with_pending(self):
     self.engine.view();self.assertEqual(self.fingerprint(),before);self.assertEqual(self.p.calls,[])
     self.engine.reorder_boundary=lambda p: (_ for _ in ()).throw(Crash()) if p=='prepared' else None
     with self.assertRaises(Crash):self.engine.handle(self.order_request('pending-0000001'))
+    self.engine.reorder_boundary=lambda p:None
     before=self.fingerprint();self.engine.view();self.engine.handle(self.order_request('dryagain-000001',dry=True))
     self.assertEqual(self.fingerprint(),before);self.assertEqual(self.p.calls,[])
 
@@ -278,19 +282,20 @@ def test_second_fresh_sensor_after_start_intent_blocks_open(self):
     self.pressure.stop()
     with patch.object(control,'pressure_mini',side_effect=[dict(load=0,memory=1),dict(load=4,memory=1)]):
         result=self.engine.handle(self.order_request())
-    self.assertEqual(result['status'],'applying')
+    self.assertEqual(result['status'],'applied')
     self.assertEqual(self.p.groups['suites']['status'],'Paused')
     self.assertNotIn(('start','-g','suites'),self.p.calls)
 
 
 def test_undo_stale_identity_priority_or_expiry_never_pauses(self):
     r=self.order_request();self.assertEqual(self.engine.handle(r)['status'],'applied')
-    for n,scenario in enumerate(('priority','created','expired','missing')):
+    for n,scenario in enumerate(('priority','created','expired','missing','none')):
         before=copy.deepcopy(self.tasks);now=self.now
         if scenario=='priority':self.tasks['1']['priority']+=9
         if scenario=='created':self.tasks['1']['created_at']='2026-11-16T12:01:00Z'
         if scenario=='expired':self.now+=61
         if scenario=='missing':self.tasks.pop('1')
+        if scenario=='none':self.tasks.clear()
         calls=len(self.p.calls);request=self.order_request('strict-undo-'+str(n).zfill(5),undo=r['action_id'])
         result=self.engine.handle(request)
         self.assertEqual((result.get('error') or {}).get('code'),'undo_conflict',result)
@@ -320,6 +325,134 @@ def test_64_pending_65_rejects_and_views_are_pure(self):
     with self.assertRaises(ValueError):self.engine.handle(r)
     self.assertEqual(self.p.calls,[])
 
+def test_preparer_intent_queue_complete_boundaries_recover_owned_lock(self):
+    self.engine.reorder_boundary=lambda p:(_ for _ in ()).throw(Crash()) if p=='client_sent' else None
+    r=self.order_request()
+    with self.assertRaises(Crash):self.engine.handle(r)
+    self.engine.reorder_boundary=lambda p:None
+    initial=self.p.status();initial['tasks']['9']=dict(task(9),status={'Stashed':dict(enqueue_at=None)})
+    self.change_state(pid_file=str(self.root/'pueue.pid'))
+    queuepath=self.root/'state.json';config=dict(data=self.root,pid_file=self.root/'pueue.pid')
+    for phase in ('intent','queue','complete'):
+        control.atomic_json(queuepath,initial)
+        with self.engine.connect() as db:state=self.engine.state(db)
+        state.pop('startup',None);state['reasons']={'suites':['reorder']}
+        with self.engine.connect(write=True) as db:self.engine.store(db,state)
+        def boundary(name):
+            if name==phase:raise Crash()
+        with patch.object(self.p,'status',side_effect=subprocess.CalledProcessError(1,['fake-offline'])),patch.object(control.subprocess,'run',return_value=subprocess.CompletedProcess([],1,'','')):
+            with self.assertRaises(Crash):control.prepare_start(self.engine,queuepath,config,boundary=boundary)
+            image=control.prepare_start(self.engine,queuepath,config)
+            again=control.prepare_start(self.engine,queuepath,config)
+        self.assertEqual(image,again)
+        self.assertEqual(image['tasks']['1']['status'],{'Queued':dict(enqueued_at=STAMP)})
+        self.assertEqual(image['tasks']['9']['status'],{'Stashed':dict(enqueue_at=None)})
+        self.assertTrue(all(row['status']=='Paused' for row in image['groups'].values()))
+
+
+def test_no_log_evidence_before_enqueue_and_offline_identity(self):
+    self.engine.reorder_boundary=lambda p:(_ for _ in ()).throw(Crash()) if p=='client_sent' else None
+    with self.assertRaises(Crash):self.engine.handle(self.order_request())
+    self.engine.reorder_boundary=lambda p:None
+    with self.engine.connect() as db:state=self.engine.state(db)
+    queue=self.p.status();queue['tasks']['1']['created_at']='2026-11-16T12:01:00Z'
+    with self.assertRaises(ValueError):self.engine.reorder_offline(queue,state,self.root)
+    (self.root/'task_logs').mkdir();(self.root/'task_logs/1.log').touch()
+    with self.assertRaises(ValueError):self.engine.reconcile()
+    self.assertNotIn(('enqueue','1'),self.p.calls)
+    self.assertEqual(self.p.groups['suites']['status'],'Paused')
+
+
+def test_request_bytes_limit_before_any_effect(self):
+    r=self.order_request(dry=True)
+    with patch.object(control,'canonical',return_value='x'*16385):
+        with self.assertRaises(ValueError):self.engine.handle(r)
+    self.assertEqual(self.p.calls,[])
+
+
+def test_cancel_during_edit_restores_only_surviving_queued(self):
+    initial=copy.deepcopy(self.tasks)
+    def boundary(phase):
+        if phase=='edit_effect' and '2' in self.tasks:
+            self.tasks['2']['status']={'Done':dict(enqueued_at=STAMP,start=STAMP,end=STAMP,result='Killed')}
+    self.engine.reorder_boundary=boundary
+    r=self.order_request();result=self.engine.handle(r)
+    self.assertEqual(result['status'],'unknown')
+    self.engine.reorder_boundary=lambda phase:None
+    self.assertTrue(self.engine.reconcile())
+    result=self.engine.handle(r)
+    self.assertEqual(result['status'],'aborted',result)
+    self.assertIn('Done',self.tasks['2']['status'])
+    for ident,t in self.tasks.items():
+        if 'Queued' in t['status']:self.assertEqual(t['priority'],initial[ident]['priority'])
+    self.assertEqual(self.p.groups['suites']['status'],'Running')
+    self.assertNotIn(('enqueue','2'),self.p.calls)
+
+
+def test_cancel_after_edited_keeps_historic_success_and_strict_undo(self):
+    def boundary(phase):
+        if phase=='edited':self.tasks['2']['status']={'Done':dict(enqueued_at=STAMP,start=STAMP,end=STAMP,result='Killed')}
+    self.engine.reorder_boundary=boundary
+    r=self.order_request();result=self.engine.handle(r)
+    self.assertEqual(result['status'],'applied',result)
+    self.assertIn('Done',self.tasks['2']['status'])
+    self.assertNotIn(('enqueue','2'),self.p.calls)
+
+
+def test_every_private_identity_field_blocks_foreign_repair(self):
+    self.engine.reorder_boundary=lambda p:(_ for _ in ()).throw(Crash()) if p=='client_sent' else None
+    with self.assertRaises(Crash):self.engine.handle(self.order_request())
+    self.engine.reorder_boundary=lambda p:None
+    initial=copy.deepcopy(self.tasks['1'])
+    changed=dict(created_at='2026-11-16T12:01:00Z',group='rapidas',command='different',original_command='different',path='/other-synthetic',envs={'NEW':'value'},dependencies=[99],label='different')
+    for field,value in changed.items():
+        self.tasks['1']=dict(copy.deepcopy(initial),**{field:value})
+        with self.assertRaises(ValueError,msg=field):self.engine.reconcile()
+        self.assertNotIn(('enqueue','1'),self.p.calls)
+        self.assertEqual(self.p.groups['suites']['status'],'Paused')
+
+
+def test_capabilities_do_not_create_bytecode_even_when_python_allows_it(self):
+    import sys
+    source=self.root/'source';source.mkdir()
+    (source/'editor_prioridad.py').write_bytes(Path(control.__file__).with_name('editor_prioridad.py').read_bytes())
+    before=self.fingerprint()
+    with patch.object(control,'__file__',str(source/'control.py')),patch.object(control,'_PRIORITY_HELPER',None),patch.object(sys,'dont_write_bytecode',False),patch.object(sys,'pycache_prefix',None):
+        self.assertTrue(self.engine.view()['capabilities']['reorder'])
+        self.assertEqual(self.fingerprint(),before)
+
+
+def test_failed_prepared_transaction_has_no_rpc_or_orphan_owner(self):
+    r=self.order_request()
+    with self.engine.connect(write=True) as db:
+        db.execute("CREATE TRIGGER reject_u36 BEFORE INSERT ON host_actions BEGIN SELECT RAISE(ABORT,'synthetic'); END")
+        before=copy.deepcopy(self.engine.state(db))
+    result=self.engine.handle(r)
+    self.assertEqual(result['status'],'unknown')
+    with self.engine.connect() as db:
+        self.assertEqual(self.engine.state(db),before)
+        self.assertEqual(db.execute('SELECT count(*) FROM host_actions').fetchone()[0],0)
+    self.assertEqual(self.p.calls,[])
+
+
+def test_unprepared_host_cannot_enable_or_pause(self):
+    self.engine.reorder_host_ready=control.MiniControl.reorder_host_ready.__get__(self.engine)
+    self.assertFalse(self.engine.view()['capabilities']['reorder'])
+    result=self.engine.handle(self.order_request())
+    self.assertEqual((result.get('error') or {}).get('code'),'unsupported',result)
+    self.assertEqual(self.p.calls,[])
+
+
+def test_stock_stashed_without_preparer_is_not_resurrected(self):
+    self.engine.reorder_boundary=lambda p:(_ for _ in ()).throw(Crash()) if p=='client_sent' else None
+    with self.assertRaises(Crash):self.engine.handle(self.order_request())
+    self.engine.reorder_boundary=lambda p:None
+    self.tasks['1']['status']={'Stashed':dict(enqueue_at=None)};self.gen='daemon-2'
+    with self.assertRaises(ValueError):self.engine.reconcile()
+    self.assertNotIn(('enqueue','1'),self.p.calls)
+    self.assertIn('Stashed',self.tasks['1']['status'])
+
+
 for name,fn in list(globals().items()):
     if name.startswith('test_'):setattr(ReorderTests,name,fn)
 
@@ -336,6 +469,36 @@ class HelperTests(unittest.TestCase):
             with self.assertRaises(ValueError):helper.document(malformed,3,2)
         t=task(3);t['command']='expanded'
         with self.assertRaises(ValueError):helper.preflight(t)
+
+    def test_helper_checks_real_locked_previous_queued_before_write(self):
+        helper=control.priority_helper();t=task(1)
+        t['status']={'Locked':dict(previous_status={'Queued':dict(enqueued_at=STAMP)})}
+        snapshot=dict(tasks={'1':t},groups={'suites':dict(status='Paused')})
+        plan=dict(id=1,expected_priority=0,identity=control.MiniControl.task_identity(t))
+        helper.verify_locked(plan,snapshot)
+        for case in ('stashed','running','priority','fields'):
+            altered=copy.deepcopy(snapshot)
+            if case=='stashed':altered['tasks']['1']['status']['Locked']['previous_status']={'Stashed':dict(enqueue_at=None)}
+            if case=='running':altered['groups']['suites']['status']='Running'
+            if case=='priority':altered['tasks']['1']['priority']=99
+            if case=='fields':altered['tasks']['1']['command']='different'
+            with self.assertRaises(ValueError):helper.verify_locked(plan,altered)
+
+    def test_helper_entrypoint_rejects_stashed_previous_without_writing_toml(self):
+        import tempfile
+        import sys
+        helper=control.priority_helper()
+        with tempfile.TemporaryDirectory(prefix='u36-helper-',dir='/tmp') as folder:
+            root=Path(folder);target=root/'edit/tasks.toml';target.parent.mkdir(mode=0o700)
+            raw=b'[1]\nid = 1\ncommand = "true"\npath = "/synthetic"\npriority = 0\n'
+            target.write_bytes(raw)
+            t=task(1);t['status']={'Locked':dict(previous_status={'Stashed':dict(enqueue_at=None)})}
+            snapshot=dict(tasks={'1':t},groups={'suites':dict(status='Paused')})
+            plan=dict(id=1,priority=7,expected_priority=0,identity=control.MiniControl.task_identity(t),binary='/tmp/only-a-fake',client=dict(pid=42,birth='proof'),daemon=dict(pid=43,birth='proof'))
+            control.atomic_json(root/'plan.json',plan)
+            with patch.object(helper,'birth',return_value='proof'),patch.object(helper.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(snapshot),'')),patch.object(sys,'argv',[str(helper.__file__),str(root/'plan.json'),str(target)]):
+                with self.assertRaises(ValueError):helper.main()
+            self.assertEqual(target.read_bytes(),raw)
 
     def test_desk_remains_disabled(self):
         self.assertFalse(control.MiniControl.coordinated_reorder)

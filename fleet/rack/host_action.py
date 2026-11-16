@@ -22,7 +22,7 @@ def validate_reorder_request(request, host, allow_short=False):
             or type(e['group']) is not str or e['group'] not in (GROUPS if host=='mini' else DESK_GROUPS)
             or type(e['generation']) is not str or not 1 <= len(e['generation']) <= 160
             or any(type(e[k]) is not str or not re.fullmatch('[0-9a-f]{64}',e[k]) for k in ('policy_hash','queue_etag'))
-            or type(e['queue']) is not list or not (0 if allow_short else 2) <= len(e['queue']) <= 64):
+            or type(e['queue']) is not list or not (0 if allow_short or request['op']=='undo' else 2) <= len(e['queue']) <= 64):
         raise ValueError('Fila inválida')
     ids = []
     for row in e['queue']:
@@ -286,6 +286,10 @@ def sanitize(request, response, op):
         if type(payload.get('queue_etag')) is not str or not re.fullmatch('[0-9a-f]{64}',payload['queue_etag']):
             raise ValueError('Etag inválido')
         answer['result']={k:payload[k] for k in ('group','before','desired','observed','queue_etag')}
+        complete=payload.get('queue_complete',True)
+        if type(complete) is not bool:
+            raise ValueError('Fila incompleta inválida')
+        answer['result']['queue_complete']=complete
         group_status=payload.get('group_status')
         pause_reasons=payload.get('pause_reasons',[])
         if (group_status is not None and group_status not in ('Running','Paused') or type(pause_reasons) is not list
