@@ -73,7 +73,11 @@ Salvo las dos formas de capabilities, todas las peticiones tienen `schema`, `op`
 `vigilante`. `ref` y `action_id` son tokens de 8–64 caracteres ASCII:
 `[A-Za-z0-9][A-Za-z0-9-]{7,63}`. No son rutas ni autorizaciones: el host los
 resuelve mediante su adaptador fijo, comprueba pertenencia física e identidad
-y deriva el grupo. Status añade nada más y lleva `phase:"action"`.
+y deriva el grupo. Status lleva `phase:"action"` y añade exactamente `mode`,
+`expected` y `action_op`: modo, identidad previa a la fase y operación original
+obtenidos del diario del consumidor. `action_op` es una de las operaciones
+mutadoras (incluido finish), nunca capabilities/status. No se consulta una
+acción sin esa identidad esperada.
 
 Las demás operaciones añaden exactamente `mode`, `expected`, `acceptance`,
 `proof`; signal/signal-manual añaden también `signal`. Los dos últimos campos
@@ -98,8 +102,12 @@ Cada `expected`/`identity` contiene exactamente:
 | `enqueued_at`, `enqueue_at`, `started_at` | Proyección explícita por estado, con null cuando el dato no existe. |
 
 Todas las fechas usan UTC canónico `YYYY-MM-DDTHH:MM:SS.ffffffZ`; los adaptadores
-normalizan el formato stock. `created_at <= attempt`. Esta normalización es
-una representación del wire; C5 sigue guardando su instante original en el
+normalizan el formato stock. El alta stock toma `enqueued_at` antes de
+`created_at`: `attempt < created_at` es legítimo, incluso en Running/Done que
+conservan el primer encolado. No se impone orden entre esos dos campos.
+Cuando existe start, no precede a created_at ni a enqueued_at; el enqueued_at
+actual no precede al attempt guardado. Esta normalización es una
+representación del wire; C5 sigue guardando su instante original en el
 lanzador y no reescribe su archivo ni su reloj.
 
 | Estado | `enqueued_at` | `enqueue_at` | `started_at` |
@@ -107,7 +115,7 @@ lanzador y no reescribe su archivo ni su reloj.
 | Queued | Igual a `attempt` | null | null |
 | Stashed | **null** | null o programación stock | null |
 | Running/Paused | Actual, >= `attempt` | null | Actual, >= `enqueued_at` |
-| Done | Actual, >= `attempt` | null | Actual o null si no hubo nacimiento |
+| Done | Actual, >= `attempt` | null | Obligatorio, >= `enqueued_at` y `created_at` |
 | Locked/Absent | null | null | null |
 
 Stock admite stash de Queued **y Locked**; start por ID admite también Locked
@@ -115,6 +123,9 @@ y no respeta la pausa del grupo. Por ello **ninguna petición mutadora admite
 Locked**, tampoco cancel, resume_queued, stop legacy o Jale verify. Locked
 ajeno se rechaza/reintenta sin tocarlo; sólo la recuperación atribuida del
 motor puede tratar su propio Locked. No se adopta un Stashed externo.
+La observación de Stashed programado es válida, pero **no** una reserva:
+held, cancel-no-payload y retire-held exigen `enqueue_at:null`. De otro modo,
+stock lo reencola automáticamente al vencer la programación, sin RPC.
 
 `transition` conserva generation/task_id/created_at/fingerprint/**attempt**.
 Queued→Stashed pierde `enqueued_at`; Stashed→Running lo renueva, conservando
@@ -131,7 +142,7 @@ ID o intento distinto necesita reconciliación, no un nuevo efecto automático.
 | `signal-manual` | Running → Running/Done | Sólo vigilante/manual, clasificación manual e identidad releídas por el host. Sólo TERM/KILL. |
 | `retire-held` | Stashed → Absent | Sólo own-legacy; nunca C1/C2 del panel. Intención de retirada anterior al efecto. |
 | `retire-interrupted` | Done → Absent | Sólo parada propia, sin resultado normal previo; no retirar éxito/fallo publicado. |
-| `finish` | Done → Done o Absent → Absent | Prueba durable enlazada; rack exige Done y queued exige worker/no-payload con nacimiento. Cierra la reserva; manual sólo cierra Done. |
+| `finish` | Done → Done o Absent → Absent | Prueba durable enlazada; rack exige Done y queued exige prueba durable no-payload del worker. Cierra la reserva; manual sólo cierra Done. |
 | `status` | Proyección del diario | Recupera la MISMA acción/fase; no crea otra cancelación ni reenvía a ciegas. |
 
 La `phase` coincide con `op`, excepto `signal:TERM`, `signal:KILL`,
@@ -149,7 +160,9 @@ registrado, no vuelve a emitir RPC.
 `origin` (null o `rack-panel`) y `receipt` (digest opaco). Se proyecta de la
 primera aceptación durable del lanzador, con hora/origen juntos bajo su
 candado de resultado: después de hold confirmado, antes de start/señal.
-La intención anterior a stash no fija hora C5. Repetir o recuperar conserva
+Hold y cualquier proyección de su fase exigen `acceptance:null`; no se puede
+presentar una aceptación previa al stash ni introducirla en held. La intención
+anterior a stash no fija hora C5. Repetir o recuperar conserva
 esa aceptación; el validador del par exige igualdad completa. Si otra acción
 encuentra una aceptación vigente, recupera el action_id ganador; no reetiqueta
 su aceptación para hacerla encajar con un identificador nuevo.
@@ -159,8 +172,15 @@ su aceptación para hacerla encajar con un identificador nuevo.
 0…255). Las dos primeras pruebas requieren aceptación y salida 130; su
 `acceptance_receipt` enlaza el digest de la aceptación. `interrupted` usa
 null y sólo sirve para cierre propio acreditado, jamás Cancelar del panel.
-Una cancelación probada conserva Done y nacimiento también en parada propia;
-Absent sólo cierra una retirada/interrupción propia acreditada.
+Una cancelación probada conserva Done también en parada propia. Done siempre
+lleva started_at en stock, incluso FailedToSpawn o DependencyFailed: ese campo
+**no prueba nacimiento**. Sólo la prueba durable del worker acredita no-payload.
+Para no-payload, tanto finish como status terminal exigen enqueued_at no anterior
+a la aceptación, igual que started. Esa relación no se impone a terminated de
+una tarea que ya estaba Running al aceptar.
+Absent sólo cierra una retirada/interrupción propia acreditada y sus timestamps
+son null: por ejemplo, una pendiente retirada sin arrancar. No se proyecta esa
+retirada como un Done sin start.
 Una huella escrita por el solicitante **no es prueba suficiente**: CC1/CC2
 resuelven y verifican los recibos mediante adaptadores fijos y comparan el
 intento vigente. El esquema valida forma/enlaces, no autentica una afirmación
@@ -170,9 +190,16 @@ ni sustituye los candados, la historia segura o la prueba real del worker.
 
 Salvo capabilities y el error sintáctico sin atribución, la respuesta lleva exactamente `schema`, `op`, `launcher`,
 `ref`, `action_id`, `phase`, `mode`, `status`, `effects`, `reservation`,
-`identity`, `acceptance`, `proof`, `reason`. Los consumidores deben usar
+`identity`, `acceptance`, `proof`, `reason`; status añade `action_op`.
+Los consumidores deben usar
 `parse(raw,response=True,request=peticion)` para cotejar eco, fase, aceptación,
-prueba y transición. Status toma modo y evidencia del diario original.
+prueba y transición. Status toma modo, operación y evidencia del diario
+original: action_op debe coincidir con la consulta y cumplir la misma matriz
+de actor/modo/lanzador y de resultado que una respuesta directa. Toda identidad
+observada por status se coteja con expected (generación, ID, creación, huella
+e intento); los efectos confirmados también cotejan la transición de esa fase.
+Una fase distinta requiere otra consulta con su expected guardado, no adoptar
+la identidad que venga en una respuesta ajena.
 
 | Status | Efecto acreditado de la fase | Reserva / evidencia |
 |---|---|---|
@@ -203,7 +230,7 @@ el worker necesita publicar bajo ese candado.
 **Con control.lock tomado nunca se llama de vuelta a un lanzador, se espera
 su result.lock ni se hace una llamada recursiva a client.** Tampoco se espera
 la gracia de limpieza. La guardia sólo consulta su índice durable bajo lock.
-Así se conservan también las lecturas de capabilities de Hasito #1107 bajo
+Así se conservan también las lecturas de capabilities del lanzador bajo
 result_control, sin introducir una inversión de locks.
 
 La reserva persiste antes de toda RPC y entre hold, aceptación, start y
@@ -241,9 +268,8 @@ rutas efectivas, drenado de procesos previos, mantenimiento/relink y rollback
 son CC7/CC8: ninguna comprobación de hash reemplaza la barrera preventiva.
 
 Productor/instalado, copia por corrida y controlador fijo se acreditan por
-separado. Base de Hasito corregida: pueue.py corresponde a **9dd63b81e**, con
-#1117; remote-run corresponde a **8ad2a9b48** (también igual en aquella main).
-No atribuir el pueue.py instalado a 8ad2a9b48 ni sobrescribir copias vivas.
+separado, con la procedencia e inventario de lo instalado fuera del repositorio
+público. No sobrescribir copias vivas.
 C1/C2 anteriores compatibles pueden seguir por un adaptador fijo acreditado,
 sin remarcarlas con versiones o capacidades retrospectivas. Una corrida vieja
 sin compatibilidad probada conserva unsupported y su mensaje anterior.
@@ -260,7 +286,7 @@ ni se promete reanudación en segundos durante recuperación/presión.
 
 | Estado acreditado por el lanzador | Sesión que espera / panel | Recursos e ID |
 |---|---|---|
-| No ganó hold: reorder/lock impiden actuar | Pendiente (`cancelling`), sin 130 ni hora C5; si pudo enviarse, unknown. | Intención conservada, ninguna prueba fabricada. |
+| No ganó hold: reorder/lock impiden actuar | `unknown`, aún no aceptada, sin 130 ni hora C5. El coordinador puede confirmar deferred sin efecto, pero eso no afirma aceptación ante el panel. | Intención conservada, ninguna prueba fabricada. |
 | Stashed y aceptada; manual/presión/startup impiden start | Pendiente/no confirmada según el plazo vigente de cada cliente (por ejemplo 75 en stop propio); no terminal anticipado. | Reserva e ID retenidos; no se fuerza apertura. |
 | Worker sin carga del intento vigente, Done, recibo 130 enlazado | `cancelled`: remote-run Mini/desk devuelve 130 y «cancelada»; Jale desk/verify devuelve 130, `PUEUE_CANCELLED=1`, sin «fallida». | Mismo ID Done; finish cierra sólo con prueba. |
 | Running aceptada, limpieza todavía viva | `cancelling`; si no se acredita fin, `cancel_unconfirmed`. | Candados, recursos, servidores/espejo conservados hasta prueba de fin. |
@@ -301,13 +327,18 @@ Locked en cada entrada, transiciones, ausencia de fallback y matriz de espera.
 `tests/mutate_client_contract.py` anula cada regla por separado en una copia
 propia bajo /tmp usando el mismo intérprete; exige una única prueba roja por
 **AssertionError**, nunca ERROR/importación ni timeout. La base debe estar
-verde antes de mutar. También comprueba los códigos cerrados de rechazo;
-algunas reglas redundantes detectan el mutante por cambiar ese diagnóstico.
+verde antes de mutar. Cada prueba aislada usa un espécimen que el mutante
+admite; el arnés exige el diagnóstico exacto «La regla … admitió el caso
+inválido». Un cambio de código de rechazo, excepción o fallo de otra regla
+no cuenta. La pertenencia del estado se comprueba en phase, sin regla
+redundante separada. La higiene del documento y del corpus rechaza referencias
+a revisiones o PR de procedencia; los digests sintéticos repetidos del corpus
+se reconocen como centinelas de prueba, no revisiones instaladas.
 Estas pruebas dirigidas no ejecutan daemon, SSH ni control.py. Ejecutar con
 `TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1`, Python 3.9 y el 3.12 ya instalado:
 
 ```text
-python -I -m unittest discover -s fleet/pueue-desk/tests -p test_client_contract.py -v
+python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_client_contract*.py" -v
 python -I fleet/pueue-desk/tests/mutate_client_contract.py
 ```
 

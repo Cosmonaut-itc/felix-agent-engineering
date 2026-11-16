@@ -197,10 +197,16 @@ class ContractTests(unittest.TestCase):
                     self.assertFalse(w['current_proof'])
                     self.assertFalse(w['cancelled_marker'])
                     self.assertEqual(w['retained'], w['status'] != 'rejected')
+                if w['status'] == 'cancelling':
+                    self.assertIs(w['accepted'], True)
+                if w['stage'] == 'before-hold':
+                    self.assertIs(w['accepted'], False)
+                    self.assertEqual(w['status'], 'unknown')
         self.assertEqual(coverage, {(l, h, s) for l, h in (('remote-run', 'mini'),
                          ('remote-run', 'desk'), ('jale', 'desk')) for s in ('Queued', 'Running')})
         for status in ('cancelled', 'cancelling', 'unknown', 'cancel_unconfirmed', 'rejected'):
-            self.assertEqual(sum(w['status'] == status for w in CORPUS['wait']), 6)
+            self.assertEqual(sum(w['status'] == status for w in CORPUS['wait']),
+                             9 if status == 'unknown' else 6)
         for code in (0, 7, 124, 130, 143):
             self.assertEqual(sum(w['status'] == 'already_finished' and w['exit'] == code
                                  for w in CORPUS['wait']), 6)

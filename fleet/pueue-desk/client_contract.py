@@ -97,7 +97,6 @@ def identity(value):
     integer(value["task_id"])
     timestamp(value["created_at"])
     timestamp(value["attempt"])
-    require(value["state"] in STATES, "state")
     for field in ("enqueued_at", "enqueue_at", "started_at"):
         if value[field] is not None:
             timestamp(value[field])
@@ -108,14 +107,15 @@ def identity(value):
         "Stashed": enqueued is None and started is None,
         "Running": enqueued is not None and scheduled is None and started is not None,
         "Paused": enqueued is not None and scheduled is None and started is not None,
-        "Done": enqueued is not None and scheduled is None,
+        "Done": enqueued is not None and scheduled is None and started is not None,
         "Locked": enqueued is None and scheduled is None and started is None,
         "Absent": enqueued is None and scheduled is None and started is None,
     }
-    require(valid.get(state, False), "phase")
-    require(value["created_at"] <= value["attempt"] and
-            (enqueued is None or value["attempt"] <= enqueued) and
-            (started is None or (enqueued is not None and enqueued <= started)), "chronology")
+    require(type(state) is str and state in valid and valid[state], "phase")
+    # El alta stock toma enqueued_at antes de Task::new/created_at.
+    require((enqueued is None or value["attempt"] <= enqueued) and
+            (started is None or (enqueued is not None and enqueued <= started and
+                                 value["created_at"] <= started)), "chronology")
     return value
 
 
@@ -149,14 +149,14 @@ def envelope(value):
 
 
 def actor(op, mode, launcher):
-    require((mode == "manual") == (launcher == "vigilante") and
-            (op in ("status", "finish") or (mode == "manual") == (op == "signal-manual")), "manual")
     require((not mode.startswith("rack-") or launcher in ("remote-run", "jale")) and
             (mode != "rack-queued" or op in ("hold", "cancel-no-payload", "finish", "status")) and
             (mode != "rack-running" or op in ("signal", "finish", "status")) and
             (op != "retire-held" or mode == "own-legacy") and
             (op != "retire-interrupted" or mode in ("own", "own-legacy")) and
             (op != "cancel-no-payload" or launcher in ("remote-run", "jale")), "scope")
+    require((mode == "manual") == (launcher == "vigilante") and
+            (op in ("status", "finish") or (mode == "manual") == (op == "signal-manual")), "manual")
 
 
 def validate_request(value):
@@ -170,28 +170,34 @@ def validate_request(value):
             token(value["ref"])
         return value
     base = "schema op launcher ref action_id phase"
-    keys(value, base if op == "status" else base + " mode expected acceptance proof" +
+    keys(value, base + " mode expected action_op" if op == "status" else base + " mode expected acceptance proof" +
          (" signal" if op in ("signal", "signal-manual") else ""))
     require(value["launcher"] in LAUNCHERS, "launcher")
     token(value["ref"])
     token(value["action_id"])
-    if op == "status":
-        require(value["phase"] == "action", "phase_key")
-        return value
     expected = identity(value["expected"])
     mode = value["mode"]
     require(mode in ("rack-queued", "rack-running", "own", "own-legacy", "manual"), "mode")
-    actor(op, mode, value["launcher"])
+    action_op = value["action_op"] if op == "status" else op
+    if op == "status":
+        require(type(action_op) is str and action_op in OPS[1:-1], "action_op")
+    actor(action_op, mode, value["launcher"])
     allowed = {"hold": ("Queued",), "cancel-no-payload": ("Stashed",),
                "signal": ("Running", "Paused"), "signal-manual": ("Running",),
                "retire-held": ("Stashed",), "retire-interrupted": ("Done",),
                "finish": ("Done", "Absent")}
-    require(expected["state"] in allowed[op], "operation_state")
+    require(expected["state"] in allowed.get(action_op, STATES), "operation_state")
+    require(action_op not in ("cancel-no-payload", "retire-held") or
+            expected["enqueue_at"] is None, "unscheduled")
+    if op == "status":
+        require(value["phase"] == "action", "phase_key")
+        return value
     if op in ("signal", "signal-manual"):
         require(value["signal"] in ("TERM", "KILL"), "signal")
     require(value["phase"] == (op + ":" + value["signal"] if op in ("signal", "signal-manual") else op),
             "phase_key")
     accepted = value["acceptance"]
+    require(op != "hold" or accepted is None, "acceptance_order")
     if accepted is not None:
         acceptance(accepted, value["action_id"], expected["attempt"])
     require((op != "cancel-no-payload" and mode != "rack-running") or accepted is not None,
@@ -201,15 +207,22 @@ def validate_request(value):
     require((op == "finish") == (value["proof"] is not None), "finish_proof")
     if op == "finish":
         terminal_identity(expected, value["proof"], mode)
+        if value["proof"]["kind"] == "no-payload":
+            start_after_acceptance(expected, accepted)
     return value
 
 
 def terminal_identity(current, evidence, mode):
     cancellation = evidence["kind"] != "interrupted"
-    require((not cancellation or (current["state"] == "Done" and current["started_at"] is not None)) and
+    require((not cancellation or current["state"] == "Done") and
             (not mode.startswith("rack-") or cancellation) and
             (mode != "rack-queued" or evidence["kind"] == "no-payload") and
             (mode != "manual" or current["state"] == "Done"), "retain_id")
+
+
+def start_after_acceptance(current, accepted):
+    require(accepted is not None and current["enqueued_at"] is not None and
+            current["enqueued_at"] >= accepted["accepted_at"], "start_time")
 
 
 def transition(before, after, op):
@@ -269,13 +282,17 @@ def validate_response(value, request=None):
             require(scoped == ("launcher" in request) and
                     (not scoped or all(value[k] == request[k] for k in ("launcher", "ref"))), "echo")
         return value
-    keys(value, "schema op launcher ref action_id phase mode status effects reservation identity acceptance proof reason")
+    keys(value, "schema op launcher ref action_id phase mode status effects reservation identity acceptance proof reason" +
+         (" action_op" if op == "status" else ""))
     require(value["launcher"] in LAUNCHERS, "launcher")
     token(value["ref"])
     token(value["action_id"])
     mode = value["mode"]
     require(mode in ("rack-queued", "rack-running", "own", "own-legacy", "manual"), "mode")
-    actor(op, mode, value["launcher"])
+    action_op = value["action_op"] if op == "status" else op
+    if op == "status":
+        require(type(action_op) is str and action_op in OPS[1:-1], "action_op")
+    actor(action_op, mode, value["launcher"])
     phase = value["phase"]
     require(phase in ((op + ":TERM", op + ":KILL") if op in ("signal", "signal-manual")
                       else ("action" if op == "status" else op,)), "phase_key")
@@ -311,21 +328,44 @@ def validate_response(value, request=None):
     status_ops = {"held": ("hold",), "started": ("cancel-no-payload",),
                   "signalled": ("signal", "signal-manual"),
                   "retired": ("retire-held", "retire-interrupted"), "finished": ("finish",)}
-    require(status not in status_ops or op in status_ops[status] + ("status",), "response_op")
+    if status in status_ops:
+        # También el resultado observado debe pertenecer al actor autorizado.
+        require(any_actor(status_ops[status], mode, value["launcher"]), "scope")
+    require(status not in status_ops or action_op in status_ops[status], "response_op")
+    require(status != "held" or current is None or current["enqueue_at"] is None, "unscheduled")
+    require(action_op != "hold" or accepted is None, "acceptance_order")
     require(status != "started" or accepted is not None, "acceptance_required")
-    require(status != "started" or current["enqueued_at"] >= accepted["accepted_at"], "start_time")
+    if status == "started":
+        start_after_acceptance(current, accepted)
     if status == "finished":
         terminal_identity(current, value["proof"], mode)
+        if value["proof"]["kind"] == "no-payload":
+            start_after_acceptance(current, accepted)
     if request is not None:
         require(all(value[k] == request[k] for k in ("schema", "op", "launcher", "ref", "action_id", "phase")), "echo")
         require("mode" not in request or mode == request["mode"], "echo")
+        if op == "status":
+            require(action_op == request["action_op"], "echo")
+            if current is not None:
+                require(all(current[k] == request["expected"][k] for k in
+                            ("generation", "task_id", "created_at", "fingerprint", "attempt")), "identity_link")
         if "expected" in request and status in status_ops:
-            transition(request["expected"], current, op)
+            transition(request["expected"], current, action_op)
         if "acceptance" in request:
             require(value["acceptance"] == request["acceptance"], "acceptance_continuity")
         if status == "finished" and "proof" in request:
             require(value["proof"] == request["proof"], "proof_continuity")
     return value
+
+
+def any_actor(ops, mode, launcher):
+    for op in ops:
+        try:
+            actor(op, mode, launcher)
+            return True
+        except Invalid:
+            pass
+    return False
 
 
 def negotiated(raw, exit_code):

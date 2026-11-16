@@ -13,7 +13,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def main():
     baseline = subprocess.run([sys.executable, '-I', '-m', 'unittest', 'discover',
-                               '-s', str(ROOT / 'tests'), '-p', 'test_client_contract.py', '-q'],
+                               '-s', str(ROOT / 'tests'), '-p', 'test_client_contract*.py', '-q'],
                               capture_output=True, text=True, timeout=30)
     if baseline.returncode:
         print(baseline.stdout + baseline.stderr)
@@ -47,8 +47,9 @@ def main():
                                      '-s', str(folder / 'tests'), '-p', 'test_client_contract.py',
                                      '-k', '*.' + test, '-v'], capture_output=True, text=True, timeout=30)
             output = result.stdout + result.stderr
+            diagnostic = 'AssertionError: La regla ' + rule + ' admitió el caso inválido'
             if not (result.returncode == 1 and 'FAIL: ' + test + ' ' in output and
-                    'AssertionError:' in output and 'ERROR:' not in output and 'Ran 1 test ' in output):
+                    diagnostic in output.splitlines() and 'ERROR:' not in output and 'Ran 1 test ' in output):
                 print(output, flush=True)
                 raise AssertionError('Mutante vivo o fallo ajeno a la aserción: ' + rule)
             assertion = next(line for line in output.splitlines() if line.startswith('AssertionError:'))
