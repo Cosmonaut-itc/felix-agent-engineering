@@ -12,6 +12,10 @@ c, ROOT, CORPUS, BY_ID = base.c, base.ROOT, base.CORPUS, base.BY_ID
 D = copy.deepcopy
 
 
+def as_status(value):
+    return dict(D(value), op='status', action_op=value['op'])
+
+
 class ReviewRegressionTests(unittest.TestCase):
     def test_sol_1_stock_add_chronology(self):
         for name in ('remote-run-rack-queued-held', 'identity-remote-run',
@@ -46,9 +50,7 @@ class ReviewRegressionTests(unittest.TestCase):
             lambda: c.validate_request(case['request']),
             lambda: c.validate_response(case['response']),
             lambda: c.validate_response(case['response'], case['request']),
-            lambda: c.validate_response(dict(case['response'], op='status', phase='action',
-                                             **({'action_op': 'finish'} if 'action_op' in
-                                                BY_ID['status-terminal']['response'] else {})),
+            lambda: c.validate_response(as_status(case['response']),
                                         BY_ID['status-terminal']['request']),
         )
         for n, check in enumerate(checks):
@@ -74,23 +76,19 @@ class ReviewRegressionTests(unittest.TestCase):
             s = D(case['response']); s['identity'][field] = wrong
             if field == 'attempt':
                 s['acceptance']['attempt'] = wrong
-            with self.subTest(field=field), self.assertRaisesRegex(c.Invalid, '^identity_link$'):
+            # El intento también está en la aceptación, cotejada por el validador común.
+            rule = 'acceptance_continuity' if field == 'attempt' else 'identity_link'
+            with self.subTest(field=field), self.assertRaisesRegex(c.Invalid, '^' + rule + '$'):
                 c.validate_response(s, case['request'])
         for launcher, mode in (('apotheca', 'own'), ('vigilante', 'manual')):
-            s = dict(D(BY_ID['remote-run-started']['response']), op='status', phase='action',
-                     action_op='cancel-no-payload', launcher=launcher, mode=mode)
-            r = dict(schema=c.SCHEMA, op='status', launcher=launcher, ref=s['ref'],
-                     action_id=s['action_id'], phase='action', action_op='cancel-no-payload',
-                     mode=mode, expected=D(BY_ID['remote-run-started']['request']['expected']))
+            s = dict(as_status(BY_ID['remote-run-started']['response']), launcher=launcher, mode=mode)
+            r = dict(as_status(BY_ID['remote-run-started']['request']), launcher=launcher, mode=mode)
             with self.subTest(launcher=launcher), self.assertRaisesRegex(c.Invalid, '^scope$'):
                 c.validate_response(s, r)
         # Un status válido conserva su operación y compara la transición completa.
         c.validate_response(case['response'], case['request'])
-        r = D(BY_ID['remote-run-started']['request'])
-        r.pop('acceptance'); r.pop('proof')
-        r.update(op='status', phase='action', action_op='cancel-no-payload')
-        s = dict(D(BY_ID['remote-run-started']['response']), op='status', phase='action',
-                 action_op='cancel-no-payload')
+        r = as_status(BY_ID['remote-run-started']['request'])
+        s = as_status(BY_ID['remote-run-started']['response'])
         c.validate_response(s, r)
         s['identity']['state'] = 'Paused'
         with self.assertRaisesRegex(c.Invalid, '^response_phase$'):
@@ -158,7 +156,7 @@ class ReviewRegressionTests(unittest.TestCase):
             with self.subTest(target=target), self.assertRaisesRegex(c.Invalid, '^acceptance_order$'):
                 (c.validate_request if target == 'request' else c.validate_response)(value)
         r = D(BY_ID['status-unresolved']['request'])
-        s = dict(D(h['response']), op='status', phase='action', action_op='hold', acceptance=a)
+        s = dict(as_status(h['response']), acceptance=a)
         with self.assertRaisesRegex(c.Invalid, '^acceptance_order$'):
             c.validate_response(s, r)
 

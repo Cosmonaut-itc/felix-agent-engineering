@@ -2659,7 +2659,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "cancel-no-payload",
         "mode": "rack-queued",
         "expected": {
           "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2672,7 +2672,15 @@
           "enqueue_at": null,
           "started_at": null
         },
-        "action_op": "cancel-no-payload"
+        "action_op": "cancel-no-payload",
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null
       },
       "response": {
         "schema": "pueue-client-control@1",
@@ -2680,7 +2688,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "cancel-no-payload",
         "mode": "rack-queued",
         "status": "pending",
         "effects": false,
@@ -2716,7 +2724,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "finish",
         "mode": "rack-queued",
         "expected": {
           "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2729,7 +2737,21 @@
           "enqueue_at": null,
           "started_at": "2026-11-16T10:04:00.000000Z"
         },
-        "action_op": "finish"
+        "action_op": "finish",
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": {
+          "kind": "no-payload",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "receipt": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "acceptance_receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "exit": 130
+        }
       },
       "response": {
         "schema": "pueue-client-control@1",
@@ -2737,7 +2759,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "finish",
         "mode": "rack-queued",
         "status": "finished",
         "effects": false,
@@ -2779,7 +2801,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "hold",
         "mode": "rack-queued",
         "expected": {
           "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -2792,7 +2814,9 @@
           "enqueue_at": null,
           "started_at": null
         },
-        "action_op": "hold"
+        "action_op": "hold",
+        "acceptance": null,
+        "proof": null
       },
       "response": {
         "schema": "pueue-client-control@1",
@@ -2800,7 +2824,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "hold",
         "mode": "rack-queued",
         "status": "unknown",
         "effects": null,
@@ -3116,6 +3140,723 @@
           "started_at": "2026-11-16T10:04:00.000000Z"
         },
         "reason": null
+      }
+    },
+    {
+      "id": "hold-pending-scheduled-control",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "hold",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-queued",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Queued",
+          "enqueued_at": "2026-11-16T10:01:00.000000Z",
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": null,
+        "proof": null,
+        "phase": "hold"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "hold",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "hold",
+        "mode": "rack-queued",
+        "status": "pending",
+        "effects": false,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": null,
+        "proof": null,
+        "reason": "manual"
+      }
+    },
+    {
+      "id": "cancel-pending-scheduled-control",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "cancel-no-payload",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-queued",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "phase": "cancel-no-payload"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "cancel-no-payload",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "cancel-no-payload",
+        "mode": "rack-queued",
+        "status": "pending",
+        "effects": false,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": "manual"
+      }
+    },
+    {
+      "id": "remote-run-started-deferred-none-control",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "cancel-no-payload",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-queued",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "phase": "cancel-no-payload"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "cancel-no-payload",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "cancel-no-payload",
+        "mode": "rack-queued",
+        "status": "deferred",
+        "effects": false,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": "manual"
+      }
+    },
+    {
+      "id": "remote-run-finished-no-payload-deferred-none-control",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "finish",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-queued",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Done",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": {
+          "kind": "no-payload",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "receipt": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "acceptance_receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "exit": 130
+        },
+        "phase": "finish"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "finish",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "finish",
+        "mode": "rack-queued",
+        "status": "deferred",
+        "effects": false,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Done",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": "manual"
+      }
+    },
+    {
+      "id": "rack-running-missing-acceptance-control",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-running",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "signal": "TERM",
+        "phase": "signal:TERM"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal:TERM",
+        "mode": "rack-running",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": null
+      }
+    },
+    {
+      "id": "rack-running-changed-acceptance-control",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-running",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "signal": "TERM",
+        "phase": "signal:TERM"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal:TERM",
+        "mode": "rack-running",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": null
+      }
+    },
+    {
+      "id": "identity-scheduled-stashed",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "capabilities",
+        "launcher": "remote-run",
+        "ref": "fixture-0001"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "capabilities",
+        "version": 1,
+        "ops": [
+          "capabilities",
+          "hold",
+          "cancel-no-payload",
+          "signal",
+          "signal-manual",
+          "retire-held",
+          "retire-interrupted",
+          "finish",
+          "status"
+        ],
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": "2026-11-16T10:04:00.000000Z",
+          "started_at": null
+        },
+        "reason": null
+      }
+    },
+    {
+      "id": "remote-run-signal-kill",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-running",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "signal": "KILL",
+        "phase": "signal:KILL"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal:KILL",
+        "mode": "rack-running",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": null
+      }
+    },
+    {
+      "id": "status-remote-run-signal",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "status",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-running",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "signal": "TERM",
+        "phase": "signal:TERM",
+        "action_op": "signal"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "status",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal:TERM",
+        "mode": "rack-running",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": null,
+        "action_op": "signal"
+      }
+    },
+    {
+      "id": "status-remote-run-signal-kill",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "status",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-running",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "signal": "KILL",
+        "phase": "signal:KILL",
+        "action_op": "signal"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "status",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal:KILL",
+        "mode": "rack-running",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": null,
+        "action_op": "signal"
+      }
+    },
+    {
+      "id": "status-manual-term",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "status",
+        "launcher": "vigilante",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "manual",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": null,
+        "proof": null,
+        "signal": "TERM",
+        "phase": "signal-manual:TERM",
+        "action_op": "signal-manual"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "status",
+        "launcher": "vigilante",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal-manual:TERM",
+        "mode": "manual",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": null,
+        "proof": null,
+        "reason": null,
+        "action_op": "signal-manual"
+      }
+    },
+    {
+      "id": "status-manual-kill",
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "status",
+        "launcher": "vigilante",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "manual",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": null,
+        "proof": null,
+        "signal": "KILL",
+        "phase": "signal-manual:KILL",
+        "action_op": "signal-manual"
+      },
+      "response": {
+        "schema": "pueue-client-control@1",
+        "op": "status",
+        "launcher": "vigilante",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal-manual:KILL",
+        "mode": "manual",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Done",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": null,
+        "proof": null,
+        "reason": null,
+        "action_op": "signal-manual"
       }
     }
   ],
@@ -4709,7 +5450,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "finish",
         "mode": "rack-queued",
         "status": "finished",
         "effects": false,
@@ -5000,23 +5741,7 @@
       "value": {
         "schema": "pueue-client-control@1",
         "op": "status",
-        "launcher": "remote-run",
-        "ref": "fixture-0001",
-        "action_id": "action-0001",
-        "phase": "action",
-        "mode": "rack-queued",
-        "expected": {
-          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-          "task_id": 77,
-          "created_at": "2026-11-16T10:00:00.000000Z",
-          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
-          "attempt": "2026-11-16T10:01:00.000000Z",
-          "state": "Stashed",
-          "enqueued_at": null,
-          "enqueue_at": null,
-          "started_at": null
-        },
-        "action_op": "status"
+        "action_op": "capabilities"
       }
     },
     {
@@ -5149,7 +5874,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "finish",
         "mode": "rack-queued",
         "status": "finished",
         "effects": false,
@@ -5188,7 +5913,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "finish",
         "mode": "rack-queued",
         "expected": {
           "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -5201,7 +5926,21 @@
           "enqueue_at": null,
           "started_at": "2026-11-16T10:04:00.000000Z"
         },
-        "action_op": "finish"
+        "action_op": "finish",
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": {
+          "kind": "no-payload",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "receipt": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "acceptance_receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "exit": 130
+        }
       }
     },
     {
@@ -5230,7 +5969,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "cancel-no-payload",
         "mode": "rack-queued",
         "status": "pending",
         "effects": false,
@@ -5263,7 +6002,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "cancel-no-payload",
         "mode": "rack-queued",
         "expected": {
           "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -5276,7 +6015,15 @@
           "enqueue_at": null,
           "started_at": null
         },
-        "action_op": "cancel-no-payload"
+        "action_op": "cancel-no-payload",
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null
       }
     },
     {
@@ -5289,7 +6036,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "cancel-no-payload",
         "mode": "rack-queued",
         "status": "retired",
         "effects": true,
@@ -5322,7 +6069,7 @@
         "launcher": "remote-run",
         "ref": "fixture-0001",
         "action_id": "action-0001",
-        "phase": "action",
+        "phase": "cancel-no-payload",
         "mode": "rack-queued",
         "expected": {
           "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -5335,7 +6082,395 @@
           "enqueue_at": null,
           "started_at": null
         },
-        "action_op": "cancel-no-payload"
+        "action_op": "cancel-no-payload",
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null
+      }
+    },
+    {
+      "id": "hold-pending-scheduled",
+      "rule": "unscheduled",
+      "target": "response",
+      "value": {
+        "schema": "pueue-client-control@1",
+        "op": "hold",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "hold",
+        "mode": "rack-queued",
+        "status": "pending",
+        "effects": false,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": "2026-11-16T10:04:00.000000Z",
+          "started_at": null
+        },
+        "acceptance": null,
+        "proof": null,
+        "reason": "manual"
+      },
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "hold",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-queued",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Queued",
+          "enqueued_at": "2026-11-16T10:01:00.000000Z",
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": null,
+        "proof": null,
+        "phase": "hold"
+      }
+    },
+    {
+      "id": "cancel-pending-scheduled",
+      "rule": "unscheduled",
+      "target": "response",
+      "value": {
+        "schema": "pueue-client-control@1",
+        "op": "cancel-no-payload",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "cancel-no-payload",
+        "mode": "rack-queued",
+        "status": "pending",
+        "effects": false,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": "2026-11-16T10:04:00.000000Z",
+          "started_at": null
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": "manual"
+      },
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "cancel-no-payload",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-queued",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "phase": "cancel-no-payload"
+      }
+    },
+    {
+      "id": "remote-run-started-deferred-none",
+      "rule": "deferred_reservation",
+      "target": "response",
+      "value": {
+        "schema": "pueue-client-control@1",
+        "op": "cancel-no-payload",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "cancel-no-payload",
+        "mode": "rack-queued",
+        "status": "deferred",
+        "effects": false,
+        "reservation": "none",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": "manual"
+      },
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "cancel-no-payload",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-queued",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Stashed",
+          "enqueued_at": null,
+          "enqueue_at": null,
+          "started_at": null
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "phase": "cancel-no-payload"
+      }
+    },
+    {
+      "id": "remote-run-finished-no-payload-deferred-none",
+      "rule": "deferred_reservation",
+      "target": "response",
+      "value": {
+        "schema": "pueue-client-control@1",
+        "op": "finish",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "finish",
+        "mode": "rack-queued",
+        "status": "deferred",
+        "effects": false,
+        "reservation": "none",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Done",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": "manual"
+      },
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "finish",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-queued",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Done",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": {
+          "kind": "no-payload",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "receipt": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+          "acceptance_receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+          "exit": 130
+        },
+        "phase": "finish"
+      }
+    },
+    {
+      "id": "rack-running-missing-acceptance",
+      "rule": "acceptance_continuity",
+      "target": "response",
+      "value": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal:TERM",
+        "mode": "rack-running",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": null,
+        "proof": null,
+        "reason": null
+      },
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-running",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "signal": "TERM",
+        "phase": "signal:TERM"
+      }
+    },
+    {
+      "id": "rack-running-changed-acceptance",
+      "rule": "acceptance_continuity",
+      "target": "response",
+      "value": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "phase": "signal:TERM",
+        "mode": "rack-running",
+        "status": "signalled",
+        "effects": true,
+        "reservation": "held",
+        "identity": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:01.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "reason": null
+      },
+      "request": {
+        "schema": "pueue-client-control@1",
+        "op": "signal",
+        "launcher": "remote-run",
+        "ref": "fixture-0001",
+        "action_id": "action-0001",
+        "mode": "rack-running",
+        "expected": {
+          "generation": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          "task_id": 77,
+          "created_at": "2026-11-16T10:00:00.000000Z",
+          "fingerprint": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "state": "Running",
+          "enqueued_at": "2026-11-16T10:03:00.000000Z",
+          "enqueue_at": null,
+          "started_at": "2026-11-16T10:04:00.000000Z"
+        },
+        "acceptance": {
+          "action_id": "action-0001",
+          "attempt": "2026-11-16T10:01:00.000000Z",
+          "accepted_at": "2026-11-16T10:02:00.000000Z",
+          "origin": "rack-panel",
+          "receipt": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+        },
+        "proof": null,
+        "signal": "TERM",
+        "phase": "signal:TERM"
       }
     }
   ],

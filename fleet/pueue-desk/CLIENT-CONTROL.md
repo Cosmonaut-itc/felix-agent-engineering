@@ -73,11 +73,12 @@ Salvo las dos formas de capabilities, todas las peticiones tienen `schema`, `op`
 `vigilante`. `ref` y `action_id` son tokens de 8–64 caracteres ASCII:
 `[A-Za-z0-9][A-Za-z0-9-]{7,63}`. No son rutas ni autorizaciones: el host los
 resuelve mediante su adaptador fijo, comprueba pertenencia física e identidad
-y deriva el grupo. Status lleva `phase:"action"` y añade exactamente `mode`,
-`expected` y `action_op`: modo, identidad previa a la fase y operación original
-obtenidos del diario del consumidor. `action_op` es una de las operaciones
-mutadoras (incluido finish), nunca capabilities/status. No se consulta una
-acción sin esa identidad esperada.
+y deriva el grupo. Status conserva el cuerpo completo de la petición de la
+fase guardada en el diario: `mode`, `expected`, `acceptance`, `proof` y, para
+señales, `signal`. Usa `op:"status"` y añade sólo `action_op`, la operación
+original (incluido finish), nunca capabilities/status. `phase` conserva la
+fase original exacta, también TERM/KILL; ya no se usa una fase genérica action.
+No se consulta una acción sin su identidad y evidencia originales.
 
 Las demás operaciones añaden exactamente `mode`, `expected`, `acceptance`,
 `proof`; signal/signal-manual añaden también `signal`. Los dos últimos campos
@@ -124,7 +125,9 @@ Locked**, tampoco cancel, resume_queued, stop legacy o Jale verify. Locked
 ajeno se rechaza/reintenta sin tocarlo; sólo la recuperación atribuida del
 motor puede tratar su propio Locked. No se adopta un Stashed externo.
 La observación de Stashed programado es válida, pero **no** una reserva:
-held, cancel-no-payload y retire-held exigen `enqueue_at:null`. De otro modo,
+toda respuesta con `reservation:held` exige `enqueue_at:null`, también
+pending/deferred/unknown/rejected y su proyección status. Las peticiones
+cancel-no-payload y retire-held también lo exigen en expected. De otro modo,
 stock lo reencola automáticamente al vencer la programación, sin RPC.
 
 `transition` conserva generation/task_id/created_at/fingerprint/**attempt**.
@@ -146,7 +149,8 @@ ID o intento distinto necesita reconciliación, no un nuevo efecto automático.
 | `status` | Proyección del diario | Recupera la MISMA acción/fase; no crea otra cancelación ni reenvía a ciegas. |
 
 La `phase` coincide con `op`, excepto `signal:TERM`, `signal:KILL`,
-`signal-manual:TERM`, `signal-manual:KILL` y status `action`. Es un conjunto
+`signal-manual:TERM` y `signal-manual:KILL`. Status conserva la fase de
+`action_op`, sin cambiarla ni combinar TERM/KILL. Es un conjunto
 cerrado, no un identificador arbitrario. La clave durable es
 `(launcher,ref,action_id,phase)`: mismo cuerpo da mismo recibo; otro cuerpo en
 esa fase da idempotency_conflict, incluso tras reiniciar. El diario enlaza
@@ -194,10 +198,15 @@ Salvo capabilities y el error sintáctico sin atribución, la respuesta lleva ex
 Los consumidores deben usar
 `parse(raw,response=True,request=peticion)` para cotejar eco, fase, aceptación,
 prueba y transición. Status toma modo, operación y evidencia del diario
-original: action_op debe coincidir con la consulta y cumplir la misma matriz
-de actor/modo/lanzador y de resultado que una respuesta directa. Toda identidad
-observada por status se coteja con expected (generación, ID, creación, huella
-e intento); los efectos confirmados también cotejan la transición de esa fase.
+original: se quita únicamente `action_op` y se sustituye op por su valor.
+El mismo `validate_request` valida la petición proyectada y el mismo
+`validate_response` valida la respuesta proyectada frente a ella. No hay
+una segunda lista de reglas para status: reserva, aceptación, prueba, actor,
+resultado, transición y eco de la fase pasan por el validador directo.
+La única comprobación adicional de la consulta es cotejar toda identidad
+observada con expected (generación, ID, creación, huella e intento), incluso
+cuando aún no hay efecto confirmado. Modo, operación y fase deben coincidir
+con el diario por los mismos cotejos de eco que en la respuesta directa.
 Una fase distinta requiere otra consulta con su expected guardado, no adoptar
 la identidad que venga en una respuesta ajena.
 
@@ -334,6 +343,13 @@ no cuenta. La pertenencia del estado se comprueba en phase, sin regla
 redundante separada. La higiene del documento y del corpus rechaza referencias
 a revisiones o PR de procedencia; los digests sintéticos repetidos del corpus
 se reconocen como centinelas de prueba, no revisiones instaladas.
+`tests/test_client_contract_r2.py` genera la paridad desde todos los negativos
+de respuesta directa de operaciones mutadoras y todos sus pares válidos:
+el status exige el mismo diagnóstico de rechazo y conserva los intercambios
+válidos, con y sin cotejo de petición. Capabilities (negociación/observación)
+y el error sintáctico sin atribución no son fases mutadoras consultables.
+El arnés añade dos mutaciones de sitio: reducir held al resultado literal y
+saltar el validador compartido de status; ambas mueren por su aserción exacta.
 Estas pruebas dirigidas no ejecutan daemon, SSH ni control.py. Ejecutar con
 `TMPDIR=/tmp PYTHONDONTWRITEBYTECODE=1`, Python 3.9 y el 3.12 ya instalado:
 

@@ -56,6 +56,37 @@ def main():
             print('RECHAZADA %02d %s | %s | %s' % (number, rule, test, assertion), flush=True)
     print('Resultado: %d/%d mutaciones rechazadas por aserción en Python %s' %
           (len(rules), len(rules), sys.version.split()[0]), flush=True)
+    # La regla ampliada y el paso compartido también se mutilan por sitio:
+    # anular la familia unscheduled no prueba que cubra pending/unknown.
+    sites = (
+        ('held-en-toda-fase', 'reserve != "held"', 'status != "held"',
+         'test_held_pending_requires_unscheduled', 'unscheduled'),
+        ('status-valida-operacion', '        validate_response(projected, original)\n',
+         '        pass\n', 'test_deferred_preserves_existing_reservation', 'deferred_reservation'),
+    )
+    for name, old, new, test, rule in sites:
+        if source.count(old) != 1:
+            raise AssertionError('Mutación de sitio ambigua o caduca: ' + name)
+        with tempfile.TemporaryDirectory(prefix='cc0-mutacion-', dir='/tmp') as temporary:
+            folder = Path(temporary)
+            (folder / 'tests').mkdir()
+            (folder / 'corpus').mkdir()
+            (folder / 'client_contract.py').write_text(source.replace(old, new))
+            shutil.copy2(ROOT / 'corpus/client-control-v1.json', folder / 'corpus')
+            for file in ('test_client_contract.py', 'test_client_contract_r2.py'):
+                shutil.copy2(ROOT / 'tests' / file, folder / 'tests')
+            result = subprocess.run([sys.executable, '-I', '-m', 'unittest', 'discover',
+                                     '-s', str(folder / 'tests'), '-p', 'test_client_contract_r2.py',
+                                     '-k', '*.' + test, '-v'], capture_output=True, text=True, timeout=30)
+            output = result.stdout + result.stderr
+            diagnostic = 'AssertionError: La regla ' + rule + ' admitió el caso inválido'
+            if not (result.returncode == 1 and 'FAIL: ' + test + ' ' in output and
+                    diagnostic in output.splitlines() and 'ERROR:' not in output and 'Ran 1 test ' in output):
+                print(output, flush=True)
+                raise AssertionError('Mutante vivo o fallo ajeno a la aserción: ' + name)
+            print('RECHAZADA sitio %s | %s | %s' % (name, test, diagnostic), flush=True)
+    print('Resultado adicional: %d/%d mutaciones de sitio rechazadas por aserción' %
+          (len(sites), len(sites)), flush=True)
 
 
 if __name__ == '__main__':
