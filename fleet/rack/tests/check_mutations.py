@@ -11,6 +11,20 @@ import tempfile
 
 BASE=Path(__file__).resolve().parents[1]
 CASES=(
+    ('orphans-descendants', 'snapshot.py', 'if parent == main:', 'if False:',
+     'test_orphans.OrphanTests.test_descendants_excluded_and_reparented_attributed_by_fd1'),
+    ('orphans-identity', 'snapshot.py', "before['start'] != after['start'] or descendant(pid, after)",
+     'descendant(pid, after)', 'test_orphans.OrphanTests.test_identity_change_and_disappearance_discarded'),
+    ('orphans-extra-fields', 'serve.py', 'type(row) is not dict or set(row) != keys', 'type(row) is not dict or not keys <= set(row)',
+     'test_orphans.OrphanTests.test_snapshot_validator_strict'),
+    ('orphans-cpu-interval', 'snapshot.py', 'candidates[pid] = (row, sampled)', 'candidates[pid] = (row, time.monotonic())',
+     'test_orphans.OrphanTests.test_cpu_interval_starts_at_the_counter_read_not_after_ancestry'),
+    ('orphans-budget', 'snapshot.py', 'within_budget(lambda: desk_orphans(data, proc, cgroup, pueue_unit), ORPHANS_BUDGET)',
+     'desk_orphans(data, proc, cgroup, pueue_unit)', 'test_orphans.OrphanTests.test_slow_read_does_not_hold_the_snapshot_past_the_budget'),
+    ('orphans-ui-hidden', 'index.html', '${orphanSlot(h)}<div class="lanes">', '<div class="lanes">',
+     'test_orphans_ui.OrphanUITests.test_with_orphans_between_capacity_and_lanes_grouped_by_origin'),
+    ('orphans-ui-innerhtml', 'index.html', 'e.append(...parts);return e;', "e.innerHTML=parts.join('');return e;",
+     'test_orphans_ui.OrphanUITests.test_data_enters_only_as_text'),
     ('http-journal-wait','accion.py',
      'if not self.wait(done, max(0, deadline - self.timer())):',
      'if not self.wait(done, 44):',

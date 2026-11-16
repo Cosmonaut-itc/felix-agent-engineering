@@ -85,7 +85,7 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .fila .l2{grid-column:2/4;display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;color:var(--ink2);min-width:0}
 .fila .l2 span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
 .fila .d{font-size:12px;color:var(--ink2);white-space:nowrap;font-variant-numeric:tabular-nums}
-.fila .more{display:block;width:100%;font:inherit;font-size:12px;color:var(--ink2);background:var(--bg);border:0;border-top:1px solid var(--line);padding:6px;cursor:pointer}
+.fila .more,.restos .more{display:block;width:100%;font:inherit;font-size:12px;color:var(--ink2);background:var(--bg);border:0;border-top:1px solid var(--line);padding:6px;cursor:pointer}
 .slot.busy{position:relative}
 .dots{font:inherit;font-size:14px;line-height:1;border:0;background:none;color:var(--muted);cursor:pointer;padding:0 2px;margin-left:auto;order:9}
 .fila .d{display:flex;gap:8px;align-items:baseline;justify-content:flex-end}
@@ -130,8 +130,9 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 .step:focus{outline:2px solid var(--accent);outline-offset:2px}
 #toast button{font:inherit;border:0;background:none;color:inherit;text-decoration:underline;cursor:pointer}
 @media(max-width:560px){.host-heading{flex-direction:column}.mode-control{text-align:left}.lane{grid-template-columns:1fr}.step button{width:44px;height:44px}.step{gap:8px}}
-.interrupted{--ease-out:cubic-bezier(0.23,1,0.32,1);margin:2px 0 6px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
+.interrupted,.restos{--ease-out:cubic-bezier(0.23,1,0.32,1);margin:2px 0 6px;border:1px solid var(--line);border-radius:8px;overflow:hidden;background:var(--panel)}
 .interrupted-summary{display:flex;align-items:center;gap:10px;width:100%;min-height:44px;padding:8px 10px;border:0;background:none;color:var(--ink);font:inherit;text-align:left;cursor:pointer;touch-action:manipulation}
+div.interrupted-summary{cursor:default}
 .interrupted-summary:focus-visible{outline:2px solid var(--accent);outline-offset:-3px}
 .interrupted-text{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
 .interrupted-count{font-size:13px;font-weight:600}
@@ -142,14 +143,17 @@ dialog button.danger{background:var(--crit);border-color:var(--crit);color:#fff}
 .interrupted-fold{display:grid;grid-template-rows:0fr;transition:grid-template-rows 200ms var(--ease-out)}
 .interrupted.open>.interrupted-fold{grid-template-rows:1fr}
 .interrupted-fold>div{overflow:hidden;min-height:0}
-.interrupted ol{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
+.interrupted ol,.restos ol{list-style:none;margin:0;padding:0;border-top:1px solid var(--line)}
 .interrupted li{display:grid;grid-template-columns:38px 68px minmax(0,1fr) auto;column-gap:10px;align-items:baseline;padding:6px 10px;border-top:1px solid var(--line);font-size:13px}
-.interrupted li:first-child{border-top:0}
+.interrupted li:first-child,.restos li:first-child{border-top:0}
 .interrupted .it{color:var(--muted);font-size:12px;font-variant-numeric:tabular-nums}
 .interrupted .tk{font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .interrupted .tk.none{font-weight:400;color:var(--muted)}
 .interrupted .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .interrupted .o{font-size:12px;color:var(--ink2);white-space:nowrap}
+.restos li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:10px;row-gap:2px;align-items:baseline;padding:6px 10px;border-top:1px solid var(--line);font-size:13px;font-variant-numeric:tabular-nums}
+.restos .n{text-align:right;white-space:nowrap}
+.restos .l2{grid-column:1/-1;font-size:12px;color:var(--ink2);overflow-wrap:anywhere}
 @media(prefers-reduced-motion:reduce){.interrupted-fold,.interrupted .chev{transition:none}}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
@@ -262,6 +266,40 @@ function interrupted(h,n){
     <button type="button" class="interrupted-summary" data-interrupted="${esc(key)}" aria-expanded="${open}" aria-controls="${esc(id)}"><span class="interrupted-text"><span class="interrupted-count">${esc(count+' por reinicio')}</span><span class="interrupted-sub">${esc(consequence)}</span></span><span class="chev" aria-hidden="true"></span></button>
     <div class="interrupted-fold" id="${esc(id)}" aria-hidden="${!open}"><div><ol>${rows.map(t=>`<li><span class="it">${esc(time(t))}</span><span class="tk ${t.ticket?'':'none'}">${esc(t.ticket||'Sin ticket')}</span><span class="t${!t.title && !t.subject && t.branch?' mono':''}">${esc(what(t))}</span><span class="o">${esc(objective(t))}</span></li>`).join('')}</ol></div></div>
   </div></div>`;
+}
+
+// Procesos que siguen en pueued.service sin tarea. El marco sale en view(); paint() lo llena sólo con textContent.
+const orphanSlot = h => h.orphans?.length ? `<section class="restos" data-orphans="${esc(h.id)}" aria-label="Procesos sin tarea"></section>` : '';
+const ORPHAN_STATE = {Done:'Terminó',Killed:'Matada',Running:'Corriendo',desconocido:'desconocido'};
+function fillOrphans(box,h){
+  const node=(tag,cls,...parts)=>{const e=document.createElement(tag);if(cls) e.className=cls;e.append(...parts);return e;};
+  const gb=rs=>(rs.reduce((a,r)=>a+r.rss_bytes,0)/1024**3).toLocaleString('es',{minimumFractionDigits:1,maximumFractionDigits:1})+' GB';
+  const cpu=rs=>{const v=rs.map(r=>r.cpu_percent).filter(Number.isFinite);return v.length ? v.reduce((a,b)=>a+b,0) : null;};
+  const rows=h.orphans, hidden=h.orphans_total-rows.length, byTask=new Map();
+  for(const r of rows){if(!byTask.has(r.origin_task)) byTask.set(r.origin_task,[]);byTask.get(r.origin_task).push(r);}
+  // Orden de memoria del snapshot; los procesos sin atribuir, al final.
+  const origins=[...byTask].sort(([a],[b])=>(a===null)-(b===null));
+  const key=JSON.stringify(['orphans',h.id]), shown=OPEN[key] ? origins : origins.slice(0,3);
+  const total=cpu(rows), n=total/100;
+  const cores=total==null ? '— núcleos' : (n>0 && n<.1 ? '<0,1' : n.toLocaleString('es',{maximumFractionDigits:1}))+(Math.round(n*10)===10 ? ' núcleo' : ' núcleos');
+  const count=`${rows.length} ${rows.length===1 ? 'proceso' : 'procesos'} sin tarea${hidden>0 ? ` y ${hidden} más que no caben` : ''}`;
+  const sub=`${rows.length===1 ? 'Sigue' : 'Siguen'} consumiendo ${gb(rows)} y ${cores} · Pueue ya liberó su lugar`;
+  box.append(node('div','interrupted-summary',node('span','interrupted-text',node('span','interrupted-count',count),node('span','interrupted-sub',sub))),
+    node('ol','',...shown.map(([task,procs])=>{
+      const head=task===null ? [node('b','','Sin atribuir'),' · origen desconocido']
+        : [node('b','',task),...[procs[0].group,ORPHAN_STATE[procs[0].origin_state]].filter(Boolean).map(x=>' · '+x)];
+      const c=cpu(procs), oldest=Math.min(...procs.map(p=>Date.parse(p.started_at)/1000));
+      const age=node('span','','hace '+fmtDur(Math.max(0,NOW-oldest)));
+      age.title='Desde '+new Date(oldest*1000).toLocaleString('es-MX',{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit',hourCycle:'h23'});
+      return node('li','',node('span','',...head),node('span','n',`${gb(procs)} · ${c==null ? '—' : Math.round(c).toLocaleString('es')} % CPU`),
+        node('span','l2',...procs.flatMap(p=>[node('span','mono',`${p.comm} ${p.pid}`),' · ']),age));
+    })));
+  if(shown.length<origins.length){const more=node('button','more',`Ver ${origins.length-shown.length} más`);more.type='button';more.dataset.open=key;box.append(more);}
+}
+function paint(){
+  document.getElementById('app').innerHTML=view();
+  for(const box of document.querySelectorAll('[data-orphans]')) fillOrphans(box,S.hosts.find(h=>h.id===box.dataset.orphans));
+  syncMenu();
 }
 
 function resourceTable(h){
@@ -492,7 +530,7 @@ function view(){
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
           ${fila(h,n,w)}${interrupted(h,n)}`;
       }).join('');
-      return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
+      return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}${orphanSlot(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
 function render(data){
   NOW = data.now;
@@ -502,6 +540,7 @@ function render(data){
     const control=confirmed && (!s.control || s.control.revision<confirmed.revision) ? confirmed : s.control;
     return {...h, control, guard:s.guard, usage:s.usage, cores:s.cpu?.cores, load:s.cpu?.load,
       mem_total:s.mem?.total, mem_avail:s.mem?.available, swap_used:s.mem?.swap_used, swap_total:s.mem?.swap_total,
+      orphans:s.orphans, orphans_total:s.orphans_total,
       groups:Object.fromEntries((s.groups || []).map(g=>[g.name,{...g,slots:control?.slots?.[g.name] ?? g.slots}])),
       tasks:(s.tasks || []).filter(t=>!CANCELLED.has(runKey(h,t))).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
@@ -513,8 +552,7 @@ function render(data){
       if(i<0) h.tasks.push(a.task); else h.tasks[i]=a.task;
     }
   }
-  document.getElementById('app').innerHTML=view();
-  syncMenu();
+  paint();
   document.getElementById('when').textContent='Instantánea de las '+new Date(NOW*1000).toLocaleTimeString('es-MX',{hour:'2-digit',minute:'2-digit',second:'2-digit'});
 }
 document.getElementById('app').addEventListener('click', event=>{
@@ -529,7 +567,7 @@ document.getElementById('app').addEventListener('click', event=>{
     return;
   }
   const button = event.target.closest('button[data-open]');
-  if (button) { OPEN[button.dataset.open] = true; document.getElementById('app').innerHTML = view(); syncMenu(); }
+  if (button) { OPEN[button.dataset.open] = true; paint(); }
 });
 let menuTask = null, toastTimer;
 function say(text,back){
@@ -640,7 +678,7 @@ function confirmCancel(found){
   };
   d.querySelectorAll('button').forEach(b=>b.onclick=()=>d.close(b.value)); d.showModal();
 }
-function repaintActions(){if(S){document.getElementById('app').innerHTML=view();syncMenu();}}
+function repaintActions(){if(S) paint();}
 function actionMessage(data,action){
   const label=action.task?.ticket || objective(action.task || {});
   if(data.status==='cancelled') return `${label} cancelada`;

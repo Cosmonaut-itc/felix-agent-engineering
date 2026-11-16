@@ -162,6 +162,38 @@ def valid_usage(value, host=False):
     return copy.deepcopy(value)
 
 
+def valid_orphans(data, host):
+    if not {'orphans', 'orphans_total'} & set(data):
+        return  # Compatibilidad con recolectores anteriores.
+    rows, total = data.get('orphans'), data.get('orphans_total')
+    if (host != 'desk' or type(rows) is not list or type(total) is not int or total < 0
+            or len(rows) != min(total, 64)):
+        raise ValueError('Huérfanos inválidos')
+    keys = {'pid', 'comm', 'origin_task', 'group', 'origin_state', 'rss_bytes', 'cpu_percent', 'started_at'}
+    seen, previous = set(), math.inf
+    for row in rows:
+        if type(row) is not dict or set(row) != keys:
+            raise ValueError('Campos de huérfano inválidos')
+        if (type(row['pid']) is not int or row['pid'] <= 0 or row['pid'] in seen
+                or type(row['comm']) is not str or len(row['comm']) > 32
+                or (row['origin_task'] is not None and (type(row['origin_task']) is not str
+                    or not re.fullmatch(r'[0-9]{1,20}', row['origin_task'])))
+                or (row['group'] is not None and (type(row['group']) is not str or len(row['group']) > 128))
+                or type(row['origin_state']) is not str or row['origin_state'] not in ('Done', 'Killed', 'Running', 'desconocido')
+                or type(row['rss_bytes']) is not int or not 0 <= row['rss_bytes'] <= previous
+                or (row['cpu_percent'] is not None and (type(row['cpu_percent']) not in (int, float)
+                    or not math.isfinite(row['cpu_percent']) or row['cpu_percent'] < 0))
+                or type(row['started_at']) is not str
+                or not re.fullmatch(r'\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d{1,6})?Z', row['started_at'])):
+            raise ValueError('Huérfano inválido')
+        try:
+            _guard_snapshot.epoch(row['started_at'])
+        except ValueError:
+            raise ValueError('Fecha de huérfano inválida') from None
+        seen.add(row['pid'])
+        previous = row['rss_bytes']
+
+
 def validate_snapshot(data, host):
     if not isinstance(data, dict) or data.get('schema') != 'rack-host@1' or data.get('host') != host:
         raise ValueError('Esquema o host inválido')
@@ -182,6 +214,7 @@ def validate_snapshot(data, host):
     if any(not isinstance(data.get(k), (dict, type(None))) for k in ('cpu', 'mem', 'disk', 'guard')):
         raise ValueError('Capacidad inválida')
     _guard_snapshot.validate_guard(data.get('guard'))
+    valid_orphans(data, host)
     if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in data.get('errors') or []):
         raise ValueError('Pueue no se pudo leer')
     data = copy.deepcopy(data)
