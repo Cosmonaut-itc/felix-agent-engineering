@@ -113,6 +113,39 @@ parciales se indican en `snapshot.errors`. No se exportan comandos, rutas ni
 entornos de Pueue. `body.sh` se recorre por líneas, extrayendo sólo MODE,
 BASE_REPO, REQUESTED_SHA, BRANCH y SLOT_KIND; nunca se ejecuta ni registra su contenido.
 
+El desk añade `orphans` y `orphans_total`: procesos que siguen en el cgroup v2
+del MainPID de `pueued.service` sin ser el daemon ni descendientes suyos. Se
+comprueba `pid` + `starttime` entre lecturas y se descartan procesos que
+desaparecen, cambian de identidad o abandonan el cgroup. No actúa sobre ellos,
+la cola ni la guardia. La lista incluye como máximo 64, ordenados por
+`rss_bytes` descendente; `orphans_total` conserva el conteo anterior al corte.
+Cada fila tiene exactamente:
+
+- `pid` entero positivo y `comm` de hasta 32 caracteres.
+- `origin_task` string decimal o null: se atribuye por fd 1 o 2 a
+  `task_logs/<id>.log`, sin exportar la ruta. Sin descriptor atribuible es null.
+- `group` de hasta 128 caracteres o null y `origin_state`, uno de `Done`,
+  `Killed`, `Running` o `desconocido`, tomados sólo del grupo y estado de Pueue.
+  Un resultado terminal `Killed` se distingue del resto de tareas `Done`.
+- `rss_bytes` entero no negativo, `cpu_percent` número no negativo o null y
+  `started_at` ISO UTC terminado en `Z`. CPU es porcentaje de un núcleo y
+  puede superar 100; usa dos lecturas de ticks con intervalo máximo de 0.5 s.
+
+El recolector del campo sólo lee `stat`, `cgroup`, `cgroup.procs` y enlaces de
+fd; nunca `cmdline` ni `environ`. Comparte una única espera de 50 ms entre
+todos los candidatos, limita `systemctl` a 0.5 s y comprueba un presupuesto
+total de 1 s. Un fallo entrega lista vacía/total cero con
+`errors.stage=orphans`; debe distinguirse de una lectura válida sin huérfanos.
+El servidor admite snapshots anteriores sin ambos campos y valida la forma,
+límites, fechas, orden y ausencia de campos extra cuando están presentes.
+Esta entrega sólo añade datos; la vista del panel no los representa todavía.
+
+La aceptación privada se ejecuta con
+`REMOTE_RUN_HOST=desk ~/.local/bin/remote-run start --carril rapido --name dirigida-orfanos-desk -- /usr/bin/python3 -B fleet/rack/tests/private_orphans.py --run-private`.
+Crea su propio pueued y configuración bajo `/tmp`, confirma el origen por log,
+excluye un hijo de una tarea Running, mide siete muestras y comprueba limpieza
+de su unidad transitoria y procesos. No se ejecuta como parte de la suite local.
+
 El clon del desk no conserva ramas remotas al día, así que la instantánea
 entrega la rama solicitada cuando no es un SHA, además del SHA y el
 repositorio (`owner/nombre`, sacado de

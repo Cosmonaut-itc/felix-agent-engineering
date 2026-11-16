@@ -11,6 +11,12 @@ import tempfile
 
 BASE=Path(__file__).resolve().parents[1]
 CASES=(
+    ('orphans-descendants', 'snapshot.py', 'if parent == main:', 'if False:',
+     'test_orphans.OrphanTests.test_descendants_excluded_and_reparented_attributed_by_fd1'),
+    ('orphans-identity', 'snapshot.py', "before['start'] != after['start'] or descendant(pid, after)",
+     'descendant(pid, after)', 'test_orphans.OrphanTests.test_identity_change_and_disappearance_discarded'),
+    ('orphans-extra-fields', 'serve.py', 'type(row) is not dict or set(row) != keys', 'type(row) is not dict or not keys <= set(row)',
+     'test_orphans.OrphanTests.test_snapshot_validator_strict'),
     ('http-journal-wait','accion.py',
      'if not self.wait(done, max(0, deadline - self.timer())):',
      'if not self.wait(done, 44):',

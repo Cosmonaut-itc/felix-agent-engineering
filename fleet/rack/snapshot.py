@@ -598,7 +598,110 @@ def read_control(controller, host='mini'):
     return json.loads(answer.stdout)
 
 
-def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
+ORPHANS_LIMIT = 64
+ORPHANS_BUDGET = 1.0
+
+
+def orphan_stat(proc, pid):
+    """Sólo stat: PPid, identidad, contadores y comm; nunca argv ni entorno."""
+    raw = (proc / str(pid) / 'stat').read_text()
+    comm, _, tail = raw.partition('(')[2].rpartition(')')
+    fields = tail.split()
+    return dict(ppid=int(fields[1]), ticks=int(fields[11]) + int(fields[12]),
+                start=int(fields[19]), rss=max(0, int(fields[21])), comm=comm[:32])
+
+
+def desk_orphans(data, proc=Path('/proc'), cgroup=Path('/sys/fs/cgroup'), unit='pueued.service'):
+    """Lee una unidad; una sola espera compartida y plazo total de un segundo."""
+    deadline = time.monotonic() + ORPHANS_BUDGET
+    def check():
+        if time.monotonic() >= deadline:
+            raise TimeoutError('Lectura de huérfanos agotada')
+    main = int(command(['systemctl', '--user', 'show', unit, '-p', 'MainPID', '--value'], timeout=.5).strip())
+    if main <= 1:
+        raise ValueError('Servicio sin MainPID')
+    leader = orphan_stat(proc, main)
+    path = next(line.split(':', 2)[2] for line in (proc / str(main) / 'cgroup').read_text().splitlines()
+                if line.startswith('0::'))
+    if not path.startswith('/') or '..' in Path(path).parts or path == '/':
+        raise ValueError('Cgroup inválido')
+    members_file = cgroup / path.lstrip('/') / 'cgroup.procs'
+    members = {int(pid) for pid in members_file.read_text().split()}
+    if main not in members:
+        raise ValueError('MainPID fuera del cgroup')
+    boot = next(int(line.split()[1]) for line in (proc / 'stat').read_text().splitlines() if line.startswith('btime '))
+    hertz, page = os.sysconf('SC_CLK_TCK'), os.sysconf('SC_PAGE_SIZE')
+    def descendant(pid, row):
+        seen = {pid}
+        parent = row['ppid']
+        while parent > 1:
+            check()
+            if parent == main:
+                return True
+            if parent in seen:
+                raise ValueError('Cadena de padres cíclica')
+            seen.add(parent)
+            parent = orphan_stat(proc, parent)['ppid']
+        return False
+    candidates = {}
+    for pid in members - {main}:
+        check()
+        try:
+            row = orphan_stat(proc, pid)
+            if not descendant(pid, row):
+                candidates[pid] = (row, time.monotonic())
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+    if candidates:
+        check()
+        time.sleep(min(.05, max(0, deadline - time.monotonic())))
+    rows = []
+    # La segunda pertenencia evita publicar procesos que abandonaron la unidad.
+    remaining = {int(pid) for pid in members_file.read_text().split()}
+    for pid, (before, sampled) in candidates.items():
+        check()
+        if pid not in remaining:
+            continue
+        try:
+            origin = None
+            for fd in ('1', '2'):
+                try:
+                    target = os.readlink(proc / str(pid) / 'fd' / fd)
+                except FileNotFoundError:
+                    continue
+                match = re.fullmatch(r'/.*/task_logs/([0-9]{1,20})\.log(?: \(deleted\))?', target)
+                if match:
+                    origin = match[1]
+                    break
+            after = orphan_stat(proc, pid)
+            interval = time.monotonic() - sampled
+            if before['start'] != after['start'] or descendant(pid, after):
+                continue
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        task = (data or {}).get('tasks', {}).get(origin, {}) if origin else {}
+        status = task.get('status')
+        state = status if isinstance(status, str) else next(iter(status or {}), None)
+        details = status.get('Done', {}) if isinstance(status, dict) else {}
+        state = 'Killed' if state == 'Done' and details.get('result') == 'Killed' else state
+        group = task.get('group')
+        rows.append(dict(pid=pid, comm=after['comm'], origin_task=origin,
+                         group=group if isinstance(group, str) and len(group) <= 128 else None,
+                         origin_state=state if state in ('Done', 'Killed', 'Running') else 'desconocido',
+                         rss_bytes=after['rss'] * page,
+                         cpu_percent=max(0, after['ticks'] - before['ticks']) / hertz / interval * 100
+                         if 0 < interval <= .5 else None,
+                         started_at=datetime.datetime.fromtimestamp(boot + after['start'] / hertz,
+                             datetime.timezone.utc).isoformat().replace('+00:00', 'Z')))
+    if orphan_stat(proc, main)['start'] != leader['start']:
+        raise ValueError('MainPID cambió de identidad')
+    check()
+    rows.sort(key=lambda row: (-row['rss_bytes'], row['pid']))
+    return rows[:ORPHANS_LIMIT], len(rows)
+
+
+def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
+            cgroup=Path('/sys/fs/cgroup'), pueue_unit='pueued.service'):
     home, now = home or Path.home(), time.time() if now is None else now
     output = dict(schema='rack-host@1', host=host, os=mode, taken=now, cpu=None, mem=None, disk=None, guard=None, groups=[], tasks=[], errors=[])
 
@@ -621,6 +724,8 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None):
     output['disk'] = attempt('disk', lambda: disk('/System/Volumes/Data' if mode == 'macos' and Path('/System/Volumes/Data').exists() else '/'))
     output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home, proc, now, output['errors']))
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
+    if host == 'desk' and mode == 'linux':
+        output['orphans'], output['orphans_total'] = attempt('orphans', lambda: desk_orphans(data, proc, cgroup, pueue_unit)) or ([], 0)
     interruptions = attempt('startup', lambda: desk_interruptions(home, host)) or {}
     cache, references = {}, {}
     if data:
