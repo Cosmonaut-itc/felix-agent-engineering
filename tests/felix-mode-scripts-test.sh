@@ -2439,14 +2439,14 @@ apto_vigente_interactions() {
 
 # Catálogos reales en historias separadas; se prueba el veredicto público.
 apto_vigente_catalogs() {
-    python3 - "$SCRIPTS/apto-vigente" "$TEST_TMP" <<'PY_CATALOGS'
+    python3 - "$SCRIPTS/apto-vigente" "$TEST_TMP" "$BASH" <<'PY_CATALOGS'
 import copy
 import json
 from pathlib import Path
 import subprocess
 import sys
 
-script, temporary = sys.argv[1:]
+script, temporary, bash = sys.argv[1:]
 
 
 def git(repo, *args):
@@ -2534,7 +2534,7 @@ for case in cases:
     if case == 'editado':
         (repo / path).write_text('{}\n')
         git(repo, 'commit', '-qam', 'extra')
-    result = subprocess.run([script, 'destino', 'revisado', 'nuevo'], cwd=repo,
+    result = subprocess.run([bash, script, 'destino', 'revisado', 'nuevo'], cwd=repo,
                             capture_output=True, text=True)
     expected = ('APTO vigente' if case in ('disjuntas', 'translations', 'varios') else
                 'Ronda:' if case == 'editado' else 'Ronda delta')
