@@ -1817,13 +1817,13 @@ class MiniControl:
         action['editing_id'] = ident
         action['process'] = dict(root=str(root), client=None)
         self.reorder_save(action, 'edit_intent')
-        env = dict(os.environ, TMPDIR=str(root), EDITOR=shlex.join(['/usr/bin/python3','-I',
+        env = dict(os.environ, TMPDIR=str(root), EDITOR=shlex.join([sys.executable,'-I','-S',
                    str(Path(__file__).with_name('editor_prioridad.py')), str(root/'plan.json')]))
         self.reorder_measure('prepare_edit',time.monotonic()-begun)
         launch_begun=time.monotonic()
         trace = dict(plan_created=plan['launched'], popen_begin=helper.host_clock())
         helper.remaining(plan)
-        client = subprocess.Popen(['/usr/bin/python3','-I',str(Path(__file__).with_name('editor_prioridad.py')),
+        client = subprocess.Popen([sys.executable,'-I','-S',str(Path(__file__).with_name('editor_prioridad.py')),
                                    '--client',str(root/'plan.json')], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, env=env, cwd=str(root))
         trace['popen_end'] = helper.host_clock()

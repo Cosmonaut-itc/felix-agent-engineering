@@ -707,6 +707,9 @@ def test_one_paused_snapshot_replaces_parent_status_reads_per_id(self):
     actual=control.MiniControl.edit_priority.__get__(self.engine)
     with patch.object(self.p,'status',side_effect=AssertionError('redundant full status read')),patch.object(control.subprocess,'Popen',return_value=client),patch.object(control.priority_helper(),'birth',return_value='proof'):
         actual(action,1,5,control.time.monotonic()+1)
+        invocation=control.subprocess.Popen.call_args
+        self.assertEqual(invocation.args[0][:3],[control.sys.executable,'-I','-S'])
+        self.assertEqual(control.shlex.split(invocation.kwargs['env']['EDITOR'])[:3],[control.sys.executable,'-I','-S'])
     client.poll.assert_called_once()
     plan=next(self.root.glob('edit-*/plan.json'))
     self.assertIn('fingerprint',json.loads(plan.read_text()))
@@ -742,6 +745,24 @@ for name,fn in list(globals().items()):
 
 
 class HelperTests(unittest.TestCase):
+    def test_gated_client_does_not_import_editor_only_dependencies(self):
+        import builtins,io,sys
+        from types import SimpleNamespace
+        helper=control.priority_helper();imports=[]
+        real_import=builtins.__import__
+        def importing(name,*args,**kwargs):
+            imports.append(name)
+            if name in ('hashlib','subprocess'):
+                raise AssertionError('editor-only import on gated client')
+            return real_import(name,*args,**kwargs)
+        scope=dict(__name__='__main__',__file__=helper.__file__,__builtins__=dict(vars(builtins),__import__=importing))
+        with patch.object(sys,'argv',[helper.__file__,'--client','/nonexistent/never-read']),patch.object(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(b''))):
+            try:
+                exec(compile(Path(helper.__file__).read_bytes(),helper.__file__,'exec'),scope)
+            except SystemExit as error:
+                self.fail('gated client failed before release: '+str(error))
+        self.assertFalse({'hashlib','subprocess'} & set(imports))
+
     def test_trace_contains_only_shared_clock_and_retains_identity_failure(self):
         import tempfile,sys
         helper=control.priority_helper()

@@ -9,6 +9,11 @@ import tempfile
 SOURCE=Path(__file__).resolve().parents[1]
 T='test_reorder.ReorderTests.'
 CASES=[
+ ('gated client skips editor imports','editor_prioridad.py',"if __name__ != '__main__' or '--client' not in sys.argv:",'if True:','test_reorder.HelperTests.test_gated_client_does_not_import_editor_only_dependencies'),
+ ('client uses running isolated interpreter','control.py',"subprocess.Popen([sys.executable,'-I','-S',","subprocess.Popen(['/usr/bin/python3','-I','-S',",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
+ ('client skips site on running interpreter','control.py',"subprocess.Popen([sys.executable,'-I','-S',","subprocess.Popen([sys.executable,'-I',",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
+ ('helper uses running isolated interpreter','control.py',"EDITOR=shlex.join([sys.executable,'-I','-S',","EDITOR=shlex.join(['/usr/bin/python3','-I','-S',",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
+ ('helper skips site on running interpreter','control.py',"EDITOR=shlex.join([sys.executable,'-I','-S',","EDITOR=shlex.join([sys.executable,'-I',",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
  ('controller gate timing retained','control.py',"trace['gate_released'] = helper.host_clock()","pass",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
  ('helper partial identity timing','editor_prioridad.py',"trace_mark(root, marks, 'identity_begin')","pass",'test_reorder.HelperTests.test_trace_contains_only_shared_clock_and_retains_identity_failure'),
  ('kernel process creation conversion','editor_prioridad.py','(now - usage.start) * scale.numer / scale.denom / 1e9','0','test_reorder.HelperTests.test_process_creation_uses_kernel_uptime_without_wall_clock'),

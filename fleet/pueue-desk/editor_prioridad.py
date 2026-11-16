@@ -2,14 +2,17 @@
 """Restricted Pueue 4.0.4 TOML editor. Never log the editing document."""
 import time
 _ENTRY = time.clock_gettime(time.CLOCK_MONOTONIC)
+import sys
 import json
-import hashlib
-import subprocess
 import os
 from pathlib import Path
 import re
 import stat
-import sys
+# The gated client never parses TOML, hashes fields or invokes a status child.
+# Avoid loading OpenSSL and subprocess for that extra interpreter on every edit.
+if __name__ != '__main__' or '--client' not in sys.argv:
+    import hashlib
+    import subprocess
 _IMPORTED = time.clock_gettime(time.CLOCK_MONOTONIC)
 
 

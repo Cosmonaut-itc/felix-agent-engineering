@@ -1192,6 +1192,25 @@ anidados, no sumandos independientes). `helper_start` va de la creación del
 plan a la entrada del helper, incluyendo arranque de cliente/CLI/puerta;
 no aísla sólo el intérprete. Cada escenario emite sus métricas
 parciales antes de comprobar éxito y el siguiente sigue aunque falle el previo.
+El diagnóstico del editor conserva `trace-controller.json`, `trace-client.json`
+y `trace-helper.json` dentro del directorio privado de cada edición: sólo fases
+fijas y tiempos de `CLOCK_MONOTONIC`, compartidos también en Python 3.9.
+Separa Popen, identidad, escritura del plan, commit de client_ready, puerta,
+imports y comprobaciones del helper. La creación del helper se obtiene de
+`proc_pid_rusage` y se convierte desde `mach_absolute_time` con el reloj del kernel,
+sin usar la hora civil como cronómetro. En el arnés privado, un observador del
+CLI estándar reduce su salida de diagnóstico en memoria a tres marcas:
+EditRequest, respuesta Edit y preparación del spawn; descarta el resto y no
+guarda documentos, comandos ni entornos. Esas tres marcas tienen la demora de
+observación del lector, no precisión de syscall. No se modifica el binario ni
+se agrega un listener. `--only diagnostic` repite reorder/undo con ids nuevos y
+los mismos límites de 1 s y 6 s; una recuperación no convierte un fallo en PASS.
+Cliente y editor arrancan con el ejecutable del controlador (`sys.executable`),
+`-I -S`: se conserva el aislamiento y sólo se carga biblioteca estándar, sin el
+launcher adicional de `/usr/bin/python3` ni inicialización de `site`. La rama
+del cliente omite `hashlib` y `subprocess`, que sólo usa el editor. La puerta
+sigue cerrada hasta persistir PID/inicio, plan y client_ready; no se omiten las
+comprobaciones de identidad, revocación, deadline ni Locked del helper.
 La admisión privada usa sensores bajos sintéticos e incluye el coste del sensor
 real; no acredita apertura bajo presión de producción. Conserva la fixture de
 1500 Stashed / 9,43 MB y carga load1/load5/load15 de cada medición.
