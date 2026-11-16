@@ -853,3 +853,133 @@ vuelve a traer y no arma, y la composición productiva sin `GitTren`
 inyectado. `tests/remoto-u17-injerto.sh` exige que las dos pruebas del
 presupuesto fallen por aserción sobre `d0019396` y pasen después; usan
 transporte y reloj falsos, sin esperas reales.
+
+## Verificación previa al aterrizaje (U18)
+
+El gancho es optativo y se declara en la configuración privada del repo:
+
+```json
+{
+  "pre_aterrizaje": {
+    "comando": ["/absolute/path/to/preflight", "--private-config", "/private/config.json"],
+    "plazo_s": 30
+  },
+  "heads_autorizados": [
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    {"head": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "ventana": {
+      "inicio": "2026-12-01T10:00:00Z", "fin": "2026-12-01T10:30:00Z"
+    }}
+  ]
+}
+```
+
+`comando` es argv sin shell; su primer elemento debe ser absoluto. El plazo
+por llamada debe ser mayor que cero y como máximo 60 segundos. Se usa el
+entorno del tick, sin variables que redirijan el almacén git; el gancho no
+puede depender de su cwd. Configuración, ejecutable y credenciales pertenecen
+al operador, fuera del árbol de C: un PR no elige el verificador que lo autoriza.
+No se publican argv, stderr ni texto libre del gancho en eventos o feedback.
+
+El tick escribe un JSON en stdin (sin argumentos añadidos):
+
+```json
+{"version":1,"accion":"verificar","id":"<identidad estable>",
+ "repo":"owner/project","tren":"<id del lote>","B":"<SHA40>","C":"<SHA40>",
+ "prs":[{"pr":1,"head":"<SHA40>"}]}
+```
+
+`id` liga repo, lote, B y C y permanece igual al reconsultar o recuperar una
+muerte. `prs` conserva el orden del lote y las cabezas exactas entregadas.
+El gancho termina con código 0 y **un único objeto JSON** en stdout, sin
+campos adicionales, con la versión e identidad recibidas:
+
+```json
+{"version":1,"id":"<la misma identidad>","resultado":"seguir"}
+```
+
+- `seguir`: autoriza **este intento** de push sobre B..C.
+- `esperar`: no empuja ni consume un intento de CAS. El tick siguiente vuelve
+  a llamar `verificar` con el mismo id; puede conservar una operación en curso.
+- `pausar`: pausa `infraestructura`, con `reanudar` y `abortar` y sin rojo al
+  dueño. `reanudar` exige otra verificación, con CI/suite ya certificados
+  sobre el mismo C. No hay absolución que permita omitir el gancho.
+- Código distinto de 0, timeout, versión/id/resultado desconocidos, JSON
+  mal formado o stdout mayor que 16 KiB: misma pausa. Al agotar el plazo se
+  mata el grupo del proceso; stderr se descarta. Nunca interpretar un error
+  como permiso para empujar.
+
+La llamada corre bajo el flock del carril, sólo en el efecto de promoción,
+después del CI y la suite verdes sobre C y de comprobar su árbol y ancestros,
+inmediatamente antes del push CAS. Después del gancho se relee el remoto y
+el reloj UTC: si B cambió, su permiso no sirve; si el cambio ocurre después
+de esa lectura, el lease sigue impidiendo el push sobre la otra base.
+Un permiso no se guarda como certificado ni se reutiliza en otro tick.
+
+Las autorizaciones históricas por SHA siguen válidas sin ventana. Una entrada
+con ventana guarda ambos extremos junto a su head, exige UTC con `Z`, segundos
+y `inicio < fin`; no admite duplicados. Sólo el observador activo incorpora
+la ventana y fuerza viaje individual. Se comprueba incluso sin gancho: antes
+de `inicio` espera, desde `inicio` y antes de `fin` permite comprobar el
+aterrizaje, y desde `fin` pausa `infraestructura` / `pre-aterrizaje:ventana-vencida`.
+Se usa la hora real previa al push, no la hora de apertura del tick: también
+se comprueba después de esperar al gancho. Una ventana vencida requiere que
+el operador renueve la autorización del head y reanude; reanudar por sí solo
+no amplía la ventana. Ningún motivo del gancho o de la ventana devuelve el PR
+ni publica status `failure` o comentario de fallo.
+
+### Operaciones pendientes y cancelación
+
+Antes de invocar `verificar` se guarda en SQLite un diario privado con el
+request, argv y plazo. Una muerte entre el gancho y el CAS deja ese registro
+pendiente: al recuperar se reconcilia main; si sigue B se vuelve a verificar,
+incluso si la ejecución muerta había obtenido `seguir`. Si C ya aterrizó se
+cierra el diario y se recupera el aviso de aterrizaje, sin llamar al gancho
+ni cancelar. El ACK de promoción guardado tampoco autoriza otro push.
+
+Si no aterriza y hay una operación pendiente, se envía el mismo request con
+`"accion":"cancelar"`; la única respuesta válida es código 0 y
+`{"version":1,"id":"<la misma identidad>","resultado":"cancelado"}`.
+Se cancela al pausar, abortar, caducar/perder admisión, salir de la ventana,
+cambiar B, cambiar o retirar el gancho, ante un fallo del gancho o un CAS
+rechazado. `esperar` conserva la operación mientras el lote y su admisión,
+base, ventana y configuración sigan vigentes. La cancelación utiliza el
+comando y plazo guardados, aunque ya no estén en la configuración.
+
+Antes de cancelar se reconcilia: sólo se cancela con no aterrizaje acreditado;
+si main es ajeno se trae y comprueba que no contiene C. Si lo contiene, se
+cierra el diario sin cancelar. Una lectura incierta o una cancelación fallida
+retiene el registro y pausa infraestructura; se reintenta la limpieza antes
+de nuevo trabajo. Tras un aborto ya terminal, `reanudar` levanta esa pausa de
+limpieza; mientras el tren sigue en promoción ofrece `reanudar` y `abortar`.
+Los registros se marcan cerrados, no se borran. No se promete cancelar mientras
+no haya otro tick: el operador debe recuperar el diario si retira el servicio.
+
+El implementador del gancho debe hacer `verificar` y `cancelar` idempotentes
+por id, con estado y evidencia durables **antes** de cada efecto remoto.
+Debe serializar esas operaciones por id, incluso si un proceso sobrevive a la
+muerte de su tick; respetar el plazo y no dejar trabajadores fuera del grupo.
+`cancelar` es seguro aunque la solicitud sólo se registrara y no llegara a
+escribir un efecto. Debe comprobar también la identidad del destino remoto y
+que C no haya aterrizado antes de deshacerlo; ante incertidumbre devuelve
+error. Una operación que no puede garantizar eso requiere intervención, nunca
+un `cancelado` inventado. La implementación propia del repo conserva su
+evidencia detallada y cualquier dato privado fuera del diario público de eventos.
+
+Sin `pre_aterrizaje` y sin ventanas se conserva el comportamiento previo.
+Sombra, `entregar` y `tick --seco` no ejecutan el gancho ni su cancelación,
+no importan ventanas a sus vistas y conservan los mismos eventos byte a byte.
+U18 no cambia ninguna inscripción ni activa repos.
+
+Para activar Hasito se requiere además el gancho configurado y el guion del
+repo que cumpla este contrato: instantánea vigente, ventana congelada,
+chequeo de redeploys de B..C, autorización vigente y preparación/cancelación
+segura de los efectos necesarios antes del aterrizaje. Ese guion y su prueba
+de contrato sobre el entorno real pertenecen a Hasito; PAO sólo provee y
+prueba el protocolo genérico.
+
+`tests/remoto-u18.sh`, llamado desde `tests/remoto.sh`, exige seis regresiones
+por aserción sobre `a1d24ec1` y su éxito después. Usa ticks, un origen git real,
+un guion falso y una muerte de proceso entre verificación y push. También
+compara byte a byte los eventos de sombra, entrega y `--seco` de ambos árboles,
+con un gancho declarado que no debe ejecutarse. La suite cubre cancelación,
+recuperación del push con ACK perdido, timeout y expiración durante el gancho.

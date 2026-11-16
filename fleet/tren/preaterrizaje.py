@@ -1,0 +1,246 @@
+"""Gancho privado por repo; nunca conserva una autorización de push entre ticks."""
+from datetime import datetime, timezone
+import json
+import math
+import os
+from pathlib import Path
+import re
+import signal
+import subprocess
+import time
+
+from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, EscritorExterno,
+                     EsperaPrevia, Incierto, Promoviendo, Terminal, VentanaAutorizada,
+                     admision_entrada, clave)
+from git_ops import FalloGit, entorno, sha
+
+
+def autorizaciones(config):
+    """Lista histórica de SHA o entradas con ventana UTC ligada al head exacto."""
+    resultado = {}
+    entradas = config.get("heads_autorizados", [])
+    if not isinstance(entradas, list):
+        raise ValueError("autorizaciones invalidas")
+    for entrada in entradas:
+        head, ventana = entrada, None
+        if isinstance(entrada, dict):
+            if set(entrada) - {"head", "ventana"}:
+                raise ValueError("autorizacion invalida")
+            head = entrada.get("head")
+            valor = entrada.get("ventana")
+            if valor is not None:
+                if not isinstance(valor, dict) or set(valor) != {"inicio", "fin"}:
+                    raise ValueError("ventana invalida")
+                fechas = []
+                for nombre in ("inicio", "fin"):
+                    texto = valor[nombre]
+                    if not isinstance(texto, str) or not re.fullmatch(
+                            r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ", texto):
+                        raise ValueError("ventana debe usar UTC con Z")
+                    fechas.append(datetime.strptime(texto, "%Y-%m-%dT%H:%M:%SZ")
+                                  .replace(tzinfo=timezone.utc).timestamp())
+                if fechas[0] >= fechas[1]:
+                    raise ValueError("ventana vacia")
+                ventana = VentanaAutorizada(*fechas)
+        if not sha(head) or head in resultado:
+            raise ValueError("head autorizado invalido o duplicado")
+        resultado[head] = ventana
+    return resultado
+
+
+def gancho(config):
+    valor = config.get("pre_aterrizaje")
+    if valor is None:
+        return None
+    if not isinstance(valor, dict) or set(valor) != {"comando", "plazo_s"}:
+        raise ValueError("gancho invalido")
+    comando, plazo = valor["comando"], valor["plazo_s"]
+    if (not isinstance(comando, list) or not comando or
+            not all(isinstance(s, str) and s and "\0" not in s for s in comando) or
+            not Path(comando[0]).is_absolute() or type(plazo) not in (int, float) or
+            not math.isfinite(plazo) or not 0 < plazo <= 60):
+        raise ValueError("comando o plazo del gancho invalido")
+    return valor
+
+
+def invocar(config, solicitud, accion):
+    """Sin shell ni salida privada en eventos. Mata el grupo al agotar el plazo."""
+    try:
+        with subprocess.Popen(config["comando"], stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                env=entorno(), start_new_session=True) as proceso:
+            try:
+                salida, _ = proceso.communicate(json.dumps(dict(solicitud, accion=accion)),
+                                                timeout=config["plazo_s"])
+            except subprocess.TimeoutExpired:
+                os.killpg(proceso.pid, signal.SIGKILL)
+                proceso.communicate()
+                return "timeout"
+            if proceso.returncode != 0:
+                return "error"
+        if len(salida) > 16384:
+            return "salida-invalida"
+        valor = json.loads(salida)
+        permitidos = ("seguir", "esperar", "pausar") if accion == "verificar" else ("cancelado",)
+        if (not isinstance(valor, dict) or set(valor) != {"version", "id", "resultado"} or
+                type(valor["version"]) is not int or valor["version"] != 1 or
+                valor["id"] != solicitud["id"] or valor["resultado"] not in permitidos):
+            return "salida-invalida"
+        return valor["resultado"]
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return "error"
+
+
+class Previo:
+    def __init__(self, ledger, git, config, frontera):
+        self.ledger, self.git, self.config = ledger, git, config
+        self.repo = ""
+        self.frontera = frontera
+        self.reloj = time.time
+        # Diario privado separado de eventos: contiene el argv que deberá
+        # cancelar incluso si se retira o cambia la configuración del repo.
+        ledger.db.execute("CREATE TABLE IF NOT EXISTS pre_aterrizajes ("
+                          "id TEXT PRIMARY KEY, repo TEXT NOT NULL, payload TEXT NOT NULL, "
+                          "pendiente INTEGER NOT NULL)")
+
+    def ventana(self, tren, observacion):
+        vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
+        ahora = self.reloj()
+        for recibo in tren.recibos:
+            vista = vistas.get(recibo)
+            if vista is None:
+                vista = next((v for v in observacion.prs if
+                    clave("entrega", self.repo, v.pr, v.head) == recibo), None)
+            if vista is None:
+                # Las observaciones inyectadas antiguas pueden estar ligadas al PR.
+                continue
+            v = vista.ventana
+            if v is not None:
+                if len(tren.recibos) != 1:
+                    return "lote-con-ventana"
+                if ahora >= v.fin:
+                    return "ventana-vencida"
+                if ahora < v.inicio:
+                    return "esperar"
+        return "seguir"
+
+    def necesario(self, tren, observacion):
+        return ("pre_aterrizaje" in self.config or
+                any(v.ventana is not None for v in observacion.prs))
+
+    def terminar(self, identificador):
+        with self.ledger.transaccion():
+            self.ledger.db.execute("UPDATE pre_aterrizajes SET pendiente=0 WHERE id=?",
+                                   (identificador,))
+
+    def cancelar(self, registro, lectura=None):
+        solicitud = registro["solicitud"]
+        B, C = solicitud["B"], solicitud["C"]
+        lectura = lectura or self.git.reconciliar(B, C, registro["arbol"], registro["heads"])
+        if isinstance(lectura, Aterrizado):
+            self.terminar(solicitud["id"])
+            return True
+        if isinstance(lectura, EscritorExterno):
+            try:
+                self.git.traer(lectura.main)
+                contiene = self.git.git("merge-base", "--is-ancestor", C, lectura.main,
+                                        aislado=True).returncode
+            except FalloGit:
+                return False
+            if contiene == 0:
+                self.terminar(solicitud["id"])
+                return True
+            if contiene != 1:
+                return False
+        elif not isinstance(lectura, EnBase):
+            return False  # Nunca deshacer un efecto cuyo push pudo aterrizar.
+        if invocar(registro["gancho"], solicitud, "cancelar") != "cancelado":
+            return False
+        self.terminar(solicitud["id"])
+        return True
+
+    def pendientes(self, repo):
+        return [json.loads(r[0]) for r in self.ledger.db.execute(
+            "SELECT payload FROM pre_aterrizajes WHERE repo=? AND pendiente=1", (repo,))]
+
+    def limpiar(self, estado, observacion=None):
+        """Cancela al pausar, abortar, caducar, cambiar base/config o salir de ventana."""
+        self.repo = estado.repo
+        vistas = {v.recibo or str(v.pr): v for v in observacion.prs} if observacion else {}
+        for registro in self.pendientes(estado.repo):
+            s = registro["solicitud"]
+            tren = next((t for t in estado.trenes if t.id == s["tren"]), None)
+            cancelar = (estado.pausa is not None or tren is None or
+                isinstance(tren.fase, Terminal) or
+                self.config.get("pre_aterrizaje") != registro["gancho"])
+            if not cancelar and observacion:
+                cancelar = (observacion.base != s["B"] or
+                    self.ventana(tren, observacion) != "seguir" or
+                    any(not isinstance(admision_entrada(e, vistas, observacion), Admitido)
+                        for e in estado.entradas if e.entrega.recibo in tren.recibos))
+            if cancelar and not self.cancelar(registro):
+                return False
+        return True
+
+    def verificar(self, estado, tren, observacion, efecto):
+        self.repo = estado.repo
+        cert = tren.fase.certificado
+        B, C = cert.B, cert.C
+        ventana = self.ventana(tren, observacion)
+        if ventana != "seguir":
+            return (EsperaPrevia(B, C) if ventana == "esperar" else
+                    BloqueoPrevia(B, C, ventana))
+        try:
+            config = gancho(self.config)
+        except ValueError:
+            return BloqueoPrevia(B, C, "configuracion-invalida")
+        registro = None
+        if config is not None:
+            miembros = {e.entrega.recibo: e.entrega for e in estado.entradas}
+            solicitud = {"version": 1, "id": clave("pre-aterrizaje", estado.repo, tren.id, B, C),
+                "repo": estado.repo, "tren": tren.id, "B": B, "C": C,
+                "prs": [{"pr": miembros[r].pr, "head": miembros[r].head}
+                        for r in tren.recibos]}
+            registro = {"gancho": config, "solicitud": solicitud, "arbol": cert.arbol,
+                        "heads": [p["head"] for p in solicitud["prs"]]}
+            with self.ledger.transaccion():
+                self.ledger.db.execute("INSERT INTO pre_aterrizajes VALUES (?, ?, ?, 1) "
+                    "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, pendiente=1",
+                    (solicitud["id"], estado.repo, json.dumps(registro, sort_keys=True)))
+            self.frontera("antes-pre-aterrizaje", efecto)
+            resultado = invocar(config, solicitud, "verificar")
+        else:
+            resultado = "seguir"
+        # Una espera de IO invalida la hora y la base leídas al abrir el tick.
+        heads = tuple(e.entrega.head for e in estado.entradas if e.entrega.recibo in tren.recibos)
+        lectura = self.git.reconciliar(B, C, cert.arbol, heads)
+        if not isinstance(lectura, EnBase):
+            if registro and not self.cancelar(registro, lectura):
+                return BloqueoPrevia(B, C, "cancelacion-incierta")
+            return lectura if not isinstance(lectura, Incierto) else BloqueoPrevia(B, C, "base-incierta")
+        ventana = self.ventana(tren, observacion)
+        impedimento = None
+        if resultado == "esperar" and ventana == "seguir":
+            return EsperaPrevia(B, C)
+        if resultado != "seguir":
+            impedimento = BloqueoPrevia(B, C, "gancho-" + resultado)
+        elif ventana != "seguir":
+            impedimento = (EsperaPrevia(B, C) if ventana == "esperar" else
+                           BloqueoPrevia(B, C, ventana))
+        if impedimento is not None:
+            if registro and not self.cancelar(registro, lectura):
+                return BloqueoPrevia(B, C, "cancelacion-incierta")
+            return impedimento
+        self.frontera("pre-aterrizaje-verificado", efecto)
+        return None
+
+    def resolver(self, estado, tren, lectura):
+        # Después del CAS, cancelar sólo con una lectura que pruebe no aterrizaje.
+        if isinstance(lectura, EsperaPrevia):
+            return lectura
+        for registro in self.pendientes(estado.repo):
+            if registro["solicitud"]["tren"] == tren.id:
+                if not self.cancelar(registro, lectura):
+                    return BloqueoPrevia(tren.fase.certificado.B,
+                                        tren.fase.certificado.C, "cancelacion-incierta")
+        return lectura

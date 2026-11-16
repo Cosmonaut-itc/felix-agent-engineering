@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 
 from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      Corriendo, Diagnosticando, Efecto, EnBase, EsperandoCI, Incierto,
+                     BloqueoPrevia, EsperaPrevia,
                      Observacion, Promoviendo, RamaOcupada, admision_entrada,
                      clave, efecto_diagnostico, efecto_promover, rama_ci, recibo_ci)
 from git_ops import Publicado
@@ -25,7 +26,7 @@ class Ejecucion:
     completo: bool
 
 
-def ejecutar(efecto, estado, observacion, git, hasito=None):
+def ejecutar(efecto, estado, observacion, git, hasito=None, previo=None):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
     Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
@@ -145,7 +146,16 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
         # siendo seguro por el lease, y su lectura posterior decide el resultado.
         lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
         if isinstance(lectura, (EnBase, Incierto)):
-            lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
+            if previo is not None and previo.necesario(tren, observacion):
+                if isinstance(lectura, Incierto):
+                    lectura = BloqueoPrevia(cert.B, cert.C, "base-incierta")
+                else:
+                    lectura = git.promover(cert.B, cert.C, cert.arbol, heads,
+                        antes_push=lambda: previo.verificar(estado, tren, observacion, efecto))
+            else:
+                lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
+        if previo is not None:
+            lectura = previo.resolver(estado, tren, lectura)
         return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
-                         not isinstance(lectura, Incierto))
+                         not isinstance(lectura, (Incierto, EsperaPrevia)))
     raise ValueError("efecto o fase no soportados")

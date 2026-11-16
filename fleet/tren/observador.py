@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
                      VistaPR, rama_ci, recibo_ci)
 from git_ops import FalloGit
+from preaterrizaje import autorizaciones
 
 
 CONCLUSIONES_CI = {
@@ -288,7 +289,8 @@ class GitHubGit:
                 alto_riesgo=bool(etiquetas.intersection(
                     self.config.get("etiquetas_alto_riesgo", ["alto-riesgo"]))),
                 verificado=apto.get("verificado") == "Verificado" and apto.get("head") == head,
-                autorizado=head in self.config.get("heads_autorizados", []))
+                autorizado=head in autorizaciones(self.config),
+                ventana=autorizaciones(self.config).get(head) if self.activo else None)
             # Re-read after all reads; a concurrent push cannot use stale evidence.
             final = self.api("repos/{}/pulls/{}".format(repo, pr))
             if final["head"]["sha"] != head:

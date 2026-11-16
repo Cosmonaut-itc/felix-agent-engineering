@@ -23,6 +23,7 @@ git version
   bash fleet/tren/tests/remoto-u16-r1.sh
   bash fleet/tren/tests/remoto-u17.sh
   bash fleet/tren/tests/remoto-u17-injerto.sh
+  bash fleet/tren/tests/remoto-u18.sh
 ) > "$aislado/antes.log" 2>&1 &
 tren_antes_pid=$!
 encontrado=0

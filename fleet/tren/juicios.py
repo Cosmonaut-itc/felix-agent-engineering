@@ -20,6 +20,10 @@ POLITICA = {
         {"reanudar": "infraestructura", "absolver": "suite-nueva", "abortar": "abortar"},
     ("infraestructura", "ci-sin-resultado"):
         {"reanudar": "ci-nuevo", "abortar": "abortar"},
+    ("infraestructura", "pre-aterrizaje:"):
+        {"reanudar": "promover", "abortar": "abortar"},
+    ("infraestructura", "cancelacion-pre-aterrizaje"):
+        {"reanudar": "continuar", "abortar": "abortar"},
     ("rama-tren-ocupada", ""): {"reanudar": "publicar", "abortar": "abortar"},
     ("conflicto-en-cadena", ""): {"expulsar": "devolver", "abortar": "abortar"},
     ("candidato-no-corresponde", ""): {"reanudar": "armar", "abortar": "abortar"},
