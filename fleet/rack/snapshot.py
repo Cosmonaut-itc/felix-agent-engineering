@@ -12,6 +12,7 @@ import re
 import subprocess
 import sqlite3
 import sys
+import threading
 import time
 
 
@@ -648,8 +649,9 @@ def desk_orphans(data, proc=Path('/proc'), cgroup=Path('/sys/fs/cgroup'), unit='
         check()
         try:
             row = orphan_stat(proc, pid)
+            sampled = time.monotonic()  # junto a los contadores: la ascendencia no entra al intervalo
             if not descendant(pid, row):
-                candidates[pid] = (row, time.monotonic())
+                candidates[pid] = (row, sampled)
         except (FileNotFoundError, ProcessLookupError):
             continue
     if candidates:
@@ -700,6 +702,25 @@ def desk_orphans(data, proc=Path('/proc'), cgroup=Path('/sys/fs/cgroup'), unit='
     return rows[:ORPHANS_LIMIT], len(rows)
 
 
+def within_budget(fn, seconds):
+    """Corre fn en un hilo daemon y deja de esperarlo al vencer el plazo; muere con el proceso."""
+    done, result = threading.Event(), []
+    def run():
+        try:
+            result.append((True, fn()))
+        except BaseException as error:
+            result.append((False, error))
+        finally:
+            done.set()
+    threading.Thread(target=run, daemon=True).start()
+    if not done.wait(seconds):
+        raise TimeoutError('Lectura de huérfanos agotada')
+    ok, value = result[0]
+    if not ok:
+        raise value
+    return value
+
+
 def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
             cgroup=Path('/sys/fs/cgroup'), pueue_unit='pueued.service'):
     home, now = home or Path.home(), time.time() if now is None else now
@@ -725,7 +746,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
     output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home, proc, now, output['errors']))
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
     if host == 'desk' and mode == 'linux':
-        output['orphans'], output['orphans_total'] = attempt('orphans', lambda: desk_orphans(data, proc, cgroup, pueue_unit)) or ([], 0)
+        output['orphans'], output['orphans_total'] = attempt('orphans', lambda: within_budget(lambda: desk_orphans(data, proc, cgroup, pueue_unit), ORPHANS_BUDGET)) or ([], 0)
     interruptions = attempt('startup', lambda: desk_interruptions(home, host)) or {}
     cache, references = {}, {}
     if data:

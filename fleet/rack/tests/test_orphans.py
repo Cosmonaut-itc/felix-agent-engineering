@@ -128,6 +128,54 @@ class OrphanTests(unittest.TestCase):
             with self.assertRaises(TimeoutError):
                 self.read()
 
+    def test_cpu_interval_starts_at_the_counter_read_not_after_ancestry(self):
+        self.process(20, 1)
+        self.process(30, 20, fd='1')
+        self.members.write_text('10\n30\n')
+        original = snapshot.orphan_stat
+        for ancestry, expected in ((.2, 100), (.6, None)):
+            clock, parent = [0.0], [0]
+            def sample(proc, pid):
+                row = original(proc, pid)
+                if pid == 30:
+                    row['ticks'] = round(clock[0] * 100)  # un núcleo: 100 ticks por segundo
+                if pid == 20:
+                    parent[0] += 1
+                    if parent[0] == 1:
+                        clock[0] += ancestry
+                return row
+            with self.subTest(ancestry=ancestry), patch.object(snapshot, 'orphan_stat', side_effect=sample), \
+                    patch.object(snapshot.time, 'monotonic', side_effect=lambda: clock[0]), \
+                    patch.object(snapshot.time, 'sleep', side_effect=lambda s: clock.__setitem__(0, clock[0] + s)):
+                cpu = self.read()[0][0]['cpu_percent']
+                if expected is None:
+                    self.assertIsNone(cpu)
+                else:
+                    self.assertAlmostEqual(cpu, expected)
+
+    def test_slow_read_does_not_hold_the_snapshot_past_the_budget(self):
+        self.process(30, 1, fd='1')
+        original, release = Path.read_text, __import__('threading').Event()
+        self.addCleanup(release.set)
+        def stuck(path, *args, **kwargs):
+            if path == self.members:
+                release.wait(5)
+            return original(path, *args, **kwargs)
+        def commands(argv, **kwargs):
+            return '10\n' if argv[0] == 'systemctl' else json.dumps(dict(groups={}, tasks={}))
+        import time
+        begin = time.monotonic()
+        with patch.object(snapshot, 'command', side_effect=commands), patch.object(Path, 'read_text', stuck), \
+                patch.object(snapshot, 'linux_capacity', return_value=None), \
+                patch.object(snapshot, 'disk', return_value=None), \
+                patch.object(snapshot, 'desk_guard', return_value=None):
+            result = snapshot.collect('linux', 'desk', pueue='/fake/pueue', home=self.root,
+                                      proc=self.proc, cgroup=self.cgroup, pueue_unit='private.service')
+        self.assertLess(time.monotonic() - begin, snapshot.ORPHANS_BUDGET + .3)
+        self.assertEqual((result['orphans'], result['orphans_total']), ([], 0))
+        self.assertEqual(result['errors'], [dict(stage='orphans', message='Lectura fallida: TimeoutError')])
+        self.assertEqual(serve.validate_snapshot(result, 'desk'), result)
+
     def test_read_failure_is_partial_snapshot_error(self):
         original = Path.read_text
         for source in ('systemctl', 'cgroup'):
