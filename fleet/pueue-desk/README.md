@@ -107,13 +107,21 @@ pasada. Una marca ilegible retiene la poda y registra `error: true`.
 
 La bitácora existente agrega una línea JSONL `evento: "poda_historial"` por
 pasada intentada, sin ids, comandos ni errores arbitrarios. `podadas` cuenta
-los ids de lotes confirmados por el cliente; `sin_confirmar` cuenta los ids de
-lotes fallidos que podrían haberse quitado parcialmente; `lotes_fallidos`
-cuenta esos lotes. Los descartes son excluyentes: `vivas`, `omitidas` (forma
+sólo los ids reconocidos en `Tasks removed from list:` de Pueue 4.0.4;
+`sin_confirmar` cuenta los ids sin esa confirmación, y `lotes_fallidos` cuenta
+los lotes parciales, fallidos o con respuesta inesperada. Un lote puede quitar
+algunas tareas y aun así devolver código 0: el código de salida solo no basta. Los descartes son excluyentes: `vivas`, `omitidas` (forma
 inesperada), `dependencias`, `retenidas`, `retenidas_killed` y `tope` (elegibles
 que exceden 500). `error` señala fallos de lectura o persistencia. Se aplica
 la misma rotación del log a 1 MiB. Si falla el propio log, la guardia conserva
 su resultado y no se promete una línea persistida.
+
+`pueue remove` elimina también el archivo de `task_logs/` de la tarea podada:
+ya no aparecen ni su estado ni su salida en `pueue log <id>`. No se guarda
+un archivo histórico. Una espera de un id ausente imprime
+`No tasks found for selection TaskIds([...])` y sale con código 0 en 4.0.4.
+El daemon rechaza quitar una tarea que aún es dependencia de una tarea en fila;
+la selección la conserva desde su lectura, antes de enviar cualquier `remove`.
 
 Pruebas dirigidas y mutaciones (mediante `remote-run`):
 `/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -p test_prune.py -v`

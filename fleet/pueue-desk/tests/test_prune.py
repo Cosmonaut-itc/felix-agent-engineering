@@ -26,7 +26,7 @@ class PruneTests(unittest.TestCase):
         self.root = Path(tempfile.mkdtemp(prefix='sen6495-test-'))
         self.p = Mock()
         self.p.status.return_value = dict(tasks={'1': done()}, groups={})
-        self.p.call.return_value = ''
+        self.p.call.side_effect = lambda *args: 'Tasks removed from list: '+', '.join(args[1:])+'\n'
 
     def select(self, tasks):
         self.assertTrue(callable(getattr(control, 'select_prune', None)), 'select_prune debe existir')
@@ -140,7 +140,13 @@ class PruneTests(unittest.TestCase):
 
     def test_failed_batch_continues_and_counts_without_sensitive_data(self):
         self.p.status.return_value['tasks'] = {str(i): done() for i in range(201)}
-        self.p.call.side_effect = [subprocess.CalledProcessError(1, ['secret']), '', '']
+        calls = []
+        def remove(*args):
+            calls.append(args)
+            if len(calls) == 1:
+                raise subprocess.CalledProcessError(1, ['secret'])
+            return 'Tasks removed from list: '+', '.join(args[1:])+'\n'
+        self.p.call.side_effect = remove
         self.run_pass()
         self.assertEqual(self.p.call.call_count, 3)
         record=json.loads((self.root/'guardia.log').read_text().splitlines()[-1])
@@ -148,6 +154,27 @@ class PruneTests(unittest.TestCase):
         self.assertEqual(record['podadas'], 101)
         self.assertEqual(record['sin_confirmar'], 100)
         self.assertNotIn('secret', json.dumps(record))
+
+    def test_M4_partial_success_exit_zero_counts_acknowledged_ids_only(self):
+        self.p.status.return_value['tasks'] = {str(i): done() for i in (1, 2, 3)}
+        self.p.call.side_effect = None
+        self.p.call.return_value = 'Tasks removed from list: 1, 3\nThe command failed for tasks: 2\n'
+        self.run_pass()
+        record=json.loads((self.root/'guardia.log').read_text().splitlines()[-1])
+        self.assertEqual((record['podadas'], record['sin_confirmar'], record['lotes_fallidos']), (2, 1, 1))
+        self.assertEqual(self.p.status.call_count, 1)
+
+    def test_unrecognized_or_inconsistent_acknowledgement_is_not_a_removal_count(self):
+        self.p.call.side_effect = None
+        for output in ('', 'Tasks removed from list: 999\n',
+                       'Tasks removed from list: 1, 1\n',
+                       'Tasks removed from list: 1\nTasks removed from list: 1\n'):
+            with self.subTest(output=output):
+                self.p.call.return_value=output
+                self.run_pass()
+                record=json.loads((self.root/'guardia.log').read_text().splitlines()[-1])
+                self.assertEqual((record['podadas'], record['sin_confirmar'], record['lotes_fallidos']), (0, 1, 1))
+                (self.root/'poda.json').unlink()
 
     def test_nonblocking_own_lock_and_clock_rollback(self):
         with (self.root/'poda.lock').open('a') as handle:

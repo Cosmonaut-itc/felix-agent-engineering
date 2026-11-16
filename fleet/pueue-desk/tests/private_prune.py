@@ -71,22 +71,30 @@ def main():
         ident=add('printf sen6495')
         wait(lambda: terminal(ident))
         logfile=root/'data/task_logs'/f'{ident}.log'
+        assert logfile.exists(), 'missing private task log before removal'
         emit('M1_before', log_exists=logfile.exists())
         result=literal('M1_remove','remove',ident)
         assert result.returncode==0
         emit('M1_after', log_exists=logfile.exists())
         literal('M2_wait_missing','wait',ident)
-        parent=add()
+        p.call('group','add','dependiente','--parallel',1)
+        p.call('pause','-g','dependiente')
+        parent=add('sleep 5')
+        child=add('true','-g','dependiente','--after',parent)
         wait(lambda: terminal(parent))
-        p.call('pause','-g','default')
-        child=add('true','--after',parent)
-        emit('M3_before', parent=parent, child=child, state=p.status()['tasks'][child]['status'])
+        before=p.status()['tasks']
+        assert before[child]['dependencies']==[int(parent)]
+        assert 'Queued' in before[child]['status']
+        emit('M3_before', parent=parent, child=child, dependencies=before[child]['dependencies'], state=before[child]['status'])
         literal('M3_remove_dependency','remove',parent)
+        snapshot=p.status()['tasks']
+        task=snapshot[child]
+        emit('M3_after', parent_present=parent in snapshot, dependencies=task['dependencies'], state=task['status'])
+        p.call('start','-g','dependiente')
+        time.sleep(5)
         task=p.status()['tasks'][child]
-        emit('M3_after', parent_present=parent in p.status()['tasks'], dependencies=task['dependencies'], state=task['status'])
-        p.call('start','-g','default')
-        wait(lambda: terminal(child))
-        emit('M3_after_resume', state=p.status()['tasks'][child]['status'])
+        emit('M3_after_resume', observation_seconds=5, state=task['status'], dependencies=task['dependencies'])
+        p.call('remove',child)
         first=add();second=add()
         wait(lambda: terminal(first) and terminal(second))
         literal('M4_missing_mix','remove',first,999999999,second)
@@ -101,11 +109,26 @@ def main():
         literal('M4_running_mix','remove',first,running,second)
         snapshot=p.status()['tasks']
         emit('M4_running_after', first_present=first in snapshot, second_present=second in snapshot,
-             running_state=snapshot[running]['status'])
-        p.call('kill',running)
-        wait(lambda: terminal(running))
+             running_state=snapshot.get(running,{}).get('status'))
+        if running in snapshot:
+            p.call('kill',running)
+            wait(lambda: terminal(running))
         p.call('clean')
         assert not p.status()['tasks']
+        race_ids={add() for _ in range(3)}
+        wait(lambda: all(terminal(ident) for ident in race_ids))
+        class Race(Private):
+            def call(self, *args):
+                if args[0]=='remove':
+                    p.call('remove',args[1])  # concurrent writer after our status read
+                return super().call(*args)
+        race_directory=root/'race-control'
+        race_directory.mkdir()
+        control.prune_history(Race(),race_directory,now=time.time()+8*86400)
+        race_report=json.loads((race_directory/'guardia.log').read_text().splitlines()[-1])
+        assert (race_report['podadas'],race_report['sin_confirmar'],race_report['lotes_fallidos'])==(2,1,1)
+        assert not p.status()['tasks']
+        emit('M4_real_pass', selected=3, concurrent_removal=1, removed_by_pass=2, log=race_report)
         p.call('parallel',32)
         started=time.monotonic()
         with ThreadPoolExecutor(max_workers=8) as pool:

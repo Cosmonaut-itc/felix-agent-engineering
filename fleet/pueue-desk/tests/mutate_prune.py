@@ -8,6 +8,8 @@ import tempfile
 
 ROOT=Path(__file__).resolve().parents[1]
 CASES=[
+    ('M4_exit_zero', "report['podadas'] += len(confirmed)", "report['podadas'] += len(batch)", 'test_M4_partial_success_exit_zero_counts_acknowledged_ids_only'),
+    ('M4_failed_batch', "if failed or len(confirmed) != len(batch):", 'if failed:', 'test_M4_partial_success_exit_zero_counts_acknowledged_ids_only'),
     ('I1_live', "                counts['vivas'] += 1\n                continue", "                counts['vivas'] += 1\n                eligible.append((0, int(ident), ident))\n                continue", 'test_I1_only_exact_Done_and_unexpected_shapes'),
     ('I1_multivariant', "type(status) is not dict or len(status) != 1:", "type(status) is not dict or not status:", 'test_I1_only_exact_Done_and_unexpected_shapes'),
     ('I2_general', 'PRUNE_RETENTION = 24 * 60 * 60', 'PRUNE_RETENTION = 23 * 60 * 60', 'test_I2_retention_boundaries_and_results'),

@@ -168,13 +168,25 @@ def prune_history(pueue, directory, now=None, policy=None):
             stamp(len(ids) == policy['limit'])
             for offset in range(0, len(ids), policy['batch']):
                 batch = ids[offset:offset + policy['batch']]
+                failed, output, confirmed = False, '', set()
                 try:
-                    pueue.call('remove', *batch)
-                    report['podadas'] += len(batch)
-                except Exception:
-                    # Stock remove can partially succeed: do not claim these as removed.
+                    output = pueue.call('remove', *batch)
+                except Exception as error:
+                    failed = True
+                    if isinstance(error, subprocess.CalledProcessError):
+                        output = error.stdout
+                # Pueue 4.0.4 can exit 0 after partial removal (M4). Its explicit
+                # acknowledgement avoids another status read and false counts.
+                matches = re.findall(r'^Tasks removed from list: ([0-9]+(?:, [0-9]+)*)$',
+                                     output, re.MULTILINE) if isinstance(output, str) else []
+                if len(matches) == 1:
+                    acknowledged = matches[0].split(', ')
+                    if len(acknowledged) == len(set(acknowledged)) and set(acknowledged) <= set(batch):
+                        confirmed = set(acknowledged)
+                report['podadas'] += len(confirmed)
+                report['sin_confirmar'] += len(batch) - len(confirmed)
+                if failed or len(confirmed) != len(batch):
                     report['lotes_fallidos'] += 1
-                    report['sin_confirmar'] += len(batch)
     except Exception:
         attempted = True
         report['error'] = True
