@@ -145,7 +145,7 @@ defaults de pstack. A partir de ahí rigen Esfuerzo y Escalado.
 | `how explorer`, `why investigators`, `swarm workers`, `reflect tooling` | haiku-5.5 en `low`, o DeepSeek en Go. |
 | `how explainer`, `why synthesizer`, `reflect judgment, divergent, synthesizer` | sonnet-5.5 en `medium`. |
 | `architect runners`, `arena runners` | opus-5.5; en diseño disputado (alto riesgo o empate entre los candidatos de opus-5.5, según `felix-mode`), también gpt-6.1-sol. |
-| `arena cross-judge pool` | fable-5.2 en `high`, juez único de todo `arena`, sea cual sea la familia de los runners. |
+| `arena cross-judge pool` | fable-5.2 en `high`, juez único cuando `arena` lleva juez (diseño disputado, según `felix-mode`), sea cual sea la familia de los runners. |
 | `interrogate reviewers` | Según Revisión: gpt-6.1-sol en `high`; en alto riesgo, también opus-5.5 en `high`. |
 | `thermos reviewers` | opus-5.5 en `high`. `felix-mode` no usa `thermos` para revisar cambios; la fila sólo fija el asiento si alguien lo invoca. |
 | `no-comments reviewer` | sonnet-5.5 en `medium`. Limpia comentarios antes de la review y no cuenta como revisor de cambios. |
