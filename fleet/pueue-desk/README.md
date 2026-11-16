@@ -449,6 +449,16 @@ ni un daemon vivo; repetir el instalador también la completa antes del prefligh
 Al repetir desde A una transición pendiente A→B, primero completa B y después
 migra de vuelta a A. Sólo esa recuperación acreditada admite el hash anterior;
 retira la intención tras validar estrictamente biblioteca y autoridad destino.
+La reparación de una biblioteca distinta, aun con el mismo perfil, usa esa misma
+puerta: instalar sobre `done`, dueño PAO y generación vigente. Repetir una
+retirada o converger desde `aborted` no inicia una intención de tabla.
+Si se acepta mantenimiento después de un corte, la intención espera mientras
+el relevo propio pasa por `maintenance`, `switch` y `verify`; `continuar` y los
+ticks reconstruyen primero el daemon y `done`, y después completan la tabla.
+Durante esa espera el runtime conserva la lectura estricta de su perfil.
+Si la publicación parcial dejó biblioteca y autoridad de perfiles distintos,
+mantenimiento rechaza antes de detener servicios: completar primero la intención
+con la guardia, login o reinstalación, y repetir mantenimiento.
 El camino legacy `--cuotas` sigue rechazando
 cualquier instalación que contenga `mini_handoff`.
 

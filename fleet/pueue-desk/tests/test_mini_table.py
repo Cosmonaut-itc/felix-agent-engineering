@@ -219,7 +219,8 @@ class MiniTableTests(unittest.TestCase):
     def test_done_with_live_homebrew_rejects_old_hash_without_effects(self):
         h = self.h
         h.loaded.discard(mini.LABEL); h.loaded.add(mini.BREW); h.owner = mini.BREW
-        h.disabled[mini.BREW] = False; h.disabled[mini.LABEL] = True
+        # Disabled can still be loaded until bootout: isolate the live-owner gate.
+        h.disabled[mini.BREW] = True; h.disabled[mini.LABEL] = True
         before = self.snapshot()
         for dry in (True, False):
             error, _ = self.install(dry)
@@ -239,6 +240,72 @@ class MiniTableTests(unittest.TestCase):
                 self.assertEqual(h.p.calls, [])
                 self.assertEqual(h.calls, [], 'Un hash viejo se rechaza antes de consultar el dueño vivo')
                 self.assert_no_manager_effects()
+
+    def test_same_profile_different_library_withdrawn_and_aborted_converge(self):
+        self.select(self.a)
+        h = self.h
+        with patch.object(mini, 'control', self.new), patch.object(mini, 'ROOT', self.candidate):
+            h.m.change('withdraw'); h.finish()
+            with (self.candidate/'mini.py').open('a') as stream:
+                stream.write('\n# Different checkout, same profile.\n')
+            for phase in ('withdrawn', 'aborted'):
+                with self.subTest(phase=phase):
+                    state = h.policy()
+                    state['mini_handoff'].update(phase=phase, target='install' if phase == 'aborted' else 'withdraw',
+                        source=dict(owner='homebrew', pid=999999, generation=h.gen), retained_owner='homebrew')
+                    h.m.save(state, 'test:terminal')
+                    before = self.snapshot(); h.calls.clear(); h.p.calls.clear(); h.trace.clear()
+                    for dry in (True, False):
+                        try: h.m.change('withdraw', dry=dry)
+                        except ValueError as error: self.fail('Repetir retirada debe converger: '+str(error))
+                        self.assertFalse((h.directory/'table-migration.json').exists())
+                        if dry or phase == 'withdrawn': self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(h.policy()['mini_handoff']['phase'], 'withdrawn')
+                    self.assertEqual(h.p.calls, [])
+                    self.assert_no_manager_effects()
+                    for _ in range(2): self.assertTrue(h.m._recover(h.config))
+            try: h.m.change('install'); h.finish()
+            except ValueError as error: self.fail('Reinstalar tras retirada debe funcionar: '+str(error))
+            self.assertEqual(h.owner, mini.LABEL)
+            self.assert_installed_healthy()
+
+    def test_aborted_pao_same_profile_converges_before_library_repair(self):
+        self.select(self.a); h = self.h
+        state = h.policy()
+        state['mini_handoff'].update(phase='aborted', target='withdraw',
+            source=dict(owner='prepared', pid=999999, generation=h.gen), retained_owner='prepared')
+        h.m.save(state, 'test:aborted')
+        with (self.candidate/'mini.py').open('a') as stream: stream.write('\n# Different checkout.\n')
+        installed = {p:p.read_bytes() for p in h.m.library.rglob('*') if p.is_file()}
+        error, _ = self.install()
+        self.assertIsNone(error, 'Convergencia desde aborted sin migración: '+str(error))
+        self.assertEqual(h.policy()['mini_handoff']['phase'], 'done')
+        self.assertFalse((h.directory/'table-migration.json').exists())
+        self.assertEqual({p:p.read_bytes() for p in installed}, installed)
+        self.assertEqual(h.trace, ['handoff:converged'])
+        self.migrate(); self.assert_installed_healthy()
+
+    def test_same_hash_library_repair_rejects_unaccredited_owner_before_intent(self):
+        self.select(self.a); h = self.h
+        with (self.candidate/'mini.py').open('a') as stream: stream.write('\n# Repair candidate.\n')
+        for invalid in ('generation', 'startup', 'brew_enabled'):
+            with self.subTest(invalid=invalid):
+                state = copy.deepcopy(self.before)
+                if invalid == 'generation': state['generation'] = 'previous-daemon'
+                elif invalid == 'startup': state['startup']['phase'] = 'prepared'
+                else: h.disabled[mini.BREW] = False
+                with h.engine.connect(write=True) as db: h.engine.store(db, state)
+                before = self.snapshot()
+                try:
+                    for dry in (True, False):
+                        error, _ = self.install(dry)
+                        self.assertIsNotNone(error, invalid+' debe rechazarse antes de intención')
+                        self.assertEqual(self.snapshot(), before)
+                        self.assertEqual(h.p.calls, [])
+                        self.assert_no_manager_effects()
+                finally:
+                    h.disabled[mini.BREW] = True
+                    with h.engine.connect(write=True) as db: h.engine.store(db, self.before)
 
     def installed_manager(self):
         h = self.h
@@ -308,6 +375,97 @@ class MiniTableTests(unittest.TestCase):
         trial = MiniTableTests(); trial.setUp()
         try: trial.cut_matrix('B', login=True)
         finally: trial.doCleanups()
+
+    def settle_installed(self):
+        h = self.h
+        for _ in range(8):
+            h.m, runtime = self.installed_manager()
+            h.engine = h.m.engine; h.runtime = runtime.control
+            h.boot()
+            with control.locked(h.directory): h.m._recover(h.config)
+            with h.engine.connect() as db: state = h.engine.state(db, policy_migration=True)
+            if state['mini_handoff']['phase'] == 'done' and not (h.directory/'table-migration.json').exists():
+                h.m, runtime = self.installed_manager()
+                h.engine = h.m.engine; h.runtime = runtime.control
+                self.assertTrue(h.p.online)
+                return
+        self.fail('Mantenimiento y tabla deben converger hasta done sin intención')
+
+    def maintenance_cut_matrix(self, profile):
+        self.migrate(); checkpoints = list(self.h.trace)
+        for boundary in checkpoints:
+            with self.subTest(boundary=boundary, profile=profile):
+                trial = MiniTableTests(); trial.setUp()
+                try:
+                    h = trial.h
+                    def crash(phase):
+                        if phase == boundary: raise handoff.Crash(phase)
+                    h.m.checkpoint = crash
+                    with self.assertRaises(handoff.Crash): trial.install()
+                    h.m.checkpoint = h.trace.append
+                    checkout = h.m
+                    h.m, _ = trial.installed_manager()
+                    before = trial.snapshot(); h.calls.clear(); h.p.calls.clear()
+                    try: h.m.maintenance()
+                    except ValueError:
+                        # A partially published B runtime cannot read authority A.
+                        # This rejection must precede marker, authority and stops.
+                        self.assertEqual(trial.snapshot(), before)
+                        self.assertEqual(h.calls, []); self.assertEqual(h.p.calls, [])
+                    else:
+                        self.assertFalse(h.p.online)
+                        self.assertEqual(h.m.state()['mini_handoff']['phase'], 'maintenance')
+                        before_wait = trial.snapshot()
+                        with control.locked(h.directory):
+                            self.assertFalse(h.m._recover(h.config))
+                        self.assertEqual(trial.snapshot(), before_wait, 'Mantenimiento espera sin efectos')
+                        try: h.m.maintenance(resume=True)
+                        except ValueError as error: self.fail('Continuar debe permitir reconstruir el dueño: '+str(error))
+                    try: trial.settle_installed()
+                    except ValueError as error: self.fail('Los ticks deben converger: '+str(error))
+                    self.assertEqual(trial.actions(), trial.receipts)
+                    self.assertIn('manual', h.m.state()['reasons']['suites'])
+                    self.assertEqual(h.p.groups['suites']['status'], 'Paused')
+                    self.assertFalse(any(c[0] == 'start' for c in h.p.calls), 'Recuperación no abre grupos')
+                    trial.login_installed()
+                    h.m = checkout
+                    trial.select(trial.a if profile == 'A' else trial.b)
+                    trial.migrate(); trial.assert_installed_healthy()
+                    trial.login_installed(); trial.assert_installed_healthy()
+                finally: trial.doCleanups()
+
+    def test_every_table_cut_then_maintenance_continue_login_reinstall_a(self):
+        self.maintenance_cut_matrix('A')
+
+    def test_every_table_cut_then_maintenance_continue_login_reinstall_b(self):
+        self.maintenance_cut_matrix('B')
+
+    def test_pending_table_waits_only_for_owned_install_maintenance_with_matching_runtime(self):
+        h = self.h
+        def crash(phase):
+            if phase == 'table:intent': raise handoff.Crash(phase)
+        h.m.checkpoint = crash
+        with self.assertRaises(handoff.Crash): self.install()
+        h.m.checkpoint = h.trace.append
+        installed, _ = self.installed_manager()
+        for invalid in (None, 'target', 'ownership', 'runtime'):
+            for phase in ('maintenance', 'switch', 'verify'):
+                with self.subTest(invalid=invalid, phase=phase):
+                    state = copy.deepcopy(self.before)
+                    state['mini_handoff'].update(phase=phase, maintenance_owned=True)
+                    if invalid == 'target': state['mini_handoff']['target'] = 'withdraw'
+                    elif invalid == 'ownership': state['mini_handoff']['maintenance_owned'] = False
+                    elif invalid == 'runtime': state = h.m.table_plan(state)
+                    with h.engine.connect(write=True) as db: h.engine.store(db, state)
+                    before = self.snapshot(); h.calls.clear(); h.p.calls.clear()
+                    with control.locked(h.directory):
+                        if invalid:
+                            with self.assertRaises(ValueError): installed.recover_table()
+                        else:
+                            try: self.assertIsNone(installed.recover_table())
+                            except ValueError as error: self.fail('La tabla debe esperar al relevo: '+str(error))
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(h.calls, []); self.assertEqual(h.p.calls, [])
 
     def test_durable_intent_precedes_every_library_effect(self):
         h = self.h; publish = h.m.publish; intents = []

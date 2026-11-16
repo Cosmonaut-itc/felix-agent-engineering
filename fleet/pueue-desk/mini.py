@@ -180,9 +180,12 @@ class Manager:
             raise ValueError('Dos gestores cargados; no se releva')
         # Check the exact PID owner, pinned file, identity/date, desired policy and live vector.
         identity = self.verify_owner(source, state)
-        if state['policy_hash'] == self.engine.policy_hash:
+        repair = (target == 'install' and source == LABEL and previous and previous['phase'] == 'done'
+                  and not self.table_installed())
+        if state['policy_hash'] == self.engine.policy_hash and not repair:
             self.engine.view()
         elif not (target == 'install' and previous and previous['phase'] == 'done' and source == LABEL
+                  and self.disabled(BREW)
                   and identity['generation'] == state['generation']
                   and state.get('startup', {}).get('phase') in (None, 'ready')):
             raise ValueError('Migración de tabla requiere relevo done y generación vigente')
@@ -293,8 +296,6 @@ class Manager:
         journal = self.directory / 'table-migration.json'
         if not journal.exists():
             return None
-        if os.path.lexists(self.directory / 'maintenance'):
-            raise ValueError('Host en mantenimiento')
         intent = json.loads(journal.read_text())
         names = {'launchagents/' + label + '.plist' for label in (LABEL, GUARD)} | {'mini.py', 'control.py'}
         if (set(intent) != {'version', 'source_hash', 'target_hash', 'files'} or intent['version'] != 1
@@ -315,14 +316,21 @@ class Manager:
         if digest != intent['target_hash']:
             raise ValueError('Hash de la intención de tabla inválido')
         config = self.configuration_for_host()
-        control.start_projection(self.engine, config, allow_pending=False, policy_migration=True)
         with self.engine.connect() as db:
             state = self.engine.state(db, policy_migration=True)
             pending = any(json.loads(row[0])['response']['status'] in ('applying', 'partial', 'unknown')
                           for row in db.execute('SELECT body FROM host_actions'))
         previous = self.transaction(state)
-        if (state['policy_hash'] not in (intent['source_hash'], intent['target_hash']) or pending
-                or not previous or previous['phase'] != 'done'
+        if state['policy_hash'] not in (intent['source_hash'], intent['target_hash']) or pending or not previous:
+            raise ValueError('Intención de tabla no acredita esta autoridad o dueño')
+        if (previous['target'] == 'install' and previous.get('maintenance_owned')
+                and previous['phase'] in ('maintenance', 'switch', 'verify')):
+            # Let the existing handoff reconstruct its owner first. No old hash
+            # is accepted by that path: its installed runtime must still agree.
+            self.state()
+            return None
+        control.start_projection(self.engine, config, allow_pending=False, policy_migration=True)
+        if (previous['phase'] != 'done'
                 or self.loaded(BREW) is not None or not self.disabled(BREW)
                 or self.loaded(LABEL) is None):
             raise ValueError('Intención de tabla no acredita esta autoridad o dueño')
@@ -395,7 +403,8 @@ class Manager:
             previous = self.transaction(state)
             same_owner = source['owner'] == ('prepared' if target == 'install' else 'homebrew')
             if same_owner and previous:
-                state = self.update_table(state, dry)
+                if target == 'install' and previous['phase'] == 'done':
+                    state = self.update_table(state, dry)
                 previous = self.transaction(state)
                 if dry:
                     print('SECO: destino ya es el gestor vivo verificado; sin relevo ni drenado')
