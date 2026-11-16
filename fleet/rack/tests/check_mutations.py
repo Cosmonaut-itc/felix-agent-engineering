@@ -224,13 +224,27 @@ STARTUP_CASES += (
 )
 
 
+REORDER_CASES = (
+    ('order-old-undo','host_action.py',"(request.get('op')=='reorder' or 'queue' in request.get('expected',{})) and op!='status'", "request.get('op')=='reorder' and op!='status'",'test_reorder.ReorderChannelTests.test_closed_fields_budget_and_old_host_translation'),
+    ('order-reply-64k','desk_action.py',"limit = 65536 if request.get('schema')","limit = 16384 if request.get('schema')",'test_reorder.ReorderChannelTests.test_64_receipt_crosses_transport_and_cancel_keeps_16k'),
+    ('order-wire-limit','accion.py','if len(raw) > 16384:', 'if False:', 'test_reorder.ReorderChannelTests.test_closed_fields_budget_and_old_host_translation'),
+    ('order-unknown-no-toast','index.html',"    announceOrder('No se pudo confirmar el orden · consultando');", "    say('Orden actualizado');announceOrder('No se pudo confirmar el orden · consultando');", 'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-confirmation-highlight','index.html','}},2500);','}},25);','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-toast-eight-seconds','index.html',"setTimeout(()=>toast.textContent='', 8000)","setTimeout(()=>toast.textContent='', 1000)",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-escape-cancel','index.html',"finishDrag(true);return;","finishDrag(false);return;",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-pointercancel','index.html','d.cancel=()=>finishDrag(true);','d.cancel=()=>finishDrag(false);','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-keyboard-direction','index.html',"from+(ev.key==='ArrowUp'?-1:1)","from+(ev.key==='ArrowUp'?1:-1)",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-text-only','index.html','toast.textContent=text;','toast.innerHTML=text;','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+)
+
+
 def main():
-    cases = STARTUP_CASES if '--startup-only' in sys.argv else CASES + STARTUP_CASES
+    cases = REORDER_CASES if '--reorder-only' in sys.argv else STARTUP_CASES if '--startup-only' in sys.argv else CASES + STARTUP_CASES + REORDER_CASES
     for name,filename,before,after,test in cases:
         with tempfile.TemporaryDirectory(prefix='rack-c3-mutation-',dir='/tmp') as folder:
             root=Path(folder)/'rack'
             shutil.copytree(BASE,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-            if name.startswith('startup-'):
+            if name.startswith(('startup-','order-')):
                 shutil.copytree(BASE.parent/'pueue-desk',root.parent/'pueue-desk',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
             path=root/filename
             text=path.read_text()
