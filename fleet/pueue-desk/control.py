@@ -57,7 +57,8 @@ STATE_DIR = Path.home() / ".local/state/pao/pueue-desk"
 RACK_LOCK_SECONDS = 1.0
 
 
-# Historial: bloque independiente de cuotas, admisión y arranque.
+# Historial: bloque independiente de cuotas y arranque. De la admisión sólo lee
+# qué tarea sigue siendo evidencia de un permiso incierto.
 PRUNE_RETENTION = 24 * 60 * 60
 PRUNE_KILLED_RETENTION = 7 * 24 * 60 * 60
 PRUNE_INTERVAL = 60 * 60
@@ -67,12 +68,27 @@ PRUNE_POLICY = dict(retention=PRUNE_RETENTION, killed_retention=PRUNE_KILLED_RET
                     interval=PRUNE_INTERVAL, limit=PRUNE_LIMIT, batch=PRUNE_BATCH)
 
 
-def select_prune(tasks, now, policy=None):
+def admission_evidence(directory):
+    """Ids whose Pueue record is the only proof left for an uncertain admission permit."""
+    path = directory / 'control.sqlite3'
+    if not os.path.lexists(path):
+        return set()
+    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)
+    try:
+        value = admission_state(db)
+    finally:
+        db.close()
+    attempt = value and value['last_attempt']
+    # _execution_confirmed needs the task itself until the permit is resolved.
+    return {str(attempt['id'])} if attempt and attempt['outcome'] in ('reserved', 'unknown') else set()
+
+
+def select_prune(tasks, now, policy=None, protected=()):
     """Return oldest eligible ids and mutually exclusive exclusion counts, without effects."""
     policy = PRUNE_POLICY if policy is None else policy
     if not math.isfinite(now):
         raise ValueError('Hora de poda ilegible')
-    counts = dict(vivas=0, omitidas=0, dependencias=0, retenidas=0,
+    counts = dict(vivas=0, omitidas=0, admision=0, dependencias=0, retenidas=0,
                   retenidas_killed=0, tope=0)
     referenced = set()
     unknown_dependencies = False
@@ -118,7 +134,9 @@ def select_prune(tasks, now, policy=None):
         cutoff = now - (policy['killed_retention'] if result == 'Killed' else policy['retention'])
         numerator, denominator = cutoff.as_integer_ratio()
         boundary = divmod(numerator * 1_000_000_000 // denominator, 1_000_000_000)
-        if unknown_dependencies or ident in referenced:
+        if ident in protected:
+            counts['admision'] += 1
+        elif unknown_dependencies or ident in referenced:
             counts['dependencias'] += 1
         elif end >= boundary:
             counts['retenidas_killed' if result == 'Killed' else 'retenidas'] += 1
@@ -133,7 +151,7 @@ def prune_history(pueue, directory, now=None, policy=None):
     """Best effort, hourly and independently locked; never propagate pruning failures."""
     policy = PRUNE_POLICY if policy is None else policy
     report = dict(podadas=0, sin_confirmar=0, lotes_fallidos=0, error=False,
-                  vivas=0, omitidas=0, dependencias=0, retenidas=0, retenidas_killed=0, tope=0)
+                  vivas=0, omitidas=0, admision=0, dependencias=0, retenidas=0, retenidas_killed=0, tope=0)
     attempted = False
     try:
         if os.path.lexists(directory / 'poda.off'):
@@ -163,7 +181,8 @@ def prune_history(pueue, directory, now=None, policy=None):
                 temporary.replace(marker)
             # Reserve the cadence before any RPC, also when status fails.
             stamp(False)
-            ids, counts = select_prune(pueue.status()['tasks'], now, policy)
+            protected = admission_evidence(directory)
+            ids, counts = select_prune(pueue.status()['tasks'], now, policy, protected)
             report.update(counts)
             stamp(len(ids) == policy['limit'])
             for offset in range(0, len(ids), policy['batch']):

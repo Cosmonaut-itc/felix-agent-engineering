@@ -95,6 +95,12 @@ dependencia de una tarea que aún no terminó. Si no puede leer las dependencias
 de una tarea no terminada, conserva todos los candidatos de esa lectura.
 Las variantes vivas y las formas inesperadas nunca se podan.
 
+Tampoco poda la tarea del último intento de admisión incremental mientras su
+resultado sea `reserved` o `unknown`: esa tarea es la evidencia con la que la
+guardia y `resolver-admision` acreditan que el intento se ejecutó. Si no puede
+leer el permiso en `control.sqlite3`, la pasada no poda nada y registra
+`error: true`.
+
 La política está en `PRUNE_*` dentro del controlador único. `poda.json` limita
 la lectura adicional a una por hora; si se seleccionaron 500 tareas, el próximo
 tick vuelve a podar sin esperar esa hora. Quita como máximo 500 por pasada,
@@ -115,7 +121,8 @@ sólo los ids reconocidos en `Tasks removed from list:` de Pueue 4.0.4;
 `sin_confirmar` cuenta los ids sin esa confirmación, y `lotes_fallidos` cuenta
 los lotes parciales, fallidos o con respuesta inesperada. Un lote puede quitar
 algunas tareas y aun así devolver código 0: el código de salida solo no basta. Los descartes son excluyentes: `vivas`, `omitidas` (forma
-inesperada), `dependencias`, `retenidas`, `retenidas_killed` y `tope` (elegibles
+inesperada), `admision` (evidencia de un permiso incierto), `dependencias`,
+`retenidas`, `retenidas_killed` y `tope` (elegibles
 que exceden 500). `error` señala fallos de lectura o persistencia. Se aplica
 la misma rotación del log a 1 MiB. Si falla el propio log, la guardia conserva
 su resultado y no se promete una línea persistida.

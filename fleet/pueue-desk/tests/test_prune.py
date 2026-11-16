@@ -5,6 +5,7 @@ import fcntl
 import importlib.util
 import json
 from pathlib import Path
+import sqlite3
 import subprocess
 import tempfile
 import unittest
@@ -198,6 +199,53 @@ class PruneTests(unittest.TestCase):
         self.run_pass()
         self.run_pass(NOW+1)
         self.assertEqual(self.p.status.call_count, 1)
+        self.p.call.assert_not_called()
+        self.assertTrue(json.loads((self.root/'guardia.log').read_text().splitlines()[-1])['error'])
+
+    def admission(self, outcome):
+        attempt = dict(boot_id='00000000-0000-4000-8000-000000000000', reserved_ns=5,
+                       completed_ns=7 if outcome in ('confirmed', 'not_sent') else None,
+                       at='2026-11-14T00:00:00+00:00', generation='a'*64, grupo='hasito', id=1,
+                       created_at='2026-11-14T00:00:00+00:00', enqueued_at='2026-11-14T00:00:00+00:00',
+                       outcome=outcome)
+        confirmed = dict(at=attempt['at'], grupo='hasito', id=1) if outcome == 'confirmed' else None
+        body = control.canonical(dict(version=1, last_attempt=attempt, last_confirmed=confirmed))
+        db = sqlite3.connect(self.root/'control.sqlite3')
+        with db:
+            db.execute('CREATE TABLE IF NOT EXISTS guard_admission (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL)')
+            db.execute('INSERT OR REPLACE INTO guard_admission VALUES (1,?)', (body,))
+        db.close()
+
+    def test_I7_uncertain_admission_keeps_its_execution_evidence(self):
+        ids, counts = control.select_prune({'1': done(), '2': done()}, NOW, protected={'1'})
+        self.assertEqual((ids, counts['admision'], counts['dependencias']), (['2'], 1, 0))
+        self.p.status.return_value = dict(tasks={'1': done(), '2': done()}, groups={})
+        for step, outcome in enumerate(('unknown', 'reserved')):
+            self.admission(outcome)
+            self.run_pass(NOW+step*4000)
+            removed = [ident for call in self.p.call.call_args_list for ident in call.args[1:]]
+            self.assertEqual(removed, ['2'], outcome+': la poda quitó la evidencia del permiso')
+            self.assertEqual(json.loads((self.root/'guardia.log').read_text().splitlines()[-1])['admision'], 1)
+            self.p.call.reset_mock()
+        for step, outcome in enumerate(('confirmed', 'not_sent'), 2):
+            self.admission(outcome)
+            self.run_pass(NOW+step*4000)
+            removed = [ident for call in self.p.call.call_args_list for ident in call.args[1:]]
+            self.assertEqual(removed, ['1', '2'], outcome+': un permiso resuelto no retiene historial')
+            self.p.call.reset_mock()
+
+    def test_I7_unreadable_admission_retains_everything(self):
+        (self.root/'control.sqlite3').write_text('not a database')
+        self.run_pass()
+        self.p.call.assert_not_called()
+        self.assertTrue(json.loads((self.root/'guardia.log').read_text().splitlines()[-1])['error'])
+        (self.root/'control.sqlite3').unlink()
+        db = sqlite3.connect(self.root/'control.sqlite3')
+        with db:
+            db.execute('CREATE TABLE guard_admission (id INTEGER PRIMARY KEY CHECK(id=1), body TEXT NOT NULL)')
+            db.execute("INSERT INTO guard_admission VALUES (1,'{}')")
+        db.close()
+        self.run_pass(NOW+4000)
         self.p.call.assert_not_called()
         self.assertTrue(json.loads((self.root/'guardia.log').read_text().splitlines()[-1])['error'])
 

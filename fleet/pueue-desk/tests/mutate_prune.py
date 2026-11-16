@@ -21,6 +21,10 @@ CASES=[
     ('I5_switch', "if os.path.lexists(directory / 'poda.off'):", 'if False:', 'test_I5_switch_no_Pueue_calls'),
     ('I6_cadence', "now - previous['at'] < policy['interval']", "now - previous['at'] < 1", 'test_I6_cadence_and_cap_retry'),
     ('I6_cap_retry', "stamp(len(ids) == policy['limit'])", 'stamp(False)', 'test_I6_cadence_and_cap_retry'),
+    ('I7_protected', "        if ident in protected:", '        if False:', 'test_I7_uncertain_admission_keeps_its_execution_evidence'),
+    ('I7_reserved', "attempt['outcome'] in ('reserved', 'unknown') else set()", "attempt['outcome'] in ('unknown',) else set()", 'test_I7_uncertain_admission_keeps_its_execution_evidence'),
+    ('I7_resolved', "attempt['outcome'] in ('reserved', 'unknown') else set()", "attempt['outcome'] in ('reserved', 'unknown', 'confirmed') else set()", 'test_I7_uncertain_admission_keeps_its_execution_evidence'),
+    ('I7_unreadable', "    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)\n    try:\n        value = admission_state(db)\n    finally:\n        db.close()", "    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)\n    try:\n        value = admission_state(db)\n    except Exception:\n        value = None\n    finally:\n        db.close()", 'test_I7_unreadable_admission_retains_everything'),
 ]
 
 def run(root, test=None):
