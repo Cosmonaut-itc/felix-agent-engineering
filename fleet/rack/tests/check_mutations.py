@@ -224,13 +224,53 @@ STARTUP_CASES += (
 )
 
 
+# U3.6: one per reorder safety rule on the rack side (host rules: pueue-desk/tests/mutate_reorder.py).
+REORDER_CASES = (
+    ('reorder-pause-owner','host_action.py',"PAUSE_REASONS = ('pressure', 'manual', 'ambiguous', 'startup', 'handoff', 'reorder')",
+     "PAUSE_REASONS = ('pressure', 'manual', 'ambiguous', 'startup', 'handoff')",
+     'test_reorder.EligibilityTests.test_paused_group_shows_its_owner_including_recovery'),
+    ('reorder-old-host','host_action.py',"if op in REORDER_OPS and status == 'recovery_error':",'if False:',
+     'test_reorder.ChannelTests.test_old_host_is_translated_to_unsupported_without_effects'),
+    ('reorder-host-text','host_action.py',"    base = REORDER_MESSAGES[code]\n    if code != 'paused' or message == base:\n        return base",
+     '    if True:\n        return message',
+     'test_reorder.WhitelistTests.test_view_never_forwards_host_text_and_desk_cannot_claim_reorder'),
+    ('reorder-desk-claim','host_action.py',"caps['reorder'] and host == 'mini' and type(value.get('reorder')) is dict","caps['reorder']",
+     'test_reorder.WhitelistTests.test_view_never_forwards_host_text_and_desk_cannot_claim_reorder'),
+    ('reorder-receipt-rebuilt','host_action.py','answer[\'result\'] = reorder_result(request, status, payload)',"answer['result'] = payload",
+     'test_reorder.WhitelistTests.test_receipt_payload_is_rebuilt_from_ids_and_numbers'),
+    ('reorder-undo-handle','host_action.py',"if result['undo'] and request['op'] == 'reorder':",'if True:',
+     'test_reorder.ChannelTests.test_drag_applies_and_undo_restores_exact_priorities'),
+    ('reorder-caps-required','accion.py',"if request['op'] in ('mode',) + host_channel.REORDER_OPS and","if request['op'] in ('mode',) and",
+     'test_reorder.EligibilityTests.test_without_capability_or_with_closed_group_nothing_reaches_the_host'),
+    ('reorder-group-open','accion.py',"            if request['op'] == 'reorder' and not (group or {}).get('enabled'):\n","            if False:\n",
+     'test_reorder.EligibilityTests.test_without_capability_or_with_closed_group_nothing_reaches_the_host'),
+    ('reorder-poll-budget','accion.py',"('cancel', 'slots', 'mode', 'undo') + host_channel.REORDER_OPS and not value.get('dry_run')",
+     "('cancel', 'slots', 'mode', 'undo') and not value.get('dry_run')",
+     'test_reorder.ChannelTests.test_poll_identity_keeps_the_mini_budget'),
+    ('reorder-ui-text-only','index.html','  toast.textContent = text;\n','  toast.innerHTML = text;\n',
+     'test_reorder.UITests.test_drag_five_to_two_shows_progress_highlight_and_undo_toast'),
+    ('reorder-ui-group-lock','index.html','if(PENDING.has(key) || !r?.enabled) return paint();','if(!r?.enabled) return paint();',
+     'test_reorder.UITests.test_drag_five_to_two_shows_progress_highlight_and_undo_toast'),
+    ('reorder-ui-unknown-no-success','index.html',"  if(['applying','partial','unknown'].includes(data.status)){\n    action.status=data.status==='applying'",
+     "  if(['applying','partial'].includes(data.status)){\n    action.status=data.status==='applying'",
+     'test_reorder.UITests.test_unknown_shows_no_success'),
+    ('reorder-ui-precheck','index.html','if(order.length>REORDER_MAX || writes>r.max_writes || JSON.stringify(request).length>REORDER_BYTES){','if(false){',
+     'test_reorder.UITests.test_too_long_is_rejected_before_any_request'),
+    ('reorder-ui-paused-reason','index.html',"if(!r || r.enabled || w.length<2 || !r.code || r.code==='busy') return '';","return '';",
+     'test_reorder.UITests.test_paused_group_shows_reason_and_is_not_draggable'),
+    ('reorder-ui-same-queue','index.html','r.queue.length===w.length && r.queue.every((x,i)=>x[0]===w[i].id)','true',
+     'test_reorder.UITests.test_desk_and_actions_off_never_offer_reorder'),
+)
+
+
 def main():
-    cases = STARTUP_CASES if '--startup-only' in sys.argv else CASES + STARTUP_CASES
+    cases = (STARTUP_CASES if '--startup-only' in sys.argv else REORDER_CASES if '--reorder-only' in sys.argv
+             else CASES + STARTUP_CASES + REORDER_CASES)
     for name,filename,before,after,test in cases:
         with tempfile.TemporaryDirectory(prefix='rack-c3-mutation-',dir='/tmp') as folder:
             root=Path(folder)/'rack'
             shutil.copytree(BASE,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-            if name.startswith('startup-'):
+            if name.startswith(('startup-', 'reorder-')):
                 shutil.copytree(BASE.parent/'pueue-desk',root.parent/'pueue-desk',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
             path=root/filename
             text=path.read_text()

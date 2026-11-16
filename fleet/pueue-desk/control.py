@@ -7,10 +7,14 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 import fcntl
 import hashlib
+import importlib.util
 import json
 import math
 import os
 from pathlib import Path
+import shutil
+import signal
+import stat
 import subprocess
 import sqlite3
 import re
@@ -55,6 +59,35 @@ ID = re.compile(r'[A-Za-z0-9-]{8,64}')
 LOG_MAX_BYTES = 1024 * 1024
 STATE_DIR = Path.home() / ".local/state/pao/pueue-desk"
 RACK_LOCK_SECONDS = 1.0
+# U3.6, reordenar en la Mini. La fila se cierra con `pause --wait` sólo mientras
+# se editan prioridades; tiempos medidos en el README («Reordenar la fila»).
+REORDER_OPS = ('reorder', 'reorder_undo')
+REORDER_MAX = 64
+REORDER_PAUSE_SECONDS = 3.0      # sección con el grupo cerrado
+REORDER_RPC_SECONDS = 1.0        # cada RPC de Pueue dentro de la acción
+REORDER_FIXED_SECONDS = 0.35     # pause + dos lecturas + start, con historial grande
+REORDER_EDIT_SECONDS = 0.03      # un `pueue edit` con estado pequeño...
+REORDER_EDIT_PER_MB = 0.008      # ...más el guardado de Pueue por MB de state.json
+REORDER_UNDO_SECONDS = 60        # el panel ofrece 8 s; el host tolera la latencia
+REORDER_REAP_SECONDS = 2.0       # espera a un editor huérfano propio antes de matarlo
+TOKEN_LENGTH = 32
+EDITOR_NAME = 'editor_prioridad.py'
+REORDER_MESSAGES = {
+    'stale_queue': 'La fila cambió. Actualiza antes de decidir.',
+    'same_order': 'Ese orden ya está vigente.',
+    'too_long': 'Fila demasiado larga para reordenar de una vez',
+    'paused': 'No se puede reordenar mientras el grupo está pausado',
+    'held_tasks': 'Hay tareas apartadas, en edición o pausadas en este grupo; no se reordena.',
+    'edit_unsafe': 'Esta fila no se puede editar con seguridad (alias o formato de Pueue); no se pausó nada.',
+    'not_ready': 'El control de este host se está recuperando. Vuelve a intentarlo.',
+    'reorder_disabled': 'El reordenamiento está apagado en este host.',
+    'interrupted': 'El reordenamiento se interrumpió; la fila quedó como estaba.',
+    'queue_changed': 'La fila cambió durante el reordenamiento; se restauró lo que seguía en fila.',
+    'reorder_unverified': 'No se pudo verificar la fila; el grupo queda en pausa. Revisar y resolver con control.py reanudar.',
+}
+# Concrete owner of a pause, as the panel shows it next to «pausado».
+PAUSE_LABELS = {'pressure': 'pausa por presión', 'manual': 'pausa manual', 'ambiguous': 'pausa de origen desconocido',
+                'startup': 'retenido al reiniciar', 'handoff': 'relevo del daemon', 'reorder': 'en pausa recuperando…'}
 
 
 def mode_at(now):
@@ -113,9 +146,23 @@ class Pueue:
         self.timeout = None
         self.context = dict(env=env, cwd=cwd) if env is not None else {}
 
+    def command(self, *args):
+        return [self.binary, *map(str, args)]
+
     def call(self, *args):
-        return subprocess.run([self.binary, *map(str, args)], check=True,
+        return subprocess.run(self.command(*args), check=True,
                               text=True, capture_output=True, timeout=self.timeout, **self.context).stdout
+
+    def edit_process(self, ident, env):
+        """One `pueue edit ID`, held at a gate until the caller journals its PID.
+
+        The shell execs Pueue (same PID) only after reading `go`; if the caller
+        dies first, stdin closes and nothing is edited. Output is discarded.
+        """
+        return subprocess.Popen(['/bin/sh', '-c', 'IFS= read -r go && [ "$go" = go ] && exec "$@"',
+                                 'pao-reorder-edit', *self.command('edit', ident)],
+                                stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                env=env, cwd=self.context.get('cwd'))
 
     def status(self):
         state = json.loads(self.call("status", "--json"))
@@ -301,11 +348,203 @@ def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
 
+def status_parts(status):
+    return (status, {}) if isinstance(status, str) else next(iter(status.items()))
+
+
+def task_state(task):
+    return status_parts(task['status'])
+
+
+def task_identity(task):
+    """Full digest stays on the host; the panel receives only an opaque prefix."""
+    seed = ['rack-reorder-task@1', task['id'], task['created_at'], task['group'], task['original_command'],
+            task['command'], task['path'], task['envs'], task['dependencies'], task['label']]
+    return hashlib.sha256(canonical(seed).encode()).hexdigest()
+
+
+def queued_rows(snapshot, group):
+    """Queued tasks of one group in scheduler order: priority desc, id asc."""
+    rows = [t for t in snapshot['tasks'].values() if t['group'] == group and task_state(t)[0] == 'Queued']
+    for task in rows:
+        validate_task(str(task['id']), task)
+    return sorted(rows, key=lambda t: (-t['priority'], t['id']))
+
+
+def queue_etag(generation, group, rows):
+    body = ['rack-reorder-queue@1', generation, group,
+            [[t['id'], task_identity(t), t['priority'], task_state(t)[1]['enqueued_at']] for t in rows]]
+    return hashlib.sha256(canonical(body).encode()).hexdigest()
+
+
+def reorder_targets(order):
+    """First cut from the judgment: N..1 over the planned ids; before is stored apart."""
+    return {str(ident): len(order) - k for k, ident in enumerate(order)}
+
+
+def reorder_classify(journal, snapshot):
+    """Planned ids as {id: priority} still ours, gone (started/removed), foreign (held or changed)."""
+    present, gone, foreign = {}, [], []
+    for ident in journal['plan']:
+        task = snapshot['tasks'].get(str(ident))
+        name = task_state(task)[0] if task is not None else None
+        if name in (None, 'Running', 'Paused', 'Done'):
+            gone.append(ident)  # never recreated
+        elif name != 'Queued' or task_identity(task) != journal['identities'][str(ident)]:
+            foreign.append(ident)  # Locked/Stashed or edited by someone else: not ours to touch
+        else:
+            present[ident] = task['priority']
+    return present, gone, foreign
+
+
+def simple_yaml_value(raw):
+    raw = raw.split(' #', 1)[0].strip()
+    if raw in ('', '~', 'null'):
+        return None
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in '\'"':
+        return raw[1:-1]
+    if re.fullmatch(r'[A-Za-z0-9_/. ~@+-]+', raw):
+        return raw
+    raise ValueError('Valor YAML no reconocido')
+
+
+def pueue_settings(path):
+    """Only client.edit_mode and shared.alias_file. Anything not proven fails closed."""
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        return dict(edit_mode=None, alias_file=None)
+    try:
+        value = json.loads(text)
+    except ValueError:
+        value, section = {}, None
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith('#') or line.strip() == '---':
+                continue
+            top = re.fullmatch(r'([A-Za-z_]+):(.*)', line)
+            if top:
+                section = top.group(1)
+                if section in ('client', 'shared') and simple_yaml_value(top.group(2)) is not None:
+                    raise ValueError('Bloque YAML en línea no reconocido')
+                value.setdefault(section, {})
+                continue
+            if section in ('client', 'shared'):
+                inner = re.fullmatch(r'  ([A-Za-z_]+):(.*)', line)
+                if not inner:
+                    raise ValueError('Configuración de Pueue no reconocida')
+                if inner.group(1) in ('edit_mode', 'alias_file'):
+                    value[section][inner.group(1)] = simple_yaml_value(inner.group(2))
+    if type(value) is not dict or any(type(value.get(k, {})) is not dict for k in ('client', 'shared')):
+        raise ValueError('Configuración de Pueue no reconocida')
+    edit_mode, alias_file = value.get('client', {}).get('edit_mode'), value.get('shared', {}).get('alias_file')
+    if any(v is not None and type(v) is not str for v in (edit_mode, alias_file)):
+        raise ValueError('Configuración de Pueue no reconocida')
+    return dict(edit_mode=edit_mode, alias_file=alias_file)
+
+
+def read_aliases(path):
+    """Flat `name: value` map as serde_yaml reads it; absent file means no aliases."""
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        return {}
+    aliases = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith('#') or line.strip() == '---':
+            continue
+        match = re.fullmatch(r'([^\s:#\'"][^:#]*?|"[^"]*"|\'[^\']*\'):\s+(.*)', line)
+        if not match:
+            raise ValueError('Alias no reconocido')
+        key = match.group(1).strip('\'"')
+        if key in aliases:
+            raise ValueError('Alias repetido')
+        aliases[key] = simple_yaml_value(match.group(2))
+    return aliases
+
+
+def edit_hazard(task, aliases):
+    """True if a TOML round trip through `pueue edit` could change more than priority."""
+    if task['command'] != task['original_command']:
+        return True  # the daemon would recompute an alias expansion
+    words = task['original_command'].split()
+    if words and words[0] in aliases:
+        return True
+    texts = (task['original_command'], task['path'], task['label'] or '')
+    return any(ord(c) < 32 and c != '\n' or ord(c) == 127 for text in texts for c in text)
+
+
+def load_editor(path):
+    spec = importlib.util.spec_from_file_location('editor_prioridad', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def process_start(pid):
+    """Wall-clock start of a live PID at ps resolution, or None if absent."""
+    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart='], text=True, capture_output=True,
+                            timeout=2, env=dict(os.environ, LC_ALL='C'))
+    text = result.stdout.strip()
+    if result.returncode != 0 or not text:
+        return None
+    return time.mktime(time.strptime(text, '%a %b %d %H:%M:%S %Y'))
+
+
+def is_reorder(action):
+    return type(action.get('reorder')) is dict and action.get('request', {}).get('op') in REORDER_OPS
+
+
+def reorder_journal(db):
+    """Locked ids that a pending reorder may own: {id: identity}. Read-only."""
+    owned = {}
+    for (body,) in db.execute('SELECT body FROM host_actions'):
+        action = json.loads(body)
+        editing = action['reorder'].get('editing') if is_reorder(action) else None
+        if editing and action['response']['status'] == 'applying':
+            owned[str(editing['id'])] = action['reorder']['identities'][str(editing['id'])]
+    return owned
+
+
+def validate_reorder_request(request, host):
+    keys = {'schema', 'op', 'action_id', 'dry_run', 'expected', 'change' if request['op'] == 'reorder' else 'undo_of'}
+    if type(request.get('action_id')) is not str or not ID.fullmatch(request['action_id']):
+        raise ValueError('ID inválido')
+    if type(request.get('dry_run')) is not bool:
+        raise ValueError('Ensayo inválido')
+    e = request.get('expected')
+    fields = {'group', 'generation', 'queue_etag'} | ({'queue'} if request['op'] == 'reorder' else set())
+    if (type(e) is not dict or set(e) != fields
+            or type(e['group']) is not str or e['group'] not in (MINI_PROFILE if host == 'mini' else GROUP_LIMITS)
+            or type(e['generation']) is not str or not 1 <= len(e['generation']) <= 160
+            or type(e['queue_etag']) is not str or not re.fullmatch('[0-9a-f]{64}', e['queue_etag'])):
+        raise ValueError('Estado esperado inválido')
+    if request['op'] == 'reorder':
+        queue = e['queue']
+        if (type(queue) is not list or not 2 <= len(queue) <= REORDER_MAX
+                or any(type(row) is not list or len(row) != 3 or type(row[0]) is not int or not 0 <= row[0] < 2**64
+                       or type(row[1]) is not str or not re.fullmatch('[0-9a-f]{%d}' % TOKEN_LENGTH, row[1])
+                       or type(row[2]) is not int or not -(2**31) <= row[2] < 2**31 for row in queue)
+                or len({row[0] for row in queue}) != len(queue)):
+            raise ValueError('Fila esperada inválida')
+        c = request.get('change')
+        if (type(c) is not dict or set(c) != {'order'} or type(c['order']) is not list
+                or any(type(i) is not int for i in c['order'])
+                or sorted(c['order']) != sorted(row[0] for row in queue)):
+            raise ValueError('Orden inválido')
+    elif type(request.get('undo_of')) is not str or not ID.fullmatch(request['undo_of']):
+        raise ValueError('Recibo inválido')
+    if set(request) != keys:
+        raise ValueError('Claves inválidas')
+    return request
+
+
 def validate_host_request(request, host='mini'):
     if type(request) is not dict or request.get('schema') != HOST_SCHEMA:
         raise ValueError('Petición inválida')
     op = request.get('op')
     keys = {'schema', 'op'}
+    if op in REORDER_OPS:
+        return validate_reorder_request(request, host)
     if op in ('slots', 'mode', 'undo', 'status'):
         keys.add('action_id')
         if type(request.get('action_id')) is not str or not ID.fullmatch(request['action_id']):
@@ -711,7 +950,9 @@ def assert_offline(pueue, pid_file):
             raise ValueError('PID anterior vivo o ambiguo; no se prepara')
 
 
-def startup_plan(queue, state, now, data, profile):
+def startup_plan(queue, state, now, data, profile, owned=None):
+    """owned: {id: identity} of Locked tasks a pending reorder journaled (U3.6)."""
+    owned = owned or {}
     image = deepcopy(queue)
     state = deepcopy(state)
     previous = state.get('startup', {})
@@ -746,6 +987,13 @@ def startup_plan(queue, state, now, data, profile):
         elif (variant == 'Done' and detail['result'] == 'Killed'
               and state.get('stop_tasks', {}).get(ident) == task['created_at']):
             interruptions[ident] = dict(created_at=task['created_at'], message=INTERRUPTED)
+        elif (variant == 'Locked' and owned.get(ident) == task_identity(task)
+              and status_parts(detail['previous_status'])[0] == 'Queued'
+              and not os.path.lexists(data / 'task_logs' / (ident + '.log'))):
+            # Our own edit lock, consumed before stock would turn it into Stashed.
+            # Same id and enqueued_at; the reorder recoverer settles priorities.
+            task['status'] = detail['previous_status']
+            changes[ident] = task['status']
         elif variant == 'Locked':
             holds[task['group']] = 'tarea Locked desconocida; revisar antes de reanudar'
             state['reasons'][task['group']] = sorted(set(state['reasons'][task['group']]) | {'ambiguous'})
@@ -762,6 +1010,7 @@ def start_inputs(engine, config, queue_path, policy_migration=False):
     queue = read_queue(queue_path)  # adopted host: absent is never a fresh queue
     with engine.connect() as db:
         stored = engine.state(db, policy_migration=policy_migration)
+        engine.owned_locked = reorder_journal(db) if engine.host == 'mini' else {}
     if os.path.lexists(engine.directory / 'maintenance'):
         raise ValueError('Host en mantenimiento')
     if config['pid_file'].resolve() != Path(stored['pid_file']).resolve():
@@ -791,7 +1040,7 @@ def start_projection(engine, config, queue_path=None, allow_pending=True, policy
             raise ValueError('Cola cambió durante preparación; conservar archivos')
     validate_queue(queue)  # an intent reconstructed from authority is validated too
     # Re-project even after a crash: an event may have expired overrides meanwhile.
-    state, image = startup_plan(queue, state, engine.clock(), config['data'], engine.profile)
+    state, image = startup_plan(queue, state, engine.clock(), config['data'], engine.profile, engine.owned_locked)
     validate_queue(image)  # validate the exact bytes to be published, before intent
     state['startup']['source_hash'] = disk_hash
     # Carry recovered statuses forward if the disk still contains the old image.
@@ -947,6 +1196,12 @@ class MiniControl:
         self.path = self.directory / 'control.sqlite3'
         self.generation_source = generation
         self.boot_clock = admission_clock
+        # U3.6 seams: real clocks/processes by default, injected by the tests.
+        self.monotonic, self.wall, self.sleep = time.monotonic, time.time, time.sleep
+        self.process_start, self.kill = process_start, os.kill
+        self.editor = Path(__file__).with_name(EDITOR_NAME)
+        self.pueue_data = self.pueue_config = self.alias_default = None
+        self.owned_locked = {}
 
     def mode(self, state):
         return 'fijo' if self.host == 'mini' else (state['mode_override']['mode'] if state['mode_override'] else
@@ -1035,7 +1290,7 @@ class MiniControl:
         if calculated != value['desired'] and not migrating:
             raise ValueError('Deseo inconsistente')
         # Ownership is independent of the quota profile (including foreign groups).
-        if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous', 'startup', 'handoff'}
+        if any(type(g) is not str or type(r) is not list or not set(r) <= {'pressure', 'manual', 'ambiguous', 'startup', 'handoff', 'reorder'}
                for g, r in value['reasons'].items()):
             raise ValueError('Propiedad inválida')
         if self.host == 'mini' and 'mini_handoff' in value:
@@ -1154,17 +1409,21 @@ class MiniControl:
             pending = [json.loads(r[0]) for r in db.execute('SELECT body FROM host_actions')
                        if json.loads(r[0])['response']['status'] in ('applying', 'partial', 'unknown')]
         observed, groups = self.observed()
+        snapshot = self._status_snapshot
         generation = self.generation(state)
         for group in self.profile:
             if os.path.lexists(self.pause_fence(group)):
                 state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
         enabled = not self.disabled()
+        reorder = ({g: self.reorder_group(state, snapshot, g, generation, observed, bool(pending), enabled)
+                    for g in self.profile if g in groups} if self.host == 'mini' else None)
         extra = dict(expires_at=schedule_at(state['schedule_event'])[1] if state['overrides'] or state['mode_override'] else None,
                      next_event=schedule_at(state['schedule_event'])[1], schedule_event=state['schedule_event'],
                      tables={m: mode_profile(m) for m in ('dia', 'noche')}, **self.notes(state)) if self.host == 'desk' else dict(
                          slots_note='Lugares ajustados · hasta otro cambio manual' if state['overrides'] else None)
         return dict(schema='rack-host-result@1', status='ok', capabilities=dict(
-            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=False, restart_queue=False),
+            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None,
+            reorder=reorder is not None and enabled and any(v['enabled'] for v in reorder.values()), restart_queue=False),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
@@ -1174,9 +1433,10 @@ class MiniControl:
                            for g,r in state['reasons'].items() if 'startup' in r and set(r) & {'manual', 'ambiguous'}},
             startup_waiting={g:'cuotas_sensores' for g,r in state['reasons'].items()
                              if 'startup' in r and not set(r) & {'manual', 'ambiguous'}},
-            pause_reasons=state['reasons'], pending_actions=[a['request']['action_id'] for a in pending], **extra)
+            pause_reasons=state['reasons'], pending_actions=[a['request']['action_id'] for a in pending],
+            **(dict(reorder=reorder) if reorder is not None else {}), **extra)
 
-    def reply(self, request, status, code=None, **fields):
+    def reply(self, request, status, code=None, message=None, **fields):
         messages = {'stale_state': 'Los lugares cambiaron. Actualiza antes de decidir.',
                     'busy': 'Hay un ajuste pendiente; consulta su recibo.',
                     'lock_busy': 'El control está ocupado. Vuelve a intentarlo.',
@@ -1188,9 +1448,10 @@ class MiniControl:
                     'recovery_error': 'Estado de control ilegible o no disponible. Se conserva la pausa.',
                     'disabled': 'Los ajustes de lugares están apagados en este host.',
                     'foreign_work': 'Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.',
-                    'unsupported': 'Falta actualizar el control de este host.'}
+                    'unsupported': 'Falta actualizar el control de este host.',
+                    **REORDER_MESSAGES}
         return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
-                    error=dict(code=code, message=messages[code]) if code else None, **fields)
+                    error=dict(code=code, message=message or messages[code]) if code else None, **fields)
 
     def handle(self, request):
         validate_host_request(request, self.host)
@@ -1199,7 +1460,7 @@ class MiniControl:
                               'unsupported', effects=False)
         try:
             response = self._handle(request)
-            if request['op'] in ('slots', 'mode', 'undo') and not request['dry_run']:
+            if request['op'] in ('slots', 'mode', 'undo') + REORDER_OPS and not request['dry_run']:
                 # Rejected IDs are bound too; a later refresh cannot turn a retry
                 # of the same ID into a previously unaccepted effect.
                 digest = hashlib.sha256(canonical(dict(host=self.host, request=request)).encode()).hexdigest()
@@ -1210,7 +1471,7 @@ class MiniControl:
                                (request['action_id'], digest, canonical(dict(request=request, response=response))))
             return response
         except (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError):
-            uncertain = request['op'] == 'status' or request['op'] in ('slots', 'mode', 'undo') and not request['dry_run']
+            uncertain = request['op'] == 'status' or request['op'] in ('slots', 'mode', 'undo') + REORDER_OPS and not request['dry_run']
             return self.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
 
     def _handle(self, request):
@@ -1223,6 +1484,8 @@ class MiniControl:
                 row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
             return dict(json.loads(row[1])['response'], receipt_digest=row[0]) if row else self.reply(request, 'unknown')
         digest = hashlib.sha256(canonical(dict(host=self.host, request=request)).encode()).hexdigest()
+        if op in REORDER_OPS:
+            return self._reorder_handle(request, digest)
         with self.connect() as db:
             row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
             if row:
@@ -1276,7 +1539,8 @@ class MiniControl:
             else:
                 previous = db.execute('SELECT body FROM host_actions WHERE action_id=?', (request['undo_of'],)).fetchone()
                 previous = json.loads(previous[0]) if previous else None
-                if (not previous or previous['response']['status'] != 'applied'
+                if (not previous or is_reorder(previous)
+                        or previous['response']['status'] != 'applied'
                         or previous['revision'] != state['revision'] or previous['target'] != before):
                     return self.reply(request, 'conflict', 'undo_conflict', effects=False)
                 target, overrides = previous['before'], previous['before_overrides']
@@ -1436,7 +1700,8 @@ class MiniControl:
                     crossed_event = True
                     break
                 action = json.loads(body)
-                if action['response']['status'] not in ('applying', 'partial', 'unknown'):
+                if (action['response']['status'] not in ('applying', 'partial', 'unknown')
+                        or is_reorder(action)):  # recover_reorder owns these
                     continue
                 status = 'unknown' if observed is None else 'partial' if failure else 'applied'
                 expired = self.host == 'desk' and action.get('schedule_event') != state['schedule_event']
@@ -1873,6 +2138,12 @@ class MiniControl:
         failure, state = recovery_error, None
         # Any unreadable authority, including numeric overflow, keeps protective closing.
         errors = (OSError, sqlite3.Error, ValueError, KeyError, TypeError, ArithmeticError, subprocess.SubprocessError)
+        if self.host == 'mini' and failure is None:
+            # The one reorder recoverer: this 60 s job and `preparar`, never a new loop.
+            try:
+                self.recover_reorder()
+            except errors as error:
+                failure = error
         try:
             if not self.reconcile():
                 raise ValueError('Deseo sin reconciliar; admisión retenida')
@@ -1994,6 +2265,374 @@ class MiniControl:
                 return False
         return self.resolve(state) == state
 
+    # ---- U3.6: reordenar y deshacer en la Mini --------------------------------
+    # Reorder: intent/identities/before/target durable -> pause --wait -> exact
+    # re-read -> per-edit intent -> TOML edit -> verify -> fresh admission -> receipt.
+    def reorder_paths(self):
+        home = Path.home()
+        return (Path(self.pueue_data) if self.pueue_data else default_data(home),
+                Path(self.pueue_config) if self.pueue_config else default_data(home) / 'pueue.yml',
+                Path(self.alias_default) if self.alias_default else default_data(home) / 'pueue_aliases.yml')
+
+    def reorder_unsafe(self, rows):
+        """Read-only, before any pause: fixed helper, TOML edit mode and aliases."""
+        try:
+            if not stat.S_ISREG(self.editor.lstat().st_mode):
+                return True
+            _, config, alias = self.reorder_paths()
+            settings = pueue_settings(config)
+            if settings['edit_mode'] not in (None, 'toml'):
+                return True
+            aliases = read_aliases(Path(settings['alias_file']).expanduser() if settings['alias_file'] else alias)
+        except (OSError, ValueError):
+            return True
+        return any(edit_hazard(task, aliases) for task in rows)
+
+    def reorder_edit_seconds(self):
+        """Measured cost of one edit; Pueue saves its whole state.json on each one."""
+        try:
+            megabytes = (self.reorder_paths()[0] / 'state.json').stat().st_size / 2**20
+        except OSError:
+            megabytes = 64  # unknown size counts as a long history
+        return REORDER_EDIT_SECONDS + REORDER_EDIT_PER_MB * megabytes
+
+    def reorder_max_writes(self):
+        return min(REORDER_MAX, max(0, int((REORDER_PAUSE_SECONDS - REORDER_FIXED_SECONDS) / self.reorder_edit_seconds())))
+
+    def reorder_group(self, state, snapshot, group, generation, observed, busy, enabled):
+        """Pure eligibility of one group; the POST checks it again under control.lock."""
+        def off(code, detail=None):
+            message = self.reply({}, 'rejected', code)['error']['message'] if code else None
+            return dict(enabled=False, code=code, reason=message + ' · ' + detail if detail else message)
+        if not enabled:
+            return off('reorder_disabled')
+        reasons = set(state['reasons'].get(group, []))
+        if os.path.lexists(self.pause_fence(group)):
+            reasons.add('manual')
+        if snapshot['groups'][group]['status'] != 'Running' or reasons:
+            return off('paused', ', '.join([PAUSE_LABELS[r] for r in sorted(reasons)] or [PAUSE_LABELS['ambiguous']]))
+        if busy:
+            return off('busy')
+        if (state.get('startup', {}).get('phase') not in (None, 'ready') or generation != state['generation']
+                or observed != state['desired'] or os.path.lexists(self.directory / 'maintenance')):
+            return off('not_ready')
+        # A group start would resume Paused tasks; Locked/Stashed rows are someone's
+        # edit or cancellation in flight (Hasito stashes, then `start <id>`).
+        if any(task_state(t)[0] in ('Locked', 'Stashed', 'Paused')
+               for t in snapshot['tasks'].values() if t['group'] == group):
+            return off('held_tasks')
+        rows = queued_rows(snapshot, group)
+        if len(rows) < 2:
+            return off(None)
+        if len(rows) > REORDER_MAX:
+            return off('too_long')
+        if self.reorder_unsafe(rows):
+            return off('edit_unsafe')
+        return dict(enabled=True, code=None, reason=None, queue_etag=queue_etag(generation, group, rows),
+                    queue=[[t['id'], task_identity(t)[:TOKEN_LENGTH], t['priority']] for t in rows],
+                    max_writes=self.reorder_max_writes())
+
+    def _reorder_load(self, key):
+        with self.connect() as db:
+            return json.loads(db.execute('SELECT body FROM host_actions WHERE action_id=?', (key,)).fetchone()[0])
+
+    def _reorder_phase(self, key, **fields):
+        with self.connect(write=True) as db:
+            action = json.loads(db.execute('SELECT body FROM host_actions WHERE action_id=?', (key,)).fetchone()[0])
+            action['reorder'].update(fields)
+            db.execute('UPDATE host_actions SET body=? WHERE action_id=?', (canonical(action), key))
+        return action['reorder']
+
+    def _rpc(self, *args):
+        previous, self.pueue.timeout = self.pueue.timeout, REORDER_RPC_SECONDS
+        try:
+            return self.pueue.call(*args)
+        finally:
+            self.pueue.timeout = previous
+
+    def _reorder_handle(self, request, digest):
+        if self.host != 'mini':
+            return self.reply(request, 'unsupported', 'unsupported', effects=False)
+        key, op, e = request['action_id'], request['op'], request['expected']
+        group = e['group']
+        with self.connect() as db:
+            row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (key,)).fetchone()
+        if row:
+            return (self.reply(request, 'conflict', 'idempotency_conflict') if row[0] != digest
+                    else json.loads(row[1])['response'])
+        if not request['dry_run']:
+            self.recover_reorder()  # an abandoned action settles before a new decision
+        if self.disabled():
+            return self.reply(request, 'rejected', 'reorder_disabled', effects=False)
+        with self.connect() as db:
+            state = self.state(db)
+            receipts = [(k, json.loads(b)) for k, b in
+                        db.execute('SELECT action_id,body FROM host_actions ORDER BY rowid')]
+        busy = any(a['response']['status'] in ('applying', 'partial', 'unknown') for _, a in receipts)
+        observed, _ = self.observed()
+        snapshot = self._status_snapshot
+        generation = self.generation(state)
+        info = self.reorder_group(state, snapshot, group, generation, observed, busy, True)
+        rows = queued_rows(snapshot, group)
+        etag = queue_etag(generation, group, rows)
+        if op == 'reorder':
+            if not info['enabled']:
+                return (self.reply(request, 'rejected', info['code'], message=info['reason'], effects=False)
+                        if info['code'] else self.reply(request, 'conflict', 'stale_queue', effects=False))
+            served = [[t['id'], task_identity(t)[:TOKEN_LENGTH], t['priority']] for t in rows]
+            if e['generation'] != generation or e['queue_etag'] != etag or e['queue'] != served:
+                return self.reply(request, 'conflict', 'stale_queue', effects=False, reorder=info)
+            order = request['change']['order']
+            if order == [t['id'] for t in rows]:
+                return self.reply(request, 'rejected', 'same_order', effects=False)
+            plan, before, target = [t['id'] for t in rows], {str(t['id']): t['priority'] for t in rows}, reorder_targets(order)
+        else:
+            prior = next((a for k, a in receipts if k == request['undo_of']), None)
+            done = [a for _, a in receipts if is_reorder(a) and a['reorder']['group'] == group
+                    and a['response']['status'] in ('applying', 'applied', 'aborted')]
+            last = prior.get('reorder') if prior else None
+            # Strict: same daemon, same exact queue as the receipt left it, no later action.
+            if not (prior is not None and is_reorder(prior) and prior['request']['op'] == 'reorder'
+                    and prior['response']['status'] == 'applied' and last['group'] == group
+                    and done and done[-1] is prior and prior['response']['result'].get('undo') is True
+                    and self.clock() - last['applied_at'] <= REORDER_UNDO_SECONDS and info['enabled']
+                    and e['generation'] == generation == last['generation']
+                    and e['queue_etag'] == etag == last['after_etag']):
+                return self.reply(request, 'conflict', 'undo_conflict', message='La fila cambió; no se puede deshacer',
+                                  effects=False)
+            plan, before, target = last['plan'], last['target'], last['before']
+            order = sorted(plan, key=lambda i: (-target[str(i)], i))
+        writes = [i for i in plan if target[str(i)] != before[str(i)]]
+        estimate = REORDER_FIXED_SECONDS + len(writes) * self.reorder_edit_seconds()
+        if estimate > REORDER_PAUSE_SECONDS:
+            return self.reply(request, 'rejected', 'too_long', effects=False)
+        result = dict(group=group, order=order, writes=len(writes), estimate_ms=round(estimate * 1000))
+        if request['dry_run']:
+            return self.reply(request, 'dry_run', result=result, effects=False)
+        journal = dict(version=1, group=group, phase='prepared', generation=generation, plan=plan, order=order,
+                       identities={str(t['id']): task_identity(t) for t in rows},
+                       enqueued={str(t['id']): task_state(t)[1]['enqueued_at'] for t in rows},
+                       before=before, target=target, writes=writes, editing=None, enqueued_again=False,
+                       accepted_at=self.clock())
+        action = dict(request=request, reorder=journal, response=self.reply(request, 'applying', result=result, effects=True))
+        with self.connect(write=True) as db:
+            # Intent and pause ownership in one FULL transaction, before any RPC.
+            state = self.state(db)
+            state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'reorder'})
+            self.store(db, state)
+            db.execute('INSERT INTO host_actions VALUES (?,?,?)', (key, digest, canonical(action)))
+        self._reorder_execute(key)
+        return self._reorder_load(key)['response']
+
+    def _reorder_execute(self, key):
+        r = self._reorder_load(key)['reorder']
+        group = r['group']
+        deadline = self.monotonic() + REORDER_PAUSE_SECONDS
+        try:
+            self._rpc('pause', '--wait', '-g', group)
+            snapshot = self.pueue.status()
+            if snapshot['groups'][group]['status'] != 'Paused':
+                raise ValueError('Pausa sin confirmar')
+            rows = queued_rows(snapshot, group)
+            # By id: an undo finds the queue in the order the reorder left it.
+            if ({t['id']: [task_identity(t), t['priority']] for t in rows}
+                    != {i: [r['identities'][str(i)], r['before'][str(i)]] for i in r['plan']}):
+                # Started, added or cancelled before this comparison: nothing is edited.
+                return self._reorder_release(key, 'conflict', 'stale_queue')
+            tasks = {t['id']: t for t in rows}
+            for ident in r['writes']:
+                if self.monotonic() + self.reorder_edit_seconds() > deadline:
+                    raise TimeoutError('Presupuesto de pausa agotado')
+                self._reorder_edit(key, tasks[ident], r['target'][str(ident)], 'editing')
+            snapshot = self.pueue.status()
+            present, gone, foreign = reorder_classify(r, snapshot)
+            if gone or foreign or any(present[i] != r['target'][str(i)] for i in r['plan']):
+                raise ValueError('Edición sin verificar')
+            self._reorder_settle(key, snapshot)
+        except ADMISSION_ERRORS:
+            return self._reorder_recover(key)
+        return self._reorder_release(key, 'applied')
+
+    def _reorder_edit(self, key, task, target, phase):
+        """One id per `pueue edit`; the editor's PID is durable before the gate opens."""
+        work = self.directory / 'reorder-edit'
+        scratch = work / 'tmp'
+        for folder in (work, scratch):
+            folder.mkdir(mode=0o700, exist_ok=True)
+            if not stat.S_ISDIR(folder.lstat().st_mode):
+                raise ValueError('Directorio de edición inválido')
+            os.chmod(folder, 0o700)
+        for child in scratch.iterdir():  # leftovers of an interrupted edit, ours only
+            shutil.rmtree(child) if child.is_dir() and not child.is_symlink() else child.unlink()
+        editor = load_editor(self.editor)
+        plan = dict(version=1, id=task['id'], before=task['priority'], target=target,
+                    fingerprint=editor.fingerprint(task['original_command'], task['path'], task['label']))
+        path, temporary = work / 'plan.json', work / 'plan.json.tmp'
+        if os.path.lexists(temporary):
+            temporary.unlink()
+        with os.fdopen(os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
+            stream.write(canonical(plan))
+        os.replace(temporary, path)
+        env = dict(self.pueue.context.get('env') or os.environ)
+        env.pop('VISUAL', None)
+        env.update(TMPDIR=str(scratch), EDITOR=shlex.join([sys.executable, '-I', str(self.editor), str(path)]))
+        process = self.pueue.edit_process(task['id'], env)
+        try:
+            self._reorder_phase(key, phase=phase, editing=dict(id=task['id'], pid=process.pid, spawned=self.wall()))
+            process.communicate(b'go\n', timeout=REORDER_RPC_SECONDS)
+        except BaseException:
+            process.kill()  # still our unreaped child: its PID cannot have been reused
+            process.wait()
+            raise
+        if process.returncode != 0:
+            raise ValueError('Edición rechazada por Pueue o por el editor')
+
+    def _reorder_settle(self, key, snapshot):
+        r = self._reorder_load(key)['reorder']
+        rows = queued_rows(snapshot, r['group'])
+        # A later ordinary add keeps its id but makes strict undo impossible.
+        self._reorder_phase(key, phase='edited', after_etag=queue_etag(r['generation'], r['group'], rows),
+                            undo=sorted(t['id'] for t in rows) == sorted(r['plan']))
+
+    def _reorder_reap(self, editing):
+        """Wait for, then kill, only our own editor: same PID and same start instant."""
+        pid, spawned = editing['pid'], editing['spawned']
+
+        def ours():
+            start = self.process_start(pid)
+            return start is not None and spawned - 2 <= start <= spawned + 2
+        deadline, killed = self.monotonic() + REORDER_REAP_SECONDS, False
+        while ours():
+            if self.monotonic() >= deadline:
+                if killed:
+                    raise ValueError('El editor propio sigue vivo; no se repara')
+                self.kill(pid, signal.SIGKILL)
+                killed, deadline = True, self.monotonic() + REORDER_REAP_SECONDS
+            self.sleep(.05)
+
+    def _reorder_enqueue_own(self, r, snapshot):
+        """Only the journaled id, same identity, never launched: Locked, or Stashed by a restart."""
+        editing = r['editing']
+        if not editing:
+            return False
+        ident = str(editing['id'])
+        task = snapshot['tasks'].get(ident)
+        if task is None or task_identity(task) != r['identities'][ident]:
+            return False
+        name, detail = task_state(task)
+        with self.connect() as db:
+            restarted = self.generation(self.state(db)) != r['generation']
+        own = ((name == 'Locked' and status_parts(detail['previous_status'])[0] == 'Queued')
+               or (name == 'Stashed' and restarted and detail.get('enqueue_at') is None))
+        if not own or os.path.lexists(self.reorder_paths()[0] / 'task_logs' / (ident + '.log')):
+            return False
+        self._rpc('enqueue', ident)  # by id only; never -g or --all
+        return True
+
+    def _reorder_recover(self, key):
+        """Settle one failed or abandoned reorder from its durable phase. Caller holds control.lock."""
+        r = self._reorder_load(key)['reorder']
+        group = r['group']
+        if r['phase'] == 'prepared':
+            return self._reorder_release(key, 'aborted', 'interrupted')
+        if r['phase'] == 'edited':
+            return self._reorder_release(key, 'applied')
+        if r['editing']:
+            self._reorder_reap(r['editing'])
+        snapshot = self.pueue.status()
+        if self._reorder_enqueue_own(r, snapshot):
+            r = self._reorder_phase(key, enqueued_again=True)
+            snapshot = self.pueue.status()
+        if snapshot['groups'][group]['status'] != 'Paused':
+            # Our reason still owns this pause; nothing may run mid-repair.
+            self._rpc('pause', '--wait', '-g', group)
+            snapshot = self.pueue.status()
+        present, gone, foreign = reorder_classify(r, snapshot)
+        if (r['phase'] == 'editing' and not gone and not foreign
+                and all(present[i] == r['target'][str(i)] for i in r['plan'])):
+            self._reorder_settle(key, snapshot)
+            return self._reorder_release(key, 'applied')
+        if foreign:
+            return self._reorder_hold(key)
+        r = self._reorder_phase(key, phase='rolling_back')
+        tasks = {t['id']: t for t in queued_rows(snapshot, group)}
+        for ident in r['plan']:
+            if ident in present and present[ident] != r['before'][str(ident)]:
+                self._reorder_edit(key, tasks[ident], r['before'][str(ident)], 'rolling_back')
+        present, gone, foreign = reorder_classify(r, self.pueue.status())
+        if foreign or any(present[i] != r['before'][str(i)] for i in present):
+            return self._reorder_hold(key)
+        return self._reorder_release(key, 'aborted', 'queue_changed' if gone else 'interrupted')
+
+    def _reorder_hold(self, key):
+        """Unattributable state: keep the group closed with a visible owner, never declare success."""
+        action = self._reorder_load(key)
+        group = action['reorder']['group']
+        with self.connect(write=True) as db:
+            state = self.state(db)
+            state['reasons'][group] = sorted((set(state['reasons'].get(group, [])) - {'reorder'}) | {'ambiguous'})
+            self.store(db, state)
+            action['reorder'].update(phase='done', editing=None)
+            action['response'] = self.reply(action['request'], 'aborted', 'reorder_unverified',
+                                            result=dict(action['response'].get('result') or {}, group=group,
+                                                        held='ambiguous', undo=False), effects=True)
+            db.execute('UPDATE host_actions SET body=? WHERE action_id=?', (canonical(action), key))
+        return action['response']
+
+    def _reorder_release(self, key, status, code=None):
+        """Drop our reason; reopen only through fresh admission; persist a recovery enqueue."""
+        action = self._reorder_load(key)
+        r = action['reorder']
+        group = r['group']
+        snapshot = self.pueue.status()
+        paused = snapshot['groups'][group]['status'] == 'Paused'
+        with self.connect() as db:
+            state = self.state(db)
+        reasons = set(state['reasons'].get(group, [])) - {'reorder'}
+        held, started = None, False
+        if paused and not reasons and not os.path.lexists(self.pause_fence(group)):
+            ready = (not os.path.lexists(self.directory / 'maintenance')
+                     and state.get('startup', {}).get('phase') in (None, 'ready')
+                     and self.generation(state) == state['generation'])
+            threshold = RAPIDAS_THRESHOLDS['mini'] if group == 'rapidas' else MINI_THRESHOLDS
+            if not ready:
+                reasons.add('ambiguous')
+                held = 'ambiguous'
+            elif decide('mini', pressure_mini(), threshold) == 'pausar':
+                reasons.add('pressure')  # the order stays; the guard owns the pause now
+                held = 'pressure'
+            else:
+                self._rpc('start', '-g', group)  # group, never ids; also saves the state
+                started = True
+        if r.get('enqueued_again') and paused and not started:
+            self._rpc('pause', '--wait', '-g', group)  # still our pause: stock enqueue does not save
+        result = dict(action['response'].get('result') or {}, group=group, held=held, undo=False)
+        applied_at = self.clock()
+        if status == 'applied':
+            result.update(before=[[i, r['before'][str(i)]] for i in r['plan']],
+                          after=[[i, r['target'][str(i)]] for i in r['plan']],
+                          after_etag=r['after_etag'], applied_at=applied_at,
+                          undo=action['request']['op'] == 'reorder' and r['undo'] and held is None and not reasons,
+                          undo_seconds=REORDER_UNDO_SECONDS)
+        with self.connect(write=True) as db:
+            state = self.state(db)
+            state['reasons'][group] = sorted((set(state['reasons'].get(group, [])) - {'reorder'}) | reasons)
+            self.store(db, state)
+            action['reorder'].update(phase='done', editing=None, applied_at=applied_at)
+            action['response'] = self.reply(action['request'], status, code, result=result, effects=status == 'applied')
+            db.execute('UPDATE host_actions SET body=? WHERE action_id=?', (canonical(action), key))
+        return action['response']
+
+    def recover_reorder(self):
+        """The single recoverer, called by the guard tick, `reanudar` and each real reorder."""
+        if self.host != 'mini':
+            return
+        with self.connect() as db:
+            bodies = [(k, json.loads(b)) for k, b in db.execute('SELECT action_id,body FROM host_actions ORDER BY rowid')]
+        for key, action in bodies:
+            if is_reorder(action) and action['response']['status'] == 'applying':
+                self._reorder_recover(key)
+
     def manual(self, group, resume=False):
         # Existing foreign groups may be resolved without joining the quota profile.
         if group not in self.pueue.status()['groups']:
@@ -2001,6 +2640,7 @@ class MiniControl:
         with self.connect() as db:
             state = self.state(db)
         if resume:
+            self.recover_reorder()  # an abandoned reorder is settled before any admission
             if not self.reconcile():
                 raise ValueError('Deseo sin reconciliar')
             with self.connect() as db:
@@ -2086,12 +2726,12 @@ def main():
                     if wait_rack_lock(handle):
                         response = engine.handle(request)
                     else:
-                        status = ('rejected' if request['op'] in ('slots', 'mode', 'undo') else
+                        status = ('rejected' if request['op'] in ('slots', 'mode', 'undo') + REORDER_OPS else
                                   'unknown' if request['op'] == 'status' else 'busy')
                         response = engine.reply(request, status, 'lock_busy', effects=False)
         except (OSError, ValueError, TypeError, sqlite3.Error):
             request = request if type(request) is dict else {}
-            uncertain = request.get('op') == 'status' or request.get('op') in ('slots', 'mode', 'undo') and request.get('dry_run') is False
+            uncertain = request.get('op') == 'status' or request.get('op') in ('slots', 'mode', 'undo') + REORDER_OPS and request.get('dry_run') is False
             response = engine.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
         print(json.dumps(response, allow_nan=False))
         return

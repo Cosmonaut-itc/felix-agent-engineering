@@ -154,7 +154,17 @@ div.interrupted-summary{cursor:default}
 .restos li{display:grid;grid-template-columns:minmax(0,1fr) auto;column-gap:10px;row-gap:2px;align-items:baseline;padding:6px 10px;border-top:1px solid var(--line);font-size:13px;font-variant-numeric:tabular-nums}
 .restos .n{text-align:right;white-space:nowrap}
 .restos .l2{grid-column:1/-1;font-size:12px;color:var(--ink2);overflow-wrap:anywhere}
-@media(prefers-reduced-motion:reduce){.interrupted-fold,.interrupted .chev{transition:none}}
+.fila h4 .note{font-weight:400;color:var(--muted);margin-left:8px}
+.fila ol.reorder li{grid-template-columns:14px 34px minmax(0,1fr) auto}
+.fila ol.reorder .l2{grid-column:3/5}
+.fila ol.reorder li:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
+.fila .h{grid-row:1/3;align-self:center;cursor:grab;color:var(--muted);user-select:none;letter-spacing:-2px;touch-action:none;position:relative}
+.fila .h::before{content:"";position:absolute;inset:-14px -10px}
+.fila ol.reorder:not(.live) .h{cursor:default}
+.fila li.drag{box-shadow:0 6px 18px rgba(0,0,0,.2);position:relative;z-index:2;cursor:grabbing}
+.fila li.moved{animation:moved 2.5s ease-out}
+@keyframes moved{0%,40%{background:var(--accent-track);box-shadow:inset 3px 0 0 var(--accent)}100%{background:var(--panel);box-shadow:inset 3px 0 0 transparent}}
+@media(prefers-reduced-motion:reduce){.interrupted-fold,.interrupted .chev{transition:none}.fila li.moved{animation:none;background:var(--accent-track)}}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 const PENDING = new Map();
@@ -246,9 +256,12 @@ function activity(t){
 const dots = () => `<button type="button" class="dots" aria-label="${esc('Acciones')}" aria-expanded="false">${esc('⋯')}</button>`;
 function fila(h, n, w){
   if (!w.length) return '';
-  const key = h.id+'/'+n, shown = OPEN[key] ? w : w.slice(0, 8);
-  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li class="${pendingClass(h,t)}" data-id="${esc(t.id)}" aria-busy="${PENDING.has(actionKey(h,t))}">
-    <span class="pos">${i+1}</span>
+  const a = PENDING.get(reorderKey(h.id,n)), done = MOVED.get(reorderKey(h.id,n)), moved = done || a?.moved;
+  if (a) w = a.order.map(id=>w.find(t=>t.id===id)).filter(Boolean).concat(w.filter(t=>!a.order.includes(t.id)));
+  const key = h.id+'/'+n, shown = OPEN[key] ? w : w.slice(0, 8), drag = reorderable(h,n,w) && !a;
+  const note = a ? (a.status==='unknown' ? 'No se pudo confirmar el orden · consultando' : 'Reordenando…') : reorderNote(h,n,w);
+  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}${note?`<span class="note" role="status">${esc(note)}</span>`:''}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}"${drag||a?` class="reorder${drag?' live':''}"`:''} aria-busy="${!!a}">${shown.map((t,i)=>`<li class="${pendingClass(h,t)}${done?.id===t.id?' moved':''}" data-id="${esc(t.id)}" aria-busy="${PENDING.has(actionKey(h,t))}"${drag||a?' tabindex="0" aria-keyshortcuts="Alt+ArrowUp Alt+ArrowDown"':''}${done?.id===t.id?` style="animation-delay:${-Math.round(performance.now()-done.at)}ms"`:''}>
+    ${drag||a?'<span class="h" aria-hidden="true">⋮⋮</span>':''}<span class="pos">${moved?.id===t.id ? `${moved.from}→${i+1}` : i+1}</span>
     <div class="l1"><span class="tk">${esc(t.ticket||'Sin ticket')}</span><span class="t" title="${esc(what(t))}">${esc(what(t))}</span></div>
     <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}${dots()}</span>
     <div class="l2">${pendingText(h,t)}<span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span></div>
@@ -297,7 +310,11 @@ function fillOrphans(box,h){
   if(shown.length<origins.length){const more=node('button','more',`Ver ${origins.length-shown.length} más`);more.type='button';more.dataset.open=key;box.append(more);}
 }
 function paint(){
+  if(DRAG){DRAG.deferred=true;return;}
+  // A refresh must not take the keyboard away from a queue row.
+  const f=document.activeElement?.closest?.('.fila li'), keep=f && `ol[data-host="${f.parentElement.dataset.host}"][data-group="${f.parentElement.dataset.group}"] li[data-id="${f.dataset.id}"]`;
   document.getElementById('app').innerHTML=view();
+  if(keep) document.querySelector(keep)?.focus();
   for(const box of document.querySelectorAll('[data-orphans]')) fillOrphans(box,S.hosts.find(h=>h.id===box.dataset.orphans));
   syncMenu();
 }
@@ -457,6 +474,156 @@ document.addEventListener('click',ev=>{
   if(h?.control?.capabilities?.slots) startSlots(h,{group:b.dataset.group,delta:Number(b.dataset.step)});
 });
 
+// U3.6: reorder the Mini's queue. The panel proposes an order; the host decides.
+const REORDER_MAX=64, REORDER_BYTES=16384, CONFIRMED_ORDER=new Map(), MOVED=new Map();
+let DRAG=null;
+const reorderKey=(host,group)=>'@reorder/'+host+'/'+group;
+const reorderInfo=(h,n)=>h.control?.reorder?.[n] ?? null;
+function reorderable(h,n,w){
+  const r=reorderInfo(h,n);
+  // The served queue must be exactly the one on screen, in the same order.
+  return !!(r?.enabled && h.fresh && !h.actions?.reason && r.queue.length===w.length && r.queue.every((x,i)=>x[0]===w[i].id));
+}
+function reorderNote(h,n,w){
+  const r=reorderInfo(h,n);
+  if(!r || r.enabled || w.length<2 || !r.code || r.code==='busy') return '';
+  return r.reason;
+}
+function reorderTargets(order){return Object.fromEntries(order.map((id,k)=>[id,order.length-k]));}
+function keepConfirmedOrder(h,data){
+  for(const [key,c] of CONFIRMED_ORDER){
+    if(c.host!==h.id) continue;
+    // A snapshot read after the receipt already shows the host's own truth.
+    if(data.now-(h.age ?? 0) > c.at){CONFIRMED_ORDER.delete(key);continue;}
+    for(const [id,prio] of c.after){const t=h.tasks.find(t=>t.id===id && t.state==='Queued');if(t) t.priority=prio;}
+    const r=h.control?.reorder?.[c.group];
+    if(r?.enabled){
+      const tokens=Object.fromEntries(r.queue.map(x=>[x[0],x[1]])), prio=Object.fromEntries(c.after);
+      const queue=r.queue.map(x=>[x[0],tokens[x[0]],prio[x[0]] ?? x[2]]).sort((a,b)=>b[2]-a[2] || a[0]-b[0]);
+      h.control={...h.control,reorder:{...h.control.reorder,[c.group]:{...r,queue,queue_etag:c.etag}}};
+    }
+  }
+}
+function startReorder(h,n,order,moved){
+  const key=reorderKey(h.id,n), r=reorderInfo(h,n);
+  if(PENDING.has(key) || !r?.enabled) return paint();
+  if(r.queue.length!==order.length || r.queue.some(x=>!order.includes(x[0]))){say('La fila cambió. Actualiza antes de decidir.');return paint();}
+  if(order.every((id,i)=>id===r.queue[i][0])) return paint();
+  const target=reorderTargets(order), writes=r.queue.filter(x=>target[x[0]]!==x[2]).length;
+  const request={schema:'rack-action@1',op:'reorder',host:h.id,action_id:newActionId(),dry_run:false,
+    expected:{group:n,generation:h.control.generation,queue_etag:r.queue_etag,queue:r.queue.map(x=>[...x])},change:{order}};
+  // Rejected here, before anything pauses: the host would refuse it too.
+  if(order.length>REORDER_MAX || writes>r.max_writes || JSON.stringify(request).length>REORDER_BYTES){
+    say('Fila demasiado larga para reordenar de una vez');return paint();
+  }
+  sendReorder(key,{request,status:'applying',order,moved});
+}
+function startReorderUndo(h,result,generation){
+  const key=reorderKey(h.id,result.group);
+  if(PENDING.has(key)) return;
+  const order=[...result.before].sort((a,b)=>b[1]-a[1] || a[0]-b[0]).map(x=>x[0]);
+  const request={schema:'rack-action@1',op:'reorder_undo',host:h.id,action_id:newActionId(),dry_run:false,
+    expected:{group:result.group,generation,queue_etag:result.after_etag},undo_of:result.undo_of};
+  sendReorder(key,{request,status:'applying',order});
+}
+async function sendReorder(key,action){
+  PENDING.set(key,action);persistActions();paint();
+  const focus=action.moved?.id;
+  if(focus!=null && action.moved.keyboard) document.querySelector(`ol[data-host="${action.request.host}"][data-group="${action.request.expected.group}"] li[data-id="${focus}"]`)?.focus();
+  try{acceptReorder(key,action,await postAction(action.request));}
+  catch{action.status='unknown';persistActions();paint();setTimeout(()=>pollAction(key,action),2000);}
+}
+function acceptReorder(key,action,data){
+  const req=action.request, group=req.expected.group;
+  if(['applying','partial','unknown'].includes(data.status)){
+    action.status=data.status==='applying' ? 'applying' : 'unknown';persistActions();paint();
+    setTimeout(()=>pollAction(key,action),2000);return;
+  }
+  const late=action.status==='unknown';
+  PENDING.delete(key);persistActions();
+  const h=S?.hosts.find(h=>h.id===req.host);
+  if(data.status==='applied' && data.result){
+    const r=data.result;
+    CONFIRMED_ORDER.set(key,{host:req.host,group,after:r.after,etag:r.after_etag,at:data.served_at ?? NOW});
+    if(h) keepConfirmedOrder(h,{now:-Infinity});
+    const moved=action.moved;
+    if(req.op==='reorder' && moved){
+      MOVED.set(key,{id:moved.id,from:moved.from,at:performance.now()});
+      setTimeout(()=>{if(MOVED.get(key)?.id===moved.id){MOVED.delete(key);paint();}},2500);
+    }
+    paint();
+    if(moved?.keyboard) document.querySelector(`ol[data-host="${req.host}"][data-group="${group}"] li[data-id="${moved.id}"]`)?.focus();
+    const t=h?.tasks.find(t=>t.id===moved?.id);
+    const to=moved ? r.order.indexOf(moved.id)+1 : 0;
+    // The 8 s window starts now, when the confirmation reached this browser.
+    if(req.op==='reorder_undo') say('Orden anterior restaurado');
+    else say(`${t?.ticket || objective(t || {})} pasó al lugar ${to} de la fila de ${group}`,
+      r.undo && r.undo_of && !late ? ()=>{const now=S?.hosts.find(x=>x.id===req.host);if(now) startReorderUndo(now,r,req.expected.generation);} : null);
+  }else{
+    paint();
+    say(data.error?.message || 'No se pudo confirmar el orden. Actualiza antes de decidir.');
+  }
+  refresh();
+}
+function dragIds(ol){return [...ol.children].map(li=>Number(li.dataset.id));}
+function commitDrag(ol,li,from){
+  const h=S?.hosts.find(h=>h.id===ol.dataset.host), n=ol.dataset.group;
+  const w=queued(h).filter(t=>t.group===n), shown=dragIds(ol);
+  const order=shown.concat(w.map(t=>t.id).filter(id=>!shown.includes(id)));
+  startReorder(h,n,order,{id:Number(li.dataset.id),from:from+1,keyboard:false});
+}
+function endDrag(commit){
+  const d=DRAG; if(!d) return;
+  DRAG=null;
+  document.removeEventListener('pointermove',d.move);document.removeEventListener('pointerup',d.up);document.removeEventListener('pointercancel',d.cancel);
+  for(const x of d.ol.children){x.style.transition='';x.style.transform='';}
+  d.li.classList.remove('drag');
+  if(commit && d.moved) commitDrag(d.ol,d.li,d.from); else if(d.moved || d.deferred) paint();
+}
+const reduced=()=>matchMedia('(prefers-reduced-motion: reduce)').matches;
+document.getElementById('app').addEventListener('pointerdown',ev=>{
+  const li=ev.target.closest('.fila ol.live li');
+  if(!li || ev.button || DRAG || ev.target.closest('button,a')) return;
+  // Touch scrolls the page; only the handle lifts a row there.
+  if(ev.pointerType!=='mouse' && !ev.target.closest('.h')) return;
+  const ol=li.parentElement, from=[...ol.children].indexOf(li), startY=ev.clientY, startTop=li.offsetTop;
+  const d=DRAG={ol,li,from,moved:false,deferred:false};
+  d.move=e=>{
+    if(!d.moved && Math.abs(e.clientY-startY)<4) return;
+    if(!d.moved){d.moved=true;li.classList.add('drag');}
+    const before=new Map([...ol.children].filter(x=>x!==li).map(x=>[x,x.offsetTop]));
+    const next=[...ol.children].filter(x=>x!==li).find(x=>e.clientY<x.getBoundingClientRect().top+x.offsetHeight/2);
+    if(next!==li.nextElementSibling) ol.insertBefore(li,next || null);
+    for(const [x,top] of before){
+      const dy=top-x.offsetTop; if(!dy || reduced()) continue;
+      x.style.transition='none';x.style.transform=`translateY(${dy}px)`;
+      requestAnimationFrame(()=>{x.style.transition='transform 160ms ease';x.style.transform='';});
+    }
+    li.style.transform=`translateY(${(e.clientY-startY)-(li.offsetTop-startTop)}px)`;
+    [...ol.children].forEach((x,i)=>x.querySelector('.pos').textContent=x===li ? `${from+1}→${i+1}` : i+1);
+  };
+  d.up=()=>{
+    if(!d.moved || reduced()) return endDrag(true);
+    li.style.transition='transform 140ms ease';li.style.transform='';
+    setTimeout(()=>endDrag(true),140);
+  };
+  d.cancel=()=>endDrag(false);
+  ev.preventDefault();
+  document.addEventListener('pointermove',d.move);document.addEventListener('pointerup',d.up);document.addEventListener('pointercancel',d.cancel);
+});
+document.addEventListener('keydown',ev=>{
+  if(DRAG && ev.key==='Escape'){ev.preventDefault();endDrag(false);return;}
+  const li=ev.target.closest?.('.fila ol.reorder li');
+  if(!li || !ev.altKey || !['ArrowUp','ArrowDown'].includes(ev.key)) return;
+  ev.preventDefault();
+  if(!li.parentElement.classList.contains('live')) return;  // locked while its request is open
+  const ol=li.parentElement, ids=dragIds(ol), from=ids.indexOf(Number(li.dataset.id)), to=from+(ev.key==='ArrowUp'?-1:1);
+  if(to<0 || to>=ids.length) return;
+  ids.splice(to,0,...ids.splice(from,1));
+  const h=S?.hosts.find(h=>h.id===ol.dataset.host), n=ol.dataset.group, w=queued(h).filter(t=>t.group===n);
+  startReorder(h,n,ids.concat(w.map(t=>t.id).filter(id=>!ids.includes(id))),{id:Number(li.dataset.id),from:from+1,keyboard:true});
+});
+
 // Free capacity of a paused group is one cell, including unknown authority.
 const startupWait=h=>h.id==='mini' ? 'Esperando cuotas y sensores' : 'Esperando cuotas y Docker';
 function heldCell(h,n,g,free){
@@ -544,6 +711,7 @@ function render(data){
       groups:Object.fromEntries((s.groups || []).map(g=>[g.name,{...g,slots:control?.slots?.[g.name] ?? g.slots}])),
       tasks:(s.tasks || []).filter(t=>!CANCELLED.has(runKey(h,t))).map(t=>({...t,title:data.tickets[t.ticket]?.title,linear_project:data.tickets[t.ticket]?.project,est:h.estimates[String(t.id)]}))};
   })};
+  for(const h of S.hosts) keepConfirmedOrder(h,data);
   for(const a of PENDING.values()){
     const h=S.hosts.find(h=>h.id===a.request.host);
     if(h && a.task){
@@ -572,8 +740,13 @@ document.getElementById('app').addEventListener('click', event=>{
 let menuTask = null, toastTimer;
 function say(text,back){
   const toast = document.getElementById('toast');
-  toast.innerHTML = esc(text)+(back ? '<button type="button">Deshacer</button>' : '');
-  if(back) toast.querySelector('button').onclick=back;
+  toast.textContent = text;
+  if(back){
+    const button = document.createElement('button');
+    button.type = 'button'; button.textContent = 'Deshacer';
+    button.onclick = ()=>{ toast.textContent=''; back(); };
+    toast.append(button);
+  }
   clearTimeout(toastTimer); toastTimer = setTimeout(()=>toast.textContent='', 8000);
 }
 function findTask(el){
@@ -689,6 +862,7 @@ function actionMessage(data,action){
 }
 function acceptAction(key,action,data){
   if(['slots','mode','undo'].includes(action.request.op)) return acceptSlots(key,action,data);
+  if(['reorder','reorder_undo'].includes(action.request.op)) return acceptReorder(key,action,data);
   if(['cancelling','unknown','cancel_unconfirmed'].includes(data.status)){
     const changed=action.status!==data.status; action.status=data.status;
     persistActions(); repaintActions();
@@ -719,12 +893,12 @@ async function pollAction(key,action){
       action.resent=true; persistActions();
       await sendCancel(key,action); return;
     }
-    const hostTerminal=['slots','mode','undo'].includes(action.request.op) &&
+    const hostTerminal=['slots','mode','undo','reorder','reorder_undo'].includes(action.request.op) &&
       (response.status===409 && ['conflict','rejected','unsupported'].includes(data.status) ||
        response.status===403 && data.status==='rejected' && data.error?.code==='disabled' && data.effects===false);
     if(data.schema!=='rack-action@1' || data.action_id!==action.request.action_id || (!response.ok && !hostTerminal)) throw Error('status');
     acceptAction(key,action,data);
-  }catch{const changed=action.status!=='unknown';action.status='unknown';persistActions();repaintActions();if(changed) say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}
+  }catch{const changed=action.status!=='unknown';action.status='unknown';persistActions();repaintActions();if(changed && !action.order) say('Error de red o autorización al consultar. Resultado desconocido; se conserva el mismo ID.');setTimeout(()=>pollAction(key,action),5000);}
 }
 for(const [key,action] of PENDING) setTimeout(()=>pollAction(key,action),2000);
 let last=null;

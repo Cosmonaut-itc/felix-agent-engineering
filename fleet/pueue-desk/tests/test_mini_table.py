@@ -488,6 +488,36 @@ class MiniTableTests(unittest.TestCase):
         self.assertEqual(self.h.policy(), before)
         self.assert_installed_healthy()
 
+    def test_install_publishes_reorder_helper_without_restart(self):
+        # A library from before U3.6 lacks only the helper; same profile, so no migration.
+        h = self.h; self.select(self.a)
+        helper = h.m.library/control.EDITOR_NAME
+        self.assertTrue(helper.is_file(), 'La instalación publica el ayudante de reordenar')
+        helper.unlink(); before = h.policy(); generation = h.gen
+        error, _ = self.install()
+        self.assertIsNone(error, str(error))
+        self.assertTrue(helper.is_file(), 'La reinstalación repone el ayudante')
+        self.assertEqual(helper.read_bytes(), (self.candidate/control.EDITOR_NAME).read_bytes())
+        self.assertEqual(h.policy(), before); self.assertEqual(h.gen, generation)
+        self.assert_no_manager_effects()
+        self.assertFalse(any(c[0] in ('pause', 'start', 'restart', 'shutdown', 'kill') for c in h.p.calls), h.p.calls)
+        self.assert_installed_healthy()
+
+    def test_intent_from_before_the_helper_still_recovers(self):
+        h = self.h
+        def crash(phase):
+            if phase == 'table:intent': raise handoff.Crash(phase)
+        h.m.checkpoint = crash
+        try:
+            with self.assertRaises(handoff.Crash): self.install()
+        finally: h.m.checkpoint = h.trace.append
+        journal = h.directory/'table-migration.json'
+        value = json.loads(journal.read_text()); self.assertIn(control.EDITOR_NAME, value['files'])
+        del value['files'][control.EDITOR_NAME]; journal.write_text(json.dumps(value))
+        self.migrate()
+        self.assertFalse(journal.exists())
+        self.assertEqual(h.policy()['policy_hash'], self.new.POLICY_HASH)
+
     def test_recovery_rejects_unaccredited_intent_without_effects(self):
         h = self.h
         def crash(phase):

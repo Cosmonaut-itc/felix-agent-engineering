@@ -20,6 +20,8 @@ spec.loader.exec_module(control)
 LABEL = 'local.pao.pueue-mini.daemon'
 GUARD = 'local.pao.pueue-mini.guard'
 BREW = 'sh.brew.pueue'
+# Library modules published together; the guard's control.py loads the reorder helper beside it.
+MODULES = ['mini.py', 'control.py', control.EDITOR_NAME]
 PUEUE = '/opt/homebrew/bin/pueue'
 DAEMON = '/opt/homebrew/bin/pueued'
 TERMINAL = ('done', 'withdrawn', 'aborted')
@@ -257,7 +259,7 @@ class Manager:
         # Templates precede the modules: every accepted intention can be repaired
         # entirely from the installed library, even when the checkout disappears.
         names = ['launchagents/' + label + '.plist' for label in (LABEL, GUARD)]
-        for name in names + ['mini.py', 'control.py']:
+        for name in names + MODULES:
             self.publish(self.library / name, (ROOT / name).read_bytes())
         self.publish(self.agents / (GUARD + '.plist'), self.render(GUARD))
         if self.disabled(GUARD):
@@ -279,7 +281,7 @@ class Manager:
                     overrides=overrides, revision=state['revision'] + 1)
 
     def table_files(self):
-        names = ['launchagents/' + label + '.plist' for label in (LABEL, GUARD)] + ['mini.py', 'control.py']
+        names = ['launchagents/' + label + '.plist' for label in (LABEL, GUARD)] + MODULES
         return {name: (ROOT / name).read_text() for name in names}
 
     def table_installed(self):
@@ -297,11 +299,13 @@ class Manager:
         if not journal.exists():
             return None
         intent = json.loads(journal.read_text())
-        names = {'launchagents/' + label + '.plist' for label in (LABEL, GUARD)} | {'mini.py', 'control.py'}
+        names = {'launchagents/' + label + '.plist' for label in (LABEL, GUARD)} | set(MODULES)
+        # An intent written before the reorder helper existed lacks only that file.
         if (set(intent) != {'version', 'source_hash', 'target_hash', 'files'} or intent['version'] != 1
                 or any(type(intent[k]) is not str or not re.fullmatch('[0-9a-f]{64}', intent[k])
                        for k in ('source_hash', 'target_hash'))
-                or type(intent['files']) is not dict or set(intent['files']) != names
+                or type(intent['files']) is not dict
+                or set(intent['files']) not in (names, names - {control.EDITOR_NAME})
                 or any(type(data) is not str for data in intent['files'].values())):
             raise ValueError('Intención de tabla inválida')
         # Validate the literal profile before publishing anything from the bundle.
