@@ -9,6 +9,8 @@ import tempfile
 SOURCE=Path(__file__).resolve().parents[1]
 T='test_reorder.ReorderTests.'
 CASES=[
+ ('recovery leaves the guard clock alone without pending reorders','control.py',"        if self.host != 'mini' or all(a['phase'] == 'terminal' for a in self.reorder_actions()):\n            return True\n","",'test_trickle.TrickleTests.test_reorder_recovery_without_pending_work_leaves_fresh_sample_budget'),
+ ('pending reorder is still recovered','control.py',"all(a['phase'] == 'terminal' for a in self.reorder_actions())","any(a['phase'] == 'terminal' for a in self.reorder_actions())",T+'test_every_boundary_recovers_and_duplicate_is_historic'),
  ('CLI observer never fsyncs between timestamps','tests/private_reorder.py',"c.priority_helper().write_trace(root/'trace-cli.json', marks)","c.atomic_json(root/'trace-cli.json', marks)",'test_reorder.HarnessTests.test_cli_observer_keeps_only_fixed_markers_never_payload'),
  ('client plan never follows a link','editor_prioridad.py','info = os.lstat(path)','info = os.stat(path)','test_reorder.HelperTests.test_private_plan_lstat_rejects_link_and_public_permissions_for_string_path'),
  ('light client still checks revocation','editor_prioridad.py',"or os.path.exists(os.path.join(root, 'revoked'))",'or False','test_reorder.HelperTests.test_light_client_validates_plan_revocation_and_deadline_before_exec'),

@@ -1920,6 +1920,8 @@ class MiniControl:
         return True
 
     def recover_reorders(self, release=False):
+        if self.host != 'mini' or all(a['phase'] == 'terminal' for a in self.reorder_actions()):
+            return True
         old_timeout = getattr(self.pueue,'timeout',None)
         old_deadline = getattr(self.pueue,'deadline',None)
         self.pueue.timeout = self.reorder_rpc
