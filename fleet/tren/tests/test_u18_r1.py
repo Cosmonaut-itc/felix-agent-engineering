@@ -1,6 +1,8 @@
 """U18 R1: barrera durable y aborto tras CAS incierto, CLI y git reales."""
+from dataclasses import replace
+
 from test_u18_injerto import ContextoInjerto
-from dominio import Incierto, Promoviendo, Terminal
+from dominio import Incierto, Pausa, Promoviendo, Terminal
 
 
 class ContextoR1(ContextoInjerto):
@@ -42,9 +44,12 @@ class ContextoR1(ContextoInjerto):
         self.assertEqual(self.pushes_main(), 1)
         self.assertNotEqual(self.remoto(), self.B)
         self.assertIsInstance(self.estado().trenes[0].fase, Promoviendo)
-        # El fallo transitorio ya no crea pausa. El aborto se ensaya bajo una
-        # pausa manual explícita, también en las bases que sí pausaban por él.
-        self.assertEqual(self.cli('pausa', '--motivo', 'examinar CAS incierto')[0], 0)
+        # El fallo transitorio ya no debe crear pausa. Para probar el aborto
+        # conservamos explícitamente el estado pausado de versiones anteriores.
+        if self.estado().pausa is None:
+            with self.ledger() as ledger:
+                ledger.guardar_paso(replace(self.estado(), pausa=Pausa('infraestructura',
+                    detalle='pre-aterrizaje:cancelacion-incierta')), (), self.hora_tick)
 
     def comprobar_exito_recuperado(self):
         self.assertEqual(self.estado().trenes[0].fase, Terminal('ATERRIZADO'))
