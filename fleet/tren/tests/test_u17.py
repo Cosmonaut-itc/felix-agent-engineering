@@ -452,17 +452,23 @@ class ObjetosTests(ContextoU17):
         self.assertFalse(any("merge-base" in a or "merge-tree" in a or nuevo in a
                              for a in argv), argv)
         self.assertEqual(self.posts(), posts)
+        # El dueño empujó: la API ya informa nuevo y la entrega vieja caduca
+        # con su aviso D6 sobre el head vigente, que no es un rojo de CI.
+        self.contexto.config["miembros"].append([str(pr), nuevo])
+        self.tick(5200)
+        avisos = self.posts()[len(posts):]
+        self.assertEqual([p["endpoint"] for p in avisos],
+                         ["repos/{}/issues/4/comments".format(REPO),
+                          "repos/{}/statuses/{}".format(REPO, nuevo)])
+        self.assertIn("caducó: head-cambiado", avisos[0]["payload"]["body"])
+        self.assertIn("caducada", avisos[1]["payload"]["description"])
         # La entrega nueva admite el head que sólo existe en la ref del PR.
         self.assertFalse(self.tiene(self.checkout, nuevo))
-        self.entregar(pr, nuevo, 5200)
-        self.tick(5300)
+        self.entregar(pr, nuevo, 5300)
+        self.tick(5400)
         self.assertEqual(self.entrada(self.estado(), nuevo).admision, Admitido())
         self.assertFalse(self.tiene(self.checkout, nuevo))
-        # Único aviso: la entrega de viejo caducó porque la API ya informa nuevo.
-        comentarios = self.posts("/comments")[len([p for p in posts if "/comments" in p["endpoint"]]):]
-        self.assertEqual(len(comentarios), 1, comentarios)
-        self.assertIn("caducó: head-cambiado", comentarios[0]["payload"]["body"])
-        self.assertFalse(any(p["payload"].get("state") == "failure" for p in self.posts("/statuses/")))
+        self.assertEqual(self.posts()[len(posts):], avisos)
         self.assertEqual(self.huella(), self.huella_inicial)
 
     def test_head_presente_no_consulta_la_ref_y_el_armado_retiene(self):
