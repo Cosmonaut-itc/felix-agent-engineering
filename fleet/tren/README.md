@@ -904,7 +904,7 @@ campos adicionales, con la versión e identidad recibidas:
   dueño. `reanudar` exige otra verificación, con CI/suite ya certificados
   sobre el mismo C. No hay absolución que permita omitir el gancho.
 - Código distinto de 0, timeout, versión/id/resultado desconocidos, JSON
-  mal formado o stdout mayor que 16 KiB: misma pausa. Al agotar el plazo se
+  mal formado, claves duplicadas o stdout mayor que 16 KiB: misma pausa. Al agotar el plazo se
   mata el grupo del proceso; stderr se descarta. Nunca interpretar un error
   como permiso para empujar.
 
@@ -951,6 +951,9 @@ cierra el diario sin cancelar. Una lectura incierta o una cancelación fallida
 retiene el registro y pausa infraestructura; se reintenta la limpieza antes
 de nuevo trabajo. Tras un aborto ya terminal, `reanudar` levanta esa pausa de
 limpieza; mientras el tren sigue en promoción ofrece `reanudar` y `abortar`.
+La política del prefijo `pre-aterrizaje:<unidad>` sólo ofrece `reanudar` y
+`abortar`. La pausa `cancelacion-pre-aterrizaje` tras un cierre ofrece
+`reanudar` y conserva el registro para limpieza (no hay tren vivo que abortar).
 Los registros se marcan cerrados, no se borran. No se promete cancelar mientras
 no haya otro tick: el operador debe recuperar el diario si retira el servicio.
 

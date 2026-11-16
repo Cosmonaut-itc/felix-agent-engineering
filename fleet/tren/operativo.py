@@ -8,8 +8,8 @@ from dataclasses import replace
 import json
 import subprocess
 
-from dominio import (Admitido, BloqueoPrevia, EnBase, Incierto, Pausa, Promoviendo, Terminal, admision_entrada,
-                     datos, desde_datos, paso)
+from dominio import (Admitido, BloqueoPrevia, EnBase, Incierto, Promoviendo, Terminal, admision_entrada,
+                     datos, desde_datos, paso, pausar_limpieza)
 from efectos import EfectoFallido, ejecutar
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
@@ -74,17 +74,12 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
     previo = Previo(ledger, git, getattr(observador, "config", {}), frontera)
 
     def limpiar(nuevo):
-        if not previo.limpiar(nuevo):
-            activa = any(isinstance(t.fase, Promoviendo) for t in nuevo.trenes)
-            detalle = ("pre-aterrizaje:cancelacion-incierta" if activa else
-                       "cancelacion-pre-aterrizaje")
-            return replace(nuevo, pausa=Pausa("infraestructura", detalle=detalle))
-        return nuevo
+        return nuevo if previo.limpiar(nuevo) else pausar_limpieza(nuevo)
 
     estado = limpiar(estado)
     observacion = observador.observar(estado, ahora)
     if not previo.limpiar(estado, observacion):
-        estado = replace(estado, pausa=Pausa("infraestructura", detalle="cancelacion-pre-aterrizaje"))
+        estado = pausar_limpieza(estado)
         ledger.guardar_paso(estado, (), ahora)
         return {"modo": "activo", "estado": datos(estado), "efectos": [],
                 "outbox": resumen_outbox(ledger, repo)}

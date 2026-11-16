@@ -458,6 +458,16 @@ def efectos_status(tren, tipo):
                  for recibo in tren.recibos)
 
 
+def pausar_previa(estado, motivo):
+    return replace(estado, pausa=Pausa("infraestructura", detalle="pre-aterrizaje:" + motivo))
+
+
+def pausar_limpieza(estado):
+    if any(isinstance(t.fase, Promoviendo) for t in estado.trenes):
+        return pausar_previa(estado, "cancelacion-incierta")
+    return replace(estado, pausa=Pausa("infraestructura", detalle="cancelacion-pre-aterrizaje"))
+
+
 def aterrizaje(estado, tren, observacion):
     """Promover tras admisión; reconciliar antes, pues el PR puede estar cerrado."""
     fase = tren.fase
@@ -479,8 +489,7 @@ def aterrizaje(estado, tren, observacion):
             fase = Terminal("ATERRIZADO")
             efectos = efectos_status(tren, "avisar-aterrizaje")
         elif isinstance(lectura, BloqueoPrevia):
-            return replace(estado, pausa=Pausa("infraestructura",
-                detalle="pre-aterrizaje:" + lectura.motivo)), ()
+            return pausar_previa(estado, lectura.motivo), ()
         elif isinstance(lectura, EnBase):
             fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):

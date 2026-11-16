@@ -10,7 +10,7 @@ import subprocess
 import time
 
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, EscritorExterno,
-                     EsperaPrevia, Incierto, Promoviendo, Terminal, VentanaAutorizada,
+                     EsperaPrevia, Incierto, Terminal, VentanaAutorizada,
                      admision_entrada, clave)
 from git_ops import FalloGit, entorno, sha
 
@@ -63,6 +63,15 @@ def gancho(config):
     return valor
 
 
+def objeto_sin_duplicados(pares):
+    objeto = {}
+    for nombre, valor in pares:
+        if nombre in objeto:
+            raise ValueError("campo duplicado")
+        objeto[nombre] = valor
+    return objeto
+
+
 def invocar(config, solicitud, accion):
     """Sin shell ni salida privada en eventos. Mata el grupo al agotar el plazo."""
     try:
@@ -80,7 +89,7 @@ def invocar(config, solicitud, accion):
                 return "error"
         if len(salida) > 16384:
             return "salida-invalida"
-        valor = json.loads(salida)
+        valor = json.loads(salida, object_pairs_hook=objeto_sin_duplicados)
         permitidos = ("seguir", "esperar", "pausar") if accion == "verificar" else ("cancelado",)
         if (not isinstance(valor, dict) or set(valor) != {"version", "id", "resultado"} or
                 type(valor["version"]) is not int or valor["version"] != 1 or
@@ -220,13 +229,13 @@ class Previo:
             return lectura if not isinstance(lectura, Incierto) else BloqueoPrevia(B, C, "base-incierta")
         ventana = self.ventana(tren, observacion)
         impedimento = None
-        if resultado == "esperar" and ventana == "seguir":
-            return EsperaPrevia(B, C)
-        if resultado != "seguir":
+        if resultado not in ("seguir", "esperar"):
             impedimento = BloqueoPrevia(B, C, "gancho-" + resultado)
         elif ventana != "seguir":
             impedimento = (EsperaPrevia(B, C) if ventana == "esperar" else
                            BloqueoPrevia(B, C, ventana))
+        elif resultado == "esperar":
+            return EsperaPrevia(B, C)
         if impedimento is not None:
             if registro and not self.cancelar(registro, lectura):
                 return BloqueoPrevia(B, C, "cancelacion-incierta")

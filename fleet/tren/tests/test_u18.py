@@ -58,6 +58,15 @@ else:
         sys.exit(0)
     if modo == 'error':
         sys.exit(4)
+    if modo == 'id-distinto':
+        s['id'] = 'otra-identidad'
+        modo = 'seguir'
+    if modo == 'version-desconocida':
+        print(json.dumps({'version': 2, 'id': s['id'], 'resultado': 'seguir'}))
+        sys.exit(0)
+    if modo == 'duplicado':
+        print('{"version":1,"id":' + json.dumps(s['id']) + ',"resultado":"pausar","resultado":"seguir"}')
+        sys.exit(0)
     if modo == 'cambiar-base':
         valor = json.loads((r / 'cambio.json').read_text())
         subprocess.run(['git', '-C', valor['origen'], 'update-ref', 'refs/heads/main', valor['sha']], check=True)
@@ -70,7 +79,7 @@ print(json.dumps({'version': 1, 'id': s['id'], 'resultado': resultado}))
 ''')
         self.config = self.contexto.config
         self.config['pre_aterrizaje'] = {'comando': [sys.executable, '-I', str(self.guion)],
-                                        'plazo_s': 0.2}
+                                        'plazo_s': 1}
         self.modo('esperar')
 
     def modo(self, valor):
@@ -148,7 +157,8 @@ class RegresionesTests(ContextoU18):
 
     def test_pausar_timeout_error_y_salida_malformada(self):
         self.preparar()
-        for modo in ('pausar', 'timeout', 'malformado', 'desconocida', 'error'):
+        for modo in ('pausar', 'timeout', 'malformado', 'desconocida', 'error',
+                     'id-distinto', 'version-desconocida', 'duplicado'):
             with self.subTest(modo=modo):
                 cancelaciones = len(self.llamadas('cancelar'))
                 self.modo(modo)
@@ -206,6 +216,9 @@ class RegresionesTests(ContextoU18):
         self.hasta(lambda: self.estado().pausa is not None)
         self.assertEqual(len(self.llamadas('verificar')), 1)
         self.assertEqual(self.remoto(), self.B)
+        self.config['heads_autorizados'][0]['ventana']['fin'] = utc(AHORA + 300)
+        self.juicio('reanudar')
+        self.hasta(lambda: self.estado().trenes[0].fase == Terminal('ATERRIZADO'))
 
     def test_muerte_tras_gancho_revalida_sin_usar_seguir_guardado(self):
         self.preparar()
@@ -253,6 +266,9 @@ class CicloTests(ContextoU18):
         self.assertEqual(self.remoto(), self.B)
         with self.ledger() as l:
             self.assertEqual(l.db.execute('SELECT pendiente FROM pre_aterrizajes').fetchone()[0], 1)
+        self.tick()
+        expediente = self.cli('estado', '--juicio')[1]['juicio']
+        self.assertEqual({a['decision'] for a in expediente['admitidas']}, {'reanudar', 'abortar'})
         (self.raiz / 'cancelacion-falla').rename(self.raiz / 'cancelacion-recuperada')
         self.juicio('reanudar')
         self.modo('seguir')
@@ -287,6 +303,31 @@ class CicloTests(ContextoU18):
         self.assertEqual(len(self.llamadas('cancelar')), 1)
         self.tick()
         self.assertEqual(self.estado().pausa.motivo, 'escritor-externo')
+
+    def test_ventana_vence_mientras_espera_cancela_antes_de_pausar(self):
+        self.individual(AHORA - 100, AHORA + 100)
+        self.preparar()
+        self.tick()
+        self.assertEqual(len(self.llamadas('verificar')), 1)
+        self.ahora = AHORA + 100
+        self.hasta(lambda: self.estado().pausa is not None)
+        self.assertEqual(self.estado().pausa.detalle, 'pre-aterrizaje:ventana-vencida')
+        self.assertEqual(len(self.llamadas('cancelar')), 1)
+        self.assertEqual(len(self.llamadas('verificar')), 1)
+        self.assertEqual(self.remoto(), self.B)
+
+    def test_perder_admision_cancela_y_revalida_al_recuperarla(self):
+        self.preparar()
+        self.tick()
+        (self.raiz / 'ci-pendiente').write_text('pendiente')
+        self.tick()
+        self.assertEqual(len(self.llamadas('cancelar')), 1)
+        self.assertEqual(self.remoto(), self.B)
+        self.assertIsNone(self.estado().pausa)
+        (self.raiz / 'ci-pendiente').rename(self.raiz / 'ci-recuperado')
+        self.modo('seguir')
+        self.hasta(lambda: self.estado().trenes[0].fase == Terminal('ATERRIZADO'))
+        self.assertEqual(len(self.llamadas('verificar')), 2)
 
     def test_configuracion_nueva_cancela_con_comando_anterior(self):
         self.preparar()
