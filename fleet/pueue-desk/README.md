@@ -1131,8 +1131,8 @@ a la lectura del plan, de modo que se escribe una sola vez con PID+nacimiento
 antes de liberar el cliente. No hay edición multitabla ni bloqueo por lotes.
 
 Los aliases se leen de la configuración realmente seleccionada por el daemon
-U3.5 (HOME/cwd fijos, sin overrides); no se infieren del config del cliente
-de edición. Si el config es posterior al nacimiento del daemon, se rechaza.
+U3.5 (archivo estándar, HOME/cwd fijos, sin overrides); no se infieren del config del cliente
+de edición. Si falta el config o su mtime/ctime es posterior al nacimiento del daemon, se rechaza. No se cambia silenciosamente a un config de fallback; sólo se aceptan alias_file absolutos o con ~/ del dueño.
 Config y aliases también requieren coordinación bajo `control.lock`; formatos
 YAML ambiguos o escapes no acreditados fallan cerrados. El helper decodifica
 command/path/label del TOML recibido y compara su huella opaca y prioridad
@@ -1184,7 +1184,9 @@ verificación, admisión, recibo y handle completo. Si no hubo start conserva
 `retained_close_observed_seconds`; no publica ese cierre retenido como pausa
 normal completada. Registra por edición lecturas status, arranque del cliente,
 arranque/status/escritura del helper, CLI, diario y total (varios son intervalos
-anidados, no sumandos independientes). Cada escenario emite sus métricas
+anidados, no sumandos independientes). `helper_start` va de la creación del
+plan a la entrada del helper, incluyendo arranque de cliente/CLI/puerta;
+no aísla sólo el intérprete. Cada escenario emite sus métricas
 parciales antes de comprobar éxito y el siguiente sigue aunque falle el previo.
 La admisión privada usa sensores bajos sintéticos e incluye el coste del sensor
 real; no acredita apertura bajo presión de producción. Conserva la fixture de
@@ -1195,11 +1197,29 @@ Las cifras anteriores de A, 3,082 s sin historial y 5,382 s con historial, eran
 5,663 s. Su unknown de 64 ocurrió en client_ready de la edición 36 y no guardó
 la clase de error: process=None por sí solo no distingue salida no-cero de
 timeout. El motor actual conserva fase/clase/rc sin argv, stderr ni documentos.
-La admisión calibrada rechaza los planes que no caben antes de pause.
+La admisión calibrada rechaza los planes que no caben antes de pause. La fórmula
+es `0,95 s + 0,40 s × escrituras necesarias`: hasta cinco caben en la
+estimación (2,95 s); seis (3,35 s) y 64 (26,55 s) se rechazan antes de pause.
+El margen se obtiene del pipeline de cinco con historial: edición media ~0,38 s
+y resto de envolvente ~0,79 s en la corrida 2. Se omiten escrituras que ya
+coinciden; el panel usa el tamaño completo de la fila como previsión conservadora.
+No es una garantía bajo cualquier carga: los plazos efectivos siguen activos.
 
 La guardia actual tiene cadencia de 60 s; no se promete recuperación ≤10 s ni
 un peor caso finito. La capacidad sigue apagada por clientes no coordinados,
 independientemente de la estimación temporal y del resultado de aceptación.
+
+Aceptación privada del injerto (2026-11-16): se consumieron tres corridas.
+Cinco sin historial se aplicaron en envolventes de 1,40–1,44 s; con 1500 Stashed,
+una muestra aplicada dio 2,69 s. Undo con historial alcanzó el límite y quedó
+retenido. La última corrida, con load 11–20, falló en client_ready; un caso se
+abortó por recuperación y otro quedó pendiente hasta cleanup privado. **La
+aceptación bajo carga sigue pendiente**: no se presenta el estimador como
+garantía ni se habilita producción. Se corrigieron con dobles la consulta de
+identidad inconclusa (retiene propietario para reintento) y la salida entre
+comprobar nacimiento y señalar (ProcessLookupError benigno). Se guarda etapa,
+clase, errno y rc originales. Esa corrección final no tuvo una cuarta corrida.
+
 
 Actualización sin reiniciar `pueued`, a ejecutar sólo en la Mini adoptada:
 

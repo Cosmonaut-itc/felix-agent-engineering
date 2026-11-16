@@ -187,7 +187,12 @@ class Sandbox:
         self.engine.reorder_boundary=lambda phase:None
         end=begun+12
         while time.monotonic()<end:
-            self.engine.reconcile()
+            try:
+                self.engine.reconcile()
+            except (OSError,ValueError) as error:
+                emit('recovery_retry',kind=type(error).__name__,errno=getattr(error,'errno',None))
+                time.sleep(.05)
+                continue
             answer=self.engine.handle(request)
             if answer['status'] in ('applied','aborted'):
                 emit('recovery_terminal',status=answer['status'],seconds=time.monotonic()-begun)
@@ -300,7 +305,7 @@ def main():
                 if not step(name,lambda:cases[name](box)):
                     failures.append(name)
                     if hasattr(box,'engine'):
-                        emit('pending',actions=[dict(phase=a.get('phase'),failure=a.get('failure'),editing_id=a.get('editing_id'),status=a['response']['status']) for a in box.engine.reorder_actions()])
+                        emit('pending',actions=[dict(phase=a.get('phase'),failure=a.get('failure'),editor_failure=a.get('editor_failure'),process_error=a.get('process_error'),editing_id=a.get('editing_id'),status=a['response']['status']) for a in box.engine.reorder_actions()])
             finally:box.close()
     emit('FAIL' if failures else 'PASS',failed=failures,no_launchagents_created=True)
     return 1 if failures else 0

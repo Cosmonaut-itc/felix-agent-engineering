@@ -1015,3 +1015,7 @@ de cancelación conservan su tope de 16 KiB. Si llegaron más de 64 altas durant
 la acción, el recibo marca el observado incompleto y la UI espera al snapshot;
 no elimina filas a partir de un vector truncado. El host valida cualquier
 intento de deshacer contra la fila completa y devuelve conflicto si cambió.
+
+La admisión temporal U3.6 usa `0,95 s + 0,40 s × escrituras`: hasta cinco (2,95 s); seis o más se rechazan antes de pause. Es una estimación medida, con fase efectiva de 3 s y RPC de 1 s/restante.
+
+La aceptación privada bajo carga del injerto sigue pendiente: hubo muestras de cinco dentro de 3 s, pero la última corrida devolvió unknown en client_ready. La UI mantiene propietario/consulta y la compuerta de clientes continúa apagada. Véase el informe del encargo para las tres corridas, cleanup y corrección final de salidas de proceso, cubierta con dobles.

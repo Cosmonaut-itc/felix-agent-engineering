@@ -225,6 +225,7 @@ STARTUP_CASES += (
 
 
 REORDER_CASES = (
+    ('order-coordination-visible','index.html',' || h.control?.capabilities?.reason_reorder ? order.reason', ' ? order.reason','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-context-toast','index.html',"`${action.ticket||'Sin ticket'} en lugar ${action.to} · ${action.group}`","'Orden actualizado'",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-lateral-marker','index.html',';box-shadow:inset 3px 0 var(--accent)','', 'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-capability-reason','host_action.py',"result['capabilities']['reason_reorder'] = caps['reason_reorder']",'pass','test_reorder.ReorderChannelTests.test_view_sanitization_and_disabled_reason'),

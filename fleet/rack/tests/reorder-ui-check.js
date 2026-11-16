@@ -76,6 +76,9 @@ run('render(structuredClone(fixture));globalThis.h=S.hosts[0]');
  run('h.control.reorder_groups.suites={...h.control.reorder_groups.suites,enabled:false,reason:"No se puede reordenar mientras el grupo está pausado · pressure"};h.groups.suites.status="Paused"');
  assert.match(run('view()'),/No se puede reordenar mientras el grupo está pausado · pressure/);
  assert.match(run('view()'),/data-reorder="false"/);
+ run('h.groups.suites.status="Running";h.control.capabilities.reorder=false;h.control.capabilities.reason_reorder="La coordinación de pausas de los clientes no está acreditada.";h.control.reorder_groups.suites={...h.control.reorder_groups.suites,owner:null,reason:h.control.capabilities.reason_reorder}');
+ assert.match(run('view()'),/class="order-state" role="status"/,'clients gate reason has a visible status slot, including a running group');
+
  assert(/\.fila li\.order-done\{[^}]*box-shadow:inset 3px 0 var\(--accent\)/.test(input.css),'confirmed state has its lateral marker');
  assert(input.js.includes("pointercancel"));assert(input.js.includes("setPointerCapture"));
  assert(input.js.includes('toast.textContent=text'));assert(!input.js.includes('toast.innerHTML'));

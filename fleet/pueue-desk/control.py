@@ -1479,9 +1479,11 @@ class MiniControl:
     coordinated_reorder = False
     reorder_budget = 3.0
     reorder_rpc = 1.0
-    # Calibración provisional, sustituida sólo tras la corrida privada final.
-    reorder_overhead = 1.0
-    reorder_cost = .35
+    # Admisión calibrada con cinco y 9.43 MB: coste medio por edición ~.38 s,
+    # resto de envolvente ~.79 s (corrida 2). Margen en el resto y redondeo.
+    # Es una estimación: los límites de fase/RPC siguen siendo efectivos.
+    reorder_overhead = .95
+    reorder_cost = .40
     reorder_boundary = staticmethod(lambda phase: None)
     reorder_measure = staticmethod(lambda event, seconds: None)
 
@@ -1595,16 +1597,20 @@ class MiniControl:
         home = Path.home()
         if source is None:
             standard = home/'Library/Application Support/pueue/pueue.yml'
-            source = standard if standard.is_file() else home/'pueue.yml'
+            source = standard  # no silent fallback after deletion of a cached config
         source = Path(source)
+        if not source.is_file():
+            raise ValueError('edit_unsafe')
         daemon_pid = int(Path(state['pid_file']).read_text().strip())
         born = priority_helper().birth(daemon_pid)
         if not born or not born.startswith('darwin:'):
             raise ValueError('edit_unsafe')
         _, sec, usec = born.split(':')
-        if source.exists() and source.stat().st_mtime_ns > int(sec)*10**9+int(usec)*1000:
+        if max(source.stat().st_mtime_ns, source.stat().st_ctime_ns) > int(sec)*10**9+int(usec)*1000:
             raise ValueError('edit_unsafe')
         configured = pueue_settings(source)['alias_file']
+        if configured is not None and not configured.startswith(('/', '~/')):
+            raise ValueError('edit_unsafe')
         alias = Path(configured).expanduser() if configured else home/'Library/Application Support/pueue/pueue_aliases.yml'
         if not alias.is_absolute():
             raise ValueError('edit_unsafe')
@@ -1736,7 +1742,7 @@ class MiniControl:
             # Safe diagnostics never serialize argv, stderr, TOML or task fields.
             latest = next(a for a in self.reorder_actions() if a['request']['action_id']==request['action_id'])
             latest['failure'] = dict(kind=type(error).__name__, phase=latest['phase'],
-                                    exit_code=getattr(error, 'returncode', None))
+                                    exit_code=getattr(error, 'returncode', None),errno=getattr(error,'errno',None))
             self.reorder_save(latest)
             # Durable intent stays owned. The existing guard repairs it even if
             # slots.disabled/actions.disabled is set after acceptance.
@@ -1822,23 +1828,30 @@ class MiniControl:
         atomic_json(root/'plan.json', plan)
         action['process']['client'] = plan['client']
         self.reorder_save(action, 'client_ready')
+        stage='release'
         try:
             helper.remaining(plan)
             cli_begun=time.monotonic()
             client.stdin.write(b'1'); client.stdin.close()
             self.reorder_boundary('client_sent')
+            stage='wait'
             # Popen.wait(timeout) backs off to 50 ms; keep the same deadline
             # and process identity with a short bounded observation interval.
             while client.poll() is None:
                 time.sleep(min(.005, helper.remaining(plan)))
+            stage='client_result'
             self.reorder_measure('cli',time.monotonic()-cli_begun)
             if client.returncode != 0:
                 raise subprocess.CalledProcessError(client.returncode, ['private-priority-client'])
+            stage='metrics'
             metrics = root/'metrics.json'
             if metrics.is_file():
                 for key,value in json.loads(metrics.read_text()).items():
                     self.reorder_measure(key,value)
-        except Exception:
+        except Exception as error:
+            action['editor_failure']=dict(stage=stage,kind=type(error).__name__,errno=getattr(error,'errno',None),
+                                          exit_code=getattr(error,'returncode',None))
+            self.reorder_save(action)
             self.stop_editor(action)
             # Keep durable ownership until all identified processes have exited.
             raise
@@ -1865,8 +1878,23 @@ class MiniControl:
             if identity is None:
                 # Spawn was not released through stdin before client_ready commit.
                 continue
-            if helper.birth(identity['pid']) == identity['birth']:
-                os.kill(identity['pid'], 15)
+            try:
+                observed_birth = helper.birth(identity['pid'])
+            except (OSError, ValueError) as error:
+                # No proof of exit/ownership: retain the journal and retry at the
+                # next recovery. Never mask the original edit failure or open.
+                action['process_error'] = dict(kind=type(error).__name__,errno=getattr(error,'errno',None))
+                self.reorder_save(action)
+                return False  # identity query is inconclusive
+            if observed_birth == identity['birth']:
+                try:
+                    os.kill(identity['pid'], 15)
+                except ProcessLookupError:
+                    continue  # exited between birth observation and signal
+                except OSError as error:
+                    action['process_error'] = dict(kind=type(error).__name__,errno=error.errno)
+                    self.reorder_save(action)
+                    return False
                 signaled = True
         # No second edit until every recorded process has exited.
         if signaled:

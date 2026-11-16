@@ -520,8 +520,22 @@ def test_daemon_config_not_edit_client_selects_effective_alias_file(self):
         self.assertEqual(actual(state),{'true':'changed'})
     with patch.object(control.priority_helper(),'birth',return_value='darwin:1:0'):
         with self.assertRaises(ValueError):actual(state)
+    from types import SimpleNamespace
+    observed_stat=source.stat()
+    retained=SimpleNamespace(st_mtime_ns=10**9,st_ctime_ns=200*10**9,st_mode=observed_stat.st_mode)
+    with patch.object(control.priority_helper(),'birth',return_value='darwin:100:0'),patch.object(Path,'stat',return_value=retained):
+        with self.assertRaises(ValueError):actual(state)
+
+    source.write_text(json.dumps(dict(shared=dict(alias_file='~another-owner/aliases.yml'))))
+    with patch.object(control.priority_helper(),'birth',return_value='darwin:9999999999:0'),patch.object(Path,'expanduser',return_value=self.root/'never-read'),patch.object(control,'read_aliases',return_value={}):
+        with self.assertRaises(ValueError):actual(state)
+
     source.write_text('{"shared": {"alias_file": "relative"}}')
     with patch.object(control.priority_helper(),'birth',return_value='darwin:9999999999:0'):
+        with self.assertRaises(ValueError):actual(state)
+
+    source.unlink()  # only the test's own /tmp fixture
+    with patch.object(control.priority_helper(),'birth',return_value='darwin:9999999999:0'),patch.object(control,'read_aliases',return_value={}):
         with self.assertRaises(ValueError):actual(state)
 
 
@@ -578,6 +592,25 @@ def test_late_quota_drift_blocks_opening_after_reconciliation(self):
     self.assertNotIn(('start','-g','suites'),self.p.calls)
 
 
+def test_identity_query_failure_holds_and_exit_before_signal_is_harmless(self):
+    self.engine.reorder_boundary=lambda p:(_ for _ in ()).throw(Crash()) if p=='prepared' else None
+    with self.assertRaises(Crash):self.engine.handle(self.order_request())
+    self.engine.reorder_boundary=lambda p:None
+    action=self.engine.reorder_actions()[-1]
+    root=self.root/'edit-query';root.mkdir(mode=0o700)
+    action['process']=dict(root=str(root),client=dict(pid=123,birth='same'))
+    helper=control.priority_helper()
+    with patch.object(helper,'birth',side_effect=OSError(5,'synthetic process query')),patch.object(control.os,'kill') as kill:
+        self.assertFalse(self.engine.stop_editor(action))
+    kill.assert_not_called()
+    self.assertIsNotNone(action.get('process'))
+    self.assertEqual(action.get('process_error'),dict(kind='OSError',errno=5))
+    with patch.object(helper,'birth',return_value='same'),patch.object(control.os,'kill',side_effect=ProcessLookupError):
+        self.assertTrue(self.engine.stop_editor(action))
+    self.assertIsNone(action['process'])
+    self.assertTrue((root/'revoked').exists())
+
+
 def test_client_configuration_is_built_once_per_action(self):
     self.p.edit_settings=dict(shared=dict(unix_socket_path='/synthetic/socket'))
     r=self.order_request('config-once-0001');action=dict(request=r)
@@ -617,6 +650,8 @@ def test_one_paused_snapshot_replaces_parent_status_reads_per_id(self):
     with patch.object(self.p,'status',side_effect=AssertionError('redundant full status read')),patch.object(control.subprocess,'Popen',return_value=client),patch.object(control.priority_helper(),'birth',return_value='proof'),patch.object(control.priority_helper(),'remaining',side_effect=[1,1,TimeoutError('expired')]),patch.object(control.time,'sleep'),patch.object(self.engine,'stop_editor',return_value=True) as stop:
         with self.assertRaises(TimeoutError):actual(action,1,5,control.time.monotonic()+1)
     stop.assert_called_once_with(action)
+    self.assertEqual((action.get('editor_failure') or {}).get('stage'),'wait')
+    self.assertEqual((action.get('editor_failure') or {}).get('kind'),'TimeoutError')
 
 
 
@@ -627,7 +662,7 @@ def test_failed_edit_preserves_safe_diagnostic_and_recovery_finishes(self):
     r=self.order_request();answer=self.engine.handle(r)
     self.assertEqual(answer['status'],'unknown')
     a=self.engine.reorder_actions()[-1]
-    self.assertEqual(a.get('failure'),dict(kind='CalledProcessError',phase='paused',exit_code=2))
+    self.assertEqual(a.get('failure'),dict(kind='CalledProcessError',phase='paused',exit_code=2,errno=None))
     self.assertNotIn('PRIVATE_',json.dumps(a))
     self.assertTrue(self.engine.reconcile())
     self.assertEqual(self.engine.handle(r)['status'],'aborted')

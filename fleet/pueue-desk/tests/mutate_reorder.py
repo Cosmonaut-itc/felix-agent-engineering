@@ -18,7 +18,7 @@ CASES=[
  ('undo exact set','control.py',"or self.clock() > previous.get('undo_until', 0) or previous['target'] != rows","or self.clock() > previous.get('undo_until', 0)",T+'test_add_after_compare_preserved_but_strict_undo_conflicts'),
  ('undo expires','control.py',"self.clock() > previous.get('undo_until', 0)","False",T+'test_undo_stale_identity_priority_or_expiry_never_pauses'),
  ('identity before enqueue','control.py',"                    if self.task_identity(task) != row['identity']:\n                        raise ValueError('recovery_error')","                    if False:\n                        raise ValueError('recovery_error')",T+'test_identity_reuse_retains_and_no_resurrection_of_cancel'),
- ('PID birth','control.py',"            if helper.birth(identity['pid']) == identity['birth']:","            if True:",T+'test_orphan_editor_pid_reuse_and_revocation'),
+ ('PID birth','control.py',"            if observed_birth == identity['birth']:","            if True:",T+'test_orphan_editor_pid_reuse_and_revocation'),
  ('unknown lock blocks admission','control.py',"if any(t['group']==g and isinstance(t['status'],dict) and set(t['status']) & {'Locked','Stashed','Paused'} for t in snap['tasks'].values()):","if False:",T+'test_unknown_lock_concurrent_never_enqueued_or_opened'),
  ('fresh pressure','control.py',("reasons <= {'pressure'} and decide('mini',fresh,threshold) == 'reanudar'","if decide('mini',fresh,threshold) != 'reanudar' or time.monotonic()-sampled > self.reorder_rpc:"),("reasons <= {'pressure'}","if False:"),T+'test_new_pressure_transfers_pause_without_start'),
  ('second sensor','control.py',"if decide('mini',fresh,threshold) != 'reanudar' or time.monotonic()-sampled > self.reorder_rpc:","if False:",T+'test_second_fresh_sensor_after_start_intent_blocks_open'),
@@ -44,7 +44,7 @@ CASES=[
 
  ('daemon aliases, never client aliases','control.py','        return read_aliases(alias)','        return {}',T+'test_daemon_config_not_edit_client_selects_effective_alias_file'),
  ('alias added after add','control.py',"        if words and words[0] in aliases:","        if False:",T+'test_alias_added_after_enqueue_rejects_before_any_effect'),
- ('daemon settings unchanged since birth','control.py',"if source.exists() and source.stat().st_mtime_ns > int(sec)*10**9+int(usec)*1000:","if False:",T+'test_daemon_config_not_edit_client_selects_effective_alias_file'),
+ ('daemon settings unchanged since birth','control.py',"if max(source.stat().st_mtime_ns, source.stat().st_ctime_ns) > int(sec)*10**9+int(usec)*1000:","if False:",T+'test_daemon_config_not_edit_client_selects_effective_alias_file'),
  ('semantic TOML before write','editor_prioridad.py','    if expected is not None:', '    if False:', 'test_reorder.HelperTests.test_semantic_toml_fingerprint_precedes_write'),
  ('reorder preacceptance RPC scope','control.py','    def reorder_handle(self, request):\n        with self.reorder_deadline():', '    def reorder_handle(self, request):\n        with __import__("contextlib").nullcontext():',T+'test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded'),
  ('recovery reconciliation scope','control.py',"if self.host == 'mini' and any(a['phase'] != 'terminal' for a in self.reorder_actions()):",'if False:',T+'test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded'),
@@ -61,6 +61,16 @@ CASES=[
 
  ('editor wait shares deadline','control.py','time.sleep(min(.005, helper.remaining(plan)))','time.sleep(.005)',T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
  ('fresh quotas before reorder admission','control.py',"and before == state['desired'] and self.generation(state) == state['generation']","and self.generation(state) == state['generation']",T+'test_late_quota_drift_blocks_opening_after_reconciliation'),
+
+ ('daemon alias path unambiguous','control.py',"if configured is not None and not configured.startswith(('/', '~/')):",'if False:',T+'test_daemon_config_not_edit_client_selects_effective_alias_file'),
+
+ ('cached daemon config cannot disappear','control.py',("        if not source.is_file():\n            raise ValueError('edit_unsafe')\n        daemon_pid", "if max(source.stat().st_mtime_ns, source.stat().st_ctime_ns) > int(sec)*10**9+int(usec)*1000:"),("        daemon_pid", "if source.exists() and max(source.stat().st_mtime_ns, source.stat().st_ctime_ns) > int(sec)*10**9+int(usec)*1000:"),T+'test_daemon_config_not_edit_client_selects_effective_alias_file'),
+ ('preserved mtime is not cached settings proof','control.py',"if max(source.stat().st_mtime_ns, source.stat().st_ctime_ns) > int(sec)*10**9+int(usec)*1000:","if source.stat().st_mtime_ns > int(sec)*10**9+int(usec)*1000:",T+'test_daemon_config_not_edit_client_selects_effective_alias_file'),
+
+ ('process query failure cannot release ownership','control.py','return False  # identity query is inconclusive','return True  # identity query is inconclusive',T+'test_identity_query_failure_holds_and_exit_before_signal_is_harmless'),
+ ('exit between birth and signal','control.py',"                except ProcessLookupError:\n                    continue  # exited between birth observation and signal", "                except ProcessLookupError:\n                    signaled = True\n                    continue  # exited between birth observation and signal",T+'test_identity_query_failure_holds_and_exit_before_signal_is_harmless'),
+
+ ('original editor failure stage retained','control.py',"action['editor_failure']=dict(stage=stage,kind=type(error).__name__,errno=getattr(error,'errno',None),","action['ignored_failure']=dict(stage=stage,kind=type(error).__name__,errno=getattr(error,'errno',None),",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
 
 ]
 
