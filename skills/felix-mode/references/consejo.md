@@ -10,13 +10,14 @@ una decisión. Corre sólo cuando el usuario lo pide con «consejo» o
 |---|---|
 | gpt-6.1-sol | `high` |
 | opus-5.5 | `high` |
-| gpt-6-astra | `low` |
+| fable-5.2 | `high` |
 
 Despacha a los tres en paralelo, cada uno por su ruta de Transporte del
 routing, con contexto nuevo y sin permiso de edición. Ningún miembro abre
-subagentes. Si un miembro no puede correr, informa cuál y por qué, y no lo
-sustituyas. Esa ronda no da APTO de consejo. La puerta del nivel sigue
-**Revisión** con los miembros que sí corrieron.
+subagentes. Si fable-5.2 no puede correr, entra gpt-6-astra en `high`,
+como dice el fallback del routing. Si otro miembro no puede correr, informa
+cuál y por qué, y no lo sustituyas. Esa ronda no da APTO de consejo. La
+puerta del nivel sigue **Revisión** con los miembros que sí corrieron.
 
 ## Review de un cambio
 
@@ -85,8 +86,9 @@ Rondas: 2
 | --- | --- | --- |
 | gpt-6.1-sol high | 7/10 NO APTO | 9/10 APTO |
 | opus-5.5 high | 8/10 APTO | 9/10 APTO |
-| gpt-6-astra low | 6/10 NO APTO | 9/10 APTO |
+| fable-5.2 high | 6/10 NO APTO | 9/10 APTO |
 ```
 
-Si un miembro no da nota, escribe `sin nota`. Si no corrió, escribe `no
+Si entró el fallback, la fila dice `gpt-6-astra high`. Si un miembro no da
+nota, escribe `sin nota`. Si no corrió, escribe `no
 corrió`. Sin PR, pon la misma tabla en la respuesta final.

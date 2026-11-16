@@ -158,8 +158,13 @@ restantes y la separación entre propietario, verificador y stacker.
    de esta skill y sigue su primera línea:
    - `APTO vigente`: el head nuevo es sólo la mezcla sin conflictos del head
      revisado con la rama destino, y esa rama no cambió archivos del parche.
-     El APTO sigue vigente sin ronda nueva. Guarda esa línea con la prueba
-     del paso 2.
+     También lo conserva si los únicos archivos compartidos son catálogos
+     `messages/*.json` o `translations/*.json` (en cualquier directorio),
+     objetos anidados de cadenas: ambos lados sólo agregan claves disjuntas
+     y el catálogo nuevo es exactamente su unión. La segunda línea confirma
+     esa excepción. Valores cambiados, claves borradas o duplicadas, JSON
+     inválido y conflictos exigen revisión. El APTO sigue vigente sin ronda
+     nueva; guarda la salida con la prueba del paso 2.
    - `Ronda delta`: la rama destino cambió los archivos del parche que
      lista, o la mezcla tuvo conflictos. Con conflictos, la segunda línea
      es el diff de su resolución y la lista incluye los archivos en

@@ -2437,6 +2437,116 @@ apto_vigente_interactions() {
     assert git -C "$repo" diff --quiet "${resolution[@]}"
 }
 
+# Catálogos reales en historias separadas; se prueba el veredicto público.
+apto_vigente_catalogs() {
+    python3 - "$SCRIPTS/apto-vigente" "$TEST_TMP" "$BASH" <<'PY_CATALOGS'
+import copy
+import json
+from pathlib import Path
+import subprocess
+import sys
+
+script, temporary, bash = sys.argv[1:]
+
+
+def git(repo, *args):
+    return subprocess.run(['git', '-C', str(repo), *args], check=True,
+                          capture_output=True, text=True).stdout.strip()
+
+
+cases = ('disjuntas', 'translations', 'varios', 'comun', 'valor-parche', 'valor-destino',
+         'borrada', 'invalido', 'duplicada', 'lista', 'numero', 'objeto-vacio',
+         'puntos', 'modo', 'no-catalogo', 'otro-archivo', 'editado', 'conflicto')
+for case in cases:
+    repo = Path(temporary) / ('catalogo-' + case)
+    repo.mkdir()
+    git(repo, 'init', '-q', '-b', 'destino')
+    git(repo, 'config', 'user.email', 'test@example.com')
+    git(repo, 'config', 'user.name', 'test')
+    path = ('apps/mobile/lib/translations/es.json' if case == 'translations' else
+            'config/es.json' if case == 'no-catalogo' else 'apps/web/messages/es.json')
+    paths = [path, 'messages/en.json'] if case == 'varios' else [path]
+    base = {'inicio': {'base': 'Inicio'}, 'medio': {'uno': 'Uno', 'dos': 'Dos', 'tres': 'Tres'},
+            'final': {'base': 'Final'}}
+    if case == 'objeto-vacio':
+        base['inicio']['vacio'] = {}
+    if case == 'puntos':
+        base['inicio']['a.b'] = 'Original'
+    mine, theirs = copy.deepcopy(base), copy.deepcopy(base)
+    mine['inicio']['parche'] = 'Nuevo del parche'
+    theirs['final']['destino'] = 'Nuevo del destino'
+    if case == 'comun':
+        theirs['inicio']['parche'] = mine['inicio']['parche']
+    if case == 'valor-parche':
+        mine['inicio']['base'] = 'Cambiado'
+    if case == 'valor-destino':
+        theirs['final']['base'] = 'Cambiado'
+    if case == 'borrada':
+        del theirs['final']['base']
+    if case == 'lista':
+        theirs['final']['destino'] = ['Cadena']
+    if case == 'numero':
+        theirs['final']['destino'] = 1
+    if case == 'objeto-vacio':
+        del mine['inicio']['vacio']
+    if case == 'puntos':
+        del mine['inicio']['a.b']
+        mine['inicio']['a'] = {'b': 'Original'}
+    if case == 'conflicto':
+        mine['medio']['dos'], theirs['medio']['dos'] = 'Parche', 'Destino'
+
+    def write(data, side):
+        for name in paths:
+            file = repo / name
+            file.parent.mkdir(parents=True, exist_ok=True)
+            text = json.dumps(data, ensure_ascii=False, indent=2) + '\n'
+            if case == 'invalido' and side == 'destino':
+                text = text.replace('"destino": "Nuevo del destino"', '"destino": indefinido')
+            if case == 'duplicada' and side == 'destino':
+                text = text.replace('"destino": "Nuevo del destino"', '"destino": "Uno", "destino": "Dos"')
+            file.write_text(text, encoding='utf-8')
+        # Mismo archivo de código, con cambios distantes para no causar conflicto.
+        (repo / 'codigo.txt').write_text(('parche' if side == 'parche' else 'base') +
+                                       '\n' * 12 + ('destino' if side == 'destino' else 'base') + '\n')
+
+    write(base, 'base')
+    git(repo, 'add', '.')
+    git(repo, 'commit', '-qm', 'base')
+    git(repo, 'checkout', '-qb', 'revisado')
+    write(mine, 'parche' if case == 'otro-archivo' else 'base')
+    git(repo, 'commit', '-qam', 'parche')
+    git(repo, 'checkout', '-q', 'destino')
+    write(theirs, 'destino')
+    if case == 'modo':
+        (repo / path).chmod(0o755)
+    git(repo, 'add', '.')
+    if case == 'modo':
+        git(repo, 'update-index', '--chmod=+x', path)
+    git(repo, 'commit', '-qm', 'destino')
+    git(repo, 'checkout', '-qb', 'nuevo', 'revisado')
+    merge = subprocess.run(['git', '-C', str(repo), 'merge', '-q', '--no-edit', 'destino'],
+                           capture_output=True, text=True)
+    if case == 'conflicto':
+        assert merge.returncode == 1, merge
+        write(mine, 'base')
+        git(repo, 'add', '.')
+        git(repo, 'commit', '-qm', 'resuelto')
+    else:
+        assert merge.returncode == 0, merge
+    if case == 'editado':
+        (repo / path).write_text('{}\n')
+        git(repo, 'commit', '-qam', 'extra')
+    result = subprocess.run([bash, script, 'destino', 'revisado', 'nuevo'], cwd=repo,
+                            capture_output=True, text=True, encoding='utf-8')
+    expected = ('APTO vigente' if case in ('disjuntas', 'translations', 'varios') else
+                'Ronda:' if case == 'editado' else 'Ronda delta')
+    assert result.returncode == 0 and result.stdout.startswith(expected), (case, result)
+    if expected == 'APTO vigente':
+        assert 'catálogo' in result.stdout and 'claves disjuntas' in result.stdout, result
+    print('catálogo ' + case + ': ' + result.stdout.splitlines()[0])
+PY_CATALOGS
+}
+
 apto_vigente_conflict() {
     local repo output resolution kind
     for kind in rebase merge; do
@@ -2638,7 +2748,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent launcher_guard merge_train_regressions) ;;
 esac
-TEST_CASES+=(merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_catalogs apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

@@ -292,8 +292,9 @@ que demuestra:
   hasta ocho rondas sin autorización adicional, entre completas y delta.
   Las rondas de sincronización no cuentan: son las que pide el paso 3 del
   [procedimiento de merge](references/merge.md) cuando `apto-vigente`
-  imprime `Ronda delta`. Todas las rondas se numeran en orden, también las
-  de sincronización, y el límite cuenta sólo las demás. Antes de la novena
+  imprime `Ronda delta`; ese procedimiento define también la excepción
+  de altas disjuntas en catálogos de traducción. Todas las rondas se numeran
+  en orden, también las de sincronización, y el límite cuenta sólo las demás. Antes de la novena
   ronda contada, pausa, aunque la octava contada haya dado APTO. Entrega al usuario lo que sigue abierto y el replanteamiento realizado.
 - **Ronda delta.** La hace un solo revisor gpt-6.1-sol en `high` con
   contexto nuevo, también en alto riesgo. Su brief lleva el brief original,
@@ -349,11 +350,11 @@ que demuestra:
   **Alto riesgo**, o un diseño cuyos dos candidatos de opus-5.5 empatan en la
   rúbrica sin un ganador claro. En alto riesgo, `arena` corre desde el inicio
   con opus-5.5 y gpt-6.1-sol. En un empate, conserva los dos candidatos de
-  opus-5.5 y suma uno de gpt-6.1-sol. En ambos casos, gpt-6-astra es el juez
-  único de todos los candidatos. En todo diseño disputado corre además el
-  `arena` de implementación del paso 4 del playbook Feature, con opus-5.5 y
-  gpt-6.1-sol, y produce dos implementaciones completas aunque no veas
-  varias formas válidas. Fuera de ese caso, un solo delegado implementa
+  opus-5.5 y suma uno de gpt-6.1-sol. En ambos casos, fable-5.2 en `high` es
+  el juez único de todos los candidatos, con el fallback del routing. En
+  todo diseño disputado corre además el `arena` de implementación del paso 4
+  del playbook Feature, con opus-5.5 y gpt-6.1-sol, y produce dos
+  implementaciones completas aunque no veas varias formas válidas. Fuera de ese caso, un solo delegado implementa
   contra el sketch elegido.
 - **Sin revisor.** Si no puede correr ningún revisor independiente, la
   puerta sigue cerrada, como dice `poteto-mode`. Tu propia lectura no cuenta como review.
