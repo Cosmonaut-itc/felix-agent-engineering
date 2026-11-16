@@ -114,7 +114,8 @@ def main():
         wrapper.write_text('#!/bin/sh\nexec '+shlex.join([str(pueue), '--config', str(config)])+' "$@"\n')
         wrapper.chmod(0o700)
         # Se ejercita collect real; el muestreo anterior de uso y la guardia son ajenos a esta prueba.
-        with patch.object(snapshot, 'collect_usage', return_value=None), patch.object(snapshot, 'desk_guard', return_value=None):
+        with patch.object(snapshot, 'collect_usage', return_value=None), patch.object(snapshot, 'desk_guard', return_value=None), \
+                patch.object(snapshot, 'mini_metadata', return_value={}):
             result = snapshot.collect('linux', 'desk', pueue=str(wrapper), home=root, pueue_unit=unit)
         serve.validate_snapshot(result, 'desk')
         assert not result['errors'], result['errors']
