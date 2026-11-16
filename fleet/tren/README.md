@@ -1060,3 +1060,33 @@ aborto y reanudación con cancelación fallida dejando avanzar armado/CI/suite,
 reanudación del mismo tren sin saltar la barrera, y aborto tras recuperar una
 lectura incierta del CAS sin perder el éxito. La suite comprueba además el
 aborto que espera acreditación y C contenido en un main posterior.
+
+## Adaptador de Jale (U9)
+
+La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
+(ruta absoluta a `scripts/test-hosts/run-remote.sh`), `"host"` (por defecto
+`"auto"`) y `"modos"` (por defecto `["contract", "e2e"]`). La configuración
+actual de Hasito con `lanzador_hasito` sigue siendo válida. Esta selección no
+inscribe ni activa repositorios.
+
+Jale corre ambos modos sobre C sin filtros y valida `jale-recibo@1`: SHA,
+modo, selección, firmas, orden, unicidad, cobertura y código de salida.
+Cada fallo conserva su firma sin declararlo preexistente; la atribución
+requiere dos observaciones sobre C y dos sobre B. Las repeticiones usan la
+ruta exacta como único filtro, guardan duración y versiones del entorno en
+cada intento y reutilizan la evidencia de B por `(B, modo, unidad)`. El
+contrato identifica la definición por modo y ruta; no acredita igualdad del
+contenido del archivo entre commits.
+
+Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
+estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
+el resultado tras una caída del tick. Si muere también el coordinador sin
+salida durable, se conserva el lanzamiento incierto y se detiene su recuperación
+sin lanzar otra corrida. Un 75 espera la política de reanudación del tren;
+recibos ausentes con otra salida, malformados o incoherentes, y el paro 64
+quedan como errores de infraestructura con el efecto pendiente. Ninguno se
+convierte en un fallo de producto. No hay cambio automático de host.
+
+La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
+procesos aislados para el carril rápido, se verifican en el host de pruebas con
+`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion conserva la evidencia.
