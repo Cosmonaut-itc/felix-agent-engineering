@@ -5,12 +5,12 @@ _ENTRY = time.clock_gettime(time.CLOCK_MONOTONIC)
 import sys
 import json
 import os
-from pathlib import Path
-import re
 import stat
 # The gated client never parses TOML, hashes fields or invokes a status child.
-# Avoid loading OpenSSL and subprocess for that extra interpreter on every edit.
+# Avoid editor-only dependencies for that extra interpreter on every edit.
 if __name__ != '__main__' or '--client' not in sys.argv:
+    from pathlib import Path
+    import re
     import hashlib
     import subprocess
 _IMPORTED = time.clock_gettime(time.CLOCK_MONOTONIC)
@@ -245,7 +245,7 @@ def verify_locked(plan, snapshot):
 
 
 def private_file(path):
-    info = path.lstat()
+    info = os.lstat(path)
     if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
         raise ValueError('edit_unsafe')
 
@@ -266,8 +266,15 @@ def remaining(plan):
 def trace_mark(root, marks, name):
     """Only fixed phase names and shared kernel timestamps; retain partial traces."""
     marks[name] = host_clock()
-    path = root / ('trace-client.json' if '--client' in sys.argv else 'trace-helper.json')
-    temporary = path.with_suffix('.pending')
+    path = os.path.join(root, 'trace-client.json' if '--client' in sys.argv else 'trace-helper.json')
+    write_trace(path, marks)
+
+
+def write_trace(path, marks):
+    # Non-authoritative diagnostics: atomic visibility without a durable fsync
+    # in the observer that would delay the next timestamp.
+    path = os.fspath(path)
+    temporary = path[:-5] + '.pending'
     fd = os.open(str(temporary), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, 'w') as stream:
         json.dump(marks, stream)
@@ -300,19 +307,21 @@ def main():
     if sys.argv[1] == '--client' and sys.stdin.buffer.read(1) != b'1':
         return
     marks['gate_read'] = host_clock()
-    plan_path = Path(sys.argv[2] if sys.argv[1] == '--client' else sys.argv[1]).resolve()
+    plan_path = os.path.realpath(sys.argv[2] if sys.argv[1] == '--client' else sys.argv[1])
     private_file(plan_path)
-    plan = json.loads(plan_path.read_text())
-    root = plan_path.parent
-    if root.stat().st_mode & 0o077 or (root/'revoked').exists():
+    with open(plan_path) as stream:
+        plan = json.load(stream)
+    root = os.path.dirname(plan_path)
+    if os.stat(root).st_mode & 0o077 or os.path.exists(os.path.join(root, 'revoked')):
         raise ValueError('edit_unsafe')
     trace_mark(root, marks, 'plan_validated')
     if sys.argv[1] == '--client':
         # No RPC before the controller commits our PID + birth and opens stdin.
         remaining(plan)
         trace_mark(root, marks, 'cli_exec')
-        os.execve(plan['binary'], [plan['binary'], '--config', plan['config'],
+        return os.execve(plan['binary'], [plan['binary'], '--config', plan['config'],
                                   'edit', str(plan['id'])], dict(os.environ))
+    root = Path(root)
     trace_mark(root, marks, 'identity_begin')
     if birth(plan['client']['pid']) != plan['client']['birth']:
         raise ValueError('edit_unsafe')

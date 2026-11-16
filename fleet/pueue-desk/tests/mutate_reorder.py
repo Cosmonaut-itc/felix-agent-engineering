@@ -9,7 +9,11 @@ import tempfile
 SOURCE=Path(__file__).resolve().parents[1]
 T='test_reorder.ReorderTests.'
 CASES=[
- ('interrupted trace retains complete boundary','editor_prioridad.py',"temporary = path.with_suffix('.pending')",'temporary = path','test_reorder.HelperTests.test_interrupted_trace_keeps_previous_complete_boundary'),
+ ('CLI observer never fsyncs between timestamps','tests/private_reorder.py',"c.priority_helper().write_trace(root/'trace-cli.json', marks)","c.atomic_json(root/'trace-cli.json', marks)",'test_reorder.HarnessTests.test_cli_observer_keeps_only_fixed_markers_never_payload'),
+ ('client plan never follows a link','editor_prioridad.py','info = os.lstat(path)','info = os.stat(path)','test_reorder.HelperTests.test_private_plan_lstat_rejects_link_and_public_permissions_for_string_path'),
+ ('light client still checks revocation','editor_prioridad.py',"or os.path.exists(os.path.join(root, 'revoked'))",'or False','test_reorder.HelperTests.test_light_client_validates_plan_revocation_and_deadline_before_exec'),
+ ('light client still checks deadline','editor_prioridad.py',"        remaining(plan)\n        trace_mark(root, marks, 'cli_exec')","        pass\n        trace_mark(root, marks, 'cli_exec')",'test_reorder.HelperTests.test_light_client_validates_plan_revocation_and_deadline_before_exec'),
+ ('interrupted trace retains complete boundary','editor_prioridad.py',"temporary = path[:-5] + '.pending'",'temporary = path','test_reorder.HelperTests.test_interrupted_trace_keeps_previous_complete_boundary'),
  ('gated client skips editor imports','editor_prioridad.py',"if __name__ != '__main__' or '--client' not in sys.argv:",'if True:','test_reorder.HelperTests.test_gated_client_does_not_import_editor_only_dependencies'),
  ('client uses running isolated interpreter','control.py',"subprocess.Popen([sys.executable,'-I','-S',","subprocess.Popen(['/usr/bin/python3','-I','-S',",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
  ('client skips site on running interpreter','control.py',"subprocess.Popen([sys.executable,'-I','-S',","subprocess.Popen([sys.executable,'-I',",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),

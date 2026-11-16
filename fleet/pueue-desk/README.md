@@ -1203,12 +1203,15 @@ CLI estándar reduce su salida de diagnóstico en memoria a tres marcas:
 EditRequest, respuesta Edit y preparación del spawn; descarta el resto y no
 guarda documentos, comandos ni entornos. Esas tres marcas tienen la demora de
 observación del lector, no precisión de syscall. No se modifica el binario ni
-se agrega un listener. `--only diagnostic` repite reorder/undo con ids nuevos y
+se agrega un listener. Las marcas se publican atómicamente sin fsync dentro del
+observador; no son autoridad y no deben retrasar la lectura del siguiente evento.
+`--only diagnostic` repite reorder/undo con ids nuevos y
 los mismos límites de 1 s y 6 s; una recuperación no convierte un fallo en PASS.
 Cliente y editor arrancan con el ejecutable del controlador (`sys.executable`),
 `-I -S`: se conserva el aislamiento y sólo se carga biblioteca estándar, sin el
 launcher adicional de `/usr/bin/python3` ni inicialización de `site`. La rama
-del cliente omite `hashlib` y `subprocess`, que sólo usa el editor. La puerta
+del cliente omite `pathlib`, el import del escáner regex, `hashlib` y `subprocess`;
+valida plan y directorio con las mismas operaciones de `os` y `stat`. La puerta
 sigue cerrada hasta persistir PID/inicio, plan y client_ready; no se omiten las
 comprobaciones de identidad, revocación, deadline ni Locked del helper.
 La admisión privada usa sensores bajos sintéticos e incluye el coste del sensor

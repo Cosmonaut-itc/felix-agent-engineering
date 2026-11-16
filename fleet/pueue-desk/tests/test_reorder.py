@@ -745,6 +745,52 @@ for name,fn in list(globals().items()):
 
 
 class HelperTests(unittest.TestCase):
+    def test_light_client_validates_plan_revocation_and_deadline_before_exec(self):
+        import builtins,io,sys,tempfile
+        from types import SimpleNamespace
+        helper=control.priority_helper();original=builtins.__import__
+        class Executed(BaseException):pass
+        def importing(name,*args,**kwargs):
+            if name in ('pathlib','hashlib','subprocess'):
+                raise AssertionError('unused editor dependency in client')
+            return original(name,*args,**kwargs)
+        source=compile(Path(helper.__file__).read_bytes(),helper.__file__,'exec')
+        with tempfile.TemporaryDirectory(prefix='u36-light-client-',dir='/tmp') as folder:
+            root=Path(folder);path=root/'plan.json'
+            plan=dict(binary='/tmp/only-a-double',config='/synthetic/config',id=7,deadline=helper.host_clock()+5)
+            control.atomic_json(path,plan)
+            def execute():
+                scope=dict(__name__='__main__',__file__=helper.__file__,__builtins__=dict(vars(builtins),__import__=importing))
+                with patch.object(sys,'argv',[helper.__file__,'--client',str(path)]),patch.object(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(b'1'))):
+                    exec(source,scope)
+            with patch.object(helper.os,'execve',side_effect=Executed) as run:
+                with self.assertRaises(Executed):execute()
+                self.assertEqual(run.call_args.args[:2],(plan['binary'],[plan['binary'],'--config',plan['config'],'edit','7']))
+                self.assertIn('cli_exec',json.loads((root/'trace-client.json').read_text()))
+            (root/'revoked').touch(mode=0o600)
+            with patch.object(helper.os,'execve') as run:
+                with self.assertRaises(SystemExit) as stopped:execute()
+                self.assertEqual(stopped.exception.code,2)
+                run.assert_not_called()
+            # A different private directory tests expiry without removing revocation.
+            expired=root/'expired';expired.mkdir(mode=0o700);path=expired/'plan.json'
+            control.atomic_json(path,dict(plan,deadline=helper.host_clock()-1))
+            with patch.object(helper.os,'execve') as run:
+                with self.assertRaises(SystemExit) as stopped:execute()
+                self.assertEqual(stopped.exception.code,2)
+                run.assert_not_called()
+
+    def test_private_plan_lstat_rejects_link_and_public_permissions_for_string_path(self):
+        import tempfile
+        helper=control.priority_helper()
+        with tempfile.TemporaryDirectory(prefix='u36-plan-stat-',dir='/tmp') as folder:
+            root=Path(folder);plan=root/'plan.json';control.atomic_json(plan,{})
+            helper.private_file(str(plan))
+            link=root/'link';link.symlink_to(plan)
+            with self.assertRaises(ValueError):helper.private_file(str(link))
+            plan.chmod(0o644)
+            with self.assertRaises(ValueError):helper.private_file(str(plan))
+
     def test_interrupted_trace_keeps_previous_complete_boundary(self):
         import tempfile
         helper=control.priority_helper()
@@ -770,7 +816,7 @@ class HelperTests(unittest.TestCase):
         real_import=builtins.__import__
         def importing(name,*args,**kwargs):
             imports.append(name)
-            if name in ('hashlib','subprocess'):
+            if name in ('pathlib','hashlib','subprocess'):
                 raise AssertionError('editor-only import on gated client')
             return real_import(name,*args,**kwargs)
         scope=dict(__name__='__main__',__file__=helper.__file__,__builtins__=dict(vars(builtins),__import__=importing))
@@ -779,7 +825,7 @@ class HelperTests(unittest.TestCase):
                 exec(compile(Path(helper.__file__).read_bytes(),helper.__file__,'exec'),scope)
             except SystemExit as error:
                 self.fail('gated client failed before release: '+str(error))
-        self.assertFalse({'hashlib','subprocess'} & set(imports))
+        self.assertFalse({'pathlib','hashlib','subprocess'} & set(imports))
 
     def test_trace_contains_only_shared_clock_and_retains_identity_failure(self):
         import tempfile,sys
@@ -905,8 +951,9 @@ class HarnessTests(unittest.TestCase):
             self.assertEqual(h.cli_phase(line),name)
         with tempfile.TemporaryDirectory(prefix='u36-cli-',dir='/tmp') as folder:
             process=Mock(stderr=io.BytesIO(b'Sending message: EditRequest([1])\ncommand: PRIVATE\nReceived message: Edit(\nPrepared command before spawn\n'))
-            with patch.object(h.subprocess,'Popen',return_value=process) as launch:
+            with patch.object(h.subprocess,'Popen',return_value=process) as launch,patch.object(h.c,'atomic_json') as durable:
                 with h.observe_cli():h.subprocess.Popen(['python','--client'],env=dict(TMPDIR=folder),stderr=h.subprocess.DEVNULL)
+            durable.assert_not_called()
             marks=json.loads((Path(folder)/'trace-cli.json').read_text())
             self.assertEqual(set(marks),{'request','response','spawn_prepared'})
             self.assertNotIn('PRIVATE',json.dumps(marks))

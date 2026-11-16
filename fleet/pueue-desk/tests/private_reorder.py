@@ -76,13 +76,15 @@ def observe_cli():
         root = Path(env['TMPDIR'])
         def drain():
             marks = {}
+            def store():
+                c.priority_helper().write_trace(root/'trace-cli.json', marks)
             with process.stderr as stream:
                 for line in stream:
                     phase = cli_phase(line)
                     if phase is not None and phase not in marks:
                         marks[phase] = c.priority_helper().host_clock()
-                        c.atomic_json(root/'trace-cli.json', marks)
-            c.atomic_json(root/'trace-cli.json', marks)
+                        store()
+            store()
         observer = threading.Thread(target=drain)
         observer.start(); observers.append(observer)
         return process
