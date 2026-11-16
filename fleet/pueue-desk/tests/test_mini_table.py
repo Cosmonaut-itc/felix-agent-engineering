@@ -64,18 +64,21 @@ class MiniTableTests(unittest.TestCase):
         spec = importlib.util.spec_from_file_location('table_installer', ROOT/'install-mini.py')
         installer = importlib.util.module_from_spec(spec); spec.loader.exec_module(installer)
         loader = installer.importlib.util.spec_from_file_location
+        module = installer.importlib.util.module_from_spec
         def module_spec(name, path):
             if name == 'mini_install':
                 return type('Spec', (), {'loader':type('Loader', (), {
                     'create_module':lambda *a:mini,
                     'exec_module':lambda *a:None})()})()
             return loader(name, path)
+        def from_spec(spec):
+            return mini if not hasattr(spec, 'name') else module(spec)
         output = io.StringIO(); error = None
         h.calls.clear(); h.p.calls.clear(); h.trace.clear()
         with patch.object(mini, 'control', self.new), patch.object(mini, 'ROOT', self.candidate), \
                 patch.object(mini, 'Manager', return_value=h.m), \
                 patch.object(installer.importlib.util, 'spec_from_file_location', side_effect=module_spec), \
-                patch.object(installer.importlib.util, 'module_from_spec', return_value=mini), \
+                patch.object(installer.importlib.util, 'module_from_spec', side_effect=from_spec), \
                 patch.object(installer.sys, 'argv', ['install-mini.py', 'instalar', '--relevo']+(['--seco'] if dry else [])), \
                 redirect_stdout(output):
             try: installer.main()
@@ -103,8 +106,9 @@ class MiniTableTests(unittest.TestCase):
                 with self.assertRaises(BlockingIOError):
                     fcntl.flock(contender, fcntl.LOCK_EX | fcntl.LOCK_NB)
             return store(db, state)
-        with patch.object(h.engine, 'store', side_effect=checked_store): self.migrate()
+        with patch.object(h.engine, 'store', side_effect=checked_store): output = self.migrate()
         state = h.policy()
+        self.assert_announcement(output, state, 'conservar ajustes')
         self.assertEqual(state, dict(self.before, policy_hash=self.new.POLICY_HASH,
                                      desired=dict(self.b, rapidas=2), revision=self.before['revision']+1))
         self.assertEqual(self.actions(), self.receipts)
@@ -131,6 +135,8 @@ class MiniTableTests(unittest.TestCase):
         self.assertIsNone(error, 'El ensayo debe acreditar la tabla anterior: '+str(error))
         self.assertIn('migración de tabla', output)
         self.assertIn(self.new.POLICY_HASH, output)
+        self.assert_announcement(output, dict(self.before, revision=self.before['revision']+1,
+                                             desired=dict(self.b, rapidas=2)), 'conservar ajustes')
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.h.p.calls, [])
         self.assert_no_manager_effects()
@@ -172,13 +178,215 @@ class MiniTableTests(unittest.TestCase):
     def test_override_that_does_not_fit_is_retired_like_desk(self):
         # Base 3/3/1 fits, but retaining the old manual rapidas=2 would total 8.
         self.select(dict(suites=3, default=3, rapidas=1))
-        self.migrate()
+        before = self.snapshot()
+        error, output = self.install(dry=True)
+        self.assertIsNone(error)
+        expected = dict(self.before, revision=self.before['revision']+1, desired=self.new.MINI_PROFILE)
+        self.assert_announcement(output, expected, 'retirar ajustes')
+        self.assertEqual(self.snapshot(), before)
+        output = self.migrate()
         state = self.h.policy()
+        self.assert_announcement(output, state, 'retirar ajustes')
         self.assertEqual(state, dict(self.before, policy_hash=self.new.POLICY_HASH,
                                      desired=self.new.MINI_PROFILE, overrides={}, revision=self.before['revision']+1))
         self.assertEqual(self.h.engine.view()['cap'], 7)
         self.assertEqual(self.actions(), self.receipts)
         self.assert_no_manager_effects()
+
+    def assert_announcement(self, output, state, adjustments):
+        self.assertIn('revisión '+str(state['revision']), output)
+        self.assertIn('desired '+json.dumps(state['desired'], sort_keys=True), output)
+        self.assertIn(adjustments, output)
+
+    def test_terminal_other_than_done_rejects_old_hash_without_effects(self):
+        h = self.h
+        for phase in ('aborted', 'withdrawn'):
+            with self.subTest(phase=phase):
+                state = copy.deepcopy(self.before)
+                state['mini_handoff'].update(target='withdraw', phase=phase,
+                    source=dict(owner='prepared', pid=999999, generation=h.gen), retained_owner='prepared')
+                with h.engine.connect(write=True) as db: h.engine.store(db, state)
+                before = self.snapshot()
+                for dry in (True, False):
+                    error, _ = self.install(dry)
+                    self.assertIsNotNone(error, phase+' no acredita una migración')
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(h.p.calls, [])
+                    self.assert_no_manager_effects()
+
+    def test_done_with_live_homebrew_rejects_old_hash_without_effects(self):
+        h = self.h
+        h.loaded.discard(mini.LABEL); h.loaded.add(mini.BREW); h.owner = mini.BREW
+        h.disabled[mini.BREW] = False; h.disabled[mini.LABEL] = True
+        before = self.snapshot()
+        for dry in (True, False):
+            error, _ = self.install(dry)
+            self.assertIsNotNone(error)
+            self.assertEqual(self.snapshot(), before)
+            self.assertEqual(h.p.calls, [])
+            self.assert_no_manager_effects()
+
+    def test_noninstall_rejects_old_hash_without_effects(self):
+        h = self.h
+        before = self.snapshot()
+        with patch.object(mini, 'control', self.new), patch.object(mini, 'ROOT', self.candidate):
+            for dry in (True, False):
+                h.calls.clear(); h.p.calls.clear()
+                with self.assertRaises(ValueError): h.m.change('withdraw', dry=dry)
+                self.assertEqual(self.snapshot(), before)
+                self.assertEqual(h.p.calls, [])
+                self.assertEqual(h.calls, [], 'Un hash viejo se rechaza antes de consultar el dueño vivo')
+                self.assert_no_manager_effects()
+
+    def installed_manager(self):
+        h = self.h
+        spec = importlib.util.spec_from_file_location('table_installed_mini', h.m.library/'mini.py')
+        runtime = importlib.util.module_from_spec(spec); spec.loader.exec_module(runtime)
+        manager = runtime.Manager(home=h.home, pueue=h.p, directory=h.directory, launch=h.launch,
+                                  checkpoint=h.trace.append, configuration=h.config)
+        manager.engine = runtime.control.MiniControl(h.p, h.directory, generation=lambda:h.gen, clock=lambda:h.now)
+        return manager, runtime
+
+    def login_installed(self):
+        h = self.h; checkout = h.m
+        h.m, runtime = self.installed_manager()
+        try:
+            h.login()
+            self.assertTrue(h.p.online, 'El login debe arrancar desde la biblioteca instalada')
+            # The existing guard is also reconstructed at login and completes the
+            # new generation before accepting an unrelated profile change.
+            h.m, runtime = self.installed_manager()
+            with control.locked(h.directory):
+                ready = h.m._recover(h.config)
+                if ready:
+                    with patch.object(runtime.control, 'pressure_mini', return_value=LOW):
+                        h.m.engine.guard(LOW)
+        finally:
+            h.m = checkout
+
+    def assert_installed_healthy(self):
+        h = self.h
+        installed, _ = self.installed_manager()
+        try: state = installed.state()
+        except ValueError as error: self.fail('Biblioteca y autoridad deben coincidir: '+str(error))
+        self.assertEqual(state['policy_hash'], self.new.POLICY_HASH)
+        self.assertEqual((h.m.library/'control.py').read_bytes(), (self.candidate/'control.py').read_bytes())
+        self.assertEqual(self.actions(), self.receipts)
+        self.assertFalse((h.directory/'table-migration.json').exists())
+        self.assertTrue(h.p.online)
+
+    def cut_matrix(self, profile, login=False):
+        self.migrate()
+        checkpoints = list(self.h.trace)
+        self.assertTrue(checkpoints)
+        for boundary in checkpoints:
+            with self.subTest(boundary=boundary, profile=profile, login=login):
+                trial = MiniTableTests(); trial.setUp()
+                try:
+                    def crash(phase):
+                        if phase == boundary: raise handoff.Crash(phase)
+                    trial.h.m.checkpoint = crash
+                    with self.assertRaises(handoff.Crash): trial.install()
+                    trial.h.m.checkpoint = trial.h.trace.append
+                    if login: trial.login_installed()
+                    trial.select(trial.a if profile == 'A' else trial.b)
+                    trial.migrate()
+                    trial.assert_installed_healthy()
+                    trial.login_installed()
+                    trial.assert_installed_healthy()
+                finally: trial.doCleanups()
+
+    def test_every_table_cut_then_reinstall_a(self): self.cut_matrix('A')
+
+    def test_every_table_cut_then_reinstall_b(self): self.cut_matrix('B')
+
+    def test_every_table_cut_then_login_and_reinstall(self):
+        self.cut_matrix('A', login=True)
+        # A second independent matrix also fixes login followed by B.
+        trial = MiniTableTests(); trial.setUp()
+        try: trial.cut_matrix('B', login=True)
+        finally: trial.doCleanups()
+
+    def test_durable_intent_precedes_every_library_effect(self):
+        h = self.h; publish = h.m.publish; intents = []
+        def checked_publish(target, data):
+            if h.m.library in target.parents:
+                journal = h.directory/'table-migration.json'
+                self.assertTrue(journal.is_file(), 'Intención durable antes de publicar biblioteca')
+                intents.append(json.loads(journal.read_text()))
+            publish(target, data)
+        with patch.object(h.m, 'publish', side_effect=checked_publish): self.migrate()
+        self.assertTrue(intents)
+        self.assertTrue(all(i['source_hash'] == self.before['policy_hash'] and
+                            i['target_hash'] == self.new.POLICY_HASH for i in intents))
+
+    def test_repeat_repairs_library_even_when_authority_hash_matches(self):
+        self.migrate()
+        (self.h.m.library/'control.py').write_bytes((ROOT/'control.py').read_bytes())
+        before = self.h.policy()
+        self.migrate()
+        self.assertEqual(self.h.policy(), before)
+        self.assert_installed_healthy()
+
+    def test_recovery_rejects_unaccredited_intent_without_effects(self):
+        h = self.h
+        def crash(phase):
+            if phase == 'table:intent': raise handoff.Crash(phase)
+        h.m.checkpoint = crash
+        try:
+            with self.assertRaises(handoff.Crash): self.install()
+        finally: h.m.checkpoint = h.trace.append
+        journal = h.directory/'table-migration.json'
+        self.assertTrue(journal.is_file())
+        intent = journal.read_bytes()
+        for invalid in ('source', 'target', 'files', 'phase', 'brew', 'pending'):
+            with self.subTest(invalid=invalid):
+                value = json.loads(intent); state = copy.deepcopy(self.before)
+                if invalid == 'source': value['source_hash'] = 'f'*64
+                elif invalid == 'target': value['target_hash'] = 'f'*64
+                elif invalid == 'files': value['files']['../elsewhere'] = 'invalid'
+                elif invalid == 'phase':
+                    state['mini_handoff'].update(phase='aborted',
+                        retained_owner=state['mini_handoff']['source']['owner'])
+                elif invalid == 'brew': h.loaded.add(mini.BREW)
+                with h.engine.connect(write=True) as db:
+                    h.engine.store(db, state)
+                    if invalid == 'pending':
+                        db.execute('INSERT INTO host_actions VALUES(?,?,?)', ('pending-0001', 'digest',
+                                   json.dumps(dict(response=dict(status='applying')))))
+                journal.write_text(json.dumps(value))
+                before = self.snapshot()
+                try:
+                    error, _ = self.install()
+                    self.assertIsNotNone(error, invalid+' no acredita recuperación')
+                    self.assertEqual(self.snapshot(), before)
+                    self.assertEqual(h.p.calls, [])
+                    self.assert_no_manager_effects()
+                finally:
+                    h.loaded.discard(mini.BREW)
+                    journal.write_bytes(intent)
+                    with h.engine.connect(write=True) as db:
+                        h.engine.store(db, self.before)
+                        db.execute('DELETE FROM host_actions WHERE action_id=?', ('pending-0001',))
+
+    def test_installed_guard_recovers_without_checkout(self):
+        h = self.h
+        boundary = 'publish:renamed:.local/lib/pao-pueue-mini/control.py'
+        def crash(phase):
+            if phase == boundary: raise handoff.Crash(phase)
+        h.m.checkpoint = crash
+        try:
+            with self.assertRaises(handoff.Crash): self.install()
+        finally: h.m.checkpoint = h.trace.append
+        # Move the checkout out of reach; only the durable installed bundle exists.
+        self.candidate.rename(h.home/'checkout-unavailable')
+        installed, runtime = self.installed_manager()
+        try:
+            with control.locked(h.directory): self.assertTrue(installed._recover(h.config))
+        except ValueError as error: self.fail('La guardia instalada debe recuperar: '+str(error))
+        self.assertEqual(installed.state()['policy_hash'], self.new.POLICY_HASH)
+        self.assertEqual(self.actions(), self.receipts)
+        self.assertFalse((h.directory/'table-migration.json').exists())
 
     def test_unprovable_state_rejects_before_any_effect(self):
         h = self.h

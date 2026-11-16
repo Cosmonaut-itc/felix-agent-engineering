@@ -422,8 +422,9 @@ Desde ese checkout en la Mini, ejecutar primero:
 
 Después, ejecutar el mismo comando sin `--seco`. Ambos toman el `control.lock`
 existente y validan configuración, cola, PID, generación, dueño del daemon,
-guardia habilitada, autoridad y recibos. El ensayo anuncia el hash nuevo sin
-escribir. La instalación publica la biblioteca y migra `policy_hash`, deseo y
+guardia habilitada, autoridad y recibos. El ensayo anuncia el hash, la revisión,
+el deseo resultante y si conserva o retira ajustes, sin escribir. La instalación
+anuncia esos mismos datos, publica la biblioteca y migra `policy_hash`, deseo y
 una revisión en una transacción FULL, sin reiniciar el daemon, descargar la
 guardia ni abrir grupos. Reconcilia las cuotas con reducciones antes de aumentos.
 Conserva `startup`, `mini_handoff`, razones de pausa y todos los recibos.
@@ -432,14 +433,23 @@ Los ajustes `slots` vigentes conservan sus valores absolutos y metadatos sobre
 la base nueva. Si el conjunto supera el tope de 7, se retiran todos los
 ajustes activos y el deseo pasa a la base nueva, como en la migración del desk;
 los recibos permanecen. La revisión anterior cambia una sola vez. Repetir con
-la tabla ya migrada no escribe; volver al perfil anterior usa el mismo procedimiento
-y vuelve a migrar, sin resucitar ajustes retirados.
+la tabla ya migrada y la biblioteca idéntica al checkout no escribe; volver al
+perfil anterior usa el mismo procedimiento y vuelve a migrar, sin resucitar
+ajustes retirados.
 
 Una base corrupta o ilegible, recibos `applying/partial/unknown`, preparación
 pendiente, relevo distinto de `done` o generación no vigente bloquean la migración
 antes de publicar o cambiar cuotas. Recuperar primero con la versión anterior;
 nunca borrar/readoptar SQLite. El runtime mantiene la comprobación estricta del
-hash: sólo este instalador migra. El camino legacy `--cuotas` sigue rechazando
+hash: sólo este instalador inicia una migración. Antes de publicar el primer
+archivo guarda bajo `control.lock` una intención durable `table-migration.json`
+con los hashes origen/destino y la biblioteca completa. Si hay un corte, el
+login y la guardia instalados completan esa intención sin necesitar el checkout
+ni un daemon vivo; repetir el instalador también la completa antes del preflight.
+Al repetir desde A una transición pendiente A→B, primero completa B y después
+migra de vuelta a A. Sólo esa recuperación acreditada admite el hash anterior;
+retira la intención tras validar estrictamente biblioteca y autoridad destino.
+El camino legacy `--cuotas` sigue rechazando
 cualquier instalación que contenga `mini_handoff`.
 
 ### Día/Noche del dashboard (U3.3)
