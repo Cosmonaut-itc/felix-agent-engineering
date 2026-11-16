@@ -1,19 +1,47 @@
 #!/usr/bin/python3 -I
 """Restricted Pueue 4.0.4 TOML editor. Never log the editing document."""
-import hashlib
 import json
 import os
 from pathlib import Path
 import re
 import stat
-import subprocess
 import sys
 
 
 def birth(pid):
-    result = subprocess.run(['/bin/ps', '-p', str(pid), '-o', 'lstart='],
-                            capture_output=True, text=True, timeout=.3)
-    return result.stdout.strip() if result.returncode == 0 else None
+    """Kernel start identity; zombies cannot submit a late EditedTasks."""
+    if type(pid) is not int or pid <= 0:
+        raise ValueError('edit_unsafe')
+    if sys.platform == 'darwin':
+        import ctypes
+        class BSDInfo(ctypes.Structure):
+            _fields_ = [(n,ctypes.c_uint32) for n in ('flags','status','xstatus','pid','ppid','uid','gid','ruid','rgid','svuid','svgid','rfu')]
+            _fields_ += [('comm',ctypes.c_char*16),('name',ctypes.c_char*32)]
+            _fields_ += [(n,ctypes.c_uint32) for n in ('nfiles','pgid','pjobc','e_tdev','e_tpgid','nice')]
+            _fields_ += [('sec',ctypes.c_uint64),('usec',ctypes.c_uint64)]
+        library=ctypes.CDLL('/usr/lib/libproc.dylib',use_errno=True)
+        info=BSDInfo()
+        count=library.proc_pidinfo(pid,3,0,ctypes.byref(info),ctypes.sizeof(info))
+        if count==ctypes.sizeof(info):
+            if info.uid != os.getuid():
+                raise ValueError('edit_unsafe')
+            return None if info.status==5 else 'darwin:'+str(info.sec)+':'+str(info.usec)
+        try:
+            os.kill(pid,0)
+        except ProcessLookupError:
+            return None
+        raise OSError('No se acreditó la identidad del proceso propio')
+    if sys.platform == 'linux':
+        try:
+            record=(Path('/proc')/str(pid)/'stat').read_text()
+        except FileNotFoundError:
+            return None
+        fields=record[record.rfind(')')+2:].split()
+        if fields[0]=='Z':
+            return None
+        boot=Path('/proc/sys/kernel/random/boot_id').read_text().strip()
+        return 'linux:'+boot+':'+fields[19]
+    raise OSError('Identidad de proceso no soportada')
 
 
 def integer(n):
@@ -41,7 +69,7 @@ def document(raw, ident, priority):
         if empty:
             i += empty.end()
             continue
-        key = re.match(r'[ \t]*(id|original_command|path|label|priority)[ \t]*=[ \t]*', text[i:])
+        key = re.match(r'[ \t]*(id|command|path|label|priority)[ \t]*=[ \t]*', text[i:])
         if not key or key[1] in seen:
             raise ValueError('edit_unsafe')
         name = key[1]; seen.add(name); i += key.end(); start = i
@@ -63,13 +91,24 @@ def document(raw, ident, priority):
                 if i >= len(text):
                     raise ValueError('edit_unsafe')
                 if text.startswith(delimiter, i):
-                    i += len(delimiter)
-                    # TOML allows four/five quote endings. Reject instead of guessing.
-                    if text[i:i+1] == quote:
+                    count = len(text[i:])-len(text[i:].lstrip(quote))
+                    if triple and count > 5:
                         raise ValueError('edit_unsafe')
+                    i += count if triple else 1
                     break
                 if quote == '"' and text[i] == '\\':
-                    i += 2
+                    escape = text[i+1:i+2]
+                    if escape in ('u','U'):
+                        length = 4 if escape=='u' else 8
+                        if not re.fullmatch('[0-9A-Fa-f]{'+str(length)+'}',text[i+2:i+2+length]):
+                            raise ValueError('edit_unsafe')
+                        i += length+2
+                    elif escape in ('b','t','n','f','r',chr(34),chr(92)):
+                        i += 2
+                    elif triple and escape in ('\n','\r'):
+                        i += 2
+                    else:
+                        raise ValueError('edit_unsafe')
                 else:
                     if not triple and text[i] in '\r\n':
                         raise ValueError('edit_unsafe')
@@ -78,7 +117,7 @@ def document(raw, ident, priority):
         if not end:
             raise ValueError('edit_unsafe')
         i += end.end()
-    if seen not in ({'id','original_command','path','priority'}, {'id','original_command','path','priority','label'}) or values['id'] != ident:
+    if seen not in ({'id','command','path','priority'}, {'id','command','path','priority','label'}) or values['id'] != ident:
         raise ValueError('edit_unsafe')
     return (text[:span[0]] + str(priority) + text[span[1]:]).encode('utf-8')
 
@@ -92,9 +131,12 @@ def preflight(task):
             raise ValueError('edit_unsafe')
     if task['label'] is not None and type(task['label']) is not str:
         raise ValueError('edit_unsafe')
+    for value in (task['original_command'],task['path'],task['label']):
+        if value is not None and (chr(34)*3 in value or chr(39)*3 in value):
+            raise ValueError('edit_unsafe')
     # Exercise our grammar against the complete anticipated editable fields.
     raw = ('[' + str(task['id']) + ']\nid = ' + str(task['id']) + '\n' +
-           ''.join(k + ' = ' + json.dumps(task[k], ensure_ascii=False) + '\n'
+           ''.join(('command' if k=='original_command' else k) + ' = ' + json.dumps(task[k], ensure_ascii=False) + '\n'
                    for k in ('original_command','path','label') if task[k] is not None) +
            'priority = ' + str(integer(task['priority'])) + '\n').encode()
     document(raw, task['id'], task['priority'])

@@ -1,0 +1,128 @@
+"""U3.6 public channel / production UI, synthetic hosts only."""
+import safety
+import copy
+import json
+from pathlib import Path
+import subprocess
+import unittest
+from unittest.mock import patch
+import test_slots
+import test_actions
+
+c=test_slots.control
+a=test_slots.accion
+BASE=Path(__file__).resolve().parents[1]
+
+
+class ReorderChannelTests(unittest.TestCase):
+    def setUp(self):
+        test_slots.ChannelTests.setUp(self)
+        self.tasks={str(i):dict(id=i,created_at='2026-11-16T12:00:00+00:00',group='suites',
+            original_command='true',command='true',path='/synthetic',envs={'PRIVATE_SENTINEL':'hidden'},
+            dependencies=[],label=None,priority=-i,status={'Queued':dict(enqueued_at='2026-11-16T12:00:00+00:00')}) for i in range(1,6)}
+        self.p.status=lambda:dict(groups=copy.deepcopy(self.p.groups),tasks=copy.deepcopy(self.tasks))
+        self.p.call=lambda *args:self.p.groups['suites'].update(status='Paused' if args[0]=='pause' else 'Running')
+        self.p.binary='fake-no-real-binary'
+        self.engine.coordinated_reorder=True
+        def edit(action,ident,priority,deadline):
+            self.engine.reorder_save(action,'edit_intent');self.tasks[str(ident)]['priority']=priority
+            self.engine.reorder_save(action,'editing')
+        self.engine.edit_priority=edit
+        self.pressure=patch.object(c,'pressure_mini',return_value=dict(load=0,memory=1))
+        self.pressure.start();self.addCleanup(self.pressure.stop)
+
+    def request(self,ident='public-order-0001',undo=None,dry_run=False):
+        expected=self.engine.view()['reorder_groups']['suites']['expected']
+        return dict(schema='rack-action@1',host='mini',op='undo' if undo else 'reorder',action_id=ident,
+            dry_run=dry_run,expected=expected,**(dict(undo_of=undo) if undo else dict(change=dict(order=[1,5,2,3,4]))))
+
+    def test_public_pipeline_and_exact_undo_opaque_only(self):
+        r=self.request();answer=self.actions.post(r)[1]
+        self.assertEqual(answer['status'],'applied',answer)
+        self.assertEqual([row['id'] for row in answer['result']['desired']],[1,5,2,3,4])
+        for private in ('PRIVATE_SENTINEL','/synthetic','command','enqueued_at','process'):
+            self.assertNotIn(private,json.dumps(answer))
+        self.assertEqual(self.actions.post(r)[1],answer)
+        self.assertEqual(self.actions.get(r['action_id'])[1],answer)
+        self.assertEqual(len(self.calls),1)
+        undo=self.actions.post(self.request('public-undo-00001',undo=r['action_id']))[1]
+        self.assertEqual(undo['status'],'applied',undo)
+        self.assertEqual([self.tasks[str(i)]['priority'] for i in range(1,6)],[-1,-2,-3,-4,-5])
+
+    def test_unknown_get_no_replay_even_disabled(self):
+        original=self.executor
+        def lost(*args,**kwargs):original(*args,**kwargs);raise OSError('lost')
+        self.actions.executor=lost;r=self.request()
+        self.assertEqual(self.actions.post(r)[1]['status'],'unknown')
+        (self.root/'rack/actions.disabled').touch();self.actions.executor=original
+        self.assertEqual(self.actions.get(r['action_id'])[1]['status'],'applied')
+        self.assertEqual([call['op'] for call in self.calls],['reorder','status'])
+
+    def test_cancel_and_order_reserve_same_host(self):
+        r=self.request()
+        prior=test_actions.request();prior['host']='mini';prior['action_id']='pending-cancel-0001'
+        with self.actions.connect() as db:
+            db.execute('INSERT INTO actions VALUES (?,?,?,?,?,?,?)',(prior['action_id'],'opaque',json.dumps(prior),json.dumps(dict(status='unknown')),1000,1000,None))
+            self.assertIsNotNone(self.actions.pending_reason(db,r))
+        self.assertEqual(self.calls,[])
+
+    def test_closed_fields_budget_and_old_host_translation(self):
+        r=self.request();self.assertEqual(a.validate(r),r)
+        for key,value in (('script','bad'),('path','bad'),('actor','Felix'),('launcher','remote-run')):
+            with self.assertRaises(ValueError):a.validate(dict(r,**{key:value}))
+        old=dict(schema='rack-cancel-result@1',error=dict(code='invalid_request'))
+        self.assertEqual(a.host_channel.sanitize(r,old,'reorder')['status'],'unsupported')
+        old=dict(schema='rack-host-result@1',action_id=r['action_id'],status='rejected',error=dict(code='invalid_request'))
+        self.assertEqual(a.host_channel.sanitize(r,old,'reorder')['status'],'unsupported')
+        with self.assertRaises(ValueError):a.decode(json.dumps(r).encode()+b' '*16384)
+        r['expected']['queue'][0]['id']=True
+        with self.assertRaises(ValueError):a.validate(r)
+
+    def test_view_sanitization_and_disabled_reason(self):
+        v=a.host_channel.control(self.engine.view())
+        self.assertTrue(v['capabilities']['reorder'])
+        self.assertEqual(set(v['reorder_groups']),set(c.MINI_PROFILE))
+        self.engine.coordinated_reorder=False
+        v=a.host_channel.control(self.engine.view())
+        self.assertFalse(v['capabilities']['reorder'])
+        self.assertIn('coordinación',v['reorder_groups']['suites']['reason'])
+        self.assertNotIn('PRIVATE_SENTINEL',json.dumps(v))
+
+    def test_http_owner_host_and_origin_fail_closed(self):
+        from unittest.mock import Mock
+        self.owner=Mock();self.owner.allows.return_value=True;self.data=self.payload
+        handler=lambda **headers:test_actions.AuthorizationTests.handler(self,self.request(),**headers)
+        for headers in ({'Origin':None},{'Origin':'http://evil:8788'},{'Host':'evil:8788'},{'X-Rack-Action':None}):
+            self.assertEqual(handler(**headers)[0],403)
+        self.assertEqual(self.calls,[])
+        self.assertEqual(handler()[1]['status'],'applied')
+        self.owner.allows.assert_called_with('100.100.0.2',fresh=True)
+
+    def test_production_ui_reorder(self):
+        fixture=browser_fixture(self.engine.view())
+        source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
+        result=subprocess.run(['node',str(BASE/'tests/reorder-ui-check.js')],input=json.dumps(dict(js=source,fixture=fixture)),text=True,capture_output=True,timeout=10)
+        self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+        self.assertIn('UI reorder OK',result.stdout)
+
+
+def browser_fixture(control=None):
+    now=1794830400
+    rows=[dict(id=i,group='suites',state='Queued',name='dirigida-contrato',ticket='SEN-'+str(6400+i),
+               subject='Contrato de fila '+str(i),priority=-i,enqueued=now-90*i,start=None,end=None,result=None,
+               scope=None,repo=None,sha=None,branch='feat/fila-'+str(i),project='Hasito',
+               control=dict(launcher='remote-run',ref='20261116-120000-abcdef',expected=dict(task_id=i,state='Queued'),reason=None)) for i in range(1,6)]
+    if control is None:
+        queue=[dict(id=i,identity=str(i)*64,priority=-i) for i in range(1,6)]
+        expected=dict(revision=1,admission_revision=1,policy_hash='a'*64,generation='synthetic',group='suites',queue_etag='b'*64,queue=queue)
+        control=dict(schema='rack-host-result@1',status='ok',capabilities=dict(slots=True,undo=True,dry_run=True,mode=False,reorder=True,restart_queue=False),
+            revision=1,policy_hash='a'*64,generation='synthetic',mode='fijo',cap=7,slots=dict(c.MINI_PROFILE),desired=dict(c.MINI_PROFILE),
+            drift=False,recovery_pending=False,pause_reasons={},reorder_groups={'suites':dict(enabled=True,reason=None,owner=None,expected=expected)})
+    snapshot=dict(schema='rack-host@1',host='mini',taken=now,control=control,tasks=rows,
+        groups=[dict(name=g,slots=n,status='Running') for g,n in c.MINI_PROFILE.items()],cpu=dict(cores=10,load=[1,1,1]),
+        mem=dict(total=16*1024**3,available=12*1024**3,swap_total=0,swap_used=0))
+    return dict(schema='rack@1',now=now,tickets={},hosts=[dict(id='mini',name='Mac Mini',fresh=True,age=0,error=None,
+         estimates={},actions=dict(reason=None),snapshot=snapshot)])
+
+
+if __name__=='__main__':unittest.main()

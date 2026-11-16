@@ -63,6 +63,8 @@ def main():
         for ident,t in p.status()['tasks'].items():
             if isinstance(t['status'],dict) and set(t['status']) & {'Running','Paused'}:p.call('kill',ident)
         daemon.kill() if hard else daemon.terminate();daemon.wait(timeout=5)
+    def terminated(signum,frame):raise SystemExit(128+signum)
+    signal.signal(signal.SIGTERM,terminated)
     engine=None
     def request(ident,undo=None):
         expected=engine.view()['reorder_groups']['suites']['expected']
@@ -94,7 +96,7 @@ def main():
             while time.monotonic()<end:
                 if all('Running' in p.status()['tasks'][str(i)]['status'] for i in blockers):break
                 time.sleep(.03)
-            for i in range(5):add("printf '  α\\npriority = 777\\n  '",[-2,-2,-8,-12,0][i], '  unicode α  ' if i%2 else None)
+            for i in range(5):add("printf '  α\npriority = 777\n  '",[-2,-2,-8,-12,0][i], '  unicode α  ' if i%2 else None)
             before=p.status()
             r=request('private-order-0001');started=time.monotonic();answer=engine.handle(r);elapsed=time.monotonic()-started
             assert answer['status']=='applied',answer
@@ -109,7 +111,7 @@ def main():
             alias=add('synthetic_alias')
             unsafe=engine.handle(request('private-alias-0001'))
             assert unsafe['error']['code']=='edit_unsafe',unsafe
-            p.call('remove',str(alias));emit('alias_rejected_before_pause',status=unsafe['status'])
+            p.call('stash',str(alias));p.call('remove',str(alias));emit('alias_rejected_before_pause',status=unsafe['status'])
             p.call('add','--stashed','-g','default','--','true')
             # True orphan CLI: stop a client while Pueue has its selected id Locked.
             r=request('private-orphan-001')
@@ -170,6 +172,9 @@ def main():
             for i in range(maximum+1,maximum+1501):
                 row=copy.deepcopy(template);row.update(id=i,command='true # '+('x'*2048),original_command='true # '+('x'*2048),group='default')
                 queue['tasks'][str(i)]=row
+            size=len(c.canonical(queue).encode())
+            pad=max(0,(9400000-size+1499)//1500)
+            for i in range(maximum+1,maximum+1501):queue['tasks'][str(i)]['envs']['SYNTHETIC_PAD']='y'*pad
             c.atomic_json(data/'state.json',queue)
             start();engine.reconcile()
             # Startup intentionally retained Paused groups; open only our groups

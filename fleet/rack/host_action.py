@@ -286,6 +286,12 @@ def sanitize(request, response, op):
         if type(payload.get('queue_etag')) is not str or not re.fullmatch('[0-9a-f]{64}',payload['queue_etag']):
             raise ValueError('Etag inválido')
         answer['result']={k:payload[k] for k in ('group','before','desired','observed','queue_etag')}
+        group_status=payload.get('group_status')
+        pause_reasons=payload.get('pause_reasons',[])
+        if (group_status is not None and group_status not in ('Running','Paused') or type(pause_reasons) is not list
+                or any(r not in ('pressure','manual','ambiguous','startup','handoff','reorder') for r in pause_reasons)):
+            raise ValueError('Admisión de fila inválida')
+        answer['result'].update(group_status=group_status,pause_reasons=pause_reasons)
         answer['result']['undo_of']=request['action_id'] if status=='applied' else None
         return answer
     if payload is not None:

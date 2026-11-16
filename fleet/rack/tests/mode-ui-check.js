@@ -2,10 +2,14 @@
 const vm=require('vm'), assert=require('assert'), fs=require('fs');
 const input=JSON.parse(fs.readFileSync(0,'utf8'));
 const elements={},storage={},timers=[],requests=[];
-const el=()=>({innerHTML:'',textContent:'',button:{onclick:null},addEventListener(){},focus(){},querySelector(){return this.button}});
+const el=()=>({html:'',text:'',children:[],listeners:{},button:{onclick:null},
+ get innerHTML(){return this.html+this.children.map(c=>'<button>'+c.innerHTML+'</button>').join('')},
+ set innerHTML(v){this.html=v;this.children=[]},get textContent(){return this.text},
+ set textContent(v){this.text=String(v);this.html=String(v).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');this.children=[]},
+ appendChild(c){this.children.push(c);this.button=c},addEventListener(type,fn){this.listeners[type]=fn},focus(){},querySelector(){return this.button}});
 const context={console,Intl,Date,Number,Object,String,Math,Map,Set,Uint8Array,JSON,
  crypto:require('crypto').webcrypto,AbortSignal:{timeout(){}},
- document:{getElementById:id=>elements[id] ||= el(),addEventListener(){},querySelector:()=>null,querySelectorAll:()=>[]},
+ document:{createElement:()=>el(),getElementById:id=>elements[id] ||= el(),addEventListener(){},querySelector:()=>null,querySelectorAll:()=>[]},
  window:{addEventListener(){}},setInterval(){},clearTimeout(){},
  setTimeout(fn,ms){timers.push({fn,ms});return timers.length},
  sessionStorage:{getItem:k=>storage[k],setItem:(k,v)=>storage[k]=v},fetch:async()=>({ok:false})};

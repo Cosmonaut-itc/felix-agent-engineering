@@ -68,7 +68,7 @@ def request(self, ident='reorder-0000001', undo=None, dry=False):
     view=self.engine.view()['reorder_groups']['suites']
     expected=view['expected']
     order=[r['id'] for r in expected['queue']]
-    order.insert(1,order.pop(4))
+    if not undo:order.insert(1,order.pop(4))
     return dict(schema=control.HOST_SCHEMA, op='undo' if undo else 'reorder',action_id=ident,
                 dry_run=dry,expected=expected, **(dict(undo_of=undo) if undo else dict(change=dict(order=order))))
 
@@ -143,12 +143,12 @@ def test_paused_reasons_manual_guard_ambiguous_and_startup(self):
         self.p.groups['suites']['status']='Paused'
         r=self.order_request('paused-'+reason+'-0001')
         result=self.engine.handle(r)
-        self.assertEqual(result['error']['code'],'paused',result)
+        self.assertEqual((result.get('error') or {}).get('code'),'paused',result)
         self.assertIn(reason,result['pause_reasons']);self.assertEqual(self.p.calls,[])
     self.change_state(reasons={});self.p.groups['suites']['status']='Running'
     self.engine.coordinated_reorder=False
     self.assertFalse(self.engine.view()['capabilities']['reorder'])
-    self.assertEqual(self.engine.handle(self.order_request('contract-000001'))['error']['code'],'uncoordinated')
+    self.assertEqual((self.engine.handle(self.order_request('contract-000001')).get('error') or {}).get('code'),'uncoordinated')
     self.assertEqual(self.p.calls,[])
 
 
@@ -178,7 +178,7 @@ def test_add_after_compare_preserved_but_strict_undo_conflicts(self):
     self.engine.reorder_boundary=lambda p:None
     before=copy.deepcopy(self.tasks);calls=len(self.p.calls)
     undo=self.engine.handle(self.order_request('undo-race-0001',undo=r['action_id']))
-    self.assertEqual(undo['error']['code'],'undo_conflict',undo)
+    self.assertEqual((undo.get('error') or {}).get('code'),'undo_conflict',undo)
     self.assertEqual(self.tasks,before);self.assertEqual(len(self.p.calls),calls)
 
 
@@ -216,7 +216,7 @@ def test_limits_permutation_i32_booleans_and_budget(self):
         with self.assertRaises(ValueError):self.engine.handle(r)
     self.engine.reorder_cost=1
     result=self.engine.handle(self.order_request('budget-0000001'))
-    self.assertEqual(result['error']['code'],'pause_budget');self.assertEqual(self.p.calls,[])
+    self.assertEqual((result.get('error') or {}).get('code'),'pause_budget');self.assertEqual(self.p.calls,[])
 
 
 def test_revocation_after_acceptance_still_recovers(self):
@@ -264,6 +264,62 @@ def test_offline_locked_owned_before_stock_stashed_foreign_untouched(self):
     with self.assertRaises(ValueError):self.engine.reorder_offline(queue,state,self.root)
 
 
+def test_unknown_lock_concurrent_never_enqueued_or_opened(self):
+    def boundary(phase):
+        if phase=='edited':self.tasks['9']=dict(task(9),status={'Locked':dict(previous_status={'Queued':dict(enqueued_at=STAMP)})})
+    self.engine.reorder_boundary=boundary
+    result=self.engine.handle(self.order_request())
+    self.assertEqual(result['status'],'unknown')
+    self.assertEqual(self.p.groups['suites']['status'],'Paused')
+    self.assertNotIn(('enqueue','9'),self.p.calls)
+
+
+def test_second_fresh_sensor_after_start_intent_blocks_open(self):
+    self.pressure.stop()
+    with patch.object(control,'pressure_mini',side_effect=[dict(load=0,memory=1),dict(load=4,memory=1)]):
+        result=self.engine.handle(self.order_request())
+    self.assertEqual(result['status'],'applying')
+    self.assertEqual(self.p.groups['suites']['status'],'Paused')
+    self.assertNotIn(('start','-g','suites'),self.p.calls)
+
+
+def test_undo_stale_identity_priority_or_expiry_never_pauses(self):
+    r=self.order_request();self.assertEqual(self.engine.handle(r)['status'],'applied')
+    for n,scenario in enumerate(('priority','created','expired','missing')):
+        before=copy.deepcopy(self.tasks);now=self.now
+        if scenario=='priority':self.tasks['1']['priority']+=9
+        if scenario=='created':self.tasks['1']['created_at']='2026-11-16T12:01:00Z'
+        if scenario=='expired':self.now+=61
+        if scenario=='missing':self.tasks.pop('1')
+        calls=len(self.p.calls);request=self.order_request('strict-undo-'+str(n).zfill(5),undo=r['action_id'])
+        result=self.engine.handle(request)
+        self.assertEqual((result.get('error') or {}).get('code'),'undo_conflict',result)
+        self.assertEqual(len(self.p.calls),calls)
+        self.tasks=before;self.now=now
+
+
+def test_stale_etag_revision_policy_generation_reject_without_pause(self):
+    for n,key in enumerate(('revision','admission_revision','queue_etag','policy_hash','generation')):
+        r=self.order_request('stale-order-'+str(n).zfill(5))
+        r['expected'][key]=999 if key in ('revision','admission_revision') else 'f'*64
+        result=self.engine.handle(r)
+        self.assertEqual(result['status'],'conflict',result)
+        self.assertEqual(self.p.calls,[])
+
+
+def test_64_pending_65_rejects_and_views_are_pure(self):
+    self.tasks={str(i):task(i,-i) for i in range(1,65)}
+    before=self.fingerprint()
+    r=self.order_request(dry=True);r['change']['order']=list(range(64,0,-1))
+    self.assertEqual(self.engine.handle(r)['status'],'dry_run')
+    self.assertEqual(self.fingerprint(),before);self.assertEqual(self.p.calls,[])
+    self.tasks['65']=task(65,-65)
+    view=self.engine.view()['reorder_groups']['suites']
+    self.assertFalse(view['enabled']);self.assertIn('demasiado larga',view['reason'])
+    r['expected']['queue'].append(dict(id=65,identity=self.engine.task_identity(self.tasks['65']),priority=-65));r['change']['order'].append(65)
+    with self.assertRaises(ValueError):self.engine.handle(r)
+    self.assertEqual(self.p.calls,[])
+
 for name,fn in list(globals().items()):
     if name.startswith('test_'):setattr(ReorderTests,name,fn)
 
@@ -273,7 +329,7 @@ class HelperTests(unittest.TestCase):
         helper=control.priority_helper()
         for quote in ('"""', "'''", '"', "'"):
             cmd='hello\npriority = 999\nα' if len(quote)==3 else 'héllo'
-            raw=('[3]\nid = 3\noriginal_command = '+quote+cmd+quote+'\npath = "/synthetic"\npriority\t= -12  \n').encode()
+            raw=('[3]\nid = 3\ncommand = '+quote+cmd+quote+'\npath = "/synthetic"\npriority\t= -12  \n').encode()
             out=helper.document(raw,3,4)
             self.assertEqual(out,raw.replace(b'priority\t= -12',b'priority\t= 4'))
         for malformed in (b'[3]\npriority=0\npriority=1\n',b'[3]\npriority=1\n[4]\n',b'[3]\npriority=true\n',b'priority=1\n'):
@@ -283,6 +339,59 @@ class HelperTests(unittest.TestCase):
 
     def test_desk_remains_disabled(self):
         self.assertFalse(control.MiniControl.coordinated_reorder)
+
+
+
+class InstallTests(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        from contextlib import contextmanager
+        self.temp=tempfile.TemporaryDirectory(prefix='u36-install-',dir='/tmp');self.addCleanup(self.temp.cleanup)
+        self.home=Path(self.temp.name);self.library=self.home/'.local/lib/pao-pueue-mini';self.library.mkdir(parents=True)
+        self.directory=self.home/'.local/state/pao/pueue-mini';self.directory.mkdir(parents=True)
+        (self.directory/'control.lock').touch();(self.library/'control.py').write_text('previous-controller\n')
+        spec=control.importlib.util.spec_from_file_location('u36_installer',control.Path(control.__file__).with_name('install-reorder.py'))
+        self.installer=control.importlib.util.module_from_spec(spec);spec.loader.exec_module(self.installer)
+        self.state=dict(mini_handoff=dict(phase='done'),generation='verified',pid_file=str(self.home/'pid'),desired=control.MINI_PROFILE)
+        self.actions=[]
+        outer=self
+        class DB:
+            def execute(self,*args):return [(json.dumps(a),) for a in outer.actions]
+        class Engine:
+            @contextmanager
+            def connect(self):yield DB()
+            def state(self,db):return outer.state
+            def generation(self,state):return 'verified'
+            def observed(self):return dict(control.MINI_PROFILE),{}
+        self.engine=Engine();self.config=dict(pid_file=self.home/'pid',data=self.home)
+
+    def files(self):return {str(p.relative_to(self.home)):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+
+    def test_dry_validates_before_every_effect_and_no_restart(self):
+        import io
+        from contextlib import redirect_stdout
+        before=self.files()
+        with redirect_stdout(io.StringIO()),patch.object(self.installer.c,'validate_configuration',return_value=self.config) as validation:
+            self.installer.install(self.home,dry=True,engine=self.engine)
+        validation.assert_called_once();self.assertEqual(before,self.files())
+        with patch.object(self.installer.c,'validate_configuration',side_effect=ValueError('unsafe')):
+            with self.assertRaises(ValueError):self.installer.install(self.home,engine=self.engine)
+        self.assertEqual(before,self.files())
+
+    def test_publish_helper_before_controller_and_rollback_no_pending(self):
+        calls=[];original=self.installer.publish
+        def publish(path,raw):calls.append(path.name);return original(path,raw)
+        with patch.object(self.installer,'publish',side_effect=publish):
+            self.installer.install(self.home,engine=self.engine,config=self.config)
+        self.assertEqual(calls,['control.py.u36-before','editor_prioridad.py','control.py'])
+        self.assertEqual((self.library/'control.py.u36-before').read_text(),'previous-controller\n')
+        self.actions=[dict(kind='reorder',phase='edit_intent',response=dict(status='unknown'))]
+        before=self.files()
+        with self.assertRaises(ValueError):self.installer.install(self.home,withdraw=True,engine=self.engine,config=self.config)
+        self.assertEqual(before,self.files())
+        self.actions=[];self.installer.install(self.home,withdraw=True,engine=self.engine,config=self.config)
+        self.assertEqual((self.library/'control.py').read_text(),'previous-controller\n')
+        self.assertTrue((self.library/'editor_prioridad.py').is_file())
 
 
 if __name__=='__main__':unittest.main()
