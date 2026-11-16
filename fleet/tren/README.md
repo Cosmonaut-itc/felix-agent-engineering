@@ -819,6 +819,15 @@ vista del PR incompleta. La entrega queda retenida por `observacion-incompleta`,
 sin rojo, comentario ni status, y el tick siguiente reintenta. Los errores
 no guardan argv ni stderr.
 
+Los fetch de una observación comparten un presupuesto,
+`PRESUPUESTO_TRANSPORTE_S` (120 s), sumado sobre toda la cola: cada fetch
+recibe como plazo lo que quede. El primer fetch que falla, de la base o de un
+head, da el remoto por caído: ninguna otra vista trae en ese tick, y las que
+falten quedan incompletas. Así una caída cuesta a lo sumo un presupuesto por
+tick bajo el candado del carril, no un timeout por PR. Un fetch que trae otro
+SHA es propio de ese PR y no corta a los demás. El tick siguiente empieza con
+el presupuesto entero.
+
 La sombra, `entregar` y `tick --seco` no reciben almacén: un `GitHubGit` con
 almacén fuera del tick activo es un error. Siguen leyendo `config["git"]`
 sin fetch, y sus eventos `sombra`, `sombra-doble-camino` y `admision-entrega`
@@ -833,3 +842,14 @@ ramas, árbol de trabajo y `FETCH_HEAD`, y nunca recibe C. `tests/remoto-u17.sh`
 llamado por `tests/remoto.sh`, exige que las tres regresiones fallen por
 aserción sobre `0f7fff27` y pasen después. También compara byte a byte los
 eventos de sombra, `entregar` y `--seco` de ambos árboles.
+
+El checkout de esas pruebas tiene una rama propia, un índice distinto del
+árbol y un archivo no versionado; todos sus bytes, `.git` incluido, quedan
+iguales. Las pruebas de objetos cubren la base ausente cuyo fetch falla y se
+recupera, la ref del PR adelantada respecto de la API (retiene sin leer otro
+objeto, y la entrega nueva admite el head que sólo existe en esa ref), el
+head ya presente que se lee sin consultar la ref mientras el armado la
+vuelve a traer y no arma, y la composición productiva sin `GitTren`
+inyectado. `tests/remoto-u17-injerto.sh` exige que las dos pruebas del
+presupuesto fallen por aserción sobre `d0019396` y pasen después; usan
+transporte y reloj falsos, sin esperas reales.

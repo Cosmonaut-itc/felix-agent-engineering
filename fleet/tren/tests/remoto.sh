@@ -22,6 +22,7 @@ git version
   bash fleet/tren/tests/remoto-u16-injerto.sh
   bash fleet/tren/tests/remoto-u16-r1.sh
   bash fleet/tren/tests/remoto-u17.sh
+  bash fleet/tren/tests/remoto-u17-injerto.sh
 ) > "$aislado/antes.log" 2>&1 &
 tren_antes_pid=$!
 encontrado=0
@@ -52,5 +53,6 @@ if [ "$resultado" -eq 0 ]; then
   echo 'U16: tres regresiones fallan sobre 85138706 y pasan después; CI rojo, partición FIFO, timeout, juicio, recuperación y sombra pasan.'
   echo 'U16 R1: cuatro regresiones fallan sobre 48748009 y pasan después; solicitud de CI vigente, recuperación y fallo de preparación del runner pasan.'
   echo 'U17: tres regresiones fallan sobre 0f7fff27 y pasan después; dos lotes sucesivos, main ajeno tras reanudar y falla al traer objetos pasan sin tocar el checkout de admisión; sombra idéntica.'
+  echo 'U17 injerto: dos regresiones fallan sobre d0019396 y pasan después; el fetch de una observación comparte un presupuesto y no se repite tras caer el remoto o la base; identidad de objetos, checkout sucio intacto y composición productiva pasan.'
 fi
 exit "$resultado"

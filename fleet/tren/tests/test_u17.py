@@ -2,8 +2,10 @@
 
 config["git"] es aquí un clon no bare, separado del origen y del bare del
 tren. Se sincroniza una sola vez, antes del primer tick, con main y los heads
-de todos los PR; después nadie le trae objetos. Cada tick pasa por la
-construcción real de `pao-tren`: sólo se sustituye el transporte de gh.
+de todos los PR; después nadie le trae objetos. Es un checkout humano: rama
+propia, índice distinto del árbol y un archivo no versionado, que no cambian
+byte a byte. Cada tick pasa por la construcción real de `pao-tren`: sólo se
+sustituye el transporte de gh.
 """
 import json
 import os
@@ -14,13 +16,56 @@ import unittest
 
 import test_activo as activo
 import test_juicio
-from dominio import (Admitido, Certificado, Congelado, Motivo, Retenido, Terminal,
-                     datos)
+from dominio import (Admitido, Certificado, Congelado, Entrega, Motivo, Retenido,
+                     Terminal, datos)
+from git_ops import ErrorGit, FalloGit, GitTren
 from ledger import directorio_estado
+import observador
 from observador import GitHubGit
 
 REPO = activo.REPO
 ATERRIZADO = Terminal("ATERRIZADO")
+# Antes del injerto no existe: el valor documenta el presupuesto exigido.
+PRESUPUESTO = getattr(observador, "PRESUPUESTO_TRANSPORTE_S", 120)
+
+
+class RelojFalso:
+    def __init__(self):
+        self.ahora = 0.0
+
+    def __call__(self):
+        return self.ahora
+
+
+class AlmacenFalso:
+    """Bare y remoto falsos: cada fetch tarda `demora` s del reloj falso."""
+    def __init__(self, demora, refs, presentes=(), caidas=()):
+        self.reloj = RelojFalso()
+        self.demora = demora
+        self.refs = refs
+        self.presentes = set(presentes)
+        self.caidas = set(caidas)
+        self.fetches = []
+
+    def preparar(self):
+        pass
+
+    def git(self, *args, aislado=False):
+        objeto = args[-1].split("^")[0]
+        return subprocess.CompletedProcess(args, 0 if objeto in self.presentes else 1)
+
+    def traer(self, ref, timeout=None):
+        self.fetches.append((ref, timeout))
+        if ref in self.caidas or (timeout is not None and self.demora > timeout):
+            self.reloj.ahora += self.demora if timeout is None else min(self.demora, timeout)
+            raise FalloGit("git-no-disponible")
+        self.reloj.ahora += self.demora
+        traido = self.refs.get(ref, ref)
+        self.presentes.add(traido)
+        return traido
+
+    def texto(self, *args):
+        raise AssertionError("la prueba no lee objetos")
 
 
 class ContextoU17(unittest.TestCase):
@@ -44,11 +89,22 @@ class ContextoU17(unittest.TestCase):
                                padres=(self.B,), mensaje="ticket {}".format(pr))
             self.push(head, "refs/pull/{}/head".format(pr))
             self.siguientes.append((pr, head))
-        self.checkout = self.raiz / "checkout"
+        self.checkout = (self.raiz / "checkout").resolve()
         self.comando(self.raiz, "clone", "--no-hardlinks", str(self.origen), str(self.checkout))
         self.comando(self.checkout, "fetch", "origin", "+refs/pull/*/head:refs/remotes/origin/pull/*")
         for _, head in self.miembros + self.siguientes:
             self.assertTrue(self.tiene(self.checkout, head))
+        self.assertFalse((self.checkout / ".git/objects/info/alternates").exists())
+        # Uso humano en curso: rama propia, índice distinto del árbol y un
+        # archivo no versionado.
+        self.comando(self.checkout, "switch", "-c", "trabajo-humano")
+        (self.checkout / "comun").write_text("cambio en el índice\n")
+        self.comando(self.checkout, "add", "comun")
+        (self.checkout / "comun").write_text("cambio sin guardar\n")
+        (self.checkout / "nota").write_text("no versionado\n")
+        self.git_tick = self.contexto.git
+        self.reloj = None
+        self.observadores = []
         self.contexto.config["git"] = str(self.checkout)
         self.privada = self.raiz / "config-privada.json"
         self.privada.write_text(json.dumps({"repos": {REPO: self.contexto.config}}))
@@ -59,24 +115,31 @@ class ContextoU17(unittest.TestCase):
                               capture_output=True, timeout=30).returncode == 0
 
     def huella(self):
-        """HEAD, ramas, árbol de trabajo y FETCH_HEAD del checkout humano."""
+        """HEAD, ramas, índice, árbol y FETCH_HEAD; además, los bytes de cada
+        archivo del checkout humano, .git incluido."""
         return {"refs": self.comando(self.checkout, "for-each-ref",
                                      "--format=%(objectname) %(refname)"),
                 "simbolica": self.comando(self.checkout, "symbolic-ref", "HEAD"),
                 "head": self.comando(self.checkout, "rev-parse", "HEAD"),
                 "estado": self.comando(self.checkout, "--no-optional-locks", "status",
                                        "--porcelain", "--untracked-files=all"),
-                "fetch_head": (self.checkout / ".git" / "FETCH_HEAD").read_text()}
+                "fetch_head": (self.checkout / ".git" / "FETCH_HEAD").read_text(),
+                "bytes": {str(p.relative_to(self.checkout)): p.read_bytes()
+                          for p in sorted(self.checkout.rglob("*")) if p.is_file()}}
 
     def crear(self, config, **kwargs):
         # Sólo se sustituye gh; pao-tren decide modo, almacén y lector.
-        return GitHubGit(config, ejecutar=self.contexto.gh, **kwargs)
+        creado = GitHubGit(config, ejecutar=self.contexto.gh, **kwargs)
+        if self.reloj is not None:
+            creado.reloj = self.reloj
+        self.observadores.append(creado)
+        return creado
 
     def tick(self, ahora):
         args = activo.cli.parser().parse_args(["tick", "--repo", REPO,
                                                "--config", str(self.privada)])
         with patch.object(activo.cli, "GitHubGit", side_effect=self.crear):
-            codigo, salida = activo.cli.ejecutar(args, None, ahora, self.contexto.git,
+            codigo, salida = activo.cli.ejecutar(args, None, ahora, self.git_tick,
                                                  self.contexto.hasito, None,
                                                  self.contexto.escritor)
         self.assertEqual(codigo, 0, salida)
@@ -110,6 +173,32 @@ class ContextoU17(unittest.TestCase):
                 "--pr", str(pr), "--head", head, "--apto", str(apto),
                 "--dirigida", str(dirigida)])
             self.assertEqual(activo.cli.ejecutar(args, ahora=ahora)[0], 0)
+
+    def entregar(self, pr, head, ahora):
+        """Entrega directa al ledger: el head puede faltar en el checkout."""
+        apto = self.raiz / "apto-{}-{}.json".format(pr, head[:7])
+        dirigida = self.raiz / "dirigida-{}-{}.json".format(pr, head[:7])
+        apto.write_text(json.dumps({"head": head, "veredicto": "APTO", "hallazgos_abiertos": 0}))
+        dirigida.write_text(json.dumps({"head": head, "resultado": "limpio"}))
+        # La API del PR informa el último head registrado aquí.
+        self.contexto.config["miembros"].append([str(pr), head])
+        with self.ledger() as ledger:
+            ledger.entregar(Entrega(REPO, pr, head, str(apto), str(dirigida)), ahora)
+
+    def entrada(self, estado, head):
+        return next(e for e in estado.entradas if e.entrega.head == head)
+
+    def registrar(self):
+        """argv de cada comando git del bare del tren, sin cambiar su efecto."""
+        argv = []
+        original = self.contexto.git.ejecutar
+
+        def ejecutar(comando, **kwargs):
+            argv.append(list(comando))
+            return original(comando, **kwargs)
+        self.contexto.git.ejecutar = ejecutar
+        self.addCleanup(setattr, self.contexto.git, "ejecutar", original)
+        return argv
 
     def lote(self, estado):
         prs = {pr for pr, _ in self.siguientes}
@@ -218,6 +307,210 @@ class RegresionesTests(ContextoU17):
         self.assertEqual([e.admision for e in self.lote(estado)], [Admitido()] * 3)
         self.assertEqual(len(estado.trenes), 2)
         self.assert_lote_siguiente_aterriza(C1, 5620)
+
+
+class PresupuestoTests(ContextoU17):
+    """Una caída del remoto no se multiplica por la cola bajo el candado.
+
+    `remoto-u17-injerto.sh` exige que ambas fallen sobre d0019396 y pasen
+    después. Transporte y reloj falsos: ninguna espera real.
+    """
+
+    def test_fetch_de_una_observacion_comparte_presupuesto_y_corta_tras_caer(self):
+        refs = {"refs/pull/{}/head".format(pr): head for pr, head in self.siguientes}
+
+        def leer(almacen):
+            lector = GitHubGit(self.contexto.config, activo=True, almacen=almacen)
+            lector.reloj = almacen.reloj
+            vistas = []
+            for pr, head in self.siguientes:
+                try:
+                    lector.lector(pr, self.B, head)
+                    vistas.append(pr)
+                except FalloGit:
+                    pass
+            return vistas
+
+        # Remoto lento: cada fetch tarda 50 s y la cola entera dispone del
+        # presupuesto; el que lo agota se da por caído y el resto no trae.
+        lento = AlmacenFalso(50, refs)
+        self.assertEqual(leer(lento), [4])
+        self.assertEqual(lento.fetches, [(self.B, PRESUPUESTO),
+                                         ("refs/pull/4/head", PRESUPUESTO - 50),
+                                         ("refs/pull/5/head", PRESUPUESTO - 100)])
+        self.assertEqual(lento.reloj.ahora, PRESUPUESTO)
+        # Falla común de la base: ninguna otra vista la repite ni trae heads.
+        caida = AlmacenFalso(1, refs, caidas={self.B})
+        self.assertEqual(leer(caida), [])
+        self.assertEqual(caida.fetches, [(self.B, PRESUPUESTO)])
+        # Un head que cae corta también los heads de las vistas siguientes.
+        cae_head = AlmacenFalso(1, refs, presentes={self.B}, caidas={"refs/pull/4/head"})
+        self.assertEqual(leer(cae_head), [])
+        self.assertEqual(cae_head.fetches, [("refs/pull/4/head", PRESUPUESTO)])
+        # Con base y heads presentes no se consulta el remoto.
+        presentes = AlmacenFalso(1, refs, presentes={self.B} | set(refs.values()))
+        self.assertEqual(leer(presentes), [4, 5, 6])
+        self.assertEqual(presentes.fetches, [])
+
+    def test_remoto_caido_trae_una_vez_por_tick_sin_feedback(self):
+        _, C1 = self.primer_lote()
+        self.tick(4900)
+        posts = self.posts()
+        pushes = self.lineas("pushes.log")
+        self.entregar_siguientes(5000)
+        self.reloj = RelojFalso()
+        original = self.contexto.git.ejecutar
+        plazos = []
+
+        def caido(argv, **kwargs):
+            if "fetch" in argv:
+                # Cada fetch agota el plazo que recibe, sin esperarlo.
+                plazos.append(kwargs["timeout"])
+                self.reloj.ahora += kwargs["timeout"]
+                raise subprocess.TimeoutExpired(argv, kwargs["timeout"], stderr="dato privado")
+            return original(argv, **kwargs)
+
+        self.contexto.git.ejecutar = caido
+        try:
+            for n in range(2):
+                del plazos[:]
+                inicio = self.reloj.ahora
+                salida = self.tick(5100 + n * 120)
+                # Faltan tres heads, pero tras la primera caída nadie más trae.
+                self.assertEqual(plazos, [PRESUPUESTO])
+                self.assertLessEqual(self.reloj.ahora - inicio, PRESUPUESTO)
+                self.assertNotIn("dato privado", json.dumps(salida, ensure_ascii=False))
+                estado = self.estado()
+                self.assertIsNone(estado.pausa, datos(estado.pausa))
+                self.assertEqual(len(estado.trenes), 1)
+                self.assertEqual([e.admision for e in self.lote(estado)],
+                                 [Retenido(Motivo.INCIERTO)] * 3)
+        finally:
+            self.contexto.git.ejecutar = original
+        self.assertEqual(self.posts(), posts)
+        self.assertEqual(self.lineas("pushes.log"), pushes)
+        # Vuelve el remoto: el tick siguiente admite y arma sin más acción.
+        self.tick(5500)
+        estado = self.estado()
+        self.assertEqual([e.admision for e in self.lote(estado)], [Admitido()] * 3)
+        self.assert_lote_siguiente_aterriza(C1, 5620)
+
+
+class ObjetosTests(ContextoU17):
+    """Identidad de los objetos que lee la admisión activa y composición real."""
+
+    def test_base_ausente_falla_al_traer_y_el_tick_siguiente_se_recupera(self):
+        original = self.contexto.git.ejecutar
+        fetches = []
+
+        def sin_base(argv, **kwargs):
+            if "fetch" in argv:
+                fetches.append(argv[-1])
+                if argv[-1] == self.B:
+                    return subprocess.CompletedProcess(argv, 128, "", "fatal: dato privado")
+            return original(argv, **kwargs)
+
+        # Bare nuevo: le faltan la base y los tres heads del primer lote.
+        self.assertFalse((directorio_estado() / "git").exists())
+        self.contexto.git.ejecutar = sin_base
+        try:
+            for n in range(2):
+                del fetches[:]
+                self.tick(100 + n * 120)
+                self.assertEqual(fetches, [self.B])
+                estado = self.estado()
+                self.assertIsNone(estado.pausa, datos(estado.pausa))
+                self.assertEqual(estado.trenes, ())
+                self.assertEqual([e.admision for e in estado.entradas],
+                                 [Retenido(Motivo.INCIERTO)] * 3)
+        finally:
+            self.contexto.git.ejecutar = original
+        self.assertEqual(self.posts(), [])
+        self.assertEqual(self.lineas("trabajos.log"), [])
+        self.hasta(lambda e: e.trenes[0].fase == ATERRIZADO, 340)
+        self.assertFalse(self.tiene(self.checkout, self.remoto()))
+        self.assertFalse(any(p["payload"]["state"] == "failure" for p in self.posts("/statuses/")))
+        self.assertEqual(self.posts("/comments"), [])
+        self.assertEqual(self.huella(), self.huella_inicial)
+
+    def test_ref_del_pr_adelantada_retiene_sin_leer_otro_objeto(self):
+        _, C1 = self.primer_lote()
+        self.tick(4900)
+        posts = self.posts()
+        pr, viejo = self.siguientes[0]
+        nuevo = self.commit({"comun": "base\n", "pr-4": "otro\n"}, padres=(viejo,))
+        self.push(nuevo, "refs/pull/4/head")
+        # La API sigue en viejo, ausente del bare; la ref ya apunta a nuevo.
+        self.entregar(pr, viejo, 5000)
+        argv = self.registrar()
+        self.tick(5100)
+        estado = self.estado()
+        self.assertEqual(self.entrada(estado, viejo).admision, Retenido(Motivo.INCIERTO))
+        self.assertEqual(len(estado.trenes), 1)
+        self.assertEqual([a[-1] for a in argv if "fetch" in a], ["refs/pull/4/head"])
+        # Retiene sin leer el objeto traído ni ningún otro.
+        self.assertFalse(any("merge-base" in a or "merge-tree" in a or nuevo in a
+                             for a in argv), argv)
+        self.assertEqual(self.posts(), posts)
+        # La entrega nueva admite el head que sólo existe en la ref del PR.
+        self.assertFalse(self.tiene(self.checkout, nuevo))
+        self.entregar(pr, nuevo, 5200)
+        self.tick(5300)
+        self.assertEqual(self.entrada(self.estado(), nuevo).admision, Admitido())
+        self.assertFalse(self.tiene(self.checkout, nuevo))
+        self.assertEqual(self.posts("/comments"), [])
+        self.assertEqual(self.huella(), self.huella_inicial)
+
+    def test_head_presente_no_consulta_la_ref_y_el_armado_retiene(self):
+        _, C1 = self.primer_lote()
+        self.tick(4900)
+        pushes = self.lineas("pushes.log")
+        pr, viejo = self.siguientes[0]
+        # El bare ya tiene viejo; después la ref del PR avanza a nuevo.
+        self.assertEqual(self.contexto.git.traer("refs/pull/4/head"), viejo)
+        nuevo = self.commit({"comun": "base\n", "pr-4": "otro\n"}, padres=(viejo,))
+        self.push(nuevo, "refs/pull/4/head")
+        self.entregar(pr, viejo, 5000)
+        argv = self.registrar()
+        for ahora in (5100, 5220, 5340):
+            self.tick(ahora)
+        estado = self.estado()
+        self.assertEqual(self.entrada(estado, viejo).admision, Admitido())
+        # La admisión leyó el SHA exacto de la API, sin fetch ni ls-remote.
+        lectura = next(n for n, a in enumerate(argv)
+                       if "merge-tree" in a and "--write-tree" not in a)
+        self.assertEqual(argv[lectura][-3:], [self.B, C1, viejo])
+        self.assertTrue(any(a[-3:] == ["merge-base", C1, viejo] for a in argv[:lectura]))
+        self.assertFalse(any("fetch" in a or "ls-remote" in a for a in argv[:lectura]),
+                         argv[:lectura])
+        self.assertFalse(any(nuevo in a for a in argv[:lectura]))
+        # El armado sí trae la ref, ve otro head y no arma ni publica.
+        self.assertEqual(len(estado.trenes), 2)
+        self.assertIsInstance(estado.trenes[1].fase, Congelado)
+        self.assertEqual(self.contexto.git.armar(C1, ((pr, viejo),)),
+                         ErrorGit("head-no-coincide", pr))
+        self.assertEqual(self.lineas("pushes.log"), pushes)
+        self.assertEqual(self.posts("/comments"), [])
+        self.assertEqual(self.huella(), self.huella_inicial)
+
+    def test_composicion_productiva_sin_gittren_inyectado(self):
+        # pao-tren construye su GitTren(remoto) y lo entrega como almacén.
+        self.git_tick = None
+        _, C1 = self.primer_lote()
+        self.entregar_siguientes(5000)
+        self.hasta(lambda e: len(e.trenes) == 2 and e.trenes[1].fase == ATERRIZADO, 5100)
+        C2 = self.remoto()
+        self.assertEqual(self.comando(self.origen, "rev-parse", C2 + "~3"), C1)
+        ruta = self.contexto.git.ruta
+        self.assertTrue(self.observadores)
+        for creado in self.observadores:
+            self.assertIsInstance(creado.almacen, GitTren)
+            self.assertIsNot(creado.almacen, self.contexto.git)
+            self.assertEqual(creado.almacen.ruta, ruta)
+            self.assertTrue(creado.activo)
+        self.assertEqual(self.posts("/comments"), [])
+        self.assertFalse(self.tiene(self.checkout, C2))
+        self.assertEqual(self.huella(), self.huella_inicial)
 
 
 class SombraTests(ContextoU17):

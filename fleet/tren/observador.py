@@ -5,6 +5,7 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import time
 from typing import Protocol
 from urllib.parse import urlparse
 
@@ -22,6 +23,9 @@ CONCLUSIONES_CI = {
 }
 STATUS_CI = {"success": "verde", "failure": "rojo", "error": "pendiente",
              "pending": "pendiente"}
+# Tiempo total de fetch de una observación activa, sumado sobre toda la cola:
+# una caída del remoto no suma un timeout por PR bajo el candado del carril.
+PRESUPUESTO_TRANSPORTE_S = 120
 
 
 class Observador(Protocol):
@@ -67,7 +71,13 @@ class GitHubGit:
         self.sombra = sombra
         self.activo = activo
         self.almacen = almacen
+        self.reloj = time.monotonic
+        self.reiniciar_transporte()
+
+    def reiniciar_transporte(self):
         self.preparado = False
+        self.transporte_s = 0.0
+        self.caido = False
 
     def comando(self, args):
         return self.ejecutar(args, check=True, capture_output=True, text=True,
@@ -92,6 +102,10 @@ class GitHubGit:
         head por la ref del PR. Así ve el C que acaba de aterrizar y el main
         ajeno tras reanudar, sin tocar el checkout humano de config["git"].
         Un fallo lanza FalloGit: la vista queda incompleta y el tick reintenta.
+        Los fetch de una observación comparten PRESUPUESTO_TRANSPORTE_S. Tras
+        el primer fetch fallido, de la base o de un head, el remoto se da por
+        caído: ninguna otra vista trae en esta observación. Un fetch que trae
+        otro SHA es propio de ese PR y no corta los demás.
         """
         if self.almacen is None:
             return self.git
@@ -99,8 +113,21 @@ class GitHubGit:
             self.almacen.preparar()
             self.preparado = True
         for objeto, ref in ((base, base), (head, "refs/pull/{}/head".format(pr))):
-            if (self.almacen.git("cat-file", "-e", objeto + "^{commit}", aislado=True).returncode
-                    and self.almacen.traer(ref) != objeto):
+            if not self.almacen.git("cat-file", "-e", objeto + "^{commit}",
+                                    aislado=True).returncode:
+                continue
+            restante = PRESUPUESTO_TRANSPORTE_S - self.transporte_s
+            if self.caido or restante <= 0:
+                raise FalloGit("transporte-agotado")
+            inicio = self.reloj()
+            try:
+                traido = self.almacen.traer(ref, timeout=restante)
+            except FalloGit:
+                self.caido = True
+                raise
+            finally:
+                self.transporte_s += self.reloj() - inicio
+            if traido != objeto:
                 raise FalloGit("objeto-no-disponible")
         return self.almacen.texto
 
@@ -274,8 +301,9 @@ class GitHubGit:
             return replace(vista, completa=False)
 
     def observar(self, estado, ahora):
-        # El bare se valida una vez por observación, no por PR.
-        self.preparado = False
+        # El bare se valida y el presupuesto de fetch corre una vez por
+        # observación, no por PR: el tick siguiente reintenta desde cero.
+        self.reiniciar_transporte()
         repo = estado.repo
         rama = self.api("repos/{}/git/ref/heads/main".format(repo))
         base = rama["object"]["sha"]
