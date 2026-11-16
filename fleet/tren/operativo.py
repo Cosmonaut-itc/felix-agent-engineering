@@ -74,15 +74,12 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
     previo = Previo(ledger, git, getattr(observador, "config", {}), frontera)
 
     def limpiar(nuevo):
-        return nuevo if previo.limpiar(nuevo) else pausar_limpieza(nuevo)
+        limpio = previo.limpiar(nuevo)
+        return nuevo if limpio or nuevo.pausa else pausar_limpieza(nuevo)
 
-    estado = limpiar(estado)
+    limpio = previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
-    if not previo.limpiar(estado, observacion):
-        estado = pausar_limpieza(estado)
-        ledger.guardar_paso(estado, (), ahora)
-        return {"modo": "activo", "estado": datos(estado), "efectos": [],
-                "outbox": resumen_outbox(ledger, repo)}
+    limpio = previo.limpiar(estado, observacion) and limpio
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
@@ -154,6 +151,10 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
         drenar(nuevo, observacion)
         return {"modo": "activo", "estado": datos(nuevo),
                 "efectos": datos(efectos), "outbox": resumen_outbox(ledger, repo)}
+    # La limpieza no cambia la identidad de una pausa antes de consumir su
+    # decisión. Aunque falle, el feedback de cualquier generación se drena.
+    if not limpio and not estado.pausa:
+        estado = pausar_limpieza(estado)
     drenar(estado, observacion, recuperacion=True)
     consumido = None
     if not estado.pausa:

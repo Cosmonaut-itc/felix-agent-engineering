@@ -15,6 +15,10 @@ from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, EscritorExtern
 from git_ops import FalloGit, entorno, sha
 
 
+PRESUPUESTO_IO_S = 60
+ESPERA_MAX_S = 1800
+
+
 def autorizaciones(config):
     """Lista histórica de SHA o entradas con ventana UTC ligada al head exacto."""
     resultado = {}
@@ -52,7 +56,8 @@ def gancho(config):
     valor = config.get("pre_aterrizaje")
     if valor is None:
         return None
-    if not isinstance(valor, dict) or set(valor) != {"comando", "plazo_s"}:
+    if (not isinstance(valor, dict) or not {"comando", "plazo_s"} <= set(valor) or
+            set(valor) - {"comando", "plazo_s", "espera_max_s"}):
         raise ValueError("gancho invalido")
     comando, plazo = valor["comando"], valor["plazo_s"]
     if (not isinstance(comando, list) or not comando or
@@ -60,6 +65,9 @@ def gancho(config):
             not Path(comando[0]).is_absolute() or type(plazo) not in (int, float) or
             not math.isfinite(plazo) or not 0 < plazo <= 60):
         raise ValueError("comando o plazo del gancho invalido")
+    espera = valor.get("espera_max_s", ESPERA_MAX_S)
+    if type(espera) not in (int, float) or not math.isfinite(espera) or espera <= 0:
+        raise ValueError("plazo total de espera invalido")
     return valor
 
 
@@ -106,11 +114,25 @@ class Previo:
         self.repo = ""
         self.frontera = frontera
         self.reloj = time.time
+        self.reloj_io = time.monotonic
+        self.io_s = 0.0
+        self.cancelaciones = set()
         # Diario privado separado de eventos: contiene el argv que deberá
         # cancelar incluso si se retira o cambia la configuración del repo.
         ledger.db.execute("CREATE TABLE IF NOT EXISTS pre_aterrizajes ("
                           "id TEXT PRIMARY KEY, repo TEXT NOT NULL, payload TEXT NOT NULL, "
                           "pendiente INTEGER NOT NULL)")
+
+    def llamar(self, config, solicitud, accion):
+        restante = PRESUPUESTO_IO_S - self.io_s
+        if restante <= 0:
+            return "timeout"
+        inicio = self.reloj_io()
+        try:
+            return invocar(dict(config, plazo_s=min(config["plazo_s"], restante)),
+                           solicitud, accion)
+        finally:
+            self.io_s += max(0, self.reloj_io() - inicio)
 
     def ventana(self, tren, observacion):
         vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
@@ -144,6 +166,12 @@ class Previo:
 
     def cancelar(self, registro, lectura=None):
         solicitud = registro["solicitud"]
+        if solicitud["id"] in self.cancelaciones:
+            if isinstance(lectura, Aterrizado):
+                self.terminar(solicitud["id"])
+                return True
+            return False
+        self.cancelaciones.add(solicitud["id"])
         B, C = solicitud["B"], solicitud["C"]
         lectura = lectura or self.git.reconciliar(B, C, registro["arbol"], registro["heads"])
         if isinstance(lectura, Aterrizado):
@@ -163,7 +191,7 @@ class Previo:
                 return False
         elif not isinstance(lectura, EnBase):
             return False  # Nunca deshacer un efecto cuyo push pudo aterrizar.
-        if invocar(registro["gancho"], solicitud, "cancelar") != "cancelado":
+        if self.llamar(registro["gancho"], solicitud, "cancelar") != "cancelado":
             return False
         self.terminar(solicitud["id"])
         return True
@@ -176,6 +204,7 @@ class Previo:
         """Cancela al pausar, abortar, caducar, cambiar base/config o salir de ventana."""
         self.repo = estado.repo
         vistas = {v.recibo or str(v.pr): v for v in observacion.prs} if observacion else {}
+        limpio = True
         for registro in self.pendientes(estado.repo):
             s = registro["solicitud"]
             tren = next((t for t in estado.trenes if t.id == s["tren"]), None)
@@ -188,8 +217,8 @@ class Previo:
                     any(not isinstance(admision_entrada(e, vistas, observacion), Admitido)
                         for e in estado.entradas if e.entrega.recibo in tren.recibos))
             if cancelar and not self.cancelar(registro):
-                return False
-        return True
+                limpio = False
+        return limpio
 
     def verificar(self, estado, tren, observacion, efecto):
         self.repo = estado.repo
@@ -212,13 +241,24 @@ class Previo:
                 "prs": [{"pr": miembros[r].pr, "head": miembros[r].head}
                         for r in tren.recibos]}
             registro = {"gancho": config, "solicitud": solicitud, "arbol": cert.arbol,
-                        "heads": [p["head"] for p in solicitud["prs"]]}
+                        "heads": [p["head"] for p in solicitud["prs"]],
+                        "vence_espera": self.reloj() + config.get("espera_max_s", ESPERA_MAX_S)}
             with self.ledger.transaccion():
+                anterior = self.ledger.db.execute(
+                    "SELECT payload FROM pre_aterrizajes WHERE id=? AND pendiente=1",
+                    (solicitud["id"],)).fetchone()
+                if anterior:
+                    # El plazo no se renueva al reconsultar ni al recuperar una muerte.
+                    registro["vence_espera"] = json.loads(anterior[0]).get(
+                        "vence_espera", registro["vence_espera"])
                 self.ledger.db.execute("INSERT INTO pre_aterrizajes VALUES (?, ?, ?, 1) "
                     "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, pendiente=1",
                     (solicitud["id"], estado.repo, json.dumps(registro, sort_keys=True)))
             self.frontera("antes-pre-aterrizaje", efecto)
-            resultado = invocar(config, solicitud, "verificar")
+            resultado = ("espera-vencida" if self.reloj() >= registro["vence_espera"] else
+                         self.llamar(config, solicitud, "verificar"))
+            if self.reloj() >= registro["vence_espera"]:
+                resultado = "espera-vencida"
         else:
             resultado = "seguir"
         # Una espera de IO invalida la hora y la base leídas al abrir el tick.
@@ -242,6 +282,14 @@ class Previo:
                 return BloqueoPrevia(B, C, "cancelacion-incierta")
             return impedimento
         self.frontera("pre-aterrizaje-verificado", efecto)
+        # Última lectura local antes de devolver el control al push. El CAS
+        # protege B, pero no impone un límite horario en el servidor remoto.
+        ventana = self.ventana(tren, observacion)
+        if ventana != "seguir":
+            if registro and not self.cancelar(registro, lectura):
+                return BloqueoPrevia(B, C, "cancelacion-incierta")
+            return (EsperaPrevia(B, C) if ventana == "esperar" else
+                    BloqueoPrevia(B, C, ventana))
         return None
 
     def resolver(self, estado, tren, lectura):
