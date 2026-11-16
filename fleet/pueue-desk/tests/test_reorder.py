@@ -47,6 +47,7 @@ def setup(self):
     self.p.status = lambda: dict(groups=copy.deepcopy(self.p.groups),tasks=copy.deepcopy(self.tasks))
     self.engine.coordinated_reorder = True
     self.engine.reorder_host_ready=lambda state:True
+    self.engine.reorder_overhead = 0
     self.engine.reorder_cost = .001
     self.engine.edit_priority = lambda *a: fake_edit(self,*a)
     self.pressure = patch.object(control,'pressure_mini',return_value=dict(load=0,memory=1))
@@ -232,6 +233,17 @@ def test_rpc_uses_remaining_common_budget_and_never_sends_after_expiry(self):
     with patch.object(control.time,'monotonic',return_value=5),patch.object(control.subprocess,'run') as run:
         with self.assertRaises(TimeoutError):client.call('start','-g','suites')
         run.assert_not_called()
+
+
+def test_measured_floor_rejects_before_pause_even_if_clients_are_coordinated(self):
+    self.engine.reorder_overhead=control.MiniControl.reorder_overhead
+    self.engine.reorder_cost=control.MiniControl.reorder_cost
+    view=self.engine.view()['reorder_groups']['suites']
+    self.assertFalse(view['enabled'])
+    self.assertIn('presupuesto de pausa medido',view['reason'])
+    answer=self.engine.handle(self.order_request('measured-budget-001'))
+    self.assertEqual((answer.get('error') or {}).get('code'),'pause_budget',answer)
+    self.assertEqual(self.p.calls,[])
 
 
 def test_revocation_after_acceptance_still_recovers(self):

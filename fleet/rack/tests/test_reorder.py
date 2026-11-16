@@ -25,6 +25,7 @@ class ReorderChannelTests(unittest.TestCase):
         self.p.binary='fake-no-real-binary'
         self.engine.coordinated_reorder=True
         self.engine.reorder_host_ready=lambda state:True
+        self.engine.reorder_overhead=0;self.engine.reorder_cost=.001
         def edit(action,ident,priority,deadline):
             self.engine.reorder_save(action,'edit_intent');self.tasks[str(ident)]['priority']=priority
             self.engine.reorder_save(action,'editing')

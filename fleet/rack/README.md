@@ -983,8 +983,13 @@ conserva el orden aplicado y entrega la pausa a la guardia.
 
 El límite es 64 pendientes; una fila mayor explica «Fila demasiado larga para
 reordenar de una vez». Además, el host rechaza antes de pausar un plan que
-excede el presupuesto medido de 3 s; las RPC tienen límite de 1 s. La guardia
-existente corre cada 60 s: no se promete recuperación en 10 s ni una cota
+excede el presupuesto medido de 3 s; las RPC tienen límite de 1 s.
+En la medición privada, 5 pendientes necesitaron 3,082 s de pausa sin historial
+y 5,382 s con 1500 Stashed / 9,43 MB. El caso de 64 terminó unknown, sin medida
+completa. No hay un lote acreditado dentro del presupuesto: el host conserva
+un piso conservador de 7 s y rechaza antes de pausar incluso con clientes
+coordinados. Hace falta optimización y nueva aceptación antes de habilitar.
+La guardia existente corre cada 60 s: no se promete recuperación en 10 s ni una cota
 finita ante avería. El [README del controlador](../pueue-desk/README.md) describe
 identidad, diario, helper TOML, medición, instalación `--seco` y reversión sin
 reiniciar Pueue. La publicación del rack conserva su procedimiento actual;

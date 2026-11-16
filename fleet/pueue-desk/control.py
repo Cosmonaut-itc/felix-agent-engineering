@@ -1403,7 +1403,12 @@ class MiniControl:
     coordinated_reorder = False
     reorder_budget = 3.0
     reorder_rpc = 1.0
-    reorder_cost = .055  # provisional; re-measured against private large history
+    # Private 4.0.4, 2026-11-16: 5 edits paused 3.082 s (small history),
+    # 5.382 s (1500 Stashed / 9.43 MB), maximum whole edit 0.914 s.
+    # No measured batch fits 3 s; 64 ended unknown. Use a conservative floor,
+    # not an unproven extrapolation that would pause and then time out.
+    reorder_overhead = 7.0  # ceil(1.25 * measured whole paused section)
+    reorder_cost = 1.5
     reorder_boundary = staticmethod(lambda phase: None)
 
     def reorder_host_ready(self, state):
@@ -1460,6 +1465,7 @@ class MiniControl:
                       'Fila demasiado larga para reordenar de una vez' if len(queue) > 64 else
                       'Se necesitan al menos dos pendientes.' if len(queue)<2 else
                       'Esta fila no se puede editar con seguridad.' if unsafe else
+                      'La fila supera el presupuesto de pausa medido.' if self.reorder_overhead > self.reorder_budget else
                       'Hay un ajuste pendiente o el host no está preparado.' if not enabled else None)
             result[g] = dict(enabled=reason is None, reason=reason, owner=recovery,
                              expected=dict(revision=state['revision'], admission_revision=state['revision'],
@@ -1546,7 +1552,7 @@ class MiniControl:
             by_id = {t['id']:t for t in rows}
             target = [dict(by_id[ident], priority=len(rows)-i) for i, ident in enumerate(request['change']['order'])]
         changes = [t for t in target if next(r['priority'] for r in rows if r['id'] == t['id']) != t['priority']]
-        if .4 + len(changes)*self.reorder_cost > self.reorder_budget:
+        if self.reorder_overhead + len(changes)*self.reorder_cost > self.reorder_budget:
             return reject('pause_budget')
         try:
             helper = priority_helper()

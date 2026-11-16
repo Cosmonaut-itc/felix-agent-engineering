@@ -1154,12 +1154,22 @@ pasa a la guardia; no se abre sólo porque la pausa empezó siendo nuestra.
 
 Los límites de entrada son 64 pendientes y 16 KiB. La pausa tiene presupuesto
 común de 3 s y RPC de hasta 1 s; antes de pausar se estima el coste de las
-ediciones necesarias y se rechaza si no cabe. Las cifras y el margen se
-contrastan en `tests/private_reorder.py` con 5/64 pendientes y una fixture de
-1500 Stashed de al menos 9,4 MB; ese guion amplía el presupuesto **sólo dentro
-del daemon privado para medir**, nunca desde el protocolo. No se promete que
-64 escrituras quepan en 3 s. La cadencia de 60 s impide prometer recuperación
-≤10 s; disco/socket averiados, procesos ambiguos o presión sostenida no tienen
+ediciones necesarias y se rechaza si no cabe. El ensayo privado Homebrew 4.0.4
+del 2026-11-16 midió 5 pendientes: 3,158 s de pipeline / 3,082 s de sección
+pausada sin historial; con 1500 Stashed y 9 433 637 bytes, 5,663 s / 5,382 s.
+En esos lotes de 5, la edición completa más lenta fue 0,914 s y la RPC observada
+0,210 s. El caso de 64 terminó unknown con intención retenida; no hay una medición completa de
+64 ni se declara esa aceptación superada. La limpieza confirmó daemon salido,
+cero LaunchAgents creados y ningún proceso propio restante.
+
+Ningún lote medido cabe en 3 s. El estimador conserva un piso de 7 s
+(`ceil(1,25 × 5,382)`) más 1,5 s por edición, deliberadamente conservador:
+**también rechaza antes de pausar si se acreditase el contrato de clientes**.
+No se ha acreditado un lote menor que pueda habilitarse. Optimizar y volver a
+medir requiere otro encargo; no se amplía el plazo de producción en silencio.
+`tests/private_reorder.py` amplía el presupuesto **sólo dentro del daemon
+privado para medir**, nunca desde el protocolo. La cadencia de 60 s impide
+prometer recuperación ≤10 s; disco/socket averiados, procesos ambiguos o presión sostenida no tienen
 un peor caso finito. Véase la evidencia del encargo U3.6 antes de habilitar.
 
 Actualización sin reiniciar `pueued`, a ejecutar sólo en la Mini adoptada:

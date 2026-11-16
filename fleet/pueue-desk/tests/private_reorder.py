@@ -19,6 +19,15 @@ spec=importlib.util.spec_from_file_location('private_u36',BASE/'control.py')
 c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
 
 
+def mark_times(marks):
+    phases=dict(marks)
+    prepared,opened,terminal=(phases.get(k) for k in ('prepared','start_effect','terminal'))
+    return dict(paused_seconds=opened-prepared if opened is not None and prepared is not None else None,
+                paused_observed_seconds=time.monotonic()-prepared if prepared is not None and opened is None else None,
+                accepted_to_receipt_seconds=terminal-prepared if terminal is not None and prepared is not None else None,
+                last_phase=marks[-1][0] if marks else None)
+
+
 def main():
     parser=argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--run-private',action='store_true',required=True)
@@ -112,7 +121,7 @@ def main():
         engine.coordinated_reorder=True
         engine.reorder_host_ready=lambda state:True  # private daemon has no launchd owner
         # Benchmark acceptance explicitly measures beyond the provisional bound.
-        engine.reorder_budget=180;engine.reorder_rpc=5;engine.reorder_cost=.001
+        engine.reorder_budget=180;engine.reorder_rpc=5;engine.reorder_cost=.001;engine.reorder_overhead=0
         with c.locked(directory),patch.object(c,'pressure_mini',side_effect=measured_sensor):
             engine.adopt(pid)
             original_edit=engine.edit_priority
@@ -128,9 +137,8 @@ def main():
             marks=[]
             engine.reorder_boundary=lambda phase:marks.append((phase,time.monotonic()))
             r=request('private-order-0001');rpc_begin=len(p.timings);sensor_begin=len(sensor_times);edit_begin=len(edit_times);started=time.monotonic();answer=engine.handle(r);elapsed=time.monotonic()-started
+            emit('pipeline',pending=5,history=0,seconds=elapsed,**mark_times(marks),status=answer['status'],max_rpc_seconds=max([v for _,v in p.timings[rpc_begin:]] or [0]),max_edit_seconds=max(edit_times[edit_begin:] or [0]),sensor_seconds=sum(sensor_times[sensor_begin:]),pause_budget=180,rpc_budget=5,private_synthetic_admission=True)
             assert answer['status']=='applied',answer
-            phase_times=dict(marks)
-            emit('pipeline',pending=5,history=0,seconds=elapsed,paused_seconds=phase_times.get('start_effect',phase_times['terminal'])-phase_times['prepared'],accepted_to_receipt_seconds=phase_times['terminal']-phase_times['prepared'],status=answer['status'],max_rpc_seconds=max([v for _,v in p.timings[rpc_begin:]] or [0]),max_edit_seconds=max(edit_times[edit_begin:] or [0]),sensor_seconds=sum(sensor_times[sensor_begin:]),pause_budget=180,rpc_budget=5,private_synthetic_admission=True)
             for ident,task in before['tasks'].items():
                 after=p.status()['tasks'][ident]
                 assert {k:v for k,v in task.items() if k!='priority'}=={k:v for k,v in after.items() if k!='priority'}
@@ -224,9 +232,8 @@ def main():
                 engine.reorder_boundary=lambda phase:marks.append((phase,time.monotonic()))
                 r=request('private-large-'+str(count).zfill(3))
                 rpc_begin=len(p.timings);sensor_begin=len(sensor_times);edit_begin=len(edit_times);started=time.monotonic();answer=engine.handle(r);elapsed=time.monotonic()-started
+                emit('pipeline',pending=count,history=1500,state_bytes=(data/'state.json').stat().st_size,seconds=elapsed,**mark_times(marks),status=answer['status'],max_rpc_seconds=max([v for _,v in p.timings[rpc_begin:]] or [0]),max_edit_seconds=max(edit_times[edit_begin:] or [0]),sensor_seconds=sum(sensor_times[sensor_begin:]),pause_budget=180,rpc_budget=5,private_synthetic_admission=True)
                 assert answer['status']=='applied',answer
-                phase_times=dict(marks)
-                emit('pipeline',pending=count,history=1500,state_bytes=(data/'state.json').stat().st_size,seconds=elapsed,paused_seconds=phase_times.get('start_effect',phase_times['terminal'])-phase_times['prepared'],accepted_to_receipt_seconds=phase_times['terminal']-phase_times['prepared'],status=answer['status'],max_rpc_seconds=max([v for _,v in p.timings[rpc_begin:]] or [0]),max_edit_seconds=max(edit_times[edit_begin:] or [0]),sensor_seconds=sum(sensor_times[sensor_begin:]),pause_budget=180,rpc_budget=5,private_synthetic_admission=True)
             emit('PASS',private_daemon=True,no_launchagents_created=True)
     finally:
         if daemon and daemon.poll() is None:
