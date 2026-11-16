@@ -109,7 +109,12 @@ cita la probabilidad es baja, y una carrera lo es mientras nada la genere.
 Lo de gravedad baja es nit aunque sea probable. Lo
 improbable de gravedad media o baja es nit y no bloquea. Lo grave e
 improbable bloquea en alto riesgo y en un cambio normal queda como riesgo
-asumido, con una línea en el cuerpo del PR. Cada critical o warning trae el
+asumido, con una línea en el cuerpo del PR. En un cambio normal, el revisor
+marca además cada warning como diferible o no. Se difiere el defecto que la
+base del PR ya tenía, y el fallo raro y recuperable que el objetivo del PR
+no nombra. Un warning diferido no bloquea. Queda en un issue y en una línea
+del cuerpo del PR. Lo que el PR rompe se corrige en el PR, y en alto riesgo
+todo warning bloquea. Cada critical o warning trae el
 comando que lo prueba y su salida. El
 orquestador vuelve a correr ese comando y sólo deja abierto el hallazgo que
 reproduce. Si no puede correr ningún revisor independiente, la puerta sigue
