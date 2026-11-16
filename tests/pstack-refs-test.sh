@@ -107,8 +107,8 @@ crlf() {
     fixture
     local file
     for file in "$SKILL/SKILL.md" "$SKILL/scripts/pstack-refs.tsv" "$PSTACK/shipping.md"; do
-        sed 's/$/\r/' "$file" > "$TEST_TMP/crlf"
-        mv "$TEST_TMP/crlf" "$file"
+        sed 's/$/\r/' "$file" > "$TEST_TMP/crlf.tmp"
+        mv "$TEST_TMP/crlf.tmp" "$file"
     done
     check 0 'ok: 1 citas;'
 }
