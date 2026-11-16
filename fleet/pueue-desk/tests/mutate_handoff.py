@@ -8,6 +8,14 @@ import tempfile
 
 ROOT=Path(__file__).resolve().parents[1]
 CASES=[
+ ('mini-table-skip','mini.py',"        self.save(migration, 'table:migrated')",'        return',
+  'test_mini_table.MiniTableTests.test_table_a_to_b_preserves_authority_and_guard_remains_healthy'),
+ ('mini-table-lose-receipt','mini.py',"        self.save(migration, 'table:migrated')",
+  "        self.save(migration, 'table:migrated')\n        with self.engine.connect(write=True) as db:\n            db.execute('DELETE FROM host_actions')",
+  'test_mini_table.MiniTableTests.test_table_a_to_b_preserves_authority_and_guard_remains_healthy'),
+ ('mini-table-dry-write','mini.py','        if dry:\n            if migration is not None:',
+  '        if False:\n            if migration is not None:',
+  'test_mini_table.MiniTableTests.test_seco_announces_migration_without_writing'),
  ('mini-authority-dispatch','control.py',"if host == 'mini' and has_authority(directory):",'if False:',
   'test_slots.SlotsTests.test_actual_guard_dispatch_never_falls_back_when_authority_corrupt'),
  ('login-disable','mini.py',"            self.command(state, 'disable', other)",'            pass',
@@ -82,7 +90,7 @@ CASES += [
   'test_handoff.InjertoTests.test_package_complete_before_intent_and_only_guard_code_updated'),
  ('package-before-intent','mini.py','            self.install_recoverer()','            pass',
   'test_handoff.InjertoTests.test_package_complete_before_intent_and_only_guard_code_updated'),
- ('projection-preflight','mini.py','        control.start_projection(self.engine, config, allow_pending=False)','        pass',
+ ('projection-preflight','mini.py',"        control.start_projection(self.engine, config, allow_pending=False, policy_migration=target == 'install')",'        pass',
   'test_handoff.InjertoTests.test_shared_projection_rejects_pending_and_bad_images_before_effects'),
  ('projection-exact-image','control.py','    validate_queue(image)  # validate the exact bytes to be published, before intent','    pass',
   'test_handoff.InjertoTests.test_shared_projection_rejects_pending_and_bad_images_before_effects'),

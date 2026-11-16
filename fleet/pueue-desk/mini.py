@@ -151,8 +151,9 @@ class Manager:
     def preflight(self, target):
         config = self.configuration_for_host()
         queue = control.read_queue(config['data'] / 'state.json')
-        control.start_projection(self.engine, config, allow_pending=False)
-        state = self.state()
+        control.start_projection(self.engine, config, allow_pending=False, policy_migration=target == 'install')
+        with self.engine.connect() as db:
+            state = self.engine.state(db, policy_migration=target == 'install')
         self.transaction(state)
         if Path(state['pid_file']).resolve() != config['pid_file'].resolve():
             raise ValueError('PID configurado distinto de la autoridad')
@@ -165,8 +166,9 @@ class Manager:
             raise ValueError('Relevo pendiente; lo atiende la guardia')
         if self.loaded(GUARD) is None or self.disabled(GUARD):
             raise ValueError('La guardia existente debe estar cargada y habilitada antes del relevo')
-        if control.MINI_PROFILE != dict(suites=3, default=1, rapidas=3) or control.MINI_GROUPS != ('suites', 'default', 'rapidas'):
+        if set(self.engine.profile) != set(control.MINI_GROUPS) or control.MINI_GROUPS != ('suites', 'default', 'rapidas'):
             raise ValueError('Perfil Mini incompatible')
+        control.validate_target(self.engine.profile, self.engine.profile, cap=self.engine.cap(state))
         for g in control.MINI_GROUPS:
             if g not in queue['groups']:
                 raise ValueError('Falta un grupo Mini en la cola; no readoptar')
@@ -177,7 +179,14 @@ class Manager:
             raise ValueError('Dos gestores cargados; no se releva')
         # Check the exact PID owner, pinned file, identity/date, desired policy and live vector.
         identity = self.verify_owner(source, state)
-        self.engine.view()
+        if state['policy_hash'] == self.engine.policy_hash:
+            self.engine.view()
+        elif not (target == 'install' and previous and previous['phase'] == 'done' and source == LABEL
+                  and identity['generation'] == state['generation']
+                  and state.get('startup', {}).get('phase') in (None, 'ready')):
+            raise ValueError('Migración de tabla requiere relevo done y generación vigente')
+        else:
+            self.engine.observed()
         brew = plistlib.loads((self.agents / (BREW + '.plist')).read_bytes())
         argv = brew.get('ProgramArguments', [])
         brew_cwd = Path(brew.get('WorkingDirectory', str(self.home)))
@@ -251,6 +260,33 @@ class Manager:
         if self.loaded(GUARD) is None:
             raise ValueError('No hay recuperador cargado; no se releva')
 
+    def table_plan(self, state):
+        """Installer only, under control.lock; receipts and pause ownership stay intact."""
+        if state['policy_hash'] == self.engine.policy_hash:
+            return None
+        desired = dict(self.engine.profile)
+        desired.update({g: item['slots'] for g, item in state['overrides'].items()})
+        overrides = state['overrides']
+        if sum(desired.values()) > self.engine.cap(state):
+            # As on desk, retire active adjustments together, never delete their receipts.
+            desired, overrides = dict(self.engine.profile), {}
+        return dict(state, policy_hash=self.engine.policy_hash, desired=desired,
+                    overrides=overrides, revision=state['revision'] + 1)
+
+    def update_table(self, state, dry):
+        migration = self.table_plan(state)
+        if dry:
+            if migration is not None:
+                print('SECO: migración de tabla bajo control.lock → ' + self.engine.policy_hash)
+            return
+        if migration is None:
+            return
+        self.install_recoverer()
+        self.save(migration, 'table:migrated')
+        # Only quotas: reconciliation never starts groups or restarts the daemon.
+        if not self.engine.reconcile():
+            raise ValueError('Tabla migrada; cuotas pendientes de reconciliar por la guardia')
+
     def change(self, target, dry=False, wait=0):
         if type(wait) not in (int, float) or not math.isfinite(wait) or not 0 <= wait <= 7200:
             raise ValueError('Espera inválida; usar entre 0 y 7200 segundos')
@@ -260,6 +296,7 @@ class Manager:
             previous = self.transaction(state)
             same_owner = source['owner'] == ('prepared' if target == 'install' else 'homebrew')
             if same_owner and previous:
+                self.update_table(state, dry)
                 if dry:
                     print('SECO: destino ya es el gestor vivo verificado; sin relevo ni drenado')
                     return
