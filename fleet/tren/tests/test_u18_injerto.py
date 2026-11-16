@@ -216,6 +216,7 @@ class LimitesTests(ContextoInjerto):
         self.assertEqual(len({i for i, _, _ in llamadas}), 2)
         self.assertTrue(all(accion == 'cancelar' for _, accion, _ in llamadas))
         self.assertEqual([pendiente for _, pendiente in self.diario()], [1, 1])
+        self.assertEqual(self.estado().pausa.motivo, 'infraestructura')
 
     def test_verificar_y_cancelar_comparten_el_mismo_presupuesto(self):
         self.config['pre_aterrizaje']['plazo_s'] = 45
