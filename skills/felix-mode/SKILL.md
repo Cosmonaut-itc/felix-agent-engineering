@@ -254,8 +254,8 @@ que demuestra:
   media o baja. Media: da un resultado
   incorrecto o un fallo que pide intervención y se recupera. Baja: causa
   una molestia sin efecto en datos ni resultados. El revisor da APTO
-  cuando no queda critical ni warning sin diferir, como define
-  **Diferible**. En el veto confirmas el disparador
+  cuando no queda critical y todo warning que queda lleva
+  `Diferible: sí`, como define **Diferible**. En el veto confirmas el disparador
   además del comando. Si no lo encuentras en el código ni en los datos, la
   probabilidad es baja. Un critical o warning que el veto baja a nit queda
   en el registro como `rebatido`, con la clase que traía y la búsqueda que
@@ -264,22 +264,25 @@ que demuestra:
 - **Diferible.** En nivel normal, el brief de todo revisor copia esta
   regla y pide en cada warning `Diferible: no` o `Diferible: sí, <razón>`.
   El warning con `Diferible: sí` queda fuera del veredicto del revisor.
-  Hay dos razones. `previo`: la base del PR ya tiene el mismo defecto, y
-  el hallazgo trae el comando que lo muestra sobre la base, como
-  `git show <base>:<archivo>`, y su salida. `raro`: la probabilidad es
-  media, el daño es un fallo que pide intervención y se recupera, y ni el
-  objetivo ni la condición de terminado del brief nombran ese caso. Un
-  warning lleva `Diferible: no` si explica un gate o una prueba en rojo,
-  aunque ya fallara en la base, o si el PR rompe un caso que la base
-  resuelve. En nivel alto el brief omite esta regla y todo warning
-  bloquea. En el veto confirmas la razón. Para `previo` corres el comando
-  sobre la base. Para `raro` lees el brief y la salida del hallazgo. Si
-  la razón se sostiene, el warning queda `diferido`. Abres un issue con
-  el hallazgo, su comando y su salida, y con la regla que lo impide si es
-  mecánico. El PR sigue sin corregirlo, y el arreglo y la regla siguen
-  **Unidades**. Si no se sostiene, queda `abierto`, lo corriges y el head
-  nuevo pasa por **Ronda delta**. El revisor delta reabre un `diferido`
-  sólo si el delta cambia su razón.
+  Un critical bloquea siempre. El revisor decide cada warning en este
+  orden. Primero, el warning lleva `Diferible: no` si explica un gate o
+  una prueba en rojo, aunque ya fallara en la base, o si el PR rompe un
+  caso que la base resuelve. Después busca una de dos razones. `previo`:
+  la base del PR ya tiene el mismo defecto, y el hallazgo trae el comando
+  que lo muestra sobre la base, como `git show <base>:<archivo>`, y su
+  salida. `raro`: la probabilidad es media, el daño es un fallo visible
+  que se recupera al reintentar o con una intervención, y ni el objetivo
+  ni la condición de terminado del brief mencionan su disparador. Sin
+  razón, o ante la duda, el warning lleva `Diferible: no`. En nivel alto
+  el brief omite esta regla y todo warning bloquea. En el veto repites
+  esa decisión. Para `previo` corres el comando sobre la base. Para
+  `raro` lees el brief y la salida del hallazgo. Si la razón se
+  sostiene, el warning queda `diferido`. Abres un issue con el hallazgo,
+  su comando y su salida, y con la regla que lo impide si es mecánico. El
+  PR sigue sin corregirlo, y el arreglo y la regla siguen **Unidades**.
+  Si no se sostiene, queda `abierto`, lo corriges y el head nuevo pasa
+  por **Ronda delta**. El revisor delta reabre un `diferido` sólo si el
+  delta cambia su razón.
 - **Rondas.** La ronda 1 es completa, y cada revisor del nivel recibe el
   diff completo. Las siguientes siguen **Ronda delta**. Una review converge
   cuando cada ronda trae menos hallazgos y ninguno abre un caso nuevo en
@@ -298,8 +301,8 @@ que demuestra:
   `git range-diff` si hubo rebase. El revisor marca cada id del registro
   como `resuelto`, `sigue asumido`, `sigue diferido` o `sigue abierto: <motivo>` y busca critical, warning y riesgos asumidos en
   lo que el delta cambió. Fuera del delta reporta sólo un critical. Da APTO
-  sobre el head nuevo cuando ningún id sigue abierto y no trae critical ni
-  warning nuevo sin diferir, y ese APTO vale por todo el nivel. La ronda vuelve a ser completa si la corrección cambia de enfoque según
+  sobre el head nuevo cuando ningún id sigue abierto, no trae critical
+  nuevo y todo warning nuevo lleva `Diferible: sí`, y ese APTO vale por todo el nivel. La ronda vuelve a ser completa si la corrección cambia de enfoque según
   **Autonomía**, si el nivel sube a alto, o si el delta añade comportamiento
   que ningún hallazgo pidió o toca archivos de producción que la ronda
   completa no vio. Un head nuevo que sólo incorpora la rama destino conserva

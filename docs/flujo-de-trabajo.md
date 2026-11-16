@@ -111,8 +111,9 @@ improbable de gravedad media o baja es nit y no bloquea. Lo grave e
 improbable bloquea en alto riesgo y en un cambio normal queda como riesgo
 asumido, con una línea en el cuerpo del PR. En un cambio normal, el revisor
 marca además cada warning como diferible o no. Se difiere el defecto que la
-base del PR ya tenía, y el fallo raro y recuperable que ni el objetivo ni la
-condición de terminado del PR nombran. Un warning diferido no bloquea. Queda
+base del PR ya tenía, y el fallo raro, visible y recuperable que ni el
+objetivo ni la condición de terminado del PR mencionan. Ante la duda, el
+warning no se difiere. Un warning diferido no bloquea. Queda
 en un issue y en una línea del cuerpo del PR. Lo que el PR rompe y lo que
 explica un gate en rojo se corrige en el PR, y en alto riesgo todo warning
 bloquea. Cada critical o warning trae el
