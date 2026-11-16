@@ -117,14 +117,14 @@ class Sandbox:
         if label is not None:argv+=['--label',label]
         return int(self.p.call(*argv,'--',command).strip())
 
-    def seed(self,history=False,count=5):
+    def seed(self,history=False,count=5,alias=False):
         self.start()
         for group,n in c.MINI_PROFILE.items():
             if group=='default':self.p.parallel(group,n)
             else:self.p.call('group','add',group,'--parallel',str(n))
         self.p.call('pause','--wait','-g','suites')
         self.blockers=[self.add('sleep 400',priority=10000) for _ in range(3)]
-        for i in range(count):self.add("printf '  α\npriority = 777\n  '",priority=[0,-2,-2,-8,-12][i%5],label='  unicode α  ' if i%2 else None)
+        for i in range(count):self.add("new_after_add" if alias and i==4 else "printf '  α\npriority = 777\n  '",priority=[0,-2,-2,-8,-12][i%5],label='  unicode α  ' if i%2 else None)
         if history:
             ident=self.add(stash=True)
             self.stop();queue=c.read_queue(self.data/'state.json');template=queue['tasks'].pop(str(ident));maximum=max(map(int,queue['tasks']))
@@ -233,8 +233,8 @@ def main():
         snapshot=box.p.status()
         assert [snapshot['tasks'][i]['priority'] for i in before['tasks']]==[before['tasks'][i]['priority'] for i in before['tasks']]
     def aliases(box):
-        box.seed()
-        ident=box.add('new_after_add')
+        box.seed(alias=True)
+        ident=max(t['id'] for t in box.p.status()['tasks'].values() if t['original_command']=='new_after_add')
         (box.root/'aliases.yml').write_text('new_after_add: "true"\n')
         request=box.request('private-alias-001');box.rpcs.clear()
         answer=box.action(request,'alias')

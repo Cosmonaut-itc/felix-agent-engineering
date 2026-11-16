@@ -245,15 +245,21 @@ def private_file(path):
         raise ValueError('edit_unsafe')
 
 
+def host_clock():
+    # Python 3.9 macOS monotonic() has a process-local epoch. CLOCK_MONOTONIC
+    # is the shared kernel clock; persisted plans only use it within one boot.
+    return time.clock_gettime(time.CLOCK_MONOTONIC)
+
+
 def remaining(plan):
-    left = min(1.0, plan['deadline'] - time.monotonic())
+    left = min(1.0, plan['deadline'] - host_clock())
     if left <= 0:
         raise TimeoutError('pause_budget')
     return left
 
 
 def main():
-    begun=time.monotonic()
+    begun=host_clock()
     if sys.argv[1] == '--client' and sys.stdin.buffer.read(1) != b'1':
         return
     plan_path = Path(sys.argv[2] if sys.argv[1] == '--client' else sys.argv[1]).resolve()
@@ -282,16 +288,16 @@ def main():
         raise ValueError('edit_unsafe')
     if birth(plan['daemon']['pid']) != plan['daemon']['birth']:
         raise ValueError('edit_unsafe')
-    status_begun=time.monotonic()
+    status_begun=host_clock()
     reply=subprocess.run([plan['binary'],'--config',plan['config'],'status','--json'],
                          check=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,
                          timeout=remaining(plan))
     verify_locked(plan,json.loads(reply.stdout))
-    status_seconds=time.monotonic()-status_begun
+    status_seconds=host_clock()-status_begun
     if birth(plan['daemon']['pid']) != plan['daemon']['birth']:
         raise ValueError('edit_unsafe')
     remaining(plan)
-    write_begun=time.monotonic()
+    write_begun=host_clock()
     raw = target.read_bytes()
     changed = document(raw, plan['id'], plan['priority'], expected=plan)
     if (root/'revoked').exists() or birth(plan['client']['pid'])!=plan['client']['birth']:
@@ -301,7 +307,7 @@ def main():
         stream.write(changed); stream.flush(); os.fsync(stream.fileno())
     # Diagnostic only: fixed names/numbers, never any editable content.
     (root/'metrics.json').write_text(json.dumps(dict(helper_start=begun-plan['launched'],
-        helper_status=status_seconds,helper_write=time.monotonic()-write_begun)))
+        helper_status=status_seconds,helper_write=host_clock()-write_begun)))
 
 
 if __name__ == '__main__':

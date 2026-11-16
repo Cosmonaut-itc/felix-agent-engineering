@@ -641,11 +641,17 @@ class HelperTests(unittest.TestCase):
             target.write_bytes(raw)
             t=task(1);t['status']={'Locked':dict(previous_status={'Stashed':dict(enqueue_at=None)})}
             snapshot=dict(tasks={'1':t},groups={'suites':dict(status='Paused')})
-            plan=dict(id=1,priority=7,config=str(root/'config.json'),deadline=control.time.monotonic()+1,launched=control.time.monotonic(),fingerprint=helper.fingerprint('true','/synthetic',None),expected_priority=0,identity=control.MiniControl.task_identity(t),binary='/tmp/only-a-fake',client=dict(pid=42,birth='proof'),daemon=dict(pid=43,birth='proof'))
+            plan=dict(id=1,priority=7,config=str(root/'config.json'),deadline=helper.host_clock()+1,launched=helper.host_clock(),fingerprint=helper.fingerprint('true','/synthetic',None),expected_priority=0,identity=control.MiniControl.task_identity(t),binary='/tmp/only-a-fake',client=dict(pid=42,birth='proof'),daemon=dict(pid=43,birth='proof'))
             control.atomic_json(root/'plan.json',plan)
             with patch.object(helper,'birth',return_value='proof'),patch.object(helper.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(snapshot),'')),patch.object(sys,'argv',[str(helper.__file__),str(root/'plan.json'),str(target)]):
                 with self.assertRaises(ValueError):helper.main()
             self.assertEqual(target.read_bytes(),raw)
+
+    def test_helper_deadline_uses_shared_kernel_clock_not_process_epoch(self):
+        helper=control.priority_helper()
+        with patch.object(helper.time,'clock_gettime',return_value=100),patch.object(helper.time,'monotonic',return_value=1):
+            self.assertAlmostEqual(helper.remaining(dict(deadline=100.4)),.4)
+            with self.assertRaises(TimeoutError):helper.remaining(dict(deadline=99))
 
     def test_client_gate_precedes_plan_read_and_every_rpc(self):
         import io,sys

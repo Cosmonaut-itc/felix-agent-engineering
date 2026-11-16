@@ -56,6 +56,7 @@ CASES=[
  ('client config reused','control.py',"        if target.exists():\n            return target\n        data = Path(authority['pid_file']).parent", "        if False:\n            return target\n        data = Path(authority['pid_file']).parent",T+'test_client_configuration_is_built_once_per_action'),
  ('one parent snapshot','control.py',"snapshot = getattr(self, '_reorder_edit_snapshot', None) or self.pueue.status()", "snapshot = self.pueue.status()",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
 
+ ('shared helper clock','editor_prioridad.py','return time.clock_gettime(time.CLOCK_MONOTONIC)','return time.monotonic()', 'test_reorder.HelperTests.test_helper_deadline_uses_shared_kernel_clock_not_process_epoch'),
 ]
 
 

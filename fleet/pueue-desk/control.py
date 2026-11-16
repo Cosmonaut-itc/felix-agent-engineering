@@ -1796,7 +1796,7 @@ class MiniControl:
         plan = dict(id=ident, priority=priority, binary=self.pueue.binary,config=str(config),identity=row['identity'],
                     expected_priority=task['priority'],daemon=dict(pid=daemon_pid,birth=daemon_birth),
                     fingerprint=helper.fingerprint(task['original_command'],task['path'],task['label']),
-                    deadline=min(deadline,time.monotonic()+self.reorder_rpc), launched=time.monotonic())
+                    deadline=helper.host_clock()+min(deadline-time.monotonic(),self.reorder_rpc), launched=helper.host_clock())
         action['editing_id'] = ident
         action['process'] = dict(root=str(root), client=None)
         self.reorder_save(action, 'edit_intent')
@@ -1823,7 +1823,7 @@ class MiniControl:
             cli_begun=time.monotonic()
             client.stdin.write(b'1'); client.stdin.close()
             self.reorder_boundary('client_sent')
-            client.wait(timeout=max(.001, plan['deadline']-time.monotonic()))
+            client.wait(timeout=helper.remaining(plan))
             self.reorder_measure('cli',time.monotonic()-cli_begun)
             if client.returncode != 0:
                 raise subprocess.CalledProcessError(client.returncode, ['private-priority-client'])
