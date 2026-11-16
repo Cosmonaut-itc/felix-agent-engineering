@@ -83,9 +83,9 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     exigir(not filtros or rutas == list(filtros), 'seleccion-no-corresponde')
     completo = all(u['resultado'] != 'no-corrida' for u in r['unidades'])
     fallas = any(u['resultado'] == 'falla' for u in r['unidades'])
-    exigir(r['completo'] == completo and
-           (codigo != 0 or completo and not fallas) and
-           (not fallas or codigo != 0), 'veredicto-incoherente')
+    # Enmienda 1: e2e sale 0 cuando sus fallos ya estaban en la base de main.
+    exigir(r['completo'] == completo and (codigo != 0 or completo) and
+           (not fallas or codigo != 0 or modo == 'e2e'), 'veredicto-incoherente')
     # Un error completo sin fallos no demuestra un resultado de producto.
     exigir(codigo != 2 and (codigo in (0, 75) or fallas or not completo), 'salida-sin-fallo')
     return r

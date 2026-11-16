@@ -168,6 +168,16 @@ class JaleTests(Aislado):
     def test_cero_con_falla_es_infraestructura(self):
         self.invalido({'estados': ['falla'], 'codigo': 0}, 'veredicto-incoherente')
 
+    def test_e2e_cero_con_fallos_compartidos_es_rojo_para_atribuir(self):
+        self.plan([{}, {'estados': ['falla'], 'codigo': 0}])
+        _, r = self.suite()
+        self.assertEqual((r.veredicto, r.fallos), ('rojo', (Fallo(
+            'apps/web/e2e/a.spec.ts', FIRMA, 'solo-candidato', 'e2e', 'e2e', 'jale', 4),)))
+
+    def test_cero_incompleto_es_infraestructura(self):
+        self.invalido({'estados': ['pasa', 'no-corrida'], 'codigo': 0},
+                      'veredicto-incoherente')
+
     def test_completo_incoherente(self):
         self.invalido({'estados': ['falla', 'no-corrida'], 'cambiar': {'completo': True}},
                       'veredicto-incoherente')

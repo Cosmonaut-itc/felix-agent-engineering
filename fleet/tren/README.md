@@ -1076,7 +1076,10 @@ requiere dos observaciones sobre C y dos sobre B. Las repeticiones usan la
 ruta exacta como único filtro, guardan duración y versiones del entorno en
 cada intento y reutilizan la evidencia de B por `(B, modo, unidad)`. El
 contrato identifica la definición por modo y ruta; no acredita igualdad del
-contenido del archivo entre commits.
+contenido del archivo entre commits. En e2e, un recibo con código 0 puede
+traer unidades `falla` cuando el juicio contra la base de main las dio por
+compartidas; el adaptador las trata como fallos que la atribución repite. En
+contract, una `falla` exige un código distinto de 0.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
