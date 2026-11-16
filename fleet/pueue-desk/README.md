@@ -394,8 +394,7 @@ la correspondencia del deseo con la tabla sustituida. Exigen cero recibos
 controlador anterior. Una base perdida, ilegible o corrupta se rechaza sin efectos.
 La comprobación se repite bajo el candado antes de publicar. El controlador en
 operación sigue rechazando un hash diferente; sólo el instalador puede migrarlo.
-`deploy-desk.sh` delega esta actualización al mismo instalador. La Mini presenta el
-mismo límite con `MINI_PROFILE`; su migración queda para una unidad aparte.
+`deploy-desk.sh` delega esta actualización al mismo instalador.
 
 Para revertir la entrega, deshacer el recibo antes de su evento, o apagar cuotas
 con `slots.disabled` y volver al panel anterior, **conservando este controlador y
@@ -409,6 +408,59 @@ retiro de ajustes al evento, undo vencido sin RPC tras perder el timer y
 recuperación de otro evento por un clic ordinario (reloj/sensores inyectados,
 daemon stock real).
 No encola tareas y siempre espera al PID exacto de su daemon al terminar.
+
+### Cambiar MINI_PROFILE después de adoptar y relevar
+
+Con la Mini adoptada y `mini_handoff.phase=done`, editar sólo `MINI_PROFILE`
+en el checkout revisado, conservando los grupos suites/default/rapidas y valores
+enteros de 1 a 8 que en conjunto respeten el tope existente de **7** lugares.
+Desde ese checkout en la Mini, ejecutar primero:
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-mini.py instalar --relevo --seco
+```
+
+Después, ejecutar el mismo comando sin `--seco`. Ambos toman el `control.lock`
+existente y validan configuración, cola, PID, generación, dueño del daemon,
+guardia habilitada, autoridad y recibos. El ensayo anuncia el hash, la revisión,
+el deseo resultante y si conserva o retira ajustes, sin escribir. La instalación
+anuncia esos mismos datos, publica la biblioteca y migra `policy_hash`, deseo y
+una revisión en una transacción FULL, sin reiniciar el daemon, descargar la
+guardia ni abrir grupos. Reconcilia las cuotas con reducciones antes de aumentos.
+Conserva `startup`, `mini_handoff`, razones de pausa y todos los recibos.
+
+Los ajustes `slots` vigentes conservan sus valores absolutos y metadatos sobre
+la base nueva. Si el conjunto supera el tope de 7, se retiran todos los
+ajustes activos y el deseo pasa a la base nueva, como en la migración del desk;
+los recibos permanecen. La revisión anterior cambia una sola vez. Repetir con
+la tabla ya migrada y la biblioteca idéntica al checkout no escribe; volver al
+perfil anterior usa el mismo procedimiento y vuelve a migrar, sin resucitar
+ajustes retirados.
+
+Una base corrupta o ilegible, recibos `applying/partial/unknown`, preparación
+pendiente, relevo distinto de `done` o generación no vigente bloquean la migración
+antes de publicar o cambiar cuotas. Recuperar primero con la versión anterior;
+nunca borrar/readoptar SQLite. El runtime mantiene la comprobación estricta del
+hash: sólo este instalador inicia una migración. Antes de publicar el primer
+archivo guarda bajo `control.lock` una intención durable `table-migration.json`
+con los hashes origen/destino y la biblioteca completa. Si hay un corte, el
+login y la guardia instalados completan esa intención sin necesitar el checkout
+ni un daemon vivo; repetir el instalador también la completa antes del preflight.
+Al repetir desde A una transición pendiente A→B, primero completa B y después
+migra de vuelta a A. Sólo esa recuperación acreditada admite el hash anterior;
+retira la intención tras validar estrictamente biblioteca y autoridad destino.
+La reparación de una biblioteca distinta, aun con el mismo perfil, usa esa misma
+puerta: instalar sobre `done`, dueño PAO y generación vigente. Repetir una
+retirada o converger desde `aborted` no inicia una intención de tabla.
+Si se acepta mantenimiento después de un corte, la intención espera mientras
+el relevo propio pasa por `maintenance`, `switch` y `verify`; `continuar` y los
+ticks reconstruyen primero el daemon y `done`, y después completan la tabla.
+Durante esa espera el runtime conserva la lectura estricta de su perfil.
+Si la publicación parcial dejó biblioteca y autoridad de perfiles distintos,
+mantenimiento rechaza antes de detener servicios: completar primero la intención
+con la guardia, login o reinstalación, y repetir mantenimiento.
+El camino legacy `--cuotas` sigue rechazando
+cualquier instalación que contenga `mini_handoff`.
 
 ### Día/Noche del dashboard (U3.3)
 

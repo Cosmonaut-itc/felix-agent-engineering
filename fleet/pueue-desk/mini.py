@@ -1,6 +1,7 @@
 #!/usr/bin/python3 -I
 """Arranque fijo y relevo Mini. El llamador toma control.lock; no hay otro job."""
 import argparse
+import ast
 import importlib.util
 import json
 import math
@@ -151,8 +152,9 @@ class Manager:
     def preflight(self, target):
         config = self.configuration_for_host()
         queue = control.read_queue(config['data'] / 'state.json')
-        control.start_projection(self.engine, config, allow_pending=False)
-        state = self.state()
+        control.start_projection(self.engine, config, allow_pending=False, policy_migration=target == 'install')
+        with self.engine.connect() as db:
+            state = self.engine.state(db, policy_migration=target == 'install')
         self.transaction(state)
         if Path(state['pid_file']).resolve() != config['pid_file'].resolve():
             raise ValueError('PID configurado distinto de la autoridad')
@@ -165,8 +167,9 @@ class Manager:
             raise ValueError('Relevo pendiente; lo atiende la guardia')
         if self.loaded(GUARD) is None or self.disabled(GUARD):
             raise ValueError('La guardia existente debe estar cargada y habilitada antes del relevo')
-        if control.MINI_PROFILE != dict(suites=3, default=1, rapidas=3) or control.MINI_GROUPS != ('suites', 'default', 'rapidas'):
+        if set(self.engine.profile) != set(control.MINI_GROUPS) or control.MINI_GROUPS != ('suites', 'default', 'rapidas'):
             raise ValueError('Perfil Mini incompatible')
+        control.validate_target(self.engine.profile, self.engine.profile, cap=self.engine.cap(state))
         for g in control.MINI_GROUPS:
             if g not in queue['groups']:
                 raise ValueError('Falta un grupo Mini en la cola; no readoptar')
@@ -177,7 +180,17 @@ class Manager:
             raise ValueError('Dos gestores cargados; no se releva')
         # Check the exact PID owner, pinned file, identity/date, desired policy and live vector.
         identity = self.verify_owner(source, state)
-        self.engine.view()
+        repair = (target == 'install' and source == LABEL and previous and previous['phase'] == 'done'
+                  and not self.table_installed())
+        if state['policy_hash'] == self.engine.policy_hash and not repair:
+            self.engine.view()
+        elif not (target == 'install' and previous and previous['phase'] == 'done' and source == LABEL
+                  and self.disabled(BREW)
+                  and identity['generation'] == state['generation']
+                  and state.get('startup', {}).get('phase') in (None, 'ready')):
+            raise ValueError('Migración de tabla requiere relevo done y generación vigente')
+        else:
+            self.engine.observed()
         brew = plistlib.loads((self.agents / (BREW + '.plist')).read_bytes())
         argv = brew.get('ProgramArguments', [])
         brew_cwd = Path(brew.get('WorkingDirectory', str(self.home)))
@@ -228,8 +241,9 @@ class Manager:
         control.sync_directory(target.parent)
         self.checkpoint('publish:after:' + name)
 
-    def render(self, label):
-        value = plistlib.loads((ROOT / 'launchagents' / (label + '.plist')).read_bytes())
+    def render(self, label, template=None):
+        value = plistlib.loads(template if template is not None else
+                              (ROOT / 'launchagents' / (label + '.plist')).read_bytes())
         for key, item in list(value.items()):
             if type(item) is str:
                 value[key] = item.replace('@HOME@', str(self.home))
@@ -251,15 +265,147 @@ class Manager:
         if self.loaded(GUARD) is None:
             raise ValueError('No hay recuperador cargado; no se releva')
 
+    def table_plan(self, state):
+        """Installer only, under control.lock; receipts and pause ownership stay intact."""
+        if state['policy_hash'] == self.engine.policy_hash:
+            return None
+        desired = dict(self.engine.profile)
+        desired.update({g: item['slots'] for g, item in state['overrides'].items()})
+        overrides = state['overrides']
+        if sum(desired.values()) > self.engine.cap(state):
+            # As on desk, retire active adjustments together, never delete their receipts.
+            desired, overrides = dict(self.engine.profile), {}
+        return dict(state, policy_hash=self.engine.policy_hash, desired=desired,
+                    overrides=overrides, revision=state['revision'] + 1)
+
+    def table_files(self):
+        names = ['launchagents/' + label + '.plist' for label in (LABEL, GUARD)] + ['mini.py', 'control.py']
+        return {name: (ROOT / name).read_text() for name in names}
+
+    def table_installed(self):
+        return all((self.library / name).is_file() and (self.library / name).read_bytes() == data.encode()
+                   for name, data in self.table_files().items())
+
+    def recover_table(self):
+        """Roll forward only an accredited intent; caller holds control.lock.
+
+        The complete bundle precedes its first publication. Recovery needs neither
+        the checkout nor a live daemon, including a wrapper importing old control.py.
+        Ordinary authority reads remain strict. Receipts are never rewritten.
+        """
+        journal = self.directory / 'table-migration.json'
+        if not journal.exists():
+            return None
+        intent = json.loads(journal.read_text())
+        names = {'launchagents/' + label + '.plist' for label in (LABEL, GUARD)} | {'mini.py', 'control.py'}
+        if (set(intent) != {'version', 'source_hash', 'target_hash', 'files'} or intent['version'] != 1
+                or any(type(intent[k]) is not str or not re.fullmatch('[0-9a-f]{64}', intent[k])
+                       for k in ('source_hash', 'target_hash'))
+                or type(intent['files']) is not dict or set(intent['files']) != names
+                or any(type(data) is not str for data in intent['files'].values())):
+            raise ValueError('Intención de tabla inválida')
+        # Validate the literal profile before publishing anything from the bundle.
+        profiles = [node.value for node in ast.parse(intent['files']['control.py']).body
+                    if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == 'MINI_PROFILE'
+                                                           for t in node.targets)]
+        if len(profiles) != 1:
+            raise ValueError('Perfil de la intención inválido')
+        profile = ast.literal_eval(profiles[0])
+        control.validate_target(profile, profile, cap=7)
+        digest = control.hashlib.sha256(json.dumps(profile, sort_keys=True).encode()).hexdigest()
+        if digest != intent['target_hash']:
+            raise ValueError('Hash de la intención de tabla inválido')
+        config = self.configuration_for_host()
+        with self.engine.connect() as db:
+            state = self.engine.state(db, policy_migration=True)
+            pending = any(json.loads(row[0])['response']['status'] in ('applying', 'partial', 'unknown')
+                          for row in db.execute('SELECT body FROM host_actions'))
+        previous = self.transaction(state)
+        if state['policy_hash'] not in (intent['source_hash'], intent['target_hash']) or pending or not previous:
+            raise ValueError('Intención de tabla no acredita esta autoridad o dueño')
+        if (previous['target'] == 'install' and previous.get('maintenance_owned')
+                and previous['phase'] in ('maintenance', 'switch', 'verify')):
+            # Let the existing handoff reconstruct its owner first. No old hash
+            # is accepted by that path: its installed runtime must still agree.
+            self.state()
+            return None
+        control.start_projection(self.engine, config, allow_pending=False, policy_migration=True)
+        if (previous['phase'] != 'done'
+                or self.loaded(BREW) is not None or not self.disabled(BREW)
+                or self.loaded(LABEL) is None):
+            raise ValueError('Intención de tabla no acredita esta autoridad o dueño')
+        for name, data in intent['files'].items():
+            self.publish(self.library / name, data.encode())
+        # Load the completed bundle, never a partially published module pair.
+        spec = importlib.util.spec_from_file_location('mini_table_recovered', self.library / 'control.py')
+        runtime = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(runtime)
+        engine = runtime.MiniControl(self.pueue, self.directory,
+                                     generation=self.engine.generation_source, clock=self.engine.clock)
+        if engine.policy_hash != intent['target_hash']:
+            raise ValueError('Biblioteca no corresponde a la intención de tabla')
+        control.validate_target(engine.profile, engine.profile, cap=engine.cap(state))
+        # Rebase on the current authority: even an older installed guard may have
+        # recorded a generation or a manual pause after the installer died.
+        original = self.engine
+        try:
+            self.engine = engine
+            migration = self.table_plan(state)
+        finally:
+            self.engine = original
+        if migration is not None:
+            self.save(migration, 'table:migrated')
+        with engine.connect() as db:
+            engine.state(db)  # strict target validation before forgetting the intent
+        template = intent['files']['launchagents/' + GUARD + '.plist'].encode()
+        self.publish(self.agents / (GUARD + '.plist'), self.render(GUARD, template))
+        self.checkpoint('table:validated')
+        journal.unlink()
+        control.sync_directory(journal.parent)
+        self.checkpoint('table:complete')
+        return engine
+
+    def update_table(self, state, dry):
+        migration = self.table_plan(state)
+        if dry:
+            if migration is not None:
+                self.announce_table(state, migration, 'SECO: ')
+            return state
+        if migration is None and self.table_installed():
+            return state
+        intent = dict(version=1, source_hash=state['policy_hash'], target_hash=self.engine.policy_hash,
+                      files=self.table_files())
+        self.publish(self.directory / 'table-migration.json', json.dumps(intent).encode())
+        self.checkpoint('table:intent')
+        self.recover_table()
+        # Only quotas: reconciliation never starts groups or restarts the daemon.
+        if not self.engine.reconcile():
+            raise ValueError('Tabla migrada; cuotas pendientes de reconciliar por la guardia')
+        self.checkpoint('table:reconciled')
+        if migration is not None:
+            self.announce_table(state, migration)
+        return self.state()
+
+    def announce_table(self, state, migration, prefix=''):
+        adjustments = 'retirar ajustes' if state['overrides'] and not migration['overrides'] else 'conservar ajustes'
+        print(prefix + 'migración de tabla: ' + adjustments + '; revisión ' + str(migration['revision'])
+              + '; policy_hash ' + migration['policy_hash']
+              + '; desired ' + json.dumps(migration['desired'], sort_keys=True))
+
     def change(self, target, dry=False, wait=0):
         if type(wait) not in (int, float) or not math.isfinite(wait) or not 0 <= wait <= 7200:
             raise ValueError('Espera inválida; usar entre 0 y 7200 segundos')
         # Even the dry branch takes the EXISTING lock read-only; never creates directories.
         with control.locked(self.directory, create=False):
+            if target == 'install' and not dry:
+                self.recover_table()
             state, config, original, source = self.preflight(target)
             previous = self.transaction(state)
             same_owner = source['owner'] == ('prepared' if target == 'install' else 'homebrew')
             if same_owner and previous:
+                if target == 'install' and previous['phase'] == 'done':
+                    state = self.update_table(state, dry)
+                previous = self.transaction(state)
                 if dry:
                     print('SECO: destino ya es el gestor vivo verificado; sin relevo ni drenado')
                     return
@@ -324,6 +470,9 @@ class Manager:
 
     def _recover(self, config=None):
         """Caller holds control.lock. False means sensors/admission must wait."""
+        recovered = self.recover_table()
+        if recovered is not None and recovered.policy_hash != self.engine.policy_hash:
+            return False  # next guard tick imports the completed installed bundle
         state = self.state()
         value = self.transaction(state)
         if os.path.lexists(self.directory / 'maintenance') or value and value['phase'] == 'maintenance':
@@ -520,6 +669,9 @@ class Manager:
         if info is None or not re.search(r'^\s*pid = ' + str(os.getpid()) + r'\s*$', info, re.M):
             raise ValueError('El arranque debe pertenecer al MainPID de launchd')
         with control.locked(self.directory, create=False):
+            recovered = self.recover_table()
+            if recovered is not None:
+                self.engine = recovered
             state = self.state()
             value = self.transaction(state)
             authorized = value and ((value['target'] == 'install' and value['phase'] in ('switch', 'verify', 'done'))

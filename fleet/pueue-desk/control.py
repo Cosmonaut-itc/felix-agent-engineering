@@ -757,11 +757,11 @@ def startup_plan(queue, state, now, data, profile):
     return state, image
 
 
-def start_inputs(engine, config, queue_path):
+def start_inputs(engine, config, queue_path, policy_migration=False):
     """Read-only gates shared by the installer and the offline preparer."""
     queue = read_queue(queue_path)  # adopted host: absent is never a fresh queue
     with engine.connect() as db:
-        stored = engine.state(db)
+        stored = engine.state(db, policy_migration=policy_migration)
     if os.path.lexists(engine.directory / 'maintenance'):
         raise ValueError('Host en mantenimiento')
     if config['pid_file'].resolve() != Path(stored['pid_file']).resolve():
@@ -769,9 +769,9 @@ def start_inputs(engine, config, queue_path):
     return queue, stored
 
 
-def start_projection(engine, config, queue_path=None, allow_pending=True):
+def start_projection(engine, config, queue_path=None, allow_pending=True, policy_migration=False):
     """Validate the exact preparation image without changing files or the daemon."""
-    queue, stored = start_inputs(engine, config, queue_path or config['data'] / 'state.json')
+    queue, stored = start_inputs(engine, config, queue_path or config['data'] / 'state.json', policy_migration)
     state = engine.resolve(stored)
     state['startup_version'] = 1
     prior = state.get('startup', {})
@@ -988,7 +988,7 @@ class MiniControl:
     def state(self, db, policy_migration=False):
         row = db.execute('SELECT body FROM policy WHERE id=1').fetchone()
         value = json.loads(row[0])
-        migrating = policy_migration and self.host == 'desk' and value['policy_hash'] != self.policy_hash
+        migrating = policy_migration and value['policy_hash'] != self.policy_hash
         if ((value['policy_hash'] != self.policy_hash and not migrating) or type(value['revision']) is not int
                 or value['revision'] < 1 or type(value['reasons']) is not dict):
             raise ValueError('Autoridad inválida')
