@@ -41,7 +41,9 @@ class MiniTableTests(unittest.TestCase):
     def select(self, profile):
         source = (ROOT/'control.py').read_text()
         line = next(line for line in source.splitlines() if line.startswith('MINI_PROFILE = '))
-        (self.candidate/'control.py').write_text(source.replace(line, 'MINI_PROFILE = '+repr(profile)))
+        # Returning to A must reproduce its exact checkout, including its bytes.
+        replacement = line if profile == self.a else 'MINI_PROFILE = '+repr(profile)
+        (self.candidate/'control.py').write_text(source.replace(line, replacement))
         spec = importlib.util.spec_from_file_location('table_candidate', self.candidate/'control.py')
         new = importlib.util.module_from_spec(spec); spec.loader.exec_module(new)
         self.new = new
