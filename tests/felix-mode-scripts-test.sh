@@ -2535,7 +2535,7 @@ for case in cases:
         (repo / path).write_text('{}\n')
         git(repo, 'commit', '-qam', 'extra')
     result = subprocess.run([bash, script, 'destino', 'revisado', 'nuevo'], cwd=repo,
-                            capture_output=True, text=True)
+                            capture_output=True, text=True, encoding='utf-8')
     expected = ('APTO vigente' if case in ('disjuntas', 'translations', 'varios') else
                 'Ronda:' if case == 'editado' else 'Ronda delta')
     assert result.returncode == 0 and result.stdout.startswith(expected), (case, result)
