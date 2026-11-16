@@ -8,11 +8,12 @@ from dataclasses import replace
 import json
 import subprocess
 
-from dominio import (Admitido, Incierto, Promoviendo, Terminal, admision_entrada,
-                     datos, desde_datos, paso)
+from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, Incierto, Promoviendo,
+                     Terminal, admision_entrada, aterrizaje, datos, desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
+from preaterrizaje import Previo
 
 
 EJECUTABLES = frozenset(("armar-candidato", "solicitar-ci", "iniciar-suite",
@@ -70,7 +71,15 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
     # Sólo para entregas aún no incorporadas: conserva la primera admisión
     # muestreada en custodia, sin importar ningún lote simulado de sombra.
     estado = ledger.estado(repo, operativo=True)
+    previo = Previo(ledger, git, getattr(observador, "config", {}), frontera)
+
+    def limpiar(nuevo):
+        previo.limpiar(nuevo)
+        return nuevo
+
+    previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
+    previo.limpiar(estado, observacion)
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
@@ -91,6 +100,10 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
                          t.id == efecto.datos[0]), None)
             if not feedback and (estado.pausa or tren is None or isinstance(tren.fase, Terminal)):
                 continue
+            # La obligación es durable y de todo el repo. No gastar un intento
+            # ni reabrir verificar mientras otra operación exige cancelación.
+            if efecto.tipo == "promover" and previo.bloqueado(repo):
+                continue
             if efecto.tipo == "solicitar-ci":
                 # La clave puede preceder una muerte/cambio de evidencia. La
                 # emisión pasada no autoriza publicar con admisión hoy retenida.
@@ -106,7 +119,7 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
                     resultado = escritor.ejecutar_feedback(efecto, estado, frontera)
                     completo = True
                 else:
-                    ejecucion = ejecutar(efecto, estado, observacion, git, hasito)
+                    ejecucion = ejecutar(efecto, estado, observacion, git, hasito, previo)
                     resultado = {"observacion": resultado_observacion(efecto, ejecucion.observacion)}
                     completo = ejecucion.completo
                     if not completo:
@@ -134,13 +147,38 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
         observacion = replace(observacion, decision=decision,
                               pausa_id=ledger.pausa_id(repo, estado))
         frontera("decision-observada", None)
+        recuperados = ()
+        from juicios import error_decision
+        tren = next((t for t in estado.trenes if t.id == decision.tren), None)
+        if (decision.decision == "abortar" and tren is not None and
+                isinstance(tren.fase, Promoviendo) and
+                not error_decision(estado, decision, observacion.pausa_id)):
+            cert = tren.fase.certificado
+            heads = tuple(e.entrega.head for e in estado.entradas
+                          if e.entrega.recibo in tren.recibos)
+            # Sólo lectura: un aborto no puede esconder un CAS sin ACK.
+            lectura = previo.reconciliar(cert.B, cert.C, cert.arbol, heads)
+            if isinstance(lectura, Incierto):
+                # Sigue pendiente; otro tick vuelve a acreditar sin empujar.
+                drenar(estado, observacion)
+                return {"modo": "activo", "estado": datos(estado), "efectos": [],
+                        "outbox": resumen_outbox(ledger, repo)}
+            if isinstance(lectura, Aterrizado):
+                estado, recuperados = aterrizaje(replace(estado, pausa=None), tren,
+                    replace(observacion, main=lectura, tren_id=tren.id,
+                            intento_promocion=tren.fase.intentos))
+                # El juicio queda rechazado por pausa ya resuelta; el éxito y
+                # su feedback se guardan atómicamente con ese rechazo.
         nuevo, efectos = paso(estado, observacion)
+        efectos = recuperados + efectos
         frontera("decision-reducida", None)
+        nuevo = limpiar(nuevo)
         ledger.guardar_paso(nuevo, efectos, ahora)
         frontera("paso-guardado", None)
         drenar(nuevo, observacion)
         return {"modo": "activo", "estado": datos(nuevo),
                 "efectos": datos(efectos), "outbox": resumen_outbox(ledger, repo)}
+    # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
     drenar(estado, observacion, recuperacion=True)
     consumido = None
     if not estado.pausa:
@@ -158,8 +196,10 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
                     # main es mutable: el ACK guardado no sustituye la lectura
                     # actual, aunque ningún efecto nuevo vaya a ejecutarse.
                     lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
-                    recibida["main"] = datos(lectura)
-                    if isinstance(lectura, Incierto):
+                    bloqueo = isinstance(desde_datos(recibida.get("main")), BloqueoPrevia)
+                    if not bloqueo or not isinstance(lectura, (EnBase, Incierto)):
+                        recibida["main"] = datos(lectura)
+                    if isinstance(lectura, Incierto) and not bloqueo:
                         ledger.registrar_efecto(repo, efecto, ahora,
                             {"error": "reconciliacion-incierta", "observacion": recibida})
                         intentados.add(efecto.clave)
@@ -169,6 +209,7 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
                 consumido = fila["clave"]
                 break
     nuevo, efectos = paso(estado, observacion)
+    nuevo = limpiar(nuevo)
     ledger.guardar_paso(nuevo, efectos, ahora, consumido)
     frontera("paso-guardado", None)
     drenar(nuevo, observacion)

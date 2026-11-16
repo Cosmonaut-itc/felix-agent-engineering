@@ -137,13 +137,33 @@ class EscritorExterno:
 
 
 @dataclass(frozen=True)
+class EsperaPrevia:
+    B: str
+    C: str
+
+
+@dataclass(frozen=True)
+class BloqueoPrevia:
+    B: str
+    C: str
+    motivo: str
+
+
+@dataclass(frozen=True)
+class VentanaAutorizada:
+    inicio: float
+    fin: float
+
+
+@dataclass(frozen=True)
 class Incierto:
     B: str
     C: str
     motivo: str
 
 
-Reconciliacion = Union[Aterrizado, EnBase, EscritorExterno, Incierto]
+Reconciliacion = Union[Aterrizado, EnBase, EscritorExterno, Incierto,
+                       EsperaPrevia, BloqueoPrevia]
 
 
 @dataclass(frozen=True)
@@ -346,6 +366,7 @@ class VistaPR:
     recibo: str = ""
     # Sólo la sombra interpreta un merge externo; default compatible con U1.
     mergeado: bool = False
+    ventana: Optional[VentanaAutorizada] = None
 
 
 @dataclass(frozen=True)
@@ -437,6 +458,10 @@ def efectos_status(tren, tipo):
                  for recibo in tren.recibos)
 
 
+def pausar_previa(estado, motivo):
+    return replace(estado, pausa=Pausa("infraestructura", detalle="pre-aterrizaje:" + motivo))
+
+
 def aterrizaje(estado, tren, observacion):
     """Promover tras admisión; reconciliar antes, pues el PR puede estar cerrado."""
     fase = tren.fase
@@ -457,6 +482,8 @@ def aterrizaje(estado, tren, observacion):
         if isinstance(lectura, Aterrizado) and lectura.arbol == cert.arbol:
             fase = Terminal("ATERRIZADO")
             efectos = efectos_status(tren, "avisar-aterrizaje")
+        elif isinstance(lectura, BloqueoPrevia):
+            return pausar_previa(estado, lectura.motivo), ()
         elif isinstance(lectura, EnBase):
             fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
@@ -768,7 +795,7 @@ def paso(estado, observacion):
                 admitida = None
             entrada = replace(entrada, admision=decision, admitida=admitida,
                               solo=entrada.partida or bool(vista and (
-                                  vista.sensible or vista.alto_riesgo)))
+                                  vista.sensible or vista.alto_riesgo or vista.ventana is not None)))
         entradas.append(entrada)
     estado = replace(estado, entradas=tuple(entradas))
     if estado.pausa:
@@ -891,7 +918,7 @@ def paso(estado, observacion):
 # Tagged encoding keeps the SQLite/event contract explicit and round-trippable.
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
           Pausa, Decision, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
-          Incierto, Fallo, Completo, Incompleto, Atribucion, Congelado,
+          Incierto, EsperaPrevia, BloqueoPrevia, VentanaAutorizada, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,
           Repeticion, Reproduccion, Evidencia, Causa, ResultadoCI)}
@@ -904,7 +931,9 @@ def datos(valor):
                     **{f.name: datos(getattr(valor, f.name)) for f in fields(valor)
                        # Conservar payloads históricos de sombra/custodia.
                        if not (isinstance(valor, Entrada) and f.name == "partida"
-                               and not valor.partida)})
+                               and not valor.partida)
+                       and not (isinstance(valor, VistaPR) and f.name == "ventana"
+                                and valor.ventana is None)})
     if isinstance(valor, tuple):
         return [datos(v) for v in valor]
     return valor.value if isinstance(valor, Enum) else valor

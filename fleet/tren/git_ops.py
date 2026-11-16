@@ -269,7 +269,7 @@ class GitTren:
         except FalloGit as exc:
             return Incierto(B, C, str(exc))
 
-    def promover(self, B, C, arbol, heads):
+    def promover(self, B, C, arbol, heads, antes_push=None):
         heads = tuple(heads)
         try:
             self.preparar()
@@ -277,6 +277,10 @@ class GitTren:
             self.verificar(B, C, arbol, heads)
         except FalloGit as exc:
             return Incierto(B, C, str(exc))
+        if antes_push is not None:
+            impedimento = antes_push()
+            if impedimento is not None:
+                return impedimento
         try:
             self.git("push", "--porcelain", "--no-verify", "--no-follow-tags",
                 "--recurse-submodules=no", "--force-with-lease=refs/heads/main:" + B,
