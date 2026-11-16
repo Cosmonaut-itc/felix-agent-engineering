@@ -78,7 +78,9 @@ Retirar: `fleet/pueue-desk/withdraw-desk.sh` (admite `--seco`). Detiene y
 deshabilita timers y daemon; conserva unidades, cola, autoridad, biblioteca
 y linger, y deja `maintenance` para impedir reactivaciones. No drenar tareas automáticamente: retirar cuando hayan terminado.
 
-Pruebas: `/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -v`.
+Pruebas: `/usr/bin/python3 -B -I -m unittest discover -s fleet/pueue-desk/tests -v`.
+`-B` evita reutilizar bytecode generado al alternar perfiles del mismo tamaño
+en los módulos temporales del arnés de migración.
 ShellCheck: `shellcheck --severity=warning fleet/pueue-desk/*-desk.sh`.
 
 ## Guardia de la Mac Mini
@@ -217,10 +219,23 @@ falle una RPC. Conserva el diagnóstico y el deseo; no crea grupos ni aplica el
 perfil por defecto. No abre mientras falle la reconciliación, y un fallo al
 pausar un grupo no impide proteger los demás. Se conserva la escalera #118.
 Si no puede guardar propiedad en SQLite, una marca durable
-`pause-GRUPO.manual` retiene esa pausa como manual incluso después de reparar
-la autoridad. La marca no asigna cuotas ni concede permiso para abrir; sólo
-`control.py reanudar GRUPO --host mini`, con reconciliación y sensores frescos,
-la retira. No borrar estas marcas para recuperar admisión automáticamente.
+`pause-GRUPO.manual` conserva el origen del cierre en ambos hosts. En un cierre
+protector contiene exactamente `pressure\n` sólo si la guardia leyó el estado en
+esa pasada y no había razones `manual` ni `ambiguous`; sin esa prueba escribe
+`manual\n`. Un fallo al soltar propiedad tras un arranque externo siempre escribe
+`manual\n`; también se sube una marca pressure si no pudo retirarse antes de
+soltar esa propiedad. Una marca previa distinta de los bytes exactos `pressure\n` nunca se
+rebaja a presión; contenido vacío, desconocido, ilegible o un enlace roto retiene
+como manual. La marca no asigna cuotas ni evita los gates de admisión.
+
+El preparador del reinicio incorpora la marca antes de inferir pausas sin dueño.
+En la primera pasada sana, la guardia guarda `pressure` en SQLite y **después**
+borra su marca; la presión y los gates normales deciden cuándo reabrir.
+`pausar GRUPO` sube una marca existente a `manual\n` con fsync antes de guardar
+la pausa manual o enviar su RPC; sin marca no crea una. Las marcas manuales
+siguen reteniendo después de reparar SQLite y sólo `control.py reanudar GRUPO`
+(con `--host mini` en la Mini), con reconciliación y sensores frescos, las retira.
+No borrar marcas a mano para recuperar admisión.
 
 En la Mini, la generación se identifica con el `pid_path` configurado, su fecha y la identidad
 `ps` del PID concreto (el desk usa otra; ver «Identidad del daemon del desk»). No se buscan ni terminan procesos por nombre. Tras reiniciar
@@ -982,6 +997,8 @@ Los umbrales anteriores no cambian. Cuando `decide` devuelve `mantener`, la
 Guardia intenta **una candidatura global**, sin abrir el grupo: `pueue start
 <id>`. Sólo participan grupos administrados excepto `rapidas`, Paused y con
 razones efectivas exactamente `pressure` (un tombstone manual también bloquea).
+Una marca con bytes exactos `pressure\n` aporta la misma razón que SQLite;
+conserva la selección FIFO y los gates de la candidatura.
 La Mini y la vía legacy no obtienen admisión incremental. Por debajo de los
 umbrales de reanudar se abren grupos como antes, sin consultar este permiso.
 
@@ -1081,3 +1098,9 @@ la guardia de esta versión. Sólo emite grupos, ids y estados; verifica el PID
 de su Popen y su config antes de terminarlo. El ensayo no instala ni demuestra
 reducción de espera real. `tests/test_private_trickle.py` valida la integración
 del arnés con el contrato A mediante dobles, sin daemon.
+
+Regresión SEN-6487: `tests/test_pause_fence.py` reproduce el cierre protector
+con fallo de escritura y reinicio administrado, con y sin presión previa en
+SQLite, y comprueba las retenciones manuales y el orden de recuperación.
+Mutaciones dirigidas: `/usr/bin/python3 -I fleet/pueue-desk/tests/mutate_pause_fence.py`,
+siempre mediante `remote-run` en el host de pruebas.
