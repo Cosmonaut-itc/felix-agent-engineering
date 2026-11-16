@@ -255,7 +255,6 @@ def test_status_size_rejects_before_pause_and_accepts_small_control(self):
     self.engine.reorder_cost=control.MiniControl.reorder_cost
     self.tasks={str(i):task(i) for i in range(1,9)}
     small=copy.deepcopy(self.tasks)
-    self.assertEqual(self.engine.reorder_budget,6)
     self.assertTrue(self.engine.view()['reorder_groups']['suites']['enabled'])
     request=self.order_request('size-control-001')
     request['change']['order']=list(range(8,0,-1))

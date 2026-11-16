@@ -1479,12 +1479,13 @@ class MiniControl:
     coordinated_reorder = False
     reorder_budget = 6.0
     reorder_rpc = 1.0
-    # Máximos por edición bajo carga: .380 s pequeño / .717 s con 9.43 MB
-    # (corridas 2 y 4). Margen sobre ambos; MB decimales del snapshot completo.
+    # Máximos completos: .380 s pequeño / .717 s con 9.43 MB (corridas 2/4).
+    # Prevuelo 1 agotó 1 s de editor grande: muestra censurada, no éxito.
+    # El margen por MB rechaza cinco grandes antes de pause; MB decimales.
     # Es una estimación: los límites de fase/RPC siguen siendo efectivos.
     reorder_overhead = .95
     reorder_cost = .40
-    reorder_size_cost = .05
+    reorder_size_cost = .08
     reorder_boundary = staticmethod(lambda phase: None)
     reorder_measure = staticmethod(lambda event, seconds: None)
 

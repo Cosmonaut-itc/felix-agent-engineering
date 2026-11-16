@@ -1199,15 +1199,17 @@ Las cifras anteriores de A, 3,082 s sin historial y 5,382 s con historial, eran
 la clase de error: process=None por sí solo no distingue salida no-cero de
 timeout. El motor actual conserva fase/clase/rc sin argv, stderr ni documentos.
 La admisión calibrada rechaza los planes que no caben antes de pause. Usa
-`0,95 + 0,05 × MB + escrituras × (0,40 + 0,05 × MB)` segundos, donde MB son
+`0,95 + 0,08 × MB + escrituras × (0,40 + 0,08 × MB)` segundos, donde MB son
 millones de bytes del snapshot completo serializado en memoria, incluido
 historial de otros grupos. No se registra su contenido ni se hace otra RPC.
 Se omiten escrituras que ya coinciden; el panel usa el tamaño completo de la
 fila como previsión conservadora y comparte estimador con la admisión/undo.
-Con unos 6 KB caben 12 escrituras (5,754 s); 13 (6,154 s) se rechazan. Con
-9,43 MB caben cinco (5,779 s); seis (6,651 s) se rechazan antes de pausar.
+Con unos 6 KB caben 12 escrituras (5,756 s); 13 (6,157 s) se rechazan. Con
+9,43 MB caben tres (5,168 s); cuatro (6,322 s) y cinco (7,476 s) se rechazan antes de pausar.
 El coste por edición parte del máximo observado bajo carga: 0,380 s pequeño
-y 0,717 s grande (corridas 2 y 4), con margen de redondeo y tamaño, más reserva
+y 0,717 s grande (corridas 2 y 4). El primer pre-vuelo agotó 1 s de editor
+con historial: muestra censurada, no edición completada. Se aumenta el margen
+por tamaño de 0,05 a 0,08 s/MB y se rechazan cinco grandes antes de pause, más reserva
 para pausa, lecturas, verificación y admisión. El detalle reproducible está en
 la evidencia del encargo, `evidencia-injerto/calibracion-admision.txt`.
 No es una garantía bajo cualquier carga: los plazos efectivos siguen activos.
