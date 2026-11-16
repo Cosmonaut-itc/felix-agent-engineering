@@ -249,9 +249,12 @@ class TablaTests(unittest.TestCase):
                     detalles = {literal_o_prefijo(detalle)}
                 esperadas.update((motivo, valor) for valor in detalles)
         self.assertTrue({"etapa-1", "necesita-juicio", "infraestructura"} <= {m for m, _ in esperadas})
-        self.assertEqual(set(POLITICA), esperadas | {("manual", "")})
+        # Ya no se emite desde el reductor, pero los diarios antiguos aún
+        # necesitan una salida documentada sin perder su obligación durable.
+        historicas = {("infraestructura", "cancelacion-pre-aterrizaje")}
+        self.assertEqual(set(POLITICA), esperadas | historicas | {("manual", "")})
         readme = (activo.RAIZ / "README.md").read_text()
-        for motivo, detalle in sorted(esperadas):
+        for motivo, detalle in sorted(esperadas | historicas):
             with self.subTest(motivo=motivo, detalle=detalle):
                 self.assertIn("`" + motivo + "`", readme)
                 if detalle:
