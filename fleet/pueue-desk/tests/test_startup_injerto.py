@@ -141,7 +141,7 @@ class InstallerGraftTests(unittest.TestCase):
             self.assertIn('ConditionPathExists=!@HOME@/.local/state/pao/pueue-desk/maintenance',source)
 
     def test_loaded_unit_mismatch_retains_maintenance_and_no_timer_restart(self):
-        for key,bad in (('MainPID','999'),('ActiveState','failed'),('NeedDaemonReload','yes'),('Restart','on-failure'),('KillMode','control-group'),('OOMPolicy','stop'),('ExecStartPre','/other/control.py preparar')):
+        for key,bad in (('MainPID','999'),('ActiveState','failed'),('NeedDaemonReload','yes'),('Restart','on-failure'),('KillMode','control-group'),('OOMPolicy','stop'),('StartLimitIntervalUSec','10s'),('ExecStartPre','/other/control.py preparar')):
             with self.subTest(key=key):
                 self.loaded_overrides={key:bad};self.syscalls.clear()
                 with redirect_stdout(io.StringIO()),self.assertRaises(ValueError):self.installer.install(self.home,self.pid,control)
