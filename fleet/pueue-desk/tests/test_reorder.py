@@ -253,11 +253,11 @@ def test_calibrated_admission_rejects_64_before_pause_and_accepts_five(self):
 def test_status_size_rejects_before_pause_and_accepts_small_control(self):
     self.engine.reorder_overhead=control.MiniControl.reorder_overhead
     self.engine.reorder_cost=control.MiniControl.reorder_cost
-    self.tasks={str(i):task(i) for i in range(1,9)}
+    self.tasks={str(i):task(i) for i in range(1,6)}
     small=copy.deepcopy(self.tasks)
     self.assertTrue(self.engine.view()['reorder_groups']['suites']['enabled'])
     request=self.order_request('size-control-001')
-    request['change']['order']=list(range(8,0,-1))
+    request['change']['order']=list(range(5,0,-1))
     self.assertEqual(self.engine.handle(request)['status'],'applied')
     self.assertIn(('pause','--wait','-g','suites'),self.p.calls)
     self.p.calls.clear()
@@ -268,7 +268,7 @@ def test_status_size_rejects_before_pause_and_accepts_small_control(self):
     before=copy.deepcopy(self.tasks)
     self.assertFalse(self.engine.view()['reorder_groups']['suites']['enabled'])
     request=self.order_request('size-large-001')
-    request['change']['order']=list(range(8,0,-1))
+    request['change']['order']=list(range(5,0,-1))
     answer=self.engine.handle(request)
     self.assertEqual((answer.get('error') or {}).get('code'),'pause_budget',answer)
     self.assertFalse(answer['effects'])

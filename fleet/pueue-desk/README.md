@@ -1199,36 +1199,46 @@ Las cifras anteriores de A, 3,082 s sin historial y 5,382 s con historial, eran
 la clase de error: process=None por sí solo no distingue salida no-cero de
 timeout. El motor actual conserva fase/clase/rc sin argv, stderr ni documentos.
 La admisión calibrada rechaza los planes que no caben antes de pause. Usa
-`0,95 + 0,08 × MB + escrituras × (0,40 + 0,08 × MB)` segundos, donde MB son
+`0,95 + 0,08 × MB + escrituras × (0,90 + 0,08 × MB)` segundos, donde MB son
 millones de bytes del snapshot completo serializado en memoria, incluido
 historial de otros grupos. No se registra su contenido ni se hace otra RPC.
 Se omiten escrituras que ya coinciden; el panel usa el tamaño completo de la
 fila como previsión conservadora y comparte estimador con la admisión/undo.
-Con unos 6 KB caben 12 escrituras (5,756 s); 13 (6,157 s) se rechazan. Con
-9,43 MB caben tres (5,168 s); cuatro (6,322 s) y cinco (7,476 s) se rechazan antes de pausar.
-El coste por edición parte del máximo observado bajo carga: 0,380 s pequeño
-y 0,717 s grande (corridas 2 y 4). El primer pre-vuelo agotó 1 s de editor
-con historial: muestra censurada, no edición completada. Se aumenta el margen
-por tamaño de 0,05 a 0,08 s/MB y se rechazan cinco grandes antes de pause, más reserva
-para pausa, lecturas, verificación y admisión. El detalle reproducible está en
-la evidencia del encargo, `evidencia-injerto/calibracion-admision.txt`.
-No es una garantía bajo cualquier carga: los plazos efectivos siguen activos.
+Con unos 6 KB caben cinco escrituras (5,453 s); seis (6,353 s) se rechazan.
+Con 9,43 MB caben dos (5,013 s); tres (6,668 s) y cinco (9,976 s) se rechazan.
+El coste por edición usa el máximo completo bajo carga, 0,858 s pequeño en el
+segundo pre-vuelo, redondeado a 0,90. El máximo completo grande anterior era
+0,717 s (corrida 4); el primer pre-vuelo agotó 1 s de editor con historial:
+es muestra censurada, no edición completada. Se conserva el margen por tamaño
+de 0,08 s/MB, también en la reserva para pausa, lecturas y admisión.
+La derivación y los bytes exactos de cada decisión están en la evidencia del
+encargo, `evidencia-injerto/calibracion-admision.txt`. La calibración final
+sólo estrecha la admisión; conserva las decisiones de los escenarios de la
+segunda corrida por sus tamaños registrados. No es una garantía ante toda
+carga ni acredita ejecución real de cada número de escrituras admisible.
+Los plazos efectivos siguen activos.
 
 La guardia actual tiene cadencia de 60 s; no se promete recuperación ≤10 s ni
 un peor caso finito. La capacidad sigue apagada por clientes no coordinados,
 independientemente de la estimación temporal y del resultado de aceptación.
 
-Aceptación privada del injerto (2026-11-16): se consumieron tres corridas.
-Cinco sin historial se aplicaron en envolventes de 1,40–1,44 s; con 1500 Stashed,
-una muestra aplicada dio 2,69 s. Undo con historial alcanzó el límite y quedó
-retenido. La última corrida, con load 11–20, falló en client_ready; un caso se
-abortó por recuperación y otro quedó pendiente hasta cleanup privado. **La
-aceptación bajo carga sigue pendiente**: no se presenta el estimador como
-garantía ni se habilita producción. Se corrigieron con dobles la consulta de
-identidad inconclusa (retiene propietario para reintento) y la salida entre
-comprobar nacimiento y señalar (ProcessLookupError benigno). Se guarda etapa,
-clase, errno y rc originales. Esa corrección final no tuvo una cuarta corrida.
+Aceptación privada de pre-vuelo (2026-11-16): dos corridas adicionales, sin
+instalación y con daemon privado Pueue 4.0.4. La primera agotó el plazo del
+editor grande y terminó `aborted` por recuperación; se conserva su FAIL.
+La segunda pasó normal/undo, rechazo previo de large, aliases nuevos,
+cliente/helper huérfanos, reinicio y rechazo previo de 64. Normal/undo dieron
+2,475/1,067 s de envolvente con load1 de 11,17/10,59. Large se rechazó en
+0,114 s antes de pause; no corresponde undo de una acción sin efectos.
+Los seis cleanup confirmaron daemon salido, cero procesos propios y ningún
+LaunchAgent creado en ambas corridas.
 
+Tras la segunda se elevó la base por edición de 0,40 a 0,90 al observar el
+máximo completo de 0,858 s. No hubo tercera corrida: se comprobó con los bytes
+exactos registrados que esa calibración conserva todas las decisiones de los
+escenarios ensayados y sólo estrecha la admisión. La ejecución real cubre cinco
+pequeñas y el rechazo de cinco grandes/64; las demás combinaciones son
+predicciones. La compuerta sigue apagada. Suites completas y revisión
+independiente corresponden al orquestador antes de habilitar producción.
 
 Actualización sin reiniciar `pueued`, a ejecutar sólo en la Mini adoptada:
 
