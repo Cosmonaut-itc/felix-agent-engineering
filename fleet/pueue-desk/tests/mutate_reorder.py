@@ -23,7 +23,7 @@ CASES=[
  ('fresh pressure','control.py',("reasons <= {'pressure'} and decide('mini',fresh,threshold) == 'reanudar'","if decide('mini',fresh,threshold) != 'reanudar' or time.monotonic()-sampled > self.reorder_rpc:"),("reasons <= {'pressure'}","if False:"),T+'test_new_pressure_transfers_pause_without_start'),
  ('second sensor','control.py',"if decide('mini',fresh,threshold) != 'reanudar' or time.monotonic()-sampled > self.reorder_rpc:","if False:",T+'test_second_fresh_sensor_after_start_intent_blocks_open'),
  ('pause budget','control.py',"        if self.reorder_overhead + len(changes)*self.reorder_cost > self.reorder_budget:","        if False:",T+'test_limits_permutation_i32_booleans_and_budget'),
- ('measured floor before pause','control.py',"self.reorder_overhead + len(changes)*self.reorder_cost > self.reorder_budget", "len(changes)*.001 > self.reorder_budget",T+'test_measured_floor_rejects_before_pause_even_if_clients_are_coordinated'),
+ ('calibrated 64 rejection before pause','control.py',"self.reorder_overhead + len(changes)*self.reorder_cost > self.reorder_budget", "len(changes)*.001 > self.reorder_budget",T+'test_calibrated_admission_rejects_64_before_pause_and_accepts_five'),
  ('RPC shares remaining budget','control.py',"timeout = min(timeout or remaining,remaining)","timeout = self.timeout",T+'test_rpc_uses_remaining_common_budget_and_never_sends_after_expiry'),
  ('expired RPC never sent','control.py',"            if remaining <= 0:\n                raise TimeoutError('Presupuesto de pausa agotado')","            if False:\n                raise TimeoutError('Presupuesto de pausa agotado')",T+'test_rpc_uses_remaining_common_budget_and_never_sends_after_expiry'),
  ('alias preflight','editor_prioridad.py',"if task['command'] != task['original_command']:","if False:",'test_reorder.HelperTests.test_multiline_unicode_whitespace_null_and_bytes'),
@@ -42,6 +42,13 @@ CASES=[
  ('rejected id cannot become effect','control.py',"            if request['op'] in ('slots', 'mode', 'undo', 'reorder') and not request['dry_run']:","            if request['op'] in ('slots', 'mode', 'undo') and not request['dry_run']:",T+'test_rejected_id_remains_terminal_after_conditions_change'),
  ('installer load has zero writes','install-reorder.py',"exec(compile((ROOT/'control.py').read_bytes(),c.__file__,'exec'),c.__dict__)","import importlib.util\nspec=importlib.util.spec_from_file_location('u36_install',ROOT/'control.py')\nspec.loader.exec_module(c)",'test_reorder.InstallTests.test_installer_load_cannot_write_bytecode_before_preflight'),
 
+ ('daemon aliases, never client aliases','control.py','        return read_aliases(alias)','        return {}',T+'test_daemon_config_not_edit_client_selects_effective_alias_file'),
+ ('alias added after add','control.py',"        if words and words[0] in aliases:","        if False:",T+'test_alias_added_after_enqueue_rejects_before_any_effect'),
+ ('daemon settings unchanged since birth','control.py',"if source.exists() and source.stat().st_mtime_ns > int(sec)*10**9+int(usec)*1000:","if False:",T+'test_daemon_config_not_edit_client_selects_effective_alias_file'),
+ ('semantic TOML before write','editor_prioridad.py','    if expected is not None:', '    if False:', 'test_reorder.HelperTests.test_semantic_toml_fingerprint_precedes_write'),
+ ('reorder preacceptance RPC scope','control.py','    def reorder_handle(self, request):\n        with self.reorder_deadline():', '    def reorder_handle(self, request):\n        with __import__("contextlib").nullcontext():',T+'test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded'),
+ ('recovery reconciliation scope','control.py',"if self.host == 'mini' and any(a['phase'] != 'terminal' for a in self.reorder_actions()):",'if False:',T+'test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded'),
+ ('safe failure diagnostic retained','control.py',"latest['failure'] = dict(kind=type(error).__name__, phase=latest['phase'],", "latest['ignored'] = dict(kind=type(error).__name__, phase=latest['phase'],",T+'test_failed_edit_preserves_safe_diagnostic_and_recovery_finishes'),
 ]
 
 

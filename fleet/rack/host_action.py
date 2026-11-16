@@ -150,6 +150,10 @@ def control(value, host='mini'):
     fields = ('revision', 'policy_hash', 'generation', 'mode', 'cap', 'slots', 'desired', 'drift', 'recovery_pending')
     result = dict(schema=value['schema'], status='ok', capabilities={k: caps[k] for k in
                   ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue')}, **{k: value[k] for k in fields})
+    if caps.get('reason_reorder') is not None:
+        if caps['reason_reorder'] != 'La coordinación de pausas de los clientes no está acreditada.':
+            raise ValueError('Motivo de coordinación inválido')
+        result['capabilities']['reason_reorder'] = caps['reason_reorder']
     reasons = value.get('pause_reasons', {})
     if type(reasons) is not dict or any(type(g) is not str or type(r) is not list
             or any(x not in ('pressure', 'manual', 'ambiguous', 'startup', 'handoff', 'reorder') for x in r) for g, r in reasons.items()):

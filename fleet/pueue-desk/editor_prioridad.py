@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import time
 
 
 def birth(pid):
@@ -52,7 +53,102 @@ def integer(n):
     return n
 
 
-def document(raw, ident, priority):
+ESCAPES = {'b': '\b', 't': '\t', 'n': '\n', 'f': '\f', 'r': '\r', '"': '"', '\\': '\\'}
+
+
+class Unrecognized(ValueError):
+    pass
+
+
+def fingerprint(command, path, label):
+    """Opaque digest of what an edit may never change; never the values themselves."""
+    body = json.dumps([command, path, label], ensure_ascii=False, separators=(',', ':'))
+    return hashlib.sha256(body.encode('utf-8')).hexdigest()
+
+
+def _basic(text, i, end_quote):
+    """Decode a basic string body starting after its opening quote(s)."""
+    out = []
+    while True:
+        if i >= len(text):
+            raise Unrecognized('cadena sin cerrar')
+        c = text[i]
+        if c == '\\':
+            if i + 1 >= len(text):
+                raise Unrecognized('escape incompleto')
+            e = text[i + 1]
+            if e in ESCAPES:
+                out.append(ESCAPES[e]); i += 2
+            elif e in 'uU':
+                width = 4 if e == 'u' else 8
+                digits = text[i + 2:i + 2 + width]
+                if not re.fullmatch('[0-9A-Fa-f]{%d}' % width, digits):
+                    raise Unrecognized('escape unicode inválido')
+                code = int(digits, 16)
+                if code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
+                    raise Unrecognized('escape unicode inválido')
+                out.append(chr(code)); i += 2 + width
+            else:
+                # Includes the multiline line-ending backslash: not emitted by Pueue.
+                raise Unrecognized('escape no reconocido')
+            continue
+        if end_quote == '"':
+            if c == '"':
+                return ''.join(out), i + 1
+            if c == '\n' or c == '\r':
+                raise Unrecognized('salto en cadena simple')
+        elif text.startswith('"""', i):
+            run = len(text) - i - len(text[i:].lstrip('"'))
+            if run > 5:
+                raise Unrecognized('comillas finales ambiguas')
+            out.append('"' * (run - 3))
+            return ''.join(out), i + run
+        out.append(c); i += 1
+
+
+def _literal(text, i, multiline):
+    if multiline:
+        end = text.find("'''", i)
+        if end < 0:
+            raise Unrecognized('cadena literal sin cerrar')
+        run = len(text) - end - len(text[end:].lstrip("'"))
+        if run > 5:
+            raise Unrecognized('comillas finales ambiguas')
+        return text[i:end] + "'" * (run - 3), end + run
+    end = text.find("'", i)
+    if end < 0 or '\n' in text[i:end] or '\r' in text[i:end]:
+        raise Unrecognized('cadena literal inválida')
+    return text[i:end], end + 1
+
+
+def _value(text, i):
+    """Return (kind, decoded, start, end) of one TOML value at text[i]."""
+    if text.startswith('"""', i):
+        j = i + 3
+        if text.startswith('\n', j):
+            j += 1  # the newline right after the opening delimiter is trimmed
+        value, end = _basic(text, j, '"""')
+        return 'string', value, i, end
+    if text.startswith("'''", i):
+        j = i + 3
+        if text.startswith('\n', j):
+            j += 1
+        value, end = _literal(text, j, True)
+        return 'string', value, i, end
+    if text.startswith('"', i):
+        value, end = _basic(text, i + 1, '"')
+        return 'string', value, i, end
+    if text.startswith("'", i):
+        value, end = _literal(text, i + 1, False)
+        return 'string', value, i, end
+    match = re.compile(r'-?(?:0|[1-9][0-9]*)').match(text, i)
+    if match:
+        return 'integer', int(match.group()), i, match.end()
+    raise Unrecognized('valor no reconocido')
+
+
+
+def document(raw, ident, priority, expected=None):
     """Scan only the serializer's scalar table grammar, not general TOML.
 
     Strings are consumed in their entirety before looking for the next key.
@@ -83,44 +179,20 @@ def document(raw, ident, priority):
             if name == 'priority':
                 integer(values[name]); span = (start, i)
         else:
-            quote = text[i:i+1]
-            if quote not in ('"', "'"):
+            kind, value, _, i = _value(text, i)
+            if kind != 'string':
                 raise ValueError('edit_unsafe')
-            triple = text[i:i+3] == quote*3
-            delimiter = quote*(3 if triple else 1)
-            i += len(delimiter)
-            while True:
-                if i >= len(text):
-                    raise ValueError('edit_unsafe')
-                if text.startswith(delimiter, i):
-                    count = len(text[i:])-len(text[i:].lstrip(quote))
-                    if triple and count > 5:
-                        raise ValueError('edit_unsafe')
-                    i += count if triple else 1
-                    break
-                if quote == '"' and text[i] == '\\':
-                    escape = text[i+1:i+2]
-                    if escape in ('u','U'):
-                        length = 4 if escape=='u' else 8
-                        if not re.fullmatch('[0-9A-Fa-f]{'+str(length)+'}',text[i+2:i+2+length]):
-                            raise ValueError('edit_unsafe')
-                        i += length+2
-                    elif escape in ('b','t','n','f','r',chr(34),chr(92)):
-                        i += 2
-                    elif triple and escape in ('\n','\r'):
-                        i += 2
-                    else:
-                        raise ValueError('edit_unsafe')
-                else:
-                    if not triple and text[i] in '\r\n':
-                        raise ValueError('edit_unsafe')
-                    i += 1
+            values[name] = value
         end = re.match(r'[ \t]*(?:\r?\n|$)', text[i:])
         if not end:
             raise ValueError('edit_unsafe')
         i += end.end()
     if seen not in ({'id','command','path','priority'}, {'id','command','path','priority','label'}) or values['id'] != ident:
         raise ValueError('edit_unsafe')
+    if expected is not None:
+        if (values['priority'] != expected['expected_priority'] or
+                fingerprint(values['command'], values['path'], values.get('label')) != expected['fingerprint']):
+            raise ValueError('edit_unsafe')
     return (text[:span[0]] + str(priority) + text[span[1]:]).encode('utf-8')
 
 
@@ -163,7 +235,15 @@ def private_file(path):
         raise ValueError('edit_unsafe')
 
 
+def remaining(plan):
+    left = min(1.0, plan['deadline'] - time.monotonic())
+    if left <= 0:
+        raise TimeoutError('pause_budget')
+    return left
+
+
 def main():
+    begun=time.monotonic()
     plan_path = Path(sys.argv[2] if sys.argv[1] == '--client' else sys.argv[1]).resolve()
     private_file(plan_path)
     plan = json.loads(plan_path.read_text())
@@ -174,6 +254,7 @@ def main():
         # No RPC before the controller commits our PID + birth and opens stdin.
         if sys.stdin.buffer.read(1) != b'1':
             return
+        remaining(plan)
         os.execve(plan['binary'], [plan['binary'], '--config', str(root/'config.json'),
                                   'edit', str(plan['id'])], dict(os.environ))
     if birth(plan['client']['pid']) != plan['client']['birth']:
@@ -191,17 +272,26 @@ def main():
         raise ValueError('edit_unsafe')
     if birth(plan['daemon']['pid']) != plan['daemon']['birth']:
         raise ValueError('edit_unsafe')
+    status_begun=time.monotonic()
     reply=subprocess.run([plan['binary'],'--config',str(root/'config.json'),'status','--json'],
-                         check=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,timeout=1)
+                         check=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,
+                         timeout=remaining(plan))
     verify_locked(plan,json.loads(reply.stdout))
+    status_seconds=time.monotonic()-status_begun
     if birth(plan['daemon']['pid']) != plan['daemon']['birth']:
         raise ValueError('edit_unsafe')
+    remaining(plan)
+    write_begun=time.monotonic()
     raw = target.read_bytes()
-    changed = document(raw, plan['id'], plan['priority'])
+    changed = document(raw, plan['id'], plan['priority'], expected=plan)
     if (root/'revoked').exists() or birth(plan['client']['pid'])!=plan['client']['birth']:
         raise ValueError('edit_unsafe')
+    remaining(plan)
     with target.open('wb') as stream:
         stream.write(changed); stream.flush(); os.fsync(stream.fileno())
+    # Diagnostic only: fixed names/numbers, never any editable content.
+    (root/'metrics.json').write_text(json.dumps(dict(helper_start=begun-plan['launched'],
+        helper_status=status_seconds,helper_write=time.monotonic()-write_begun)))
 
 
 if __name__ == '__main__':

@@ -23,6 +23,7 @@ class ReorderChannelTests(unittest.TestCase):
         self.p.status=lambda:dict(groups=copy.deepcopy(self.p.groups),tasks=copy.deepcopy(self.tasks))
         self.p.call=lambda *args:self.p.groups['suites'].update(status='Paused' if args[0]=='pause' else 'Running')
         self.p.binary='fake-no-real-binary'
+        self.engine.reorder_aliases=lambda state:{}
         self.engine.coordinated_reorder=True
         self.engine.reorder_host_ready=lambda state:True
         self.engine.reorder_overhead=0;self.engine.reorder_cost=.001
@@ -47,19 +48,22 @@ class ReorderChannelTests(unittest.TestCase):
             self.assertNotIn(private,json.dumps(answer))
         self.assertEqual(self.actions.post(r)[1],answer)
         self.assertEqual(self.actions.get(r['action_id'])[1],answer)
-        self.assertEqual(len(self.calls),1)
+        self.assertEqual([r['op'] for r in self.calls],['capabilities','reorder'])
         undo=self.actions.post(self.request('public-undo-00001',undo=r['action_id']))[1]
         self.assertEqual(undo['status'],'applied',undo)
         self.assertEqual([self.tasks[str(i)]['priority'] for i in range(1,6)],[-1,-2,-3,-4,-5])
 
     def test_unknown_get_no_replay_even_disabled(self):
         original=self.executor
-        def lost(*args,**kwargs):original(*args,**kwargs);raise OSError('lost')
+        def lost(host,target,wire,timeout):
+            answer=original(host,target,wire,timeout)
+            if wire['op']!='capabilities':raise OSError('lost')
+            return answer
         self.actions.executor=lost;r=self.request()
         self.assertEqual(self.actions.post(r)[1]['status'],'unknown')
         (self.root/'rack/actions.disabled').touch();self.actions.executor=original
         self.assertEqual(self.actions.get(r['action_id'])[1]['status'],'applied')
-        self.assertEqual([call['op'] for call in self.calls],['reorder','status'])
+        self.assertEqual([call['op'] for call in self.calls],['capabilities','reorder','status'])
 
     def test_cancel_and_order_reserve_same_host(self):
         r=self.request()
@@ -82,6 +86,37 @@ class ReorderChannelTests(unittest.TestCase):
         with self.assertRaises(ValueError):a.decode(json.dumps(r).encode()+b' '*16384)
         r['expected']['queue'][0]['id']=True
         with self.assertRaises(ValueError):a.validate(r)
+
+    def test_real_old_host_reorder_and_queue_undo_fail_before_mutation(self):
+        fixture=json.loads((BASE/'tests/old-host-u36.json').read_text())
+        self.assertTrue(fixture['source'].startswith('66e2c1e'))
+        for op in ('reorder','undo'):
+            r=self.request('old-actual-'+op+'-001',undo='previous-order-001' if op=='undo' else None)
+            seen=[]
+            def old(host,target,wire,timeout):
+                seen.append(wire['op'])
+                return fixture['capabilities'] if wire['op']=='capabilities' else fixture['responses'][op]
+            self.actions.executor=old
+            result=self.actions.post(r)[1]
+            self.assertEqual(result['status'],'unsupported',result)
+            self.assertIs(result['effects'],False)
+            self.assertEqual(seen,['capabilities'])
+            self.assertEqual(self.actions.get(r['action_id'])[1]['status'],'unsupported')
+        self.assertEqual(self.p.calls if hasattr(self.p,'calls') else [],[])
+
+    def test_current_unknown_after_probe_and_probe_failure_remain_unknown(self):
+        original=self.executor
+        for case in ('uncertain','probe_timeout','corrupt'):
+            r=self.request('current-'+case+'-001')
+            def executor(host,target,wire,timeout):
+                if wire['op']=='capabilities':
+                    if case=='probe_timeout':raise TimeoutError('slow')
+                    if case=='corrupt':return {'broken':True}
+                    return original(host,target,wire,timeout)
+                return dict(schema='rack-host-result@1',action_id=r['action_id'],status='unknown',
+                            error=dict(code='recovery_error'))
+            self.actions.executor=executor
+            self.assertEqual(self.actions.call(r,r['op'],self.actions.timer()+20)['status'],'unknown')
 
     def test_old_capabilities_without_reorder_metadata_never_dispatch(self):
         self.payload['hosts'][0]['snapshot']['control'].pop('reorder_groups')

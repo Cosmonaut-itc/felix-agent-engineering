@@ -393,6 +393,21 @@ class Actions:
             if remaining < MIN_TRANSPORT:
                 return result(request, 'unknown')
             try:
+                if op != 'status' and (request['op']=='reorder' or 'queue' in request.get('expected',{})):
+                    # Snapshot may predate a rollback. Probe the actual controller,
+                    # including undo: an old host already knows slots undo.
+                    caps = self.executor(self.hosts[request['host']], 'host-control',
+                                         dict(schema='rack-host-control@1',op='capabilities'), timeout=min(1,remaining))
+                    current = host_channel.control(caps, request['host'])
+                    if current['status']=='ok' and 'reorder_groups' not in current:
+                        answer = dict(host_channel.unavailable(), action_id=request['action_id'], effects=False,
+                                      schema=SCHEMA, op=request['op'], host=request['host'])
+                        return answer
+                    if current['status']!='ok':
+                        return result(request, 'unknown')
+                    remaining = deadline - self.timer() - RECEIPT_RESERVE
+                    if remaining < MIN_TRANSPORT:
+                        return result(request, 'unknown')
                 response = self.executor(self.hosts[request['host']], 'host-control', wire, timeout=min(10, remaining))
                 response = host_channel.sanitize(request, response, wire['op'])
                 verified = response.pop('receipt_verified', False)

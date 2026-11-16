@@ -45,6 +45,7 @@ def setup(self):
     self.p.call=call
     self.tasks = {str(i):task(i,p) for i,p in enumerate([0,-2,-2,-8,-12],1)}
     self.p.status = lambda: dict(groups=copy.deepcopy(self.p.groups),tasks=copy.deepcopy(self.tasks))
+    self.engine.reorder_aliases=lambda state:{}
     self.engine.coordinated_reorder = True
     self.engine.reorder_host_ready=lambda state:True
     self.engine.reorder_overhead = 0
@@ -162,7 +163,7 @@ def test_concurrent_before_compare_aborts_add_cancel_and_start(self):
     for index,change in enumerate(('add','cancel','start')):
         self.tasks=copy.deepcopy(base);self.p.groups['suites']['status']='Running'
         def boundary(phase):
-            if phase=='paused':
+            if phase=='pause_effect':
                 if change=='add':self.tasks['8']=task(8)
                 if change=='cancel':self.tasks.pop('3')
                 if change=='start':self.tasks['3']['status']={'Running':dict(enqueued_at=STAMP,start=STAMP)}
@@ -235,15 +236,18 @@ def test_rpc_uses_remaining_common_budget_and_never_sends_after_expiry(self):
         run.assert_not_called()
 
 
-def test_measured_floor_rejects_before_pause_even_if_clients_are_coordinated(self):
+def test_calibrated_admission_rejects_64_before_pause_and_accepts_five(self):
     self.engine.reorder_overhead=control.MiniControl.reorder_overhead
     self.engine.reorder_cost=control.MiniControl.reorder_cost
-    view=self.engine.view()['reorder_groups']['suites']
-    self.assertFalse(view['enabled'])
-    self.assertIn('presupuesto de pausa medido',view['reason'])
-    answer=self.engine.handle(self.order_request('measured-budget-001'))
+    self.assertTrue(self.engine.view()['reorder_groups']['suites']['enabled'])
+    self.assertEqual(self.engine.handle(self.order_request('calibrated-five-001'))['status'],'applied')
+    self.p.calls.clear()
+    self.tasks={str(i):task(i) for i in range(1,65)}
+    r=self.order_request('calibrated-64-001');r['change']['order']=list(range(64,0,-1))
+    answer=self.engine.handle(r)
     self.assertEqual((answer.get('error') or {}).get('code'),'pause_budget',answer)
     self.assertEqual(self.p.calls,[])
+
 
 
 def test_revocation_after_acceptance_still_recovers(self):
@@ -490,6 +494,72 @@ def test_rejected_id_remains_terminal_after_conditions_change(self):
     self.assertEqual(self.engine.handle(request),rejected)
 
 
+
+def test_alias_added_after_enqueue_rejects_before_any_effect(self):
+    r=self.order_request('new-alias-00001')
+    self.engine.reorder_aliases=lambda state:{'true':'changed'}
+    self.assertEqual(self.engine.handle(r)['error']['code'],'edit_unsafe')
+    self.assertEqual(self.p.calls,[])
+    self.assertTrue(all(t['command']=='true' for t in self.tasks.values()))
+    self.assertFalse(self.engine.view()['reorder_groups']['suites']['enabled'])
+
+
+def test_daemon_config_not_edit_client_selects_effective_alias_file(self):
+    source=self.root/'daemon.json';aliases=self.root/'daemon-aliases.yml'
+    client=self.root/'client-aliases.yml';client.write_text('{}')
+    aliases.write_text('true: changed\n')
+    source.write_text(json.dumps(dict(shared=dict(alias_file=str(aliases)))))
+    (self.root/'pueue.pid').write_text('43')
+    self.p.daemon_config=source
+    self.p.edit_settings=dict(shared=dict(alias_file=str(client)))
+    with self.engine.connect() as db:state=self.engine.state(db)
+    actual=control.MiniControl.reorder_aliases.__get__(self.engine)
+    with patch.object(control.priority_helper(),'birth',return_value='darwin:9999999999:0'):
+        self.assertEqual(actual(state),{'true':'changed'})
+    with patch.object(control.priority_helper(),'birth',return_value='darwin:1:0'):
+        with self.assertRaises(ValueError):actual(state)
+    source.write_text('{"shared": {"alias_file": "relative"}}')
+    with patch.object(control.priority_helper(),'birth',return_value='darwin:9999999999:0'):
+        with self.assertRaises(ValueError):actual(state)
+
+
+def test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded(self):
+    seen=[];old=self.p.status
+    def status():
+        seen.append((getattr(self.p,'timeout',None),getattr(self.p,'deadline',None)))
+        return old()
+    self.p.status=status
+    r=self.order_request();seen.clear()
+    self.assertEqual(self.engine.handle(r)['status'],'applied')
+    self.assertTrue(seen)
+    for timeout,deadline in seen:
+        self.assertIsNotNone(timeout)
+        self.assertLessEqual(timeout,1)
+        self.assertIsNotNone(deadline)
+    self.assertIsNone(self.p.timeout);self.assertIsNone(self.p.deadline)
+    self.engine.reorder_boundary=lambda p:(_ for _ in ()).throw(Crash()) if p=='prepared' else None
+    with self.assertRaises(Crash):self.engine.handle(self.order_request('scope-recovery-001'))
+    self.engine.reorder_boundary=lambda p:None
+    seen.clear();self.assertTrue(self.engine.reconcile())
+    self.assertTrue(all(timeout is not None and timeout<=1 and deadline is not None for timeout,deadline in seen))
+    self.assertIsNone(self.p.timeout);self.assertIsNone(self.p.deadline)
+    seen.clear();self.engine.reconcile()
+    self.assertTrue(any(timeout is None for timeout,_ in seen))
+
+
+def test_failed_edit_preserves_safe_diagnostic_and_recovery_finishes(self):
+    def fail(action,ident,priority,deadline):
+        raise subprocess.CalledProcessError(2,['PRIVATE_COMMAND'],stderr='PRIVATE_ENV')
+    self.engine.edit_priority=fail
+    r=self.order_request();answer=self.engine.handle(r)
+    self.assertEqual(answer['status'],'unknown')
+    a=self.engine.reorder_actions()[-1]
+    self.assertEqual(a.get('failure'),dict(kind='CalledProcessError',phase='paused',exit_code=2))
+    self.assertNotIn('PRIVATE_',json.dumps(a))
+    self.assertTrue(self.engine.reconcile())
+    self.assertEqual(self.engine.handle(r)['status'],'aborted')
+
+
 for name,fn in list(globals().items()):
     if name.startswith('test_'):setattr(ReorderTests,name,fn)
 
@@ -531,11 +601,24 @@ class HelperTests(unittest.TestCase):
             target.write_bytes(raw)
             t=task(1);t['status']={'Locked':dict(previous_status={'Stashed':dict(enqueue_at=None)})}
             snapshot=dict(tasks={'1':t},groups={'suites':dict(status='Paused')})
-            plan=dict(id=1,priority=7,expected_priority=0,identity=control.MiniControl.task_identity(t),binary='/tmp/only-a-fake',client=dict(pid=42,birth='proof'),daemon=dict(pid=43,birth='proof'))
+            plan=dict(id=1,priority=7,deadline=control.time.monotonic()+1,expected_priority=0,identity=control.MiniControl.task_identity(t),binary='/tmp/only-a-fake',client=dict(pid=42,birth='proof'),daemon=dict(pid=43,birth='proof'))
             control.atomic_json(root/'plan.json',plan)
             with patch.object(helper,'birth',return_value='proof'),patch.object(helper.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(snapshot),'')),patch.object(sys,'argv',[str(helper.__file__),str(root/'plan.json'),str(target)]):
                 with self.assertRaises(ValueError):helper.main()
             self.assertEqual(target.read_bytes(),raw)
+
+    def test_semantic_toml_fingerprint_precedes_write(self):
+        helper=control.priority_helper()
+        raw=b'[1]\nid = 1\ncommand = "true"\npath = "/synthetic"\npriority = 0\n'
+        plan=dict(expected_priority=0,fingerprint=helper.fingerprint('true','/synthetic',None))
+        self.assertEqual(helper.document(raw,1,7,plan),raw.replace(b'priority = 0',b'priority = 7'))
+        for key in (b'command = "true"',b'path = "/synthetic"'):
+            with self.assertRaises(ValueError):helper.document(raw.replace(key,key[:-1]+b'changed"'),1,7,plan)
+        with self.assertRaises(ValueError):helper.document(raw.replace(b'priority = 0',b'priority = 9'),1,7,plan)
+        with self.assertRaises(ValueError):helper.document(raw+b'label = "new"\n',1,7,plan)
+        # Decoded strings, including TOML's initial multiline newline and Unicode.
+        quoted=b'[1]\nid = 1\ncommand = \'\'\'\ntrue\'\'\'\npath = "/synthetic"\npriority = 0\n'
+        self.assertIn(b'priority = 7',helper.document(quoted,1,7,plan))
 
     def test_desk_remains_disabled(self):
         self.assertFalse(control.MiniControl.coordinated_reorder)

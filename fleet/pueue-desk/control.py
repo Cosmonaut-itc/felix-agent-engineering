@@ -109,6 +109,80 @@ def validate_limit(value):
     return value
 
 
+def simple_yaml_value(raw):
+    raw = raw.split(' #', 1)[0].strip()
+    if raw in ('', '~', 'null'):
+        return None
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in '\'"':
+        inner = raw[1:-1]
+        if chr(92) in inner or raw[0] in inner:
+            raise ValueError('Escape YAML no acreditado')
+        return inner
+    if re.fullmatch(r'[A-Za-z0-9_/. ~@+-]+', raw):
+        return raw
+    raise ValueError('Valor YAML no reconocido')
+
+
+def pueue_settings(path):
+    """Only client.edit_mode and shared.alias_file. Anything not proven fails closed."""
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        return dict(edit_mode=None, alias_file=None)
+    try:
+        value = json.loads(text)
+    except ValueError:
+        value, section = {}, None
+        for line in text.splitlines():
+            if not line.strip() or line.lstrip().startswith('#') or line.strip() == '---':
+                continue
+            top = re.fullmatch(r'([A-Za-z_]+):(.*)', line)
+            if top:
+                section = top.group(1)
+                if section in ('client', 'shared') and simple_yaml_value(top.group(2)) is not None:
+                    raise ValueError('Bloque YAML en línea no reconocido')
+                if section in value:
+                    raise ValueError('Bloque duplicado')
+                value[section] = {}
+                continue
+            if section in ('client', 'shared'):
+                inner = re.fullmatch(r'  ([A-Za-z_]+):(.*)', line)
+                if not inner:
+                    raise ValueError('Configuración de Pueue no reconocida')
+                if inner.group(1) in value[section]:
+                    raise ValueError('Clave duplicada')
+                value[section][inner.group(1)] = simple_yaml_value(inner.group(2)) if inner.group(1) in ('edit_mode', 'alias_file') else None
+    if type(value) is not dict or any(type(value.get(k, {})) is not dict for k in ('client', 'shared')):
+        raise ValueError('Configuración de Pueue no reconocida')
+    edit_mode, alias_file = value.get('client', {}).get('edit_mode'), value.get('shared', {}).get('alias_file')
+    if any(v is not None and type(v) is not str for v in (edit_mode, alias_file)):
+        raise ValueError('Configuración de Pueue no reconocida')
+    return dict(edit_mode=edit_mode, alias_file=alias_file)
+
+
+def read_aliases(path):
+    """Flat `name: value` map as serde_yaml reads it; absent file means no aliases."""
+    try:
+        text = Path(path).read_text()
+    except FileNotFoundError:
+        return {}
+    if text.strip() == '{}':
+        return {}
+    aliases = {}
+    for line in text.splitlines():
+        if not line.strip() or line.lstrip().startswith('#') or line.strip() == '---':
+            continue
+        match = re.fullmatch(r'([^\s:#\'"][^:#]*?|"[^"]*"|\'[^\']*\'):\s+(.*)', line)
+        if not match:
+            raise ValueError('Alias no reconocido')
+        key = simple_yaml_value(match.group(1))
+        if key in aliases:
+            raise ValueError('Alias repetido')
+        aliases[key] = simple_yaml_value(match.group(2))
+    return aliases
+
+
+
 class Pueue:
     def __init__(self, binary=None, env=None, cwd=None):
         self.binary = str(binary or Path.home() / ".local/bin/pueue")
@@ -1236,7 +1310,8 @@ class MiniControl:
                          and generation==state['generation'] and self.reorder_host_ready(state))
         reorder_groups = self.reorder_view(state, self._status_snapshot, reorder_ready) if self.host=='mini' else {}
         return dict(schema='rack-host-result@1', status='ok', reorder_groups=reorder_groups, capabilities=dict(
-            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=any(g['enabled'] for g in reorder_groups.values()), restart_queue=False),
+            slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=any(g['enabled'] for g in reorder_groups.values()), restart_queue=False,
+            reason_reorder='La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
@@ -1398,18 +1473,17 @@ class MiniControl:
         return self._handle(dict(schema=HOST_SCHEMA, op='status', action_id=request['action_id']))
 
     # Reorder uses this controller's existing lock, durable index and guard job.
-    # The installed remote-run currently force-starts cancelled Stashed tasks.
-    # No JSON flag can waive that contract. Private acceptance injects True.
+    # Única compuerta durable: CLIENTES COORDINADOS. La unidad de clientes la
+    # encenderá en este fuente después de acreditar TODOS sus escritores Mini.
+    # No existe habilitación por entorno, JSON, instalador ni CLI de producción.
     coordinated_reorder = False
     reorder_budget = 3.0
     reorder_rpc = 1.0
-    # Private 4.0.4, 2026-11-16: 5 edits paused 3.082 s (small history),
-    # 5.382 s (1500 Stashed / 9.43 MB), maximum whole edit 0.914 s.
-    # No measured batch fits 3 s; 64 ended unknown. Use a conservative floor,
-    # not an unproven extrapolation that would pause and then time out.
-    reorder_overhead = 7.0  # ceil(1.25 * measured whole paused section)
-    reorder_cost = 1.5
+    # Calibración provisional, sustituida sólo tras la corrida privada final.
+    reorder_overhead = 1.0
+    reorder_cost = .35
     reorder_boundary = staticmethod(lambda phase: None)
+    reorder_measure = staticmethod(lambda event, seconds: None)
 
     def reorder_host_ready(self, state):
         handoff=state.get('mini_handoff',{})
@@ -1455,8 +1529,9 @@ class MiniControl:
             unsafe = any(t['group']==g and isinstance(t['status'],dict) and set(t['status']) & {'Paused','Locked','Stashed'} for t in snapshot['tasks'].values())
             if self.coordinated_reorder and not unsafe:
                 try:
+                    aliases = self.reorder_aliases(state)
                     for row in queue:
-                        priority_helper().preflight(snapshot['tasks'][str(row['id'])])
+                        self.reorder_preflight(snapshot['tasks'][str(row['id'])], aliases)
                 except (ValueError,OSError):
                     unsafe = True
             reason = ('En pausa recuperando… · ' + recovery if recovery else
@@ -1465,7 +1540,7 @@ class MiniControl:
                       'Fila demasiado larga para reordenar de una vez' if len(queue) > 64 else
                       'Se necesitan al menos dos pendientes.' if len(queue)<2 else
                       'Esta fila no se puede editar con seguridad.' if unsafe else
-                      'La fila supera el presupuesto de pausa medido.' if self.reorder_overhead > self.reorder_budget else
+                      'La fila supera el presupuesto de pausa medido.' if self.reorder_overhead + len(queue)*self.reorder_cost > self.reorder_budget else
                       'Hay un ajuste pendiente o el host no está preparado.' if not enabled else None)
             result[g] = dict(enabled=reason is None, reason=reason, owner=recovery,
                              expected=dict(revision=state['revision'], admission_revision=state['revision'],
@@ -1497,7 +1572,51 @@ class MiniControl:
         return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
                     error=dict(code=code, message=messages[code]), **fields)
 
+    @contextmanager
+    def reorder_deadline(self):
+        old_timeout = getattr(self.pueue, 'timeout', None)
+        old_deadline = getattr(self.pueue, 'deadline', None)
+        self.pueue.timeout = min(old_timeout or self.reorder_rpc, self.reorder_rpc)
+        self.pueue.deadline = min(old_deadline or float('inf'), time.monotonic()+self.reorder_budget)
+        try:
+            yield
+        finally:
+            self.pueue.timeout, self.pueue.deadline = old_timeout, old_deadline
+
+    def reorder_aliases(self, state):
+        # U3.5 execs stock with no argv overrides, HOME/cwd fixed to the owner.
+        # A changed config cannot attest the running daemon's cached settings.
+        # The private seam names the actual daemon config, NEVER edit_settings.
+        source = getattr(self.pueue, 'daemon_config', None)
+        home = Path.home()
+        if source is None:
+            standard = home/'Library/Application Support/pueue/pueue.yml'
+            source = standard if standard.is_file() else home/'pueue.yml'
+        source = Path(source)
+        daemon_pid = int(Path(state['pid_file']).read_text().strip())
+        born = priority_helper().birth(daemon_pid)
+        if not born or not born.startswith('darwin:'):
+            raise ValueError('edit_unsafe')
+        _, sec, usec = born.split(':')
+        if source.exists() and source.stat().st_mtime_ns > int(sec)*10**9+int(usec)*1000:
+            raise ValueError('edit_unsafe')
+        configured = pueue_settings(source)['alias_file']
+        alias = Path(configured).expanduser() if configured else home/'Library/Application Support/pueue/pueue_aliases.yml'
+        if not alias.is_absolute():
+            raise ValueError('edit_unsafe')
+        return read_aliases(alias)
+
+    def reorder_preflight(self, task, aliases):
+        priority_helper().preflight(task)
+        words = task['original_command'].split()
+        if words and words[0] in aliases:
+            raise ValueError('edit_unsafe')
+
     def reorder_handle(self, request):
+        with self.reorder_deadline():
+            return self._reorder_handle(request)
+
+    def _reorder_handle(self, request):
         digest = hashlib.sha256(canonical(dict(host=self.host, request=request)).encode()).hexdigest()
         with self.connect() as db:
             row = db.execute('SELECT digest,body FROM host_actions WHERE action_id=?', (request['action_id'],)).fetchone()
@@ -1555,9 +1674,9 @@ class MiniControl:
         if self.reorder_overhead + len(changes)*self.reorder_cost > self.reorder_budget:
             return reject('pause_budget')
         try:
-            helper = priority_helper()
+            aliases = self.reorder_aliases(state)
             for row in rows:
-                helper.preflight(snapshot['tasks'][str(row['id'])])
+                self.reorder_preflight(snapshot['tasks'][str(row['id'])], aliases)
         except (ValueError, OSError):
             return reject('edit_unsafe')
         payload = dict(group=g, before=rows, desired=target, observed=rows,
@@ -1581,12 +1700,13 @@ class MiniControl:
         self.pueue.deadline = deadline
         self.pueue.timeout = self.reorder_rpc
         try:
+            self.reorder_boundary('pause_begin')
             self.pueue.call('pause','--wait','-g',g)
             self.reorder_boundary('pause_effect')
-            if self.pueue.status()['groups'][g]['status'] != 'Paused':
+            snap = self.pueue.status()
+            if snap['groups'][g]['status'] != 'Paused':
                 raise ValueError('Pausa sin confirmar')
             self.reorder_save(action, 'paused')
-            snap = self.pueue.status()
             if (snap['groups'][g]['status'] != 'Paused' or self.generation(state) != gen or
                     self.reorder_rows(snap,g,gen) != rows):
                 action['outcome'] = 'aborted'
@@ -1595,12 +1715,24 @@ class MiniControl:
                 for row in changes:
                     if time.monotonic() >= deadline:
                         raise TimeoutError('pause_budget')
-                    self.edit_priority(action, row['id'], row['priority'], deadline)
+                    self._reorder_edit_snapshot = snap
+                    try:
+                        self.edit_priority(action, row['id'], row['priority'], deadline)
+                    finally:
+                        self._reorder_edit_snapshot = None
+                    snap['tasks'][str(row['id'])]['priority'] = row['priority']
+                self.reorder_boundary('verification_begin')
                 snap = self.pueue.status()
                 self.verify_reorder(action, snap, target)
+                self.reorder_boundary('verification_end')
                 self.reorder_save(action, 'edited')
             self.reconcile()
-        except (OSError, ValueError, TimeoutError, subprocess.SubprocessError):
+        except (OSError, ValueError, TimeoutError, subprocess.SubprocessError) as error:
+            # Safe diagnostics never serialize argv, stderr, TOML or task fields.
+            latest = next(a for a in self.reorder_actions() if a['request']['action_id']==request['action_id'])
+            latest['failure'] = dict(kind=type(error).__name__, phase=latest['phase'],
+                                    exit_code=getattr(error, 'returncode', None))
+            self.reorder_save(latest)
             # Durable intent stays owned. The existing guard repairs it even if
             # slots.disabled/actions.disabled is set after acceptance.
             return self.reorder_reply(request, 'unknown', 'recovery_error')
@@ -1622,9 +1754,11 @@ class MiniControl:
                 raise ValueError('recovery_error')
 
     def edit_priority(self, action, ident, priority, deadline):
+        begun = time.monotonic()
         import tempfile
         helper = priority_helper()
-        snapshot = self.pueue.status()
+        snapshot = getattr(self, '_reorder_edit_snapshot', None) or self.pueue.status()
+        self.reorder_measure('parent_status',time.monotonic()-begun)
         with self.connect() as db:
             authority = self.state(db)
         row = next(r for r in action['before'] if r['id']==ident)
@@ -1634,7 +1768,7 @@ class MiniControl:
                 or self.generation(authority)!=action.get('repair_generation',action['generation'])
                 or task['priority'] not in (row['priority'],next(r['priority'] for r in action['target'] if r['id']==ident))):
             raise ValueError('recovery_error')
-        helper.preflight(task)
+        self.reorder_preflight(task, self.reorder_aliases(authority))
         root = Path(tempfile.mkdtemp(prefix='edit-', dir=str(self.directory)))
         root.chmod(0o700)
         # A new config changes only this private client's edit mode / aliases.
@@ -1656,16 +1790,22 @@ class MiniControl:
         if not daemon_birth:
             raise ValueError('Daemon no verificable')
         plan = dict(id=ident, priority=priority, binary=self.pueue.binary,identity=row['identity'],
-                    expected_priority=task['priority'],daemon=dict(pid=daemon_pid,birth=daemon_birth))
+                    expected_priority=task['priority'],daemon=dict(pid=daemon_pid,birth=daemon_birth),
+                    fingerprint=helper.fingerprint(task['original_command'],task['path'],task['label']),
+                    deadline=min(deadline,time.monotonic()+self.reorder_rpc), launched=time.monotonic())
         atomic_json(root/'plan.json', plan)
         action['editing_id'] = ident
         action['process'] = dict(root=str(root), client=None)
         self.reorder_save(action, 'edit_intent')
         env = dict(os.environ, TMPDIR=str(root), EDITOR=shlex.join(['/usr/bin/python3','-I',
                    str(Path(__file__).with_name('editor_prioridad.py')), str(root/'plan.json')]))
+        self.reorder_measure('prepare_edit',time.monotonic()-begun)
+        launch_begun=time.monotonic()
+        helper.remaining(plan)
         client = subprocess.Popen(['/usr/bin/python3','-I',str(Path(__file__).with_name('editor_prioridad.py')),
                                    '--client',str(root/'plan.json')], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
                                   stderr=subprocess.DEVNULL, env=env, cwd=str(root))
+        self.reorder_measure('launch_client',time.monotonic()-launch_begun)
         signature = helper.birth(client.pid)
         if not signature:
             client.stdin.close()
@@ -1676,11 +1816,18 @@ class MiniControl:
         action['process']['client'] = plan['client']
         self.reorder_save(action, 'client_ready')
         try:
+            helper.remaining(plan)
+            cli_begun=time.monotonic()
             client.stdin.write(b'1'); client.stdin.close()
             self.reorder_boundary('client_sent')
-            client.wait(timeout=max(.001, min(self.reorder_rpc,deadline-time.monotonic())))
+            client.wait(timeout=max(.001, plan['deadline']-time.monotonic()))
+            self.reorder_measure('cli',time.monotonic()-cli_begun)
             if client.returncode != 0:
-                raise ValueError('edit_unsafe')
+                raise subprocess.CalledProcessError(client.returncode, ['private-priority-client'])
+            metrics = root/'metrics.json'
+            if metrics.is_file():
+                for key,value in json.loads(metrics.read_text()).items():
+                    self.reorder_measure(key,value)
         except Exception:
             self.stop_editor(action)
             # Keep durable ownership until all identified processes have exited.
@@ -1688,6 +1835,7 @@ class MiniControl:
         self.reorder_boundary('edit_effect')
         action['process'] = None
         self.reorder_save(action, 'editing')
+        self.reorder_measure('edit_total',time.monotonic()-begun)
 
     def stop_editor(self, action):
         info = action.get('process')
@@ -1791,6 +1939,7 @@ class MiniControl:
             if not release:
                 continue
             # Quotas/generation have been reconciled by reconcile() first.
+            self.reorder_boundary('admission_begin')
             snap = self.pueue.status()
             applied = action.get('outcome', 'applied') == 'applied'
             if applied:
@@ -1836,6 +1985,8 @@ class MiniControl:
                 state['reasons'][g] = sorted(reasons - {'pressure'})
             else:
                 raise ValueError('recovery_error')
+            self.reorder_boundary('admission_end')
+            self.reorder_boundary('receipt_begin')
             final = self.pueue.status()
             action['undo_until'] = self.clock()+60
             observed = self.reorder_rows(final,g,self.generation(state))
@@ -1846,6 +1997,7 @@ class MiniControl:
                             queue_etag=self.reorder_etag(observed,self.generation(state)),
                             undo_of=action['request']['action_id'] if applied else None))
             self.reorder_save(action,'terminal',state)
+            self.reorder_boundary('receipt_end')
         return True
 
     def reorder_offline(self, queue, state, data):
@@ -1927,6 +2079,12 @@ class MiniControl:
             self.store(db, state)
 
     def reconcile(self):
+        if self.host == 'mini' and any(a['phase'] != 'terminal' for a in self.reorder_actions()):
+            with self.reorder_deadline():
+                return self._reconcile()
+        return self._reconcile()
+
+    def _reconcile(self):
         if os.path.lexists(self.directory / 'maintenance'):
             return False
         with self.connect() as db:
