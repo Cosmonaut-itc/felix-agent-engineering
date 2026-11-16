@@ -1,5 +1,9 @@
 # Pueue en el desk
 
+El [contrato local de clientes CC0](CLIENT-CONTROL.md) define el esquema y
+corpus común para coordinar mutaciones. No instala el coordinador ni cambia
+la ejecución: la compuerta de clientes coordinados sigue apagada hasta CC8.
+
 Servicio systemd **de usuario** para Pueue 4.0.4 en WSL, listo para instalar
 tras U10 (NVMe). No instala binarios. El [retiro de deskpolicy](../deskpolicy/)
 se despliega por separado durante el corte coordinado de los clientes a Pueue.
