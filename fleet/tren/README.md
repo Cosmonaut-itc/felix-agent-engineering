@@ -307,7 +307,7 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
   acreditan al lanzador real. Su implementación pertenece a otra unidad.
 - Para Hasito, declarar `verificacion_previa` (véase U18) con el guion de
   Hasito que implementa ese contrato: ventana congelada, chequeo de redeploys
-  sobre B..C y drain de `hermes-hasito` con su cancelación. El guion vive en
+  sobre B..C y drain del servicio afectado, con su cancelación. El guion vive en
   Hasito, es otra unidad y se acredita allí con sus propias pruebas de
   contrato; las pruebas de PAO usan un gancho falso y no lo acreditan.
 
@@ -891,7 +891,7 @@ no empuja, no pausa ni avisa, y el tick siguiente repite la misma clave.
 Desde `hasta`, pausa `infraestructura` / `ventana-autorizada-vencida`. Con
 gancho, la ventana se comprueba antes de llamarlo (fuera de ella no se pide
 drain) y otra vez después, con el tiempo que tardó: si venció mientras corría,
-pausa igual. Para reanudar, Felix fija una ventana nueva para el mismo head
+pausa igual. Para reanudar, el operador fija una ventana nueva para el mismo head
 en el config y decide `reanudar`; `abortar` libera el lote. Sin ventana, el
 comportamiento no cambia.
 
@@ -965,7 +965,7 @@ como efecto `cancelar-verificacion` del outbox, con clave propia, cuando:
 - se consume un resultado de `promover` que no aterrizó con certeza: `main`
   sigue en B (reintento, admisión perdida o pausa del gancho o de la
   ventana) o la escribió otro (`escritor-externo`);
-- Felix pausa el carril a mano con el tren en `Promoviendo`.
+- el operador pausa el carril a mano con el tren en `Promoviendo`.
 
 No se cancela si el aterrizaje es incierto: el efecto `promover` queda
 pendiente y una lectura posterior decide. Tampoco tras `ATERRIZADO`: el
