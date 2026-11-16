@@ -5,7 +5,7 @@ import shlex
 
 from dominio import (Armado, Congelado, Corriendo, Diagnosticando,
                      Efecto, EsperandoCI, Pausa, Promoviendo, Rechazado, Terminal, Tren,
-                     cambiar_fase, clave, datos, efecto_diagnostico,
+                     cambiar_fase, clave, datos, efecto_cancelar, efecto_diagnostico,
                      efecto_promover, efectos_status, separar_devueltos)
 
 
@@ -25,6 +25,10 @@ POLITICA = {
     ("candidato-no-corresponde", ""): {"reanudar": "armar", "abortar": "abortar"},
     ("head-cambiado-en-tren", ""): {"expulsar": "devolver", "abortar": "abortar"},
     ("promocion-rechazada", ""): {"reanudar": "promover", "abortar": "abortar"},
+    # U18: el gancho o la ventana autorizada impidieron el push; main sigue en B.
+    ("infraestructura", "verificacion-previa:"): {"reanudar": "promover", "abortar": "abortar"},
+    ("infraestructura", "ventana-autorizada-vencida"):
+        {"reanudar": "promover", "abortar": "abortar"},
     ("manual", ""): {"levantar": "continuar"},
 }
 for _detalle in (
@@ -139,7 +143,12 @@ def resolver(estado, observacion):
     if error:
         return estado, (resultado,)
     if decision.decision == "pausar":
-        return replace(estado, pausa=Pausa("manual", detalle=decision.motivo)), (resultado,)
+        efectos = (resultado,)
+        tren = next((t for t in estado.trenes if isinstance(t.fase, Promoviendo)), None)
+        if tren is not None and observacion.verificacion_previa:
+            # Una espera del gancho (drain pedido) no sobrevive a la pausa manual.
+            efectos += (efecto_cancelar(tren, tren.fase.certificado, "pausa", decision.id),)
+        return replace(estado, pausa=Pausa("manual", detalle=decision.motivo)), efectos
     tren = tren_pausado(estado)
     # El detalle manual es texto humano; no es una clave de política.
     operacion = politica(estado.pausa)[decision.decision]

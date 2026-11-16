@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
                      VistaPR, rama_ci, recibo_ci)
 from git_ops import FalloGit
+from verificacion import autorizaciones
 
 
 CONCLUSIONES_CI = {
@@ -48,6 +49,8 @@ def configuracion(ruta, repo):
         raise ValueError("falta ruta git local")
     if not isinstance(config.get("excluir_alto_riesgo", True), bool):
         raise ValueError("política de piloto inválida")
+    # Una ventana mal escrita no puede caer en silencio a «sin ventana».
+    autorizaciones(config)
     return config
 
 
@@ -268,6 +271,7 @@ class GitHubGit:
             base = payload["base"]["sha"]
             if not sha(base):
                 raise ValueError("base inválida")
+            autorizados = autorizaciones(self.config)
             leer = self.lector(pr, base, head)
             ancestro = leer("merge-base", base, head)
             if not sha(ancestro):
@@ -288,7 +292,7 @@ class GitHubGit:
                 alto_riesgo=bool(etiquetas.intersection(
                     self.config.get("etiquetas_alto_riesgo", ["alto-riesgo"]))),
                 verificado=apto.get("verificado") == "Verificado" and apto.get("head") == head,
-                autorizado=head in self.config.get("heads_autorizados", []))
+                autorizado=head in autorizados, ventana=autorizados.get(head))
             # Re-read after all reads; a concurrent push cannot use stale evidence.
             final = self.api("repos/{}/pulls/{}".format(repo, pr))
             if final["head"]["sha"] != head:

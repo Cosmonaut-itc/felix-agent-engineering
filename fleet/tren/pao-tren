@@ -170,6 +170,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
                 from adaptadores.hasito import Hasito
                 from git_ops import GitTren
                 from operativo import tick
+                from verificacion import gancho
+                verificador = None
                 if observador is None or git is None:
                     ruta = args.config or ledger.directorio / "config.json"
                     config = configuracion(ruta, args.repo)
@@ -185,8 +187,10 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
                         if not isinstance(lanzador, str) or not Path(lanzador).is_absolute():
                             raise ValueError("lanzador Hasito debe ser ruta absoluta")
                         hasito = Hasito(lanzador, git)
+                    # U18: sin `verificacion_previa` el tick no cambia.
+                    verificador = gancho(config)
                 return 0, tick(ledger, args.repo, observador, ahora, git, hasito, frontera,
-                               escritor)
+                               escritor, verificador)
             doble_camino = modo(args.repo) == "sombra"
             estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
             if observador is None:

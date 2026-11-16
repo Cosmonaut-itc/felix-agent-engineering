@@ -5,12 +5,13 @@ la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 """
 from dataclasses import dataclass, replace
 
-from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
+from dominio import (CANCELAR, Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      Corriendo, Diagnosticando, Efecto, EnBase, EsperandoCI, Incierto,
                      Observacion, Promoviendo, RamaOcupada, admision_entrada,
                      clave, efecto_diagnostico, efecto_promover, rama_ci, recibo_ci)
 from git_ops import Publicado
 from adaptadores.hasito import ResultadoInvalido
+from verificacion import CancelacionFallida, solicitud, verificar_aterrizaje
 
 
 class EfectoFallido(Exception):
@@ -25,11 +26,13 @@ class Ejecucion:
     completo: bool
 
 
-def ejecutar(efecto, estado, observacion, git, hasito=None):
+def ejecutar(efecto, estado, observacion, git, hasito=None, verificador=None, reloj=None):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
     Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
     Incierto queda pendiente. Otros errores de IO quedan en EfectoFallido.
+    `verificador` es el gancho del repo (U18) y `reloj()` el instante actual
+    en la base de Observacion.ahora; por defecto, el de la observación.
     """
     if not efecto.datos:
         raise ValueError("efecto sin tren")
@@ -126,6 +129,18 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
         if not isinstance(resultado, Publicado):
             raise EfectoFallido(resultado)
         return Ejecucion(replace(limpia, ci_candidato="pendiente", suite=None), True)
+    if efecto.tipo == CANCELAR:
+        # Corre también en pausa y con el tren terminal; sin gancho no hay nada.
+        if verificador is not None:
+            entradas = {e.entrega.recibo: e for e in estado.entradas}
+            _, B, C, arbol = efecto.datos
+            try:
+                verificador.cancelar(solicitud(estado.repo, tren.id, 0, B, C, arbol,
+                    tuple((entradas[r].entrega.pr, entradas[r].entrega.head)
+                          for r in tren.recibos), getattr(git, "ruta", None) and str(git.ruta)))
+            except CancelacionFallida as exc:
+                raise EfectoFallido(exc.resultado) from None
+        return Ejecucion(limpia, True)
     if efecto.tipo == "promover" and isinstance(fase, Promoviendo):
         if efecto != efecto_promover(tren.id, fase.intentos):
             raise ValueError("intento de promoción obsoleto")
@@ -144,8 +159,27 @@ def ejecutar(efecto, estado, observacion, git, hasito=None):
         # Una lectura incierta conserva el contrato U2: intentar el CAS sigue
         # siendo seguro por el lease, y su lectura posterior decide el resultado.
         lectura = git.reconciliar(cert.B, cert.C, cert.arbol, heads)
+        verificacion = None
         if isinstance(lectura, (EnBase, Incierto)):
+            # U18, bajo el candado y justo antes del CAS: ventana autorizada y
+            # gancho. Nunca se reutiliza un resultado: cada push, también tras
+            # una muerte, vuelve a verificar este B..C, y el lease rechaza el
+            # push si main dejó de ser B mientras corría el gancho.
+            miembros = [entradas[r].entrega for r in tren.recibos]
+            ventanas = tuple(v.ventana for v in (vistas.get(m.recibo, vistas.get(str(m.pr)))
+                                                 for m in miembros) if v and v.ventana)
+            verificacion = verificar_aterrizaje(
+                ventanas, reloj or (lambda: observacion.ahora), verificador,
+                lambda: solicitud(estado.repo, tren.id, fase.intentos, cert.B, cert.C,
+                                  cert.arbol, tuple((m.pr, m.head) for m in miembros),
+                                  getattr(git, "ruta", None) and str(git.ruta)))
+            if verificacion is not None and verificacion.resultado != "seguir":
+                llegada = replace(limpia, main=lectura, verificacion=verificacion,
+                                  intento_promocion=fase.intentos)
+                # Esperar no consume el intento: el tick siguiente repite la clave.
+                return Ejecucion(llegada, verificacion.resultado == "pausar")
             lectura = git.promover(cert.B, cert.C, cert.arbol, heads)
-        return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos),
+        return Ejecucion(replace(limpia, main=lectura, intento_promocion=fase.intentos,
+                                 verificacion=verificacion),
                          not isinstance(lectura, Incierto))
     raise ValueError("efecto o fase no soportados")

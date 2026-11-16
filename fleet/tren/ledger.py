@@ -166,13 +166,14 @@ class Ledger:
                                 (consumido,))
             # Una nueva generación no puede consumir ni recuperar IO de la
             # anterior. El feedback conserva el orden y se drena igualmente.
-            from dominio import Terminal
+            from dominio import CANCELAR, Terminal
             from feedback import FEEDBACK
             terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
             cancelados = []
             for fila in self.outbox(estado.repo):
                 efecto = desde_datos(json.loads(fila["payload"]))
-                if (efecto.tipo not in FEEDBACK and efecto.datos and
+                # La salida del gancho (U18) sobrevive al tren que no aterrizó.
+                if (efecto.tipo not in FEEDBACK and efecto.tipo != CANCELAR and efecto.datos and
                         efecto.datos[0] in terminales):
                     self.db.execute("UPDATE outbox SET estado='cancelado' WHERE clave=?", (efecto.clave,))
                     cancelados.append(efecto.clave)

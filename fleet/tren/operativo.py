@@ -7,8 +7,9 @@ siempre proceden de la observación fresca. No modifica el reductor puro.
 from dataclasses import replace
 import json
 import subprocess
+import time
 
-from dominio import (Admitido, Incierto, Promoviendo, Terminal, admision_entrada,
+from dominio import (CANCELAR, Admitido, Incierto, Promoviendo, Terminal, admision_entrada,
                      datos, desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
@@ -16,7 +17,8 @@ from git_ops import FalloGit
 
 
 EJECUTABLES = frozenset(("armar-candidato", "solicitar-ci", "iniciar-suite",
-                        "reanudar-suite", "repetir", "armar-subconjunto", "promover")) | FEEDBACK
+                        "reanudar-suite", "repetir", "armar-subconjunto", "promover",
+                        CANCELAR)) | FEEDBACK
 CAMPOS_RESULTADO = ("candidato", "suite", "conflicto_cadena", "main", "tren_id",
                     "intento_promocion", "rama_ocupada", "resultado_suite",
                     "suite_intento", "repeticion", "reproduccion_id")
@@ -27,6 +29,9 @@ def resultado_observacion(efecto, observacion):
     if efecto.tipo == "iniciar-suite":
         # Evidencia de CI con la que se lanzó la suite, ligada al mismo C.
         campos += ("ci_candidato", "ci_recibo")
+    if efecto.tipo == "promover" and observacion.verificacion is not None:
+        # Sólo con ventana o gancho: sin ellos el ACK de promover no cambia.
+        campos += ("verificacion",)
     return {k: datos(getattr(observacion, k)) for k in campos}
 
 
@@ -57,20 +62,26 @@ def resumen_outbox(ledger, repo):
 
 
 def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
-         escritor=None):
+         escritor=None, verificador=None):
     """El llamador mantiene el candado durante TODO el tick, incluido el IO.
 
     `frontera` es sólo una costura de inyección para pruebas de muerte real.
     Un fallo no confirma el efecto; cada clave se intenta a lo sumo una vez
-    por tick. Feedback no requiere tren vivo ni carril sin pausa.
+    por tick. Feedback no requiere tren vivo ni carril sin pausa; tampoco la
+    cancelación del gancho (U18), que se cierra sin pasar por el reductor.
     """
+    inicio = time.monotonic()
     intentados = set()
     frontera = frontera or (lambda nombre, efecto: None)
     escritor = escritor or EscritorGitHub()
     # Sólo para entregas aún no incorporadas: conserva la primera admisión
     # muestreada en custodia, sin importar ningún lote simulado de sombra.
     estado = ledger.estado(repo, operativo=True)
-    observacion = observador.observar(estado, ahora)
+    observacion = replace(observador.observar(estado, ahora),
+                          verificacion_previa=verificador is not None)
+
+    def reloj():
+        return ahora + (time.monotonic() - inicio)
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
@@ -86,10 +97,12 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
             if efecto.tipo not in EJECUTABLES:
                 continue
             feedback = efecto.tipo in FEEDBACK
+            sin_consumo = feedback or efecto.tipo == CANCELAR
             # No ejecutar trabajo de un tren ya cerrado. Se conserva visible.
             tren = next((t for t in estado.trenes if efecto.datos and
                          t.id == efecto.datos[0]), None)
-            if not feedback and (estado.pausa or tren is None or isinstance(tren.fase, Terminal)):
+            if not sin_consumo and (estado.pausa or tren is None or
+                                    isinstance(tren.fase, Terminal)):
                 continue
             if efecto.tipo == "solicitar-ci":
                 # La clave puede preceder una muerte/cambio de evidencia. La
@@ -106,7 +119,8 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
                     resultado = escritor.ejecutar_feedback(efecto, estado, frontera)
                     completo = True
                 else:
-                    ejecucion = ejecutar(efecto, estado, observacion, git, hasito)
+                    ejecucion = ejecutar(efecto, estado, observacion, git, hasito,
+                                         verificador, reloj)
                     resultado = {"observacion": resultado_observacion(efecto, ejecucion.observacion)}
                     completo = ejecucion.completo
                     if not completo:
@@ -120,7 +134,7 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
                 resultado, completo = {"error": {"clase": type(exc).__name__}}, False
             frontera("antes-registrar", efecto)
             ledger.registrar_efecto(repo, efecto, ahora, resultado, completo,
-                                    sin_consumo=feedback)
+                                    sin_consumo=sin_consumo)
             if feedback and completo:
                 completados.add(efecto.clave)
             frontera("resultado-guardado", efecto)

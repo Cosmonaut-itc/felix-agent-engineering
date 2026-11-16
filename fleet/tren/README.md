@@ -305,6 +305,11 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
   publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
   crear otro. El lanzador falso cumple esa condición; estas pruebas no
   acreditan al lanzador real. Su implementación pertenece a otra unidad.
+- Para Hasito, declarar `verificacion_previa` (véase U18) con el guion de
+  Hasito que implementa ese contrato: ventana congelada, chequeo de redeploys
+  sobre B..C y drain de `hermes-hasito` con su cancelación. El guion vive en
+  Hasito, es otra unidad y se acredita allí con sus propias pruebas de
+  contrato; las pruebas de PAO usan un gancho falso y no lo acreditan.
 
 Un sincronizador externo del checkout `git` no es requisito de activación:
 desde U17 el tick activo trae al bare del tren la base y los heads que le
@@ -853,3 +858,149 @@ vuelve a traer y no arma, y la composición productiva sin `GitTren`
 inyectado. `tests/remoto-u17-injerto.sh` exige que las dos pruebas del
 presupuesto fallen por aserción sobre `d0019396` y pasen después; usan
 transporte y reloj falsos, sin esperas reales.
+
+
+## Verificación previa al aterrizaje (U18)
+
+Justo antes del push CAS a `main`, el tick activo comprueba dos cosas: la
+ventana autorizada de los heads del lote y, si el repo lo declara, un gancho
+de verificación. Ambas corren dentro del efecto `promover`, bajo el candado
+del carril, después del CI y la suite verdes sobre C y después de la
+reconciliación que confirma `main == B`. Sin ventana ni gancho, `promover`
+hace exactamente lo de antes y su ACK no cambia.
+
+### Ventana autorizada
+
+`heads_autorizados` acepta, además de un SHA suelto, un objeto con ventana
+UTC opcional:
+
+```json
+"heads_autorizados": [
+  "<SHA40>",
+  {"head": "<SHA40>", "desde": "2026-11-20T02:00:00Z", "hasta": "2026-11-20T04:00:00Z"}
+]
+```
+
+`{"head": ...}` sin ventana equivale al SHA suelto. Un objeto con otras
+claves, un instante que no sea `AAAA-MM-DDTHH:MM:SSZ`, `desde >= hasta` o dos
+ventanas distintas para el mismo head invalidan la configuración: el tick
+sale con 2. La ventana es `[desde, hasta)`. Si varios miembros del lote
+tienen ventana, rige la intersección. Antes de `desde`, `promover` espera:
+no empuja, no pausa ni avisa, y el tick siguiente repite la misma clave.
+Desde `hasta`, pausa `infraestructura` / `ventana-autorizada-vencida`. Con
+gancho, la ventana se comprueba antes de llamarlo (fuera de ella no se pide
+drain) y otra vez después, con el tiempo que tardó: si venció mientras corría,
+pausa igual. Para reanudar, Felix fija una ventana nueva para el mismo head
+en el config y decide `reanudar`; `abortar` libera el lote. Sin ventana, el
+comportamiento no cambia.
+
+### Contrato del gancho
+
+El repo lo declara en su objeto de `repos["owner/project"]`:
+
+```json
+"verificacion_previa": {"argv": ["/ruta/absoluta/al/gancho", "--opcion"], "plazo_s": 600}
+```
+
+`argv[0]` es una ruta absoluta; `plazo_s`, un entero entre 1 y 3600 (600 por
+defecto). Un repo sin `verificacion_previa` se comporta como antes. PAO
+invoca `argv + [operacion]` sin shell, con el entorno del tick y una
+solicitud JSON por stdin:
+
+```json
+{"contrato": "pao-tren/verificacion-previa@1", "operacion": "verificar",
+ "repo": "owner/project", "tren": "<id>", "intento": 1,
+ "B": "<SHA40>", "C": "<SHA40>", "arbol": "<SHA40>",
+ "prs": [{"pr": 123, "head": "<SHA40>"}], "almacen": "/ruta/al/bare/del/tren",
+ "plazo_s": 600}
+```
+
+`prs` va en el orden de los eslabones de C. `almacen` es el bare del tren,
+que contiene B y C: el gancho puede leer B..C sin fetch y sin escribir en él.
+La respuesta es un único objeto JSON en stdout con salida 0:
+
+```json
+{"resultado": "seguir", "motivo": "redeploys-ok", "B": "<SHA40>", "C": "<SHA40>"}
+```
+
+`B` y `C` repiten los de la solicitud: liga la respuesta al rango evaluado.
+`motivo` es un slug `[a-z0-9][a-z0-9-]{0,62}`, opcional con `seguir` y
+obligatorio con `esperar` y `pausar`. stderr se descarta y nada del stdout,
+salvo resultado y motivo, llega al ledger.
+
+| Respuesta | Qué hace el tick |
+| --- | --- |
+| `seguir` | Empuja C con el CAS sobre B en la misma ejecución. |
+| `esperar` | Condición transitoria (ventana congelada, drain pedido y aún no listo). No empuja, no pausa ni avisa; `promover` queda `fallido` con la verificación en su resultado, y el tick siguiente vuelve a consultar con la misma clave e intento. |
+| `pausar` | El gancho decide que no se aterriza. |
+| plazo agotado, salida distinta de 0, stdout que no es un objeto JSON, `B`/`C` distintos, `motivo` inválido, `esperar` o `pausar` sin motivo, resultado desconocido, gancho no ejecutable | Igual que `pausar`. |
+
+Una pausa del gancho es `infraestructura` con detalle
+`verificacion-previa:<motivo>`: el del gancho o `plazo-agotado`,
+`salida-no-cero`, `salida-mal-formada`, `resultado-desconocido` o
+`gancho-no-ejecutable`. Admite `reanudar` (intento nuevo de promoción, que
+vuelve a verificar) y `abortar` (libera el lote). Ninguna respuesta del gancho
+ni de la ventana produce `devolver`, comentario ni status rojo: no son culpa
+del PR. El tren sigue en `Promoviendo` con `main` en B y no gasta intentos de
+`LIMITE_PROMOCION`.
+
+Un resultado del gancho nunca se reutiliza. Vale sólo para el push que lo
+sigue en esa ejecución: si `main` dejó de ser B mientras corría, el lease
+rechaza el push y la reconciliación pausa `escritor-externo`. Si el tick
+muere entre el gancho y el push, el efecto queda `ejecutando` y la
+recuperación del tick siguiente reconcilia y, si `main` sigue en B, vuelve a
+llamar al gancho antes de empujar. Si el push ya había aterrizado, no lo
+llama.
+
+#### Cancelación
+
+El gancho puede dejar un efecto a medias: un drain pedido con `esperar`, o
+listo con `seguir` antes de un push que no aterriza. Por eso el contrato
+incluye `cancelar`: la misma invocación con operación `cancelar`, la misma
+forma de solicitud (`intento` 0) y una respuesta
+`{"resultado": "cancelado", "B": ..., "C": ...}` con salida 0. PAO la emite
+como efecto `cancelar-verificacion` del outbox, con clave propia, cuando:
+
+- se consume un resultado de `promover` que no aterrizó con certeza: `main`
+  sigue en B (reintento, admisión perdida o pausa del gancho o de la
+  ventana) o la escribió otro (`escritor-externo`);
+- Felix pausa el carril a mano con el tren en `Promoviendo`.
+
+No se cancela si el aterrizaje es incierto: el efecto `promover` queda
+pendiente y una lectura posterior decide. Tampoco tras `ATERRIZADO`: el
+redeploy de C reemplaza lo que el drain preparó. `esperar` no cancela: el
+tick siguiente vuelve a consultar. Una cancelación corre en el mismo tick,
+aun con el carril en pausa o el tren terminal, y se cierra sin pasar por el
+reductor. Si falla (mismos criterios que arriba), queda `fallido`, visible en
+`pao-tren estado`, y se reintenta cada tick hasta lograrla.
+
+#### Lo que debe cumplir el guion de un repo
+
+- Ser idempotente por `(repo, B, C)`: una segunda llamada `verificar` tras
+  `esperar` o tras una muerte consulta el mismo drain, sin pedir otro.
+- Ordenar sus comprobaciones para no dejar efectos innecesarios: ventana
+  congelada y redeploys antes de pedir un drain.
+- Responder dentro de `plazo_s`. Al agotarse, PAO mata el proceso y pausa;
+  el guion no debe dejar procesos hijos vivos.
+- Convertir en `pausar` una espera que ya no es transitoria (un drain que no
+  queda listo en su propio plazo), para no retener el carril sin aviso.
+- `cancelar` es idempotente y responde `cancelado` también cuando no hay
+  nada que cancelar.
+- No escribir en `almacen`, en `main` ni en GitHub.
+
+La sombra, `entregar` y `tick --seco` no llaman al gancho ni miran la
+ventana; sus eventos no cambian.
+
+`tests/test_u18.py` usa el origen git real de U13, GitHub y lanzador falsos
+y un gancho falso que registra cada llamada. Cada tick pasa por `pao-tren`
+con el config privado. Cubre `esperar` y `seguir` con el contrato completo;
+cada salida que pausa (`pausar`, plazo agotado, salida mal formada o sin eco
+de B y C, salida distinta de 0, resultado desconocido, `esperar` sin motivo)
+con su cancelación y `reanudar`; `abortar`; B movido por el gancho antes del
+push; la ventana antes, dentro, vencida y vencida mientras corre el gancho; la
+muerte entre el gancho y el push, que vuelve a verificar; y la pausa manual
+durante una espera. Ninguno produce feedback rojo. `tests/remoto-u18.sh`,
+llamado por `tests/remoto.sh`, exige que esas nueve regresiones fallen por
+aserción sobre `a1d24ec1` y pasen después, y compara byte a byte los eventos
+de sombra, `entregar` y `--seco` con gancho y ventana declarados contra los
+de `a1d24ec1`.

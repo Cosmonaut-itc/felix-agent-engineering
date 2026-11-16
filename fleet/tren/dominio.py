@@ -301,6 +301,18 @@ class Terminal:
     resultado: str
 
 
+@dataclass(frozen=True)
+class Verificacion:
+    """Verificación previa al push de un intento, ligada a B..C (U18).
+
+    resultado: seguir, esperar o pausar. motivo es la clave de pausa o espera.
+    """
+    B: str
+    C: str
+    resultado: str
+    motivo: str = ""
+
+
 Fase = Union[Congelado, Armado, EsperandoCI, Corriendo, Certificado,
              Diagnosticando, Promoviendo, Terminal]
 
@@ -346,6 +358,8 @@ class VistaPR:
     recibo: str = ""
     # Sólo la sombra interpreta un merge externo; default compatible con U1.
     mergeado: bool = False
+    # Ventana UTC (desde, hasta) del head autorizado; sólo la usa el push (U18).
+    ventana: Optional[Tuple[float, float]] = None
 
 
 @dataclass(frozen=True)
@@ -371,6 +385,10 @@ class Observacion:
     decision: Optional[Decision] = None
     pausa_id: str = ""
     ci_rojos: Tuple[str, ...] = ()
+    # U18: resultado de la verificación previa del intento y si el repo
+    # declara un gancho cuyo efecto a medias hay que cancelar.
+    verificacion: Optional[Verificacion] = None
+    verificacion_previa: bool = False
 
 
 @dataclass(frozen=True)
@@ -424,11 +442,22 @@ def admision_entrada(entrada, vistas, observacion):
 
 
 LIMITE_PROMOCION = 3
+CANCELAR = "cancelar-verificacion"
+PAUSAS_VERIFICACION = ("verificacion-previa:", "ventana-autorizada-vencida")
 
 
 def efecto_promover(tren_id, intentos):
     return Efecto(clave("promover", tren_id, intentos), "promover",
                   (tren_id, str(intentos)))
+
+
+def efecto_cancelar(tren, cert, *partes):
+    """Salida del efecto a medias del gancho cuando el intento no aterriza.
+
+    Lleva B, C y árbol: la fase puede quedar terminal sin certificado.
+    """
+    return Efecto(clave(CANCELAR, tren.id, *partes), CANCELAR,
+                  (tren.id, cert.B, cert.C, cert.arbol))
 
 
 def efectos_status(tren, tipo):
@@ -458,7 +487,18 @@ def aterrizaje(estado, tren, observacion):
             fase = Terminal("ATERRIZADO")
             efectos = efectos_status(tren, "avisar-aterrizaje")
         elif isinstance(lectura, EnBase):
-            fase = replace(fase, reintento_pendiente=True)
+            verificacion = observacion.verificacion
+            if (verificacion is not None and verificacion.resultado == "pausar" and
+                    (verificacion.B, verificacion.C) == (cert.B, cert.C)):
+                # main sigue en B y no hubo push: no gasta intento ni es rojo.
+                motivo = verificacion.motivo
+                if not (motivo.startswith(PAUSAS_VERIFICACION[0]) and
+                        len(motivo) > len(PAUSAS_VERIFICACION[0]) or
+                        motivo == PAUSAS_VERIFICACION[1]):
+                    motivo = PAUSAS_VERIFICACION[0] + "resultado-desconocido"
+                estado = replace(estado, pausa=Pausa("infraestructura", detalle=motivo))
+            else:
+                fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
             fase = Terminal("REARMAR")
             estado = replace(estado,
@@ -467,6 +507,9 @@ def aterrizaje(estado, tren, observacion):
                                else e for e in estado.entradas))
         else:
             return estado, ()
+        if observacion.verificacion_previa and fase != Terminal("ATERRIZADO"):
+            # El intento no aterrizó: retirar lo que el gancho dejó a medias.
+            efectos = efectos + (efecto_cancelar(tren, cert, tren.fase.intentos),)
     return replace(estado, trenes=tuple(replace(t, fase=fase) if t.id == tren.id
                                        else t for t in estado.trenes)), efectos
 
@@ -716,6 +759,8 @@ def paso(estado, observacion):
         from juicios import resolver
         return resolver(estado, observacion)
     activos = [t for t in estado.trenes if not isinstance(t.fase, Terminal)]
+    # EnBase consumido puede traer la cancelación del gancho (U18).
+    efectos = []
     if not estado.pausa and activos and isinstance(activos[0].fase, Promoviendo):
         tren = activos[0]
         fase = tren.fase
@@ -729,7 +774,7 @@ def paso(estado, observacion):
                     observacion.intento_promocion != fase.intentos or
                     (lectura.B, lectura.C) != (cert.B, cert.C)):
                 return estado, efectos
-    efectos = []
+            efectos = list(efectos)
     entradas = []
     vistas = {v.recibo or str(v.pr): v for v in observacion.prs}
     # A landed PR closes as merged; its delivery is settled, not expired.
@@ -894,7 +939,7 @@ _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrad
           Incierto, Fallo, Completo, Incompleto, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,
-          Repeticion, Reproduccion, Evidencia, Causa, ResultadoCI)}
+          Repeticion, Reproduccion, Evidencia, Causa, ResultadoCI, Verificacion)}
 
 
 def datos(valor):
