@@ -216,7 +216,7 @@ def sanitize(request, response, op):
         raise ValueError('Respuesta inválida')
     if op == 'capabilities':
         return control(response, request['host'])
-    if request.get('op')=='reorder' and op!='status' and (response.get('error') or {}).get('code')=='invalid_request':
+    if (request.get('op')=='reorder' or 'queue' in request.get('expected',{})) and op!='status' and (response.get('error') or {}).get('code')=='invalid_request':
         return dict(unavailable(),action_id=request['action_id'])
     if response.get('action_id') != request['action_id']:
         raise ValueError('ID distinto')

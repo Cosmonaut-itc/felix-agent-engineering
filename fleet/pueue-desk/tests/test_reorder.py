@@ -453,6 +453,20 @@ def test_stock_stashed_without_preparer_is_not_resurrected(self):
     self.assertIn('Stashed',self.tasks['1']['status'])
 
 
+def test_rejected_id_remains_terminal_after_conditions_change(self):
+    self.engine.coordinated_reorder=False
+    request=self.order_request('rejected-order-01')
+    rejected=self.engine.handle(request)
+    self.assertEqual(rejected['error']['code'],'uncoordinated')
+    self.engine.coordinated_reorder=True
+    self.assertEqual(self.engine.handle(request),rejected)
+    changed=copy.deepcopy(request);changed['change']['order'].reverse()
+    self.assertEqual(self.engine.handle(changed)['error']['code'],'idempotency_conflict')
+    self.assertEqual(self.p.calls,[])
+    self.assertTrue(self.engine.reconcile())
+    self.assertEqual(self.engine.handle(request),rejected)
+
+
 for name,fn in list(globals().items()):
     if name.startswith('test_'):setattr(ReorderTests,name,fn)
 
@@ -529,6 +543,17 @@ class InstallTests(unittest.TestCase):
         self.engine=Engine();self.config=dict(pid_file=self.home/'pid',data=self.home)
 
     def files(self):return {str(p.relative_to(self.home)):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+
+    def test_installer_load_cannot_write_bytecode_before_preflight(self):
+        import sys
+        source=self.home/'source';source.mkdir()
+        path=Path(self.installer.__file__)
+        (source/'control.py').write_bytes(path.with_name('control.py').read_bytes())
+        before=self.files()
+        namespace=dict(__file__=str(source/'install-reorder.py'),__name__='u36_dry_import')
+        with patch.object(sys,'dont_write_bytecode',False),patch.object(sys,'pycache_prefix',None):
+            exec(compile(path.read_bytes(),str(path),'exec'),namespace)
+        self.assertEqual(before,self.files())
 
     def test_dry_validates_before_every_effect_and_no_restart(self):
         import io

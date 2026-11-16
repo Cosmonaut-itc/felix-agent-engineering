@@ -76,6 +76,8 @@ class ReorderChannelTests(unittest.TestCase):
         self.assertEqual(a.host_channel.sanitize(r,old,'reorder')['status'],'unsupported')
         old=dict(schema='rack-host-result@1',action_id=r['action_id'],status='rejected',error=dict(code='invalid_request'))
         self.assertEqual(a.host_channel.sanitize(r,old,'reorder')['status'],'unsupported')
+        undo=dict(r,op='undo',undo_of='previous-order-001');undo.pop('change')
+        self.assertEqual(a.host_channel.sanitize(undo,old,'undo')['status'],'unsupported')
         with self.assertRaises(ValueError):a.decode(json.dumps(r).encode()+b' '*16384)
         r['expected']['queue'][0]['id']=True
         with self.assertRaises(ValueError):a.validate(r)

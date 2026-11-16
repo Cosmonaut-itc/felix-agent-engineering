@@ -1120,15 +1120,25 @@ una tarea con alias expandido ni formatos que el helper no reconoce: se devuelve
 de Pueue 4.0.4, consume completas las cadenas TOML multilínea y sólo sustituye
 el entero de `priority`; no registra el documento ni acepta rutas del navegador.
 Usa directorio 0700, plan 0600 y TMPDIR privado.
+Antes de escribir el TOML, el helper consulta el socket fijo y exige Locked con
+previous_status Queued, grupo Paused, prioridad e identidad esperadas y el mismo
+inicio de kernel del daemon y cliente. Revalida la revocación antes del efecto.
 
 El mismo recuperador de `control.py` atiende acciones desde la guardia existente
 `local.pao.pueue-mini.guard` (60 s) y desde `preparar`; no se agrega job ni bucle.
 El preparador resuelve Locked propio antes del restore stock, con identidad,
 previous_status Queued y ausencia de log. Stashed ajeno y tareas terminales no
-se reviven. Si queda un cliente/editor vivo, se revoca su plan y sólo se señala
+se reviven. Si alguien omite el preparador y stock ya convirtió Locked a
+Stashed, la recuperación online retiene el grupo: no puede distinguir esa
+conversión de una cancelación externa. El arranque normal U3.5 resuelve el
+Locked atribuible antes de esa pérdida de información.
+Si queda un cliente/editor vivo, se revoca su plan y sólo se señala
 un PID cuyo inicio de kernel coincide (microsegundos Darwin, boot/ticks Linux).
 No se inicia otra edición hasta confirmar su salida. `enqueue ID` se limita al
 id anotado y se persiste con edit, apertura o repetición de nuestra propia pausa.
+Cuando enqueue cambia su fecha, el diario conserva el enlace entre la fecha
+anterior y la nueva; el snapshot mantiene la edad visual sólo si coinciden la
+identidad opaca y la fecha de reparación actual, sin trasladarla a un id nuevo.
 La incertidumbre conserva el grupo cerrado y muestra «En pausa recuperando…»
 y el action_id propietario. Los switches de acciones nuevas no abandonan una
 acción aceptada; consultas y ensayos no recuperan ni escriben. El índice de

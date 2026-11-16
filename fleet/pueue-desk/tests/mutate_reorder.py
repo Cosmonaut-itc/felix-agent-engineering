@@ -36,6 +36,8 @@ CASES=[
  ('helper checks previous Queued before write','editor_prioridad.py',"    verify_locked(plan,json.loads(reply.stdout))","    pass",'test_reorder.HelperTests.test_helper_entrypoint_rejects_stashed_previous_without_writing_toml'),
  ('ambiguous Stashed never enqueued','control.py',"                    if owned_lock:","                    if owned_lock or name=='Stashed':",T+'test_stock_stashed_without_preparer_is_not_resurrected'),
  ('host has preparer','control.py',"        if not self.reorder_host_ready(state):", "        if False:",T+'test_unprepared_host_cannot_enable_or_pause'),
+ ('rejected id cannot become effect','control.py',"            if request['op'] in ('slots', 'mode', 'undo', 'reorder') and not request['dry_run']:","            if request['op'] in ('slots', 'mode', 'undo') and not request['dry_run']:",T+'test_rejected_id_remains_terminal_after_conditions_change'),
+ ('installer load has zero writes','install-reorder.py',"exec(compile((ROOT/'control.py').read_bytes(),c.__file__,'exec'),c.__dict__)","import importlib.util\nspec=importlib.util.spec_from_file_location('u36_install',ROOT/'control.py')\nspec.loader.exec_module(c)",'test_reorder.InstallTests.test_installer_load_cannot_write_bytecode_before_preflight'),
 
 ]
 

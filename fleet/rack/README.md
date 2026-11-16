@@ -989,3 +989,10 @@ finita ante avería. El [README del controlador](../pueue-desk/README.md) descri
 identidad, diario, helper TOML, medición, instalación `--seco` y reversión sin
 reiniciar Pueue. La publicación del rack conserva su procedimiento actual;
 no se ha ejecutado en esta entrega.
+
+Las respuestas del canal de control de host admiten hasta 64 KiB para incluir
+before, destino y observado de 64 identidades. Las peticiones y las respuestas
+de cancelación conservan su tope de 16 KiB. Si llegaron más de 64 altas durante
+la acción, el recibo marca el observado incompleto y la UI espera al snapshot;
+no elimina filas a partir de un vector truncado. El host valida cualquier
+intento de deshacer contra la fila completa y devuelve conflicto si cambió.

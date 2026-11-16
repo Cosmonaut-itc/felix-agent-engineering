@@ -1,14 +1,15 @@
 #!/usr/bin/python3 -I
 """Actualizar U3.6 en una Mini adoptada, sin reiniciar daemon ni jobs."""
 import argparse
-import importlib.util
 import os
 from pathlib import Path
 import sys
+import types
 
 ROOT=Path(__file__).resolve().parent
-spec=importlib.util.spec_from_file_location('u36_install',ROOT/'control.py')
-c=importlib.util.module_from_spec(spec);spec.loader.exec_module(c)
+c=types.ModuleType('u36_install');c.__file__=str(ROOT/'control.py')
+# -I ignores PYTHONDONTWRITEBYTECODE: even the preflight's local import is pure.
+exec(compile((ROOT/'control.py').read_bytes(),c.__file__,'exec'),c.__dict__)
 
 
 def publish(path, raw):
