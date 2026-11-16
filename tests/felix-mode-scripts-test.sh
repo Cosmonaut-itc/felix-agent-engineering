@@ -2517,9 +2517,9 @@ for case in cases:
     git(repo, 'commit', '-qam', 'parche')
     git(repo, 'checkout', '-q', 'destino')
     write(theirs, 'destino')
-    if case == 'modo':
-        (repo / path).chmod(0o755)
     git(repo, 'add', '.')
+    if case == 'modo':
+        git(repo, 'update-index', '--chmod=+x', path)
     git(repo, 'commit', '-qm', 'destino')
     git(repo, 'checkout', '-qb', 'nuevo', 'revisado')
     merge = subprocess.run(['git', '-C', str(repo), 'merge', '-q', '--no-edit', 'destino'],
