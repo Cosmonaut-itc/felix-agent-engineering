@@ -223,6 +223,17 @@ def test_limits_permutation_i32_booleans_and_budget(self):
     self.assertEqual((result.get('error') or {}).get('code'),'pause_budget');self.assertEqual(self.p.calls,[])
 
 
+def test_rpc_uses_remaining_common_budget_and_never_sends_after_expiry(self):
+    client=control.Pueue('only-a-double');client.timeout=1;client.deadline=5
+    answer=subprocess.CompletedProcess([],0,'synthetic','')
+    with patch.object(control.time,'monotonic',return_value=4.8),patch.object(control.subprocess,'run',return_value=answer) as run:
+        self.assertEqual(client.call('status','--json'),'synthetic')
+        self.assertAlmostEqual(run.call_args.kwargs['timeout'],.2)
+    with patch.object(control.time,'monotonic',return_value=5),patch.object(control.subprocess,'run') as run:
+        with self.assertRaises(TimeoutError):client.call('start','-g','suites')
+        run.assert_not_called()
+
+
 def test_revocation_after_acceptance_still_recovers(self):
     self.engine.reorder_boundary=lambda p:(_ for _ in ()).throw(Crash()) if p=='client_sent' else None
     r=self.order_request()
