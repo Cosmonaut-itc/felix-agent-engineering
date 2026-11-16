@@ -61,8 +61,14 @@ run('render(structuredClone(fixture));globalThis.h=S.hosts[0]');
  run('globalThis.cancelled=[];DRAG={};finishDrag=(cancel)=>{cancelled.push(cancel);DRAG=null}');
  for(const fn of listeners.keydown) fn({target:{closest:()=>null},key:'Escape',preventDefault(){}});
  assert.equal(run('cancelled[0]'),true);
+ // Touch outside the handle preserves vertical scroll and never captures.
+ run('DRAG=null');
+ for(const fn of listeners.pointerdown) fn({target:{closest:s=>s==='.fila li[data-reorder="true"]'?li:null},button:0,pointerType:'touch',pointerId:4,clientY:100,preventDefault(){throw Error('scroll captured')}});
+ assert.equal(run('DRAG'),null,'touch on row body must scroll');
  li.getBoundingClientRect=()=>({top:100});li.focus=()=>{};ol.children=[li];
  for(const fn of listeners.pointerdown) fn({target:{closest:s=>s==='button'?null:li},button:0,pointerId:3,clientY:100,preventDefault(){}});
+ for(const fn of listeners.pointercancel || []) fn({pointerId:99});
+ assert(run('DRAG!==null'),'another pointer cannot cancel the drag');
  for(const fn of listeners.pointercancel || []) fn({pointerId:3});
  assert.equal(run('cancelled.at(-1)'),true,'pointercancel restores without submitting');
  assert.equal(requests.filter(r=>r[1]?.method==='POST').length,2,'cancelling gestures never POST');

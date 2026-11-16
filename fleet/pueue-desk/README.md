@@ -137,7 +137,7 @@ sigue en pausa, ahora como pausa manual:
 /usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py pausar suites --host mini
 ```
 
-Para reanudarlo después: `/opt/homebrew/bin/pueue start -g suites`.
+Para reanudarlo después: `/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar suites --host mini`.
 Una segunda pausa directa de Pueue no expresa ese relevo. El estado
 `guardia-state.json`, `control.lock` y el log JSONL UTC viven en
 `~/.local/state/pao/pueue-mini`. Verlo con
@@ -148,7 +148,7 @@ pausas manuales no son suyas y siguen en pausa. Conserva el log.
 Si instalar o desinstalar fallan con la guardia descargada, el guion reanuda
 sus grupos y, si no puede, vuelve a cargarla con la propiedad intacta; en ambos
 casos sale con error. Si tampoco puede recargarla, el error nombra los grupos que
-siguen en pausa y el comando `pueue start -g` para reanudarlos.
+siguen en pausa. En una instalación adoptada, reanudarlos siempre por `control.py reanudar GRUPO --host mini`, que conserva razones y admisión fresca.
 
 **Límite:** sólo frena la admisión: las tareas que ya corren siguen. Las
 corridas de `remote-run` encolan en `suites`, o en `rapidas` con `--carril rapido`; las corridas de Jale en la Mini
@@ -1091,7 +1091,11 @@ capacidad **deshabilitada mientras no se acredite el contrato de clientes**:
 el cliente inspeccionado `~/.local/bin/pueue.py:1925` hace `start <id>` durante
 una cancelación en fila. No hay una opción JSON, variable de entorno ni botón
 para eludir este cierre. El daemon privado de aceptación inyecta el contrato;
-no se ejecuta un canario sobre la fila compartida. El primer uso real será de
+no se ejecuta un canario sobre la fila compartida. La única compuerta durable es
+`MiniControl.coordinated_reorder = False` en `control.py` («clientes coordinados»).
+La unidad posterior del cliente cambiará ese fuente tras acreditar todos sus
+escritores; ninguna ruta de producción actual la enciende. Apagada publica
+`capabilities.reorder=false`, `capabilities.reason_reorder` y el motivo por grupo. El primer uso real será de
 Felix desde el panel después de cerrar esa dependencia y pasar aceptación.
 
 Las pausas y aperturas manuales pasan por `control.py pausar GRUPO --host mini`
@@ -1115,11 +1119,24 @@ pausa y cotejar fila exacta → intención por edición → helper TOML fijo por
 verificar identidad/campos/prioridades → reconciliar cuotas → sensores frescos
 → admitir por grupo → recibo durable. Un alta posterior al cotejo conserva su
 id y prioridad y queda fuera del plan; invalida Deshacer estricto. No se edita
-una tarea con alias expandido ni formatos que el helper no reconoce: se devuelve
+una tarea con alias expandido, un alias actual aplicable aunque se añadiera
+después del add, ni formatos que el helper no reconoce: se devuelve
 `edit_unsafe` antes de pausar. El helper reconoce la clave serializada `command`
 de Pueue 4.0.4, consume completas las cadenas TOML multilínea y sólo sustituye
 el entero de `priority`; no registra el documento ni acepta rutas del navegador.
-Usa directorio 0700, plan 0600 y TMPDIR privado.
+Usa directorio 0700, plan 0600 y TMPDIR privado. La configuración de conexión
+TOML se prepara una vez por acción antes de pause; cada id conserva plan,
+TMPDIR, cliente, helper y revocación propios. La compuerta stdin precede incluso
+a la lectura del plan, de modo que se escribe una sola vez con PID+nacimiento
+antes de liberar el cliente. No hay edición multitabla ni bloqueo por lotes.
+
+Los aliases se leen de la configuración realmente seleccionada por el daemon
+U3.5 (HOME/cwd fijos, sin overrides); no se infieren del config del cliente
+de edición. Si el config es posterior al nacimiento del daemon, se rechaza.
+Config y aliases también requieren coordinación bajo `control.lock`; formatos
+YAML ambiguos o escapes no acreditados fallan cerrados. El helper decodifica
+command/path/label del TOML recibido y compara su huella opaca y prioridad
+previa con el plan **antes** de escribir; preserva todos los demás bytes.
 Antes de escribir el TOML, el helper consulta el socket fijo y exige Locked con
 previous_status Queued, grupo Paused, prioridad e identidad esperadas y el mismo
 inicio de kernel del daemon y cliente. Revalida la revocación antes del efecto.
@@ -1152,25 +1169,37 @@ deshacer». Una tarea que empezó al abrir el grupo puede invalidarlo enseguida.
 Si sube la presión durante el reordenado, el orden queda aplicado y la pausa
 pasa a la guardia; no se abre sólo porque la pausa empezó siendo nuestra.
 
-Los límites de entrada son 64 pendientes y 16 KiB. La pausa tiene presupuesto
-común de 3 s y RPC de hasta 1 s; antes de pausar se estima el coste de las
-ediciones necesarias y se rechaza si no cabe. El ensayo privado Homebrew 4.0.4
-del 2026-11-16 midió 5 pendientes: 3,158 s de pipeline / 3,082 s de sección
-pausada sin historial; con 1500 Stashed y 9 433 637 bytes, 5,663 s / 5,382 s.
-En esos lotes de 5, la edición completa más lenta fue 0,914 s y la RPC observada
-0,210 s. El caso de 64 terminó unknown con intención retenida; no hay una medición completa de
-64 ni se declara esa aceptación superada. La limpieza confirmó daemon salido,
-cero LaunchAgents creados y ningún proceso propio restante.
+Los límites de entrada son 64 pendientes y 16 KiB. La fase normal pausada
+conserva 3 s y cada RPC de reorder ≤1 s y el tiempo restante de su fase,
+incluidas lecturas, reparación y reconciliación. Una recuperación tiene su
+propio presupuesto acotado y puede continuar en otro tick; el vencimiento no
+es un recibo terminal de aborto. El ámbito se restaura al salir: las lecturas
+ordinarias de guardia mantienen su espera histórica sin timeout global.
 
-Ningún lote medido cabe en 3 s. El estimador conserva un piso de 7 s
-(`ceil(1,25 × 5,382)`) más 1,5 s por edición, deliberadamente conservador:
-**también rechaza antes de pausar si se acreditase el contrato de clientes**.
-No se ha acreditado un lote menor que pueda habilitarse. Optimizar y volver a
-medir requiere otro encargo; no se amplía el plazo de producción en silencio.
-`tests/private_reorder.py` amplía el presupuesto **sólo dentro del daemon
-privado para medir**, nunca desde el protocolo. La cadencia de 60 s impide
-prometer recuperación ≤10 s; disco/socket averiados, procesos ambiguos o presión sostenida no tienen
-un peor caso finito. Véase la evidencia del encargo U3.6 antes de habilitar.
+El arnés `tests/private_reorder.py` nombra los intervalos con precisión:
+`acceptance_to_pause_seconds` empieza después del commit de prepared;
+`pause_start_envelope_seconds` va de antes de enviar pause a después de la RPC
+start, **no mide los instantes internos exactos del daemon**. Separa
+verificación, admisión, recibo y handle completo. Si no hubo start conserva
+`retained_close_observed_seconds`; no publica ese cierre retenido como pausa
+normal completada. Registra por edición lecturas status, arranque del cliente,
+arranque/status/escritura del helper, CLI, diario y total (varios son intervalos
+anidados, no sumandos independientes). Cada escenario emite sus métricas
+parciales antes de comprobar éxito y el siguiente sigue aunque falle el previo.
+La admisión privada usa sensores bajos sintéticos e incluye el coste del sensor
+real; no acredita apertura bajo presión de producción. Conserva la fixture de
+1500 Stashed / 9,43 MB y carga load1/load5/load15 de cada medición.
+
+Las cifras anteriores de A, 3,082 s sin historial y 5,382 s con historial, eran
+**prepared→start**, no sección pausada exacta; los handles fueron 3,158 y
+5,663 s. Su unknown de 64 ocurrió en client_ready de la edición 36 y no guardó
+la clase de error: process=None por sí solo no distingue salida no-cero de
+timeout. El motor actual conserva fase/clase/rc sin argv, stderr ni documentos.
+La admisión calibrada rechaza los planes que no caben antes de pause.
+
+La guardia actual tiene cadencia de 60 s; no se promete recuperación ≤10 s ni
+un peor caso finito. La capacidad sigue apagada por clientes no coordinados,
+independientemente de la estimación temporal y del resultado de aceptación.
 
 Actualización sin reiniciar `pueued`, a ejecutar sólo en la Mini adoptada:
 

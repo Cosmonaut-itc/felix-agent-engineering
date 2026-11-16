@@ -954,6 +954,14 @@ listener ni acceso público nuevo. El desk sigue sin capacidad de reordenar.
 Un controlador viejo que responde `invalid_request` se presenta como
 `unsupported`; una respuesta incierta se consulta por el mismo id, sin repetir
 el POST. El índice durable conserva también los rechazos y sus digest.
+Antes del POST de reorder o undo de fila se consultan capacidades frescas del
+controlador real. Esto detecta una reversión posterior al snapshot: la base
+66e2c1e devuelve recovery_error para reorder y unknown para la nueva variante
+undo, que todavía no admite. La falta comprobada de metadata de fila en un
+controlador sano se traduce a unsupported **antes de enviar la mutación**.
+Timeout, capacidad corrupta y unknown de un host actual siguen inciertos;
+GET nunca reenvía una operación ni convierte una incertidumbre en rechazo.
+
 Cancelación y reordenado se excluyen mientras haya una acción pendiente del
 host; el candado de control nunca se retiene durante la limpieza de un lanzador.
 
@@ -963,14 +971,18 @@ reconciliadas, generación vigente y ausencia de pausa/Locked/Stashed o tareas
 individualmente Paused. **La entrega queda cerrada en la instalación actual**:
 `~/.local/bin/pueue.py:1925` fuerza `start ID` al cancelar. Debe corregirse y
 auditarse ese cliente antes de habilitar en producción. No se cambia aquí el
-cliente instalado. La comprobación privada usa exclusivamente un daemon propio.
+cliente instalado. `MiniControl.coordinated_reorder=False` es la única
+compuerta durable; su motivo llega en capabilities y por grupo. La comprobación
+privada usa exclusivamente un daemon propio.
 
 Cuando está acreditado, arrastrar una fila la levanta y sigue al puntero;
 los vecinos se desplazan y la posición muestra `5→2`. Alt+↑/↓ usa la misma
 operación y conserva el foco; Escape y pointercancel restauran sin POST.
 `prefers-reduced-motion` quita desplazamientos de vecinos. Durante la petición
 se bloquea el grupo y aparece «Reordenando…». Tras confirmación visible se
-resalta 2,5 s y se ofrece «Deshacer» durante 8 s. El toast usa `textContent`.
+resalta 2,5 s con marcador `5→2` y franja lateral, y se ofrece «Deshacer»
+durante 8 s con ticket/lugar/grupo. El toast usa `textContent`. En táctil sólo
+la manija captura el arrastre; el cuerpo de fila conserva scroll vertical.
 Los cambios se anuncian por aria-live. No se añade menú Subir/Bajar en esta
 unidad; queda como mejora de accesibilidad separada del prototipo aprobado.
 
@@ -984,11 +996,13 @@ conserva el orden aplicado y entrega la pausa a la guardia.
 El límite es 64 pendientes; una fila mayor explica «Fila demasiado larga para
 reordenar de una vez». Además, el host rechaza antes de pausar un plan que
 excede el presupuesto medido de 3 s; las RPC tienen límite de 1 s.
-En la medición privada, 5 pendientes necesitaron 3,082 s de pausa sin historial
-y 5,382 s con 1500 Stashed / 9,43 MB. El caso de 64 terminó unknown, sin medida
-completa. No hay un lote acreditado dentro del presupuesto: el host conserva
-un piso conservador de 7 s y rechaza antes de pausar incluso con clientes
-coordinados. Hace falta optimización y nueva aceptación antes de habilitar.
+La envolvente `pause_start_envelope_seconds` del arnés va desde antes de la
+RPC pause hasta después de start; handle completo incluye más trabajo. Se
+miden aparte aceptación→pause, verificación, admisión y recibo. Las antiguas
+cifras 3,082/5,382 s de A eran prepared→start, no pausa exacta. Una avería
+conserva cierre observado y propietario; ningún arnés llama éxito a superar
+el presupuesto normal. La estimación se calibra con el pipeline completo y
+la fixture de 9,43 MB; no es una garantía ante carga futura.
 La guardia existente corre cada 60 s: no se promete recuperación en 10 s ni una cota
 finita ante avería. El [README del controlador](../pueue-desk/README.md) describe
 identidad, diario, helper TOML, medición, instalación `--seco` y reversión sin

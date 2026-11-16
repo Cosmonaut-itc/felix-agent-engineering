@@ -23,6 +23,7 @@ class ReorderChannelTests(unittest.TestCase):
         self.p.status=lambda:dict(groups=copy.deepcopy(self.p.groups),tasks=copy.deepcopy(self.tasks))
         self.p.call=lambda *args:self.p.groups['suites'].update(status='Paused' if args[0]=='pause' else 'Running')
         self.p.binary='fake-no-real-binary'
+        self.engine.reorder_config=lambda action,state:self.root/'synthetic-config.json'
         self.engine.reorder_aliases=lambda state:{}
         self.engine.coordinated_reorder=True
         self.engine.reorder_host_ready=lambda state:True

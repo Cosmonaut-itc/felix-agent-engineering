@@ -225,6 +225,11 @@ STARTUP_CASES += (
 
 
 REORDER_CASES = (
+    ('order-current-host-probe','accion.py',"if op != 'status' and (request['op']=='reorder' or 'queue' in request.get('expected',{})):","if False:",'test_reorder.ReorderChannelTests.test_real_old_host_reorder_and_queue_undo_fail_before_mutation'),
+    ('order-undo-current-probe','accion.py',"if op != 'status' and (request['op']=='reorder' or 'queue' in request.get('expected',{})):","if op != 'status' and request['op']=='reorder':",'test_reorder.ReorderChannelTests.test_real_old_host_reorder_and_queue_undo_fail_before_mutation'),
+    ('order-confirmed-marker','index.html','return mark?.from&&mark?.to?`${mark.from}→${mark.to}`:i+1;','return i+1;','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-touch-scroll','index.html',"  if(ev.pointerType==='touch' && !ev.target.closest('.h')) return;",'','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-pointer-id','index.html','d.cancel=e=>{if(e.pointerId===d.pointer) finishDrag(true);};','d.cancel=e=>{finishDrag(true);};','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-old-undo','host_action.py',"(request.get('op')=='reorder' or 'queue' in request.get('expected',{})) and op!='status'", "request.get('op')=='reorder' and op!='status'",'test_reorder.ReorderChannelTests.test_closed_fields_budget_and_old_host_translation'),
     ('order-reply-64k','desk_action.py',"limit = 65536 if request.get('schema')","limit = 16384 if request.get('schema')",'test_reorder.ReorderChannelTests.test_64_receipt_crosses_transport_and_cancel_keeps_16k'),
     ('order-wire-limit','accion.py','if len(raw) > 16384:', 'if False:', 'test_reorder.ReorderChannelTests.test_closed_fields_budget_and_old_host_translation'),
@@ -232,7 +237,7 @@ REORDER_CASES = (
     ('order-confirmation-highlight','index.html','}},2500);','}},25);','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-toast-eight-seconds','index.html',"setTimeout(()=>toast.textContent='', 8000)","setTimeout(()=>toast.textContent='', 1000)",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-escape-cancel','index.html',"finishDrag(true);return;","finishDrag(false);return;",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
-    ('order-pointercancel','index.html','d.cancel=()=>finishDrag(true);','d.cancel=()=>finishDrag(false);','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-pointercancel','index.html','d.cancel=e=>{if(e.pointerId===d.pointer) finishDrag(true);};','d.cancel=e=>{if(e.pointerId===d.pointer) finishDrag(false);};','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-keyboard-direction','index.html',"from+(ev.key==='ArrowUp'?-1:1)","from+(ev.key==='ArrowUp'?1:-1)",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-text-only','index.html','toast.textContent=text;','toast.innerHTML=text;','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
 )

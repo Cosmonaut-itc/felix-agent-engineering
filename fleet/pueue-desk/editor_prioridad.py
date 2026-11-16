@@ -88,8 +88,13 @@ def _basic(text, i, end_quote):
                 if code > 0x10FFFF or 0xD800 <= code <= 0xDFFF:
                     raise Unrecognized('escape unicode inválido')
                 out.append(chr(code)); i += 2 + width
+            elif end_quote == chr(34)*3 and e in ('\n','\r'):
+                i += 1
+                if text.startswith('\r\n',i):i += 2
+                elif text.startswith('\n',i):i += 1
+                else:raise Unrecognized('continuación inválida')
+                while i<len(text) and text[i] in ' \t\r\n':i += 1
             else:
-                # Includes the multiline line-ending backslash: not emitted by Pueue.
                 raise Unrecognized('escape no reconocido')
             continue
         if end_quote == '"':
@@ -103,7 +108,10 @@ def _basic(text, i, end_quote):
                 raise Unrecognized('comillas finales ambiguas')
             out.append('"' * (run - 3))
             return ''.join(out), i + run
-        out.append(c); i += 1
+        if c=='\r' and text[i:i+2]=='\r\n':
+            out.append('\n');i += 2
+        else:
+            out.append(c);i += 1
 
 
 def _literal(text, i, multiline):
@@ -114,7 +122,7 @@ def _literal(text, i, multiline):
         run = len(text) - end - len(text[end:].lstrip("'"))
         if run > 5:
             raise Unrecognized('comillas finales ambiguas')
-        return text[i:end] + "'" * (run - 3), end + run
+        return text[i:end].replace('\r\n','\n') + "'" * (run - 3), end + run
     end = text.find("'", i)
     if end < 0 or '\n' in text[i:end] or '\r' in text[i:end]:
         raise Unrecognized('cadena literal inválida')
@@ -125,13 +133,15 @@ def _value(text, i):
     """Return (kind, decoded, start, end) of one TOML value at text[i]."""
     if text.startswith('"""', i):
         j = i + 3
-        if text.startswith('\n', j):
+        if text.startswith('\r\n',j):j += 2
+        elif text.startswith('\n', j):
             j += 1  # the newline right after the opening delimiter is trimmed
         value, end = _basic(text, j, '"""')
         return 'string', value, i, end
     if text.startswith("'''", i):
         j = i + 3
-        if text.startswith('\n', j):
+        if text.startswith('\r\n',j):j += 2
+        elif text.startswith('\n', j):
             j += 1
         value, end = _literal(text, j, True)
         return 'string', value, i, end
@@ -244,6 +254,8 @@ def remaining(plan):
 
 def main():
     begun=time.monotonic()
+    if sys.argv[1] == '--client' and sys.stdin.buffer.read(1) != b'1':
+        return
     plan_path = Path(sys.argv[2] if sys.argv[1] == '--client' else sys.argv[1]).resolve()
     private_file(plan_path)
     plan = json.loads(plan_path.read_text())
@@ -252,10 +264,8 @@ def main():
         raise ValueError('edit_unsafe')
     if sys.argv[1] == '--client':
         # No RPC before the controller commits our PID + birth and opens stdin.
-        if sys.stdin.buffer.read(1) != b'1':
-            return
         remaining(plan)
-        os.execve(plan['binary'], [plan['binary'], '--config', str(root/'config.json'),
+        os.execve(plan['binary'], [plan['binary'], '--config', plan['config'],
                                   'edit', str(plan['id'])], dict(os.environ))
     if birth(plan['client']['pid']) != plan['client']['birth']:
         raise ValueError('edit_unsafe')
@@ -273,7 +283,7 @@ def main():
     if birth(plan['daemon']['pid']) != plan['daemon']['birth']:
         raise ValueError('edit_unsafe')
     status_begun=time.monotonic()
-    reply=subprocess.run([plan['binary'],'--config',str(root/'config.json'),'status','--json'],
+    reply=subprocess.run([plan['binary'],'--config',plan['config'],'status','--json'],
                          check=True,stdout=subprocess.PIPE,stderr=subprocess.DEVNULL,text=True,
                          timeout=remaining(plan))
     verify_locked(plan,json.loads(reply.stdout))

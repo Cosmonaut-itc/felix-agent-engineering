@@ -49,6 +49,13 @@ CASES=[
  ('reorder preacceptance RPC scope','control.py','    def reorder_handle(self, request):\n        with self.reorder_deadline():', '    def reorder_handle(self, request):\n        with __import__("contextlib").nullcontext():',T+'test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded'),
  ('recovery reconciliation scope','control.py',"if self.host == 'mini' and any(a['phase'] != 'terminal' for a in self.reorder_actions()):",'if False:',T+'test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded'),
  ('safe failure diagnostic retained','control.py',"latest['failure'] = dict(kind=type(error).__name__, phase=latest['phase'],", "latest['ignored'] = dict(kind=type(error).__name__, phase=latest['phase'],",T+'test_failed_edit_preserves_safe_diagnostic_and_recovery_finishes'),
+ ('precise pause envelope','tests/private_reorder.py',"pause_start_envelope_seconds=span('pause_begin','start_effect')", "pause_start_envelope_seconds=span('prepared','start_effect')",'test_reorder.HarnessTests.test_intervals_use_rpc_envelope_and_keep_partial_evidence'),
+ ('scenario failure retained','tests/private_reorder.py',"        return False\n\n\nclass Crash", "        return True\n\n\nclass Crash",'test_reorder.HarnessTests.test_failed_scenario_emits_partial_and_next_scenario_runs'),
+
+ ('client waits before reading plan','editor_prioridad.py',"if sys.argv[1] == '--client' and sys.stdin.buffer.read(1) != b'1':",'if False:','test_reorder.HelperTests.test_client_gate_precedes_plan_read_and_every_rpc'),
+ ('client config reused','control.py',"        if target.exists():\n            return target\n        data = Path(authority['pid_file']).parent", "        if False:\n            return target\n        data = Path(authority['pid_file']).parent",T+'test_client_configuration_is_built_once_per_action'),
+ ('one parent snapshot','control.py',"snapshot = getattr(self, '_reorder_edit_snapshot', None) or self.pueue.status()", "snapshot = self.pueue.status()",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
+
 ]
 
 

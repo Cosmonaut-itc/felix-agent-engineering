@@ -1694,6 +1694,7 @@ class MiniControl:
 
             db.execute('INSERT INTO host_actions VALUES (?,?,?)', (request['action_id'], digest, canonical(action)))
         self.reorder_boundary('prepared')
+        self.reorder_config(action, state)
         deadline = time.monotonic() + self.reorder_budget
         old_timeout = getattr(self.pueue, 'timeout', None)
         old_deadline = getattr(self.pueue, 'deadline', None)
@@ -1753,6 +1754,22 @@ class MiniControl:
             if set(task['status']) != {'Queued'} or task['priority'] != row['priority']:
                 raise ValueError('recovery_error')
 
+    def reorder_config(self, action, authority):
+        # Fixed local connection, never supplied by a wire request. All ids still
+        # use distinct private TMPDIR/plan/revocation files; no shared editor state.
+        target = self.directory/('reorder-'+action['request']['action_id']+'.json')
+        if target.exists():
+            return target
+        data = Path(authority['pid_file']).parent
+        settings = dict(shared=dict(pueue_directory=str(data), runtime_directory=str(data),
+                         pid_path=str(data/'pueue.pid'), unix_socket_path=str(data/('pueue_'+__import__('pwd').getpwuid(os.getuid()).pw_name+'.socket')),
+                         shared_secret_path=str(data/'shared_secret')), client=dict(edit_mode='toml'))
+        if hasattr(self.pueue, 'edit_settings'):
+            settings = deepcopy(self.pueue.edit_settings)  # private harness seam, no wire input
+            settings.setdefault('client', {})['edit_mode'] = 'toml'
+        atomic_json(target, settings)
+        return target
+
     def edit_priority(self, action, ident, priority, deadline):
         begun = time.monotonic()
         import tempfile
@@ -1771,29 +1788,15 @@ class MiniControl:
         self.reorder_preflight(task, self.reorder_aliases(authority))
         root = Path(tempfile.mkdtemp(prefix='edit-', dir=str(self.directory)))
         root.chmod(0o700)
-        # A new config changes only this private client's edit mode / aliases.
-        # Connection paths originate in authority, never in a JSON request.
-        with self.connect() as db:
-            data = Path(self.state(db)['pid_file']).parent
-        settings = dict(shared=dict(pueue_directory=str(data), runtime_directory=str(data),
-                         pid_path=str(data/'pueue.pid'), unix_socket_path=str(data/('pueue_'+__import__('pwd').getpwuid(os.getuid()).pw_name+'.socket')),
-                         shared_secret_path=str(data/'shared_secret'), alias_file=str(root/'aliases.yml')),
-                        client=dict(edit_mode='toml'))
-        if hasattr(self.pueue, 'edit_settings'):
-            settings = deepcopy(self.pueue.edit_settings)  # private harness seam, no wire input
-            settings.setdefault('client', {})['edit_mode'] = 'toml'
-            settings['shared']['alias_file'] = str(root/'aliases.yml')
-        atomic_json(root/'config.json', settings)
-        (root/'aliases.yml').write_text('{}\n'); (root/'aliases.yml').chmod(0o600)
+        config = self.reorder_config(action, authority)
         daemon_pid=int(Path(authority['pid_file']).read_text().strip())
         daemon_birth=helper.birth(daemon_pid)
         if not daemon_birth:
             raise ValueError('Daemon no verificable')
-        plan = dict(id=ident, priority=priority, binary=self.pueue.binary,identity=row['identity'],
+        plan = dict(id=ident, priority=priority, binary=self.pueue.binary,config=str(config),identity=row['identity'],
                     expected_priority=task['priority'],daemon=dict(pid=daemon_pid,birth=daemon_birth),
                     fingerprint=helper.fingerprint(task['original_command'],task['path'],task['label']),
                     deadline=min(deadline,time.monotonic()+self.reorder_rpc), launched=time.monotonic())
-        atomic_json(root/'plan.json', plan)
         action['editing_id'] = ident
         action['process'] = dict(root=str(root), client=None)
         self.reorder_save(action, 'edit_intent')
@@ -1884,6 +1887,8 @@ class MiniControl:
                 continue
             if not self.stop_editor(action):
                 return False
+            if not release and action['phase'] in ('edited','releasing'):
+                continue  # no repair read is needed before quota reconciliation
             with self.connect() as db:
                 state = self.state(db)
             g = action['group']

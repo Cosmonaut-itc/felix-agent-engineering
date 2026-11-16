@@ -45,6 +45,7 @@ def setup(self):
     self.p.call=call
     self.tasks = {str(i):task(i,p) for i,p in enumerate([0,-2,-2,-8,-12],1)}
     self.p.status = lambda: dict(groups=copy.deepcopy(self.p.groups),tasks=copy.deepcopy(self.tasks))
+    self.engine.reorder_config=lambda action,state:self.root/'synthetic-config.json'
     self.engine.reorder_aliases=lambda state:{}
     self.engine.coordinated_reorder = True
     self.engine.reorder_host_ready=lambda state:True
@@ -498,7 +499,8 @@ def test_rejected_id_remains_terminal_after_conditions_change(self):
 def test_alias_added_after_enqueue_rejects_before_any_effect(self):
     r=self.order_request('new-alias-00001')
     self.engine.reorder_aliases=lambda state:{'true':'changed'}
-    self.assertEqual(self.engine.handle(r)['error']['code'],'edit_unsafe')
+    answer=self.engine.handle(r)
+    self.assertEqual((answer.get('error') or {}).get('code'),'edit_unsafe')
     self.assertEqual(self.p.calls,[])
     self.assertTrue(all(t['command']=='true' for t in self.tasks.values()))
     self.assertFalse(self.engine.view()['reorder_groups']['suites']['enabled'])
@@ -545,6 +547,44 @@ def test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded(self):
     self.assertIsNone(self.p.timeout);self.assertIsNone(self.p.deadline)
     seen.clear();self.engine.reconcile()
     self.assertTrue(any(timeout is None for timeout,_ in seen))
+
+
+def test_client_configuration_is_built_once_per_action(self):
+    self.p.edit_settings=dict(shared=dict(unix_socket_path='/synthetic/socket'))
+    r=self.order_request('config-once-0001');action=dict(request=r)
+    with self.engine.connect() as db:state=self.engine.state(db)
+    original=control.atomic_json;calls=[]
+    def write(path,value):
+        calls.append(path)
+        return original(path,value)
+    actual=control.MiniControl.reorder_config.__get__(self.engine)
+    with patch.object(control,'atomic_json',side_effect=write):
+        path=actual(action,state)
+        self.assertEqual(actual(action,state),path)
+    self.assertEqual(len(calls),1)
+    self.assertEqual(path.stat().st_mode & 0o777,0o600)
+    self.assertEqual(json.loads(path.read_text())['client']['edit_mode'],'toml')
+
+
+def test_one_paused_snapshot_replaces_parent_status_reads_per_id(self):
+    from unittest.mock import Mock
+    r=self.order_request()
+    self.engine.reorder_boundary=lambda p:(_ for _ in ()).throw(Crash()) if p=='prepared' else None
+    with self.assertRaises(Crash):self.engine.handle(r)
+    self.engine.reorder_boundary=lambda p:None
+    action=self.engine.reorder_actions()[-1]
+    self.p.groups['suites']['status']='Paused'
+    snap=self.p.status();self.engine._reorder_edit_snapshot=snap
+    (self.root/'pueue.pid').write_text('43')
+    self.p.binary='/tmp/only-a-fake'
+    client=Mock(pid=42,returncode=0)
+    actual=control.MiniControl.edit_priority.__get__(self.engine)
+    with patch.object(self.p,'status',side_effect=AssertionError('redundant full status read')),patch.object(control.subprocess,'Popen',return_value=client),patch.object(control.priority_helper(),'birth',return_value='proof'):
+        actual(action,1,5,control.time.monotonic()+1)
+    client.wait.assert_called_once()
+    self.assertLessEqual(client.wait.call_args.kwargs['timeout'],1)
+    plan=next(self.root.glob('edit-*/plan.json'))
+    self.assertIn('fingerprint',json.loads(plan.read_text()))
 
 
 def test_failed_edit_preserves_safe_diagnostic_and_recovery_finishes(self):
@@ -601,11 +641,19 @@ class HelperTests(unittest.TestCase):
             target.write_bytes(raw)
             t=task(1);t['status']={'Locked':dict(previous_status={'Stashed':dict(enqueue_at=None)})}
             snapshot=dict(tasks={'1':t},groups={'suites':dict(status='Paused')})
-            plan=dict(id=1,priority=7,deadline=control.time.monotonic()+1,expected_priority=0,identity=control.MiniControl.task_identity(t),binary='/tmp/only-a-fake',client=dict(pid=42,birth='proof'),daemon=dict(pid=43,birth='proof'))
+            plan=dict(id=1,priority=7,config=str(root/'config.json'),deadline=control.time.monotonic()+1,launched=control.time.monotonic(),fingerprint=helper.fingerprint('true','/synthetic',None),expected_priority=0,identity=control.MiniControl.task_identity(t),binary='/tmp/only-a-fake',client=dict(pid=42,birth='proof'),daemon=dict(pid=43,birth='proof'))
             control.atomic_json(root/'plan.json',plan)
             with patch.object(helper,'birth',return_value='proof'),patch.object(helper.subprocess,'run',return_value=subprocess.CompletedProcess([],0,json.dumps(snapshot),'')),patch.object(sys,'argv',[str(helper.__file__),str(root/'plan.json'),str(target)]):
                 with self.assertRaises(ValueError):helper.main()
             self.assertEqual(target.read_bytes(),raw)
+
+    def test_client_gate_precedes_plan_read_and_every_rpc(self):
+        import io,sys
+        from types import SimpleNamespace
+        helper=control.priority_helper()
+        with patch.object(sys,'argv',[helper.__file__,'--client','/nonexistent/never-read']),patch.object(sys,'stdin',SimpleNamespace(buffer=io.BytesIO(b''))),patch.object(helper,'private_file',side_effect=AssertionError('plan read before gate')) as private,patch.object(helper.os,'execve') as execute:
+            helper.main()
+        private.assert_not_called();execute.assert_not_called()
 
     def test_semantic_toml_fingerprint_precedes_write(self):
         helper=control.priority_helper()
@@ -623,6 +671,41 @@ class HelperTests(unittest.TestCase):
     def test_desk_remains_disabled(self):
         self.assertFalse(control.MiniControl.coordinated_reorder)
 
+
+
+class HarnessTests(unittest.TestCase):
+    def module(self):
+        import importlib.util
+        path=Path(control.__file__).parent/'tests/private_reorder.py'
+        spec=importlib.util.spec_from_file_location('u36_private_metrics',path)
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        return module
+
+    def test_intervals_use_rpc_envelope_and_keep_partial_evidence(self):
+        h=self.module()
+        result=h.mark_times([('prepared',1),('pause_begin',2),('start_effect',5),
+            ('verification_begin',3),('verification_end',3.5),('admission_begin',3.5),('admission_end',5),('receipt_begin',5),('terminal',6)])
+        self.assertEqual(result['acceptance_to_pause_seconds'],1)
+        self.assertEqual(result['pause_start_envelope_seconds'],3)
+        self.assertEqual(result['verification_seconds'],.5)
+        self.assertEqual(result['admission_seconds'],1.5)
+        self.assertEqual(result['receipt_seconds'],1)
+        partial=h.mark_times([('prepared',1),('pause_begin',2),('client_ready',3)])
+        self.assertIsNone(partial['pause_start_envelope_seconds'])
+        self.assertIsNotNone(partial['retained_close_observed_seconds'])
+        self.assertEqual(partial['last_phase'],'client_ready')
+        self.assertIsNone(h.mark_times([])['retained_close_observed_seconds'])
+
+    def test_failed_scenario_emits_partial_and_next_scenario_runs(self):
+        h=self.module();events=[]
+        def fail():
+            h.emit('partial',phase='client_ready')
+            raise AssertionError('synthetic failure')
+        with patch.object(h,'emit',side_effect=lambda event,**fields:events.append((event,fields))):
+            self.assertFalse(h.step('broken',fail))
+            self.assertTrue(h.step('following',lambda:None))
+        self.assertEqual([e[0] for e in events],['partial','step','step'])
+        self.assertEqual(events[-1][1]['case'],'following')
 
 
 class InstallTests(unittest.TestCase):

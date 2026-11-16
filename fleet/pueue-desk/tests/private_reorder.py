@@ -38,6 +38,16 @@ def emit(event,**fields):
     print(json.dumps(dict(event=event,**fields),sort_keys=True),flush=True)
 
 
+def step(name, run):
+    try:
+        run()
+        emit('step',case=name,status='passed')
+        return True
+    except Exception as error:
+        emit('step',case=name,status='failed',kind=type(error).__name__)
+        return False
+
+
 class Crash(BaseException):pass
 
 
@@ -283,12 +293,10 @@ def main():
         for name in args.only.split(','):
             box=Sandbox(root/name)
             try:
-                cases[name](box);emit('step',case=name,status='passed')
-            except Exception as error:
-                failures.append(name)
-                emit('step',case=name,status='failed',kind=type(error).__name__)
-                if hasattr(box,'engine'):
-                    emit('pending',actions=[dict(phase=a.get('phase'),failure=a.get('failure'),editing_id=a.get('editing_id'),status=a['response']['status']) for a in box.engine.reorder_actions()])
+                if not step(name,lambda:cases[name](box)):
+                    failures.append(name)
+                    if hasattr(box,'engine'):
+                        emit('pending',actions=[dict(phase=a.get('phase'),failure=a.get('failure'),editing_id=a.get('editing_id'),status=a['response']['status']) for a in box.engine.reorder_actions()])
             finally:box.close()
     emit('FAIL' if failures else 'PASS',failed=failures,no_launchagents_created=True)
     return 1 if failures else 0
