@@ -70,14 +70,14 @@ class GitTren:
             directorio_estado() / "git" / (clave("git", remoto) + ".git"))
         self.ejecutar = ejecutar or subprocess.run
 
-    def git(self, *args, aislado=False, input=None, env_extra=None):
+    def git(self, *args, aislado=False, input=None, env_extra=None, timeout=120):
         env = entorno(aislado)
         env.update(env_extra or {})
         comando = ["git", "--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
                    "--git-dir=" + str(self.ruta), *args]
         try:
             return self.ejecutar(comando, capture_output=True, text=True,
-                                 timeout=120, check=False, input=input, env=env)
+                                 timeout=timeout, check=False, input=input, env=env)
         except (OSError, subprocess.SubprocessError):
             raise FalloGit("git-no-disponible") from None
 
@@ -117,10 +117,10 @@ class GitTren:
         if self.texto("rev-parse", "--is-bare-repository") != "true":
             raise FalloGit("repositorio-del-tren-debe-ser-bare")
 
-    def traer(self, ref):
+    def traer(self, ref, timeout=120):
         self.texto("fetch", "--no-tags", "--no-recurse-submodules",
                    "--no-auto-maintenance", self.remoto, ref,
-                   aislado=False)
+                   aislado=False, timeout=timeout)
         return self.texto("rev-parse", "--verify", "FETCH_HEAD^{commit}")
 
     def armar(self, B, miembros):

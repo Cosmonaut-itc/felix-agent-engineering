@@ -5,11 +5,13 @@ import json
 from pathlib import Path
 import re
 import subprocess
+import time
 from typing import Protocol
 from urllib.parse import urlparse
 
 from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
                      VistaPR, rama_ci, recibo_ci)
+from git_ops import FalloGit
 
 
 CONCLUSIONES_CI = {
@@ -21,6 +23,9 @@ CONCLUSIONES_CI = {
 }
 STATUS_CI = {"success": "verde", "failure": "rojo", "error": "pendiente",
              "pending": "pendiente"}
+# Tiempo total de fetch de una observación activa, sumado sobre toda la cola:
+# una caída del remoto no suma un timeout por PR bajo el candado del carril.
+PRESUPUESTO_TRANSPORTE_S = 120
 
 
 class Observador(Protocol):
@@ -57,11 +62,22 @@ def sha(valor):
 
 
 class GitHubGit:
-    def __init__(self, config, ejecutar=None, sombra=False, activo=False):
+    def __init__(self, config, ejecutar=None, sombra=False, activo=False, almacen=None):
+        # La sombra y --seco nunca traen objetos: sólo el tick activo recibe almacén.
+        if almacen is not None and (sombra or not activo):
+            raise ValueError("almacén sólo para el tick activo")
         self.config = config
         self.ejecutar = ejecutar or subprocess.run
         self.sombra = sombra
         self.activo = activo
+        self.almacen = almacen
+        self.reloj = time.monotonic
+        self.reiniciar_transporte()
+
+    def reiniciar_transporte(self):
+        self.preparado = False
+        self.transporte_s = 0.0
+        self.caido = False
 
     def comando(self, args):
         return self.ejecutar(args, check=True, capture_output=True, text=True,
@@ -76,6 +92,44 @@ class GitHubGit:
 
     def git(self, *args):
         return self.comando(["git", "-C", self.config["git"], *args]).strip()
+
+    def lector(self, pr, base, head):
+        """Dónde leer merge-base/merge-tree de la admisión.
+
+        Sombra, `entregar` y `--seco` leen config["git"] sin fetch. El tick
+        activo lee el bare del tren, el mismo GitTren que arma y promueve bajo
+        el candado del carril, y trae sólo lo que falte: la base por SHA y el
+        head por la ref del PR. Así ve el C que acaba de aterrizar y el main
+        ajeno tras reanudar, sin tocar el checkout humano de config["git"].
+        Un fallo lanza FalloGit: la vista queda incompleta y el tick reintenta.
+        Los fetch de una observación comparten PRESUPUESTO_TRANSPORTE_S. Tras
+        el primer fetch fallido, de la base o de un head, el remoto se da por
+        caído: ninguna otra vista trae en esta observación. Un fetch que trae
+        otro SHA es propio de ese PR y no corta los demás.
+        """
+        if self.almacen is None:
+            return self.git
+        if not self.preparado:
+            self.almacen.preparar()
+            self.preparado = True
+        for objeto, ref in ((base, base), (head, "refs/pull/{}/head".format(pr))):
+            if not self.almacen.git("cat-file", "-e", objeto + "^{commit}",
+                                    aislado=True).returncode:
+                continue
+            restante = PRESUPUESTO_TRANSPORTE_S - self.transporte_s
+            if self.caido or restante <= 0:
+                raise FalloGit("transporte-agotado")
+            inicio = self.reloj()
+            try:
+                traido = self.almacen.traer(ref, timeout=restante)
+            except FalloGit:
+                self.caido = True
+                raise
+            finally:
+                self.transporte_s += self.reloj() - inicio
+            if traido != objeto:
+                raise FalloGit("objeto-no-disponible")
+        return self.almacen.texto
 
     def evidencia(self, referencia, repo, pr):
         if referencia.startswith("https://"):
@@ -214,11 +268,12 @@ class GitHubGit:
             base = payload["base"]["sha"]
             if not sha(base):
                 raise ValueError("base inválida")
-            ancestro = self.git("merge-base", base, head)
+            leer = self.lector(pr, base, head)
+            ancestro = leer("merge-base", base, head)
             if not sha(ancestro):
                 raise ValueError("ancestro inválido")
             # Legacy merge-tree is read-only (no --write-tree / object creation).
-            fusion = self.git("merge-tree", ancestro, base, head)
+            fusion = leer("merge-tree", ancestro, base, head)
             conflicto = bool(re.search(r"^\+?<<<<<<< ", fusion, re.MULTILINE))
             # Both sources must be certain. A stale/unavailable local object retains.
             if payload.get("mergeable") is not True:
@@ -242,10 +297,13 @@ class GitHubGit:
                     or final["state"] != payload["state"]):
                 return replace(vista, completa=False)
             return vista
-        except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        except (FalloGit, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
             return replace(vista, completa=False)
 
     def observar(self, estado, ahora):
+        # El bare se valida y el presupuesto de fetch corre una vez por
+        # observación, no por PR: el tick siguiente reintenta desde cero.
+        self.reiniciar_transporte()
         repo = estado.repo
         rama = self.api("repos/{}/git/ref/heads/main".format(repo))
         base = rama["object"]["sha"]

@@ -177,7 +177,9 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
                     if not isinstance(remoto, str) or not remoto:
                         raise ValueError("tick activo requiere remoto explícito")
                     git = git if git is not None else GitTren(remoto)
-                    observador = observador or GitHubGit(config, activo=True)
+                    # Admisión y armado comparten el bare del tren: el tick
+                    # siguiente ve el C aterrizado sin sincronizar config["git"].
+                    observador = observador or GitHubGit(config, activo=True, almacen=git)
                     lanzador = config.get("lanzador_hasito")
                     if hasito is None and lanzador is not None:
                         if not isinstance(lanzador, str) or not Path(lanzador).is_absolute():
