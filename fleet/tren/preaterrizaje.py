@@ -108,6 +108,20 @@ def invocar(config, solicitud, accion):
         return "error"
 
 
+def resumen_cancelaciones(ledger, repo):
+    """Lectura sin crear tablas ni exponer argv o evidencia privada."""
+    if not ledger.db.execute("SELECT 1 FROM sqlite_master WHERE type='table' "
+                             "AND name='pre_aterrizajes'").fetchone():
+        return []
+    registros = (json.loads(r[0]) for r in ledger.db.execute(
+        "SELECT payload FROM pre_aterrizajes WHERE repo=? AND pendiente=1 ORDER BY rowid",
+        (repo,)))
+    return [dict(id=r["solicitud"]["id"], tren=r["solicitud"]["tren"],
+                 B=r["solicitud"]["B"], C=r["solicitud"]["C"],
+                 ultimo_error=r.get("ultimo_error", "cancelacion-sin-confirmar"))
+            for r in registros if r.get("cancelacion_requerida")]
+
+
 class Previo:
     def __init__(self, ledger, git, config, frontera):
         self.ledger, self.git, self.config = ledger, git, config
@@ -164,6 +178,30 @@ class Previo:
             self.ledger.db.execute("UPDATE pre_aterrizajes SET pendiente=0 WHERE id=?",
                                    (identificador,))
 
+    def guardar_cancelacion(self, registro, error):
+        # La obligación precede al IO y no depende de que la pausa siga viva.
+        registro.update(cancelacion_requerida=True, ultimo_error=error)
+        with self.ledger.transaccion():
+            self.ledger.db.execute("UPDATE pre_aterrizajes SET payload=? WHERE id=?",
+                (json.dumps(registro, sort_keys=True), registro["solicitud"]["id"]))
+
+    def reconciliar(self, B, C, arbol, heads, lectura=None):
+        lectura = lectura or self.git.reconciliar(B, C, arbol, heads)
+        if isinstance(lectura, EscritorExterno):
+            try:
+                self.git.traer(lectura.main)
+                contiene = self.git.git("merge-base", "--is-ancestor", C, lectura.main,
+                                        aislado=True).returncode
+                if contiene == 0:
+                    self.git.verificar(B, C, arbol, heads)
+                    return Aterrizado(B, C, arbol)
+                if contiene == 1:
+                    return lectura
+            except FalloGit:
+                pass
+            return Incierto(B, C, "ascendencia-incierta")
+        return lectura
+
     def cancelar(self, registro, lectura=None):
         solicitud = registro["solicitud"]
         if solicitud["id"] in self.cancelaciones:
@@ -172,26 +210,18 @@ class Previo:
                 return True
             return False
         self.cancelaciones.add(solicitud["id"])
+        self.guardar_cancelacion(registro, registro.get("ultimo_error", "cancelacion-sin-confirmar"))
         B, C = solicitud["B"], solicitud["C"]
-        lectura = lectura or self.git.reconciliar(B, C, registro["arbol"], registro["heads"])
+        lectura = self.reconciliar(B, C, registro["arbol"], registro["heads"], lectura)
         if isinstance(lectura, Aterrizado):
             self.terminar(solicitud["id"])
             return True
-        if isinstance(lectura, EscritorExterno):
-            try:
-                self.git.traer(lectura.main)
-                contiene = self.git.git("merge-base", "--is-ancestor", C, lectura.main,
-                                        aislado=True).returncode
-            except FalloGit:
-                return False
-            if contiene == 0:
-                self.terminar(solicitud["id"])
-                return True
-            if contiene != 1:
-                return False
-        elif not isinstance(lectura, EnBase):
+        if not isinstance(lectura, (EnBase, EscritorExterno)):
+            self.guardar_cancelacion(registro, "reconciliacion-incierta")
             return False  # Nunca deshacer un efecto cuyo push pudo aterrizar.
-        if self.llamar(registro["gancho"], solicitud, "cancelar") != "cancelado":
+        resultado = self.llamar(registro["gancho"], solicitud, "cancelar")
+        if resultado != "cancelado":
+            self.guardar_cancelacion(registro, "cancelar-" + resultado)
             return False
         self.terminar(solicitud["id"])
         return True
@@ -199,6 +229,9 @@ class Previo:
     def pendientes(self, repo):
         return [json.loads(r[0]) for r in self.ledger.db.execute(
             "SELECT payload FROM pre_aterrizajes WHERE repo=? AND pendiente=1", (repo,))]
+
+    def bloqueado(self, repo):
+        return any(r.get("cancelacion_requerida") for r in self.pendientes(repo))
 
     def limpiar(self, estado, observacion=None):
         """Cancela al pausar, abortar, caducar, cambiar base/config o salir de ventana."""
@@ -208,7 +241,8 @@ class Previo:
         for registro in self.pendientes(estado.repo):
             s = registro["solicitud"]
             tren = next((t for t in estado.trenes if t.id == s["tren"]), None)
-            cancelar = (estado.pausa is not None or tren is None or
+            cancelar = (registro.get("cancelacion_requerida") or
+                estado.pausa is not None or tren is None or
                 isinstance(tren.fase, Terminal) or
                 self.config.get("pre_aterrizaje") != registro["gancho"])
             if not cancelar and observacion:
@@ -224,6 +258,8 @@ class Previo:
         self.repo = estado.repo
         cert = tren.fase.certificado
         B, C = cert.B, cert.C
+        if self.bloqueado(estado.repo):
+            return EsperaPrevia(B, C)
         ventana = self.ventana(tren, observacion)
         if ventana != "seguir":
             return (EsperaPrevia(B, C) if ventana == "esperar" else

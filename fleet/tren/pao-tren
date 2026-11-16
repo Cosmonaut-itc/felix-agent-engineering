@@ -151,12 +151,14 @@ def ejecutar(args, observador=None, ahora=None, git=None, hasito=None, frontera=
                            "admision": decision_json(entrada.admision)}
         if args.comando == "estado":
             from operativo import resumen_outbox
+            from preaterrizaje import resumen_cancelaciones
             # Snapshot SQLite consistente, legible incluso con IO bajo flock.
             with ledger.transaccion(escritura=False):
                 resultado = {"estado": datos(ledger.estado(args.repo)),
                            "sombra": datos(ledger.estado(args.repo, sombra=True,
                                                          doble_camino=modo(args.repo) == "sombra")),
                            "outbox": resumen_outbox(ledger, args.repo),
+                           "cancelaciones_pre_aterrizaje": resumen_cancelaciones(ledger, args.repo),
                            "eventos": ledger.ultimos_eventos(args.repo)}
                 if args.juicio:
                     from juicios import expediente

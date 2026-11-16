@@ -972,16 +972,27 @@ comando y plazo guardados, aunque ya no estén en la configuración.
 Antes de cancelar se reconcilia: sólo se cancela con no aterrizaje acreditado;
 si main es ajeno se trae y comprueba que no contiene C. Si lo contiene, se
 cierra el diario sin cancelar. Una lectura incierta o una cancelación fallida
-retiene el registro y pausa infraestructura; se reintenta la limpieza antes
-de nuevas promociones. Se hace **a lo sumo una tentativa de cancelación por id
+retiene en el diario la **obligación durable de cancelar**, junto con el último
+error. Esa obligación es la barrera de todo el repo: ningún tren puede hacer
+push de promoción hasta confirmar `cancelado` o acreditar que C ya aterrizó.
+No crea una pausa del carril. `reanudar` no la borra; armado, CI, suite,
+decisiones y feedback de los demás trenes siguen avanzando hasta antes del
+push. Se reintenta en cada tick y, al resolverse, el carril sigue sin otra
+decisión humana. `pao-tren estado` muestra las obligaciones pendientes en
+`cancelaciones_pre_aterrizaje`, con id, tren, B, C y `ultimo_error`, sin argv ni
+salida privada del gancho. Se hace **a lo sumo una tentativa de cancelación por id
 y tick**, incluida su reconciliación; el fallo de una no impide intentar las
 otras dentro del presupuesto compartido. La limpieza pendiente no impide
-consumir decisiones ni drenar feedback de ningún tren. Tras un aborto ya
-terminal, `reanudar` levanta esa pausa de
-limpieza; mientras el tren sigue en promoción ofrece `reanudar` y `abortar`.
+consumir decisiones ni drenar feedback de ningún tren. Antes de aplicar
+`abortar` a un tren en promoción se reconcilia sin push: si C aterrizó (también
+si main ya lo contiene), se registra ATERRIZADO, se emite su éxito y se rechaza
+el aborto por pausa resuelta. Si la lectura sigue incierta, el aborto queda
+pendiente y se reintenta en otro tick, sin cancelar ni cerrar como ABORTADO.
 La política del prefijo `pre-aterrizaje:<unidad>` sólo ofrece `reanudar` y
-`abortar`. La pausa `cancelacion-pre-aterrizaje` tras un cierre ofrece
-`reanudar` y conserva el registro para limpieza (no hay tren vivo que abortar).
+`abortar`; estas pausas del gancho o la ventana conservan su decisión humana.
+Por compatibilidad, una pausa `cancelacion-pre-aterrizaje` guardada por una
+versión anterior se levanta con `reanudar`, conservando la obligación del
+diario. Los ticks nuevos no crean ni reponen esa pausa de limpieza.
 Los registros se marcan cerrados, no se borran. No se promete cancelar mientras
 no haya otro tick: el operador debe recuperar el diario si retira el servicio.
 
@@ -1035,3 +1046,8 @@ individual ya existía en esa base; su regresión de composición falla antes
 porque el contrato anterior rechaza `espera_max_s`. Se prueba además el límite
 documentado con un transporte que acepta el push cuando ya venció la ventana,
 y el presupuesto compartido entre identidades y entre verificar/cancelar.
+`tests/remoto-u18-r1.sh` exige tres regresiones por aserción contra `4498b3dd`:
+aborto y reanudación con cancelación fallida dejando avanzar armado/CI/suite,
+reanudación del mismo tren sin saltar la barrera, y aborto tras recuperar una
+lectura incierta del CAS sin perder el éxito. La suite comprueba además el
+aborto que espera acreditación y C contenido en un main posterior.

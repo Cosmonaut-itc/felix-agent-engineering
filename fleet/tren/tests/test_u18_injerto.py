@@ -55,7 +55,7 @@ class RegresionesTests(ContextoInjerto):
         self.assertEqual(decisiones[0]['estado'], 'aplicada')
         for _ in range(2):
             self.tick()
-            self.assertEqual(len(self.estado().trenes), 1)
+            self.assertEqual(self.estado().trenes[0].fase, Terminal('ABORTADO'))
             self.assertEqual(self.diario(), [(anterior, 1)])
         self.assertEqual(self.remoto(), self.B)
         self.assertTrue(self.llamadas('cancelar'))
@@ -216,7 +216,7 @@ class LimitesTests(ContextoInjerto):
         self.assertEqual(len({i for i, _, _ in llamadas}), 2)
         self.assertTrue(all(accion == 'cancelar' for _, accion, _ in llamadas))
         self.assertEqual([pendiente for _, pendiente in self.diario()], [1, 1])
-        self.assertEqual(self.estado().pausa.motivo, 'infraestructura')
+        self.assertEqual(self.estado().pausa.motivo, 'manual')
 
     def test_verificar_y_cancelar_comparten_el_mismo_presupuesto(self):
         self.config['pre_aterrizaje']['plazo_s'] = 45
