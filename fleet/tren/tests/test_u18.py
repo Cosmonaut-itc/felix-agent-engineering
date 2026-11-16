@@ -228,10 +228,12 @@ class RegresionesTests(ContextoU18):
         self.modo('seguir')
         self.ruta_contexto.write_text(json.dumps(self.config))
         proceso = self.hijo("from test_activo import Contexto\n"
+            "from unittest.mock import patch\n"
             "import os\nc = Contexto(sys.argv[3])\n"
             "def frontera(nombre, efecto):\n"
             "    if nombre == 'pre-aterrizaje-verificado': os._exit(77)\n"
-            "c.tick(5000, frontera)\n")
+            "with patch('time.time', return_value=" + str(self.ahora) + "):\n"
+            "    c.tick(5000, frontera)\n")
         out, err = proceso.communicate(timeout=30)
         self.assertEqual(proceso.returncode, 77, out + err)
         self.assertEqual(self.remoto(), self.B)

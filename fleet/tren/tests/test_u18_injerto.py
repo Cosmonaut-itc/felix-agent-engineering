@@ -176,6 +176,23 @@ class RegresionesTests(ContextoInjerto):
 
 
 class LimitesTests(ContextoInjerto):
+    def test_plazo_configurado_vence_durante_un_seguir(self):
+        self.config['pre_aterrizaje']['espera_max_s'] = 100
+        self.preparar()
+        self.modo('vencer')
+        self.hasta(lambda: self.estado().pausa is not None)
+        self.assertEqual(self.estado().pausa.detalle, 'pre-aterrizaje:gancho-espera-vencida')
+        self.assertEqual(self.diario()[0][0]['vence_espera'], AHORA + 100)
+        self.assertEqual(self.diario()[0][1], 0)
+        self.assertEqual(len(self.llamadas('cancelar')), 1)
+        self.assertEqual(self.remoto(), self.B)
+
+    def test_plazo_total_rechaza_valores_ambiguos(self):
+        from preaterrizaje import gancho
+        for espera in (0, -1, True, '100', float('inf'), float('nan')):
+            with self.subTest(espera=espera), self.assertRaises(ValueError):
+                gancho({'pre_aterrizaje': dict(self.config['pre_aterrizaje'], espera_max_s=espera)})
+
     def test_presupuesto_compartido_por_todos_los_ids_y_acciones_del_tick(self):
         self.config['pre_aterrizaje']['plazo_s'] = 45
         self.preparar()

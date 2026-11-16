@@ -883,8 +883,7 @@ recibe como timeout el menor entre su plazo y el presupuesto restante; agotado
 gancho, no sustituye los plazos de los transportes git/GitHub ni de la suite.
 `espera_max_s` es opcional (1.800 segundos por defecto), finito y mayor que cero;
 limita la espera total entre ticks, independientemente del plazo por llamada.
-Se usa el
-entorno del tick, sin variables que redirijan el almacén git; el gancho no
+Se usa el entorno del tick, sin variables que redirijan el almacén git; el gancho no
 puede depender de su cwd. Configuración, ejecutable y credenciales pertenecen
 al operador, fuera del árbol de C: un PR no elige el verificador que lo autoriza.
 No se publican argv, stderr ni texto libre del gancho en eventos o feedback.
