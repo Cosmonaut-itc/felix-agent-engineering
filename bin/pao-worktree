@@ -1,0 +1,52 @@
+#!/bin/bash
+set -euo pipefail
+
+uso() { printf 'uso: pao-worktree new <repo> <ruta> (-b <rama> | --detach)\n' >&2; exit 2; }
+falla() { printf 'pao-worktree: %s\n' "$1" >&2; exit "${2:-1}"; }
+
+[ "${1:-}" = new ] && [ "$#" -ge 4 ] || uso
+repo=$2 ruta=$3
+shift 3
+case "$1" in
+    -b) [ "$#" = 2 ] || uso; modo=(-b "$2") ;;
+    --detach) [ "$#" = 1 ] || uso; modo=(--detach) ;;
+    *) uso ;;
+esac
+git twig --version >/dev/null 2>&1 || falla 'falta git-twig; instálalo con brew install leostera/git-twig/git-twig' 4
+[ ! -e "$ruta" ] || falla "la ruta ya existe: $ruta" 2
+comun=$(git -C "$repo" rev-parse --path-format=absolute --git-common-dir 2>/dev/null) || falla "no es un repositorio: $repo" 2
+mkdir -p "$(dirname "$ruta")"
+ruta=$(cd "$(dirname "$ruta")" && pwd -P)/$(basename "$ruta")
+
+estado=${XDG_STATE_HOME:-$HOME/.local/state}/pao-worktree
+base=$estado/$(basename "$(dirname "$comun")")-$(printf '%s' "$comun" | shasum | cut -c1-8)
+candado=$base.lock
+mkdir -p "$estado"
+for _ in $(seq 120); do
+    if mkdir "$candado" 2>/dev/null; then
+        printf '%s\n' "$$" > "$candado/pid"
+        break
+    fi
+    duenio=$(cat "$candado/pid" 2>/dev/null || true)
+    if [ -n "$duenio" ] && ! kill -0 "$duenio" 2>/dev/null; then
+        rm -rf "$candado"
+        continue
+    fi
+    sleep 1
+done
+[ "$(cat "$candado/pid" 2>/dev/null)" = "$$" ] || falla "otra creación sigue en curso: $candado" 75
+trap 'rm -rf "$candado"' EXIT
+
+git -C "$repo" fetch --quiet origin
+principal=$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || printf 'origin/main')
+if [ -e "$base" ]; then
+    sucio=$(git -C "$base" status --porcelain) || falla "la base no es un worktree: $base" 3
+    [ -z "$sucio" ] || falla "la base tiene cambios y Twig no podría compartir archivos: $base" 3
+    git -C "$base" checkout --quiet --detach "$principal"
+else
+    git -C "$repo" worktree add --quiet --detach "$base" "$principal"
+    git -C "$repo" worktree lock --reason 'base limpia de pao-worktree' "$base"
+fi
+
+TWIG_TRACE=${TWIG_TRACE:-1} git -C "$base" twig new "${modo[@]}" "$ruta" HEAD
+printf '%s\n' "$ruta"
