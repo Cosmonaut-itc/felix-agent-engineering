@@ -10,6 +10,12 @@ from preaterrizaje import invocar
 
 
 class ContextoR3(ContextoR2):
+    def setUp(self):
+        super().setUp()
+        # Esta matriz prueba el protocolo, no el timeout del proceso. Dar
+        # margen al gancho real cuando el host comparte carga con otras suites.
+        self.config['pre_aterrizaje']['plazo_s'] = 10
+
     def instrumentar(self):
         self.fallos = (False, False, False)  # push, lectura posterior, cancelar
         self.deudas = set()

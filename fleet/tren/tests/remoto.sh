@@ -38,7 +38,25 @@ for interprete in python3.9 python3.10 python3; do
   if command -v "$interprete" >/dev/null 2>&1; then
     encontrado=1
     "$interprete" --version
-    "$interprete" -I -m unittest discover -s fleet/tren/tests -v || resultado=1
+    "$interprete" -I - "$interprete" <<'PY' || resultado=1
+import sys
+import unittest
+
+def casos(suite):
+    for caso in suite:
+        if isinstance(caso, unittest.TestSuite):
+            yield from casos(caso)
+        else:
+            yield caso
+
+# En python3 la matriz completa corre arriba en remoto-u18-r3.sh, sobre la
+# base anterior y la actual. No duplicarla en el camino crítico de diez min.
+# Los demás intérpretes siguen ejecutando también ese módulo por discovery.
+suite = unittest.TestSuite(caso for caso in casos(
+    unittest.defaultTestLoader.discover('fleet/tren/tests'))
+    if sys.argv[1] != 'python3' or not caso.id().startswith('test_u18_r3.'))
+raise SystemExit(not unittest.TextTestRunner(verbosity=2).run(suite).wasSuccessful())
+PY
   fi
 done
 if ! wait "$tren_antes_pid"; then
