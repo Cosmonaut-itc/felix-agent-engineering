@@ -142,6 +142,7 @@ cat "$FAKE_ROOT/bibliotecas"
         for sistema in ('Darwin arm64', 'Linux x86_64'):
             with self.subTest(sistema=sistema):
                 self.preparar(sistema)
+                anteriores = set(self.home.glob('actions-runner-hasito-ci.retirado-*'))
                 self.assertEqual(self.instalar().returncode, 0)
                 contenido = self.servicio.read_bytes()
                 (self.dir / 'evidencia').write_text('conservar')
@@ -154,9 +155,11 @@ cat "$FAKE_ROOT/bibliotecas"
                 self.assertFalse((self.fake / 'cargado').exists())
                 self.assertFalse(self.dir.exists())
                 self.assertFalse(self.servicio.exists())
-                retirados = list(self.home.glob('actions-runner-hasito-ci.retirado-*'))
-                self.assertEqual(len(retirados), 1)
-                self.assertEqual((retirados[0] / 'evidencia').read_text(), 'conservar')
+                retirados = set(self.home.glob('actions-runner-hasito-ci.retirado-*'))
+                self.assertTrue(anteriores.issubset(retirados))
+                nuevos = retirados - anteriores
+                self.assertEqual(len(nuevos), 1)
+                self.assertEqual((nuevos.pop() / 'evidencia').read_text(), 'conservar')
                 unidades = list(self.servicio.parent.glob(self.servicio.name + '.retirado-*'))
                 self.assertEqual(len(unidades), 1)
                 self.assertEqual(unidades[0].read_bytes(), contenido)
