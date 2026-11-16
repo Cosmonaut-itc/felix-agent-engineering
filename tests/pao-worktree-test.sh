@@ -103,7 +103,9 @@ TEST_CASES=(crea_desde_base_limpia avanza_la_base rechaza_base_sucia ruta_relati
 CASE=0 FAILURES=0
 for test_case in "${TEST_CASES[@]}"; do
     CASE=$((CASE + 1))
-    if (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1; then
+    (set -e; "$test_case") > "$TEST_TMP/$test_case.log" 2>&1
+    result=$?
+    if [ "$result" = 0 ]; then
         printf 'PASS %s\n' "$test_case"
     else
         printf 'FAIL %s\n' "$test_case"; cat "$TEST_TMP/$test_case.log"; FAILURES=$((FAILURES + 1))
