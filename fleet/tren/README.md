@@ -885,11 +885,14 @@ El tick escribe un JSON en stdin (sin argumentos añadidos):
 ```json
 {"version":1,"accion":"verificar","id":"<identidad estable>",
  "repo":"owner/project","tren":"<id del lote>","B":"<SHA40>","C":"<SHA40>",
+ "almacen_git":"/absolute/path/to/train.git",
  "prs":[{"pr":1,"head":"<SHA40>"}]}
 ```
 
 `id` liga repo, lote, B y C y permanece igual al reconsultar o recuperar una
 muerte. `prs` conserva el orden del lote y las cabezas exactas entregadas.
+`almacen_git` es el bare del tren con B y C disponibles, para lecturas del
+diff; el gancho no modifica sus objetos, refs ni configuración.
 El gancho termina con código 0 y **un único objeto JSON** en stdout, sin
 campos adicionales, con la versión e identidad recibidas:
 
@@ -970,7 +973,9 @@ evidencia detallada y cualquier dato privado fuera del diario público de evento
 
 Sin `pre_aterrizaje` y sin ventanas se conserva el comportamiento previo.
 Sombra, `entregar` y `tick --seco` no ejecutan el gancho ni su cancelación,
-no importan ventanas a sus vistas y conservan los mismos eventos byte a byte.
+conservan la interpretación histórica de `heads_autorizados` (sólo SHA
+literales), no importan ventanas a sus vistas y mantienen los mismos eventos
+byte a byte.
 U18 no cambia ninguna inscripción ni activa repos.
 
 Para activar Hasito se requiere además el gancho configurado y el guion del

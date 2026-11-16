@@ -143,6 +143,9 @@ class RegresionesTests(ContextoU18):
         self.assertEqual((primera['repo'], primera['B']), (REPO, self.B))
         self.assertEqual(primera['prs'], [{'pr': p, 'head': h} for p, h in self.miembros])
         self.assertNotEqual(primera['C'], self.B)
+        almacen = Path(primera['almacen_git'])
+        self.assertEqual(almacen, self.contexto.git.ruta.resolve())
+        self.assertEqual(self.comando(almacen, 'rev-parse', primera['C']), primera['C'])
         for _ in range(4):
             self.tick()
             self.assertIsNone(self.estado().pausa)
@@ -366,5 +369,10 @@ class SombraTests(test_u17.SombraTests):
             'comando': [sys.executable, '-c',
                         'from pathlib import Path; Path(' + repr(str(marca)) + ').touch()'],
             'plazo_s': 1}
+        # La sombra conserva la interpretación histórica de la lista de SHA:
+        # ni siquiera una autorización con ventana puede modificar sus eventos.
+        self.contexto.config['sensibles']['gobierno'] = ['src/*']
+        self.contexto.config['heads_autorizados'] = [{'head': self.siguientes[0][1],
+            'ventana': {'inicio': '2026-01-01T00:00:00Z', 'fin': '2026-01-02T00:00:00Z'}}]
         self.privada.write_text(json.dumps({'repos': {REPO: self.contexto.config}}))
         self.addCleanup(lambda: self.assertFalse(marca.exists()))

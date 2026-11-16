@@ -279,6 +279,8 @@ class GitHubGit:
             # Both sources must be certain. A stale/unavailable local object retains.
             if payload.get("mergeable") is not True:
                 conflicto = True if payload.get("mergeable") is False else None
+            autorizados = (autorizaciones(self.config) if self.activo else
+                           self.config.get("heads_autorizados", []))
             vista = replace(vista,
                 apto=apto.get("veredicto") == "APTO" and apto.get("head") == head,
                 hallazgos=apto.get("hallazgos_abiertos")
@@ -289,8 +291,8 @@ class GitHubGit:
                 alto_riesgo=bool(etiquetas.intersection(
                     self.config.get("etiquetas_alto_riesgo", ["alto-riesgo"]))),
                 verificado=apto.get("verificado") == "Verificado" and apto.get("head") == head,
-                autorizado=head in autorizaciones(self.config),
-                ventana=autorizaciones(self.config).get(head) if self.activo else None)
+                autorizado=head in autorizados,
+                ventana=autorizados.get(head) if self.activo else None)
             # Re-read after all reads; a concurrent push cannot use stale evidence.
             final = self.api("repos/{}/pulls/{}".format(repo, pr))
             if final["head"]["sha"] != head:

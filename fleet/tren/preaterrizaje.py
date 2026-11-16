@@ -208,6 +208,7 @@ class Previo:
             miembros = {e.entrega.recibo: e.entrega for e in estado.entradas}
             solicitud = {"version": 1, "id": clave("pre-aterrizaje", estado.repo, tren.id, B, C),
                 "repo": estado.repo, "tren": tren.id, "B": B, "C": C,
+                "almacen_git": str(self.git.ruta.resolve()),
                 "prs": [{"pr": miembros[r].pr, "head": miembros[r].head}
                         for r in tren.recibos]}
             registro = {"gancho": config, "solicitud": solicitud, "arbol": cert.arbol,
