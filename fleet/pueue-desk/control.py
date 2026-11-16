@@ -2440,8 +2440,13 @@ class MiniControl:
                 # Started, added or cancelled before this comparison: nothing is edited.
                 return self._reorder_release(key, 'conflict', 'stale_queue')
             tasks = {t['id']: t for t in rows}
-            for ident in r['writes']:
-                if self.monotonic() + self.reorder_edit_seconds() > deadline:
+            first = self.monotonic()
+            for done, ident in enumerate(r['writes']):
+                # Project the remaining edits with the slower of the estimate and this
+                # pause's own pace: a loaded host aborts early, with little to roll back.
+                now = self.monotonic()
+                cost = max(self.reorder_edit_seconds(), (now - first) / done if done else 0)
+                if now + cost * (len(r['writes']) - done) > deadline:
                     raise TimeoutError('Presupuesto de pausa agotado')
                 self._reorder_edit(key, tasks[ident], r['target'][str(ident)], 'editing')
             snapshot = self.pueue.status()

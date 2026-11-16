@@ -247,6 +247,8 @@ def main():
         call('group', 'add', 'suites', '--parallel', control.MINI_PROFILE['suites'])
         call('group', 'add', 'rapidas', '--parallel', control.MINI_PROFILE['rapidas'])
         call('parallel', control.MINI_PROFILE['default'], '-g', 'default')
+        call('group', 'add', 'banco', '--parallel', 1)
+        call('pause', '--wait', '-g', 'banco')  # su única tarea nunca corre: sólo se edita
         for _ in range(control.MINI_PROFILE['suites']):
             add('/bin/sh', str(blocker), str(root), label='pao.u36.opus.bloqueador')
         wait_running(control.MINI_PROFILE['suites'])
@@ -279,7 +281,7 @@ def run_scenarios(control, emit, engine_for, instrument, window, request, handle
                   identity, queued, root, data, pid_file, kill_daemon, start_daemon, released_wait, children, config):
     directory = root / 'control'
 
-    def settled(result, marks, ids):
+    def settled(result, marks, ids, priorities):
         """Aplicado dentro de la pausa, rechazado antes de pausar, o abortado y restaurado."""
         rows = tasks()[1]
         if result['status'] == 'applied':
@@ -289,8 +291,42 @@ def run_scenarios(control, emit, engine_for, instrument, window, request, handle
             assert result['error']['code'] == 'too_long' and marks == [], result
         else:
             assert result['status'] == 'aborted', result
-            assert dict(result['result']['before']) == {t['id']: t['priority'] for t in rows}, rows
+            assert priorities == {t['id']: t['priority'] for t in rows}, rows
         assert tasks()[0]['groups']['suites']['status'] == 'Running'
+
+    bench_task = add('/usr/bin/true', 'banco', group='banco', label='pao.u36.opus.banco')
+
+    def breakdown(tag):
+        """Dónde se va una edición: Pueue solo, arranque de Python, cargar el ayudante, SQLite."""
+        def timed(fn, n=8):
+            samples = []
+            for _ in range(n):
+                t = time.monotonic()
+                fn()
+                samples.append(time.monotonic() - t)
+            samples.sort()
+            return dict(med=round(samples[len(samples) // 2] * 1000), max=round(samples[-1] * 1000))
+        env = dict(pueue.context['env'])
+
+        def bare(editor):
+            def run():
+                subprocess.run(pueue.command('edit', bench_task), env=dict(env, EDITOR=editor), check=True,
+                               capture_output=True, timeout=10, cwd=str(root))
+            return run
+        engine = engine_for()
+        emit('desglose', tag=tag, carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size,
+             pueue_edit_true_ms=timed(bare('/usr/bin/true')),
+             pueue_edit_python_ms=timed(bare(sys.executable + ' -I -B -c pass')),
+             python_arranque_ms=timed(lambda: subprocess.run([sys.executable, '-I', '-B', '-c', 'pass'], check=True)),
+             cargar_ayudante_ms=timed(lambda: control.load_editor(engine.editor)),
+             sqlite_full_ms=timed(lambda: reasons_write(engine)),
+             status_json_ms=timed(lambda: pueue.status(), n=4))
+
+    def reasons_write(engine):
+        with engine.connect(write=True) as db:
+            engine.store(db, engine.state(db))
+
+    breakdown('historial-pequeño')
 
     # ---- 1. Secuencia normal (5 filas) y deshacer ----------------------------
     engine = engine_for()
@@ -308,7 +344,7 @@ def run_scenarios(control, emit, engine_for, instrument, window, request, handle
     assert not reasons(engine).get('suites'), reasons(engine)
     assert {t['id']: t['priority'] for t in rows} == dict(result['result']['after'])
     assert window(marks)['rpcs'] == ['pause'] + ['edit'] * result['result']['writes'] + ['start'], marks
-    emit('normal', filas=5, writes=result['result']['writes'], total_ms=total,
+    emit('normal', filas=5, carga=os.getloadavg()[0], writes=result['result']['writes'], total_ms=total,
          estimate_ms=result['result']['estimate_ms'], **window(marks))
     applied = result
     engine = engine_for()
@@ -400,14 +436,15 @@ def run_scenarios(control, emit, engine_for, instrument, window, request, handle
     engine = engine_for()
     info = engine.view()['reorder']['suites']
     assert info['enabled'] and len(info['queue']) == control.REORDER_MAX, info
-    ids = [t['id'] for t in tasks()[1]]
+    rows = tasks()[1]
+    ids, priorities = [t['id'] for t in rows], {t['id']: t['priority'] for t in rows}
     marks = instrument(engine)
     result, total = handle(engine, request(engine, [ids[-1]] + ids[:-1]))
-    emit('medicion', historial='pequeño', state_bytes=(data / 'state.json').stat().st_size, filas=len(ids),
+    emit('medicion', historial='pequeño', carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size, filas=len(ids),
          status=result['status'], code=(result.get('error') or {}).get('code'),
          writes=(result.get('result') or {}).get('writes'), max_writes=info['max_writes'], total_ms=total,
          estimate_ms=(result.get('result') or {}).get('estimate_ms'), **window(marks))
-    settled(result, marks, ids)
+    settled(result, marks, ids, priorities)
     one_more = add('/usr/bin/true', 'sobra', label='pao.u36.opus.larga')
     info = engine_for().view()['reorder']['suites']
     assert info['enabled'] is False and info['code'] == 'too_long', info
@@ -423,6 +460,7 @@ def run_scenarios(control, emit, engine_for, instrument, window, request, handle
         add('/usr/bin/true', long, group='big', stashed=True)
     call('pause', '--wait', '-g', 'big')  # guarda el estado completo
     emit('mo2', state_bytes=(data / 'state.json').stat().st_size, alta_s=round(time.monotonic() - started, 1))
+    breakdown('MO2')
     for size in (5, 20, control.REORDER_MAX):
         rows = tasks()[1]
         if len(rows) < size:
@@ -433,14 +471,14 @@ def run_scenarios(control, emit, engine_for, instrument, window, request, handle
             rows = tasks()[1]
         engine = engine_for()
         info = engine.view()['reorder']['suites']
-        ids = [t['id'] for t in rows]
+        ids, priorities = [t['id'] for t in rows], {t['id']: t['priority'] for t in rows}
         marks = instrument(engine)
         result, total = handle(engine, request(engine, [ids[-1]] + ids[:-1]))
-        emit('medicion', historial='MO2', state_bytes=(data / 'state.json').stat().st_size, filas=size,
+        emit('medicion', historial='MO2', carga=os.getloadavg()[0], state_bytes=(data / 'state.json').stat().st_size, filas=size,
              status=result['status'], code=(result.get('error') or {}).get('code'),
              writes=(result.get('result') or {}).get('writes'), max_writes=info.get('max_writes'),
              estimate_ms=(result.get('result') or {}).get('estimate_ms'), total_ms=total, **window(marks))
-        settled(result, marks, ids)
+        settled(result, marks, ids, priorities)
     for row in tasks()[1][5:]:
         call('remove', row['id'])  # el reinicio parte de 5 filas
 

@@ -603,6 +603,19 @@ class LimitTests(ReorderFixture):
         self.assertEqual(self.p.groups['suites']['status'], 'Running')
         self.assertEqual(self.state()['reasons'].get('suites', []), [])
 
+    def test_slow_edits_abort_early_with_little_to_roll_back(self):
+        # Accepted by the estimate, but each real edit takes 0.9 s: stop after the first.
+        self.queue([0] * 5)
+        request = self.request([5, 4, 3, 2, 1])
+        self.p.events.clear()
+        slow = lambda: setattr(self, 'mono', self.mono + 0.9)
+        self.p.hooks = {('edit_done', n): slow for n in range(1, 12)}
+        result = self.engine.handle(request)
+        self.assertEqual(outcome(result), ('aborted', 'interrupted'))
+        self.assertEqual(self.p.priorities(), {i: 0 for i in range(1, 6)})
+        self.assertLessEqual(len(self.p.edits), 2, 'una edición y su reversión, no cuatro y cuatro')
+        self.assertEqual(self.p.groups['suites']['status'], 'Running')
+
 
 class PressureTests(ReorderFixture):
     def test_new_pressure_keeps_order_and_hands_pause_to_guard(self):
