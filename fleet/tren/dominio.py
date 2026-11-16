@@ -492,11 +492,14 @@ def aterrizaje(estado, tren, observacion):
                     (verificacion.B, verificacion.C) == (cert.B, cert.C)):
                 # main sigue en B y no hubo push: no gasta intento ni es rojo.
                 motivo = verificacion.motivo
-                if not (motivo.startswith(PAUSAS_VERIFICACION[0]) and
-                        len(motivo) > len(PAUSAS_VERIFICACION[0]) or
-                        motivo == PAUSAS_VERIFICACION[1]):
-                    motivo = PAUSAS_VERIFICACION[0] + "resultado-desconocido"
-                estado = replace(estado, pausa=Pausa("infraestructura", detalle=motivo))
+                if motivo == "ventana-autorizada-vencida":
+                    pausa = Pausa("infraestructura", detalle="ventana-autorizada-vencida")
+                else:
+                    unidad = motivo[len("verificacion-previa:"):]
+                    if not motivo.startswith("verificacion-previa:") or not unidad:
+                        unidad = "resultado-desconocido"
+                    pausa = Pausa("infraestructura", detalle="verificacion-previa:" + unidad)
+                estado = replace(estado, pausa=pausa)
             else:
                 fase = replace(fase, reintento_pendiente=True)
         elif isinstance(lectura, EscritorExterno):
