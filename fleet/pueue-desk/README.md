@@ -81,6 +81,47 @@ y linger, y deja `maintenance` para impedir reactivaciones. No drenar tareas aut
 Pruebas: `/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -v`.
 ShellCheck: `shellcheck --severity=warning fleet/pueue-desk/*-desk.sh`.
 
+## Poda del historial (SEN-6495)
+
+Después de una guardia exitosa, en desk y Mini, `control.py` suelta
+`control.lock` y ejecuta una pasada independiente de poda. Sólo selecciona
+`Done` con `end` válido y anterior a 24 h; `Killed` se conserva 7 días,
+incluidos los avisos de interrupción por reinicio del panel. Retiene cualquier
+dependencia de una tarea que aún no terminó. Si no puede leer las dependencias
+de una tarea no terminada, conserva todos los candidatos de esa lectura.
+Las variantes vivas y las formas inesperadas nunca se podan.
+
+La política está en `PRUNE_*` dentro del controlador único. `poda.json` limita
+la lectura adicional a una por hora; si se seleccionaron 500 tareas, el próximo
+tick vuelve a podar sin esperar esa hora. Quita como máximo 500 por pasada,
+las más antiguas primero, en lotes de 100. `poda.lock` es independiente y no
+bloqueante: un segundo proceso omite la pasada. No hay unidades ni timers nuevos.
+Una excepción de guardia impide la poda; los fallos de poda no cambian su salida.
+Cada lote fallido se registra y los siguientes se intentan normalmente.
+
+Para apagarla, crear un archivo vacío `poda.off` en el directorio de estado
+que corresponde al host (el mismo que contiene `guardia.log`). Para reactivarla,
+retirar ese archivo; no hace falta reinstalar. La cadencia conservada sigue
+vigente. Un retroceso del reloj retiene hasta alcanzar la fecha de la última
+pasada. Una marca ilegible retiene la poda y registra `error: true`.
+
+La bitácora existente agrega una línea JSONL `evento: "poda_historial"` por
+pasada intentada, sin ids, comandos ni errores arbitrarios. `podadas` cuenta
+los ids de lotes confirmados por el cliente; `sin_confirmar` cuenta los ids de
+lotes fallidos que podrían haberse quitado parcialmente; `lotes_fallidos`
+cuenta esos lotes. Los descartes son excluyentes: `vivas`, `omitidas` (forma
+inesperada), `dependencias`, `retenidas`, `retenidas_killed` y `tope` (elegibles
+que exceden 500). `error` señala fallos de lectura o persistencia. Se aplica
+la misma rotación del log a 1 MiB. Si falla el propio log, la guardia conserva
+su resultado y no se promete una línea persistida.
+
+Pruebas dirigidas y mutaciones (mediante `remote-run`):
+`/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -p test_prune.py -v`
+y `/usr/bin/python3 -I fleet/pueue-desk/tests/mutate_prune.py`.
+`tests/private_prune.py --run-private` mide M1–M5 con daemon, socket y
+configuración temporales propios, tareas reales y hora de poda adelantada
+sólo en el argumento de la función. No toca el reloj ni la instancia real.
+
 ## Guardia de la Mac Mini
 
 La Mini comparte la lógica de `control.py` (perfil `--host mini`), pero lee la

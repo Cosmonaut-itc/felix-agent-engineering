@@ -57,6 +57,135 @@ STATE_DIR = Path.home() / ".local/state/pao/pueue-desk"
 RACK_LOCK_SECONDS = 1.0
 
 
+# Historial: bloque independiente de cuotas, admisión y arranque.
+PRUNE_RETENTION = 24 * 60 * 60
+PRUNE_KILLED_RETENTION = 7 * 24 * 60 * 60
+PRUNE_INTERVAL = 60 * 60
+PRUNE_LIMIT = 500
+PRUNE_BATCH = 100
+PRUNE_POLICY = dict(retention=PRUNE_RETENTION, killed_retention=PRUNE_KILLED_RETENTION,
+                    interval=PRUNE_INTERVAL, limit=PRUNE_LIMIT, batch=PRUNE_BATCH)
+
+
+def select_prune(tasks, now, policy=None):
+    """Return oldest eligible ids and mutually exclusive exclusion counts, without effects."""
+    policy = PRUNE_POLICY if policy is None else policy
+    if not math.isfinite(now):
+        raise ValueError('Hora de poda ilegible')
+    counts = dict(vivas=0, omitidas=0, dependencias=0, retenidas=0,
+                  retenidas_killed=0, tope=0)
+    referenced = set()
+    unknown_dependencies = False
+    for task in tasks.values():
+        if type(task) is not dict:
+            unknown_dependencies = True
+            continue
+        status = task.get('status')
+        if type(status) is dict and set(status) == {'Done'}:
+            continue
+        dependencies = task.get('dependencies')
+        if type(dependencies) is not list or any(type(d) is not int or not 0 <= d < 2**64 for d in dependencies):
+            unknown_dependencies = True
+        else:
+            referenced.update(map(str, dependencies))
+    eligible = []
+    for ident, task in tasks.items():
+        try:
+            if not isinstance(ident, str) or not ident.isascii() or not ident.isdecimal() or str(int(ident)) != ident or not 0 <= int(ident) < 2**64:
+                raise ValueError('Identidad incompatible')
+            status = task['status']
+            if type(status) is not dict or len(status) != 1:
+                raise ValueError('Variante incompatible')
+            variant, detail = next(iter(status.items()))
+            if variant in ('Queued', 'Stashed', 'Locked', 'Running', 'Paused'):
+                counts['vivas'] += 1
+                continue
+            if variant != 'Done' or type(detail) is not dict:
+                raise ValueError('Variante incompatible')
+            end = timestamp_key(detail.get('end'))
+            result = detail['result']
+            if type(result) is dict:
+                if len(result) != 1 or not (
+                    'Failed' in result and type(result['Failed']) is int and -(2**31) <= result['Failed'] < 2**31
+                    or 'FailedToSpawn' in result and isinstance(result['FailedToSpawn'], str)
+                ):
+                    raise ValueError('Resultado incompatible')
+            elif result not in ('Success', 'Killed', 'Errored', 'DependencyFailed'):
+                raise ValueError('Resultado incompatible')
+        except (KeyError, TypeError, ValueError, OverflowError, OSError):
+            counts['omitidas'] += 1
+            continue
+        cutoff = now - (policy['killed_retention'] if result == 'Killed' else policy['retention'])
+        numerator, denominator = cutoff.as_integer_ratio()
+        boundary = divmod(numerator * 1_000_000_000 // denominator, 1_000_000_000)
+        if unknown_dependencies or ident in referenced:
+            counts['dependencias'] += 1
+        elif end >= boundary:
+            counts['retenidas_killed' if result == 'Killed' else 'retenidas'] += 1
+        else:
+            eligible.append((end, int(ident), ident))
+    eligible.sort()
+    counts['tope'] = max(0, len(eligible) - policy['limit'])
+    return [row[2] for row in eligible[:policy['limit']]], counts
+
+
+def prune_history(pueue, directory, now=None, policy=None):
+    """Best effort, hourly and independently locked; never propagate pruning failures."""
+    policy = PRUNE_POLICY if policy is None else policy
+    report = dict(podadas=0, sin_confirmar=0, lotes_fallidos=0, error=False,
+                  vivas=0, omitidas=0, dependencias=0, retenidas=0, retenidas_killed=0, tope=0)
+    attempted = False
+    try:
+        if os.path.lexists(directory / 'poda.off'):
+            return
+        with (directory / 'poda.lock').open('a') as handle:
+            try:
+                fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return
+            if os.path.lexists(directory / 'poda.off'):
+                return
+            now = time.time() if now is None else now
+            if not math.isfinite(now):
+                raise ValueError('Hora de poda ilegible')
+            marker = directory / 'poda.json'
+            if marker.exists():
+                previous = json.loads(marker.read_text())
+                if (type(previous.get('at')) not in (int, float) or not math.isfinite(previous['at'])
+                        or type(previous.get('capped')) is not bool):
+                    raise ValueError('Marca de poda ilegible')
+                if now < previous['at'] or not previous['capped'] and now - previous['at'] < policy['interval']:
+                    return
+            attempted = True
+            def stamp(capped):
+                temporary = directory / 'poda.tmp'
+                temporary.write_text(json.dumps(dict(at=now, capped=capped)) + '\n')
+                temporary.replace(marker)
+            # Reserve the cadence before any RPC, also when status fails.
+            stamp(False)
+            ids, counts = select_prune(pueue.status()['tasks'], now, policy)
+            report.update(counts)
+            stamp(len(ids) == policy['limit'])
+            for offset in range(0, len(ids), policy['batch']):
+                batch = ids[offset:offset + policy['batch']]
+                try:
+                    pueue.call('remove', *batch)
+                    report['podadas'] += len(batch)
+                except Exception:
+                    # Stock remove can partially succeed: do not claim these as removed.
+                    report['lotes_fallidos'] += 1
+                    report['sin_confirmar'] += len(batch)
+    except Exception:
+        attempted = True
+        report['error'] = True
+    finally:
+        if attempted:
+            try:
+                log(directory, 'poda_historial', **report)
+            except Exception:
+                pass
+
+
 def mode_at(now):
     if now.tzinfo is None:
         raise ValueError("La hora debe incluir zona horaria")
@@ -2145,6 +2274,12 @@ def main():
                 detalle = type(error).__name__ if args.host == 'desk' else str(error)
                 log(directory, "error", detalle=detalle)
             raise
+    if args.command == 'guardia':
+        try:
+            prune_history(pueue, directory)
+        except Exception:
+            # The guard has already succeeded and released control.lock.
+            pass
 
 
 if __name__ == "__main__":
