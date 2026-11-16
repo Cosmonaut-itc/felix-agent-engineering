@@ -987,7 +987,10 @@ gancho o una ventana que sí exigían pausa. `pao-tren estado` muestra las
 obligaciones pendientes en
 `cancelaciones_pre_aterrizaje`, con id, tren, B, C y `ultimo_error`, sin argv ni
 salida privada del gancho. Se hace **a lo sumo una tentativa de cancelación por id
-y tick**, incluida su reconciliación; el fallo de una no impide intentar las
+y tick**, incluida su reconciliación. La obligación se guarda al decidir cancelar,
+antes de aplicar ese límite o el presupuesto de IO; diferir la tentativa no la
+borra, y volver a verificar el mismo id tampoco puede borrarla. Sólo la cierra
+un `cancelado` confirmado o C acreditado como aterrizado. El fallo de una no impide intentar las
 otras dentro del presupuesto compartido. La limpieza pendiente no impide
 consumir decisiones ni drenar feedback de ningún tren. Antes de aplicar
 `abortar` a un tren en promoción se reconcilia sin push: si C aterrizó (también

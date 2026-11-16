@@ -462,12 +462,6 @@ def pausar_previa(estado, motivo):
     return replace(estado, pausa=Pausa("infraestructura", detalle="pre-aterrizaje:" + motivo))
 
 
-def pausar_limpieza(estado):
-    if any(isinstance(t.fase, Promoviendo) for t in estado.trenes):
-        return pausar_previa(estado, "cancelacion-incierta")
-    return replace(estado, pausa=Pausa("infraestructura", detalle="cancelacion-pre-aterrizaje"))
-
-
 def aterrizaje(estado, tren, observacion):
     """Promover tras admisión; reconciliar antes, pues el PR puede estar cerrado."""
     fase = tren.fase

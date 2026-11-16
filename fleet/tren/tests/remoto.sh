@@ -29,6 +29,9 @@ git version
   bash fleet/tren/tests/remoto-u18-r2.sh
 ) > "$aislado/antes.log" 2>&1 &
 tren_antes_pid=$!
+# La matriz U18 R3 usa fixtures propios y no comparte estado con los injertos.
+bash fleet/tren/tests/remoto-u18-r3.sh > "$aislado/u18-r3.log" 2>&1 &
+tren_r3_pid=$!
 encontrado=0
 resultado=0
 for interprete in python3.9 python3.10 python3; do
@@ -41,7 +44,11 @@ done
 if ! wait "$tren_antes_pid"; then
   resultado=1
 fi
+if ! wait "$tren_r3_pid"; then
+  resultado=1
+fi
 cat "$aislado/antes.log"
+cat "$aislado/u18-r3.log"
 if [ "$encontrado" -eq 0 ]; then
   echo 'No hay intérprete Python disponible' >&2
   exit 2
@@ -61,5 +68,6 @@ if [ "$resultado" -eq 0 ]; then
   echo 'U18 injerto: seis regresiones fallan sobre c06a9c70 y pasan después; aborto y feedback con limpieza fallida, cancelación acotada, espera durable, CLI con ventana y última lectura local pasan; U18 original y sombra idéntica a a1d24ec1 pasan.'
   echo 'U18 R1: tres regresiones fallan sobre 4498b3dd y pasan después; obligación durable bloquea sólo el push, reanudar no la borra y abortar reconcilia el CAS incierto sin perder el éxito.'
   echo 'U18 R2: dos regresiones fallan sobre 21c93c12 y pasan después; lectura incierta y cancelación fallida una vez se recuperan sin decisión humana; control sin gancho pasa antes y después.'
+  echo 'U18 R3: regresión de dos pushes fallidos e invariante de 64 combinaciones fallan sobre c28fa524 y pasan después; toda la suite del tren pasa.'
 fi
 exit "$resultado"

@@ -204,13 +204,13 @@ class Previo:
 
     def cancelar(self, registro, lectura=None):
         solicitud = registro["solicitud"]
+        self.guardar_cancelacion(registro, registro.get("ultimo_error", "cancelacion-sin-confirmar"))
         if solicitud["id"] in self.cancelaciones:
             if isinstance(lectura, Aterrizado):
                 self.terminar(solicitud["id"])
                 return True
             return False
         self.cancelaciones.add(solicitud["id"])
-        self.guardar_cancelacion(registro, registro.get("ultimo_error", "cancelacion-sin-confirmar"))
         B, C = solicitud["B"], solicitud["C"]
         lectura = self.reconciliar(B, C, registro["arbol"], registro["heads"], lectura)
         if isinstance(lectura, Aterrizado):
@@ -284,8 +284,11 @@ class Previo:
                     "SELECT payload FROM pre_aterrizajes WHERE id=? AND pendiente=1",
                     (solicitud["id"],)).fetchone()
                 if anterior:
+                    anterior = json.loads(anterior[0])
+                    if anterior.get("cancelacion_requerida"):
+                        return EsperaPrevia(B, C)
                     # El plazo no se renueva al reconsultar ni al recuperar una muerte.
-                    registro["vence_espera"] = json.loads(anterior[0]).get(
+                    registro["vence_espera"] = anterior.get(
                         "vence_espera", registro["vence_espera"])
                 self.ledger.db.execute("INSERT INTO pre_aterrizajes VALUES (?, ?, ?, 1) "
                     "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, pendiente=1",
