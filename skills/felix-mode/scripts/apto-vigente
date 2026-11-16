@@ -1,11 +1,11 @@
 #!/bin/bash
 # Dice si un APTO sigue vigente cuando el head cambió por incorporar el destino.
 # Imprime `APTO vigente` si el head nuevo es la mezcla sin conflictos del head
-# revisado con el destino y el destino no cambió ningún archivo del parche.
+# revisado con el destino, sin interacción o con altas disjuntas de traducción.
 # Imprime `Ronda delta` y los archivos que revisar si el destino cambió archivos
 # del parche, o si la mezcla tuvo conflictos, con el diff de su resolución.
 # En los demás casos imprime `Ronda` y el motivo. Sale con 2 cuando no puede
-# decidir; eso tampoco conserva el APTO. Necesita git 2.38 o posterior.
+# decidir; eso tampoco conserva el APTO. Necesita git 2.38+ y python3 para JSON.
 set -uo pipefail
 fail() { printf 'apto-vigente: %s\n' "$1" >&2; exit 2; }
 
@@ -79,9 +79,83 @@ if [ "$merge_status" = 1 ]; then
     printf '%s\n%s' "$conflicted" "$shared" | sed '/^$/d' | LC_ALL=C sort -u
     exit 0
 fi
-if [ -n "$shared" ]; then
+# Sólo se exceptúan catálogos de cadenas con altas disjuntas y unión exacta.
+# Se leen los objetos del mismo repositorio aislado; nunca el checkout.
+catalogs_disjoint() {
+    python3 -I - "$reviewed_base" "$reviewed" "$new_base" "$new" "$shared" <<'PY_CATALOGS'
+import json
+import re
+import subprocess
+import sys
+
+
+def unique(pairs):
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError('clave duplicada')
+        result[key] = value
+    return result
+
+
+def validate(node):
+    if isinstance(node, dict):
+        for value in node.values():
+            validate(value)
+    elif not isinstance(node, str):
+        raise ValueError('la traducción no es una cadena')
+
+
+def load(revision, path):
+    entry = subprocess.run(['git', 'ls-tree', revision, '--', path],
+                           check=True, capture_output=True).stdout
+    if not entry.startswith(b'100644 blob '):
+        raise ValueError('el catálogo no es un archivo regular sin cambio de modo')
+    content = subprocess.run(['git', 'show', revision + ':' + path],
+                             check=True, capture_output=True).stdout
+    node = json.loads(content.decode('utf-8'), object_pairs_hook=unique)
+    if not isinstance(node, dict):
+        raise ValueError('el catálogo no es un objeto')
+    validate(node)
+    return node
+
+
+def union(base, mine, theirs):
+    result = dict(mine)
+    for key, value in base.items():
+        if key not in mine or key not in theirs:
+            raise ValueError('clave borrada')
+        if isinstance(value, dict) and isinstance(mine[key], dict) and isinstance(theirs[key], dict):
+            result[key] = union(value, mine[key], theirs[key])
+        elif mine[key] != value or theirs[key] != value:
+            raise ValueError('valor cambiado')
+    for key in (mine.keys() & theirs.keys()) - base.keys():
+        if not isinstance(mine[key], dict) or not isinstance(theirs[key], dict):
+            raise ValueError('altas con clave común')
+        if not mine[key] or not theirs[key]:
+            raise ValueError('alta de objeto vacío común')
+        result[key] = union({}, mine[key], theirs[key])
+    result.update({key: value for key, value in theirs.items() if key not in mine})
+    return result
+
+
+try:
+    for path in sys.argv[5].splitlines():
+        if not re.fullmatch(r'(?:.*/)?(?:messages|translations)/[^/]+\.json', path):
+            raise ValueError('archivo compartido fuera de los catálogos')
+        base, mine, theirs, merged = (load(revision, path) for revision in sys.argv[1:5])
+        if mine == base or theirs == base or union(base, mine, theirs) != merged:
+            raise ValueError('el catálogo no es la unión de las altas')
+except (ValueError, OSError, subprocess.CalledProcessError, RecursionError):
+    sys.exit(1)
+PY_CATALOGS
+}
+if [ -n "$shared" ] && ! catalogs_disjoint; then
     printf 'Ronda delta: el destino cambió archivos del parche\n%s' "$shared"
     exit 0
 fi
 printf 'APTO vigente: %s es %s más %s, árbol %s\n' \
     "$(git rev-parse --short "$new")" "$(git rev-parse --short "$reviewed")" "$(git rev-parse --short "$new_base")" "$tree"
+if [ -n "$shared" ]; then
+    printf 'El catálogo se juntó por claves disjuntas:\n%s' "$shared"
+fi
