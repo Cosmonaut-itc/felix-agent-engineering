@@ -425,7 +425,7 @@ const vm=require('vm'), assert=require('assert');
 const input=JSON.parse(require('fs').readFileSync(0,'utf8'));
 const elements={};
 const context={console, Intl, Date, Number, Object, String, Math,
-  document:{getElementById:id=>elements[id] ||= {addEventListener(){},innerHTML:'',textContent:''},
+  document:{getElementById:id=>elements[id] ||= {addEventListener(){},innerHTML:'',textContent:''},querySelectorAll:()=>[],
     addEventListener(){},querySelector:()=>null},
   window:{addEventListener(){}},setInterval(){},AbortSignal:{timeout(){}},
   fetch:async()=>({ok:false})};

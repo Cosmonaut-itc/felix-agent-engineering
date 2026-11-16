@@ -138,7 +138,16 @@ total de 1 s. Un fallo entrega lista vacía/total cero con
 `errors.stage=orphans`; debe distinguirse de una lectura válida sin huérfanos.
 El servidor admite snapshots anteriores sin ambos campos y valida la forma,
 límites, fechas, orden y ausencia de campos extra cuando están presentes.
-Esta entrega sólo añade datos; la vista del panel no los representa todavía.
+El panel los muestra en una franja abierta entre la capacidad del desk y los
+carriles, agrupados por `origin_task` y sin acciones. Cada origen ocupa dos
+renglones: tarea, grupo y estado (`Killed` es «Matada», nunca OOM) con memoria y
+CPU; debajo `comm pid` y la antigüedad del más antiguo, con la hora en `title`.
+La cabecera suma memoria y núcleos (`cpu_percent`/100; null es «—») y avisa
+cuando `orphans_total` supera la lista. Desde 4 orígenes muestra tres y «Ver N
+más». Sin huérfanos o sin ambos campos no aparece nada. Los textos entran sólo
+por `textContent`. Pruebas: `tests/test_orphans_ui.py` con
+`tests/orphans-ui-check.js`; `tests/orphans_browser_fixture.py OUTPUT.html`
+genera la página sintética para capturas a 390 y 1280 px.
 
 La aceptación privada se ejecuta con
 `REMOTE_RUN_HOST=desk ~/.local/bin/remote-run start --carril rapido --name dirigida-orfanos-desk -- /usr/bin/python3 -B fleet/rack/tests/private_orphans.py --run-private`.
