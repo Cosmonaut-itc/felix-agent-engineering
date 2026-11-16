@@ -173,6 +173,8 @@ usage() { expect 2 'Uso:' --root; }
 real_registry() { expect 0 'ok:' --registry-only --root "$REPO"; }
 failed=0
 for CASE in all_green missing_row unused_row renumbered lost_anchor missing_step missing_book registry_only not_installed citation_forms split_line unregistered_playbook slash_split crlf local_docs new_title step_boundaries tab_marker empty_marker code_block repeated_number unnamed_playbook installed_path usage real_registry; do
-    if (set -e; "$CASE"); then printf 'ok %s\n' "$CASE"; else printf 'FAIL %s\n' "$CASE" >&2; failed=$((failed + 1)); fi
+    (set -e; "$CASE")
+    result=$?
+    if [ "$result" = 0 ]; then printf 'ok %s\n' "$CASE"; else printf 'FAIL %s\n' "$CASE" >&2; failed=$((failed + 1)); fi
 done
 [ "$failed" = 0 ]
