@@ -225,9 +225,13 @@ STARTUP_CASES += (
 
 
 REORDER_CASES = (
+    ('order-context-toast','index.html',"`${action.ticket||'Sin ticket'} en lugar ${action.to} · ${action.group}`","'Orden actualizado'",'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-lateral-marker','index.html',';box-shadow:inset 3px 0 var(--accent)','', 'test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-capability-reason','host_action.py',"result['capabilities']['reason_reorder'] = caps['reason_reorder']",'pass','test_reorder.ReorderChannelTests.test_view_sanitization_and_disabled_reason'),
+    ('order-real-legacy-response','host_action.py',"request.get('op')=='reorder' and op=='reorder' and status=='recovery_error'",'False','test_reorder.ReorderChannelTests.test_real_old_host_reorder_and_queue_undo_fail_before_mutation'),
     ('order-current-host-probe','accion.py',"if op != 'status' and (request['op']=='reorder' or 'queue' in request.get('expected',{})):","if False:",'test_reorder.ReorderChannelTests.test_real_old_host_reorder_and_queue_undo_fail_before_mutation'),
     ('order-undo-current-probe','accion.py',"if op != 'status' and (request['op']=='reorder' or 'queue' in request.get('expected',{})):","if op != 'status' and request['op']=='reorder':",'test_reorder.ReorderChannelTests.test_real_old_host_reorder_and_queue_undo_fail_before_mutation'),
-    ('order-confirmed-marker','index.html','return mark?.from&&mark?.to?`${mark.from}→${mark.to}`:i+1;','return i+1;','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
+    ('order-confirmed-marker','index.html','return Number.isInteger(mark?.from)&&Number.isInteger(mark?.to)?`${mark.from}→${mark.to}`:i+1;','return i+1;','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-touch-scroll','index.html',"  if(ev.pointerType==='touch' && !ev.target.closest('.h')) return;",'','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-pointer-id','index.html','d.cancel=e=>{if(e.pointerId===d.pointer) finishDrag(true);};','d.cancel=e=>{finishDrag(true);};','test_reorder.ReorderChannelTests.test_production_ui_reorder'),
     ('order-old-undo','host_action.py',"(request.get('op')=='reorder' or 'queue' in request.get('expected',{})) and op!='status'", "request.get('op')=='reorder' and op!='status'",'test_reorder.ReorderChannelTests.test_closed_fields_budget_and_old_host_translation'),

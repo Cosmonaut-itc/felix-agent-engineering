@@ -1572,16 +1572,20 @@ class MiniControl:
         return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
                     error=dict(code=code, message=messages[code]), **fields)
 
+    _reorder_scope = False
+
     @contextmanager
     def reorder_deadline(self):
         old_timeout = getattr(self.pueue, 'timeout', None)
         old_deadline = getattr(self.pueue, 'deadline', None)
+        old_scope, self._reorder_scope = self._reorder_scope, True
         self.pueue.timeout = min(old_timeout or self.reorder_rpc, self.reorder_rpc)
         self.pueue.deadline = min(old_deadline or float('inf'), time.monotonic()+self.reorder_budget)
         try:
             yield
         finally:
             self.pueue.timeout, self.pueue.deadline = old_timeout, old_deadline
+            self._reorder_scope = old_scope
 
     def reorder_aliases(self, state):
         # U3.5 execs stock with no argv overrides, HOME/cwd fixed to the owner.
@@ -1823,7 +1827,10 @@ class MiniControl:
             cli_begun=time.monotonic()
             client.stdin.write(b'1'); client.stdin.close()
             self.reorder_boundary('client_sent')
-            client.wait(timeout=helper.remaining(plan))
+            # Popen.wait(timeout) backs off to 50 ms; keep the same deadline
+            # and process identity with a short bounded observation interval.
+            while client.poll() is None:
+                time.sleep(min(.005, helper.remaining(plan)))
             self.reorder_measure('cli',time.monotonic()-cli_begun)
             if client.returncode != 0:
                 raise subprocess.CalledProcessError(client.returncode, ['private-priority-client'])
@@ -2133,6 +2140,7 @@ class MiniControl:
                 state['generation'] = generation
                 with self.connect(write=True) as db:
                     self.store(db, state)
+            reverify = observed != state['desired'] or not self._reorder_scope
             for g, n in slot_plan(observed, state['desired']):
                 if self.resolve(state) != state:
                     return self.reconcile()
@@ -2140,7 +2148,10 @@ class MiniControl:
                 observed, _ = self.observed()
                 if observed[g] != n or self.generation(state) != generation:
                     raise ValueError('RPC no confirmada o daemon sustituido')
-            observed, _ = self.observed()
+            # No quota write + same control.lock: the initial observation is
+            # sufficient here. Reorder admission still rereads quotas fresh.
+            if reverify:
+                observed, _ = self.observed()
             if observed != state['desired'] or self.generation(state) != generation:
                 raise ValueError('Deriva de cuotas')
             # The final daemon identification can cross the schedule boundary too.

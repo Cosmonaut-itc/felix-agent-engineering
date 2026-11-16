@@ -549,6 +549,35 @@ def test_reorder_reads_and_recovery_are_scoped_but_guard_reads_unbounded(self):
     self.assertTrue(any(timeout is None for timeout,_ in seen))
 
 
+def test_quota_drift_is_reconciled_and_read_again_before_reorder_start(self):
+    original_call=self.p.call
+    def boundary(phase):
+        if phase=='edited':self.p.groups['suites']['parallel_tasks']=8
+    self.engine.reorder_boundary=boundary
+    def call(*args):
+        if args[0]=='start':self.assertEqual(self.p.groups['suites']['parallel_tasks'],3)
+        return original_call(*args)
+    self.p.call=call
+    self.assertEqual(self.engine.handle(self.order_request())['status'],'applied')
+    self.assertEqual(self.p.groups['suites']['parallel_tasks'],3)
+    self.assertIn(('parallel','suites',3),self.p.calls)
+    self.assertFalse(self.engine._reorder_scope)
+
+
+def test_late_quota_drift_blocks_opening_after_reconciliation(self):
+    original=self.engine.observed;armed=[False]
+    def boundary(phase):
+        if phase=='admission_begin':armed[0]=True
+    self.engine.reorder_boundary=boundary
+    def observed():
+        if armed[0]:self.p.groups['suites']['parallel_tasks']=8
+        return original()
+    self.engine.observed=observed
+    self.assertEqual(self.engine.handle(self.order_request())['status'],'applied')
+    self.assertEqual(self.p.groups['suites']['status'],'Paused')
+    self.assertNotIn(('start','-g','suites'),self.p.calls)
+
+
 def test_client_configuration_is_built_once_per_action(self):
     self.p.edit_settings=dict(shared=dict(unix_socket_path='/synthetic/socket'))
     r=self.order_request('config-once-0001');action=dict(request=r)
@@ -577,14 +606,18 @@ def test_one_paused_snapshot_replaces_parent_status_reads_per_id(self):
     snap=self.p.status();self.engine._reorder_edit_snapshot=snap
     (self.root/'pueue.pid').write_text('43')
     self.p.binary='/tmp/only-a-fake'
-    client=Mock(pid=42,returncode=0)
+    client=Mock(pid=42,returncode=0);client.poll.return_value=0
     actual=control.MiniControl.edit_priority.__get__(self.engine)
     with patch.object(self.p,'status',side_effect=AssertionError('redundant full status read')),patch.object(control.subprocess,'Popen',return_value=client),patch.object(control.priority_helper(),'birth',return_value='proof'):
         actual(action,1,5,control.time.monotonic()+1)
-    client.wait.assert_called_once()
-    self.assertLessEqual(client.wait.call_args.kwargs['timeout'],1)
+    client.poll.assert_called_once()
     plan=next(self.root.glob('edit-*/plan.json'))
     self.assertIn('fingerprint',json.loads(plan.read_text()))
+    client.poll.side_effect=[None,0]
+    with patch.object(self.p,'status',side_effect=AssertionError('redundant full status read')),patch.object(control.subprocess,'Popen',return_value=client),patch.object(control.priority_helper(),'birth',return_value='proof'),patch.object(control.priority_helper(),'remaining',side_effect=[1,1,TimeoutError('expired')]),patch.object(control.time,'sleep'),patch.object(self.engine,'stop_editor',return_value=True) as stop:
+        with self.assertRaises(TimeoutError):actual(action,1,5,control.time.monotonic()+1)
+    stop.assert_called_once_with(action)
+
 
 
 def test_failed_edit_preserves_safe_diagnostic_and_recovery_finishes(self):
@@ -738,6 +771,12 @@ class InstallTests(unittest.TestCase):
         self.engine=Engine();self.config=dict(pid_file=self.home/'pid',data=self.home)
 
     def files(self):return {str(p.relative_to(self.home)):p.read_bytes() for p in self.home.rglob('*') if p.is_file()}
+
+    def test_manual_resume_documentation_uses_authority(self):
+        text=Path(control.__file__).with_name('README.md').read_text()
+        line=next(line for line in text.splitlines() if line.startswith('Para reanudarlo después:'))
+        self.assertIn('control.py reanudar suites --host mini',line)
+        self.assertNotIn('pueue start',line)
 
     def test_installer_load_cannot_write_bytecode_before_preflight(self):
         import sys

@@ -91,6 +91,13 @@ class ReorderChannelTests(unittest.TestCase):
     def test_real_old_host_reorder_and_queue_undo_fail_before_mutation(self):
         fixture=json.loads((BASE/'tests/old-host-u36.json').read_text())
         self.assertTrue(fixture['source'].startswith('66e2c1e'))
+        r=self.request('old-wire-reorder-001')
+        old=dict(fixture['responses']['reorder'],action_id=r['action_id'])
+        self.assertEqual(a.host_channel.sanitize(r,old,'reorder')['status'],'unsupported')
+        undo=self.request('old-wire-undo-0001',undo='previous-order-001')
+        old=dict(fixture['responses']['undo'],action_id=undo['action_id'])
+        self.assertEqual(a.host_channel.sanitize(undo,old,'undo')['status'],'unknown')
+        self.assertEqual(a.host_channel.sanitize(r,dict(fixture['responses']['reorder'],action_id=r['action_id']),'status')['status'],'recovery_error')
         for op in ('reorder','undo'):
             r=self.request('old-actual-'+op+'-001',undo='previous-order-001' if op=='undo' else None)
             seen=[]
@@ -132,6 +139,7 @@ class ReorderChannelTests(unittest.TestCase):
         self.engine.coordinated_reorder=False
         v=a.host_channel.control(self.engine.view())
         self.assertFalse(v['capabilities']['reorder'])
+        self.assertEqual(v['capabilities'].get('reason_reorder'),'La coordinación de pausas de los clientes no está acreditada.')
         self.assertIn('coordinación',v['reorder_groups']['suites']['reason'])
         self.assertNotIn('PRIVATE_SENTINEL',json.dumps(v))
 
@@ -184,7 +192,7 @@ class ReorderChannelTests(unittest.TestCase):
     def test_production_ui_reorder(self):
         fixture=browser_fixture(self.engine.view())
         source=(BASE/'index.html').read_text().split('<script>',1)[1].split('</script>',1)[0]
-        result=subprocess.run(['node',str(BASE/'tests/reorder-ui-check.js')],input=json.dumps(dict(js=source,fixture=fixture)),text=True,capture_output=True,timeout=10)
+        result=subprocess.run(['node',str(BASE/'tests/reorder-ui-check.js')],input=json.dumps(dict(js=source,css=(BASE/'index.html').read_text().split('<style>',1)[1].split('</style>',1)[0],fixture=fixture)),text=True,capture_output=True,timeout=10)
         self.assertEqual(result.returncode,0,result.stdout+result.stderr)
         self.assertIn('UI reorder OK',result.stdout)
 

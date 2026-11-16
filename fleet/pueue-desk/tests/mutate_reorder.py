@@ -57,6 +57,11 @@ CASES=[
  ('one parent snapshot','control.py',"snapshot = getattr(self, '_reorder_edit_snapshot', None) or self.pueue.status()", "snapshot = self.pueue.status()",T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
 
  ('shared helper clock','editor_prioridad.py','return time.clock_gettime(time.CLOCK_MONOTONIC)','return time.monotonic()', 'test_reorder.HelperTests.test_helper_deadline_uses_shared_kernel_clock_not_process_epoch'),
+ ('manual resume through authority','README.md','Para reanudarlo después: `/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar suites --host mini`.','Para reanudarlo después: `/opt/homebrew/bin/pueue start -g suites`.','test_reorder.InstallTests.test_manual_resume_documentation_uses_authority'),
+
+ ('editor wait shares deadline','control.py','time.sleep(min(.005, helper.remaining(plan)))','time.sleep(.005)',T+'test_one_paused_snapshot_replaces_parent_status_reads_per_id'),
+ ('fresh quotas before reorder admission','control.py',"and before == state['desired'] and self.generation(state) == state['generation']","and self.generation(state) == state['generation']",T+'test_late_quota_drift_blocks_opening_after_reconciliation'),
+
 ]
 
 

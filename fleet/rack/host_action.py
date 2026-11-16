@@ -225,6 +225,12 @@ def sanitize(request, response, op):
     if response.get('action_id') != request['action_id']:
         raise ValueError('ID distinto')
     status = response.get('status')
+    if (request.get('op')=='reorder' and op=='reorder' and status=='recovery_error'
+            and (response.get('error') or {}).get('code')=='recovery_error'
+            and 'receipt_digest' not in response):
+        # 66e2c1e rejects the unknown op before acceptance. Current uncertain
+        # mutations return unknown; status queries are never reclassified.
+        return dict(unavailable(),action_id=request['action_id'],effects=False)
     if status not in ('applied', 'applying', 'partial', 'unknown', 'conflict', 'rejected', 'dry_run', 'recovery_error', 'unsupported', 'aborted'):
         raise ValueError('Estado inválido')
     answer = dict(schema='rack-host-result@1', action_id=request['action_id'], status=status, error=None)

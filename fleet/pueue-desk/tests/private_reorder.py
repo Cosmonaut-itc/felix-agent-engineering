@@ -228,10 +228,14 @@ def main():
         for ident,task in before['tasks'].items():
             after=snapshot['tasks'][ident]
             assert {k:v for k,v in task.items() if k!='priority'}=={k:v for k,v in after.items() if k!='priority'}
-        undo=box.action(box.request('private-undo-0001',undo=r['action_id']),'undo')
-        assert undo['status']=='applied',undo['status']
+        undo_request=box.request('private-undo-0001',undo=r['action_id'])
+        undo=box.action(undo_request,'undo')
+        if undo['status']=='unknown':
+            terminal=box.recover(undo_request)
+            emit('undo_recovered',status=terminal['status'])
         snapshot=box.p.status()
         assert [snapshot['tasks'][i]['priority'] for i in before['tasks']]==[before['tasks'][i]['priority'] for i in before['tasks']]
+        assert undo['status']=='applied',undo['status']  # recovery is not a normal-budget PASS
     def aliases(box):
         box.seed(alias=True)
         ident=max(t['id'] for t in box.p.status()['tasks'].values() if t['original_command']=='new_after_add')
