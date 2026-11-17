@@ -1060,3 +1060,46 @@ aborto y reanudación con cancelación fallida dejando avanzar armado/CI/suite,
 reanudación del mismo tren sin saltar la barrera, y aborto tras recuperar una
 lectura incierta del CAS sin perder el éxito. La suite comprueba además el
 aborto que espera acreditación y C contenido en un main posterior.
+
+## Adaptador de Jale (U9)
+
+La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
+(ruta absoluta a `scripts/test-hosts/run-remote.sh`), `"host"` (por defecto
+`"auto"`) y `"modos"` (por defecto `["contract", "e2e"]`). La configuración
+actual de Hasito con `lanzador_hasito` sigue siendo válida. Esta selección no
+inscribe ni activa repositorios.
+
+Un push a `main` de Jale despliega a producción y aplica migraciones, así que
+con `"adaptador": "jale"` el bloque `pre_aterrizaje` (U18) es obligatorio. Sin
+él, la promoción pausa `infraestructura` / `pre-aterrizaje:configuracion-ausente`,
+sin push ni rojo. El tick sigue limpiando el diario, drenando feedback y
+consumiendo decisiones: retirar el bloque cancela la operación pendiente con
+el comando guardado, como en U18, y detiene el carril antes del push.
+
+Jale corre ambos modos sobre C sin filtros y valida `jale-recibo@1`: SHA,
+modo, selección, firmas, orden, unicidad, cobertura y código de salida.
+Cada fallo conserva su firma sin declararlo preexistente; la atribución
+requiere dos observaciones sobre C y dos sobre B. Las repeticiones usan la
+ruta exacta como único filtro, guardan duración y versiones del entorno en
+cada intento y reutilizan la evidencia de B por `(B, modo, unidad)`. El
+adaptador publica los subconjuntos antes de lanzarlos con una ref estable por
+tren y commit; los registros de repetición pertenecen al tren y la solicitud,
+y la caché de B guarda por intento sólo punteros a recibos válidos sin 75. El
+contrato identifica la definición por modo y ruta; no acredita igualdad del
+contenido del archivo entre commits. En e2e, un recibo con código 0 puede
+traer unidades `falla` cuando el juicio contra la base de main las dio por
+compartidas; el adaptador las trata como fallos que la atribución repite. En
+contract, una `falla` exige un código distinto de 0.
+
+Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
+estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
+el resultado tras una caída del tick. Si muere también el coordinador sin
+salida durable, se conserva el lanzamiento incierto y se detiene su recuperación
+sin lanzar otra corrida. Un 75 espera la política de reanudación del tren;
+recibos ausentes con otra salida, malformados o incoherentes, y el paro 64
+quedan como errores de infraestructura con el efecto pendiente. Ninguno se
+convierte en un fallo de producto. No hay cambio automático de host.
+
+La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
+procesos aislados para el carril rápido, se verifican en el host de pruebas con
+`bash fleet/tren/tests/remoto-u9.sh --completa`. El guion conserva la evidencia.

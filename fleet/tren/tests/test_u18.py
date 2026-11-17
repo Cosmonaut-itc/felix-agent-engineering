@@ -343,6 +343,28 @@ class CicloTests(ContextoU18):
         self.assertEqual(len(self.llamadas('cancelar')), 1)
         self.assertEqual(len(self.llamadas('verificar')), 1)
 
+    def test_jale_sin_gancho_pausa_sin_push(self):
+        self.config['adaptador'] = 'jale'
+        self.config.pop('pre_aterrizaje')
+        self.preparar()
+        self.hasta(lambda: self.estado().pausa is not None)
+        self.assertEqual(self.remoto(), self.B)
+        self.assertEqual(self.estado().pausa.motivo, 'infraestructura')
+        self.assertEqual(self.estado().pausa.detalle, 'pre-aterrizaje:configuracion-ausente')
+        self.assertFalse(self.llamadas())
+
+    def test_jale_retirar_gancho_cancela_y_no_empuja(self):
+        self.config['adaptador'] = 'jale'
+        self.preparar()
+        self.tick()
+        self.assertEqual(len(self.llamadas('verificar')), 1)
+        self.config.pop('pre_aterrizaje')
+        self.hasta(lambda: self.estado().pausa is not None)
+        self.assertEqual(self.remoto(), self.B)
+        self.assertEqual(self.estado().pausa.detalle, 'pre-aterrizaje:configuracion-ausente')
+        self.assertEqual(len(self.llamadas('cancelar')), 1)
+        self.assertEqual(len(self.llamadas('verificar')), 1)
+
 
 class ConfigTests(unittest.TestCase):
     def test_ventanas_y_comando_rechazan_ambiguedad(self):

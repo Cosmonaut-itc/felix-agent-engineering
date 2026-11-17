@@ -198,6 +198,7 @@ class Intento:
     firma: str
     duracion_s: float
     ensayo: str = ""
+    huella_entorno: str = ""
 
 
 @dataclass(frozen=True)
