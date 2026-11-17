@@ -358,7 +358,64 @@ python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_client_contrac
 python -I fleet/pueue-desk/tests/mutate_client_contract.py
 ```
 
-Quedan CC1 coordinador/diario, CC2 reconciliador, CC3 Hasito, CC4 apotheca,
+Quedan CC2 reconciliador, CC3 Hasito, CC4 apotheca,
 CC5 Jale/verify, CC6 escritores PAO, CC7 filtro/mantenimiento y CC8 acreditación
 cruzada con daemon privado. Sólo CC8, además de las otras puertas de U3.6,
 puede habilitar la compuerta. Acreditar Mini nunca habilita desk/U3.7.
+
+## CC1: coordinador local, compuerta apagada
+
+CC1 entrega el lado host del contrato en la Mini. `coordinated_reorder` sigue
+en `False` y ningún cliente cambia: nada llama todavía a este subcomando.
+
+- **Entrada.** `control.py client --host mini` lee una petición por stdin,
+  acotada a `MAX_BYTES + 1` antes de decodificar, y la valida con
+  `client_contract.py`. Sale 0 con respuesta de negocio válida y 2 con
+  `invalid_request_response()`. Host, autoridad, daemon y binario salen de la
+  instalación; la petición no elige grupo, socket, config, binario,
+  directorio, comando, señal libre ni prioridad. En el desk responde
+  `rejected/unsupported`.
+- **Diario.** `client_actions.py` guarda en `control.sqlite3` (FULL y
+  fullfsync) dos tablas: recibos por clave `(launcher, ref, action_id, phase)`
+  con el digest de la petición, y reservas por acción. Intención y reserva se
+  escriben en una transacción **antes** de cada RPC. Mismo cuerpo, mismo
+  recibo; otro cuerpo, `idempotency_conflict`, también tras reiniciar. Un
+  `deferred` o un `rejected` sin efecto (`locked`, `evidence_missing`) se
+  reevalúa con el mismo cuerpo. El diario sólo guarda ids, estados, huellas
+  opacas y razones cerradas.
+- **Incertidumbre.** Respuesta perdida, timeout o hijo vivo dejan `unknown`
+  con la reserva retenida y nunca un segundo envío. Un `unknown` o una
+  intención huérfana bloquea toda acción del mismo grupo, el reorder incluido,
+  hasta que CC2 la reconcilie. Dos lecturas iguales no prueban ausencia.
+- **Reserva.** Nunca expira. Sólo `finish` con prueba enlazada la cierra. La
+  prueba `interrupted` cita el recibo de la retirada de esa misma acción
+  (`sha256` con dominio `pueue-client-receipt@1` de la respuesta `retired`).
+  La guardia reabre presión o arranque aunque haya una reserva propia de
+  cancelar; esa cancelación nunca abre por encima de manual, presión,
+  arranque ni de la marca de pausa leída con `fence_reason`.
+- **Locked y carreras.** Ninguna operación mutadora actúa sobre Locked.
+  Queued→Running en cualquier lectura o durante stash devuelve `stale_state`;
+  nunca escala a señal.
+- **Reorder.** Con una reserva o un `unknown` en el grupo, reorder se rechaza
+  con `client_action` y la vista muestra el motivo. Mientras reorder posee el
+  grupo o su recuperación sigue abierta, toda operación con RPC devuelve
+  `deferred/host_action` sin RPC.
+- **Candados.** Las mutaciones esperan control.lock de forma breve y no
+  bloqueante; ocupado, responden `deferred/lock_busy` sin efecto. Con el lock
+  tomado sólo se leen archivos pequeños del lanzador, sin seguir enlaces y sin
+  esperar su result.lock. No hay espera de gracia: TERM y KILL son fases
+  separadas.
+- **Adaptadores fijos.** Hasito acredita `pueue.id`, su manifiesto, la
+  aceptación enlazada al intento y la prueba del mismo intento. apotheca
+  acredita el `pueue.id` de tres campos o con `pueue.group`; el formato que
+  exige leer meta responde `unsupported`. Jale acredita sólo su manifiesto;
+  aceptación, prueba y retirada responden `unsupported` hasta CC5. La
+  clasificación manual del vigilante exige leer comando y ruta: `unsupported`.
+  Ningún adaptador lee body, meta, comandos ni logs.
+- **Instalación.** `control.py` funciona sin `client_actions.py` al lado; si
+  encuentra un diario cliente sin su módulo, cierra el reorder de todos los
+  grupos y la poda no retira nada. Publicar el módulo junto con
+  `client_contract.py` es de CC6.
+
+Pruebas: `tests/test_client_actions.py` y `tests/mutate_client_actions.py`,
+con Pueue, reloj y disco falsos, en Python 3.9 y 3.12.

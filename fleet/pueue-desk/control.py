@@ -183,7 +183,8 @@ def prune_history(pueue, directory, now=None, policy=None):
                 temporary.replace(marker)
             # Reserve the cadence before any RPC, also when status fails.
             stamp(False)
-            protected = admission_evidence(directory)
+            # A Done task awaiting its client finish keeps the only proof of that reservation.
+            protected = admission_evidence(directory) | client_reserved_ids(directory)
             ids, counts = select_prune(pueue.status()['tasks'], now, policy, protected)
             report.update(counts)
             stamp(len(ids) == policy['limit'])
@@ -542,6 +543,54 @@ def live_tasks(state):
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+_CLIENT_ACTIONS = None
+CLIENT_BLOCK_MESSAGE = 'Hay una acción de cliente en curso en este grupo; el orden espera a que termine.'
+
+
+def client_actions():
+    # CC1. Same zero-bytecode load as the priority editor: reads never write pyc.
+    # None when the installation did not publish the module beside this file.
+    global _CLIENT_ACTIONS
+    if _CLIENT_ACTIONS is None:
+        path = Path(__file__).with_name('client_actions.py')
+        if not (path.is_file() and path.with_name('client_contract.py').is_file()):
+            return None
+        module = types.ModuleType('client_actions')
+        module.__file__ = str(path)
+        exec(compile(path.read_bytes(), str(path), 'exec'), module.__dict__)
+        _CLIENT_ACTIONS = module
+    return _CLIENT_ACTIONS
+
+
+def orphan_client_journal(path):
+    """A client journal without its module installed: nothing can read it, so it fails closed."""
+    if not os.path.lexists(str(path)):
+        return False
+    db = sqlite3.connect(Path(path).as_uri() + '?mode=ro', uri=True, timeout=.2)
+    try:
+        return db.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='client_reservations'"
+                          ).fetchone() is not None
+    finally:
+        db.close()
+
+
+def client_blocks(engine):
+    """Groups a client reservation or unresolved client RPC owns (CC1); read-only."""
+    module = client_actions()
+    if module is not None:
+        return module.blocked_groups(engine)
+    return {g: 'unknown' for g in engine.profile} if orphan_client_journal(engine.path) else {}
+
+
+def client_reserved_ids(directory):
+    module = client_actions()
+    if module is not None:
+        return module.reserved_task_ids(directory)
+    if orphan_client_journal(Path(directory) / 'control.sqlite3'):
+        raise ValueError('Diario cliente sin su módulo')
+    return set()
 
 
 _PRIORITY_HELPER = None
@@ -1693,6 +1742,7 @@ class MiniControl:
         generation = self.generation(state)
         state_bytes = len(canonical(snapshot).encode())
         pending = [a for a in self.reorder_actions() if a['phase'] != 'terminal']
+        clients = client_blocks(self)
         result = {}
         for g in self.profile:
             queue = self.reorder_rows(snapshot, g, generation)
@@ -1710,6 +1760,7 @@ class MiniControl:
                     unsafe = True
             reason = ('En pausa recuperando… · ' + recovery if recovery else
                       'No se puede reordenar mientras el grupo está pausado · ' + ', '.join(labels[r] for r in (reasons or ['manual'])) if paused else
+                      CLIENT_BLOCK_MESSAGE if g in clients else
                       'La coordinación de pausas de los clientes no está acreditada.' if not self.coordinated_reorder else
                       'Fila demasiado larga para reordenar de una vez' if len(queue) > 64 else
                       'Se necesitan al menos dos pendientes.' if len(queue)<2 else
@@ -1740,7 +1791,8 @@ class MiniControl:
                         edit_unsafe='Esta fila no se puede editar con seguridad.',
                         queue_too_long='Fila demasiado larga para reordenar de una vez',
                         pause_budget='La fila supera el presupuesto de pausa medido.',
-                        recovery_error='En pausa recuperando…')
+                        recovery_error='En pausa recuperando…',
+                        client_action=CLIENT_BLOCK_MESSAGE)
         if code not in messages:
             return self.reply(request, status, code, **fields)
         return dict(schema='rack-host-result@1', action_id=request.get('action_id'), status=status,
@@ -1816,6 +1868,10 @@ class MiniControl:
             return reject('unsupported')
         if self.disabled():
             return reject('disabled')
+        # CC1: a durable client reservation or unresolved client RPC owns the group,
+        # even when its process died and left control.lock free.
+        if request['expected']['group'] in client_blocks(self):
+            return reject('client_action')
         if not self.coordinated_reorder:
             return reject('uncoordinated')
         if pending:
@@ -3040,9 +3096,38 @@ class MiniControl:
             self.pause_fence(group).unlink()
 
 
+def client_cli(stream, engine, directory, coordinator=None):
+    """`control.py client`: 0 con respuesta de negocio válida, 2 con petición inválida.
+
+    The host, authority, daemon and binary come from the installation. The lock
+    already exists after adoption; this entry never creates it. Status and
+    capabilities only read. Mutations wait briefly for control.lock and never call
+    a launcher back, wait for its result.lock or recurse into `client`.
+    """
+    module = client_actions()
+    try:
+        request = module.read_request(stream)
+    except module.Invalid:
+        return 2, module.contract.invalid_request_response()
+    coordinator = coordinator or module.Coordinator(engine)
+    try:
+        if request['op'] in ('capabilities', 'status') or engine.host != 'mini':
+            return 0, coordinator.handle(request)
+        with (Path(directory) / 'control.lock').open('r') as handle:
+            if not wait_rack_lock(handle):
+                return 0, coordinator.handle(request, locked=False)
+            return 0, coordinator.handle(request)
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError):
+        # Never a raw fallback: a valid non-confirmation or no answer at all.
+        response = coordinator.fallback(request)
+        if response is None:
+            raise
+        return 0, response
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "preparar", "retirar", "parada", "resolver-admision"])
+    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "client", "preparar", "retirar", "parada", "resolver-admision"])
     parser.add_argument("group", nargs="?")
     parser.add_argument("--host", choices=["desk", "mini"], default="desk")
     parser.add_argument('--pid-file', type=Path)
@@ -3065,6 +3150,15 @@ def main():
     if args.host == 'mini':
         pueue.context = dict(env=mini_environment(Path.home()), cwd=Path.home())
     directory = Path.home() / ".local/state/pao/pueue-mini" if args.host == "mini" else STATE_DIR
+    if args.command == 'client':
+        if args.group is not None:
+            parser.error('client lee una sola petición por stdin, sin grupo')
+        if client_actions() is None:
+            parser.error('client no está instalado en este host')
+        pueue.timeout = client_actions().Coordinator.rpc_timeout
+        code, response = client_cli(sys.stdin.buffer, MiniControl(pueue, directory, host=args.host), directory)
+        print(json.dumps(response, ensure_ascii=False, allow_nan=False))
+        sys.exit(code)
     if args.command == 'rack':
         # Only panel RPCs have a deadline. Guards and aplicar wait for Pueue.
         pueue.timeout = 3
