@@ -53,13 +53,15 @@ for clave in ('StandardOutPath', 'StandardErrorPath'):
 with open(sys.argv[2], 'wb') as salida:
     plistlib.dump(datos, salida)
 PY
+# Sin acceso no se instala nada: launchd carga en el siguiente arranque
+# cualquier plist que encuentre, y ese agente fallaría cada noche en silencio.
+if ! /bin/bash "$temporal/disparar.sh" --en-seco; then
+  echo 'No se instala: gh no puede ver el workflow activo.' >&2
+  exit 1
+fi
 install -m 755 "$temporal/disparar.sh" "$HOME/bin/gate-noche-disparo.sh"
 install -m 644 "$temporal/preparado.plist" "$plist"
 cat "$temporal/origen" "$temporal/sumas" > "$HOME/bin/gate-noche-disparo.origen"
-if ! "$HOME/bin/gate-noche-disparo.sh" --en-seco; then
-  echo 'No se carga el LaunchAgent: gh no puede ver el workflow activo.' >&2
-  exit 1
-fi
 if launchctl print "$dominio/$label" >/dev/null 2>&1; then
   launchctl bootout "$dominio/$label"
 fi

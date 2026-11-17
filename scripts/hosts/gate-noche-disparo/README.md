@@ -6,10 +6,11 @@ ventana; el cron de GitHub se conserva como respaldo. Dos disparos en una
 noche son inofensivos: el ciclo omite commits que ya tienen veredicto.
 
 `./instalar.sh` instala desde HEAD publicado, verifica SHA-256 y conserva la
-procedencia en `~/bin/gate-noche-disparo.origen`. Antes de cargarlo comprueba
-que `gh` con sesión que pueda despachar workflows del repositorio ve activo
-el workflow. `./instalar.sh --en-seco` prueba los bytes publicados por SSH,
-sin instalar. El log está en `~/Library/Logs/gate-noche-disparo.log`.
+procedencia en `~/bin/gate-noche-disparo.origen`. Requiere en la Mini `gh` con
+sesión que pueda despachar workflows del repositorio. Antes de instalar
+comprueba que esa sesión ve activo el workflow; si no lo ve, no instala nada.
+`./instalar.sh --en-seco` hace la misma comprobación con los bytes publicados,
+por SSH y sin instalar. El log está en `~/Library/Logs/gate-noche-disparo.log`.
 
 Para desinstalar, ejecuta `launchctl bootout gui/$(id -u)/com.cosmonaut.gate-noche-disparo`
 y quita `~/bin/gate-noche-disparo.sh`,
