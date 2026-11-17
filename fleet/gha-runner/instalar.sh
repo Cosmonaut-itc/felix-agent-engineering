@@ -92,7 +92,6 @@ libkrb5-3|libkrb5.so.3
 libicu74|libicuuc.so.74 libicui18n.so.74 libicudata.so.74
 libssl3t64|libssl.so.3 libcrypto.so.3
 zlib1g|libz.so.1
-liblttng-ust1t64|liblttng-ust.so.1
 BIBLIOTECAS
   [ -z "$faltantes" ] || fallo "faltan dependencias de Ubuntu 24.04:$faltantes"
 }

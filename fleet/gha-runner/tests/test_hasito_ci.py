@@ -53,7 +53,7 @@ cat "$FAKE_ROOT/bibliotecas"
             f'  {lib} (libc6,x86-64) => /lib/{lib}' for lib in
             ('libc.so.6', 'libgcc_s.so.1', 'libstdc++.so.6', 'libgssapi_krb5.so.2',
              'libkrb5.so.3', 'libicuuc.so.74', 'libicui18n.so.74', 'libicudata.so.74',
-             'libssl.so.3', 'libcrypto.so.3', 'libz.so.1', 'liblttng-ust.so.1')))
+             'libssl.so.3', 'libcrypto.so.3', 'libz.so.1')))
         config = self.raiz / 'origen/config.sh'
         config.write_text(CONFIG)
         with tarfile.open(self.fake / 'paquete.tgz', 'w:gz') as paquete:
@@ -227,13 +227,21 @@ cat "$FAKE_ROOT/bibliotecas"
 
     def test_dependencias_faltantes_se_listan_antes_de_registrar(self):
         self.preparar('Linux x86_64')
-        (self.fake / 'faltantes').write_text('libicu74 liblttng-ust1t64')
+        (self.fake / 'faltantes').write_text('libicu74 libkrb5-3')
         resultado = self.instalar()
         self.assertNotEqual(resultado.returncode, 0)
         self.assertIn('libicu74', resultado.stderr)
-        self.assertIn('liblttng-ust1t64', resultado.stderr)
+        self.assertIn('libkrb5-3', resultado.stderr)
         self.assertEqual(self.leer('config.log'), '')
         self.assertFalse((self.fake / 'cargado').exists())
+
+    def test_sin_lttng_registra_como_el_desk(self):
+        self.preparar('Linux x86_64')
+        (self.fake / 'faltantes').write_text('liblttng-ust1t64')
+        resultado = self.instalar()
+        self.assertEqual(resultado.returncode, 0, resultado.stderr)
+        self.assertIn('--name desk-hasito-ci', self.leer('config.log'))
+        self.assertTrue((self.fake / 'cargado').exists())
 
     def test_biblioteca_no_resuelta_falla_aunque_dpkg_diga_instalado(self):
         self.preparar('Linux x86_64')

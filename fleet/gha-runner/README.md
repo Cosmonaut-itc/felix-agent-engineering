@@ -201,11 +201,12 @@ los trabajos.
 
 Antes de registrar en Ubuntu 24.04, el instalador consulta `dpkg-query` y
 `ldconfig -p`: requiere `libc6`, `libgcc-s1`, `libstdc++6`,
-`libgssapi-krb5-2`, `libkrb5-3`, `libicu74`, `libssl3t64`, `zlib1g` y
-`liblttng-ust1t64`. Si falta algún paquete o biblioteca, sale con la lista.
-No ejecuta `bin/installdependencies.sh`: requiere `sudo`. La lista incluye
-`liblttng-ust1t64`, que pide el instalador oficial para las trazas de .NET.
-Un administrador instala los paquetes que falten antes de reintentar.
+`libgssapi-krb5-2`, `libkrb5-3`, `libicu74`, `libssl3t64` y `zlib1g`.
+Si falta algún paquete o biblioteca, sale con la lista.
+No ejecuta `bin/installdependencies.sh`: requiere `sudo`. Un administrador
+instala los paquetes que falten antes de reintentar. La lista no incluye
+`liblttng-ust1t64`: ese paquete sólo sirve a las trazas de .NET, `config.sh`
+no lo comprueba y la imagen oficial del runner tampoco lo instala.
 Los runtimes de los lints los preparan los propios workflows.
 
 El PATH de los trabajos es fijo. En la Mini es
