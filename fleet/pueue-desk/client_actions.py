@@ -156,7 +156,9 @@ class ClientActions:
                     result = (prior['response'] if prior['digest'] == digest(r) else
                               self.reply(r, 'rejected', 'idempotency_conflict', held=prior['response']['reservation'] == 'held'))
                 else:
-                    result = self.reply(r, 'deferred', 'lock_busy', held=r['op'] in ('cancel-no-payload', 'finish'))
+                    reservation = self.reservation(r)
+                    result = self.reply(r, 'deferred', 'lock_busy', held=r['op'] in ('cancel-no-payload', 'finish') or
+                                        bool(reservation and reservation['open']))
                 return dict(result, op='status', action_op=r['op']) if request['op'] == 'status' else result
             return self._handle(request)
 

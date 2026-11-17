@@ -361,7 +361,7 @@ def test_foreign_stash_after_rejected_hold_is_never_adopted(self):
 
 def test_physical_missing_client_modules_preserve_host_and_orphan_journal(self):
     source = Path(control.__file__).resolve().parent
-    for missing in (('client_actions.py',), ('client_contract.py',), ('client_actions.py', 'client_contract.py')):
+    for missing in (('client_actions.py',), ('client_contract.py',), ('editor_prioridad.py',), ('client_actions.py', 'client_contract.py')):
         with self.subTest(missing=missing), tempfile.TemporaryDirectory(prefix='cc1-install-', dir='/tmp') as folder:
             with self.engine.connect(write=True) as db: db.execute('DROP TABLE IF EXISTS client_reservations')
             install = Path(folder)
@@ -415,8 +415,10 @@ def test_physical_missing_client_modules_preserve_host_and_orphan_journal(self):
                 self.assertEqual(self.p.calls, [])
                 self.change_state(reasons={'suites': ['pressure']})
                 self.p.groups['suites']['status'] = 'Paused'
-                engine.guard(dict(load=0, memory=1))
-                self.assertEqual(self.p.groups['suites']['status'], 'Paused')
+                for _ in range(2):
+                    engine.guard(dict(load=0, memory=1))
+                    self.assertEqual(self.p.groups['suites']['status'], 'Paused')
+                    with self.engine.connect() as db: self.assertEqual(self.engine.state(db)['reasons']['suites'], ['pressure'])
                 self.change_state(reasons={'suites': ['manual']})
                 with self.assertRaises(ValueError): engine.manual('suites', resume=True)
                 self.assertFalse(any(call[0] in ('start', 'remove') for call in self.p.calls))
@@ -548,9 +550,49 @@ def test_unknown_prevents_guard_opening(self):
     self.assertEqual(self.act()['status'], 'unknown')
     self.change_state(reasons={'suites': ['pressure']})
     self.p.groups['suites']['status'] = 'Paused'
-    self.engine.guard(dict(load=0, memory=1))
-    self.assertEqual(self.p.groups['suites']['status'], 'Paused')
+    for _ in range(2):
+        self.engine.guard(dict(load=0, memory=1))
+        self.assertEqual(self.p.groups['suites']['status'], 'Paused')
+        # The client block must not erase pressure into a later manual pause.
+        with self.engine.connect() as db: self.assertEqual(self.engine.state(db)['reasons']['suites'], ['pressure'])
     self.assertFalse(any(call[0] == 'start' for call in self.p.calls))
+
+
+def test_lock_busy_keeps_an_existing_reservation_held(self):
+    r = request('remote-run-signal')
+    self.evidence = Evidence(r['expected']); self.evidence.acceptance = r['acceptance']
+    self.actions = a.ClientActions(self.engine, self.evidence, rpc=lambda *args: self.rpc(*args))
+    self.after = copy.deepcopy(CASES['remote-run-signal']['response']['identity'])
+    self.assertEqual(self.act(r)['reservation'], 'held')
+    kill = copy.deepcopy(r); kill.update(signal='KILL', phase='signal:KILL')
+    calls = list(self.rpc_calls)
+    ctx = multiprocessing.get_context('spawn'); parent, child = ctx.Pipe()
+    holder = ctx.Process(target=hold_lock, args=(str(self.root), child)); holder.start()
+    try:
+        self.assertTrue(parent.poll(8) and parent.recv() == 'locked')
+        busy = self.act(kill)
+    finally:
+        parent.send('release'); holder.join(8)
+    self.assertEqual((busy['status'], busy['reason'], busy['reservation']), ('deferred', 'lock_busy', 'held'))
+    self.assertEqual(self.rpc_calls, calls)
+    self.assertTrue(a.reservations(self.engine)[0]['open'])
+
+
+def test_client_cli_refuses_desk_without_journal(self):
+    class Input:
+        buffer = io.BytesIO(json.dumps(dict(schema=c.SCHEMA, op='capabilities')).encode())
+    output = io.StringIO()
+    with patch('sys.argv', ['control.py', 'client']), patch.object(control.sys, 'platform', 'linux'), \
+            patch.object(control, 'Pueue', return_value=self.p), patch('sys.stdin', Input()), \
+            patch.object(control.Path, 'home', return_value=self.root), patch('sys.stdout', output), \
+            patch('sys.stderr', io.StringIO()) as error:
+        with self.assertRaises(SystemExit) as exit_:
+            control.main()
+    self.assertEqual(exit_.exception.code, 2)
+    self.assertIn('desk', error.getvalue())
+    self.assertEqual(output.getvalue(), '')
+    with self.engine.connect() as db:
+        self.assertIsNone(db.execute("SELECT 1 FROM sqlite_master WHERE name='client_actions'").fetchone())
 
 
 def test_cli_uses_installation_and_bounds_stdin(self):
@@ -558,12 +600,12 @@ def test_cli_uses_installation_and_bounds_stdin(self):
     class Input:
         buffer = io.BytesIO(raw)
     output = io.StringIO()
-    with patch('sys.argv', ['control.py', 'client']), patch.object(control, 'Pueue', return_value=self.p), patch.object(control.Path, 'home', return_value=self.root), patch('sys.stdin', Input()), patch('sys.stdout', output):
+    with patch('sys.argv', ['control.py', 'client']), patch.object(control.sys, 'platform', 'darwin'), patch.object(control, 'Pueue', return_value=self.p), patch.object(control.Path, 'home', return_value=self.root), patch('sys.stdin', Input()), patch('sys.stdout', output):
         self.assertEqual(control.main(), 0)
     self.assertEqual(c.parse(output.getvalue(), response=True)['ops'], list(c.OPS))
     self.assertEqual(self.p.timeout, 1.0)
     output = io.StringIO()
-    with patch('sys.argv', ['control.py', 'client', '--host', 'mini']), patch('sys.stdout', output):
+    with patch('sys.argv', ['control.py', 'client', '--host', 'mini']), patch.object(control.sys, 'platform', 'darwin'), patch('sys.stdout', output):
         self.assertEqual(control.main(), 2)
     self.assertEqual(json.loads(output.getvalue()), c.invalid_request_response())
 

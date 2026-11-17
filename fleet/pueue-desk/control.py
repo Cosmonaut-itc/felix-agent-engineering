@@ -567,8 +567,10 @@ def client_module():
 
 
 def client_support():
+    # The CLI also needs the priority helper for child birth identity.
     try:
-        return client_module() is not None
+        return (client_module() is not None and
+                Path(__file__).with_name('editor_prioridad.py').is_file())
     except FileNotFoundError:
         # A partial publication can remove a companion between check and read.
         return False
@@ -1505,7 +1507,7 @@ class MiniControl:
                          and generation==state['generation'] and self.reorder_host_ready(state))
         reorder_groups = self.reorder_view(state, self._status_snapshot, reorder_ready) if self.host=='mini' else {}
         return dict(schema='rack-host-result@1', status='ok', reorder_groups=reorder_groups, capabilities=dict(
-            client=client_support(),
+            client=self.host == 'mini' and client_support(),
             slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=any(g['enabled'] for g in reorder_groups.values()), restart_queue=False,
             reason_reorder=self.client_reservation_reason if any(g['reason'] == self.client_reservation_reason for g in reorder_groups.values()) else
                 'La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None),
@@ -2985,7 +2987,9 @@ class MiniControl:
                     can_open, failure = False, error
                 continue
             elif can_open and decision == 'reanudar' and reasons & {'pressure', 'startup'}:
-                if reasons <= {'pressure', 'startup'} and status == 'Paused' and not self.client_blocked(g, opening=True):
+                if reasons <= {'pressure', 'startup'} and status == 'Paused':
+                    if self.client_blocked(g, opening=True):
+                        continue  # Keep the pressure reason; it reopens once the client action resolves.
                     # A fresh sample, after reconciliation and immediately before admission.
                     current = pressure_mini() if self.host == 'mini' else pressure(proc)
                     if decide(self.host, current, RAPIDAS_THRESHOLDS[self.host] if g == 'rapidas' else thresholds) != 'reanudar':
@@ -3098,6 +3102,9 @@ def main():
     parser.add_argument('--sin-efecto', action='store_true', help='Certifica que no existe efecto pendiente ni tardío de la admisión')
     if sys.argv[1:2] == ['client'] and not client_support():
         parser.error('Control cliente no disponible: faltan módulos de la instalación')
+    if sys.argv[1:2] == ['client'] and sys.platform != 'darwin':
+        # Desk writers do not consult client reservations until U3.7.
+        parser.error('Control cliente no disponible en el desk')
     if sys.argv[1:2] == ['client'] and len(sys.argv) != 2:
         print(json.dumps(client_module().c.invalid_request_response()))
         return 2

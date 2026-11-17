@@ -367,7 +367,9 @@ puede habilitar la compuerta. Acreditar Mini nunca habilita desk/U3.7.
 
 `control.py client` implementa el transporte local del contrato. No admite
 argumentos ni selectores: la instalación elige host, autoridad, configuración,
-entorno y binario. Lee como máximo `MAX_BYTES+1` antes de decodificar; usa
+entorno y binario. Sólo corre en la Mini. En el desk la guardia y el goteo
+aún no consultan reservas (U3.7), así que `client` falla con un diagnóstico,
+no escribe el diario y la vista anuncia `capabilities.client:false`. Lee como máximo `MAX_BYTES+1` antes de decodificar; usa
 los validadores CC0 tanto al entrar como al responder. Los rechazos de negocio
 salen 0; una petición inválida sale 2 con `invalid_request_response()`.
 
@@ -389,6 +391,10 @@ con `evidence_missing`, conservan la reserva y no envían RPC. Un diario
 anterior sin el campo tampoco acredita hold. Sólo una recuperación atribuida
 de CC2 podrá completar esa evidencia; no basta releer el estado del daemon.
 
+Con `control.lock` ocupado, una fase sin recibo responde `deferred` y
+`lock_busy` sin RPC; si la acción ya tiene una reserva abierta, la respuesta
+la declara `held`.
+
 Antes de crear el hijo se confirma intención `unknown` y reserva. El hijo
 espera en stdin hasta confirmar también su PID y nacimiento; no hereda el
 candado. Toda respuesta perdida, caída o incertidumbre conserva la reserva.
@@ -400,7 +406,8 @@ incertidumbre.
 Una reserva impide reordenar y lo explica en `reorder_groups`; un reordenado
 abierto o en recuperación difiere las acciones cliente sin RPC. La guardia
 Mini puede reabrir normalmente con una reserva de cancelación conocida cuando
-cede la presión; una RPC incierta bloquea esa apertura. Cancelar nunca abre
+cede la presión; una RPC incierta bloquea esa apertura y conserva la razón
+`pressure`, sin convertirla en pausa manual. Cancelar nunca abre
 por encima de manual, presión o arranque. La poda conserva las tareas que
 necesita una reserva abierta. No se cambian cuotas, modo ni política de cola.
 
@@ -411,7 +418,8 @@ válida y explica la reserva pendiente, reordenar queda cerrado en todos los
 grupos, la poda se abstiene y las aperturas se retienen conservadoramente.
 No se borra ni convierte el diario ni se reemplaza `control.lock`. La vista
 del host anuncia `capabilities.client:false` si falta cualquiera de las dos
-piezas; invocar `client` entonces falla con un diagnóstico de instalación,
+piezas o `editor_prioridad.py`, que la CLI necesita para identificar a sus
+hijos; invocar `client` entonces falla con un diagnóstico de instalación,
 sin negociación positiva ni acceso al daemon.
 
 Son tres acreditaciones distintas:

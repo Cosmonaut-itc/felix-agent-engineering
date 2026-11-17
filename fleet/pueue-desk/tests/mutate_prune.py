@@ -24,7 +24,7 @@ CASES=[
     ('I7_protected', "        if ident in protected:", '        if False:', 'test_I7_uncertain_admission_keeps_its_execution_evidence'),
     ('I7_reserved', "attempt['outcome'] in ('reserved', 'unknown') else set()", "attempt['outcome'] in ('unknown',) else set()", 'test_I7_uncertain_admission_keeps_its_execution_evidence'),
     ('I7_resolved', "attempt['outcome'] in ('reserved', 'unknown') else set()", "attempt['outcome'] in ('reserved', 'unknown', 'confirmed') else set()", 'test_I7_uncertain_admission_keeps_its_execution_evidence'),
-    ('I7_unreadable', "    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)\n    try:\n        value = admission_state(db)\n    finally:\n        db.close()", "    db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)\n    try:\n        value = admission_state(db)\n    except Exception:\n        value = None\n    finally:\n        db.close()", 'test_I7_unreadable_admission_retains_everything'),
+    ('I7_unreadable', "    try:\n        value = admission_state(db)\n        has_clients = db.execute(\"SELECT 1 FROM sqlite_master WHERE name='client_reservations'\").fetchone() is not None\n    finally:\n        db.close()", "    try:\n        value = admission_state(db)\n        has_clients = db.execute(\"SELECT 1 FROM sqlite_master WHERE name='client_reservations'\").fetchone() is not None\n    except Exception:\n        value, has_clients = None, False\n    finally:\n        db.close()", 'test_I7_unreadable_admission_retains_everything'),
 ]
 
 def run(root, test=None):
