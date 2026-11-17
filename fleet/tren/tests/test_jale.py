@@ -447,7 +447,7 @@ class JaleTests(Aislado):
     def test_coordinador_interrumpido_no_duplica_lanzamiento_incierto(self):
         registro = self.adaptador.estado / clave('suite', 'lote') / 'contract' / '0'
         registro.mkdir(parents=True)
-        (registro / 'solicitud.json').write_text(json.dumps(['bash', str(self.lanzador),
+        (registro / 'solicitud.json').write_text(json.dumps(['bash', str(self.lanzador.resolve()),
             'auto', str(registro / 'corrida.log'), 'contract', C]))
         (registro / 'iniciado.json').write_text('true')
         with self.assertRaises(ResultadoInvalido) as contexto:
@@ -461,7 +461,7 @@ class JaleTests(Aislado):
         legacy = seleccionar({'lanzador_hasito': str(self.lanzador)}, git)
         self.assertIsInstance(legacy, Hasito)
         self.assertIs(legacy.git, git)
-        self.assertEqual(legacy.lanzador, str(self.lanzador))
+        self.assertEqual(legacy.lanzador, str(self.lanzador.resolve()))
         jale = seleccionar({'adaptador': 'jale', 'lanzador': str(self.lanzador),
                             'host': 'auto', 'modos': ['e2e']}, git)
         self.assertIsInstance(jale, self.Jale)
