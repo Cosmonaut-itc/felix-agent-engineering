@@ -16,7 +16,7 @@ Dos runners en la Mini los corren sin costo.
 | `guard` | «Política de exportación a Boat» | `jale-guard` | `mini-jale-guard` |
 | `datos` | «Unitarias con datos o recursos excluidos de Boat» | `jale-datos` | `mini-jale-datos` |
 | `hasito-noche` | Gate completo nocturno de Hasito sobre `main` | `hasito-noche` | `mini-hasito-noche` |
-| `hasito-ci` | Lints de los PR de Hasito | `hasito-ci` | `mini-hasito-ci` o `desk-hasito-ci` |
+| `hasito-ci` | CI de los PR de Hasito; hoy ningún workflow lo pide | `hasito-ci` | `mini-hasito-ci` o `desk-hasito-ci` |
 
 Cada runner toma un trabajo a la vez y GitHub guarda su fila. Van separados
 porque los trabajos de Boat esperan al guard, que tarda segundos: con un solo
@@ -152,7 +152,7 @@ runner, el plist y la copia del hook renombrándolos a `.retirado-<fecha>`.
 
 ## CI de los PR de Hasito
 
-El papel `hasito-ci` ejecuta los lints de los PR de `SEN-HASO/Hasito`.
+El papel `hasito-ci` ejecuta trabajos de CI de los PR de `SEN-HASO/Hasito`.
 Se instala una vez en cada host. Comparten la etiqueta `hasito-ci` y el
 directorio `~/actions-runner-hasito-ci`. Cada runner toma un trabajo a la vez.
 No lleva hook de inicio de trabajo.
@@ -160,9 +160,10 @@ No lleva hook de inicio de trabajo.
 Cualquier PR de Hasito que pida esa etiqueta ejecuta código con el usuario del host.
 El límite de confianza es el mismo que el de `jale-guard`.
 
-Los workflows eligen esta ruta con las variables del repositorio de Hasito
-`CI_RUNS_ON_LINT` y `CI_RUNS_ON_LINT_TS`, cada una con el valor
-`["self-hosted","hasito-ci"]`. Sin variable, el trabajo sigue en Boat.
+Un trabajo elige esta ruta con `runs-on: [self-hosted, hasito-ci]`. Hoy
+ningún workflow de Hasito la pide: sus lints corren con los tests de raíz en
+un solo trabajo, en Boat. Instalar el runner no mueve ningún trabajo hasta
+que un workflow pida la etiqueta.
 
 Para instalar en la Mini, con su checkout de PAO al día:
 
@@ -213,7 +214,7 @@ No ejecuta `bin/installdependencies.sh`: requiere `sudo`. Un administrador
 instala los paquetes que falten antes de reintentar. La lista no incluye
 `liblttng-ust1t64`: ese paquete sólo sirve a las trazas de .NET, `config.sh`
 no lo comprueba y la imagen oficial del runner tampoco lo instala.
-Los runtimes de los lints los preparan los propios workflows.
+Los runtimes de cada trabajo los prepara su workflow.
 
 El PATH de los trabajos es fijo. En la Mini es
 `/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin`; en el desk,
