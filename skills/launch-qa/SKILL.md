@@ -106,8 +106,14 @@ persona devuelve BLOQUEADO.
    problema como resuelto, persiste o empeoró. Está resuelto cuando ninguna
    de las personas que lo sufrieron vuelve a sufrirlo. Lista aparte los
    hallazgos nuevos. Si queda un problema aceptado sin resolver o un hallazgo
-   nuevo que bloquea, vuelve al paso 5. Cada vuelta cuenta dentro del límite
-   de **Rondas** de `felix-mode`.
+   nuevo que bloquea, vuelve al paso 5. Las rondas de QA siguen **Rondas** de
+   `felix-mode` con una cuenta propia, y la review de cada arreglo lleva la
+   suya. La ronda del paso 3 es la ronda 1 y cada repetición es la
+   siguiente. En esa regla, los problemas aceptados sin resolver y los
+   hallazgos nuevos que bloquean cuentan como los critical y warning en
+   `abierto`, y una ronda que deja alguno hace de NO APTO. Un hallazgo nuevo
+   con la pantalla y la causa de un problema ya resuelto es otro caso de un
+   defecto ya corregido.
 
    Termina cuando todos los problemas aceptados quedan resueltos y ningún
    hallazgo nuevo bloquea.
@@ -116,5 +122,5 @@ persona devuelve BLOQUEADO.
 
 Guarda `informe.md` en el directorio del encargo, con los datos de la
 corrida, el reparto y sus exclusiones, la tabla ordenada de problemas
-(personas, gravedad, capturas y estado en cada ronda) y las decisiones que
-siguen pendientes del dueño.
+(personas, gravedad, capturas y estado en cada ronda), cada cambio de
+enfoque con su ronda y las decisiones que siguen pendientes del dueño.
