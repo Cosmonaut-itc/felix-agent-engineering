@@ -6,6 +6,7 @@
 # Modo emergencia: si al empezar quedan menos de 15 GB libres, los umbrales de
 # antigüedad se acortan (entre paréntesis, el valor en emergencia).
 # Sólo work tiene otra emergencia: <40 GB, ventana de 6 h y freno en 60 GB.
+# Una preparación sin meta bloquea work durante 1 h (15 min en su emergencia).
 #
 # Qué borra:
 #   1. ~/remote-run/work/*   sólo las copias no ocultas que ~/bin/pao-inventario.py
@@ -411,10 +412,12 @@ trap soltar_lock EXIT
 antes=$(libre_gb)
 [[ "$antes" =~ ^[0-9]+$ ]] || { log "sin borrar: espacio libre no verificable"; exit 1; }
 WORK_EMERG=0 COPIA_MIN=10080 COPIA_VENTANA="7 días"
+PREPARACION_SEGUNDOS=3600 PREPARACION_VENTANA="1 h"
 COPIA_FIND=(-maxdepth 2 -mtime -7)
 INV_ARGS=(--copia-minutos "$COPIA_MIN")
 if [ "$antes" -lt 40 ]; then
   WORK_EMERG=1 COPIA_MIN=360 COPIA_VENTANA="360 minutos"
+  PREPARACION_SEGUNDOS=900 PREPARACION_VENTANA="15 min"
   # git status puede refrescar index mediante rename y con ello el mtime de
   # .git. No son uso. Sí recorremos sus otros hijos y todo el árbol de trabajo.
   # Los patrones relativos no excluyen archivos homónimos fuera de .git.
@@ -476,7 +479,7 @@ elif [ ! -d "$RR" ]; then
   INV_MOTIVO="no existe $RR"
 elif ! acotado "reglas 1 y 3: inventario" "$RR" /usr/bin/python3 -B "$inventario_dir/pao-inventario.py" --raiz "$RR" "${INV_ARGS[@]}" > "$INV_JSON" 2> "$INV_ERR"; then
   INV_MOTIVO="el inventario falló: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
-elif ! /usr/bin/python3 -B - "$INV_JSON" "$RR" "$WORK_EMERG" "$COPIA_MIN" > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
+elif ! /usr/bin/python3 -B - "$INV_JSON" "$RR" "$WORK_EMERG" "$COPIA_MIN" "$PREPARACION_SEGUNDOS" > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
 from datetime import datetime, timezone
 import json
 import math
@@ -488,6 +491,7 @@ raiz = os.path.abspath(sys.argv[2])
 if datos.get('schema') != 'remote-run-inventario@1' or os.path.abspath(datos.get('raiz', '')) != raiz:
     sys.exit('esquema o raíz inesperados')
 emergencia = sys.argv[3] == '1'
+preparacion_segundos = int(sys.argv[5])
 if datos['reglas']['copiaDias'] * 1440 != int(sys.argv[4]):
     sys.exit('umbral de copias inesperado')
 if datos['proteccionCopias']['bloqueoGlobal']:
@@ -519,7 +523,7 @@ def visible(c):
 
 # Una preparación reciente aún no tiene mirror en meta: no se sabe qué copia usa.
 for c in datos['corridas']:
-    if c['clase'] == 'preparacion-abortada' and datos['ts'] - (c['ultimoUso'] or 0) < 3600:
+    if c['clase'] == 'preparacion-abortada' and datos['ts'] - (c['ultimoUso'] or 0) < preparacion_segundos:
         print('sin-copias\t' + nombre(c['ruta'], runs))
 copias = datos['copias']
 if emergencia:
@@ -728,7 +732,7 @@ if [ "$INV_OK" = 1 ]; then
     INV_OK=0
     log "reglas 1 y 3 sin borrar: falló lectura de la lista del inventario"
   elif [ "$estado_preparacion" = 0 ]; then
-    log "regla 1 sin borrar: preparación de menos de 1 h en runs/${preparacion#*$'\t'}"
+    log "regla 1 sin borrar: preparación de menos de $PREPARACION_VENTANA en runs/${preparacion#*$'\t'}"
   else
     while IFS=$'\t' read -r tipo n ultimo; do
       [ "$tipo" = work ] || continue

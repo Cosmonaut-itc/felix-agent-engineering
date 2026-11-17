@@ -136,9 +136,12 @@ demás.
   `stat` directo que el mtime del propio directorio tenga al menos siete
   días. No hay otro recorrido de árbol entre ese bloque y la acción.
 - **Preparación en curso.** Si el inventario ve una corrida
-  `preparacion-abortada` de menos de 1 h, la regla 1 no borra nada en esa
-  pasada. Esa corrida todavía no tiene `mirror` en `meta`, así que no se sabe
-  qué copia usa.
+  `preparacion-abortada` de menos de 1 h en modo normal o de menos de 15 min
+  en EMERGENCIA work, la regla 1 no borra nada en esa pasada. Esa corrida
+  todavía no tiene `mirror` en `meta`, así que no se sabe qué copia usa.
+  La ventana de emergencia evita que una preparación abandonada bloquee
+  durante una hora la recuperación de espacio. El log indica la ventana
+  aplicada. Las corridas nuevas durante la pasada conservan su veto.
 - **Rename antes de borrar.** La regla 1 comprueba con `stat -f %d` que
   `~/remote-run` y `$STATE` (`~/Library/Application Support/limpieza-disco`)
   están en el mismo filesystem. Desde el padre fijado renombra la copia a

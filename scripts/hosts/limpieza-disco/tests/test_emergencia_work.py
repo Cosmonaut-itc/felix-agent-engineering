@@ -503,6 +503,37 @@ print(values[min(i, len(values) - 1)])
         self.assertEqual(self.ejecutar(), [])
         self.assertIn('bloqueo global', self.log)
 
+    def test_emergencia_preparacion_sin_meta_20_min_no_bloquea(self):
+        p = self.copia(horas=7)
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.edad(run, 20 / 60)
+        self.ejecutar(dry=False)
+        self.assertFalse(p.exists(), self.log)
+        self.assertIn('borrado ', self.log)
+        self.assertNotIn('regla 1 sin borrar: preparación', self.log)
+
+    def test_emergencia_preparacion_sin_meta_5_min_bloquea(self):
+        p = self.copia(horas=7)
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.edad(run, 5 / 60)
+        self.ejecutar(dry=False)
+        self.assertTrue((p / 'dato').exists(), self.log)
+        self.assertNotIn('borrado ', self.log)
+        self.assertIn('regla 1 sin borrar: preparación de menos de 15 min', self.log)
+
+    def test_normal_preparacion_sin_meta_20_min_bloquea(self):
+        self.config['free'] = [40]
+        p = self.copia(horas=8 * 24)
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.edad(run, 20 / 60)
+        self.ejecutar(dry=False)
+        self.assertTrue((p / 'dato').exists(), self.log)
+        self.assertNotIn('borrado ', self.log)
+        self.assertIn('regla 1 sin borrar: preparación de menos de 1 h', self.log)
+
     def test_corrida_nueva_sigue_vetando(self):
         self.copia()
         self.config['hook'] = 'run-mirror'
