@@ -74,6 +74,21 @@ class TrickleTests(DeskFixture):
         self.sample=self.low; self.run_guard(self.low)
         self.assertEqual(self.p.groups['jale']['status'],'Running')
 
+    def test_pressure_marker_candidate_matches_durable_pressure_and_manual_blocks(self):
+        snapshot = self.p.status()
+        state = self.state()
+        expected = self.engine._candidate(snapshot, state, lambda *args:None)
+        self.assertEqual(expected[2], 'jale')
+        state['reasons']['jale'] = []
+        self.engine.pause_fence('jale').write_bytes(b'pressure\n')
+        self.assertEqual(self.engine._candidate(snapshot, state, lambda *args:None), expected)
+        for reason in ('manual', 'ambiguous', 'startup'):
+            state['reasons']['jale'] = [reason]
+            self.assertEqual(self.engine._candidate(snapshot, state, lambda *args:None)[2], 'pesadas')
+        state['reasons']['jale'] = []
+        self.engine.fence_pause('jale')
+        self.assertEqual(self.engine._candidate(snapshot, state, lambda *args:None)[2], 'pesadas')
+
     def test_global_cooldown_instances_59999_60(self):
         self.run_guard()
         self.assertEqual(len(self.starts()),1)
