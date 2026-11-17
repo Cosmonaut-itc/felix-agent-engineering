@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.cosmonaut.fseventsd-guardia</string>
+<key>ProgramArguments</key><array><string>/usr/bin/python3</string><string>-I</string><string>/Library/Application Support/pao/fseventsd-guardia/guardia.py</string></array>
+<key>UserName</key><string>root</string>
+<key>StartInterval</key><integer>600</integer>
+<key>RunAtLoad</key><true/>
+<key>StandardOutPath</key><string>/Library/Logs/fseventsd-guardia.log</string>
+<key>StandardErrorPath</key><string>/Library/Logs/fseventsd-guardia.log</string>
+</dict></plist>
