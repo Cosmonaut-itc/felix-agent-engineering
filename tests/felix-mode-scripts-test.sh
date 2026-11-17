@@ -787,6 +787,9 @@ for command in (
     'true; gh run rerun 123; echo listo', 'gh run rerun 123 --failed && gh run rerun 456',
     'true\ngh run rerun 123', 'GH_REPO=owner/repo gh run rerun 123',
     'gh run rerun 123 --log-failed', 'gh run rerun 123 -- --failed',
+    'gh run rerun 123 --failed=false', 'gh run rerun 123 --failed --failed=false',
+    "cat <<'EOF' && gh run rerun 123\nhola\nEOF\n",
+    "bash <<'EOF'\ngh run rerun 123\nEOF\n",
 ):
     check(command, deny=True)
 endpoint = 'repos/owner/repo/actions/runs/123/rerun'
@@ -796,6 +799,9 @@ for command in (
     'cd repo && gh api ' + endpoint + ' -X POST; echo listo',
     'gh api ' + endpoint + ' -f hello=world',
     'gh api https://api.github.com/' + endpoint + ' -X POST',
+    'gh api -X POST ' + endpoint + ' > result.json',
+    'gh api --cache 1h -X POST ' + endpoint,
+    'gh api -X POST repos/{owner}/{repo}/actions/runs/123/rerun',
 ):
     check(command, deny=True)
 for command in (
@@ -810,6 +816,7 @@ for command in (
     'echo "gh run rerun 123"', "grep 'gh run rerun' README.md",
     "printf '%s\\n' 'gh run rerun 123' > example.txt",
     "cat <<'EOF' > example.txt\ngh run rerun 123\nEOF\n",
+    'cat <<"EOF" > example.txt\ngh run rerun 123\nEOF\n',
     'echo "gh api -X POST ' + endpoint + '"',
     '# gh run rerun 123\necho listo',
 ):
