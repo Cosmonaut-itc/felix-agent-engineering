@@ -171,12 +171,18 @@ gh api -X POST repos/SEN-HASO/Hasito/actions/runners/registration-token -q .toke
   | ssh mini 'bash ~/.local/share/personal-agent-orchestration/fleet/gha-runner/instalar.sh hasito-ci'
 ```
 
-Para instalar en el desk, con su checkout de PAO al día:
+El desk no tiene checkout de PAO. Para instalar ahí, copia primero el
+instalador desde el checkout de PAO de la MacBook, con `main` al día. El papel
+`hasito-ci` no necesita ningún otro archivo del repositorio:
 
 ```sh
+ssh desk 'mkdir -p ~/.local/lib/pao-gha-runner-instalador && cat > ~/.local/lib/pao-gha-runner-instalador/instalar.sh' \
+  < fleet/gha-runner/instalar.sh
 gh api -X POST repos/SEN-HASO/Hasito/actions/runners/registration-token -q .token \
-  | ssh desk 'bash ~/.local/share/personal-agent-orchestration/fleet/gha-runner/instalar.sh hasito-ci'
+  | ssh desk 'bash ~/.local/lib/pao-gha-runner-instalador/instalar.sh hasito-ci'
 ```
+
+Repite la copia antes de reinstalar o retirar si `instalar.sh` cambió en `main`.
 
 Cada instalación requiere un token propio. Viaja por stdin y se pasa a
 `config.sh` por entorno. `instalar.sh --seco hasito-ci` anuncia los pasos sin
@@ -236,7 +242,7 @@ Para retirar cada runner:
 gh api -X POST repos/SEN-HASO/Hasito/actions/runners/remove-token -q .token \
   | ssh mini 'bash ~/.local/share/personal-agent-orchestration/fleet/gha-runner/instalar.sh --retirar hasito-ci'
 gh api -X POST repos/SEN-HASO/Hasito/actions/runners/remove-token -q .token \
-  | ssh desk 'bash ~/.local/share/personal-agent-orchestration/fleet/gha-runner/instalar.sh --retirar hasito-ci'
+  | ssh desk 'bash ~/.local/lib/pao-gha-runner-instalador/instalar.sh --retirar hasito-ci'
 ```
 
 El retiro detiene el servicio y da de baja el registro. En Linux también
