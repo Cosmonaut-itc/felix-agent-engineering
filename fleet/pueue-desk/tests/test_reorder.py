@@ -740,6 +740,63 @@ def test_failed_edit_preserves_safe_diagnostic_and_recovery_finishes(self):
     self.assertEqual(self.engine.handle(r)['status'],'aborted')
 
 
+def test_pause_marker_rejects_with_its_own_reason(self):
+    for marker,reason in ((b'pressure\n','pressure'),(b'manual\n','manual'),(b'otro\n','manual')):
+        self.engine.pause_fence('suites').write_bytes(marker)
+        result=self.engine.handle(self.order_request('marker-'+reason+'-'+str(len(marker))))
+        self.assertEqual((result.get('error') or {}).get('code'),'paused',result)
+        self.assertEqual(result['pause_reasons'],[reason]);self.assertEqual(self.p.calls,[])
+
+
+def interrupted_before_pause(self):
+    r=self.order_request()
+    def crash(phase):
+        if phase=='prepared':raise Crash()
+    self.engine.reorder_boundary=crash
+    with self.assertRaises(Crash):self.engine.handle(r)
+    self.engine.reorder_boundary=lambda phase:None
+    return r
+
+
+def test_recovery_keeps_pressure_marker_and_guard_reopens_after_retiring_it(self):
+    r=interrupted_before_pause(self)
+    status,failed=self.p.status,[]
+    def fail_once():
+        if not failed:
+            failed.append(True);raise OSError('lectura sintética fallida')
+        return status()
+    with patch.object(self.p,'status',side_effect=fail_once):
+        try:self.engine.guard(dict(load=4,memory=1))
+        except OSError:pass
+    self.assertEqual(self.engine.pause_fence('suites').read_bytes(),b'pressure\n')
+    self.p.calls.clear()
+    self.engine.reconcile()
+    self.assertEqual(self.engine.handle(r)['status'],'aborted')
+    self.assertNotIn(('start','-g','suites'),self.p.calls)
+    with self.engine.connect() as db:
+        self.assertEqual(self.engine.state(db)['reasons']['suites'],['pressure'])
+    for _ in range(3):self.engine.guard(dict(load=0,memory=1))
+    self.assertFalse(os.path.lexists(self.engine.pause_fence('suites')))
+    self.assertEqual(self.p.groups['suites']['status'],'Running')
+    with self.engine.connect() as db:
+        self.assertEqual(self.engine.state(db)['reasons'].get('suites',[]),[])
+
+
+def test_recovery_keeps_manual_marker_closed(self):
+    r=interrupted_before_pause(self)
+    self.engine.pause_fence('suites').write_bytes(b'manual\n')
+    self.p.groups['suites']['status']='Paused'
+    self.p.calls.clear()
+    self.engine.reconcile()
+    self.assertEqual(self.engine.handle(r)['status'],'aborted')
+    for _ in range(3):self.engine.guard(dict(load=0,memory=1))
+    self.assertNotIn(('start','-g','suites'),self.p.calls)
+    self.assertEqual(self.p.groups['suites']['status'],'Paused')
+    self.assertTrue(os.path.lexists(self.engine.pause_fence('suites')))
+    with self.engine.connect() as db:
+        self.assertIn('manual',self.engine.state(db)['reasons']['suites'])
+
+
 for name,fn in list(globals().items()):
     if name.startswith('test_'):setattr(ReorderTests,name,fn)
 

@@ -1834,8 +1834,9 @@ class MiniControl:
         if expected != request['expected'] or gen != state['generation'] or state['desired'] != before:
             return reject(conflict, 'conflict')
         reasons = state['reasons'].get(g, [])
-        if groups[g]['status'] != 'Running' or reasons or os.path.lexists(self.pause_fence(g)):
-            return reject('paused', pause_reasons=reasons or ['manual'])
+        fence = self.fence_reason(g)
+        if groups[g]['status'] != 'Running' or reasons or fence:
+            return reject('paused', pause_reasons=sorted(set(reasons) | ({fence} if fence else set())) or ['manual'])
         if (state.get('startup', {}).get('phase') not in (None, 'ready') or
                 any(t['group'] == g and (next(iter(t['status'])) if isinstance(t['status'],dict) else t['status'])
                     in ('Paused','Locked','Stashed') for t in snapshot['tasks'].values())):
@@ -2174,8 +2175,9 @@ class MiniControl:
             if any(t['group']==g and isinstance(t['status'],dict) and set(t['status']) & {'Locked','Stashed','Paused'} for t in snap['tasks'].values()):
                 raise ValueError('recovery_error')
             reasons = set(state['reasons'].get(g,[])) - {'reorder'}
-            if os.path.lexists(self.pause_fence(action['group'])):
-                reasons.add('manual')
+            fence = self.fence_reason(g)
+            if fence:
+                reasons.add(fence)
             # Transfer ownership before opening, so a crash here remains recoverable.
             reasons.add('pressure')
             state['reasons'][g] = sorted(reasons)
@@ -2185,7 +2187,8 @@ class MiniControl:
             before, _ = self.observed()
             # This action paused a Running group. Hysteresis preserves that
             # prior state; only fresh high pressure transfers our pause.
-            can_open = (reasons <= {'pressure'} and decide('mini',fresh,threshold) != 'pausar'
+            # The guard alone retires a pause marker after persisting its owner.
+            can_open = (reasons <= {'pressure'} and not fence and decide('mini',fresh,threshold) != 'pausar'
                         and before == state['desired'] and self.generation(state) == state['generation']
                         and not os.path.lexists(self.directory/'maintenance')
                         and state.get('startup',{}).get('phase') in (None,'ready'))

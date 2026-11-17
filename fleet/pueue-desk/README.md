@@ -1187,7 +1187,11 @@ y `control.py reanudar GRUPO --host mini`. Los clientes pueden hacer `add`
 ordinario, pero no `add --immediate`, `start ID`, pausa/apertura directa de grupo
 ni editar prioridades durante una acción. Stock no permite atribuir una pausa
 redundante externa. Una pausa manual, por presión, ambigua o retenida al arrancar
-impide reordenar y se muestra con su motivo. El instalador legacy también tiene
+impide reordenar y se muestra con su motivo. Una marca `pause-GRUPO.manual`
+también lo impide, con el motivo que le da la guardia: `pressure` sólo con los
+bytes exactos `pressure\n`, `manual` en otro caso. La recuperación de un
+reordenar nunca reabre un grupo con marca; la guardia la retira después de
+persistir su propiedad y reabre con sus gates. El instalador legacy también tiene
 `start -g`, pero rechaza la autoridad adoptada antes de llegar a ese camino.
 
 La petición `rack-host-control@1` lleva revisión, generación, revisión de
