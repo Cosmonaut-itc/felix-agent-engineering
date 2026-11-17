@@ -85,7 +85,7 @@ CASES=[
 CASES += [
  ('external-running-startup','control.py',"reasons -= {'pressure','startup'}","reasons -= {'pressure'}",
   'test_startup_injerto.StartupGraftTests.test_a_w2_external_running_releases_startup_and_second_pause_is_manual'),
- ('external-running-hold','control.py',"reasons -= {'pressure','startup'}\n                    state.get('startup',{}).get('holds',{}).pop(group,None)","reasons -= {'pressure','startup'}",
+ ('external-running-hold','control.py',"                            state.get('startup',{}).get('holds',{}).pop(group,None)\n                            state['reasons'][group] = sorted(reasons)","                            state['reasons'][group] = sorted(reasons)",
   'test_startup_injerto.StartupGraftTests.test_a_w2_external_running_releases_startup_and_second_pause_is_manual'),
  ('foreign-resume-cli','control.py',"foreign_resume = args.command == 'reanudar'",'foreign_resume = False',
   'test_startup_injerto.StartupGraftTests.test_a_w1_cli_resolves_existing_foreign_without_changing_profile'),
