@@ -211,6 +211,9 @@ que demuestra:
   las correcciones de la ronda en un solo push y deja la rama destino para
   el final, como fija
   [Sincronizar una vez, al final](references/merge.md#sincronizar-una-vez-al-final).
+  Si la rama base del PR es la rama de otro PR abierto, el PR es una capa
+  de una pila: antes de sincronizarla o de pedirle una ronda, sigue
+  [Pilas](references/merge.md#pilas-la-base-aterriza-primero).
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio

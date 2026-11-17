@@ -109,6 +109,45 @@ sobre commits que sólo mezclaban `main` (medido el 2026-11-16).
   Antes confirma que el fallo no viene del cambio y, si el CI tiene cupo,
   que queda cupo, como digan los docs del repositorio.
 
+## Pilas: la base aterriza primero
+
+Una pila es un PR cuya rama base es la rama de otro PR abierto. Ese otro PR
+es la **base** y el PR que nace de ella es una **capa**. Cuando una capa
+sigue cada movimiento de su base, paga una ronda de sincronización y una
+corrida de CI por cada uno: en Jale, las sincronizaciones del PR 660
+dispararon rondas en sus cuatro capas durante 6 días (medido el
+2026-11-17). Esta regla sustituye el rebase de cada capa sobre la punta de
+su base que pide «Size and stacks» de pstack.
+
+- **La base primero.** La base recibe antes que sus capas la revisión, la
+  verificación y el merge, con las reglas de este archivo.
+- **La capa quieta.** Mientras su base siga abierta, la capa conserva el
+  head de la base del que nació. Sus pushes llevan sólo trabajo propio y
+  sus rondas revisan su diff contra ese head. Un commit nuevo en la base,
+  una sincronización de la base con el destino, el aviso del forge de que
+  la rama está desactualizada y el aviso de otra sesión se toman en la
+  sincronización única de la capa.
+- **Conflicto real.** La capa incorpora su base antes sólo por uno de estos
+  motivos, y lo anotas en tu registro:
+  - después de `git fetch`,
+    `git merge-tree --write-tree --name-only <head de la base> HEAD` sale
+    con 1, y la capa necesita su CI o seguir editando los archivos que
+    lista;
+  - una corrección de la base cambió un contrato que la capa usa, como una
+    firma, un schema o una migración, y la capa mezclada con el head nuevo
+    de la base ya no compila o falla su prueba dirigida.
+
+  Esa incorporación viaja en el mismo push que el trabajo pendiente de la
+  capa. Su ronda la fija `scripts/apto-vigente`, con la rama de la base
+  como rama destino.
+- **Una sincronización por capa.** Cuando la base aterriza, la capa que
+  nació de ella apunta su PR al destino e incorpora el destino una vez. Si
+  ya tenía APTO, `scripts/apto-vigente` decide su ronda, como en el paso 3
+  de «Aterrizar el head aprobado». Esa capa es ahora la base de las que
+  tiene encima.
+- **Con tren.** El tren exige que la base de cada PR sea el destino, así que
+  una capa se entrega al tren después de su sincronización única.
+
 ## Llevar el PR hasta verde
 
 Después de abrir el PR, sigue Babysit hasta merge-ready, también si sólo
