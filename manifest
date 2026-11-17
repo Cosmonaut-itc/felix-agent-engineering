@@ -4,6 +4,7 @@
 # file ... si-existe: enlaza sólo si el directorio del destino ya existe en este host
 file fleet/rack/rack-inspeccionar ~/.local/bin/rack-inspeccionar
 file fleet/tren/pao-tren ~/.local/bin/pao-tren
+file bin/pao-worktree ~/.local/bin/pao-worktree
 file docs/orchestration.md ~/.agents/docs/orchestration.md
 file docs/agent-routing.md ~/.agents/docs/agent-routing.md
 file docs/native-subagents.md ~/.agents/docs/native-subagents.md
