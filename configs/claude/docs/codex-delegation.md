@@ -164,6 +164,15 @@ worktree; si debe compartir checkout, commitea un punto de recuperación
 antes. En el CLI, `-s workspace-write` no trae red;
 `-c 'sandbox_workspace_write.network_access=true'` la habilita.
 
+- **Crear el worktree.** En la MacBook, créalo con
+  `pao-worktree new <repo> <ruta> -b <rama>` (o `--detach`). Parte de la
+  rama por defecto de `origin` y copia los archivos versionados con Twig desde
+  una base limpia. Cuando Twig usa su copia rápida, el worktree ocupa unos MB
+  en vez de una copia completa. Vuelve a Git normal en un repositorio con
+  atributos que transforman el texto, como el `* text=auto eol=lf` de este; la
+  línea `git-twig:` que imprime el comando dice qué ruta tomó. No copia
+  `node_modules` ni lo ignorado: instala dependencias en el worktree. Para partir de commits que `origin` no tiene, usa
+  `git worktree add`. Quítalo con `git worktree remove` sin `--force`.
 - **Commits.** En `workspace-write` el trabajador no puede commitear
   (`index.lock`); el orquestador commitea. El brief fija que el árbol de
   partida es correcto y que el trabajador sólo edita archivos; git lo gestiona
