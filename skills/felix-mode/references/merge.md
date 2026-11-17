@@ -89,7 +89,10 @@ sobre commits que sólo mezclaban `main` (medido el 2026-11-16).
   head. Hasta entonces mide la deriva sin empujar: después de `git fetch`,
   `git merge-tree --write-tree --name-only <destino> HEAD` sale con 1 si
   hay conflicto y lista sus archivos. Un aviso de otra sesión sobre un
-  cambio en el destino se toma en esa sincronización final.
+  cambio en el destino se toma en esa sincronización final. En un
+  [acumulador](acumulador.md), la sincronización final es su paso 8: el
+  candidato final incorpora la rama de entrega antes de los gates y de la
+  revisión del conjunto.
 - **Sincronización anticipada.** Sincroniza antes sólo por uno de estos
   motivos, y anótalo en tu registro:
   - el PR tiene conflicto y necesitas su CI, que el forge no corre sobre un
