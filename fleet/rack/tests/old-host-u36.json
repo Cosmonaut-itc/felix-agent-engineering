@@ -1,0 +1,58 @@
+{
+  "source": "66e2c1e68aa89894b0dfc05ef12480ad2257e1db:fleet/pueue-desk/control.py",
+  "capabilities": {
+    "schema": "rack-host-result@1",
+    "status": "ok",
+    "capabilities": {
+      "slots": true,
+      "undo": true,
+      "dry_run": true,
+      "mode": false,
+      "reorder": false,
+      "restart_queue": false
+    },
+    "revision": 1,
+    "policy_hash": "5455081b48084b0571bcb43aee5ac52b81603b0a4cba8e272e7bbbc440c96dd8",
+    "generation": "daemon-1",
+    "mode": "fijo",
+    "cap": 7,
+    "slots": {
+      "suites": 3,
+      "default": 1,
+      "rapidas": 3
+    },
+    "desired": {
+      "default": 1,
+      "rapidas": 3,
+      "suites": 3
+    },
+    "drift": false,
+    "reason": null,
+    "recovery_pending": false,
+    "startup_holds": {},
+    "startup_waiting": {},
+    "pause_reasons": {},
+    "pending_actions": [],
+    "slots_note": null
+  },
+  "responses": {
+    "reorder": {
+      "schema": "rack-host-result@1",
+      "action_id": "old-host-reorder-001",
+      "status": "recovery_error",
+      "error": {
+        "code": "recovery_error",
+        "message": "Estado de control ilegible o no disponible. Se conserva la pausa."
+      }
+    },
+    "undo": {
+      "schema": "rack-host-result@1",
+      "action_id": "old-host-undo-001",
+      "status": "unknown",
+      "error": {
+        "code": "recovery_error",
+        "message": "Estado de control ilegible o no disponible. Se conserva la pausa."
+      }
+    }
+  }
+}

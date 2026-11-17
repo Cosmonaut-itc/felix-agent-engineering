@@ -5,6 +5,7 @@ import ast
 from concurrent.futures import ThreadPoolExecutor
 import datetime
 import json
+import hashlib
 import math
 import os
 from pathlib import Path
@@ -157,6 +158,38 @@ def desk_interruptions(home, host='desk'):
         return json.loads(row[0]).get('startup', {}).get('interruptions', {})
     finally:
         db.close()
+
+
+def mini_reorder_ages(home):
+    """Only timestamps/opaque fingerprints from the same read-only authority."""
+    path=home/'.local/state/pao/pueue-mini/control.sqlite3'
+    if not path.is_file():
+        return {}
+    db=sqlite3.connect(path.as_uri()+'?mode=ro',uri=True,timeout=.2)
+    try:
+        links={}
+        for body, in db.execute('SELECT body FROM host_actions'):
+            action=json.loads(body)
+            if action.get('kind')!='reorder':
+                continue
+            for item in action.get('recovered_enqueued',{}).values():
+                if (type(item) is not dict or set(item)!={'identity','before','after'}
+                        or not re.fullmatch('[0-9a-f]{64}',item.get('identity',''))):
+                    raise ValueError('Edad de fila inválida')
+                epoch(item['before']);epoch(item['after'])
+                links[(item['identity'],item['after'])]=item['before']
+        return links
+    finally:
+        db.close()
+
+
+def original_queue_age(task, stamp, links):
+    fields=('id','created_at','group','command','original_command','path','envs','dependencies','label')
+    identity=hashlib.sha256(json.dumps({k:task[k] for k in fields},sort_keys=True,separators=(',',':'),allow_nan=False).encode()).hexdigest()
+    seen=set()
+    while (identity,stamp) in links and stamp not in seen:
+        seen.add(stamp);stamp=links[(identity,stamp)]
+    return epoch(stamp)
 
 
 GUARD_CAUSES = {'fresh_sample','docker','generation','desired','event','admission','startup','authority',
@@ -594,7 +627,7 @@ def read_control(controller, host='mini'):
     answer = subprocess.run(['/usr/bin/python3', '-I', str(controller), 'rack', '--host', host],
         input=json.dumps(dict(schema='rack-host-control@1', op='capabilities')),
         check=True, text=True, capture_output=True, timeout=5)
-    if len(answer.stdout) > 16384:
+    if len(answer.stdout) > (65536 if host=='mini' else 16384):
         raise ValueError('Respuesta excesiva')
     return json.loads(answer.stdout)
 
@@ -748,6 +781,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
     if host == 'desk' and mode == 'linux':
         output['orphans'], output['orphans_total'] = attempt('orphans', lambda: within_budget(lambda: desk_orphans(data, proc, cgroup, pueue_unit), ORPHANS_BUDGET)) or ([], 0)
     interruptions = attempt('startup', lambda: desk_interruptions(home, host)) or {}
+    queue_ages = (attempt('queue-age',lambda:mini_reorder_ages(home)) or {}) if host=='mini' else {}
     cache, references = {}, {}
     if data:
         def tasks():
@@ -761,6 +795,8 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
                     result = 'exit ' + str(result['Failed']) if 'Failed' in result else next(iter(result))
                 row = dict(id=task['id'], group=task['group'], state=state, enqueued=epoch(details.get('enqueued_at')), start=epoch(details.get('start')), end=end, result=result,
                            name=None, scope=None, project=None, ticket=None, repo=None, sha=None, branch=None, subject=None, priority=task.get('priority', 0))
+                if state=='Queued' and queue_ages:
+                    row['enqueued']=original_queue_age(task,details.get('enqueued_at'),queue_ages)
                 interruption = interruptions.get(str(task['id']), {})
                 attributed = (state == 'Done' and result == 'Killed' and interruption.get('created_at') == task.get('created_at')
                               and interruption.get('message') == 'Interrumpida al reiniciar Pueue; relanzar manualmente')

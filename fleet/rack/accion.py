@@ -35,6 +35,7 @@ ERRORS = {
     'deadline': 'No se lanzó una cancelación nueva: se agotó el plazo. Consulta el mismo recibo.',
     'manually_closed': 'Recibo cerrado a mano tras comprobar la corrida en Pueue. No acredita una cancelación.',
     'forbidden': 'No se pudo autorizar la petición.',
+    'preflight_unavailable': 'No se pudo comprobar el control del host; la acción no se envió. Vuelve a intentarlo.',
 }
 CANCEL_OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
 OPEN = (*CANCEL_OPEN, 'applying', 'partial')
@@ -286,7 +287,7 @@ class Actions:
         if operation == 'post':
             validate(value)
             identity = dict(value)
-            if value['op'] in ('cancel', 'slots', 'mode', 'undo') and not value.get('dry_run'):
+            if value['op'] in ('cancel', 'slots', 'mode', 'undo', 'reorder') and not value.get('dry_run'):
                 with self.http_lock:
                     self.identities.setdefault(value['action_id'], identity)
         else:
@@ -364,6 +365,8 @@ class Actions:
             current = next((h for h in payload['hosts'] if h['id'] == request['host']), None)
             if not current or not current['fresh'] or current.get('age') is None or current['age'] > 45 or self.clock() - payload['now'] > 45:
                 return ERRORS['stale_state']
+            if (request['op']=='reorder' or 'queue' in request.get('expected',{})) and not isinstance(((current.get('snapshot') or {}).get('control') or {}).get('reorder_groups'),dict):
+                return 'Falta actualizar el control de este host.'
             if request['op'] == 'mode' and ((current.get('snapshot') or {}).get('control') or {}).get('capabilities', {}).get('mode') is not True:
                 return 'Falta actualizar el control de este host.'
             return None
@@ -383,14 +386,33 @@ class Actions:
 
     def call(self, request, op, deadline):
         if request['op'] in host_channel.OPS:
+            mutation_sent = False
+            def unsent():
+                return dict(result(request,'rejected','preflight_unavailable'),effects=False)
             wire = {k: v for k, v in request.items() if k not in ('schema', 'host')}
             wire.update(schema='rack-host-control@1', op='capabilities' if request['op'] == 'host_capabilities' else request['op'])
             if op == 'status':
                 wire = dict(schema='rack-host-control@1', op='status', action_id=request['action_id'])
             remaining = deadline - self.timer() - RECEIPT_RESERVE
             if remaining < MIN_TRANSPORT:
-                return result(request, 'unknown')
+                return result(request, 'unknown') if op=='status' else unsent()
             try:
+                if op != 'status' and (request['op']=='reorder' or 'queue' in request.get('expected',{})):
+                    # Snapshot may predate a rollback. Probe the actual controller,
+                    # including undo: an old host already knows slots undo.
+                    caps = self.executor(self.hosts[request['host']], 'host-control',
+                                         dict(schema='rack-host-control@1',op='capabilities'), timeout=min(.5,remaining))
+                    current = host_channel.control(caps, request['host'])
+                    if current['status']=='ok' and 'reorder_groups' not in current:
+                        answer = dict(host_channel.unavailable(), action_id=request['action_id'], effects=False,
+                                      schema=SCHEMA, op=request['op'], host=request['host'])
+                        return answer
+                    if current['status']!='ok':
+                        return unsent()
+                    remaining = deadline - self.timer() - RECEIPT_RESERVE
+                    if remaining < MIN_TRANSPORT:
+                        return unsent()
+                mutation_sent = True
                 response = self.executor(self.hosts[request['host']], 'host-control', wire, timeout=min(10, remaining))
                 response = host_channel.sanitize(request, response, wire['op'])
                 verified = response.pop('receipt_verified', False)
@@ -399,7 +421,7 @@ class Actions:
                 response.update(schema=SCHEMA, op=request['op'], host=request['host'])
                 return response if self.timer() <= deadline - RECEIPT_RESERVE else result(request, 'unknown')
             except Exception:
-                return result(request, 'unknown')
+                return result(request, 'unknown') if mutation_sent or op=='status' else unsent()
         wire = dict(schema='rack-cancel@1', op=op, ref=request['ref'])
         if op != 'capabilities':
             wire['action_id'] = request['action_id']
@@ -456,6 +478,10 @@ class Actions:
                                        (request.get('action_id', ''),)):
             previous, response = json.loads(body), json.loads(answer)
             if request['op'] in host_channel.OPS or previous['op'] in host_channel.OPS:
+                if (response['status'] in OPEN and previous['host']==request['host']
+                        and (request['op']=='reorder' or previous['op']=='reorder'
+                             or 'queue' in request.get('expected',{}) or 'queue' in previous.get('expected',{}))):
+                    return 'Hay una acción pendiente en este host; consulta su recibo.'
                 if (request['op'] in host_channel.OPS and previous['op'] in host_channel.OPS
                         and response['status'] in OPEN and previous['host'] == request['host']):
                     return 'Hay un ajuste pendiente en este host; consulta su recibo.'

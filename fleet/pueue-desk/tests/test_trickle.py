@@ -262,6 +262,11 @@ class TrickleTests(DeskFixture):
             self.run_guard();self.assertEqual(len(self.starts()),1)
             self.assertIn('clock',self.causes())
 
+    def test_reorder_recovery_without_pending_work_leaves_fresh_sample_budget(self):
+        with patch.object(control.time,'monotonic',side_effect=[0,11]+[11]*20):self.run_guard()
+        self.assertEqual(self.starts(),[])
+        self.assertIn('fresh_sample',self.causes())
+
     def test_manual_tombstone_startup_and_pending_receipt(self):
         for filename,cause in (('maintenance','maintenance'),):
             (self.engine.directory/filename).touch();self.run_guard()

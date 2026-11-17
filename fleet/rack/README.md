@@ -944,3 +944,104 @@ ambos sentidos y unknown recargado, con capturas a 1280/390 px.
 U3.4: `startup_holds` y `startup_waiting` se presentan en la celda fusionada de
 lugares libres. La espera indica «reanudación automática»; las pausas ambiguas
 de ambos hosts se resuelven desde esa celda, sin duplicación en la cabecera.
+
+### Orden de la fila de la Mini (U3.6)
+
+La variante aditiva `reorder` y el undo de fila usan `/api/accion` y
+`rack-host-control@1`, con los mismos controles de dueño por whois fresco,
+Host permitido, Origin exacto, JSON cerrado y límite de 16 KiB. No hay llave,
+listener ni acceso público nuevo. El desk sigue sin capacidad de reordenar.
+Un controlador viejo que responde `invalid_request` se presenta como
+`unsupported`; una respuesta incierta se consulta por el mismo id, sin repetir
+el POST. El índice durable conserva también los rechazos y sus digest.
+Antes del POST de reorder o undo de fila se consultan capacidades frescas del
+controlador real. Esto detecta una reversión posterior al snapshot: la base
+66e2c1e devuelve recovery_error para reorder y unknown para la nueva variante
+undo, que todavía no admite. La falta comprobada de metadata de fila en un
+controlador sano se traduce a unsupported **antes de enviar la mutación**.
+Timeout, capacidad corrupta y unknown de un host actual siguen inciertos;
+GET nunca reenvía una operación ni convierte una incertidumbre en rechazo.
+
+Cancelación y reordenado se excluyen mientras haya una acción pendiente del
+host; el candado de control nunca se retiene durante la limpieza de un lanzador.
+
+La Mini publica por grupo identidad opaca, prioridades y etag de la fila.
+Antes de habilitar requiere contrato de pausas coordinadas, host listo, cuotas
+reconciliadas, generación vigente y ausencia de pausa/Locked/Stashed o tareas
+individualmente Paused. **La entrega queda cerrada en la instalación actual**:
+`~/.local/bin/pueue.py:1925` fuerza `start ID` al cancelar. Debe corregirse y
+auditarse ese cliente antes de habilitar en producción. No se cambia aquí el
+cliente instalado. `MiniControl.coordinated_reorder=False` es la única
+compuerta durable; su motivo llega en capabilities y por grupo. La comprobación
+privada usa exclusivamente un daemon propio.
+
+Cuando está acreditado, arrastrar una fila la levanta y sigue al puntero;
+los vecinos se desplazan y la posición muestra `5→2`. Alt+↑/↓ usa la misma
+operación y conserva el foco; Escape y pointercancel restauran sin POST.
+`prefers-reduced-motion` quita desplazamientos de vecinos. Durante la petición
+se bloquea el grupo y aparece «Reordenando…». Tras confirmación visible se
+resalta 2,5 s con marcador `5→2` y franja lateral, y se ofrece «Deshacer»
+durante 8 s con ticket/lugar/grupo. El toast usa `textContent`. En táctil sólo
+la manija captura el arrastre; el cuerpo de fila conserva scroll vertical.
+Los cambios se anuncian por aria-live. No se añade menú Subir/Bajar en esta
+unidad; queda como mejora de accesibilidad separada del prototipo aprobado.
+
+«No se pudo confirmar el orden · consultando» conserva la reserva y el mismo
+id, sin toast de éxito. «La fila cambió; no se puede deshacer» indica que el
+host rechazó el undo exacto sin efectos: puede haber empezado una tarea o
+haber entrado otra. Las pausas muestran el motivo concreto. Una recuperación
+pendiente muestra «En pausa recuperando…» y su propietario. La presión nueva
+conserva el orden aplicado y entrega la pausa a la guardia.
+La banda de histéresis conserva el estado abierto anterior al reorder; sólo
+una decisión fresca `pausar` entrega la pausa a la guardia. Una instantánea
+de recuperación que aún nombra la acción ya confirmada no reemplaza su
+recibo terminal, aunque tenga igual revisión. Una pausa nueva observada con
+esa misma revisión sí se muestra.
+
+Si falla el sondeo de capacidades antes de enviar reorder o undo, el rack
+guarda un rechazo terminal `preflight_unavailable`, `effects=false`, con el
+motivo «la acción no se envió». GET conserva ese rechazo y otra acción puede
+continuar. El sondeo tiene plazo de 0,5 s, menor que la espera del candado del
+host; `unknown` se conserva si la mutación pudo llegar al controlador.
+
+El límite es 64 pendientes; una fila mayor explica «Fila demasiado larga para
+reordenar de una vez». Además, el host rechaza antes de pausar un plan que
+excede el presupuesto de 6 s; las RPC tienen límite de 1 s.
+La envolvente `pause_start_envelope_seconds` del arnés va desde antes de la
+RPC pause hasta después de start; handle completo incluye más trabajo. Se
+miden aparte aceptación→pause, verificación, admisión y recibo. Las antiguas
+cifras 3,082/5,382 s de A eran prepared→start, no pausa exacta. Una avería
+conserva cierre observado y propietario; ningún arnés llama éxito a superar
+el presupuesto normal. La estimación se calibra con el pipeline completo y
+la fixture de 9,43 MB; no es una garantía ante carga futura.
+La guardia existente corre cada 60 s: no se promete recuperación en 10 s ni una cota
+finita ante avería. El [README del controlador](../pueue-desk/README.md) describe
+identidad, diario, helper TOML, medición, instalación `--seco` y reversión sin
+reiniciar Pueue. La publicación del rack conserva su procedimiento actual;
+no se ha ejecutado en esta entrega.
+
+Las respuestas del canal de control de host admiten hasta 64 KiB para incluir
+before, destino y observado de 64 identidades. Las peticiones y las respuestas
+de cancelación conservan su tope de 16 KiB. Si llegaron más de 64 altas durante
+la acción, el recibo marca el observado incompleto y la UI espera al snapshot;
+no elimina filas a partir de un vector truncado. El host valida cualquier
+intento de deshacer contra la fila completa y devuelve conflicto si cambió.
+
+La admisión temporal U3.6 usa `0,95 + 0,08 × MB + escrituras × (0,90 + 0,08 × MB)`
+segundos: MB decimales del snapshot completo, incluido el historial de otros
+grupos. Con unos 6 KB caben cinco escrituras (5,453 s); seis (6,353 s) se
+rechazan. Con 9,43 MB caben dos (5,013 s); tres (6,668 s) y cinco (9,976 s)
+se rechazan antes de pause. Panel, reorder y undo comparten estimación; el
+panel prevé tantas escrituras como filas. Se usa el máximo completo por
+edición bajo carga (0,858 s en el segundo pre-vuelo, redondeado a 0,90),
+y margen por tamaño tras el timeout del editor grande del primer pre-vuelo.
+Fase efectiva de 6 s y RPC de 1 s/restante. La compuerta de clientes sigue apagada.
+
+Aceptación privada del segundo pre-vuelo: PASS de normal/undo (envolventes
+2,475/1,067 s), large rechazado antes de pause en 0,114 s, aliases, huérfano,
+reinicio y 64. El primero falló por plazo del editor grande y se conserva como
+FAIL. Después del segundo se elevó la base a 0,90 por el máximo observado de
+0,858 s; un replay numérico con los bytes registrados conserva las decisiones
+ensayadas. No se hizo una tercera corrida ni se acredita cada tamaño admisible.
+La compuerta continúa apagada; suites completas y revisión independiente
+quedan al orquestador antes de habilitar producción.

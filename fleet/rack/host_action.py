@@ -3,7 +3,7 @@ import re
 import hashlib
 import json
 
-OPS = ('host_capabilities', 'slots', 'mode', 'undo')
+OPS = ('host_capabilities', 'slots', 'mode', 'undo', 'reorder')
 GROUPS = {'suites', 'default', 'rapidas'}
 DESK_GROUPS = {'hasito', 'jale', 'jale-verify', 'otros', 'pesadas', 'rapidas'}
 ACTION = re.compile(r'[A-Za-z0-9-]{8,64}')
@@ -14,16 +14,54 @@ def vector(value, host='mini'):
             and all(type(n) is int and 1 <= n <= 8 for n in value.values()))
 
 
+def validate_reorder_request(request, host, allow_short=False):
+    e = request.get('expected')
+    fields = {'revision','admission_revision','policy_hash','generation','group','queue_etag','queue'}
+    if (type(e) is not dict or set(e) != fields or type(e['revision']) is not int or e['revision'] < 1
+            or type(e['admission_revision']) is not int or e['admission_revision'] < 1
+            or type(e['group']) is not str or e['group'] not in (GROUPS if host=='mini' else DESK_GROUPS)
+            or type(e['generation']) is not str or not 1 <= len(e['generation']) <= 160
+            or any(type(e[k]) is not str or not re.fullmatch('[0-9a-f]{64}',e[k]) for k in ('policy_hash','queue_etag'))
+            or type(e['queue']) is not list or not (0 if allow_short or request['op']=='undo' else 2) <= len(e['queue']) <= 64):
+        raise ValueError('Fila inválida')
+    ids = []
+    for row in e['queue']:
+        if (type(row) is not dict or set(row) != {'id','identity','priority'}
+                or type(row['id']) is not int or not 0 <= row['id'] < 2**64
+                or type(row['priority']) is not int or not -(2**31) <= row['priority'] < 2**31
+                or type(row['identity']) is not str or not re.fullmatch('[0-9a-f]{64}',row['identity'])):
+            raise ValueError('Identidad inválida')
+        ids.append(row['id'])
+    if len(set(ids)) != len(ids):
+        raise ValueError('Fila duplicada')
+    if request['op'] == 'reorder':
+        c = request.get('change')
+        if (type(c) is not dict or set(c) != {'order'} or type(c['order']) is not list
+                or len(c['order']) != len(ids) or any(type(n) is not int for n in c['order'])
+                or set(c['order']) != set(ids)):
+            raise ValueError('Permutación inválida')
+    elif type(request.get('undo_of')) is not str or not ACTION.fullmatch(request['undo_of']):
+        raise ValueError('Recibo inválido')
+    if len(json.dumps(request, sort_keys=True, separators=(',',':'), allow_nan=False).encode()) > 16384:
+        raise ValueError('Fila demasiado larga para reordenar de una vez')
+
+
 def validate(request):
     if type(request) is not dict or request.get('op') not in OPS:
         raise ValueError('Operación inválida')
     keys = {'schema', 'op', 'host'}
     if request['op'] != 'host_capabilities':
-        keys |= {'action_id', 'dry_run', 'expected', 'change' if request['op'] in ('slots', 'mode') else 'undo_of'}
+        reorder = request['op']=='reorder' or request['op']=='undo' and type(request.get('expected')) is dict and 'queue' in request['expected']
+        keys |= {'action_id', 'dry_run', 'expected', 'change' if request['op'] in ('slots', 'mode','reorder') else 'undo_of'}
         if (type(request.get('action_id')) is not str or not ACTION.fullmatch(request['action_id'])
                 or type(request.get('dry_run')) is not bool):
             raise ValueError('Identidad inválida')
         e = request.get('expected')
+        if reorder:
+            validate_reorder_request(request, request.get('host'))
+            if set(request) != keys or request['schema']!='rack-action@1' or request.get('host') not in ('mini','desk'):
+                raise ValueError('Petición inválida')
+            return request
         if (type(e) is not dict or set(e) != {'revision', 'policy_hash', 'generation', 'mode', 'slots'}
                 or type(e['revision']) is not int or e['revision'] < 1
                 or type(e['policy_hash']) is not str or len(e['policy_hash']) != 64
@@ -112,11 +150,31 @@ def control(value, host='mini'):
     fields = ('revision', 'policy_hash', 'generation', 'mode', 'cap', 'slots', 'desired', 'drift', 'recovery_pending')
     result = dict(schema=value['schema'], status='ok', capabilities={k: caps[k] for k in
                   ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue')}, **{k: value[k] for k in fields})
+    if caps.get('reason_reorder') is not None:
+        if caps['reason_reorder'] != 'La coordinación de pausas de los clientes no está acreditada.':
+            raise ValueError('Motivo de coordinación inválido')
+        result['capabilities']['reason_reorder'] = caps['reason_reorder']
     reasons = value.get('pause_reasons', {})
     if type(reasons) is not dict or any(type(g) is not str or type(r) is not list
-            or any(x not in ('pressure', 'manual', 'ambiguous', 'startup', 'handoff') for x in r) for g, r in reasons.items()):
+            or any(x not in ('pressure', 'manual', 'ambiguous', 'startup', 'handoff', 'reorder') for x in r) for g, r in reasons.items()):
         raise ValueError('Pausas inválidas')
     result['pause_reasons'] = reasons
+    if 'reorder_groups' in value:
+        rg = value['reorder_groups']
+        if type(rg) is not dict or not set(rg) <= (GROUPS if host=='mini' else DESK_GROUPS):
+            raise ValueError('Grupos inválidos')
+        result['reorder_groups'] = {}
+        for group, entry in rg.items():
+            if (type(entry) is not dict or set(entry) != {'enabled','reason','owner','expected'}
+                    or type(entry['enabled']) is not bool
+                    or entry['reason'] is not None and (type(entry['reason']) is not str or len(entry['reason'])>300)
+                    or entry['owner'] is not None and (type(entry['owner']) is not str or not ACTION.fullmatch(entry['owner']))):
+                raise ValueError('Fila inválida')
+            expected = entry['expected']
+            if expected['group'] != group:
+                raise ValueError('Grupo distinto')
+            validate_reorder_request(dict(op='undo',expected=expected,undo_of='validate-0001'),host,allow_short=True)
+            result['reorder_groups'][group] = entry
     holds = value.get('startup_holds', {})
     if (type(holds) is not dict or any(type(g) is not str or type(r) is not str or not 1 <= len(r) <= 300 for g,r in holds.items())):
         raise ValueError('Retención de arranque inválida')
@@ -162,9 +220,17 @@ def sanitize(request, response, op):
         raise ValueError('Respuesta inválida')
     if op == 'capabilities':
         return control(response, request['host'])
+    if (request.get('op')=='reorder' or 'queue' in request.get('expected',{})) and op!='status' and (response.get('error') or {}).get('code')=='invalid_request':
+        return dict(unavailable(),action_id=request['action_id'])
     if response.get('action_id') != request['action_id']:
         raise ValueError('ID distinto')
     status = response.get('status')
+    if (request.get('op')=='reorder' and op=='reorder' and status=='recovery_error'
+            and (response.get('error') or {}).get('code')=='recovery_error'
+            and 'receipt_digest' not in response):
+        # 66e2c1e rejects the unknown op before acceptance. Current uncertain
+        # mutations return unknown; status queries are never reclassified.
+        return dict(unavailable(),action_id=request['action_id'],effects=False)
     if status not in ('applied', 'applying', 'partial', 'unknown', 'conflict', 'rejected', 'dry_run', 'recovery_error', 'unsupported', 'aborted'):
         raise ValueError('Estado inválido')
     answer = dict(schema='rack-host-result@1', action_id=request['action_id'], status=status, error=None)
@@ -197,6 +263,13 @@ def sanitize(request, response, op):
                     disabled='Los ajustes de lugares están apagados en este host.',
                     foreign_work='Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.',
                     unsupported='Falta actualizar el control de este host.')
+    messages.update(queue_conflict='La fila cambió. Actualiza antes de reordenar.',
+        paused='No se puede reordenar mientras el grupo está pausado',
+        uncoordinated='La coordinación de pausas de los clientes no está acreditada.',
+        edit_unsafe='Esta fila no se puede editar con seguridad.', queue_too_long='Fila demasiado larga para reordenar de una vez',
+        pause_budget='La fila supera el presupuesto de pausa medido.')
+    if 'queue' in request.get('expected',{}):
+        messages['undo_conflict']='La fila cambió; no se puede deshacer'
     if error is not None:
         code = error.get('code') if type(error) is dict else None
         if code not in messages:
@@ -209,6 +282,32 @@ def sanitize(request, response, op):
     if type(response.get('effects')) is bool:
         answer['effects'] = response['effects']
     payload = response.get('result')
+    if payload is not None and 'queue' in request.get('expected',{}):
+        if type(payload) is not dict or payload.get('group') != request['expected']['group']:
+            raise ValueError('Resultado de fila inválido')
+        for key in ('before','desired','observed'):
+            rows = payload.get(key)
+            if type(rows) is not list or len(rows)>128:
+                raise ValueError('Vector de fila inválido')
+            if any(type(r) is not dict or set(r)!={'id','identity','priority'} or type(r['id']) is not int
+                   or type(r['priority']) is not int or not -(2**31)<=r['priority']<2**31
+                   or type(r['identity']) is not str or not re.fullmatch('[0-9a-f]{64}',r['identity']) for r in rows):
+                raise ValueError('Identidad de fila inválida')
+        if type(payload.get('queue_etag')) is not str or not re.fullmatch('[0-9a-f]{64}',payload['queue_etag']):
+            raise ValueError('Etag inválido')
+        answer['result']={k:payload[k] for k in ('group','before','desired','observed','queue_etag')}
+        complete=payload.get('queue_complete',True)
+        if type(complete) is not bool:
+            raise ValueError('Fila incompleta inválida')
+        answer['result']['queue_complete']=complete
+        group_status=payload.get('group_status')
+        pause_reasons=payload.get('pause_reasons',[])
+        if (group_status is not None and group_status not in ('Running','Paused') or type(pause_reasons) is not list
+                or any(r not in ('pressure','manual','ambiguous','startup','handoff','reorder') for r in pause_reasons)):
+            raise ValueError('Admisión de fila inválida')
+        answer['result'].update(group_status=group_status,pause_reasons=pause_reasons)
+        answer['result']['undo_of']=request['action_id'] if status=='applied' else None
+        return answer
     if payload is not None:
         if (type(payload) is not dict or not vector(payload.get('before'), request['host']) or not vector(payload.get('desired'), request['host'])
                 or payload.get('observed') is not None and not vector(payload['observed'], request['host'])):
