@@ -78,11 +78,15 @@ def admission_evidence(directory):
     db = sqlite3.connect(path.as_uri() + '?mode=ro', uri=True, timeout=.2)
     try:
         value = admission_state(db)
+        has_clients = db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone() is not None
     finally:
         db.close()
     attempt = value and value['last_attempt']
     # _execution_confirmed needs the task itself until the permit is resolved.
-    return {str(attempt['id'])} if attempt and attempt['outcome'] in ('reserved', 'unknown') else set()
+    protected = {str(attempt['id'])} if attempt and attempt['outcome'] in ('reserved', 'unknown') else set()
+    if not has_clients:
+        return protected
+    return protected | client_module().protected_ids(MiniControl(None, directory))
 
 
 def select_prune(tasks, now, policy=None, protected=()):
@@ -542,6 +546,20 @@ def live_tasks(state):
 
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
+
+
+_CLIENT_ACTIONS = None
+
+
+def client_module():
+    global _CLIENT_ACTIONS
+    if _CLIENT_ACTIONS is None:
+        path = Path(__file__).with_name('client_actions.py')
+        module = types.ModuleType('client_actions')
+        module.__file__ = str(path)
+        exec(compile(path.read_bytes(), str(path), 'exec'), module.__dict__)
+        _CLIENT_ACTIONS = module
+    return _CLIENT_ACTIONS
 
 
 _PRIORITY_HELPER = None
@@ -1476,7 +1494,8 @@ class MiniControl:
         reorder_groups = self.reorder_view(state, self._status_snapshot, reorder_ready) if self.host=='mini' else {}
         return dict(schema='rack-host-result@1', status='ok', reorder_groups=reorder_groups, capabilities=dict(
             slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=any(g['enabled'] for g in reorder_groups.values()), restart_queue=False,
-            reason_reorder='La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None),
+            reason_reorder=self.client_reservation_reason if any(g['reason'] == self.client_reservation_reason for g in reorder_groups.values()) else
+                'La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
@@ -1689,6 +1708,14 @@ class MiniControl:
             return [json.loads(r[0]) for r in db.execute('SELECT body FROM host_actions')
                     if json.loads(r[0]).get('kind') == 'reorder']
 
+    client_reservation_reason = 'Hay una reserva cliente o una RPC pendiente de reconciliar.'
+
+    def client_blocked(self, group, opening=False):
+        with self.connect() as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
+                return False  # Pre-CC1 authority; no new dependency for old installers.
+        return client_module().blocked(self, group, opening=opening)
+
     def reorder_view(self, state, snapshot, enabled):
         generation = self.generation(state)
         state_bytes = len(canonical(snapshot).encode())
@@ -1708,7 +1735,8 @@ class MiniControl:
                         self.reorder_preflight(snapshot['tasks'][str(row['id'])], aliases)
                 except (ValueError,OSError):
                     unsafe = True
-            reason = ('En pausa recuperando… · ' + recovery if recovery else
+            reason = (self.client_reservation_reason if self.client_blocked(g) else
+                      'En pausa recuperando… · ' + recovery if recovery else
                       'No se puede reordenar mientras el grupo está pausado · ' + ', '.join(labels[r] for r in (reasons or ['manual'])) if paused else
                       'La coordinación de pausas de los clientes no está acreditada.' if not self.coordinated_reorder else
                       'Fila demasiado larga para reordenar de una vez' if len(queue) > 64 else
@@ -1733,7 +1761,8 @@ class MiniControl:
         self.reorder_boundary(phase or action['phase'])
 
     def reorder_reply(self, request, status, code=None, **fields):
-        messages = dict(queue_conflict='La fila cambió. Actualiza antes de reordenar.',
+        messages = dict(client_reserved=self.client_reservation_reason,
+                        queue_conflict='La fila cambió. Actualiza antes de reordenar.',
                         undo_conflict='La fila cambió; no se puede deshacer',
                         paused='No se puede reordenar mientras el grupo está pausado',
                         uncoordinated='La coordinación de pausas de los clientes no está acreditada.',
@@ -1816,6 +1845,8 @@ class MiniControl:
             return reject('unsupported')
         if self.disabled():
             return reject('disabled')
+        if self.client_blocked(request['expected']['group']):
+            return reject('client_reserved')
         if not self.coordinated_reorder:
             return reject('uncoordinated')
         if pending:
@@ -2939,7 +2970,7 @@ class MiniControl:
                     can_open, failure = False, error
                 continue
             elif can_open and decision == 'reanudar' and reasons & {'pressure', 'startup'}:
-                if reasons <= {'pressure', 'startup'} and status == 'Paused':
+                if reasons <= {'pressure', 'startup'} and status == 'Paused' and not self.client_blocked(g, opening=True):
                     # A fresh sample, after reconciliation and immediately before admission.
                     current = pressure_mini() if self.host == 'mini' else pressure(proc)
                     if decide(self.host, current, RAPIDAS_THRESHOLDS[self.host] if g == 'rapidas' else thresholds) != 'reanudar':
@@ -3004,6 +3035,8 @@ class MiniControl:
         with self.connect() as db:
             state = self.state(db)
         if resume:
+            if self.client_blocked(group, opening=True):
+                raise ValueError('RPC cliente pendiente de reconciliar; admisión retenida')
             if not self.reconcile():
                 raise ValueError('Deseo sin reconciliar')
             with self.connect() as db:
@@ -3042,13 +3075,28 @@ class MiniControl:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "preparar", "retirar", "parada", "resolver-admision"])
+    parser.add_argument("command", choices=["client", "aplicar", "guardia", "pausar", "reanudar", "adoptar", "rack", "preparar", "retirar", "parada", "resolver-admision"])
     parser.add_argument("group", nargs="?")
     parser.add_argument("--host", choices=["desk", "mini"], default="desk")
     parser.add_argument('--pid-file', type=Path)
     parser.add_argument('--seco', action='store_true')
     parser.add_argument('--sin-efecto', action='store_true', help='Certifica que no existe efecto pendiente ni tardío de la admisión')
+    if sys.argv[1:2] == ['client'] and len(sys.argv) != 2:
+        print(json.dumps(client_module().c.invalid_request_response()))
+        return 2
     args = parser.parse_args()
+    if args.command == 'client':
+        # The local installation chooses host; client has no selectors/flags.
+        if len(sys.argv) != 2:
+            print(json.dumps(client_module().c.invalid_request_response()))
+            return 2
+        host = 'mini' if sys.platform == 'darwin' else 'desk'
+        directory = Path.home() / ('.local/state/pao/pueue-mini' if host == 'mini' else '.local/state/pao/pueue-desk')
+        pueue = Pueue('/opt/homebrew/bin/pueue' if host == 'mini' else Path.home()/'.local/bin/pueue',
+                      env=dict(HOME=str(Path.home()), PATH='/usr/bin:/bin:/opt/homebrew/bin', LANG='C'), cwd=Path.home())
+        pueue.timeout = 1.0  # Client reads cannot hold control.lock indefinitely.
+        engine = MiniControl(pueue, directory, host=host)
+        return client_module().main(engine, sys.stdin.buffer, sys.stdout, birth=priority_helper().birth)
     if args.sin_efecto and args.command != 'resolver-admision':
         parser.error('--sin-efecto sólo para resolver-admision')
     if args.command == 'resolver-admision' and (args.host != 'desk' or args.group is not None):
@@ -3159,4 +3207,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

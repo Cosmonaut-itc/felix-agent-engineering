@@ -362,3 +362,52 @@ Quedan CC1 coordinador/diario, CC2 reconciliador, CC3 Hasito, CC4 apotheca,
 CC5 Jale/verify, CC6 escritores PAO, CC7 filtro/mantenimiento y CC8 acreditación
 cruzada con daemon privado. Sólo CC8, además de las otras puertas de U3.6,
 puede habilitar la compuerta. Acreditar Mini nunca habilita desk/U3.7.
+
+## Entrega CC1: diario y exclusión, sin habilitar reordenar
+
+`control.py client` implementa el transporte local del contrato. No admite
+argumentos ni selectores: la instalación elige host, autoridad, configuración,
+entorno y binario. Lee como máximo `MAX_BYTES+1` antes de decodificar; usa
+los validadores CC0 tanto al entrar como al responder. Los rechazos de negocio
+salen 0; una petición inválida sale 2 con `invalid_request_response()`.
+
+`client_actions.py` conserva fases y reservas en tablas aditivas de la
+SQLite ya adoptada, con `synchronous=FULL` y `fullfsync`. No crea otra autoridad
+ni reemplaza el inode de `control.lock`. Cada clave de fase conserva petición,
+digest, revisión y recibo; una repetición no reenvía RPC y otro cuerpo da
+conflicto, incluso después de reiniciar. `status` proyecta ese recibo sin
+recoger evidencia ni enviar efectos. Los terminales se conservan.
+
+Antes de crear el hijo se confirma intención `unknown` y reserva. El hijo
+espera en stdin hasta confirmar también su PID y nacimiento; no hereda el
+candado. Toda respuesta perdida, caída o incertidumbre conserva la reserva.
+Matar y recoger nuestro propio hijo tras su plazo no excluye mensajes ya
+recibidos por el daemon. Ni el reloj, ni dos lecturas iguales, ni la muerte
+del dueño cierran la acción. Una fase posterior tampoco atraviesa esa
+incertidumbre.
+
+Una reserva impide reordenar y lo explica en `reorder_groups`; un reordenado
+abierto o en recuperación difiere las acciones cliente sin RPC. La guardia
+Mini puede reabrir normalmente con una reserva de cancelación conocida cuando
+cede la presión; una RPC incierta bloquea esa apertura. Cancelar nunca abre
+por encima de manual, presión o arranque. La poda conserva las tareas que
+necesita una reserva abierta. No se cambian cuotas, modo ni política de cola.
+
+Los formatos actuales de los cuatro lanzadores requieren inspeccionar comandos
+para acreditar pertenencia o clasificación manual. El adaptador instalado
+los rechaza con `unsupported`: ni manifiesto, grupo, etiqueta, cwd ni un
+recibo declarado por el solicitante bastan para sustituir esa comprobación.
+No se leen comandos, carga, metadatos de ejecución ni logs para habilitarlos.
+La interfaz interna de adaptadores se prueba con evidencia sintética; las
+entregas posteriores deben acreditar formatos fijos que permitan verificar
+identidad, compatibilidad del worker, aceptación y prueba sin esos accesos.
+La negociación global del protocolo no anuncia soporte por corrida.
+
+CC2 debe copiar bajo `control.lock` acción, reserva, generación, ambas
+revisiones y digest; recoger evidencia fuera del candado; volver y cotejar
+las versiones antes de avanzar o cerrar. Debe recoger también intenciones
+anteriores al envío, hijos identificados, recibos diferidos y resultados
+publicados antes de `finish`, sin depender de runner, waiter ni HTTP vivos.
+CC1 conserva esos datos; no implementa ese recuperador, preparador ni goteo.
+CC6 entregará los archivos y el binario interno mediante los instaladores.
+**`coordinated_reorder` sigue en `False`; sólo CC8 puede acreditar el corte.**

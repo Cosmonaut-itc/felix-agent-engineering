@@ -151,7 +151,8 @@ def control(value, host='mini'):
     result = dict(schema=value['schema'], status='ok', capabilities={k: caps[k] for k in
                   ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue')}, **{k: value[k] for k in fields})
     if caps.get('reason_reorder') is not None:
-        if caps['reason_reorder'] != 'La coordinación de pausas de los clientes no está acreditada.':
+        if caps['reason_reorder'] not in ('La coordinación de pausas de los clientes no está acreditada.',
+                                        'Hay una reserva cliente o una RPC pendiente de reconciliar.'):
             raise ValueError('Motivo de coordinación inválido')
         result['capabilities']['reason_reorder'] = caps['reason_reorder']
     reasons = value.get('pause_reasons', {})
@@ -263,7 +264,8 @@ def sanitize(request, response, op):
                     disabled='Los ajustes de lugares están apagados en este host.',
                     foreign_work='Hay trabajo fuera del reparto. Resuélvelo antes de añadir lugares.',
                     unsupported='Falta actualizar el control de este host.')
-    messages.update(queue_conflict='La fila cambió. Actualiza antes de reordenar.',
+    messages.update(client_reserved='Hay una reserva cliente o una RPC pendiente de reconciliar.',
+        queue_conflict='La fila cambió. Actualiza antes de reordenar.',
         paused='No se puede reordenar mientras el grupo está pausado',
         uncoordinated='La coordinación de pausas de los clientes no está acreditada.',
         edit_unsafe='Esta fila no se puede editar con seguridad.', queue_too_long='Fila demasiado larga para reordenar de una vez',
