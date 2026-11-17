@@ -73,6 +73,17 @@ class HuerfanosTest(unittest.TestCase):
                    lambda: 'fecha', lambda s: None)
         self.assertEqual(senales, [signal.SIGTERM])
 
+    def test_forma_real_de_ps_y_cancelacion(self):
+        real = ('zsh -c cd remote-run/runs/' + ID + ' || exit 255\\012if [ -f pueue.py ]; then\\012'
+                '  while [ ! -f exit ]; do\\012    sleep .2\\012  done\\012fi\\012')
+        procesos = h.instantanea_de_bytes(b'5 1 01:00 python3 caf\xe9.py\n10 1 11:00 ' + real.encode())
+        self.assertEqual(self.ejecutar(procesos)[1], [(10, signal.SIGTERM)])
+
+    def test_forma_real_con_carpeta(self):
+        real = 'zsh -c cd remote-run/runs/' + ID + ' || exit 3\\012if [ -f pueue.py ]; then\\012fi'
+        procesos = h.instantanea_de_bytes(b'10 1 11:00 ' + real.encode())
+        self.assertEqual(self.ejecutar(procesos, existe=lambda i: True)[1], [])
+
     def test_no_shell(self):
         self.assertEqual(self.ejecutar([h.Proceso(10, 1, 700, 'echo ' + VIEJA)])[1], [])
 

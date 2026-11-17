@@ -19,7 +19,8 @@ class Proceso:
     args: str
 
 
-ESPERA = re.compile(r'\bcd remote-run/runs/(\d{8}-\d{6}-[0-9a-f]+) \|\| exit 3(?:[;\s]|$)')
+# ps de macOS imprime los saltos de línea del argv como «\012» literal; la espera de una cancelación sale con 255.
+ESPERA = re.compile(r'\bcd remote-run/runs/(\d{8}-\d{6}-[0-9a-f]+) \|\| exit (?:3|255)(?:[;\s]|\\012|$)')
 SHELL = re.compile(r'^(?:\S*/)?(?:sh|bash|zsh)\s')
 ANCESTRO = re.compile(r'(?:^|[\s/])remote-run\s+wait(?:\s|$)')
 
@@ -45,6 +46,11 @@ def parsear_instantanea(texto):
             procesos[-1] = Proceso(previo.pid, previo.ppid, previo.edad_s,
                                    previo.args + '\n' + linea)
     return procesos
+
+
+def instantanea_de_bytes(salida):
+    # Un argv ajeno puede traer bytes que no son UTF-8.
+    return parsear_instantanea(salida.decode('utf-8', 'replace'))
 
 
 def elegir_victimas(procesos, directorios_existentes):
@@ -124,9 +130,9 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--dry-run', action='store_true')
     args = parser.parse_args()
-    texto = subprocess.check_output(['ps', '-Ao', 'pid=,ppid=,etime=,args='], text=True)
+    salida = subprocess.run(['ps', '-Ao', 'pid=,ppid=,etime=,args='], check=True, capture_output=True).stdout
     raiz = Path.home() / 'remote-run/runs'
-    ejecutar(parsear_instantanea(texto), lambda i: (raiz / i).exists(),
+    ejecutar(instantanea_de_bytes(salida), lambda i: (raiz / i).exists(),
              enviar_senal, esta_vivo, time.sleep,
              lambda: datetime.now(timezone.utc).isoformat(), print, args.dry_run)
 
