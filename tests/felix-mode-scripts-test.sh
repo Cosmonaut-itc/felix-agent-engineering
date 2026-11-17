@@ -742,6 +742,106 @@ hook() {
     printf '%s' "$1" | LAPTOP_GUARD_LAPTOP=${2:-1} "$SCRIPTS/laptop-guard"
 }
 
+rerun_guard() {
+    python3 - "$SCRIPTS/rerun-guard" "$TEST_TMP/rerun" "$BASH" <<'PY_RERUN'
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+
+script, temporary, bash = sys.argv[1:]
+base = Path(temporary)
+base.mkdir()
+assert Path(script).is_file() and os.access(script, os.X_OK), 'falta rerun-guard ejecutable'
+
+def raw(payload, extra_env=None):
+    result = subprocess.run([bash, script], input=payload, text=True, capture_output=True,
+                            env=dict(os.environ, **(extra_env or {})))
+    assert result.returncode == 0 and result.stderr == '', result
+    return result.stdout
+
+def check(command, deny=False, ambiguous=False, tool='Bash'):
+    output = raw(json.dumps({'tool_name': tool, 'tool_input': {'command': command}}))
+    if not deny:
+        assert output == '', (command, output)
+        return
+    value = json.loads(output)
+    decision = value['hookSpecificOutput']
+    assert decision['hookEventName'] == 'PreToolUse', value
+    assert decision['permissionDecision'] == 'deny', (command, value)
+    reason = decision['permissionDecisionReason']
+    assert 'gh run rerun' in reason and '--failed' in reason, reason
+    if ambiguous:
+        assert 'gh run reru[n]' in reason and 'analizar' in reason, reason
+    elif 'gh api' in command:
+        assert 'rerun-failed-jobs' in reason, reason
+    else:
+        assert '--job' in reason and 'arranques' in reason, reason
+    assert value['systemMessage'].startswith('rerun-guard:'), value
+
+for command in (
+    'gh run rerun 123', 'gh run rerun', 'cd "repo space" && gh run rerun 123',
+    'gh run rerun --repo owner/repo 123', 'gh run rerun 123 --repo owner/repo',
+    'gh run rerun -R owner/repo 123', 'gh -R owner/repo run rerun 123',
+    'true; gh run rerun 123; echo listo', 'gh run rerun 123 --failed && gh run rerun 456',
+    'true\ngh run rerun 123', 'GH_REPO=owner/repo gh run rerun 123',
+    'gh run rerun 123 --log-failed', 'gh run rerun 123 -- --failed',
+    'gh run rerun 123 --failed=false', 'gh run rerun 123 --failed --failed=false',
+    "cat <<'EOF' && gh run rerun 123\nhola\nEOF\n",
+    "bash <<'EOF'\ngh run rerun 123\nEOF\n",
+):
+    check(command, deny=True)
+endpoint = 'repos/owner/repo/actions/runs/123/rerun'
+for command in (
+    'gh api -X POST ' + endpoint, 'gh api ' + endpoint + ' --method POST',
+    'gh api --method=POST /' + endpoint, 'gh api -XPOST ' + endpoint,
+    'cd repo && gh api ' + endpoint + ' -X POST; echo listo',
+    'gh api ' + endpoint + ' -f hello=world',
+    'gh api https://api.github.com/' + endpoint + ' -X POST',
+    'gh api -X POST ' + endpoint + ' > result.json',
+    'gh api --cache 1h -X POST ' + endpoint,
+    'gh api -X POST repos/{owner}/{repo}/actions/runs/123/rerun',
+):
+    check(command, deny=True)
+for command in (
+    'gh run rerun 123 --failed', 'gh run rerun --failed -R owner/repo 123',
+    'gh run rerun --repo owner/repo --failed', 'gh run rerun 123 --job 456',
+    'gh run rerun --job=456 123', 'gh run rerun --job 456 -R owner/repo 123',
+    'gh run rerun 123 --failed; gh run rerun 456 --job 789',
+    'gh api -X POST repos/owner/repo/actions/runs/123/rerun-failed-jobs',
+    'gh api -X POST repos/owner/repo/actions/jobs/456/rerun',
+    'gh api -X GET ' + endpoint, 'gh api ' + endpoint,
+    'gh workflow run check.yml', 'git status',
+    'echo "gh run rerun 123"', "grep 'gh run rerun' README.md",
+    "printf '%s\\n' 'gh run rerun 123' > example.txt",
+    "cat <<'EOF' > example.txt\ngh run rerun 123\nEOF\n",
+    'cat <<"EOF" > example.txt\ngh run rerun 123\nEOF\n',
+    'echo "gh api -X POST ' + endpoint + '"',
+    '# gh run rerun 123\necho listo',
+):
+    check(command)
+for command in ('bash -c "gh run rerun 123"', 'echo "$(gh run rerun 123)"',
+                'gh run rerun 123 "', 'wrapper gh run rerun 123'):
+    check(command, deny=True, ambiguous=True)
+check('gh run rerun 123', tool='Read')
+for payload in ('not json', '{}', '{"tool_input":{"command":null}}', '[]'):
+    assert raw(payload) == ''
+# No python3, y un intérprete roto: ambos deben fallar abiertos y en silencio.
+empty = base / 'empty'
+empty.mkdir()
+assert raw(json.dumps({'tool_input': {'command': 'gh run rerun 123'}}),
+           {'PATH': str(empty)}) == ''
+broken = base / 'broken'
+broken.mkdir()
+(broken / 'python3').write_text('#!/bin/bash\necho fallo >&2\nexit 1\n')
+(broken / 'python3').chmod(0o755)
+assert raw(json.dumps({'tool_input': {'command': 'gh run rerun 123'}}),
+           {'PATH': str(broken)}) == ''
+print('rerun-guard: denegaciones, excepciones, citas y fallos abiertos verificados')
+PY_RERUN
+}
+
 launcher_guard() {
     python3 - "$SCRIPTS/launcher-guard" "$TEST_TMP/launcher" <<'PY_LAUNCHER'
 import json
@@ -2748,7 +2848,7 @@ case "$(uname)" in
         ;;
     *) TEST_CASES+=(lifecycle write_options resume_run resume_rejections stop_and_wait_timeout stop_without_supervisor done_after_leftover_child resume_while_resuming execution_timeout stop_tool timeout_tool normal_exit_tool killed_supervisor_tool concurrent_stop impossible_confirmation post_launch_exception popen_failure codex_without_snapshot state_during_launch foreign_group launch_window foreign_supervisor_pid concurrent_resume lost_and_nonzero default_out_and_home store_warnings store_silent launcher_guard merge_train_regressions) ;;
 esac
-TEST_CASES+=(merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_catalogs apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
+TEST_CASES+=(rerun_guard merge_train merge_unenrolled apto_vigente_scratch risk_classify risk_classify_moves_and_errors risk_classify_sources risk_classify_target risk_classify_edges apto_vigente apto_vigente_interactions apto_vigente_catalogs apto_vigente_conflict apto_vigente_config apto_vigente_local_state apto_vigente_object_store laptop_warnings laptop_silent laptop_detection merge_deny merge_silent merge_ask merge_scope merge_arguments merge_manifest merge_unknown_flags merge_wrappers merge_deadline merge_differential merge_invalid_utf8)
 # Permite repetir sólo las regresiones contra una copia temporal de otra versión.
 if [ -n "${CODEX_RUN_TEST_CASES:-}" ]; then
     read -r -a TEST_CASES <<< "$CODEX_RUN_TEST_CASES"

@@ -1,0 +1,120 @@
+#!/bin/bash
+# Hook local: no ejecuta comandos del payload ni consulta GitHub.
+set -uo pipefail
+command -v python3 >/dev/null 2>&1 || exit 0
+
+python3 -c '
+import json
+import os
+import re
+import shlex
+import sys
+
+FIX = ("Usa gh run rerun <run-id> --failed, o --job <job-id> para un job concreto: "
+       "un relanzamiento completo vuelve a arrancar los jobs que ya pasaron y gasta arranques de CI.")
+API = ("Usa el endpoint …/rerun-failed-jobs o gh run rerun <run-id> --failed: "
+       "un relanzamiento completo vuelve a arrancar los jobs que ya pasaron y gasta arranques de CI.")
+UNKNOWN = ("rerun-guard no puede analizar este comando que menciona un relanzamiento; "
+           "usa gh run rerun <run-id> --failed en una llamada propia. "
+           "Si sólo buscas o citas el texto, escribe gh run reru[n] o pásalo en un archivo.")
+MENTION = re.compile(r"\bgh\s+(?:run\s+rerun\b|api\b[\s\S]*?actions/runs/[^/\s]+/rerun\b)")
+ENDPOINT = re.compile(r"(?:https://api\.github\.com/|/)?repos/[^/]+/[^/]+/actions/runs/[^/]+/rerun/?$")
+
+
+def inspect(args):
+    while args and re.match(r"[A-Za-z_][A-Za-z0-9_]*=", args[0]):
+        args = args[1:]
+    if not args:
+        return None
+    executable = os.path.basename(args[0])
+    if executable in {"echo", "printf", "grep", "rg"}:
+        return None  # Sus argumentos literales son datos, no comandos.
+    if executable != "gh":
+        return UNKNOWN if MENTION.search(" ".join(args)) else None
+    args = args[1:]
+    while args and (args[0] in {"--repo", "-R", "--hostname"} or
+                    args[0].startswith(("--repo=", "-R", "--hostname="))):
+        args = args[2:] if args[0] in {"--repo", "-R", "--hostname"} else args[1:]
+    if args[:2] == ["run", "rerun"]:
+        remaining = args[2:]
+        index, failed, job = 0, False, False
+        while index < len(remaining):
+            arg = remaining[index]
+            if arg == "--":
+                break
+            if arg == "--failed" or arg.startswith("--failed="):
+                failed = arg in {"--failed", "--failed=true", "--failed=1", "--failed=True", "--failed=TRUE"}
+            if arg.startswith("--job=") and arg[len("--job="):]:
+                job = True
+            if arg == "--job" and index + 1 < len(remaining) and not remaining[index + 1].startswith("-"):
+                job = True
+            index += 2 if arg in {"--repo", "-R", "--job"} else 1
+        return None if failed or job else FIX
+    if args[:1] != ["api"]:
+        return None
+    endpoint, method, fields = None, None, False
+    index = 1
+    while index < len(args):
+        arg = args[index]
+        if arg in {"-X", "--method"} and index + 1 < len(args):
+            index += 1
+            method = args[index].upper()
+        elif arg.startswith("--method=") or arg.startswith("-X"):
+            method = arg.split("=", 1)[1].upper() if "=" in arg else arg[2:].upper()
+        elif arg in {"-f", "-F", "--field", "--raw-field"}:
+            fields = True
+            index += 1
+        elif arg.startswith(("--field=", "--raw-field=", "-f", "-F")):
+            fields = True
+        elif arg in {"-H", "--header", "--hostname", "--input", "-q", "--jq", "-t", "--template", "--cache", "-p", "--preview"}:
+            index += 1
+            fields = fields or arg == "--input"
+        elif not arg.startswith("-") and endpoint is None:
+            endpoint = arg
+        index += 1
+    if endpoint and ENDPOINT.fullmatch(endpoint) and (method or ("POST" if fields else "GET")) == "POST":
+        return API
+    return None
+
+
+def analyze(command):
+    # Sólo cat consume este cuerpo como datos; bash/sh podrían ejecutarlo.
+    # Conserva la cabecera: puede llevar otros comandos tras el delimitador.
+    command = re.sub(r"(?m)^([ \t]*cat[ \t]+[^\n]*?<<[ \t]*[\x27\"](\w+)[\x27\"][^\n]*)\n.*?\n\2[ \t]*(?:\n|$)",
+                     r"\1\n", command, flags=re.S)
+    if not MENTION.search(command) and not re.search(r"\bgh\b.*\brerun\b", command, re.S):
+        return None
+    if "$(" in command or "`" in command:
+        return UNKNOWN  # No evaluamos sustituciones ni intérpretes anidados.
+    try:
+        lexer = shlex.shlex(command.replace("\\\n", " "), posix=True, punctuation_chars=";&|()\n")
+        lexer.whitespace = " \t\r"
+        lexer.whitespace_split = True
+        tokens = list(lexer) + [";"]
+    except ValueError:
+        return UNKNOWN
+    segment = []
+    for token in tokens:
+        if token and all(char in ";&|()\n" for char in token):
+            reason = inspect(segment)
+            if reason:
+                return reason
+            segment = []
+        else:
+            segment.append(token)
+    return None
+
+
+try:
+    payload = json.load(sys.stdin)
+    command = payload["tool_input"]["command"]
+    if isinstance(command, str) and payload.get("tool_name", "Bash") == "Bash":
+        reason = analyze(command)
+        if reason:
+            print(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse",
+                  "permissionDecision": "deny", "permissionDecisionReason": reason},
+                  "systemMessage": "rerun-guard: relanzamiento completo o comando ambiguo bloqueado"}, ensure_ascii=False))
+except Exception:
+    pass
+' 2>/dev/null || true
+exit 0

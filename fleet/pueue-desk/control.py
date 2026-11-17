@@ -950,6 +950,10 @@ def start_projection(engine, config, queue_path=None, allow_pending=True, policy
         elif digest != prior['target_hash']:
             raise ValueError('Cola cambió durante preparación; conservar archivos')
     validate_queue(queue)  # an intent reconstructed from authority is validated too
+    for group in queue['groups']:
+        reason = engine.fence_reason(group)
+        if reason:
+            state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {reason})
     # Re-project even after a crash: an event may have expired overrides meanwhile.
     state, image = startup_plan(queue, state, engine.clock(), config['data'], engine.profile)
     validate_queue(image)  # validate the exact bytes to be published, before intent
@@ -1316,8 +1320,9 @@ class MiniControl:
         observed, groups = self.observed()
         generation = self.generation(state)
         for group in self.profile:
-            if os.path.lexists(self.pause_fence(group)):
-                state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
+            reason = self.fence_reason(group)
+            if reason:
+                state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {reason})
         enabled = not self.disabled()
         extra = dict(expires_at=schedule_at(state['schedule_event'])[1] if state['overrides'] or state['mode_override'] else None,
                      next_event=schedule_at(state['schedule_event'])[1], schedule_event=state['schedule_event'],
@@ -1629,16 +1634,36 @@ class MiniControl:
     def pause_fence(self, group):
         return self.directory / ('pause-' + group + '.manual')
 
-    def fence_pause(self, group):
-        # A tombstone, not another ownership authority. Only explicit CLI admission
-        # removes it; repairing SQLite must never claim an emergency pause.
+    def fence_reason(self, group):
+        """Only exact pressure bytes prove protective ownership; all else holds."""
+        path = self.pause_fence(group)
+        try:
+            return 'pressure' if path.read_bytes() == b'pressure\n' else 'manual'
+        except FileNotFoundError:
+            return 'manual' if os.path.lexists(path) else None  # broken symlink holds
+        except OSError:
+            return 'manual'
+
+    def fence_pause(self, group, reason='manual'):
+        # A failed ownership release always requests manual. Protective closing
+        # may claim pressure, but must never downgrade an existing conservative mark.
+        if reason != 'pressure' or self.fence_reason(group) == 'manual':
+            reason = 'manual'
         with self.pause_fence(group).open('w') as stream:
-            stream.write('manual\n'); stream.flush(); os.fsync(stream.fileno())
+            stream.write(reason + '\n'); stream.flush(); os.fsync(stream.fileno())
         folder = os.open(str(self.directory), os.O_RDONLY)
         try:
             os.fsync(folder)
         finally:
             os.close(folder)
+
+    def recover_pressure_fence(self, state, group, reasons):
+        # Caller holds control.lock. Commit ownership before removing its fallback.
+        state['reasons'][group] = sorted(reasons | {'pressure'})
+        with self.connect(write=True) as db:
+            self.store(db, state)
+        self.pause_fence(group).unlink()
+        sync_directory(self.directory)
 
     def _admission_gate(self, state, group=None, proc=Path('/proc'), operation='resume'):
         """One bounded sequence, repeated once after reservation; no retry loop.
@@ -1727,8 +1752,9 @@ class MiniControl:
             if not waiting:
                 continue
             reasons = set(state['reasons'].get(group,[]))
-            if os.path.lexists(self.pause_fence(group)):
-                reasons.add('manual')
+            reason = self.fence_reason(group)
+            if reason:
+                reasons.add(reason)
             if row['status'] != 'Paused':
                 continue  # open group: waits on its own Pueue quota, not on the guard
             if reasons != {'pressure'}:
@@ -1956,20 +1982,34 @@ class MiniControl:
                 if group not in groups:
                     continue
                 reasons = set(state['reasons'].get(group,[])) if state else set()
-                if os.path.lexists(self.pause_fence(group)):
-                    reasons.add('manual')
-                status = groups[group]['status']
-                decision = rapid if group == 'rapidas' else normal
-                if status == 'Running' and reasons & {'pressure','startup'}:
-                    reasons -= {'pressure','startup'}
-                    state.get('startup',{}).get('holds',{}).pop(group,None)
-                    state['reasons'][group] = sorted(reasons)
+                reason = self.fence_reason(group)
+                if reason:
+                    reasons.add(reason)
+                protective_reason = 'pressure' if state is not None and not reasons & {'manual','ambiguous'} else 'manual'
+                if can_open and reason == 'pressure':
                     try:
-                        with self.connect(write=True) as db:self.store(db,state)
+                        self.recover_pressure_fence(state,group,reasons)
+                        reason = None
                     except ADMISSION_ERRORS as error:
                         can_open=False;failure=failure or error;block('authority')
+                status = groups[group]['status']
+                decision = rapid if group == 'rapidas' else normal
+                if status == 'Running' and (reasons & {'pressure','startup'} or reason is not None):
+                    reasons -= {'pressure','startup'}
+                    if reason is not None:
+                        reasons.add('manual')
+                    try:
+                        if state is not None:
+                            state.get('startup',{}).get('holds',{}).pop(group,None)
+                            state['reasons'][group] = sorted(reasons)
+                            with self.connect(write=True) as db:self.store(db,state)
+                    except ADMISSION_ERRORS as error:
+                        can_open=False;failure=failure or error;block('authority')
+                        reason = 'manual'
+                    if reason is not None:
                         try:self.fence_pause(group)
-                        except ADMISSION_ERRORS:pass
+                        except ADMISSION_ERRORS as error:
+                            can_open=False;failure=failure or error;block('authority')
                 if decision == 'pausar':
                     if group != 'rapidas':block('pressure_high')
                     if status == 'Running' or 'pressure' in reasons:
@@ -1977,10 +2017,10 @@ class MiniControl:
                             if can_open:
                                 state['reasons'][group] = sorted(reasons | {'pressure'})
                                 with self.connect(write=True) as db:self.store(db,state)
-                            else:self.fence_pause(group)
+                            else:self.fence_pause(group,protective_reason)
                         except ADMISSION_ERRORS as error:
                             can_open=False;failure=failure or error;block('authority')
-                            try:self.fence_pause(group)
+                            try:self.fence_pause(group,protective_reason)
                             except ADMISSION_ERRORS:pass
                         try:self.pueue.call('pause','--wait','-g',group)
                         except ADMISSION_ERRORS as error:
@@ -2056,29 +2096,42 @@ class MiniControl:
             if g not in groups:
                 continue
             reasons = set(state['reasons'].get(g, [])) if state else set()
-            if os.path.lexists(self.pause_fence(g)):
-                reasons.add('manual')
+            reason = self.fence_reason(g)
+            if reason:
+                reasons.add(reason)
+            protective_reason = 'pressure' if state is not None and not reasons & {'manual', 'ambiguous'} else 'manual'
+            if can_open and reason == 'pressure':
+                try:
+                    self.recover_pressure_fence(state, g, reasons)
+                    reason = None
+                except errors as error:
+                    can_open, failure = False, error
             status = groups[g]['status']
-            if status == 'Running' and reasons & {'pressure', 'startup'}:
+            if status == 'Running' and (reasons & {'pressure', 'startup'} or reason is not None):
                 # An external start ends our ownership, even in hysteresis.
                 reasons.discard('pressure')
                 reasons.discard('startup')
-                state.get('startup', {}).get('holds', {}).pop(g, None)
-                state['reasons'][g] = sorted(reasons)
+                if reason is not None:
+                    reasons.add('manual')
                 try:
-                    with self.connect(write=True) as db:
-                        self.store(db, state)
+                    if state is not None:
+                        state.get('startup', {}).get('holds', {}).pop(g, None)
+                        state['reasons'][g] = sorted(reasons)
+                        with self.connect(write=True) as db:
+                            self.store(db, state)
                 except errors as error:
                     can_open, failure = False, error
+                    reason = 'manual'
+                if reason is not None:
                     try:
                         self.fence_pause(g)
-                    except errors:
-                        pass
+                    except errors as error:
+                        can_open, failure = False, error
             decision = rapid if g == 'rapidas' else normal
             if decision == 'pausar' and (status == 'Running' or 'pressure' in reasons):
                 try:
                     if not can_open:
-                        self.fence_pause(g)
+                        self.fence_pause(g, protective_reason)
                     else:
                         reasons.add('pressure')
                         state['reasons'][g] = sorted(reasons)
@@ -2087,7 +2140,7 @@ class MiniControl:
                 except errors as error:
                     can_open, failure = False, error
                     try:
-                        self.fence_pause(g)
+                        self.fence_pause(g, protective_reason)
                     except errors:
                         pass  # Even a failed disk must not suppress protective pause.
                 try:
@@ -2185,6 +2238,8 @@ class MiniControl:
             state['reasons'][group] = sorted(reasons)
             state.get('startup', {}).get('holds', {}).pop(group, None)
         else:
+            if os.path.lexists(self.pause_fence(group)):
+                self.fence_pause(group)  # promote before authority write and pause RPC
             state['reasons'][group] = sorted(set(state['reasons'].get(group, [])) | {'manual'})
             with self.connect(write=True) as db:
                 self.store(db, state)
