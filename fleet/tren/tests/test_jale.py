@@ -22,7 +22,6 @@ from git_ops import ErrorGit, Publicado, RamaOcupada
 UNIDAD = 'apps/api/src/a.contract.test.ts'
 OTRA = 'apps/api/src/b.contract.test.ts'
 FIRMA = 'sha256:' + 'a' * 64
-GANCHO = {'comando': ['/usr/bin/true'], 'plazo_s': 30}
 FALLO = Fallo(UNIDAD, FIRMA, 'solo-candidato', 'contract', 'contract', 'jale', 4)
 
 # Escribe exclusivamente fixtures del contrato; no depende del productor real.
@@ -464,44 +463,27 @@ class JaleTests(Aislado):
         self.assertIs(legacy.git, git)
         self.assertEqual(legacy.lanzador, str(self.lanzador.resolve()))
         jale = seleccionar({'adaptador': 'jale', 'lanzador': str(self.lanzador),
-                            'host': 'auto', 'modos': ['e2e'], 'pre_aterrizaje': GANCHO}, git)
+                            'host': 'auto', 'modos': ['e2e']}, git)
         self.assertIsInstance(jale, self.Jale)
         self.assertEqual(jale.modos, ('e2e',))
         self.assertEqual(jale.suite(CANDIDATO, 'config')[1].costo_s, 4)
         self.assertIsNone(seleccionar({}, git))
         for config in ({'adaptador': 'otro'}, {'adaptador': 'jale'},
-                       {'adaptador': 'jale', 'lanzador': 'relativo', 'pre_aterrizaje': GANCHO},
-                       {'adaptador': 'jale', 'lanzador': str(self.lanzador), 'host': 'invalido',
-                        'pre_aterrizaje': GANCHO},
-                       {'adaptador': 'jale', 'lanzador': str(self.lanzador), 'modos': [],
-                        'pre_aterrizaje': GANCHO},
-                       {'adaptador': 'jale', 'lanzador': str(self.lanzador)},
-                       {'adaptador': 'jale', 'lanzador': str(self.lanzador),
-                        'pre_aterrizaje': {'comando': ['relativo'], 'plazo_s': 30}}):
+                       {'adaptador': 'jale', 'lanzador': 'relativo'},
+                       {'adaptador': 'jale', 'lanzador': str(self.lanzador), 'host': 'invalido'},
+                       {'adaptador': 'jale', 'lanzador': str(self.lanzador), 'modos': []}):
             with self.assertRaises(ValueError):
                 seleccionar(config, git)
 
     def test_cli_carga_jale_desde_config_privada(self):
-        args = cli.parser().parse_args(['tick', '--repo', REPO])
-        config = {'remoto': 'origen', 'adaptador': 'jale', 'lanzador': str(self.lanzador),
-                  'pre_aterrizaje': GANCHO}
-        with patch.object(cli, 'activacion', return_value='activo'), \
-             patch.object(cli, 'configuracion', return_value=config), \
-             patch.object(cli, 'GitHubGit'), patch('git_ops.GitTren'), \
-             patch('operativo.tick', return_value={}) as tick:
-            self.assertEqual(cli.ejecutar(args), (0, {}))
-        self.assertIsInstance(tick.call_args.args[5], self.Jale)
-
-    def test_tick_activo_de_jale_sin_gancho_no_corre(self):
         args = cli.parser().parse_args(['tick', '--repo', REPO])
         config = {'remoto': 'origen', 'adaptador': 'jale', 'lanzador': str(self.lanzador)}
         with patch.object(cli, 'activacion', return_value='activo'), \
              patch.object(cli, 'configuracion', return_value=config), \
              patch.object(cli, 'GitHubGit'), patch('git_ops.GitTren'), \
              patch('operativo.tick', return_value={}) as tick:
-            with self.assertRaisesRegex(ValueError, 'pre_aterrizaje'):
-                cli.ejecutar(args)
-        tick.assert_not_called()
+            self.assertEqual(cli.ejecutar(args), (0, {}))
+        self.assertIsInstance(tick.call_args.args[5], self.Jale)
 
     def test_efectos_consumen_jale_y_tipan_infraestructura(self):
         inicial = estado()

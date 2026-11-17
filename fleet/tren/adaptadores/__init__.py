@@ -15,9 +15,5 @@ def seleccionar(config, git):
         raise ValueError('lanzador debe ser ruta absoluta')
     if nombre == 'hasito':
         return Hasito(lanzador, git)
-    from preaterrizaje import gancho
-    # Un push a main de Jale despliega a producción y aplica migraciones.
-    if gancho(config) is None:
-        raise ValueError('jale requiere pre_aterrizaje')
     from adaptadores.jale import Jale, MODOS
     return Jale(lanzador, git, host=config.get('host', 'auto'), modos=config.get('modos', MODOS))

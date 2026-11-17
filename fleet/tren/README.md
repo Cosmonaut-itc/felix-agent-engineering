@@ -1070,10 +1070,11 @@ actual de Hasito con `lanzador_hasito` sigue siendo válida. Esta selección no
 inscribe ni activa repositorios.
 
 Un push a `main` de Jale despliega a producción y aplica migraciones, así que
-el adaptador de Jale exige el bloque `pre_aterrizaje` (U18). Sin él, o con
-él mal formado, el tick activo termina con error antes de cualquier efecto y
-no empuja. Retirar el bloque de la configuración detiene el carril en lugar
-de aterrizar sin verificación. La sombra y el modo seco no cambian.
+con `"adaptador": "jale"` el bloque `pre_aterrizaje` (U18) es obligatorio. Sin
+él, la promoción pausa `infraestructura` / `pre-aterrizaje:configuracion-ausente`,
+sin push ni rojo. El tick sigue limpiando el diario, drenando feedback y
+consumiendo decisiones: retirar el bloque cancela la operación pendiente con
+el comando guardado, como en U18, y detiene el carril antes del push.
 
 Jale corre ambos modos sobre C sin filtros y valida `jale-recibo@1`: SHA,
 modo, selección, firmas, orden, unicidad, cobertura y código de salida.
