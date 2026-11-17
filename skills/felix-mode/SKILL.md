@@ -207,7 +207,10 @@ que demuestra:
   o ruta>`, y tu respuesta repite el nivel y su motivo.
 - **Pre-vuelo.** Antes de cada ronda, atiende los comentarios abiertos del
   PR, corrige lo que ya sabes que falla y corre la prueba dirigida del
-  cambio. El brief nombra los checks que faltan o que ya fallaban.
+  cambio. El brief nombra los checks que faltan o que ya fallaban. Empuja
+  las correcciones de la ronda en un solo push y deja la rama destino para
+  el final, como fija
+  [Sincronizar una vez, al final](references/merge.md#sincronizar-una-vez-al-final).
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
