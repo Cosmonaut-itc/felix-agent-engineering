@@ -23,7 +23,7 @@ jobs:
               Windows) choco install shellcheck --yes --no-progress ;;
             esac
           fi
-      - run: shellcheck --severity=warning skills/felix-mode/scripts/pstack-refs tests/pstack-refs-test.sh bin/pao tests/pao-test.sh skills/felix-mode/scripts/codex-run skills/felix-mode/scripts/laptop-guard skills/felix-mode/scripts/merge-guard skills/felix-mode/scripts/store-guard skills/felix-mode/scripts/risk-classify skills/felix-mode/scripts/apto-vigente tests/felix-mode-scripts-test.sh configs/claude/hooks/duplicate-session-guard tests/duplicate-session-guard-test.sh fleet/deskpolicy/deploy-desk.sh fleet/deskpolicy/withdraw-desk.sh fleet/gha-runner/instalar.sh fleet/gha-runner/solo-main.sh bin/pao-worktree tests/pao-worktree-test.sh
+      - run: shellcheck --severity=warning skills/felix-mode/scripts/pstack-refs tests/pstack-refs-test.sh bin/pao tests/pao-test.sh skills/felix-mode/scripts/codex-run skills/felix-mode/scripts/laptop-guard skills/felix-mode/scripts/merge-guard skills/felix-mode/scripts/rerun-guard skills/felix-mode/scripts/store-guard skills/felix-mode/scripts/risk-classify skills/felix-mode/scripts/apto-vigente tests/felix-mode-scripts-test.sh configs/claude/hooks/duplicate-session-guard tests/duplicate-session-guard-test.sh fleet/deskpolicy/deploy-desk.sh fleet/deskpolicy/withdraw-desk.sh fleet/gha-runner/instalar.sh fleet/gha-runner/solo-main.sh bin/pao-worktree tests/pao-worktree-test.sh
       - name: Reject test cases run as an if condition
         run: |
           if grep -rnE 'if[[:space:]]+!?[[:space:]]*\(set -e' tests fleet skills configs bin; then
