@@ -87,6 +87,62 @@ Pruebas: `/usr/bin/python3 -B -I -m unittest discover -s fleet/pueue-desk/tests 
 en los módulos temporales del arnés de migración.
 ShellCheck: `shellcheck --severity=warning fleet/pueue-desk/*-desk.sh`.
 
+## Poda del historial (SEN-6495)
+
+Después de una guardia exitosa, en desk y Mini, `control.py` suelta
+`control.lock` y ejecuta una pasada independiente de poda. Sólo selecciona
+`Done` con `end` válido y anterior a 24 h; `Killed` se conserva 7 días,
+incluidos los avisos de interrupción por reinicio del panel. Retiene cualquier
+dependencia de una tarea que aún no terminó. Si no puede leer las dependencias
+de una tarea no terminada, conserva todos los candidatos de esa lectura.
+Las variantes vivas y las formas inesperadas nunca se podan.
+
+Tampoco poda la tarea del último intento de admisión incremental mientras su
+resultado sea `reserved` o `unknown`: esa tarea es la evidencia con la que la
+guardia y `resolver-admision` acreditan que el intento se ejecutó. Si no puede
+leer el permiso en `control.sqlite3`, la pasada no poda nada y registra
+`error: true`.
+
+La política está en `PRUNE_*` dentro del controlador único. `poda.json` limita
+la lectura adicional a una por hora; si se seleccionaron 500 tareas, el próximo
+tick vuelve a podar sin esperar esa hora. Quita como máximo 500 por pasada,
+las más antiguas primero, en lotes de 100. `poda.lock` es independiente y no
+bloqueante: un segundo proceso omite la pasada. No hay unidades ni timers nuevos.
+Una excepción de guardia impide la poda; los fallos de poda no cambian su salida.
+Cada lote fallido se registra y los siguientes se intentan normalmente.
+
+Para apagarla, crear un archivo vacío `poda.off` en el directorio de estado
+que corresponde al host (el mismo que contiene `guardia.log`). Para reactivarla,
+retirar ese archivo; no hace falta reinstalar. La cadencia conservada sigue
+vigente. Un retroceso del reloj retiene hasta alcanzar la fecha de la última
+pasada. Una marca ilegible retiene la poda y registra `error: true`.
+
+La bitácora existente agrega una línea JSONL `evento: "poda_historial"` por
+pasada intentada, sin ids, comandos ni errores arbitrarios. `podadas` cuenta
+sólo los ids reconocidos en `Tasks removed from list:` de Pueue 4.0.4;
+`sin_confirmar` cuenta los ids sin esa confirmación, y `lotes_fallidos` cuenta
+los lotes parciales, fallidos o con respuesta inesperada. Un lote puede quitar
+algunas tareas y aun así devolver código 0: el código de salida solo no basta. Los descartes son excluyentes: `vivas`, `omitidas` (forma
+inesperada), `admision` (evidencia de un permiso incierto), `dependencias`,
+`retenidas`, `retenidas_killed` y `tope` (elegibles
+que exceden 500). `error` señala fallos de lectura o persistencia. Se aplica
+la misma rotación del log a 1 MiB. Si falla el propio log, la guardia conserva
+su resultado y no se promete una línea persistida.
+
+`pueue remove` elimina también el archivo de `task_logs/` de la tarea podada:
+ya no aparecen ni su estado ni su salida en `pueue log <id>`. No se guarda
+un archivo histórico. Una espera de un id ausente imprime
+`No tasks found for selection TaskIds([...])` y sale con código 0 en 4.0.4.
+El daemon rechaza quitar una tarea que aún es dependencia de una tarea en fila;
+la selección la conserva desde su lectura, antes de enviar cualquier `remove`.
+
+Pruebas dirigidas y mutaciones (mediante `remote-run`):
+`/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -p test_prune.py -v`
+y `/usr/bin/python3 -I fleet/pueue-desk/tests/mutate_prune.py`.
+`tests/private_prune.py --run-private` mide M1–M5 con daemon, socket y
+configuración temporales propios, tareas reales y hora de poda adelantada
+sólo en el argumento de la función. No toca el reloj ni la instancia real.
+
 ## Guardia de la Mac Mini
 
 La Mini comparte la lógica de `control.py` (perfil `--host mini`), pero lee la
