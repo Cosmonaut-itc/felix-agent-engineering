@@ -93,8 +93,10 @@ sobre commits que sólo mezclaban `main` (medido el 2026-11-16).
   [acumulador](acumulador.md), la sincronización final es su paso 8: el
   candidato final incorpora la rama de entrega antes de los gates y de la
   revisión del conjunto.
-- **Sincronización anticipada.** Sincroniza antes sólo por uno de estos
-  motivos, y anótalo en tu registro:
+- **Sincronización anticipada.** Una capa de una pila sincroniza antes
+  sólo por los motivos de
+  [Pilas](#pilas-la-base-aterriza-primero). Los demás PR sincronizan antes
+  sólo por uno de estos motivos, y lo anotas en tu registro:
   - el PR tiene conflicto y necesitas su CI, que el forge no corre sobre un
     PR en conflicto;
   - la rama necesita un cambio que ya está en el destino: un arreglo del
@@ -122,11 +124,15 @@ su base que pide «Size and stacks» de pstack.
 - **La base primero.** La base recibe antes que sus capas la revisión, la
   verificación y el merge, con las reglas de este archivo.
 - **La capa quieta.** Mientras su base siga abierta, la capa conserva el
-  head de la base del que nació. Sus pushes llevan sólo trabajo propio y
-  sus rondas revisan su diff contra ese head. Un commit nuevo en la base,
+  head de la base del que nació, su **head fijo**. Sus pushes llevan sólo
+  trabajo propio y sus rondas revisan su diff contra el head fijo. Un commit nuevo en la base,
   una sincronización de la base con el destino, el aviso del forge de que
   la rama está desactualizada y el aviso de otra sesión se toman en la
   sincronización única de la capa.
+- **Riesgo de la capa.** Antes de cada ronda, la capa corre
+  `scripts/risk-classify <head fijo>`. Con ese destino
+  el script clasifica sólo el diff de la capa y su resultado es exacto, así
+  que nunca pide actualizar la rama.
 - **Conflicto real.** La capa incorpora su base antes sólo por uno de estos
   motivos, y lo anotas en tu registro:
   - después de `git fetch`,
@@ -138,13 +144,20 @@ su base que pide «Size and stacks» de pstack.
     de la base ya no compila o falla su prueba dirigida.
 
   Esa incorporación viaja en el mismo push que el trabajo pendiente de la
-  capa. Su ronda la fija `scripts/apto-vigente`, con la rama de la base
-  como rama destino.
+  capa, y el head incorporado es el nuevo head fijo. Su ronda la fija
+  `scripts/apto-vigente`, con la rama de la base como rama destino.
 - **Una sincronización por capa.** Cuando la base aterriza, la capa que
   nació de ella apunta su PR al destino e incorpora el destino una vez. Si
   ya tenía APTO, `scripts/apto-vigente` decide su ronda, como en el paso 3
   de «Aterrizar el head aprobado». Esa capa es ahora la base de las que
   tiene encima.
+- **Base cerrada sin merge.** Sus capas se detienen: conservan su rama y su
+  rama base, y esperan sin sincronizarse ni entregarse. Avisa a quien pidió
+  el trabajo y sigue con la salida que elija. Si otro PR reemplaza a la
+  base, la capa lo incorpora una vez como base nueva. Si la capa absorbe el
+  cambio de la base, apunta su PR al destino y su siguiente ronda es
+  completa, porque su diff creció. Si el trabajo se abandona, la capa se
+  cierra.
 - **Con tren.** El tren exige que la base de cada PR sea el destino, así que
   una capa se entrega al tren después de su sincronización única.
 
