@@ -378,6 +378,17 @@ digest, revisión y recibo; una repetición no reenvía RPC y otro cuerpo da
 conflicto, incluso después de reiniciar. `status` proyecta ese recibo sin
 recoger evidencia ni enviar efectos. Los terminales se conservan.
 
+La reserva añade `hold_identity`: null hasta que el `hold` de esa misma
+`(launcher, ref, action_id)` confirma, sin RPC incierta, la transición al
+Stashed no programado. Guarda la identidad completa posterior, incluido el
+intento original, en la misma transacción que el recibo `held`. Una reserva
+abierta, un rechazo por carrera o ver Stashed después de perder la respuesta
+no acreditan esa atribución. `cancel-no-payload` y `retire-held` exigen que
+`hold_identity` coincida con el Stashed actual; si falta o difiere, rechazan
+con `evidence_missing`, conservan la reserva y no envían RPC. Un diario
+anterior sin el campo tampoco acredita hold. Sólo una recuperación atribuida
+de CC2 podrá completar esa evidencia; no basta releer el estado del daemon.
+
 Antes de crear el hijo se confirma intención `unknown` y reserva. El hijo
 espera en stdin hasta confirmar también su PID y nacimiento; no hereda el
 candado. Toda respuesta perdida, caída o incertidumbre conserva la reserva.
@@ -393,10 +404,35 @@ cede la presión; una RPC incierta bloquea esa apertura. Cancelar nunca abre
 por encima de manual, presión o arranque. La poda conserva las tareas que
 necesita una reserva abierta. No se cambian cuotas, modo ni política de cola.
 
-Los formatos actuales de los cuatro lanzadores requieren inspeccionar comandos
-para acreditar pertenencia o clasificación manual. El adaptador instalado
-los rechaza con `unsupported`: ni manifiesto, grupo, etiqueta, cwd ni un
-recibo declarado por el solicitante bastan para sustituir esa comprobación.
+El controlador también funciona si la instalación sólo publicó `control.py`
+y falta `client_actions.py` o `client_contract.py`. Sin tablas cliente mantiene
+las operaciones del host. Si existe el diario cliente, la vista permanece
+válida y explica la reserva pendiente, reordenar queda cerrado en todos los
+grupos, la poda se abstiene y las aperturas se retienen conservadoramente.
+No se borra ni convierte el diario ni se reemplaza `control.lock`. La vista
+del host anuncia `capabilities.client:false` si falta cualquiera de las dos
+piezas; invocar `client` entonces falla con un diagnóstico de instalación,
+sin negociación positiva ni acceso al daemon.
+
+Son tres acreditaciones distintas:
+
+1. **Protocolo instalado.** Con ambos módulos presentes se puede negociar la
+   versión global del protocolo; eso no acredita una corrida.
+2. **Soporte por corrida.** Los cuatro adaptadores instalados (`remote-run`,
+   `jale`, `apotheca`, `vigilante`) devuelven hoy `unsupported`. Los formatos
+   actuales no publican un vínculo acreditado entre launcher/ref y la
+   generación e identidad originales de tarea/intento, o no permiten acreditar
+   su clasificación manual. Un ID almacenado puede referirse a otra tarea
+   tras reconstruir la cola; cotejarlo con la tarea actual no demuestra
+   pertenencia. Los productores deben publicar el vínculo desde el alta
+   verificada y contemplar caídas, relevo, reencolado y nueva generación.
+3. **Filtro y acreditación del host.** CC7 debe interceptar las mutaciones raw
+   antes del daemon; CC8 debe acreditar cobertura, drenado, recuperación y
+   compatibilidad efectivas antes de habilitar reordenar. Ninguna de las dos
+   acreditaciones anteriores demuestra esa exclusión preventiva.
+
+Ni manifiesto, grupo, etiqueta, cwd ni un recibo declarado por el solicitante
+bastan para sustituir la pertenencia o la clasificación acreditadas.
 No se leen comandos, carga, metadatos de ejecución ni logs para habilitarlos.
 La interfaz interna de adaptadores se prueba con evidencia sintética; las
 entregas posteriores deben acreditar formatos fijos que permitan verificar

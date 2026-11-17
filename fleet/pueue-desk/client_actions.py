@@ -290,6 +290,8 @@ class ClientActions:
                     return reject('identity')
             if r['op'] in ('cancel-no-payload', 'retire-held', 'finish') and not held:
                 return reject('evidence_missing')
+            if r['op'] in ('cancel-no-payload', 'retire-held') and previous.get('hold_identity') != current:
+                return reject('evidence_missing')
             if self.host_busy(group):
                 return reject('host_action', 'deferred')
             if any(v['group'] == group and v['open'] and
@@ -317,6 +319,7 @@ class ClientActions:
                 return record['response']
             reservation = dict(launcher=r['launcher'], ref=r['ref'], action_id=r['action_id'],
                                group=group, mode=r['mode'], identity=current, acceptance=r['acceptance'],
+                               hold_identity=previous.get('hold_identity') if previous else None,
                                open=True, uncertain=True, revision=previous.get('revision', 0) if previous else 0)
             # Unknown is durable before spawn, before gate release and every RPC.
             record['response'] = self.reply(r, 'unknown', 'rpc_unresolved', identity=current, held=True)
@@ -350,6 +353,8 @@ class ClientActions:
                 status = {'hold': 'held', 'cancel-no-payload': 'started', 'signal': 'signalled',
                           'signal-manual': 'signalled', 'retire-held': 'retired', 'retire-interrupted': 'retired'}[r['op']]
                 record['response'] = self.reply(r, status, identity=after, held=True)
+                if status == 'held':
+                    reservation['hold_identity'] = after
             reservation.update(identity=after, uncertain=False)
             self.save(record, reservation)
             return record['response']

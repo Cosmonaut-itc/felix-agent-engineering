@@ -86,6 +86,8 @@ def admission_evidence(directory):
     protected = {str(attempt['id'])} if attempt and attempt['outcome'] in ('reserved', 'unknown') else set()
     if not has_clients:
         return protected
+    if not client_support():
+        raise ValueError('Diario cliente sin sus módulos; poda suspendida')
     return protected | client_module().protected_ids(MiniControl(None, directory))
 
 
@@ -553,13 +555,23 @@ _CLIENT_ACTIONS = None
 
 def client_module():
     global _CLIENT_ACTIONS
+    path = Path(__file__).with_name('client_actions.py')
+    if not (path.is_file() and path.with_name('client_contract.py').is_file()):
+        return None
     if _CLIENT_ACTIONS is None:
-        path = Path(__file__).with_name('client_actions.py')
         module = types.ModuleType('client_actions')
         module.__file__ = str(path)
         exec(compile(path.read_bytes(), str(path), 'exec'), module.__dict__)
         _CLIENT_ACTIONS = module
     return _CLIENT_ACTIONS
+
+
+def client_support():
+    try:
+        return client_module() is not None
+    except FileNotFoundError:
+        # A partial publication can remove a companion between check and read.
+        return False
 
 
 _PRIORITY_HELPER = None
@@ -1493,6 +1505,7 @@ class MiniControl:
                          and generation==state['generation'] and self.reorder_host_ready(state))
         reorder_groups = self.reorder_view(state, self._status_snapshot, reorder_ready) if self.host=='mini' else {}
         return dict(schema='rack-host-result@1', status='ok', reorder_groups=reorder_groups, capabilities=dict(
+            client=client_support(),
             slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=any(g['enabled'] for g in reorder_groups.values()), restart_queue=False,
             reason_reorder=self.client_reservation_reason if any(g['reason'] == self.client_reservation_reason for g in reorder_groups.values()) else
                 'La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None),
@@ -1714,6 +1727,8 @@ class MiniControl:
         with self.connect() as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
                 return False  # Pre-CC1 authority; no new dependency for old installers.
+        if not client_support():
+            return True  # An unreadable client journal closes every group, including openings.
         return client_module().blocked(self, group, opening=opening)
 
     def reorder_view(self, state, snapshot, enabled):
@@ -3081,6 +3096,8 @@ def main():
     parser.add_argument('--pid-file', type=Path)
     parser.add_argument('--seco', action='store_true')
     parser.add_argument('--sin-efecto', action='store_true', help='Certifica que no existe efecto pendiente ni tardío de la admisión')
+    if sys.argv[1:2] == ['client'] and not client_support():
+        parser.error('Control cliente no disponible: faltan módulos de la instalación')
     if sys.argv[1:2] == ['client'] and len(sys.argv) != 2:
         print(json.dumps(client_module().c.invalid_request_response()))
         return 2

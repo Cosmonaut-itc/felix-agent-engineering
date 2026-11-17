@@ -6,7 +6,10 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import shutil
 import subprocess
+import tempfile
+import types
 import unittest
 from unittest.mock import patch
 import test_reorder
@@ -105,7 +108,8 @@ def act(self, r=None):
 
 def seed(self, r, uncertain=False):
     reservation = dict(launcher=r['launcher'], ref=r['ref'], action_id=r['action_id'], group='suites',
-                       mode=r['mode'], identity=r['expected'], acceptance=None, open=True, uncertain=uncertain)
+                       mode=r['mode'], identity=r['expected'], acceptance=None, open=True, uncertain=uncertain,
+                       hold_identity=copy.deepcopy(r['expected']) if r['expected']['state'] == 'Stashed' else None)
     record = dict(request=r, digest=a.digest(r), revision=0, process=None,
                   response=self.actions.reply(r, 'unknown', 'rpc_unresolved', held=True))
     self.actions.save(record, reservation)
@@ -120,6 +124,7 @@ def test_normal_hold_before_rpc_and_restart_idempotence(self):
     result = self.act()
     self.assertEqual(result['status'], 'held', result)
     self.assertEqual(self.rpc_calls, [('stash', 77)])
+    self.assertEqual(a.reservations(self.engine)[0]['hold_identity'], result['identity'])
     self.actions = a.ClientActions(self.engine, self.evidence, rpc=lambda *args: self.fail('duplicate RPC'))
     self.assertEqual(self.act(), result)
     changed = copy.deepcopy(self.r); changed['mode'] = 'own'
@@ -207,6 +212,7 @@ def test_lost_response_live_cli_never_retries_or_expires(self):
     result = self.act()
     self.assertEqual(result['status'], 'unknown')
     self.assertEqual(result['reservation'], 'held')
+    self.assertIsNone(a.reservations(self.engine)[0]['hold_identity'])
     self.now += 10**9
     self.actions = a.ClientActions(self.engine, self.evidence, rpc=lambda *args: self.fail('second RPC'))
     for _ in range(2):
@@ -324,6 +330,112 @@ def test_prune_keeps_done_identity_until_finish(self):
     self.assertEqual(control.select_prune({'77': dict(status={'Done': dict(
         end='2020-01-01T00:00:00Z', result='Success')}, dependencies=[])},
         2000000000, protected=control.admission_evidence(self.root))[0], [])
+
+
+def test_foreign_stash_after_rejected_hold_is_never_adopted(self):
+    for op, mode in (('cancel-no-payload', 'rack-queued'), ('retire-held', 'own-legacy')):
+        with self.subTest(op=op):
+            with self.engine.connect(write=True) as db: db.execute('DROP TABLE IF EXISTS client_reservations')
+            self.rpc_calls.clear()
+            hold = dict(self.r, mode=mode, action_id='foreign-stash-' + op)
+            stashed = dict(hold['expected'], state='Stashed', enqueued_at=None, started_at=None)
+            self.evidence = Evidence(hold['expected'])
+            self.evidence.change_at[2] = stashed
+            self.actions = a.ClientActions(self.engine, self.evidence, rpc=lambda *args: self.rpc(*args))
+            self.assertEqual(self.act(hold)['reason'], 'stale_state')
+            follow = request('remote-run-started') if op == 'cancel-no-payload' else dict(hold)
+            follow.update(op=op, phase=op, mode=mode, action_id=hold['action_id'], expected=stashed)
+            if follow['acceptance']: follow['acceptance']['action_id'] = hold['action_id']
+            self.evidence.acceptance = follow['acceptance']
+            self.after = copy.deepcopy(CASES['remote-run-started']['response']['identity']) if op == 'cancel-no-payload' else dict(stashed, state='Absent')
+            before = copy.deepcopy(a.reservations(self.engine))
+            # Attribution must survive a fresh coordinator, independently of its receipt cache.
+            self.actions = a.ClientActions(self.engine, self.evidence, rpc=lambda *args: self.rpc(*args))
+            result = self.act(follow)
+            self.assertEqual((result['status'], result['reason'], result['reservation']),
+                             ('rejected', 'evidence_missing', 'held'))
+            self.assertEqual(self.rpc_calls, [])
+            self.assertEqual(a.reservations(self.engine), before)
+            with self.engine.connect(write=True) as db: db.execute('DELETE FROM client_reservations')
+
+
+def test_physical_missing_client_modules_preserve_host_and_orphan_journal(self):
+    source = Path(control.__file__).resolve().parent
+    for missing in (('client_actions.py',), ('client_contract.py',), ('client_actions.py', 'client_contract.py')):
+        with self.subTest(missing=missing), tempfile.TemporaryDirectory(prefix='cc1-install-', dir='/tmp') as folder:
+            with self.engine.connect(write=True) as db: db.execute('DROP TABLE IF EXISTS client_reservations')
+            install = Path(folder)
+            for name in ('control.py', 'editor_prioridad.py', 'client_actions.py', 'client_contract.py'):
+                if name not in missing: shutil.copy2(source / name, install / name)
+            module = types.ModuleType('isolated_control')
+            module.__file__ = str(install / 'control.py')
+            exec(compile((install / 'control.py').read_bytes(), module.__file__, 'exec'), module.__dict__)
+            module.pressure_mini = lambda: dict(load=0, memory=1)
+            engine = module.MiniControl(self.p, self.root, clock=lambda: self.now, generation=lambda: self.gen)
+            engine.coordinated_reorder = True
+            engine.reorder_host_ready = lambda state: True
+            engine.reorder_aliases = lambda state: {}
+            inode = (self.root / 'control.lock').stat().st_ino
+            # A pre-CC1 authority needs no companion file for ordinary host reads/writes.
+            self.assertFalse(engine.client_blocked('suites'))
+            self.assertFalse(engine.client_blocked('suites', opening=True))
+            self.assertEqual(engine.view()['status'], 'ok')
+            self.assertEqual(module.admission_evidence(self.root), set())
+            self.change_state(startup_version=1, startup=dict(phase='ready', statuses={}, groups={},
+                              holds={}, interruptions={}, source_hash='a'*64, target_hash='b'*64))
+            self.change_state(reasons={'suites': ['pressure']})
+            self.p.groups['suites']['status'] = 'Paused'
+            engine.guard(dict(load=0, memory=1))
+            self.assertEqual(self.p.groups['suites']['status'], 'Running')
+            self.change_state(reasons={})
+            self.p.calls.clear()
+            unavailable = subprocess.run([os.sys.executable, '-B', module.__file__, 'client'],
+                                         input=b'{"schema":"pueue-client-control@1","op":"capabilities"}',
+                                         capture_output=True, timeout=10)
+            self.assertEqual(unavailable.returncode, 2)
+            self.assertIn(b'faltan m', unavailable.stderr)
+            self.assertEqual(unavailable.stdout, b'')
+            for uncertain in (False, True):
+                self.seed(self.r, uncertain=uncertain)
+                before = a.reservations(self.engine)
+                try:
+                    view = engine.view()
+                except FileNotFoundError:
+                    self.fail('host view must survive physically absent client modules')
+                self.assertEqual(view['status'], 'ok')
+                self.assertIs(view['capabilities'].get('client'), False)
+                for group in engine.profile:
+                    self.assertTrue(engine.client_blocked(group, opening=True))
+                    self.assertEqual(view['reorder_groups'][group]['reason'], engine.client_reservation_reason)
+                self.assertEqual(engine.handle(self.order_request('orphan-' + str(uncertain)))['error']['code'], 'client_reserved')
+                done = dict(test_reorder.task(90), status={'Done': dict(end='2020-01-01T00:00:00Z', result='Success')})
+                self.tasks['90'] = done
+                self.p.calls.clear()
+                module.prune_history(self.p, self.root, now=2000000000 + int(uncertain) * 4000)
+                self.assertEqual(self.p.calls, [])
+                self.change_state(reasons={'suites': ['pressure']})
+                self.p.groups['suites']['status'] = 'Paused'
+                engine.guard(dict(load=0, memory=1))
+                self.assertEqual(self.p.groups['suites']['status'], 'Paused')
+                self.change_state(reasons={'suites': ['manual']})
+                with self.assertRaises(ValueError): engine.manual('suites', resume=True)
+                self.assertFalse(any(call[0] in ('start', 'remove') for call in self.p.calls))
+                self.assertEqual(a.reservations(self.engine), before)
+                self.assertEqual((self.root / 'control.lock').stat().st_ino, inode)
+                with self.engine.connect(write=True) as db: db.execute('DROP TABLE client_reservations')
+                self.change_state(reasons={})
+                self.p.groups['suites']['status'] = 'Running'
+
+
+def test_prune_history_removes_only_unreserved_done_task(self):
+    self.assertEqual(self.act()['status'], 'held')
+    old = dict(status={'Done': dict(end='2020-01-01T00:00:00Z', result='Killed')}, dependencies=[])
+    self.tasks['77'], self.tasks['90'] = copy.deepcopy(old), copy.deepcopy(old)
+    removed = []
+    self.p.call = lambda *args: removed.append(args) or 'Tasks removed from list: 90\n'
+    control.prune_history(self.p, self.root, now=2000000000)
+    self.assertEqual(removed, [('remove', '90')])
+    self.assertTrue(a.reservations(self.engine)[0]['open'])
 
 
 def test_payload_env_hygiene_and_closed_failure(self):
@@ -516,6 +628,81 @@ def test_term_kill_preserve_first_acceptance(self):
 
 for _name, _value in list(globals().items()):
     if _name.startswith('test_') and callable(_value): setattr(ActionTests, _name, _value)
+
+
+class CorpusTests(unittest.TestCase):
+    def test_expected_states_reservations_reasons_and_rpc(self):
+        # CC0 also contains valid response controls which CC1 does not produce:
+        # pending is a recovered journal state; finish is local, not deferred by manual.
+        controls = {'hold-pending-scheduled-control', 'cancel-pending-scheduled-control',
+                    'remote-run-finished-no-payload-deferred-none-control'}
+        matched = 0
+        for case in CORPUS['valid']:
+            with self.subTest(case=case['id']):
+                x = ActionTests()
+                x.setUp()
+                try:
+                    r, expected = copy.deepcopy(case['request']), case['response']
+                    original = c.action_projection(r) if r['op'] == 'status' else r
+                    op, reason = original['op'], expected.get('reason')
+                    if op == 'capabilities':
+                        if expected.get('identity'):
+                            x.evidence.identity = copy.deepcopy(expected['identity'])
+                        elif 'launcher' in r:
+                            x.actions.adapter = a.InstalledAdapters()
+                        self.assertEqual(x.act(r), expected)
+                        self.assertEqual(x.rpc_calls, [])
+                        matched += 1
+                        continue
+                    x.evidence = Evidence(original['expected'])
+                    x.evidence.acceptance, x.evidence.proof = original['acceptance'], original['proof']
+                    x.actions = a.ClientActions(x.engine, x.evidence, rpc=lambda *args: x.rpc(*args))
+                    if reason == 'host_action':
+                        x.engine.reorder_boundary = lambda phase: (_ for _ in ()).throw(test_reorder.Crash()) if phase == 'prepared' else None
+                        with self.assertRaises(test_reorder.Crash): x.engine.handle(x.order_request())
+                    if op in ('cancel-no-payload', 'retire-held', 'finish'):
+                        x.seed(original)
+                    if reason in ('manual', 'pressure', 'startup'):
+                        x.change_state(startup_version=1, startup=dict(phase='ready', statuses={}, groups={},
+                                       holds={}, interruptions={}, source_hash='a'*64, target_hash='b'*64))
+                        x.change_state(reasons={'suites': [reason]})
+                        x.p.groups['suites']['status'] = 'Paused'
+                    if expected['status'] == 'unknown':
+                        def lost(*args):
+                            x.rpc(*args)
+                            raise subprocess.TimeoutExpired('synthetic', 1)
+                        x.actions.rpc = lost
+                    if expected['status'] == 'rejected' and reason == 'stale_state':
+                        x.evidence.identity = copy.deepcopy(expected['identity'])
+                    x.after = copy.deepcopy(expected['identity'])
+                    if r['op'] == 'status' and expected['status'] == 'pending':
+                        response = dict(expected, op=op)
+                        response.pop('action_op')
+                        x.actions.save(dict(request=original, digest=a.digest(original), revision=0,
+                                            process=None, response=response))
+                    else:
+                        with (x.root / 'control.lock').open('rb') as lock:
+                            if reason == 'lock_busy': fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            response = x.act(original)
+                    answer = x.act(r) if r['op'] == 'status' else response
+                    if case['id'] in controls:
+                        # They still exercise the coordinator and CC0 response validation.
+                        continue
+                    self.assertEqual(tuple(answer[k] for k in ('status', 'reservation', 'reason')),
+                                     tuple(expected[k] for k in ('status', 'reservation', 'reason')))
+                    if expected['effects'] is False:
+                        self.assertEqual(x.rpc_calls, [])
+                    elif expected['effects'] is True:
+                        self.assertEqual(len(x.rpc_calls), 1)
+                    matched += 1
+                finally:
+                    x.doCleanups()
+        self.assertEqual(matched, len(CORPUS['valid']) - len(controls))
+        for case in CORPUS['invalid']:
+            if case['target'] == 'request':
+                with self.subTest(case=case['id']):
+                    raw = json.dumps(case['value'], ensure_ascii=False).encode()
+                    self.assertEqual(a.ClientActions(None).dispatch(raw), (c.invalid_request_response(), 2))
 
 
 if __name__ == '__main__': unittest.main()
