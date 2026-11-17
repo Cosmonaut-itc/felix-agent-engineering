@@ -1069,6 +1069,13 @@ La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
 actual de Hasito con `lanzador_hasito` sigue siendo válida. Esta selección no
 inscribe ni activa repositorios.
 
+Un push a `main` de Jale despliega a producción y aplica migraciones, así que
+con `"adaptador": "jale"` el bloque `pre_aterrizaje` (U18) es obligatorio. Sin
+él, la promoción pausa `infraestructura` / `pre-aterrizaje:configuracion-ausente`,
+sin push ni rojo. El tick sigue limpiando el diario, drenando feedback y
+consumiendo decisiones: retirar el bloque cancela la operación pendiente con
+el comando guardado, como en U18, y detiene el carril antes del push.
+
 Jale corre ambos modos sobre C sin filtros y valida `jale-recibo@1`: SHA,
 modo, selección, firmas, orden, unicidad, cobertura y código de salida.
 Cada fallo conserva su firma sin declararlo preexistente; la atribución

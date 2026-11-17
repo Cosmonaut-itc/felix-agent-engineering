@@ -52,6 +52,14 @@ def autorizaciones(config):
     return resultado
 
 
+# Un push a main de estos repos despliega a producción: sin gancho no hay push.
+EXIGEN_GANCHO = frozenset({"jale"})
+
+
+def exige_gancho(config):
+    return config.get("adaptador") in EXIGEN_GANCHO
+
+
 def gancho(config):
     valor = config.get("pre_aterrizaje")
     if valor is None:
@@ -170,7 +178,7 @@ class Previo:
         return "seguir"
 
     def necesario(self, tren, observacion):
-        return ("pre_aterrizaje" in self.config or
+        return ("pre_aterrizaje" in self.config or exige_gancho(self.config) or
                 any(v.ventana is not None for v in observacion.prs))
 
     def terminar(self, identificador):
@@ -268,6 +276,8 @@ class Previo:
             config = gancho(self.config)
         except ValueError:
             return BloqueoPrevia(B, C, "configuracion-invalida")
+        if config is None and exige_gancho(self.config):
+            return BloqueoPrevia(B, C, "configuracion-ausente")
         registro = None
         if config is not None:
             miembros = {e.entrega.recibo: e.entrega for e in estado.entradas}
