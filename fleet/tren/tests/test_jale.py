@@ -17,6 +17,7 @@ from dominio import (Completo, Efecto, EsperandoCI, Evidencia, Fallo, Incompleto
                      Intento, Repeticion, Reproduccion, Tren, clave, datos, desde_datos)
 from efectos import EfectoFallido, ejecutar
 from atribucion import planificar
+from git_ops import ErrorGit, Publicado, RamaOcupada
 
 UNIDAD = 'apps/api/src/a.contract.test.ts'
 OTRA = 'apps/api/src/b.contract.test.ts'
@@ -261,6 +262,139 @@ class JaleTests(Aislado):
         self.assertEqual(r2.unidades, r.unidades)
         self.assertEqual(r2.origen_sha, nuevo.C)
         self.assertNotEqual(r2.origen_sha256, r.origen_sha256)
+
+    def repeticion_valida(self, candidato, origen, solicitud, commit, tren, **kwargs):
+        try:
+            r = self.adaptador.repetir(candidato, origen, solicitud, commit, tren, **kwargs)
+        except ResultadoInvalido as exc:
+            self.fail('se esperaba Repeticion, recibido ' + exc.resultado.codigo)
+        self.assertIsInstance(r, Repeticion)
+        self.assertEqual([i.veredicto for i in r.unidades[0].intentos], ['pasa', 'pasa'])
+        return r
+
+    def test_r1_subconjunto_publicado_fetch_real_e_idempotente(self):
+        from test_aterrizaje import AterrizajeTests
+        from dominio import Candidato
+        f = AterrizajeTests()
+        self.addCleanup(f.doCleanups)
+        f.setUp()
+        miembros = []
+        for pr, fecha in ((4, '2001-01-01T00:00:00+0000'),
+                          (5, '2001-01-02T00:00:00+0000')):
+            with patch.dict(os.environ, {'GIT_AUTHOR_DATE': fecha, 'GIT_COMMITTER_DATE': fecha}):
+                head = f.commit({'comun': 'base\n', 'pr-' + str(pr): 'ticket\n'}, (f.B,))
+            f.push(head, 'refs/pull/' + str(pr) + '/head')
+            miembros.append((pr, head))
+        c = f.git.armar(f.B, miembros)
+        self.assertIsInstance(c, Candidato)
+        self.assertIsInstance(f.git.publicar('lote-r1', c.C), Publicado)
+        sub = f.git.armar(f.B, miembros[1:])
+        self.assertIsInstance(sub, Candidato)
+        ancestro = subprocess.run(['git', '-C', str(f.git.ruta), 'merge-base',
+                                  '--is-ancestor', sub.C, c.C], capture_output=True)
+        self.assertEqual(ancestro.returncode, 1)
+        ausente = subprocess.run(['git', '-C', str(f.origen), 'cat-file', '-e', sub.C],
+                                capture_output=True)
+        self.assertNotEqual(ausente.returncode, 0)
+        host = f.raiz / 'host.git'
+        subprocess.run(['git', 'init', '--bare', str(host)], capture_output=True, check=True)
+        f.comando(host, 'remote', 'add', 'origin', str(f.origen))
+        self.lanzador.write_text('#!/bin/bash\n' + shlex.join(['git', '-C', str(host),
+            'fetch', 'origin']) + ' "$4" || exit 1\nexec ' + shlex.join(
+            [sys.executable, str(self.productor), str(self.raiz)]) + ' "$@"\n')
+        self.adaptador = self.Jale(self.lanzador, f.git)
+        origen, _ = self.adaptador.suite(c, 'lote-r1')
+        solicitud = Reproduccion('sub-5', FALLO, 'subconjunto', (5,))
+        with patch.object(f.git, 'publicar', wraps=f.git.publicar) as publicar:
+            r = self.repeticion_valida(c, origen, solicitud, sub.C, 'lote-r1')
+            self.assertEqual(len(publicar.call_args_list), 1)
+            nombre, commit = publicar.call_args.args
+            self.assertRegex(nombre, r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
+            self.assertEqual(commit, sub.C)
+            self.assertEqual(f.remoto('refs/heads/tren/' + nombre), sub.C)
+            self.assertEqual(self.repeticion_valida(c, origen, solicitud, sub.C, 'lote-r1'), r)
+            self.assertTrue(all(llamada.args == (nombre, sub.C)
+                                for llamada in publicar.call_args_list))
+            self.assertEqual(len(self.lanzamientos()), 4)
+            self.repeticion_valida(c, origen, solicitud, sub.C, 'lote-r1', permitir_lanzar=False)
+            antes = publicar.call_count
+            self.assertIsNone(self.adaptador.repetir(c, origen, replace(solicitud, id='otra'),
+                                                    sub.C, 'lote-r1', permitir_lanzar=False))
+            self.assertEqual(publicar.call_count, antes)
+
+    def test_r1_publicacion_fallida_no_lanza(self):
+        origen = self.origen()
+        antes = len(self.lanzamientos())
+        git = self.adaptador.git = type('Git', (), {})()
+        solicitud = Reproduccion('sub', FALLO, 'subconjunto', (2,))
+        for resultado in (ErrorGit('publicacion-rechazada'),
+                          RamaOcupada('ref', 'd' * 40, C), None):
+            with self.subTest(resultado=resultado), \
+                 patch.object(git, 'publicar', create=True, return_value=resultado) as publicar:
+                with self.assertRaises(ResultadoInvalido) as contexto:
+                    self.adaptador.repetir(CANDIDATO, origen, solicitud, 'd' * 40, 'lote')
+                self.assertEqual(contexto.exception.resultado.codigo, 'subconjunto-no-publicado')
+                publicar.assert_called_once()
+                self.assertEqual(len(self.lanzamientos()), antes)
+
+    def test_r1_subconjunto_sin_git_es_infraestructura(self):
+        origen = self.origen()
+        self.plan([{}])
+        antes = len(self.lanzamientos())
+        solicitud = Reproduccion('sub', FALLO, 'subconjunto', (2,))
+        self.assertIsNone(self.adaptador.repetir(CANDIDATO, origen, solicitud, 'd' * 40,
+                                               'lote', permitir_lanzar=False))
+        with self.assertRaises(ResultadoInvalido) as contexto:
+            self.adaptador.repetir(CANDIDATO, origen, solicitud, 'd' * 40, 'lote')
+        self.assertEqual(contexto.exception.resultado.codigo, 'subconjunto-sin-git')
+        self.assertEqual(len(self.lanzamientos()), antes)
+
+    def test_r1_base_transporte_no_envenena_otro_tren(self):
+        origen = self.origen()
+        nuevo = replace(CANDIDATO, C='e' * 40)
+        self.plan([{}])
+        ruta, _ = self.adaptador.suite(nuevo, 'otro')
+        for codigo in (255, None):
+            with self.subTest(codigo=codigo):
+                estado = self.raiz / ('estado-' + str(codigo))
+                self.adaptador = self.Jale(self.lanzador, estado=estado)
+                antes = len(self.lanzamientos())
+                self.plan([{}] * antes + [{'codigo': 255, 'sin_linea': True}, {}])
+                with self.assertRaises(ResultadoInvalido) as contexto:
+                    self.repetir(origen, 'B')
+                self.assertEqual(contexto.exception.resultado.codigo, 'salida-sin-recibo')
+                self.assertEqual(len(self.lanzamientos()), antes + 1)
+                if codigo is None:
+                    registro = Path(self.lanzamientos()[-1][1]).parent
+                    (registro / 'codigo.json').write_text('null')
+                    with self.assertRaises(ResultadoInvalido) as contexto:
+                        self.repetir(origen, 'B')
+                    self.assertEqual(contexto.exception.resultado.codigo, 'salida-no-utilizable')
+                self.adaptador = self.Jale(self.lanzador, estado=estado)
+                r = self.repeticion_valida(nuevo, ruta, Reproduccion('otra', FALLO, 'B'), B, 'otro')
+                self.assertEqual(len(self.lanzamientos()), antes + 3)
+                self.assertEqual(r.origen_sha, nuevo.C)
+                antes = len(self.lanzamientos())
+                self.assertEqual(self.repeticion_valida(nuevo, ruta,
+                    Reproduccion('tercera', FALLO, 'B'), B, 'tercero', permitir_lanzar=False).unidades,
+                    r.unidades)
+                self.assertEqual(len(self.lanzamientos()), antes)
+
+    def test_r1_base_75_no_consume_reanudacion_otro_tren(self):
+        origen = self.origen()
+        nuevo = replace(CANDIDATO, C='e' * 40)
+        ruta, _ = self.adaptador.suite(nuevo, 'otro')
+        antes = len(self.lanzamientos())
+        self.plan([{}] * (antes + 1) + [{'codigo': 75, 'estados': ['falla']}, {}])
+        r = self.repetir(origen, 'B')
+        self.assertIsInstance(r, Incompleto)
+        self.assertIsNone(self.adaptador.repetir(nuevo, ruta, Reproduccion('otra', FALLO, 'B'),
+                                               B, 'otro', permitir_lanzar=False))
+        r2 = self.repeticion_valida(nuevo, ruta, Reproduccion('otra', FALLO, 'B'), B, 'otro')
+        self.assertEqual(len(self.lanzamientos()), antes + 3)
+        self.assertEqual(self.repetir(origen, 'B', intento=1,
+                                    reanudar=r.reanudar).unidades, r2.unidades)
+        self.assertEqual(len(self.lanzamientos()), antes + 3)
 
     def test_repeticion_75_reanuda_sin_repetir_primer_intento(self):
         origen = self.origen()

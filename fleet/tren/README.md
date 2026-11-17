@@ -1075,6 +1075,9 @@ Cada fallo conserva su firma sin declararlo preexistente; la atribución
 requiere dos observaciones sobre C y dos sobre B. Las repeticiones usan la
 ruta exacta como único filtro, guardan duración y versiones del entorno en
 cada intento y reutilizan la evidencia de B por `(B, modo, unidad)`. El
+adaptador publica los subconjuntos antes de lanzarlos con una ref estable por
+tren y commit; los registros de repetición pertenecen al tren y la solicitud,
+y la caché de B guarda por intento sólo punteros a recibos válidos sin 75. El
 contrato identifica la definición por modo y ruta; no acredita igualdad del
 contenido del archivo entre commits. En e2e, un recibo con código 0 puede
 traer unidades `falla` cuando el juicio contra la base de main las dio por

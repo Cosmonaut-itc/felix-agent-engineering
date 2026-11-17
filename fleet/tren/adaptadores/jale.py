@@ -12,7 +12,7 @@ from adaptadores.ejecucion_jale import guardar
 from adaptadores.hasito import ResultadoInvalido, exigir, leer_json
 from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, clave)
-from git_ops import sha
+from git_ops import Publicado, sha
 from ledger import directorio_estado
 
 
@@ -99,6 +99,7 @@ class Jale:
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
         self.lanzador = str(Path(lanzador).resolve())
+        self.git = git
         self.host, self.modos = host, tuple(modos)
         self.estado = (Path(estado) if estado is not None else
                        directorio_estado() / 'jale').expanduser().resolve()
@@ -169,8 +170,9 @@ class Jale:
                 permitir_lanzar=True):
         fallo = solicitud.fallo
         exigir(fallo.parte == 'jale' and fallo.check in self.modos, 'seleccion-no-corresponde')
-        raiz = self.estado / (clave('base', commit, fallo.check, fallo.unidad)
-                if commit == candidato.B else clave('repetir', tren_id, solicitud.id))
+        raiz = self.estado / clave('repetir', tren_id, solicitud.id)
+        base = (self.estado / clave('base', commit, fallo.check, fallo.unidad)
+                if commit == candidato.B else None)
         exigir(not reanudar or reanudar == str(raiz), 'reanudar-no-corresponde')
         origen = leer_json(suite)
         exigir(isinstance(origen, list) and all(isinstance(r, dict) for r in origen) and
@@ -178,19 +180,36 @@ class Jale:
                 isinstance(r.get('unidades'), list) and any(isinstance(u, dict) and
                     u.get('unidad') == fallo.unidad for u in r['unidades'])
                 for r in origen), 'origen-no-corresponde')
+        if permitir_lanzar and commit not in (candidato.B, candidato.C):
+            exigir(self.git is not None, 'subconjunto-sin-git')
+            publicado = self.git.publicar('subconjunto-' + clave(tren_id, commit), commit)
+            exigir(isinstance(publicado, Publicado), 'subconjunto-no-publicado')
         intentos = []
         for n in (1, 2):
-            r = self.corrida(raiz / str(n), commit, fallo.check, (fallo.unidad,), intento,
-                             permitir_lanzar)
+            cache = base / str(n) / 'registro.json' if base is not None else None
+            if cache is not None and cache.exists():
+                puntero = leer_json(cache)
+                exigir(isinstance(puntero, str) and re.fullmatch(
+                    r'[0-9a-f]{64}/' + str(n) + r'/[0-9]+', puntero), 'cache-invalida')
+                ultimo = self.estado / puntero
+                r = self.correr(ultimo, commit, fallo.check, (fallo.unidad,), False)
+                exigir(isinstance(r, dict) and r['codigo'] != 75, 'cache-invalida')
+            else:
+                r = self.corrida(raiz / str(n), commit, fallo.check, (fallo.unidad,), intento,
+                                 permitir_lanzar)
+                if isinstance(r, dict) and r['codigo'] != 75:
+                    ultimo = raiz / str(n) / str(leer_json(raiz / str(n) / 'completo.json'))
+                    if cache is not None:
+                        cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+                        guardar(cache, str(ultimo.relative_to(self.estado)))
             if r is False:
                 return None
             if r is None or r['codigo'] == 75:
                 return Incompleto(75, str(raiz))
             u = r['unidades'][0]
             intentos.append(Intento(n, 'omitida' if u['resultado'] == 'no-corrida' else
-                u['resultado'], u['firma'], u['duracion_s'], str(raiz / str(n)),
+                u['resultado'], u['firma'], u['duracion_s'], str(ultimo.parent),
                 json.dumps(r['huella_entorno'], sort_keys=True)))
-        ultimo = raiz / '2' / str(leer_json(raiz / '2' / 'completo.json'))
         return Repeticion(commit, candidato.C, candidato.B,
             hashlib.sha256(Path(suite).read_bytes()).hexdigest(),
             (UnidadRepetida(fallo.check, fallo.unidad, fallo.parte,
