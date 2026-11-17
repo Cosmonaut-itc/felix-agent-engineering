@@ -77,6 +77,38 @@ El tick de launchd promueve C probado con push CAS fast-forward y comprueba
 `main` del repo inscrito activo; `merge-guard` lo niega sin excepción para el tick.
 En sombra el tren sólo observa y el guard conserva las reglas habituales de merge.
 
+## Sincronizar una vez, al final
+
+Cada push a un PR corre todos sus checks, y cada relanzamiento completo los
+corre de nuevo. Donde el CI tiene cupo, ese gasto deja sin checks a las
+demás sesiones: en Jale, el 40 % de los arranques de CI de un día corrió
+sobre commits que sólo mezclaban `main` (medido el 2026-11-16).
+
+- **Una sincronización.** La rama del PR incorpora la rama destino en el
+  paso 2 de «Aterrizar el head aprobado», con APTO y verde ya sobre su
+  head. Hasta entonces mide la deriva sin empujar: después de `git fetch`,
+  `git merge-tree --write-tree --name-only <destino> HEAD` sale con 1 si
+  hay conflicto y lista sus archivos. Un aviso de otra sesión sobre un
+  cambio en el destino se toma en esa sincronización final. En un
+  [acumulador](acumulador.md), la sincronización final es su paso 8: el
+  candidato final incorpora la rama de entrega antes de los gates y de la
+  revisión del conjunto.
+- **Sincronización anticipada.** Sincroniza antes sólo por uno de estos
+  motivos, y anótalo en tu registro:
+  - el PR tiene conflicto y necesitas su CI, que el forge no corre sobre un
+    PR en conflicto;
+  - la rama necesita un cambio que ya está en el destino: un arreglo del
+    que depende tu prueba, o la infraestructura de pruebas que un lanzador
+    exige al fallar con un código de admisión;
+  - `scripts/risk-classify` lo pide, como dice **Riesgo**.
+
+  Esa sincronización viaja en el mismo push que las correcciones
+  pendientes.
+- **Relanzar lo fallido.** Para repetir un check, relanza sólo los jobs que
+  fallaron: `gh run rerun <run-id> --failed`, o `--job <job-id>` para uno.
+  Antes confirma que el fallo no viene del cambio y, si el CI tiene cupo,
+  que queda cupo, como digan los docs del repositorio.
+
 ## Llevar el PR hasta verde
 
 Después de abrir el PR, sigue Babysit hasta merge-ready, también si sólo

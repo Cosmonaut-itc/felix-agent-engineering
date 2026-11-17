@@ -26,7 +26,7 @@ class Ejecucion:
     completo: bool
 
 
-def ejecutar(efecto, estado, observacion, git, hasito=None, previo=None):
+def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
     """Repetible sobre la misma instantánea; los leases hacen converger el IO.
 
     Devuelve Ejecucion; sólo completo=True permite cerrar el efecto del outbox.
@@ -59,15 +59,15 @@ def ejecutar(efecto, estado, observacion, git, hasito=None, previo=None):
             if isinstance(resultado, ConflictoCadena):
                 return Ejecucion(replace(llegada, conflicto_cadena=resultado), True)
             raise EfectoFallido(resultado)
-        if hasito is None:
+        if adaptador is None:
             if not admitidos:
                 return Ejecucion(limpia, False)
-            raise ValueError("falta adaptador Hasito")
+            raise ValueError("falta adaptador de suite")
         try:
             if efecto.tipo == "iniciar-suite" and isinstance(fase, EsperandoCI):
                 if efecto != Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)):
                     raise ValueError("suite obsoleta")
-                recibo = hasito.suite(fase.candidato, tren.id,
+                recibo = adaptador.suite(fase.candidato, tren.id,
                     permitir_lanzar=admitidos and (not fase.solicitud or
                     (observacion.tren_id == tren.id and observacion.ci_recibo == recibo_ci(tren))) and
                     observacion.ci_candidato == "verde")
@@ -85,7 +85,7 @@ def ejecutar(efecto, estado, observacion, git, hasito=None, previo=None):
                     "reanudar-suite", (tren.id, str(fase.reanudaciones)))
                 if efecto != esperado or fase.esperar_hasta is not None or not fase.reanudar:
                     raise ValueError("reanudación obsoleta")
-                recibo = hasito.suite(fase.candidato, tren.id,
+                recibo = adaptador.suite(fase.candidato, tren.id,
                     fase.reanudaciones, fase.reanudar, permitir_lanzar=admitidos)
                 if recibo is None:
                     return Ejecucion(limpia, False)
@@ -99,7 +99,7 @@ def ejecutar(efecto, estado, observacion, git, hasito=None, previo=None):
                 s = fase.pendiente
                 commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B
                           if s.objetivo == "B" else fase.subconjunto.C)
-                resultado = hasito.repetir(fase.candidato, fase.suite, s, commit,
+                resultado = adaptador.repetir(fase.candidato, fase.suite, s, commit,
                                           tren.id, fase.reanudaciones, fase.reanudar,
                                           permitir_lanzar=admitidos)
                 if resultado is None:

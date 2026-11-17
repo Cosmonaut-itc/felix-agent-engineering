@@ -106,7 +106,7 @@ CASES=[
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
  ('fullfsync','control.py','        fcntl.fcntl(stream.fileno(), 51)','        pass # fcntl.fcntl(stream.fileno(), 51)',
   'test_fullfsync_is_required_for_own_files_on_macos'),
- ('maintenance-reconcile','control.py',"    def reconcile(self):\n        if os.path.lexists(self.directory / 'maintenance'):\n            return False",'    def reconcile(self):\n        if False:\n            return False',
+ ('maintenance-reconcile','control.py',"    def _reconcile(self):\n        if os.path.lexists(self.directory / 'maintenance'):\n            return False",'    def _reconcile(self):\n        if False:\n            return False',
   'test_maintenance_stops_installer_recoverer_wrapper_and_guard_without_reopening'),
  ('maintenance-stop-order','mini.py',"                self.bootout(state, GUARD)","                pass",
   'test_maintenance_command_stops_guard_first_and_resumes_only_own_marker'),

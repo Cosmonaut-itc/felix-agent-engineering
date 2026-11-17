@@ -57,7 +57,7 @@ def resumen_outbox(ledger, repo):
             for r, efecto, espera in outbox_en_orden(ledger, repo, estado, set())]
 
 
-def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
+def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
          escritor=None):
     """El llamador mantiene el candado durante TODO el tick, incluido el IO.
 
@@ -119,7 +119,7 @@ def tick(ledger, repo, observador, ahora, git, hasito=None, frontera=None,
                     resultado = escritor.ejecutar_feedback(efecto, estado, frontera)
                     completo = True
                 else:
-                    ejecucion = ejecutar(efecto, estado, observacion, git, hasito, previo)
+                    ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo)
                     resultado = {"observacion": resultado_observacion(efecto, ejecucion.observacion)}
                     completo = ejecucion.completo
                     if not completo:

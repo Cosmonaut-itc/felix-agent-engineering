@@ -82,8 +82,66 @@ Retirar: `fleet/pueue-desk/withdraw-desk.sh` (admite `--seco`). Detiene y
 deshabilita timers y daemon; conserva unidades, cola, autoridad, biblioteca
 y linger, y deja `maintenance` para impedir reactivaciones. No drenar tareas automáticamente: retirar cuando hayan terminado.
 
-Pruebas: `/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -v`.
+Pruebas: `/usr/bin/python3 -B -I -m unittest discover -s fleet/pueue-desk/tests -v`.
+`-B` evita reutilizar bytecode generado al alternar perfiles del mismo tamaño
+en los módulos temporales del arnés de migración.
 ShellCheck: `shellcheck --severity=warning fleet/pueue-desk/*-desk.sh`.
+
+## Poda del historial (SEN-6495)
+
+Después de una guardia exitosa, en desk y Mini, `control.py` suelta
+`control.lock` y ejecuta una pasada independiente de poda. Sólo selecciona
+`Done` con `end` válido y anterior a 24 h; `Killed` se conserva 7 días,
+incluidos los avisos de interrupción por reinicio del panel. Retiene cualquier
+dependencia de una tarea que aún no terminó. Si no puede leer las dependencias
+de una tarea no terminada, conserva todos los candidatos de esa lectura.
+Las variantes vivas y las formas inesperadas nunca se podan.
+
+Tampoco poda la tarea del último intento de admisión incremental mientras su
+resultado sea `reserved` o `unknown`: esa tarea es la evidencia con la que la
+guardia y `resolver-admision` acreditan que el intento se ejecutó. Si no puede
+leer el permiso en `control.sqlite3`, la pasada no poda nada y registra
+`error: true`.
+
+La política está en `PRUNE_*` dentro del controlador único. `poda.json` limita
+la lectura adicional a una por hora; si se seleccionaron 500 tareas, el próximo
+tick vuelve a podar sin esperar esa hora. Quita como máximo 500 por pasada,
+las más antiguas primero, en lotes de 100. `poda.lock` es independiente y no
+bloqueante: un segundo proceso omite la pasada. No hay unidades ni timers nuevos.
+Una excepción de guardia impide la poda; los fallos de poda no cambian su salida.
+Cada lote fallido se registra y los siguientes se intentan normalmente.
+
+Para apagarla, crear un archivo vacío `poda.off` en el directorio de estado
+que corresponde al host (el mismo que contiene `guardia.log`). Para reactivarla,
+retirar ese archivo; no hace falta reinstalar. La cadencia conservada sigue
+vigente. Un retroceso del reloj retiene hasta alcanzar la fecha de la última
+pasada. Una marca ilegible retiene la poda y registra `error: true`.
+
+La bitácora existente agrega una línea JSONL `evento: "poda_historial"` por
+pasada intentada, sin ids, comandos ni errores arbitrarios. `podadas` cuenta
+sólo los ids reconocidos en `Tasks removed from list:` de Pueue 4.0.4;
+`sin_confirmar` cuenta los ids sin esa confirmación, y `lotes_fallidos` cuenta
+los lotes parciales, fallidos o con respuesta inesperada. Un lote puede quitar
+algunas tareas y aun así devolver código 0: el código de salida solo no basta. Los descartes son excluyentes: `vivas`, `omitidas` (forma
+inesperada), `admision` (evidencia de un permiso incierto), `dependencias`,
+`retenidas`, `retenidas_killed` y `tope` (elegibles
+que exceden 500). `error` señala fallos de lectura o persistencia. Se aplica
+la misma rotación del log a 1 MiB. Si falla el propio log, la guardia conserva
+su resultado y no se promete una línea persistida.
+
+`pueue remove` elimina también el archivo de `task_logs/` de la tarea podada:
+ya no aparecen ni su estado ni su salida en `pueue log <id>`. No se guarda
+un archivo histórico. Una espera de un id ausente imprime
+`No tasks found for selection TaskIds([...])` y sale con código 0 en 4.0.4.
+El daemon rechaza quitar una tarea que aún es dependencia de una tarea en fila;
+la selección la conserva desde su lectura, antes de enviar cualquier `remove`.
+
+Pruebas dirigidas y mutaciones (mediante `remote-run`):
+`/usr/bin/python3 -I -m unittest discover -s fleet/pueue-desk/tests -p test_prune.py -v`
+y `/usr/bin/python3 -I fleet/pueue-desk/tests/mutate_prune.py`.
+`tests/private_prune.py --run-private` mide M1–M5 con daemon, socket y
+configuración temporales propios, tareas reales y hora de poda adelantada
+sólo en el argumento de la función. No toca el reloj ni la instancia real.
 
 ## Guardia de la Mac Mini
 
@@ -141,7 +199,7 @@ sigue en pausa, ahora como pausa manual:
 /usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py pausar suites --host mini
 ```
 
-Para reanudarlo después: `/opt/homebrew/bin/pueue start -g suites`.
+Para reanudarlo después: `/usr/bin/python3 -I ~/.local/lib/pao-pueue-mini/control.py reanudar suites --host mini`.
 Una segunda pausa directa de Pueue no expresa ese relevo. El estado
 `guardia-state.json`, `control.lock` y el log JSONL UTC viven en
 `~/.local/state/pao/pueue-mini`. Verlo con
@@ -152,7 +210,7 @@ pausas manuales no son suyas y siguen en pausa. Conserva el log.
 Si instalar o desinstalar fallan con la guardia descargada, el guion reanuda
 sus grupos y, si no puede, vuelve a cargarla con la propiedad intacta; en ambos
 casos sale con error. Si tampoco puede recargarla, el error nombra los grupos que
-siguen en pausa y el comando `pueue start -g` para reanudarlos.
+siguen en pausa. En una instalación adoptada, reanudarlos siempre por `control.py reanudar GRUPO --host mini`, que conserva razones y admisión fresca.
 
 **Límite:** sólo frena la admisión: las tareas que ya corren siguen. Las
 corridas de `remote-run` encolan en `suites`, o en `rapidas` con `--carril rapido`; las corridas de Jale en la Mini
@@ -200,7 +258,8 @@ permite una acción nueva. Las capacidades muestran «El control está ocupado.
 Vuelve a intentarlo.», sin atribuir una pausa. Consultar un recibo con el candado
 ocupado conserva `unknown`; nunca reenvía la mutación.
 
-Sólo las RPC de `control.py rack` en la Mini tienen límite de 3 s. Las guardias
+Las RPC ordinarias de `control.py rack` en la Mini tienen límite de 3 s;
+reorder aplica ≤1 s/restante por RPC y fases de 6 s (véase U3.6). Las guardias
 del desk y de la Mini, y `aplicar`, esperan a Pueue como antes: un `status` o una
 pausa lentos no cancelan el cierre protector por ese límite del panel.
 
@@ -221,10 +280,23 @@ falle una RPC. Conserva el diagnóstico y el deseo; no crea grupos ni aplica el
 perfil por defecto. No abre mientras falle la reconciliación, y un fallo al
 pausar un grupo no impide proteger los demás. Se conserva la escalera #118.
 Si no puede guardar propiedad en SQLite, una marca durable
-`pause-GRUPO.manual` retiene esa pausa como manual incluso después de reparar
-la autoridad. La marca no asigna cuotas ni concede permiso para abrir; sólo
-`control.py reanudar GRUPO --host mini`, con reconciliación y sensores frescos,
-la retira. No borrar estas marcas para recuperar admisión automáticamente.
+`pause-GRUPO.manual` conserva el origen del cierre en ambos hosts. En un cierre
+protector contiene exactamente `pressure\n` sólo si la guardia leyó el estado en
+esa pasada y no había razones `manual` ni `ambiguous`; sin esa prueba escribe
+`manual\n`. Un fallo al soltar propiedad tras un arranque externo siempre escribe
+`manual\n`; también se sube una marca pressure si no pudo retirarse antes de
+soltar esa propiedad. Una marca previa distinta de los bytes exactos `pressure\n` nunca se
+rebaja a presión; contenido vacío, desconocido, ilegible o un enlace roto retiene
+como manual. La marca no asigna cuotas ni evita los gates de admisión.
+
+El preparador del reinicio incorpora la marca antes de inferir pausas sin dueño.
+En la primera pasada sana, la guardia guarda `pressure` en SQLite y **después**
+borra su marca; la presión y los gates normales deciden cuándo reabrir.
+`pausar GRUPO` sube una marca existente a `manual\n` con fsync antes de guardar
+la pausa manual o enviar su RPC; sin marca no crea una. Las marcas manuales
+siguen reteniendo después de reparar SQLite y sólo `control.py reanudar GRUPO`
+(con `--host mini` en la Mini), con reconciliación y sensores frescos, las retira.
+No borrar marcas a mano para recuperar admisión.
 
 En la Mini, la generación se identifica con el `pid_path` configurado, su fecha y la identidad
 `ps` del PID concreto (el desk usa otra; ver «Identidad del daemon del desk»). No se buscan ni terminan procesos por nombre. Tras reiniciar
@@ -986,6 +1058,8 @@ Los umbrales anteriores no cambian. Cuando `decide` devuelve `mantener`, la
 Guardia intenta **una candidatura global**, sin abrir el grupo: `pueue start
 <id>`. Sólo participan grupos administrados excepto `rapidas`, Paused y con
 razones efectivas exactamente `pressure` (un tombstone manual también bloquea).
+Una marca con bytes exactos `pressure\n` aporta la misma razón que SQLite;
+conserva la selección FIFO y los gates de la candidatura.
 La Mini y la vía legacy no obtienen admisión incremental. Por debajo de los
 umbrales de reanudar se abren grupos como antes, sin consultar este permiso.
 
@@ -1085,3 +1159,215 @@ la guardia de esta versión. Sólo emite grupos, ids y estados; verifica el PID
 de su Popen y su config antes de terminarlo. El ensayo no instala ni demuestra
 reducción de espera real. `tests/test_private_trickle.py` valida la integración
 del arnés con el contrato A mediante dobles, sin daemon.
+
+Regresión SEN-6487: `tests/test_pause_fence.py` reproduce el cierre protector
+con fallo de escritura y reinicio administrado, con y sin presión previa en
+SQLite, y comprueba las retenciones manuales y el orden de recuperación.
+Mutaciones dirigidas: `/usr/bin/python3 -I fleet/pueue-desk/tests/mutate_pause_fence.py`,
+siempre mediante `remote-run` en el host de pruebas.
+
+### Reordenar la Mini y deshacer (U3.6)
+
+El motor comparte `control.lock`, la autoridad y el índice durable `host_actions`
+con lugares y horario. No usa `switch`, no retira tareas ni crea ids nuevos.
+El desk conserva `reorder=false` hasta U3.7. La Mini conserva también la
+capacidad **deshabilitada mientras no se acredite el contrato de clientes**:
+el cliente inspeccionado `~/.local/bin/pueue.py:1925` hace `start <id>` durante
+una cancelación en fila. No hay una opción JSON, variable de entorno ni botón
+para eludir este cierre. El daemon privado de aceptación inyecta el contrato;
+no se ejecuta un canario sobre la fila compartida. La única compuerta durable es
+`MiniControl.coordinated_reorder = False` en `control.py` («clientes coordinados»).
+La unidad posterior del cliente cambiará ese fuente tras acreditar todos sus
+escritores; ninguna ruta de producción actual la enciende. Apagada publica
+`capabilities.reorder=false`, `capabilities.reason_reorder` y el motivo por grupo. El primer uso real será de
+Felix desde el panel después de cerrar esa dependencia y pasar aceptación.
+
+Las pausas y aperturas manuales pasan por `control.py pausar GRUPO --host mini`
+y `control.py reanudar GRUPO --host mini`. Los clientes pueden hacer `add`
+ordinario, pero no `add --immediate`, `start ID`, pausa/apertura directa de grupo
+ni editar prioridades durante una acción. Stock no permite atribuir una pausa
+redundante externa. Una pausa manual, por presión, ambigua o retenida al arrancar
+impide reordenar y se muestra con su motivo. Una marca `pause-GRUPO.manual`
+también lo impide, con el motivo que le da la guardia: `pressure` sólo con los
+bytes exactos `pressure\n`, `manual` en otro caso. La recuperación de un
+reordenar nunca reabre un grupo con marca; la guardia la retira después de
+persistir su propiedad y reabre con sus gates. El instalador legacy también tiene
+`start -g`, pero rechaza la autoridad adoptada antes de llegar a ese camino.
+
+La petición `rack-host-control@1` lleva revisión, generación, revisión de
+admisión, grupo, `queue_etag`, identidades opacas y la permutación completa de
+Queued. El token se calcula en el host con id, creación, grupo, comandos, path,
+label, entorno y dependencias; esos campos privados no salen en el recibo.
+El destino inicial asigna N..1, omitiendo prioridades que ya coinciden. Antes
+conserva el vector exacto, incluidos negativos y empates. Las dependencias
+siguen decidiendo qué tareas son elegibles.
+
+La secuencia es intención durable con propietario → `pause --wait` → confirmar
+pausa y cotejar fila exacta → intención por edición → helper TOML fijo por id →
+verificar identidad/campos/prioridades → reconciliar cuotas → sensores frescos
+→ admitir por grupo → recibo durable. Un alta posterior al cotejo conserva su
+id y prioridad y queda fuera del plan; invalida Deshacer estricto. No se edita
+una tarea con alias expandido, un alias actual aplicable aunque se añadiera
+después del add, ni formatos que el helper no reconoce: se devuelve
+`edit_unsafe` antes de pausar. El helper reconoce la clave serializada `command`
+de Pueue 4.0.4, consume completas las cadenas TOML multilínea y sólo sustituye
+el entero de `priority`; no registra el documento ni acepta rutas del navegador.
+Usa directorio 0700, plan 0600 y TMPDIR privado. La configuración de conexión
+TOML se prepara una vez por acción antes de pause; cada id conserva plan,
+TMPDIR, cliente, helper y revocación propios. La compuerta stdin precede incluso
+a la lectura del plan, de modo que se escribe una sola vez con PID+nacimiento
+antes de liberar el cliente. No hay edición multitabla ni bloqueo por lotes.
+
+Los aliases se leen de la configuración realmente seleccionada por el daemon
+U3.5 (archivo estándar, HOME/cwd fijos, sin overrides); no se infieren del config del cliente
+de edición. Si falta el config o su mtime/ctime es posterior al nacimiento del daemon, se rechaza. No se cambia silenciosamente a un config de fallback; sólo se aceptan alias_file absolutos o con ~/ del dueño.
+Config y aliases también requieren coordinación bajo `control.lock`; formatos
+YAML ambiguos o escapes no acreditados fallan cerrados. El helper decodifica
+command/path/label del TOML recibido y compara su huella opaca y prioridad
+previa con el plan **antes** de escribir; preserva todos los demás bytes.
+Antes de escribir el TOML, el helper consulta el socket fijo y exige Locked con
+previous_status Queued, grupo Paused, prioridad e identidad esperadas y el mismo
+inicio de kernel del daemon y cliente. Revalida la revocación antes del efecto.
+
+El mismo recuperador de `control.py` atiende acciones desde la guardia existente
+`local.pao.pueue-mini.guard` (60 s) y desde `preparar`; no se agrega job ni bucle.
+El preparador resuelve Locked propio antes del restore stock, con identidad,
+previous_status Queued y ausencia de log. Stashed ajeno y tareas terminales no
+se reviven. Si alguien omite el preparador y stock ya convirtió Locked a
+Stashed, la recuperación online retiene el grupo: no puede distinguir esa
+conversión de una cancelación externa. El arranque normal U3.5 resuelve el
+Locked atribuible antes de esa pérdida de información.
+Si queda un cliente/editor vivo, se revoca su plan y sólo se señala
+un PID cuyo inicio de kernel coincide (microsegundos Darwin, boot/ticks Linux).
+No se inicia otra edición hasta confirmar su salida. `enqueue ID` se limita al
+id anotado y se persiste con edit, apertura o repetición de nuestra propia pausa.
+Cuando enqueue cambia su fecha, el diario conserva el enlace entre la fecha
+anterior y la nueva; el snapshot mantiene la edad visual sólo si coinciden la
+identidad opaca y la fecha de reparación actual, sin trasladarla a un id nuevo.
+La incertidumbre conserva el grupo cerrado y muestra «En pausa recuperando…»
+y el action_id propietario. Los switches de acciones nuevas no abandonan una
+acción aceptada; consultas y ensayos no recuperan ni escriben. El índice de
+id/digest/resultado no se poda.
+
+Deshacer usa otro action_id, el recibo anterior y el estado actual completo;
+restaura las prioridades anteriores exactas. La ventana del host es 60 s.
+Cambios de conjunto, identidad, estado, prioridades, revisión o generación, o
+vencimiento, devuelven `undo_conflict` sin efectos: «La fila cambió; no se puede
+deshacer». Una tarea que empezó al abrir el grupo puede invalidarlo enseguida.
+Si sube la presión durante el reordenado, el orden queda aplicado y la pausa
+pasa a la guardia; no se abre sólo porque la pausa empezó siendo nuestra.
+En la banda de histéresis (`mantener`), se restaura el estado Running anterior
+con las dos muestras frescas de admisión; sólo `pausar` transfiere la pausa a
+la guardia. Una pausa manual o de otro propietario sigue cerrada.
+
+Los límites de entrada son 64 pendientes y 16 KiB. La fase normal pausada
+usa 6 s (constante `reorder_budget`) y cada RPC de reorder ≤1 s y el tiempo restante de su fase,
+incluidas lecturas, reparación y reconciliación. Una recuperación tiene su
+propio presupuesto acotado y puede continuar en otro tick; el vencimiento no
+es un recibo terminal de aborto. El ámbito se restaura al salir: las lecturas
+ordinarias de guardia mantienen su espera histórica sin timeout global.
+
+El arnés `tests/private_reorder.py` nombra los intervalos con precisión:
+`acceptance_to_pause_seconds` empieza después del commit de prepared;
+`pause_start_envelope_seconds` va de antes de enviar pause a después de la RPC
+start, **no mide los instantes internos exactos del daemon**. Separa
+verificación, admisión, recibo y handle completo. Si no hubo start conserva
+`retained_close_observed_seconds`; no publica ese cierre retenido como pausa
+normal completada. Registra por edición lecturas status, arranque del cliente,
+arranque/status/escritura del helper, CLI, diario y total (varios son intervalos
+anidados, no sumandos independientes). `helper_start` va de la creación del
+plan a la entrada del helper, incluyendo arranque de cliente/CLI/puerta;
+no aísla sólo el intérprete. Cada escenario emite sus métricas
+parciales antes de comprobar éxito y el siguiente sigue aunque falle el previo.
+El diagnóstico del editor conserva `trace-controller.json`, `trace-client.json`
+y `trace-helper.json` dentro del directorio privado de cada edición: sólo fases
+fijas y tiempos de `CLOCK_MONOTONIC`, compartidos también en Python 3.9.
+Separa Popen, identidad, escritura del plan, commit de client_ready, puerta,
+imports y comprobaciones del helper. La creación del helper se obtiene de
+`proc_pid_rusage` y se convierte desde `mach_absolute_time` con el reloj del kernel,
+sin usar la hora civil como cronómetro. En el arnés privado, un observador del
+CLI estándar reduce su salida de diagnóstico en memoria a tres marcas:
+EditRequest, respuesta Edit y preparación del spawn; descarta el resto y no
+guarda documentos, comandos ni entornos. Esas tres marcas tienen la demora de
+observación del lector, no precisión de syscall. No se modifica el binario ni
+se agrega un listener. Las marcas se publican atómicamente sin fsync dentro del
+observador; no son autoridad y no deben retrasar la lectura del siguiente evento.
+`--only diagnostic` repite reorder/undo con ids nuevos y
+los mismos límites de 1 s y 6 s; una recuperación no convierte un fallo en PASS.
+Cliente y editor arrancan con el ejecutable del controlador (`sys.executable`),
+`-I -S`: se conserva el aislamiento y sólo se carga biblioteca estándar, sin el
+launcher adicional de `/usr/bin/python3` ni inicialización de `site`. La rama
+del cliente omite `pathlib`, el import del escáner regex, `hashlib` y `subprocess`;
+valida plan y directorio con las mismas operaciones de `os` y `stat`. La puerta
+sigue cerrada hasta persistir PID/inicio, plan y client_ready; no se omiten las
+comprobaciones de identidad, revocación, deadline ni Locked del helper.
+La admisión privada usa sensores bajos sintéticos e incluye el coste del sensor
+real; no acredita apertura bajo presión de producción. Conserva la fixture de
+1500 Stashed / 9,43 MB y carga load1/load5/load15 de cada medición.
+
+Las cifras anteriores de A, 3,082 s sin historial y 5,382 s con historial, eran
+**prepared→start**, no sección pausada exacta; los handles fueron 3,158 y
+5,663 s. Su unknown de 64 ocurrió en client_ready de la edición 36 y no guardó
+la clase de error: process=None por sí solo no distingue salida no-cero de
+timeout. El motor actual conserva fase/clase/rc sin argv, stderr ni documentos.
+La admisión calibrada rechaza los planes que no caben antes de pause. Usa
+`0,95 + 0,08 × MB + escrituras × (0,90 + 0,08 × MB)` segundos, donde MB son
+millones de bytes del snapshot completo serializado en memoria, incluido
+historial de otros grupos. No se registra su contenido ni se hace otra RPC.
+Se omiten escrituras que ya coinciden; el panel usa el tamaño completo de la
+fila como previsión conservadora y comparte estimador con la admisión/undo.
+Con unos 6 KB caben cinco escrituras (5,453 s); seis (6,353 s) se rechazan.
+Con 9,43 MB caben dos (5,013 s); tres (6,668 s) y cinco (9,976 s) se rechazan.
+El coste por edición usa el máximo completo bajo carga, 0,858 s pequeño en el
+segundo pre-vuelo, redondeado a 0,90. El máximo completo grande anterior era
+0,717 s (corrida 4); el primer pre-vuelo agotó 1 s de editor con historial:
+es muestra censurada, no edición completada. Se conserva el margen por tamaño
+de 0,08 s/MB, también en la reserva para pausa, lecturas y admisión.
+La derivación y los bytes exactos de cada decisión están en la evidencia del
+encargo, `evidencia-injerto/calibracion-admision.txt`. La calibración final
+sólo estrecha la admisión; conserva las decisiones de los escenarios de la
+segunda corrida por sus tamaños registrados. No es una garantía ante toda
+carga ni acredita ejecución real de cada número de escrituras admisible.
+Los plazos efectivos siguen activos.
+
+La guardia actual tiene cadencia de 60 s; no se promete recuperación ≤10 s ni
+un peor caso finito. La capacidad sigue apagada por clientes no coordinados,
+independientemente de la estimación temporal y del resultado de aceptación.
+
+Aceptación privada de pre-vuelo (2026-11-16): dos corridas adicionales, sin
+instalación y con daemon privado Pueue 4.0.4. La primera agotó el plazo del
+editor grande y terminó `aborted` por recuperación; se conserva su FAIL.
+La segunda pasó normal/undo, rechazo previo de large, aliases nuevos,
+cliente/helper huérfanos, reinicio y rechazo previo de 64. Normal/undo dieron
+2,475/1,067 s de envolvente con load1 de 11,17/10,59. Large se rechazó en
+0,114 s antes de pause; no corresponde undo de una acción sin efectos.
+Los seis cleanup confirmaron daemon salido, cero procesos propios y ningún
+LaunchAgent creado en ambas corridas.
+
+Tras la segunda se elevó la base por edición de 0,40 a 0,90 al observar el
+máximo completo de 0,858 s. No hubo tercera corrida: se comprobó con los bytes
+exactos registrados que esa calibración conserva todas las decisiones de los
+escenarios ensayados y sólo estrecha la admisión. La ejecución real cubre cinco
+pequeñas y el rechazo de cinco grandes/64; las demás combinaciones son
+predicciones. La compuerta sigue apagada. Suites completas y revisión
+independiente corresponden al orquestador antes de habilitar producción.
+
+Actualización sin reiniciar `pueued`, a ejecutar sólo en la Mini adoptada:
+
+```sh
+/usr/bin/python3 -I fleet/pueue-desk/install-reorder.py --seco
+/usr/bin/python3 -I fleet/pueue-desk/install-reorder.py
+```
+
+El ensayo valida configuración, autoridad, generación, cuotas e intenciones
+antes de cualquier copia. La publicación conserva `control.py.u36-before`,
+publica el helper y después el controlador bajo el mismo candado. No releva
+Brew, no toca LaunchAgents y no cambia cuotas ni modo. La UI/canal del rack se
+actualizan con su procedimiento existente; el daemon Pueue sigue vivo. No se
+ha ejecutado esta instalación como parte del encargo.
+
+Para revertir: `install-reorder.py --retirar --seco`, después
+`install-reorder.py --retirar`. Si hay acciones pendientes se rechaza la
+reversión: primero recuperarlas con la versión que las entiende. Se conserva
+el helper inerte, los recibos y la autoridad. Restaurar además la UI del rack
+con la versión anterior si se revierte su publicación.

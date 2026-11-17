@@ -724,22 +724,23 @@ sys.argv=['control.py','rack','--host','mini'];c.main()
                 self.assert_closed('default', 'rapidas')
         self.assertEqual(self.p.groups['suites']['status'], 'Running')
 
-    def test_failed_authority_write_closes_but_never_grants_future_reopen(self):
-        # A stale pressure owner must not reclaim an emergency pause after repair.
+    def test_failed_authority_write_recovers_known_protective_ownership_after_repair(self):
+        # A read authority without manual/ambiguous reasons proves protective origin.
         self.change_state(reasons=dict(suites=['pressure']))
         self.p.groups['suites']['status'] = 'Paused'
         with patch.object(self.engine, 'store', side_effect=sqlite3.OperationalError('readonly authority')):
             self.protective_tick()
         self.assert_closed('suites', 'default', 'rapidas')
+        for group in ('suites', 'default', 'rapidas'):
+            self.assertTrue(self.engine.pause_fence(group).exists())
+            self.assertEqual(self.engine.pause_fence(group).read_bytes(), b'pressure\n')
         self.p.calls.clear()
         with patch.object(control, 'pressure_mini', return_value=dict(load=0, memory=1)):
             self.engine.guard(dict(load=0, memory=1))
-        self.assert_closed('suites', 'default', 'rapidas')
-        self.assertIn('manual', self.engine.view()['pause_reasons']['suites'])
-        with patch.object(control, 'pressure_mini', return_value=dict(load=0, memory=1)):
-            self.engine.manual('suites', resume=True)
-        self.assertEqual(self.p.groups['suites']['status'], 'Running')
-        self.assertEqual(self.p.groups['default']['status'], 'Paused')
+        for group in ('suites', 'default', 'rapidas'):
+            self.assertEqual(self.p.groups[group]['status'], 'Running')
+            self.assertNotIn('manual', self.engine.view()['pause_reasons'][group])
+            self.assertFalse(self.engine.pause_fence(group).exists())
 
     def request_without_read(self):
         return dict(schema=control.HOST_SCHEMA,op='capabilities')

@@ -39,14 +39,15 @@ def unique(pairs):
     return data
 
 
-def decode(raw):
-    if len(raw) > 16384:
+def decode(raw, limit=16384):
+    if len(raw) > limit:
         raise ValueError()
     return json.loads(raw, object_pairs_hook=unique)
 
 
 def exchange(argv, request, runner, env, timeout):
     """No shell/TTY, bounded stdin/stdout and time; kill only our session and reap."""
+    limit = 65536 if request.get('schema') == 'rack-host-control@1' or (request.get('schema') == 'rack-desk-action@1' and request.get('target') == 'host-control') else 16384
     deadline = time.monotonic() + timeout
     process = runner(argv,
         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -76,9 +77,9 @@ def exchange(argv, request, runner, env, timeout):
                             selector.unregister(process.stdin)
                             process.stdin.close()
                     else:
-                        chunk = os.read(process.stdout.fileno(), min(4096, 16385 - len(output)))
+                        chunk = os.read(process.stdout.fileno(), min(4096, limit + 1 - len(output)))
                         output.extend(chunk)
-                        if len(output) > 16384:
+                        if len(output) > limit:
                             raise ValueError('Respuesta demasiado grande')
                         if not chunk:
                             selector.unregister(process.stdout)
@@ -94,7 +95,7 @@ def exchange(argv, request, runner, env, timeout):
     finally:
         process.stdin.close()
         process.stdout.close()
-    return process.returncode, decode(output)
+    return process.returncode, decode(output, limit=limit)
 
 
 def origin_supported(response, ref):

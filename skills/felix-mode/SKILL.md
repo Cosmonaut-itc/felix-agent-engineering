@@ -84,7 +84,7 @@ El hook `scripts/store-guard` avisa cuando una herramienta toca un store sin
 `units.tsv` o sin `decisions.tsv`. En Write y Edit es exacto; en Bash deduce
 las rutas del comando sin ejecutarlo y puede fallar en los dos sentidos, así
 que su silencio no prueba que el store esté completo. Él,
-`scripts/laptop-guard`, `scripts/launcher-guard` y `scripts/merge-guard` se registran en
+`scripts/laptop-guard`, `scripts/launcher-guard`, `scripts/merge-guard` y `scripts/rerun-guard` se registran en
 `~/.claude/settings.json`, como dice el README, porque T3 Code no ejecuta los
 hooks del frontmatter de una skill.
 
@@ -207,7 +207,10 @@ que demuestra:
   o ruta>`, y tu respuesta repite el nivel y su motivo.
 - **Pre-vuelo.** Antes de cada ronda, atiende los comentarios abiertos del
   PR, corrige lo que ya sabes que falla y corre la prueba dirigida del
-  cambio. El brief nombra los checks que faltan o que ya fallaban.
+  cambio. El brief nombra los checks que faltan o que ya fallaban. Empuja
+  las correcciones de la ronda en un solo push y deja la rama destino para
+  el final, como fija
+  [Sincronizar una vez, al final](references/merge.md#sincronizar-una-vez-al-final).
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
@@ -284,18 +287,34 @@ que demuestra:
   por **Ronda delta**. El revisor delta reabre un `diferido` sólo si el
   delta cambia su razón.
 - **Rondas.** La ronda 1 es completa, y cada revisor del nivel recibe el
-  diff completo. Las siguientes siguen **Ronda delta**. Una review converge
-  cuando cada ronda trae menos hallazgos y ninguno abre un caso nuevo en
-  reglas que una ronda anterior ya corrigió. Si una ronda no converge, o la
-  ronda 3 no da APTO, lee y aplica `principle-attack-the-premise` de pstack
-  y **Autonomía** antes de la siguiente corrección. Un mismo cambio tiene
-  hasta ocho rondas sin autorización adicional, entre completas y delta.
-  Las rondas de sincronización no cuentan: son las que pide el paso 3 del
+  diff completo. Las siguientes siguen **Ronda delta**. Las rondas se
+  cuentan por enfoque. La cuenta empieza en la ronda 1 del cambio y vuelve
+  a empezar en la ronda completa que sigue a un cambio de enfoque. Si el
+  enfoque cambia tras la ronda 4, la ronda 5 del registro es la ronda 1
+  contada del enfoque nuevo. Una review converge cuando la ronda deja,
+  tras el veto, menos critical y warning en `abierto` que la ronda contada
+  anterior, y ninguno es otro caso del mismo defecto que una ronda
+  anterior ya corrigió, como otra entrada que rompe una validación ya
+  corregida. En las rondas 1 a 3 contadas de cada enfoque, tras el veto de
+  un NO APTO corrige y corre la ronda siguiente. En el primer enfoque,
+  desde su ronda 4 contada, decide antes de corregir si la review
+  converge. Si converge, corrige y sigue las rondas que hagan falta. Si no
+  converge, cambia de enfoque. Lee y aplica `principle-attack-the-premise`
+  de pstack para escribir la premisa que compartían las correcciones.
+  Después rehaz, con un diseño que no dependa de esa premisa, la parte del
+  cambio donde caen los hallazgos abiertos, y sigue **Autonomía**. En el
+  enfoque nuevo, desde su ronda 4 contada, pausa tras el veto de un
+  NO APTO, converja o no la review. En cualquier ronda, pausa también
+  antes de cambiar de enfoque por segunda vez. Ese es el límite de un
+  cambio sin autorización adicional. Entrega al usuario lo que sigue
+  abierto, los dos enfoques, por qué no cerró cada uno y las opciones que
+  ves. Las rondas de sincronización no cuentan, y tras su NO APTO corriges
+  y sigues. Son las que pide el paso 3 del
   [procedimiento de merge](references/merge.md) cuando `apto-vigente`
-  imprime `Ronda delta`; ese procedimiento define también la excepción
-  de altas disjuntas en catálogos de traducción. Todas las rondas se numeran
-  en orden, también las de sincronización, y el límite cuenta sólo las demás. Antes de la novena
-  ronda contada, pausa, aunque la octava contada haya dado APTO. Entrega al usuario lo que sigue abierto y el replanteamiento realizado.
+  imprime `Ronda delta`; ese procedimiento define también la excepción de
+  altas disjuntas en catálogos de traducción. En el registro, todas las
+  rondas se numeran en orden, también las de sincronización y las del
+  enfoque nuevo.
 - **Ronda delta.** La hace un solo revisor gpt-6.1-sol en `high` con
   contexto nuevo, también en alto riesgo. Su brief lleva el brief original,
   el registro, el head ya revisado y el diff desde ese head, con
@@ -330,8 +349,11 @@ que demuestra:
   como warning. Un `diferido` lleva en `evidencia` su razón y su issue. Anota
   la cuenta de `Nits descartados` de cada ronda en una fila con id
   `nits-r<ronda>`, `-` en probabilidad y gravedad, severidad `nit`, estado
-  `declinado` y la cuenta en `evidencia`. El brief de la ronda delta omite
-  esas filas.
+  `declinado` y la cuenta en `evidencia`. Anota cada cambio de enfoque en
+  una fila con id `enfoque-r<ronda>` y los mismos valores en las demás
+  columnas, salvo `evidencia`, que lleva la premisa y el enfoque nuevo.
+  Su `<ronda>` es la última ronda del enfoque anterior. El brief de la
+  ronda delta omite las filas `nits-r<ronda>` y `enfoque-r<ronda>`.
 - **Regla por hallazgo.** Si un critical o warning que corriges es mecánico, como un
   patrón de sintaxis, una API prohibida, una forma de import o una regla de
   ubicación o de nombre de archivo, el mismo PR añade lo que lo impide. Sigue
@@ -421,8 +443,10 @@ elegir un alcance menor:
 - El brief de cada ronda siguiente lleva el brief original y su condición
   de terminado sin reescribir, además de tu decisión registrada. El
   revisor juzga contra el original.
-- El conteo de rondas sigue. Cada parte de una división es una unidad de
-  **Unidades** o entra al acumulador.
+- Un cambio de enfoque después de la ronda 1 abre la cuenta nueva que
+  fija **Rondas**, también cuando lo decides antes de la ronda 4. Un
+  recorte o una división conservan la cuenta. Cada parte de una división
+  es una unidad de **Unidades** o entra al acumulador.
 
 Fuera de la autoridad de **Merge** y de lo ya autorizado por el usuario,
 además de «Always pause» de pstack, pausa antes de:
@@ -435,7 +459,7 @@ además de «Always pause» de pstack, pausa antes de:
   agentes;
 - implementar UI/UX sin un prototipo aprobado por el dueño, como pide el
   routing;
-- la novena ronda contada de review de un mismo cambio, como dice **Rondas**.
+- corregir una review que llegó al límite de **Rondas**.
 
 El resto del trabajo local y reversible avanza sin preguntar.
 

@@ -74,6 +74,21 @@ class TrickleTests(DeskFixture):
         self.sample=self.low; self.run_guard(self.low)
         self.assertEqual(self.p.groups['jale']['status'],'Running')
 
+    def test_pressure_marker_candidate_matches_durable_pressure_and_manual_blocks(self):
+        snapshot = self.p.status()
+        state = self.state()
+        expected = self.engine._candidate(snapshot, state, lambda *args:None)
+        self.assertEqual(expected[2], 'jale')
+        state['reasons']['jale'] = []
+        self.engine.pause_fence('jale').write_bytes(b'pressure\n')
+        self.assertEqual(self.engine._candidate(snapshot, state, lambda *args:None), expected)
+        for reason in ('manual', 'ambiguous', 'startup'):
+            state['reasons']['jale'] = [reason]
+            self.assertEqual(self.engine._candidate(snapshot, state, lambda *args:None)[2], 'pesadas')
+        state['reasons']['jale'] = []
+        self.engine.fence_pause('jale')
+        self.assertEqual(self.engine._candidate(snapshot, state, lambda *args:None)[2], 'pesadas')
+
     def test_global_cooldown_instances_59999_60(self):
         self.run_guard()
         self.assertEqual(len(self.starts()),1)
@@ -246,6 +261,11 @@ class TrickleTests(DeskFixture):
             self.engine.boot_clock=lambda:clock
             self.run_guard();self.assertEqual(len(self.starts()),1)
             self.assertIn('clock',self.causes())
+
+    def test_reorder_recovery_without_pending_work_leaves_fresh_sample_budget(self):
+        with patch.object(control.time,'monotonic',side_effect=[0,11]+[11]*20):self.run_guard()
+        self.assertEqual(self.starts(),[])
+        self.assertIn('fresh_sample',self.causes())
 
     def test_manual_tombstone_startup_and_pending_receipt(self):
         for filename,cause in (('maintenance','maintenance'),):
