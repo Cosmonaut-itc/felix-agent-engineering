@@ -341,7 +341,8 @@ class HandoffTests(unittest.TestCase):
         with patch.object(control,'prepare_start',side_effect=AssertionError('prepare under maintenance')):
             with self.assertRaises(ValueError):h.m.start(execute=lambda *_:self.fail('exec under maintenance'))
         with self.assertRaises(ValueError):h.m.change('withdraw')
-        after={k:v for k,v in h.fingerprint().items() if not k.endswith('/arranque.log')}
+        after={k:v for k,v in h.fingerprint().items() if not k.endswith(('/arranque.log','/arranque.log.lock'))}
+        self.assertEqual((h.directory/'arranque.log.lock').read_bytes(),b'')
         self.assertEqual(after,before,'Only a rejected-start diagnostic may be written')
         self.assertFalse(any(c[0] in ('enable','bootstrap','bootout','disable') for c in h.calls))
         marker.unlink();h.finish()

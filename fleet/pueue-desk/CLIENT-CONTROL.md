@@ -152,8 +152,9 @@ La `phase` coincide con `op`, excepto `signal:TERM`, `signal:KILL`,
 `signal-manual:TERM` y `signal-manual:KILL`. Status conserva la fase de
 `action_op`, sin cambiarla ni combinar TERM/KILL. Es un conjunto
 cerrado, no un identificador arbitrario. La clave durable es
-`(launcher,ref,action_id,phase)`: mismo cuerpo da mismo recibo; otro cuerpo en
-esa fase da idempotency_conflict, incluso tras reiniciar. El diario enlaza
+`(launcher,ref,action_id,phase)`: mismo cuerpo da mismo recibo, salvo el reintento explícito de `deferred`
+sin efecto definido en «Entrega CC2»; otro cuerpo en esa fase da
+idempotency_conflict, incluso tras reiniciar. El diario enlaza
 todas las fases a la misma identidad inicial/modo/acción; permite las
 transiciones explícitas de esta tabla, no cambiar el intento. TERM y KILL
 son subpasos diferentes de una misma acción; un poll no genera UUID nuevo.
@@ -367,8 +368,7 @@ puede habilitar la compuerta. Acreditar Mini nunca habilita desk/U3.7.
 
 `control.py client` implementa el transporte local del contrato. No admite
 argumentos ni selectores: la instalación elige host, autoridad, configuración,
-entorno y binario. Sólo corre en la Mini. En el desk la guardia y el goteo
-aún no consultan reservas (U3.7), así que `client` falla con un diagnóstico,
+entorno y binario. Sólo corre en la Mini. En el desk `client` sigue fallando con un diagnóstico,
 no escribe el diario y la vista anuncia `capabilities.client:false`. Lee como máximo `MAX_BYTES+1` antes de decodificar; usa
 los validadores CC0 tanto al entrar como al responder. Los rechazos de negocio
 salen 0; una petición inválida sale 2 con `invalid_request_response()`.
@@ -447,11 +447,195 @@ entregas posteriores deben acreditar formatos fijos que permitan verificar
 identidad, compatibilidad del worker, aceptación y prueba sin esos accesos.
 La negociación global del protocolo no anuncia soporte por corrida.
 
-CC2 debe copiar bajo `control.lock` acción, reserva, generación, ambas
-revisiones y digest; recoger evidencia fuera del candado; volver y cotejar
-las versiones antes de avanzar o cerrar. Debe recoger también intenciones
+CC2 recoge bajo `control.lock` acción, reserva, generación, ambas
+revisiones y digest; recoge evidencia fuera del candado y vuelve a cotejar
+las versiones antes de avanzar o cerrar. Recoge también intenciones
 anteriores al envío, hijos identificados, recibos diferidos y resultados
 publicados antes de `finish`, sin depender de runner, waiter ni HTTP vivos.
-CC1 conserva esos datos; no implementa ese recuperador, preparador ni goteo.
+CC1 conserva esos datos; la entrega CC2 siguiente implementa la recogida.
 CC6 entregará los archivos y el binario interno mediante los instaladores.
 **`coordinated_reorder` sigue en `False`; sólo CC8 puede acreditar el corte.**
+
+
+## Entrega CC2
+
+`Reconciler` en `client_actions.py` recorre las reservas abiertas sin runner,
+waiter ni HTTP. La guardia solicita el ciclo en su tick, incluso si el relevo
+mantiene la admisión cerrada. `locked` conserva su descriptor durante todo el
+trabajo protector del llamador. Al terminar ese trabajo, **todavía bajo el mismo
+candado**, copia hasta ocho acciones y aplica pruebas del diario o evidencia
+recogida entre turnos. Sólo después de cerrar el descriptor recoge nueva
+evidencia en un proceso independiente y prueba una aplicación no bloqueante.
+Si una aplicación deja la reserva abierta, renueva su copia y vuelve a recoger
+en ese mismo ciclo exterior, incluso tras una retención idéntica o una fase ya
+confirmada sin `finish`. Una propuesta cacheada permite revisar bajo contención;
+nunca sustituye la recogida nueva de una acción abierta alcanzada por el lote.
+Nunca se cede ni se recupera un candado prestado. La pausa protectora de la
+guardia ocurre antes y no depende del reconciliador.
+
+Garantía de progreso: si la guardia obtiene su turno en el tick N, cada acción
+abierta alcanzada por su lote se revisa y avanza o retiene con motivo a más
+tardar en N+1, aunque choquen todas las adquisiciones independientes. Los
+cierres acreditables sólo con el diario se aplican en N. Las otras copias
+conservan su posición del índice hasta su revisión: ni siquiera un lote de
+más de ocho abiertas desplaza su obligación al copiar. La recogida termina
+con prueba o con una propuesta de retención acotada. Si la aplicación propia
+choca, N+1 aplica esa propuesta en el turno de la guardia, después de proteger.
+No se promete progreso mientras la guardia no obtenga su turno. Cambios de
+fase/autoridad invalidan la copia: se descarta y se recoge la versión vigente;
+la reserva nunca se libera para resolver contención o falta de prueba.
+
+La evidencia entre ticks se publica atómicamente fuera de `control.lock` en
+`client-evidence/`, fuera de la autoridad SQLite y sin obligación de fsync.
+Cada archivo liga acción/fase, PID/nacimiento, generación durable y observada,
+revisión/digest de fase y reserva; su nombre deriva del vínculo completo, de
+modo que un colector atrasado no pisa evidencia de otra versión. Se leen sólo
+los archivos exactos del lote, con tamaño limitado; no se escanea el historial.
+Una publicación interrumpida o un archivo ausente/corrupto obliga a recoger de
+nuevo, nunca certifica un efecto. El núcleo coteja de nuevo todo el vínculo
+bajo el candado al aplicar. Los archivos antiguos son descartables y no se
+reutilizan para otra revisión; no son reservas ni recibos idempotentes.
+
+`prepare_start` sigue solicitando el ciclo al salir de su ámbito protegido;
+esto cubre su llamada directa y la CLI `preparar`. El ensayo no recoge ni
+escribe. Como exec no desenrolla contextos, el wrapper de launchd ejecuta
+explícitamente un ciclo **antes** de entrar a su propia sección de preparación.
+Ese ciclo previo nunca hace fallar el arranque por contención. El arranque
+**espera su propio control.lock como antes de CC2**: al quedar libre prepara y
+ejecuta el daemon una sola vez. Esa espera preexistente no tiene un nuevo
+plazo de rechazo. Después de adquirirlo relee la autoridad del relevo y vuelve
+a comprobarla antes de exec. La preparación conserva el Stashed cliente,
+incertidumbre y reservas a través del reinicio; nunca los adopta como propiedad
+del editor de orden.
+
+El ciclo independiente conserva sus adquisiciones no bloqueantes para copia y
+aplicación. Antes de guardar coteja generación durable y observada **por cada
+acción**, revisión/digest/proceso de la fase y revisión/digest/fase/apertura de
+la reserva. En la Mini, la copia lee sólo PID/nacimiento nativo y firma del pid
+file, ligados a la generación durable pendiente de autenticar. El colector,
+fuera del candado y dentro de su plazo, autentica la generación con el `ps`
+acotado entre dos cotejos de esa identidad nativa. Cada aplicación vuelve a
+leerla por acción. Así detecta también la muerte o sustitución entre elementos
+del lote, sin lanzar ni esperar procesos en la copia ni en la aplicación del
+turno protegido. Las demás operaciones conservan su `ps` acotado. El desk usa
+su identidad nativa de `/proc`. No hay RPC, callback al lanzador, result.lock,
+espera de gracia ni llamada recursiva a client en esa aplicación.
+
+Con `client_open` vacío no se crea colector ni se lee generación. Un único
+proceso tiene plazo de 0,4 s para todo el lote; el RPC de lectura tiene un plazo
+menor. Se recoge el proceso y su grupo privado al salir. Una lectura lenta o
+sin prueba retiene con evidence_missing; la guardia ya ejecutó su protección.
+El trabajo protegido está limitado por ocho copias/aplicaciones y sus lecturas
+locales; SQLite, serialización, generación y disco añaden coste medido. Los
+0,4 s acotan la recogida, **no el tick completo** ni la espera preexistente del
+candado. No hay una cota universal de extremo a extremo independiente del
+dueño anterior o de fallos del sistema de archivos.
+
+El rechazo de arranque conserva el diagnóstico saneado de U3.5 y la rotación
+acotada en `arranque.log`, bajo el candado independiente `arranque.log.lock`.
+No espera `control.lock` para registrar. Si otro escritor del diagnóstico
+retiene su candado más de 0,1 s, o falla el acceso al disco, se omite ese registro
+y el arranque sigue rechazado; un log descartable no alarga la espera de autoridad.
+
+Qué puede cerrar hoy:
+
+- Una intención `unknown` anterior a publicar la identidad de cualquier hijo
+  prueba que no se abrió la compuerta del RPC: CC1 confirma PID/nacimiento
+  antes de abrir stdin. El hijo no registrado sólo puede recibir EOF. Si es
+  el hold inicial, sin aceptación ni hold atribuido, se cierra la reserva con
+  rechazo sin efecto. El cliente puede iniciar otra acción; no hubo aceptación
+  C5. En otra fase se conserva la reserva y se devuelve `deferred`, sin efecto.
+- Un hold rechazado en la segunda lectura (Locked o Stashed ajeno) también
+  cierra sin cliente cuando el diario prueba que no lanzó hijo, no hay
+  incertidumbre, aceptación ni hold atribuido y todas las fases de esa acción
+  son rechazos/diferidas sin envío ni efecto. Sólo cambia la reserva y su
+  índice: el recibo rejected, digest y revisión permanecen idénticos. No se
+  atribuye el Stashed ajeno. Una fase previa con efecto impide este cierre.
+- Una respuesta con efecto ya confirmada permanece histórica e idempotente.
+  Con adaptador acreditado, una prueba durable enlazada permite añadir la
+  fase finish y cerrar; se reutilizan los validadores de `client_contract.py`.
+  No se sustituye held/started por un terminal de otra fase.
+
+Los cuatro adaptadores instalados siguen devolviendo `unsupported`, sin
+leer formatos productivos ni consultar el daemon para reconstruir pertenencia.
+Con ellos, una identidad de hijo `gated`, `sent` o `reaped`, una aceptación
+pendiente o un resultado supuesto conservan la reserva y su motivo cerrado.
+La salida del hijo, el reloj y dos observaciones iguales nunca acreditan
+exclusión de mensajes tardíos. Un hijo todavía vivo con el mismo nacimiento
+retiene `rpc_unresolved`; un cambio de generación retiene `startup`.
+Una reserva conocida conserva su recibo y su condición conocida; la falta de
+nueva prueba no fabrica incertidumbre de un RPC que nunca se envió.
+
+El futuro método fijo `recover` recibe copia de la petición, estado, reserva,
+proceso identificado y observación del daemon. Devuelve observación acreditada,
+exclusión positiva de RPC tardía (`settled`), prueba del efecto de **esta fase**
+(`effect_applied`) y opcionalmente una petición finish autenticada por
+`verify`. La prueba de efecto es un objeto con exactamente launcher, ref,
+action_id, phase, pid y birth, procedente de evidencia durable del lanzador.
+El núcleo exige que coincidan la clave `(launcher, ref, action_id, phase)` y
+el PID/nacimiento del hijo copiado; vuelve a cotejarlos bajo el candado al
+aplicar. Un booleano, una clave ajena o un proceso distinto no acreditan efecto.
+La forma y el enlace no autentican por sí solos el origen: el adaptador fijo
+debe acreditar el recibo durable original, nunca construirlo desde los argumentos
+que recibe. **La prueba de efecto no puede derivarse del daemon, del estado o
+salida del hijo ni de la petición del cliente.** Son pruebas distintas:
+`settled` tampoco puede derivarse sólo del hijo ni del daemon, y no demuestra
+quién produjo el estado observado.
+Tras un gated incierto, incluso un Stashed con la identidad esperada más
+settled conserva `unknown`, reserva abierta/incierta y `hold_identity:null`
+si falta la prueba de efecto. Un adaptador antiguo que omite effect_applied
+retiene igual. cancel-no-payload y retire-held rechazan sin RPC hasta acreditar
+la atribución; no basta excluir mensajes tardíos. CC3–CC5 deben acreditar
+ambas pruebas por lanzador.
+Las pruebas sintéticas recorren hold atribuido y resultado durable hasta
+finish, sin depender de clientes vivos. No se reenvía stash/start/señal/remove
+para resolver una respuesta perdida. Sin aceptación/prueba, se retiene; no
+se inicia automáticamente un worker ni se fabrica 130.
+
+La vista por grupo y capabilities transportan motivos fijos de retención,
+validados por el sanitizador del rack: «una RPC del cliente puede seguir en
+curso» (`rpc_unresolved`), «el lanzador aún no publica evidencia acreditada»
+(`unsupported`) y «falta evidencia para cerrarla» (`evidence_missing` y demás
+pruebas inconclusas). El diario conserva `reconcile_reason` como enum cerrado;
+ningún texto del daemon se publica. El bloqueo de guardia/goteo usa la causa
+existente `reason`, que atraviesa validate_guard y llega al panel.
+Guardia y goteo `_one` del desk consultan las mismas reservas: una incierta
+retiene la apertura y conserva pressure. Una reserva conocida de cancelación
+permite la reapertura normal cuando cede presión, para evitar impedir su
+propio start. Manual, presión, startup y `fence_reason` mantienen su autoridad.
+El desk sigue rechazando `client` y anunciando `client:false` hasta U3.7.
+
+### Reintento de deferred
+
+CC2 precisa una única excepción temporal a «mismo cuerpo, mismo recibo»:
+una petición mutadora repetida con **la misma clave y digest**, cuyo último
+recibo está en `client_contract.REEVALUATED` (sólo `deferred`), se vuelve a
+validar bajo control.lock. Deferred garantiza
+que esa petición no envió RPC. Se conserva la revisión creciente y se aplican
+otra vez identidad, primera aceptación, reservas y cierres. `status` sólo
+consulta el recibo y nunca reintenta. Un cuerpo distinto sigue dando conflicto.
+
+Una vez confirmado un efecto, el duplicado devuelve siempre su recibo sin
+RPC, incluso tras reiniciar o cerrar la reserva con finish. Rejected, unknown
+y finished tampoco se reevalúan por este mecanismo. No se adopta una política
+general de reevaluación. Esto permite reintentar cancel-no-payload después de
+una pausa manual sin cambiar action_id ni perder el hold atribuido y la primera
+aceptación. Una respuesta perdida tras enviar siempre sigue siendo unknown.
+El esquema del wire y sus validadores no cambian: cada petición y respuesta
+continúan pasando por CC0; la prueba temporal y su mutación viven en CC2.
+
+### Índice y conservación
+
+`client_open` indexa sólo las reservas abiertas y rota por último cotejo.
+El índice se actualiza en la misma transacción que la reserva. `client_scan`
+migra diarios CC1 en lotes de ocho filas; mientras está incompleto, todas las
+aperturas/reordenados se retienen y la poda se abstiene. No se escanea el
+historial completo en un tick, ni se archivan/borran claves, digests o recibos.
+Una reserva nunca vence por reloj y un terminal nunca se resucita. Una
+retención idéntica no reescribe recibo/reserva ni incrementa sus revisiones;
+el índice avanza de todos modos para no perder el turno de otras acciones.
+
+CC3–CC5 deben entregar los adaptadores acreditados; CC6 los instaladores y
+escritores restantes; CC7 el filtro preventivo y CC8 la acreditación cruzada.
+**La compuerta `coordinated_reorder` sigue apagada.** No se cambian cuotas,
+modo ni la tabla de la Mini; la acreditación del desk sigue siendo U3.7.

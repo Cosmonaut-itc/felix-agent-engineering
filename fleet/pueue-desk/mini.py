@@ -27,6 +27,7 @@ START_LOG_BYTES = 65536
 # Only our fixed messages may reach diagnostics. Stock/subprocess exceptions
 # can contain task commands, environments, config contents or secrets.
 START_REASONS = {
+    'Autorización de arranque cambió durante la recogida cliente',
     'Host en mantenimiento', 'El arranque debe pertenecer al MainPID de launchd',
     'Homebrew no está retirado; no se arranca otro daemon',
     'Daemon responde; preparar exige daemon detenido',
@@ -650,7 +651,11 @@ class Manager:
         line = (json.dumps(record, ensure_ascii=False) + '\n').encode('utf-8')
         # Diagnostics are disposable, unlike authority. Rotation precedes append
         # and bounds BOTH files, even across repeated KeepAlive failures.
-        with control.locked(self.directory, create=False):
+        with (self.directory / 'arranque.log.lock').open('a') as handle:
+            try:
+                control.wait_control_lock(handle, control.CLIENT_LOCK_SECONDS)
+            except control.ClientCollectionBusy:
+                return False  # Another diagnostic writer stalled; never wait on authority.
             target = self.directory / 'arranque.log'
             if target.exists() and target.stat().st_size + len(line) > START_LOG_BYTES:
                 target.replace(self.directory / 'arranque.log.1')
@@ -668,7 +673,15 @@ class Manager:
         info = self.loaded(LABEL)
         if info is None or not re.search(r'^\s*pid = ' + str(os.getpid()) + r'\s*$', info, re.M):
             raise ValueError('El arranque debe pertenecer al MainPID de launchd')
+        self._start_stage = 'configuración'
+        config = self.configuration_for_host()
+        self._start_stage = 'preparación'
+        # A complete, independent cycle. Failure to apply leaves the reservation
+        # open. The start then waits for its own lock, as before CC2.
+        self.engine.reconcile_clients(offline=config['data'] / 'state.json')
         with control.locked(self.directory, create=False):
+            if os.path.lexists(self.directory / 'maintenance'):
+                raise ValueError('Host en mantenimiento')
             recovered = self.recover_table()
             if recovered is not None:
                 self.engine = recovered
@@ -683,7 +696,10 @@ class Manager:
             self._start_stage = 'configuración'
             config = self.configuration_for_host()
             self._start_stage = 'preparación'
-            control.prepare_start(self.engine, configuration=config)
+            control.prepare_start(self.engine, configuration=config, _collected=True)
+            # Reread authority before exec, including preparation/recovery changes.
+            if self.transaction(self.state()) != value:
+                raise ValueError('Autorización de arranque cambió durante la recogida cliente')
             self.checkpoint('start:prepared')
             self._start_stage = 'exec'
             # control.lock is close-on-exec; launchd owns the daemon, stock owns tasks.
@@ -704,8 +720,9 @@ def main():
         manager.maintenance(resume=args.command == 'continuar')
     else:
         with control.locked(manager.directory, create=False):
+            manager.engine.reconcile_clients()
             if manager._recover():
-                control.MiniControl(manager.pueue, manager.directory).guard(None)
+                control.MiniControl(manager.pueue, manager.directory).guard(None, _collected=True)
 
 
 if __name__ == '__main__':

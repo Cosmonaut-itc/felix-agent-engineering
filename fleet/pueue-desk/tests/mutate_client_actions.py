@@ -24,8 +24,8 @@ CASES = [
      "return self.reply(r, 'deferred', 'rpc_unresolved', held=True)",
      T+'test_lost_response_live_cli_never_retries_or_expires'),
     ('reservation never expires', 'client_actions.py',
-     '    for item in reservations(engine):',
-     '    if engine.clock() > 1000000:\n        return False\n    for item in reservations(engine):',
+     '    for item in reservations(engine, open_only=True):',
+     '    if engine.clock() > 1000000:\n        return False\n    for item in reservations(engine, open_only=True):',
      T+'test_lost_response_live_cli_never_retries_or_expires'),
     ('Locked is untouchable', 'client_actions.py',
      "            if current['state'] == 'Locked':", '            if False:',
@@ -47,7 +47,7 @@ CASES = [
      "            if not opening or item['uncertain']:", '            if True:',
      T+'test_manual_pressure_and_cancel_guard_reopening'),
     ('unknown blocks manual opening', 'control.py',
-     '            if self.client_blocked(group, opening=True):', '            if False:',
+     "            if self.client_blocked(group, opening=True):\n                raise ValueError('RPC cliente pendiente de reconciliar; admisión retenida')", "            if False:\n                raise ValueError('RPC cliente pendiente de reconciliar; admisión retenida')",
      T+'test_unknown_prevents_manual_resume_without_losing_manual_reason'),
     ('unknown blocks guard opening', 'client_actions.py',
      "            if not opening or item['uncertain']:", '            if not opening:',
@@ -57,7 +57,7 @@ CASES = [
      ('            pass', '            pass'),
      T+'test_untrusted_acceptance_proof_and_prior_normal_result'),
     ('phase digest survives restart', 'client_actions.py',
-     "if record['digest'] != digest(r) else record['response']", "if False else record['response']",
+     "            if record['digest'] != digest(r):", "            if False:",
      T+'test_normal_hold_before_rpc_and_restart_idempotence'),
     ('first acceptance survives TERM to KILL', 'client_actions.py',
      "                if previous['acceptance'] is not None and previous['acceptance'] != r['acceptance']:",
@@ -83,7 +83,7 @@ CASES = [
      "if r['op'] == 'cancel-no-payload' and previous.get('hold_identity') != current:",
      T+'test_foreign_stash_after_rejected_hold_is_never_adopted'),
     ('confirmed hold attribution durable', 'client_actions.py',
-     "reservation['hold_identity'] = after", "reservation['hold_identity'] = None",
+     "                    reservation['hold_identity'] = after\n            reservation.update(identity=after, uncertain=False)", "                    reservation['hold_identity'] = None\n            reservation.update(identity=after, uncertain=False)",
      T+'test_normal_hold_before_rpc_and_restart_idempotence'),
     ('orphan journal blocks host operations', 'control.py',
      'return True  # An unreadable client journal closes every group, including openings.',
@@ -121,14 +121,14 @@ CASES = [
 ]
 
 
-def run(root, test):
+def run(root, test, timeout=30):
     return subprocess.run([sys.executable, '-B', '-m', 'unittest', '-v', test], cwd=str(root/'tests'),
                           env=dict(os.environ, TMPDIR='/tmp', PYTHONDONTWRITEBYTECODE='1'),
-                          capture_output=True, text=True, timeout=30)
+                          capture_output=True, text=True, timeout=timeout)
 
 
 def main():
-    nominal = run(SOURCE, 'test_client_actions')
+    nominal = run(SOURCE, 'test_client_actions', timeout=120)
     if nominal.returncode:
         raise AssertionError(nominal.stdout + nominal.stderr)
     for number, (rule, name, old, new, test) in enumerate(CASES, 1):

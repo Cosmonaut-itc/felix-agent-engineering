@@ -69,6 +69,27 @@ class ReorderChannelTests(unittest.TestCase):
         self.assertIs(clean['effects'], False)
         self.assertNotIn('PRIVATE_SENTINEL', json.dumps(clean))
 
+    def test_retention_reasons_survive_public_sanitizers(self):
+        module=c.client_module();actions=module.ClientActions(self.engine)
+        corpus=json.loads((BASE.parent/'pueue-desk/corpus/client-control-v1.json').read_text())
+        r=next(v['request'] for v in corpus['valid'] if v['request']['op']=='hold')
+        reasons={
+            'rpc_unresolved':'Reserva cliente retenida: una RPC del cliente puede seguir en curso.',
+            'unsupported':'Reserva cliente retenida: el lanzador aún no publica evidencia acreditada.',
+            'evidence_missing':'Reserva cliente retenida: falta evidencia para cerrarla.'}
+        for reason,text in reasons.items():
+            reserve=dict(launcher=r['launcher'],ref=r['ref'],action_id=r['action_id'],group='suites',mode=r['mode'],
+                         identity=r['expected'],acceptance=None,hold_identity=None,open=True,uncertain=True,reconcile_reason=reason)
+            record=dict(request=r,digest=module.digest(r),revision=0,process=dict(state='injected'),
+                        response=actions.reply(r,'unknown',reason,held=True))
+            actions.save(record,reserve)
+            view=a.host_channel.control(self.engine.view())
+            self.assertEqual(view['reorder_groups']['suites']['reason'],text)
+            self.assertEqual(view['capabilities'].get('reason_reorder'),text)
+            self.assertFalse(view['reorder_groups']['suites']['enabled'])
+        bad=self.engine.view();bad['capabilities']['reason_reorder']='PRIVATE_SENTINEL'
+        with self.assertRaises(ValueError):a.host_channel.control(bad)
+
     def test_public_pipeline_and_exact_undo_opaque_only(self):
         r=self.request();answer=self.actions.post(r)[1]
         self.assertEqual(answer['status'],'applied',answer)

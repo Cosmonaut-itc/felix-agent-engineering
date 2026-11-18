@@ -93,7 +93,11 @@ CASES=[
   'test_shared_validator_in_seco_and_real_precedes_all_effects'),
  ('maintenance-recovery','mini.py',"        if os.path.lexists(self.directory / 'maintenance') or value and value['phase'] == 'maintenance':\n            return False",'        if False:\n            return False',
   'test_maintenance_during_bootout_gap_blocks_every_manager_effect'),
- ('maintenance-wrapper','mini.py',"        self._start_stage = 'autorización'\n        if os.path.lexists(self.directory / 'maintenance'):\n            raise ValueError('Host en mantenimiento')", "        self._start_stage = 'autorización'\n        if False:\n            raise ValueError('Host en mantenimiento')",
+ ('maintenance-wrapper','mini.py',
+  ("        self._start_stage = 'autorización'\n        if os.path.lexists(self.directory / 'maintenance'):\n            raise ValueError('Host en mantenimiento')",
+   "            if os.path.lexists(self.directory / 'maintenance'):\n                raise ValueError('Host en mantenimiento')"),
+  ("        self._start_stage = 'autorización'\n        if False:\n            raise ValueError('Host en mantenimiento')",
+   "            if False:\n                raise ValueError('Host en mantenimiento')"),
   'test_maintenance_stops_installer_recoverer_wrapper_and_guard_without_reopening'),
  ('single-daemon','mini.py',"if (not authorized\n                    or self.loaded(BREW) is not None or not self.disabled(BREW)",
   "if (not authorized\n                    or not self.disabled(BREW)",
@@ -102,7 +106,7 @@ CASES=[
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
  ('throttle','launchagents/local.pao.pueue-mini.daemon.plist','<integer>10</integer>','<integer>0</integer>',
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
- ('fixed-preparer','mini.py',"            control.prepare_start(self.engine, configuration=config)\n            self.checkpoint('start:prepared')","            self.checkpoint('start:prepared')",
+ ('fixed-preparer','mini.py',"            self._start_stage = 'preparación'\n            control.prepare_start(self.engine, configuration=config, _collected=True)", "            self._start_stage = 'preparación'",
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
  ('fullfsync','control.py','        fcntl.fcntl(stream.fileno(), 51)','        pass # fcntl.fcntl(stream.fileno(), 51)',
   'test_fullfsync_is_required_for_own_files_on_macos'),
@@ -223,8 +227,11 @@ def main():
             root=Path(folder)/'pueue-desk'
             shutil.copytree(ROOT,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
             path=root/relative;source=path.read_text()
-            assert source.count(before)==1,(name,'nonunique anchor')
-            path.write_text(source.replace(before,after))
+            edits = zip(before, after) if isinstance(before, tuple) else [(before, after)]
+            for old, new in edits:
+                assert source.count(old)==1,(name,'nonunique anchor')
+                source=source.replace(old,new)
+            path.write_text(source)
             target_test=test if '.' in test else 'test_handoff.HandoffTests.'+test
             result=subprocess.run([sys.executable,'-B','-m','unittest',target_test,'-v'],
                 cwd=str(root/'tests'),env=dict(os.environ,TMPDIR='/tmp',PYTHONDONTWRITEBYTECODE='1'),text=True,capture_output=True,timeout=120)

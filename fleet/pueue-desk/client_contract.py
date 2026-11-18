@@ -13,6 +13,8 @@ STATES = ("Queued", "Stashed", "Running", "Paused", "Done", "Locked", "Absent")
 REASONS = ("lock_busy", "host_action", "manual", "pressure", "startup", "locked",
            "stale_state", "not_found", "unsupported", "identity", "invalid_request",
            "idempotency_conflict", "rpc_unresolved", "evidence_missing")
+# Only an explicit duplicate with the same digest may reevaluate these receipts.
+REEVALUATED = ('deferred',)
 POLICY_EXIT = 64
 POLICY_MESSAGE = ("Pueue administrado: esta operación requiere el controlador "
                   "coordinado; actualiza el lanzador")
