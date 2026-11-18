@@ -91,10 +91,13 @@ def objeto_sin_duplicados(pares):
 
 def invocar(config, solicitud, accion):
     """Sin shell ni salida privada en eventos. Mata el grupo al agotar el plazo."""
+    env = entorno()
+    if config.get("snapshot"):
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         with subprocess.Popen(config["comando"], stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                env=dict(entorno(), PYTHONDONTWRITEBYTECODE="1"), start_new_session=True) as proceso:
+                env=env, start_new_session=True) as proceso:
             try:
                 salida, _ = proceso.communicate(json.dumps(dict(solicitud, accion=accion)),
                                                 timeout=config["plazo_s"])
@@ -152,12 +155,13 @@ class Previo:
         restante = PRESUPUESTO_IO_S - self.io_s
         if restante <= 0:
             return "timeout"
-        inicio = self.reloj_io()
         config = registro["gancho"]
+        snapshot = bool(registro.get("snapshot"))
+        if snapshot and self.operador is not None:
+            self.operador.validar_guardado(*config["comando"])
+        inicio = self.reloj_io()
         try:
-            if registro.get("snapshot") and self.operador is not None:
-                self.operador.validar_guardado(*config["comando"])
-            return invocar(dict(config, plazo_s=min(config["plazo_s"], restante)),
+            return invocar(dict(config, plazo_s=min(config["plazo_s"], restante), snapshot=snapshot),
                            registro["solicitud"], accion)
         finally:
             self.io_s += max(0, self.reloj_io() - inicio)

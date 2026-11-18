@@ -21,11 +21,6 @@ def checkout_configurado(config):
     return Path(ruta)
 
 
-def entorno_lanzador():
-    # Los módulos Python importados por los scripts viven en el worktree.
-    return dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
-
-
 class Snapshots:
     def __init__(self, ledger, repo, git, config):
         self.ledger, self.repo, self.git, self.config = ledger, repo, git, config
@@ -33,6 +28,12 @@ class Snapshots:
         self.raiz = ledger.directorio.resolve() / "snapshots-operador" / clave("repo", repo)
         self.punta = None
         self.lanzador_configurado = config.get("lanzador") or config.get("lanzador_hasito")
+
+    def entorno_lanzador(self, ruta):
+        # Los módulos Python importados por el lanzador viven en el worktree.
+        if Path(ruta).is_relative_to(self.raiz):
+            return dict(os.environ, PYTHONDONTWRITEBYTECODE="1")
+        return None
 
     def comando_git(self, ruta, *args, verificar=True):
         env = dict(entorno(True), GIT_OPTIONAL_LOCKS="0", GIT_TERMINAL_PROMPT="0")

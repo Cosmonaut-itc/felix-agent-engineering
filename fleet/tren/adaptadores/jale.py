@@ -14,7 +14,6 @@ from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, RechazoLanzador, clave)
 from git_ops import Publicado, sha
 from ledger import directorio_estado
-from operador import entorno_lanzador
 
 
 MODOS = ('contract', 'e2e')
@@ -134,15 +133,17 @@ class Jale:
                 not (registro / 'codigo.json').exists()):
             return False
         if not (registro / 'codigo.json').exists():
+            env = None
             if self.operador is not None:
                 self.operador.validar_guardado(guardado[1])
+                env = self.operador.entorno_lanzador(guardado[1])
             # Otro coordinador espera el mismo candado y recupera su resultado.
             # La sesión nueva sigue viva aunque muera el proceso del tick.
             try:
                 proceso = subprocess.Popen([sys.executable, str(Path(__file__).with_name(
                     'ejecucion_jale.py')), str(registro)], start_new_session=True,
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-                    env=entorno_lanzador())
+                    env=env)
                 self.esperar(proceso)
             except (OSError, subprocess.SubprocessError):
                 raise ResultadoInvalido('lanzador-no-disponible') from None

@@ -13,7 +13,6 @@ from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
 from adaptadores.ejecucion_jale import guardar
 from git_ops import FalloGit, sha
 from ledger import directorio_estado
-from operador import entorno_lanzador
 
 
 @dataclass(frozen=True)
@@ -220,9 +219,13 @@ class Hasito:
                 lanzador = self.operador.lanzador(self.lanzador_configurado, tren_id)
                 argv = (argv[0], lanzador, *argv[2:])
             guardar(solicitud, list(argv))
+        opciones = {"capture_output": True, "text": True, "check": False}
+        if self.operador is not None:
+            env = self.operador.entorno_lanzador(argv[1])
+            if env is not None:
+                opciones["env"] = env
         try:
-            resultado = self.runner(list(argv), capture_output=True, text=True, check=False,
-                                    env=entorno_lanzador())
+            resultado = self.runner(list(argv), **opciones)
         except (OSError, subprocess.SubprocessError):
             raise ResultadoInvalido("lanzador-no-disponible") from None
         if resultado.returncode == 64:
