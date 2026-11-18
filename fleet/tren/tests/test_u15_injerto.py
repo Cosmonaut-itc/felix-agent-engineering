@@ -216,7 +216,7 @@ sys.exit(9)
 class TablaTests(unittest.TestCase):
     def test_cada_pausa_y_detalle_del_reductor_tiene_fila(self):
         raices = [ast.parse((activo.RAIZ / nombre).read_text())
-                  for nombre in ("dominio.py", "atribucion.py")]
+                  for nombre in ("dominio.py", "atribucion.py", "operativo.py")]
 
         def literal_o_prefijo(nodo):
             if isinstance(nodo, ast.Constant) and isinstance(nodo.value, str):
@@ -258,7 +258,8 @@ class TablaTests(unittest.TestCase):
             with self.subTest(motivo=motivo, detalle=detalle):
                 self.assertIn("`" + motivo + "`", readme)
                 if detalle:
-                    self.assertIn("`" + detalle + ("<unidad>" if detalle.endswith(":") else "") + "`", readme)
+                    sufijo = ("<estado-encontrado>" if detalle == "checkout-operador:" else "<unidad>")
+                    self.assertIn("`" + detalle + (sufijo if detalle.endswith(":") else "") + "`", readme)
                 real = detalle + "unidad" if detalle.endswith(":") else detalle
                 self.assertEqual(politica(Pausa(motivo, detalle=real)), POLITICA[(motivo, detalle)])
                 self.assertTrue(POLITICA[(motivo, detalle)])
