@@ -224,40 +224,71 @@ a.correr(Path(registro), C, 'contract', (), True)
         self.assertIn('promover', [e['tipo'] for e in r['efectos']])
         self.assertIsNone(t.estado().pausa)
 
-    def test_r1_muerte_al_guardar_pausa_no_pierde_efectos_ni_ack(self):
+    def muerte_despues_del_primer_commit_pausado(self, condicion):
         t = self.t
-        fallo, gancho, original = self.preparar_pausa_gancho()
-        # La cancelación inicial no altera la pausa anterior. Abortar crea
-        # Terminal y feedback; limpiar encuentra el checkout sucio después.
-        t.juicio('abortar')
         t.ruta_contexto.write_text(json.dumps(t.contexto.config))
+        # Inyección de fallo IO en limpiar, no del reductor ni del ledger.
+        # La misma frontera mata tras el primer COMMIT del estado pausado:
+        # en el head revisado es el COMMIT prematuro, con el arreglo es el
+        # COMMIT único que incluye efectos y ACK.
         codigo = '''from test_activo import Contexto, REPO
 from ledger import Ledger
-from dominio import Terminal
+from dominio import Certificado, Promoviendo
+from preaterrizaje import Previo
+from git_ops import CheckoutOperadorBloqueado
 import os
 original = Ledger.guardar_paso
 def frontera(nombre, efecto):
     if nombre == 'paso-guardado': os._exit(77)
+def limpiar(self, estado, observacion=None):
+    if CONDICION:
+        raise CheckoutOperadorBloqueado('cambios-sin-commitear')
+    return True
 def guardar(self, estado, efectos, ahora, consumido=None):
     original(self, estado, efectos, ahora, consumido)
-    if estado.trenes and isinstance(estado.trenes[0].fase, Terminal):
+    if estado.pausa and estado.pausa.detalle.startswith('checkout-operador:'):
         frontera('paso-guardado', None)
+Previo.limpiar = limpiar
 Ledger.guardar_paso = guardar
 c = Contexto(sys.argv[3])
 c.tick(9200, frontera)
-'''
+'''.replace('CONDICION', condicion)
         with activo.ActivoTests.hijo(t, codigo) as hijo:
             salida, error = hijo.communicate(timeout=30)
             self.assertEqual(hijo.returncode, 77, (salida, error))
+
+    def test_r1_muerte_al_guardar_pausa_no_pierde_promover_ni_juicio(self):
+        t = self.t
+        fallo, gancho, original = self.preparar_pausa_gancho()
+        gancho.write_text(original)
+        t.juicio('reanudar')
+        self.muerte_despues_del_primer_commit_pausado(
+            'estado.trenes and isinstance(estado.trenes[0].fase, Promoviendo) '
+            'and estado.trenes[0].fase.intentos == 1')
         with t.ledger() as ledger:
-            self.assertEqual(t.estado().trenes[0].fase, Terminal('ABORTADO'))
             decision = ledger.db.execute('SELECT estado FROM decisions ORDER BY rowid DESC').fetchone()[0]
             self.assertEqual(decision, 'aplicada')
-            efectos = [json.loads(r['payload'])['tipo'] for r in ledger.outbox(activo.REPO)]
-            self.assertTrue(any(e.startswith('avisar-') for e in efectos), efectos)
-        gancho.write_text(original)
-        fallo.rename(t.raiz / 'cancelacion-reparada')
-        t.contexto.tick(9300)
+            efectos = [json.loads(r['payload']) for r in ledger.outbox(activo.REPO)]
+            self.assertTrue(any(e['tipo'] == 'promover' and e['datos'][-1] == '1'
+                                for e in efectos), efectos)
+
+    def test_r1_muerte_al_guardar_pausa_marca_resultado_consumido(self):
+        t = self.t
+        t.hasta_fase(EsperandoCI)
+        t.contexto.tick(8000)
+        with t.ledger() as ledger:
+            resultados = [r for r in ledger.outbox(activo.REPO) if r['estado'] == 'resultado']
+            self.assertEqual(len(resultados), 1)
+            clave_resultado = resultados[0]['clave']
+        self.muerte_despues_del_primer_commit_pausado(
+            'estado.trenes and isinstance(estado.trenes[0].fase, Certificado)')
+        self.assertIsInstance(t.estado().trenes[0].fase, Certificado)
+        with t.ledger() as ledger:
+            self.assertEqual(ledger.db.execute('SELECT estado FROM outbox WHERE clave=?',
+                (clave_resultado,)).fetchone()[0], 'completo')
+            ultimo = json.loads(ledger.db.execute("SELECT payload FROM events WHERE tipo='operativo' "
+                "ORDER BY seq DESC LIMIT 1").fetchone()[0])
+            self.assertEqual(ultimo['consumido'], clave_resultado)
 
 
 if __name__ == '__main__':
