@@ -102,7 +102,7 @@ CASES=[
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
  ('throttle','launchagents/local.pao.pueue-mini.daemon.plist','<integer>10</integer>','<integer>0</integer>',
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
- ('fixed-preparer','mini.py',"            control.prepare_start(self.engine, configuration=config)\n            self.checkpoint('start:prepared')","            self.checkpoint('start:prepared')",
+ ('fixed-preparer','mini.py',"            self._start_stage = 'preparación'\n            control.prepare_start(self.engine, configuration=config)", "            self._start_stage = 'preparación'",
   'test_delivered_plists_fixed_preparer_keepalive_throttle_and_existing_job'),
  ('fullfsync','control.py','        fcntl.fcntl(stream.fileno(), 51)','        pass # fcntl.fcntl(stream.fileno(), 51)',
   'test_fullfsync_is_required_for_own_files_on_macos'),

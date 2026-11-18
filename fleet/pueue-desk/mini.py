@@ -27,6 +27,7 @@ START_LOG_BYTES = 65536
 # Only our fixed messages may reach diagnostics. Stock/subprocess exceptions
 # can contain task commands, environments, config contents or secrets.
 START_REASONS = {
+    'Autorización de arranque cambió durante la recogida cliente',
     'Host en mantenimiento', 'El arranque debe pertenecer al MainPID de launchd',
     'Homebrew no está retirado; no se arranca otro daemon',
     'Daemon responde; preparar exige daemon detenido',
@@ -684,6 +685,10 @@ class Manager:
             config = self.configuration_for_host()
             self._start_stage = 'preparación'
             control.prepare_start(self.engine, configuration=config)
+            # CC2 collects outside control.lock. Do not execute a launch whose
+            # handoff authorization changed while that window was open.
+            if self.transaction(self.state()) != value:
+                raise ValueError('Autorización de arranque cambió durante la recogida cliente')
             self.checkpoint('start:prepared')
             self._start_stage = 'exec'
             # control.lock is close-on-exec; launchd owns the daemon, stock owns tasks.
@@ -704,8 +709,9 @@ def main():
         manager.maintenance(resume=args.command == 'continuar')
     else:
         with control.locked(manager.directory, create=False):
+            manager.engine.reconcile_clients()
             if manager._recover():
-                control.MiniControl(manager.pueue, manager.directory).guard(None)
+                control.MiniControl(manager.pueue, manager.directory).guard(None, _collected=True)
 
 
 if __name__ == '__main__':

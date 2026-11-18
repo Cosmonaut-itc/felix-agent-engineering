@@ -2,7 +2,7 @@
 
 The installation supplies engine, adapter and binary. No client field selects
 any of them. Adapters are bounded local evidence reads, never launcher calls
-or result locks. CC2 owns reconciliation of retained/unknown reservations.
+or result locks. CC2 collects retained actions outside the host lock.
 """
 import fcntl
 import hashlib
@@ -13,6 +13,8 @@ import sqlite3
 import subprocess
 import sys
 import types
+import time
+import select
 
 # Loading through compile also works with the controller's isolated interpreter
 # and cannot create bytecode during a read-only capabilities request.
@@ -52,8 +54,11 @@ class InstalledAdapters:
     def verify(self, request, observation, reservation):
         raise Unavailable('unsupported')
 
+    def recover(self, request, state, reservation, process, daemon):
+        raise Unavailable('unsupported')
 
-def reservations(engine):
+
+def reservations(engine, open_only=False):
     """Read-only seam for host writers; caller holds the real control.lock.
 
     Missing table is the additive pre-CC1 format, not a missing authority.
@@ -63,18 +68,39 @@ def reservations(engine):
     with engine.connect() as db:
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
             return []
-        values = [json.loads(row[0]) for row in db.execute('SELECT body FROM client_reservations')]
+        indexed = db.execute("SELECT 1 FROM sqlite_master WHERE name='client_open'").fetchone()
+        sql = ('SELECT r.body FROM client_reservations r JOIN client_open o USING(launcher,ref,action_id)'
+               if open_only and indexed else 'SELECT body FROM client_reservations')
+        values = [json.loads(row[0]) for row in db.execute(sql)]
     for value in values:
-        if (type(value) is not dict or type(value.get('version')) is not int or value['version'] != 1 or
-                type(value.get('open')) is not bool or type(value.get('uncertain')) is not bool or
-                type(value.get('group')) is not str or not value['group']):
-            raise ValueError('client_journal')
-        c.identity(value['identity'])
+        validate_reservation(value)
     return values
 
 
+def validate_reservation(value):
+    if (type(value) is not dict or type(value.get('version')) is not int or value['version'] != 1 or
+            type(value.get('open')) is not bool or type(value.get('uncertain')) is not bool or
+            type(value.get('group')) is not str or not value['group']):
+        raise ValueError('client_journal')
+    c.identity(value['identity'])
+    if type(value.get('revision')) is not int or value['revision'] < 1:
+        raise ValueError('client_journal')
+    return value
+
+
+def index_pending(engine):
+    with engine.connect() as db:
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
+            return False
+        if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_scan'").fetchone():
+            return True
+        return db.execute('SELECT done FROM client_scan WHERE id=1').fetchone() != (1,)
+
+
 def blocked(engine, group, opening=False):
-    for item in reservations(engine):
+    if index_pending(engine):
+        return True  # A partial migration cannot certify any group free.
+    for item in reservations(engine, open_only=True):
         if item['group'] == group and item['open']:
             # A known cancellation hold must not prevent its own safe admission.
             if not opening or item['uncertain']:
@@ -83,7 +109,9 @@ def blocked(engine, group, opening=False):
 
 
 def protected_ids(engine):
-    return {str(r['identity']['task_id']) for r in reservations(engine) if r['open']}
+    if index_pending(engine):
+        raise ValueError('client_index_pending')
+    return {str(r['identity']['task_id']) for r in reservations(engine, open_only=True) if r['open']}
 
 
 class ClientActions:
@@ -205,8 +233,29 @@ class ClientActions:
         return record
 
     def reservation(self, r):
-        return next((v for v in reservations(self.engine) if tuple(v[k] for k in
-                    ('launcher', 'ref', 'action_id')) == self.key(r)[:3]), None)
+        with self.engine.connect() as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
+                return None
+            row = db.execute('SELECT body FROM client_reservations WHERE launcher=? AND ref=? AND action_id=?', self.key(r)[:3]).fetchone()
+        return validate_reservation(json.loads(row[0])) if row else None
+
+    @staticmethod
+    def index(db):
+        db.execute('CREATE TABLE IF NOT EXISTS client_open (launcher TEXT, ref TEXT, action_id TEXT, checked INTEGER NOT NULL, PRIMARY KEY(launcher,ref,action_id))')
+        db.execute('CREATE INDEX IF NOT EXISTS client_open_checked ON client_open(checked)')
+        db.execute('CREATE TABLE IF NOT EXISTS client_scan (id INTEGER PRIMARY KEY CHECK(id=1), cursor INTEGER NOT NULL, done INTEGER NOT NULL)')
+        db.execute('INSERT OR IGNORE INTO client_scan VALUES (1,0,0)')
+        cursor, done = db.execute('SELECT cursor,done FROM client_scan WHERE id=1').fetchone()
+        if not done:
+            # Migrate a bounded slice; no historical scan on a guard tick.
+            rows = list(db.execute('SELECT rowid,body FROM client_reservations WHERE rowid>? ORDER BY rowid LIMIT 8', (cursor,)))
+            for rowid, body in rows:
+                value = validate_reservation(json.loads(body))
+                if value['open']:
+                    db.execute('INSERT OR IGNORE INTO client_open VALUES (?,?,?,0)', tuple(value[k] for k in ('launcher','ref','action_id')))
+                cursor = rowid
+            db.execute('UPDATE client_scan SET cursor=?,done=? WHERE id=1', (cursor, int(len(rows) < 8)))
+
 
     def save(self, record, reservation=None):
         # SQLite FULL + fullfsync commits intent/reservation atomically before
@@ -221,9 +270,15 @@ class ClientActions:
         with self.engine.connect(write=True) as db:
             db.execute('CREATE TABLE IF NOT EXISTS client_actions (launcher TEXT, ref TEXT, action_id TEXT, phase TEXT, body TEXT NOT NULL, PRIMARY KEY(launcher,ref,action_id,phase))')
             db.execute('CREATE TABLE IF NOT EXISTS client_reservations (launcher TEXT, ref TEXT, action_id TEXT, body TEXT NOT NULL, PRIMARY KEY(launcher,ref,action_id))')
+            self.index(db)
             db.execute('INSERT OR REPLACE INTO client_actions VALUES (?,?,?,?,?)', self.key(record['request']) + (canonical(record),))
             if reservation is not None:
                 db.execute('INSERT OR REPLACE INTO client_reservations VALUES (?,?,?,?)', self.key(record['request'])[:3] + (canonical(reservation),))
+                key = self.key(record['request'])[:3]
+                if reservation['open']:
+                    db.execute('INSERT OR IGNORE INTO client_open VALUES (?,?,?,0)', key)
+                else:
+                    db.execute('DELETE FROM client_open WHERE launcher=? AND ref=? AND action_id=?', key)
         self.boundary('saved')
 
     def observe(self, r, state, reservation):
@@ -254,18 +309,22 @@ class ClientActions:
         r = c.action_projection(request) if query else request
         record = self.record(r)
         if record:
-            result = (self.reply(r, 'rejected', 'idempotency_conflict', held=record['response']['reservation'] == 'held')
-                      if record['digest'] != digest(r) else record['response'])
+            if record['digest'] != digest(r):
+                result = self.reply(r, 'rejected', 'idempotency_conflict', held=record['response']['reservation'] == 'held')
+            elif not query and record['response']['status'] == 'deferred':
+                result = self.execute(r, prior=record)
+            else:
+                result = record['response']
         elif query:
             result = self.reply(r, 'rejected', 'not_found')
         else:
             result = self.execute(r)
         return c.validate_response(dict(result, op='status', action_op=r['op']) if query else result, request)
 
-    def execute(self, r):
+    def execute(self, r, prior=None):
         previous = self.reservation(r)
         held = bool(previous and previous['open'])
-        record = dict(request=r, digest=digest(r), revision=0, response=None, process=None)
+        record = dict(request=r, digest=digest(r), revision=prior['revision'] if prior else 0, response=None, process=None)
         def reject(reason, status='rejected', identity=None):
             record['response'] = self.reply(r, status, reason, identity, held)
             self.save(record)
@@ -343,6 +402,8 @@ class ClientActions:
                     'retire-interrupted': ('remove', current['task_id'])}[r['op']]
             self.boundary('before_rpc')
             if self.rpc is not None:
+                record['process'] = dict(state='injected')  # Test seam cannot certify non-delivery.
+                self.save(record)
                 self.rpc(*args)
             else:
                 self.send(record, *args)
@@ -406,6 +467,241 @@ class ClientActions:
             if child.poll() is None:
                 child.kill()
             child.wait()
+
+
+class Reconciler:
+    """CC2: bounded copy / collect / compare. Never sends a Pueue mutation.
+
+    recover is a fixed adapter's evidence-only interface. It returns observation,
+    settled (a positive exclusion of late RPCs, NOT child death), and optional
+    finish (a full CC0 request authenticated by verify). The collector runs in
+    a disposable process, outside control.lock; no result lock can stall guard.
+    """
+    limit = 8
+    seconds = .4
+    boundary = staticmethod(lambda phase: None)
+
+    def __init__(self, engine, adapter=None, birth=None):
+        self.engine = engine
+        self.actions = ClientActions(engine, adapter=adapter)
+        self.birth = birth
+
+    def lock(self):
+        handle = (self.engine.directory / 'control.lock').open('rb')
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BaseException:
+            handle.close()
+            raise
+        return handle
+
+    def current_generation(self, state, offline):
+        try:
+            return self.engine.generation(state)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            if not offline:
+                raise
+            return None  # Absence is compared too; a restart invalidates the copy.
+
+    def copies(self, offline):
+        with self.lock(), self.engine.connect(write=True) as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
+                return []
+            self.actions.index(db)
+            state = self.engine.state(db)
+            generation = self.current_generation(state, offline)
+            keys = list(db.execute('SELECT launcher,ref,action_id FROM client_open ORDER BY checked LIMIT ?', (self.limit,)))
+            sequence = db.execute('SELECT COALESCE(MAX(checked),0)+1 FROM client_open').fetchone()[0]
+            result = []
+            for key in keys:
+                row = db.execute('SELECT body FROM client_reservations WHERE launcher=? AND ref=? AND action_id=?', key).fetchone()
+                reservation = validate_reservation(json.loads(row[0]))
+                r = dict(zip(('launcher','ref','action_id'), key), phase=reservation['phase'])
+                record = self.actions.record(r)
+                if not record or not reservation['open']:
+                    raise ValueError('client_journal')
+                if record['digest'] != reservation['digest'] or self.actions.key(record['request']) != self.actions.key(r):
+                    raise ValueError('client_journal')
+                result.append(dict(record=record, reservation=reservation, state=state, generation=generation))
+                db.execute('UPDATE client_open SET checked=? WHERE launcher=? AND ref=? AND action_id=?', (sequence,) + key)
+            return result
+
+    def collect(self, item, daemon):
+        record, reservation = item['record'], item['reservation']
+        r, process = record['request'], record.get('process')
+        if record['response']['status'] == 'unknown' and process is None:
+            # CC1 fsyncs a child's identity before opening its stdin gate. A
+            # child spawned before that commit sees EOF after the owner dies.
+            return dict(kind='not_sent')
+        if item['generation'] is not None and item['generation'] != item['state']['generation']:
+            raise Unavailable('startup')
+        if process and process.get('pid') is not None:
+            if self.birth is None or self.birth(process['pid']) == process['birth']:
+                raise Unavailable('rpc_unresolved')
+        evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon)
+        if daemon is None:
+            raise Unavailable('startup')
+        c.keys(evidence, 'observation settled finish')
+        observed = evidence['observation']
+        c.keys(observed, 'group identity')
+        c.identity(observed['identity'])
+        if (observed['group'] != reservation['group'] or
+                not self.actions.same_attempt(reservation['identity'], observed['identity'])):
+            raise Unavailable('identity')
+        if evidence['settled'] is not True:
+            raise Unavailable('rpc_unresolved')
+        finish = evidence['finish']
+        if finish is not None:
+            c.validate_request(finish)
+            if (finish['op'] != 'finish' or self.actions.key(finish)[:3] != self.actions.key(r)[:3]
+                    or finish['mode'] != reservation['mode'] or finish['expected'] != observed['identity']
+                    or reservation['acceptance'] is not None and finish['acceptance'] != reservation['acceptance']):
+                raise Unavailable('identity')
+            self.actions.adapter.verify(finish, observed, reservation)
+        return dict(kind='evidence', observation=observed, finish=finish)
+
+    def gather(self, copies, offline):
+        proposals = []
+        try:
+            self.engine.pueue.timeout = self.seconds / 2
+            self.engine.pueue.deadline = time.monotonic() + self.seconds / 2
+            daemon = (None if type(self.actions.adapter) is InstalledAdapters else
+                      json.loads(Path(offline).read_text()) if offline else self.engine.pueue.status())
+        except (OSError, ValueError, subprocess.SubprocessError):
+            daemon = None
+        for item in copies:
+            try:
+                proposal = self.collect(item, daemon)
+            except Unavailable as error:
+                proposal = dict(kind='retain', reason=error.reason)
+            except (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError, AttributeError):
+                proposal = dict(kind='retain', reason='evidence_missing')
+            proposals.append(proposal)
+        return proposals
+
+    def bounded_gather(self, copies, offline):
+        # One child and one deadline for the batch, never one timeout per action.
+        # No DB connection or host lock is inherited across this fork.
+        read_fd, write_fd = os.pipe()
+        try:
+            pid = os.fork()
+        except OSError:
+            os.close(read_fd); os.close(write_fd)
+            raise
+        if pid == 0:
+            os.close(read_fd)
+            try:
+                os.setsid()  # Only our collector and its read-only daemon CLI.
+                body = canonical(self.gather(copies, offline)).encode()
+                # Bound output independently of an adapter's implementation.
+                if len(body) <= c.MAX_BYTES * self.limit:
+                    view = memoryview(body)
+                    while view:
+                        view = view[os.write(write_fd, view):]
+            finally:
+                os.close(write_fd)
+                os._exit(0)
+        os.close(write_fd)
+        deadline, raw = time.monotonic() + self.seconds, b''
+        try:
+            while len(raw) <= c.MAX_BYTES * self.limit:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0 or not select.select([read_fd], [], [], remaining)[0]:
+                    return [dict(kind='retain', reason='evidence_missing') for _ in copies]
+                chunk = os.read(read_fd, 65536)
+                if not chunk:
+                    proposals = json.loads(raw)
+                    if type(proposals) is list and len(proposals) == len(copies):
+                        return proposals
+                    break
+                raw += chunk
+            return [dict(kind='retain', reason='evidence_missing') for _ in copies]
+        finally:
+            os.close(read_fd)
+            # This is our unreaped child, so its PID cannot have been reused.
+            # Clean its private group too if status was interrupted during spawn.
+            try:
+                if os.getpgid(pid) == pid:
+                    os.killpg(pid, 9)
+                else:
+                    os.kill(pid, 9)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)
+
+    def apply(self, item, proposal, offline):
+        with self.lock():
+            old, before = item['record'], item['reservation']
+            r = old['request']
+            current = self.actions.record(r)
+            reservation = self.actions.reservation(r)
+            with self.engine.connect() as db:
+                state = self.engine.state(db)
+            generation = self.current_generation(state, offline)
+            if (state['generation'] != item['state']['generation'] or generation != item['generation']
+                    or current['revision'] != old['revision']
+                    or current['digest'] != old['digest']
+                    or reservation['revision'] != before['revision']
+                    or reservation['digest'] != before['digest'] or reservation['phase'] != before['phase']
+                    or not reservation['open']):
+                return False  # Discard; the rotating index rereads on a later tick.
+            if current['response']['status'] == 'finished':
+                return False
+            reason = proposal.get('reason', 'evidence_missing')
+            if reason not in c.REASONS:
+                reason = 'evidence_missing'
+            if proposal['kind'] == 'not_sent':
+                close = r['op'] == 'hold' and reservation.get('hold_identity') is None and reservation['acceptance'] is None
+                reservation.update(open=not close, uncertain=False)
+                current['response'] = self.actions.reply(r, 'rejected' if close else 'deferred',
+                                                         'stale_state' if close else 'evidence_missing', held=not close)
+                reason = 'evidence_missing'
+            elif proposal['kind'] == 'evidence':
+                observed, finish = proposal['observation'], proposal['finish']
+                after = observed['identity']
+                if current['response']['status'] == 'unknown':
+                    c.transition(r['expected'], after, r['op'])
+                    status = dict(hold='held', **{'cancel-no-payload':'started', 'signal':'signalled',
+                                  'signal-manual':'signalled', 'retire-held':'retired', 'retire-interrupted':'retired'})[r['op']]
+                    current['response'] = self.actions.reply(r, status, identity=after, held=True)
+                    if status == 'held':
+                        reservation['hold_identity'] = after
+                    reservation.update(uncertain=False, identity=after)
+                if finish is not None:
+                    # A terminal is appended, never substituted for an effect receipt.
+                    # It is validated with CC0 again in the authority process.
+                    c.validate_request(finish)
+                    prior = self.actions.record(finish)
+                    if prior and prior['digest'] != digest(finish):
+                        raise Unavailable('idempotency_conflict')
+                    if prior and prior['response']['status'] not in ('deferred', 'unknown', 'pending'):
+                        return False
+                    terminal = dict(request=finish, digest=digest(finish), revision=prior['revision'] if prior else 0,
+                                    process=None, response=self.actions.reply(finish, 'finished', identity=after))
+                    # Persist an acknowledged uncertain phase before appending finish;
+                    # both commits remain under control.lock. A crash retains the hold.
+                    self.actions.save(current, reservation)
+                    reservation.update(open=False, uncertain=False, identity=after, acceptance=finish['acceptance'])
+                    self.actions.save(terminal, reservation)
+                    return True
+            reservation['reconcile_reason'] = reason
+            if current['response']['status'] == 'unknown':
+                current['response'] = self.actions.reply(r, 'unknown', reason, held=True)
+            self.actions.save(current, reservation)
+            return True
+
+    def run(self, offline=None):
+        try:
+            copies = self.copies(offline)
+            if not copies:
+                return 0
+            self.boundary('copied')
+            proposals = self.bounded_gather(copies, offline)
+            self.boundary('collected')
+            return sum(self.apply(item, proposal, offline) for item, proposal in zip(copies, proposals))
+        except (BlockingIOError, OSError, ValueError, KeyError, TypeError, sqlite3.Error,
+                subprocess.SubprocessError, Unavailable):
+            return 0  # Failure preserves every reservation, including at startup.
 
 
 def main(engine, stdin, stdout, birth=None):

@@ -19,6 +19,7 @@ import sys
 import time
 import importlib.util
 import types
+from contextvars import ContextVar
 
 # Reparto medido el 2026-11-13 (README, «Reparto»). `pesadas` y `jale-verify`
 # sacan de `jale` las corridas de horas y las sesiones de verify.
@@ -57,6 +58,7 @@ ID = re.compile(r'[A-Za-z0-9-]{8,64}')
 LOG_MAX_BYTES = 1024 * 1024
 STATE_DIR = Path.home() / ".local/state/pao/pueue-desk"
 RACK_LOCK_SECONDS = 1.0
+_CONTROL_HANDLES = ContextVar('control_handles', default=())
 
 
 # Historial: bloque independiente de cuotas y arranque. De la admisión sólo lee
@@ -397,7 +399,31 @@ def locked(directory, create=True):
         directory.mkdir(parents=True, exist_ok=True)
     with (directory / "control.lock").open("a" if create else "rb") as handle:
         fcntl.flock(handle, fcntl.LOCK_EX)
+        token = _CONTROL_HANDLES.set(_CONTROL_HANDLES.get() + ((Path(directory).resolve(), handle),))
+        try:
+            yield handle
+        finally:
+            _CONTROL_HANDLES.reset(token)
+
+
+@contextmanager
+def client_collection_window(directory):
+    """Only release our own tracked lock; every caller rereads authority after it.
+
+    Never open another descriptor to unlock an inode: flock belongs to the open
+    description. Untracked callers simply get the reconciler's nonblocking miss.
+    """
+    handles = [h for path, h in _CONTROL_HANDLES.get() if path == Path(directory).resolve()]
+    if len(handles) > 1:
+        raise ValueError('Candado de control anidado')
+    handle = handles[0] if handles else None
+    if handle is not None:
+        fcntl.flock(handle, fcntl.LOCK_UN)
+    try:
         yield
+    finally:
+        if handle is not None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
 
 
 def wait_rack_lock(handle):
@@ -488,6 +514,9 @@ def recover_mini(pueue, directory):
 
 
 def guard(pueue, proc, directory, *, host="desk"):
+    engine = MiniControl(pueue, directory, host=host)
+    if has_authority(directory):
+        engine.reconcile_clients()  # Also runs when handoff recovery keeps this tick closed.
     if host == 'mini' and has_authority(directory):
         # The existing 60 s job also owns handoff recovery. No second timer.
         try:
@@ -498,8 +527,7 @@ def guard(pueue, proc, directory, *, host="desk"):
             # Carry its failure into the guard so even valid quotas cannot reopen.
             return MiniControl(pueue, directory)._legacy_guard(None, proc=proc, recovery_error=error)
     if has_authority(directory):
-        engine = MiniControl(pueue, directory) if host == 'mini' else MiniControl(pueue, directory, host='desk')
-        return engine.guard(None, proc=proc)
+        return engine.guard(None, proc=proc, _collected=True)
     readings = pressure_mini() if host == 'mini' else pressure(proc)
     log(directory, 'lectura', **readings)
     normal = decide(host, readings, MINI_THRESHOLDS if host == "mini" else PRESSURE_THRESHOLDS)
@@ -1139,12 +1167,14 @@ def start_projection(engine, config, queue_path=None, allow_pending=True, policy
     return state, image
 
 
-def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, boundary=lambda phase: None):
+def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, boundary=lambda phase: None, _collected=False):
     """Caller holds control.lock. Intention -> queue rename -> repeatable completion."""
     config = configuration if configuration is not None else (
         validate_configuration(pueue='/opt/homebrew/bin/pueue', daemon='/opt/homebrew/bin/pueued',
                                env={}, cwd=Path.home()) if engine.host == 'mini' else validate_configuration())
     queue_path = queue_path or config['data'] / 'state.json'
+    if not dry_run and not _collected:
+        engine.reconcile_clients(offline=queue_path)
     state, image = start_projection(engine, config, queue_path)
     assert_offline(engine.pueue, config['pid_file'])
     if dry_run:
@@ -1159,7 +1189,7 @@ def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, bo
         engine.store(db, state)
     boundary('complete')
     if engine.resolve(state) != state:
-        return prepare_start(engine, queue_path, config, dry_run=False, boundary=boundary)
+        return prepare_start(engine, queue_path, config, dry_run=False, boundary=boundary, _collected=True)
     # Stock refuses even a dead pid file. Remove only after all data are durable.
     if os.path.lexists(config['pid_file']):
         config['pid_file'].unlink(); sync_directory(config['pid_file'].parent)
@@ -1725,6 +1755,20 @@ class MiniControl:
 
     client_reservation_reason = 'Hay una reserva cliente o una RPC pendiente de reconciliar.'
 
+    def reconcile_clients(self, offline=None):
+        # No table means no extra dependency, process, clock read or state change.
+        try:
+            with self.connect() as db:
+                if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
+                    return 0
+            if not client_support():
+                return 0  # All opening/pruning seams already fail closed on orphan journals.
+            with client_collection_window(self.directory):
+                return client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
+                                                 birth=priority_helper().birth).run(offline=offline)
+        except ADMISSION_ERRORS:
+            return 0  # Collection failure cannot suppress the protective guard.
+
     def client_blocked(self, group, opening=False):
         with self.connect() as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
@@ -2175,6 +2219,8 @@ class MiniControl:
                     # external cancellation. The preparer resolves our Locked
                     # image first; a bypassed preparer remains held for inspection.
                     if owned_lock:
+                        if self.client_blocked(g):
+                            raise ValueError('Reserva cliente; conservar Locked y cierre de reorder')
                         data = Path(state['pid_file']).parent
                         if os.path.lexists(data/'task_logs'/(str(row['id'])+'.log')):
                             raise ValueError('recovery_error')
@@ -2237,6 +2283,7 @@ class MiniControl:
             # prior state; only fresh high pressure transfers our pause.
             # The guard alone retires a pause marker after persisting its owner.
             can_open = (reasons <= {'pressure'} and not fence and decide('mini',fresh,threshold) != 'pausar'
+                        and not self.client_blocked(g, opening=True)
                         and before == state['desired'] and self.generation(state) == state['generation']
                         and not os.path.lexists(self.directory/'maintenance')
                         and state.get('startup',{}).get('phase') in (None,'ready'))
@@ -2278,6 +2325,7 @@ class MiniControl:
 
     def reorder_offline(self, queue, state, data):
         image = deepcopy(queue)
+        protected = client_module().protected_ids(self) if client_support() else set()
         for action in self.reorder_actions():
             if action['phase'] == 'terminal':
                 continue
@@ -2299,6 +2347,8 @@ class MiniControl:
                     raise ValueError('Identidad de reorder cambió; conservar cierre')
                 name, detail = next(iter(task['status'].items()))
                 if name == 'Locked' and row['id'] == action.get('editing_id'):
+                    if ident in protected or self.client_blocked(task['group']):
+                        raise ValueError('Reserva cliente; no recuperar como Locked de reorder')
                     if set(detail['previous_status']) != {'Queued'} or os.path.lexists(data/'task_logs'/(ident+'.log')):
                         raise ValueError('Locked de reorder sin atribución segura')
                     task['status'] = deepcopy(detail['previous_status'])
@@ -2595,6 +2645,9 @@ class MiniControl:
                 reasons.add(reason)
             if row['status'] != 'Paused':
                 continue  # open group: waits on its own Pueue quota, not on the guard
+            if self.client_blocked(group, opening=True):
+                block('client_reserved', group)
+                continue
             if reasons != {'pressure'}:
                 block('reason',group)
                 continue
@@ -2778,7 +2831,9 @@ class MiniControl:
         else:
             block('admission_unknown',group)
 
-    def guard(self, readings, proc=Path('/proc')):
+    def guard(self, readings, proc=Path('/proc'), _collected=False):
+        if not _collected:
+            self.reconcile_clients()
         if self.host == 'mini':
             return self._legacy_guard(readings,proc)
         tick = os.urandom(12).hex()
@@ -2866,6 +2921,8 @@ class MiniControl:
                     continue
                 if decision == 'reanudar' and reasons & {'pressure','startup'}:
                     if not can_open:continue
+                    if self.client_blocked(group, opening=True):
+                        block('client_reserved',group,'resume');continue
                     if not reasons <= {'pressure','startup'}:
                         block('reason',group,'resume');continue
                     if status != 'Paused':continue

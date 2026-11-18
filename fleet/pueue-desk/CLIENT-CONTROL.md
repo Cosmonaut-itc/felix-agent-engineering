@@ -152,8 +152,9 @@ La `phase` coincide con `op`, excepto `signal:TERM`, `signal:KILL`,
 `signal-manual:TERM` y `signal-manual:KILL`. Status conserva la fase de
 `action_op`, sin cambiarla ni combinar TERM/KILL. Es un conjunto
 cerrado, no un identificador arbitrario. La clave durable es
-`(launcher,ref,action_id,phase)`: mismo cuerpo da mismo recibo; otro cuerpo en
-esa fase da idempotency_conflict, incluso tras reiniciar. El diario enlaza
+`(launcher,ref,action_id,phase)`: mismo cuerpo da mismo recibo, salvo el reintento explícito de `deferred`
+sin efecto definido en «Entrega CC2»; otro cuerpo en esa fase da
+idempotency_conflict, incluso tras reiniciar. El diario enlaza
 todas las fases a la misma identidad inicial/modo/acción; permite las
 transiciones explícitas de esta tabla, no cambiar el intento. TERM y KILL
 son subpasos diferentes de una misma acción; un poll no genera UUID nuevo.
@@ -367,8 +368,7 @@ puede habilitar la compuerta. Acreditar Mini nunca habilita desk/U3.7.
 
 `control.py client` implementa el transporte local del contrato. No admite
 argumentos ni selectores: la instalación elige host, autoridad, configuración,
-entorno y binario. Sólo corre en la Mini. En el desk la guardia y el goteo
-aún no consultan reservas (U3.7), así que `client` falla con un diagnóstico,
+entorno y binario. Sólo corre en la Mini. En el desk `client` sigue fallando con un diagnóstico,
 no escribe el diario y la vista anuncia `capabilities.client:false`. Lee como máximo `MAX_BYTES+1` antes de decodificar; usa
 los validadores CC0 tanto al entrar como al responder. Los rechazos de negocio
 salen 0; una petición inválida sale 2 con `invalid_request_response()`.
@@ -447,11 +447,111 @@ entregas posteriores deben acreditar formatos fijos que permitan verificar
 identidad, compatibilidad del worker, aceptación y prueba sin esos accesos.
 La negociación global del protocolo no anuncia soporte por corrida.
 
-CC2 debe copiar bajo `control.lock` acción, reserva, generación, ambas
-revisiones y digest; recoger evidencia fuera del candado; volver y cotejar
-las versiones antes de avanzar o cerrar. Debe recoger también intenciones
+CC2 recoge bajo `control.lock` acción, reserva, generación, ambas
+revisiones y digest; recoge evidencia fuera del candado y vuelve a cotejar
+las versiones antes de avanzar o cerrar. Recoge también intenciones
 anteriores al envío, hijos identificados, recibos diferidos y resultados
 publicados antes de `finish`, sin depender de runner, waiter ni HTTP vivos.
-CC1 conserva esos datos; no implementa ese recuperador, preparador ni goteo.
+CC1 conserva esos datos; la entrega CC2 siguiente implementa la recogida.
 CC6 entregará los archivos y el binario interno mediante los instaladores.
 **`coordinated_reorder` sigue en `False`; sólo CC8 puede acreditar el corte.**
+
+
+## Entrega CC2
+
+`Reconciler` en `client_actions.py` recorre las reservas abiertas sin runner,
+waiter ni HTTP. La guardia lo ejecuta antes de recuperar/admitir, incluso si
+el relevo mantiene el tick cerrado. `prepare_start` lo ejecuta antes de leer
+su imagen de preparación; el ensayo no escribe ni recoge. El preparador
+conserva el Stashed cliente, la incertidumbre y las reservas a través del
+reinicio. No convierte una reserva cliente en propiedad del editor de orden.
+
+El ciclo toma una copia de acción/reserva bajo el mismo inode de control,
+suelta el candado, recoge del daemon y del adaptador fijo, y recupera el
+candado. Antes de guardar coteja la generación durable y la observada, la
+revisión y digest de la fase, y revisión/digest/fase/apertura de la reserva.
+Una copia obsoleta se descarta; el índice la vuelve a leer en otro tick.
+No espera result.lock ni llama al lanzador bajo control.lock. Los ámbitos
+productivos usan `locked`, que conserva el descriptor mientras permite esa
+ventana; después se relee la autoridad. El wrapper de arranque vuelve a
+comprobar la autorización del relevo antes de ejecutar el daemon.
+
+Se recogen hasta ocho reservas por lote. Un único proceso de recogida tiene
+un plazo de 0,4 s para todo el lote; el RPC de lectura tiene un plazo menor.
+Se recoge el proceso y su grupo privado al salir. Una lectura lenta o sin
+prueba retiene con `evidence_missing`, sin impedir el cierre por presión de
+la guardia. No hay espera de gracia, llamada recursiva a client ni RPC
+mutadora desde el reconciliador.
+
+Qué puede cerrar hoy:
+
+- Una intención `unknown` anterior a publicar la identidad de cualquier hijo
+  prueba que no se abrió la compuerta del RPC: CC1 confirma PID/nacimiento
+  antes de abrir stdin. El hijo no registrado sólo puede recibir EOF. Si es
+  el hold inicial, sin aceptación ni hold atribuido, se cierra la reserva con
+  rechazo sin efecto. El cliente puede iniciar otra acción; no hubo aceptación
+  C5. En otra fase se conserva la reserva y se devuelve `deferred`, sin efecto.
+- Una respuesta con efecto ya confirmada permanece histórica e idempotente.
+  Con adaptador acreditado, una prueba durable enlazada permite añadir la
+  fase finish y cerrar; se reutilizan los validadores de `client_contract.py`.
+  No se sustituye held/started por un terminal de otra fase.
+
+Los cuatro adaptadores instalados siguen devolviendo `unsupported`, sin
+leer formatos productivos ni consultar el daemon para reconstruir pertenencia.
+Con ellos, una identidad de hijo `gated`, `sent` o `reaped`, una aceptación
+pendiente o un resultado supuesto conservan la reserva y su motivo cerrado.
+La salida del hijo, el reloj y dos observaciones iguales nunca acreditan
+exclusión de mensajes tardíos. Un hijo todavía vivo con el mismo nacimiento
+retiene `rpc_unresolved`; un cambio de generación retiene `startup`.
+Una reserva conocida conserva su recibo y su condición conocida; la falta de
+nueva prueba no fabrica incertidumbre de un RPC que nunca se envió.
+
+El futuro método fijo `recover` recibe copia de la petición, estado, reserva,
+proceso identificado y observación del daemon. Devuelve observación acreditada,
+exclusión positiva de RPC tardía (`settled`) y opcionalmente una petición
+finish autenticada por `verify`. `settled` no puede derivarse sólo del estado
+del hijo ni del daemon. CC3–CC5 deben acreditar esa evidencia por lanzador.
+Las pruebas sintéticas recorren hold atribuido y resultado durable hasta
+finish, sin depender de clientes vivos. No se reenvía stash/start/señal/remove
+para resolver una respuesta perdida. Sin aceptación/prueba, se retiene; no
+se inicia automáticamente un worker ni se fabrica 130.
+
+La vista y capabilities conservan el motivo legible de reserva cliente para
+reordenar; el diario guarda además `reconcile_reason` con un enum cerrado.
+Guardia y goteo `_one` del desk consultan las mismas reservas: una incierta
+retiene la apertura y conserva pressure. Una reserva conocida de cancelación
+permite la reapertura normal cuando cede presión, para evitar impedir su
+propio start. Manual, presión, startup y `fence_reason` mantienen su autoridad.
+El desk sigue rechazando `client` y anunciando `client:false` hasta U3.7.
+
+### Reintento de deferred
+
+CC2 precisa una única excepción temporal a «mismo cuerpo, mismo recibo»:
+una petición mutadora repetida con **la misma clave y digest**, cuyo último
+recibo es `deferred`, se vuelve a validar bajo control.lock. Deferred garantiza
+que esa petición no envió RPC. Se conserva la revisión creciente y se aplican
+otra vez identidad, primera aceptación, reservas y cierres. `status` sólo
+consulta el recibo y nunca reintenta. Un cuerpo distinto sigue dando conflicto.
+
+Una vez confirmado un efecto, el duplicado devuelve siempre su recibo sin
+RPC, incluso tras reiniciar o cerrar la reserva con finish. Rejected, unknown
+y finished tampoco se reevalúan por este mecanismo. No se adopta una política
+general de reevaluación. Esto permite reintentar cancel-no-payload después de
+una pausa manual sin cambiar action_id ni perder el hold atribuido y la primera
+aceptación. Una respuesta perdida tras enviar siempre sigue siendo unknown.
+El esquema del wire y sus validadores no cambian: cada petición y respuesta
+continúan pasando por CC0; la prueba temporal y su mutación viven en CC2.
+
+### Índice y conservación
+
+`client_open` indexa sólo las reservas abiertas y rota por último cotejo.
+El índice se actualiza en la misma transacción que la reserva. `client_scan`
+migra diarios CC1 en lotes de ocho filas; mientras está incompleto, todas las
+aperturas/reordenados se retienen y la poda se abstiene. No se escanea el
+historial completo en un tick, ni se archivan/borran claves, digests o recibos.
+Una reserva nunca vence por reloj y un terminal nunca se resucita.
+
+CC3–CC5 deben entregar los adaptadores acreditados; CC6 los instaladores y
+escritores restantes; CC7 el filtro preventivo y CC8 la acreditación cruzada.
+**La compuerta `coordinated_reorder` sigue apagada.** No se cambian cuotas,
+modo ni la tabla de la Mini; la acreditación del desk sigue siendo U3.7.
