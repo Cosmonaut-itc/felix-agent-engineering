@@ -102,7 +102,7 @@ a.correr(Path(registro), C, 'contract', (), True)
         self.assertEqual(self.t.cabeza(), viejo)
 
     def test_r1_lector_huerfano_difiere_trabajo_nuevo_y_estado_lo_muestra(self):
-        _, _, cert, _, _, viejo, _ = self.jale_vivo()
+        _, registro, cert, seguir, _, viejo, nuevo = self.jale_vivo()
         t = self.t
         # Crear otro efecto real de suite, con el lector huérfano aún vivo.
         # Volver al estado anterior a lanzar preserva el resto de la fixture.
@@ -133,6 +133,20 @@ a.correr(Path(registro), C, 'contract', (), True)
         self.assertTrue(any(r['resultado'] and
             r['resultado'].get('error', {}).get('codigo') == 'checkout-operador-lector-vivo'
             for r in visible['outbox']))
+        seguir.touch()
+        self.esperar_archivo(registro / 'codigo.json')
+        # El código durable precede por instantes al cierre del descriptor.
+        limite = time.monotonic() + 10
+        while True:
+            with patch.object(t.contexto.observador, 'observar',
+                    side_effect=lambda e, a: replace(observar(e, a), base=cert.B)):
+                t.contexto.tick(8002)
+            if t.cabeza() == nuevo:
+                break
+            if time.monotonic() >= limite:
+                self.fail('no reintentó al terminar el lector')
+            time.sleep(.02)
+        self.assertEqual(t.lineas('versiones.log'), anteriores + ['nuevo'])
 
     def test_r1_hasito_y_gancho_heredan_lector_tras_muerte_del_tick(self):
         t = self.t
@@ -332,12 +346,12 @@ c.tick(9200, frontera)
         t.juicio('reanudar')
         self.muerte_despues_del_primer_commit_pausado(
             'estado.trenes and isinstance(estado.trenes[0].fase, Promoviendo) '
-            'and estado.trenes[0].fase.intentos == 1')
+            'and estado.trenes[0].fase.intentos == 2')
         with t.ledger() as ledger:
             decision = ledger.db.execute('SELECT estado FROM decisions ORDER BY rowid DESC').fetchone()[0]
             self.assertEqual(decision, 'aplicada')
             efectos = [json.loads(r['payload']) for r in ledger.outbox(activo.REPO)]
-            self.assertTrue(any(e['tipo'] == 'promover' and e['datos'][-1] == '1'
+            self.assertTrue(any(e['tipo'] == 'promover' and e['datos'][-1] == '2'
                                 for e in efectos), efectos)
 
     def test_r1_muerte_al_guardar_pausa_marca_resultado_consumido(self):
