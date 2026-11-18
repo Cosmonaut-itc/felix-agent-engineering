@@ -526,6 +526,9 @@ def test_identical_retention_skips_journal_write_but_advances_index(self):
         self.assertFalse(save.called,'identical retention must not write journal')
     self.assertEqual((self.actions.record(self.r),self.actions.reservation(self.r)),before,'journal revisions stay fixed')
     with self.engine.connect() as db:self.assertGreater(db.execute('SELECT checked FROM client_open').fetchone()[0],checked)
+    with self.engine.connect() as db:checked=db.execute('SELECT checked FROM client_open').fetchone()[0]
+    reconciler.copies(None)
+    with self.engine.connect() as db:self.assertGreater(db.execute('SELECT checked FROM client_open').fetchone()[0],checked)
 
 
 def collection_lock_holder(path,pipe,seconds):

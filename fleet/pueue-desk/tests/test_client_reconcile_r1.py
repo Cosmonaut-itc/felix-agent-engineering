@@ -1,4 +1,4 @@
-"""R1 regressions: protective guard, bounded start, action-bound adapter evidence."""
+"""R1 regressions: protective guard, waiting start, action-bound adapter evidence."""
 import copy
 import fcntl
 import json
@@ -221,7 +221,7 @@ class StartTests(unittest.TestCase):
             if holder.is_alive():holder.terminate();holder.join()
             self.assertEqual(holder.exitcode,0);parent.close();child.close()
 
-    def test_start_rejects_with_real_contention_and_keeps_sanitized_log(self):
+    def test_start_waits_with_real_contention_and_executes_once_without_rejection(self):
         h = self.h
         r = cc1.request(); actions = a.ClientActions(h.engine)
         record = dict(request=r, digest=a.digest(r), revision=0, process=dict(state='injected'),
@@ -229,7 +229,8 @@ class StartTests(unittest.TestCase):
         reservation = dict(launcher=r['launcher'],ref=r['ref'],action_id=r['action_id'],group='suites',
             mode=r['mode'],identity=r['expected'],acceptance=None,hold_identity=None,open=True,uncertain=True)
         with control.locked(h.directory):actions.save(record,reservation)
-        before = (h.data/'state.json').read_bytes()
+        log = h.directory/'arranque.log'
+        before = log.read_bytes() if log.exists() else b''
         ctx = multiprocessing.get_context('fork'); parent, child = ctx.Pipe()
         holder = None; executed = []; gather = a.Reconciler.bounded_gather
         def collect(reconciler,copies,offline):
@@ -241,16 +242,14 @@ class StartTests(unittest.TestCase):
         try:
             start = time.monotonic()
             with patch.object(a.Reconciler,'bounded_gather',collect):
-                with self.assertRaises(control.ClientCollectionBusy):
-                    h.m.start(execute=lambda *args:executed.append(args))
+                h.m.start(execute=lambda *args:executed.append(args))
             elapsed = time.monotonic()-start
-            print('whole-start-busy seconds=%.3f'%elapsed,flush=True)
-            self.assertLess(elapsed,.45,'return while the 0.7 second holder still owns control.lock')
-            self.assertEqual(executed,[]);self.assertEqual((h.data/'state.json').read_bytes(),before)
+            print('whole-start-wait seconds=%.3f'%elapsed,flush=True)
+            self.assertGreater(elapsed,.6,'start waits for the 0.7 second holder')
+            self.assertLess(elapsed,1.4,'only the prior collection adds work to the original lock wait')
+            self.assertEqual(len(executed),1)
             self.assertTrue(actions.reservation(r)['open'])
-            row = json.loads((h.directory/'arranque.log').read_text().splitlines()[-1])
-            self.assertEqual(row['evento'],'arranque_rechazado')
-            self.assertNotIn('rpc_unresolved',row['motivo'])
+            self.assertEqual(log.read_bytes() if log.exists() else b'',before,'contention records no rejection')
         finally:
             if holder:
                 holder.join(2)

@@ -896,6 +896,19 @@ de una tarea en su log `info` (`spawn.rs:245`); redirigirlo al registro propio
 filtraría comandos y podría filtrar secretos. El registro propio diagnostica el
 preparador y la autorización, no los fallos internos posteriores al exec stock.
 
+CC2 no convierte un `control.lock` ocupado en rechazo de arranque: el wrapper
+espera su turno como antes; su ciclo cliente previo es independiente y su
+contención no impide preparar al quedar libre el candado. KeepAlive vuelve a
+invocar el wrapper si el proceso sale; no garantiza un turno por sí solo.
+El diagnóstico usa `arranque.log.lock`, independiente de la autoridad: omite
+la línea si otro escritor lo retiene más de 0,1 s o falla el disco. Esa omisión
+no cambia el rechazo original ni espera que se libere `control.lock`.
+La guardia protege antes de revisar clientes; copia/aplica al final de su
+turno y recoge después. La evidencia entre ticks es descartable y se coteja
+contra acción, proceso, generación y revisiones/digests antes de aplicar.
+Véase «Entrega CC2» en `CLIENT-CONTROL.md` para la garantía N/N+1 y su límite
+cuando la guardia no consigue entrar al candado.
+
 La **misma guardia de 60 s** repara el relevo y los recibos aceptados del rack;
 conserva sensores, umbrales y escalera de rapidas. No se instala otro recuperador.
 Orden: control.lock → validar autoridad → deseo vigente → intenciones sin abrir →

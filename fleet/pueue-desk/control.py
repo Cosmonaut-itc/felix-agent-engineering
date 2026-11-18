@@ -397,7 +397,7 @@ CLIENT_LOCK_SECONDS = .1
 
 
 class ClientCollectionBusy(RuntimeError):
-    """A new start could not enter its independent critical section in time."""
+    """A disposable diagnostic could not acquire its own lock within its budget."""
 
 
 def wait_control_lock(handle, seconds):
@@ -429,12 +429,21 @@ def locked(directory, create=True, seconds=None):
             try:
                 yield handle
             finally:
-                _CONTROL_HANDLES.reset(token)
+                # Protective duties are complete; copy/apply during the turn
+                # already obtained by this caller. Never lend its descriptor.
+                try:
+                    for key, (engine, offline) in list(pending.items()):
+                        pending[key] = None
+                        pending[key] = engine.client_reconcile_turn(offline)
+                finally:
+                    _CONTROL_HANDLES.reset(token)
     finally:
         # The caller has finished ALL protected work and its descriptor is closed.
         # These independent cycles never borrow or reacquire the caller's lock.
-        for engine, offline in pending.values():
-            engine.reconcile_clients(offline=offline)
+        for cycle in pending.values():
+            if cycle is not None:
+                reconciler, offline, copies = cycle
+                reconciler.run(offline=offline, copies=copies)
 
 
 def wait_rack_lock(handle):
@@ -1793,6 +1802,14 @@ class MiniControl:
                                              birth=priority_helper().birth).run(offline=offline)
         except ADMISSION_ERRORS:
             return 0  # Collection failure cannot suppress the protective guard.
+
+    def client_reconcile_turn(self, offline=None):
+        try:
+            reconciler = client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
+                                                    birth=priority_helper().birth)
+            return reconciler, offline, reconciler.protected_turn(offline)
+        except ADMISSION_ERRORS:
+            return None  # The guard has already run; retry on its next turn.
 
     def client_blocked(self, group, opening=False):
         with self.connect() as db:

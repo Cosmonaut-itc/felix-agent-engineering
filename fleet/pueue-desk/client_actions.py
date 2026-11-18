@@ -4,6 +4,7 @@ The installation supplies engine, adapter and binary. No client field selects
 any of them. Adapters are bounded local evidence reads, never launcher calls
 or result locks. CC2 collects retained actions outside the host lock.
 """
+from contextlib import nullcontext
 import fcntl
 import hashlib
 import json
@@ -15,6 +16,7 @@ import sys
 import types
 import time
 import select
+import tempfile
 
 # Loading through compile also works with the controller's isolated interpreter
 # and cannot create bytecode during a read-only capabilities request.
@@ -500,12 +502,36 @@ class Reconciler:
         try:
             return self.engine.generation(state)
         except (OSError, ValueError, subprocess.SubprocessError):
-            if not offline:
-                raise
             return None  # Absence is compared too; a restart invalidates the copy.
 
-    def copies(self, offline):
-        with self.lock(), self.engine.connect(write=True) as db:
+    def daemon_stamp(self, state, offline):
+        # mini_generation uses ps to authenticate the generation. Pin that read
+        # between native PID/birth/file observations, then recheck the stamp per
+        # application without launching or waiting for any process under lock.
+        try:
+            path = Path(state['pid_file'])
+            before = path.stat()
+            pid = int(path.read_text().strip())
+            born = self.birth(pid) if self.birth is not None else None
+            after = path.stat()
+            signature = lambda st: [st.st_dev, st.st_ino, st.st_mtime_ns, st.st_ctime_ns, st.st_size]
+            if born is None or signature(before) != signature(after):
+                raise ValueError('client_generation')
+            return [pid, born, signature(after)]
+        except (OSError, ValueError):
+            return None
+
+    def apply_generation(self, state, item, offline):
+        if 'daemon_stamp' not in item:
+            return self.current_generation(state, offline)
+        # A fresh native check for EACH action: the daemon can die between two
+        # saves even while control.lock excludes every coordinated writer.
+        if self.daemon_stamp(state, offline) != item['daemon_stamp']:
+            return None
+        return item['generation']
+
+    def copies(self, offline, protected=False, advance=True):
+        with (nullcontext() if protected else self.lock()), self.engine.connect(write=True) as db:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
                 return []
             self.actions.index(db)
@@ -513,7 +539,11 @@ class Reconciler:
             if not keys:
                 return []
             state = self.engine.state(db)
+            native = self.engine.host == 'mini' and self.engine.generation_source is None
+            stamp = self.daemon_stamp(state, offline) if native else None
             generation = self.current_generation(state, offline)
+            if native and (stamp is None or self.daemon_stamp(state, offline) != stamp):
+                generation = None  # No authenticated native life; retain, never promote.
             sequence = db.execute('SELECT COALESCE(MAX(checked),0)+1 FROM client_open').fetchone()[0]
             result = []
             for key in keys:
@@ -535,7 +565,10 @@ class Reconciler:
                         and phase['response']['status'] in ('rejected',) + c.REEVALUATED for phase in phases))
                 result.append(dict(record=record, reservation=reservation, state=state, generation=generation,
                                    rejected_unsent=rejected_unsent))
-                db.execute('UPDATE client_open SET checked=? WHERE launcher=? AND ref=? AND action_id=?', (sequence,) + key)
+                if native:
+                    result[-1]['daemon_stamp'] = stamp
+                if advance:
+                    db.execute('UPDATE client_open SET checked=? WHERE launcher=? AND ref=? AND action_id=?', (sequence,) + key)
             return result
 
     @staticmethod
@@ -551,16 +584,23 @@ class Reconciler:
                 and type(proof['birth']) is str and bool(proof['birth'])
                 and proof['birth'] == process.get('birth'))
 
+    @staticmethod
+    def journal_proposal(item):
+        record = item['record']
+        if item['rejected_unsent']:
+            return dict(kind='rejected_not_sent')
+        if record['response']['status'] == 'unknown' and record.get('process') is None:
+            # CC1 commits PID/birth before opening the RPC gate.
+            return dict(kind='not_sent')
+        return None
+
     def collect(self, item, daemon):
         record, reservation = item['record'], item['reservation']
         r, process = record['request'], record.get('process')
-        if item['rejected_unsent']:
-            return dict(kind='rejected_not_sent')
-        if record['response']['status'] == 'unknown' and process is None:
-            # CC1 fsyncs a child's identity before opening its stdin gate. A
-            # child spawned before that commit sees EOF after the owner dies.
-            return dict(kind='not_sent')
-        if item['generation'] is not None and item['generation'] != item['state']['generation']:
+        journal = self.journal_proposal(item)
+        if journal is not None:
+            return journal
+        if item['generation'] != item['state']['generation']:
             raise Unavailable('startup')
         if process and process.get('pid') is not None:
             if self.birth is None or self.birth(process['pid']) == process['birth']:
@@ -660,18 +700,19 @@ class Reconciler:
                 pass
             os.waitpid(pid, 0)
 
-    def apply(self, item, proposal, offline):
-        with self.lock():
+    def apply(self, item, proposal, offline, protected=False):
+        with (nullcontext() if protected else self.lock()):
             old, before = item['record'], item['reservation']
             r = old['request']
             current = self.actions.record(r)
             reservation = self.actions.reservation(r)
             with self.engine.connect() as db:
                 state = self.engine.state(db)
-            generation = self.current_generation(state, offline)
+            generation = self.apply_generation(state, item, offline)
             if (state['generation'] != item['state']['generation'] or generation != item['generation']
                     or current['revision'] != old['revision']
                     or current['digest'] != old['digest']
+                    or current.get('process') != old.get('process')
                     or reservation['revision'] != before['revision']
                     or reservation['digest'] != before['digest'] or reservation['phase'] != before['phase']
                     or not reservation['open']):
@@ -732,16 +773,96 @@ class Reconciler:
                 current['response'] = self.actions.reply(r, 'unknown', reason, held=True)
             if current != old or reservation != before:
                 self.actions.save(current, reservation)
+            self.advance(r)
             return True
 
-    def run(self, offline=None):
+    def advance(self, r):
+        with self.engine.connect(write=True) as db:
+            key = self.actions.key(r)[:3]
+            sequence = db.execute('SELECT COALESCE(MAX(checked),0)+1 FROM client_open').fetchone()[0]
+            db.execute('UPDATE client_open SET checked=? WHERE launcher=? AND ref=? AND action_id=?', (sequence,) + key)
+
+    @staticmethod
+    def binding(item):
+        record, reservation = item['record'], item['reservation']
+        return dict(key=ClientActions.key(record['request']), process=record.get('process'),
+                    generation=item['generation'], authority=item['state']['generation'],
+                    revision=record['revision'], digest=record['digest'],
+                    reservation_revision=reservation['revision'], reservation_digest=reservation['digest'],
+                    phase=reservation['phase'], daemon_stamp=item.get('daemon_stamp'))
+
+    def evidence_path(self, item):
+        # Fixed internal path, derived only from the validated action key.
+        return self.engine.directory / 'client-evidence' / (digest(self.binding(item)) + '.json')
+
+    def cache(self, item, proposal):
+        # Disposable evidence, never authority. Atomic publication occurs AFTER
+        # collection and outside control.lock. A crash only causes recollection.
+        path = self.evidence_path(item)
+        path.parent.mkdir(mode=0o700, exist_ok=True)
+        body = canonical(dict(binding=self.binding(item), proposal=proposal)).encode()
+        if len(body) > c.MAX_BYTES * self.limit:
+            return
+        fd, name = tempfile.mkstemp(prefix='.collect-', dir=str(path.parent))
         try:
-            copies = self.copies(offline)
+            with os.fdopen(fd, 'wb') as stream:
+                stream.write(body)
+            os.replace(name, path)
+        finally:
+            if os.path.exists(name):
+                os.unlink(name)
+
+    def cached(self, item):
+        try:
+            with self.evidence_path(item).open('rb') as stream:
+                raw = stream.read(c.MAX_BYTES * self.limit + 1)
+            if len(raw) > c.MAX_BYTES * self.limit:
+                return None
+            value = json.loads(raw)
+            # JSON normalizes the tuple in binding.key to a list.
+            if value['binding'] != json.loads(canonical(self.binding(item))):
+                return None
+            proposal = value['proposal']
+            return proposal if proposal.get('kind') in ('evidence', 'retain') else None
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return None
+
+    def protected_turn(self, offline=None):
+        """Caller still owns its original lock and has finished its own duties.
+
+        Do not advance the rotating cursor until a review is applied: an action
+        copied in tick N remains in the reached batch in N+1, even with more
+        than limit open actions and every independent acquisition colliding.
+        No adapter, process wait or collection occurs here.
+        """
+        copies = self.copies(offline, protected=True, advance=False)
+        pending = []
+        for item in copies:
+            proposal = self.journal_proposal(item)
+            if proposal is None:
+                proposal = self.cached(item)
+            if proposal is None:
+                pending.append(item)
+                continue
+            try:
+                reviewed = self.apply(item, proposal, offline, protected=True)
+            except (OSError, ValueError, KeyError, TypeError, sqlite3.Error,
+                    subprocess.SubprocessError, Unavailable):
+                reviewed = False
+            if not reviewed:
+                pending.append(item)  # Changed authority is reread next turn.
+        return pending
+
+    def run(self, offline=None, copies=None):
+        try:
+            copies = self.copies(offline) if copies is None else copies
             if not copies:
                 return 0
             self.boundary('copied')
             proposals = self.bounded_gather(copies, offline)
             self.boundary('collected')
+            for item, proposal in zip(copies, proposals):
+                self.cache(item, proposal)
             return sum(self.apply(item, proposal, offline) for item, proposal in zip(copies, proposals))
         except (BlockingIOError, OSError, ValueError, KeyError, TypeError, sqlite3.Error,
                 subprocess.SubprocessError, Unavailable):

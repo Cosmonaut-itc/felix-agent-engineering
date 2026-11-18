@@ -461,42 +461,68 @@ CC6 entregará los archivos y el binario interno mediante los instaladores.
 
 `Reconciler` en `client_actions.py` recorre las reservas abiertas sin runner,
 waiter ni HTTP. La guardia solicita el ciclo en su tick, incluso si el relevo
-mantiene la admisión cerrada. Si el llamador tiene `control.lock`, `locked`
-registra una recogida pendiente y conserva el candado hasta terminar todo su
-trabajo protegido. Sólo después de cerrar su descriptor ejecuta el ciclo
-independiente: la pausa por presión no depende de que éste consiga entrar,
-recoger ni aplicar. Nunca se cede ni se recupera un candado prestado.
+mantiene la admisión cerrada. `locked` conserva su descriptor durante todo el
+trabajo protector del llamador. Al terminar ese trabajo, **todavía bajo el mismo
+candado**, copia hasta ocho acciones y aplica pruebas del diario o evidencia
+recogida entre turnos. Sólo después de cerrar el descriptor recoge nueva
+evidencia en un proceso independiente y prueba una aplicación no bloqueante.
+Nunca se cede ni se recupera un candado prestado. La pausa protectora de la
+guardia ocurre antes y no depende del reconciliador.
 
-`prepare_start` sigue solicitando la recogida; bajo `locked` se ejecuta al
-salir de la sección de preparación. Esto cubre la llamada directa y la CLI
-`preparar`. El ensayo no recoge ni escribe. Como exec no desenrolla contextos,
-el wrapper de launchd ejecuta explícitamente el ciclo **antes** de entrar a su
-propia sección de preparación. Después relee y valida la autoridad del relevo,
-y vuelve a comprobarla justo antes de exec. Su nueva entrada a `control.lock`
-tiene un plazo de 0,1 s: la contención rechaza el arranque sin escribir la cola
-ni ejecutar el daemon. La preparación conserva el Stashed cliente, la
-incertidumbre y las reservas a través del reinicio; nunca los adopta como
-propiedad del editor de orden.
+Garantía de progreso: si la guardia obtiene su turno en el tick N, cada acción
+abierta alcanzada por su lote se revisa y avanza o retiene con motivo a más
+tardar en N+1, aunque choquen todas las adquisiciones independientes. Los
+cierres acreditables sólo con el diario se aplican en N. Las otras copias
+conservan su posición del índice hasta su revisión: ni siquiera un lote de
+más de ocho abiertas desplaza su obligación al copiar. La recogida termina
+con prueba o con una propuesta de retención acotada. Si la aplicación propia
+choca, N+1 aplica esa propuesta en el turno de la guardia, después de proteger.
+No se promete progreso mientras la guardia no obtenga su turno. Cambios de
+fase/autoridad invalidan la copia: se descarta y se recoge la versión vigente;
+la reserva nunca se libera para resolver contención o falta de prueba.
 
-El ciclo independiente copia acción/reserva bajo una adquisición no bloqueante
-del mismo inode de control, cierra su descriptor, recoge del daemon y del
-adaptador fijo, y toma otra adquisición no bloqueante para aplicar. Antes de
-guardar coteja la generación durable y la observada, revisión/digest de la fase,
-y revisión/digest/fase/apertura de la reserva. Una copia obsoleta o una entrada
-ocupada se descartan: el siguiente tick vuelve a intentarlo y el índice rotativo
-revisa también las demás acciones. El llamador ya terminó su sección crítica;
-ningún trabajo que presupone exclusión continúa después de soltarla. No espera
-result.lock ni llama al lanzador bajo control.lock.
+La evidencia entre ticks se publica atómicamente fuera de `control.lock` en
+`client-evidence/`, fuera de la autoridad SQLite y sin obligación de fsync.
+Cada archivo liga acción/fase, PID/nacimiento, generación durable y observada,
+revisión/digest de fase y reserva; su nombre deriva del vínculo completo, de
+modo que un colector atrasado no pisa evidencia de otra versión. Se leen sólo
+los archivos exactos del lote, con tamaño limitado; no se escanea el historial.
+Una publicación interrumpida o un archivo ausente/corrupto obliga a recoger de
+nuevo, nunca certifica un efecto. El núcleo coteja de nuevo todo el vínculo
+bajo el candado al aplicar. Los archivos antiguos son descartables y no se
+reutilizan para otra revisión; no son reservas ni recibos idempotentes.
 
-Se recogen hasta ocho reservas por lote. Con `client_open` vacío no se crea
-colector ni se lee la generación. Un único proceso tiene un plazo de 0,4 s
-para todo el lote; el RPC de lectura tiene un plazo menor. Se recoge el proceso
-y su grupo privado al salir. Una lectura lenta o sin prueba retiene con
-evidence_missing; la guardia ya ejecutó su deber protector. No hay espera de
-gracia, llamada recursiva a client ni RPC mutadora desde el reconciliador.
-El límite del lote, los plazos de SQLite y de generación y las adquisiciones
-no bloqueantes acotan el trabajo añadido; los 0,4 s no se presentan como cota
-del tick completo, que incluye copia, cotejos y las lecturas propias del host.
+`prepare_start` sigue solicitando el ciclo al salir de su ámbito protegido;
+esto cubre su llamada directa y la CLI `preparar`. El ensayo no recoge ni
+escribe. Como exec no desenrolla contextos, el wrapper de launchd ejecuta
+explícitamente un ciclo **antes** de entrar a su propia sección de preparación.
+Ese ciclo previo nunca hace fallar el arranque por contención. El arranque
+**espera su propio control.lock como antes de CC2**: al quedar libre prepara y
+ejecuta el daemon una sola vez. Esa espera preexistente no tiene un nuevo
+plazo de rechazo. Después de adquirirlo relee la autoridad del relevo y vuelve
+a comprobarla antes de exec. La preparación conserva el Stashed cliente,
+incertidumbre y reservas a través del reinicio; nunca los adopta como propiedad
+del editor de orden.
+
+El ciclo independiente conserva sus adquisiciones no bloqueantes para copia y
+aplicación. Antes de guardar coteja generación durable y observada **por cada
+acción**, revisión/digest/proceso de la fase y revisión/digest/fase/apertura de
+la reserva. En la Mini, la copia autentica la generación entre dos lecturas
+nativas del PID/nacimiento y firma del pid file; cada aplicación vuelve a leer
+esa identidad nativa. Así detecta también la muerte entre elementos del lote,
+sin lanzar ni esperar procesos al aplicar en el turno protegido. El desk usa
+su identidad nativa de `/proc`. No hay RPC, callback al lanzador, result.lock,
+espera de gracia ni llamada recursiva a client en esa aplicación.
+
+Con `client_open` vacío no se crea colector ni se lee generación. Un único
+proceso tiene plazo de 0,4 s para todo el lote; el RPC de lectura tiene un plazo
+menor. Se recoge el proceso y su grupo privado al salir. Una lectura lenta o
+sin prueba retiene con evidence_missing; la guardia ya ejecutó su protección.
+El trabajo protegido está limitado por ocho copias/aplicaciones y sus lecturas
+locales; SQLite, serialización, generación y disco añaden coste medido. Los
+0,4 s acotan la recogida, **no el tick completo** ni la espera preexistente del
+candado. No hay una cota universal de extremo a extremo independiente del
+dueño anterior o de fallos del sistema de archivos.
 
 El rechazo de arranque conserva el diagnóstico saneado de U3.5 y la rotación
 acotada en `arranque.log`, bajo el candado independiente `arranque.log.lock`.

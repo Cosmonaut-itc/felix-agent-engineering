@@ -677,9 +677,9 @@ class Manager:
         config = self.configuration_for_host()
         self._start_stage = 'preparación'
         # A complete, independent cycle. Failure to apply leaves the reservation
-        # open. Entry into the start's own section has its own deadline too.
+        # open. The start then waits for its own lock, as before CC2.
         self.engine.reconcile_clients(offline=config['data'] / 'state.json')
-        with control.locked(self.directory, create=False, seconds=control.CLIENT_LOCK_SECONDS):
+        with control.locked(self.directory, create=False):
             if os.path.lexists(self.directory / 'maintenance'):
                 raise ValueError('Host en mantenimiento')
             recovered = self.recover_table()
