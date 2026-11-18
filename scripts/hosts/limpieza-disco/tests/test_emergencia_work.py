@@ -535,7 +535,10 @@ with open(sys.argv[1]) as archivo:
     print('listo', flush=True)
     sys.stdin.read()
 '''
-        archivo = (run if archivo_abierto else self.root) / 'git-input'
+        directorio = run / 'git-input' if archivo_abierto else self.root
+        if archivo_abierto:
+            directorio.mkdir()
+        archivo = directorio / 'history.bundle'
         archivo.write_text('preparando')
         process = subprocess.Popen(
             ['/usr/bin/python3', '-B', '-c', codigo, str(archivo)],
@@ -559,6 +562,9 @@ with open(sys.argv[1]) as archivo:
         self.assertIsNone(process.poll())
         self.config.update(pid=process.pid, uso_real=True)
         self.edad(run, 20 / 60)
+        datos = inv.inventariar(self.rr, copia_minutos=360)
+        self.assertEqual(datos['corridas'][0]['clase'], 'preparacion-abortada')
+        self.assertEqual(datos['proteccionCopias']['bloqueoGlobal'], [])
         return process
 
     def test_emergencia_preparacion_20_min_cwd_vivo_bloquea(self):
