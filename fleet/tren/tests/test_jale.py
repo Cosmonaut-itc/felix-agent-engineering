@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import shlex
+import signal
 import subprocess
 import sys
 import time
@@ -27,18 +28,43 @@ FALLO = Fallo(UNIDAD, FIRMA, 'solo-candidato', 'contract', 'contract', 'jale', 4
 # Escribe exclusivamente fixtures del contrato; no depende del productor real.
 PRODUCTOR = r'''
 import base64
+import fcntl
+import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import time
 raiz = Path(sys.argv[1])
 host, log, modo, sha, *filtros = sys.argv[2:]
 contador = raiz / 'lanzamientos.jsonl'
-previos = contador.read_text().splitlines() if contador.exists() else []
-plan = json.loads((raiz / 'plan.json').read_text())
-f = plan[min(len(previos), len(plan) - 1)]
-with contador.open('a') as archivo:
-    archivo.write(json.dumps([host, log, modo, sha, *filtros]) + '\n')
+invocaciones = raiz / 'invocaciones.jsonl'
+with (raiz / 'candado-productor').open('a') as candado:
+    fcntl.flock(candado, fcntl.LOCK_EX)
+    previas = invocaciones.read_text().splitlines() if invocaciones.exists() else []
+    clave = os.environ.get('REMOTE_RUN_CLAVE', '')
+    with invocaciones.open('a') as archivo:
+        archivo.write(json.dumps(dict(clave=clave, log=log, pgid=os.getpgrp())) + '\n')
+    registros = raiz / 'por-clave'
+    registros.mkdir(exist_ok=True)
+    identidad = clave or 'sin-clave-' + str(len(previas))
+    registro = registros / (hashlib.sha256(identidad.encode()).hexdigest() + '.json')
+    conocido = registro.exists()
+    if conocido:
+        trabajo = json.loads(registro.read_text())
+        print('PUEUE_REENGANCHE=' + str(trabajo['id']), flush=True)
+    else:
+        previos = contador.read_text().splitlines() if contador.exists() else []
+        plan = json.loads((raiz / 'plan.json').read_text())
+        trabajo = dict(id=len(previos), conexiones=0, plan=plan[min(len(previos), len(plan) - 1)])
+        with contador.open('a') as archivo:
+            archivo.write(json.dumps([host, log, modo, sha, *filtros]) + '\n')
+    trabajo['conexiones'] += 1
+    registro.write_text(json.dumps(trabajo))
+f = trabajo['plan']
+if trabajo['conexiones'] <= f.get('transportes', 0):
+    Path(log).write_text('')
+    sys.exit(255)
 if f.get('esperar'):
     (raiz / 'listo').write_text('listo')
     limite = time.monotonic() + 20
@@ -94,6 +120,10 @@ class JaleTests(Aislado):
 
     def lanzamientos(self):
         ruta = self.raiz / 'lanzamientos.jsonl'
+        return [json.loads(l) for l in ruta.read_text().splitlines()] if ruta.exists() else []
+
+    def invocaciones(self):
+        ruta = self.raiz / 'invocaciones.jsonl'
         return [json.loads(l) for l in ruta.read_text().splitlines()] if ruta.exists() else []
 
     def suite(self, tren='lote', **kwargs):
@@ -454,6 +484,114 @@ class JaleTests(Aislado):
             self.suite()
         self.assertEqual(contexto.exception.resultado.codigo, 'corrida-interrumpida')
         self.assertEqual(self.lanzamientos(), [])
+
+    def test_u23_muerte_del_grupo_del_coordinador_recupera_el_mismo_trabajo(self):
+        self.plan([{'esperar': True}, {}])
+        helper = self.raiz / 'tick-u23.py'
+        helper.write_text('import sys\nsys.path.insert(0, ' + repr(str(Path(__file__).resolve().parents[1])) +
+            ')\nfrom adaptadores.jale import Jale\nfrom dominio import Candidato\nJale(' +
+            repr(str(self.lanzador)) + ').suite(Candidato(' + repr(B) + ', (), ' + repr(C) +
+            ', "d" * 40), "lote")\n')
+        with (self.raiz / 'tick-u23.log').open('w') as salida:
+            proceso = subprocess.Popen([sys.executable, str(helper)], stdout=salida, stderr=salida)
+            try:
+                limite = time.monotonic() + 10
+                while not (self.raiz / 'listo').exists() and proceso.poll() is None and time.monotonic() < limite:
+                    time.sleep(.02)
+                self.assertTrue((self.raiz / 'listo').exists())
+            finally:
+                if proceso.poll() is None:
+                    proceso.kill()
+                proceso.wait(timeout=5)
+                invocaciones = self.invocaciones()
+                if invocaciones:
+                    grupo = invocaciones[0]['pgid']
+                    self.assertNotEqual(grupo, os.getpgrp())
+                    try:
+                        os.killpg(grupo, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                (self.raiz / 'seguir').write_text('seguir')
+        registro = Path(self.lanzamientos()[0][1]).parent
+        self.assertFalse((registro / 'codigo.json').exists())
+        iniciado = (registro / 'iniciado.json').read_text()
+        # Recuperar trabajo autorizado tampoco requiere admisión para lanzar uno nuevo.
+        self.adaptador = self.Jale(self.lanzador)
+        _, r = self.suite(permitir_lanzar=False)
+        self.assertEqual(r.veredicto, 'verde')
+        self.assertEqual((registro / 'iniciado.json').read_text(), iniciado)
+        self.assertEqual(json.loads(iniciado), {'clave': self.invocaciones()[0]['clave']})
+        self.assertEqual(self.invocaciones()[0]['clave'], self.invocaciones()[1]['clave'])
+        self.assertEqual(self.invocaciones()[0]['log'], self.invocaciones()[1]['log'])
+        self.assertIn('PUEUE_REENGANCHE=0', (registro / 'coordinador.log').read_text())
+        self.assertEqual(len(self.invocaciones()), 3)
+        self.assertEqual(len(self.lanzamientos()), 2)  # Una suite por modo.
+        self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 0)
+        self.assertEqual(self.suite()[1], r)
+        self.assertEqual(len(self.invocaciones()), 3)
+
+    def test_u23_clave_estable_y_distinta_por_intento_modo_y_tren(self):
+        self.plan([{'codigo': 75, 'sin_linea': True}, {}, {}, {}, {}])
+        _, incompleto = self.suite()
+        primero = self.invocaciones()[0]
+        registro = Path(primero['log']).parent
+        iniciado = json.loads((registro / 'iniciado.json').read_text())
+        self.assertEqual(iniciado, {'clave': primero['clave']})
+        self.assertIsInstance(incompleto, Incompleto)
+        self.assertEqual(self.suite()[1], incompleto)
+        self.assertEqual(json.loads((registro / 'iniciado.json').read_text()), iniciado)
+        with patch.dict(os.environ, {'REMOTE_RUN_CLAVE': 'clave-del-padre'}):
+            ruta, final = self.suite(intento=1, reanudar=incompleto.reanudar)
+            self.assertEqual(final.veredicto, 'verde')
+            self.assertEqual(self.suite(intento=1), (ruta, final))
+            self.assertEqual(self.suite(tren='otro')[1].veredicto, 'verde')
+        claves = [i['clave'] for i in self.invocaciones()]
+        self.assertEqual(len(claves), 5)
+        self.assertEqual(len(set(claves)), 5)
+        for valor in claves:
+            self.assertRegex(valor, r'^[A-Za-z0-9._-]{8,128}$')
+            self.assertNotEqual(valor, 'clave-del-padre')
+
+    def test_u23_transporte_255_reengancha_con_la_misma_clave(self):
+        self.adaptador = self.Jale(self.lanzador, modos=('contract',))
+        self.plan([{'transportes': 2}])
+        ruta, r = self.suite()
+        self.assertEqual(r.veredicto, 'verde')
+        invocaciones = self.invocaciones()
+        self.assertEqual(len(invocaciones), 3)
+        self.assertEqual(len({i['clave'] for i in invocaciones}), 1)
+        self.assertRegex(invocaciones[0]['clave'], r'^[A-Za-z0-9._-]{8,128}$')
+        self.assertEqual(len(self.lanzamientos()), 1)
+        registro = Path(invocaciones[0]['log']).parent
+        self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 0)
+        self.assertEqual(self.suite(), (ruta, r))
+        self.assertEqual(len(self.invocaciones()), 3)
+
+    def test_u23_transporte_255_agota_limite_y_conserva_salida(self):
+        self.plan([{'codigo': 255, 'sin_linea': True}])
+        for _ in range(2):
+            with self.assertRaises(ResultadoInvalido) as contexto:
+                self.suite()
+            self.assertEqual(contexto.exception.resultado.codigo, 'salida-sin-recibo')
+        invocaciones = self.invocaciones()
+        self.assertEqual(len(invocaciones), 3)
+        self.assertEqual(len({i['clave'] for i in invocaciones}), 1)
+        self.assertEqual(len(self.lanzamientos()), 1)
+        registro = Path(invocaciones[0]['log']).parent
+        self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 255)
+
+    def test_u23_125_se_guarda_sin_reintento_con_la_misma_clave(self):
+        self.plan([{'codigo': 125, 'sin_linea': True}, {}, {}])
+        for _ in range(2):
+            with self.assertRaises(ResultadoInvalido) as contexto:
+                self.suite()
+            self.assertEqual(contexto.exception.resultado.codigo, 'salida-sin-recibo')
+        self.assertEqual(len(self.invocaciones()), 1)
+        registro = Path(self.invocaciones()[0]['log']).parent
+        self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 125)
+        self.assertEqual(self.suite(intento=1)[1].veredicto, 'verde')
+        self.assertEqual(len(self.invocaciones()), 3)
+        self.assertEqual(len({i['clave'] for i in self.invocaciones()}), 3)
 
     def test_seleccion_configurable_y_hasito_legacy(self):
         from adaptadores import seleccionar
