@@ -18,6 +18,9 @@ POLICY_MESSAGE = ("Pueue administrado: esta operación requiere el controlador "
                   "coordinado; actualiza el lanzador")
 LOCK_ORDER = ("launcher-run", "launcher-mirror", "launcher-result", "control.lock")
 COORDINATED_GATE = False  # Sólo CC8 puede acreditar el host; esto no configura control.py.
+# CC2: único estado que el mismo cuerpo vuelve a evaluar. deferred no tuvo
+# efecto ni RPC; cualquier otro recibo es fijo para su clave de fase.
+REEVALUATED = ("deferred",)
 
 
 class Invalid(ValueError):

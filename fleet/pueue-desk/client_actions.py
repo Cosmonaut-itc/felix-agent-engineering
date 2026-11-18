@@ -2,8 +2,10 @@
 
 The installation supplies engine, adapter and binary. No client field selects
 any of them. Adapters are bounded local evidence reads, never launcher calls
-or result locks. CC2 owns reconciliation of retained/unknown reservations.
+or result locks. CC2's Reconciler recovers retained/unknown reservations.
 """
+from contextlib import contextmanager
+import copy
 import fcntl
 import hashlib
 import json
@@ -12,6 +14,7 @@ from pathlib import Path
 import sqlite3
 import subprocess
 import sys
+import time
 import types
 
 # Loading through compile also works with the controller's isolated interpreter
@@ -52,6 +55,9 @@ class InstalledAdapters:
     def verify(self, request, observation, reservation):
         raise Unavailable('unsupported')
 
+    def evidence(self, reservation):
+        raise Unavailable('unsupported')
+
 
 def reservations(engine):
     """Read-only seam for host writers; caller holds the real control.lock.
@@ -64,13 +70,17 @@ def reservations(engine):
         if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
             return []
         values = [json.loads(row[0]) for row in db.execute('SELECT body FROM client_reservations')]
-    for value in values:
-        if (type(value) is not dict or type(value.get('version')) is not int or value['version'] != 1 or
-                type(value.get('open')) is not bool or type(value.get('uncertain')) is not bool or
-                type(value.get('group')) is not str or not value['group']):
-            raise ValueError('client_journal')
-        c.identity(value['identity'])
-    return values
+    return [valid_reservation(value) for value in values]
+
+
+def valid_reservation(value):
+    if (type(value) is not dict or type(value.get('version')) is not int or value['version'] != 1 or
+            type(value.get('open')) is not bool or type(value.get('uncertain')) is not bool or
+            type(value.get('group')) is not str or not value['group'] or
+            value.get('retained') not in (None,) + c.REASONS):
+        raise ValueError('client_journal')
+    c.identity(value['identity'])
+    return value
 
 
 def blocked(engine, group, opening=False):
@@ -253,19 +263,22 @@ class ClientActions:
         query = request['op'] == 'status'
         r = c.action_projection(request) if query else request
         record = self.record(r)
-        if record:
+        # Only a receipt without effect and without RPC is evaluated again.
+        if record and (query or record['response']['status'] not in c.REEVALUATED or record['digest'] != digest(r)):
             result = (self.reply(r, 'rejected', 'idempotency_conflict', held=record['response']['reservation'] == 'held')
                       if record['digest'] != digest(r) else record['response'])
         elif query:
             result = self.reply(r, 'rejected', 'not_found')
         else:
-            result = self.execute(r)
+            result = self.execute(r, record)
         return c.validate_response(dict(result, op='status', action_op=r['op']) if query else result, request)
 
-    def execute(self, r):
+    def execute(self, r, prior=None):
         previous = self.reservation(r)
         held = bool(previous and previous['open'])
-        record = dict(request=r, digest=digest(r), revision=0, response=None, process=None)
+        # Revisions stay monotonic across a deferred re-evaluation (no ABA for CC2).
+        record = dict(request=r, digest=digest(r), revision=prior['revision'] if prior else 0,
+                      response=None, process=None)
         def reject(reason, status='rejected', identity=None):
             record['response'] = self.reply(r, status, reason, identity, held)
             self.save(record)
@@ -284,7 +297,7 @@ class ClientActions:
                 if (previous['group'] != group or previous['mode'] != r['mode'] or
                         not self.same_attempt(previous['identity'], current)):
                     return reject('identity')
-                if not previous['open']:
+                if not previous['open'] and not (previous.get('released') and r['op'] == 'hold'):
                     return reject('stale_state')
                 if previous['uncertain']:
                     return reject('rpc_unresolved', 'deferred')
@@ -343,6 +356,9 @@ class ClientActions:
                     'retire-interrupted': ('remove', current['task_id'])}[r['op']]
             self.boundary('before_rpc')
             if self.rpc is not None:
+                # Synthetic transport: durable dispatch mark, never provably unsent.
+                record['process'] = dict(state='direct')
+                self.save(record)
                 self.rpc(*args)
             else:
                 self.send(record, *args)
@@ -406,6 +422,266 @@ class ClientActions:
             if child.poll() is None:
                 child.kill()
             child.wait()
+
+
+ERRORS = (OSError, ValueError, KeyError, TypeError, sqlite3.Error, subprocess.SubprocessError)
+NO_EFFECT = ('deferred', 'rejected')
+# Ops whose effect a fixed adapter can observe in the task identity alone.
+OBSERVABLE = {'hold': 'held', 'cancel-no-payload': 'started',
+              'retire-held': 'retired', 'retire-interrupted': 'retired'}
+LOCK_WAIT = 1.0
+
+
+class Busy(Exception):
+    pass
+
+
+def retained(engine, group):
+    """Closed reason of the first retained open reservation of group, or None."""
+    reasons = [v.get('retained') for v in reservations(engine) if v['group'] == group and v['open']]
+    return next((r for r in ('rpc_unresolved', 'unsupported') if r in reasons),
+                next((r for r in reasons if r), None))
+
+
+class Reconciler:
+    """CC2: autonomous recovery of client actions without runner/waiter/HTTP.
+
+    copy (control.lock) -> collect (no lock) -> compare and decide (control.lock).
+    Collect only calls the fixed adapter, the child birth identity and the
+    daemon generation. With control.lock held nothing calls a launcher, waits
+    for result.lock, recurses into client, waits for a signal grace or sends a
+    Pueue RPC. No reservation expires; closing needs journal/daemon/adapter proof.
+    """
+    LIMIT = 32
+    boundary = staticmethod(lambda phase: None)
+
+    def __init__(self, engine, adapter=None, birth=None, budget=5.0, clock=time.monotonic):
+        self.engine, self.birth, self.budget, self.clock = engine, birth, budget, clock
+        self.actions = ClientActions(engine, adapter)
+
+    @contextmanager
+    def locked(self):
+        # Bounded wait on the installed inode: a slow client never stalls the tick.
+        with (self.engine.directory / 'control.lock').open('rb') as handle:
+            limit = time.monotonic() + LOCK_WAIT
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    if time.monotonic() >= limit:
+                        raise Busy()
+                    time.sleep(.02)
+            yield
+
+    def run(self):
+        report = dict(abiertas=0, cerradas=0, avanzadas=0, retenidas=0, cambiadas=0, pendientes=0, ocupado=False)
+        deadline = self.clock() + self.budget
+        try:
+            with self.locked():
+                snapshots = self.copy()
+            report['abiertas'] = len(snapshots)
+            self.boundary('copied')
+            proposals = []
+            for snap in snapshots:
+                if self.clock() >= deadline:
+                    report['pendientes'] += 1  # next tick; nothing decided without evidence
+                    continue
+                proposals.append((snap, self.collect(snap)))
+            self.boundary('collected')
+            if proposals:
+                with self.locked():
+                    for snap, evidence in proposals:
+                        self.apply(snap, evidence, report)
+        except Busy:
+            report['ocupado'] = True
+        return report
+
+    def snapshot(self, key, generation):
+        launcher, ref, action_id = key
+        with self.engine.connect() as db:
+            row = db.execute('SELECT body FROM client_reservations WHERE launcher=? AND ref=? AND action_id=?', key).fetchone()
+            rows = db.execute('SELECT phase FROM client_actions WHERE launcher=? AND ref=? AND action_id=? '
+                              'ORDER BY phase', key).fetchall()
+        if row is None:
+            return None
+        value = valid_reservation(json.loads(row[0]))
+        phases = {}
+        for (phase,) in rows:
+            record = self.actions.record(dict(launcher=launcher, ref=ref, action_id=action_id, phase=phase))
+            phases[phase] = (record['revision'], record['digest'], record['response']['status'])
+        record = self.actions.record(dict(value, phase=value.get('phase')))
+        return dict(key=key, generation=generation, reservation=value, record=record, phases=phases)
+
+    def authority(self):
+        with self.engine.connect() as db:
+            return self.engine.state(db)
+
+    def copy(self):
+        state = self.authority()
+        with self.engine.connect() as db:
+            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
+                return []
+        keys = sorted((v['launcher'], v['ref'], v['action_id']) for v in reservations(self.engine) if v['open'])
+        if not keys:
+            return []
+        start = int(self.engine.clock() // 60) % len(keys)  # rotation: no starvation under LIMIT
+        keys = (keys[start:] + keys[:start])[:self.LIMIT]
+        result = []
+        for key in keys:
+            snap = self.snapshot(key, state['generation'])
+            snap['authority'] = state
+            result.append(copy.deepcopy(snap))
+        return result
+
+    def collect(self, snap):
+        """Outside control.lock. Bounded local reads; any failure is just no evidence."""
+        evidence = dict(child=None, live=None, observation=None, finish=None, reason=None)
+        R, P = snap['reservation'], snap['record']
+        if P is None:
+            return evidence
+        proc = P.get('process') or {}
+        if R['uncertain'] and proc.get('pid') is not None and 'dead_generation' not in proc and self.birth:
+            try:
+                before = self.engine.generation(snap['authority'])
+                born = self.birth(proc['pid'])
+                after = self.engine.generation(snap['authority'])
+                evidence.update(child='alive' if born == proc['birth'] else 'dead',
+                                live=before if before == after else None)
+            except ERRORS:
+                pass
+        excluded = R['uncertain'] and proc.get('dead_generation') not in (None, snap['generation'])
+        if excluded or not R['uncertain'] and not self.unused(snap):
+            try:
+                observed = self.actions.observe(P['request'], snap['authority'], R)
+                evidence['observation'] = observed
+                if not R['uncertain']:
+                    published = self.actions.adapter.evidence(R)
+                    c.keys(published, 'acceptance proof')
+                    if published['proof'] is None:
+                        raise Unavailable('evidence_missing')
+                    finish = c.validate_request(dict(
+                        schema=c.SCHEMA, op='finish', launcher=R['launcher'], ref=R['ref'],
+                        action_id=R['action_id'], phase='finish', mode=R['mode'],
+                        expected=observed['identity'], acceptance=published['acceptance'],
+                        proof=published['proof']))
+                    self.actions.adapter.verify(finish, observed, R)
+                    evidence['finish'] = finish
+            except Unavailable as error:
+                evidence['reason'] = error.reason
+            except ERRORS:
+                evidence['reason'] = 'evidence_missing'
+        return evidence
+
+    @staticmethod
+    def unused(snap, besides=None):
+        """True when no phase of this action had (or may have had) an effect."""
+        return all(status in NO_EFFECT for phase, (_, _, status) in snap['phases'].items() if phase != besides)
+
+    def same(self, before, now):
+        # The three versions: journal revisions, request digests, authority generation.
+        revisions = (now['reservation']['revision'] == before['reservation']['revision'] and
+                     [v[0] for v in now['phases'].values()] == [v[0] for v in before['phases'].values()])
+        digests = (now['reservation'].get('digest') == before['reservation'].get('digest') and
+                   [v[1] for v in now['phases'].values()] == [v[1] for v in before['phases'].values()])
+        generation = now['generation'] == before['generation']
+        return revisions and digests and generation and list(now['phases']) == list(before['phases'])
+
+    def apply(self, snap, evidence, report):
+        try:
+            now = self.snapshot(snap['key'], self.authority()['generation'])
+        except ERRORS:
+            report['cambiadas'] += 1
+            return
+        if now is None or not now['reservation']['open'] or not self.same(snap, now):
+            report['cambiadas'] += 1  # discard; the next pass rereads from scratch
+            return
+        R, P = now['reservation'], now['record']
+        outcome = self.decide(now, R, P, evidence)
+        report[outcome] += 1
+
+    def keep(self, R, reason):
+        if R.get('retained') != reason:
+            R['retained'] = reason
+            R['revision'] = R.get('revision', 0) + 1
+            with self.engine.connect(write=True) as db:
+                db.execute('UPDATE client_reservations SET body=? WHERE launcher=? AND ref=? AND action_id=?',
+                           (canonical(R), R['launcher'], R['ref'], R['action_id']))
+        return 'retenidas'
+
+    def decide(self, now, R, P, evidence):
+        if P is None or P['digest'] != R.get('digest'):
+            return self.keep(R, 'evidence_missing')
+        r, proc = P['request'], P.get('process')
+        if R['uncertain']:
+            if P['response']['status'] != 'unknown':
+                return self.keep(R, 'evidence_missing')
+            if proc is None:
+                # No dispatch mark: the coordinator ended before any child/RPC.
+                R['uncertain'] = False
+                if self.unused(now, besides=r['phase']):
+                    R.update(open=False, released=True)
+                P['response'] = self.actions.reply(r, 'deferred', 'host_action', held=R['open'])
+                self.actions.save(P, R)
+                return 'avanzadas' if R['open'] else 'cerradas'
+            dead = proc.get('dead_generation')
+            if dead is None or dead == now['generation']:
+                if dead is None and evidence['child'] == 'dead' and evidence['live'] == now['generation']:
+                    # Only a durable fact: the child died under this daemon generation.
+                    # Exit alone never excludes a late message the daemon still holds.
+                    proc['dead_generation'] = now['generation']
+                    self.actions.save(P)
+                return self.keep(R, 'rpc_unresolved')
+            # Child dead before a supervised daemon change: no late message exists.
+            # The effect itself still needs proof; without it the action stays
+            # unknown and uncertain (no opening), only the reason changes.
+            current = (evidence['observation'] or {}).get('identity')
+            if (current is None or r['op'] not in OBSERVABLE or
+                    not self.actions.same_attempt(r['expected'], current)):
+                if proc.get('state') != 'excluded':
+                    proc['state'] = 'excluded'
+                    self.actions.save(P)
+                return self.keep(R, evidence['reason'] or 'evidence_missing')
+            if current == r['expected']:
+                # No late message and no effect: a fixed receipt, never a retry.
+                response = self.actions.reply(r, 'rejected', 'stale_state', held=True)
+            else:
+                try:
+                    c.transition(r['expected'], current, r['op'])  # only our op's edge
+                    response = self.actions.reply(r, OBSERVABLE[r['op']], identity=current, held=True)
+                except c.Invalid:
+                    return self.keep(R, 'identity')
+                R['identity'] = current
+                if r['op'] == 'hold':
+                    R['hold_identity'] = current  # attributed: our single message, excluded late
+            proc['state'] = 'excluded'
+            R['uncertain'] = False
+            if response['status'] == 'rejected' and self.unused(now, besides=r['phase']):
+                R.update(open=False, released=True)
+                response = self.actions.reply(r, 'rejected', 'stale_state')
+            P['response'] = response
+            self.actions.save(P, R)
+            return 'avanzadas' if R['open'] else 'cerradas'
+        if self.unused(now):
+            # Every phase was rejected/deferred: this action never held anything.
+            R.update(open=False, released=True)
+            self.actions.save(P, R)
+            return 'cerradas'
+        finish = evidence['finish']
+        if finish is None:
+            return self.keep(R, evidence['reason'] or 'evidence_missing')
+        current = finish['expected']
+        prior = now['phases'].get('finish')
+        if prior is not None and prior[2] not in c.REEVALUATED:
+            return self.keep(R, 'idempotency_conflict')
+        if (R['mode'] != finish['mode'] or not self.actions.same_attempt(R['identity'], current) or
+                R['acceptance'] is not None and R['acceptance'] != finish['acceptance']):
+            return self.keep(R, 'identity')  # first acceptance and attempt stay fixed
+        record = dict(request=finish, digest=digest(finish), revision=prior[0] if prior else 0,
+                      process=None, response=self.actions.reply(finish, 'finished', identity=current))
+        R.update(open=False, uncertain=False, identity=current)
+        self.actions.save(record, R)
+        return 'cerradas'
 
 
 def main(engine, stdin, stdout, birth=None):

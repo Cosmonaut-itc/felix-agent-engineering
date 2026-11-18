@@ -152,7 +152,11 @@ def control(value, host='mini'):
                   ('slots', 'undo', 'dry_run', 'mode', 'reorder', 'restart_queue')}, **{k: value[k] for k in fields})
     if caps.get('reason_reorder') is not None:
         if caps['reason_reorder'] not in ('La coordinación de pausas de los clientes no está acreditada.',
-                                        'Hay una reserva cliente o una RPC pendiente de reconciliar.'):
+                                        'Hay una reserva cliente o una RPC pendiente de reconciliar.',
+                                        # CC2: retained reservations name their closed reason.
+                                        'Reserva cliente retenida: una RPC del cliente puede seguir en curso.',
+                                        'Reserva cliente retenida: el lanzador aún no publica evidencia acreditada.',
+                                        'Reserva cliente retenida: falta evidencia para cerrarla.'):
             raise ValueError('Motivo de coordinación inválido')
         result['capabilities']['reason_reorder'] = caps['reason_reorder']
     reasons = value.get('pause_reasons', {})

@@ -576,6 +576,37 @@ def client_support():
         return False
 
 
+CLIENT_RECONCILE_SECONDS = 5.0
+CLIENT_RETAINED = {
+    'rpc_unresolved': 'Reserva cliente retenida: una RPC del cliente puede seguir en curso.',
+    'unsupported': 'Reserva cliente retenida: el lanzador aún no publica evidencia acreditada.',
+    None: 'Reserva cliente retenida: falta evidencia para cerrarla.'}
+
+
+def reconcile_clients(pueue, directory, engine=None):
+    """CC2 tick for the Mini guard and start preparer. Caller must NOT hold control.lock.
+
+    The reconciler takes the installed lock twice with a bounded wait and keeps
+    its own budget, so a slow adapter never delays the guard without bound.
+    Never raises: failure only leaves the reservations as they were.
+    """
+    try:
+        if not client_support():
+            return None  # orphan journal: host paths already fail closed
+        engine = engine or MiniControl(pueue, directory)
+        report = client_module().Reconciler(engine, birth=priority_helper().birth,
+                                            budget=CLIENT_RECONCILE_SECONDS).run()
+        if report['abiertas'] or report['ocupado']:
+            log(directory, 'reconciliacion_cliente', **report)
+        return report
+    except Exception as error:
+        try:
+            log(directory, 'reconciliacion_cliente', error=type(error).__name__)
+        except Exception:
+            pass
+        return None
+
+
 _PRIORITY_HELPER = None
 
 
@@ -1509,8 +1540,8 @@ class MiniControl:
         return dict(schema='rack-host-result@1', status='ok', reorder_groups=reorder_groups, capabilities=dict(
             client=self.host == 'mini' and client_support(),
             slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=any(g['enabled'] for g in reorder_groups.values()), restart_queue=False,
-            reason_reorder=self.client_reservation_reason if any(g['reason'] == self.client_reservation_reason for g in reorder_groups.values()) else
-                'La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None),
+            reason_reorder=next((g['reason'] for g in reorder_groups.values() if g['reason'] in self.client_reasons()), None) or (
+                'La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None)),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
@@ -1733,6 +1764,18 @@ class MiniControl:
             return True  # An unreadable client journal closes every group, including openings.
         return client_module().blocked(self, group, opening=opening)
 
+    def client_reasons(self):
+        return {self.client_reservation_reason} | set(CLIENT_RETAINED.values())
+
+    def client_block_reason(self, group):
+        """Readable, fixed reason while a client reservation closes reorder."""
+        if not self.client_blocked(group):
+            return None
+        if not client_support():
+            return self.client_reservation_reason
+        reason = client_module().retained(self, group)
+        return CLIENT_RETAINED.get(reason, CLIENT_RETAINED[None]) if reason else self.client_reservation_reason
+
     def reorder_view(self, state, snapshot, enabled):
         generation = self.generation(state)
         state_bytes = len(canonical(snapshot).encode())
@@ -1752,7 +1795,8 @@ class MiniControl:
                         self.reorder_preflight(snapshot['tasks'][str(row['id'])], aliases)
                 except (ValueError,OSError):
                     unsafe = True
-            reason = (self.client_reservation_reason if self.client_blocked(g) else
+            client = self.client_block_reason(g)
+            reason = (client if client else
                       'En pausa recuperando… · ' + recovery if recovery else
                       'No se puede reordenar mientras el grupo está pausado · ' + ', '.join(labels[r] for r in (reasons or ['manual'])) if paused else
                       'La coordinación de pausas de los clientes no está acreditada.' if not self.coordinated_reorder else
@@ -2701,6 +2745,10 @@ class MiniControl:
         candidate = self._candidate(snapshot,state,block)
         if candidate is None:
             return
+        if self.client_blocked(candidate[2], opening=True):
+            # An unresolved client RPC in this group excludes any start by ID.
+            block('reason',candidate[2])
+            return
         with self.connect() as db:
             value = admission_state(db)
         if value is None:
@@ -2869,6 +2917,8 @@ class MiniControl:
                     if not reasons <= {'pressure','startup'}:
                         block('reason',group,'resume');continue
                     if status != 'Paused':continue
+                    if self.client_blocked(group,opening=True):
+                        block('reason',group,'resume');continue  # same client barrier as the Mini guard
                     cause,_,_,started = self._admission_gate(state,group,proc)
                     if cause:
                         block(cause,group,'resume')
@@ -3172,6 +3222,19 @@ def main():
             response = engine.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
         print(json.dumps(response, allow_nan=False))
         return
+    guarded(args, parser, pueue, directory)
+    if args.host == 'mini' and (args.command == 'guardia' or args.command == 'preparar' and not args.seco):
+        # After control.lock is released: the reconciler retakes it itself.
+        reconcile_clients(pueue, directory)
+    if args.command == 'guardia':
+        try:
+            prune_history(pueue, directory)
+        except Exception:
+            # The guard has already succeeded and released control.lock.
+            pass
+
+
+def guarded(args, parser, pueue, directory):
     with locked(directory, create=args.command != 'preparar'):
         try:
             engine = MiniControl(pueue, directory, host=args.host)
@@ -3222,12 +3285,6 @@ def main():
                 detalle = type(error).__name__ if args.host == 'desk' else str(error)
                 log(directory, "error", detalle=detalle)
             raise
-    if args.command == 'guardia':
-        try:
-            prune_history(pueue, directory)
-        except Exception:
-            # The guard has already succeeded and released control.lock.
-            pass
 
 
 if __name__ == "__main__":

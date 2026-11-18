@@ -153,12 +153,14 @@ La `phase` coincide con `op`, excepto `signal:TERM`, `signal:KILL`,
 `action_op`, sin cambiarla ni combinar TERM/KILL. Es un conjunto
 cerrado, no un identificador arbitrario. La clave durable es
 `(launcher,ref,action_id,phase)`: mismo cuerpo da mismo recibo; otro cuerpo en
-esa fase da idempotency_conflict, incluso tras reiniciar. El diario enlaza
+esa fase da idempotency_conflict, incluso tras reiniciar. La única excepción es
+`deferred` (`REEVALUATED` en `client_contract.py`): no tuvo efecto ni envió RPC,
+así que el mismo cuerpo se evalúa otra vez y su revisión sigue creciendo. El diario enlaza
 todas las fases a la misma identidad inicial/modo/acción; permite las
 transiciones explícitas de esta tabla, no cambiar el intento. TERM y KILL
 son subpasos diferentes de una misma acción; un poll no genera UUID nuevo.
 Los terminales no se podan con los logs. Un duplicado consulta el resultado
-registrado, no vuelve a emitir RPC.
+registrado, no vuelve a emitir RPC; `status` tampoco reevalúa un `deferred`.
 
 `acceptance` contiene exactamente `action_id`, `attempt`, `accepted_at`,
 `origin` (null o `rack-panel`) y `receipt` (digest opaco). Se proyecta de la
@@ -256,8 +258,9 @@ suelta el lock; obtiene evidencia por adaptador fijo; vuelve a tomarlo y
 coteja las tres versiones antes de avanzar/cerrar. Si algo cambió, descarta
 la propuesta y relee. Si falta prueba o queda RPC vivo, conserva unknown y
 su razón. Cubre reserva antes de stash nunca enviado y resultado durable
-publicado antes de finish. El preparador y las guardias ejecutarán ese ciclo;
-no se delega su progreso al próximo usuario que consulte. CC0 sólo lo exige.
+publicado antes de finish. El preparador y la guardia de la Mini ejecutan ese
+ciclo; no se delega su progreso al próximo usuario que consulte. Ver
+«Entrega CC2».
 
 ## Clientes viejos, filtro pendiente y elegibilidad
 
@@ -367,9 +370,9 @@ puede habilitar la compuerta. Acreditar Mini nunca habilita desk/U3.7.
 
 `control.py client` implementa el transporte local del contrato. No admite
 argumentos ni selectores: la instalación elige host, autoridad, configuración,
-entorno y binario. Sólo corre en la Mini. En el desk la guardia y el goteo
-aún no consultan reservas (U3.7), así que `client` falla con un diagnóstico,
-no escribe el diario y la vista anuncia `capabilities.client:false`. Lee como máximo `MAX_BYTES+1` antes de decodificar; usa
+entorno y binario. Sólo corre en la Mini. En el desk `client` falla con un diagnóstico,
+no escribe el diario y la vista anuncia `capabilities.client:false`; desde CC2
+la guardia y el goteo del desk sí consultan reservas (ver «Entrega CC2»). Lee como máximo `MAX_BYTES+1` antes de decodificar; usa
 los validadores CC0 tanto al entrar como al responder. Los rechazos de negocio
 salen 0; una petición inválida sale 2 con `invalid_request_response()`.
 
@@ -447,11 +450,69 @@ entregas posteriores deben acreditar formatos fijos que permitan verificar
 identidad, compatibilidad del worker, aceptación y prueba sin esos accesos.
 La negociación global del protocolo no anuncia soporte por corrida.
 
-CC2 debe copiar bajo `control.lock` acción, reserva, generación, ambas
-revisiones y digest; recoger evidencia fuera del candado; volver y cotejar
-las versiones antes de avanzar o cerrar. Debe recoger también intenciones
-anteriores al envío, hijos identificados, recibos diferidos y resultados
-publicados antes de `finish`, sin depender de runner, waiter ni HTTP vivos.
-CC1 conserva esos datos; no implementa ese recuperador, preparador ni goteo.
+CC1 conserva los datos que usa el recuperador de CC2 (ver «Entrega CC2»).
 CC6 entregará los archivos y el binario interno mediante los instaladores.
+**`coordinated_reorder` sigue en `False`; sólo CC8 puede acreditar el corte.**
+
+## Entrega CC2: reconciliador autónomo, sin habilitar reordenar
+
+`client_actions.Reconciler` recoge acciones cliente abiertas sin runner, waiter
+ni HTTP vivos. Un cliente vivo retiene `control.lock` durante toda su fase, así
+que una intención `unknown` visible bajo el candado pertenece a un dueño
+terminado. Cada pasada sigue tres pasos:
+
+1. **Copia bajo `control.lock`.** Reserva, recibo de su fase, revisión de la
+   reserva y de cada fase, digest de petición y `generation` de la autoridad.
+2. **Recogida sin candado.** Nacimiento del hijo identificado, generación del
+   daemon y el adaptador fijo. Nunca llama a un lanzador, espera `result.lock`,
+   llama a `client`, espera una gracia de señal ni envía una RPC de Pueue.
+3. **Cotejo bajo `control.lock`.** Si cambió una revisión, un digest o la
+   generación, descarta la propuesta; la pasada siguiente relee desde cero.
+
+La espera por el candado está acotada y la pasada tiene presupuesto de
+tiempo y un máximo de acciones, con rotación por minuto para que ninguna
+quede sin turno. Lo que no alcanza queda para el siguiente tick. Corren la
+guardia de la Mini, después de soltar `control.lock` y antes de la poda, y
+el envoltorio de arranque antes de tomar el candado del preparador; también
+`control.py preparar` sin `--seco`. El preparador no toca reservas, ni
+`unknown`, ni los Stashed de un cliente, y reiniciar el daemon no libera nada.
+
+**Qué cierra hoy, con los adaptadores instalados (`unsupported`):**
+
+- Una intención `unknown` sin marca de despacho: la reserva se escribió antes
+  de un stash que nunca salió, porque el hijo no ejecuta sin el byte de
+  liberación. El recibo pasa a `deferred` (`host_action`) y la reserva se
+  libera si ninguna otra fase de la acción tuvo efecto. El mismo cuerpo
+  puede reintentarse.
+- Una reserva abierta cuyas fases son todas `rejected` o `deferred`, por
+  ejemplo un hold rechazado por carrera tras escribir la reserva.
+
+**Qué retiene, con razón cerrada en `retained`:**
+
+- `rpc_unresolved`: hijo `gated`, `sent` o `reaped`, o transporte directo,
+  mientras no haya cambiado la generación del daemon. La salida del hijo sólo
+  deja constancia durable (`dead_generation`); ni ella, ni el reloj, ni dos
+  lecturas iguales excluyen un mensaje tardío. Sólo un reinicio supervisado
+  del daemon después de esa muerte lo excluye.
+- `unsupported`: reservas conocidas (aceptación pendiente, resultado durable
+  publicado antes de `finish`) que necesitan evidencia del lanzador.
+- `evidence_missing`, `identity` o `idempotency_conflict`: falta prueba, la
+  identidad no es la del intento o ya existe otro `finish`.
+
+Mientras una reserva retenida bloquea reordenar, `reorder_groups` y
+`capabilities.reason_reorder` muestran un motivo fijo según esa razón. Una
+acción excluida sin prueba de su efecto conserva `unknown` e incierta, así que
+ninguna guardia abre su grupo. Manual, presión, arranque y la marca
+`pause-GRUPO.manual` siguen reteniendo.
+
+Con adaptadores sintéticos las pruebas cubren el ciclo completo: efecto
+observado tras la exclusión (`held` con `hold_identity` atribuido) y `finish`
+con resultado publicado. Esto no acredita adaptadores reales ni lee formatos
+de producción; eso queda para CC3–CC5.
+
+En el desk, `_one` y la reapertura de su guardia consultan reservas cliente
+igual que la Mini; `client` sigue rechazado allí y la vista anuncia
+`client:false`. El diario no se poda: las reservas no expiran y los
+terminales se conservan.
+
 **`coordinated_reorder` sigue en `False`; sólo CC8 puede acreditar el corte.**

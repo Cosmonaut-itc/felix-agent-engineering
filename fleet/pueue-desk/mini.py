@@ -668,6 +668,9 @@ class Manager:
         info = self.loaded(LABEL)
         if info is None or not re.search(r'^\s*pid = ' + str(os.getpid()) + r'\s*$', info, re.M):
             raise ValueError('El arranque debe pertenecer al MainPID de launchd')
+        # CC2 before the preparer's lock: the daemon is down, so only journal
+        # facts (never-dispatched intents) can close; the rest stays retained.
+        control.reconcile_clients(self.engine.pueue, self.directory, engine=self.engine)
         with control.locked(self.directory, create=False):
             recovered = self.recover_table()
             if recovered is not None:
