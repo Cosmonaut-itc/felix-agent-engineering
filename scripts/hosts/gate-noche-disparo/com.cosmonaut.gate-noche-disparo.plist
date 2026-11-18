@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+<key>Label</key><string>com.cosmonaut.gate-noche-disparo</string>
+<key>ProgramArguments</key><array><string>/bin/bash</string><string>__HOME__/bin/gate-noche-disparo.sh</string></array>
+<key>StartCalendarInterval</key><dict><key>Hour</key><integer>1</integer><key>Minute</key><integer>35</integer></dict>
+<key>StandardOutPath</key><string>__HOME__/Library/Logs/gate-noche-disparo.log</string>
+<key>StandardErrorPath</key><string>__HOME__/Library/Logs/gate-noche-disparo.log</string>
+</dict></plist>

@@ -74,6 +74,11 @@ class GenerationFixture(unittest.TestCase):
 
 
 class DeskGenerationTests(GenerationFixture):
+    def test_desk_view_never_announces_client(self):
+        # Desk guard and trickle do not consult client reservations until U3.7.
+        self.assertTrue(control.client_support())
+        self.assertIs(self.engine.view()['capabilities']['client'], False)
+
     def test_wall_clock_jumps_keep_identity(self):
         original = self.generation()
         for ps in ('Sat Nov 14 08:44:12 2026 pueued', 'Sat Nov 14 08:44:14 2026 pueued',
