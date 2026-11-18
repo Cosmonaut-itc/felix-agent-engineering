@@ -27,6 +27,7 @@ class Evidence(cc1.Evidence):
         self.directory=Path(directory)
         self.settled=False
         self.effect_applied=False
+        self.effect_receipts={}
         self.finish=None
         self.slow=0
         self.result_lock=False
@@ -42,7 +43,8 @@ class Evidence(cc1.Evidence):
             with (self.directory/'result.lock').open('a') as h:fcntl.flock(h,fcntl.LOCK_EX)
         return dict(observation=dict(group=reservation['group'],identity=copy.deepcopy(self.identity)),
                     settled=self.settled,finish=copy.deepcopy(self.finish),
-                    **(dict(effect_applied=True) if self.effect_applied else {}))
+                    **(dict(effect_applied=copy.deepcopy(self.effect_receipts.get(
+                        tuple(r[k] for k in ('launcher','ref','action_id','phase'))))) if self.effect_applied else {}))
 
 
 def write_then_die(directory,record,reserve):
@@ -85,7 +87,12 @@ def orphan(self,r=None,process='sent',status='unknown',die=False):
     r=copy.deepcopy(r or self.r)
     reserve=dict(launcher=r['launcher'],ref=r['ref'],action_id=r['action_id'],group='suites',mode=r['mode'],
                  identity=r['expected'],acceptance=r['acceptance'],hold_identity=None,open=True,uncertain=status=='unknown')
-    if process is not None:process=dict(pid=999999,birth='synthetic:123',state=process)
+    if process is not None:
+        process=dict(pid=999999,birth='synthetic:123',state=process)
+        # Synthetic launcher authority publishes a phase/process receipt before
+        # recovery. recover only reads that artifact, not a daemon-derived claim.
+        self.evidence.effect_receipts[tuple(r[k] for k in ('launcher','ref','action_id','phase'))] = dict(
+            {k:r[k] for k in ('launcher','ref','action_id','phase')},pid=process['pid'],birth=process['birth'])
     response=(self.actions.reply(r,'unknown','rpc_unresolved',identity=r['expected'],held=True) if status=='unknown'
               else self.actions.reply(r,status,identity=self.evidence.identity,held=True))
     record=dict(request=r,digest=a.digest(r),revision=0,process=process,response=response)
@@ -104,8 +111,7 @@ def orphan(self,r=None,process='sent',status='unknown',die=False):
 
 def run_reconcile(self,offline=None):
     reconcile=a.Reconciler(self.engine,self.evidence,birth=lambda pid:None)
-    with control.locked(self.engine.directory),control.client_collection_window(self.engine.directory):
-        return reconcile.run(offline=offline)
+    return reconcile.run(offline=offline)
 
 
 def state(self):
@@ -529,12 +535,18 @@ def collection_lock_holder(path,pipe,seconds):
     pipe.close()
 
 
-def test_whole_guard_tick_aborts_on_bounded_relock_contention(self):
+def test_whole_guard_tick_protects_before_independent_contended_collection(self):
     self.orphan();self.evidence.identity=copy.deepcopy(self.after)
     self.evidence.settled=True;self.evidence.effect_applied=True
     ctx=multiprocessing.get_context('fork');parent,child=ctx.Pipe()
     holder=None;events=[];continued=[];generations=[]
     gather=a.Reconciler.bounded_gather;generation=self.engine.generation
+    legacy_guard=self.engine._legacy_guard
+    def protective(*args,**kwargs):
+        continued.append('guard')
+        with (self.engine.directory/'control.lock').open('rb') as handle:
+            with self.assertRaises(BlockingIOError):fcntl.flock(handle,fcntl.LOCK_EX|fcntl.LOCK_NB)
+        return legacy_guard(*args,**kwargs)
     def collect(reconciler,copies,offline):
         nonlocal holder
         proposals=gather(reconciler,copies,offline)
@@ -545,17 +557,17 @@ def test_whole_guard_tick_aborts_on_bounded_relock_contention(self):
         generations.append(time.monotonic());return generation(*args)
     started=time.monotonic();aborted=False
     try:
-        with patch.object(a.Reconciler,'bounded_gather',collect),patch.object(a.Reconciler,'boundary',events.append),patch.object(control,'CLIENT_RELOCK_SECONDS',.08,create=True),patch.object(self.engine,'generation',read_generation),patch.object(self.engine,'_legacy_guard',side_effect=lambda *args:continued.append('guard')):
+        with patch.object(a.Reconciler,'bounded_gather',collect),patch.object(a.Reconciler,'boundary',events.append),patch.object(self.engine,'generation',read_generation),patch.object(self.engine,'_legacy_guard',side_effect=protective):
             try:
                 with control.locked(self.engine.directory):self.engine.guard(dict(load=4,memory=1))
             except RuntimeError as error:
                 self.assertEqual(str(error),'client_collection_lock_busy');aborted=True
         elapsed=time.monotonic()-started
         print('whole-guard-tick seconds=%.3f generations=%d events=%s aborted=%s'%(elapsed,len(generations),events,aborted),flush=True)
-        self.assertLess(elapsed,.45,'full tick includes copy, gather, apply, relock and generation reads')
-        self.assertTrue(aborted,'lock failure must unwind the tick')
-        self.assertEqual(continued,[],'guard cannot continue without exclusion')
-        self.assertEqual(events,['copied','collected']);self.assertTrue(generations)
+        self.assertLess(elapsed,.45,'full tick includes protective guard, copy, gather, apply attempt and generation reads')
+        self.assertFalse(aborted,'an independent collection never aborts the protective guard')
+        self.assertEqual(continued,['guard'],'protective guard runs before independent collection')
+        self.assertEqual(events,['copied','collected']);self.assertGreaterEqual(len(generations),3,'protective guard and collection generation reads')
         self.assertTrue(self.actions.reservation(self.r)['open'])
         self.assertEqual(self.actions.record(self.r)['response']['status'],'unknown')
     finally:
@@ -564,7 +576,8 @@ def test_whole_guard_tick_aborts_on_bounded_relock_contention(self):
             if holder.is_alive():holder.terminate();holder.join()
             self.assertEqual(holder.exitcode,0)
         parent.close();child.close()
-
+    with control.locked(self.engine.directory):self.engine.guard(dict(load=4,memory=1))
+    self.assertEqual(self.actions.record(self.r)['response']['status'],'held','a contended action is retried on a later tick')
 
 
 def test_whole_guard_tick_with_contention_after_application(self):

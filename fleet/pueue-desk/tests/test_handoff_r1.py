@@ -173,7 +173,8 @@ class R1Tests(unittest.TestCase):
         with patch.object(h.m,'loaded',return_value=None):
             for _ in range(1200):
                 with self.assertRaises(ValueError):h.m.start(execute=lambda *_:None)
-        files=list(h.directory.glob('arranque.log*'))
+        self.assertEqual((h.directory/'arranque.log.lock').read_bytes(),b'')
+        files=[p for p in h.directory.glob('arranque.log*') if p.name != 'arranque.log.lock']
         self.assertEqual({p.name for p in files},{'arranque.log','arranque.log.1'})
         self.assertTrue(all(p.stat().st_size<=65536 for p in files))
         self.assertTrue(all('SECRET' not in p.read_text() and 'TOKEN' not in p.read_text() for p in files))

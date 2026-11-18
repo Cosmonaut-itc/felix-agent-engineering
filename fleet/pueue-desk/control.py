@@ -393,55 +393,48 @@ def apply_mode(pueue, now):
     print(f"Modo {mode}: " + ", ".join(f"{g}={n}" for g, n in limits.items()))
 
 
-@contextmanager
-def locked(directory, create=True):
-    if create:
-        directory.mkdir(parents=True, exist_ok=True)
-    with (directory / "control.lock").open("a" if create else "rb") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
-        token = _CONTROL_HANDLES.set(_CONTROL_HANDLES.get() + ((Path(directory).resolve(), handle),))
-        try:
-            yield handle
-        finally:
-            _CONTROL_HANDLES.reset(token)
-
-
-CLIENT_RELOCK_SECONDS = .1
+CLIENT_LOCK_SECONDS = .1
 
 
 class ClientCollectionBusy(RuntimeError):
-    """Unwind every scope that assumed control.lock; retry on the next tick."""
+    """A new start could not enter its independent critical section in time."""
+
+
+def wait_control_lock(handle, seconds):
+    deadline = time.monotonic() + seconds
+    while True:
+        try:
+            fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return
+        except BlockingIOError:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ClientCollectionBusy('client_collection_lock_busy')
+            time.sleep(min(.01, remaining))
 
 
 @contextmanager
-def client_collection_window(directory):
-    """Only release our own tracked lock; every caller rereads authority after it.
-
-    Never open another descriptor to unlock an inode: flock belongs to the open
-    description. Untracked callers simply get the reconciler's nonblocking miss.
-    """
-    handles = [h for path, h in _CONTROL_HANDLES.get() if path == Path(directory).resolve()]
-    if len(handles) > 1:
-        raise ValueError('Candado de control anidado')
-    handle = handles[0] if handles else None
-    if handle is not None:
-        fcntl.flock(handle, fcntl.LOCK_UN)
+def locked(directory, create=True, seconds=None):
+    if create:
+        directory.mkdir(parents=True, exist_ok=True)
+    pending = {}
     try:
-        yield
+        with (directory / "control.lock").open("a" if create else "rb") as handle:
+            if seconds is None:
+                fcntl.flock(handle, fcntl.LOCK_EX)
+            else:
+                wait_control_lock(handle, seconds)
+            handle.client_pending = pending
+            token = _CONTROL_HANDLES.set(_CONTROL_HANDLES.get() + ((Path(directory).resolve(), handle),))
+            try:
+                yield handle
+            finally:
+                _CONTROL_HANDLES.reset(token)
     finally:
-        if handle is not None:
-            deadline = time.monotonic() + CLIENT_RELOCK_SECONDS
-            while True:
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        # Deliberately outside ADMISSION_ERRORS: callers must
-                        # unwind, never continue their authority-dependent work.
-                        raise ClientCollectionBusy('client_collection_lock_busy')
-                    time.sleep(min(.01, remaining))
+        # The caller has finished ALL protected work and its descriptor is closed.
+        # These independent cycles never borrow or reacquire the caller's lock.
+        for engine, offline in pending.values():
+            engine.reconcile_clients(offline=offline)
 
 
 def wait_rack_lock(handle):
@@ -1192,7 +1185,11 @@ def start_projection(engine, config, queue_path=None, allow_pending=True, policy
 
 
 def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, boundary=lambda phase: None, _collected=False):
-    """Caller holds control.lock. Intention -> queue rename -> repeatable completion."""
+    """Caller holds control.lock; collection runs after its normal lock exit.
+
+    launchd collects before entering here, since exec does not unwind contexts.
+    Intention -> queue rename -> repeatable completion retains all client holds.
+    """
     config = configuration if configuration is not None else (
         validate_configuration(pueue='/opt/homebrew/bin/pueue', daemon='/opt/homebrew/bin/pueued',
                                env={}, cwd=Path.home()) if engine.host == 'mini' else validate_configuration())
@@ -1787,9 +1784,13 @@ class MiniControl:
                     return 0
             if not client_support():
                 return 0  # All opening/pruning seams already fail closed on orphan journals.
-            with client_collection_window(self.directory):
-                return client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
-                                                 birth=priority_helper().birth).run(offline=offline)
+            handles = [h for path, h in _CONTROL_HANDLES.get() if path == self.directory.resolve()]
+            if handles:
+                # Keep the guard/preparer's exclusion until its normal exit.
+                handles[-1].client_pending[self.directory.resolve()] = (self, offline)
+                return 0
+            return client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
+                                             birth=priority_helper().birth).run(offline=offline)
         except ADMISSION_ERRORS:
             return 0  # Collection failure cannot suppress the protective guard.
 

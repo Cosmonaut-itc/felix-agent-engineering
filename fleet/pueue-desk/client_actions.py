@@ -474,7 +474,7 @@ class Reconciler:
 
     recover is a fixed adapter's evidence-only interface. It returns observation,
     settled (a positive exclusion of late RPCs, NOT child death), effect_applied
-    (authenticated evidence that THIS phase caused the observed effect), and optional
+    (durable launcher evidence bound to the phase key and child's PID/birth), and optional
     finish (a full CC0 request authenticated by verify). The collector runs in
     a disposable process, outside control.lock; no result lock can stall guard.
     """
@@ -509,9 +509,11 @@ class Reconciler:
             if not db.execute("SELECT 1 FROM sqlite_master WHERE name='client_reservations'").fetchone():
                 return []
             self.actions.index(db)
+            keys = list(db.execute('SELECT launcher,ref,action_id FROM client_open ORDER BY checked LIMIT ?', (self.limit,)))
+            if not keys:
+                return []
             state = self.engine.state(db)
             generation = self.current_generation(state, offline)
-            keys = list(db.execute('SELECT launcher,ref,action_id FROM client_open ORDER BY checked LIMIT ?', (self.limit,)))
             sequence = db.execute('SELECT COALESCE(MAX(checked),0)+1 FROM client_open').fetchone()[0]
             result = []
             for key in keys:
@@ -535,6 +537,19 @@ class Reconciler:
                                    rejected_unsent=rejected_unsent))
                 db.execute('UPDATE client_open SET checked=? WHERE launcher=? AND ref=? AND action_id=?', (sequence,) + key)
             return result
+
+    @staticmethod
+    def effect_matches(proof, record):
+        # Shape and binding are checked again under the apply lock. This is an
+        # internal fixed-adapter receipt, never a client-supplied affirmation.
+        if type(proof) is not dict or set(proof) != {'launcher', 'ref', 'action_id', 'phase', 'pid', 'birth'}:
+            return False
+        r, process = record['request'], record.get('process') or {}
+        return (all(proof[k] == r[k] for k in ('launcher', 'ref', 'action_id', 'phase'))
+                and type(proof['pid']) is int and proof['pid'] > 0
+                and proof['pid'] == process.get('pid')
+                and type(proof['birth']) is str and bool(proof['birth'])
+                and proof['birth'] == process.get('birth'))
 
     def collect(self, item, daemon):
         record, reservation = item['record'], item['reservation']
@@ -564,7 +579,7 @@ class Reconciler:
             raise Unavailable('rpc_unresolved')
         # Excluding a late message does not attribute an external Stashed to
         # our hold. Older adapters without effect evidence must retain unknown.
-        if record['response']['status'] == 'unknown' and evidence.get('effect_applied') is not True:
+        if record['response']['status'] == 'unknown' and not self.effect_matches(evidence.get('effect_applied'), record):
             raise Unavailable('evidence_missing')
         finish = evidence['finish']
         if finish is not None:
@@ -574,7 +589,7 @@ class Reconciler:
                     or reservation['acceptance'] is not None and finish['acceptance'] != reservation['acceptance']):
                 raise Unavailable('identity')
             self.actions.adapter.verify(finish, observed, reservation)
-        return dict(kind='evidence', observation=observed, finish=finish)
+        return dict(kind='evidence', observation=observed, finish=finish, effect_applied=evidence.get('effect_applied'))
 
     def gather(self, copies, offline):
         proposals = []
@@ -686,6 +701,8 @@ class Reconciler:
                 observed, finish = proposal['observation'], proposal['finish']
                 after = observed['identity']
                 if current['response']['status'] == 'unknown':
+                    if not self.effect_matches(proposal.get('effect_applied'), current):
+                        raise Unavailable('evidence_missing')
                     c.transition(r['expected'], after, r['op'])
                     status = dict(hold='held', **{'cancel-no-payload':'started', 'signal':'signalled',
                                   'signal-manual':'signalled', 'retire-held':'retired', 'retire-interrupted':'retired'})[r['op']]

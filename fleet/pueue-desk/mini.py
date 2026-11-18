@@ -651,7 +651,11 @@ class Manager:
         line = (json.dumps(record, ensure_ascii=False) + '\n').encode('utf-8')
         # Diagnostics are disposable, unlike authority. Rotation precedes append
         # and bounds BOTH files, even across repeated KeepAlive failures.
-        with control.locked(self.directory, create=False):
+        with (self.directory / 'arranque.log.lock').open('a') as handle:
+            try:
+                control.wait_control_lock(handle, control.CLIENT_LOCK_SECONDS)
+            except control.ClientCollectionBusy:
+                return False  # Another diagnostic writer stalled; never wait on authority.
             target = self.directory / 'arranque.log'
             if target.exists() and target.stat().st_size + len(line) > START_LOG_BYTES:
                 target.replace(self.directory / 'arranque.log.1')
@@ -669,7 +673,15 @@ class Manager:
         info = self.loaded(LABEL)
         if info is None or not re.search(r'^\s*pid = ' + str(os.getpid()) + r'\s*$', info, re.M):
             raise ValueError('El arranque debe pertenecer al MainPID de launchd')
-        with control.locked(self.directory, create=False):
+        self._start_stage = 'configuración'
+        config = self.configuration_for_host()
+        self._start_stage = 'preparación'
+        # A complete, independent cycle. Failure to apply leaves the reservation
+        # open. Entry into the start's own section has its own deadline too.
+        self.engine.reconcile_clients(offline=config['data'] / 'state.json')
+        with control.locked(self.directory, create=False, seconds=control.CLIENT_LOCK_SECONDS):
+            if os.path.lexists(self.directory / 'maintenance'):
+                raise ValueError('Host en mantenimiento')
             recovered = self.recover_table()
             if recovered is not None:
                 self.engine = recovered
@@ -684,9 +696,8 @@ class Manager:
             self._start_stage = 'configuración'
             config = self.configuration_for_host()
             self._start_stage = 'preparación'
-            control.prepare_start(self.engine, configuration=config)
-            # CC2 collects outside control.lock. Do not execute a launch whose
-            # handoff authorization changed while that window was open.
+            control.prepare_start(self.engine, configuration=config, _collected=True)
+            # Reread authority before exec, including preparation/recovery changes.
             if self.transaction(self.state()) != value:
                 raise ValueError('Autorización de arranque cambió durante la recogida cliente')
             self.checkpoint('start:prepared')

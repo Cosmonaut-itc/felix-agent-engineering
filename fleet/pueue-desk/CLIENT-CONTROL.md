@@ -460,34 +460,49 @@ CC6 entregará los archivos y el binario interno mediante los instaladores.
 ## Entrega CC2
 
 `Reconciler` en `client_actions.py` recorre las reservas abiertas sin runner,
-waiter ni HTTP. La guardia lo ejecuta antes de recuperar/admitir, incluso si
-el relevo mantiene el tick cerrado. `prepare_start` lo ejecuta antes de leer
-su imagen de preparación; el ensayo no escribe ni recoge. El preparador
-conserva el Stashed cliente, la incertidumbre y las reservas a través del
-reinicio. No convierte una reserva cliente en propiedad del editor de orden.
+waiter ni HTTP. La guardia solicita el ciclo en su tick, incluso si el relevo
+mantiene la admisión cerrada. Si el llamador tiene `control.lock`, `locked`
+registra una recogida pendiente y conserva el candado hasta terminar todo su
+trabajo protegido. Sólo después de cerrar su descriptor ejecuta el ciclo
+independiente: la pausa por presión no depende de que éste consiga entrar,
+recoger ni aplicar. Nunca se cede ni se recupera un candado prestado.
 
-El ciclo toma una copia de acción/reserva bajo el mismo inode de control,
-suelta el candado, recoge del daemon y del adaptador fijo, y recupera el
-candado. Antes de guardar coteja la generación durable y la observada, la
-revisión y digest de la fase, y revisión/digest/fase/apertura de la reserva.
-Una copia obsoleta se descarta; el índice la vuelve a leer en otro tick.
-No espera result.lock ni llama al lanzador bajo control.lock. Los ámbitos
-productivos usan `locked`, que conserva el descriptor mientras permite esa
-ventana; después se relee la autoridad. El wrapper de arranque vuelve a
-comprobar la autorización del relevo antes de ejecutar el daemon.
-La recuperación del descriptor exterior usa un plazo de 0,1 s: si otro dueño
-lo retiene, lanza `ClientCollectionBusy` con `client_collection_lock_busy` y
-aborta el tick/preparador; ningún trabajo que presuponga exclusión continúa.
-El siguiente tick puede reintentar. Este plazo y los 0,4 s de recogida no son
-una cota de extremo a extremo: copia, cotejos, SQLite y lecturas de generación
-son trabajo adicional.
+`prepare_start` sigue solicitando la recogida; bajo `locked` se ejecuta al
+salir de la sección de preparación. Esto cubre la llamada directa y la CLI
+`preparar`. El ensayo no recoge ni escribe. Como exec no desenrolla contextos,
+el wrapper de launchd ejecuta explícitamente el ciclo **antes** de entrar a su
+propia sección de preparación. Después relee y valida la autoridad del relevo,
+y vuelve a comprobarla justo antes de exec. Su nueva entrada a `control.lock`
+tiene un plazo de 0,1 s: la contención rechaza el arranque sin escribir la cola
+ni ejecutar el daemon. La preparación conserva el Stashed cliente, la
+incertidumbre y las reservas a través del reinicio; nunca los adopta como
+propiedad del editor de orden.
 
-Se recogen hasta ocho reservas por lote. Un único proceso de recogida tiene
-un plazo de 0,4 s para todo el lote; el RPC de lectura tiene un plazo menor.
-Se recoge el proceso y su grupo privado al salir. Una lectura lenta o sin
-prueba retiene con `evidence_missing`, sin impedir el cierre por presión de
-la guardia. No hay espera de gracia, llamada recursiva a client ni RPC
-mutadora desde el reconciliador.
+El ciclo independiente copia acción/reserva bajo una adquisición no bloqueante
+del mismo inode de control, cierra su descriptor, recoge del daemon y del
+adaptador fijo, y toma otra adquisición no bloqueante para aplicar. Antes de
+guardar coteja la generación durable y la observada, revisión/digest de la fase,
+y revisión/digest/fase/apertura de la reserva. Una copia obsoleta o una entrada
+ocupada se descartan: el siguiente tick vuelve a intentarlo y el índice rotativo
+revisa también las demás acciones. El llamador ya terminó su sección crítica;
+ningún trabajo que presupone exclusión continúa después de soltarla. No espera
+result.lock ni llama al lanzador bajo control.lock.
+
+Se recogen hasta ocho reservas por lote. Con `client_open` vacío no se crea
+colector ni se lee la generación. Un único proceso tiene un plazo de 0,4 s
+para todo el lote; el RPC de lectura tiene un plazo menor. Se recoge el proceso
+y su grupo privado al salir. Una lectura lenta o sin prueba retiene con
+evidence_missing; la guardia ya ejecutó su deber protector. No hay espera de
+gracia, llamada recursiva a client ni RPC mutadora desde el reconciliador.
+El límite del lote, los plazos de SQLite y de generación y las adquisiciones
+no bloqueantes acotan el trabajo añadido; los 0,4 s no se presentan como cota
+del tick completo, que incluye copia, cotejos y las lecturas propias del host.
+
+El rechazo de arranque conserva el diagnóstico saneado de U3.5 y la rotación
+acotada en `arranque.log`, bajo el candado independiente `arranque.log.lock`.
+No espera `control.lock` para registrar. Si otro escritor del diagnóstico
+retiene su candado más de 0,1 s, o falla el acceso al disco, se omite ese registro
+y el arranque sigue rechazado; un log descartable no alarga la espera de autoridad.
 
 Qué puede cerrar hoy:
 
@@ -521,9 +536,18 @@ nueva prueba no fabrica incertidumbre de un RPC que nunca se envió.
 El futuro método fijo `recover` recibe copia de la petición, estado, reserva,
 proceso identificado y observación del daemon. Devuelve observación acreditada,
 exclusión positiva de RPC tardía (`settled`), prueba del efecto de **esta fase**
-(`effect_applied:true`) y opcionalmente una petición finish autenticada por
-`verify`. Son pruebas distintas: `settled` no puede derivarse sólo del estado
-del hijo ni del daemon, y tampoco prueba quién produjo el estado observado.
+(`effect_applied`) y opcionalmente una petición finish autenticada por
+`verify`. La prueba de efecto es un objeto con exactamente launcher, ref,
+action_id, phase, pid y birth, procedente de evidencia durable del lanzador.
+El núcleo exige que coincidan la clave `(launcher, ref, action_id, phase)` y
+el PID/nacimiento del hijo copiado; vuelve a cotejarlos bajo el candado al
+aplicar. Un booleano, una clave ajena o un proceso distinto no acreditan efecto.
+La forma y el enlace no autentican por sí solos el origen: el adaptador fijo
+debe acreditar el recibo durable original, nunca construirlo desde los argumentos
+que recibe. **La prueba de efecto no puede derivarse del daemon, del estado o
+salida del hijo ni de la petición del cliente.** Son pruebas distintas:
+`settled` tampoco puede derivarse sólo del hijo ni del daemon, y no demuestra
+quién produjo el estado observado.
 Tras un gated incierto, incluso un Stashed con la identidad esperada más
 settled conserva `unknown`, reserva abierta/incierta y `hold_identity:null`
 si falta la prueba de efecto. Un adaptador antiguo que omite effect_applied
