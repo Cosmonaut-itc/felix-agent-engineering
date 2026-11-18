@@ -98,9 +98,9 @@ class RunnerFalso:
             "{} veredicto={} {}={}\n".format(etiqueta, r["veredicto"], campo, archivo), "")
 
 
-def verificar_rechazo(caso, tipo, configurar, fallo, recuperacion=False, decision="reanudar"):
+def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="reanudar"):
     """Contrato operativo compartido: cada adaptador conserva su productor falso."""
-    from dominio import Decision, Pausa
+    from dominio import Decision
     from ledger import Ledger
     from observador import Falso
     from operativo import tick
@@ -144,11 +144,21 @@ def verificar_rechazo(caso, tipo, configurar, fallo, recuperacion=False, decisio
         from operativo import resultado_observacion
         ledger.registrar_efecto(actual.repo, efecto, obs.ahora,
             {"observacion": resultado_observacion(efecto, llegada.observacion)}, True)
+    def invocaciones():
+        return (caso.invocaciones() if hasattr(caso, "invocaciones") else
+                caso.runner.llamadas)
+    rechazados = {ruta: ruta.read_bytes() for patron in ("codigo.json", "recibo.json")
+                  for ruta in caso.adaptador.estado.rglob(patron)
+                  if (json.loads(ruta.read_text()) == 64 if ruta.name == "codigo.json" else
+                      json.loads(ruta.read_text()).get("codigo") == 64)}
+    caso.assertTrue(rechazados)
+    invocaciones_antes = list(invocaciones())
     observador = Falso(obs)
     tick(ledger, actual.repo, observador, obs.ahora + 1, caso.git, caso.adaptador)
     pausado = ledger.estado(actual.repo, operativo=True)
     caso.assertEqual((pausado.pausa.motivo, pausado.pausa.detalle),
                      ("infraestructura", "lanzador-rechazo"))
+    caso.assertEqual(invocaciones(), invocaciones_antes)
     caso.assertTrue(pausado.pausa.archivos)
     caso.assertTrue(all(Path(r).is_file() for r in pausado.pausa.archivos))
     caso.assertEqual(pausado.trenes[0].fase.reanudaciones,
@@ -180,10 +190,12 @@ def verificar_rechazo(caso, tipo, configurar, fallo, recuperacion=False, decisio
     tick(ledger, actual.repo, observador, obs.ahora + 2, caso.git, caso.adaptador)
     resuelto = ledger.estado(actual.repo, operativo=True)
     caso.assertIsNone(resuelto.pausa)
+    caso.assertEqual({ruta: ruta.read_bytes() for ruta in rechazados}, rechazados)
     if decision == "abortar":
         caso.assertEqual(resuelto.trenes[0].fase, Terminal("ABORTADO"))
         caso.assertTrue(all(e.tren is None and e.terminal is None for e in resuelto.entradas))
         caso.assertFalse(ledger.outbox(actual.repo))
+        caso.assertEqual(invocaciones(), invocaciones_antes)
         return
     fase = resuelto.trenes[0].fase
     caso.assertEqual(fase.reanudaciones, getattr(anterior, "reanudaciones", 0))
@@ -192,6 +204,13 @@ def verificar_rechazo(caso, tipo, configurar, fallo, recuperacion=False, decisio
     nuevo = desde_datos(json.loads(filas[0]["payload"]))
     caso.assertNotEqual(nuevo.clave, efecto.clave)
     caso.assertEqual(filas[0]["estado"], "resultado")
+    caso.assertGreater(len(invocaciones()), len(invocaciones_antes))
+    if hasattr(caso, "invocaciones"):
+        viejas = {i["clave"] for i in invocaciones_antes}
+        nuevas = invocaciones()[len(invocaciones_antes):]
+        caso.assertTrue(all(i["clave"] not in viejas for i in nuevas))
+        caso.assertTrue(all(Path(i["log"]).parent not in
+            {ruta.parent for ruta in rechazados} for i in nuevas))
     tick(ledger, actual.repo, observador, obs.ahora + 3, caso.git, caso.adaptador)
     final = ledger.estado(actual.repo, operativo=True)
     caso.assertIsNone(final.pausa)
@@ -233,19 +252,25 @@ class HasitoTests(Aislado):
                 suite_fixture(codigo=0, fallos=()))
 
     def test_sen7030_iniciar(self):
-        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo, F)
+        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo)
 
     def test_sen7030_reanudar(self):
-        verificar_rechazo(self, "reanudar-suite", self.configurar_rechazo, F)
+        verificar_rechazo(self, "reanudar-suite", self.configurar_rechazo)
 
     def test_sen7030_repetir(self):
-        verificar_rechazo(self, "repetir", self.configurar_rechazo, F)
+        verificar_rechazo(self, "repetir", self.configurar_rechazo)
 
     def test_sen7030_recuperar(self):
-        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo, F, recuperacion=True)
+        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo, recuperacion=True)
 
     def test_sen7030_abortar(self):
-        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo, F, decision="abortar")
+        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo, decision="abortar")
+
+    def test_sen7030_recuperar_reanudar(self):
+        verificar_rechazo(self, "reanudar-suite", self.configurar_rechazo, recuperacion=True)
+
+    def test_sen7030_recuperar_repetir(self):
+        verificar_rechazo(self, "repetir", self.configurar_rechazo, recuperacion=True)
 
     def iniciar(self, codigo=1, restantes=()):
         self.runner.responder = lambda argv: suite_fixture(

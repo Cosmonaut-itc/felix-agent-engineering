@@ -155,7 +155,7 @@ class JaleTests(Aislado):
     def verificar_rechazo(self, tipo, **kwargs):
         from test_hasito import GitFalso, verificar_rechazo
         self.git = GitFalso(self.raiz)
-        verificar_rechazo(self, tipo, self.configurar_rechazo, FALLO, **kwargs)
+        verificar_rechazo(self, tipo, self.configurar_rechazo, **kwargs)
 
     def test_sen7030_iniciar(self):
         self.verificar_rechazo("iniciar-suite")
@@ -171,6 +171,12 @@ class JaleTests(Aislado):
 
     def test_sen7030_abortar(self):
         self.verificar_rechazo("iniciar-suite", decision="abortar")
+
+    def test_sen7030_recuperar_reanudar(self):
+        self.verificar_rechazo("reanudar-suite", recuperacion=True)
+
+    def test_sen7030_recuperar_repetir(self):
+        self.verificar_rechazo("repetir", recuperacion=True)
 
     def test_suite_verde_dos_modos_y_argv_sin_filtros(self):
         ruta, r = self.suite()
