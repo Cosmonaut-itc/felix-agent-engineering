@@ -45,14 +45,15 @@ class OperadorR1Tests(unittest.TestCase):
         t.hasta_fase(Certificado)
         cert = t.estado().trenes[0].fase
         inicio, seguir, mezcla = (t.raiz / n for n in ('inicio', 'seguir', 'mezcla.log'))
+        archivos = {p.name: p.read_text() for p in t.operador.iterdir() if p.is_file()}
         def version(nombre, padre):
             entrada = ('echo entrada=' + nombre + ' >> ' + shlex.quote(str(mezcla)) +
                 '\ntouch ' + shlex.quote(str(inicio)) + '\nwhile [ ! -e ' +
                 shlex.quote(str(seguir)) + ' ]; do sleep .02; done\n' +
                 '. "$(dirname "$0")/modulo.sh"\nexec ' +
                 shlex.join([sys.executable, str(t.productor), str(t.raiz)]) + ' "$@"\n')
-            return t.commit({'jale.sh': entrada, 'modulo.sh': 'echo modulo=' + nombre +
-                            ' >> ' + shlex.quote(str(mezcla)) + '\n'}, (padre,))
+            return t.commit(dict(archivos, **{'jale.sh': entrada, 'modulo.sh': 'echo modulo=' + nombre +
+                            ' >> ' + shlex.quote(str(mezcla)) + '\n'}), (padre,))
         viejo = version('viejo', t.nuevo)
         nuevo = version('nuevo', viejo)
         t.push(viejo, 'refs/heads/main')
