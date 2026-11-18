@@ -10,7 +10,7 @@ import sys
 import unittest
 
 import test_activo as activo
-import test_juicio as juicio
+import test_juicio as juicio_fixtures
 from test_jale import PRODUCTOR
 from test_hasito import CANDIDATO, F, suite_fixture
 from adaptadores import seleccionar
@@ -29,9 +29,9 @@ class OperadorTests(unittest.TestCase):
     estado = activo.ActivoTests.estado
     hasta_fase = activo.ActivoTests.hasta_fase
     lineas = activo.ActivoTests.lineas
-    cli = juicio.JuicioTests.cli
-    juicio = juicio.JuicioTests.juicio
-    hasta_pausa = juicio.JuicioTests.hasta_pausa
+    cli = juicio_fixtures.JuicioTests.cli
+    juicio = juicio_fixtures.JuicioTests.juicio
+    hasta_pausa = juicio_fixtures.JuicioTests.hasta_pausa
 
     def setUp(self):
         activo.ActivoTests.setUp(self)
