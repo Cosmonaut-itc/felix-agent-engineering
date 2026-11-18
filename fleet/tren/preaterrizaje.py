@@ -1,4 +1,5 @@
 """Gancho privado por repo; nunca conserva una autorización de push entre ticks."""
+from contextlib import nullcontext
 from datetime import datetime, timezone
 import json
 import math
@@ -89,12 +90,13 @@ def objeto_sin_duplicados(pares):
     return objeto
 
 
-def invocar(config, solicitud, accion):
+def invocar(config, solicitud, accion, descriptor=None):
     """Sin shell ni salida privada en eventos. Mata el grupo al agotar el plazo."""
     try:
         with subprocess.Popen(config["comando"], stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                env=entorno(), start_new_session=True) as proceso:
+                env=entorno(), start_new_session=True,
+                pass_fds=(descriptor,) if descriptor is not None else ()) as proceso:
             try:
                 salida, _ = proceso.communicate(json.dumps(dict(solicitud, accion=accion)),
                                                 timeout=config["plazo_s"])
@@ -150,12 +152,13 @@ class Previo:
         restante = PRESUPUESTO_IO_S - self.io_s
         if restante <= 0:
             return "timeout"
-        if operador is not None:
-            CheckoutOperador(operador).avanzar()
+        lectura = (CheckoutOperador(operador, remoto=self.git.remoto).lectura(
+            {"pre_aterrizaje": config}) if operador is not None else nullcontext(None))
         inicio = self.reloj_io()
         try:
-            return invocar(dict(config, plazo_s=min(config["plazo_s"], restante)),
-                           solicitud, accion)
+            with lectura as descriptor:
+                return invocar(dict(config, plazo_s=min(config["plazo_s"], restante)),
+                               solicitud, accion, descriptor)
         finally:
             self.io_s += max(0, self.reloj_io() - inicio)
 

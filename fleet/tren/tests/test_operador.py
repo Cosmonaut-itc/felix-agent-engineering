@@ -36,8 +36,7 @@ class OperadorTests(unittest.TestCase):
     def setUp(self):
         activo.ActivoTests.setUp(self)
         self.operador = self.raiz / 'operador'
-        self.remoto_operador = self.raiz / 'operador-origin.git'
-        self.comando(self.raiz, 'init', '--bare', '--initial-branch=main', str(self.remoto_operador))
+        self.remoto_operador = self.origen
         self.productor = self.raiz / 'productor.py'
         self.productor.write_text(PRODUCTOR)
         (self.raiz / 'plan.json').write_text(json.dumps([{}]))
@@ -67,7 +66,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
       ('repeticion=' if rep else 'resultado=') + str(ruta))
 ''')
         self.productor_hasito = productor_hasito
-        self.viejo = self.version('viejo')
+        self.viejo = self.version('viejo', self.B)
         self.comando(self.fuente, 'push', str(self.remoto_operador), self.viejo + ':refs/heads/main')
         self.comando(self.raiz, 'clone', str(self.remoto_operador), str(self.operador))
         self.nuevo = self.version('nuevo', self.viejo)
@@ -77,7 +76,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
 
     def version(self, nombre, padre=None):
         salida = shlex.quote(str(self.raiz / 'versiones.log'))
-        lanzadores = {}
+        lanzadores = {'comun': 'base\n'}
         for adaptador, productor, prefijo in (
                 ('hasito', self.productor_hasito, [str(activo.RAIZ / 'tests')]),
                 ('jale', self.productor, [str(self.raiz)])):
@@ -92,7 +91,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
             + "('esperar' if esperar else 'seguir') if s['accion']=='verificar' else 'cancelado')))\n")
         lanzadores['vivo.sh'] = ('echo listo\nread -r continuar\n' + '# relleno\n' * 20000 +
                                   'echo ' + nombre + '\n')
-        if padre:
+        if padre and padre != self.B:
             lanzadores['agregado'] = 'nuevo\n'
         return self.commit(lanzadores, (padre,) if padre else (), nombre)
 
@@ -102,7 +101,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
     def avanzar(self):
         clase = getattr(git_ops, 'CheckoutOperador', None)
         self.assertIsNotNone(clase, 'falta avance del checkout del operador')
-        return clase(self.operador).avanzar()
+        return clase(self.operador, remoto=str(self.remoto_operador)).avanzar()
 
     def lanzar(self):
         self.hasta_fase(Certificado)
@@ -185,7 +184,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
 
     def test_fallo_fetch_no_pausa_reintenta_tick_siguiente(self):
         self.hasta_fase(EsperandoCI)
-        self.comando(self.operador, 'remote', 'set-url', 'origin', str(self.raiz / 'inexistente.git'))
+        self.contexto.git.remoto = str(self.raiz / 'inexistente.git')
         self.contexto.tick(5000)
         self.assertIsNone(self.estado().pausa)
         self.assertEqual(self.lineas('versiones.log'), [])
@@ -194,7 +193,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
                             r['resultado']['error'].get('codigo') ==
                             'checkout-operador-fetch-pendiente' for r in visible['outbox']))
         self.assertEqual(self.cabeza(), self.viejo)
-        self.comando(self.operador, 'remote', 'set-url', 'origin', str(self.remoto_operador))
+        self.contexto.git.remoto = str(self.remoto_operador)
         self.contexto.tick(5001)
         self.lanzar()
 
@@ -269,23 +268,21 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
         self.assertEqual(self.lineas('versiones.log'), [])
 
 
-    def test_candado_comun_serializa_otro_proceso(self):
+    def test_candado_comun_no_espera_a_otro_proceso(self):
         comun = Path(self.comando(self.operador, 'rev-parse', '--absolute-git-dir'))
         with (comun / 'pao-tren-operador.lock').open('a') as candado:
-            fcntl.flock(candado, fcntl.LOCK_EX)
+            fcntl.flock(candado, fcntl.LOCK_SH)
             guion = ("import sys; sys.path.insert(0, sys.argv[1]); "
-                     "from git_ops import CheckoutOperador; "
-                     "CheckoutOperador(sys.argv[2]).avanzar()")
-            proceso = subprocess.Popen([sys.executable, '-I', '-c', guion,
-                str(activo.RAIZ), str(self.operador)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            self.addCleanup(lambda: proceso.poll() is None and proceso.kill())
-            with self.assertRaises(subprocess.TimeoutExpired):
-                proceso.communicate(timeout=.3)
+                     "from git_ops import CheckoutOperador, CheckoutOperadorPendiente; "
+                     "\ntry: CheckoutOperador(sys.argv[2], remoto=sys.argv[3]).avanzar()"
+                     "\nexcept CheckoutOperadorPendiente as e: print(str(e))")
+            proceso = subprocess.run([sys.executable, '-I', '-c', guion,
+                str(activo.RAIZ), str(self.operador), str(self.remoto_operador)],
+                capture_output=True, text=True, timeout=10)
+            self.assertEqual(proceso.returncode, 0, proceso.stderr)
+            self.assertEqual(proceso.stdout.strip(), 'checkout-operador-lector-vivo')
             self.assertEqual(self.cabeza(), self.viejo)
-            fcntl.flock(candado, fcntl.LOCK_UN)
-            salida, error = proceso.communicate(timeout=10)
-            self.assertEqual(proceso.returncode, 0, (salida, error))
-            self.assertEqual(self.cabeza(), self.nuevo)
+        self.assertTrue(self.avanzar())
 
     def test_reanudar_y_repetir_hasito_avanzan_antes_del_runner(self):
         self.assertTrue(self.avanzar())

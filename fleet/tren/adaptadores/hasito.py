@@ -1,4 +1,5 @@
 """Frontera Hasito: argv sin shell y recibos tipados. No importa el tick."""
+from contextlib import nullcontext
 from dataclasses import dataclass, replace
 import hashlib
 import json
@@ -133,7 +134,7 @@ def leer_repeticion(r, commit, origen, origen_sha, base, fallo):
 
 class Hasito:
     def __init__(self, lanzador, git, runner=None, estado=None):
-        self.lanzador = str(Path(lanzador).resolve())
+        self.lanzador = str(Path(lanzador).absolute())
         self.git = git
         self.operador = None
         self.runner = runner or subprocess.run
@@ -190,10 +191,13 @@ class Hasito:
         # Recuperar evidencia ya producida no requiere permiso para trabajo nuevo.
         if not permitir_lanzar:
             return None
-        if self.operador is not None:
-            self.operador.avanzar()
+        lectura = (self.operador.lectura({"lanzador_hasito": self.lanzador})
+                   if self.operador is not None else nullcontext(None))
         try:
-            resultado = self.runner(list(argv), capture_output=True, text=True, check=False)
+            with lectura as descriptor:
+                herencia = {"pass_fds": (descriptor,)} if descriptor is not None else {}
+                resultado = self.runner(list(argv), capture_output=True, text=True,
+                                        check=False, **herencia)
         except (OSError, subprocess.SubprocessError):
             raise ResultadoInvalido("lanzador-no-disponible") from None
         exigir(resultado.returncode in (0, 1, 75), "salida-no-utilizable")

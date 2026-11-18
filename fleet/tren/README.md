@@ -1132,36 +1132,55 @@ escapan de ella. Un intérprete absoluto puede preceder al script del gancho;
 los archivos privados pasados como opciones posteriores pueden vivir fuera.
 Sin la clave se conserva el comportamiento anterior.
 
-El tick trae `origin/main` y avanza ese checkout sólo con fast-forward antes
-de cada lanzamiento, reanudación o repetición, y antes de invocar el gancho
-de pre-aterrizaje, tanto al verificar como al cancelar. El diario conserva
-la ruta del operador original para cancelar aunque cambie la configuración.
-Sigue a `main`, cuyo código ya pasó revisión, en vez de
-fijarse a un SHA: el lanzador puede exigir su último cambio publicado en
-`main`. El candidato conserva su SHA propio. En la promoción, el CAS y la
-relectura de la base siguen protegiendo B. Recuperar un recibo completado no
-avanza el operador; Jale puede avanzarlo también al reenganchar por clave un
-coordinador cuyo recibo aún no existe.
+El tick trae `main` desde el `remoto` configurado para el repositorio,
+el mismo que usa el tick activo para su candidato y CAS. Avanza el checkout
+sólo con fast-forward antes de cada lanzamiento, reanudación o repetición,
+y antes de invocar el gancho, tanto al verificar como al cancelar. No usa
+el `origin` del checkout como autoridad. El diario conserva la ruta del
+operador original para cancelar aunque cambie la configuración. Sigue a
+`main`, cuyo código ya pasó revisión; el candidato conserva su SHA propio.
+Después del avance vuelve a resolver el lanzador o script del gancho bajo
+candado: si un symlink nuevo escapa de la raíz, pausa con
+`checkout-operador:script-fuera-del-checkout` sin ejecutarlo.
 
 Con cambios locales, otra rama, historia divergente, una operación Git en
 curso o archivos sin seguimiento (también ignorados) que el avance pisaría,
 el checkout no se modifica y el carril pausa `infraestructura` con detalle
 `checkout-operador:<estado-encontrado>`. Un HEAD desacoplado sólo puede
-avanzar si es ancestro de `origin/main`, conservando el estado desacoplado.
+avanzar si es ancestro del `main` traído, conservando el estado desacoplado.
 `pao-tren estado --repo owner/project --juicio` muestra la pausa y permite
-`reanudar` para reintentar el mismo efecto, o `abortar`. Un fallo de fetch
-conserva el efecto pendiente sin lanzar ni pausar: el outbox muestra
-`checkout-operador-fetch-pendiente` y el siguiente tick reintenta.
+`reanudar` para reintentar el mismo efecto, o `abortar`. Un bloqueo del
+checkout conserva cualquier pausa anterior y su semántica de reanudación;
+la cancelación queda pendiente con el motivo en su diario, visible en
+`pao-tren estado`, y se reintenta en ticks posteriores. La pausa nacida al
+limpiar un paso se guarda en el mismo COMMIT que sus efectos y su ACK.
+Una pausa nacida al drenar se guarda como una transición propia sin efectos
+ni ACK: las obligaciones del paso anterior ya están confirmadas.
 
-El candado existente del carril cubre todo el tick. Además, el avance toma
-un `flock` exclusivo en `pao-tren-operador.lock` dentro del common-dir de Git:
-dos repositorios o rutas equivalentes que compartan checkout usan el mismo
-candado. Este archivo no se retira. No se mantiene durante la suite. Git
-reemplaza las entradas modificadas del checkout con archivos nuevos; un
-`bash` que ya tiene abierto su guion conserva el inodo y el contenido
-originales. La regresión usa un guion mayor que el búfer de lectura de Bash,
-lo detiene en una barrera, avanza el checkout y acredita ambos inodos y que
-termina con su versión original.
+El candado del carril cubre todo el tick. Además, el checkout usa un `flock`
+lector/escritor en `pao-tren-operador.lock` dentro del common-dir de Git;
+las rutas equivalentes y worktrees enlazados comparten ese candado. El
+avance toma el exclusivo sin esperar. Una puerta de escritura
+`pao-tren-operador.avance.lock` serializa la conversión de exclusivo a
+compartido. Ambos archivos son permanentes. Cada coordinador Jale,
+lanzador Hasito e invocación del gancho conserva el compartido durante su
+vida, mediante un descriptor heredado también por el lanzador de Jale.
+El candado sobrevive a la muerte del tick. El reenganche a un coordinador
+vivo usa su misma versión sin avanzar; recuperar un recibo completo tampoco
+avanza. El reemplazo de inodos sólo protege archivos ya abiertos: los
+módulos leídos después exigen bloquear el avance durante toda la corrida.
+
+Si hay lectores vivos, el trabajo nuevo no avanza ni lanza: conserva su
+efecto pendiente y el outbox muestra `checkout-operador-lector-vivo`.
+Un escritor concurrente puede mostrar `checkout-operador-avance-en-curso`.
+Un fallo de fetch también conserva el efecto pendiente sin pausar y muestra
+`checkout-operador-fetch-pendiente`. El siguiente tick reintenta.
+
+`tests/remoto-sen-7032-r1.sh` contrasta cada regresión de la ronda 1 contra
+el head revisado y exige rojo por assertions, sin errores de fixture, seguido
+de verde con el cambio. Incluye la muerte real del padre de un coordinador,
+lectura tardía de módulos, procedencia del remoto, symlinks introducidos por
+el avance, conservación de pausas y atomicidad ante muerte.
 
 `tests/remoto-sen-7032.sh` contrasta estas regresiones con la base anterior
 y con el cambio, usando remotos y checkouts temporales reales y los

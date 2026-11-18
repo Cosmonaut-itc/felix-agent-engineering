@@ -1,5 +1,7 @@
 """Recibos jale-recibo@1; sin juicio contra base ni normalización de firmas."""
+from contextlib import ExitStack
 import base64
+import fcntl
 import binascii
 import hashlib
 import json
@@ -98,7 +100,7 @@ class Jale:
         if not (isinstance(modos, (tuple, list)) and modos and
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
-        self.lanzador = str(Path(lanzador).resolve())
+        self.lanzador = str(Path(lanzador).absolute())
         self.git = git
         self.operador = None
         self.host, self.modos = host, tuple(modos)
@@ -123,14 +125,26 @@ class Jale:
                 not (registro / 'codigo.json').exists()):
             return False
         if not (registro / 'codigo.json').exists():
-            if self.operador is not None:
-                self.operador.avanzar()
             # Otro coordinador espera el mismo candado y recupera su resultado.
             # La sesión nueva sigue viva aunque muera el proceso del tick.
             try:
-                proceso = subprocess.Popen([sys.executable, str(Path(__file__).with_name(
-                    'ejecucion_jale.py')), str(registro)], start_new_session=True,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                with ExitStack() as recursos:
+                    descriptores, extras = (), []
+                    if self.operador is not None:
+                        candado = recursos.enter_context((registro / 'candado').open('a'))
+                        try:
+                            fcntl.flock(candado, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                            vivo = False
+                        except BlockingIOError:
+                            vivo = True
+                        lector = recursos.enter_context(self.operador.lectura(
+                            {"lanzador": self.lanzador}, reenganche=vivo))
+                        descriptores = (lector,) if vivo else (lector, candado.fileno())
+                        extras = [str(lector), str(-1 if vivo else candado.fileno())]
+                    proceso = subprocess.Popen([sys.executable, str(Path(__file__).with_name(
+                        'ejecucion_jale.py')), str(registro), *extras], start_new_session=True,
+                        pass_fds=descriptores, stdin=subprocess.DEVNULL,
+                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 self.esperar(proceso)
             except (OSError, subprocess.SubprocessError):
                 raise ResultadoInvalido('lanzador-no-disponible') from None

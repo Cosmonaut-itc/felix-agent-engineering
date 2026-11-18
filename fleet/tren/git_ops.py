@@ -4,6 +4,7 @@ Los objetos se construyen sin configuración global/sistema. El transporte
 conserva esa configuración para credenciales, pero desactiva hooks y tags.
 No se guardan argv ni stderr de transporte: pueden contener datos privados.
 """
+from contextlib import contextmanager
 from dataclasses import dataclass
 import fcntl
 import os
@@ -336,7 +337,8 @@ def validar_checkout_operador(config):
 
 class CheckoutOperador:
     """Avance conservador de un checkout dedicado; IO Git fuera del dominio."""
-    def __init__(self, ruta, ejecutar=None):
+    def __init__(self, ruta, ejecutar=None, *, remoto):
+        self.remoto = remoto
         self.ruta = Path(ruta).resolve()
         self.ejecutar = ejecutar or subprocess.run
 
@@ -354,17 +356,55 @@ class CheckoutOperador:
             raise CheckoutOperadorBloqueado("checkout-no-valido")
         return resultado.stdout.rstrip("\n")
 
-    def avanzar(self):
+    def candado(self):
         if Path(self.texto("rev-parse", "--show-toplevel")).resolve() != self.ruta:
             raise CheckoutOperadorBloqueado("raiz-no-corresponde")
         comun = Path(self.texto("rev-parse", "--git-common-dir"))
         if not comun.is_absolute():
             comun = self.ruta / comun
-        # Dentro del common-dir: misma identidad incluso con aliases de ruta,
-        # carriles distintos o worktrees enlazados. Nunca retirar este archivo.
-        with (comun / "pao-tren-operador.lock").open("a") as candado:
-            fcntl.flock(candado, fcntl.LOCK_EX)
+        return comun / "pao-tren-operador.lock"
+
+    @contextmanager
+    def escritura(self):
+        ruta = self.candado()
+        # Serializa la conversión EX -> SH: flock no garantiza una conversión
+        # atómica en todos los sistemas. Ningún escritor entra en ese intervalo.
+        with ruta.with_suffix(".avance.lock").open("a") as puerta, ruta.open("a") as candado:
+            try:
+                fcntl.flock(puerta, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(candado, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                raise CheckoutOperadorPendiente("checkout-operador-lector-vivo") from None
+            yield candado
+
+    def avanzar(self):
+        with self.escritura():
             return self._avanzar()
+
+    @contextmanager
+    def lectura(self, config, reenganche=False):
+        if reenganche:
+            with self.candado().open("a") as candado:
+                try:
+                    fcntl.flock(candado, fcntl.LOCK_SH | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    raise CheckoutOperadorPendiente("checkout-operador-avance-en-curso") from None
+                self.validar(config)
+                yield candado.fileno()
+        else:
+            with self.escritura() as candado:
+                self._avanzar()
+                self.validar(config)
+                fcntl.flock(candado, fcntl.LOCK_SH)
+                # Sólo cerrar el fd: LOCK_UN liberaría también el candado
+                # heredado por hijos que sobreviven a la muerte del tick.
+                yield candado.fileno()
+
+    def validar(self, config):
+        try:
+            validar_checkout_operador(dict(config, checkout_operador=str(self.ruta)))
+        except (ValueError, OSError, RuntimeError):
+            raise CheckoutOperadorBloqueado("script-fuera-del-checkout") from None
 
     def _avanzar(self):
         rama = self.git("symbolic-ref", "--quiet", "HEAD")
@@ -379,11 +419,11 @@ class CheckoutOperador:
         if self.texto("status", "--porcelain", "--untracked-files=no"):
             raise CheckoutOperadorBloqueado("cambios-sin-commitear")
         fetch = self.git("fetch", "--no-tags", "--no-recurse-submodules",
-            "--no-auto-maintenance", "origin", "+refs/heads/main:refs/remotes/origin/main")
+            "--no-auto-maintenance", self.remoto, "refs/heads/main")
         if fetch.returncode:
             raise CheckoutOperadorPendiente("checkout-operador-fetch-pendiente")
         actual = self.texto("rev-parse", "HEAD")
-        destino = self.texto("rev-parse", "refs/remotes/origin/main^{commit}")
+        destino = self.texto("rev-parse", "FETCH_HEAD^{commit}")
         if actual == destino:
             return False
         if self.git("merge-base", "--is-ancestor", actual, destino).returncode:

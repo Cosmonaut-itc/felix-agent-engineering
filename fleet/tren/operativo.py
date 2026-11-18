@@ -76,21 +76,27 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     previo = Previo(ledger, git, config, frontera)
     if adaptador is not None and ("checkout_operador" in config or
                                   getattr(adaptador, "operador", None) is not None):
-        adaptador.operador = (CheckoutOperador(config["checkout_operador"])
+        adaptador.operador = (CheckoutOperador(config["checkout_operador"], remoto=git.remoto)
                               if "checkout_operador" in config else None)
 
     def limpiar(nuevo, observacion=None):
         try:
             previo.limpiar(nuevo, observacion)
         except CheckoutOperadorBloqueado as exc:
-            nuevo = replace(nuevo, pausa=Pausa("infraestructura",
-                detalle="checkout-operador:" + str(exc)))
+            if nuevo.pausa is None:
+                nuevo = replace(nuevo, pausa=Pausa("infraestructura",
+                    detalle="checkout-operador:" + str(exc)))
+        return nuevo
+
+    def limpiar_previo(estado, observacion=None):
+        nuevo = limpiar(estado, observacion)
+        if nuevo != estado:
             ledger.guardar_paso(nuevo, (), ahora)
         return nuevo
 
-    estado = limpiar(estado)
+    estado = limpiar_previo(estado)
     observacion = observador.observar(estado, ahora)
-    estado = limpiar(estado, observacion)
+    estado = limpiar_previo(estado, observacion)
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
@@ -137,9 +143,10 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                         resultado["error"] = "ejecucion-incompleta"
                 frontera("efecto-ejecutado", efecto)
             except CheckoutOperadorBloqueado as exc:
-                estado = replace(estado, pausa=Pausa("infraestructura",
-                    detalle="checkout-operador:" + str(exc)))
-                ledger.guardar_paso(estado, (), ahora)
+                if estado.pausa is None:
+                    estado = replace(estado, pausa=Pausa("infraestructura",
+                        detalle="checkout-operador:" + str(exc)))
+                    ledger.guardar_paso(estado, (), ahora)
                 resultado, completo = {"error": {"codigo": "checkout-operador",
                                                "detalle": str(exc)}}, False
             except CheckoutOperadorPendiente as exc:
@@ -193,12 +200,13 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         efectos = recuperados + efectos
         frontera("decision-reducida", None)
         nuevo = limpiar(nuevo)
+        frontera("paso-limpiado", None)
         ledger.guardar_paso(nuevo, efectos, ahora)
         frontera("paso-guardado", None)
         nuevo = drenar(nuevo, observacion)
         return {"modo": "activo", "estado": datos(nuevo),
                 "efectos": datos(efectos), "outbox": resumen_outbox(ledger, repo)}
-    # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
+    # La cancelación pendiente retiene nuevos pushes, incluso al reanudar.
     estado = drenar(estado, observacion, recuperacion=True)
     consumido = None
     if not estado.pausa:
@@ -230,6 +238,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 break
     nuevo, efectos = paso(estado, observacion)
     nuevo = limpiar(nuevo)
+    frontera("paso-limpiado", None)
     ledger.guardar_paso(nuevo, efectos, ahora, consumido)
     frontera("paso-guardado", None)
     nuevo = drenar(nuevo, observacion)

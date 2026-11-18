@@ -26,9 +26,11 @@ def guardar(ruta, valor):
         os.close(descriptor)
 
 
-def coordinar(registro):
-    with (registro / 'candado').open('a') as candado:
-        fcntl.flock(candado, fcntl.LOCK_EX)
+def coordinar(registro, lector=-1, reservado=-1):
+    with (os.fdopen(reservado, "a") if reservado >= 0 else
+          (registro / "candado").open("a")) as candado:
+        if reservado < 0:
+            fcntl.flock(candado, fcntl.LOCK_EX)
         if (registro / 'codigo.json').exists():
             return
         iniciado = registro / 'iniciado.json'
@@ -47,7 +49,8 @@ def coordinar(registro):
             with (registro / 'coordinador.log').open('a') as salida:
                 for _ in range(INTENTOS_TRANSPORTE):
                     codigo = subprocess.run(argv, env=entorno, stdout=salida,
-                                            stderr=salida, check=False).returncode
+                                            stderr=salida, check=False,
+                                            pass_fds=(lector,) if lector >= 0 else ()).returncode
                     if codigo != 255:
                         break
         except (OSError, subprocess.SubprocessError):
@@ -56,4 +59,4 @@ def coordinar(registro):
 
 
 if __name__ == '__main__':
-    coordinar(Path(sys.argv[1]))
+    coordinar(Path(sys.argv[1]), *(int(a) for a in sys.argv[2:]))
