@@ -230,9 +230,11 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
     def test_config_rechaza_lanzador_y_gancho_fuera_al_cargar(self):
         config = dict(self.contexto.config, lanzador_hasito=str(self.operador / 'hasito.sh'))
         ruta = self.raiz / 'privada.json'
+        (self.operador / 'enlace.sh').symlink_to(self.raiz / 'fuera.sh')
         for invalido in (
                 dict(config, lanzador_hasito=str(self.raiz / 'fuera.sh')),
                 dict(config, lanzador=str(self.raiz / 'fuera.sh')),
+                dict(config, lanzador_hasito=str(self.operador / 'enlace.sh')),
                 dict(config, pre_aterrizaje=dict(comando=[sys.executable, str(self.raiz / 'fuera.py')], plazo_s=5)),
                 dict(config, checkout_operador='relativo')):
             with self.subTest(config=invalido):
@@ -337,4 +339,42 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
         self.contexto.tick(5000)
         self.assertEqual(self.cabeza(), self.nuevo)
         self.assertEqual((self.raiz / 'gancho-version').read_text(), 'nuevo')
+        self.assertEqual((self.raiz / 'gancho-accion').read_text(), 'cancelar')
+
+
+    def test_ignorado_que_se_pisaria_pausa_sin_perder_archivo(self):
+        (self.operador / '.git/info/exclude').write_text('agregado\n')
+        ruta = self.operador / 'agregado'
+        ruta.write_text('ignorado propio\n')
+        self.bloqueo('sin-seguimiento-en-el-avance',
+                     lambda: ruta.rename(self.raiz / 'ignorado-conservado'))
+        self.assertEqual((self.raiz / 'ignorado-conservado').read_text(), 'ignorado propio\n')
+
+    def test_archivo_sin_seguimiento_ajeno_al_avance_se_conserva(self):
+        ruta = self.operador / 'local'
+        ruta.write_text('conservar\n')
+        self.lanzar()
+        self.assertEqual(ruta.read_text(), 'conservar\n')
+
+    def test_cancelacion_sucia_pausa_y_reanudar_cancela(self):
+        self.hasta_fase(Certificado)
+        self.contexto.config['pre_aterrizaje'] = dict(
+            comando=[sys.executable, str(self.operador / 'gancho.py')], plazo_s=5)
+        (self.raiz / 'gancho-esperar').write_text('esperar')
+        self.hasta_fase(Promoviendo)
+        self.comando(self.operador, 'reset', '--hard', self.viejo)
+        ruta = self.operador / 'hasito.sh'
+        original = ruta.read_text()
+        ruta.write_text(original + '# local\n')
+        self.contexto.config.pop('pre_aterrizaje')
+        self.contexto.tick(5000)
+        self.assertIsNotNone(self.estado().pausa)
+        self.assertEqual(self.estado().pausa.detalle, 'checkout-operador:cambios-sin-commitear')
+        self.assertEqual((self.raiz / 'gancho-accion').read_text(), 'verificar')
+        self.assertEqual(self.cabeza(), self.viejo)
+        ruta.write_text(original)
+        self.juicio('reanudar')
+        self.contexto.tick(5001)
+        self.assertIsNone(self.estado().pausa)
+        self.assertEqual(self.cabeza(), self.nuevo)
         self.assertEqual((self.raiz / 'gancho-accion').read_text(), 'cancelar')
