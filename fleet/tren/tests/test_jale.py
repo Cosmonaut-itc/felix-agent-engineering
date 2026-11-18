@@ -146,6 +146,32 @@ class JaleTests(Aislado):
             self.assertEqual(contexto.exception.resultado.codigo, codigo)
         self.assertEqual(len(self.lanzamientos()), 1)
 
+    def configurar_rechazo(self, respuesta):
+        fila = {"codigo": 64, "sin_linea": True} if respuesta == "64" else (
+            {"codigo": 75, "sin_linea": True} if respuesta == "75" else
+            {"estados": ["falla"]} if respuesta == "rojo" else {})
+        self.plan([{}] * len(self.lanzamientos()) + [fila])
+
+    def verificar_rechazo(self, tipo, **kwargs):
+        from test_hasito import GitFalso, verificar_rechazo
+        self.git = GitFalso(self.raiz)
+        verificar_rechazo(self, tipo, self.configurar_rechazo, FALLO, **kwargs)
+
+    def test_sen7030_iniciar(self):
+        self.verificar_rechazo("iniciar-suite")
+
+    def test_sen7030_reanudar(self):
+        self.verificar_rechazo("reanudar-suite")
+
+    def test_sen7030_repetir(self):
+        self.verificar_rechazo("repetir")
+
+    def test_sen7030_recuperar(self):
+        self.verificar_rechazo("iniciar-suite", recuperacion=True)
+
+    def test_sen7030_abortar(self):
+        self.verificar_rechazo("iniciar-suite", decision="abortar")
+
     def test_suite_verde_dos_modos_y_argv_sin_filtros(self):
         ruta, r = self.suite()
         self.assertEqual(r, Completo('verde', costo_s=8))

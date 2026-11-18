@@ -84,6 +84,8 @@ class RunnerFalso:
     def __call__(self, argv, **kwargs):
         self.llamadas.append(tuple(argv))
         r = self.responder(argv)
+        if r["veredicto"] == 64:
+            return subprocess.CompletedProcess(argv, 64, "rechazo de política\n", "detalle del rechazo\n")
         rep = "--repetir" in argv
         carpeta = self.raiz / clave(argv[argv.index("--evidencia") + 1], rep)
         carpeta.mkdir(exist_ok=True)
@@ -94,6 +96,112 @@ class RunnerFalso:
         etiqueta, campo = ("REPETICION", "repeticion") if rep else ("SUITE", "resultado")
         return subprocess.CompletedProcess(argv, r["veredicto"],
             "{} veredicto={} {}={}\n".format(etiqueta, r["veredicto"], campo, archivo), "")
+
+
+def verificar_rechazo(caso, tipo, configurar, fallo, recuperacion=False, decision="reanudar"):
+    """Contrato operativo compartido: cada adaptador conserva su productor falso."""
+    from dominio import Decision, Pausa
+    from ledger import Ledger
+    from observador import Falso
+    from operativo import tick
+    entradas = tuple(Entrada(Entrega("example/project", pr, head, "apto", "dirigida"), pr,
+                             Admitido(), pr, tren="lote")
+                     for pr, head, _ in CANDIDATO.eslabones)
+    inicial = Estado("example/project", entradas,
+        (Tren("lote", tuple(e.entrega.recibo for e in entradas), EsperandoCI(CANDIDATO)),))
+    obs = Observacion(100, B, tuple(VistaPR(e.entrega.pr, e.entrega.head,
+        apto=True, hallazgos=0, dirigida=True, ci="verde", conflicto=False) for e in entradas),
+        ci_candidato="verde", costo_suite_sana_s=10000, ci_recibo="recibo-ci")
+    actual, efectos = paso(inicial, obs)
+    efecto = efectos[0]
+    if tipo != "iniciar-suite":
+        configurar("75" if tipo == "reanudar-suite" else "rojo")
+        llegada = ejecutar(efecto, actual, obs, caso.git, caso.adaptador)
+        actual, efectos = paso(actual, llegada.observacion)
+        if tipo == "reanudar-suite":
+            obs = replace(obs, ahora=actual.trenes[0].fase.esperar_hasta)
+            actual, efectos = paso(actual, obs)
+        efecto = efectos[0]
+        caso.assertEqual(efecto.tipo, tipo)
+    anterior = actual.trenes[0].fase
+    configurar("64")
+    ledger = Ledger(caso.raiz / ("ledger-" + tipo))
+    caso.addCleanup(ledger.close)
+    for entrada in entradas:
+        ledger.entregar(entrada.entrega, entrada.recibida)
+    ledger.guardar_paso(actual, (efecto,), obs.ahora)
+    if recuperacion:
+        # Simula el estado instalado anterior: outbox fallido y 64 durable.
+        try:
+            ejecutar(efecto, actual, obs, caso.git, caso.adaptador)
+        except EfectoFallido:
+            pass
+        ledger.registrar_efecto(actual.repo, efecto, obs.ahora,
+            {"error": {"codigo": "jale-paro-64"}}, False)
+    else:
+        llegada = ejecutar(efecto, actual, obs, caso.git, caso.adaptador)
+        caso.assertTrue(llegada.completo)
+        from operativo import resultado_observacion
+        ledger.registrar_efecto(actual.repo, efecto, obs.ahora,
+            {"observacion": resultado_observacion(efecto, llegada.observacion)}, True)
+    observador = Falso(obs)
+    tick(ledger, actual.repo, observador, obs.ahora + 1, caso.git, caso.adaptador)
+    pausado = ledger.estado(actual.repo, operativo=True)
+    caso.assertEqual((pausado.pausa.motivo, pausado.pausa.detalle),
+                     ("infraestructura", "lanzador-rechazo"))
+    caso.assertTrue(pausado.pausa.archivos)
+    caso.assertTrue(all(Path(r).is_file() for r in pausado.pausa.archivos))
+    caso.assertEqual(pausado.trenes[0].fase.reanudaciones,
+                     getattr(anterior, "reanudaciones", 0))
+    if tipo == "repetir":
+        fase = pausado.trenes[0].fase
+        caso.assertEqual((fase.costo_infra_s, fase.evidencias, fase.pendiente),
+                         (anterior.costo_infra_s, anterior.evidencias, anterior.pendiente))
+    caso.assertFalse(ledger.outbox(actual.repo))
+    caso.assertEqual(desde_datos(datos(pausado)), pausado)
+    # La proyección del CLI muestra motivo, evidencia y ambas decisiones.
+    from test_tren import cli
+    from unittest.mock import patch
+    with patch.object(cli, "activacion", return_value="activo"), \
+         patch.object(cli, "Ledger", return_value=ledger):
+        args = cli.parser().parse_args(["estado", "--repo", actual.repo, "--juicio"])
+        _, visible = cli.ejecutar(args)
+    caso.assertEqual(visible["estado"]["pausa"]["detalle"], "lanzador-rechazo")
+    caso.assertEqual({d["decision"] for d in visible["juicio"]["admitidas"]},
+                     {"reanudar", "abortar"})
+    # El CLI cierra el ledger: reabrir para continuar la decisión real.
+    ledger = Ledger(caso.raiz / ("ledger-" + tipo))
+    caso.addCleanup(ledger.close)
+    d = Decision("resolver-64", actual.repo, "lote", decision, None,
+                 "infraestructura corregida", obs.ahora + 2,
+                 ledger.pausa_id(actual.repo), pausado.pausa)
+    ledger.registrar_decision(d)
+    configurar("verde")
+    tick(ledger, actual.repo, observador, obs.ahora + 2, caso.git, caso.adaptador)
+    resuelto = ledger.estado(actual.repo, operativo=True)
+    caso.assertIsNone(resuelto.pausa)
+    if decision == "abortar":
+        caso.assertEqual(resuelto.trenes[0].fase, Terminal("ABORTADO"))
+        caso.assertTrue(all(e.tren is None and e.terminal is None for e in resuelto.entradas))
+        caso.assertFalse(ledger.outbox(actual.repo))
+        return
+    fase = resuelto.trenes[0].fase
+    caso.assertEqual(fase.reanudaciones, getattr(anterior, "reanudaciones", 0))
+    filas = ledger.outbox(actual.repo)
+    caso.assertEqual(len(filas), 1)
+    nuevo = desde_datos(json.loads(filas[0]["payload"]))
+    caso.assertNotEqual(nuevo.clave, efecto.clave)
+    caso.assertEqual(filas[0]["estado"], "resultado")
+    tick(ledger, actual.repo, observador, obs.ahora + 3, caso.git, caso.adaptador)
+    final = ledger.estado(actual.repo, operativo=True)
+    caso.assertIsNone(final.pausa)
+    if tipo != "repetir":
+        caso.assertIsInstance(final.trenes[0].fase, Certificado)
+    else:
+        caso.assertEqual(len(final.trenes[0].fase.evidencias), 1)
+        caso.assertEqual(final.trenes[0].fase.costo_infra_s, anterior.costo_infra_s)
+    caso.assertFalse(any(desde_datos(json.loads(f["payload"])).tipo == "devolver"
+                         for f in ledger.db.execute("SELECT payload FROM effects")))
 
 
 class HasitoTests(Aislado):
@@ -110,6 +218,34 @@ class HasitoTests(Aislado):
         self.obs = Observacion(100, B, tuple(VistaPR(e.entrega.pr, e.entrega.head,
             apto=True, hallazgos=0, dirigida=True, ci="verde", conflicto=False) for e in entradas),
             ci_candidato="verde", costo_suite_sana_s=10000, ci_recibo="recibo-ci")
+
+    def configurar_rechazo(self, respuesta):
+        if respuesta == "64":
+            self.runner.responder = lambda argv: {"veredicto": 64}
+        elif respuesta == "75":
+            self.runner.responder = lambda argv: suite_fixture(codigo=75, fallos=())
+        elif respuesta == "rojo":
+            self.runner.responder = lambda argv: suite_fixture()
+        else:
+            self.runner.responder = lambda argv: (repeticion_fixture(
+                Path(argv[argv.index("--repetir") + 1]), argv[argv.index("--sha") + 1],
+                valores=("pasa", "pasa")) if "--repetir" in argv else
+                suite_fixture(codigo=0, fallos=()))
+
+    def test_sen7030_iniciar(self):
+        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo, F)
+
+    def test_sen7030_reanudar(self):
+        verificar_rechazo(self, "reanudar-suite", self.configurar_rechazo, F)
+
+    def test_sen7030_repetir(self):
+        verificar_rechazo(self, "repetir", self.configurar_rechazo, F)
+
+    def test_sen7030_recuperar(self):
+        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo, F, recuperacion=True)
+
+    def test_sen7030_abortar(self):
+        verificar_rechazo(self, "iniciar-suite", self.configurar_rechazo, F, decision="abortar")
 
     def iniciar(self, codigo=1, restantes=()):
         self.runner.responder = lambda argv: suite_fixture(
