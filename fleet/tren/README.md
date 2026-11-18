@@ -143,6 +143,8 @@ python3 -I fleet/tren/instalar.py --repo owner/project
 python3 -I fleet/tren/instalar.py --repo owner/project --cargar
 # Retirar sin borrar el plist, los logs ni el ledger:
 python3 -I fleet/tren/instalar.py --repo owner/project --retirar
+# Tick activo, sin --seco, con la inscripción ya en activo:
+python3 -I fleet/tren/instalar.py --repo owner/project --activo --cargar
 ```
 
 Cada repo tiene un label `local.pao.tren.<sha256-del-repo>` en
@@ -155,6 +157,11 @@ también cambios preparados antes. Repetir una instalación idéntica conserva e
 un cambio guarda `.bak-*` antes del reemplazo atómico. `--retirar` hace
 bootout si está cargado y renombra a `.retirado-*`. Nada se borra.
 La activación y los siete días de sombra requieren una decisión posterior.
+`--activo` prepara el mismo label con `pao-tren tick --repo owner/project`,
+sin `--seco`. El tick activo sale con 2 mientras la inscripción no esté en
+activo, así que primero se cambia `inscritos` y después se carga el plist.
+Volver a instalar sin `--activo` restaura el tick en sombra; el plist activo
+queda en `.bak-*`.
 CI prueba la suite en Ubuntu y macOS, también con `/usr/bin/python3` en macOS;
 Windows queda fuera por flock POSIX.
 
@@ -303,8 +310,10 @@ El feedback D6 está implementado. Siguen siendo requisitos de activación:
   o evidencia e intento para suite, reanudación y repetición. Hace falta una
   prueba de contrato con muerte después de aceptar trabajo y antes de
   publicar `recibo.json`: la misma identidad debe recuperar el trabajo sin
-  crear otro. El lanzador falso cumple esa condición; estas pruebas no
-  acreditan al lanzador real. Su implementación pertenece a otra unidad.
+  crear otro. Jale acredita este requisito con la prueba de contrato de su
+  lanzador real por `REMOTE_RUN_CLAVE` y la recuperación del coordinador por
+  esa misma clave (U23, véase U9). Las pruebas del lanzador falso del tren
+  verifican la integración; por sí solas no acreditan otros lanzadores reales.
 
 Un sincronizador externo del checkout `git` no es requisito de activación:
 desde U17 el tick activo trae al bare del tren la base y los heads que le
@@ -1093,9 +1102,16 @@ contract, una `falla` exige un código distinto de 0.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar
-el resultado tras una caída del tick. Si muere también el coordinador sin
-salida durable, se conserva el lanzamiento incierto y se detiene su recuperación
-sin lanzar otra corrida. Un 75 espera la política de reanudación del tren;
+el resultado tras una caída del tick. Cada registro deriva una clave estable
+de su ruta y la guarda en `iniciado.json` antes de lanzar el hijo con
+`REMOTE_RUN_CLAVE`. Si muere también el coordinador sin salida durable, el
+siguiente tick relanza el mismo argv con la clave guardada y recupera el
+trabajo aceptado por el lanzador, sin otro envío. Cada intento, modo y tren
+tiene su propio registro y clave. Los registros antiguos con `iniciado.json`
+sin clave conservan el lanzamiento incierto y detienen su recuperación.
+El coordinador permite como máximo tres invocaciones ante salida 255,
+siempre con la misma clave; guarda la última salida. Un 125 se guarda sin
+reintentar con esa clave. Un 75 espera la política de reanudación del tren;
 recibos ausentes con otra salida, malformados o incoherentes, y el paro 64
 quedan como errores de infraestructura con el efecto pendiente. Ninguno se
 convierte en un fallo de producto. No hay cambio automático de host.

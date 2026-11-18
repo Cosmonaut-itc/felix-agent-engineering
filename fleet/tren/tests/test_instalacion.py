@@ -106,6 +106,23 @@ else:
         self.assertIn(str(self.plist), salida)
         self.assertEqual(self.llamadas(), [])
 
+    def test_activo_quita_seco_respalda_y_vuelve_a_sombra(self):
+        self.ejecutar("--cargar")
+        sombra = self.plist.read_bytes()
+        self.ejecutar("--activo", "--cargar")
+        unidad = plistlib.loads(self.plist.read_bytes())
+        self.assertEqual(unidad["ProgramArguments"], [str(self.cli), "tick", "--repo", REPO])
+        self.assertEqual([p.read_bytes() for p in self.plist.parent.glob("*.bak-*")], [sombra])
+        self.assertEqual([c[0] for c in self.llamadas() if c[0] != "print"],
+                         ["bootstrap", "bootout", "bootstrap"])
+        self.ejecutar("--cargar")
+        self.assertEqual(self.plist.read_bytes(), sombra)
+        with redirect_stdout(io.StringIO()), patch("sys.stderr", io.StringIO()):
+            with self.assertRaises(SystemExit) as salida:
+                instalador.main(["--repo", REPO, "--activo", "--retirar"])
+        self.assertEqual(salida.exception.code, 2)
+        self.assertTrue(self.plist.is_file())
+
     def test_identica_no_reescribe_y_distinta_respalda_antes(self):
         self.ejecutar()
         anterior = self.plist.read_bytes()

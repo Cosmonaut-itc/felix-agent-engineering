@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Prepara un LaunchAgent por repo para tick --seco; cargar es explícito."""
+"""Prepara un LaunchAgent por repo para tick --seco, o tick activo con --activo; cargar es explícito."""
 from __future__ import annotations
 
 import argparse
@@ -56,13 +56,13 @@ def entorno(home: Path) -> dict[str, str]:
     return resultado
 
 
-def renderizar(repo: str, home: Path) -> dict:
+def renderizar(repo: str, home: Path, activo: bool = False) -> dict:
     variables = entorno(home)
     logs = Path(variables["XDG_STATE_HOME"]) / "pao-tren/launchd" / etiqueta(repo)
     return {
         "Label": etiqueta(repo),
         "ProgramArguments": [str(home / ".local/bin/pao-tren"),
-                             "tick", "--repo", repo, "--seco"],
+                             "tick", "--repo", repo, *([] if activo else ["--seco"])],
         "StartInterval": 120,
         "RunAtLoad": True,
         "StandardOutPath": str(logs / "stdout.log"),
@@ -106,7 +106,7 @@ def detener(servicio: str) -> bool:
     return cargado
 
 
-def instalar(repo: str, retirar: bool = False, cargar: bool = False) -> None:
+def instalar(repo: str, retirar: bool = False, cargar: bool = False, activo: bool = False) -> None:
     home = Path.home()
     label = etiqueta(repo)
     ruta = home / "Library/LaunchAgents" / (label + ".plist")
@@ -124,7 +124,7 @@ def instalar(repo: str, retirar: bool = False, cargar: bool = False) -> None:
                 ruta.rename(destino)
                 print("retirado: " + str(destino))
             return
-        unidad = renderizar(repo, home)
+        unidad = renderizar(repo, home, activo)
         binario = Path(unidad["ProgramArguments"][0])
         if not binario.is_file() or not os.access(binario, os.X_OK):
             raise ValueError("instala primero pao-tren con bin/pao sync --no-plugins --no-schedule")
@@ -151,9 +151,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     accion = parser.add_mutually_exclusive_group()
     accion.add_argument("--retirar", action="store_true", help="bootout y renombrar, sin borrar")
     accion.add_argument("--cargar", action="store_true", help="ejecutar también launchctl bootstrap")
+    parser.add_argument("--activo", action="store_true", help="tick activo, sin --seco")
     args = parser.parse_args(argv)
+    if args.activo and args.retirar:
+        parser.error("--activo no se combina con --retirar")
     try:
-        instalar(args.repo, args.retirar, args.cargar)
+        instalar(args.repo, args.retirar, args.cargar, args.activo)
     except (OSError, ValueError, subprocess.SubprocessError) as exc:
         parser.exit(2, "error de instalación: " + str(exc) + "\n")
     return 0

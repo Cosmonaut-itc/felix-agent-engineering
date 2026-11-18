@@ -1,10 +1,15 @@
-"""Coordinador desacoplado: una sola ejecución por registro durable POSIX."""
+"""Coordinador desacoplado: reenganche por clave sobre un registro durable POSIX."""
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
+
+
+INTENTOS_TRANSPORTE = 3
 
 
 def guardar(ruta, valor):
@@ -24,14 +29,27 @@ def guardar(ruta, valor):
 def coordinar(registro):
     with (registro / 'candado').open('a') as candado:
         fcntl.flock(candado, fcntl.LOCK_EX)
-        if (registro / 'codigo.json').exists() or (registro / 'iniciado.json').exists():
+        if (registro / 'codigo.json').exists():
             return
+        iniciado = registro / 'iniciado.json'
+        if iniciado.exists():
+            anterior = json.loads(iniciado.read_text())
+            clave = anterior.get('clave') if isinstance(anterior, dict) else None
+            # Los registros anteriores no acreditan deduplicación del lanzador.
+            if not isinstance(clave, str) or not re.fullmatch(r'[A-Za-z0-9._-]{8,128}', clave):
+                return
+        else:
+            clave = 'pao-jale-' + hashlib.sha256(os.fsencode(registro.resolve())).hexdigest()
+            guardar(iniciado, {'clave': clave})
         argv = json.loads((registro / 'solicitud.json').read_text())
-        # Si muere también este coordinador, no adivinar si hubo lanzamiento.
-        guardar(registro / 'iniciado.json', True)
+        entorno = dict(os.environ, REMOTE_RUN_CLAVE=clave)
         try:
             with (registro / 'coordinador.log').open('a') as salida:
-                codigo = subprocess.run(argv, stdout=salida, stderr=salida, check=False).returncode
+                for _ in range(INTENTOS_TRANSPORTE):
+                    codigo = subprocess.run(argv, env=entorno, stdout=salida,
+                                            stderr=salida, check=False).returncode
+                    if codigo != 255:
+                        break
         except (OSError, subprocess.SubprocessError):
             codigo = None
         guardar(registro / 'codigo.json', codigo)
