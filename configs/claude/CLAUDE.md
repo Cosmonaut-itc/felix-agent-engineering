@@ -31,9 +31,9 @@ el esfuerzo en ese routing; antes del primer despacho, lee
 autenticación, recogida y cancelación. Aplica sus controles y el alcance
 autorizado en «Estado de validación» al preparar cada encargo.
 
-Con gpt-6.2-astra parte de esfuerzo `low`: su low rinde más que el high de
-gpt-5.6-sol. Sube a `medium` sólo con incertidumbre real y a `high` cuando
-medium no baste. Las reviews de cambios requieren gpt-6.2-sol en `high`.
+Con gpt-6.2-astra parte de esfuerzo `low`. Sube a `medium` sólo con
+incertidumbre real y a `high` cuando medium no baste. Las reviews de cambios
+requieren gpt-6.2-sol en `high`.
 
 Para delegar en Codex, lee `~/.claude/docs/codex-delegation.md`. Si corres en
 un hilo de T3 Code con su `delegate_task` disponible, despacha por ahí
