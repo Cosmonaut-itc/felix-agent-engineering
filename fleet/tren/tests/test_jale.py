@@ -490,7 +490,7 @@ class JaleTests(Aislado):
         helper = self.raiz / 'tick-u23.py'
         helper.write_text('import sys\nsys.path.insert(0, ' + repr(str(Path(__file__).resolve().parents[1])) +
             ')\nfrom adaptadores.jale import Jale\nfrom dominio import Candidato\nJale(' +
-            repr(str(self.lanzador)) + ').suite(Candidato(' + repr(B) + ', (), ' + repr(C) +
+            repr(str(self.lanzador)) + ', modos=("contract",)).suite(Candidato(' + repr(B) + ', (), ' + repr(C) +
             ', "d" * 40), "lote")\n')
         with (self.raiz / 'tick-u23.log').open('w') as salida:
             proceso = subprocess.Popen([sys.executable, str(helper)], stdout=salida, stderr=salida)
@@ -516,7 +516,7 @@ class JaleTests(Aislado):
         self.assertFalse((registro / 'codigo.json').exists())
         iniciado = (registro / 'iniciado.json').read_text()
         # Recuperar trabajo autorizado tampoco requiere admisión para lanzar uno nuevo.
-        self.adaptador = self.Jale(self.lanzador)
+        self.adaptador = self.Jale(self.lanzador, modos=('contract',))
         _, r = self.suite(permitir_lanzar=False)
         self.assertEqual(r.veredicto, 'verde')
         self.assertEqual((registro / 'iniciado.json').read_text(), iniciado)
@@ -524,11 +524,11 @@ class JaleTests(Aislado):
         self.assertEqual(self.invocaciones()[0]['clave'], self.invocaciones()[1]['clave'])
         self.assertEqual(self.invocaciones()[0]['log'], self.invocaciones()[1]['log'])
         self.assertIn('PUEUE_REENGANCHE=0', (registro / 'coordinador.log').read_text())
-        self.assertEqual(len(self.invocaciones()), 3)
-        self.assertEqual(len(self.lanzamientos()), 2)  # Una suite por modo.
+        self.assertEqual(len(self.invocaciones()), 2)
+        self.assertEqual(len(self.lanzamientos()), 1)
         self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 0)
         self.assertEqual(self.suite()[1], r)
-        self.assertEqual(len(self.invocaciones()), 3)
+        self.assertEqual(len(self.invocaciones()), 2)
 
     def test_u23_clave_estable_y_distinta_por_intento_modo_y_tren(self):
         self.plan([{'codigo': 75, 'sin_linea': True}, {}, {}, {}, {}])
