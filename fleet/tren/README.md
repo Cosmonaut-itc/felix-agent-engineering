@@ -143,6 +143,8 @@ python3 -I fleet/tren/instalar.py --repo owner/project
 python3 -I fleet/tren/instalar.py --repo owner/project --cargar
 # Retirar sin borrar el plist, los logs ni el ledger:
 python3 -I fleet/tren/instalar.py --repo owner/project --retirar
+# Tick activo, sin --seco, con la inscripción ya en activo:
+python3 -I fleet/tren/instalar.py --repo owner/project --activo --cargar
 ```
 
 Cada repo tiene un label `local.pao.tren.<sha256-del-repo>` en
@@ -155,6 +157,11 @@ también cambios preparados antes. Repetir una instalación idéntica conserva e
 un cambio guarda `.bak-*` antes del reemplazo atómico. `--retirar` hace
 bootout si está cargado y renombra a `.retirado-*`. Nada se borra.
 La activación y los siete días de sombra requieren una decisión posterior.
+`--activo` prepara el mismo label con `pao-tren tick --repo owner/project`,
+sin `--seco`. El tick activo sale con 2 mientras la inscripción no esté en
+activo, así que primero se cambia `inscritos` y después se carga el plist.
+Volver a instalar sin `--activo` restaura el tick en sombra; el plist activo
+queda en `.bak-*`.
 CI prueba la suite en Ubuntu y macOS, también con `/usr/bin/python3` en macOS;
 Windows queda fuera por flock POSIX.
 
