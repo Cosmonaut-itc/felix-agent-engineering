@@ -140,8 +140,15 @@ demás.
   en EMERGENCIA work, la regla 1 no borra nada en esa pasada. Esa corrida
   todavía no tiene `mirror` en `meta`, así que no se sabe qué copia usa.
   La ventana de emergencia evita que una preparación abandonada bloquee
-  durante una hora la recuperación de espacio. El log indica la ventana
-  aplicada. Las corridas nuevas durante la pasada conservan su veto.
+  durante una hora la recuperación de espacio. Entre 15 min y 1 h en
+  emergencia, conserva el veto si `EN_USO` contiene alguna ruta dentro de
+  `runs/<id>` (cwd o archivos abiertos del usuario); usa `en_uso`, que también
+  veta si la captura falló o no puede leerse. El log indica la ventana
+  aplicada o «preparación con procesos vivos» y la carpeta. En modo normal
+  esta guarda no consulta `EN_USO`. Una preparación de más de 15 min
+  sorprendida entre dos pasos, sin ningún proceso dentro en el instante de
+  la captura, queda sin cubrir por esta guarda en emergencia.
+  Las corridas nuevas durante la pasada conservan su veto.
 - **Rename antes de borrar.** La regla 1 comprueba con `stat -f %d` que
   `~/remote-run` y `$STATE` (`~/Library/Application Support/limpieza-disco`)
   están en el mismo filesystem. Desde el padre fijado renombra la copia a
