@@ -1119,3 +1119,49 @@ convierte en un fallo de producto. No hay cambio automático de host.
 La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
 procesos aislados para el carril rápido, se verifican en el host de pruebas con
 `bash fleet/tren/tests/remoto-u9.sh --completa`. El guion conserva la evidencia.
+
+
+### Checkout del operador (SEN-7032)
+
+`checkout_operador` es una clave opcional por repositorio: ruta absoluta a
+un checkout dedicado que contiene el lanzador de suite y el script de
+`pre_aterrizaje.comando`. Es distinto del bare que arma el candidato y del
+worktree sobre el que corre la suite. Al cargar la configuración se rechazan
+lanzadores o scripts fuera de esa raíz, incluidos enlaces simbólicos que
+escapan de ella. Un intérprete absoluto puede preceder al script del gancho;
+los archivos privados pasados como opciones posteriores pueden vivir fuera.
+Sin la clave se conserva el comportamiento anterior.
+
+El tick trae `origin/main` y avanza ese checkout sólo con fast-forward antes
+de cada lanzamiento, reanudación o repetición, y antes de verificar el gancho
+de pre-aterrizaje. Sigue a `main`, cuyo código ya pasó revisión, en vez de
+fijarse a un SHA: el lanzador puede exigir su último cambio publicado en
+`main`. El candidato conserva su SHA propio. En la promoción, el CAS y la
+relectura de la base siguen protegiendo B. Recuperar un recibo completado no
+avanza el operador; Jale puede avanzarlo también al reenganchar por clave un
+coordinador cuyo recibo aún no existe.
+
+Con cambios locales, otra rama, historia divergente, una operación Git en
+curso o archivos sin seguimiento (también ignorados) que el avance pisaría,
+el checkout no se modifica y el carril pausa `infraestructura` con detalle
+`checkout-operador:<estado-encontrado>`. Un HEAD desacoplado sólo puede
+avanzar si es ancestro de `origin/main`, conservando el estado desacoplado.
+`pao-tren estado --repo owner/project --juicio` muestra la pausa y permite
+`reanudar` para reintentar el mismo efecto, o `abortar`. Un fallo de fetch
+conserva el efecto pendiente sin lanzar ni pausar: el outbox muestra
+`checkout-operador-fetch-pendiente` y el siguiente tick reintenta.
+
+El candado existente del carril cubre todo el tick. Además, el avance toma
+un `flock` exclusivo en `pao-tren-operador.lock` dentro del common-dir de Git:
+dos repositorios o rutas equivalentes que compartan checkout usan el mismo
+candado. Este archivo no se retira. No se mantiene durante la suite. Git
+reemplaza las entradas modificadas del checkout con archivos nuevos; un
+`bash` que ya tiene abierto su guion conserva el inodo y el contenido
+originales. La regresión usa un guion mayor que el búfer de lectura de Bash,
+lo detiene en una barrera, avanza el checkout y acredita ambos inodos y que
+termina con su versión original.
+
+`tests/remoto-sen-7032.sh` contrasta estas regresiones con la base anterior
+y con el cambio, usando remotos y checkouts temporales reales y los
+productores falsos de Hasito/Jale. Se ejecuta sólo en el host de pruebas;
+la verificación final completa usa `bash fleet/tren/tests/remoto-u9.sh --completa`.

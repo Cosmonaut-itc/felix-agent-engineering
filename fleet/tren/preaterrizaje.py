@@ -12,7 +12,7 @@ import time
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, EscritorExterno,
                      EsperaPrevia, Incierto, Terminal, VentanaAutorizada,
                      admision_entrada, clave)
-from git_ops import FalloGit, entorno, sha
+from git_ops import CheckoutOperador, FalloGit, entorno, sha
 
 
 PRESUPUESTO_IO_S = 60
@@ -280,6 +280,8 @@ class Previo:
             return BloqueoPrevia(B, C, "configuracion-ausente")
         registro = None
         if config is not None:
+            if "checkout_operador" in self.config:
+                CheckoutOperador(self.config["checkout_operador"]).avanzar()
             miembros = {e.entrega.recibo: e.entrega for e in estado.entradas}
             solicitud = {"version": 1, "id": clave("pre-aterrizaje", estado.repo, tren.id, B, C),
                 "repo": estado.repo, "tren": tren.id, "B": B, "C": C,

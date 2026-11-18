@@ -100,6 +100,7 @@ class Jale:
             raise ValueError('modos-invalidos')
         self.lanzador = str(Path(lanzador).resolve())
         self.git = git
+        self.operador = None
         self.host, self.modos = host, tuple(modos)
         self.estado = (Path(estado) if estado is not None else
                        directorio_estado() / 'jale').expanduser().resolve()
@@ -122,6 +123,8 @@ class Jale:
                 not (registro / 'codigo.json').exists()):
             return False
         if not (registro / 'codigo.json').exists():
+            if self.operador is not None:
+                self.operador.avanzar()
             # Otro coordinador espera el mismo candado y recupera su resultado.
             # La sesión nueva sigue viva aunque muera el proceso del tick.
             try:

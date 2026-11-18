@@ -22,6 +22,8 @@ POLITICA = {
         {"reanudar": "ci-nuevo", "abortar": "abortar"},
     ("infraestructura", "pre-aterrizaje:"):
         {"reanudar": "promover", "abortar": "abortar"},
+    ("infraestructura", "checkout-operador:"):
+        {"reanudar": "continuar", "abortar": "abortar"},
     ("infraestructura", "cancelacion-pre-aterrizaje"):
         {"reanudar": "continuar", "abortar": "abortar"},
     ("rama-tren-ocupada", ""): {"reanudar": "publicar", "abortar": "abortar"},

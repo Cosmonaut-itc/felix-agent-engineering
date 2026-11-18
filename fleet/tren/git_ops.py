@@ -1,10 +1,11 @@
-"""Cadena reproducible, publicación con lease y CAS; nunca usa un checkout.
+"""Cadena reproducible, publicación con lease/CAS y checkout del operador.
 
 Los objetos se construyen sin configuración global/sistema. El transporte
 conserva esa configuración para credenciales, pero desactiva hooks y tags.
 No se guardan argv ni stderr de transporte: pueden contener datos privados.
 """
 from dataclasses import dataclass
+import fcntl
 import os
 from pathlib import Path
 import re
@@ -289,3 +290,115 @@ class GitTren:
             pass
         # Never infer success/failure from push's exit/ACK. Always read the remote.
         return self.reconciliar(B, C, arbol, heads)
+
+
+class CheckoutOperadorBloqueado(Exception):
+    """Estado local que requiere juicio; sólo contiene un código público."""
+
+
+class CheckoutOperadorPendiente(Exception):
+    """Transporte no acreditado: conservar el efecto para el siguiente tick."""
+
+
+def validar_checkout_operador(config):
+    valor = config.get("checkout_operador")
+    if valor is None and "checkout_operador" not in config:
+        return
+    if not isinstance(valor, str) or not Path(valor).is_absolute():
+        raise ValueError("checkout_operador debe ser ruta absoluta")
+    raiz = Path(valor).resolve()
+
+    def dentro(ruta):
+        if (not isinstance(ruta, str) or not Path(ruta).is_absolute() or
+                not Path(ruta).resolve().is_relative_to(raiz)):
+            raise ValueError("script fuera de checkout_operador")
+
+    for nombre in ("lanzador", "lanzador_hasito"):
+        if nombre in config:
+            dentro(config[nombre])
+    previo = config.get("pre_aterrizaje")
+    if previo is not None:
+        comando = previo.get("comando") if isinstance(previo, dict) else None
+        if (not isinstance(comando, list) or not comando or
+                not all(isinstance(a, str) and a for a in comando)):
+            raise ValueError("comando del gancho invalido")
+        # Un intérprete absoluto puede preceder al script. Los argumentos de
+        # opciones posteriores (p. ej. un JSON privado) no son el script.
+        interpretes = {"bash", "sh", "zsh", "python", "python3", "perl", "ruby", "node"}
+        nombre = Path(comando[0]).name
+        indice = 1 if nombre in interpretes or re.fullmatch(r"python[0-9.]+", nombre) else 0
+        while indice < len(comando) and comando[indice].startswith("-"):
+            indice += 1
+        if indice == len(comando):
+            raise ValueError("falta script del gancho")
+        dentro(comando[indice])
+
+
+class CheckoutOperador:
+    """Avance conservador de un checkout dedicado; IO Git fuera del dominio."""
+    def __init__(self, ruta, ejecutar=None):
+        self.ruta = Path(ruta).resolve()
+        self.ejecutar = ejecutar or subprocess.run
+
+    def git(self, *args):
+        try:
+            return self.ejecutar(["git", "--no-replace-objects", "-c",
+                "core.hooksPath=" + os.devnull, "-C", str(self.ruta), *args],
+                capture_output=True, text=True, check=False, timeout=120, env=entorno())
+        except (OSError, subprocess.SubprocessError):
+            raise CheckoutOperadorPendiente("checkout-operador-git-pendiente") from None
+
+    def texto(self, *args):
+        resultado = self.git(*args)
+        if resultado.returncode:
+            raise CheckoutOperadorBloqueado("checkout-no-valido")
+        return resultado.stdout.rstrip("\n")
+
+    def avanzar(self):
+        if Path(self.texto("rev-parse", "--show-toplevel")).resolve() != self.ruta:
+            raise CheckoutOperadorBloqueado("raiz-no-corresponde")
+        comun = Path(self.texto("rev-parse", "--git-common-dir"))
+        if not comun.is_absolute():
+            comun = self.ruta / comun
+        # Dentro del common-dir: misma identidad incluso con aliases de ruta,
+        # carriles distintos o worktrees enlazados. Nunca retirar este archivo.
+        with (comun / "pao-tren-operador.lock").open("a") as candado:
+            fcntl.flock(candado, fcntl.LOCK_EX)
+            return self._avanzar()
+
+    def _avanzar(self):
+        rama = self.git("symbolic-ref", "--quiet", "HEAD")
+        if rama.returncode not in (0, 1):
+            raise CheckoutOperadorBloqueado("checkout-no-valido")
+        if rama.returncode == 0 and rama.stdout.strip() != "refs/heads/main":
+            raise CheckoutOperadorBloqueado("rama-distinta-de-main")
+        privado = Path(self.texto("rev-parse", "--absolute-git-dir"))
+        if any((privado / p).exists() for p in ("MERGE_HEAD", "CHERRY_PICK_HEAD",
+                "REVERT_HEAD", "rebase-merge", "rebase-apply", "sequencer")):
+            raise CheckoutOperadorBloqueado("operacion-git-en-curso")
+        if self.texto("status", "--porcelain", "--untracked-files=no"):
+            raise CheckoutOperadorBloqueado("cambios-sin-commitear")
+        fetch = self.git("fetch", "--no-tags", "--no-recurse-submodules",
+            "--no-auto-maintenance", "origin", "+refs/heads/main:refs/remotes/origin/main")
+        if fetch.returncode:
+            raise CheckoutOperadorPendiente("checkout-operador-fetch-pendiente")
+        actual = self.texto("rev-parse", "HEAD")
+        destino = self.texto("rev-parse", "refs/remotes/origin/main^{commit}")
+        if actual == destino:
+            return False
+        if self.git("merge-base", "--is-ancestor", actual, destino).returncode:
+            raise CheckoutOperadorBloqueado("historia-divergente" if rama.returncode == 0
+                                          else "head-desacoplado-no-ancestro")
+        # Incluir ignorados: merge puede pisarlos sin avisar. También cubrir
+        # cambios archivo/directorio, no sólo coincidencias de nombres exactos.
+        ajenos = self.texto("ls-files", "--others", "-z").split("\0")
+        nuevos = self.texto("diff", "--name-only", "--diff-filter=ACMRT", "-z",
+                            actual, destino).split("\0")
+        if any(a and n and (a == n or a.startswith(n + "/") or n.startswith(a + "/"))
+               for a in ajenos for n in nuevos):
+            raise CheckoutOperadorBloqueado("sin-seguimiento-en-el-avance")
+        avance = self.git("-c", "merge.autostash=false", "merge", "--ff-only",
+                          "--no-edit", destino)
+        if avance.returncode:
+            raise CheckoutOperadorBloqueado("fast-forward-rechazado")
+        return True

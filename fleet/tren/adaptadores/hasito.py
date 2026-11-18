@@ -135,6 +135,7 @@ class Hasito:
     def __init__(self, lanzador, git, runner=None, estado=None):
         self.lanzador = str(Path(lanzador).resolve())
         self.git = git
+        self.operador = None
         self.runner = runner or subprocess.run
         self.estado = (Path(estado) if estado is not None else
                        directorio_estado() / "hasito").expanduser().resolve()
@@ -189,6 +190,8 @@ class Hasito:
         # Recuperar evidencia ya producida no requiere permiso para trabajo nuevo.
         if not permitir_lanzar:
             return None
+        if self.operador is not None:
+            self.operador.avanzar()
         try:
             resultado = self.runner(list(argv), capture_output=True, text=True, check=False)
         except (OSError, subprocess.SubprocessError):

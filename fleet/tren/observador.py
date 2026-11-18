@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
                      VistaPR, rama_ci, recibo_ci)
-from git_ops import FalloGit
+from git_ops import FalloGit, validar_checkout_operador
 from preaterrizaje import autorizaciones
 
 
@@ -49,6 +49,7 @@ def configuracion(ruta, repo):
         raise ValueError("falta ruta git local")
     if not isinstance(config.get("excluir_alto_riesgo", True), bool):
         raise ValueError("política de piloto inválida")
+    validar_checkout_operador(config)
     return config
 
 
