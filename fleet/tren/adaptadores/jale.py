@@ -11,7 +11,7 @@ import sys
 from adaptadores.ejecucion_jale import guardar
 from adaptadores.hasito import ResultadoInvalido, exigir, leer_json
 from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
-                     UnidadRepetida, clave)
+                     UnidadRepetida, RechazoLanzador, clave)
 from git_ops import Publicado, sha
 from ledger import directorio_estado
 
@@ -29,7 +29,8 @@ def objeto(pares):
 
 
 def leer_recibo(log, codigo, commit, modo, filtros):
-    exigir(codigo != 64, 'jale-paro-64')
+    if type(codigo) is int and codigo == 64:
+        return RechazoLanzador(str(Path(log).with_name('coordinador.log')))
     exigir(type(codigo) is int and 0 <= codigo <= 255, 'salida-no-utilizable')
     try:
         lineas = Path(log).read_text(encoding='utf-8').splitlines()
@@ -153,6 +154,8 @@ class Jale:
             r = self.corrida(raiz / modo, candidato.C, modo, (), intento, permitir_lanzar)
             if r is False:
                 return None
+            if isinstance(r, RechazoLanzador):
+                return str(raiz), r
             if r is None or r['codigo'] == 75:
                 return str(raiz), Incompleto(75, str(raiz))
             recibos.append(r)
@@ -204,6 +207,8 @@ class Jale:
                         guardar(cache, str(ultimo.relative_to(self.estado)))
             if r is False:
                 return None
+            if isinstance(r, RechazoLanzador):
+                return r
             if r is None or r['codigo'] == 75:
                 return Incompleto(75, str(raiz))
             u = r['unidades'][0]

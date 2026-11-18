@@ -10,7 +10,7 @@ import shlex
 import subprocess
 
 from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
-                     UnidadRepetida, clave)
+                     UnidadRepetida, RechazoLanzador, clave)
 from git_ops import FalloGit, sha
 from ledger import directorio_estado
 
@@ -184,7 +184,7 @@ class Hasito:
             guardado = leer_json(recibo)
             exigir(isinstance(guardado, dict) and guardado.get("argv") == list(argv), "recibo-no-corresponde")
             exigir(isinstance(guardado.get("ruta"), str) and
-                   type(guardado.get("codigo")) is int and guardado["codigo"] in (0, 1, 75), "recibo-invalido")
+                   type(guardado.get("codigo")) is int and guardado["codigo"] in (0, 1, 64, 75), "recibo-invalido")
             return Path(guardado["ruta"]), guardado["codigo"]
         # Recuperar evidencia ya producida no requiere permiso para trabajo nuevo.
         if not permitir_lanzar:
@@ -193,6 +193,14 @@ class Hasito:
             resultado = self.runner(list(argv), capture_output=True, text=True, check=False)
         except (OSError, subprocess.SubprocessError):
             raise ResultadoInvalido("lanzador-no-disponible") from None
+        if resultado.returncode == 64:
+            # El rechazo no trae resultado de producto; conserva stdout/stderr
+            # y un recibo durable para que otro tick no vuelva a lanzarlo.
+            log = registro / "lanzador.log"
+            log.write_text(resultado.stdout + resultado.stderr, encoding="utf-8")
+            from adaptadores.ejecucion_jale import guardar
+            guardar(recibo, {"argv": list(argv), "ruta": str(log), "codigo": 64})
+            return log, 64
         exigir(resultado.returncode in (0, 1, 75), "salida-no-utilizable")
         etiqueta = "REPETICION" if repeticion else "SUITE"
         campo = "repeticion" if repeticion else "resultado"
@@ -229,6 +237,8 @@ class Hasito:
             if recibo is None:
                 return None
             ruta, codigo = recibo
+            if codigo == 64:
+                return str(ruta), RechazoLanzador(str(ruta))
             r = leer_json(ruta)
             exigir(isinstance(r, dict) and r.get("veredicto") == codigo, "salida-no-corresponde")
             return str(ruta), leer_suite(r, candidato.C, candidato.B)
@@ -250,6 +260,8 @@ class Hasito:
             if recibo is None:
                 return None
             ruta, codigo = recibo
+            if codigo == 64:
+                return RechazoLanzador(str(ruta))
             r = leer_json(ruta)
             exigir(isinstance(r, dict) and r.get("veredicto") == codigo, "salida-no-corresponde")
             resultado = leer_repeticion(r, commit, suite, candidato.C, candidato.B, solicitud.fallo)
