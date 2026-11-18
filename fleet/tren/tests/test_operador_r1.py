@@ -134,6 +134,74 @@ a.correr(Path(registro), C, 'contract', (), True)
             r['resultado'].get('error', {}).get('codigo') == 'checkout-operador-lector-vivo'
             for r in visible['outbox']))
 
+    def test_r1_hasito_y_gancho_heredan_lector_tras_muerte_del_tick(self):
+        t = self.t
+        for tipo in ('hasito', 'gancho'):
+            with self.subTest(tipo=tipo):
+                inicio, seguir, fin = (t.raiz / (tipo + '-' + n) for n in ('inicio', 'seguir', 'fin'))
+                def version(nombre, padre):
+                    entrada = ('touch ' + shlex.quote(str(inicio)) + '\nwhile [ ! -e ' +
+                        shlex.quote(str(seguir)) + ' ]; do sleep .02; done\n' +
+                        '. "$(dirname "$0")/modulo.sh"\n')
+                    modulo = 'echo ' + nombre + ' > ' + shlex.quote(str(fin)) + '\n'
+                    return t.commit({'entrada.sh': entrada, 'modulo.sh': modulo}, (padre,))
+                anterior = t.comando(t.remoto_operador, 'rev-parse', 'main')
+                viejo = version('viejo', anterior)
+                nuevo = version('nuevo', viejo)
+                t.push(viejo, 'refs/heads/main')
+                self.operador().avanzar()
+                codigo = '''import inspect, sys
+from pathlib import Path
+sys.path.insert(0, sys.argv[1])
+from adaptadores.hasito import Hasito
+from git_ops import CheckoutOperador, GitTren
+from preaterrizaje import Previo
+from ledger import Ledger
+raiz, remoto, tipo = Path(sys.argv[2]), sys.argv[3], sys.argv[4]
+kw = {'remoto': remoto} if 'remoto' in inspect.signature(CheckoutOperador).parameters else {}
+if tipo == 'hasito':
+    a = Hasito(raiz / 'entrada.sh', GitTren(remoto))
+    a.operador = CheckoutOperador(raiz, **kw)
+    a.correr(['bash', str(raiz / 'entrada.sh')], raiz.parent / 'hasito-huerfano')
+else:
+    p = Previo(Ledger(), GitTren(remoto), {}, lambda *a: None)
+    p.llamar({'comando': ['/bin/bash', str(raiz / 'entrada.sh')], 'plazo_s': 60},
+             {'id': 'lector'}, 'verificar', str(raiz))
+'''
+                padre = subprocess.Popen([sys.executable, '-I', '-B', '-c', codigo,
+                    str(activo.RAIZ), str(t.operador), str(t.remoto_operador), tipo],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                try:
+                    self.esperar_archivo(inicio)
+                    padre.kill()
+                    padre.communicate(timeout=10)
+                    t.push(nuevo, 'refs/heads/main')
+                    try:
+                        self.operador().avanzar()
+                        bloqueo = None
+                    except git_ops.CheckoutOperadorPendiente as exc:
+                        bloqueo = str(exc)
+                    cabeza = t.cabeza()
+                finally:
+                    seguir.touch()
+                    if padre.poll() is None:
+                        padre.kill()
+                    padre.communicate(timeout=10)
+                    self.esperar_archivo(fin)
+                self.assertEqual(bloqueo, 'checkout-operador-lector-vivo')
+                self.assertEqual(cabeza, viejo)
+                self.assertEqual(fin.read_text().strip(), 'viejo')
+                # El lector terminó: el siguiente intento sí puede avanzar.
+                limite = time.monotonic() + 10
+                while True:
+                    try:
+                        self.operador().avanzar()
+                        break
+                    except git_ops.CheckoutOperadorPendiente:
+                        if time.monotonic() >= limite: raise
+                        time.sleep(.02)
+                self.assertEqual(t.cabeza(), nuevo)
+
     def test_r1_origin_ajeno_no_cambia_procedencia_del_tick(self):
         t = self.t
         ajeno = t.raiz / 'ajeno.git'
@@ -220,7 +288,7 @@ a.correr(Path(registro), C, 'contract', (), True)
         gancho.write_text(original)
         fallo.rename(t.raiz / 'cancelacion-reparada')
         t.juicio('reanudar')
-        r = t.contexto.tick(9100)
+        _, r = t.contexto.tick(9100)
         self.assertIn('promover', [e['tipo'] for e in r['efectos']])
         self.assertIsNone(t.estado().pausa)
 

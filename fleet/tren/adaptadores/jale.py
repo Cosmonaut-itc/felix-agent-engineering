@@ -100,12 +100,20 @@ class Jale:
         if not (isinstance(modos, (tuple, list)) and modos and
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
-        self.lanzador = str(Path(lanzador).absolute())
+        self._lanzador_configurado = str(Path(lanzador).absolute())
+        self._lanzador_resuelto = str(Path(lanzador).resolve())
         self.git = git
         self.operador = None
         self.host, self.modos = host, tuple(modos)
         self.estado = (Path(estado) if estado is not None else
                        directorio_estado() / 'jale').expanduser().resolve()
+
+    @property
+    def lanzador(self):
+        # Con operador conservar la ruta original para volver a resolver sus
+        # symlinks después de avanzar. Sin la clave, mantener el argv anterior.
+        return (self._lanzador_configurado if self.operador is not None
+                else self._lanzador_resuelto)
 
     def esperar(self, proceso):
         proceso.wait()

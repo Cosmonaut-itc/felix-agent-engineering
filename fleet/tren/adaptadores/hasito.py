@@ -134,12 +134,20 @@ def leer_repeticion(r, commit, origen, origen_sha, base, fallo):
 
 class Hasito:
     def __init__(self, lanzador, git, runner=None, estado=None):
-        self.lanzador = str(Path(lanzador).absolute())
+        self._lanzador_configurado = str(Path(lanzador).absolute())
+        self._lanzador_resuelto = str(Path(lanzador).resolve())
         self.git = git
         self.operador = None
         self.runner = runner or subprocess.run
         self.estado = (Path(estado) if estado is not None else
                        directorio_estado() / "hasito").expanduser().resolve()
+
+    @property
+    def lanzador(self):
+        # Con operador conservar la ruta original para volver a resolver sus
+        # symlinks después de avanzar. Sin la clave, mantener el argv anterior.
+        return (self._lanzador_configurado if self.operador is not None
+                else self._lanzador_resuelto)
 
     def argv_suite(self, candidato, worktree, evidencia, nombre):
         return ("bash", self.lanzador, "--suite", candidato.C, "--perfil", "final",

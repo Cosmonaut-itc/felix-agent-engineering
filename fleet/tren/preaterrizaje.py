@@ -157,8 +157,9 @@ class Previo:
         inicio = self.reloj_io()
         try:
             with lectura as descriptor:
+                herencia = {"descriptor": descriptor} if descriptor is not None else {}
                 return invocar(dict(config, plazo_s=min(config["plazo_s"], restante)),
-                               solicitud, accion, descriptor)
+                               solicitud, accion, **herencia)
         finally:
             self.io_s += max(0, self.reloj_io() - inicio)
 
