@@ -123,10 +123,10 @@ class Snapshots:
         registrados = self.comando_git(checkout, "worktree", "list", "--porcelain", "-z").stdout
         if "worktree " + str(arbol) in registrados.split("\0"):
             self.comando_git(checkout, "worktree", "remove", "--force", str(arbol))
-        elif arbol.is_symlink():
-            arbol.unlink()
-        elif arbol.exists():
+        elif arbol.is_dir() and not arbol.is_symlink():
             shutil.rmtree(arbol)
+        else:
+            arbol.unlink(missing_ok=True)
 
     def preparar(self, commit, lanzador=None):
         try:
@@ -172,7 +172,7 @@ class Snapshots:
 
     def validar_guardado(self, *argv):
         """Comprueba el worktree registrado sólo si el argv requiere ejecutarlo."""
-        arboles = {}
+        arboles = set()
         try:
             for arg in argv:
                 ruta = Path(arg)
@@ -189,7 +189,7 @@ class Snapshots:
                     if fila is None:
                         raise FalloSnapshot("snapshot-no-verificable")
                     self.verificar_arbol(arbol, Path(fila[0]), arbol.name)
-                    arboles[arbol] = True
+                    arboles.add(arbol)
                 if not ruta.resolve(strict=True).is_relative_to(arbol):
                     raise FalloSnapshot("ruta-fuera-del-snapshot")
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):

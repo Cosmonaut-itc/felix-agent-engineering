@@ -182,9 +182,9 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.gancho()
         self.hasta_fase(Promoviendo)
         for n in range(3):
-            self.contexto.tick(3000 + n)
             if self.lineas('gancho.log'):
                 break
+            self.contexto.tick(3000 + n)
         self.assertEqual(self.lineas('gancho.log'), ['verificar nuevo'])
         con_otra_base = self.version('tercero', self.nuevo)
         self.push(con_otra_base, 'refs/heads/main')
@@ -359,7 +359,8 @@ c.tick(2000)
             adaptador = self.contexto.hasito
             gestor = Snapshots(ledger, activo.REPO, self.contexto.git, self.config)
             adaptador.operador = gestor
-            adaptador.esperar = lambda proceso: None
+            procesos = []
+            adaptador.esperar = procesos.append
             raiz = adaptador.estado
             try:
                 # El coordinador queda vivo mientras se prepara otra generación.
@@ -380,6 +381,8 @@ c.tick(2000)
                 self.assertEqual(salida.read_text().splitlines(), ['tercero tercero'])
             finally:
                 (self.raiz / 'seguir').touch()
+                for proceso in procesos:
+                    self.assertEqual(proceso.wait(timeout=15), 0)
             self.esperar(registro.with_name('codigo.json'))
             self.assertEqual(salida.read_text().splitlines(), ['tercero tercero', 'esperando esperando'])
             candidato = tren.fase.candidato
