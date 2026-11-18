@@ -9,7 +9,7 @@ llamadas de herramienta que completó, nunca por el exit.
 Primera opción. Sigue `~/.agents/docs/t3-delegation.md` con lo propio de
 esta ruta:
 
-- Instancia `codex`, con ids completos como `gpt-6.1-sol` y opciones
+- Instancia `codex`, con ids completos como `gpt-6.2-sol` y opciones
   `{ "reasoningEffort": "<nivel>" }`.
 - La instancia pasa por el proxy. En la MacBook,
   `providerInstances.codex.config.homePath` de
@@ -140,7 +140,7 @@ timeout --signal=KILL "$max_secs" codex exec \
   siempre el prompt por stdin explícito (`- < brief`) o redirige `</dev/null`.
 - **Modelo.** Un alias corto (`sol`) o cualquier `-m` no soportado devuelve
   `400 ... not supported` y **exit 0** con el árbol intacto. Usa el nombre
-  completo (`gpt-6.1-sol`).
+  completo (`gpt-6.2-sol`).
 - **Flags.** Un flag inválido (`--search` no existe) falla en el parseo con
   exit 0 y un output de pocas líneas. La búsqueda web se controla por
   `web_search` en `config.toml`.

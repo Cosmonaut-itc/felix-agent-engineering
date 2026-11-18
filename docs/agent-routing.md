@@ -7,7 +7,7 @@ Política común para seleccionar trabajadores y revisores.
 Elige siempre dentro de esta tabla; los entrypoints globales llevan una
 copia, así que al cambiarla replícala en ambos. Las puntuaciones son preferencias
 operativas (10 = mejor; en costo, más económico) y se ajustan con resultados
-observados. Inteligencia y gusto de los modelos Go, de gpt-6.1-sol,
+observados. Inteligencia y gusto de los modelos Go, de gpt-6.2-sol,
 gpt-6.1-terra, gpt-6-luna, sonnet-5.5 y haiku-5.5, son hipótesis iniciales,
 pendientes de calibrar con encargos propios. Gusto valora criterio de
 producto, claridad y coherencia visual; admitir imágenes no demuestra buen
@@ -15,9 +15,9 @@ gusto.
 
 | Modelo        | costo | inteligencia | gusto | Cuándo |
 |---------------|-------|--------------|-------|--------|
-| gpt-6-astra   | 5     | 10           | 7     | Problemas más complejos que Sol no resolvió o que claramente lo superan. |
-| gpt-6.1-sol   | 9     | 9            | 6     | Opción habitual para ejecución técnica; reviews de cambios en high. |
-| gpt-6.1-terra | 10    | 8            | 6     | Computer Use y QA con usuarios simulados (`launch-qa`); cuesta la mitad que gpt-6.1-sol. |
+| gpt-6.2-astra | 5     | 10           | 7     | Problemas más complejos que Sol no resolvió o que claramente lo superan. |
+| gpt-6.2-sol   | 9     | 9            | 6     | Opción habitual para ejecución técnica; reviews de cambios en high. |
+| gpt-6.1-terra | 10    | 8            | 6     | Computer Use y QA con usuarios simulados (`launch-qa`); cuesta la mitad que gpt-6.2-sol. |
 | gpt-6-luna    | 10    | 7            | 4     | Primera opción Codex para encargos claros y fáciles de verificar; cuesta la mitad que gpt-5.6-luna. |
 | opus-5.5      | 8     | 9            | 9     | Gusto visual y decisiones de producto. |
 | sonnet-5.5    | 6     | 7            | 7     | Trabajo en el entorno Claude que no requiera el juicio de Opus. |
@@ -37,7 +37,7 @@ cambiar de perfil no recupera presupuesto agotado. Considera cuota disponible,
 tarifa, caché y reintentos al estimar el coste del encargo completo.
 
 gpt-6-luna cuesta la mitad que gpt-5.6-luna, al que sustituye. Dentro del
-presupuesto Codex, gpt-6-luna y gpt-6.1-sol son el punto de partida para
+presupuesto Codex, gpt-6-luna y gpt-6.2-sol son el punto de partida para
 ejecución: luna si el encargo es claro y verificable, sol si pide más criterio.
 
 Para ejecución, parte del modelo más barato que plausiblemente dé la talla y
@@ -73,7 +73,7 @@ cada modelo. El esfuerzo sigue la incertidumbre del encargo, no su tamaño.
 | medium | Hace falta interpretar, planificar o comparar alternativas; punto de partida habitual. |
 | high | Persisten incertidumbres importantes o se necesita razonamiento profundo. |
 
-**gpt-6-astra se calibra un escalón por debajo.**
+**gpt-6.2-astra se calibra un escalón por debajo.**
 Astra en low rinde más que gpt-5.6-sol en high, según
 [OpenAI](https://x.com/thsottiaux/status/2096688770523467947).
 Con Astra, `low` es el punto de partida habitual y `medium` cubre lo que con
@@ -119,10 +119,10 @@ pendiente.
 
 ## Revisión y UI/UX
 
-Las reviews de cambios las hace un revisor independiente con gpt-6.1-sol en
+Las reviews de cambios las hace un revisor independiente con gpt-6.2-sol en
 esfuerzo `high`. En un cambio de alto riesgo, según lo juzgue el orquestador,
 se suma opus-5.5 en `high` como segundo revisor independiente de las rondas
-completas. Cuando el usuario pide consejo, revisan juntos gpt-6.1-sol en
+completas. Cuando el usuario pide consejo, revisan juntos gpt-6.2-sol en
 `high`, opus-5.5 en `high` y fable-5.2 en `high`, con el fallback de «Roles de
 pstack», como define `felix-mode`.
 Ningún otro modelo revisa cambios. El orquestador veta el cambio y los hallazgos.
@@ -144,16 +144,16 @@ defaults de pstack. A partir de ahí rigen Esfuerzo y Escalado.
 | `judgment and prose` | El orquestador (`inherit-parent`). |
 | `how explorer`, `why investigators`, `swarm workers`, `reflect tooling` | haiku-5.5 en `low`, o DeepSeek en Go. |
 | `how explainer`, `why synthesizer`, `reflect judgment, divergent, synthesizer` | sonnet-5.5 en `medium`. |
-| `architect runners`, `arena runners` | opus-5.5; en diseño disputado (alto riesgo o empate entre los candidatos de opus-5.5, según `felix-mode`), también gpt-6.1-sol. |
+| `architect runners`, `arena runners` | opus-5.5; en diseño disputado (alto riesgo o empate entre los candidatos de opus-5.5, según `felix-mode`), también gpt-6.2-sol. |
 | `arena cross-judge pool` | fable-5.2 en `high`, juez único cuando `arena` lleva juez (diseño disputado, según `felix-mode`), sea cual sea la familia de los runners. |
-| `interrogate reviewers` | Según Revisión: gpt-6.1-sol en `high`; en alto riesgo, también opus-5.5 en `high`. |
+| `interrogate reviewers` | Según Revisión: gpt-6.2-sol en `high`; en alto riesgo, también opus-5.5 en `high`. |
 | `thermos reviewers` | opus-5.5 en `high`. `felix-mode` no usa `thermos` para revisar cambios; la fila sólo fija el asiento si alguien lo invoca. |
 | `no-comments reviewer` | sonnet-5.5 en `medium`. Limpia comentarios antes de la review y no cuenta como revisor de cambios. |
 | Revisor del rastro de `show-me-your-work` | fable-5.2 en `high`. |
 
 **Fallback de fable-5.2.** Si el `Agent` rechaza el modelo `fable`, o el
 despacho termina sin dictamen por cuota o error, el mismo encargo pasa a
-gpt-6-astra en `high` por Transporte. Vale para el juez de `arena`, el
+gpt-6.2-astra en `high` por Transporte. Vale para el juez de `arena`, el
 revisor del rastro y el miembro fable-5.2 del Consejo. Registra la
 sustitución y su motivo.
 

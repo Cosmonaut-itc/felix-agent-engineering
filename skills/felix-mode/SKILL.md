@@ -212,11 +212,11 @@ que demuestra:
   el final, como fija
   [Sincronizar una vez, al final](references/merge.md#sincronizar-una-vez-al-final).
 - **Normal.** Toda review de cambios la hace un revisor independiente
-  gpt-6.1-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
+  gpt-6.2-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
   normal, ese revisor cumple el paso.
 - **Alto riesgo.** Corre `interrogate` con dos revisores independientes:
-  gpt-6.1-sol en `high` por Transporte, siempre como Reviewer A, y opus-5.5
+  gpt-6.2-sol en `high` por Transporte, siempre como Reviewer A, y opus-5.5
   en `high`, el asiento Claude que trae la hoja. Ese asiento corre sólo en
   las rondas completas de alto riesgo. Vetas sus hallazgos con **Prueba**.
   Cuentan como señales: escrituras a producción o a un sistema de cliente
@@ -315,7 +315,7 @@ que demuestra:
   altas disjuntas en catálogos de traducción. En el registro, todas las
   rondas se numeran en orden, también las de sincronización y las del
   enfoque nuevo.
-- **Ronda delta.** La hace un solo revisor gpt-6.1-sol en `high` con
+- **Ronda delta.** La hace un solo revisor gpt-6.2-sol en `high` con
   contexto nuevo, también en alto riesgo. Su brief lleva el brief original,
   el registro, el head ya revisado y el diff desde ese head, con
   `git range-diff` si hubo rebase. El revisor marca cada id del registro
@@ -371,11 +371,11 @@ que demuestra:
 - **Diseño disputado.** Lo es un cambio de alto riesgo, con las señales de
   **Alto riesgo**, o un diseño cuyos dos candidatos de opus-5.5 empatan en la
   rúbrica sin un ganador claro. En alto riesgo, `arena` corre desde el inicio
-  con opus-5.5 y gpt-6.1-sol. En un empate, conserva los dos candidatos de
-  opus-5.5 y suma uno de gpt-6.1-sol. En ambos casos, fable-5.2 en `high` es
+  con opus-5.5 y gpt-6.2-sol. En un empate, conserva los dos candidatos de
+  opus-5.5 y suma uno de gpt-6.2-sol. En ambos casos, fable-5.2 en `high` es
   el juez único de todos los candidatos, con el fallback del routing. En
   todo diseño disputado corre además el `arena` de implementación del paso 4
-  del playbook Feature, con opus-5.5 y gpt-6.1-sol, y produce dos
+  del playbook Feature, con opus-5.5 y gpt-6.2-sol, y produce dos
   implementaciones completas aunque no veas varias formas válidas. Fuera de ese caso, un solo delegado implementa
   contra el sketch elegido.
 - **Sin revisor.** Si no puede correr ningún revisor independiente, la
