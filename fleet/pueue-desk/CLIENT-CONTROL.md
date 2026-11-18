@@ -362,3 +362,96 @@ Quedan CC1 coordinador/diario, CC2 reconciliador, CC3 Hasito, CC4 apotheca,
 CC5 Jale/verify, CC6 escritores PAO, CC7 filtro/mantenimiento y CC8 acreditación
 cruzada con daemon privado. Sólo CC8, además de las otras puertas de U3.6,
 puede habilitar la compuerta. Acreditar Mini nunca habilita desk/U3.7.
+
+## Entrega CC1: diario y exclusión, sin habilitar reordenar
+
+`control.py client` implementa el transporte local del contrato. No admite
+argumentos ni selectores: la instalación elige host, autoridad, configuración,
+entorno y binario. Sólo corre en la Mini. En el desk la guardia y el goteo
+aún no consultan reservas (U3.7), así que `client` falla con un diagnóstico,
+no escribe el diario y la vista anuncia `capabilities.client:false`. Lee como máximo `MAX_BYTES+1` antes de decodificar; usa
+los validadores CC0 tanto al entrar como al responder. Los rechazos de negocio
+salen 0; una petición inválida sale 2 con `invalid_request_response()`.
+
+`client_actions.py` conserva fases y reservas en tablas aditivas de la
+SQLite ya adoptada, con `synchronous=FULL` y `fullfsync`. No crea otra autoridad
+ni reemplaza el inode de `control.lock`. Cada clave de fase conserva petición,
+digest, revisión y recibo; una repetición no reenvía RPC y otro cuerpo da
+conflicto, incluso después de reiniciar. `status` proyecta ese recibo sin
+recoger evidencia ni enviar efectos. Los terminales se conservan.
+
+La reserva añade `hold_identity`: null hasta que el `hold` de esa misma
+`(launcher, ref, action_id)` confirma, sin RPC incierta, la transición al
+Stashed no programado. Guarda la identidad completa posterior, incluido el
+intento original, en la misma transacción que el recibo `held`. Una reserva
+abierta, un rechazo por carrera o ver Stashed después de perder la respuesta
+no acreditan esa atribución. `cancel-no-payload` y `retire-held` exigen que
+`hold_identity` coincida con el Stashed actual; si falta o difiere, rechazan
+con `evidence_missing`, conservan la reserva y no envían RPC. Un diario
+anterior sin el campo tampoco acredita hold. Sólo una recuperación atribuida
+de CC2 podrá completar esa evidencia; no basta releer el estado del daemon.
+
+Con `control.lock` ocupado, una fase sin recibo responde `deferred` y
+`lock_busy` sin RPC; si la acción ya tiene una reserva abierta, la respuesta
+la declara `held`.
+
+Antes de crear el hijo se confirma intención `unknown` y reserva. El hijo
+espera en stdin hasta confirmar también su PID y nacimiento; no hereda el
+candado. Toda respuesta perdida, caída o incertidumbre conserva la reserva.
+Matar y recoger nuestro propio hijo tras su plazo no excluye mensajes ya
+recibidos por el daemon. Ni el reloj, ni dos lecturas iguales, ni la muerte
+del dueño cierran la acción. Una fase posterior tampoco atraviesa esa
+incertidumbre.
+
+Una reserva impide reordenar y lo explica en `reorder_groups`; un reordenado
+abierto o en recuperación difiere las acciones cliente sin RPC. La guardia
+Mini puede reabrir normalmente con una reserva de cancelación conocida cuando
+cede la presión; una RPC incierta bloquea esa apertura y conserva la razón
+`pressure`, sin convertirla en pausa manual. Cancelar nunca abre
+por encima de manual, presión o arranque. La poda conserva las tareas que
+necesita una reserva abierta. No se cambian cuotas, modo ni política de cola.
+
+El controlador también funciona si la instalación sólo publicó `control.py`
+y falta `client_actions.py` o `client_contract.py`. Sin tablas cliente mantiene
+las operaciones del host. Si existe el diario cliente, la vista permanece
+válida y explica la reserva pendiente, reordenar queda cerrado en todos los
+grupos, la poda se abstiene y las aperturas se retienen conservadoramente.
+No se borra ni convierte el diario ni se reemplaza `control.lock`. La vista
+del host anuncia `capabilities.client:false` si falta cualquiera de las dos
+piezas o `editor_prioridad.py`, que la CLI necesita para identificar a sus
+hijos; invocar `client` entonces falla con un diagnóstico de instalación,
+sin negociación positiva ni acceso al daemon.
+
+Son tres acreditaciones distintas:
+
+1. **Protocolo instalado.** Con ambos módulos presentes se puede negociar la
+   versión global del protocolo; eso no acredita una corrida.
+2. **Soporte por corrida.** Los cuatro adaptadores instalados (`remote-run`,
+   `jale`, `apotheca`, `vigilante`) devuelven hoy `unsupported`. Los formatos
+   actuales no publican un vínculo acreditado entre launcher/ref y la
+   generación e identidad originales de tarea/intento, o no permiten acreditar
+   su clasificación manual. Un ID almacenado puede referirse a otra tarea
+   tras reconstruir la cola; cotejarlo con la tarea actual no demuestra
+   pertenencia. Los productores deben publicar el vínculo desde el alta
+   verificada y contemplar caídas, relevo, reencolado y nueva generación.
+3. **Filtro y acreditación del host.** CC7 debe interceptar las mutaciones raw
+   antes del daemon; CC8 debe acreditar cobertura, drenado, recuperación y
+   compatibilidad efectivas antes de habilitar reordenar. Ninguna de las dos
+   acreditaciones anteriores demuestra esa exclusión preventiva.
+
+Ni manifiesto, grupo, etiqueta, cwd ni un recibo declarado por el solicitante
+bastan para sustituir la pertenencia o la clasificación acreditadas.
+No se leen comandos, carga, metadatos de ejecución ni logs para habilitarlos.
+La interfaz interna de adaptadores se prueba con evidencia sintética; las
+entregas posteriores deben acreditar formatos fijos que permitan verificar
+identidad, compatibilidad del worker, aceptación y prueba sin esos accesos.
+La negociación global del protocolo no anuncia soporte por corrida.
+
+CC2 debe copiar bajo `control.lock` acción, reserva, generación, ambas
+revisiones y digest; recoger evidencia fuera del candado; volver y cotejar
+las versiones antes de avanzar o cerrar. Debe recoger también intenciones
+anteriores al envío, hijos identificados, recibos diferidos y resultados
+publicados antes de `finish`, sin depender de runner, waiter ni HTTP vivos.
+CC1 conserva esos datos; no implementa ese recuperador, preparador ni goteo.
+CC6 entregará los archivos y el binario interno mediante los instaladores.
+**`coordinated_reorder` sigue en `False`; sólo CC8 puede acreditar el corte.**

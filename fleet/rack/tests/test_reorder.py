@@ -41,6 +41,34 @@ class ReorderChannelTests(unittest.TestCase):
         return dict(schema='rack-action@1',host='mini',op='undo' if undo else 'reorder',action_id=ident,
             dry_run=dry_run,expected=expected,**(dict(undo_of=undo) if undo else dict(change=dict(order=[1,5,2,3,4]))))
 
+    def test_client_reservation_survives_public_sanitizers_with_visible_reason(self):
+        module = c.client_module()
+        corpus = json.loads((BASE.parent/'pueue-desk/corpus/client-control-v1.json').read_text())
+        r = next(v['request'] for v in corpus['valid'] if v['request']['op'] == 'hold')
+        coordinator = module.ClientActions(self.engine)
+        reservation = dict(launcher=r['launcher'], ref=r['ref'], action_id=r['action_id'],
+                           group='suites', mode=r['mode'], identity=r['expected'], acceptance=None,
+                           open=True, uncertain=True)
+        record = dict(request=r, digest=module.digest(r), revision=0, process=None,
+                      response=coordinator.reply(r, 'unknown', 'rpc_unresolved', held=True))
+        coordinator.save(record, reservation)
+        view = a.host_channel.control(self.engine.view())
+        reason = 'Hay una reserva cliente o una RPC pendiente de reconciliar.'
+        self.assertFalse(view['reorder_groups']['suites']['enabled'])
+        self.assertEqual(view['reorder_groups']['suites']['reason'], reason)
+        # fila() uses this field to render the group's status even while Running.
+        self.assertEqual(view['capabilities']['reason_reorder'], reason)
+        public = self.request('client-reserve-order-0001')
+        wire = {k: v for k, v in public.items() if k not in ('schema', 'host')}
+        wire['schema'] = 'rack-host-control@1'
+        response = self.engine.handle(wire)
+        self.assertEqual(response['status'], 'rejected')
+        response['error']['message'] = 'PRIVATE_SENTINEL'
+        clean = a.host_channel.sanitize(public, response, 'reorder')
+        self.assertEqual(clean['error'], dict(code='client_reserved', message=reason))
+        self.assertIs(clean['effects'], False)
+        self.assertNotIn('PRIVATE_SENTINEL', json.dumps(clean))
+
     def test_public_pipeline_and_exact_undo_opaque_only(self):
         r=self.request();answer=self.actions.post(r)[1]
         self.assertEqual(answer['status'],'applied',answer)
