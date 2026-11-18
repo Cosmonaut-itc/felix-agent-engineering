@@ -15,7 +15,7 @@ from test_jale import PRODUCTOR
 from test_hasito import F, suite_fixture
 from adaptadores import seleccionar
 from adaptadores.hasito import Hasito
-from dominio import Certificado, EsperandoCI, Promoviendo, Terminal
+from dominio import Candidato, Certificado, EsperandoCI, Promoviendo, Terminal, clave
 from observador import configuracion
 import git_ops
 
@@ -290,14 +290,15 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
     def test_reanudar_y_repetir_hasito_avanzan_antes_del_runner(self):
         self.assertTrue(self.avanzar())
         self.hasta_fase(Certificado)
-        candidato = self.estado().trenes[0].fase.candidato
+        certificado = self.estado().trenes[0].fase
+        candidato = Candidato(certificado.B, (), certificado.C, certificado.arbol)
         adaptador = self.contexto.hasito
         from dominio import Reproduccion
         origen = self.raiz / 'origen-suite.json'
         origen.write_text(json.dumps(suite_fixture(candidato, 1, (F,))))
         solicitud = Reproduccion('reproduccion', F, 'C', (1,), 10)
         # Construir el comando de reanudación válido sin haber corrido antes.
-        raiz = adaptador.estado / __import__('dominio').clave('suite', 'reanudar')
+        raiz = adaptador.estado / clave('suite', 'reanudar')
         argv = adaptador.argv_suite(candidato, self.contexto.git.worktree(candidato.C),
                                    raiz / 'evidencia', 'suite-reanudar')
         self.comando(self.operador, 'reset', '--hard', self.viejo)
@@ -314,7 +315,8 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
         self.contexto.hasito = seleccionar(self.contexto.config, self.contexto.git)
         self.hasta_fase(Certificado)
         adaptador = self.contexto.hasito
-        candidato = self.estado().trenes[0].fase.candidato
+        certificado = self.estado().trenes[0].fase
+        candidato = Candidato(certificado.B, (), certificado.C, certificado.arbol)
         self.comando(self.operador, 'reset', '--hard', self.viejo)
         raiz, _ = adaptador.suite(candidato, 'reanudar-nuevo', intento=1)
         self.assertEqual(self.cabeza(), self.nuevo)

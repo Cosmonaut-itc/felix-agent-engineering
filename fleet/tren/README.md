@@ -1133,9 +1133,10 @@ los archivos privados pasados como opciones posteriores pueden vivir fuera.
 Sin la clave se conserva el comportamiento anterior.
 
 El tick trae `origin/main` y avanza ese checkout sólo con fast-forward antes
-de cada lanzamiento, reanudación o repetición, y antes de verificar el gancho
-de pre-aterrizaje, incluida su cancelación. El diario conserva la ruta del
-operador original para cancelar aunque cambie la configuración. Sigue a `main`, cuyo código ya pasó revisión, en vez de
+de cada lanzamiento, reanudación o repetición, y antes de invocar el gancho
+de pre-aterrizaje, tanto al verificar como al cancelar. El diario conserva
+la ruta del operador original para cancelar aunque cambie la configuración.
+Sigue a `main`, cuyo código ya pasó revisión, en vez de
 fijarse a un SHA: el lanzador puede exigir su último cambio publicado en
 `main`. El candidato conserva su SHA propio. En la promoción, el CAS y la
 relectura de la base siguen protegiendo B. Recuperar un recibo completado no
