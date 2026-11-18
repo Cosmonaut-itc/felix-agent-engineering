@@ -13,6 +13,7 @@ from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      intento_suite, rama_ci, recibo_ci)
 from git_ops import Publicado
 from adaptadores.hasito import ResultadoInvalido
+from operador import FalloSnapshot
 
 
 class EfectoFallido(Exception):
@@ -148,6 +149,8 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
         if isinstance(lectura, (EnBase, Incierto)):
             if previo is not None and previo.necesario(tren, observacion):
                 if isinstance(lectura, Incierto):
+                    if previo.operador is not None and "pre_aterrizaje" in previo.config:
+                        raise FalloSnapshot("main-no-disponible")
                     lectura = BloqueoPrevia(cert.B, cert.C, "base-incierta")
                 else:
                     lectura = git.promover(cert.B, cert.C, cert.arbol, heads,

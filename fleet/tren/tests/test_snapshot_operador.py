@@ -10,7 +10,7 @@ from unittest.mock import patch
 
 import test_activo as activo
 from test_jale import PRODUCTOR
-from test_juicio import JuicioTests
+import test_juicio as juicio_fixtures
 from adaptadores import seleccionar
 from dominio import Certificado, EsperandoCI, Pausa, Promoviendo, Terminal, clave
 
@@ -24,9 +24,9 @@ class SnapshotTests(unittest.TestCase):
     estado = activo.ActivoTests.estado
     hasta_fase = activo.ActivoTests.hasta_fase
     lineas = activo.ActivoTests.lineas
-    cli = JuicioTests.cli
-    juicio = JuicioTests.juicio
-    hasta_pausa = JuicioTests.hasta_pausa
+    cli = juicio_fixtures.JuicioTests.cli
+    juicio = juicio_fixtures.JuicioTests.juicio
+    hasta_pausa = juicio_fixtures.JuicioTests.hasta_pausa
 
     def setUp(self):
         activo.ActivoTests.setUp(self)
@@ -116,23 +116,23 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         self.assertEqual(self.lineas('versiones.log'), ['nuevo nuevo'])
 
     def test_symlink_lanzador_sale_del_snapshot(self):
-        self.comprobar_symlink('jale.sh', False)
+        self.comprobar_symlink('jale.sh')
 
     def test_symlink_argumento_gancho_sale_del_snapshot(self):
         self.gancho()
-        self.comprobar_symlink('gancho.py', True)
+        self.comprobar_symlink('gancho.py')
 
     def test_symlink_ejecutable_gancho_sale_del_snapshot(self):
         self.gancho(ejecutable=True)
-        self.comprobar_symlink('gancho.py', True)
+        self.comprobar_symlink('gancho.py')
 
-    def comprobar_symlink(self, archivo, gancho):
+    def comprobar_symlink(self, archivo):
         externo = self.raiz / 'externo'
         externo.write_text('#!/bin/bash\nexit 0\n')
         externo.chmod(0o755)
         malo = self.version('malo', self.nuevo, enlace=(archivo, externo))
         self.push(malo, 'refs/heads/main')
-        pausa = self.hasta_pausa()
+        pausa = self.hasta_pausa().pausa
         self.assertTrue(pausa.detalle.startswith('checkout-operador:'), pausa)
         self.assertFalse(self.lineas('versiones.log'))
         self.assertFalse(self.lineas('gancho.log'))
@@ -142,7 +142,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
         lectura = self.contexto.git.leer_ref
         with patch.object(self.contexto.git, 'leer_ref',
                           side_effect=lambda ref: 'f' * 40 if ref == 'refs/heads/main' else lectura(ref)):
-            pausa = self.hasta_pausa()
+            pausa = self.hasta_pausa().pausa
         self.assertTrue(pausa.detalle.startswith('checkout-operador:'), pausa)
         self.assertFalse(self.solicitudes())
         self.juicio('reanudar')

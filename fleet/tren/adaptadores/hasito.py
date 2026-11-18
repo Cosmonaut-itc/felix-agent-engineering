@@ -3,7 +3,6 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 import math
-import os
 from pathlib import Path
 import re
 import shlex
@@ -11,8 +10,10 @@ import subprocess
 
 from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, RechazoLanzador, clave)
+from adaptadores.ejecucion_jale import guardar
 from git_ops import FalloGit, sha
 from ledger import directorio_estado
+from operador import entorno_lanzador
 
 
 @dataclass(frozen=True)
@@ -134,6 +135,8 @@ def leer_repeticion(r, commit, origen, origen_sha, base, fallo):
 class Hasito:
     def __init__(self, lanzador, git, runner=None, estado=None):
         self.lanzador = str(Path(lanzador).resolve())
+        self.lanzador_configurado = str(lanzador)
+        self.operador = None
         self.git = git
         self.runner = runner or subprocess.run
         self.estado = (Path(estado) if estado is not None else
@@ -149,12 +152,17 @@ class Hasito:
                 "--worktree", str(worktree), "--veces", "2", "--unidad",
                 fallo.check + "=" + fallo.unidad, "--evidencia", str(evidencia), "--nombre", nombre)
 
-    def reanudacion(self, comando, anterior):
+    def reanudacion(self, comando, anterior, remapear=False):
         """Sólo admite el mismo argv, --reanudar y el traslado documentado a mini."""
         try:
             nuevo = tuple(shlex.split(comando))
         except ValueError:
             raise ResultadoInvalido("reanudar-invalido") from None
+        if remapear:
+            exigir(len(nuevo) >= 2 and Path(nuevo[1]).is_absolute(), "reanudar-invalido")
+            # El comando del recibo conserva sus argumentos operativos. El
+            # intento nuevo elige su lanzador después de validarlos.
+            nuevo = (nuevo[0], anterior[1], *nuevo[2:])
         def normalizar(argv):
             salida = []
             indice = 0
@@ -176,21 +184,41 @@ class Hasito:
         exigir(nuevo.count("--reanudar") == 1 and normalizar(nuevo) == normalizar(anterior), "reanudar-no-corresponde")
         return nuevo
 
-    def correr(self, argv, registro, repeticion=False, permitir_lanzar=True):
+    def correr(self, argv, registro, tren_id, reanudar="", repeticion=False, permitir_lanzar=True):
         """Una clave de efecto conserva su recibo; un crash se reengancha al lanzador."""
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
         recibo = registro / "recibo.json"
+        solicitud = registro / "solicitud.json"
+        guardado = leer_json(recibo) if recibo.exists() else None
+        argv_guardado = guardado.get("argv") if isinstance(guardado, dict) else None
+        if solicitud.exists():
+            solicitado = leer_json(solicitud)
+            exigir(guardado is None or solicitado == argv_guardado, "recibo-no-corresponde")
+            argv_guardado = solicitado
+        if reanudar:
+            argv = self.reanudacion(reanudar, argv,
+                remapear=self.operador is not None or solicitud.exists() or guardado is not None)
+        if solicitud.exists() or recibo.exists():
+            exigir(isinstance(argv_guardado, list) and len(argv_guardado) == len(argv) and
+                   argv_guardado[0] == argv[0] and isinstance(argv_guardado[1], str) and
+                   Path(argv_guardado[1]).is_absolute() and argv_guardado[2:] == list(argv[2:]),
+                   "recibo-no-corresponde")
+            argv = tuple(argv_guardado)
         if recibo.exists():
-            guardado = leer_json(recibo)
-            exigir(isinstance(guardado, dict) and guardado.get("argv") == list(argv), "recibo-no-corresponde")
-            exigir(isinstance(guardado.get("ruta"), str) and
+            exigir(isinstance(guardado, dict) and isinstance(guardado.get("ruta"), str) and
                    type(guardado.get("codigo")) is int and guardado["codigo"] in (0, 1, 64, 75), "recibo-invalido")
-            return Path(guardado["ruta"]), guardado["codigo"]
+            return Path(guardado["ruta"]), guardado["codigo"], argv
         # Recuperar evidencia ya producida no requiere permiso para trabajo nuevo.
         if not permitir_lanzar:
             return None
+        if not solicitud.exists():
+            if self.operador is not None:
+                lanzador = self.operador.lanzador(self.lanzador_configurado, tren_id)
+                argv = (argv[0], lanzador, *argv[2:])
+            guardar(solicitud, list(argv))
         try:
-            resultado = self.runner(list(argv), capture_output=True, text=True, check=False)
+            resultado = self.runner(list(argv), capture_output=True, text=True, check=False,
+                                    env=entorno_lanzador())
         except (OSError, subprocess.SubprocessError):
             raise ResultadoInvalido("lanzador-no-disponible") from None
         if resultado.returncode == 64:
@@ -198,9 +226,8 @@ class Hasito:
             # y un recibo durable para que otro tick no vuelva a lanzarlo.
             log = registro / "lanzador.log"
             log.write_text(resultado.stdout + resultado.stderr, encoding="utf-8")
-            from adaptadores.ejecucion_jale import guardar
             guardar(recibo, {"argv": list(argv), "ruta": str(log), "codigo": 64})
-            return log, 64
+            return log, 64, argv
         exigir(resultado.returncode in (0, 1, 75), "salida-no-utilizable")
         etiqueta = "REPETICION" if repeticion else "SUITE"
         campo = "repeticion" if repeticion else "resultado"
@@ -210,33 +237,19 @@ class Hasito:
         exigir(len(encontrados) == 1 and int(encontrados[0][1]) == resultado.returncode, "salida-sin-recibo")
         ruta = Path(encontrados[0][2])
         exigir(ruta.is_absolute() and ruta.is_file(), "resultado-ilegible")
-        # Un recibo truncado por una muerte no debe impedir el reenganche.
-        temporal = registro / "recibo.tmp"
-        with temporal.open("w", encoding="utf-8") as archivo:
-            json.dump({"argv": list(argv), "ruta": str(ruta),
-                       "codigo": resultado.returncode}, archivo)
-            archivo.flush()
-            os.fsync(archivo.fileno())
-        os.replace(str(temporal), str(recibo))
-        descriptor = os.open(str(registro), os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        return ruta, resultado.returncode
+        guardar(recibo, {"argv": list(argv), "ruta": str(ruta), "codigo": resultado.returncode})
+        return ruta, resultado.returncode, argv
 
     def suite(self, candidato, tren_id, intento=0, reanudar="", permitir_lanzar=True):
         try:
             wt = self.git.worktree(candidato.C)
             raiz = self.estado / clave("suite", tren_id)
             argv = self.argv_suite(candidato, wt, raiz / "evidencia", "suite-" + tren_id)
-            if reanudar:
-                argv = self.reanudacion(reanudar, argv)
-            recibo = self.correr(argv, raiz / ("intento-" + str(intento)),
+            recibo = self.correr(argv, raiz / ("intento-" + str(intento)), tren_id, reanudar,
                                  permitir_lanzar=permitir_lanzar)
             if recibo is None:
                 return None
-            ruta, codigo = recibo
+            ruta, codigo, _ = recibo
             if codigo == 64:
                 return str(ruta), RechazoLanzador(str(ruta))
             r = leer_json(ruta)
@@ -253,13 +266,11 @@ class Hasito:
             prefijo = "diag-" if commit == candidato.C else "repro-"
             argv = self.argv_repetir(suite, commit, wt, raiz / "evidencia",
                                     prefijo + solicitud.id, solicitud.fallo)
-            if reanudar:
-                argv = self.reanudacion(reanudar, argv)
-            recibo = self.correr(argv, raiz / ("intento-" + str(intento)), True,
-                                 permitir_lanzar=permitir_lanzar)
+            recibo = self.correr(argv, raiz / ("intento-" + str(intento)), tren_id, reanudar,
+                                 repeticion=True, permitir_lanzar=permitir_lanzar)
             if recibo is None:
                 return None
-            ruta, codigo = recibo
+            ruta, codigo, argv = recibo
             if codigo == 64:
                 return RechazoLanzador(str(ruta))
             r = leer_json(ruta)

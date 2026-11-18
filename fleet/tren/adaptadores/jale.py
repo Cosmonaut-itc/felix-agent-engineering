@@ -14,6 +14,7 @@ from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, RechazoLanzador, clave)
 from git_ops import Publicado, sha
 from ledger import directorio_estado
+from operador import entorno_lanzador
 
 
 MODOS = ('contract', 'e2e')
@@ -100,6 +101,8 @@ class Jale:
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
         self.lanzador = str(Path(lanzador).resolve())
+        self.lanzador_configurado = str(lanzador)
+        self.operador = None
         self.git = git
         self.host, self.modos = host, tuple(modos)
         self.estado = (Path(estado) if estado is not None else
@@ -108,16 +111,22 @@ class Jale:
     def esperar(self, proceso):
         proceso.wait()
 
-    def correr(self, registro, commit, modo, filtros, permitir_lanzar):
+    def correr(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None):
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
         log = registro / 'corrida.log'
         argv = ['bash', self.lanzador, self.host, str(log), modo, commit, *filtros]
         solicitud = registro / 'solicitud.json'
         if solicitud.exists():
-            exigir(leer_json(solicitud) == argv, 'recibo-no-corresponde')
+            guardado = leer_json(solicitud)
+            exigir(isinstance(guardado, list) and len(guardado) == len(argv) and
+                   guardado[0] == 'bash' and isinstance(guardado[1], str) and
+                   Path(guardado[1]).is_absolute() and guardado[2] in ('auto', 'mini', 'desktop') and
+                   guardado[3:] == argv[3:], 'recibo-no-corresponde')
         elif not permitir_lanzar:
             return False
         else:
+            if self.operador is not None:
+                argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id)
             guardar(solicitud, argv)
         if (not permitir_lanzar and not (registro / 'iniciado.json').exists() and
                 not (registro / 'codigo.json').exists()):
@@ -128,20 +137,21 @@ class Jale:
             try:
                 proceso = subprocess.Popen([sys.executable, str(Path(__file__).with_name(
                     'ejecucion_jale.py')), str(registro)], start_new_session=True,
-                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                    env=entorno_lanzador())
                 self.esperar(proceso)
             except (OSError, subprocess.SubprocessError):
                 raise ResultadoInvalido('lanzador-no-disponible') from None
         exigir((registro / 'codigo.json').exists(), 'corrida-interrumpida')
         return leer_recibo(log, leer_json(registro / 'codigo.json'), commit, modo, filtros)
 
-    def corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar):
+    def corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id):
         cache = raiz / 'completo.json'
         if cache.exists():
             guardado = leer_json(cache)
             exigir(type(guardado) is int and guardado >= 0, 'cache-invalida')
             return self.correr(raiz / str(guardado), commit, modo, filtros, False)
-        r = self.correr(raiz / str(intento), commit, modo, filtros, permitir_lanzar)
+        r = self.correr(raiz / str(intento), commit, modo, filtros, permitir_lanzar, tren_id)
         if isinstance(r, dict) and r['codigo'] != 75:
             guardar(cache, intento)
         return r
@@ -151,7 +161,7 @@ class Jale:
         exigir(not reanudar or reanudar == str(raiz), 'reanudar-no-corresponde')
         recibos = []
         for modo in self.modos:
-            r = self.corrida(raiz / modo, candidato.C, modo, (), intento, permitir_lanzar)
+            r = self.corrida(raiz / modo, candidato.C, modo, (), intento, permitir_lanzar, tren_id)
             if r is False:
                 return None
             if isinstance(r, RechazoLanzador):
@@ -199,7 +209,7 @@ class Jale:
                 exigir(isinstance(r, dict) and r['codigo'] != 75, 'cache-invalida')
             else:
                 r = self.corrida(raiz / str(n), commit, fallo.check, (fallo.unidad,), intento,
-                                 permitir_lanzar)
+                                 permitir_lanzar, tren_id)
                 if isinstance(r, dict) and r['codigo'] != 75:
                     ultimo = raiz / str(n) / str(leer_json(raiz / str(n) / 'completo.json'))
                     if cache is not None:
