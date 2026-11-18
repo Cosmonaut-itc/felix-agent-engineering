@@ -133,8 +133,8 @@ def leer_repeticion(r, commit, origen, origen_sha, base, fallo):
 
 
 class Hasito:
-    def __init__(self, lanzador, git, runner=None, estado=None):
-        self.lanzador = str(Path(lanzador).resolve())
+    def __init__(self, lanzador, git, runner=None, estado=None, *, resolver_lanzador=True):
+        self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)
         self.operador = None
         self.git = git
@@ -197,7 +197,8 @@ class Hasito:
             argv_guardado = solicitado
         if reanudar:
             argv = self.reanudacion(reanudar, argv,
-                remapear=self.operador is not None or solicitud.exists() or guardado is not None)
+                remapear=(self.operador is not None and self.operador.checkout is not None)
+                or solicitud.exists() or guardado is not None)
         if solicitud.exists() or recibo.exists():
             exigir(isinstance(argv_guardado, list) and len(argv_guardado) == len(argv) and
                    argv_guardado[0] == argv[0] and isinstance(argv_guardado[1], str) and
@@ -211,8 +212,11 @@ class Hasito:
         # Recuperar evidencia ya producida no requiere permiso para trabajo nuevo.
         if not permitir_lanzar:
             return None
-        if not solicitud.exists():
+        if solicitud.exists():
             if self.operador is not None:
+                self.operador.validar_guardado(argv[1])
+        else:
+            if self.operador is not None and self.operador.checkout is not None:
                 lanzador = self.operador.lanzador(self.lanzador_configurado, tren_id)
                 argv = (argv[0], lanzador, *argv[2:])
             guardar(solicitud, list(argv))

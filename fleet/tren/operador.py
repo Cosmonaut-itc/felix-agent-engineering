@@ -69,7 +69,7 @@ class Snapshots:
                     self.git.texto("update-ref", ref, commit)
                 # fetch-pack habla con upload-pack por la ruta local. No consulta
                 # remotos ni aplica las reglas url.*.insteadOf del operador.
-                self.comando_git(checkout, "fetch-pack", "--no-progress", "--",
+                self.comando_git(checkout, "fetch-pack", "--no-progress",
                                  str(self.git.ruta.resolve()), ref)
             except (FalloGit, FalloSnapshot):
                 raise FalloSnapshot("sha-no-disponible") from None
@@ -169,6 +169,31 @@ class Snapshots:
         checkout, arbol = self.preparar(commit, self.lanzador_configurado)
         return dict(config, comando=[self.mapear(arg, checkout, arbol)
                                      for arg in config["comando"]]), str(arbol)
+
+    def validar_guardado(self, *argv):
+        """Comprueba el worktree registrado sólo si el argv requiere ejecutarlo."""
+        arboles = {}
+        try:
+            for arg in argv:
+                ruta = Path(arg)
+                if not ruta.is_relative_to(self.raiz):
+                    continue
+                relativa = ruta.relative_to(self.raiz)
+                if len(relativa.parts) < 2:
+                    raise FalloSnapshot("snapshot-no-verificable")
+                arbol = self.raiz.joinpath(*relativa.parts[:2])
+                if arbol not in arboles:
+                    fila = self.ledger.db.execute(
+                        "SELECT checkout FROM snapshots_operador WHERE ruta=? AND repo=?",
+                        (str(arbol), self.repo)).fetchone()
+                    if fila is None:
+                        raise FalloSnapshot("snapshot-no-verificable")
+                    self.verificar_arbol(arbol, Path(fila[0]), arbol.name)
+                    arboles[arbol] = True
+                if not ruta.resolve(strict=True).is_relative_to(arbol):
+                    raise FalloSnapshot("ruta-fuera-del-snapshot")
+        except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+            raise FalloSnapshot("snapshot-no-verificable") from None
 
     def limpiar(self, estado, diarios):
         filas = self.ledger.db.execute("SELECT ruta, checkout FROM snapshots_operador "

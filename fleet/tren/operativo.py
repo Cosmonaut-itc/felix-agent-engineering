@@ -75,16 +75,19 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     estado = ledger.estado(repo, operativo=True)
     config = getattr(observador, "config", {})
     snapshots = Snapshots(ledger, repo, git, config)
-    operador = snapshots if snapshots.checkout is not None else None
-    if operador is not None and adaptador is not None:
+    if adaptador is not None and hasattr(adaptador, "operador"):
         adaptador = copy(adaptador)
-        adaptador.operador = operador
+        adaptador.operador = snapshots
         if snapshots.lanzador_configurado is None:
             snapshots.lanzador_configurado = adaptador.lanzador_configurado
-    previo = Previo(ledger, git, config, frontera, operador)
+    previo = Previo(ledger, git, config, frontera, snapshots)
 
     def limpiar(nuevo):
         previo.limpiar(nuevo)
+        if (previo.fallo_snapshot is not None and nuevo.pausa is None and
+                any(not isinstance(t.fase, Terminal) for t in nuevo.trenes)):
+            nuevo = replace(nuevo, pausa=Pausa("infraestructura",
+                detalle="checkout-operador:" + str(previo.fallo_snapshot)))
         return nuevo
 
     previo.limpiar(estado)

@@ -13,6 +13,7 @@ from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, EscritorExtern
                      EsperaPrevia, Incierto, Terminal, VentanaAutorizada,
                      admision_entrada, clave)
 from git_ops import FalloGit, entorno, sha
+from operador import FalloSnapshot
 
 
 PRESUPUESTO_IO_S = 60
@@ -134,6 +135,7 @@ class Previo:
     def __init__(self, ledger, git, config, frontera, operador=None):
         self.ledger, self.git, self.config = ledger, git, config
         self.operador = operador
+        self.fallo_snapshot = None
         self.repo = ""
         self.frontera = frontera
         self.reloj = time.time
@@ -146,14 +148,17 @@ class Previo:
                           "id TEXT PRIMARY KEY, repo TEXT NOT NULL, payload TEXT NOT NULL, "
                           "pendiente INTEGER NOT NULL)")
 
-    def llamar(self, config, solicitud, accion):
+    def llamar(self, registro, accion):
         restante = PRESUPUESTO_IO_S - self.io_s
         if restante <= 0:
             return "timeout"
         inicio = self.reloj_io()
+        config = registro["gancho"]
         try:
+            if registro.get("snapshot") and self.operador is not None:
+                self.operador.validar_guardado(*config["comando"])
             return invocar(dict(config, plazo_s=min(config["plazo_s"], restante)),
-                           solicitud, accion)
+                           registro["solicitud"], accion)
         finally:
             self.io_s += max(0, self.reloj_io() - inicio)
 
@@ -228,7 +233,12 @@ class Previo:
         if not isinstance(lectura, (EnBase, EscritorExterno)):
             self.guardar_cancelacion(registro, "reconciliacion-incierta")
             return False  # Nunca deshacer un efecto cuyo push pudo aterrizar.
-        resultado = self.llamar(registro["gancho"], solicitud, "cancelar")
+        try:
+            resultado = self.llamar(registro, "cancelar")
+        except FalloSnapshot as exc:
+            self.fallo_snapshot = exc
+            self.guardar_cancelacion(registro, "checkout-operador:" + str(exc))
+            return False
         if resultado != "cancelado":
             self.guardar_cancelacion(registro, "cancelar-" + resultado)
             return False
@@ -301,7 +311,7 @@ class Previo:
                 registro = {"gancho": config, "solicitud": solicitud, "arbol": cert.arbol,
                             "heads": [p["head"] for p in solicitud["prs"]],
                             "vence_espera": self.reloj() + config.get("espera_max_s", ESPERA_MAX_S)}
-                if self.operador is not None:
+                if self.operador is not None and self.operador.checkout is not None:
                     # El EnBase previo al CAS certificó main == B.
                     registro["gancho"], registro["snapshot"] = self.operador.gancho(config, B)
                     registro["gancho_original"] = config
@@ -311,7 +321,7 @@ class Previo:
                     (solicitud["id"], estado.repo, json.dumps(registro, sort_keys=True)))
             self.frontera("antes-pre-aterrizaje", efecto)
             resultado = ("espera-vencida" if self.reloj() >= registro["vence_espera"] else
-                         self.llamar(registro["gancho"], registro["solicitud"], "verificar"))
+                         self.llamar(registro, "verificar"))
             if self.reloj() >= registro["vence_espera"]:
                 resultado = "espera-vencida"
         else:

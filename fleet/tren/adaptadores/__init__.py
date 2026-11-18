@@ -2,6 +2,7 @@
 from pathlib import Path
 
 from adaptadores.hasito import Hasito
+from operador import checkout_configurado
 
 
 def seleccionar(config, git):
@@ -13,7 +14,9 @@ def seleccionar(config, git):
         return None
     if not isinstance(lanzador, str) or not Path(lanzador).is_absolute():
         raise ValueError('lanzador debe ser ruta absoluta')
+    resolver = checkout_configurado(config) is None
     if nombre == 'hasito':
-        return Hasito(lanzador, git)
+        return Hasito(lanzador, git, resolver_lanzador=resolver)
     from adaptadores.jale import Jale, MODOS
-    return Jale(lanzador, git, host=config.get('host', 'auto'), modos=config.get('modos', MODOS))
+    return Jale(lanzador, git, host=config.get('host', 'auto'), modos=config.get('modos', MODOS),
+                resolver_lanzador=resolver)

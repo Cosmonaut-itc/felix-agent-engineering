@@ -149,7 +149,8 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
         if isinstance(lectura, (EnBase, Incierto)):
             if previo is not None and previo.necesario(tren, observacion):
                 if isinstance(lectura, Incierto):
-                    if previo.operador is not None and "pre_aterrizaje" in previo.config:
+                    if (previo.operador is not None and previo.operador.checkout is not None
+                            and "pre_aterrizaje" in previo.config):
                         raise FalloSnapshot("main-no-disponible")
                     lectura = BloqueoPrevia(cert.B, cert.C, "base-incierta")
                 else:

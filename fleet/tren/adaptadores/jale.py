@@ -94,13 +94,14 @@ def leer_recibo(log, codigo, commit, modo, filtros):
 
 
 class Jale:
-    def __init__(self, lanzador, git=None, host='auto', modos=MODOS, estado=None):
+    def __init__(self, lanzador, git=None, host='auto', modos=MODOS, estado=None, *,
+                 resolver_lanzador=True):
         if not isinstance(host, str) or host not in ('auto', 'mini', 'desktop'):
             raise ValueError('host-invalido')
         if not (isinstance(modos, (tuple, list)) and modos and
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
-        self.lanzador = str(Path(lanzador).resolve())
+        self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)
         self.operador = None
         self.git = git
@@ -125,13 +126,16 @@ class Jale:
         elif not permitir_lanzar:
             return False
         else:
-            if self.operador is not None:
+            if self.operador is not None and self.operador.checkout is not None:
                 argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id)
+            guardado = argv
             guardar(solicitud, argv)
         if (not permitir_lanzar and not (registro / 'iniciado.json').exists() and
                 not (registro / 'codigo.json').exists()):
             return False
         if not (registro / 'codigo.json').exists():
+            if self.operador is not None:
+                self.operador.validar_guardado(guardado[1])
             # Otro coordinador espera el mismo candado y recupera su resultado.
             # La sesión nueva sigue viva aunque muera el proceso del tick.
             try:
