@@ -5,6 +5,9 @@ import json
 import multiprocessing
 import os
 from pathlib import Path
+import select
+import subprocess
+import sys
 import time
 import unittest
 from unittest.mock import patch
@@ -14,6 +17,7 @@ import test_trickle
 import test_handoff
 
 control,a,c=cc1.control,cc1.a,cc1.c
+mini=test_handoff.mini
 
 
 def finish_request():
@@ -30,6 +34,8 @@ class Evidence(cc1.Evidence):
         self.finish=None
         self.slow=0
         self.result_lock=False
+        # The synthetic launcher's durable records: which child ran which phase.
+        self.launcher_effects={}
 
     def recover(self,r,state,reservation,process,daemon):
         # Another open description detects a collector whose parent holds flock.
@@ -42,7 +48,8 @@ class Evidence(cc1.Evidence):
             with (self.directory/'result.lock').open('a') as h:fcntl.flock(h,fcntl.LOCK_EX)
         return dict(observation=dict(group=reservation['group'],identity=copy.deepcopy(self.identity)),
                     settled=self.settled,finish=copy.deepcopy(self.finish),
-                    **(dict(effect_applied=True) if self.effect_applied else {}))
+                    **({'effect':copy.deepcopy(self.launcher_effects[a.ClientActions.key(r)])}
+                       if self.effect_applied and a.ClientActions.key(r) in self.launcher_effects else {}))
 
 
 def write_then_die(directory,record,reserve):
@@ -85,7 +92,9 @@ def orphan(self,r=None,process='sent',status='unknown',die=False):
     r=copy.deepcopy(r or self.r)
     reserve=dict(launcher=r['launcher'],ref=r['ref'],action_id=r['action_id'],group='suites',mode=r['mode'],
                  identity=r['expected'],acceptance=r['acceptance'],hold_identity=None,open=True,uncertain=status=='unknown')
-    if process is not None:process=dict(pid=999999,birth='synthetic:123',state=process)
+    if process is not None:
+        process=dict(pid=999999,birth='synthetic:123',state=process)
+        self.evidence.launcher_effects[a.ClientActions.key(r)]=dict(zip(a.Reconciler.EFFECT_FIELDS,a.ClientActions.key(r)+(process['pid'],process['birth'])))
     response=(self.actions.reply(r,'unknown','rpc_unresolved',identity=r['expected'],held=True) if status=='unknown'
               else self.actions.reply(r,status,identity=self.evidence.identity,held=True))
     record=dict(request=r,digest=a.digest(r),revision=0,process=process,response=response)
@@ -103,9 +112,15 @@ def orphan(self,r=None,process='sent',status='unknown',die=False):
 
 
 def run_reconcile(self,offline=None):
-    reconcile=a.Reconciler(self.engine,self.evidence,birth=lambda pid:None)
-    with control.locked(self.engine.directory),control.client_collection_window(self.engine.directory):
-        return reconcile.run(offline=offline)
+    # Like every productive entry: before, never inside, a caller's control.lock.
+    return a.Reconciler(self.engine,self.evidence,birth=lambda pid:None).run(offline=offline)
+
+
+def guard_tick(self,readings=None):
+    """The order of control.main guardia: CC2 first, then the locked guard."""
+    control.reconcile_before_lock(self.engine)
+    with control.locked(self.engine.directory):
+        return self.engine.guard(readings or dict(load=4,memory=1))
 
 
 def state(self):
@@ -116,13 +131,16 @@ def prepare(self):
     data=self.root/'offline';data.mkdir(exist_ok=True)
     path=data/'state.json'
     path.write_text(json.dumps(dict(groups=copy.deepcopy(self.p.groups),tasks=copy.deepcopy(self.tasks))))
+    config=dict(data=data,pid_file=Path(self.state()['pid_file']))
+    control.reconcile_before_start(self.engine,lambda:config)  # as preparar and the wrapper do
     with control.locked(self.engine.directory),patch.object(control,'assert_offline'):
-        return control.prepare_start(self.engine,path,dict(data=data,pid_file=Path(self.state()['pid_file'])))
+        return control.prepare_start(self.engine,path,config)
 
 
 ReconcileTests.setUp=setup
 ReconcileTests.orphan=orphan
 ReconcileTests.run_reconcile=run_reconcile
+ReconcileTests.guard_tick=guard_tick
 ReconcileTests.state=state
 ReconcileTests.prepare=prepare
 
@@ -160,7 +178,7 @@ def test_every_death_boundary_in_guard_and_preparer(self):
                         with self.engine.connect(write=True) as db:db.execute('INSERT INTO host_actions VALUES (?,?,?)',(order['action_id'],'a'*64,control.canonical(action)))
                 with patch.object(self.engine,'reconcile',return_value=True):
                     if entry=='guard':
-                        with control.locked(self.engine.directory):self.engine.guard(dict(load=0,memory=1))
+                        self.guard_tick(dict(load=0,memory=1))
                     else:
                         with patch.object(self.engine,'reorder_offline',side_effect=lambda q,s,d:q):self.prepare()
                 reserve=self.actions.reservation(r)
@@ -331,7 +349,7 @@ def test_slow_collector_with_many_open_actions_has_one_batch_budget_and_fair_ind
     for n in range(40):
         r=copy.deepcopy(self.r);r['action_id']='many-'+str(n).zfill(8);self.orphan(r)
     self.evidence.slow=2;started=time.monotonic()
-    with control.locked(self.engine.directory):self.engine.guard(dict(load=4,memory=1))
+    self.guard_tick()
     self.assertLess(time.monotonic()-started,1.5,'guard must not wait per action')
     with self.engine.connect() as db:
         self.assertEqual(len(list(db.execute('SELECT checked FROM client_open WHERE checked>0'))),a.Reconciler.limit)
@@ -529,76 +547,126 @@ def collection_lock_holder(path,pipe,seconds):
     pipe.close()
 
 
-def test_whole_guard_tick_aborts_on_bounded_relock_contention(self):
-    self.orphan();self.evidence.identity=copy.deepcopy(self.after)
-    self.evidence.settled=True;self.evidence.effect_applied=True
-    ctx=multiprocessing.get_context('fork');parent,child=ctx.Pipe()
-    holder=None;events=[];continued=[];generations=[]
-    gather=a.Reconciler.bounded_gather;generation=self.engine.generation
-    def collect(reconciler,copies,offline):
-        nonlocal holder
-        proposals=gather(reconciler,copies,offline)
-        holder=ctx.Process(target=collection_lock_holder,args=(str(self.engine.directory/'control.lock'),child,.6))
-        holder.start();self.assertTrue(parent.poll(2));self.assertEqual(parent.recv(),'locked')
-        return proposals
-    def read_generation(*args):
-        generations.append(time.monotonic());return generation(*args)
-    started=time.monotonic();aborted=False
-    try:
-        with patch.object(a.Reconciler,'bounded_gather',collect),patch.object(a.Reconciler,'boundary',events.append),patch.object(control,'CLIENT_RELOCK_SECONDS',.08,create=True),patch.object(self.engine,'generation',read_generation),patch.object(self.engine,'_legacy_guard',side_effect=lambda *args:continued.append('guard')):
-            try:
-                with control.locked(self.engine.directory):self.engine.guard(dict(load=4,memory=1))
-            except RuntimeError as error:
-                self.assertEqual(str(error),'client_collection_lock_busy');aborted=True
-        elapsed=time.monotonic()-started
-        print('whole-guard-tick seconds=%.3f generations=%d events=%s aborted=%s'%(elapsed,len(generations),events,aborted),flush=True)
-        self.assertLess(elapsed,.45,'full tick includes copy, gather, apply, relock and generation reads')
-        self.assertTrue(aborted,'lock failure must unwind the tick')
-        self.assertEqual(continued,[],'guard cannot continue without exclusion')
-        self.assertEqual(events,['copied','collected']);self.assertTrue(generations)
-        self.assertTrue(self.actions.reservation(self.r)['open'])
-        self.assertEqual(self.actions.record(self.r)['response']['status'],'unknown')
-    finally:
-        if holder:
-            holder.join(2)
-            if holder.is_alive():holder.terminate();holder.join()
-            self.assertEqual(holder.exitcode,0)
-        parent.close();child.close()
+LAUNCHER="import fcntl,sys,time\nh=open(sys.argv[1],'rb')\nprint('waiting',flush=True)\nfcntl.flock(h,fcntl.LOCK_EX)\nprint('acquired',flush=True)\ntime.sleep(float(sys.argv[2]))\n"
 
 
+def test_queued_launcher_never_preempts_protective_guard(self):
+    """R1-opus-1: a real launcher queued on control.lock behind the Mini guard."""
+    with self.engine.connect(write=True) as db:
+        for table in ('client_actions','client_reservations','client_open'):
+            if db.execute('SELECT 1 FROM sqlite_master WHERE name=?',(table,)).fetchone():db.execute('DELETE FROM '+table)
+    record=dict(request=self.r,digest=a.digest(self.r),revision=0,process=None,
+                response=self.actions.reply(self.r,'rejected','stale_state'))
+    reserve=dict(launcher=self.r['launcher'],ref=self.r['ref'],action_id=self.r['action_id'],group='suites',mode=self.r['mode'],
+                 identity=self.r['expected'],acceptance=None,hold_identity=None,open=False,uncertain=False)
+    self.actions.save(record,reserve)
+    with self.engine.connect() as db:self.assertEqual(list(db.execute('SELECT * FROM client_open')),[],'only closed reservations')
+    for hold in (.15,.3):
+        with self.subTest(hold=hold):
+            calls=[];gathered=[]
+            collector=patch.object(a.Reconciler,'bounded_gather',side_effect=lambda copies,offline:gathered.append(copies) or [])
+            with patch.object(self.engine,'_legacy_guard',side_effect=lambda *x,**k:calls.append('protective-guard')),collector:
+                control.reconcile_before_lock(self.engine)  # what control.main guardia runs first
+                with control.locked(self.engine.directory):
+                    launcher=subprocess.Popen([sys.executable,'-c',LAUNCHER,str(self.engine.directory/'control.lock'),str(hold)],
+                                              stdout=subprocess.PIPE,close_fds=True,text=True)
+                    self.addCleanup(launcher.stdout.close)
+                    self.addCleanup(lambda p=launcher:(p.poll() is None and p.kill(),p.wait()))
+                    self.assertEqual(launcher.stdout.readline().strip(),'waiting');time.sleep(.1)
+                    self.assertEqual(self.engine.reconcile_clients(),0,'under a caller lock CC2 does nothing')
+                    self.engine.guard(dict(load=40,memory=95))
+                    ready=select.select([launcher.stdout],[],[],.2)[0]
+                    self.assertEqual(ready,[],'the queued launcher entered while the guard held control.lock')
+            self.assertEqual(launcher.stdout.readline().strip(),'acquired')
+            self.assertEqual(launcher.wait(timeout=5),0)
+            self.assertEqual(calls,['protective-guard'])
+            self.assertEqual(gathered,[],'an empty index launches no collector process')
+    # An open reservation inside the caller's section changes nothing either.
+    r=self.orphan(process=None)
+    with control.locked(self.engine.directory):
+        self.assertEqual(self.engine.reconcile_clients(),0)
+        with (self.engine.directory/'control.lock').open('rb') as h:
+            with self.assertRaises(BlockingIOError):fcntl.flock(h,fcntl.LOCK_EX|fcntl.LOCK_NB)
+    self.assertTrue(self.actions.reservation(r)['open'])
+    self.assertEqual(control.reconcile_before_lock(self.engine),1)
+    self.assertFalse(self.actions.reservation(r)['open'])
 
-def test_whole_guard_tick_with_contention_after_application(self):
-    self.orphan();self.evidence.identity=copy.deepcopy(self.after)
-    self.evidence.settled=True;self.evidence.effect_applied=True;self.evidence.slow=.025
-    ctx=multiprocessing.get_context('fork');parent,child=ctx.Pipe()
-    holder=None;generations=[]
-    apply=a.Reconciler.apply;generation=self.engine.generation
-    def apply_then_contend(reconciler,*args):
-        nonlocal holder
-        changed=apply(reconciler,*args)
-        self.assertTrue(changed)
-        holder=ctx.Process(target=collection_lock_holder,args=(str(self.engine.directory/'control.lock'),child,.04))
-        holder.start();self.assertTrue(parent.poll(2));self.assertEqual(parent.recv(),'locked')
-        return changed
-    def read_generation(*args):
-        generations.append(time.monotonic());time.sleep(.005);return generation(*args)
-    started=time.monotonic()
-    try:
-        with patch.object(a.Reconciler,'apply',apply_then_contend),patch.object(self.engine,'generation',read_generation),patch.object(control,'pressure_mini',return_value=dict(load=4,memory=1)):
-            with control.locked(self.engine.directory):self.engine.guard(dict(load=4,memory=1))
-        elapsed=time.monotonic()-started
-        print('whole-guard-tick-success seconds=%.3f generations=%d'%(elapsed,len(generations)),flush=True)
-        self.assertLess(elapsed,1.5)
-        self.assertGreaterEqual(len(generations),3,'copy, apply and guard authority reads included')
-        self.assertEqual(self.actions.record(self.r)['response']['status'],'held')
-        self.assertTrue((self.engine.directory/'guardia.log').is_file())
-    finally:
-        if holder:
-            holder.join(2)
-            if holder.is_alive():holder.terminate();holder.join()
-            self.assertEqual(holder.exitcode,0)
-        parent.close();child.close()
 
+class Forged(Evidence):
+    """Evidence whose adapter invents an effect proof instead of reading the launcher's record."""
+    forge=None
+    def recover(self,r,state,reservation,process,daemon):
+        out=super().recover(r,state,reservation,process,daemon)
+        if self.forge:self.forge(out,r,reservation,process)
+        return out
+
+
+def forged_case(self,r,forge=None,effect=None):
+    self.evidence=Forged(r['expected'],self.engine.directory);self.engine.client_adapter=self.evidence
+    self.actions=a.ClientActions(self.engine,self.evidence,rpc=lambda *args:self.rpc(*args))
+    self.orphan(r,process='gated')
+    self.evidence.identity=copy.deepcopy(self.after);self.evidence.settled=True
+    if effect is not None:
+        self.evidence.launcher_effects[a.ClientActions.key(r)]=effect;self.evidence.effect_applied=True
+    self.evidence.forge=forge
+    self.run_reconcile()
+
+
+def assert_unattributed(self,r):
+    reserve=self.actions.reservation(r)
+    self.assertEqual(self.actions.record(r)['response']['status'],'unknown')
+    self.assertTrue(reserve['open']);self.assertIsNone(reserve['hold_identity'])
+    follow=dict(r,op='cancel-no-payload',phase='cancel-no-payload',expected=copy.deepcopy(self.after))
+    follow['acceptance']=dict(cc1.request('remote-run-started')['acceptance'],action_id=r['action_id'])
+    self.evidence.acceptance=follow['acceptance']
+    response=self.act(follow)
+    self.assertEqual((response['status'],response['reason']),('rejected','evidence_missing'))
+    self.assertEqual(self.rpc_calls,[])
+
+
+ReconcileTests.forged_case=forged_case
+ReconcileTests.assert_unattributed=assert_unattributed
+
+
+def test_effect_derived_from_daemon_never_attributes_hold(self):
+    """R1-opus-2: an adapter that derives the effect from the daemon, not the launcher record."""
+    def legacy(out,r,reservation,process):
+        seen=out['observation']['identity']
+        out['effect_applied']=seen['state']=='Stashed' and seen['task_id']==reservation['identity']['task_id']
+    def truthy(out,r,reservation,process):out['effect']=True
+    def from_daemon(out,r,reservation,process):
+        seen=out['observation']['identity']
+        out['effect']=dict(zip(a.Reconciler.EFFECT_FIELDS,a.ClientActions.key(r)+(seen['task_id'],str(seen['created_at']))))
+    def from_request(out,r,reservation,process):
+        out['effect']=dict(launcher=r['launcher'],ref=r['ref'],action_id=r['action_id'],phase=r['phase'])
+    for name,forge in (('effect_applied',legacy),('effect-true',truthy),('daemon',from_daemon),('request',from_request)):
+        with self.subTest(forge=name):
+            r=copy.deepcopy(self.r);r['mode']='own-legacy';r['action_id']='derived-'+name.replace('_','-')+'-0001'
+            self.rpc_calls.clear()
+            self.forged_case(r,forge)
+            self.assert_unattributed(r)
+
+
+def test_effect_bound_to_key_phase_and_child_identity(self):
+    """R1-opus-2: a launcher record for another key, phase or child never proves this effect."""
+    for name in ('action','phase','birth','pid','missing','exact'):
+        with self.subTest(change=name):
+            r=copy.deepcopy(self.r);r['mode']='own-legacy';r['action_id']='bound-'+name+'-0001'
+            effect=dict(zip(a.Reconciler.EFFECT_FIELDS,a.ClientActions.key(r)+(999999,'synthetic:123')))
+            if name=='action':effect['action_id']='bound-other-00000001'
+            elif name=='phase':effect['phase']='cancel-no-payload'
+            elif name=='birth':effect['birth']='synthetic:124'
+            elif name=='pid':effect['pid']=999998
+            elif name=='missing':effect.pop('birth')
+            self.rpc_calls.clear()
+            self.forged_case(r,effect=effect)
+            if name=='exact':
+                # The positive synthetic still closes the cycle: hold attributed, no RPC.
+                self.assertEqual(self.actions.record(r)['response']['status'],'held')
+                self.assertEqual(self.actions.reservation(r)['hold_identity'],self.after)
+                self.assertEqual(self.rpc_calls,[])
+            else:
+                self.assert_unattributed(r)
 
 
 def test_autonomous_finish_preserves_deferred_request_digest(self):
@@ -671,7 +739,55 @@ for name in dir(test_trickle.TrickleTests):
     if name.startswith('test_') and name not in DeskReservationsTests.__dict__:setattr(DeskReservationsTests,name,None)
 
 
+def unsent_hold(h,action_id):
+    """A hold the parent journaled and never sent: CC2 closes it when it can run."""
+    r=cc1.request();r['action_id']=action_id
+    actions=a.ClientActions(h.engine)
+    record=dict(request=r,digest=a.digest(r),revision=0,process=None,
+                response=actions.reply(r,'unknown','rpc_unresolved',identity=r['expected'],held=True))
+    reserve=dict(launcher=r['launcher'],ref=r['ref'],action_id=r['action_id'],group='suites',mode=r['mode'],
+                 identity=r['expected'],acceptance=None,hold_identity=None,open=True,uncertain=True)
+    with control.locked(h.directory):actions.save(record,reserve)
+    return r,actions
+
+
+def caller_holds_lock(test,h):
+    with (h.directory/'control.lock').open('rb') as other:
+        with test.assertRaises(BlockingIOError,msg='work must run under the caller control.lock'):
+            fcntl.flock(other,fcntl.LOCK_EX|fcntl.LOCK_NB)
+
+
+def lock_holder(path,pipe,seconds):
+    with open(path,'rb') as handle:
+        fcntl.flock(handle,fcntl.LOCK_EX)
+        pipe.send('locked');time.sleep(seconds)
+    pipe.close()
+
+
 class StartAuthorizationTests(test_handoff.HandoffTests):
+    def held_lock(self,path,seconds):
+        """A real foreign holder (a guard tick, an admission) of a file lock."""
+        ctx=multiprocessing.get_context('fork');parent,child=ctx.Pipe()
+        holder=ctx.Process(target=lock_holder,args=(str(path),child,seconds));holder.start();child.close()
+        def stop():
+            holder.join(5)
+            if holder.is_alive():holder.terminate();holder.join()
+            parent.close()
+            self.assertEqual(holder.exitcode,0)
+        self.addCleanup(stop)
+        self.assertTrue(parent.poll(3));self.assertEqual(parent.recv(),'locked')
+        return holder
+
+    def main_guard(self,spy=None):
+        h=self.h;calls=[]
+        guard=spy or (lambda *x,**k:calls.append('protective-guard'))
+        with patch.object(control.Path,'home',return_value=h.home),patch.object(control,'Pueue',return_value=h.p), \
+             patch.object(control,'MiniControl',return_value=h.engine),patch.object(control,'recover_mini',return_value=True), \
+             patch.object(control,'prune_history'), patch.object(h.engine,'_legacy_guard',side_effect=guard), \
+             patch.object(control.sys,'argv',['control.py','guardia','--host','mini']):
+            control.main()
+        return calls
+
     def test_start_rechecks_handoff_after_collection_window(self):
         h=self.h;h.m.change('install');h.finish()
         h.p.online=False;h.owner=None
@@ -683,6 +799,107 @@ class StartAuthorizationTests(test_handoff.HandoffTests):
             with self.assertRaisesRegex(ValueError,'Autorización de arranque cambió'):
                 h.m.start(execute=lambda *args:executed.append(args))
         self.assertEqual(executed,[])
+
+    def test_every_productive_entry_reconciles_before_its_locked_work(self):
+        """Point 5: guardia, preparar, the launchd wrapper and recuperar all run CC2 first."""
+        h=self.h;h.m.change('install');h.finish()
+        seen={}
+        def checked(entry,r,actions,result=None):
+            def spy(*args,**kwargs):
+                caller_holds_lock(self,h)
+                seen[entry]=actions.reservation(r)['open']
+                return result
+            return spy
+        r,actions=unsent_hold(h,'entry-guardia-0001')
+        with patch.object(control.Path,'home',return_value=h.home),patch.object(control,'Pueue',return_value=h.p), \
+             patch.object(control,'MiniControl',return_value=h.engine),patch.object(control,'prune_history'), \
+             patch.object(control,'guard',side_effect=checked('guardia',r,actions)), \
+             patch.object(control.sys,'argv',['control.py','guardia','--host','mini']):
+            control.main()
+        for argv,entry in ((['--seco'],'preparar-seco'),([],'preparar')):
+            r,actions=unsent_hold(h,'entry-'+entry+'-0001')
+            with patch.object(control.Path,'home',return_value=h.home),patch.object(control,'Pueue',return_value=h.p), \
+                 patch.object(control,'MiniControl',return_value=h.engine),patch.object(control,'start_configuration',return_value=h.config), \
+                 patch.object(control,'prepare_start',side_effect=checked(entry,r,actions)), \
+                 patch.object(control.sys,'argv',['control.py','preparar','--host','mini']+argv):
+                control.main()
+        h.p.online=False;h.owner=None
+        r,actions=unsent_hold(h,'entry-arrancar-0001');executed=[]
+        with patch.object(control,'prepare_start',side_effect=checked('arrancar',r,actions)):
+            h.m.start(execute=lambda *args:executed.append(args))
+        self.assertEqual(len(executed),1)
+        r,actions=unsent_hold(h,'entry-recuperar-0001')
+        with patch.object(mini,'Manager',return_value=h.m),patch.object(h.m,'_recover',side_effect=checked('recuperar',r,actions,False)), \
+             patch.object(mini.sys,'argv',['mini.py','recuperar']):
+            mini.main()
+        self.assertEqual(seen,{'guardia':False,'preparar-seco':True,'preparar':False,'arrancar':False,'recuperar':False},
+                         'every productive entry closes the unsent hold first; a dry run reconciles nothing')
+
+    def test_whole_guard_tick_runs_protective_guard_despite_reconciler_failure_or_contention(self):
+        """Point 4: CC2 never suppresses the guard; a contended pass is revisited later."""
+        h=self.h
+        r,actions=unsent_hold(h,'tick-failure-0001')
+        with patch.object(h.engine,'reconcile_clients',side_effect=RuntimeError('collector bug')):
+            try:calls=self.main_guard()
+            except RuntimeError as error:self.fail('a reconciler failure suppressed the guard: '+str(error))
+        self.assertEqual(calls,['protective-guard'])
+        self.assertTrue(actions.reservation(r)['open'])
+        self.assertEqual(self.main_guard(),['protective-guard'])
+        self.assertFalse(actions.reservation(r)['open'],'the next tick reconciles')
+        r,actions=unsent_hold(h,'tick-contended-0001')
+        timing={}
+        before=control.reconcile_before_lock
+        def timed(*args,**kwargs):
+            started=time.monotonic()
+            try:return before(*args,**kwargs)
+            finally:timing['before']=time.monotonic()-started
+        def guard(*args,**kwargs):
+            timing['guard_at']=time.monotonic()-timing['tick']
+        self.held_lock(h.directory/'control.lock',.3)
+        timing['tick']=time.monotonic()
+        with patch.object(control,'reconcile_before_lock',side_effect=timed):
+            self.assertEqual(self.main_guard(guard),[])
+        total=time.monotonic()-timing['tick']
+        print('\ntick-contention-0.3 before=%.3f guard_at=%.3f total=%.3f' % (timing['before'],timing['guard_at'],total))
+        self.assertLess(timing['before'],.1,'the reconciler never waits for a busy control.lock')
+        self.assertGreaterEqual(timing['guard_at'],.2,'the guard itself waits its own lock, as in main')
+        self.assertTrue(actions.reservation(r)['open'],'a contended pass changes nothing')
+        self.assertEqual(self.main_guard(),['protective-guard'])
+        self.assertFalse(actions.reservation(r)['open'],'and a later tick revisits it')
+
+    def test_contended_start_rejects_within_deadline_with_diagnostic(self):
+        """R1-sol-1: Manager.start under a foreign holder of 0.7 s."""
+        for when in ('before','after-collection','log-held'):
+            with self.subTest(when=when):
+                self.h=test_handoff.Harness(self);h=self.h
+                h.m.change('install');h.finish();h.p.online=False;h.owner=None
+                r,actions=unsent_hold(h,'busy-'+when+'-0001')
+                before=(h.data/'state.json').read_bytes();executed=[]
+                gather=a.Reconciler.bounded_gather
+                def collect(reconciler,copies,offline):
+                    proposals=gather(reconciler,copies,offline)
+                    self.held_lock(h.directory/'control.lock',.7)  # a guard tick enters right after collection
+                    return proposals
+                if when=='before':self.held_lock(h.directory/'control.lock',.7)
+                if when=='log-held':
+                    (h.directory/'arranque.log').touch()
+                    self.held_lock(h.directory/'arranque.log',.7);self.held_lock(h.directory/'control.lock',.7)
+                started=time.monotonic()
+                with patch.object(a.Reconciler,'bounded_gather',collect if when=='after-collection' else gather):
+                    with self.assertRaises(ValueError) as raised:
+                        h.m.start(execute=lambda *args:executed.append(args))
+                elapsed=time.monotonic()-started
+                print('\nstart-busy-%s elapsed=%.3f' % (when,elapsed))
+                self.assertEqual(str(raised.exception),control.CONTROL_BUSY)
+                self.assertLess(elapsed,.45);self.assertEqual(executed,[])
+                self.assertEqual((h.data/'state.json').read_bytes(),before)
+                self.assertTrue(actions.reservation(r)['open'])
+                log=(h.directory/'arranque.log').read_text().splitlines()
+                if when=='log-held':
+                    # Documented: a stuck diagnostic writer loses this line, never the reject.
+                    self.assertEqual(log,[])
+                else:
+                    self.assertEqual(json.loads(log[-1])['motivo'],control.CONTROL_BUSY)
 
 
 for name in dir(test_handoff.HandoffTests):

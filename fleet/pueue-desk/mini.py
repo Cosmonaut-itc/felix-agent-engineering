@@ -24,10 +24,13 @@ PUEUE = '/opt/homebrew/bin/pueue'
 DAEMON = '/opt/homebrew/bin/pueued'
 TERMINAL = ('done', 'withdrawn', 'aborted')
 START_LOG_BYTES = 65536
+# launchd's KeepAlive owns the retry: the wrapper never waits without a deadline.
+START_LOCK_SECONDS = .2
+START_LOG_LOCK_SECONDS = .1
 # Only our fixed messages may reach diagnostics. Stock/subprocess exceptions
 # can contain task commands, environments, config contents or secrets.
 START_REASONS = {
-    'Autorización de arranque cambió durante la recogida cliente',
+    'Autorización de arranque cambió durante la preparación', control.CONTROL_BUSY,
     'Host en mantenimiento', 'El arranque debe pertenecer al MainPID de launchd',
     'Homebrew no está retirado; no se arranca otro daemon',
     'Daemon responde; preparar exige daemon detenido',
@@ -649,16 +652,31 @@ class Manager:
         if isinstance(error, json.JSONDecodeError) and error.msg in JSON_REASONS:
             record['detalle_json'] = error.msg  # fixed parser vocabulary, never its input document
         line = (json.dumps(record, ensure_ascii=False) + '\n').encode('utf-8')
-        # Diagnostics are disposable, unlike authority. Rotation precedes append
-        # and bounds BOTH files, even across repeated KeepAlive failures.
-        with control.locked(self.directory, create=False):
-            target = self.directory / 'arranque.log'
-            if target.exists() and target.stat().st_size + len(line) > START_LOG_BYTES:
-                target.replace(self.directory / 'arranque.log.1')
+        # Diagnostics are disposable, unlike authority: they never wait on
+        # control.lock, whose owner may be the very reason this start failed.
+        # The log's own flock serializes rotation and append, with a deadline.
+        # Rotation precedes append and bounds BOTH files across KeepAlive retries.
+        target = self.directory / 'arranque.log'
+        deadline = time.monotonic() + START_LOG_LOCK_SECONDS
+        for _ in range(4):  # a rotation by another writer costs one reopen
             descriptor = os.open(str(target), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
             with os.fdopen(descriptor, 'ab') as stream:
+                if not control.wait_rack_lock(stream, deadline - time.monotonic()):
+                    return False  # another diagnostic writer is stuck; never block the reject
+                opened = os.fstat(stream.fileno())
+                try:
+                    current = os.stat(str(target))
+                except FileNotFoundError:
+                    continue
+                if (opened.st_dev, opened.st_ino) != (current.st_dev, current.st_ino):
+                    continue  # rotated while we waited: append to the new file
+                if opened.st_size and opened.st_size + len(line) > START_LOG_BYTES:
+                    target.replace(self.directory / 'arranque.log.1')
+                    continue
                 os.fchmod(stream.fileno(), 0o600)
                 stream.write(line)
+                return True
+        return False
 
     def _start(self, execute=None):
         self._start_stage = 'autorización'
@@ -669,7 +687,10 @@ class Manager:
         info = self.loaded(LABEL)
         if info is None or not re.search(r'^\s*pid = ' + str(os.getpid()) + r'\s*$', info, re.M):
             raise ValueError('El arranque debe pertenecer al MainPID de launchd')
-        with control.locked(self.directory, create=False):
+        # CC2 runs before control.lock, on its own nonblocking locks; its
+        # contention or failure never delays nor rejects this start.
+        control.reconcile_before_start(self.engine, self.configuration_for_host)
+        with control.locked(self.directory, create=False, seconds=START_LOCK_SECONDS):
             recovered = self.recover_table()
             if recovered is not None:
                 self.engine = recovered
@@ -685,10 +706,10 @@ class Manager:
             config = self.configuration_for_host()
             self._start_stage = 'preparación'
             control.prepare_start(self.engine, configuration=config)
-            # CC2 collects outside control.lock. Do not execute a launch whose
-            # handoff authorization changed while that window was open.
+            # prepare_start never cedes control.lock; still, never execute a
+            # launch whose handoff authorization changed during preparation.
             if self.transaction(self.state()) != value:
-                raise ValueError('Autorización de arranque cambió durante la recogida cliente')
+                raise ValueError('Autorización de arranque cambió durante la preparación')
             self.checkpoint('start:prepared')
             self._start_stage = 'exec'
             # control.lock is close-on-exec; launchd owns the daemon, stock owns tasks.
@@ -708,10 +729,10 @@ def main():
     elif args.command in ('mantenimiento', 'continuar'):
         manager.maintenance(resume=args.command == 'continuar')
     else:
+        control.reconcile_before_lock(manager.engine)
         with control.locked(manager.directory, create=False):
-            manager.engine.reconcile_clients()
             if manager._recover():
-                control.MiniControl(manager.pueue, manager.directory).guard(None, _collected=True)
+                control.MiniControl(manager.pueue, manager.directory).guard(None)
 
 
 if __name__ == '__main__':

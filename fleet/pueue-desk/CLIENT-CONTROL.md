@@ -460,34 +460,57 @@ CC6 entregará los archivos y el binario interno mediante los instaladores.
 ## Entrega CC2
 
 `Reconciler` en `client_actions.py` recorre las reservas abiertas sin runner,
-waiter ni HTTP. La guardia lo ejecuta antes de recuperar/admitir, incluso si
-el relevo mantiene el tick cerrado. `prepare_start` lo ejecuta antes de leer
-su imagen de preparación; el ensayo no escribe ni recoge. El preparador
-conserva el Stashed cliente, la incertidumbre y las reservas a través del
-reinicio. No convierte una reserva cliente en propiedad del editor de orden.
+waiter ni HTTP. Corre **antes** de la sección crítica de su llamador, nunca
+dentro: `reconcile_before_lock` lo ejecuta en `control.py guardia` (antes de
+recuperar el relevo y de admitir, incluso si el relevo mantiene el tick
+cerrado), en `control.py preparar`, en el wrapper de launchd
+(`mini.py arrancar`) y en `mini.py recuperar`. `prepare_start` ya no lo
+ejecuta: cada entrada productiva lo hace antes de tomar el candado, y el
+cambio a Homebrew dentro de la recuperación viene de la guardia o de
+`recuperar`. El ensayo (`preparar --seco`) no escribe ni recoge. El
+preparador conserva el Stashed cliente, la incertidumbre y las reservas a
+través del reinicio. No convierte una reserva cliente en propiedad del editor
+de orden.
 
-El ciclo toma una copia de acción/reserva bajo el mismo inode de control,
-suelta el candado, recoge del daemon y del adaptador fijo, y recupera el
-candado. Antes de guardar coteja la generación durable y la observada, la
+El reconciliador sólo toma `control.lock` con descriptores propios y nunca lo
+espera: uno para la copia (índice, estado y generación) y otro para el lote de
+aplicación, con una sola lectura de estado y generación para todo el lote.
+Entre ambos recoge del daemon y del adaptador fijo sin candado. Si cualquiera
+de los dos está ocupado, la pasada termina sin cambios y el índice rotativo
+`client_open` vuelve a leer la acción en un tick posterior. Un fallo propio,
+de cualquier clase, tampoco llega al llamador. Después el llamador toma
+`control.lock` igual que antes de CC2: nadie cede ni recupera un candado, y
+todo lo que presupone exclusión (recuperación del relevo, guardia protectora,
+preparación, exec) corre con el candado tomado de principio a fin. Bajo el
+candado de un llamador el reconciliador no hace nada, porque su candado sin
+espera choca con el del propio proceso.
+
+Antes de guardar, el lote coteja la generación durable y la observada, la
 revisión y digest de la fase, y revisión/digest/fase/apertura de la reserva.
 Una copia obsoleta se descarta; el índice la vuelve a leer en otro tick.
-No espera result.lock ni llama al lanzador bajo control.lock. Los ámbitos
-productivos usan `locked`, que conserva el descriptor mientras permite esa
-ventana; después se relee la autoridad. El wrapper de arranque vuelve a
-comprobar la autorización del relevo antes de ejecutar el daemon.
-La recuperación del descriptor exterior usa un plazo de 0,1 s: si otro dueño
-lo retiene, lanza `ClientCollectionBusy` con `client_collection_lock_busy` y
-aborta el tick/preparador; ningún trabajo que presuponga exclusión continúa.
-El siguiente tick puede reintentar. Este plazo y los 0,4 s de recogida no son
-una cota de extremo a extremo: copia, cotejos, SQLite y lecturas de generación
-son trabajo adicional.
+No espera result.lock ni llama al lanzador bajo control.lock.
 
-Se recogen hasta ocho reservas por lote. Un único proceso de recogida tiene
-un plazo de 0,4 s para todo el lote; el RPC de lectura tiene un plazo menor.
-Se recoge el proceso y su grupo privado al salir. Una lectura lenta o sin
-prueba retiene con `evidence_missing`, sin impedir el cierre por presión de
-la guardia. No hay espera de gracia, llamada recursiva a client ni RPC
-mutadora desde el reconciliador.
+El tiempo que el reconciliador añade a cada entrada tiene cota: la copia sin
+espera (SQLite con plazo de 0,2 s y una lectura de generación, con `ps`
+acotado a 2 s), un proceso de recogida para todo el lote con plazo de 0,4 s
+más su terminación (el RPC de lectura tiene la mitad), y el lote de aplicación
+sin espera, de hasta ocho reservas. No es una cota del tick: después la
+guardia espera su propio `control.lock` sin plazo, como antes de CC2.
+
+El wrapper de arranque entra en `control.lock` con un plazo de 0,2 s. Si
+vence, rechaza con «Candado de control ocupado; se reintenta sin efectos»
+antes de cualquier trabajo, y launchd reintenta con KeepAlive. Después de
+preparar vuelve a comprobar la autorización del relevo antes de ejecutar el
+daemon. El diagnóstico `arranque.log` no usa `control.lock`: serializa
+rotación y escritura con el flock del propio log, con plazo de 0,1 s. Si otro
+escritor retiene ese candado más tiempo, se pierde esa línea de diagnóstico,
+nunca el rechazo.
+
+Se recogen hasta ocho reservas por lote. Se recoge el proceso de recogida y su
+grupo privado al salir. Una lectura lenta o sin prueba retiene con
+`evidence_missing`. La guardia protectora corre siempre, también cuando la
+recogida falla o encuentra el candado ocupado. No hay espera de gracia,
+llamada recursiva a client ni RPC mutadora desde el reconciliador.
 
 Qué puede cerrar hoy:
 
@@ -520,16 +543,25 @@ nueva prueba no fabrica incertidumbre de un RPC que nunca se envió.
 
 El futuro método fijo `recover` recibe copia de la petición, estado, reserva,
 proceso identificado y observación del daemon. Devuelve observación acreditada,
-exclusión positiva de RPC tardía (`settled`), prueba del efecto de **esta fase**
-(`effect_applied:true`) y opcionalmente una petición finish autenticada por
-`verify`. Son pruebas distintas: `settled` no puede derivarse sólo del estado
-del hijo ni del daemon, y tampoco prueba quién produjo el estado observado.
-Tras un gated incierto, incluso un Stashed con la identidad esperada más
-settled conserva `unknown`, reserva abierta/incierta y `hold_identity:null`
-si falta la prueba de efecto. Un adaptador antiguo que omite effect_applied
-retiene igual. cancel-no-payload y retire-held rechazan sin RPC hasta acreditar
-la atribución; no basta excluir mensajes tardíos. CC3–CC5 deben acreditar
-ambas pruebas por lanzador.
+exclusión positiva de RPC tardía (`settled`), la prueba del efecto de
+**esta fase** (`effect`, opcional) y opcionalmente una petición finish
+autenticada por `verify`. `effect` es el registro durable del lanzador ligado
+a `(launcher, ref, action_id, phase)` y al `pid`/`birth` del hijo que esa fase
+copió (`Reconciler.EFFECT_FIELDS`). El lote lo coteja bajo el candado con la
+fase y el hijo de la copia, y sólo la igualdad exacta atribuye el efecto. No
+puede derivarse del daemon (un Stashed con la identidad esperada no dice quién
+lo produjo), del hijo (salida, nacimiento o estado) ni de la petición: sólo lo
+escribe el lanzador cuando su hijo aplicó el efecto. Una fase sin hijo
+identificado no admite prueba. Son pruebas distintas: `settled` no puede
+derivarse sólo del estado del hijo ni del daemon, y tampoco prueba quién
+produjo el estado observado. Tras un gated incierto, incluso un Stashed con la
+identidad esperada más settled conserva `unknown`, reserva abierta/incierta y
+`hold_identity:null` si la prueba ligada falta o no coincide (otra clave, otra
+fase, otro pid u otro nacimiento). La clave anterior `effect_applied` ya no
+existe: una respuesta que la trae es evidencia inválida y retiene con
+`evidence_missing`. cancel-no-payload y retire-held rechazan sin RPC hasta
+acreditar la atribución; no basta excluir mensajes tardíos. CC3–CC5 deben
+acreditar ambas pruebas por lanzador.
 Las pruebas sintéticas recorren hold atribuido y resultado durable hasta
 finish, sin depender de clientes vivos. No se reenvía stash/start/señal/remove
 para resolver una respuesta perdida. Sin aceptación/prueba, se retiene; no

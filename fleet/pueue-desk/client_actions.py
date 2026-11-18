@@ -473,14 +473,18 @@ class Reconciler:
     """CC2: bounded copy / collect / compare. Never sends a Pueue mutation.
 
     recover is a fixed adapter's evidence-only interface. It returns observation,
-    settled (a positive exclusion of late RPCs, NOT child death), effect_applied
-    (authenticated evidence that THIS phase caused the observed effect), and optional
-    finish (a full CC0 request authenticated by verify). The collector runs in
-    a disposable process, outside control.lock; no result lock can stall guard.
+    settled (a positive exclusion of late RPCs, NOT child death), optional effect
+    and optional finish (a full CC0 request authenticated by verify). effect is the
+    launcher's durable record that THIS phase ran in THIS child: exactly
+    EFFECT_FIELDS, compared under control.lock with the copied key and child
+    pid/birth. It is never derived from the daemon, the child or the request.
+    The collector runs in a disposable process, outside control.lock; no result
+    lock can stall guard. Callers run it before their own critical section.
     """
     limit = 8
     seconds = .4
     boundary = staticmethod(lambda phase: None)
+    EFFECT_FIELDS = ('launcher', 'ref', 'action_id', 'phase', 'pid', 'birth')
 
     def __init__(self, engine, adapter=None, birth=None):
         self.engine = engine
@@ -488,6 +492,7 @@ class Reconciler:
         self.birth = birth
 
     def lock(self):
+        # Never waits: a busy lock skips this pass; the index revisits it later.
         handle = (self.engine.directory / 'control.lock').open('rb')
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -553,7 +558,7 @@ class Reconciler:
         evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon)
         if daemon is None:
             raise Unavailable('startup')
-        c.keys(evidence, 'observation settled finish' + (' effect_applied' if 'effect_applied' in evidence else ''))
+        c.keys(evidence, 'observation settled finish' + (' effect' if 'effect' in evidence else ''))
         observed = evidence['observation']
         c.keys(observed, 'group identity')
         c.identity(observed['identity'])
@@ -562,10 +567,6 @@ class Reconciler:
             raise Unavailable('identity')
         if evidence['settled'] is not True:
             raise Unavailable('rpc_unresolved')
-        # Excluding a late message does not attribute an external Stashed to
-        # our hold. Older adapters without effect evidence must retain unknown.
-        if record['response']['status'] == 'unknown' and evidence.get('effect_applied') is not True:
-            raise Unavailable('evidence_missing')
         finish = evidence['finish']
         if finish is not None:
             c.validate_request(finish)
@@ -574,7 +575,9 @@ class Reconciler:
                     or reservation['acceptance'] is not None and finish['acceptance'] != reservation['acceptance']):
                 raise Unavailable('identity')
             self.actions.adapter.verify(finish, observed, reservation)
-        return dict(kind='evidence', observation=observed, finish=finish)
+        # Excluding a late message does not attribute an external Stashed to our
+        # hold: apply compares this launcher proof with the copy under the lock.
+        return dict(kind='evidence', observation=observed, finish=finish, effect=evidence.get('effect'))
 
     def gather(self, copies, offline):
         proposals = []
@@ -645,77 +648,94 @@ class Reconciler:
                 pass
             os.waitpid(pid, 0)
 
-    def apply(self, item, proposal, offline):
-        with self.lock():
-            old, before = item['record'], item['reservation']
-            r = old['request']
-            current = self.actions.record(r)
-            reservation = self.actions.reservation(r)
-            with self.engine.connect() as db:
-                state = self.engine.state(db)
-            generation = self.current_generation(state, offline)
-            if (state['generation'] != item['state']['generation'] or generation != item['generation']
-                    or current['revision'] != old['revision']
-                    or current['digest'] != old['digest']
-                    or reservation['revision'] != before['revision']
-                    or reservation['digest'] != before['digest'] or reservation['phase'] != before['phase']
-                    or not reservation['open']):
-                return False  # Discard; the rotating index rereads on a later tick.
-            if current['response']['status'] == 'finished':
-                return False
-            reason = proposal.get('reason', 'evidence_missing')
-            if reason not in c.REASONS:
-                reason = 'evidence_missing'
-            if proposal['kind'] == 'rejected_not_sent':
-                # Only the reservation changes: the rejected phase's receipt,
-                # digest and revision remain the idempotent historical result.
-                reservation.update(open=False, uncertain=False, revision=reservation['revision'] + 1)
-                with self.engine.connect(write=True) as db:
-                    key = self.actions.key(r)[:3]
-                    db.execute('UPDATE client_reservations SET body=? WHERE launcher=? AND ref=? AND action_id=?',
-                               (canonical(reservation),) + key)
-                    db.execute('DELETE FROM client_open WHERE launcher=? AND ref=? AND action_id=?', key)
-                return True
-            if proposal['kind'] == 'not_sent':
-                close = r['op'] == 'hold' and reservation.get('hold_identity') is None and reservation['acceptance'] is None
-                reservation.update(open=not close, uncertain=False)
-                current['response'] = self.actions.reply(r, 'rejected' if close else 'deferred',
-                                                         'stale_state' if close else 'evidence_missing', held=not close)
-                reason = 'evidence_missing'
-            elif proposal['kind'] == 'evidence':
-                observed, finish = proposal['observation'], proposal['finish']
-                after = observed['identity']
-                if current['response']['status'] == 'unknown':
-                    c.transition(r['expected'], after, r['op'])
-                    status = dict(hold='held', **{'cancel-no-payload':'started', 'signal':'signalled',
-                                  'signal-manual':'signalled', 'retire-held':'retired', 'retire-interrupted':'retired'})[r['op']]
-                    current['response'] = self.actions.reply(r, status, identity=after, held=True)
-                    if status == 'held':
-                        reservation['hold_identity'] = after
-                    reservation.update(uncertain=False, identity=after)
-                if finish is not None:
-                    # A terminal is appended, never substituted for an effect receipt.
-                    # It is validated with CC0 again in the authority process.
-                    c.validate_request(finish)
-                    prior = self.actions.record(finish)
-                    if prior and prior['digest'] != digest(finish):
-                        raise Unavailable('idempotency_conflict')
-                    if prior and prior['response']['status'] not in c.REEVALUATED + ('unknown', 'pending'):
-                        return False
-                    terminal = dict(request=finish, digest=digest(finish), revision=prior['revision'] if prior else 0,
-                                    process=None, response=self.actions.reply(finish, 'finished', identity=after))
-                    # Persist an acknowledged uncertain phase before appending finish;
-                    # both commits remain under control.lock. A crash retains the hold.
-                    self.actions.save(current, reservation)
-                    reservation.update(open=False, uncertain=False, identity=after, acceptance=finish['acceptance'])
-                    self.actions.save(terminal, reservation)
-                    return True
-            reservation['reconcile_reason'] = reason
-            if current['response']['status'] == 'unknown':
-                current['response'] = self.actions.reply(r, 'unknown', reason, held=True)
-            if current != old or reservation != before:
-                self.actions.save(current, reservation)
+    def observe(self, offline):
+        with self.engine.connect() as db:
+            state = self.engine.state(db)
+        return state, self.current_generation(state, offline)
+
+    @classmethod
+    def bound_effect(cls, record):
+        """The only effect proof accepted: the copied action phase and child."""
+        process = record.get('process') or {}
+        if type(process.get('pid')) is not int or type(process.get('birth')) is not str:
+            return None  # no identified child, nothing a launcher record can bind to
+        return dict(zip(cls.EFFECT_FIELDS, ClientActions.key(record['request']) + (process['pid'], process['birth'])))
+
+    def apply(self, item, proposal, offline, snapshot=None):
+        """One batch: the caller holds self.lock() and passes one observation."""
+        if snapshot is None:
+            with self.lock():
+                return self.apply(item, proposal, offline, self.observe(offline))
+        old, before = item['record'], item['reservation']
+        r = old['request']
+        current = self.actions.record(r)
+        reservation = self.actions.reservation(r)
+        state, generation = snapshot
+        if (state['generation'] != item['state']['generation'] or generation != item['generation']
+                or current['revision'] != old['revision']
+                or current['digest'] != old['digest']
+                or reservation['revision'] != before['revision']
+                or reservation['digest'] != before['digest'] or reservation['phase'] != before['phase']
+                or not reservation['open']):
+            return False  # Discard; the rotating index rereads on a later tick.
+        if current['response']['status'] == 'finished':
+            return False
+        reason = proposal.get('reason', 'evidence_missing')
+        if reason not in c.REASONS:
+            reason = 'evidence_missing'
+        if proposal['kind'] == 'rejected_not_sent':
+            # Only the reservation changes: the rejected phase's receipt,
+            # digest and revision remain the idempotent historical result.
+            reservation.update(open=False, uncertain=False, revision=reservation['revision'] + 1)
+            with self.engine.connect(write=True) as db:
+                key = self.actions.key(r)[:3]
+                db.execute('UPDATE client_reservations SET body=? WHERE launcher=? AND ref=? AND action_id=?',
+                           (canonical(reservation),) + key)
+                db.execute('DELETE FROM client_open WHERE launcher=? AND ref=? AND action_id=?', key)
             return True
+        if proposal['kind'] == 'not_sent':
+            close = r['op'] == 'hold' and reservation.get('hold_identity') is None and reservation['acceptance'] is None
+            reservation.update(open=not close, uncertain=False)
+            current['response'] = self.actions.reply(r, 'rejected' if close else 'deferred',
+                                                     'stale_state' if close else 'evidence_missing', held=not close)
+            reason = 'evidence_missing'
+        elif (proposal['kind'] == 'evidence' and current['response']['status'] == 'unknown'
+              and (self.bound_effect(old) is None or proposal.get('effect') != self.bound_effect(old))):
+            reason = 'evidence_missing'  # settled alone never attributes the observed effect
+        elif proposal['kind'] == 'evidence':
+            observed, finish = proposal['observation'], proposal['finish']
+            after = observed['identity']
+            if current['response']['status'] == 'unknown':
+                c.transition(r['expected'], after, r['op'])
+                status = dict(hold='held', **{'cancel-no-payload':'started', 'signal':'signalled',
+                              'signal-manual':'signalled', 'retire-held':'retired', 'retire-interrupted':'retired'})[r['op']]
+                current['response'] = self.actions.reply(r, status, identity=after, held=True)
+                if status == 'held':
+                    reservation['hold_identity'] = after
+                reservation.update(uncertain=False, identity=after)
+            if finish is not None:
+                # A terminal is appended, never substituted for an effect receipt.
+                # It is validated with CC0 again in the authority process.
+                c.validate_request(finish)
+                prior = self.actions.record(finish)
+                if prior and prior['digest'] != digest(finish):
+                    raise Unavailable('idempotency_conflict')
+                if prior and prior['response']['status'] not in c.REEVALUATED + ('unknown', 'pending'):
+                    return False
+                terminal = dict(request=finish, digest=digest(finish), revision=prior['revision'] if prior else 0,
+                                process=None, response=self.actions.reply(finish, 'finished', identity=after))
+                # Persist an acknowledged uncertain phase before appending finish;
+                # both commits remain under control.lock. A crash retains the hold.
+                self.actions.save(current, reservation)
+                reservation.update(open=False, uncertain=False, identity=after, acceptance=finish['acceptance'])
+                self.actions.save(terminal, reservation)
+                return True
+        reservation['reconcile_reason'] = reason
+        if current['response']['status'] == 'unknown':
+            current['response'] = self.actions.reply(r, 'unknown', reason, held=True)
+        if current != old or reservation != before:
+            self.actions.save(current, reservation)
+        return True
 
     def run(self, offline=None):
         try:
@@ -725,7 +745,9 @@ class Reconciler:
             self.boundary('copied')
             proposals = self.bounded_gather(copies, offline)
             self.boundary('collected')
-            return sum(self.apply(item, proposal, offline) for item, proposal in zip(copies, proposals))
+            with self.lock():  # one nonblocking entry and one generation read per batch
+                snapshot = self.observe(offline)
+                return sum(self.apply(item, proposal, offline, snapshot) for item, proposal in zip(copies, proposals))
         except (BlockingIOError, OSError, ValueError, KeyError, TypeError, sqlite3.Error,
                 subprocess.SubprocessError, Unavailable):
             return 0  # Failure preserves every reservation, including at startup.

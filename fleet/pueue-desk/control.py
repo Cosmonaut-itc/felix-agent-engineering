@@ -393,12 +393,22 @@ def apply_mode(pueue, now):
     print(f"Modo {mode}: " + ", ".join(f"{g}={n}" for g, n in limits.items()))
 
 
+CONTROL_BUSY = 'Candado de control ocupado; se reintenta sin efectos'
+
+
 @contextmanager
-def locked(directory, create=True):
+def locked(directory, create=True, seconds=None):
+    """seconds bounds entry for callers that own a retry (launchd's wrapper).
+
+    Expiry happens before any work, so it certifies no effects.
+    """
     if create:
         directory.mkdir(parents=True, exist_ok=True)
     with (directory / "control.lock").open("a" if create else "rb") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX)
+        if seconds is None:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+        elif not wait_rack_lock(handle, seconds):
+            raise ValueError(CONTROL_BUSY)
         token = _CONTROL_HANDLES.set(_CONTROL_HANDLES.get() + ((Path(directory).resolve(), handle),))
         try:
             yield handle
@@ -406,47 +416,35 @@ def locked(directory, create=True):
             _CONTROL_HANDLES.reset(token)
 
 
-CLIENT_RELOCK_SECONDS = .1
+def reconcile_before_lock(engine, offline=None):
+    """CC2 runs BEFORE its caller's critical section, never inside it.
 
-
-class ClientCollectionBusy(RuntimeError):
-    """Unwind every scope that assumed control.lock; retry on the next tick."""
-
-
-@contextmanager
-def client_collection_window(directory):
-    """Only release our own tracked lock; every caller rereads authority after it.
-
-    Never open another descriptor to unlock an inode: flock belongs to the open
-    description. Untracked callers simply get the reconciler's nonblocking miss.
+    The reconciler takes control.lock only on its own descriptors and never
+    waits for it (copy, then one apply batch). A busy lock skips this pass; the
+    rotating client_open index revisits the action on a later tick. Neither
+    contention nor failure reaches the caller, which then takes control.lock
+    exactly as before CC2: nothing is ever ceded and re-acquired.
     """
-    handles = [h for path, h in _CONTROL_HANDLES.get() if path == Path(directory).resolve()]
-    if len(handles) > 1:
-        raise ValueError('Candado de control anidado')
-    handle = handles[0] if handles else None
-    if handle is not None:
-        fcntl.flock(handle, fcntl.LOCK_UN)
+    if not has_authority(engine.directory):
+        return 0
     try:
-        yield
-    finally:
-        if handle is not None:
-            deadline = time.monotonic() + CLIENT_RELOCK_SECONDS
-            while True:
-                try:
-                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except BlockingIOError:
-                    remaining = deadline - time.monotonic()
-                    if remaining <= 0:
-                        # Deliberately outside ADMISSION_ERRORS: callers must
-                        # unwind, never continue their authority-dependent work.
-                        raise ClientCollectionBusy('client_collection_lock_busy')
-                    time.sleep(min(.01, remaining))
+        return engine.reconcile_clients(offline=offline)
+    except Exception:
+        return 0  # Collection can never suppress the caller's own duties.
 
 
-def wait_rack_lock(handle):
+def reconcile_before_start(engine, configuration):
+    """Both productive start entries (preparar, launchd wrapper) call this first."""
+    try:
+        queue = configuration()['data'] / 'state.json'
+    except ADMISSION_ERRORS:
+        return 0  # The locked preparation reports this same failure.
+    return reconcile_before_lock(engine, offline=queue)
+
+
+def wait_rack_lock(handle, seconds=None):
     """A short tick may finish; expiry before entry certifies no effects."""
-    deadline = time.monotonic() + RACK_LOCK_SECONDS
+    deadline = time.monotonic() + (RACK_LOCK_SECONDS if seconds is None else seconds)
     while True:
         try:
             fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -533,8 +531,7 @@ def recover_mini(pueue, directory):
 
 def guard(pueue, proc, directory, *, host="desk"):
     engine = MiniControl(pueue, directory, host=host)
-    if has_authority(directory):
-        engine.reconcile_clients()  # Also runs when handoff recovery keeps this tick closed.
+    # CC2 already ran before this caller took control.lock (reconcile_before_lock).
     if host == 'mini' and has_authority(directory):
         # The existing 60 s job also owns handoff recovery. No second timer.
         try:
@@ -545,7 +542,7 @@ def guard(pueue, proc, directory, *, host="desk"):
             # Carry its failure into the guard so even valid quotas cannot reopen.
             return MiniControl(pueue, directory)._legacy_guard(None, proc=proc, recovery_error=error)
     if has_authority(directory):
-        return engine.guard(None, proc=proc, _collected=True)
+        return engine.guard(None, proc=proc)
     readings = pressure_mini() if host == 'mini' else pressure(proc)
     log(directory, 'lectura', **readings)
     normal = decide(host, readings, MINI_THRESHOLDS if host == "mini" else PRESSURE_THRESHOLDS)
@@ -1191,14 +1188,20 @@ def start_projection(engine, config, queue_path=None, allow_pending=True, policy
     return state, image
 
 
-def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, boundary=lambda phase: None, _collected=False):
-    """Caller holds control.lock. Intention -> queue rename -> repeatable completion."""
-    config = configuration if configuration is not None else (
-        validate_configuration(pueue='/opt/homebrew/bin/pueue', daemon='/opt/homebrew/bin/pueued',
-                               env={}, cwd=Path.home()) if engine.host == 'mini' else validate_configuration())
+def start_configuration(engine):
+    return (validate_configuration(pueue='/opt/homebrew/bin/pueue', daemon='/opt/homebrew/bin/pueued',
+                                   env={}, cwd=Path.home()) if engine.host == 'mini' else validate_configuration())
+
+
+def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, boundary=lambda phase: None):
+    """Caller holds control.lock. Intention -> queue rename -> repeatable completion.
+
+    CC2 never runs here: it would have to cede the caller's lock. Its entries
+    (CLI preparar, the launchd wrapper, the guard before a Brew switch) run
+    reconcile_before_lock first. Retained reservations survive unchanged.
+    """
+    config = configuration if configuration is not None else start_configuration(engine)
     queue_path = queue_path or config['data'] / 'state.json'
-    if not dry_run and not _collected:
-        engine.reconcile_clients(offline=queue_path)
     state, image = start_projection(engine, config, queue_path)
     assert_offline(engine.pueue, config['pid_file'])
     if dry_run:
@@ -1213,7 +1216,7 @@ def prepare_start(engine, queue_path=None, configuration=None, dry_run=False, bo
         engine.store(db, state)
     boundary('complete')
     if engine.resolve(state) != state:
-        return prepare_start(engine, queue_path, config, dry_run=False, boundary=boundary, _collected=True)
+        return prepare_start(engine, queue_path, config, dry_run=False, boundary=boundary)
     # Stock refuses even a dead pid file. Remove only after all data are durable.
     if os.path.lexists(config['pid_file']):
         config['pid_file'].unlink(); sync_directory(config['pid_file'].parent)
@@ -1780,6 +1783,8 @@ class MiniControl:
     client_reservation_reason = 'Hay una reserva cliente o una RPC pendiente de reconciliar.'
 
     def reconcile_clients(self, offline=None):
+        # Only through reconcile_before_lock. Under a caller's control.lock the
+        # reconciler's own nonblocking locks miss: it does nothing, cedes nothing.
         # No table means no extra dependency, process, clock read or state change.
         try:
             with self.connect() as db:
@@ -1787,9 +1792,8 @@ class MiniControl:
                     return 0
             if not client_support():
                 return 0  # All opening/pruning seams already fail closed on orphan journals.
-            with client_collection_window(self.directory):
-                return client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
-                                                 birth=priority_helper().birth).run(offline=offline)
+            return client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
+                                             birth=priority_helper().birth).run(offline=offline)
         except ADMISSION_ERRORS:
             return 0  # Collection failure cannot suppress the protective guard.
 
@@ -2870,9 +2874,7 @@ class MiniControl:
         else:
             block('admission_unknown',group)
 
-    def guard(self, readings, proc=Path('/proc'), _collected=False):
-        if not _collected:
-            self.reconcile_clients()
+    def guard(self, readings, proc=Path('/proc')):
         if self.host == 'mini':
             return self._legacy_guard(readings,proc)
         tick = os.urandom(12).hex()
@@ -3268,6 +3270,11 @@ def main():
             response = engine.reply(request, 'unknown' if uncertain else 'recovery_error', 'recovery_error')
         print(json.dumps(response, allow_nan=False))
         return
+    if args.command == 'guardia':
+        reconcile_before_lock(MiniControl(pueue, directory, host=args.host))
+    elif args.command == 'preparar' and not args.seco:
+        engine = MiniControl(pueue, directory, host=args.host)
+        reconcile_before_start(engine, lambda: start_configuration(engine))
     with locked(directory, create=args.command != 'preparar'):
         try:
             engine = MiniControl(pueue, directory, host=args.host)

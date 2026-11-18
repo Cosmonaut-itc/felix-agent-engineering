@@ -890,6 +890,10 @@ La intención de preparación precede al rename de cola y se recupera repetiblem
 Si `arrancar` bloquea, mirar `~/.local/state/pao/pueue-mini/arranque.log`
 (y `arranque.log.1`): fecha, fase y motivo seguro del rechazo. Cada archivo está
 acotado a 64 KiB, con permisos 0600; KeepAlive sigue reintentando cada 10 s.
+Con `control.lock` ocupado (una guardia en curso), el wrapper espera hasta
+0,2 s y rechaza con «Candado de control ocupado; se reintenta sin efectos».
+El registro no espera `control.lock`: si otro escritor retiene el propio log
+más de 0,1 s, se pierde esa línea, nunca el rechazo.
 No contiene comandos, entornos ni el texto arbitrario de excepciones/subprocesos.
 La salida cruda de `pueued` sigue en `/dev/null`: Pueue 4.0.4 imprime el comando
 de una tarea en su log `info` (`spawn.rs:245`); redirigirlo al registro propio
