@@ -168,10 +168,10 @@ class ProgressTests(t.ReconcileTests):
         with self.engine.connect(write=True) as db:
             state = self.engine.state(db); state['pid_file'] = str(pidfile); self.engine.store(db, state)
         self.engine.generation_source = None
-        # Generation authentication still brackets native identity when copying.
+        # Process-based authentication occurs only in the collector.
         with patch.object(self.engine, 'generation', return_value='daemon-1'):
             item = rec.copies(None)[0]
-        proposal = rec.bounded_gather([item], None)[0]
+            proposal = rec.bounded_gather([item], None)[0]
         with patch.object(subprocess, 'Popen', side_effect=AssertionError('application must not wait for a process')), \
              patch.object(self.engine, 'generation', side_effect=AssertionError('application must use fresh native identity')):
             with control.locked(self.engine.directory):

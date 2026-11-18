@@ -81,7 +81,7 @@ class R2Tests(t.ReconcileTests):
                 if authenticate: state['generation'] = control.mini_generation(pidfile)
                 self.engine.store(db, state)
             waits.write_text('')
-            self.tick(); self.tick()
+            self.tick(); self.tick(); self.tick()
         events = [json.loads(row) for row in waits.read_text().splitlines()]
         return events
 

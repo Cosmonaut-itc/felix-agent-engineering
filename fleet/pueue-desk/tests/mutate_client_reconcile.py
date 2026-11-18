@@ -154,6 +154,26 @@ CASES=[
   "        if item['generation'] != item['state']['generation']:", "        if False:",
   'test_client_reconcile_progress.ProgressTests.test_unavailable_generation_retains_with_startup_reason_next_tick'),
 
+ ('cached retention never replaces fresh guard collection','client_actions.py',
+  "            pending.append(item)  # Every still-open action collects again outside the turn.",
+  "            if not reviewed:\n                pending.append(item)",
+  'test_client_reconcile_r2.R2Tests.test_guard_recollects_late_hold_evidence'),
+ ('confirmed phase still collects a late finish','client_actions.py',
+  "            pending.append(item)  # Every still-open action collects again outside the turn.",
+  "            if not reviewed:\n                pending.append(item)",
+  'test_client_reconcile_r2.R2Tests.test_guard_collects_finish_after_an_unchanged_confirmed_phase'),
+ ('slow read is retried after cached retention','client_actions.py',
+  "            pending.append(item)  # Every still-open action collects again outside the turn.",
+  "            if not reviewed:\n                pending.append(item)",
+  'test_client_reconcile_r2.R2Tests.test_guard_retries_a_transiently_slow_read'),
+ ('protected native copy never runs ps','client_actions.py',
+  "            generation = (state['generation'] if stamp is not None else None) if native else self.current_generation(state, offline)",
+  "            generation = self.current_generation(state, offline)",
+  'test_client_reconcile_r2.R2Tests.test_guard_native_copy_and_apply_never_wait_for_a_process'),
+ ('native copy still authenticates generation outside the turn','client_actions.py',
+  "                    or self.current_generation(item['state'], None) != item['generation']", "",
+  'test_client_reconcile_r2.R2Tests.test_guard_native_copy_cannot_authenticate_a_replaced_daemon'),
+
 ]
 
 

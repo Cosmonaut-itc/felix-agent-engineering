@@ -505,9 +505,8 @@ class Reconciler:
             return None  # Absence is compared too; a restart invalidates the copy.
 
     def daemon_stamp(self, state, offline):
-        # mini_generation uses ps to authenticate the generation. Pin that read
-        # between native PID/birth/file observations, then recheck the stamp per
-        # application without launching or waiting for any process under lock.
+        # Native PID/birth/file identity only: safe in the caller's protected
+        # turn. The collector authenticates mini_generation outside the lock.
         try:
             path = Path(state['pid_file'])
             before = path.stat()
@@ -541,9 +540,7 @@ class Reconciler:
             state = self.engine.state(db)
             native = self.engine.host == 'mini' and self.engine.generation_source is None
             stamp = self.daemon_stamp(state, offline) if native else None
-            generation = self.current_generation(state, offline)
-            if native and (stamp is None or self.daemon_stamp(state, offline) != stamp):
-                generation = None  # No authenticated native life; retain, never promote.
+            generation = (state['generation'] if stamp is not None else None) if native else self.current_generation(state, offline)
             sequence = db.execute('SELECT COALESCE(MAX(checked),0)+1 FROM client_open').fetchone()[0]
             result = []
             for key in keys:
@@ -602,6 +599,13 @@ class Reconciler:
             return journal
         if item['generation'] != item['state']['generation']:
             raise Unavailable('startup')
+        if 'daemon_stamp' in item:
+            # ps may wait: authenticate only in the bounded collector, pinning
+            # it to the copied native life. Apply checks that life per action.
+            if (self.daemon_stamp(item['state'], None) != item['daemon_stamp']
+                    or self.current_generation(item['state'], None) != item['generation']
+                    or self.daemon_stamp(item['state'], None) != item['daemon_stamp']):
+                raise Unavailable('startup')
         if process and process.get('pid') is not None:
             if self.birth is None or self.birth(process['pid']) == process['birth']:
                 raise Unavailable('rpc_unresolved')
@@ -833,6 +837,9 @@ class Reconciler:
         Do not advance the rotating cursor until a review is applied: an action
         copied in tick N remains in the reached batch in N+1, even with more
         than limit open actions and every independent acquisition colliding.
+        Reviewing cached evidence never replaces collection for an open action;
+        refresh its copy after applying so the next proposal binds to new state.
+        Native copies read only PID/birth/file identity, not ps generation.
         No adapter, process wait or collection occurs here.
         """
         copies = self.copies(offline, protected=True, advance=False)
@@ -849,8 +856,13 @@ class Reconciler:
             except (OSError, ValueError, KeyError, TypeError, sqlite3.Error,
                     subprocess.SubprocessError, Unavailable):
                 reviewed = False
-            if not reviewed:
-                pending.append(item)  # Changed authority is reread next turn.
+            if reviewed:
+                r = item['record']['request']
+                item['reservation'] = self.actions.reservation(r)
+                if not item['reservation']['open']:
+                    continue
+                item['record'] = self.actions.record(r)
+            pending.append(item)  # Every still-open action collects again outside the turn.
         return pending
 
     def run(self, offline=None, copies=None):

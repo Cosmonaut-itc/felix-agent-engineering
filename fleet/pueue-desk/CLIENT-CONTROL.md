@@ -466,6 +466,10 @@ trabajo protector del llamador. Al terminar ese trabajo, **todavía bajo el mism
 candado**, copia hasta ocho acciones y aplica pruebas del diario o evidencia
 recogida entre turnos. Sólo después de cerrar el descriptor recoge nueva
 evidencia en un proceso independiente y prueba una aplicación no bloqueante.
+Si una aplicación deja la reserva abierta, renueva su copia y vuelve a recoger
+en ese mismo ciclo exterior, incluso tras una retención idéntica o una fase ya
+confirmada sin `finish`. Una propuesta cacheada permite revisar bajo contención;
+nunca sustituye la recogida nueva de una acción abierta alcanzada por el lote.
 Nunca se cede ni se recupera un candado prestado. La pausa protectora de la
 guardia ocurre antes y no depende del reconciliador.
 
@@ -507,10 +511,13 @@ del editor de orden.
 El ciclo independiente conserva sus adquisiciones no bloqueantes para copia y
 aplicación. Antes de guardar coteja generación durable y observada **por cada
 acción**, revisión/digest/proceso de la fase y revisión/digest/fase/apertura de
-la reserva. En la Mini, la copia autentica la generación entre dos lecturas
-nativas del PID/nacimiento y firma del pid file; cada aplicación vuelve a leer
-esa identidad nativa. Así detecta también la muerte entre elementos del lote,
-sin lanzar ni esperar procesos al aplicar en el turno protegido. El desk usa
+la reserva. En la Mini, la copia lee sólo PID/nacimiento nativo y firma del pid
+file, ligados a la generación durable pendiente de autenticar. El colector,
+fuera del candado y dentro de su plazo, autentica la generación con el `ps`
+acotado entre dos cotejos de esa identidad nativa. Cada aplicación vuelve a
+leerla por acción. Así detecta también la muerte o sustitución entre elementos
+del lote, sin lanzar ni esperar procesos en la copia ni en la aplicación del
+turno protegido. Las demás operaciones conservan su `ps` acotado. El desk usa
 su identidad nativa de `/proc`. No hay RPC, callback al lanzador, result.lock,
 espera de gracia ni llamada recursiva a client en esa aplicación.
 
