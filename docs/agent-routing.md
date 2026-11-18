@@ -7,9 +7,9 @@ Política común para seleccionar trabajadores y revisores.
 Elige siempre dentro de esta tabla; los entrypoints globales llevan una
 copia, así que al cambiarla replícala en ambos. Las puntuaciones son preferencias
 operativas (10 = mejor; en costo, más económico) y se ajustan con resultados
-observados. Inteligencia y gusto de los modelos Go, de gpt-6.2-sol,
-gpt-6.1-terra, gpt-6-luna, sonnet-5.5 y haiku-5.5, son hipótesis iniciales,
-pendientes de calibrar con encargos propios. Gusto valora criterio de
+observados. Inteligencia y gusto de los modelos Go, de gpt-6.2-astra,
+gpt-6.2-sol, gpt-6.1-terra, gpt-6-luna, sonnet-5.5 y haiku-5.5, son
+hipótesis iniciales, pendientes de calibrar con encargos propios. Gusto valora criterio de
 producto, claridad y coherencia visual; admitir imágenes no demuestra buen
 gusto.
 
@@ -73,11 +73,9 @@ cada modelo. El esfuerzo sigue la incertidumbre del encargo, no su tamaño.
 | medium | Hace falta interpretar, planificar o comparar alternativas; punto de partida habitual. |
 | high | Persisten incertidumbres importantes o se necesita razonamiento profundo. |
 
-**gpt-6.2-astra se calibra un escalón por debajo.**
-Astra en low rinde más que gpt-5.6-sol en high, según
-[OpenAI](https://x.com/thsottiaux/status/2096688770523467947).
-Con Astra, `low` es el punto de partida habitual y `medium` cubre lo que con
-gpt-5.6-sol pedía `high`; reserva `high` para incertidumbres que medium no
+**gpt-6.2-astra parte de `low`.**
+Con Astra, `low` es el punto de partida habitual; sube a `medium` con
+incertidumbre real y reserva `high` para incertidumbres que medium no
 resolvió. Sol y Astra se distinguen por el tipo de problema, no por
 equivalencias de esfuerzo: al pasar de Sol a Astra, elige el esfuerzo de
 Astra por la incertidumbre que queda.
