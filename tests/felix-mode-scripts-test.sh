@@ -105,7 +105,7 @@ fixture() {
     export FAKE_LOG=$TEST_TMP/log-$CASE
     unset FAKE_SLEEP FAKE_CHILD FAKE_TOOL FAKE_NO_SESSION FAKE_EXIT FAKE_IGNORE_TERM
 }
-start() { run start --model gpt-6.1-sol --effort medium --out "$OUT" "$@" "$TEST_TMP/brief.md"; }
+start() { run start --model gpt-6.2-sol --effort medium --out "$OUT" "$@" "$TEST_TMP/brief.md"; }
 wait_for_absent() {
     local count=0
     while [ -e "$1" ] && [ "$count" -lt 100 ]; do sleep 0.1; count=$((count + 1)); done
@@ -120,17 +120,17 @@ wait_for_file() {
 validation() {
     fixture
     reject start --model sol --effort medium "$TEST_TMP/brief.md"
-    reject start --model gpt-6-astra --effort xhigh "$TEST_TMP/brief.md"
-    reject start --model gpt-6-astra --effort max "$TEST_TMP/brief.md"
+    reject start --model gpt-6.2-astra --effort xhigh "$TEST_TMP/brief.md"
+    reject start --model gpt-6.2-astra --effort max "$TEST_TMP/brief.md"
     reject start --effort high "$TEST_TMP/brief.md"
-    reject start --model gpt-6-astra "$TEST_TMP/brief.md"
-    reject start --model gpt-6-astra --effort high --root "$TEST_TMP" "$TEST_TMP/brief.md"
-    reject start --model gpt-6-astra --effort high --network "$TEST_TMP/brief.md"
-    reject start --model gpt-6-astra --effort high --timeout 0 "$TEST_TMP/brief.md"
+    reject start --model gpt-6.2-astra "$TEST_TMP/brief.md"
+    reject start --model gpt-6.2-astra --effort high --root "$TEST_TMP" "$TEST_TMP/brief.md"
+    reject start --model gpt-6.2-astra --effort high --network "$TEST_TMP/brief.md"
+    reject start --model gpt-6.2-astra --effort high --timeout 0 "$TEST_TMP/brief.md"
     reject wait absent --timeout nope
     run --help > "$TEST_TMP/help"
-    assert grep -q 'gpt-6.1-sol --effort high --ephemeral' "$TEST_TMP/help"
-    assert grep -q 'gpt-6.1-sol --effort medium --write' "$TEST_TMP/help"
+    assert grep -q 'gpt-6.2-sol --effort high --ephemeral' "$TEST_TMP/help"
+    assert grep -q 'gpt-6.2-sol --effort medium --write' "$TEST_TMP/help"
 }
 
 lifecycle() {
@@ -164,7 +164,7 @@ assert args[-1] == '-'
 assert args[args.index('-c') + 1] == 'model_reasoning_effort="medium"'
 assert not any('trust_level' in arg for arg in args)
 PY
-    reject start --model gpt-6.1-sol --effort medium --out "$OUT" "$TEST_TMP/brief.md"
+    reject start --model gpt-6.2-sol --effort medium --out "$OUT" "$TEST_TMP/brief.md"
 }
 
 write_options() {
@@ -730,7 +730,7 @@ default_out_and_home() {
     fixture
     unset CODEX_RUN_HOME
     local launched
-    launched=$(TMPDIR=$TEST_TMP run start --model gpt-6-astra --effort high "$TEST_TMP/brief.md")
+    launched=$(TMPDIR=$TEST_TMP run start --model gpt-6.2-astra --effort high "$TEST_TMP/brief.md")
     OUT=$(printf '%s\n' "$launched" | sed -n 's/^out=//p')
     assert test "${OUT#"$TEST_TMP/codex-run/"}" != "$OUT"
     run wait "$OUT" --timeout 15
