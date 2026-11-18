@@ -79,13 +79,18 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         adaptador.operador = (CheckoutOperador(config["checkout_operador"])
                               if "checkout_operador" in config else None)
 
-    def limpiar(nuevo):
-        previo.limpiar(nuevo)
+    def limpiar(nuevo, observacion=None):
+        try:
+            previo.limpiar(nuevo, observacion)
+        except CheckoutOperadorBloqueado as exc:
+            nuevo = replace(nuevo, pausa=Pausa("infraestructura",
+                detalle="checkout-operador:" + str(exc)))
+            ledger.guardar_paso(nuevo, (), ahora)
         return nuevo
 
-    previo.limpiar(estado)
+    estado = limpiar(estado)
     observacion = observador.observar(estado, ahora)
-    previo.limpiar(estado, observacion)
+    estado = limpiar(estado, observacion)
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()

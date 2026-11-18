@@ -12,7 +12,8 @@ import time
 from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, EscritorExterno,
                      EsperaPrevia, Incierto, Terminal, VentanaAutorizada,
                      admision_entrada, clave)
-from git_ops import CheckoutOperador, FalloGit, entorno, sha
+from git_ops import (CheckoutOperador, CheckoutOperadorBloqueado,
+                     CheckoutOperadorPendiente, FalloGit, entorno, sha)
 
 
 PRESUPUESTO_IO_S = 60
@@ -145,10 +146,12 @@ class Previo:
                           "id TEXT PRIMARY KEY, repo TEXT NOT NULL, payload TEXT NOT NULL, "
                           "pendiente INTEGER NOT NULL)")
 
-    def llamar(self, config, solicitud, accion):
+    def llamar(self, config, solicitud, accion, operador=None):
         restante = PRESUPUESTO_IO_S - self.io_s
         if restante <= 0:
             return "timeout"
+        if operador is not None:
+            CheckoutOperador(operador).avanzar()
         inicio = self.reloj_io()
         try:
             return invocar(dict(config, plazo_s=min(config["plazo_s"], restante)),
@@ -227,7 +230,15 @@ class Previo:
         if not isinstance(lectura, (EnBase, EscritorExterno)):
             self.guardar_cancelacion(registro, "reconciliacion-incierta")
             return False  # Nunca deshacer un efecto cuyo push pudo aterrizar.
-        resultado = self.llamar(registro["gancho"], solicitud, "cancelar")
+        try:
+            resultado = self.llamar(registro["gancho"], solicitud, "cancelar",
+                                   registro.get("checkout_operador"))
+        except CheckoutOperadorPendiente as exc:
+            self.guardar_cancelacion(registro, str(exc))
+            return False
+        except CheckoutOperadorBloqueado as exc:
+            self.guardar_cancelacion(registro, "checkout-operador:" + str(exc))
+            raise
         if resultado != "cancelado":
             self.guardar_cancelacion(registro, "cancelar-" + resultado)
             return False
@@ -280,8 +291,6 @@ class Previo:
             return BloqueoPrevia(B, C, "configuracion-ausente")
         registro = None
         if config is not None:
-            if "checkout_operador" in self.config:
-                CheckoutOperador(self.config["checkout_operador"]).avanzar()
             miembros = {e.entrega.recibo: e.entrega for e in estado.entradas}
             solicitud = {"version": 1, "id": clave("pre-aterrizaje", estado.repo, tren.id, B, C),
                 "repo": estado.repo, "tren": tren.id, "B": B, "C": C,
@@ -291,6 +300,8 @@ class Previo:
             registro = {"gancho": config, "solicitud": solicitud, "arbol": cert.arbol,
                         "heads": [p["head"] for p in solicitud["prs"]],
                         "vence_espera": self.reloj() + config.get("espera_max_s", ESPERA_MAX_S)}
+            if "checkout_operador" in self.config:
+                registro["checkout_operador"] = self.config["checkout_operador"]
             with self.ledger.transaccion():
                 anterior = self.ledger.db.execute(
                     "SELECT payload FROM pre_aterrizajes WHERE id=? AND pendiente=1",
@@ -307,7 +318,8 @@ class Previo:
                     (solicitud["id"], estado.repo, json.dumps(registro, sort_keys=True)))
             self.frontera("antes-pre-aterrizaje", efecto)
             resultado = ("espera-vencida" if self.reloj() >= registro["vence_espera"] else
-                         self.llamar(config, solicitud, "verificar"))
+                         self.llamar(config, solicitud, "verificar",
+                                     self.config.get("checkout_operador")))
             if self.reloj() >= registro["vence_espera"]:
                 resultado = "espera-vencida"
         else:

@@ -12,10 +12,10 @@ import unittest
 import test_activo as activo
 import test_juicio as juicio_fixtures
 from test_jale import PRODUCTOR
-from test_hasito import CANDIDATO, F, suite_fixture
+from test_hasito import F, suite_fixture
 from adaptadores import seleccionar
 from adaptadores.hasito import Hasito
-from dominio import Corriendo, EsperandoCI, Promoviendo, Terminal
+from dominio import Certificado, EsperandoCI, Promoviendo, Terminal
 from observador import configuracion
 import git_ops
 
@@ -85,8 +85,11 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
                 '\nexec ' + shlex.join([sys.executable, str(productor), *prefijo]) + ' "$@"\n')
         lanzadores['gancho.py'] = ("import json, sys\nfrom pathlib import Path\n"
             + 'Path(' + repr(str(self.raiz / 'gancho-version')) + ').write_text(' + repr(nombre) + ')\n'
-            + "s=json.load(sys.stdin)\nprint(json.dumps(dict(version=1,id=s['id'],resultado="
-            + "'seguir' if s['accion']=='verificar' else 'cancelado')))\n")
+            + "s=json.load(sys.stdin)\n"
+            + 'Path(' + repr(str(self.raiz / 'gancho-accion')) + ").write_text(s['accion'])\n"
+            + 'esperar=Path(' + repr(str(self.raiz / 'gancho-esperar')) + ').exists()\n'
+            + "print(json.dumps(dict(version=1,id=s['id'],resultado="
+            + "('esperar' if esperar else 'seguir') if s['accion']=='verificar' else 'cancelado')))\n")
         lanzadores['vivo.sh'] = ('echo listo\nread -r continuar\n' + '# relleno\n' * 20000 +
                                   'echo ' + nombre + '\n')
         if padre:
@@ -102,7 +105,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
         return clase(self.operador).avanzar()
 
     def lanzar(self):
-        self.hasta_fase(Corriendo)
+        self.hasta_fase(Certificado)
         self.assertIsNone(self.estado().pausa)
         self.assertEqual(self.lineas('versiones.log'), ['nuevo'])
         self.assertEqual(self.cabeza(), self.nuevo)
@@ -196,7 +199,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
         self.lanzar()
 
     def test_gancho_corre_con_checkout_avanzado(self):
-        self.hasta_fase(Corriendo)
+        self.hasta_fase(Certificado)
         # La suite ya usó la versión nueva. Dejar el operador de nuevo atrás
         # para acreditar la frontera independiente de pre-aterrizaje.
         self.comando(self.operador, 'reset', '--hard', self.viejo)
@@ -248,7 +251,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
     def test_sin_clave_conserva_lanzamiento_anterior(self):
         self.contexto.config.pop('checkout_operador')
         (self.operador / 'hasito.sh').write_text((self.operador / 'hasito.sh').read_text() + '# local\n')
-        self.hasta_fase(Corriendo)
+        self.hasta_fase(Certificado)
         self.assertIsNone(self.estado().pausa)
         self.assertEqual(self.lineas('versiones.log'), ['viejo'])
         self.assertEqual(self.cabeza(), self.viejo)
@@ -284,7 +287,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
 
     def test_reanudar_y_repetir_hasito_avanzan_antes_del_runner(self):
         self.assertTrue(self.avanzar())
-        self.hasta_fase(Corriendo)
+        self.hasta_fase(Certificado)
         candidato = self.estado().trenes[0].fase.candidato
         adaptador = self.contexto.hasito
         from dominio import Reproduccion
@@ -307,7 +310,7 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
         self.contexto.config.update(adaptador='jale', lanzador=str(self.operador / 'jale.sh'),
                                    modos=['contract'])
         self.contexto.hasito = seleccionar(self.contexto.config, self.contexto.git)
-        self.hasta_fase(Corriendo)
+        self.hasta_fase(Certificado)
         adaptador = self.contexto.hasito
         candidato = self.estado().trenes[0].fase.candidato
         self.comando(self.operador, 'reset', '--hard', self.viejo)
@@ -320,3 +323,18 @@ print(('REPETICION' if rep else 'SUITE') + ' veredicto=0 ' +
         adaptador.repetir(candidato, raiz, solicitud, candidato.C, 'rep-jale')
         self.assertEqual(self.cabeza(), self.nuevo)
         self.assertEqual(self.lineas('versiones.log'), ['nuevo'] * 4)
+
+
+    def test_cancelacion_avanza_checkout_original_antes_del_gancho(self):
+        self.hasta_fase(Certificado)
+        self.contexto.config['pre_aterrizaje'] = dict(
+            comando=[sys.executable, str(self.operador / 'gancho.py')], plazo_s=5)
+        (self.raiz / 'gancho-esperar').write_text('esperar')
+        self.hasta_fase(Promoviendo)
+        self.assertEqual((self.raiz / 'gancho-accion').read_text(), 'verificar')
+        self.comando(self.operador, 'reset', '--hard', self.viejo)
+        self.contexto.config.pop('pre_aterrizaje')
+        self.contexto.tick(5000)
+        self.assertEqual(self.cabeza(), self.nuevo)
+        self.assertEqual((self.raiz / 'gancho-version').read_text(), 'nuevo')
+        self.assertEqual((self.raiz / 'gancho-accion').read_text(), 'cancelar')
