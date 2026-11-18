@@ -192,6 +192,11 @@ class Incompleto:
 
 
 @dataclass(frozen=True)
+class RechazoLanzador:
+    evidencia: str
+
+
+@dataclass(frozen=True)
 class Intento:
     n: int
     veredicto: str
@@ -241,7 +246,7 @@ class Causa:
     minimos: Tuple[Tuple[int, ...], ...]
 
 
-ResultadoSuite = Union[Completo, Incompleto]
+ResultadoSuite = Union[Completo, Incompleto, RechazoLanzador]
 
 
 @dataclass(frozen=True)
@@ -280,6 +285,7 @@ class Corriendo:
     reanudaciones: int = 0
     esperar_hasta: Optional[float] = None
     reanudar: str = ""
+    reintentos_lanzador: int = 0
 
 
 @dataclass(frozen=True)
@@ -307,6 +313,7 @@ class Diagnosticando:
     reanudar: str = ""
     costo_infra_s: float = 0
     restantes: Tuple[str, ...] = ()
+    reintentos_lanzador: int = 0
 
 
 @dataclass(frozen=True)
@@ -386,7 +393,7 @@ class Observacion:
     rama_ocupada: Optional[RamaOcupada] = None
     resultado_suite: Optional[ResultadoSuite] = None
     suite_intento: int = 0
-    repeticion: Optional[Union[Repeticion, Incompleto]] = None
+    repeticion: Optional[Union[Repeticion, Incompleto, RechazoLanzador]] = None
     reproduccion_id: str = ""
     costo_suite_sana_s: float = 0
     ci_recibo: str = "verde"
@@ -560,12 +567,28 @@ def avanzar_ci(estado, tren, observacion):
     return estado, ()
 
 
+def intento_suite(fase):
+    """Identidad del registro; los rechazos no gastan reanudaciones de 75."""
+    return fase.reanudaciones + fase.reintentos_lanzador
+
+
+def efecto_reanudar_suite(tren, fase):
+    intento = intento_suite(fase)
+    return Efecto(clave("reanudar-suite", tren.id, intento),
+                  "reanudar-suite", (tren.id, str(intento)))
+
+
+def pausar_lanzador(estado, resultado):
+    return replace(estado, pausa=Pausa("infraestructura", detalle="lanzador-rechazo",
+                                      archivos=(resultado.evidencia,))), ()
+
+
 def efecto_diagnostico(tren, fase):
     solicitud = fase.pendiente
     tipo = ("armar-subconjunto" if solicitud.objetivo == "subconjunto" and
             fase.subconjunto is None else "repetir")
-    return Efecto(clave(tipo, tren.id, solicitud.id, fase.reanudaciones), tipo,
-                  (tren.id, solicitud.id, str(fase.reanudaciones)))
+    return Efecto(clave(tipo, tren.id, solicitud.id, intento_suite(fase)), tipo,
+                  (tren.id, solicitud.id, str(intento_suite(fase))))
 
 
 def esperar_infraestructura(estado, tren, fase, resultado, ahora):
@@ -643,11 +666,13 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
     ligada = observacion.tren_id == tren.id
     if isinstance(fase, Corriendo):
         resultado = observacion.resultado_suite if (ligada and
-            observacion.suite_intento == fase.reanudaciones and
+            observacion.suite_intento == intento_suite(fase) and
             (observacion.suite == fase.suite or
-             fase.reanudaciones > 0 and observacion.suite)) else None
+             intento_suite(fase) > 0 and observacion.suite)) else None
         if resultado is not None and fase.esperar_hasta is None:
             fase = replace(fase, suite=observacion.suite)
+            if isinstance(resultado, RechazoLanzador):
+                return pausar_lanzador(estado, resultado)
             if isinstance(resultado, Incompleto):
                 return esperar_infraestructura(estado, tren, fase, resultado, observacion.ahora)
             if not isinstance(resultado, Completo):
@@ -673,9 +698,8 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
             fase = replace(fase, esperar_hasta=None, reanudaciones=fase.reanudaciones + 1)
             estado = cambiar_fase(estado, tren, fase)
         if isinstance(fase, Corriendo):
-            if fase.reanudaciones and fase.esperar_hasta is None and despachar:
-                efecto = Efecto(clave("reanudar-suite", tren.id, fase.reanudaciones),
-                    "reanudar-suite", (tren.id, str(fase.reanudaciones)))
+            if intento_suite(fase) and fase.esperar_hasta is None and despachar:
+                efecto = efecto_reanudar_suite(tren, fase)
                 return estado, (efecto,)
             return estado, ()
     if fase.pendiente:
@@ -689,8 +713,10 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
             fase = replace(fase, subconjunto=c)
         if ligada and observacion.conflicto_cadena:
             return replace(estado, pausa=Pausa("necesita-juicio", detalle="conflicto-en-subconjunto")), ()
-        resultado = observacion.repeticion if ligada and observacion.suite_intento == fase.reanudaciones else None
+        resultado = observacion.repeticion if ligada and observacion.suite_intento == intento_suite(fase) else None
         if resultado is not None and fase.esperar_hasta is None:
+            if isinstance(resultado, RechazoLanzador):
+                return pausar_lanzador(estado, resultado)
             if isinstance(resultado, Incompleto):
                 return esperar_infraestructura(estado, tren, fase, resultado, observacion.ahora)
             commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B if
@@ -701,7 +727,8 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
             if fase.evidencias and resultado.origen_sha256 != fase.evidencias[0].resultado.origen_sha256:
                 return replace(estado, pausa=Pausa("necesita-juicio", detalle="origen-distinto")), ()
             fase = replace(fase, evidencias=fase.evidencias + (Evidencia(s, resultado),),
-                pendiente=None, subconjunto=None, reanudaciones=0, esperar_hasta=None, reanudar="")
+                pendiente=None, subconjunto=None, reanudaciones=0, esperar_hasta=None, reanudar="",
+                reintentos_lanzador=0)
         elif fase.esperar_hasta is not None:
             if observacion.ahora < fase.esperar_hasta or not despachar:
                 return cambiar_fase(estado, tren, fase), ()
@@ -919,7 +946,7 @@ def paso(estado, observacion):
 # Tagged encoding keeps the SQLite/event contract explicit and round-trippable.
 _TIPOS = {c.__name__: c for c in (Entrega, Admitido, Retenido, Rechazado, Entrada,
           Pausa, Decision, Candidato, ConflictoCadena, RamaOcupada, Aterrizado, EnBase, EscritorExterno,
-          Incierto, EsperaPrevia, BloqueoPrevia, VentanaAutorizada, Fallo, Completo, Incompleto, Atribucion, Congelado,
+          Incierto, EsperaPrevia, BloqueoPrevia, VentanaAutorizada, Fallo, Completo, Incompleto, RechazoLanzador, Atribucion, Congelado,
           Armado, EsperandoCI, Corriendo, Certificado, Diagnosticando,
           Promoviendo, Terminal, Tren, Estado, Efecto, Intento, UnidadRepetida,
           Repeticion, Reproduccion, Evidencia, Causa, ResultadoCI)}

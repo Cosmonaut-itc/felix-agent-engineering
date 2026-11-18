@@ -90,7 +90,11 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 continue
             if fila["estado"] == "resultado" or fila["clave"] in intentados:
                 continue
-            if recuperacion and fila["estado"] != "ejecutando":
+            # Los fallos de suite pueden tener una salida durable del lanzador.
+            # Incorporarla antes del paso permite recuperar instalaciones viejas.
+            if recuperacion and fila["estado"] != "ejecutando" and not (
+                    fila["estado"] == "fallido" and efecto.tipo in
+                    ("iniciar-suite", "reanudar-suite", "repetir")):
                 continue
             if efecto.tipo not in EJECUTABLES:
                 continue

@@ -9,7 +9,8 @@ from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      Corriendo, Diagnosticando, Efecto, EnBase, EsperandoCI, Incierto,
                      BloqueoPrevia, EsperaPrevia,
                      Observacion, Promoviendo, RamaOcupada, admision_entrada,
-                     clave, efecto_diagnostico, efecto_promover, rama_ci, recibo_ci)
+                     clave, efecto_diagnostico, efecto_promover, efecto_reanudar_suite,
+                     intento_suite, rama_ci, recibo_ci)
 from git_ops import Publicado
 from adaptadores.hasito import ResultadoInvalido
 
@@ -81,17 +82,16 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                     observacion.ci_recibo if observacion.ci_candidato == "verde"
                     else recibo_ci(tren)), True)
             if efecto.tipo == "reanudar-suite" and isinstance(fase, Corriendo):
-                esperado = Efecto(clave("reanudar-suite", tren.id, fase.reanudaciones),
-                    "reanudar-suite", (tren.id, str(fase.reanudaciones)))
-                if efecto != esperado or fase.esperar_hasta is not None or not fase.reanudar:
+                esperado = efecto_reanudar_suite(tren, fase)
+                if efecto != esperado or fase.esperar_hasta is not None:
                     raise ValueError("reanudación obsoleta")
                 recibo = adaptador.suite(fase.candidato, tren.id,
-                    fase.reanudaciones, fase.reanudar, permitir_lanzar=admitidos)
+                    intento_suite(fase), fase.reanudar, permitir_lanzar=admitidos)
                 if recibo is None:
                     return Ejecucion(limpia, False)
                 ruta, resultado = recibo
                 return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado,
-                                         suite_intento=fase.reanudaciones), True)
+                                         suite_intento=intento_suite(fase)), True)
             if efecto.tipo == "repetir" and isinstance(fase, Diagnosticando):
                 if (fase.pendiente is None or fase.esperar_hasta is not None or
                         efecto != efecto_diagnostico(tren, fase)):
@@ -100,12 +100,12 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 commit = (fase.candidato.C if s.objetivo == "C" else fase.candidato.B
                           if s.objetivo == "B" else fase.subconjunto.C)
                 resultado = adaptador.repetir(fase.candidato, fase.suite, s, commit,
-                                          tren.id, fase.reanudaciones, fase.reanudar,
+                                          tren.id, intento_suite(fase), fase.reanudar,
                                           permitir_lanzar=admitidos)
                 if resultado is None:
                     return Ejecucion(limpia, False)
                 return Ejecucion(replace(limpia, repeticion=resultado, reproduccion_id=s.id,
-                                         suite_intento=fase.reanudaciones), True)
+                                         suite_intento=intento_suite(fase)), True)
         except ResultadoInvalido as exc:
             raise EfectoFallido(exc.resultado) from None
         raise ValueError("efecto de suite incompatible con fase")

@@ -199,9 +199,11 @@ class JaleTests(Aislado):
         self.assertIsInstance(self.suite()[1], Incompleto)
 
     def test_paro_64_no_reintenta_ni_cambia_host(self):
-        self.invalido({'codigo': 64, 'sin_linea': True}, 'jale-paro-64')
-        with self.assertRaises(ResultadoInvalido):
-            self.suite()
+        from dominio import RechazoLanzador
+        self.plan([{'codigo': 64, 'sin_linea': True}])
+        recibo = self.suite()
+        self.assertIsInstance(recibo[1], RechazoLanzador)
+        self.assertEqual(self.suite(), recibo)
         self.assertEqual(len(self.lanzamientos()), 1)
 
     def test_sha_ajeno(self):
