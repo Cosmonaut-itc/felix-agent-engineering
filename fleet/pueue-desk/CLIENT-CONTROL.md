@@ -475,6 +475,12 @@ No espera result.lock ni llama al lanzador bajo control.lock. Los ámbitos
 productivos usan `locked`, que conserva el descriptor mientras permite esa
 ventana; después se relee la autoridad. El wrapper de arranque vuelve a
 comprobar la autorización del relevo antes de ejecutar el daemon.
+La recuperación del descriptor exterior usa un plazo de 0,1 s: si otro dueño
+lo retiene, lanza `ClientCollectionBusy` con `client_collection_lock_busy` y
+aborta el tick/preparador; ningún trabajo que presuponga exclusión continúa.
+El siguiente tick puede reintentar. Este plazo y los 0,4 s de recogida no son
+una cota de extremo a extremo: copia, cotejos, SQLite y lecturas de generación
+son trabajo adicional.
 
 Se recogen hasta ocho reservas por lote. Un único proceso de recogida tiene
 un plazo de 0,4 s para todo el lote; el RPC de lectura tiene un plazo menor.
@@ -491,6 +497,12 @@ Qué puede cerrar hoy:
   el hold inicial, sin aceptación ni hold atribuido, se cierra la reserva con
   rechazo sin efecto. El cliente puede iniciar otra acción; no hubo aceptación
   C5. En otra fase se conserva la reserva y se devuelve `deferred`, sin efecto.
+- Un hold rechazado en la segunda lectura (Locked o Stashed ajeno) también
+  cierra sin cliente cuando el diario prueba que no lanzó hijo, no hay
+  incertidumbre, aceptación ni hold atribuido y todas las fases de esa acción
+  son rechazos/diferidas sin envío ni efecto. Sólo cambia la reserva y su
+  índice: el recibo rejected, digest y revisión permanecen idénticos. No se
+  atribuye el Stashed ajeno. Una fase previa con efecto impide este cierre.
 - Una respuesta con efecto ya confirmada permanece histórica e idempotente.
   Con adaptador acreditado, una prueba durable enlazada permite añadir la
   fase finish y cerrar; se reutilizan los validadores de `client_contract.py`.
@@ -508,16 +520,28 @@ nueva prueba no fabrica incertidumbre de un RPC que nunca se envió.
 
 El futuro método fijo `recover` recibe copia de la petición, estado, reserva,
 proceso identificado y observación del daemon. Devuelve observación acreditada,
-exclusión positiva de RPC tardía (`settled`) y opcionalmente una petición
-finish autenticada por `verify`. `settled` no puede derivarse sólo del estado
-del hijo ni del daemon. CC3–CC5 deben acreditar esa evidencia por lanzador.
+exclusión positiva de RPC tardía (`settled`), prueba del efecto de **esta fase**
+(`effect_applied:true`) y opcionalmente una petición finish autenticada por
+`verify`. Son pruebas distintas: `settled` no puede derivarse sólo del estado
+del hijo ni del daemon, y tampoco prueba quién produjo el estado observado.
+Tras un gated incierto, incluso un Stashed con la identidad esperada más
+settled conserva `unknown`, reserva abierta/incierta y `hold_identity:null`
+si falta la prueba de efecto. Un adaptador antiguo que omite effect_applied
+retiene igual. cancel-no-payload y retire-held rechazan sin RPC hasta acreditar
+la atribución; no basta excluir mensajes tardíos. CC3–CC5 deben acreditar
+ambas pruebas por lanzador.
 Las pruebas sintéticas recorren hold atribuido y resultado durable hasta
 finish, sin depender de clientes vivos. No se reenvía stash/start/señal/remove
 para resolver una respuesta perdida. Sin aceptación/prueba, se retiene; no
 se inicia automáticamente un worker ni se fabrica 130.
 
-La vista y capabilities conservan el motivo legible de reserva cliente para
-reordenar; el diario guarda además `reconcile_reason` con un enum cerrado.
+La vista por grupo y capabilities transportan motivos fijos de retención,
+validados por el sanitizador del rack: «una RPC del cliente puede seguir en
+curso» (`rpc_unresolved`), «el lanzador aún no publica evidencia acreditada»
+(`unsupported`) y «falta evidencia para cerrarla» (`evidence_missing` y demás
+pruebas inconclusas). El diario conserva `reconcile_reason` como enum cerrado;
+ningún texto del daemon se publica. El bloqueo de guardia/goteo usa la causa
+existente `reason`, que atraviesa validate_guard y llega al panel.
 Guardia y goteo `_one` del desk consultan las mismas reservas: una incierta
 retiene la apertura y conserva pressure. Una reserva conocida de cancelación
 permite la reapertura normal cuando cede presión, para evitar impedir su
@@ -528,7 +552,8 @@ El desk sigue rechazando `client` y anunciando `client:false` hasta U3.7.
 
 CC2 precisa una única excepción temporal a «mismo cuerpo, mismo recibo»:
 una petición mutadora repetida con **la misma clave y digest**, cuyo último
-recibo es `deferred`, se vuelve a validar bajo control.lock. Deferred garantiza
+recibo está en `client_contract.REEVALUATED` (sólo `deferred`), se vuelve a
+validar bajo control.lock. Deferred garantiza
 que esa petición no envió RPC. Se conserva la revisión creciente y se aplican
 otra vez identidad, primera aceptación, reservas y cierres. `status` sólo
 consulta el recibo y nunca reintenta. Un cuerpo distinto sigue dando conflicto.
@@ -549,7 +574,9 @@ El índice se actualiza en la misma transacción que la reserva. `client_scan`
 migra diarios CC1 en lotes de ocho filas; mientras está incompleto, todas las
 aperturas/reordenados se retienen y la poda se abstiene. No se escanea el
 historial completo en un tick, ni se archivan/borran claves, digests o recibos.
-Una reserva nunca vence por reloj y un terminal nunca se resucita.
+Una reserva nunca vence por reloj y un terminal nunca se resucita. Una
+retención idéntica no reescribe recibo/reserva ni incrementa sus revisiones;
+el índice avanza de todos modos para no perder el turno de otras acciones.
 
 CC3–CC5 deben entregar los adaptadores acreditados; CC6 los instaladores y
 escritores restantes; CC7 el filtro preventivo y CC8 la acreditación cruzada.

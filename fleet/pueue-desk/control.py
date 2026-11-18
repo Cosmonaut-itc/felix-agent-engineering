@@ -406,6 +406,13 @@ def locked(directory, create=True):
             _CONTROL_HANDLES.reset(token)
 
 
+CLIENT_RELOCK_SECONDS = .1
+
+
+class ClientCollectionBusy(RuntimeError):
+    """Unwind every scope that assumed control.lock; retry on the next tick."""
+
+
 @contextmanager
 def client_collection_window(directory):
     """Only release our own tracked lock; every caller rereads authority after it.
@@ -423,7 +430,18 @@ def client_collection_window(directory):
         yield
     finally:
         if handle is not None:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+            deadline = time.monotonic() + CLIENT_RELOCK_SECONDS
+            while True:
+                try:
+                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    break
+                except BlockingIOError:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        # Deliberately outside ADMISSION_ERRORS: callers must
+                        # unwind, never continue their authority-dependent work.
+                        raise ClientCollectionBusy('client_collection_lock_busy')
+                    time.sleep(min(.01, remaining))
 
 
 def wait_rack_lock(handle):
@@ -602,6 +620,12 @@ def client_support():
     except FileNotFoundError:
         # A partial publication can remove a companion between check and read.
         return False
+
+
+CLIENT_RETAINED = {
+    'rpc_unresolved': 'Reserva cliente retenida: una RPC del cliente puede seguir en curso.',
+    'unsupported': 'Reserva cliente retenida: el lanzador aún no publica evidencia acreditada.',
+    'evidence_missing': 'Reserva cliente retenida: falta evidencia para cerrarla.'}
 
 
 _PRIORITY_HELPER = None
@@ -1539,8 +1563,8 @@ class MiniControl:
         return dict(schema='rack-host-result@1', status='ok', reorder_groups=reorder_groups, capabilities=dict(
             client=self.host == 'mini' and client_support(),
             slots=enabled, undo=enabled, dry_run=enabled, mode=enabled and self.host == 'desk' and extra.get('mode_note') is not None, reorder=any(g['enabled'] for g in reorder_groups.values()), restart_queue=False,
-            reason_reorder=self.client_reservation_reason if any(g['reason'] == self.client_reservation_reason for g in reorder_groups.values()) else
-                'La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None),
+            reason_reorder=next((g['reason'] for g in reorder_groups.values() if g['reason'] in self.client_reasons()),
+                'La coordinación de pausas de los clientes no está acreditada.' if self.host=='mini' and not self.coordinated_reorder else None)),
             revision=state['revision'], policy_hash=self.policy_hash, generation=generation, mode=self.mode(state), cap=self.cap(state),
             slots=observed, desired=state['desired'], drift=observed != state['desired'],
             **(dict(foreign_work=self.foreign_work) if self.host == 'desk' else {}),
@@ -1777,6 +1801,21 @@ class MiniControl:
             return True  # An unreadable client journal closes every group, including openings.
         return client_module().blocked(self, group, opening=opening)
 
+    def client_reasons(self):
+        return {self.client_reservation_reason} | set(CLIENT_RETAINED.values())
+
+    def client_block_reason(self, group):
+        if not self.client_blocked(group):
+            return None
+        if not client_support():
+            return self.client_reservation_reason
+        reasons = {r.get('reconcile_reason') for r in client_module().reservations(self, open_only=True)
+                   if r['open'] and r['group'] == group}
+        for reason in CLIENT_RETAINED:
+            if reason in reasons:
+                return CLIENT_RETAINED[reason]
+        return CLIENT_RETAINED['evidence_missing'] if reasons - {None} else self.client_reservation_reason
+
     def reorder_view(self, state, snapshot, enabled):
         generation = self.generation(state)
         state_bytes = len(canonical(snapshot).encode())
@@ -1796,7 +1835,7 @@ class MiniControl:
                         self.reorder_preflight(snapshot['tasks'][str(row['id'])], aliases)
                 except (ValueError,OSError):
                     unsafe = True
-            reason = (self.client_reservation_reason if self.client_blocked(g) else
+            reason = (self.client_block_reason(g) if self.client_blocked(g) else
                       'En pausa recuperando… · ' + recovery if recovery else
                       'No se puede reordenar mientras el grupo está pausado · ' + ', '.join(labels[r] for r in (reasons or ['manual'])) if paused else
                       'La coordinación de pausas de los clientes no está acreditada.' if not self.coordinated_reorder else
@@ -2646,7 +2685,7 @@ class MiniControl:
             if row['status'] != 'Paused':
                 continue  # open group: waits on its own Pueue quota, not on the guard
             if self.client_blocked(group, opening=True):
-                block('client_reserved', group)
+                block('reason', group)
                 continue
             if reasons != {'pressure'}:
                 block('reason',group)
@@ -2922,7 +2961,7 @@ class MiniControl:
                 if decision == 'reanudar' and reasons & {'pressure','startup'}:
                     if not can_open:continue
                     if self.client_blocked(group, opening=True):
-                        block('client_reserved',group,'resume');continue
+                        block('reason',group,'resume');continue
                     if not reasons <= {'pressure','startup'}:
                         block('reason',group,'resume');continue
                     if status != 'Paused':continue

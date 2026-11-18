@@ -311,7 +311,7 @@ class ClientActions:
         if record:
             if record['digest'] != digest(r):
                 result = self.reply(r, 'rejected', 'idempotency_conflict', held=record['response']['reservation'] == 'held')
-            elif not query and record['response']['status'] == 'deferred':
+            elif not query and record['response']['status'] in c.REEVALUATED:
                 result = self.execute(r, prior=record)
             else:
                 result = record['response']
@@ -345,13 +345,13 @@ class ClientActions:
                     return reject('identity')
                 if not previous['open']:
                     return reject('stale_state')
+                if r['op'] in ('cancel-no-payload', 'retire-held') and previous.get('hold_identity') != current:
+                    return reject('evidence_missing')
                 if previous['uncertain']:
                     return reject('rpc_unresolved', 'deferred')
                 if previous['acceptance'] is not None and previous['acceptance'] != r['acceptance']:
                     return reject('identity')
             if r['op'] in ('cancel-no-payload', 'retire-held', 'finish') and not held:
-                return reject('evidence_missing')
-            if r['op'] in ('cancel-no-payload', 'retire-held') and previous.get('hold_identity') != current:
                 return reject('evidence_missing')
             if self.host_busy(group):
                 return reject('host_action', 'deferred')
@@ -473,7 +473,8 @@ class Reconciler:
     """CC2: bounded copy / collect / compare. Never sends a Pueue mutation.
 
     recover is a fixed adapter's evidence-only interface. It returns observation,
-    settled (a positive exclusion of late RPCs, NOT child death), and optional
+    settled (a positive exclusion of late RPCs, NOT child death), effect_applied
+    (authenticated evidence that THIS phase caused the observed effect), and optional
     finish (a full CC0 request authenticated by verify). The collector runs in
     a disposable process, outside control.lock; no result lock can stall guard.
     """
@@ -522,13 +523,24 @@ class Reconciler:
                     raise ValueError('client_journal')
                 if record['digest'] != reservation['digest'] or self.actions.key(record['request']) != self.actions.key(r):
                     raise ValueError('client_journal')
-                result.append(dict(record=record, reservation=reservation, state=state, generation=generation))
+                phases = [json.loads(row[0]) for row in db.execute(
+                    'SELECT body FROM client_actions WHERE launcher=? AND ref=? AND action_id=?', key)]
+                rejected_unsent = (record['request']['op'] == 'hold' and record['process'] is None
+                    and record['response']['status'] == 'rejected' and record['response']['reason'] in ('locked', 'stale_state')
+                    and reservation['uncertain'] is False and reservation.get('hold_identity') is None
+                    and reservation['acceptance'] is None and all(
+                        phase['process'] is None and phase['response']['effects'] is False
+                        and phase['response']['status'] in ('rejected',) + c.REEVALUATED for phase in phases))
+                result.append(dict(record=record, reservation=reservation, state=state, generation=generation,
+                                   rejected_unsent=rejected_unsent))
                 db.execute('UPDATE client_open SET checked=? WHERE launcher=? AND ref=? AND action_id=?', (sequence,) + key)
             return result
 
     def collect(self, item, daemon):
         record, reservation = item['record'], item['reservation']
         r, process = record['request'], record.get('process')
+        if item['rejected_unsent']:
+            return dict(kind='rejected_not_sent')
         if record['response']['status'] == 'unknown' and process is None:
             # CC1 fsyncs a child's identity before opening its stdin gate. A
             # child spawned before that commit sees EOF after the owner dies.
@@ -541,7 +553,7 @@ class Reconciler:
         evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon)
         if daemon is None:
             raise Unavailable('startup')
-        c.keys(evidence, 'observation settled finish')
+        c.keys(evidence, 'observation settled finish' + (' effect_applied' if 'effect_applied' in evidence else ''))
         observed = evidence['observation']
         c.keys(observed, 'group identity')
         c.identity(observed['identity'])
@@ -550,6 +562,10 @@ class Reconciler:
             raise Unavailable('identity')
         if evidence['settled'] is not True:
             raise Unavailable('rpc_unresolved')
+        # Excluding a late message does not attribute an external Stashed to
+        # our hold. Older adapters without effect evidence must retain unknown.
+        if record['response']['status'] == 'unknown' and evidence.get('effect_applied') is not True:
+            raise Unavailable('evidence_missing')
         finish = evidence['finish']
         if finish is not None:
             c.validate_request(finish)
@@ -650,6 +666,16 @@ class Reconciler:
             reason = proposal.get('reason', 'evidence_missing')
             if reason not in c.REASONS:
                 reason = 'evidence_missing'
+            if proposal['kind'] == 'rejected_not_sent':
+                # Only the reservation changes: the rejected phase's receipt,
+                # digest and revision remain the idempotent historical result.
+                reservation.update(open=False, uncertain=False, revision=reservation['revision'] + 1)
+                with self.engine.connect(write=True) as db:
+                    key = self.actions.key(r)[:3]
+                    db.execute('UPDATE client_reservations SET body=? WHERE launcher=? AND ref=? AND action_id=?',
+                               (canonical(reservation),) + key)
+                    db.execute('DELETE FROM client_open WHERE launcher=? AND ref=? AND action_id=?', key)
+                return True
             if proposal['kind'] == 'not_sent':
                 close = r['op'] == 'hold' and reservation.get('hold_identity') is None and reservation['acceptance'] is None
                 reservation.update(open=not close, uncertain=False)
@@ -674,7 +700,7 @@ class Reconciler:
                     prior = self.actions.record(finish)
                     if prior and prior['digest'] != digest(finish):
                         raise Unavailable('idempotency_conflict')
-                    if prior and prior['response']['status'] not in ('deferred', 'unknown', 'pending'):
+                    if prior and prior['response']['status'] not in c.REEVALUATED + ('unknown', 'pending'):
                         return False
                     terminal = dict(request=finish, digest=digest(finish), revision=prior['revision'] if prior else 0,
                                     process=None, response=self.actions.reply(finish, 'finished', identity=after))
@@ -687,7 +713,8 @@ class Reconciler:
             reservation['reconcile_reason'] = reason
             if current['response']['status'] == 'unknown':
                 current['response'] = self.actions.reply(r, 'unknown', reason, held=True)
-            self.actions.save(current, reservation)
+            if current != old or reservation != before:
+                self.actions.save(current, reservation)
             return True
 
     def run(self, offline=None):

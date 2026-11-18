@@ -26,6 +26,7 @@ class Evidence(cc1.Evidence):
         super().__init__(identity)
         self.directory=Path(directory)
         self.settled=False
+        self.effect_applied=False
         self.finish=None
         self.slow=0
         self.result_lock=False
@@ -40,7 +41,8 @@ class Evidence(cc1.Evidence):
             (self.directory/'collecting').write_text('ready')
             with (self.directory/'result.lock').open('a') as h:fcntl.flock(h,fcntl.LOCK_EX)
         return dict(observation=dict(group=reservation['group'],identity=copy.deepcopy(self.identity)),
-                    settled=self.settled,finish=copy.deepcopy(self.finish))
+                    settled=self.settled,finish=copy.deepcopy(self.finish),
+                    **(dict(effect_applied=True) if self.effect_applied else {}))
 
 
 def write_then_die(directory,record,reserve):
@@ -145,7 +147,7 @@ def test_every_death_boundary_in_guard_and_preparer(self):
                     self.orphan(r,status='started',die=True)
                     self.evidence.finish=finish_request();self.evidence.identity=self.evidence.finish['expected']
                     self.evidence.acceptance=self.evidence.finish['acceptance'];self.evidence.proof=self.evidence.finish['proof']
-                    self.evidence.settled=True
+                    self.evidence.settled=True;self.evidence.effect_applied=True
                 else:
                     if stage=='acceptance':
                         self.evidence.identity=copy.deepcopy(self.after)
@@ -173,7 +175,7 @@ def test_every_death_boundary_in_guard_and_preparer(self):
 def test_generation_revision_digest_and_reservation_cas(self):
     for version in ('generation','offline-generation','revision','digest','reserve-revision','reserve-digest','phase','closed'):
         with self.subTest(version=version):
-            r=self.orphan();self.evidence.identity=copy.deepcopy(self.after);self.evidence.settled=True
+            r=self.orphan();self.evidence.identity=copy.deepcopy(self.after);self.evidence.settled=True;self.evidence.effect_applied=True
             reconcile=a.Reconciler(self.engine,self.evidence,birth=lambda pid:None)
             offline=self.root/'nonexistent-offline-image' if version=='offline-generation' else None
             copies=reconcile.copies(offline);proposals=reconcile.bounded_gather(copies,offline)
@@ -200,7 +202,7 @@ def test_generation_revision_digest_and_reservation_cas(self):
 
 def test_real_result_lock_and_client_lock_have_no_deadlock(self):
     self.orphan();self.evidence.identity=copy.deepcopy(self.after)
-    self.evidence.settled=True;self.evidence.result_lock=True
+    self.evidence.settled=True;self.evidence.effect_applied=True;self.evidence.result_lock=True
     ctx=multiprocessing.get_context('fork');parent,child=ctx.Pipe()
     owner=ctx.Process(target=result_owner,args=(str(self.engine.directory),child));owner.start();child.close()
     try:
@@ -218,7 +220,7 @@ def test_real_result_lock_and_client_lock_have_no_deadlock(self):
 
 
 def test_clock_two_equal_reads_and_child_exit_never_exclude_late_rpc(self):
-    r=self.orphan(process='reaped');self.evidence.identity=copy.deepcopy(self.after);self.now+=10**9
+    r=self.orphan(process='reaped');self.evidence.effect_applied=True;self.evidence.identity=copy.deepcopy(self.after);self.now+=10**9
     for _ in range(2):
         self.assertEqual(self.run_reconcile(),1)
         self.assertTrue(self.actions.reservation(r)['open'],'no expiry, equal reads, or child-exit release')
@@ -229,7 +231,7 @@ def test_clock_two_equal_reads_and_child_exit_never_exclude_late_rpc(self):
 
 
 def test_birth_matches_live_child_keeps_unknown_even_with_claimed_settlement(self):
-    self.orphan(process='gated');self.evidence.identity=copy.deepcopy(self.after);self.evidence.settled=True
+    self.orphan(process='gated');self.evidence.identity=copy.deepcopy(self.after);self.evidence.settled=True;self.evidence.effect_applied=True
     reconcile=a.Reconciler(self.engine,self.evidence,birth=lambda pid:'synthetic:123')
     self.assertEqual(reconcile.run(),1)
     self.assertEqual(self.actions.record(self.r)['response']['status'],'unknown')
@@ -238,7 +240,7 @@ def test_birth_matches_live_child_keeps_unknown_even_with_claimed_settlement(sel
 
 
 def test_synthetic_settlement_attributes_hold_then_durable_result_finishes(self):
-    self.orphan();self.evidence.identity=copy.deepcopy(self.after);self.evidence.settled=True
+    self.orphan();self.evidence.identity=copy.deepcopy(self.after);self.evidence.settled=True;self.evidence.effect_applied=True
     self.assertEqual(self.run_reconcile(),1)
     held=self.actions.record(self.r)['response'];self.assertEqual(held['status'],'held')
     self.assertEqual(self.actions.reservation(self.r)['hold_identity'],self.after)
@@ -255,7 +257,7 @@ def test_synthetic_settlement_attributes_hold_then_durable_result_finishes(self)
 def test_terminal_never_resurrects_and_effect_receipts_stay_fixed(self):
     finish=finish_request();self.evidence.identity=finish['expected']
     self.orphan(cc1.request('remote-run-started'),status='started')
-    self.evidence.finish=finish;self.evidence.settled=True
+    self.evidence.finish=finish;self.evidence.settled=True;self.evidence.effect_applied=True
     self.evidence.acceptance=finish['acceptance'];self.evidence.proof=finish['proof']
     reconcile=a.Reconciler(self.engine,self.evidence,birth=lambda pid:None)
     copies=reconcile.copies(None);proposals=reconcile.bounded_gather(copies,None)
@@ -299,7 +301,7 @@ def test_manual_pressure_startup_and_fence_survive_reconciliation(self):
     self.orphan()
     for reason in ('manual','pressure','startup'):
         self.change_state(reasons={'suites':[reason]});self.p.groups['suites']['status']='Paused'
-        self.evidence.settled=True;self.evidence.identity=copy.deepcopy(self.after);self.run_reconcile()
+        self.evidence.settled=True;self.evidence.effect_applied=True;self.evidence.identity=copy.deepcopy(self.after);self.run_reconcile()
         self.engine.pause_fence('suites').write_bytes(b'pressure\n' if reason=='pressure' else b'manual\n')
         self.assertEqual(self.engine.fence_reason('suites'),'pressure' if reason=='pressure' else 'manual')
         with control.locked(self.engine.directory),patch.object(control,'pressure_mini',return_value=dict(load=4,memory=1)):
@@ -370,7 +372,7 @@ def test_missing_or_changed_authenticated_proof_keeps_reservation_and_acceptance
     self.orphan(r,status='started')
     original=copy.deepcopy(self.actions.reservation(r)['acceptance'])
     finish=finish_request();self.evidence.finish=finish
-    self.evidence.identity=finish['expected'];self.evidence.settled=True
+    self.evidence.identity=finish['expected'];self.evidence.settled=True;self.evidence.effect_applied=True
     self.evidence.acceptance=finish['acceptance'];self.evidence.proof=None
     self.run_reconcile()
     self.assertTrue(self.actions.reservation(r)['open'])
@@ -408,7 +410,7 @@ def test_rejected_finish_receipt_cannot_be_replaced_by_reconciler(self):
     rejected=dict(request=finish,digest=a.digest(finish),revision=0,process=None,
                   response=self.actions.reply(finish,'rejected','evidence_missing',held=True))
     self.actions.save(rejected)
-    self.evidence.finish=finish;self.evidence.settled=True
+    self.evidence.finish=finish;self.evidence.settled=True;self.evidence.effect_applied=True
     self.evidence.acceptance=finish['acceptance'];self.evidence.proof=finish['proof']
     before=copy.deepcopy(self.actions.record(finish))
     self.run_reconcile()
@@ -429,6 +431,194 @@ def test_client_reservation_prevents_online_and_offline_locked_adoption(self):
     self.assertTrue(any('Locked' in t['status'] for t in self.tasks.values()))
 
 
+
+def test_settled_external_stash_never_attributes_hold_or_allows_followups(self):
+    self.r['mode']='own-legacy'
+    self.orphan(process='gated');self.evidence.identity=copy.deepcopy(self.after)
+    self.evidence.settled=True;self.evidence.effect_applied=False
+    self.assertEqual(self.run_reconcile(),1)
+    reserve=self.actions.reservation(self.r)
+    self.assertEqual(self.actions.record(self.r)['response']['status'],'unknown')
+    self.assertTrue(reserve['open']);self.assertTrue(reserve['uncertain'])
+    self.assertIsNone(reserve['hold_identity'])
+    for op in ('cancel-no-payload','retire-held'):
+        r=dict(self.r,op=op,phase=op,expected=copy.deepcopy(self.after))
+        if op=='cancel-no-payload':
+            r['acceptance']=cc1.request('remote-run-started')['acceptance']
+        self.evidence.acceptance=r['acceptance']
+        response=self.act(r)
+        self.assertEqual((response['status'],response['reason']),('rejected','evidence_missing'))
+        self.assertIsNone(self.actions.reservation(r)['hold_identity'])
+    self.assertEqual(self.rpc_calls,[])
+
+
+def test_race_rejected_unsent_hold_closes_without_rewriting_receipt(self):
+    for state in ('Locked','Stashed'):
+        with self.subTest(state=state):
+            with self.engine.connect(write=True) as db:
+                for table in ('client_actions','client_reservations','client_open'):
+                    if db.execute('SELECT 1 FROM sqlite_master WHERE name=?',(table,)).fetchone():db.execute('DELETE FROM '+table)
+            r=copy.deepcopy(self.r);r['action_id']='race-'+state.lower()+'-0001'
+            changed=dict(r['expected'],state='Locked',enqueued_at=None) if state=='Locked' else self.after
+            self.evidence.identity=copy.deepcopy(r['expected']);self.evidence.reads=0
+            self.evidence.change_at={2:copy.deepcopy(changed)}
+            response=self.act(r);before=copy.deepcopy(self.actions.record(r))
+            self.assertEqual(response['status'],'rejected');self.assertTrue(self.actions.reservation(r)['open'])
+            self.assertEqual(a.Reconciler(self.engine,birth=lambda p:None).run(),1)
+            self.assertFalse(self.actions.reservation(r)['open'],'journal proves rejected before child launch')
+            self.assertIsNone(self.actions.reservation(r)['hold_identity'])
+            self.assertEqual(self.actions.record(r),before,'receipt, digest and revision fixed')
+            self.assertEqual(self.act(r),response,'rejected is idempotent after closure')
+    self.assertEqual(self.rpc_calls,[])
+
+
+def test_rejected_hold_cannot_close_with_uncertainty_or_prior_effect(self):
+    for prior in ('uncertain','effect','acceptance','child','attributed'):
+        with self.subTest(prior=prior):
+            r=copy.deepcopy(self.r);r['action_id']='reject-'+prior+'-0001'
+            self.orphan(r,process=None)
+            record=self.actions.record(r);reserve=self.actions.reservation(r)
+            record['response']=self.actions.reply(r,'rejected','locked',held=True);reserve['uncertain']=False
+            if prior=='uncertain':reserve['uncertain']=True
+            elif prior=='child':record['process']=dict(state='injected')
+            elif prior=='attributed':reserve['hold_identity']=copy.deepcopy(self.after)
+            elif prior=='acceptance':reserve['acceptance']=dict(cc1.request('remote-run-started')['acceptance'],action_id=r['action_id'])
+            else:
+                old=dict(r,op='signal',phase='signal:TERM',signal='TERM',mode='own',
+                         expected=copy.deepcopy(cc1.request('remote-run-started')['expected']))
+                old['expected']=copy.deepcopy(cc1.CASES['remote-run-started']['response']['identity'])
+                self.actions.save(dict(request=old,digest=a.digest(old),revision=0,process=dict(state='injected'),
+                                       response=self.actions.reply(old,'signalled',identity=old['expected'],held=True)))
+            self.actions.save(record,reserve)
+            a.Reconciler(self.engine,birth=lambda p:None).run()
+            self.assertTrue(self.actions.reservation(r)['open'],'no closure from '+prior)
+    self.assertEqual(self.rpc_calls,[])
+
+
+def test_non_deferred_receipts_never_reevaluate(self):
+    for status in ('unknown','rejected','held'):
+        with self.subTest(status=status):
+            r=copy.deepcopy(self.r);r['action_id']='fixed-'+status+'-0001'
+            response=self.actions.reply(r,status,'rpc_unresolved' if status=='unknown' else 'stale_state' if status=='rejected' else None,
+                                        identity=self.after if status=='held' else None,held=status!='rejected')
+            self.actions.save(dict(request=r,digest=a.digest(r),revision=0,process=None,response=response))
+            before=self.actions.record(r)
+            with patch.object(self.actions,'execute',return_value=self.actions.reply(r,'rejected','unsupported')) as execute:
+                self.assertEqual(self.act(r),response)
+                self.assertFalse(execute.called,'only deferred reevaluates: '+status)
+            self.assertEqual(self.actions.record(r),before)
+
+
+def test_identical_retention_skips_journal_write_but_advances_index(self):
+    self.orphan()
+    reconciler=a.Reconciler(self.engine,birth=lambda p:None)
+    self.assertEqual(reconciler.run(),1)
+    before=(self.actions.record(self.r),self.actions.reservation(self.r))
+    with self.engine.connect() as db:checked=db.execute('SELECT checked FROM client_open').fetchone()[0]
+    with patch.object(a.ClientActions,'save',wraps=self.actions.save) as save:
+        reconciler.run()
+        self.assertFalse(save.called,'identical retention must not write journal')
+    self.assertEqual((self.actions.record(self.r),self.actions.reservation(self.r)),before,'journal revisions stay fixed')
+    with self.engine.connect() as db:self.assertGreater(db.execute('SELECT checked FROM client_open').fetchone()[0],checked)
+
+
+def collection_lock_holder(path,pipe,seconds):
+    with open(path,'rb') as handle:
+        fcntl.flock(handle,fcntl.LOCK_EX)
+        pipe.send('locked');time.sleep(seconds)
+    pipe.close()
+
+
+def test_whole_guard_tick_aborts_on_bounded_relock_contention(self):
+    self.orphan();self.evidence.identity=copy.deepcopy(self.after)
+    self.evidence.settled=True;self.evidence.effect_applied=True
+    ctx=multiprocessing.get_context('fork');parent,child=ctx.Pipe()
+    holder=None;events=[];continued=[];generations=[]
+    gather=a.Reconciler.bounded_gather;generation=self.engine.generation
+    def collect(reconciler,copies,offline):
+        nonlocal holder
+        proposals=gather(reconciler,copies,offline)
+        holder=ctx.Process(target=collection_lock_holder,args=(str(self.engine.directory/'control.lock'),child,.6))
+        holder.start();self.assertTrue(parent.poll(2));self.assertEqual(parent.recv(),'locked')
+        return proposals
+    def read_generation(*args):
+        generations.append(time.monotonic());return generation(*args)
+    started=time.monotonic();aborted=False
+    try:
+        with patch.object(a.Reconciler,'bounded_gather',collect),patch.object(a.Reconciler,'boundary',events.append),patch.object(control,'CLIENT_RELOCK_SECONDS',.08,create=True),patch.object(self.engine,'generation',read_generation),patch.object(self.engine,'_legacy_guard',side_effect=lambda *args:continued.append('guard')):
+            try:
+                with control.locked(self.engine.directory):self.engine.guard(dict(load=4,memory=1))
+            except RuntimeError as error:
+                self.assertEqual(str(error),'client_collection_lock_busy');aborted=True
+        elapsed=time.monotonic()-started
+        print('whole-guard-tick seconds=%.3f generations=%d events=%s aborted=%s'%(elapsed,len(generations),events,aborted),flush=True)
+        self.assertLess(elapsed,.45,'full tick includes copy, gather, apply, relock and generation reads')
+        self.assertTrue(aborted,'lock failure must unwind the tick')
+        self.assertEqual(continued,[],'guard cannot continue without exclusion')
+        self.assertEqual(events,['copied','collected']);self.assertTrue(generations)
+        self.assertTrue(self.actions.reservation(self.r)['open'])
+        self.assertEqual(self.actions.record(self.r)['response']['status'],'unknown')
+    finally:
+        if holder:
+            holder.join(2)
+            if holder.is_alive():holder.terminate();holder.join()
+            self.assertEqual(holder.exitcode,0)
+        parent.close();child.close()
+
+
+
+def test_whole_guard_tick_with_contention_after_application(self):
+    self.orphan();self.evidence.identity=copy.deepcopy(self.after)
+    self.evidence.settled=True;self.evidence.effect_applied=True;self.evidence.slow=.025
+    ctx=multiprocessing.get_context('fork');parent,child=ctx.Pipe()
+    holder=None;generations=[]
+    apply=a.Reconciler.apply;generation=self.engine.generation
+    def apply_then_contend(reconciler,*args):
+        nonlocal holder
+        changed=apply(reconciler,*args)
+        self.assertTrue(changed)
+        holder=ctx.Process(target=collection_lock_holder,args=(str(self.engine.directory/'control.lock'),child,.04))
+        holder.start();self.assertTrue(parent.poll(2));self.assertEqual(parent.recv(),'locked')
+        return changed
+    def read_generation(*args):
+        generations.append(time.monotonic());time.sleep(.005);return generation(*args)
+    started=time.monotonic()
+    try:
+        with patch.object(a.Reconciler,'apply',apply_then_contend),patch.object(self.engine,'generation',read_generation),patch.object(control,'pressure_mini',return_value=dict(load=4,memory=1)):
+            with control.locked(self.engine.directory):self.engine.guard(dict(load=4,memory=1))
+        elapsed=time.monotonic()-started
+        print('whole-guard-tick-success seconds=%.3f generations=%d'%(elapsed,len(generations)),flush=True)
+        self.assertLess(elapsed,1.5)
+        self.assertGreaterEqual(len(generations),3,'copy, apply and guard authority reads included')
+        self.assertEqual(self.actions.record(self.r)['response']['status'],'held')
+        self.assertTrue((self.engine.directory/'guardia.log').is_file())
+    finally:
+        if holder:
+            holder.join(2)
+            if holder.is_alive():holder.terminate();holder.join()
+            self.assertEqual(holder.exitcode,0)
+        parent.close();child.close()
+
+
+
+def test_autonomous_finish_preserves_deferred_request_digest(self):
+    finish=finish_request();self.evidence.identity=finish['expected']
+    self.orphan(cc1.request('remote-run-started'),status='started')
+    old=copy.deepcopy(finish);old['proof']['receipt']='e'*64
+    self.actions.save(dict(request=old,digest=a.digest(old),revision=0,process=None,
+                           response=self.actions.reply(old,'deferred','host_action',held=True)))
+    before=copy.deepcopy(self.actions.record(old))
+    self.evidence.finish=finish;self.evidence.settled=True
+    self.evidence.acceptance=finish['acceptance'];self.evidence.proof=finish['proof']
+    self.run_reconcile()
+    self.assertEqual(self.actions.record(old),before,'finish digest is fixed even for deferred')
+    self.assertTrue(self.actions.reservation(old)['open'])
+    self.evidence.finish=old;self.evidence.proof=old['proof']
+    self.run_reconcile()
+    self.assertFalse(self.actions.reservation(old)['open'],'same deferred body may finish')
+    self.assertEqual(self.actions.record(old)['digest'],a.digest(old))
+
+
 for name,value in list(globals().items()):
     if name.startswith('test_'):setattr(ReconcileTests,name,value)
 
@@ -446,7 +636,29 @@ class DeskReservationsTests(test_trickle.TrickleTests):
 
     def test_desk_one_retains_client_reservation(self):
         self.run_guard();self.assertEqual(self.starts(),[],'desk _one must consult client reservations')
-        self.assertEqual(self.p.groups['jale']['status'],'Paused');self.assertIn('client_reserved',self.causes())
+        self.assertEqual(self.p.groups['jale']['status'],'Paused');self.assertIn('reason',self.causes())
+
+    def test_actual_guard_block_reaches_rack_snapshot_and_panel(self):
+        import importlib.util
+        rack=Path(__file__).resolve().parents[2]/'rack'
+        def load(name):
+            spec=importlib.util.spec_from_file_location('cc2_rack_'+name,rack/(name+'.py'))
+            module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module);return module
+        snapshot=load('snapshot');serve=load('serve')
+        for sample in (self.mid,self.low):
+            self.sample=sample;self.run_guard(sample)
+            row=next(v for v in reversed(self.rows()) if 'bloqueos' in v)
+            value=dict(last_result=dict(evento=row['evento'],tick_id=row['tick_id'],at=row['utc'],bloqueos=row['bloqueos']))
+            try:self.assertEqual(snapshot.validate_guard(value),value)
+            except ValueError as error:self.fail('actual guard rejected by snapshot: '+str(error))
+            self.assertEqual(value['last_result']['bloqueos'][0]['causa'],'reason')
+            # serve uses this same validator before exposing the snapshot to index.html.
+            data=dict(schema='rack-host@1',host='desk',os='linux',taken=1000,cpu=None,mem=None,disk=None,
+                      guard=value,groups=[dict(name='jale',status='Paused',slots=1)],tasks=[],errors=[])
+            public=serve.validate_snapshot(data,'desk')
+            self.assertEqual(public['guard']['last_result']['bloqueos'],row['bloqueos'])
+            self.assertIn("reason:",(rack/'index.html').read_text())
+            self.assertEqual(self.starts(),[])
 
     def test_desk_guard_retains_pressure_reason_and_unknown(self):
         self.sample=self.low;self.run_guard(self.low)

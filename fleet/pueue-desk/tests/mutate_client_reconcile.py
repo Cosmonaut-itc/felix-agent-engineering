@@ -19,7 +19,7 @@ CASES=[
   "            if self.transaction(self.state()) != value:", '            if False:',
   'test_client_reconcile.StartAuthorizationTests.test_start_rechecks_handoff_after_collection_window'),
  ('rejected terminal is immutable','client_actions.py',
-  "if prior and prior['response']['status'] not in ('deferred', 'unknown', 'pending'):",'if False:',T+'test_rejected_finish_receipt_cannot_be_replaced_by_reconciler'),
+  "if prior and prior['response']['status'] not in c.REEVALUATED + ('unknown', 'pending'):",'if False:',T+'test_rejected_finish_receipt_cannot_be_replaced_by_reconciler'),
  ('dead reorder respects client reserve','control.py',
   '                        and not self.client_blocked(g, opening=True)','',T+'test_dead_reorder_owner_never_opens_over_retained_client_reservation'),
  ('CAS generation','client_actions.py',
@@ -37,14 +37,53 @@ CASES=[
  ('prepare preserves retained reservations','control.py',"        engine.reconcile_clients(offline=queue_path)","        engine.reconcile_clients(offline=queue_path)\n        with engine.connect(write=True) as db:\n            for row in db.execute('SELECT launcher,ref,action_id,body FROM client_reservations'):\n                r = json.loads(row[3]); r['open'] = False\n                db.execute('UPDATE client_reservations SET body=? WHERE launcher=? AND ref=? AND action_id=?',(canonical(r),)+row[:3])",T+'test_preparer_retains_unknown_stashed_across_daemon_restart'),
  ('prepare executes autonomous cycle','control.py',"        engine.reconcile_clients(offline=queue_path)",'        pass',T+'test_every_death_boundary_in_guard_and_preparer'),
  ('guard executes autonomous cycle','control.py',"        self.reconcile_clients()",'        pass',T+'test_every_death_boundary_in_guard_and_preparer'),
- ('desk one checks retained reservation','control.py',"            if self.client_blocked(group, opening=True):\n                block('client_reserved', group)",'            if False:\n                block(\'client_reserved\', group)',D+'test_desk_one_retains_client_reservation'),
- ('desk guard checks retained reservation','control.py',"                    if self.client_blocked(group, opening=True):\n                        block('client_reserved',group,'resume');continue",'                    if False:\n                        continue',D+'test_desk_guard_retains_pressure_reason_and_unknown'),
- ('retry preserves effect idempotency','client_actions.py',"elif not query and record['response']['status'] == 'deferred':","elif not query and record['response']['status'] in ('deferred','started'):",T+'test_deferred_same_body_retries_but_effect_response_never_replays'),
+ ('desk one checks retained reservation','control.py',"            if self.client_blocked(group, opening=True):\n                block('reason', group)",'            if False:\n                block(\'reason\', group)',D+'test_desk_one_retains_client_reservation'),
+ ('desk guard checks retained reservation','control.py',"                    if self.client_blocked(group, opening=True):\n                        block('reason',group,'resume');continue",'                    if False:\n                        continue',D+'test_desk_guard_retains_pressure_reason_and_unknown'),
+ ('retry preserves effect idempotency','client_actions.py',"elif not query and record['response']['status'] in c.REEVALUATED:","elif not query and record['response']['status'] in c.REEVALUATED + ('started',):",T+'test_deferred_same_body_retries_but_effect_response_never_replays'),
  ('deferred can retry only exact body','client_actions.py',"            if record['digest'] != digest(r):",'            if False:',T+'test_deferred_same_body_retries_but_effect_response_never_replays'),
- ('deferred can progress','client_actions.py',"elif not query and record['response']['status'] == 'deferred':",'elif False:',T+'test_deferred_same_body_retries_but_effect_response_never_replays'),
+ ('deferred can progress','client_actions.py',"elif not query and record['response']['status'] in c.REEVALUATED:",'elif False:',T+'test_deferred_same_body_retries_but_effect_response_never_replays'),
  ('collection has a batch cap','client_actions.py',"    seconds = .4",'    seconds = 3',T+'test_slow_collector_with_many_open_actions_has_one_batch_budget_and_fair_index'),
  ('manual closure retained','client_actions.py',"                if reasons:","                if reasons - {'manual'}:",'test_client_actions.ActionTests.test_fence_real_reason_and_no_manual_open'),
  ('pressure closure retained','client_actions.py',"                if reasons:","                if reasons - {'pressure'}:",'test_client_actions.CorpusTests.test_expected_states_reservations_reasons_and_rpc'),
+
+ ('settlement does not attribute an external effect','client_actions.py',
+  "if record['response']['status'] == 'unknown' and evidence.get('effect_applied') is not True:",
+  "if False:",T+'test_settled_external_stash_never_attributes_hold_or_allows_followups'),
+ ('rejected no-send reservation closes autonomously','client_actions.py',
+  "        if item['rejected_unsent']:","        if False:",T+'test_race_rejected_unsent_hold_closes_without_rewriting_receipt'),
+ ('rejected closure never rewrites receipt revision','client_actions.py',
+  "                reservation.update(open=False, uncertain=False, revision=reservation['revision'] + 1)",
+  "                self.actions.save(current)\n                reservation.update(open=False, uncertain=False, revision=reservation['revision'] + 1)",T+'test_race_rejected_unsent_hold_closes_without_rewriting_receipt'),
+ ('rejected uncertain phase retains reservation','client_actions.py',
+  "and reservation['uncertain'] is False and reservation.get('hold_identity') is None",
+  "and reservation.get('hold_identity') is None",T+'test_rejected_hold_cannot_close_with_uncertainty_or_prior_effect'),
+ ('rejected phase with prior effect retains reservation','client_actions.py',
+  "all(\n                        phase['process'] is None and phase['response']['effects'] is False\n                        and phase['response']['status'] in ('rejected',) + c.REEVALUATED for phase in phases)", "True",T+'test_rejected_hold_cannot_close_with_uncertainty_or_prior_effect'),
+ ('desk cause passes real snapshot contract','control.py',
+  "                block('reason', group)","                block('client_reserved', group)",D+'test_actual_guard_block_reaches_rack_snapshot_and_panel'),
+ ('desk resume cause passes real snapshot contract','control.py',
+  "                    if self.client_blocked(group, opening=True):\n                        block('reason',group,'resume');continue","                    if self.client_blocked(group, opening=True):\n                        block('client_reserved',group,'resume');continue",D+'test_actual_guard_block_reaches_rack_snapshot_and_panel'),
+ ('relock contention has a deadline','control.py',
+  "                    fcntl.flock(handle, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+  "                    fcntl.flock(handle, fcntl.LOCK_EX)",T+'test_whole_guard_tick_aborts_on_bounded_relock_contention'),
+ ('relock timeout unwinds authority work','control.py',
+  "                        raise ClientCollectionBusy('client_collection_lock_busy')", "                        break",T+'test_whole_guard_tick_aborts_on_bounded_relock_contention'),
+ ('only deferred receipts may reevaluate','client_contract.py',
+  "REEVALUATED = ('deferred',)", "REEVALUATED = ('deferred', 'unknown', 'rejected', 'held')",T+'test_non_deferred_receipts_never_reevaluate'),
+ ('identical retention has no journal write','client_actions.py',
+  "            if current != old or reservation != before:","            if True:",T+'test_identical_retention_skips_journal_write_but_advances_index'),
+ ('unchanged retention still advances index','client_actions.py',
+  "                db.execute('UPDATE client_open SET checked=? WHERE launcher=? AND ref=? AND action_id=?', (sequence,) + key)",
+  "                pass",T+'test_identical_retention_skips_journal_write_but_advances_index'),
+ ('finish deferred keeps its original digest','client_actions.py',
+  "                    if prior and prior['digest'] != digest(finish):","                    if False:",T+'test_autonomous_finish_preserves_deferred_request_digest'),
+ ('retention reason reaches the group view','control.py',
+  "            reason = (self.client_block_reason(g) if self.client_blocked(g) else",
+  "            reason = (self.client_reservation_reason if self.client_blocked(g) else",
+  'rack:test_reorder.ReorderChannelTests.test_retention_reasons_survive_public_sanitizers'),
+ ('retention reason reaches sanitized capabilities','../rack/host_action.py',
+  "        result['capabilities']['reason_reorder'] = caps['reason_reorder']","        pass",
+  'rack:test_reorder.ReorderChannelTests.test_retention_reasons_survive_public_sanitizers'),
 ]
 
 
@@ -55,10 +94,11 @@ def main():
         with tempfile.TemporaryDirectory(prefix='cc2-sol-mutant-',dir='/tmp') as folder:
             root=Path(folder)/'pueue-desk'
             shutil.copytree(SOURCE,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
+            shutil.copytree(SOURCE.parent/'rack',root.parent/'rack',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
             path=root/name;source=path.read_text()
             if source.count(old)!=1:raise AssertionError('Nonunique anchor: '+rule)
             path.write_text(source.replace(old,new))
-            result=run(root,test)
+            result=run(root.parent/'rack',test[len('rack:'):]) if test.startswith('rack:') else run(root,test)
             if result.returncode!=1 or 'FAIL:' not in result.stderr or 'ERROR:' in result.stderr:
                 raise AssertionError(rule+' did not fail by assertion:\n'+result.stdout+result.stderr)
             print(str(number)+' '+rule+': assertion',flush=True)
