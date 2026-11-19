@@ -13,6 +13,7 @@ from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, EscritorExtern
                      EsperaPrevia, Incierto, Terminal, VentanaAutorizada,
                      admision_entrada, clave)
 from git_ops import FalloGit, entorno, sha
+from operador import FalloSnapshot
 
 
 PRESUPUESTO_IO_S = 60
@@ -90,10 +91,13 @@ def objeto_sin_duplicados(pares):
 
 def invocar(config, solicitud, accion):
     """Sin shell ni salida privada en eventos. Mata el grupo al agotar el plazo."""
+    env = entorno()
+    if config.get("snapshot"):
+        env["PYTHONDONTWRITEBYTECODE"] = "1"
     try:
         with subprocess.Popen(config["comando"], stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
-                env=entorno(), start_new_session=True) as proceso:
+                env=env, start_new_session=True) as proceso:
             try:
                 salida, _ = proceso.communicate(json.dumps(dict(solicitud, accion=accion)),
                                                 timeout=config["plazo_s"])
@@ -131,8 +135,10 @@ def resumen_cancelaciones(ledger, repo):
 
 
 class Previo:
-    def __init__(self, ledger, git, config, frontera):
+    def __init__(self, ledger, git, config, frontera, operador=None):
         self.ledger, self.git, self.config = ledger, git, config
+        self.operador = operador
+        self.fallo_snapshot = None
         self.repo = ""
         self.frontera = frontera
         self.reloj = time.time
@@ -145,14 +151,18 @@ class Previo:
                           "id TEXT PRIMARY KEY, repo TEXT NOT NULL, payload TEXT NOT NULL, "
                           "pendiente INTEGER NOT NULL)")
 
-    def llamar(self, config, solicitud, accion):
+    def llamar(self, registro, accion):
         restante = PRESUPUESTO_IO_S - self.io_s
         if restante <= 0:
             return "timeout"
+        config = registro["gancho"]
+        snapshot = bool(registro.get("snapshot"))
+        if snapshot and self.operador is not None:
+            self.operador.validar_guardado(*config["comando"])
         inicio = self.reloj_io()
         try:
-            return invocar(dict(config, plazo_s=min(config["plazo_s"], restante)),
-                           solicitud, accion)
+            return invocar(dict(config, plazo_s=min(config["plazo_s"], restante), snapshot=snapshot),
+                           registro["solicitud"], accion)
         finally:
             self.io_s += max(0, self.reloj_io() - inicio)
 
@@ -227,7 +237,12 @@ class Previo:
         if not isinstance(lectura, (EnBase, EscritorExterno)):
             self.guardar_cancelacion(registro, "reconciliacion-incierta")
             return False  # Nunca deshacer un efecto cuyo push pudo aterrizar.
-        resultado = self.llamar(registro["gancho"], solicitud, "cancelar")
+        try:
+            resultado = self.llamar(registro, "cancelar")
+        except FalloSnapshot as exc:
+            self.fallo_snapshot = exc
+            self.guardar_cancelacion(registro, "checkout-operador:" + str(exc))
+            return False
         if resultado != "cancelado":
             self.guardar_cancelacion(registro, "cancelar-" + resultado)
             return False
@@ -252,7 +267,7 @@ class Previo:
             cancelar = (registro.get("cancelacion_requerida") or
                 estado.pausa is not None or tren is None or
                 isinstance(tren.fase, Terminal) or
-                self.config.get("pre_aterrizaje") != registro["gancho"])
+                self.config.get("pre_aterrizaje") != registro.get("gancho_original", registro["gancho"]))
             if not cancelar and observacion:
                 cancelar = (observacion.base != s["B"] or
                     self.ventana(tren, observacion) != "seguir" or
@@ -286,26 +301,31 @@ class Previo:
                 "almacen_git": str(self.git.ruta.resolve()),
                 "prs": [{"pr": miembros[r].pr, "head": miembros[r].head}
                         for r in tren.recibos]}
-            registro = {"gancho": config, "solicitud": solicitud, "arbol": cert.arbol,
-                        "heads": [p["head"] for p in solicitud["prs"]],
-                        "vence_espera": self.reloj() + config.get("espera_max_s", ESPERA_MAX_S)}
+            anterior = self.ledger.db.execute(
+                "SELECT payload FROM pre_aterrizajes WHERE id=? AND pendiente=1",
+                (solicitud["id"],)).fetchone()
+            if anterior:
+                # Una reconsulta o recuperación conserva el argv y su plazo.
+                registro = json.loads(anterior[0])
+                if registro.get("cancelacion_requerida"):
+                    return EsperaPrevia(B, C)
+                registro.setdefault("vence_espera",
+                    self.reloj() + config.get("espera_max_s", ESPERA_MAX_S))
+            else:
+                registro = {"gancho": config, "solicitud": solicitud, "arbol": cert.arbol,
+                            "heads": [p["head"] for p in solicitud["prs"]],
+                            "vence_espera": self.reloj() + config.get("espera_max_s", ESPERA_MAX_S)}
+                if self.operador is not None and self.operador.checkout is not None:
+                    # El EnBase previo al CAS certificó main == B.
+                    registro["gancho"], registro["snapshot"] = self.operador.gancho(config, B)
+                    registro["gancho_original"] = config
             with self.ledger.transaccion():
-                anterior = self.ledger.db.execute(
-                    "SELECT payload FROM pre_aterrizajes WHERE id=? AND pendiente=1",
-                    (solicitud["id"],)).fetchone()
-                if anterior:
-                    anterior = json.loads(anterior[0])
-                    if anterior.get("cancelacion_requerida"):
-                        return EsperaPrevia(B, C)
-                    # El plazo no se renueva al reconsultar ni al recuperar una muerte.
-                    registro["vence_espera"] = anterior.get(
-                        "vence_espera", registro["vence_espera"])
                 self.ledger.db.execute("INSERT INTO pre_aterrizajes VALUES (?, ?, ?, 1) "
                     "ON CONFLICT(id) DO UPDATE SET payload=excluded.payload, pendiente=1",
                     (solicitud["id"], estado.repo, json.dumps(registro, sort_keys=True)))
             self.frontera("antes-pre-aterrizaje", efecto)
             resultado = ("espera-vencida" if self.reloj() >= registro["vence_espera"] else
-                         self.llamar(config, solicitud, "verificar"))
+                         self.llamar(registro, "verificar"))
             if self.reloj() >= registro["vence_espera"]:
                 resultado = "espera-vencida"
         else:

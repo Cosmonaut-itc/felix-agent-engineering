@@ -4,15 +4,17 @@ El ACK del buzón se guarda con el paso que lo consume, nunca con el IO.
 Sólo se reponen campos producidos por el ejecutor: hora, base y admisiones
 siempre proceden de la observación fresca. No modifica el reductor puro.
 """
+from copy import copy
 from dataclasses import replace
 import json
 import subprocess
 
-from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, Incierto, Promoviendo,
+from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, Incierto, Pausa, Promoviendo,
                      Terminal, admision_entrada, aterrizaje, datos, desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
+from operador import FalloSnapshot, Snapshots
 from preaterrizaje import Previo
 
 
@@ -71,10 +73,21 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     # Sólo para entregas aún no incorporadas: conserva la primera admisión
     # muestreada en custodia, sin importar ningún lote simulado de sombra.
     estado = ledger.estado(repo, operativo=True)
-    previo = Previo(ledger, git, getattr(observador, "config", {}), frontera)
+    config = getattr(observador, "config", {})
+    snapshots = Snapshots(ledger, repo, git, config)
+    if adaptador is not None and hasattr(adaptador, "operador"):
+        adaptador = copy(adaptador)
+        adaptador.operador = snapshots
+        if snapshots.lanzador_configurado is None:
+            snapshots.lanzador_configurado = adaptador.lanzador_configurado
+    previo = Previo(ledger, git, config, frontera, snapshots)
 
     def limpiar(nuevo):
         previo.limpiar(nuevo)
+        if (previo.fallo_snapshot is not None and nuevo.pausa is None and
+                any(not isinstance(t.fase, Terminal) for t in nuevo.trenes)):
+            nuevo = replace(nuevo, pausa=Pausa("infraestructura",
+                detalle="checkout-operador:" + str(previo.fallo_snapshot)))
         return nuevo
 
     previo.limpiar(estado)
@@ -83,6 +96,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
 
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
+        fallo_operador = None
         for fila, efecto, espera in outbox_en_orden(ledger, repo, estado, completados):
             # Se comprueba antes de iniciar: esperar no es intento ni fallo.
             # Recuperación también respeta predecesores pendientes/fallidos.
@@ -131,6 +145,14 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 frontera("efecto-ejecutado", efecto)
             except EfectoFallido as exc:
                 resultado, completo = {"error": datos(exc.resultado)}, False
+            except FalloSnapshot as exc:
+                detalle = str(exc)
+                if estado.pausa is None:
+                    estado = replace(estado, pausa=Pausa(
+                        "infraestructura", detalle="checkout-operador:" + detalle))
+                # Se registra junto con la pausa al guardar el paso.
+                fallo_operador = efecto, detalle
+                continue
             except (FalloGit, OSError, ValueError, KeyError, TypeError,
                     StopIteration, subprocess.SubprocessError) as exc:
                 # Nada de argv, stderr, tokens ni rutas privadas en los errores.
@@ -141,6 +163,16 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             if feedback and completo:
                 completados.add(efecto.clave)
             frontera("resultado-guardado", efecto)
+        return estado, fallo_operador
+
+    def terminar(nuevo, efectos):
+        nuevo, fallo = drenar(nuevo, observacion)
+        if fallo is not None:
+            ledger.guardar_paso(nuevo, (), ahora, fallo_operador=fallo)
+            frontera("paso-guardado", None)
+        snapshots.limpiar(nuevo, previo.pendientes(repo), ahora)
+        return {"modo": "activo", "estado": datos(nuevo), "efectos": datos(efectos),
+                "outbox": resumen_outbox(ledger, repo)}
 
     # Una muerte con el marcador durable puede haber producido IO sin ACK.
     # Recuperarlo antes del paso evita caducar PR cerrados por nuestro push.
@@ -164,9 +196,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             lectura = previo.reconciliar(cert.B, cert.C, cert.arbol, heads)
             if isinstance(lectura, Incierto):
                 # Sigue pendiente; otro tick vuelve a acreditar sin empujar.
-                drenar(estado, observacion)
-                return {"modo": "activo", "estado": datos(estado), "efectos": [],
-                        "outbox": resumen_outbox(ledger, repo)}
+                return terminar(estado, ())
             if isinstance(lectura, Aterrizado):
                 estado, recuperados = aterrizaje(replace(estado, pausa=None), tren,
                     replace(observacion, main=lectura, tren_id=tren.id,
@@ -179,11 +209,9 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         nuevo = limpiar(nuevo)
         ledger.guardar_paso(nuevo, efectos, ahora)
         frontera("paso-guardado", None)
-        drenar(nuevo, observacion)
-        return {"modo": "activo", "estado": datos(nuevo),
-                "efectos": datos(efectos), "outbox": resumen_outbox(ledger, repo)}
+        return terminar(nuevo, efectos)
     # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
-    drenar(estado, observacion, recuperacion=True)
+    estado, fallo = drenar(estado, observacion, recuperacion=True)
     consumido = None
     if not estado.pausa:
         for fila in ledger.outbox(repo):
@@ -214,8 +242,9 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 break
     nuevo, efectos = paso(estado, observacion)
     nuevo = limpiar(nuevo)
-    ledger.guardar_paso(nuevo, efectos, ahora, consumido)
+    if fallo is None:
+        ledger.guardar_paso(nuevo, efectos, ahora, consumido)
+    else:
+        ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo)
     frontera("paso-guardado", None)
-    drenar(nuevo, observacion)
-    return {"modo": "activo", "estado": datos(nuevo),
-            "efectos": datos(efectos), "outbox": resumen_outbox(ledger, repo)}
+    return terminar(nuevo, efectos)

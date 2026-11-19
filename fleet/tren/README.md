@@ -596,6 +596,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
 | `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
 | `infraestructura` | `lanzador-rechazo` | El lanzador salió 64; la pausa conserva la ruta del log y cierra el efecto. `reanudar`: lanzar otro intento con registro y clave nuevos, conservando el registro rechazado, sin gastar reanudaciones de 75 ni presupuesto de diagnóstico. `abortar`: terminar el tren y devolver las entregas a la fila sin feedback de producto. |
+| `infraestructura` | `checkout-operador:<estado>` | El tick no pudo obtener el SHA o verificar su snapshot. `reanudar` permite reintentar y `abortar` termina el tren. El tick conserva cualquier pausa vigente. |
 | `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `absolver`: abandonar el diagnóstico o reenganche anterior y exigir CI y suite completa nuevos sobre el mismo C, incluso si el diagnóstico agotó D5. `abortar`: liberar entregas sin rojo. |
 | `infraestructura` | `ci-sin-resultado` | `reanudar`: solicitar CI sobre el mismo C con ref/clave nuevas y reiniciar los 60 minutos; `abortar`: liberar entregas sin rojo. No admite `absolver`. |
 | `rama-tren-ocupada` | vacío | `reanudar`: reintentar publicar el C guardado, sin forzar ni reemplazar la rama ajena; si sigue ocupada vuelve a pausar. `abortar`. |
@@ -1078,6 +1079,53 @@ La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
 `"auto"`) y `"modos"` (por defecto `["contract", "e2e"]`). La configuración
 actual de Hasito con `lanzador_hasito` sigue siendo válida. Esta selección no
 inscribe ni activa repositorios.
+
+### Checkout del operador
+
+`checkout_operador` es un campo opcional del objeto de configuración privada
+del repositorio. Contiene la ruta absoluta a la raíz de un checkout del
+repositorio de producto. Al configurarlo, el tren ejecuta el lanzador
+(`lanzador` o `lanzador_hasito`) y cada ruta absoluta de
+`pre_aterrizaje.comando` situada dentro del checkout desde su ruta equivalente
+en un snapshot. Esto incluye el primer elemento del comando. El intérprete
+del sistema y las configuraciones privadas externas conservan sus rutas.
+Al omitir el campo se ejecutan las rutas configuradas directamente.
+
+Para iniciar, reanudar o repetir trabajo de suite, el tick lee el SHA de
+`refs/heads/main` del remoto explícito del tren. Para el gancho usa el mismo SHA
+que la reconciliación previa acreditó como base del CAS. Si falta el objeto,
+el tren lo trae a su almacén bare y lo transfiere desde ahí al repositorio del
+operador, bajo `refs/pao-tren/operador/<SHA>`. La elección del SHA y la
+transferencia local son independientes de los remotos del checkout del
+operador. Jale conserva la comprobación de `origin/main` de su lanzador. Si
+entra un cambio del lanzador tras fijar el SHA, el 64 pausa la vía en
+`lanzador-rechazo` y el nuevo intento toma otra lectura de `main`.
+
+El tren reserva en el ledger la ruta del worktree desacoplado por SHA antes
+de crearlo. Lo marca completo después de comprobar el HEAD, el árbol limpio
+y el destino de cada ruta mapeada, incluidos sus symlinks. Si la creación
+queda a medias, el próximo intento recupera la ruta reservada. Una ruta
+ocupada sin reserva produce la pausa `checkout-operador:ruta-ocupada` y el
+ocupante se conserva. Cada corrida guarda su argv antes de ejecutar. El
+reenganche y la recuperación usan el argv guardado, también para registros
+anteriores a los snapshots. Tras un 75 de Hasito, un intento nuevo valida
+los argumentos contra el registro anterior y usa el lanzador que permite
+la configuración vigente. El diario del gancho guarda el comando
+verificado para reconsultarlo o cancelarlo.
+
+Al final de cada tick activo, la limpieza conserva el snapshot más reciente
+del repositorio, los que usan los trenes no terminales y los de los diarios de
+pre-aterrizaje pendientes. Tras el cierre de un tren, conserva los snapshots
+con lanzamientos todavía activos. Si falta un recibo terminal y no se puede
+determinar si el proceso sigue vivo, los conserva 24 horas desde que el tren
+quedó terminal. Quita los worktrees limpios restantes con
+`git worktree remove`; si el directorio de un snapshot ya no existe, quita
+sólo su registro. No corre `git worktree prune`: el repositorio del operador
+puede ser compartido y la poda borraría registros de worktrees ajenos. Los
+worktrees sucios se conservan para inspección. Si el SHA o el snapshot fallan, el
+efecto y la pausa `infraestructura/checkout-operador:<estado>` se registran
+juntos. `reanudar` vuelve a intentar el efecto y `abortar` aplica el cierre
+habitual del tren.
 
 Un push a `main` de Jale despliega a producción y aplica migraciones, así que
 con `"adaptador": "jale"` el bloque `pre_aterrizaje` (U18) es obligatorio. Sin

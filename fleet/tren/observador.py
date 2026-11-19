@@ -49,6 +49,8 @@ def configuracion(ruta, repo):
         raise ValueError("falta ruta git local")
     if not isinstance(config.get("excluir_alto_riesgo", True), bool):
         raise ValueError("política de piloto inválida")
+    from operador import checkout_configurado
+    checkout_configurado(config)
     return config
 
 

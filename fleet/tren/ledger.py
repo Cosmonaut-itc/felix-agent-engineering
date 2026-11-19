@@ -23,6 +23,7 @@ class Ledger:
 
     def __init__(self, directorio=None):
         self.directorio = Path(directorio) if directorio is not None else directorio_estado()
+        self.fd_candado = None
         self.directorio.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.db = sqlite3.connect(str(self.directorio / "ledger.sqlite3"),
                                   isolation_level=None, timeout=30)
@@ -55,6 +56,15 @@ class Ledger:
                 self.db.execute("CREATE TABLE IF NOT EXISTS decisions ("
                                 "id TEXT PRIMARY KEY, repo TEXT NOT NULL, payload TEXT NOT NULL, "
                                 "estado TEXT NOT NULL, resultado TEXT)")
+                self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_operador ("
+                                "ruta TEXT PRIMARY KEY, repo TEXT NOT NULL, checkout TEXT NOT NULL)")
+                self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_reservados (ruta TEXT PRIMARY KEY)")
+                self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_usados ("
+                                "ruta TEXT NOT NULL REFERENCES snapshots_operador(ruta) ON DELETE CASCADE, "
+                                "tren TEXT NOT NULL, PRIMARY KEY(ruta, tren))")
+                self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_lanzamientos ("
+                                "ruta TEXT NOT NULL REFERENCES snapshots_operador(ruta) ON DELETE CASCADE, "
+                                "tren TEXT NOT NULL, recibo TEXT NOT NULL, PRIMARY KEY(ruta, tren, recibo))")
         except BaseException:
             self.db.close()
             raise
@@ -77,9 +87,11 @@ class Ledger:
         # Append/open preserves the inode; never retire lock files.
         with (self.directorio / (clave("repo", repo) + ".lock")).open("a") as handle:
             fcntl.flock(handle, fcntl.LOCK_EX)
+            self.fd_candado = handle.fileno()
             try:
                 yield
             finally:
+                self.fd_candado = None
                 fcntl.flock(handle, fcntl.LOCK_UN)
 
     def entregar(self, entrega, ahora, sombra_entrega=None):
@@ -131,7 +143,7 @@ class Ledger:
         return replace(estado, entradas=estado.entradas + tuple(
             e for e in nuevas if e.entrega.recibo not in recibos))
 
-    def guardar_paso(self, estado, efectos, ahora, consumido=None):
+    def guardar_paso(self, estado, efectos, ahora, consumido=None, fallo_operador=None):
         """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
         with self.transaccion():
             # entries es custodia inmutable: la sombra también la importa.
@@ -164,6 +176,10 @@ class Ledger:
             if consumido is not None:
                 self.db.execute("UPDATE outbox SET estado='completo' WHERE clave=? AND estado='resultado'",
                                 (consumido,))
+            if fallo_operador is not None:
+                efecto, detalle = fallo_operador
+                self._guardar_resultado(estado.repo, efecto, ahora,
+                    {"error": {"codigo": "checkout-operador", "detalle": detalle}})
             # Una nueva generación no puede consumir ni recuperar IO de la
             # anterior. El feedback conserva el orden y se drena igualmente.
             from dominio import Terminal
@@ -180,6 +196,15 @@ class Ledger:
                 self.evento(estado.repo, "efectos-cancelados", ahora, {"claves": cancelados})
             self.evento(estado.repo, "operativo", ahora,
                         {"estado": datos(estado), "efectos": datos(efectos), "consumido": consumido})
+
+    def terminales_hasta(self, repo, instante):
+        from dominio import Terminal
+        fila = self.db.execute("SELECT payload FROM events WHERE repo=? AND tipo='operativo' "
+                               "AND instante<=? ORDER BY seq DESC LIMIT 1", (repo, instante)).fetchone()
+        if fila is None:
+            return set()
+        estado = desde_datos(json.loads(fila[0])["estado"])
+        return {tren.id for tren in estado.trenes if isinstance(tren.fase, Terminal)}
 
     def outbox(self, repo):
         return [dict(r) for r in self.db.execute(
@@ -238,14 +263,18 @@ class Ledger:
                          sin_consumo=False):
         """Feedback cierra directamente: no produce observación para el reductor."""
         with self.transaccion():
-            self.db.execute("INSERT INTO effect_results VALUES (?, ?) ON CONFLICT(clave) "
-                            "DO UPDATE SET payload=excluded.payload",
-                            (efecto.clave, json.dumps(resultado, sort_keys=True)))
-            self.db.execute("UPDATE outbox SET estado=? WHERE clave=?",
-                            (("completo" if sin_consumo else "resultado")
-                             if completo else "fallido", efecto.clave))
-            self.evento(repo, "efecto-resultado" if completo else "efecto-fallido", ahora,
-                        {"clave": efecto.clave, "resultado": resultado})
+            self._guardar_resultado(repo, efecto, ahora, resultado, completo, sin_consumo)
+
+    def _guardar_resultado(self, repo, efecto, ahora, resultado, completo=False,
+                           sin_consumo=False):
+        self.db.execute("INSERT INTO effect_results VALUES (?, ?) ON CONFLICT(clave) "
+                        "DO UPDATE SET payload=excluded.payload",
+                        (efecto.clave, json.dumps(resultado, sort_keys=True)))
+        self.db.execute("UPDATE outbox SET estado=? WHERE clave=?",
+                        (("completo" if sin_consumo else "resultado")
+                         if completo else "fallido", efecto.clave))
+        self.evento(repo, "efecto-resultado" if completo else "efecto-fallido", ahora,
+                    {"clave": efecto.clave, "resultado": resultado})
 
     def sombra(self, estado, efectos, ahora, doble_camino=False):
         # Only the event is committed. No operational trains/effects/outbox rows.
