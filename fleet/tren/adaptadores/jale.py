@@ -126,7 +126,7 @@ class Jale:
             return False
         else:
             if self.operador is not None and self.operador.checkout is not None:
-                argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id)
+                argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id, registro / 'codigo.json')
             guardado = argv
             guardar(solicitud, argv)
         if (not permitir_lanzar and not (registro / 'iniciado.json').exists() and

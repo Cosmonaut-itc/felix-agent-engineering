@@ -170,7 +170,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         if fallo is not None:
             ledger.guardar_paso(nuevo, (), ahora, fallo_operador=fallo)
             frontera("paso-guardado", None)
-        snapshots.limpiar(nuevo, previo.pendientes(repo))
+        snapshots.limpiar(nuevo, previo.pendientes(repo), ahora)
         return {"modo": "activo", "estado": datos(nuevo), "efectos": datos(efectos),
                 "outbox": resumen_outbox(ledger, repo)}
 

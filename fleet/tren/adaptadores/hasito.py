@@ -1,5 +1,7 @@
 """Frontera Hasito: argv sin shell y recibos tipados. No importa el tick."""
+from contextlib import ExitStack
 from dataclasses import dataclass, replace
+import fcntl
 import hashlib
 import json
 import math
@@ -151,20 +153,18 @@ class Hasito:
                 "--worktree", str(worktree), "--veces", "2", "--unidad",
                 fallo.check + "=" + fallo.unidad, "--evidencia", str(evidencia), "--nombre", nombre)
 
-    def reanudacion(self, comando, anterior, remapear=False):
-        """Sólo admite el mismo argv, --reanudar y el traslado documentado a mini."""
+    def reanudacion(self, comando, anterior, actual=None):
+        """Valida los argumentos del 75 y admite el traslado documentado a mini."""
         try:
             nuevo = tuple(shlex.split(comando))
         except ValueError:
             raise ResultadoInvalido("reanudar-invalido") from None
-        if remapear:
-            exigir(len(nuevo) >= 2 and Path(nuevo[1]).is_absolute(), "reanudar-invalido")
-            # El comando del recibo conserva sus argumentos operativos. El
-            # intento nuevo elige su lanzador después de validarlos.
-            nuevo = (nuevo[0], anterior[1], *nuevo[2:])
         def normalizar(argv):
+            exigir(isinstance(argv, (list, tuple)) and len(argv) >= 4 and
+                   all(isinstance(a, str) for a in argv) and Path(argv[1]).is_absolute(),
+                   "reanudar-invalido")
             salida = []
-            indice = 0
+            indice = 2
             while indice < len(argv):
                 a = argv[indice]
                 if a == "--hosts":
@@ -176,12 +176,25 @@ class Hasito:
                     salida.append(a)
                     indice += 1
             # El lanzador ordena --perfil y --base de otra forma.
-            exigir(len(salida) >= 4 and len(salida[4:]) % 2 == 0, "reanudar-invalido")
-            pares = list(zip(salida[4::2], salida[5::2]))
+            exigir(len(salida) >= 2 and len(salida) % 2 == 0, "reanudar-invalido")
+            pares = list(zip(salida[2::2], salida[3::2]))
             exigir(len({k for k, _ in pares}) == len(pares), "reanudar-invalido")
-            return salida[:4], sorted(pares)
-        exigir(nuevo.count("--reanudar") == 1 and normalizar(nuevo) == normalizar(anterior), "reanudar-no-corresponde")
-        return nuevo
+            return argv[0], salida[:2], sorted(pares)
+        argumentos = normalizar(nuevo)
+        exigir(nuevo.count("--reanudar") == 1 and argumentos == normalizar(anterior) and
+               (actual is None or argumentos == normalizar(actual)), "reanudar-no-corresponde")
+        return (nuevo[0], (actual if actual is not None else anterior)[1], *nuevo[2:])
+
+    def argv_anterior_75(self, registro):
+        intento = int(registro.name.removeprefix("intento-"))
+        for previo in range(intento - 1, -1, -1):
+            recibo = registro.with_name("intento-" + str(previo)) / "recibo.json"
+            if recibo.is_file():
+                guardado = leer_json(recibo)
+                # Un rechazo 64 puede intercalarse sin cambiar el comando del 75.
+                if isinstance(guardado, dict) and guardado.get("codigo") == 75:
+                    return guardado.get("argv")
+        raise ResultadoInvalido("reanudar-no-corresponde")
 
     def correr(self, argv, registro, tren_id, reanudar="", repeticion=False, permitir_lanzar=True):
         """Una clave de efecto conserva su recibo; un crash se reengancha al lanzador."""
@@ -195,9 +208,8 @@ class Hasito:
             exigir(guardado is None or solicitado == argv_guardado, "recibo-no-corresponde")
             argv_guardado = solicitado
         if reanudar:
-            argv = self.reanudacion(reanudar, argv,
-                remapear=(self.operador is not None and self.operador.checkout is not None)
-                or solicitud.exists() or guardado is not None)
+            anterior = argv_guardado if argv_guardado is not None else self.argv_anterior_75(registro)
+            argv = self.reanudacion(reanudar, anterior, argv)
         if solicitud.exists() or recibo.exists():
             exigir(isinstance(argv_guardado, list) and len(argv_guardado) == len(argv) and
                    argv_guardado[0] == argv[0] and isinstance(argv_guardado[1], str) and
@@ -216,16 +228,19 @@ class Hasito:
                 self.operador.validar_guardado(argv[1])
         else:
             if self.operador is not None and self.operador.checkout is not None:
-                lanzador = self.operador.lanzador(self.lanzador_configurado, tren_id)
+                lanzador = self.operador.lanzador(self.lanzador_configurado, tren_id, recibo)
                 argv = (argv[0], lanzador, *argv[2:])
             guardar(solicitud, list(argv))
         opciones = {"capture_output": True, "text": True, "check": False}
-        if self.operador is not None:
-            env = self.operador.entorno_lanzador(argv[1])
-            if env is not None:
-                opciones["env"] = env
+        env = self.operador.entorno_lanzador(argv[1]) if self.operador is not None else None
         try:
-            resultado = self.runner(list(argv), **opciones)
+            with ExitStack() as pila:
+                if env is not None:
+                    candado = pila.enter_context((registro / "candado").open("a"))
+                    # El lanzador conserva el flock aunque muera este tick.
+                    fcntl.flock(candado, fcntl.LOCK_SH)
+                    opciones.update(env=env, pass_fds=(candado.fileno(),))
+                resultado = self.runner(list(argv), **opciones)
         except (OSError, subprocess.SubprocessError):
             raise ResultadoInvalido("lanzador-no-disponible") from None
         if resultado.returncode == 64:

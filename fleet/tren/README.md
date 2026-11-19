@@ -1101,18 +1101,24 @@ operador. Jale conserva la comprobación de `origin/main` de su lanzador. Si
 entra un cambio del lanzador tras fijar el SHA, el 64 pausa la vía en
 `lanzador-rechazo` y el nuevo intento toma otra lectura de `main`.
 
-El tren crea un worktree desacoplado por SHA en su directorio de estado y lo
-marca completo en el ledger después de comprobar el HEAD, el árbol limpio y
-el destino de cada ruta mapeada, incluidos sus symlinks. Si la creación
-queda a medias, el próximo intento descarta ese worktree y lo vuelve a
-crear. El código del snapshot permanece fijo mientras se usa. Cada corrida
-guarda su argv antes de ejecutar. El reenganche y la recuperación usan el
-argv guardado, también para registros anteriores a los snapshots. El diario
-del gancho guarda el comando verificado para reconsultarlo o cancelarlo.
+El tren reserva en el ledger la ruta del worktree desacoplado por SHA antes
+de crearlo. Lo marca completo después de comprobar el HEAD, el árbol limpio
+y el destino de cada ruta mapeada, incluidos sus symlinks. Si la creación
+queda a medias, el próximo intento recupera la ruta reservada. Una ruta
+ocupada sin reserva produce la pausa `checkout-operador:ruta-ocupada` y el
+ocupante se conserva. Cada corrida guarda su argv antes de ejecutar. El
+reenganche y la recuperación usan el argv guardado, también para registros
+anteriores a los snapshots. Tras un 75 de Hasito, un intento nuevo valida
+los argumentos contra el registro anterior y usa el lanzador que permite
+la configuración vigente. El diario del gancho guarda el comando
+verificado para reconsultarlo o cancelarlo.
 
 Al final de cada tick activo, la limpieza conserva el snapshot más reciente
 del repositorio, los que usan los trenes no terminales y los de los diarios de
-pre-aterrizaje pendientes. Quita los worktrees limpios restantes con
+pre-aterrizaje pendientes. Tras el cierre de un tren, conserva los snapshots
+con lanzamientos todavía activos. Si falta un recibo terminal y no se puede
+determinar si el proceso sigue vivo, los conserva 24 horas desde que el tren
+quedó terminal. Quita los worktrees limpios restantes con
 `git worktree remove` y después corre `git worktree prune`. Los worktrees
 sucios se conservan para inspección. Si el SHA o el snapshot fallan, el
 efecto y la pausa `infraestructura/checkout-operador:<estado>` se registran

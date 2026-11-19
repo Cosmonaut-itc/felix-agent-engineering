@@ -58,9 +58,13 @@ class Ledger:
                                 "estado TEXT NOT NULL, resultado TEXT)")
                 self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_operador ("
                                 "ruta TEXT PRIMARY KEY, repo TEXT NOT NULL, checkout TEXT NOT NULL)")
+                self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_reservados (ruta TEXT PRIMARY KEY)")
                 self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_usados ("
                                 "ruta TEXT NOT NULL REFERENCES snapshots_operador(ruta) ON DELETE CASCADE, "
                                 "tren TEXT NOT NULL, PRIMARY KEY(ruta, tren))")
+                self.db.execute("CREATE TABLE IF NOT EXISTS snapshots_lanzamientos ("
+                                "ruta TEXT NOT NULL REFERENCES snapshots_operador(ruta) ON DELETE CASCADE, "
+                                "tren TEXT NOT NULL, recibo TEXT NOT NULL, PRIMARY KEY(ruta, tren, recibo))")
         except BaseException:
             self.db.close()
             raise
@@ -192,6 +196,15 @@ class Ledger:
                 self.evento(estado.repo, "efectos-cancelados", ahora, {"claves": cancelados})
             self.evento(estado.repo, "operativo", ahora,
                         {"estado": datos(estado), "efectos": datos(efectos), "consumido": consumido})
+
+    def terminales_hasta(self, repo, instante):
+        from dominio import Terminal
+        fila = self.db.execute("SELECT payload FROM events WHERE repo=? AND tipo='operativo' "
+                               "AND instante<=? ORDER BY seq DESC LIMIT 1", (repo, instante)).fetchone()
+        if fila is None:
+            return set()
+        estado = desde_datos(json.loads(fila[0])["estado"])
+        return {tren.id for tren in estado.trenes if isinstance(tren.fase, Terminal)}
 
     def outbox(self, repo):
         return [dict(r) for r in self.db.execute(

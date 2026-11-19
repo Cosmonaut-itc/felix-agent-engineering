@@ -1,11 +1,16 @@
 """Worktrees del operador fijados al main que leyó el tren."""
+import fcntl
 import os
 from pathlib import Path
 import shutil
 import subprocess
+import time
 
 from dominio import Terminal, clave
 from git_ops import FalloGit, entorno, sha
+
+
+RETENCION_SIN_RECIBO_S = 24 * 60 * 60
 
 
 class FalloSnapshot(Exception):
@@ -118,12 +123,17 @@ class Snapshots:
                 not self.limpio(arbol)):
             raise FalloSnapshot("snapshot-no-verificable")
 
-    def descartar_incompleto(self, checkout, arbol):
+    def worktree_registrado(self, checkout, arbol):
+        registrados = self.comando_git(checkout, "worktree", "list", "--porcelain", "-z").stdout
+        return "worktree " + str(arbol) in registrados.split("\0")
+
+    def descartar_incompleto(self, checkout, arbol, registrado):
         # La ruta está reservada por el tren. Git puede morir antes de registrar
         # el worktree, o después de registrarlo y antes de terminar el checkout.
-        registrados = self.comando_git(checkout, "worktree", "list", "--porcelain", "-z").stdout
-        if "worktree " + str(arbol) in registrados.split("\0"):
-            self.comando_git(checkout, "worktree", "remove", "--force", str(arbol))
+        if registrado:
+            quitar = self.comando_git(checkout, "worktree", "remove", str(arbol), verificar=False)
+            if quitar.returncode:
+                self.comando_git(checkout, "worktree", "remove", "--force", str(arbol))
         elif arbol.is_dir() and not arbol.is_symlink():
             shutil.rmtree(arbol)
         else:
@@ -140,8 +150,17 @@ class Snapshots:
                 "SELECT 1 FROM snapshots_operador WHERE ruta=?", (str(arbol),)).fetchone()
             if not completo:
                 arbol.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
-                self.descartar_incompleto(checkout, arbol)
                 self.traer(checkout, commit)
+                registrado = self.worktree_registrado(checkout, arbol)
+                reserva = self.ledger.db.execute(
+                    "SELECT 1 FROM snapshots_reservados WHERE ruta=?", (str(arbol),)).fetchone()
+                if reserva:
+                    self.descartar_incompleto(checkout, arbol, registrado)
+                elif registrado or ruta_ocupada(arbol):
+                    raise FalloSnapshot("ruta-ocupada")
+                # El INSERT en autocommit precede al primer cambio del worktree.
+                if not reserva:
+                    self.ledger.db.execute("INSERT INTO snapshots_reservados VALUES (?)", (str(arbol),))
                 self.comando_git(checkout, "worktree", "add", "--detach", str(arbol), commit)
             self.verificar_arbol(arbol, checkout, commit)
             if lanzador is not None:
@@ -151,19 +170,21 @@ class Snapshots:
                 for arg in gancho["comando"]:
                     self.mapear(arg, checkout, arbol)
             if not completo:
-                self.ledger.db.execute("INSERT INTO snapshots_operador VALUES (?, ?, ?)",
-                                       (str(arbol), self.repo, str(checkout)))
+                with self.ledger.transaccion():
+                    self.ledger.db.execute("INSERT INTO snapshots_operador VALUES (?, ?, ?)",
+                                           (str(arbol), self.repo, str(checkout)))
+                    self.ledger.db.execute("DELETE FROM snapshots_reservados WHERE ruta=?", (str(arbol),))
             return checkout, arbol
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
             raise FalloSnapshot("snapshot-no-disponible") from None
 
-    def lanzador(self, ruta, tren):
+    def lanzador(self, ruta, tren, recibo):
         checkout, arbol = self.preparar(self.main(), ruta)
         lanzador = self.mapear(ruta, checkout, arbol)
         if lanzador != ruta:
             # La referencia precede a escribir el argv y a toda ejecución.
-            self.ledger.db.execute("INSERT OR IGNORE INTO snapshots_usados VALUES (?, ?)",
-                                   (str(arbol), tren))
+            self.ledger.db.execute("INSERT OR IGNORE INTO snapshots_lanzamientos VALUES (?, ?, ?)",
+                                   (str(arbol), tren, str(recibo)))
         return lanzador
 
     def gancho(self, config, commit):
@@ -196,16 +217,29 @@ class Snapshots:
         except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
             raise FalloSnapshot("snapshot-no-verificable") from None
 
-    def limpiar(self, estado, diarios):
+    def limpiar(self, estado, diarios, ahora=None):
         filas = self.ledger.db.execute("SELECT ruta, checkout FROM snapshots_operador "
                                        "WHERE repo=? ORDER BY rowid DESC", (self.repo,)).fetchall()
         if len(filas) <= 1:
             return
         vivos = {t.id for t in estado.trenes if not isinstance(t.fase, Terminal)}
         usadas = {d.get("snapshot") for d in diarios}
-        usadas.update(ruta for ruta, tren in self.ledger.db.execute(
-            "SELECT s.ruta, u.tren FROM snapshots_operador s JOIN snapshots_usados u "
-            "ON u.ruta=s.ruta WHERE s.repo=?", (self.repo,)) if tren in vivos)
+        sin_recibo = []
+        for ruta, tren, recibo in self.ledger.db.execute(
+                "SELECT s.ruta, u.tren, u.recibo FROM snapshots_operador s JOIN ("
+                "SELECT ruta, tren, NULL AS recibo FROM snapshots_usados UNION ALL "
+                "SELECT ruta, tren, recibo FROM snapshots_lanzamientos) u ON u.ruta=s.ruta "
+                "WHERE s.repo=? AND s.ruta<>?", (self.repo, filas[0][0])):
+            if ruta in usadas:
+                continue
+            if tren in vivos or (recibo and lanzamiento_activo(Path(recibo).with_name("candado"))):
+                usadas.add(ruta)
+            elif not recibo or not recibo_terminal(Path(recibo)):
+                sin_recibo.append((ruta, tren))
+        if sin_recibo:
+            ahora = time.time() if ahora is None else ahora
+            vencidos = self.ledger.terminales_hasta(self.repo, ahora - RETENCION_SIN_RECIBO_S)
+            usadas.update(ruta for ruta, tren in sin_recibo if tren not in vencidos)
         for ruta, checkout in filas[1:]:
             if ruta in usadas:
                 continue
@@ -219,3 +253,29 @@ class Snapshots:
             except (FalloSnapshot, OSError, ValueError, subprocess.SubprocessError):
                 continue
             self.ledger.db.execute("DELETE FROM snapshots_operador WHERE ruta=?", (ruta,))
+
+
+def ruta_ocupada(ruta):
+    try:
+        ruta.lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def recibo_terminal(recibo):
+    try:
+        return recibo.is_file()
+    except OSError:
+        return False
+
+
+def lanzamiento_activo(candado):
+    try:
+        with candado.open("rb") as archivo:
+            fcntl.flock(archivo, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+    return False

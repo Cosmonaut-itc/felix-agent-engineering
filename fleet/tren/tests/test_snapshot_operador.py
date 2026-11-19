@@ -401,6 +401,23 @@ c.tick(2000)
         self.assertIsInstance(self.estado().trenes[0].fase, Certificado)
         self.assertEqual(len(self.lineas('hasito-argv.log')), 1)
 
+    def test_hasito_reanuda_75_con_el_argv_ya_guardado(self):
+        self.usar_hasito()
+        (self.raiz / 'suite-75').touch()
+        self.hasta_fase(Corriendo)
+        with patch.object(self.contexto.hasito, 'runner', side_effect=OSError):
+            for n in range(4):
+                self.contexto.tick(2000 + n * 600)
+        peticion = next(r for r in self.solicitudes() if r.parent.name == 'intento-1')
+        anterior = self.argv(peticion)
+        self.comprobar_snapshot(anterior, self.nuevo)
+        self.config.pop('checkout_operador')
+        self.usar_hasito()
+        self.hasta_fase(Certificado)
+        _, ultimo = map(json.loads, self.lineas('hasito-argv.log'))
+        self.assertEqual(ultimo, anterior)
+        self.assertEqual(self.argv(peticion), anterior)
+
     def test_cambio_posterior_del_lanzador_rechaza_64_y_reanuda_desde_snapshot_nuevo(self):
         seguir = self.raiz / 'seguir'
         mas_nuevo = self.version('tercero', self.nuevo)
@@ -490,6 +507,55 @@ c.tick(2000)
             registrados = self.comando(self.operador, 'worktree', 'list', '--porcelain')
             self.assertIn(ultimo, registrados)
             self.assertNotIn(anterior, registrados)
+
+    def test_hasito_conserva_snapshot_si_otro_proceso_del_intento_sigue_vivo(self):
+        self.usar_hasito()
+        listo, seguir = (shlex.quote(str(self.raiz / s)) for s in ('listo', 'seguir'))
+        pausa = (f'touch {listo}; fin=$((SECONDS + 15)); '
+                 f'while ! [ -f {seguir} ] && [ "$SECONDS" -lt "$fin" ]; do sleep 0.025; done\n'
+                 f'test -f {seguir}\n'
+                 'cat "$(dirname "$0")/modulo"\nexit 0')
+        anterior = self.version('esperando', self.nuevo, extra=pausa)
+        self.push(anterior, 'refs/heads/main')
+        self.hasta_fase(EsperandoCI)
+        estado = self.estado()
+        tren = estado.trenes[0]
+        adaptador = self.contexto.hasito
+        procesos = []
+
+        def lanzar_y_salir(argv, check, **opciones):
+            procesos.append(subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                             text=True, env=opciones.get('env'),
+                                             pass_fds=opciones.get('pass_fds', ())))
+            raise OSError('el tick no recogió el resultado')
+
+        from adaptadores.hasito import ResultadoInvalido
+        with self.ledger() as ledger:
+            gestor = Snapshots(ledger, activo.REPO, self.contexto.git, self.config)
+            adaptador.operador = gestor
+            try:
+                with patch.object(adaptador, 'runner', lanzar_y_salir):
+                    with self.assertRaisesRegex(ResultadoInvalido, 'lanzador-no-disponible'):
+                        adaptador.suite(tren.fase.candidato, tren.id)
+                self.esperar(self.raiz / 'listo')
+                registro = self.solicitudes()[0]
+                viejo = self.comprobar_snapshot(self.argv(registro), anterior)
+                adaptador.suite(tren.fase.candidato, tren.id)
+                self.assertTrue(registro.with_name('recibo.json').exists())
+                siguiente = self.version('tercero', anterior)
+                self.push(siguiente, 'refs/heads/main')
+                gestor.preparar(siguiente)
+                cerrado = replace(estado, trenes=(replace(tren, fase=Terminal('ABORTADO')),))
+                ledger.guardar_paso(cerrado, (), time.time())
+                gestor.limpiar(cerrado, [])
+                self.assertTrue(viejo.exists(), 'un recibo no detiene otra ejecución viva del intento')
+            finally:
+                (self.raiz / 'seguir').touch()
+                for proceso in procesos:
+                    salida, error = proceso.communicate(timeout=15)
+            self.assertEqual((salida, error), ('esperando\n', ''))
+            gestor.limpiar(cerrado, [])
+            self.assertFalse(viejo.exists())
 
     def test_sin_checkout_operador(self):
         self.config.pop('checkout_operador')
