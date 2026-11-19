@@ -258,7 +258,8 @@ class Snapshots:
                 elif self.registro_worktree(checkout, arbol) is not None:
                     # El repositorio del operador es compartido: `prune` quitaría
                     # registros ajenos. Sin directorio sólo queda el registro propio.
-                    self.comando_git(checkout, "worktree", "remove", "--force", ruta)
+                    # Sin --force: si el árbol reaparece, Git vuelve a exigir que esté limpio.
+                    self.comando_git(checkout, "worktree", "remove", ruta)
             except (FalloSnapshot, OSError, ValueError, subprocess.SubprocessError):
                 continue
             self.ledger.db.execute("DELETE FROM snapshots_operador WHERE ruta=?", (ruta,))
