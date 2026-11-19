@@ -1,8 +1,10 @@
 # Aviso de grupos cerrados con fila
 
 En la MacBook, el LaunchAgent consulta cada tres minutos la vista privada del
-rack. Avisa cuando observa `manual` o `ambiguous` y al menos una tarea
-`Queued` en el mismo grupo durante más de 30 minutos. Cuenta desde la primera
+rack. Avisa cuando observa un grupo en pausa en Pueue (`Paused`) con razón
+`manual` o `ambiguous` y al menos una tarea `Queued` durante más de 30
+minutos. Una razón guardada con el grupo en marcha no cuenta: `pausar` la
+guarda antes de llamar a Pueue y la llamada puede fallar. Cuenta desde la primera
 observación. Cada episodio tiene un aviso, con host, grupo, motivos, minutos y
 tareas en fila. Una lectura válida sin esa combinación termina el episodio.
 

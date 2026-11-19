@@ -30,13 +30,21 @@ class Aviso(NamedTuple):
     mensaje: str
 
 
-def grupos_con_fila(control, tareas):
+def grupos_con_fila(control, tareas, grupos):
     if (not isinstance(control, dict) or control.get('schema') != 'rack-host-result@1'
             or control.get('status') != 'ok'):
         raise ValueError('Control no disponible')
     razones = control['pause_reasons']
-    if not isinstance(razones, dict) or not isinstance(tareas, list):
-        raise ValueError('Pausas o tareas inválidas')
+    if not isinstance(razones, dict) or not isinstance(tareas, list) or not isinstance(grupos, list):
+        raise ValueError('Pausas, tareas o grupos inválidos')
+    # Una razón guardada no cierra la fila si Pueue no llegó a pausar el grupo.
+    pausados = set()
+    for grupo in grupos:
+        nombre, estado = grupo['name'], grupo['status']
+        if not isinstance(nombre, str) or not isinstance(estado, str):
+            raise ValueError('Grupo inválido')
+        if estado == 'Paused':
+            pausados.add(nombre)
     for grupo, motivos in razones.items():
         if (not isinstance(grupo, str) or not grupo.isprintable() or not isinstance(motivos, list)
                 or any(not isinstance(motivo, str) for motivo in motivos)):
@@ -49,7 +57,7 @@ def grupos_con_fila(control, tareas):
         if estado == 'Queued':
             conteos[grupo] += 1
     return {grupo: (tuple(motivos), conteos[grupo]) for grupo, motivos in razones.items()
-            if conteos[grupo] and any(motivo in motivos for motivo in MOTIVOS)}
+            if grupo in pausados and conteos[grupo] and any(motivo in motivos for motivo in MOTIVOS)}
 
 
 def observar(documento, ahora):
@@ -72,7 +80,7 @@ def observar(documento, ahora):
                     or abs(ahora - tomada) > ANTIGUEDAD_MAXIMA
                     or any(error['stage'] in ('control', 'pueue') for error in foto['errors'])):
                 continue
-            lecturas[host] = grupos_con_fila(foto['control'], foto['tasks'])
+            lecturas[host] = grupos_con_fila(foto['control'], foto['tasks'], foto['groups'])
         except (KeyError, TypeError, ValueError, OverflowError):
             continue
     return lecturas

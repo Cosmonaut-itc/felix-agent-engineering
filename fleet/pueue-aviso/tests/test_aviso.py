@@ -26,9 +26,13 @@ def tarea(grupo, estado='Queued'):
     return dict(group=grupo, state=estado)
 
 
-def foto(host, momento, control_host, tareas, fresh=True, errores=()):
+def foto(host, momento, control_host, tareas, fresh=True, errores=(), abiertos=()):
+    # Por omisión Pueue tiene pausado todo grupo con alguna razón de pausa.
+    razones = control_host.get('pause_reasons', {}) if isinstance(control_host, dict) else {}
+    grupos = [dict(name=g, status='Paused' if motivos and g not in abiertos else 'Running', slots=1)
+              for g, motivos in razones.items()]
     return dict(id=host, fresh=fresh, snapshot=dict(schema='rack-host@1', host=host, taken=momento,
-                control=control_host, tasks=tareas, errors=list(errores)))
+                control=control_host, groups=grupos, tasks=tareas, errors=list(errores)))
 
 
 def rack(*hosts):
@@ -39,9 +43,9 @@ class AvisoTests(unittest.TestCase):
     def setUp(self):
         self.estado = {}
 
-    def pasar(self, segundos, razones=None, tareas=(), disponible=True):
+    def pasar(self, segundos, razones=None, tareas=(), disponible=True, abiertos=()):
         ahora = INICIO + segundos
-        desk = foto('desk', ahora, control(razones or {}), list(tareas), fresh=disponible)
+        desk = foto('desk', ahora, control(razones or {}), list(tareas), fresh=disponible, abiertos=abiertos)
         mini = foto('mini', ahora, control({}), [])
         self.estado, avisos = aviso.decidir(self.estado, aviso.observar(rack(desk, mini), ahora), ahora, UMBRAL)
         for nota in avisos:
@@ -72,6 +76,14 @@ class AvisoTests(unittest.TestCase):
         self.assertEqual(self.pasar(0, razones, tareas), [])
         self.assertEqual(self.pasar(UMBRAL + 1, razones, tareas), [])
         self.assertEqual(self.estado['desk']['grupos'], {})
+
+    def test_grupo_abierto_con_razon_guardada_no_avisa_y_cierra_el_episodio(self):
+        # pausar guarda la razón antes de la RPC; si la RPC falla, el grupo sigue Running.
+        razones, tareas = {'hasito': ['manual']}, [tarea('hasito')]
+        self.assertEqual(self.pasar(0, razones, tareas), [])
+        self.assertEqual(self.pasar(5, razones, tareas, abiertos=('hasito',)), [])
+        self.assertEqual(self.estado['desk']['grupos'], {})
+        self.assertEqual(self.pasar(UMBRAL + 6, razones, tareas, abiertos=('hasito',)), [])
 
     def test_un_aviso_por_episodio_y_otro_al_volver_a_cerrar(self):
         razones, tareas = {'hasito': ['manual']}, [tarea('hasito')]
@@ -138,6 +150,8 @@ class AvisoTests(unittest.TestCase):
             foto('desk', INICIO, control({}), [], errores=[{'stage': 'pueue'}]),
             foto('desk', INICIO, {'schema': 'rack-host-result@1', 'status': 'busy'}, []),
             foto('desk', INICIO, control({}), [{'group': 'hasito'}]),
+            dict(id='desk', fresh=True, snapshot=dict(schema='rack-host@1', host='desk', taken=INICIO,
+                 control=control({}), tasks=[], errors=[])),
         )
         for desk in casos:
             with self.subTest(desk=desk):
