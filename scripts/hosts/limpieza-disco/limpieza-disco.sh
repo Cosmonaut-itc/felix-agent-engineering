@@ -6,10 +6,10 @@
 # Modo emergencia: si al empezar quedan menos de 15 GB libres, los umbrales de
 # antigüedad se acortan (entre paréntesis, el valor en emergencia).
 # Sólo work tiene otra emergencia: <40 GB, ventana de 6 h y freno en 60 GB.
-# Una preparación sin meta bloquea work durante 1 h (15 min en su emergencia).
-# En emergencia, entre 15 min y 1 h conserva el veto si EN_USO muestra procesos
-# dentro de runs/<id> o falla su captura o lectura. Entre dos pasos sin procesos dentro,
-# una preparación de más de 15 min queda sin cubrir por esta guarda.
+# Durante 1 h, meta o los argumentos de git-cache identifican la copia de una
+# preparación y protegen esa copia. Sin identidad, la preparación veta work
+# durante 1 h (15 min en su emergencia). En emergencia, entre 15 min y 1 h,
+# también veta si hay artefactos de git o EN_USO no descarta procesos en runs/<id>.
 #
 # Qué borra:
 #   1. ~/remote-run/work/*   sólo las copias no ocultas que ~/bin/pao-inventario.py
@@ -483,12 +483,23 @@ elif [ ! -d "$RR" ]; then
   INV_MOTIVO="no existe $RR"
 elif ! acotado "reglas 1 y 3: inventario" "$RR" /usr/bin/python3 -B "$inventario_dir/pao-inventario.py" --raiz "$RR" "${INV_ARGS[@]}" > "$INV_JSON" 2> "$INV_ERR"; then
   INV_MOTIVO="el inventario falló: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
-elif ! /usr/bin/python3 -B - "$INV_JSON" "$RR" "$WORK_EMERG" "$COPIA_MIN" "$PREPARACION_SEGUNDOS" "$PREPARACION_NORMAL_SEGUNDOS" > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
+fi
+INVENTARIO="${inventario_dir:-}/pao-inventario.py"
+
+validar_inventario() {
+  /usr/bin/python3 -B - "$INV_JSON" "$RR" "$WORK_EMERG" "$COPIA_MIN" \
+    "$PREPARACION_SEGUNDOS" "$PREPARACION_NORMAL_SEGUNDOS" "$INVENTARIO" "$USO_PS" \
+    > "$INV_LISTA" 2> "$INV_ERR" <<'PY'
 from datetime import datetime, timezone
 import json
 import math
 import os
+from pathlib import Path
+import re
+import runpy
+import stat
 import sys
+from unicodedata import normalize
 
 datos = json.load(open(sys.argv[1]))
 raiz = os.path.abspath(sys.argv[2])
@@ -526,35 +537,82 @@ def visible(c):
     return not os.path.basename(c['ruta']).startswith('.')
 
 
-# Una preparación reciente aún no tiene mirror en meta: no se sabe qué copia usa.
-for c in datos['corridas']:
-    if c['clase'] != 'preparacion-abortada':
-        continue
-    edad = datos['ts'] - (c['ultimoUso'] or 0)
-    if edad < preparacion_segundos:
-        print('sin-copias\t' + nombre(c['ruta'], runs))
-    elif emergencia and edad < preparacion_normal_segundos:
-        print('preparacion-por-uso\t' + nombre(c['ruta'], runs))
+def clave_copia(copia):
+    return normalize('NFD', copia).casefold()
+
+
+preparaciones = [(datos['ts'] - (c['ultimoUso'] or 0), nombre(c['ruta'], runs))
+                 for c in datos['corridas'] if c['clase'] == 'preparacion-abortada'
+                 and datos['ts'] - (c['ultimoUso'] or 0) < preparacion_normal_segundos]
+protegidas = set()
+if preparaciones:
+    espejo = runpy.run_path(sys.argv[7])['espejo']
+    # remote-run pasa rutas relativas sin espacios al instalador. Sólo sus
+    # argumentos finales contienen juntos el id y el espejo de la corrida.
+    # El lanzador /usr/bin/python3 de macOS puede aparecer como Python.
+    instalador = re.compile(
+        r'\s*(?:\S*/)?(?:[Pp]ython3(?:\.\d+)?|Python) -c .* instalar '
+        r'remote-run/git-cache/[0-9a-f]{64}\.git '
+        r'remote-run/runs/([0-9]{8}-[0-9]{6}-[0-9a-f]{6}) '
+        r'remote-run/work/([A-Za-z0-9._-]+-[0-9a-f]{8}) (?:[0-9a-f]{40}|[0-9a-f]{64})')
+    por_corrida = {}
+    try:
+        with open(sys.argv[8], encoding='utf-8', errors='replace') as captura:
+            for linea in captura:
+                coincidencia = instalador.fullmatch(linea.rstrip('\n'))
+                if coincidencia:
+                    corrida, copia = coincidencia.groups()
+                    por_corrida.setdefault(corrida, set()).add((copia, 'argumentos de git-cache instalar'))
+    except OSError:
+        por_corrida.clear()  # Una captura parcial no aporta identidad.
+
+    for edad, corrida in preparaciones:
+        ruta = Path(runs) / corrida
+        try:
+            if not stat.S_ISDIR(ruta.lstat().st_mode):
+                raise ValueError('corrida no regular')
+            senales = por_corrida.get(corrida, set())
+            copia = espejo(ruta / 'meta')
+            if copia is not None:
+                senales.add((copia, 'mirror de meta'))
+            for copia, _ in senales:
+                if (any(ord(ch) < 32 or ord(ch) == 127 for ch in copia)
+                        or (Path(work) / copia).is_symlink()):
+                    raise ValueError('ruta de copia no verificable')
+            if senales:
+                for copia, origen in sorted(senales):
+                    protegidas.add(clave_copia(copia))
+                    print('preparacion-copia\t' + '\t'.join((corrida, copia, origen)))
+            elif edad < preparacion_segundos:
+                print('sin-copias\t' + corrida)
+            elif emergencia:
+                fila = 'preparacion-por-uso\t' + corrida
+                # El respaldo con bundle completo puede correr sólo en el cliente.
+                if {'git-input', 'git-preparado'}.intersection(os.listdir(ruta)):
+                    fila += '\tgit'
+                print(fila)
+        except (OSError, ValueError):
+            print('sin-copias\t' + corrida + '\tlectura')
+
 copias = datos['copias']
 if emergencia:
     copias = sorted(copias, key=lambda c: (c['ultimoUso'] or 0, c['ruta']))
 for c in copias:
     if c['borrable'] is True and c['clase'] == 'inactiva' and visible(c):
-        fila = 'work\t' + nombre(c['ruta'], work)
+        copia = nombre(c['ruta'], work)
+        fila = 'work\t' + copia
         if emergencia:
             ultimo = c['ultimoUso']
             if not math.isfinite(ultimo):
                 sys.exit('último uso de copia no verificable')
             fila += '\t' + datetime.fromtimestamp(ultimo, timezone.utc).isoformat()
-        print(fila)
+        if clave_copia(copia) not in protegidas:
+            print(fila)
 for c in datos['corridas']:
     if c['borrable'] is True and c['clase'] == 'terminal' and visible(c):
         print('runs\t' + nombre(c['ruta'], runs))
 PY
-then
-  INV_MOTIVO="salida del inventario no válida: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
-fi
-INVENTARIO="${inventario_dir:-}/pao-inventario.py"
+}
 if [ -n "$INV_MOTIVO" ]; then
   INV_OK=0
   log "reglas 1 y 3 sin borrar: $INV_MOTIVO"
@@ -590,6 +648,11 @@ filtrar_uso() {
 filtrar_uso cwd 's/^n//p' "$USO_CWD"
 filtrar_uso basetemp 's/^--basetemp[= ]//; s/"//g; p' "$USO_BASETEMP"
 filtrar_uso 'archivos abiertos' 's/^n\(\/.*\)/\1/p' "$USO_ABIERTOS"
+
+if [ "$INV_OK" = 1 ] && ! validar_inventario; then
+  INV_OK=0
+  log "reglas 1 y 3 sin borrar: salida del inventario no válida: $(tr '\n' ' ' < "$INV_ERR" | cut -c1-300)"
+fi
 
 en_uso() { # Un error al leer la captura también conserva la candidata.
   local estado
@@ -739,21 +802,36 @@ fi
 if [ "$INV_OK" = 1 ]; then
   preparacion=$(grep -m1 '^sin-copias' "$INV_LISTA"); estado_preparacion=$?
   preparacion_viva=
-  if [ "$estado_preparacion" = 1 ] && [ "$WORK_EMERG" = 1 ]; then
-    while IFS=$'\t' read -r tipo n; do
-      [ "$tipo" = preparacion-por-uso ] || continue
-      if en_uso "$RR/runs/$n"; then
-        preparacion_viva=$n; break
-      fi
+  preparacion_git=
+  if [ "$estado_preparacion" -le 1 ]; then
+    while IFS=$'\t' read -r tipo n copia origen; do
+      case "$tipo" in
+        preparacion-copia)
+          log "regla 1 conservo work/$copia: $origen de la preparación en runs/$n" ;;
+        preparacion-por-uso)
+          if [ "$estado_preparacion" = 1 ] && [ -z "$preparacion_viva" ]; then
+            if en_uso "$RR/runs/$n"; then
+              preparacion_viva=$n
+            elif [ "$copia" = git ] && [ -z "$preparacion_git" ]; then
+              preparacion_git=$n
+            fi
+          fi ;;
+      esac
     done < "$INV_LISTA"
   fi
   if [ "$estado_preparacion" -gt 1 ]; then
     INV_OK=0
     log "reglas 1 y 3 sin borrar: falló lectura de la lista del inventario"
   elif [ "$estado_preparacion" = 0 ]; then
-    log "regla 1 sin borrar: preparación de menos de $PREPARACION_VENTANA en runs/${preparacion#*$'\t'}"
+    IFS=$'\t' read -r tipo n causa <<< "$preparacion"
+    case "$causa" in
+      lectura) log "regla 1 sin borrar: no pude verificar la copia de la preparación en runs/$n" ;;
+      *) log "regla 1 sin borrar: preparación de menos de $PREPARACION_VENTANA en runs/$n (copia desconocida)" ;;
+    esac
   elif [ -n "$preparacion_viva" ]; then
-    log "regla 1 sin borrar: preparación con procesos vivos en runs/$preparacion_viva"
+    log "regla 1 sin borrar: preparación con procesos vivos en runs/$preparacion_viva (copia desconocida)"
+  elif [ -n "$preparacion_git" ]; then
+    log "regla 1 sin borrar: preparación con artefactos de git en runs/$preparacion_git (copia desconocida)"
   else
     while IFS=$'\t' read -r tipo n ultimo; do
       [ "$tipo" = work ] || continue

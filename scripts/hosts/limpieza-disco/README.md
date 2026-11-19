@@ -135,20 +135,23 @@ demás.
   Al final vuelve a comprobar el lock, con `-e` y `-L`, y exige mediante
   `stat` directo que el mtime del propio directorio tenga al menos siete
   días. No hay otro recorrido de árbol entre ese bloque y la acción.
-- **Preparación en curso.** Si el inventario ve una corrida
-  `preparacion-abortada` de menos de 1 h en modo normal o de menos de 15 min
-  en EMERGENCIA work, la regla 1 no borra nada en esa pasada. Esa corrida
-  todavía no tiene `mirror` en `meta`, así que no se sabe qué copia usa.
-  La ventana de emergencia evita que una preparación abandonada bloquee
-  durante una hora la recuperación de espacio. Entre 15 min y 1 h en
-  emergencia, conserva el veto si `EN_USO` contiene alguna ruta dentro de
-  `runs/<id>` (cwd o archivos abiertos del usuario); usa `en_uso`, que también
-  veta si la captura falló o no puede leerse. El log indica la ventana
-  aplicada o «preparación con procesos vivos» y la carpeta. En modo normal
-  esta guarda no consulta `EN_USO`. Una preparación de más de 15 min
-  sorprendida entre dos pasos, sin ningún proceso dentro en el instante de
-  la captura, queda sin cubrir por esta guarda en emergencia.
-  Las corridas nuevas durante la pasada conservan su veto.
+- **Preparación en curso.** Durante la primera hora de una corrida que el
+  inventario marca `preparacion-abortada`, la regla 1 protege la copia indicada
+  en `meta` o en los argumentos de `git-cache instalar` que nombran tanto la
+  corrida como su copia. El log registra la copia y la señal. Las demás copias
+  siguen sujetas a las comprobaciones de inactividad y uso.
+  Si falta la identidad, la preparación veta toda la regla 1 durante 1 h en
+  modo normal o 15 min en EMERGENCIA work. Entre 15 min y 1 h en emergencia,
+  también veta si hay `git-input` o `git-preparado`, porque el productor puede
+  estar reconstruyendo un bundle en el cliente sin un proceso visible en el
+  host. Sin esos artefactos, `EN_USO` conserva el veto si detecta rutas en
+  `runs/<id>` o falla su captura o lectura. El log registra la carpeta y el
+  motivo del veto. Esto deja pasar una preparación vacía de más de 15 min en
+  emergencia cuando la captura tampoco encuentra procesos.
+  `run-control.json` llega después de `meta`, al encolar. Publicar la identidad
+  en el host antes de sincronizar cubriría el tramo previo a `meta` incluso
+  sin un proceso visible. Las corridas nuevas durante la pasada conservan su
+  veto.
 - **Rename antes de borrar.** La regla 1 comprueba con `stat -f %d` que
   `~/remote-run` y `$STATE` (`~/Library/Application Support/limpieza-disco`)
   están en el mismo filesystem. Desde el padre fijado renombra la copia a
