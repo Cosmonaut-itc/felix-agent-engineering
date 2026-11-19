@@ -561,7 +561,10 @@ class ObservadorTests(Aislado):
         for valor in ("Felix", {"nombre": "Felix"}, {"nombre": "", "email": "a@b"},
                       {"nombre": " Felix", "email": "a@b"}, {"nombre": "Felix", "email": "sin-arroba"},
                       {"nombre": "Felix", "email": "a<b@c"}, {"nombre": "Fe\nlix", "email": "a@b"},
-                      {"nombre": "Felix", "email": "a@b", "extra": "x"}):
+                      {"nombre": "Felix", "email": "a@b", "extra": "x"},
+                      {"nombre": "Felix Jr.", "email": "a@b"}, {"nombre": "Felix", "email": "'a@b"},
+                      {"nombre": "...", "email": "a@b"}, {"nombre": "Felix", "email": "@"},
+                      {"nombre": "Felix", "email": "felix@"}, {"nombre": "Felix", "email": "@example.org"}):
             self.config["identidad_commits"] = valor
             ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
             with self.assertRaises(ValueError, msg=repr(valor)):

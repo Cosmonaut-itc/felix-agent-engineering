@@ -17,6 +17,7 @@ from ledger import directorio_estado
 
 
 IDENTIDAD_TREN = ("PAO Tren", "tren@example.invalid")
+CRUD_GIT = frozenset(" .,:;<>\"\\'")
 
 
 def identidad_commits(config):
@@ -31,11 +32,12 @@ def identidad_commits(config):
     if not isinstance(valor, dict) or set(valor) != {"nombre", "email"}:
         raise ValueError("identidad_commits requiere sólo nombre y email")
     nombre, email = valor["nombre"], valor["email"]
-    # git recorta espacios y no admite <, > ni controles: el SHA dejaría de ser el esperado.
-    if not all(isinstance(v, str) and v and v == v.strip() and
-               not re.search(r"[<>\x00-\x1f\x7f]", v) for v in (nombre, email)):
+    # git quita de los extremos lo que ident.c llama crud y no admite <, > ni
+    # controles: el commit llevaría otra identidad que la configurada.
+    if not all(isinstance(v, str) and v and v[0] not in CRUD_GIT and v[-1] not in CRUD_GIT
+               and not re.search(r"[<>\x00-\x1f\x7f]", v) for v in (nombre, email)):
         raise ValueError("identidad_commits inválida")
-    if email.count("@") != 1:
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+", email):
         raise ValueError("identidad_commits requiere un email")
     return nombre, email
 

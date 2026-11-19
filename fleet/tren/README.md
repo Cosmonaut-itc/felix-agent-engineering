@@ -816,7 +816,7 @@ un fallo en cualquiera de los dos caminos hace fallar la corrida.
 ## Admisión activa sobre el bare del tren (U17)
 
 El tick activo observa la admisión en el mismo almacén con que arma y
-promueve: `pao-tren` construye `GitTren(remoto)` y lo entrega como `almacen`
+promueve: `pao-tren` construye `GitTren(remoto, identidad=...)` y lo entrega como `almacen`
 a `GitHubGit(config, activo=True, almacen=git)`. Antes de `merge-base` y
 `merge-tree`, `GitHubGit.lector` prepara ese bare y comprueba con
 `cat-file -e` la base y el head de cada PR. Sólo trae lo que falte: la base
