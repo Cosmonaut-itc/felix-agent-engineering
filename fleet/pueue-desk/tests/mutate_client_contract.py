@@ -92,7 +92,8 @@ def main():
 
 RPC_FILES = ('client-control-v1.json', 'client-rpc-stock-v1.json', 'pueue-404-frames.json')
 # CC3-P0 (alcance-stock §4.3): cada mutante semántico muere por la historia del corpus
-# que lo acusa. El octavo cubre la propuesta de E-stock adoptada (S3 relajada).
+# que lo acusa. El octavo cubre la propuesta de E-stock adoptada (S3 relajada); los tres
+# últimos, los hallazgos de la review r1.
 RPC_SITES = (
     ('r-plus-sin-exclusion', '    if exclusion != "filtered":\n', '    if False:\n',
      'test_mutant_r_plus_without_exclusion', 'La historia hold-success-coordinated cambió de veredicto'),
@@ -117,6 +118,15 @@ RPC_SITES = (
      'return True, None, "evidence_missing" if life_alive else "startup"',
      'return True, (False if life_alive else None), "evidence_missing" if life_alive else "startup"',
      'test_mutant_closed_never_not_applied', 'La historia hold-closed-alive-coordinated cambió de veredicto'),
+    # Review r1: claim perdido en una restauración, retirada con id reutilizado y sello negativo ajeno.
+    ('claim-perdido-liquida', 'if claim is None and not emitter_alive:', 'if False:',
+     'test_mutant_lost_claim_never_settles', 'La historia lost-claim-both-dead cambió de veredicto'),
+    ('retirada-proyecta-q-cruda',
+     'if (op in ("retire-held", "retire-interrupted") and after["state"] != "Absent" and',
+     'if (False and',
+     'test_retire_reused_id_projects_absent_of_x', 'La retirada con id reutilizado no proyecta Absent de X'),
+    ('sello-negativo-de-no-duenio', 'owners = (plan, process, claim, seal)', 'owners = (plan, process, claim)',
+     'test_mutant_negative_seal_from_non_owner', 'La historia hold-not-sent-non-owner cambió de veredicto'),
 )
 
 

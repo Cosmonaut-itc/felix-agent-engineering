@@ -188,6 +188,11 @@ class RpcContractTests(unittest.TestCase):
                     self.assertIsNotNone(case['post'])
                 if case['seal'] is not None and case['seal']['outcome'] == 'closed':
                     self.assertIsNone(effect)  # S3 liquida, nunca atribuye ni prueba ausencia.
+                if case.get('patch', {}).get('doc') == 'claim':
+                    # Sin claim nunca se liquida: pendiente con el emisor vivo, perdido si murió.
+                    self.assertFalse(settled)
+                    self.assertEqual(reason, 'rpc_unresolved' if case.get('emitter_alive', True)
+                                     and case['seal'] is None else 'evidence_missing')
         covered = {(case['seal'] or {}).get('outcome') for case in RPC['verdicts']}
         self.assertEqual(covered, {None, 'not-sent', 'replied', 'closed'})
 
@@ -197,8 +202,38 @@ class RpcContractTests(unittest.TestCase):
     def test_mutant_seal_from_non_owner(self):
         self.assert_story('hold-seal-non-owner')
 
+    def test_mutant_negative_seal_from_non_owner(self):
+        self.assert_story('hold-not-sent-non-owner')
+
     def test_mutant_s4_requires_daemon_death(self):
         self.assert_story('no-seal-emitter-dead-daemon-alive')
+
+    def test_mutant_lost_claim_never_settles(self):
+        self.assert_story('lost-claim-both-dead')
+
+    def test_retire_reused_id_projects_absent_of_x(self):
+        """collect y apply cotejan Absent de X, no la Q cruda de la tarea nueva (`@1` intacto)."""
+        stable = ('generation', 'task_id', 'created_at', 'fingerprint', 'attempt')
+        for name in ('retire-reused-id', 'retire-interrupted-reused-id'):
+            docs = build(VERDICTS[name])
+            request, before, raw = docs['record']['request'], docs['pre']['identity'], docs['post']['identity']
+            with self.subTest(case=name):
+                effect = c.rpc_effect_identity(request['op'], before, raw)
+                if effect != RPC['observations']['absent'] or any(effect[k] != before[k] for k in stable):
+                    self.fail('La retirada con id reutilizado no proyecta Absent de X')
+                response = {k: request[k] for k in ('schema', 'op', 'launcher', 'ref', 'action_id', 'phase', 'mode')}
+                response.update(status='retired', effects=True, reservation='held', identity=effect,
+                                acceptance=request['acceptance'], proof=None, reason=None)
+                self.assertEqual(c.validate_response(response, request), response)
+                self.assertEqual(c.transition(request['expected'], effect, request['op']), effect)
+                with self.assertRaisesRegex(c.Invalid, '^response_phase$'):
+                    c.validate_response(dict(response, identity=raw), request)
+        # Fuera de una retirada, o con la misma creación, Q no se proyecta.
+        for name in ('hold-reused-id-not-projected', 'retire-still-present', 'retire-absent'):
+            docs = build(VERDICTS[name])
+            with self.subTest(case=name):
+                self.assertEqual(c.rpc_effect_identity(docs['record']['request']['op'], docs['pre']['identity'],
+                                                       docs['post']['identity']), docs['post']['identity'])
 
     def test_mutant_closed_is_not_a_reply(self):
         self.assert_story('hold-closed-alive-filtered')

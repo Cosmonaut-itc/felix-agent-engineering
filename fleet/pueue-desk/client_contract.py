@@ -594,6 +594,25 @@ def pueue_greeting(frame):
                 frame[8:] == PUEUE_PROTOCOL.encode("ascii"), "rpc_greeting")
 
 
+def rpc_effect_identity(op, before, after):
+    """Identidad de fase que collect y apply (P1) cotejan en lugar de la Q cruda.
+
+    En una retirada, otra creación con el mismo id y la misma generación es Absent
+    de X: conserva generación, id, creación, huella e intento de X, sin tiempos. En
+    cualquier otro caso devuelve Q. Sólo se usa con el veredicto (true, true, null):
+    sin R+ ∧ P ∧ Q ∧ Ex un id reutilizado nunca se proyecta.
+    """
+    identity(before)
+    identity(after)
+    if (op in ("retire-held", "retire-interrupted") and after["state"] != "Absent" and
+            after["generation"] == before["generation"] and after["task_id"] == before["task_id"] and
+            after["created_at"] != before["created_at"]):
+        stable = ("generation", "task_id", "created_at", "fingerprint", "attempt")
+        return dict({k: before[k] for k in stable}, state="Absent",
+                    enqueued_at=None, enqueue_at=None, started_at=None)
+    return after
+
+
 def rpc_attributed(record, plan, seal, pre, post, exclusion):
     """R+ ∧ P ∧ Q ∧ Ex: el único camino a effect_applied con Pueue stock."""
     if not (seal["outcome"] == "replied" and seal["reply"] == "success"):
@@ -605,12 +624,8 @@ def rpc_attributed(record, plan, seal, pre, post, exclusion):
         return False
     if post["life"] != plan["daemon"]:
         return False
-    op, before, after = record["request"]["op"], pre["identity"], post["identity"]
-    if op in ("retire-held", "retire-interrupted") and after["state"] != "Absent":
-        # Tras R+, otra creación con el mismo id cuenta como Absent de X.
-        return (after["task_id"] == before["task_id"] and
-                after["generation"] == before["generation"] and
-                after["created_at"] != before["created_at"])
+    op, before = record["request"]["op"], pre["identity"]
+    after = rpc_effect_identity(op, before, post["identity"])
     try:
         transition(before, after, op)
     except Invalid:
@@ -636,8 +651,12 @@ def rpc_verdict(record, plan, claim, seal, emitter_alive, life_alive, pre, post,
     except Invalid:
         return False, None, "evidence_missing"
     if seal is None:
+        if claim is None and not emitter_alive:
+            # Sólo el emisor del plan publica el claim. Muerto, la ausencia ya no es
+            # «aún no publicado»: pudo perderse en una restauración. Nunca liquida.
+            return False, None, "evidence_missing"
         if not emitter_alive and not life_alive:
-            return True, None, "startup"  # S4
+            return True, None, "startup"  # S4, con el claim del dueño
         return False, None, "rpc_unresolved"
     if seal["outcome"] == "not-sent":
         return True, False, seal["reason"]  # S2 y N2

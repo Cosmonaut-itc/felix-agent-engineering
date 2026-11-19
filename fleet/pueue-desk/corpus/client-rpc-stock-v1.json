@@ -103,7 +103,12 @@
     {"id": "no-seal-emitter-dead-daemon-alive", "history": "hold", "seal": null, "post": {"obs": "stashed"}, "emitter_alive": false, "exclusion": "filtered", "expect": [false, null, "rpc_unresolved"]},
     {"id": "no-seal-emitter-alive-daemon-dead", "history": "hold", "seal": null, "post": null, "life_alive": false, "exclusion": "filtered", "expect": [false, null, "rpc_unresolved"]},
     {"id": "no-seal-both-dead", "history": "hold", "seal": null, "post": null, "emitter_alive": false, "life_alive": false, "exclusion": "filtered", "expect": [true, null, "startup"]},
+    {"id": "claim-pending-emitter-alive", "history": "hold", "seal": null, "post": null, "exclusion": "filtered", "patch": {"doc": "claim", "path": [], "value": null}, "expect": [false, null, "rpc_unresolved"]},
+    {"id": "claim-pending-emitter-alive-daemon-dead", "history": "hold", "seal": null, "post": null, "life_alive": false, "exclusion": "filtered", "patch": {"doc": "claim", "path": [], "value": null}, "expect": [false, null, "rpc_unresolved"]},
+    {"id": "lost-claim-emitter-dead-daemon-alive", "history": "hold", "seal": null, "post": {"obs": "stashed"}, "emitter_alive": false, "exclusion": "filtered", "patch": {"doc": "claim", "path": [], "value": null}, "expect": [false, null, "evidence_missing"]},
+    {"id": "lost-claim-both-dead", "history": "hold", "seal": null, "post": null, "emitter_alive": false, "life_alive": false, "exclusion": "filtered", "patch": {"doc": "claim", "path": [], "value": null}, "expect": [false, null, "evidence_missing"]},
     {"id": "hold-seal-non-owner", "history": "hold", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "stashed"}, "exclusion": "filtered", "patch": {"doc": "seal", "path": ["pid"], "value": 5152}, "expect": [false, null, "evidence_missing"]},
+    {"id": "hold-not-sent-non-owner", "history": "hold", "seal": {"outcome": "not-sent", "reason": "startup"}, "post": null, "exclusion": "filtered", "patch": {"doc": "seal", "path": ["pid"], "value": 5152}, "expect": [false, null, "evidence_missing"]},
     {"id": "hold-peer-other-life", "history": "hold", "seal": {"outcome": "replied", "reply": "success", "peer": "D2"}, "post": {"obs": "stashed"}, "exclusion": "filtered", "expect": [false, null, "evidence_missing"]},
     {"id": "hold-seal-without-claim", "history": "hold", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "stashed"}, "exclusion": "filtered", "patch": {"doc": "claim", "path": [], "value": null}, "expect": [false, null, "evidence_missing"]},
     {"id": "hold-plan-missing", "history": "hold", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "stashed"}, "exclusion": "filtered", "patch": {"doc": "plan", "path": [], "value": null}, "expect": [false, null, "evidence_missing"]},
@@ -120,11 +125,13 @@
     {"id": "signal-failure", "history": "signal-term", "seal": {"outcome": "replied", "reply": "failure"}, "post": {"obs": "done-signal"}, "exclusion": "filtered", "expect": [true, false, "stale_state"]},
     {"id": "retire-absent", "history": "retire-held", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "absent"}, "exclusion": "filtered", "expect": [true, true, null]},
     {"id": "retire-reused-id", "history": "retire-held", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "reused"}, "exclusion": "filtered", "expect": [true, true, null]},
+    {"id": "hold-reused-id-not-projected", "history": "hold", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "reused"}, "exclusion": "filtered", "expect": [true, null, "evidence_missing"]},
     {"id": "retire-still-present", "history": "retire-held", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "stashed"}, "exclusion": "filtered", "expect": [true, null, "evidence_missing"]},
     {"id": "retire-reused-id-coordinated", "history": "retire-held", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "reused"}, "exclusion": "coordinated", "expect": [true, null, "unsupported"]},
     {"id": "retire-closed-reused-id", "history": "retire-held", "seal": {"outcome": "closed"}, "post": {"obs": "reused"}, "exclusion": "filtered", "expect": [true, null, "evidence_missing"]},
     {"id": "retire-no-seal-reused-id", "history": "retire-held", "seal": null, "post": {"obs": "reused"}, "exclusion": "filtered", "expect": [false, null, "rpc_unresolved"]},
     {"id": "retire-failure", "history": "retire-held", "seal": {"outcome": "replied", "reply": "failure"}, "post": {"obs": "stashed"}, "exclusion": "filtered", "expect": [true, false, "stale_state"]},
-    {"id": "retire-interrupted-absent", "history": "retire-interrupted", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "absent"}, "exclusion": "filtered", "expect": [true, true, null]}
+    {"id": "retire-interrupted-absent", "history": "retire-interrupted", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "absent"}, "exclusion": "filtered", "expect": [true, true, null]},
+    {"id": "retire-interrupted-reused-id", "history": "retire-interrupted", "seal": {"outcome": "replied", "reply": "success"}, "post": {"obs": "reused"}, "exclusion": "filtered", "expect": [true, true, null]}
   ]
 }
