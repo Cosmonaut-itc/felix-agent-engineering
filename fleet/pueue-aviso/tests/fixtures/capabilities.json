@@ -1,0 +1,22 @@
+{
+  "desk": {
+    "schema": "rack-host-result@1",
+    "status": "ok",
+    "pause_reasons": {
+      "default": ["ambiguous", "startup"],
+      "hasito": [],
+      "jale": [],
+      "otros": [],
+      "rapidas": []
+    }
+  },
+  "mini": {
+    "schema": "rack-host-result@1",
+    "status": "ok",
+    "pause_reasons": {
+      "default": [],
+      "rapidas": [],
+      "suites": []
+    }
+  }
+}
