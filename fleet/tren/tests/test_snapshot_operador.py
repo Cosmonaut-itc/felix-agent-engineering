@@ -16,6 +16,7 @@ import test_juicio as juicio_fixtures
 from adaptadores import seleccionar
 from dominio import (Certificado, Corriendo, EsperandoCI, Pausa, Promoviendo,
                      Reproduccion, Terminal, clave)
+from operador import FalloSnapshot, Snapshots
 
 
 class SnapshotTests(unittest.TestCase):
@@ -212,20 +213,67 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
                          'checkout-operador:snapshot-no-verificable')
         self.assertEqual((arbol / 'modulo').read_text(), 'tocado')
 
-    def test_snapshot_sin_marca_se_recrea(self):
-        try:
-            from operador import Snapshots
-        except ImportError:
-            self.fail('falta el registro de snapshots')
+    def ruta_snapshot(self):
         with self.ledger() as ledger:
             gestor = Snapshots(ledger, activo.REPO, self.contexto.git, self.config)
-            anterior = gestor.raiz / clave(str(self.operador)) / self.nuevo
-        anterior.parent.mkdir(parents=True)
-        self.comando(self.operador, 'worktree', 'add', '--detach', str(anterior), self.viejo)
-        (anterior / 'rastro').touch()
+            return gestor.raiz / clave(str(self.operador)) / self.nuevo
+
+    def comprobar_ocupante(self, arbol):
+        (arbol / 'ajeno').write_text('conservar')
+        # La versión anterior llega a Certificado y borra el archivo.
+        for n in range(8):
+            self.contexto.tick(100 + n * 120)
+            estado = self.estado()
+            if estado.pausa or estado.trenes and isinstance(estado.trenes[0].fase, Certificado):
+                break
+        self.assertTrue((arbol / 'ajeno').is_file(), 'el tren borró el ocupante ajeno')
+        self.assertEqual((arbol / 'ajeno').read_text(), 'conservar')
+        self.assertEqual(estado.pausa, Pausa('infraestructura', detalle='checkout-operador:ruta-ocupada'))
+        self.assertFalse(self.solicitudes())
+        self.assertFalse(self.lineas('versiones.log'))
+
+    def test_worktree_ajeno_sin_reserva_sobrevive_y_pausa(self):
+        arbol = self.ruta_snapshot()
+        arbol.parent.mkdir(parents=True)
+        self.comando(self.operador, 'worktree', 'add', '--detach', str(arbol), self.viejo)
+        self.comprobar_ocupante(arbol)
+        self.assertEqual(self.cabeza(arbol), self.viejo)
+
+    def test_directorio_ajeno_sin_reserva_sobrevive_y_pausa(self):
+        arbol = self.ruta_snapshot()
+        arbol.mkdir(parents=True)
+        self.comprobar_ocupante(arbol)
+
+    def test_snapshot_reservado_interrumpido_se_recrea(self):
+        arbol = self.ruta_snapshot()
+        git = Snapshots.comando_git
+
+        def interrumpir(gestor, ruta, *args, **opciones):
+            if args[:2] == ('worktree', 'add'):
+                # Otra conexión ve la reserva antes de que Git registre la ruta.
+                with self.ledger() as ledger:
+                    tabla = ledger.db.execute("SELECT 1 FROM sqlite_master "
+                                              "WHERE name='snapshots_reservados'").fetchone()
+                    self.assertIsNotNone(tabla, 'falta la reserva durable del snapshot')
+                    reserva = ledger.db.execute("SELECT 1 FROM snapshots_reservados WHERE ruta=?",
+                                                (str(arbol),)).fetchone()
+                    self.assertIsNotNone(reserva)
+                git(gestor, ruta, *args[:2], '--no-checkout', *args[2:], **opciones)
+                (arbol / 'modulo').write_text('checkout interrumpido')
+                raise FalloSnapshot('git-del-operador')
+            return git(gestor, ruta, *args, **opciones)
+
+        with patch.object(Snapshots, 'comando_git', interrumpir):
+            self.assertEqual(self.hasta_pausa().pausa.detalle, 'checkout-operador:git-del-operador')
+        self.assertEqual((arbol / 'modulo').read_text(), 'checkout interrumpido')
+        self.assertFalse(self.solicitudes())
+        self.juicio('reanudar')
         self.hasta_fase(Certificado)
-        self.assertEqual(self.comprobar_snapshot(self.argv(), self.nuevo), anterior)
-        self.assertFalse((anterior / 'rastro').exists())
+        self.assertEqual(self.comprobar_snapshot(self.argv(), self.nuevo), arbol)
+        self.assertEqual((arbol / 'modulo').read_text(), 'nuevo')
+        with self.ledger() as ledger:
+            self.assertIsNone(ledger.db.execute("SELECT 1 FROM snapshots_reservados WHERE ruta=?",
+                                                (str(arbol),)).fetchone())
 
     def test_reenganche_tras_muerte_conserva_snapshot_y_argv(self):
         self.plan([{'esperar': True}])
@@ -297,6 +345,43 @@ c.tick(2000)
         self.comprobar_snapshot(ultimo, siguiente)
         self.assertIn('--reanudar', ultimo)
 
+    def test_hasito_reanuda_75_tras_retirar_checkout_operador(self):
+        self.usar_hasito()
+        (self.raiz / 'suite-75').touch()
+        self.hasta_fase(Corriendo)
+        primera = json.loads(self.lineas('hasito-argv.log')[0])
+        self.comprobar_snapshot(primera, self.nuevo)
+        self.config.pop('checkout_operador')
+        self.usar_hasito()
+        self.hasta_fase(Certificado)
+        _, ultimo = map(json.loads, self.lineas('hasito-argv.log'))
+        self.assertEqual(ultimo[1], self.config['lanzador'])
+        self.assertIn('--reanudar', ultimo)
+
+    def test_snapshot_de_tren_terminal_sin_recibo_tiene_plazo(self):
+        self.hasta_fase(EsperandoCI)
+        estado = self.estado()
+        tren = estado.trenes[0]
+        with self.ledger() as ledger:
+            gestor = Snapshots(ledger, activo.REPO, self.contexto.git, self.config)
+            _, anterior = gestor.preparar(self.nuevo)
+            siguiente = self.version('tercero', self.nuevo)
+            self.push(siguiente, 'refs/heads/main')
+            gestor.preparar(siguiente)
+            # Referencia histórica sin ruta al recibo del lanzador.
+            ledger.db.execute('INSERT INTO snapshots_usados VALUES (?, ?)', (str(anterior), tren.id))
+            cerrado = replace(estado, trenes=(replace(tren, fase=Terminal('ABORTADO')),))
+            cierre = time.time()
+            plazo = 24 * 60 * 60
+            ledger.guardar_paso(cerrado, (), cierre)
+            ledger.guardar_paso(cerrado, (), cierre + plazo - 2)
+            with patch.object(time, 'time', return_value=cierre + plazo - 1):
+                gestor.limpiar(cerrado, [])
+            self.assertTrue(anterior.exists(), 'la limpieza se adelantó al plazo del tren terminal')
+            with patch.object(time, 'time', return_value=cierre + plazo):
+                gestor.limpiar(cerrado, [])
+            self.assertFalse(anterior.exists())
+
     def test_hasito_recupera_recibo_anterior(self):
         ruta = self.config.pop('checkout_operador')
         self.usar_hasito()
@@ -341,10 +426,6 @@ c.tick(2000)
         self.comprobar_snapshot(self.argv(segunda), mas_nuevo)
 
     def test_lectura_concurrente_repeticion_y_limpieza(self):
-        try:
-            from operador import Snapshots
-        except ImportError:
-            self.fail('no hay snapshots por SHA')
         salida = self.raiz / 'versiones.log'
         listo, seguir = (shlex.quote(str(self.raiz / s)) for s in ('listo', 'seguir'))
         pausa = (f'touch {listo}; fin=$((SECONDS + 15)); '
@@ -378,6 +459,10 @@ c.tick(2000)
                 nuevo = adaptador.suite(tren.fase.candidato, 'otro')[0]
                 gestor.limpiar(estado, [])
                 self.assertTrue(viejo.exists())
+                cerrado = replace(estado, trenes=(replace(tren, fase=Terminal('ABORTADO')),))
+                ledger.guardar_paso(cerrado, (), time.time())
+                gestor.limpiar(cerrado, [])
+                self.assertTrue(viejo.exists(), 'el lanzador de un tren terminal sigue leyendo el snapshot')
                 self.assertEqual(salida.read_text().splitlines(), ['tercero tercero'])
             finally:
                 (self.raiz / 'seguir').touch()
@@ -398,7 +483,6 @@ c.tick(2000)
                 self.comprobar_snapshot(self.argv(r), ultimo)
             gestor.limpiar(estado, [{'snapshot': str(viejo)}])
             self.assertTrue(viejo.exists())
-            cerrado = replace(estado, trenes=(replace(tren, fase=Terminal('ABORTADO')),))
             gestor.limpiar(cerrado, [{'snapshot': str(viejo)}])
             self.assertTrue(viejo.exists())
             gestor.limpiar(cerrado, [])
