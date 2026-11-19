@@ -383,6 +383,35 @@ c.tick(2000)
                 gestor.limpiar(cerrado, [])
             self.assertFalse(anterior.exists())
 
+    def test_limpiar_no_poda_worktrees_ajenos(self):
+        # Un worktree ajeno sin directorio puede ser la única referencia a commits locales.
+        ajeno = self.raiz / 'ajeno-del-operador'
+        self.comando(self.operador, 'worktree', 'add', '--detach', str(ajeno), 'HEAD')
+        self.comando(ajeno, '-c', 'user.name=t', '-c', 'user.email=t@t', 'commit',
+                     '--allow-empty', '-m', 'local')
+        local = self.comando(ajeno, 'rev-parse', 'HEAD').strip()
+        subprocess.run(['rm', '-rf', str(ajeno)], check=True)
+        self.hasta_fase(EsperandoCI)
+        estado = self.estado()
+        with self.ledger() as ledger:
+            gestor = Snapshots(ledger, activo.REPO, self.contexto.git, self.config)
+            _, viejo = gestor.preparar(self.viejo)
+            _, anterior = gestor.preparar(self.nuevo)
+            siguiente = self.version('tercero', self.nuevo)
+            self.push(siguiente, 'refs/heads/main')
+            gestor.preparar(siguiente)
+            # Un snapshot propio cuyo directorio desapareció sólo conserva su registro.
+            subprocess.run(['rm', '-rf', str(viejo)], check=True)
+            gestor.limpiar(estado, [])
+            registrados = self.comando(self.operador, 'worktree', 'list', '--porcelain')
+            self.assertIn('worktree ' + str(ajeno), registrados)
+            self.assertIn('HEAD ' + local, registrados)
+            self.assertNotIn('worktree ' + str(viejo), registrados)
+            self.assertNotIn('worktree ' + str(anterior), registrados)
+            self.assertFalse(ledger.db.execute(
+                'SELECT 1 FROM snapshots_operador WHERE ruta IN (?, ?)',
+                (str(viejo), str(anterior))).fetchone())
+
     def test_hasito_recupera_recibo_anterior(self):
         ruta = self.config.pop('checkout_operador')
         self.usar_hasito()

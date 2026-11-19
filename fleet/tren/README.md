@@ -1119,8 +1119,10 @@ pre-aterrizaje pendientes. Tras el cierre de un tren, conserva los snapshots
 con lanzamientos todavía activos. Si falta un recibo terminal y no se puede
 determinar si el proceso sigue vivo, los conserva 24 horas desde que el tren
 quedó terminal. Quita los worktrees limpios restantes con
-`git worktree remove` y después corre `git worktree prune`. Los worktrees
-sucios se conservan para inspección. Si el SHA o el snapshot fallan, el
+`git worktree remove`; si el directorio de un snapshot ya no existe, quita
+sólo su registro. No corre `git worktree prune`: el repositorio del operador
+puede ser compartido y la poda borraría registros de worktrees ajenos. Los
+worktrees sucios se conservan para inspección. Si el SHA o el snapshot fallan, el
 efecto y la pausa `infraestructura/checkout-operador:<estado>` se registran
 juntos. `reanudar` vuelve a intentar el efecto y `abortar` aplica el cierre
 habitual del tren.
