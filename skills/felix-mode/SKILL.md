@@ -200,7 +200,10 @@ que demuestra:
   tree y esa rama, y marca `rename de directorio` cuando git podría mover un
   archivo; su `--help` da la sintaxis. Si imprime `Nivel: alto`, el nivel es
   alto. Si sólo lista archivos que la rama no tocó, o un `rename de
-  directorio`, actualiza la rama con el destino y vuelve a correrlo. Si imprime `Rutas:`, clasifica
+  directorio`, actualiza la rama con el destino y vuelve a correrlo. Una capa
+  de una pila corre el script como fija
+  [Pilas](references/merge.md#pilas-la-base-aterriza-primero) y conserva su
+  rama. Si imprime `Rutas:`, clasifica
   el diff completo con las demás señales de **Alto riesgo**. Si sale con 2,
   corrige lo que dice antes de la ronda; un error no cuenta como normal. Un diff que crece puede subir de
   nivel. El brief de cada ronda abre con `Nivel: <normal o alto> por <señal
@@ -211,6 +214,9 @@ que demuestra:
   las correcciones de la ronda en un solo push y deja la rama destino para
   el final, como fija
   [Sincronizar una vez, al final](references/merge.md#sincronizar-una-vez-al-final).
+  Si la rama base del PR es la rama de otro PR abierto, el PR es una capa
+  de una pila: antes de sincronizarla o de pedirle una ronda, sigue
+  [Pilas](references/merge.md#pilas-la-base-aterriza-primero).
 - **Normal.** Toda review de cambios la hace un revisor independiente
   gpt-6.2-sol en `high`, con contexto nuevo y evidencia primaria. Donde pstack
   pida `interrogate`, `thermos` o un veredicto independiente para un cambio
