@@ -259,6 +259,7 @@ print(json.dumps(dict(version=1, id=s['id'], resultado=
                                                 (str(arbol),)).fetchone()
                     self.assertIsNotNone(reserva)
                 git(gestor, ruta, *args[:2], '--no-checkout', *args[2:], **opciones)
+                git(gestor, ruta, 'worktree', 'lock', '--reason', 'initializing', str(arbol))
                 (arbol / 'modulo').write_text('checkout interrumpido')
                 raise FalloSnapshot('git-del-operador')
             return git(gestor, ruta, *args, **opciones)
@@ -523,10 +524,9 @@ c.tick(2000)
         adaptador = self.contexto.hasito
         procesos = []
 
-        def lanzar_y_salir(argv, check, **opciones):
+        def lanzar_y_salir(argv, *, check, capture_output, **opciones):
             procesos.append(subprocess.Popen(argv, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                             text=True, env=opciones.get('env'),
-                                             pass_fds=opciones.get('pass_fds', ())))
+                                             **opciones))
             raise OSError('el tick no recogió el resultado')
 
         from adaptadores.hasito import ResultadoInvalido
@@ -553,7 +553,7 @@ c.tick(2000)
                 (self.raiz / 'seguir').touch()
                 for proceso in procesos:
                     salida, error = proceso.communicate(timeout=15)
-            self.assertEqual((salida, error), ('esperando\n', ''))
+            self.assertEqual((salida, error), ('esperando', ''))
             gestor.limpiar(cerrado, [])
             self.assertFalse(viejo.exists())
 

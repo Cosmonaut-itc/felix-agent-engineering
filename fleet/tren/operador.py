@@ -123,14 +123,20 @@ class Snapshots:
                 not self.limpio(arbol)):
             raise FalloSnapshot("snapshot-no-verificable")
 
-    def worktree_registrado(self, checkout, arbol):
+    def registro_worktree(self, checkout, arbol):
         registrados = self.comando_git(checkout, "worktree", "list", "--porcelain", "-z").stdout
-        return "worktree " + str(arbol) in registrados.split("\0")
+        for ficha in registrados.split("\0\0"):
+            campos = ficha.split("\0")
+            if campos[0] == "worktree " + str(arbol):
+                return campos
+        return None
 
-    def descartar_incompleto(self, checkout, arbol, registrado):
+    def descartar_incompleto(self, checkout, arbol, registro):
         # La ruta está reservada por el tren. Git puede morir antes de registrar
         # el worktree, o después de registrarlo y antes de terminar el checkout.
-        if registrado:
+        if registro is not None:
+            if "locked initializing" in registro:
+                self.comando_git(checkout, "worktree", "unlock", str(arbol))
             quitar = self.comando_git(checkout, "worktree", "remove", str(arbol), verificar=False)
             if quitar.returncode:
                 self.comando_git(checkout, "worktree", "remove", "--force", str(arbol))
@@ -151,12 +157,12 @@ class Snapshots:
             if not completo:
                 arbol.parent.mkdir(parents=True, mode=0o700, exist_ok=True)
                 self.traer(checkout, commit)
-                registrado = self.worktree_registrado(checkout, arbol)
+                registro = self.registro_worktree(checkout, arbol)
                 reserva = self.ledger.db.execute(
                     "SELECT 1 FROM snapshots_reservados WHERE ruta=?", (str(arbol),)).fetchone()
                 if reserva:
-                    self.descartar_incompleto(checkout, arbol, registrado)
-                elif registrado or ruta_ocupada(arbol):
+                    self.descartar_incompleto(checkout, arbol, registro)
+                elif registro is not None or ruta_ocupada(arbol):
                     raise FalloSnapshot("ruta-ocupada")
                 # El INSERT en autocommit precede al primer cambio del worktree.
                 if not reserva:
