@@ -189,12 +189,20 @@ class RpcContractTests(unittest.TestCase):
                 if case['seal'] is not None and case['seal']['outcome'] == 'closed':
                     self.assertIsNone(effect)  # S3 liquida, nunca atribuye ni prueba ausencia.
                 if case.get('patch', {}).get('doc') == 'claim':
-                    # Sin claim nunca se liquida: pendiente con el emisor vivo, perdido si murió.
-                    self.assertFalse(settled)
-                    self.assertEqual(reason, 'rpc_unresolved' if case.get('emitter_alive', True)
-                                     and case['seal'] is None else 'evidence_missing')
+                    # Sin claim: pendiente con el emisor vivo; perdido si murió, y entonces sólo
+                    # liquida por S4 (D terminada, sin sello), sin atribuir y con evidence_missing.
+                    alive = case.get('emitter_alive', True)
+                    s4 = case['seal'] is None and not alive and not case.get('life_alive', True)
+                    self.assertEqual(settled, s4)
+                    self.assertEqual(reason, 'rpc_unresolved' if alive and case['seal'] is None
+                                     else 'evidence_missing')
         covered = {(case['seal'] or {}).get('outcome') for case in RPC['verdicts']}
         self.assertEqual(covered, {None, 'not-sent', 'replied', 'closed'})
+        # Q sólo se exige para atribuir: hay una historia sin Q por cada clase de sello.
+        without_q = {(case['seal']['outcome'], case['seal'].get('reply')) for case in RPC['verdicts']
+                     if case['seal'] is not None and case['post'] is None and 'patch' not in case}
+        self.assertLessEqual({('not-sent', None), ('closed', None), ('replied', 'failure'),
+                              ('replied', 'success')}, without_q)
 
     def test_mutant_r_plus_without_exclusion(self):
         self.assert_story('hold-success-coordinated')
@@ -208,8 +216,17 @@ class RpcContractTests(unittest.TestCase):
     def test_mutant_s4_requires_daemon_death(self):
         self.assert_story('no-seal-emitter-dead-daemon-alive')
 
-    def test_mutant_lost_claim_never_settles(self):
+    def test_mutant_lost_claim_waits_for_daemon(self):
+        self.assert_story('lost-claim-emitter-dead-daemon-alive')
+
+    def test_mutant_lost_claim_settles_as_evidence_missing(self):
         self.assert_story('lost-claim-both-dead')
+
+    def test_mutant_missing_q_only_holds_success(self):
+        """Sin Q (vencida o no leída) S2, R− y S3 liquidan igual; sólo un success queda sin atribuir."""
+        for name in ('hold-not-sent-startup', 'hold-failure-without-q', 'hold-closed-alive-without-q',
+                     'hold-closed-daemon-gone', 'hold-success-without-q'):
+            self.assert_story(name)
 
     def test_retire_reused_id_projects_absent_of_x(self):
         """collect y apply cotejan Absent de X, no la Q cruda de la tarea nueva (`@1` intacto)."""

@@ -443,13 +443,22 @@ del colector de CC2, la mitad de sus 0,4 s, fijado en `Pueue.timeout` y
 `Pueue.deadline`. Hoy el lector por omisión espera sin plazo. Q tiene ese
 plazo propio y no consume el segundo del sello. Las escrituras FULL con
 `fullfsync` y la creación del emisor no tienen cota, igual que hoy y que en
-CC2. Si vence P o la relectura, no se envía nada. Si llega el sello y Q no
-se lee a tiempo, CC1 no atribuye: guarda la fase `unknown` con
-`evidence_missing`, suelta el candado y no fija `hold_identity`. CC2 toma el
-relevo en cuanto CC1 suelta el candado con un recibo no final, sea sin sello
-o con sello y sin Q. Recoge sello, plan y claim locales y una Q nueva dentro
-de sus 0,4 s, y aplica `rpc_verdict`. Una Q leída después del sello y en la
-vida D vale aunque llegue en otro turno.
+CC2. Si vence P o la relectura, no se envía nada. Q sólo se exige para
+atribuir un `success`. Si llega el sello y Q vence o falla, CC1 aplica
+`rpc_verdict` con `post=None`: un sello `not-sent` (S2), un `failure` (R−) o
+un `closed` (S3) liquidan o acreditan el rechazo como dice la tabla de
+veredictos, sin esperar otra Q. Un `success` sin Q no atribuye: la fase queda
+`unknown` con `evidence_missing`, no fija `hold_identity` y la reserva se
+retiene a la espera de una Q posterior. Con un recibo no final, sea sin
+sello o con un `success` sin Q, CC1 deja el recibo disponible y suelta el
+candado. Lo recoge el siguiente ciclo de CC2 que alcance la reserva: lee
+sello, plan, claim y una Q nueva fuera del candado, en sus lotes de ocho y
+dentro de los 0,4 s que comparte el lote, y retiene con `evidence_missing` si
+el plazo vence. Aplica `rpc_verdict` con los cotejos de revisión de CC2. Una Q
+leída después del sello y en la vida D vale aunque llegue en otro turno; una
+Q incompatible se vuelve a intentar cuando el índice alcance otra vez la
+acción, con la garantía N/N+1 de la entrega CC2. No se promete progreso
+mientras la guardia no obtenga su turno.
 
 Una reserva impide reordenar y lo explica en `reorder_groups`; un reordenado
 abierto o en recuperación difiere las acciones cliente sin RPC. La guardia
@@ -782,21 +791,29 @@ exclusion}` (P1).
   `prepare_client_binding→save_id→publish_client_binding` y la recuperación
   previa al ID son de Hasito y no cambian con stock. Los directorios
   `client-rpc/<dispatch>/` son lápidas: no se borran mientras exista el
-  registro que los nombra. Sin plan, con un sello sin claim o sin claim con
-  el emisor muerto, el veredicto es `evidence_missing` y se retiene; nunca
-  `not_sent`, nunca liquida y nunca hay reenvío. Una restauración que conserva
-  la SQLite y pierde `client-rpc/`, o sólo el claim, sólo produce retenciones,
-  y un emisor anterior no alcanza una vida nueva del daemon porque coteja el
-  par antes de enviar.
+  registro que los nombra. Sin plan o con un sello sin claim, el veredicto es
+  `evidence_missing` y se retiene sin liquidar. Sin claim con el emisor
+  muerto, el motivo también es `evidence_missing`: retiene mientras viva D y
+  liquida por S4, sin atribuir, cuando D termina. En todos esos casos la
+  reserva se retiene, nunca es `not_sent` y nunca hay reenvío. Una
+  restauración que conserva la SQLite y pierde `client-rpc/`, o sólo el
+  claim, sólo produce retenciones de la reserva, y un emisor anterior no
+  alcanza una vida nueva del daemon porque coteja el par antes de enviar.
+  Así se cumple §2.7.3 del alcance stock, la corrección del juicio sobre la
+  restauración de claims: motivo `evidence_missing`, reserva retenida y nunca
+  `not_sent` ni reenvío.
 - **Claim perdido frente a claim pendiente.** El dato que los distingue es la
   vida del emisor que nombran el plan y `process`, por pid y nacimiento: el
   `emitter_alive` que el colector ya calcula. Sólo ese emisor puede publicar
   el claim, y lo hace antes de conectar. Mientras vive, la falta de claim es
   «aún no publicado» y retiene `rpc_unresolved`. Una vez muerto, el claim ya
   no puede aparecer. Su falta es entonces indistinguible entre un emisor
-  muerto antes de publicarlo y un claim perdido en una restauración, y retiene
-  `evidence_missing` sin liquidar ni quitar `uncertain`. S4 exige el claim. No
-  sirven otros datos:
+  muerto antes de publicarlo y un claim perdido en una restauración. Mientras
+  vive D retiene `evidence_missing` sin liquidar ni quitar `uncertain`. Cuando
+  D termina, S4 vale igual que con claim: el emisor muerto no alcanza otra
+  vida y nadie lee el búfer de una vida muerta, así que liquida sin atribuir,
+  con `uncertain:false`, motivo `evidence_missing` y la reserva retenida. Para
+  distinguir los dos casos no sirven otros datos:
   - `process.state` no certifica nada: `gated` no prueba que stdin siguiera
     cerrado.
   - Una marca de restauración depende de que la restauración se declare. Una
@@ -812,13 +829,14 @@ exclusion}` (P1).
 - **S2.** Sello `not-sent`.
 - **S3.** Sello `closed`. Un cierre del daemon implica que la tarea de esa
   conexión terminó (E6), viva o no la vida `peer`.
-- **S4.** Sin sello, con el claim del dueño, emisor muerto **y** la vida D
-  del plan terminada.
+- **S4.** Sin sello, emisor muerto **y** la vida D del plan terminada, con o
+  sin claim. Con el claim del dueño el motivo es `startup`; sin claim es
+  `evidence_missing`, porque pudo perderse en una restauración.
 
 S3 y S4 liquidan sin atribuir: la reserva pasa a `uncertain:false` y sigue
 abierta. Un emisor vivo sin sello, con o sin claim, o un emisor muerto con
-claim y D viva retienen `rpc_unresolved`. Un emisor muerto sin claim retiene
-`evidence_missing` y nunca liquida, viva o no D.
+claim y D viva retienen `rpc_unresolved`. Un emisor muerto sin claim y con D
+viva retiene `evidence_missing`.
 
 `rpc_verdict(record, plan, claim, seal, emitter_alive, life_alive, pre, post,
 exclusion)` devuelve `(settled, effect, reason)`. Los booleanos de vida los
@@ -828,7 +846,8 @@ que el llamador retiene como `evidence_missing`.
 | Historia | Veredicto |
 |---|---|
 | Plan ausente o enlace roto (no dueño, también en un sello negativo; `peer` de otra vida, sello sin claim, P distinta de `expected` o de D) | `(false, null, evidence_missing)` |
-| Sin sello ni claim, emisor muerto (claim perdido o nunca publicado), viva o no D | `(false, null, evidence_missing)` |
+| Sin sello ni claim, emisor muerto (claim perdido o nunca publicado) y D viva | `(false, null, evidence_missing)` |
+| Sin sello ni claim, emisor muerto y D terminada (S4) | `(true, null, evidence_missing)` |
 | Sin sello ni claim, emisor vivo (claim aún no publicado) | `(false, null, rpc_unresolved)` |
 | Sin sello, con claim, y con el emisor vivo o con D viva | `(false, null, rpc_unresolved)` |
 | Sin sello, con claim, emisor muerto y D terminada (S4) | `(true, null, startup)` |
@@ -848,10 +867,12 @@ id reutilizado **sin respuesta** nunca atribuyen. Ex exige el perfil
 motivo es N2: el hold inicial cierra y las demás fases difieren. CC3 no añade
 motivos al cable: todos están en `REASONS`.
 
-Un `success` sin Q (`post` null, porque la lectura venció o falló) es
-provisional: la fase sigue `unknown`, no fija `hold_identity` y CC2 vuelve a
-leer Q mientras la reserva siga abierta. Una Q incompatible también retiene;
-CC2 la relee en cada ciclo, sin reenviar nada.
+Las filas de S2, R− y S3 no dependen de Q: con `post` null dan el mismo
+veredicto. Un `success` sin Q (`post` null, porque la lectura venció o falló)
+es provisional: la fase sigue `unknown`, no fija `hold_identity` y la reserva
+queda pendiente de una Q posterior. Una Q incompatible también retiene. El
+siguiente ciclo de CC2 que alcance la reserva vuelve a leer Q, sin reenviar
+nada, con la garantía N/N+1 de la entrega CC2.
 
 **Identidad que cotejan collect y apply.** Con el veredicto `(true, true,
 null)`, P1 coteja la identidad de fase E = `rpc_effect_identity(op, P, Q)`,
@@ -875,11 +896,14 @@ R2 (daemon caído o reiniciado con la petición en vuelo), R4 (`held` perdido al
 reiniciar antes del start) y R6 (Absent o id reutilizado sin respuesta) dejan
 una reserva abierta para siempre y cierran el reordenar de su grupo. Un
 emisor muerto sin claim, sea por un claim perdido o por un emisor que murió
-antes de publicarlo, deja además `uncertain` para siempre. Eso retiene también
-las aperturas del grupo. Sólo ocurre si muere CC1 entre registrar `gated` y
-abrir la compuerta, si muere el emisor entre leer `dispatch` y publicar el
-claim, o si una restauración pierde el claim. Su intervención explícita y
-auditada es un ticket posterior, antes de CC8, y no forma parte de P0. Editar
+antes de publicarlo, deja además `uncertain` mientras viva D. Eso retiene
+también las aperturas del grupo. Sólo ocurre si muere CC1 entre registrar
+`gated` y abrir la compuerta, si muere el emisor entre leer `dispatch` y
+publicar el claim, o si una restauración pierde el claim. Un relevo
+supervisado del daemon termina D y lo convierte en S4, como en los demás
+cortes sin sello: `uncertain:false`, motivo `evidence_missing` y la reserva
+abierta. La intervención explícita y auditada de las reservas que quedan
+abiertas es un ticket posterior, antes de CC8, y no forma parte de P0. Editar
 el diario no es un procedimiento.
 
 ## Entrega CC3-P0
@@ -930,10 +954,11 @@ Propuestas de E-stock:
 
 Correcciones de la review r1, sin cambiar el cable:
 
-- **Claim perdido.** `rpc_verdict` no liquida sin claim cuando el emisor ya
-  murió: da `(false, null, evidence_missing)`. S4 exige el claim. Lo fijan las
-  historias `lost-claim-*` y `claim-pending-*` y el mutante «claim perdido que
-  liquida».
+- **Claim perdido.** Sin claim y con el emisor muerto, `rpc_verdict` da
+  `(false, null, evidence_missing)` mientras vive D y liquida por S4 con
+  `(true, null, evidence_missing)` cuando D termina. Lo fijan las historias
+  `lost-claim-*` y `claim-pending-*` y los mutantes «claim perdido que
+  liquida» y «claim perdido como S4».
 - **Retirada con id reutilizado.** `rpc_effect_identity` proyecta Absent de X
   para collect y apply. `rpc_attributed` usa la misma proyección. Lo fijan
   `test_retire_reused_id_projects_absent_of_x`, la historia
@@ -944,6 +969,17 @@ Correcciones de la review r1, sin cambiar el cable:
 - **Nits.** El texto de CC2 distingue main de P1. Un emisor que aborta tras la
   trama 3 no sella `closed`. La historia `hold-not-sent-non-owner` y su
   mutante fijan el rechazo de un sello negativo de quien no es dueño.
+
+Correcciones de la review r2, sin cambiar el cable:
+
+- **Q vencida.** Q sólo se exige para atribuir un `success`. Lo fijan las
+  historias con `post` null `hold-not-sent-startup`, `hold-failure-without-q`,
+  `hold-closed-alive-without-q`, `hold-closed-daemon-gone` y
+  `hold-success-without-q`, el invariante que exige una historia sin Q por
+  clase de sello y el mutante «sin Q retiene todo».
+- **Relevo de CC2.** El texto se ciñe a la garantía de la entrega CC2: lotes
+  de ocho, 0,4 s compartidos, retención al vencer y N/N+1 sólo con el turno de
+  la guardia.
 
 El defecto latente de CC1 (confirmar `held` con rc 0 más la arista) queda
 corregido en el contrato y en `rpc_verdict`; su cambio en `client_actions.py`

@@ -653,10 +653,11 @@ def rpc_verdict(record, plan, claim, seal, emitter_alive, life_alive, pre, post,
     if seal is None:
         if claim is None and not emitter_alive:
             # Sólo el emisor del plan publica el claim. Muerto, la ausencia ya no es
-            # «aún no publicado»: pudo perderse en una restauración. Nunca liquida.
-            return False, None, "evidence_missing"
+            # «aún no publicado»: pudo perderse en una restauración. Con D viva retiene;
+            # con D terminada liquida por S4, sin atribuir y con el motivo de la restauración.
+            return (not life_alive), None, "evidence_missing"
         if not emitter_alive and not life_alive:
-            return True, None, "startup"  # S4, con el claim del dueño
+            return True, None, "startup"  # S4
         return False, None, "rpc_unresolved"
     if seal["outcome"] == "not-sent":
         return True, False, seal["reason"]  # S2 y N2

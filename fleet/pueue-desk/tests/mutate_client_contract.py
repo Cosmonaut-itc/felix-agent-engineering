@@ -92,8 +92,8 @@ def main():
 
 RPC_FILES = ('client-control-v1.json', 'client-rpc-stock-v1.json', 'pueue-404-frames.json')
 # CC3-P0 (alcance-stock §4.3): cada mutante semántico muere por la historia del corpus
-# que lo acusa. El octavo cubre la propuesta de E-stock adoptada (S3 relajada); los tres
-# últimos, los hallazgos de la review r1.
+# que lo acusa. El octavo cubre la propuesta de E-stock adoptada (S3 relajada); los
+# siguientes, los hallazgos de las reviews r1 y r2.
 RPC_SITES = (
     ('r-plus-sin-exclusion', '    if exclusion != "filtered":\n', '    if False:\n',
      'test_mutant_r_plus_without_exclusion', 'La historia hold-success-coordinated cambió de veredicto'),
@@ -119,8 +119,19 @@ RPC_SITES = (
      'return True, (False if life_alive else None), "evidence_missing" if life_alive else "startup"',
      'test_mutant_closed_never_not_applied', 'La historia hold-closed-alive-coordinated cambió de veredicto'),
     # Review r1: claim perdido en una restauración, retirada con id reutilizado y sello negativo ajeno.
-    ('claim-perdido-liquida', 'if claim is None and not emitter_alive:', 'if False:',
-     'test_mutant_lost_claim_never_settles', 'La historia lost-claim-both-dead cambió de veredicto'),
+    # Review r2: el claim perdido liquida sólo con D terminada y con evidence_missing; sin Q sólo
+    # queda sin atribuir un success.
+    ('claim-perdido-liquida', 'return (not life_alive), None, "evidence_missing"',
+     'return True, None, "evidence_missing"',
+     'test_mutant_lost_claim_waits_for_daemon',
+     'La historia lost-claim-emitter-dead-daemon-alive cambió de veredicto'),
+    ('claim-perdido-como-s4', 'if claim is None and not emitter_alive:', 'if False:',
+     'test_mutant_lost_claim_settles_as_evidence_missing',
+     'La historia lost-claim-both-dead cambió de veredicto'),
+    ('sin-q-retiene-todo', '    if seal["outcome"] == "not-sent":\n',
+     '    if post is None:\n        return False, None, "evidence_missing"\n'
+     '    if seal["outcome"] == "not-sent":\n',
+     'test_mutant_missing_q_only_holds_success', 'La historia hold-not-sent-startup cambió de veredicto'),
     ('retirada-proyecta-q-cruda',
      'if (op in ("retire-held", "retire-interrupted") and after["state"] != "Absent" and',
      'if (False and',
