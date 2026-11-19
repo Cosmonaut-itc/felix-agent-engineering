@@ -178,6 +178,7 @@ class RpcContractTests(unittest.TestCase):
         for case in RPC['verdicts']:
             settled, effect, reason = case['expect']
             with self.subTest(case=case['id']):
+                self.assertIn(case['exclusion'], c.EXCLUSION_PROFILES)
                 # Sin liquidar nunca hay efecto; un efecto atribuido no lleva motivo.
                 self.assertTrue(settled or effect is None)
                 self.assertEqual(effect is True, reason is None)
