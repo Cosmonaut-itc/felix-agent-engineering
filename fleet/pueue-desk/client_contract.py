@@ -1,5 +1,10 @@
-"""Contrato local CC0: validación pura; sin daemon, locks, disco ni transportes."""
+"""Contrato local CC0: validación pura; sin daemon, locks, disco ni transportes.
+
+CC3-P0 añade el contrato interno del emisor stock (plan, claim, sello y
+veredicto). No cambia el cable `pueue-client-control@1`.
+"""
 import datetime
+import hashlib
 import json
 import re
 
@@ -68,10 +73,15 @@ def bounded(value):
 
 def decode(raw):
     """Un único documento UTF-8. Limitar también la lectura a MAX_BYTES+1 en CC1."""
+    return strict_decode(raw, MAX_BYTES)
+
+
+def strict_decode(raw, limit):
+    """Decodificador estricto común; el límite es explícito para los originales CC3."""
     require(type(raw) in (bytes, str), "wire_type")
     try:
         data = raw.encode("utf-8") if type(raw) is str else raw
-        require(len(data) <= MAX_BYTES, "size")
+        require(len(data) <= limit, "size")
         def pairs(items):
             result = {}
             for key, value in items:
@@ -380,3 +390,284 @@ def negotiated(raw, exit_code):
     value = parse(raw, response=True)
     require(type(exit_code) is int and exit_code == 0 and value["op"] == "capabilities", "negotiation")
     return value
+
+
+# --- CC3-P0: contrato interno del emisor stock (perfil stock) -----------------
+# Documentos originales de una entrega de un solo uso bajo A/client-rpc/<dispatch>/.
+# Ninguno viaja por el cable; ninguna regla de esta sección usa `require`, para que
+# la paridad regla↔corpus de CC0 siga intacta. Sus reglas tienen su propio corpus
+# (corpus/client-rpc-stock-v1.json) y su propio mutador.
+RPC_PLAN = "pao-client-rpc-plan@1"
+RPC_CLAIM = "pao-client-rpc-claim@1"
+RPC_SEAL = "pao-client-rpc-seal@1"
+RPC_CORPUS_SCHEMA = "pao-client-rpc-corpus@1"
+FRAMES_CORPUS_SCHEMA = "pao-pueue-frames@1"
+RPC_MAX_BYTES = 16 * 1024
+RPC_PLAN_MAX_BYTES = 32 * 1024  # El plan lleva una petición CC0 completa.
+PUEUE_RELEASE = "4.0.4"
+# La trama 2 trae PROTOCOL_VERSION de pueue_lib, no la versión del binario (E-stock).
+PUEUE_PROTOCOL = "0.31.1"
+RPC_OPS = ("hold", "cancel-no-payload", "signal", "signal-manual", "retire-held", "retire-interrupted")
+# Única forma cerrada por fase: un solo id, `kill` siempre con señal.
+RPC_VERBS = {"hold": "stash", "cancel-no-payload": "start",
+             "signal:TERM": "kill:SigTerm", "signal:KILL": "kill:SigKill",
+             "signal-manual:TERM": "kill:SigTerm", "signal-manual:KILL": "kill:SigKill",
+             "retire-held": "remove", "retire-interrupted": "remove"}
+RPC_OUTCOMES = ("not-sent", "replied", "closed")
+RPC_REPLIES = ("success", "failure", "unrecognized")
+RPC_NOT_SENT = ("startup", "unsupported", "evidence_missing")
+RPC_PROCESS_STATES = ("gated", "sent")
+# Lo fija la instalación de CC7, nunca el cable. Sólo `filtered` permite atribuir.
+EXCLUSION_PROFILES = ("coordinated", "filtered")
+
+
+def rpc_require(condition, rule):
+    """Regla interna CC3; código cerrado propio, mutado aparte de las de CC0."""
+    if condition:
+        return
+    raise Invalid(rule)
+
+
+def rpc_digest(value):
+    """H(x): SHA-256 del JSON canónico, la misma forma que el diario de client_actions."""
+    try:
+        text = json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+    except (ValueError, TypeError, RecursionError):
+        raise Invalid("json") from None
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def rpc_pid(value):
+    rpc_require(type(value) is int and 0 < value <= 2**31 - 1, "rpc_pid")
+
+
+def rpc_birth(value):
+    # Nacimiento nativo: proc_pidinfo en Darwin, boot_id y ticks en Linux.
+    rpc_require(type(value) is str and len(value) <= 128 and re.fullmatch(
+        r"darwin:[0-9]{1,20}:[0-9]{1,6}|linux:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+        r"[0-9a-f]{4}-[0-9a-f]{12}:[0-9]{1,20}", value) is not None, "rpc_birth")
+
+
+def rpc_process(value):
+    keys(value, "pid birth")
+    rpc_pid(value["pid"])
+    rpc_birth(value["birth"])
+    return value
+
+
+def rpc_life(value):
+    """Vida D del daemon: pid y nacimiento nativos más la generación acreditada."""
+    keys(value, "pid birth generation")
+    rpc_pid(value["pid"])
+    rpc_birth(value["birth"])
+    digest(value["generation"])
+    return value
+
+
+def validate_rpc_plan(value):
+    """Escritor: CC1, bajo control.lock y antes de abrir la compuerta del emisor."""
+    rpc_require(type(value) is dict and value.get("schema") == RPC_PLAN, "rpc_schema")
+    keys(value, "schema dispatch request group verb task_id daemon pid birth")
+    digest(value["dispatch"])
+    request = validate_request(value["request"])
+    rpc_require(request.get("op") in RPC_OPS and
+                value["verb"] == RPC_VERBS.get(request.get("phase")), "rpc_verb")
+    rpc_require(type(value["group"]) is str and
+                re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}", value["group"]) is not None, "rpc_group")
+    rpc_require(type(value["task_id"]) is int and
+                value["task_id"] == request["expected"]["task_id"], "rpc_task")
+    life = rpc_life(value["daemon"])
+    rpc_require(life["generation"] == request["expected"]["generation"], "rpc_generation")
+    rpc_pid(value["pid"])
+    rpc_birth(value["birth"])
+    return value
+
+
+def validate_rpc_claim(value):
+    """Escritor: el emisor, con link exclusivo, antes de conectar."""
+    rpc_require(type(value) is dict and value.get("schema") == RPC_CLAIM, "rpc_schema")
+    keys(value, "schema dispatch plan_digest pid birth")
+    digest(value["dispatch"])
+    digest(value["plan_digest"])
+    rpc_pid(value["pid"])
+    rpc_birth(value["birth"])
+    return value
+
+
+def validate_rpc_seal(value):
+    """Escritor: sólo el ganador del claim, también para el sello negativo."""
+    rpc_require(type(value) is dict and value.get("schema") == RPC_SEAL, "rpc_schema")
+    keys(value, "schema dispatch plan_digest pid birth peer outcome reply reason receipt")
+    digest(value["dispatch"])
+    digest(value["plan_digest"])
+    digest(value["receipt"])
+    rpc_pid(value["pid"])
+    rpc_birth(value["birth"])
+    peer = value["peer"]
+    if peer is not None:
+        rpc_process(peer)
+    outcome, reply, reason = value["outcome"], value["reply"], value["reason"]
+    rpc_require(type(outcome) is str and (
+        (outcome == "not-sent" and reply is None and type(reason) is str and reason in RPC_NOT_SENT) or
+        (outcome == "replied" and peer is not None and type(reply) is str and reply in RPC_REPLIES
+         and reason is None) or
+        (outcome == "closed" and peer is not None and reply is None and reason is None)), "rpc_outcome")
+    rpc_require(value["receipt"] == rpc_digest({k: v for k, v in value.items() if k != "receipt"}),
+                "rpc_receipt")
+    return value
+
+
+def parse_rpc_plan(raw):
+    return validate_rpc_plan(strict_decode(raw, RPC_PLAN_MAX_BYTES))
+
+
+def parse_rpc_claim(raw):
+    return validate_rpc_claim(strict_decode(raw, RPC_MAX_BYTES))
+
+
+def parse_rpc_seal(raw):
+    return validate_rpc_seal(strict_decode(raw, RPC_MAX_BYTES))
+
+
+def rpc_record(record):
+    """Fase del diario con un emisor CC3: `process` liga pid, nacimiento y plan."""
+    process = record.get("process") if type(record) is dict else None
+    rpc_require(type(process) is dict and
+                set(process) == {"pid", "birth", "dispatch", "plan_digest", "state"} and
+                type(process["state"]) is str and process["state"] in RPC_PROCESS_STATES and
+                "request" in record and "digest" in record, "rpc_record")
+    rpc_pid(process["pid"])
+    rpc_birth(process["birth"])
+    digest(process["dispatch"])
+    digest(process["plan_digest"])
+    return process
+
+
+def execution_link(plan, claim, seal, record):
+    """Forma y enlace de los originales de una entrega. No autentica al escritor.
+
+    claim y seal pueden faltar mientras el emisor trabaja; un sello sin claim no.
+    """
+    validate_rpc_plan(plan)
+    process = rpc_record(record)
+    if claim is not None:
+        validate_rpc_claim(claim)
+    if seal is not None:
+        validate_rpc_seal(seal)
+    rpc_require(seal is None or claim is not None, "rpc_seal_claim")
+    present = [d for d in (process, claim, seal) if d is not None]
+    plan_digest = rpc_digest(plan)
+    rpc_require(all(d["plan_digest"] == plan_digest for d in present), "rpc_plan_digest")
+    rpc_require(all(d["dispatch"] == plan["dispatch"] for d in present), "rpc_dispatch")
+    rpc_require(plan["request"] == record["request"] and
+                record["digest"] == rpc_digest(record["request"]), "rpc_request")
+    # Sólo el dueño durable del claim sella: el mismo pid y nacimiento en todos.
+    owners = (plan, process, claim, seal)
+    rpc_require(all((d["pid"], d["birth"]) == (plan["pid"], plan["birth"])
+                    for d in owners if d is not None), "rpc_owner")
+    daemon = plan["daemon"]
+    rpc_require(seal is None or seal["peer"] is None or
+                seal["peer"] == {"pid": daemon["pid"], "birth": daemon["birth"]}, "rpc_peer")
+
+
+def rpc_observation(value, posterior):
+    """P o Q: vida del daemon e identidad CC0; Q nombra el sello que leyó antes."""
+    keys(value, "life identity seal" if posterior else "life identity")
+    rpc_life(value["life"])
+    identity(value["identity"])
+    if posterior and value["seal"] is not None:
+        digest(value["seal"])
+    return value
+
+
+def rpc_prior(record, plan, pre):
+    """P es la lectura bajo control.lock: identidad esperada y vida del plan."""
+    rpc_observation(pre, False)
+    rpc_require(pre["identity"] == record["request"]["expected"] and
+                pre["life"] == plan["daemon"], "rpc_pre")
+
+
+def pueue_greeting(frame):
+    """Trama 2 completa: cabecera big-endian de 8 bytes y versión cruda de pueue_lib."""
+    rpc_require(type(frame) is bytes and len(frame) == 8 + len(PUEUE_PROTOCOL) and
+                int.from_bytes(frame[:8], "big") == len(frame) - 8 and
+                frame[8:] == PUEUE_PROTOCOL.encode("ascii"), "rpc_greeting")
+
+
+def rpc_effect_identity(op, before, after):
+    """Identidad de fase que collect y apply (P1) cotejan en lugar de la Q cruda.
+
+    En una retirada, otra creación con el mismo id y la misma generación es Absent
+    de X: conserva generación, id, creación, huella e intento de X, sin tiempos. En
+    cualquier otro caso devuelve Q. Sólo se usa con el veredicto (true, true, null):
+    sin R+ ∧ P ∧ Q ∧ Ex un id reutilizado nunca se proyecta.
+    """
+    identity(before)
+    identity(after)
+    if (op in ("retire-held", "retire-interrupted") and after["state"] != "Absent" and
+            after["generation"] == before["generation"] and after["task_id"] == before["task_id"] and
+            after["created_at"] != before["created_at"]):
+        stable = ("generation", "task_id", "created_at", "fingerprint", "attempt")
+        return dict({k: before[k] for k in stable}, state="Absent",
+                    enqueued_at=None, enqueue_at=None, started_at=None)
+    return after
+
+
+def rpc_attributed(record, plan, seal, pre, post, exclusion):
+    """R+ ∧ P ∧ Q ∧ Ex: el único camino a effect_applied con Pueue stock."""
+    if not (seal["outcome"] == "replied" and seal["reply"] == "success"):
+        return False
+    if exclusion != "filtered":
+        return False
+    # Q sólo vale leída después de este sello (respuesta recibida) y en la vida D.
+    if post is None or post["seal"] != seal["receipt"]:
+        return False
+    if post["life"] != plan["daemon"]:
+        return False
+    op, before = record["request"]["op"], pre["identity"]
+    after = rpc_effect_identity(op, before, post["identity"])
+    try:
+        transition(before, after, op)
+    except Invalid:
+        return False
+    return op != "hold" or after["enqueue_at"] is None
+
+
+def rpc_verdict(record, plan, claim, seal, emitter_alive, life_alive, pre, post, exclusion):
+    """Devuelve (settled, effect, reason) de una fase de cola. Función pura.
+
+    effect True: efecto atribuido. False: no aplicado con prueba positiva
+    (not-sent con su motivo, o Failure de un solo id con stale_state). None:
+    indistinguible. Los booleanos de vida los calcula el colector.
+    """
+    rpc_require(type(emitter_alive) is bool and type(life_alive) is bool, "rpc_flag")
+    rpc_require(type(exclusion) is str and exclusion in EXCLUSION_PROFILES, "rpc_exclusion")
+    rpc_observation(pre, False)
+    if post is not None:
+        rpc_observation(post, True)
+    try:
+        execution_link(plan, claim, seal, record)
+        rpc_prior(record, plan, pre)
+    except Invalid:
+        return False, None, "evidence_missing"
+    if seal is None:
+        if claim is None and not emitter_alive:
+            # Sólo el emisor del plan publica el claim. Muerto, la ausencia ya no es
+            # «aún no publicado»: pudo perderse en una restauración. Con D viva retiene;
+            # con D terminada liquida por S4, sin atribuir y con el motivo de la restauración.
+            return (not life_alive), None, "evidence_missing"
+        if not emitter_alive and not life_alive:
+            return True, None, "startup"  # S4
+        return False, None, "rpc_unresolved"
+    if seal["outcome"] == "not-sent":
+        return True, False, seal["reason"]  # S2 y N2
+    if rpc_attributed(record, plan, seal, pre, post, exclusion):
+        return True, True, None  # S1 con atribución
+    if seal["outcome"] == "closed":
+        # S3: el cierre del daemon termina la tarea de la conexión (E6), viva o no la vida.
+        return True, None, "evidence_missing" if life_alive else "startup"
+    if seal["reply"] == "failure":
+        return True, False, "stale_state"  # R−: E8c, sin mutación con un solo id
+    if seal["reply"] == "success" and exclusion != "filtered":
+        return True, None, "unsupported"
+    return True, None, "evidence_missing"
