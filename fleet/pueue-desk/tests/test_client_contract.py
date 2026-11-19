@@ -247,7 +247,7 @@ class ContractTests(unittest.TestCase):
         self.assertEqual(c.POLICY_MESSAGE, 'Pueue administrado: esta operación requiere el controlador coordinado; actualiza el lanzador')
         tree = ast.parse((ROOT / 'client_contract.py').read_text())
         imports = {n.names[0].name for n in tree.body if isinstance(n, ast.Import)}
-        self.assertEqual(imports, {'datetime', 'json', 're'})
+        self.assertEqual(imports, {'datetime', 'hashlib', 'json', 're'})
 
 
 # Cada regla tiene una prueba aislada: el mutador exige FAIL/AssertionError, nunca ERROR.
