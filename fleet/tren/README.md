@@ -174,6 +174,12 @@ ni checkout. Requiere git >=2.38, con error tipado si falta. Un conflicto
 devuelve `ConflictoCadena(pr, archivos)` y pausa `conflicto-en-cadena`.
 El SHA es reproducible con las mismas entradas y versión de git: identidad
 y mensaje fijos, sin firma ni configuración global/sistema al construir.
+La identidad de autor y committer es `PAO Tren <tren@example.invalid>`. La
+clave opcional `identidad_commits` del repo, con `nombre` y `email`, la
+sustituye. Sirve cuando el deploy de `main` verifica al autor del commit y
+bloquea una cuenta que GitHub no conoce. Una identidad inválida falla al leer
+la configuración. Los candidatos ya armados conservan la identidad con la que
+se construyeron.
 La fecha de cada merge es el máximo timestamp de committer de B y todos los
 heads, más su posición (1..N), en UTC. Sale de los objetos, nunca del reloj.
 Fetch/push conservan la configuración del usuario para credenciales.

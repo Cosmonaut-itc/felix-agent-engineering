@@ -170,7 +170,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 if activacion(args.repo) != "activo":
                     return 2, {"error": "tick activo requiere inscripción activa"}
                 from adaptadores import seleccionar
-                from git_ops import GitTren
+                from git_ops import GitTren, identidad_commits
                 from operativo import tick
                 if observador is None or git is None:
                     ruta = args.config or ledger.directorio / "config.json"
@@ -178,7 +178,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                     remoto = config.get("remoto")
                     if not isinstance(remoto, str) or not remoto:
                         raise ValueError("tick activo requiere remoto explícito")
-                    git = git if git is not None else GitTren(remoto)
+                    git = git if git is not None else GitTren(
+                        remoto, identidad=identidad_commits(config))
                     # Admisión y armado comparten el bare del tren: el tick
                     # siguiente ve el C aterrizado sin sincronizar config["git"].
                     observador = observador or GitHubGit(config, activo=True, almacen=git)
