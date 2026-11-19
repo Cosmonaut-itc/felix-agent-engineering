@@ -7,6 +7,7 @@ import importlib.util
 import json
 import os
 from pathlib import Path
+import select
 import shlex
 import shutil
 import subprocess
@@ -71,6 +72,11 @@ elif '+D' in args:
         (Path(args[-1]) / '.remote-run.lock').write_text('nuevo')
     sys.exit(1)  # la nueva capa cwd debe vetar incluso si +D no lo detecta
 else:
+    if c.get('uso_falla'):
+        sys.exit(2)
+    if c.get('uso_real'):
+        seleccion = ['-d', 'cwd'] if '-d' in args else []
+        os.execv('/usr/sbin/lsof', ['lsof', '-a', '-p', str(c['pid'])] + seleccion + ['-Fn'])
     print('p123\\nn' + str(root))
 ''')
         self.executable('ps', '''#!/usr/bin/python3 -B
@@ -502,6 +508,122 @@ print(values[min(i, len(values) - 1)])
         (run / 'started').write_text(str(self.now))
         self.assertEqual(self.ejecutar(), [])
         self.assertIn('bloqueo global', self.log)
+
+    def test_emergencia_preparacion_sin_meta_20_min_no_bloquea(self):
+        p = self.copia(horas=7)
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.edad(run, 20 / 60)
+        self.ejecutar(dry=False)
+        self.assertFalse(p.exists(), self.log)
+        self.assertIn('borrado ', self.log)
+        self.assertNotIn('regla 1 sin borrar: preparación', self.log)
+
+    def test_emergencia_preparacion_sin_meta_5_min_bloquea(self):
+        p = self.copia(horas=7)
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.edad(run, 5 / 60)
+        self.ejecutar(dry=False)
+        self.assertTrue((p / 'dato').exists(), self.log)
+        self.assertNotIn('borrado ', self.log)
+        self.assertIn('regla 1 sin borrar: preparación de menos de 15 min', self.log)
+
+    def preparador(self, run, archivo_abierto=False):
+        codigo = '''import sys
+with open(sys.argv[1]) as archivo:
+    print('listo', flush=True)
+    sys.stdin.read()
+'''
+        directorio = run / 'git-input' if archivo_abierto else self.root
+        if archivo_abierto:
+            directorio.mkdir()
+        archivo = directorio / 'history.bundle'
+        archivo.write_text('preparando')
+        process = subprocess.Popen(
+            ['/usr/bin/python3', '-B', '-c', codigo, str(archivo)],
+            cwd=self.root if archivo_abierto else run,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+            text=True)
+
+        def terminar():
+            if process.poll() is None:
+                process.terminate()
+            try:
+                process.communicate(timeout=10)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=10)
+
+        self.addCleanup(terminar)
+        # communicate no sirve aquí: cerraría stdin y terminaría el preparador.
+        self.assertTrue(select.select([process.stdout], [], [], 10)[0], 'preparador no arrancó')
+        self.assertEqual(process.stdout.readline(), 'listo\n')
+        self.assertIsNone(process.poll())
+        self.config.update(pid=process.pid, uso_real=True)
+        self.edad(run, 20 / 60)
+        datos = inv.inventariar(self.rr, copia_minutos=360)
+        self.assertEqual(datos['corridas'][0]['clase'], 'preparacion-abortada')
+        self.assertEqual(datos['proteccionCopias']['bloqueoGlobal'], [])
+        return process
+
+    def test_emergencia_preparacion_20_min_cwd_vivo_bloquea(self):
+        p = self.copia()
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.preparador(run)
+        self.ejecutar(dry=False)
+        self.assertTrue((p / 'dato').exists(), self.log)
+        self.assertIn('preparación con procesos vivos en runs/preparacion', self.log)
+        self.assertNotIn('borrado ', self.log)
+
+    def test_emergencia_preparacion_20_min_archivo_abierto_bloquea(self):
+        p = self.copia()
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.preparador(run, archivo_abierto=True)
+        self.ejecutar(dry=False)
+        self.assertTrue((p / 'dato').exists(), self.log)
+        self.assertIn('preparación con procesos vivos en runs/preparacion', self.log)
+        self.assertNotIn('borrado ', self.log)
+
+    def test_emergencia_preparacion_20_min_uso_no_verificable_bloquea(self):
+        p = self.copia()
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.edad(run, 20 / 60)
+        # Simula una lectura fallida de EN_USO al consultar la preparación.
+        # Las consultas de otras guardas siguen funcionando.
+        self.executable('grep', '''#!/bin/bash
+if [[ "$*" == *'/runs/preparacion'* ]]; then exit 2; fi
+exec /usr/bin/grep "$@"
+''')
+        self.ejecutar(dry=False)
+        self.assertTrue((p / 'dato').exists(), self.log)
+        self.assertIn('falló lectura de EN_USO (estado 2)', self.log)
+        self.assertIn('preparación con procesos vivos en runs/preparacion', self.log)
+
+    def test_emergencia_preparacion_20_min_captura_fallida_bloquea(self):
+        p = self.copia()
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.edad(run, 20 / 60)
+        self.config['uso_falla'] = True
+        self.ejecutar(dry=False)
+        self.assertTrue((p / 'dato').exists(), self.log)
+        self.assertIn('para EN_USO o emitió diagnósticos', self.log)
+        self.assertNotIn('borrado ', self.log)
+
+    def test_normal_preparacion_sin_meta_20_min_bloquea(self):
+        self.config['free'] = [40]
+        p = self.copia(horas=8 * 24)
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        self.edad(run, 20 / 60)
+        self.ejecutar(dry=False)
+        self.assertTrue((p / 'dato').exists(), self.log)
+        self.assertNotIn('borrado ', self.log)
+        self.assertIn('regla 1 sin borrar: preparación de menos de 1 h', self.log)
 
     def test_corrida_nueva_sigue_vetando(self):
         self.copia()
