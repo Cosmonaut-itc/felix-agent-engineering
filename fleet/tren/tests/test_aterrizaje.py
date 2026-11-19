@@ -154,6 +154,20 @@ class AterrizajeTests(unittest.TestCase):
             padres = self.comando(segundo.ruta, "show", "-s", "--format=%P", commit).split()
             self.assertEqual(padres, [self.B if i == 1 else primero.eslabones[i - 2][2], head])
 
+    def test_identidad_configurada_firma_los_merges_y_reproduce(self):
+        identidad = ("Felix", "1+felix@users.noreply.github.com")
+        propio = GitTren(str(self.origen), self.raiz / "propio.git", identidad=identidad)
+        primero = propio.armar(self.B, self.miembros)
+        self.assertIsInstance(primero, Candidato)
+        otro = GitTren(str(self.origen), self.raiz / "otro.git", identidad=identidad)
+        self.assertEqual(otro.armar(self.B, self.miembros), primero)
+        self.assertNotEqual(self.git.armar(self.B, self.miembros).C, primero.C)
+        for _, _, commit in primero.eslabones:
+            metadatos = self.comando(propio.ruta, "cat-file", "-p", commit)
+            for rol in ("author", "committer"):
+                self.assertIn("{} Felix <1+felix@users.noreply.github.com> ".format(rol), metadatos)
+            self.assertNotIn("tren@example.invalid", metadatos)
+
     def test_escritor_externo_conservado_rearmado_y_fifo(self):
         estado, candidato, obs = self.armar()
         ajeno = self.commit({"comun": "base\n", "ajeno": "conservar\n"}, (self.B,), "externo")
