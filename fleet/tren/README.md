@@ -174,6 +174,12 @@ ni checkout. Requiere git >=2.38, con error tipado si falta. Un conflicto
 devuelve `ConflictoCadena(pr, archivos)` y pausa `conflicto-en-cadena`.
 El SHA es reproducible con las mismas entradas y versión de git: identidad
 y mensaje fijos, sin firma ni configuración global/sistema al construir.
+La identidad de autor y committer es `PAO Tren <tren@example.invalid>`. La
+clave opcional `identidad_commits` del repo, con `nombre` y `email`, la
+sustituye. Sirve cuando el deploy de `main` verifica al autor del commit y
+bloquea una cuenta que GitHub no conoce. Una identidad inválida falla al leer
+la configuración. Los candidatos ya armados conservan la identidad con la que
+se construyeron.
 La fecha de cada merge es el máximo timestamp de committer de B y todos los
 heads, más su posición (1..N), en UTC. Sale de los objetos, nunca del reloj.
 Fetch/push conservan la configuración del usuario para credenciales.
@@ -810,7 +816,7 @@ un fallo en cualquiera de los dos caminos hace fallar la corrida.
 ## Admisión activa sobre el bare del tren (U17)
 
 El tick activo observa la admisión en el mismo almacén con que arma y
-promueve: `pao-tren` construye `GitTren(remoto)` y lo entrega como `almacen`
+promueve: `pao-tren` construye `GitTren(remoto, identidad=...)` y lo entrega como `almacen`
 a `GitHubGit(config, activo=True, almacen=git)`. Antes de `merge-base` y
 `merge-tree`, `GitHubGit.lector` prepara ese bare y comprueba con
 `cat-file -e` la base y el head de cada PR. Sólo trae lo que falte: la base

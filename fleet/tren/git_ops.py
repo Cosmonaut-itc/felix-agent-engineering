@@ -16,6 +16,32 @@ from dominio import (Aterrizado, Candidato, ConflictoCadena, EnBase,
 from ledger import directorio_estado
 
 
+IDENTIDAD_TREN = ("PAO Tren", "tren@example.invalid")
+CRUD_GIT = frozenset(" .,:;<>\"\\'")
+
+
+def identidad_commits(config):
+    """(nombre, email) de autor y committer de los merges del tren.
+
+    Sin la clave conserva la identidad fija. Un deploy que verifica al autor
+    (Vercel) bloquea una cuenta inexistente, así que el repo puede nombrar una.
+    """
+    if "identidad_commits" not in config:
+        return IDENTIDAD_TREN
+    valor = config["identidad_commits"]
+    if not isinstance(valor, dict) or set(valor) != {"nombre", "email"}:
+        raise ValueError("identidad_commits requiere sólo nombre y email")
+    nombre, email = valor["nombre"], valor["email"]
+    # git quita de los extremos lo que ident.c llama crud y no admite <, > ni
+    # controles: el commit llevaría otra identidad que la configurada.
+    if not all(isinstance(v, str) and v and v[0] not in CRUD_GIT and v[-1] not in CRUD_GIT
+               and not re.search(r"[<>\x00-\x1f\x7f]", v) for v in (nombre, email)):
+        raise ValueError("identidad_commits inválida")
+    if not re.fullmatch(r"[^@\s]+@[^@\s]+", email):
+        raise ValueError("identidad_commits requiere un email")
+    return nombre, email
+
+
 @dataclass(frozen=True)
 class ErrorGit:
     codigo: str
@@ -59,7 +85,7 @@ class GitTren:
     ejecutar tiene el contrato de subprocess.run y permite simular ACK perdido.
     Métodos públicos devuelven datos tipados, incluidos errores de git/versión.
     """
-    def __init__(self, remoto, ruta=None, ejecutar=None):
+    def __init__(self, remoto, ruta=None, ejecutar=None, identidad=IDENTIDAD_TREN):
         if not isinstance(remoto, str) or not remoto or remoto.startswith("-"):
             raise ValueError("remoto explícito inválido")
         url = urlsplit(remoto)
@@ -69,6 +95,7 @@ class GitTren:
         self.ruta = Path(ruta) if ruta is not None else (
             directorio_estado() / "git" / (clave("git", remoto) + ".git"))
         self.ejecutar = ejecutar or subprocess.run
+        self.identidad = identidad
 
     def git(self, *args, aislado=False, input=None, env_extra=None, timeout=120):
         env = entorno(aislado)
@@ -165,10 +192,11 @@ class GitTren:
                     return ErrorGit("merge-tree-fallido", pr_actual)
                 arbol = campos[0]
                 instante = "{} +0000".format(fecha + indice)
-                identidad = {"GIT_AUTHOR_NAME": "PAO Tren",
-                    "GIT_AUTHOR_EMAIL": "tren@example.invalid", "GIT_AUTHOR_DATE": instante,
-                    "GIT_COMMITTER_NAME": "PAO Tren",
-                    "GIT_COMMITTER_EMAIL": "tren@example.invalid", "GIT_COMMITTER_DATE": instante}
+                nombre, email = self.identidad
+                identidad = {"GIT_AUTHOR_NAME": nombre,
+                    "GIT_AUTHOR_EMAIL": email, "GIT_AUTHOR_DATE": instante,
+                    "GIT_COMMITTER_NAME": nombre,
+                    "GIT_COMMITTER_EMAIL": email, "GIT_COMMITTER_DATE": instante}
                 mensaje = "pao-tren merge PR {}\n\nbase {}\nhead {}\neslabon {}\n".format(
                     pr_actual, B, head, indice)
                 C = self.texto("-c", "commit.gpgsign=false", "-c", "i18n.commitEncoding=UTF-8",

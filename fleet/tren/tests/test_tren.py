@@ -553,6 +553,23 @@ class ObservadorTests(Aislado):
         with self.assertRaises(ValueError):
             configuracion(ruta, REPO)
 
+    def test_config_identidad_commits_invalida_falla_al_leer(self):
+        ruta = self.raiz / "config.json"
+        self.config["identidad_commits"] = {"nombre": "Felix", "email": "1+felix@users.noreply.github.com"}
+        ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
+        self.assertEqual(configuracion(ruta, REPO), self.config)
+        for valor in ("Felix", {"nombre": "Felix"}, {"nombre": "", "email": "a@b"},
+                      {"nombre": " Felix", "email": "a@b"}, {"nombre": "Felix", "email": "sin-arroba"},
+                      {"nombre": "Felix", "email": "a<b@c"}, {"nombre": "Fe\nlix", "email": "a@b"},
+                      {"nombre": "Felix", "email": "a@b", "extra": "x"},
+                      {"nombre": "Felix Jr.", "email": "a@b"}, {"nombre": "Felix", "email": "'a@b"},
+                      {"nombre": "...", "email": "a@b"}, {"nombre": "Felix", "email": "@"},
+                      {"nombre": "Felix", "email": "felix@"}, {"nombre": "Felix", "email": "@example.org"}):
+            self.config["identidad_commits"] = valor
+            ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
+            with self.assertRaises(ValueError, msg=repr(valor)):
+                configuracion(ruta, REPO)
+
     def test_git_real_conflicto_con_origen_local_sin_writes(self):
         repo = self.raiz / "origen"
         repo.mkdir()

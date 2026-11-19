@@ -11,7 +11,7 @@ from urllib.parse import urlparse
 
 from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
                      VistaPR, rama_ci, recibo_ci)
-from git_ops import FalloGit
+from git_ops import FalloGit, identidad_commits
 from preaterrizaje import autorizaciones
 
 
@@ -51,6 +51,7 @@ def configuracion(ruta, repo):
         raise ValueError("política de piloto inválida")
     from operador import checkout_configurado
     checkout_configurado(config)
+    identidad_commits(config)
     return config
 
 
