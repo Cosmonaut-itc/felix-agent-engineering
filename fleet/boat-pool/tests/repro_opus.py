@@ -1,10 +1,11 @@
 import hashlib
+import os
 from pathlib import Path
 import sys
 import unittest
 from unittest.mock import patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, os.environ.get("REPRO_TESTS") or str(Path(__file__).resolve().parent))
 import test_pool
 from test_pool import FAKE_ID, NAME, NOW, pool
 
