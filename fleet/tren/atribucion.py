@@ -1,6 +1,7 @@
 """D5 puro: el historial determina el próximo ensayo o los conjuntos mínimos."""
 from dataclasses import dataclass, replace
 from itertools import combinations
+import re
 from typing import Optional, Tuple
 
 from dominio import Causa, Fallo, Reproduccion, clave
@@ -98,10 +99,14 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
         uc = unidad(por_objetivo[("C", ())].resultado, fallo)
         ub = unidad(por_objetivo[("B", ())].resultado, fallo)
         candidato = estable(uc, fallo.firma or None)
+        ruta = fallo.unidad.split("::", 1)[0]
+        firma_suite = fallo.firma.strip()
+        puede_absolver = (absolver and ruta and fallo.unidad != fallo.check and firma_suite
+                          and not re.fullmatch(r"codigo=-?[0-9]+", firma_suite))
         if candidato != "falla":
-            if (absolver and candidato == "pasa"
+            if (puede_absolver and candidato == "pasa"
                     and all(i.caso_ejecutado is True for i in uc.intentos)
-                    and intentos_observados(ub)
+                    and estable(ub) == "pasa"
                     and ub.definicion == uc.definicion):
                 absoluciones.append(absolucion(fallo, 1, uc, ub))
                 continue
@@ -114,7 +119,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
         if estable(ub, firma) == "falla":
             continue
         if estable(ub) != "pasa":
-            if (absolver and intentos_observados(ub)
+            if (puede_absolver and intentos_observados(ub)
                     and any(i.veredicto == "falla" and i.firma == firma for i in ub.intentos)):
                 absoluciones.append(absolucion(replace(fallo, firma=firma), 2, uc, ub))
                 continue

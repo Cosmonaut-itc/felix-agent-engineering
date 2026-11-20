@@ -628,20 +628,26 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `necesita-juicio` | `intermitente-reincidente:<unidad>` | La unidad ya tiene dos absoluciones automáticas en siete días para este repo. `absolver` exige una suite nueva sobre C. También admite `expulsar` y `abortar`. |
 | `manual` | motivo humano | Sólo `pausa --levantar`: continuar desde la fase guardada. `juicio` no la levanta. |
 
-El tick activo puede absolver una unidad que pasa dos veces en C (caso 1) o
-que falla dos veces con una firma estable en C y al menos una vez con esa
-firma en B (caso 2). En ambos casos exige dos intentos observados en cada commit
-y la misma definición. Para el caso 1, el recibo del repositorio debe traer la
+El tick activo puede absolver una unidad que pasa dos veces en C y dos veces en
+B (caso 1), o que falla dos veces con una firma estable en C y al menos una vez
+con esa firma en B (caso 2). En ambos casos exige dos intentos observados en
+cada commit y la misma definición. Para el caso 1, el recibo debe traer la
 identidad de cada caso que falló en la suite y su resultado en cada repetición
 de C, con un pase para cada caso en los dos intentos. Los recibos actuales de
 Hasito y Jale carecen de esos datos, así que el caso 1 queda en la pausa
 `confirmacion-candidato`.
 La absolución requiere una suite sin etapas pendientes,
 un máximo de dos unidades fallidas y que todas sean intermitentes que cumplen
-estas reglas o fallos preexistentes confirmados. El tick compara los árboles
-de la base y del candidato del lote en el repositorio Git del tren. Una ruta
-modificada que coincide con el archivo de una unidad fallida conserva la pausa
-de diagnóstico, incluidos los renombres y las rutas relativas a un paquete.
+estas reglas o fallos preexistentes confirmados. Una unidad que sólo identifica
+el check, o cuya firma está vacía o sólo contiene un código de salida, conserva
+su pausa de diagnóstico.
+
+El tick reúne los diffs propios de los heads congelados de cada PR, desde su
+ancestro común único con B. También incluye el destino de cada ruta de esos
+diffs que B renombró desde ese ancestro. El diagnóstico conserva la pausa si
+Git falla, si algún ancestro común falta o es múltiple, o si una ruta del
+inventario coincide con el archivo de una unidad fallida. La comparación
+admite rutas relativas a un paquete.
 
 Al certificar C con la suite ya corrida, el ledger escribe un evento
 `intermitente-absuelto` por unidad absuelta. Guarda repo, tren, B, C, unidad,

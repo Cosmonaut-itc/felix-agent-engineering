@@ -51,7 +51,8 @@ class TrenIntermitentes:
     cli = juicios.JuicioTests.cli
     juicio = juicios.JuicioTests.juicio
 
-    def preparar(self, repeticiones, *, restantes=(), base_vieja=False, firma_base=None):
+    def preparar(self, repeticiones, *, restantes=(), base_vieja=False, firma_base=None,
+                 fallo=F, firma_repeticion=None):
         self.contexto.config["costo_suite_sana_s"] = 600
         trabajos = Counter()
         gh = self.contexto.observador.ejecutar
@@ -77,16 +78,17 @@ class TrenIntermitentes:
                 unidad = argv[argv.index("--unidad") + 1].split("=", 1)[1]
                 candidato = Candidato(self.B, (), json.loads(origen.read_text())["sha"], "")
                 valores = repeticiones[unidad][int(commit == self.B)]
-                fallo = replace(F, unidad=unidad)
-                resultado = repeticion_fixture(origen, commit, candidato, fallo, valores)
-                if firma_base is not None and commit == self.B:
+                fallo_repetido = replace(fallo, unidad=unidad)
+                resultado = repeticion_fixture(origen, commit, candidato, fallo_repetido, valores)
+                firma = firma_base if firma_base is not None and commit == self.B else firma_repeticion
+                if firma is not None:
                     for intento in resultado["unidades"][0]["intentos"]:
                         if intento["veredicto"] == "falla":
-                            intento["firma"] = firma_base
+                            intento["firma"] = firma
             else:
                 candidato = Candidato(self.B, (), argv[argv.index("--suite") + 1], "")
                 rojo = trabajos[tipo] == 1
-                fallos = tuple(replace(F, unidad=u) for u in repeticiones) if rojo else ()
+                fallos = tuple(replace(fallo, unidad=u) for u in repeticiones) if rojo else ()
                 resultado = suite_fixture(candidato, int(rojo), fallos, restantes if rojo else ())
             recibo.write_text(json.dumps(resultado))
             codigo = resultado["veredicto"]
@@ -241,6 +243,17 @@ class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
         self.contexto.git.ejecutar = git
         self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
 
+    def test_pausa_si_git_no_puede_leer_los_renombres_de_main(self):
+        transporte = self.contexto.git.ejecutar
+
+        def git(argv, **kwargs):
+            if "diff" in argv and "--name-status" in argv:
+                return subprocess.CompletedProcess(argv, 128, b"", b"error de lectura")
+            return transporte(argv, **kwargs)
+
+        self.contexto.git.ejecutar = git
+        self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
+
     def test_snapshot_anterior_se_sigue_leyendo(self):
         self.preparar({UNIDAD: (PASA, PASA)})
         guardado = self.avanzar(lambda fase: isinstance(fase, Diagnosticando) and fase.evidencias)
@@ -255,6 +268,33 @@ class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
             ledger.evento(REPO, "operativo", AHORA + 2800,
                           {"estado": anterior, "efectos": [], "consumido": None})
         self.assertEqual(self.estado(), guardado)
+
+
+class FalloGenericoTests(TrenIntermitentes, unittest.TestCase):
+    def preparar_git(self):
+        super().preparar_git()
+        pr, previo = self.miembros[1]
+        head = self.commit({"comun": "base\n", ARCHIVO: "prueba original\n",
+                            f"pr-{pr}": "ticket\n",
+                            "packages/web/app/login/page.tsx": "rompe el login\n"},
+                           padres=(previo, self.B))
+        self.push(head, f"refs/pull/{pr}/head")
+        self.miembros[1] = pr, head
+
+    def test_pausa_con_check_entero_y_codigo_de_salida(self):
+        self.pausa_original({F.check: (FALLA, MIXTO)}, "confirmacion-base",
+                            fallo=replace(F, firma="codigo=1"))
+
+    def test_pausa_con_check_entero_aunque_la_firma_sea_especifica(self):
+        self.pausa_original({F.check: (FALLA, MIXTO)}, "confirmacion-base")
+
+    def test_pausa_con_codigo_de_salida_aunque_la_unidad_sea_un_archivo(self):
+        self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base",
+                            fallo=replace(F, firma="codigo=1"))
+
+    def test_pausa_con_firma_de_suite_vacia_aunque_la_repeticion_la_tenga(self):
+        self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base",
+                            fallo=replace(F, firma=""), firma_repeticion=F.firma)
 
 
 class ArchivosDelLoteTests(TrenIntermitentes, unittest.TestCase):
@@ -419,10 +459,15 @@ class PlanificarTests(unittest.TestCase):
 
         c1 = Intento(1, "pasa", "", 3, caso_ejecutado=True)
         c2 = Intento(2, "pasa", "", 3, caso_ejecutado=True)
-        base = evidencia("B", Intento(1, "pasa", "", 3), Intento(2, "falla", F.firma, 3))
+        b1 = Intento(1, "pasa", "", 3)
+        base = evidencia("B", b1, Intento(2, "pasa", "", 3))
 
         plan = planificar((F,), (1,), (evidencia("C", c1, c2), base), 600, absolver=True)
-        self.assertEqual(plan, Plan(terminado=True, absoluciones=(Absolucion(F, 1, PASA, MIXTO),)))
+        self.assertEqual(plan, Plan(terminado=True, absoluciones=(Absolucion(F, 1, PASA, PASA),)))
+        with self.subTest(base="mixta"):
+            base_mixta = evidencia("B", b1, Intento(2, "falla", F.firma, 3))
+            plan = planificar((F,), (1,), (evidencia("C", c1, c2), base_mixta), 600, absolver=True)
+            self.assertEqual(plan, Plan(incierto="confirmacion-candidato:" + F.unidad))
         for n, intentos in enumerate(((replace(c1, caso_ejecutado=False), c2),
                                       (c1, replace(c2, caso_ejecutado=False))), 1):
             with self.subTest(sin_evidencia=n):
@@ -477,3 +522,33 @@ class IntermitentesJaleTests(TrenIntermitentes, unittest.TestCase):
             "firma": FIRMA_JALE, "caso": 2, "intentos_C": list(FALLA), "intentos_B": list(MIXTO),
         }])
         self.verificar_repeticiones(tren.fase.C)
+
+
+class RenombreEnMainTests(TrenIntermitentes, unittest.TestCase):
+    unidad = IntermitentesJaleTests.unidad
+    vieja = "apps/web/e2e/previa.spec.ts"
+    preparar_recibos = IntermitentesJaleTests.preparar_recibos
+    verificar_repeticiones = IntermitentesJaleTests.verificar_repeticiones
+
+    def preparar_git(self):
+        contenido = "".join(f"linea {n:03d}\n" for n in range(100))
+        anterior = self.commit({"comun": "base\n", self.vieja: contenido}, padres=(self.B,))
+        self.B = self.commit({"comun": "base\n", self.unidad: contenido}, padres=(anterior,))
+        head = self.commit({"comun": "base\n", self.vieja: contenido.replace(
+            "linea 042", "expectativa PR"), "src/nomina.ts": "cambio\n"}, padres=(anterior,))
+        self.push(self.B, "refs/heads/main")
+        self.comando(self.fuente, "push", str(self.origen), f"+{head}:refs/pull/1/head")
+        self.miembros = [(1, head)]
+
+    def test_pausa_si_main_renombra_la_prueba_editada_por_el_pr(self):
+        self.preparar_recibos(FALLA)
+        self.contexto.tick(AHORA - 3600)
+        diagnostico = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
+        candidato = diagnostico.trenes[-1].fase.candidato
+        self.assertIn("expectativa PR", self.contexto.git.texto("show", f"{candidato.C}:{self.unidad}"))
+        final = self.avanzar(lambda fase: isinstance(fase, Terminal), AHORA + 2400)
+        self.assertIsInstance(final.trenes[-1].fase, Diagnosticando)
+        self.assertEqual(final.pausa, Pausa("necesita-juicio", detalle="confirmacion-base:" + self.unidad))
+        self.assertEqual(self.eventos(), [])
+        self.assertEqual(self.remoto(), self.B)
+        self.verificar_repeticiones(candidato.C)
