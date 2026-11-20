@@ -621,10 +621,11 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 El tick activo puede absolver una unidad que pasa dos veces en C (caso 1) o
 que falla dos veces con una firma estable en C y al menos una vez con esa
 firma en B (caso 2). En ambos casos exige dos intentos observados en cada commit
-y la misma definición. El caso 1 exige además evidencia de que los casos que
-fallaron en la suite pasaron en los dos reportes de C. Hasito distingue los
-nodos de pytest y comprueba los casos de Vitest y Bun en la evidencia recogida.
-El recibo agregado de Jale carece de evidencia por caso para esta absolución.
+y la misma definición. Para el caso 1, el recibo del repositorio debe traer la
+identidad de cada caso que falló en la suite y su resultado en cada repetición
+de C, con un pase para cada caso en los dos intentos. Los recibos actuales de
+Hasito y Jale carecen de esos datos, así que el caso 1 queda en la pausa
+`confirmacion-candidato`.
 La absolución requiere una suite sin etapas pendientes,
 un máximo de dos unidades fallidas y que todas sean intermitentes que cumplen
 estas reglas o fallos preexistentes confirmados. El tick compara los árboles

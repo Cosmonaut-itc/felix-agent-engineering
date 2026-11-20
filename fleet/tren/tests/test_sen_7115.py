@@ -1,21 +1,21 @@
 """SEN-7115: tick, Git local y launcher falso, sólo en el host de pruebas."""
-import base64
 from collections import Counter
 from dataclasses import replace
-import hashlib
-from io import BytesIO
 import json
 from pathlib import Path
+import shlex
 import subprocess
-import tarfile
+import sys
 import unittest
-from xml.etree import ElementTree
 
 import test_activo as activo
 import test_juicio as juicios
-from adaptadores.jale import Jale, guardar, leer_recibo
-from dominio import Candidato, Certificado, Diagnosticando, Pausa, Promoviendo, Terminal, datos
+from adaptadores.jale import Jale
+from atribucion import Absolucion, Plan, planificar
+from dominio import (Candidato, Certificado, Diagnosticando, Evidencia, Intento, Pausa,
+                     Promoviendo, Repeticion, Reproduccion, Terminal, UnidadRepetida, datos)
 from test_hasito import F, repeticion_fixture, suite_fixture
+from test_jale import FIRMA as FIRMA_JALE, PRODUCTOR
 
 
 REPO = activo.REPO
@@ -23,7 +23,6 @@ EVENTO = "intermitente-absuelto"
 DIA = 86400
 AHORA = 20 * DIA
 PASA = ("pasa", "pasa")
-PASA_EJECUTADA = ("passed", "passed")
 FALLA = ("falla", "falla")
 MIXTO = ("pasa", "falla")
 ARCHIVO = "tests/test_intermitente.py"
@@ -52,8 +51,7 @@ class TrenIntermitentes:
     cli = juicios.JuicioTests.cli
     juicio = juicios.JuicioTests.juicio
 
-    def preparar(self, repeticiones, *, restantes=(), base_vieja=False, firma_base=None,
-                 publicar_evidencia=None):
+    def preparar(self, repeticiones, *, restantes=(), base_vieja=False, firma_base=None):
         self.contexto.config["costo_suite_sana_s"] = 600
         trabajos = Counter()
         gh = self.contexto.observador.ejecutar
@@ -91,8 +89,6 @@ class TrenIntermitentes:
                 fallos = tuple(replace(F, unidad=u) for u in repeticiones) if rojo else ()
                 resultado = suite_fixture(candidato, int(rojo), fallos, restantes if rojo else ())
             recibo.write_text(json.dumps(resultado))
-            if publicar_evidencia:
-                publicar_evidencia(recibo, resultado, es_repeticion)
             codigo = resultado["veredicto"]
             prefijo = "REPETICION" if es_repeticion else "SUITE"
             campo = "repeticion" if es_repeticion else "resultado"
@@ -123,8 +119,8 @@ class TrenIntermitentes:
                           "B": "b" * 40, "C": "a" * 40, "firma": F.firma, "caso": 1,
                           "intentos_C": PASA, "intentos_B": PASA})
 
-    def absuelve(self, c, b, caso, otras=(), **opciones):
-        trabajos = self.preparar({UNIDAD: (c, b), **dict(otras)}, **opciones)
+    def absuelve_caso_2(self, otras=(), **opciones):
+        trabajos = self.preparar({UNIDAD: (FALLA, MIXTO), **dict(otras)}, **opciones)
         certificado = self.avanzar(lambda fase: isinstance(fase, Certificado))
         self.assertIsNone(certificado.pausa)
         tren = certificado.trenes[-1]
@@ -133,7 +129,7 @@ class TrenIntermitentes:
         self.assertEqual(json.loads(Path(cert.suite).read_text())["sha"], cert.C)
         self.assertEqual(self.eventos()[-1], {
             "repo": REPO, "tren": tren.id, "B": self.B, "C": cert.C, "unidad": UNIDAD,
-            "firma": F.firma, "caso": caso, "intentos_C": list(c), "intentos_B": list(b)})
+            "firma": F.firma, "caso": 2, "intentos_C": list(FALLA), "intentos_B": list(MIXTO)})
         promoviendo = self.avanzar(lambda fase: isinstance(fase, Promoviendo), AHORA + 3000)
         self.assertIsNone(promoviendo.pausa)
         self.assertEqual(promoviendo.trenes[-1].fase.certificado, cert)
@@ -148,38 +144,39 @@ class TrenIntermitentes:
         trabajos = self.preparar(repeticiones, **opciones)
         estado = self.avanzar(lambda fase: isinstance(fase, (Certificado, Terminal)))
         self.assertEqual(estado.pausa, Pausa("necesita-juicio", detalle=f"{detalle}:{next(iter(repeticiones))}"))
+        self.assertIsInstance(estado.trenes[-1].fase, Diagnosticando)
         self.assertEqual(trabajos["suite"], 1)
         self.assertEqual(self.remoto(), self.B)
         self.assertEqual(self.eventos(), [])
 
 
 class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
-    def test_caso_1_pasa_pasa_en_c_y_b(self):
-        self.absuelve(PASA, PASA, 1)
+    def test_caso_1_pausa_con_ambos_commits_en_verde(self):
+        self.pausa_original({UNIDAD: (PASA, PASA)})
 
-    def test_caso_1_certifica_si_github_conserva_la_base_anterior(self):
-        self.absuelve(PASA, PASA, 1, base_vieja=True)
+    def test_caso_2_certifica_si_github_conserva_la_base_anterior(self):
+        self.absuelve_caso_2(base_vieja=True)
 
-    def test_caso_1_con_base_mixta(self):
-        self.absuelve(PASA, MIXTO, 1)
+    def test_caso_1_pausa_con_base_mixta(self):
+        self.pausa_original({UNIDAD: (PASA, MIXTO)})
 
     def test_caso_2_con_base_mixta_misma_firma(self):
-        self.absuelve(FALLA, MIXTO, 2)
+        self.absuelve_caso_2()
 
     def test_intermitente_y_preexistente_certifican_juntos(self):
-        self.absuelve(PASA, PASA, 1, ((OTRA, (FALLA, FALLA)),))
+        self.absuelve_caso_2(((OTRA, (FALLA, FALLA)),))
 
     def test_absolucion_de_hace_ocho_dias_y_otro_repo_no_cuentan(self):
         self.antecedente(1)
         self.antecedente(8)
         self.antecedente(2, repo="otro/proyecto")
         self.antecedente(2, unidad=OTRA)
-        self.absuelve(PASA, PASA, 1)
+        self.absuelve_caso_2()
 
     def test_tercera_vez_pausa_y_absolver_manual_corre_suite_nueva(self):
         self.antecedente(1)
         self.antecedente(6)
-        trabajos = self.preparar({UNIDAD: (PASA, PASA)})
+        trabajos = self.preparar({UNIDAD: (FALLA, MIXTO)})
         pausado = self.avanzar(lambda fase: False)
         self.assertEqual(pausado.pausa, Pausa("necesita-juicio",
                          detalle="intermitente-reincidente:" + UNIDAD))
@@ -206,13 +203,13 @@ class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
         self.pausa_original({UNIDAD: (("pasa", "omitida"), PASA)})
 
     def test_pausa_si_quedan_etapas(self):
-        self.pausa_original({UNIDAD: (PASA, PASA)}, restantes=("no-corrida",))
+        self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base", restantes=("no-corrida",))
 
     def test_pausa_si_hay_tres_unidades(self):
-        self.pausa_original({u: (PASA, PASA) for u in (UNIDAD, OTRA, TERCERA)})
+        self.pausa_original({u: (FALLA, MIXTO) for u in (UNIDAD, OTRA, TERCERA)}, "confirmacion-base")
 
     def test_pausa_si_hay_un_fallo_atribuible_junto_al_intermitente(self):
-        self.pausa_original({UNIDAD: (PASA, PASA), OTRA: (FALLA, PASA)})
+        self.pausa_original({UNIDAD: (FALLA, MIXTO), OTRA: (FALLA, PASA)}, "confirmacion-base")
 
     def test_pausa_si_git_no_puede_leer_el_diff(self):
         transporte = self.contexto.git.ejecutar
@@ -223,15 +220,21 @@ class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
             return transporte(argv, **kwargs)
 
         self.contexto.git.ejecutar = git
-        self.pausa_original({UNIDAD: (PASA, PASA)})
+        self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
 
     def test_snapshot_anterior_se_sigue_leyendo(self):
         self.preparar({UNIDAD: (PASA, PASA)})
-        guardado = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
+        guardado = self.avanzar(lambda fase: isinstance(fase, Diagnosticando) and fase.evidencias)
+        anterior = datos(guardado)
+        evidencias = anterior["trenes"][-1]["fase"]["evidencias"]
+        for evidencia in evidencias:
+            for unidad in evidencia["resultado"]["unidades"]:
+                for intento in unidad["intentos"]:
+                    self.assertIs(intento.pop("caso_ejecutado"), False)
         with self.ledger() as ledger:
             # Formato operativo anterior a SEN-7115: sólo estado, efectos y ACK.
             ledger.evento(REPO, "operativo", AHORA + 2800,
-                          {"estado": datos(guardado), "efectos": [], "consumido": None})
+                          {"estado": anterior, "efectos": [], "consumido": None})
         self.assertEqual(self.estado(), guardado)
 
 
@@ -250,140 +253,82 @@ class ArchivosDelLoteTests(TrenIntermitentes, unittest.TestCase):
         self.miembros[1] = pr, head
 
     def test_pausa_si_un_pr_toca_el_archivo_de_la_unidad(self):
-        self.pausa_original({UNIDAD: (PASA, PASA)})
+        self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
 
     def test_pausa_si_un_pr_renombra_el_archivo_de_la_unidad(self):
-        self.pausa_original({RENOMBRADO + "::test_uno": (PASA, PASA)})
+        self.pausa_original({RENOMBRADO + "::test_uno": (FALLA, MIXTO)}, "confirmacion-base")
 
     def test_pausa_si_el_lote_toca_la_ruta_relativa_al_paquete(self):
         self.pausa_original({"tests/auth.vitest.ts": (FALLA, MIXTO)}, "confirmacion-base")
 
 
-class ReportesHasitoTests(TrenIntermitentes, unittest.TestCase):
-    def publicar(self, fallo, formato, estados):
-        cwd = "packages/mcp-server"
-        nombre = "/espejo/" + cwd + "/" + fallo.unidad
+class PlanificarTests(unittest.TestCase):
+    def test_caso_1_exige_que_ambos_intentos_de_c_acrediten_el_caso(self):
+        b, c = "b" * 40, "c" * 40
 
-        def reporte(estado):
-            casos = [(fallo.firma, estado), ("hermano que sí corre", "passed")]
-            if formato == "vitest":
-                return json.dumps(dict(testResults=[dict(name=nombre, assertionResults=[
-                    dict(fullName=caso, status=veredicto) for caso, veredicto in casos if veredicto
-                ])])).encode()
-            suite = ElementTree.Element("testsuite", name=nombre)
-            for caso, veredicto in casos:
-                if veredicto:
-                    nodo = ElementTree.SubElement(suite, "testcase", name=caso, file=nombre)
-                    if veredicto != "passed":
-                        ElementTree.SubElement(nodo, "failure" if veredicto == "failed" else "skipped")
-            return ElementTree.tostring(suite)
+        def evidencia(objetivo, *intentos):
+            unidad = UnidadRepetida(F.check, F.unidad, F.parte, "definicion", intentos)
+            solicitud = Reproduccion(objetivo, F, objetivo, costo_s=20)
+            resultado = Repeticion(c if objetivo == "C" else b, c, b, "huella", (unidad,))
+            return Evidencia(solicitud, resultado)
 
-        def publicar(ruta, recibo, repeticion):
-            sha = recibo["sha"]
-            huella = "a" * 64
-            check = dict(id=fallo.check, cwd=cwd, unidades=[
-                dict(formato=formato, archivo="{reporte}", reejecutar=dict(cwd=cwd))])
-            plan = dict(huella=huella, sha=sha, destino="desk",
-                        etapas=[dict(id=fallo.etapa, checks=[check])])
-            motor = dict(sha=sha, base=self.B, origen=fallo.parte, huella_plan=huella)
-            if repeticion:
-                u = recibo["unidades"][0]
-                u["cobertura"]["testigo"] = "vitest-json" if formato == "vitest" else "bun-junit"
-                objetivo = dict(check=fallo.check, unidad=fallo.unidad, fuente=0, definicion=u["definicion"])
-                plan["repeticion"] = dict(objetivos=[objetivo], origen=recibo["origen"])
-                motor["repeticion"] = dict(objetivos=[objetivo], intentos=[
-                    dict(i, check=fallo.check, unidad=fallo.unidad, fuente=0) for i in u["intentos"]])
-                archivos = {f"observaciones/{fallo.check}/f0/{n}/reporte.json": reporte(estado)
-                            for n, estado in enumerate(estados, 1)}
-            else:
-                recibo["partes"][0]["huella_plan"] = huella
-                motor["etapas"] = [dict(id=fallo.etapa, checks=[
-                    dict(id=fallo.check, corridas={"candidato": {}})])]
-                archivos = {f"etapas/01-{fallo.etapa}/{fallo.check}/reporte.json": reporte("failed")}
-            ruta.write_text(json.dumps(recibo))
-            token = "b" * 32
-            guardar(ruta.with_name("despacho.json"), dict(tareas=[
-                dict(token=token, estado="recogida", planes=[plan], resultados=[motor])]))
-            recogido = ruta.parent / "tareas" / token / "recogido" / ".suite"
-            recogido.mkdir(parents=True)
-            archivos["plan.json"] = json.dumps(plan).encode()
-            with tarfile.open(recogido / f"evidencia-{fallo.parte}.tar", "w") as tar:
-                for nombre, contenido in archivos.items():
-                    miembro = tarfile.TarInfo(f"desk-{huella[:12]}/{nombre}")
-                    miembro.size = len(contenido)
-                    tar.addfile(miembro, BytesIO(contenido))
+        c1 = Intento(1, "pasa", "", 3, caso_ejecutado=True)
+        c2 = Intento(2, "pasa", "", 3, caso_ejecutado=True)
+        base = evidencia("B", Intento(1, "pasa", "", 3), Intento(2, "falla", F.firma, 3))
 
-        return publicar
-
-    def verificar_reportes(self, formato, estados, certifica):
-        unidad = "tests/auth.vitest.ts" if formato == "vitest" else "tests/auth.test.ts"
-        fallo = replace(F, unidad=unidad)
-        publicar = self.publicar(fallo, formato, estados)
-        self.preparar({unidad: (PASA, PASA)}, publicar_evidencia=publicar)
-        estado = self.avanzar(lambda fase: isinstance(fase, Certificado))
-        if certifica:
-            self.assertIsInstance(estado.trenes[-1].fase, Certificado)
-            self.assertEqual([e["unidad"] for e in self.eventos()], [unidad])
-        else:
-            self.assertEqual(estado.pausa, Pausa("necesita-juicio", detalle="confirmacion-candidato:" + unidad))
-            self.assertEqual(self.eventos(), [])
-
-    def test_certifica_si_vitest_ejecuta_ambas_veces_el_caso(self):
-        self.verificar_reportes("vitest", PASA_EJECUTADA, True)
-
-    def test_pausa_si_vitest_omite_el_caso_en_un_intento(self):
-        self.verificar_reportes("vitest", ("passed", "skipped"), False)
-
-    def test_pausa_si_vitest_deja_de_enumerar_el_caso(self):
-        self.verificar_reportes("vitest", (None, "passed"), False)
-
-    def test_certifica_si_bun_ejecuta_ambas_veces_el_caso(self):
-        self.verificar_reportes("bun", PASA_EJECUTADA, True)
-
-    def test_pausa_si_junit_marca_omitido_el_caso(self):
-        self.verificar_reportes("bun", ("skipped", "skipped"), False)
+        plan = planificar((F,), (1,), (evidencia("C", c1, c2), base), 600, absolver=True)
+        self.assertEqual(plan, Plan(terminado=True, absoluciones=(Absolucion(F, 1, PASA, MIXTO),)))
+        for n, intentos in enumerate(((replace(c1, caso_ejecutado=False), c2),
+                                      (c1, replace(c2, caso_ejecutado=False))), 1):
+            with self.subTest(sin_evidencia=n):
+                plan = planificar((F,), (1,), (evidencia("C", *intentos), base), 600, absolver=True)
+                self.assertEqual(plan, Plan(incierto="confirmacion-candidato:" + F.unidad))
 
 
-class PlaywrightTests(TrenIntermitentes, unittest.TestCase):
-    def test_pausa_si_playwright_omite_el_caso_que_fallo(self):
-        unidad = "apps/web/e2e/disciplinary-measures.spec.ts"
-        adaptador = Jale("/sin-lanzador", modos=("e2e",), estado=self.raiz / "jale")
-        self.contexto.hasito = adaptador
+class IntermitentesJaleTests(TrenIntermitentes, unittest.TestCase):
+    unidad = "apps/web/e2e/a.spec.ts"
+
+    def preparar_recibos(self, intentos_c):
         self.contexto.config["costo_suite_sana_s"] = 600
-        omitidos = []
+        productor = self.raiz / "productor.py"
+        productor.write_text(PRODUCTOR)
+        lanzador = self.raiz / "jale.sh"
+        lanzador.write_text("#!/bin/bash\nexec " + shlex.join(
+            [sys.executable, str(productor), str(self.raiz)]) + ' "$@"\n')
+        (self.raiz / "plan.json").write_text(json.dumps([
+            {"estados": [v]} for v in ("falla", *intentos_c, *MIXTO)
+        ]))
+        self.contexto.hasito = Jale(lanzador, modos=("e2e",), estado=self.raiz / "jale")
 
-        def corrida(registro, commit, modo, filtros, intento, permitir_lanzar, tren_id):
-            ruta = registro / str(intento)
-            ruta.mkdir(parents=True, exist_ok=True)
-            guardar(registro / "completo.json", intento)
-            guardar(ruta / "solicitud.json", ["fixture"])
-            estado = ("passed" if commit == self.B else "skipped" if filtros else "failed")
-            if estado == "skipped":
-                omitidos.append(registro)
-            # El hermano pasa y el recibo jale-recibo@1 agrega ambos por archivo.
-            specs = [
-                dict(title=titulo, file="e2e/disciplinary-measures.spec.ts", tests=[
-                    dict(projectName="chromium", status=veredicto, results=[dict(status=status)])])
-                for titulo, veredicto, status in (
-                    ("flujo de acta firmada",
-                     {"passed": "expected", "failed": "unexpected", "skipped": "skipped"}[estado],
-                     estado),
-                    ("consulta de historial", "expected", "passed"))]
-            fallos = [s for s in specs if s["tests"][0]["status"] == "unexpected"]
-            firma = ("sha256:" + hashlib.sha256(b"flujo de acta firmada [chromium]\tExpected closed").hexdigest()
-                     if fallos else "")
-            codigo = int(bool(fallos))
-            recibo = dict(esquema="jale-recibo@1", sha=commit, modo=modo, codigo=codigo,
-                          alcance="parcial" if filtros else "completo", filtros=list(filtros),
-                          completo=True, huella_entorno=dict(bun="1", node="24", playwright="1"),
-                          unidades=[dict(unidad=unidad, resultado="falla" if fallos else "pasa",
-                                         firma=firma, fallidas=len(fallos), duracion_s=3)])
-            log = ruta / "corrida.log"
-            log.write_bytes(b"RECIBO jale-recibo@1 " + base64.b64encode(json.dumps(recibo).encode()))
-            return leer_recibo(log, codigo, commit, modo, filtros)
+    def verificar_repeticiones(self, candidato):
+        lanzamientos = (self.raiz / "lanzamientos.jsonl").read_text().splitlines()
+        self.assertEqual([json.loads(linea)[2:] for linea in lanzamientos], [
+            ["e2e", candidato],
+            ["e2e", candidato, self.unidad],
+            ["e2e", candidato, self.unidad],
+            ["e2e", self.B, self.unidad],
+            ["e2e", self.B, self.unidad],
+        ])
 
-        adaptador.corrida = corrida
+    def test_caso_1_pausa_con_base_mixta(self):
+        self.preparar_recibos(PASA)
         estado = self.avanzar(lambda fase: isinstance(fase, Certificado))
-        self.assertEqual(len(omitidos), 2)
-        self.assertEqual(estado.pausa, Pausa("necesita-juicio", detalle="confirmacion-candidato:" + unidad))
+        fase = estado.trenes[-1].fase
+        self.assertIsInstance(fase, Diagnosticando)
+        self.assertEqual(estado.pausa,
+                         Pausa("necesita-juicio", detalle="confirmacion-candidato:" + self.unidad))
         self.assertEqual(self.eventos(), [])
+        self.assertEqual(self.remoto(), self.B)
+        self.verificar_repeticiones(fase.candidato.C)
+
+    def test_caso_2_con_base_mixta_misma_firma(self):
+        self.preparar_recibos(FALLA)
+        estado = self.avanzar(lambda fase: isinstance(fase, Certificado))
+        self.assertIsNone(estado.pausa)
+        tren = estado.trenes[-1]
+        self.assertIsInstance(tren.fase, Certificado)
+        self.assertEqual(self.eventos(), [{
+            "repo": REPO, "tren": tren.id, "B": self.B, "C": tren.fase.C, "unidad": self.unidad,
+            "firma": FIRMA_JALE, "caso": 2, "intentos_C": list(FALLA), "intentos_B": list(MIXTO),
+        }])
+        self.verificar_repeticiones(tren.fase.C)
