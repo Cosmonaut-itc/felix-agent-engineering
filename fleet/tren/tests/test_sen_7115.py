@@ -266,6 +266,17 @@ class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
         self.contexto.git.ejecutar = git
         self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
 
+    def test_pausa_si_git_no_puede_leer_las_rutas_borradas_en_main(self):
+        transporte = self.contexto.git.ejecutar
+
+        def git(argv, **kwargs):
+            if "diff" in argv and "--diff-filter=D" in argv:
+                return subprocess.CompletedProcess(argv, 128, b"", b"error de lectura")
+            return transporte(argv, **kwargs)
+
+        self.contexto.git.ejecutar = git
+        self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
+
     def test_snapshot_anterior_se_sigue_leyendo(self):
         self.preparar({UNIDAD: (PASA, PASA)})
         guardado = self.avanzar(lambda fase: isinstance(fase, Diagnosticando) and fase.evidencias)
@@ -558,36 +569,45 @@ class IntermitentesHasitoTests(TrenIntermitentes, unittest.TestCase):
 class RenombreEnMain(TrenIntermitentes):
     unidad = IntermitentesJaleTests.unidad
     vieja = "apps/web/e2e/previa.spec.ts"
+    contenido = "".join(f"linea principal {n:03d}\n" for n in range(100))
+    editado = contenido.replace("linea principal 042", "expectativa PR")
     preparar_recibos = IntermitentesJaleTests.preparar_recibos
     verificar_repeticiones = IntermitentesJaleTests.verificar_repeticiones
 
     def archivos_en_main(self, contenido):
         return {"comun": "base\n", self.vieja: contenido}, {"comun": "base\n", self.unidad: contenido}
 
+    def archivos_del_pr(self, antes):
+        return {**antes, self.vieja: self.editado, "src/nomina.ts": "cambio\n"}
+
     def preparar_git(self):
-        contenido = "".join(f"linea principal {n:03d}\n" for n in range(100))
-        antes, despues = self.archivos_en_main(contenido)
+        antes, despues = self.archivos_en_main(self.contenido)
         anterior = self.commit(antes, padres=(self.B,))
         self.B = self.commit(despues, padres=(anterior,))
-        head = self.commit({**antes, self.vieja: contenido.replace(
-            "linea principal 042", "expectativa PR"), "src/nomina.ts": "cambio\n"}, padres=(anterior,))
+        head = self.commit(self.archivos_del_pr(antes), padres=(anterior,))
         self.push(self.B, "refs/heads/main")
         self.comando(self.fuente, "push", str(self.origen), f"+{head}:refs/pull/1/head")
         self.miembros = [(1, head)]
 
-    def verificar_pausa_por_renombre(self):
+    def verificar_pausa_por_renombre(self, *, diff_neto=True, edicion_en_c=True):
         self.preparar_recibos(FALLA, JaleConFirma)
         self.contexto.tick(AHORA - 3600)
         diagnostico = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
         candidato = diagnostico.trenes[-1].fase.candidato
-        self.assertIn("expectativa PR", self.contexto.git.texto("show", f"{candidato.C}:{self.unidad}"))
+        self.assertEqual([(pr, head) for pr, head, _ in candidato.eslabones], self.miembros)
+        git = self.contexto.git
+        contenido_final = git.texto("show", f"{candidato.C}:{self.unidad}")
+        self.assertEqual("expectativa PR" in contenido_final, edicion_en_c)
+        self.assertEqual(self.unidad in git.archivos_entre(candidato.B, candidato.C), diff_neto)
+        observacion = self.contexto.observador.observar(diagnostico, AHORA)
         final = self.avanzar(lambda fase: isinstance(fase, Terminal), AHORA + 2400)
         self.assertIsInstance(final.trenes[-1].fase, Diagnosticando)
         self.assertEqual(final.pausa, Pausa("necesita-juicio", detalle="confirmacion-base:" + self.unidad))
         self.assertEqual(self.eventos(), [])
         self.assertEqual(self.remoto(), self.B)
         self.verificar_repeticiones(candidato.C)
-        self.assertIn(self.unidad, self.contexto.git.archivos_lote(candidato))
+        self.assertIsNone(observacion.archivos_lote)
+        return candidato
 
 
 class RenombreEnMainTests(RenombreEnMain, unittest.TestCase):
@@ -619,3 +639,51 @@ class RenombreLimiteDiffTests(RenombreEnMain, unittest.TestCase):
 
     def test_pausa_cuando_el_diff_supera_el_limite_de_renombres(self):
         self.verificar_pausa_por_renombre()
+
+
+class RenombreAbsorbidoTests(RenombreEnMain, unittest.TestCase):
+    def archivos_en_main(self, contenido):
+        antes, despues = super().archivos_en_main(contenido)
+        despues[self.unidad] = self.editado
+        return antes, despues
+
+    def test_pausa_si_main_ya_absorbio_la_edicion_en_el_destino(self):
+        self.verificar_pausa_por_renombre(diff_neto=False)
+
+
+class RenombreRestauradoTests(RenombreEnMain, unittest.TestCase):
+    def preparar_git(self):
+        super().preparar_git()
+        _, padre = self.miembros[0]
+        hijo = self.commit({"comun": "base\n", self.vieja: self.contenido,
+                            "src/nomina.ts": "cambio\n", "pr-2": "ticket\n"}, padres=(padre,))
+        self.comando(self.fuente, "push", str(self.origen), f"+{hijo}:refs/pull/2/head")
+        self.miembros.append((2, hijo))
+
+    def test_pausa_si_otro_pr_restaura_el_destino(self):
+        candidato = self.verificar_pausa_por_renombre(diff_neto=False, edicion_en_c=False)
+        _, _, primero = candidato.eslabones[0]
+        git = self.contexto.git
+        self.assertIn(self.unidad, git.archivos_entre(candidato.B, primero))
+        self.assertIn(self.unidad, git.archivos_entre(primero, candidato.C))
+
+
+class ArchivoNuevoConRenombreEnMainTests(RenombreEnMain, unittest.TestCase):
+    nuevo = "src/nuevo.ts"
+
+    def archivos_del_pr(self, antes):
+        return {**antes, self.nuevo: "archivo nuevo\n"}
+
+    def test_aterriza_si_el_pr_agrega_un_archivo_ajeno_al_renombre(self):
+        self.preparar_recibos(FALLA, JaleConFirma)
+        self.contexto.tick(AHORA - 3600)
+        diagnostico = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
+        candidato = diagnostico.trenes[-1].fase.candidato
+        self.assertEqual(self.contexto.git.archivos_lote(candidato), (self.nuevo,))
+
+        final = self.avanzar(lambda fase: isinstance(fase, Terminal), AHORA + 2400)
+        self.assertIsNone(final.pausa)
+        self.assertEqual(final.trenes[-1].fase, Terminal("ATERRIZADO"))
+        self.assertEqual(self.remoto(), candidato.C)
+        self.assertEqual(len(self.eventos()), 1)
+        self.verificar_repeticiones(candidato.C)

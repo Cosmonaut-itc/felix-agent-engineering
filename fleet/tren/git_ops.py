@@ -114,11 +114,12 @@ class GitTren:
             raise FalloGit("operacion-git-fallida")
         return resultado.stdout.strip()
 
-    def archivos_entre(self, B, C):
+    def archivos_entre(self, B, C, *, solo_borrados=False):
         if not sha(B) or not sha(C):
             raise FalloGit("sha-invalido")
+        filtro = ("--diff-filter=D",) if solo_borrados else ()
         resultado = self.git("diff", "--no-renames", "--no-ext-diff", "--name-only",
-                             "-z", B, C, "--", aislado=True, text=False)
+                             *filtro, "-z", B, C, "--", aislado=True, text=False)
         if resultado.returncode:
             raise FalloGit("operacion-git-fallida")
         return tuple(os.fsdecode(ruta) for ruta in resultado.stdout.split(b"\0")[:-1])
@@ -133,7 +134,12 @@ class GitTren:
             bases = self.texto("merge-base", "--all", candidato.B, head).splitlines()
             if len(bases) != 1:
                 raise FalloGit("base-de-pr-no-unica")
-            archivos.update(self.archivos_entre(bases[0], head))
+            base = bases[0]
+            propios = set(self.archivos_entre(base, head))
+            borrados = self.archivos_entre(base, candidato.B, solo_borrados=True)
+            if not propios.isdisjoint(borrados):
+                raise FalloGit("ruta-del-pr-borrada-en-base")
+            archivos.update(propios)
         archivos.update(self.archivos_entre(candidato.B, candidato.C))
         return tuple(sorted(archivos))
 

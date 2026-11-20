@@ -649,11 +649,15 @@ su pausa de diagnóstico.
 El tick une los diffs propios de los heads congelados de cada PR, desde su
 ancestro común único con B, con las rutas del diff de B a C sin detección de
 renombres. Los primeros conservan los cambios que la mezcla absorbió. El
-segundo incluye las rutas donde la mezcla aplicó los cambios, también cuando
-B había renombrado un archivo. El diagnóstico conserva la pausa si algún
-diff falla, si algún ancestro común falta o es múltiple, o si una ruta del
-inventario coincide con el archivo de una unidad fallida. La comparación
-admite rutas relativas a un paquete.
+segundo incluye las rutas donde la mezcla aplicó los cambios. Para cada PR,
+el tick también compara las rutas de su diff propio con los borrados entre
+su ancestro común y B, sin detección de renombres. Si B borró o movió una
+ruta que el PR toca, el tick deja el inventario sin acreditar y conserva la
+pausa de diagnóstico. Los archivos que el PR añade desde su ancestro común
+quedan fuera de esta comprobación. El diagnóstico también conserva la pausa
+si algún diff falla, si algún ancestro común falta o es múltiple, o si una
+ruta del inventario coincide con el archivo de una unidad fallida. La
+comparación admite rutas relativas a un paquete.
 
 Al certificar C con la suite ya corrida, el ledger escribe un evento
 `intermitente-absuelto` por unidad absuelta. Guarda repo, tren, B, C, unidad,
