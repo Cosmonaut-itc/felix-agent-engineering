@@ -365,9 +365,8 @@ class GitHubGit:
                 diagnostico = next((t.fase for t in estado.trenes
                                     if isinstance(t.fase, Diagnosticando)), None)
                 if diagnostico is not None:
-                    candidato = diagnostico.candidato
                     try:
-                        archivos = self.almacen.archivos_entre(candidato.B, candidato.C)
+                        archivos = self.almacen.archivos_cadena(diagnostico.candidato)
                     except FalloGit:
                         archivos = None
                     observacion = replace(observacion, archivos_lote=archivos)

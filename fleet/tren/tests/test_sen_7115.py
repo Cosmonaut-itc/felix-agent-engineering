@@ -222,6 +222,19 @@ class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
         self.contexto.git.ejecutar = git
         self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
 
+    def test_no_hay_inventario_si_falta_un_eslabon_de_la_cadena(self):
+        self.preparar({UNIDAD: (FALLA, MIXTO)})
+        estado = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
+        tren = estado.trenes[-1]
+        fase = tren.fase
+        primero, _, ultimo = fase.candidato.eslabones
+        incompleto = replace(fase.candidato, eslabones=(primero, ultimo))
+        tren_incompleto = replace(tren, fase=replace(fase, candidato=incompleto))
+        estado_incompleto = replace(estado, trenes=estado.trenes[:-1] + (tren_incompleto,))
+
+        observacion = self.contexto.observador.observar(estado_incompleto, AHORA)
+        self.assertIsNone(observacion.archivos_lote)
+
     def test_snapshot_anterior_se_sigue_leyendo(self):
         self.preparar({UNIDAD: (PASA, PASA)})
         guardado = self.avanzar(lambda fase: isinstance(fase, Diagnosticando) and fase.evidencias)
@@ -260,6 +273,75 @@ class ArchivosDelLoteTests(TrenIntermitentes, unittest.TestCase):
 
     def test_pausa_si_el_lote_toca_la_ruta_relativa_al_paquete(self):
         self.pausa_original({"tests/auth.vitest.ts": (FALLA, MIXTO)}, "confirmacion-base")
+
+
+class ArchivoRestauradoEnLoteTests(TrenIntermitentes, unittest.TestCase):
+    def preparar_git(self):
+        super().preparar_git()
+        prueba = "prueba original\n"
+        cambios = {"comun": "base\n", "src/nomina.py": "cálculo cambiado\n"}
+        primero = self.commit({**cambios, OTRA: prueba}, padres=(self.B,))
+        segundo = self.commit({**cambios, ARCHIVO: prueba, "pr-2": "ticket\n"},
+                              padres=(primero,))
+        for pr, head in ((1, primero), (2, segundo)):
+            self.comando(self.fuente, "push", str(self.origen), f"+{head}:refs/pull/{pr}/head")
+            self.miembros[pr - 1] = pr, head
+
+    def test_pausa_si_un_pr_restaura_el_archivo_renombrado_por_otro(self):
+        config = self.contexto.config
+        config["sensibles"]["pruebas"] = [ARCHIVO]
+        config["sensibles_en_lote"] = ["pruebas"]
+        config["alto_riesgo_en_lote"] = True
+        config["heads_autorizados"] = [head for _, head in self.miembros]
+        apto = self.raiz / "apto-1.json"
+        evidencia = json.loads(apto.read_text())
+        apto.write_text(json.dumps({**evidencia, "verificado": "Verificado"}))
+
+        gh = self.contexto.observador.ejecutar
+        archivos_por_pr = {
+            "1": [{"filename": OTRA, "previous_filename": ARCHIVO, "status": "renamed"},
+                  {"filename": "src/nomina.py"}],
+            "2": [{"filename": "src/nomina.py"}, {"filename": "pr-2"}],
+            "3": [{"filename": "pr-3"}],
+        }
+
+        def github(argv, **kwargs):
+            resultado = gh(argv, **kwargs)
+            if argv[0] != "gh":
+                return resultado
+            ruta = argv[4].split("/")
+            if ruta[3] != "pulls":
+                return resultado
+            pr = ruta[4]
+            archivos = archivos_por_pr[pr]
+            if len(ruta) == 5:
+                datos_pr = json.loads(resultado.stdout)
+                datos_pr["changed_files"] = len(archivos)
+                if pr == "1":
+                    datos_pr["labels"] = [{"name": "alto-riesgo"}]
+                resultado.stdout = json.dumps(datos_pr)
+            elif ruta[5].startswith("files?"):
+                resultado.stdout = json.dumps([archivos])
+            return resultado
+
+        self.contexto.observador.ejecutar = github
+        trabajos = self.preparar({UNIDAD: (FALLA, MIXTO)})
+        diagnostico = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
+        self.assertIsNone(diagnostico.pausa)
+        candidato = diagnostico.trenes[-1].fase.candidato
+        self.assertEqual([pr for pr, _, _ in candidato.eslabones], [1, 2, 3])
+        git = self.contexto.git
+        primero, segundo, _ = (commit for _, _, commit in candidato.eslabones)
+        self.assertIn(ARCHIVO, git.archivos_entre(candidato.B, primero))
+        self.assertIn(ARCHIVO, git.archivos_entre(primero, segundo))
+        self.assertNotIn(ARCHIVO, git.archivos_entre(candidato.B, candidato.C))
+
+        final = self.avanzar(lambda fase: isinstance(fase, Terminal), AHORA + 2400)
+        self.assertIsInstance(final.trenes[-1].fase, Diagnosticando)
+        self.assertEqual(final.pausa, Pausa("necesita-juicio", detalle="confirmacion-base:" + UNIDAD))
+        self.assertEqual(self.eventos(), [])
+        self.assertEqual(self.remoto(), candidato.B)
+        self.assertEqual(trabajos, {"suite": 1, "repeticion": 2})
 
 
 class PlanificarTests(unittest.TestCase):
