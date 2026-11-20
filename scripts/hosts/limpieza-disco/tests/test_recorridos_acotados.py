@@ -1,8 +1,9 @@
 """Pasada completa aislada; el tope corto y PATH sólo cambian en el fixture.
 
 LIMPIEZA_TEST_SOURCE permite ejecutar estos mismos tests contra origin/main.
-Nunca consulta /private/tmp ni HOME reales y siempre usa --dry-run.
-Los tests r5 sustituyen sólo borrar() para las cachés aisladas del fixture.
+Nunca consulta /private/tmp ni HOME reales. Sólo los tests de mktemp
+ejecutan la pasada sin --dry-run. Los tests r5 habilitan el borrado de las
+cachés aisladas del fixture sin quitar --dry-run.
 """
 import fcntl
 import json
@@ -92,7 +93,11 @@ if '+D' in sys.argv:
     if c['block'] == 'lsof': time.sleep(30)
     if c['block'] == 'lsof-parcial': print('captura parcial')
     sys.exit(1)
-print('p123\\nn' + os.environ['HARNESS'])
+if c.get('lsof_error'):
+    print('captura no disponible', file=sys.stderr)
+    sys.exit(1)
+captura = 'lsof_cwd' if '-d' in sys.argv else 'lsof_abiertos'
+print(c.get(captura, 'p123\\nn' + os.environ['HARNESS']))
 ''')
         self.executable('ps', '''#!/usr/bin/python3 -B
 import os, sys
@@ -130,11 +135,10 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
             'export PATH="$HOME/.bun/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
             'export PATH=' + shlex.quote(str(self.bin)) + ':/usr/bin:/bin:/usr/sbin:/sbin')
         script = script.replace("libre_gb() { df -g /System/Volumes/Data | awk 'NR==2{print $4}'; }",
-                                'libre_gb() { echo 41; }')
+                                'libre_gb() { echo "${LIBRE_FIXTURE:-41}"; }')
         script = script.replace('RECORRIDO_SEGUNDOS=600', 'RECORRIDO_SEGUNDOS=0.5')
         script = script.replace('/private/tmp', str(self.root / 'tmp'))
-        # Sólo la regla 7 puede borrar, y sólo dentro de este HOME temporal.
-        # El resto de la pasada mantiene --dry-run, incluido simctl.
+        # El simctl falso también aísla las pasadas de mktemp sin --dry-run.
         self.executable('xcrun', '#!/bin/sh\nexit 0\n')
         script = script.replace('borrar "$c" "caché de Next.js,',
                                 'borrar_cache_fixture "$c" "caché de Next.js,')
@@ -159,15 +163,20 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
         p.write_text(text)
         p.chmod(0o755)
 
-    def envejecer(self, p):
+    def envejecer(self, p, dias=9):
+        instante = time.time() - dias * 86400
         for ruta in sorted(p.rglob('*'), reverse=True) + [p]:
-            os.utime(ruta, (time.time() - 9 * 86400,) * 2)
+            os.utime(ruta, (instante, instante))
 
-    def ejecutar(self, poda_fixture=False):
+    def ejecutar(self, poda_fixture=False, *, dry_run=True, libre=41):
         (self.root / 'config.json').write_text(json.dumps(self.config))
         start = time.monotonic()
-        p = subprocess.Popen(['bash', str(self.script), '--dry-run'], start_new_session=True,
+        comando = ['bash', str(self.script)]
+        if dry_run:
+            comando.append('--dry-run')
+        p = subprocess.Popen(comando, start_new_session=True,
                              env=dict(os.environ, HOME=str(self.home), HARNESS=str(self.root),
+                                      LIBRE_FIXTURE=str(libre),
                                       PODA_FIXTURE=str(int(poda_fixture))),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
@@ -188,6 +197,117 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
         (cache / 'dato').write_text('fixture borrable')
         self.envejecer(self.home / nombre)
         return cache
+
+    def temporal_mktemp(self, nombre='x.AbCd1234', dias=8):
+        ruta = self.home / nombre
+        dato = ruta / 'uno/dos/tres/cuatro/dato'
+        dato.parent.mkdir(parents=True)
+        dato.write_text('fixture mktemp')
+        self.envejecer(ruta, dias)
+        return ruta, dato
+
+    def test_mktemp_viejo_renombra_y_borra(self):
+        ruta, _ = self.temporal_mktemp()
+        out = self.ejecutar(dry_run=False)
+        self.assertFalse(ruta.exists(), 'el temporal mktemp viejo sigue en el home\n' + out)
+        self.assertIn(f'renombrada {ruta} a {self.state}/borrando-', out)
+        self.assertIn(f'borrado {ruta} (regla 9:', out)
+        self.assertFalse(list(self.state.glob('borrando-*')), out)
+
+    def test_mktemp_archivo_profundo_reciente_conserva_el_arbol(self):
+        ruta, dato = self.temporal_mktemp()
+        ayer = time.time() - 86400
+        os.utime(dato, (ayer, ayer))
+        out = self.ejecutar(dry_run=False)
+        self.assertTrue(dato.exists(), out)
+        self.assertIn(f'no borro {ruta}: algo cambió en los últimos 7 días', out)
+
+    def test_mktemp_emergencia_general_usa_dos_dias(self):
+        vieja, _ = self.temporal_mktemp(dias=3)
+        reciente, _ = self.temporal_mktemp('y.DeFg5678', dias=1)
+        out = self.ejecutar(dry_run=False, libre=15)
+        self.assertTrue(vieja.exists(), out)
+        out = self.ejecutar(dry_run=False, libre=14)
+        self.assertFalse(vieja.exists(), out)
+        self.assertTrue(reciente.exists(), out)
+        self.assertIn(f'no borro {reciente}: algo cambió en los últimos 2 días', out)
+
+    def test_mktemp_cwd_y_archivo_abierto_conservan_sus_arboles(self):
+        cwd, dato_cwd = self.temporal_mktemp()
+        abiertos, dato_abierto = self.temporal_mktemp('y.DeFg5678')
+        proceso = subprocess.Popen(['/bin/sleep', '120'], cwd=dato_cwd.parent)
+        self.addCleanup(proceso.wait)
+        self.addCleanup(proceso.terminate)
+        self.config['lsof_cwd'] = subprocess.run(
+            ['/usr/sbin/lsof', '-a', '-p', str(proceso.pid), '-d', 'cwd', '-Fn'],
+            capture_output=True, text=True, check=True).stdout
+        self.assertIn(str(dato_cwd.parent), self.config['lsof_cwd'])
+        with dato_abierto.open():
+            self.config['lsof_abiertos'] = subprocess.run(
+                ['/usr/sbin/lsof', '-p', str(os.getpid()), '-Fn'],
+                capture_output=True, text=True, check=True).stdout
+            self.assertIn(str(dato_abierto), self.config['lsof_abiertos'])
+            out = self.ejecutar(dry_run=False)
+        for ruta in (cwd, abiertos):
+            self.assertTrue(ruta.exists(), out)
+            self.assertIn(f'no borro {ruta}: aparece en EN_USO', out)
+
+    def test_mktemp_nombres_invalidos_enlace_y_archivo_se_conservan(self):
+        nombres = ('x.backup12', 'x.ABCDEF12', 'x.AbCd123', 'x.AbCd12345',
+                   '.AbCd1234', '.x.AbCd1234', 'x.y.AbCd1234', 'x+y.AbCd1234')
+        carpetas = [self.temporal_mktemp(nombre)[0] for nombre in nombres]
+        # Un árbol que cumpliría bajo el enlace, fuera del primer nivel del home.
+        destino = self.root / 'destino'
+        destino.mkdir()
+        self.envejecer(destino)
+        enlace = self.home / 'enlace.AbCd1234'
+        enlace.symlink_to(destino, target_is_directory=True)
+        archivo = self.home / 'archivo.AbCd1234'
+        archivo.touch()
+        self.envejecer(archivo)
+        out = self.ejecutar(dry_run=False)
+        for ruta in carpetas + [destino, enlace, archivo]:
+            self.assertTrue(ruta.exists(), str(ruta) + '\n' + out)
+        for ruta in (enlace, archivo):
+            self.assertIn(f'no borro {ruta}: no es un directorio propio sin enlace', out)
+
+    def test_mktemp_dry_run_solo_registra(self):
+        ruta, dato = self.temporal_mktemp()
+        out = self.ejecutar()
+        self.assertTrue(dato.exists(), out)
+        self.assertIn(f'[dry-run] borraría {ruta} (regla 9:', out)
+        self.assertNotIn('renombrada ', out)
+        self.assertFalse(list(self.state.glob('borrando-*')), out)
+
+    def test_mktemp_atributos_error_y_tope_conservan_el_arbol(self):
+        for nombre, hijo in (('macl', 'interior'), ('proveedor', 'dominio'),
+                             ('error', 'sin-atributos'), ('tope', 'atascada')):
+            ruta = self.home / f'{nombre}.AbCd1234'
+            (ruta / hijo).mkdir(parents=True)
+            self.envejecer(ruta, 8)
+        self.config.update(
+            xattrs={'macl.AbCd1234': 'com.apple.macl#S',
+                    'dominio': 'com.apple.file-provider-domain-id#B'},
+            xattr_error='sin-atributos', xattr_block='atascada')
+        out = self.ejecutar(dry_run=False)
+        for nombre, motivo in (('macl', 'com.apple.macl'),
+                               ('proveedor', 'com.apple.file-provider-domain-id'),
+                               ('error', 'falló xattr'), ('tope', 'actividad no descartada')):
+            ruta = self.home / f'{nombre}.AbCd1234'
+            self.assertTrue(ruta.exists(), out)
+            self.assertIn(f'no borro {ruta}: {motivo}', out)
+        self.assertIn('tope 0.5 s: regla 9: actividad', out)
+
+    def test_mktemp_lsof_fallido_o_parcial_conserva_el_arbol(self):
+        ruta, _ = self.temporal_mktemp()
+        self.config['lsof_error'] = True
+        out = self.ejecutar(dry_run=False)
+        self.assertTrue(ruta.exists(), out)
+        self.assertIn(f'no borro {ruta}: aparece en EN_USO o no pudo consultarse', out)
+        self.config.update(lsof_error=False, block='lsof-parcial')
+        out = self.ejecutar(dry_run=False)
+        self.assertTrue(ruta.exists(), out)
+        self.assertIn(f'no borro {ruta}: lsof salió 1: captura parcial', out)
 
     def test_r6_podas_tcc_antes_de_stat_xattr_y_find(self):
         podas = ('Downloads', 'Movies', 'Music', 'Pictures')

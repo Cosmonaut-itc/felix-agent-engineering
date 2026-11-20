@@ -3,7 +3,7 @@
 `limpieza-disco.sh` libera espacio regenerable en la Mini. El LaunchAgent
 `com.cosmonaut.limpieza-disco` lo ejecuta al cargar y cada hora, con Nice 10 y
 E/S de baja prioridad. Escribe en `~/Library/Logs/limpieza-disco.log`. La
-cabecera del script lista las ocho reglas y sus umbrales.
+cabecera del script lista las nueve reglas y sus umbrales.
 
 ## Recorridos y exclusión mutua
 
@@ -25,8 +25,8 @@ corridas nuevas cierra las reglas 1 y 3. Un corte del listado de cachés no
 publica candidatas. El log de topes usa un descriptor separado para seguir
 visible aunque la consulta capture stdout y stderr.
 
-La regla 7 es el único recorrido que parte del home. Recorre cada entrada
-de primer nivel por separado, oculta o no, con su propio tope, así que una
+La regla 7 busca cachés a partir del home. Recorre cada entrada de primer
+nivel por separado, oculta o no, con su propio tope, así que una
 raíz que bloquea sólo pierde su propio contenido. Salta estas raíces:
 
 - las rutas podadas por nombre, sin línea en el log: `Documents`, `Desktop`,
@@ -57,6 +57,35 @@ otra limpieza viva. La adquisición y recuperación se serializan con
 el recuperador. El archivo puede permanecer sin bloquear. No hay un límite
 global de pasada: muchas candidatas pueden sumar más de 120 minutos; en
 ese caso una invocación posterior registra el dueño vivo y sale.
+
+## Temporales de mktemp en el home
+
+La regla 9 considera directorios propios del primer nivel del home con
+nombre `prefijo.sufijo`. El prefijo usa uno o más caracteres
+`[A-Za-z0-9_-]`. El sufijo usa exactamente ocho caracteres
+`[A-Za-z0-9]`, con al menos una mayúscula y una minúscula. Por ejemplo,
+`x.AbCd1234` puede ser candidato y `x.backup12` queda fuera.
+
+Comprueba el mtime de todo el árbol con el tope común. Exige siete días
+sin cambios, o dos días si al empezar había menos de 15 GB libres.
+Conserva la carpeta si el recorrido falla o vence su plazo, si detecta
+otro dispositivo o si un directorio tiene `com.apple.macl` o
+`com.apple.file-provider-domain-id` (incluidas variantes con sufijo
+`#…`). Comprueba los atributos antes de abrir cada directorio y no
+sigue enlaces. Un fallo de acceso o de lectura de atributos veta el
+borrado.
+
+Reutiliza `EN_USO` de la regla 2 para detectar cwd y archivos abiertos.
+Repite la comprobación con un `lsof +D` acotado al final y comprueba
+que el directorio sigue siendo el mismo. Una captura no verificable lo
+conserva. Un proceso que empiece a usarlo después de la última consulta
+aún puede coincidir con el rename.
+
+Sólo renombra en el mismo filesystem, de forma exclusiva, a
+`$STATE/borrando-mktemp-<aleatorio>`. El borrado actúa sobre ese
+nombre. Si falla, el resto queda en `$STATE` para revisión. El log
+registra el origen y el resultado o el motivo de conservar la candidata.
+`--dry-run` registra la candidata tras las mismas comprobaciones.
 
 ## ~/remote-run
 
@@ -196,7 +225,7 @@ demás.
   de un temporal exclusivo del inventario (`MARCA`, `INV_JSON`, `INV_LISTA`
   o `RUNS_NUEVAS`) o del listado de restos `borrando-*` detiene sólo las
   reglas 1 y 3. Si falla un temporal compartido (`INV_ERR`, `EN_USO` o
-  `USO_*`), se detienen también las reglas 2, 5, 6 y 7, que consultan
+  `USO_*`), se detienen también las reglas 2, 5, 6, 7 y 9, que consultan
   `EN_USO`. Cada fallo deja su motivo en el log y ningún veto se revierte
   durante la pasada.
   Si la lectura inicial de `df` no es un entero no negativo, toda la pasada
@@ -209,7 +238,7 @@ demás.
   cada causa se registra. Un fallo al abrir la salida de basetemp cuenta
   como fallo de extracción y no como ausencia de coincidencias. Cualquier
   fallo, o diagnóstico de `lsof` o `ps`, deja sin borrar las reglas 1, 2, 3,
-  5, 6 y 7 durante esa pasada. Las reglas 4 y 8, que no consultan `EN_USO`,
+  5, 6, 7 y 9 durante esa pasada. Las reglas 4 y 8, que no consultan `EN_USO`,
   siguen.
 - **Regla 7.** Busca cachés de Next.js en el home, raíz por raíz, con las
   exclusiones descritas arriba, y poda
@@ -235,6 +264,8 @@ Ejecutar las suites exclusivamente en la Mini por
 temporales de fixture, comandos falsos en PATH y un tope de 0,5 segundos
 inyectados sólo en la copia temporal. Comprueba cortes de find/du/lsof,
 salidas parciales, continuidad hasta `fin`, podas y recuperación del lock.
+Los casos mktemp comprueban el borrado y la cuarentena dentro del fixture,
+la antigüedad en ambos modos, las protecciones y el modo seco.
 También admite `LIMPIEZA_TEST_SOURCE` para comparar contra main.
 
 **Premisa y ventanas residuales.** El productor `remote-run` sincroniza
