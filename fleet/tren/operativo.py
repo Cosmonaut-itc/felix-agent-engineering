@@ -94,8 +94,9 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
     previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
     if not estado.pausa and any(isinstance(t.fase, Diagnosticando) for t in estado.trenes):
-        observacion = replace(observacion,
-                              absoluciones_recientes=ledger.absoluciones_recientes(repo, ahora))
+        observacion = replace(
+            observacion, absoluciones_recientes=ledger.absoluciones_recientes(repo, ahora),
+            firma_distingue_fallo=getattr(adaptador, "firma_distingue_fallo", False) is True)
     previo.limpiar(estado, observacion)
 
     def drenar(estado, observacion, recuperacion=False):

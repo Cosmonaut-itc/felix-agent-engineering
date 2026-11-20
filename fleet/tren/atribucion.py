@@ -58,13 +58,15 @@ def absolucion(fallo, caso, uc, ub):
                       tuple(i.veredicto for i in sorted(ub.intentos, key=lambda i: i.n)))
 
 
-def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=False):
+def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=False,
+               firma_distingue_fallo=False):
     """Una repetición = dos intentos de una unidad; N <= 3.
 
     Costo: 2 * máximo(segundos del check de origen, duraciones observadas).
     El check entero es una cota conservadora cuando falta tiempo por test.
     Archivos sólo prioriza tickets: (PR, rutas). Nunca es evidencia causal.
     Con absolver, devuelve None si un fallo exige atribución al lote.
+    La absolución con B mixto requiere una firma que identifique el fallo.
     """
     prs = tuple(prs)
     if not 1 <= len(prs) <= 3 or len(set(prs)) != len(prs):
@@ -119,7 +121,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
         if estable(ub, firma) == "falla":
             continue
         if estable(ub) != "pasa":
-            if (puede_absolver and intentos_observados(ub)
+            if (puede_absolver and firma_distingue_fallo and intentos_observados(ub)
                     and any(i.veredicto == "falla" and i.firma == firma for i in ub.intentos)):
                 absoluciones.append(absolucion(replace(fallo, firma=firma), 2, uc, ub))
                 continue

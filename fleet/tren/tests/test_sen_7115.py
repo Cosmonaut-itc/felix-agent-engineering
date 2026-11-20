@@ -10,6 +10,7 @@ import unittest
 
 import test_activo as activo
 import test_juicio as juicios
+from adaptadores.hasito import Hasito
 from adaptadores.jale import Jale
 from atribucion import Absolucion, Plan, planificar
 from dominio import (Candidato, Certificado, Diagnosticando, Evidencia, Intento, Pausa,
@@ -32,6 +33,14 @@ TERCERA = "tests/test_tercera.py"
 RENOMBRADO = "tests/test_renombrado.py"
 
 
+class HasitoConFirma(Hasito):
+    firma_distingue_fallo = True
+
+
+class JaleConFirma(Jale):
+    firma_distingue_fallo = True
+
+
 class TrenIntermitentes:
     def setUp(self):
         activo.ActivoTests.setUp(self, self.preparar_git)
@@ -52,7 +61,7 @@ class TrenIntermitentes:
     juicio = juicios.JuicioTests.juicio
 
     def preparar(self, repeticiones, *, restantes=(), base_vieja=False, firma_base=None,
-                 fallo=F, firma_repeticion=None):
+                 fallo=F, firma_repeticion=None, adaptador=HasitoConFirma):
         self.contexto.config["costo_suite_sana_s"] = 600
         trabajos = Counter()
         gh = self.contexto.observador.ejecutar
@@ -97,7 +106,7 @@ class TrenIntermitentes:
             return subprocess.CompletedProcess(argv, codigo,
                 f"{prefijo} veredicto={codigo} {campo}={recibo}\n", "")
 
-        self.contexto.hasito.runner = lanzador
+        self.contexto.hasito = adaptador(self.contexto.hasito.lanzador, self.contexto.git, lanzador)
         self.contexto.observador.ejecutar = github
         return trabajos
 
@@ -232,22 +241,25 @@ class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
     def test_pausa_si_hay_un_fallo_atribuible_junto_al_intermitente(self):
         self.pausa_original({UNIDAD: (FALLA, MIXTO), OTRA: (FALLA, PASA)}, "confirmacion-base")
 
-    def test_pausa_si_git_no_puede_leer_el_diff(self):
+    def test_pausa_si_git_no_puede_leer_el_diff_propio(self):
         transporte = self.contexto.git.ejecutar
+        _, head = self.miembros[0]
 
         def git(argv, **kwargs):
-            if "diff" in argv and "--name-only" in argv:
+            if "diff" in argv and "--name-only" in argv and argv[-2] == head:
                 return subprocess.CompletedProcess(argv, 128, b"", b"error de lectura")
             return transporte(argv, **kwargs)
 
         self.contexto.git.ejecutar = git
         self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
 
-    def test_pausa_si_git_no_puede_leer_los_renombres_de_main(self):
+    def test_pausa_si_git_no_puede_leer_el_diff_del_candidato(self):
         transporte = self.contexto.git.ejecutar
+        heads = {head for _, head in self.miembros}
 
         def git(argv, **kwargs):
-            if "diff" in argv and "--name-status" in argv:
+            if ("diff" in argv and "--name-only" in argv
+                    and argv[-3] == self.B and argv[-2] not in heads):
                 return subprocess.CompletedProcess(argv, 128, b"", b"error de lectura")
             return transporte(argv, **kwargs)
 
@@ -478,7 +490,7 @@ class PlanificarTests(unittest.TestCase):
 class IntermitentesJaleTests(TrenIntermitentes, unittest.TestCase):
     unidad = "apps/web/e2e/a.spec.ts"
 
-    def preparar_recibos(self, intentos_c):
+    def preparar_recibos(self, intentos_c, adaptador=Jale):
         self.contexto.config["costo_suite_sana_s"] = 600
         productor = self.raiz / "productor.py"
         productor.write_text(PRODUCTOR)
@@ -488,7 +500,7 @@ class IntermitentesJaleTests(TrenIntermitentes, unittest.TestCase):
         (self.raiz / "plan.json").write_text(json.dumps([
             {"estados": [v]} for v in ("falla", *intentos_c, *MIXTO)
         ]))
-        self.contexto.hasito = Jale(lanzador, modos=("e2e",), estado=self.raiz / "jale")
+        self.contexto.hasito = adaptador(lanzador, modos=("e2e",), estado=self.raiz / "jale")
 
     def verificar_repeticiones(self, candidato):
         lanzamientos = (self.raiz / "lanzamientos.jsonl").read_text().splitlines()
@@ -512,7 +524,7 @@ class IntermitentesJaleTests(TrenIntermitentes, unittest.TestCase):
         self.verificar_repeticiones(fase.candidato.C)
 
     def test_caso_2_con_base_mixta_misma_firma(self):
-        self.preparar_recibos(FALLA)
+        self.preparar_recibos(FALLA, JaleConFirma)
         estado = self.avanzar(lambda fase: isinstance(fase, Certificado))
         self.assertIsNone(estado.pausa)
         tren = estado.trenes[-1]
@@ -523,25 +535,48 @@ class IntermitentesJaleTests(TrenIntermitentes, unittest.TestCase):
         }])
         self.verificar_repeticiones(tren.fase.C)
 
+    def test_caso_2_pausa_si_jale_no_distingue_fallos_del_mismo_caso(self):
+        self.preparar_recibos(FALLA)
+        self.contexto.tick(AHORA - 3600)
+        estado = self.avanzar(lambda fase: isinstance(fase, Terminal))
+        fase = estado.trenes[-1].fase
+        self.assertIsInstance(fase, Diagnosticando)
+        self.assertEqual(estado.pausa, Pausa("necesita-juicio", detalle="confirmacion-base:" + self.unidad))
+        self.assertEqual(self.eventos(), [])
+        self.assertEqual(self.remoto(), self.B)
+        self.verificar_repeticiones(fase.candidato.C)
 
-class RenombreEnMainTests(TrenIntermitentes, unittest.TestCase):
+
+class IntermitentesHasitoTests(TrenIntermitentes, unittest.TestCase):
+    def test_caso_2_pausa_si_hasito_no_distingue_fallos_del_mismo_caso(self):
+        fallo = replace(F, unidad="tests/auth.vitest.ts", firma="Auth crea sesión")
+        self.contexto.tick(AHORA - 3600)
+        self.pausa_original({fallo.unidad: (FALLA, MIXTO)}, "confirmacion-base",
+                            fallo=fallo, adaptador=Hasito)
+
+
+class RenombreEnMain(TrenIntermitentes):
     unidad = IntermitentesJaleTests.unidad
     vieja = "apps/web/e2e/previa.spec.ts"
     preparar_recibos = IntermitentesJaleTests.preparar_recibos
     verificar_repeticiones = IntermitentesJaleTests.verificar_repeticiones
 
+    def archivos_en_main(self, contenido):
+        return {"comun": "base\n", self.vieja: contenido}, {"comun": "base\n", self.unidad: contenido}
+
     def preparar_git(self):
-        contenido = "".join(f"linea {n:03d}\n" for n in range(100))
-        anterior = self.commit({"comun": "base\n", self.vieja: contenido}, padres=(self.B,))
-        self.B = self.commit({"comun": "base\n", self.unidad: contenido}, padres=(anterior,))
-        head = self.commit({"comun": "base\n", self.vieja: contenido.replace(
-            "linea 042", "expectativa PR"), "src/nomina.ts": "cambio\n"}, padres=(anterior,))
+        contenido = "".join(f"linea principal {n:03d}\n" for n in range(100))
+        antes, despues = self.archivos_en_main(contenido)
+        anterior = self.commit(antes, padres=(self.B,))
+        self.B = self.commit(despues, padres=(anterior,))
+        head = self.commit({**antes, self.vieja: contenido.replace(
+            "linea principal 042", "expectativa PR"), "src/nomina.ts": "cambio\n"}, padres=(anterior,))
         self.push(self.B, "refs/heads/main")
         self.comando(self.fuente, "push", str(self.origen), f"+{head}:refs/pull/1/head")
         self.miembros = [(1, head)]
 
-    def test_pausa_si_main_renombra_la_prueba_editada_por_el_pr(self):
-        self.preparar_recibos(FALLA)
+    def verificar_pausa_por_renombre(self):
+        self.preparar_recibos(FALLA, JaleConFirma)
         self.contexto.tick(AHORA - 3600)
         diagnostico = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
         candidato = diagnostico.trenes[-1].fase.candidato
@@ -552,3 +587,35 @@ class RenombreEnMainTests(TrenIntermitentes, unittest.TestCase):
         self.assertEqual(self.eventos(), [])
         self.assertEqual(self.remoto(), self.B)
         self.verificar_repeticiones(candidato.C)
+        self.assertIn(self.unidad, self.contexto.git.archivos_lote(candidato))
+
+
+class RenombreEnMainTests(RenombreEnMain, unittest.TestCase):
+    def test_pausa_si_main_renombra_la_prueba_editada_por_el_pr(self):
+        self.verificar_pausa_por_renombre()
+
+
+class RenombreOrigenAlternativoTests(RenombreEnMain, unittest.TestCase):
+    def archivos_en_main(self, contenido):
+        antes, despues = super().archivos_en_main(contenido)
+        destino = contenido.replace("principal 023", "base 023")
+        antes["apps/web/e2e/otra.spec.ts"] = destino.replace("principal 024", "otra 024")
+        despues[self.unidad] = destino.replace("principal 025", "dest 025")
+        return antes, despues
+
+    def test_pausa_cuando_la_mezcla_y_el_diff_eligen_distinto_origen(self):
+        self.verificar_pausa_por_renombre()
+
+
+class RenombreLimiteDiffTests(RenombreEnMain, unittest.TestCase):
+    def archivos_en_main(self, contenido):
+        antes, despues = super().archivos_en_main(contenido)
+        despues[self.unidad] = contenido.replace("principal 023", "base 023")
+        # Supera el límite predeterminado de la detección exhaustiva del diff.
+        for n in range(1050):
+            antes[f"viejas/o-{n:04d}.txt"] = f"origen {n:04d}\n" * 12
+            despues[f"nuevas/d-{n:04d}.txt"] = f"destino {n:04d}\n" * 12
+        return antes, despues
+
+    def test_pausa_cuando_el_diff_supera_el_limite_de_renombres(self):
+        self.verificar_pausa_por_renombre()

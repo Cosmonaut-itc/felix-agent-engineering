@@ -633,19 +633,25 @@ B (caso 1), o que falla dos veces con una firma estable en C y al menos una vez
 con esa firma en B (caso 2). En ambos casos exige dos intentos observados en
 cada commit y la misma definición. Para el caso 1, el recibo debe traer la
 identidad de cada caso que falló en la suite y su resultado en cada repetición
-de C, con un pase para cada caso en los dos intentos. Los recibos actuales de
-Hasito y Jale carecen de esos datos, así que el caso 1 queda en la pausa
-`confirmacion-candidato`.
+de C, con un pase para cada caso en los dos intentos. Para el caso 2, el
+adaptador debe declarar que la firma del recibo distingue fallos distintos del
+mismo caso. Hoy ningún adaptador habilita estos casos. Los recibos de Hasito y
+Jale carecen de la evidencia de pases por caso, por lo que se conserva
+`confirmacion-candidato`. Sus firmas también pueden coincidir para errores
+distintos del mismo caso, por lo que se conserva `confirmacion-base` con B mixto.
+
 La absolución requiere una suite sin etapas pendientes,
 un máximo de dos unidades fallidas y que todas sean intermitentes que cumplen
 estas reglas o fallos preexistentes confirmados. Una unidad que sólo identifica
 el check, o cuya firma está vacía o sólo contiene un código de salida, conserva
 su pausa de diagnóstico.
 
-El tick reúne los diffs propios de los heads congelados de cada PR, desde su
-ancestro común único con B. También incluye el destino de cada ruta de esos
-diffs que B renombró desde ese ancestro. El diagnóstico conserva la pausa si
-Git falla, si algún ancestro común falta o es múltiple, o si una ruta del
+El tick une los diffs propios de los heads congelados de cada PR, desde su
+ancestro común único con B, con las rutas del diff de B a C sin detección de
+renombres. Los primeros conservan los cambios que la mezcla absorbió. El
+segundo incluye las rutas donde la mezcla aplicó los cambios, también cuando
+B había renombrado un archivo. El diagnóstico conserva la pausa si algún
+diff falla, si algún ancestro común falta o es múltiple, o si una ruta del
 inventario coincide con el archivo de una unidad fallida. La comparación
 admite rutas relativas a un paquete.
 

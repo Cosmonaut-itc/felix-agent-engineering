@@ -124,31 +124,17 @@ class GitTren:
         return tuple(os.fsdecode(ruta) for ruta in resultado.stdout.split(b"\0")[:-1])
 
     def archivos_lote(self, candidato):
-        """Diffs propios de los PR y destinos de esas rutas renombradas en B."""
+        """Diffs propios de los PR y rutas modificadas entre B y C."""
         heads = tuple(head for _, head, _ in candidato.eslabones)
         if not heads or not sha(candidato.B) or not all(map(sha, heads)):
             raise FalloGit("entradas-invalidas")
-        archivos_por_base = {}
+        archivos = set()
         for head in heads:
             bases = self.texto("merge-base", "--all", candidato.B, head).splitlines()
             if len(bases) != 1:
                 raise FalloGit("base-de-pr-no-unica")
-            base = bases[0]
-            archivos_por_base.setdefault(base, set()).update(self.archivos_entre(base, head))
-
-        archivos = set()
-        for base, rutas in archivos_por_base.items():
-            resultado = self.git("diff", "--name-status", "-M", "--diff-filter=R",
-                                 "--no-ext-diff", "-z", base, candidato.B, "--",
-                                 aislado=True, text=False)
-            if resultado.returncode:
-                raise FalloGit("operacion-git-fallida")
-            archivos.update(rutas)
-            # Cada entrada R trae estado, ruta de origen y ruta de destino.
-            campos = resultado.stdout.split(b"\0")[:-1]
-            for origen, destino in zip(campos[1::3], campos[2::3]):
-                if os.fsdecode(origen) in rutas:
-                    archivos.add(os.fsdecode(destino))
+            archivos.update(self.archivos_entre(bases[0], head))
+        archivos.update(self.archivos_entre(candidato.B, candidato.C))
         return tuple(sorted(archivos))
 
     def preparar(self):

@@ -93,6 +93,8 @@ def leer_recibo(log, codigo, commit, modo, filtros):
 
 
 class Jale:
+    firma_distingue_fallo = False
+
     def __init__(self, lanzador, git=None, host='auto', modos=MODOS, estado=None, *,
                  resolver_lanzador=True):
         if not isinstance(host, str) or host not in ('auto', 'mini', 'desktop'):

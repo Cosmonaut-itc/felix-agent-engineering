@@ -410,6 +410,7 @@ class Observacion:
     ci_rojos: Tuple[str, ...] = ()
     absoluciones_recientes: Tuple[Tuple[str, int], ...] = ()
     archivos_lote: Optional[Tuple[str, ...]] = None
+    firma_distingue_fallo: bool = False
 
 
 @dataclass(frozen=True)
@@ -783,7 +784,8 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
         if (plan.incierto.startswith(("confirmacion-candidato:", "confirmacion-base:")) and
                 not fase.restantes and len(fase.fallos) <= 2 and
                 archivos_acreditados(fase, observacion)):
-            automatico = planificar(fase.fallos, prs, fase.evidencias, presupuesto, absolver=True)
+            automatico = planificar(fase.fallos, prs, fase.evidencias, presupuesto, absolver=True,
+                                    firma_distingue_fallo=observacion.firma_distingue_fallo)
             if automatico is not None and not automatico.incierto:
                 recientes = dict(observacion.absoluciones_recientes)
                 for absolucion in automatico.absoluciones:
