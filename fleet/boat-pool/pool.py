@@ -857,7 +857,8 @@ class Pool:
             raise BoatError('Boat no confirmó el consumo del mes UTC en curso') from None
         return f'{seconds / 3600:.6f}', f'{dollars:.6f}'
 
-    def daily_pool_cost(self, registrations, start, until):
+    def daily_pool_cost(self, registrations, start, end, now):
+        until = min(end, math.floor(now * 1000) / 1000)
         if start >= until:
             return ('0.000000',) * 4
         since_stamp, until_stamp = stamp(start), stamp(until)
@@ -871,7 +872,7 @@ class Pool:
                 errors.append(f'{name}: diario histórico sin ID de Boat')
             for index, (prepared, identifier) in enumerate(changes):
                 replaced = changes[index + 1][0] if index + 1 < len(changes) else math.inf
-                if prepared >= until or replaced <= start:
+                if prepared >= end or prepared > now or replaced <= start:
                     continue
                 try:
                     check_id(identifier)
@@ -928,7 +929,6 @@ class Pool:
                     registrations.append((vm.name, first_event, changes))
                 history.extend(journal)
         now = self.now()
-        now_ms = math.floor(now * 1000) / 1000
         history.sort(key=lambda item: epoch(item['en']))
         today = datetime.fromtimestamp(now, timezone.utc).date()
         first = today if not history else min(today, datetime.fromtimestamp(epoch(history[0]['en']), timezone.utc).date())
@@ -946,7 +946,7 @@ class Pool:
             start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).timestamp()
             end = start + 86400
             try:
-                pool_cost = self.daily_pool_cost(registrations, start, min(end, now_ms))
+                pool_cost = self.daily_pool_cost(registrations, start, end, now)
             except BoatError as error:
                 pool_cost = ('NA',) * 4
                 print(f'boat-pool: reporte {day}: {error}', file=sys.stderr)
