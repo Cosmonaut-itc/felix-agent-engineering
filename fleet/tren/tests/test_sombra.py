@@ -188,7 +188,8 @@ class MedicionTests(Aislado):
                      for i, t in enumerate(tiempos, 1))
 
     def test_lote_inmediato_y_admisiones_en_espera(self):
-        entradas = self.entradas([0, 10, 10, 20, 20, 20, 30])
+        entradas = tuple(replace(e, recibida=i) for i, e in enumerate(
+            self.entradas([0, 10, 10, 20, 20, 20, 30])))
         lotes, pendientes = lotes_fifo(entradas, 20)
         self.assertEqual([(t, len(es)) for t, _, es in lotes], [(0, 1)])
         self.assertEqual(pendientes, entradas[1:6])
