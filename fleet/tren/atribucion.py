@@ -63,8 +63,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
     Costo: 2 * máximo(segundos del check de origen, duraciones observadas).
     El check entero es una cota conservadora cuando falta tiempo por test.
     Archivos sólo prioriza tickets: (PR, rutas). Nunca es evidencia causal.
-    Con absolver, sólo se investiga si todos los fallos se pueden aceptar
-    sin atribuirlos al lote.
+    Con absolver, devuelve None si un fallo exige atribución al lote.
     """
     prs = tuple(prs)
     if not 1 <= len(prs) <= 3 or len(set(prs)) != len(prs):
@@ -119,7 +118,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
                 continue
             return Plan(incierto="confirmacion-base:" + fallo.unidad)
         if absolver:
-            return Plan(incierto="fallo-atribuible:" + fallo.unidad)
+            return None
         orden = sorted(prs, key=lambda pr: (
             not any(ruta in fallo.unidad for ruta in por_archivo.get(pr, ())), prs.index(pr)))
         minimos = []

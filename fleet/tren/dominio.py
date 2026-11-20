@@ -778,7 +778,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                 not fase.restantes and len(fase.fallos) <= 2 and
                 archivos_acreditados(fase, observacion)):
             automatico = planificar(fase.fallos, prs, fase.evidencias, presupuesto, absolver=True)
-            if not automatico.incierto:
+            if automatico is not None and not automatico.incierto:
                 recientes = dict(observacion.absoluciones_recientes)
                 for absolucion in automatico.absoluciones:
                     unidad = absolucion.fallo.unidad
