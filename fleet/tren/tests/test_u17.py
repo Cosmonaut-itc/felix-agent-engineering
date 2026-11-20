@@ -468,7 +468,10 @@ class ObjetosTests(ContextoU17):
         self.tick(5400)
         self.assertEqual(self.entrada(self.estado(), nuevo).admision, Admitido())
         self.assertFalse(self.tiene(self.checkout, nuevo))
-        self.assertEqual(self.posts()[len(posts):], avisos)
+        posteriores = self.posts()[len(posts):]
+        self.assertEqual(posteriores[:-1], avisos)
+        self.assertEqual(posteriores[-1]["endpoint"], "repos/{}/statuses/{}".format(REPO, nuevo))
+        self.assertEqual(posteriores[-1]["payload"]["state"], "pending")
         self.assertEqual(self.huella(), self.huella_inicial)
 
     def test_head_presente_no_consulta_la_ref_y_el_armado_retiene(self):
@@ -482,8 +485,8 @@ class ObjetosTests(ContextoU17):
         self.push(nuevo, "refs/pull/4/head")
         self.entregar(pr, viejo, 5000)
         argv = self.registrar()
-        # Un PR solo forma tren una hora después de admitirse.
-        for ahora in (5100, 8800, 8920):
+        # El primer tick congela el PR y los siguientes prueban el armado.
+        for ahora in (5100, 5220, 5340):
             self.tick(ahora)
         estado = self.estado()
         self.assertEqual(self.entrada(estado, viejo).admision, Admitido())

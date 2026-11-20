@@ -6,7 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import test_activo as activo
-from test_u14_r1 import contexto
+from test_u14_r1 import contexto, tick_sin_base
 from dominio import Admitido, Efecto, Entrega, Motivo, Rechazado, Retenido, Terminal, clave, desde_datos
 from observador import GitHubGit
 
@@ -21,7 +21,7 @@ def reentregar(c, pr):
                       "nuevo": "head\n"}, (anterior,))
     c.push(nuevo, "refs/pull/{}/head".format(pr))
     c.contexto.config["miembros"][pr - 1][1] = nuevo
-    c.contexto.tick(100)
+    tick_sin_base(c, 100)
     apto = c.raiz / ("apto-{}.json".format(pr))
     dirigida = c.raiz / ("dirigida-{}.json".format(pr))
     apto.write_text(json.dumps({"head": nuevo, "veredicto": "APTO", "hallazgos_abiertos": 0}))
@@ -120,7 +120,9 @@ class U14R2Tests(unittest.TestCase):
                     _, sombra = activo.cli.ejecutar(args, ahora=102)
                 simulado = desde_datos(sombra["plan"]["estado"])
                 self.assertEqual(simulado.entradas[0].admision, Retenido(Motivo.CI))
-                self.assertFalse(simulado.trenes)
+                self.assertIsNone(simulado.entradas[0].tren)
+                self.assertEqual(tuple(t.recibos for t in simulado.trenes),
+                                 (tuple(e.entrega.recibo for e in simulado.entradas[1:]),))
                 self.assertEqual(sombra["plan"]["efectos"], [])
                 self.assertEqual(c.posts(), antes)
                 with c.ledger() as ledger:

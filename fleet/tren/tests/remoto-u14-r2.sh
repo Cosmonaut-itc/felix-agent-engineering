@@ -5,7 +5,7 @@ tren_pruebas=$(mktemp -d "${TMPDIR:-/tmp}/pao-tren-u14-r2-antes.XXXXXX")
 tren_anterior="$tren_pruebas/anterior"
 mkdir -p "$tren_anterior"
 git archive 0a1aabd8b735e3f885d16be45dd9586ce8386090 | tar -x -C "$tren_anterior"
-cp fleet/tren/tests/test_u14_r2.py "$tren_anterior/fleet/tren/tests/"
+cp fleet/tren/tests/test_u14_r1.py fleet/tren/tests/test_u14_r2.py "$tren_anterior/fleet/tren/tests/"
 python3 -I -B - "$tren_anterior" <<'PY'
 from pathlib import Path
 import sys
