@@ -16,8 +16,8 @@ def conservar_lotes_comunes(tipo, payload, comunes):
         # El instante de despacho forma parte del id simulado.
         for tren in estado["trenes"]:
             del tren["id"]
-    payload["efectos"] = [e for e in payload["efectos"]
-                         if e["tipo"] != "armar-candidato" or e["datos"][0] in ids]
+    # El efecto de armado se emite en el tick de despacho de cada regla.
+    payload["efectos"] = [e for e in payload["efectos"] if e["tipo"] != "armar-candidato"]
 
 
 def comparar(anterior, actual):
