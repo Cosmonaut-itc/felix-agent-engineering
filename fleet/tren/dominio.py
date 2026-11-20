@@ -376,10 +376,12 @@ class VistaPR:
     mergeado: bool = False
     ventana: Optional[VentanaAutorizada] = None
     sensible_en_lote: bool = False
+    alto_riesgo_en_lote: bool = False
 
     @property
     def requiere_solo(self):
-        return self.alto_riesgo or (self.sensible and not self.sensible_en_lote)
+        return ((self.alto_riesgo and not self.alto_riesgo_en_lote)
+                or (self.sensible and not self.sensible_en_lote))
 
 
 @dataclass(frozen=True)

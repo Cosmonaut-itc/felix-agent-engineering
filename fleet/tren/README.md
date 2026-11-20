@@ -70,7 +70,10 @@ Alto riesgo exige Verificado y la autorización de su head en
 `heads_autorizados`; sin ella queda retenido (`alto-riesgo-excluido-del-piloto`
 mientras `excluir_alto_riesgo` sea verdadero, `merge-ready` si no). Sensibles
 permanecen en merge-ready hasta autorización del head. El alto riesgo fuerza
-un tren propio. En el tick activo, una ventana de migración también lo fuerza.
+un tren propio si la clave booleana opcional `alto_riesgo_en_lote` se omite o
+vale `false`. Con `true`, un PR de alto riesgo admitido puede viajar en lote
+si todas sus categorías sensibles figuran en `sensibles_en_lote`. En el tick
+activo, una ventana de migración también fuerza un tren propio.
 La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos.
 Un PR que requiere tren propio sale inmediatamente al llegar al frente.
 Jale nace en pausa `etapa-1`.
@@ -127,7 +130,8 @@ Los eventos U1
 se leen igual; sin muestra al entregar se informa custodia y fuente
 `sin-observacion-al-entregar`, sin inventar evidencia retroactiva.
 Los lotes usan los tiempos de primera admisión, FIFO hasta 3 o 60 min.
-La sombra aplica `sensibles_en_lote` y la regla de alto riesgo al formar lotes.
+La entrega y el tick en sombra aplican `sensibles_en_lote` y
+`alto_riesgo_en_lote` al formar lotes.
 A los 60 min vence la ventana antes de incorporar una llegada simultánea.
 La ventana selecciona la cohorte de entregas y sólo sus observaciones
 anteriores a `hasta`; un lote aún sin vencer figura en pendientes. El ahorro

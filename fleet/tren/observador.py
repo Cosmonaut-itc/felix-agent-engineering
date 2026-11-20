@@ -53,6 +53,8 @@ def configuracion(ruta, repo):
         raise ValueError("falta ruta git local")
     if not isinstance(config.get("excluir_alto_riesgo", True), bool):
         raise ValueError("política de piloto inválida")
+    if not isinstance(config.get("alto_riesgo_en_lote", False), bool):
+        raise ValueError("alto_riesgo_en_lote debe ser booleano")
     from operador import checkout_configurado
     checkout_configurado(config)
     identidad_commits(config)
@@ -300,6 +302,7 @@ class GitHubGit:
                     self.config.get("sensibles_en_lote", [])),
                 alto_riesgo=bool(etiquetas.intersection(
                     self.config.get("etiquetas_alto_riesgo", ["alto-riesgo"]))),
+                alto_riesgo_en_lote=self.config.get("alto_riesgo_en_lote", False),
                 verificado=apto.get("verificado") == "Verificado" and apto.get("head") == head,
                 autorizado=head in autorizados,
                 ventana=autorizados.get(head) if self.activo else None)
