@@ -37,8 +37,10 @@ En sombra no edites `heads_autorizados`.
    `${XDG_STATE_HOME:-~/.local/state}/pao-tren/config.json`, la configuración
    privada del tren. Conserva las demás claves y autorizaciones. Anota el
    head y la cita de la decisión en el registro de tu programa. Después
-   entrega; el PR viaja solo. Los demás límites de autorización del archivo
-   siguen vigentes.
+   entrega. El PR viaja solo salvo que la config del repo admita su
+   categoría en `sensibles_en_lote` o su alto riesgo con
+   `alto_riesgo_en_lote`; la autorización del head no cambia. Los demás
+   límites de autorización del archivo siguen vigentes.
 3. Registra `watch_pull_request` antes de entregar. Ejecuta:
 
    ```sh
