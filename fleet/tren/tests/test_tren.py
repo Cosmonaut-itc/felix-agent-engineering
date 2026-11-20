@@ -464,7 +464,8 @@ class ObservadorTests(Aislado):
         original = Estado(REPO, (Entrada(self.entrega, 1), Entrada(entrega(2), 2)))
         observador = GitHubGit(self.config, ejecutar=self.ejecutar, activo=activo,
                                sombra=not activo)
-        obs = Observacion(100, BASE, (observador.vista(self.entrega), vista(2)))
+        obs = Observacion(100, BASE, (observador.vista(self.entrega), vista(2)),
+                          self.config["excluir_alto_riesgo"])
         reductor = paso if activo else paso_sombra
         admitido, _ = reductor(original, obs)
         if not admitido.trenes:
@@ -497,12 +498,80 @@ class ObservadorTests(Aislado):
         self.config["sensibles"]["ci"].append("AGENTS.md")
         self.prueba_sen_7114_lote(["AGENTS.md"], solo=True)
 
-    def test_sen_7114_alto_riesgo_fuerza_solo(self):
-        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
+    def marcar_alto_riesgo(self, *, verificado=True):
         self.pr["labels"] = [{"name": "alto-riesgo"}]
         apto = json.loads(self.apto.read_text())
-        self.apto.write_text(json.dumps(dict(apto, verificado="Verificado")))
+        if verificado:
+            apto["verificado"] = "Verificado"
+        self.apto.write_text(json.dumps(apto))
+
+    def test_sen_7114_alto_riesgo_fuerza_solo(self):
+        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
+        self.marcar_alto_riesgo()
         self.prueba_sen_7114_lote(["AGENTS.md"], solo=True)
+
+    def test_sen_7114_r2_alto_riesgo_autorizado_viaja_en_lote(self):
+        self.config.update(alto_riesgo_en_lote=True, heads_autorizados=[HEAD])
+        self.marcar_alto_riesgo()
+        self.prueba_sen_7114_lote(["src/app.py"], solo=False)
+
+    def test_sen_7114_r2_alto_riesgo_sin_autorizacion_sigue_retenido(self):
+        self.config.update(alto_riesgo_en_lote=True, heads_autorizados=[])
+        self.marcar_alto_riesgo()
+        for piloto, motivo in ((True, Motivo.PILOTO), (False, Motivo.MERGE_READY)):
+            self.config["excluir_alto_riesgo"] = piloto
+            for activo in (True, False):
+                with self.subTest(piloto=piloto, activo=activo):
+                    nuevo = self.lote_con_normal(["src/app.py"], activo=activo)
+                    self.assertEqual(nuevo.entradas[0].admision, Retenido(motivo))
+                    self.assertEqual(tuple(t.recibos for t in nuevo.trenes),
+                                     ((entrega(2).recibo,),))
+
+    def test_sen_7114_r2_alto_riesgo_sin_verificar_sigue_retenido(self):
+        self.config.update(alto_riesgo_en_lote=True, heads_autorizados=[HEAD])
+        self.marcar_alto_riesgo(verificado=False)
+        for activo in (True, False):
+            with self.subTest(activo=activo):
+                nuevo = self.lote_con_normal(["src/app.py"], activo=activo)
+                self.assertEqual(nuevo.entradas[0].admision, Retenido(Motivo.VERIFICADO))
+                self.assertEqual(tuple(t.recibos for t in nuevo.trenes),
+                                 ((entrega(2).recibo,),))
+
+    def test_sen_7114_r2_alto_riesgo_sin_excepcion_va_solo(self):
+        self.config["heads_autorizados"] = [HEAD]
+        self.marcar_alto_riesgo()
+        self.prueba_sen_7114_lote(["src/app.py"], solo=True)
+        self.config["alto_riesgo_en_lote"] = False
+        self.prueba_sen_7114_lote(["src/app.py"], solo=True)
+
+    def test_sen_7114_r2_alto_riesgo_con_categoria_fuera_de_lista_va_solo(self):
+        self.config.update(alto_riesgo_en_lote=True, sensibles_en_lote=["gobierno"],
+                           heads_autorizados=[HEAD])
+        self.marcar_alto_riesgo()
+        self.prueba_sen_7114_lote(["AGENTS.md", ".github/check.yml"], solo=True)
+
+    def test_sen_7114_r2_alto_riesgo_con_ventana_va_solo_en_activo(self):
+        self.config.update(alto_riesgo_en_lote=True, heads_autorizados=[{
+            "head": HEAD, "ventana": {"inicio": "2026-01-01T00:00:00Z",
+                                      "fin": "2026-01-01T01:00:00Z"}
+        }])
+        self.marcar_alto_riesgo()
+        nuevo = self.lote_con_normal(["src/app.py"], activo=True)
+        self.assertEqual(nuevo.entradas[0].admision, Admitido())
+        self.assertEqual(tuple(t.recibos for t in nuevo.trenes), ((self.entrega.recibo,),))
+
+    def test_sen_7114_r2_config_alto_riesgo_en_lote(self):
+        ruta = self.raiz / "config.json"
+        for valor in (True, False):
+            self.config["alto_riesgo_en_lote"] = valor
+            ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
+            self.assertEqual(configuracion(ruta, REPO), self.config)
+        for valor in ("true", 1, None):
+            with self.subTest(valor=valor):
+                self.config["alto_riesgo_en_lote"] = valor
+                ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
+                with self.assertRaisesRegex(ValueError, "alto_riesgo_en_lote"):
+                    configuracion(ruta, REPO)
 
     def test_sen_7114_ventana_fuerza_solo_en_activo(self):
         self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[{
@@ -535,6 +604,14 @@ class ObservadorTests(Aislado):
     def test_sen_7114_entrega_en_sombra_conserva_opcion_de_lote(self):
         self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
         self.archivos = [[{"filename": "AGENTS.md"}]]
+        self.comprobar_entrega_en_lote_sombra()
+
+    def test_sen_7114_r2_entrega_alto_riesgo_en_sombra_conserva_opcion_de_lote(self):
+        self.config.update(alto_riesgo_en_lote=True, heads_autorizados=[HEAD])
+        self.marcar_alto_riesgo()
+        self.comprobar_entrega_en_lote_sombra()
+
+    def comprobar_entrega_en_lote_sombra(self):
         observador = GitHubGit(self.config, ejecutar=self.ejecutar, sombra=True)
         args = cli.parser().parse_args(["entregar", "--repo", REPO, "--pr", "1",
             "--head", HEAD, "--apto", str(self.apto), "--dirigida", str(self.dirigida)])
