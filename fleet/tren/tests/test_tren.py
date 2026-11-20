@@ -21,6 +21,7 @@ from dominio import (Admitido, Armado, Candidato, Congelado, Corriendo,
                      datos, desde_datos, inicial, paso)
 from ledger import Ledger, directorio_estado
 from observador import Falso, GitHubGit, configuracion, es_sensible
+from sombra import paso_sombra
 
 loader = importlib.machinery.SourceFileLoader("cli_tren", str(RAIZ / "pao-tren"))
 spec = importlib.util.spec_from_loader(loader.name, loader)
@@ -456,6 +457,96 @@ class ObservadorTests(Aislado):
         self.assertEqual(self.decision(), Retenido(Motivo.MERGE_READY))
         self.config["heads_autorizados"] = [HEAD]
         self.assertIsInstance(self.decision(), Admitido)
+
+    def lote_con_normal(self, archivos, *, activo):
+        self.archivos = [[{"filename": archivo} for archivo in archivos]]
+        self.pr["changed_files"] = len(archivos)
+        original = Estado(REPO, (Entrada(self.entrega, 1), Entrada(entrega(2), 2)))
+        observador = GitHubGit(self.config, ejecutar=self.ejecutar, activo=activo,
+                               sombra=not activo)
+        obs = Observacion(100, BASE, (observador.vista(self.entrega), vista(2)))
+        reductor = paso if activo else paso_sombra
+        admitido, _ = reductor(original, obs)
+        if not admitido.trenes:
+            admitido, _ = reductor(admitido, replace(obs, ahora=3700))
+        return admitido
+
+    def prueba_sen_7114_lote(self, archivos, *, solo):
+        for activo in (True, False):
+            with self.subTest(activo=activo):
+                nuevo = self.lote_con_normal(archivos, activo=activo)
+                self.assertEqual(nuevo.entradas[0].admision, Admitido())
+                recibos = (self.entrega.recibo,) if solo else (self.entrega.recibo, entrega(2).recibo)
+                self.assertEqual(tuple(t.recibos for t in nuevo.trenes), (recibos,))
+
+    def test_sen_7114_gobierno_autorizado_viaja_en_lote(self):
+        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
+        self.prueba_sen_7114_lote(["AGENTS.md"], solo=False)
+
+    def test_sen_7114_gobierno_sin_autorizacion_sigue_retenido(self):
+        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=["c" * 40])
+        for activo in (True, False):
+            with self.subTest(activo=activo):
+                nuevo = self.lote_con_normal(["AGENTS.md"], activo=activo)
+                self.assertEqual(nuevo.entradas[0].admision, Retenido(Motivo.MERGE_READY))
+                self.assertEqual(tuple(t.recibos for t in nuevo.trenes), ((entrega(2).recibo,),))
+
+    def test_sen_7114_categoria_fuera_de_lista_fuerza_solo(self):
+        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
+        self.prueba_sen_7114_lote(["AGENTS.md", ".github/check.yml"], solo=True)
+        self.config["sensibles"]["ci"].append("AGENTS.md")
+        self.prueba_sen_7114_lote(["AGENTS.md"], solo=True)
+
+    def test_sen_7114_alto_riesgo_fuerza_solo(self):
+        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
+        self.pr["labels"] = [{"name": "alto-riesgo"}]
+        apto = json.loads(self.apto.read_text())
+        self.apto.write_text(json.dumps(dict(apto, verificado="Verificado")))
+        self.prueba_sen_7114_lote(["AGENTS.md"], solo=True)
+
+    def test_sen_7114_ventana_fuerza_solo_en_activo(self):
+        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[{
+            "head": HEAD, "ventana": {"inicio": "2026-01-01T00:00:00Z",
+                                      "fin": "2026-01-01T01:00:00Z"}
+        }])
+        nuevo = self.lote_con_normal(["AGENTS.md"], activo=True)
+        self.assertEqual(nuevo.entradas[0].admision, Admitido())
+        self.assertEqual(tuple(t.recibos for t in nuevo.trenes), ((self.entrega.recibo,),))
+
+    def test_sen_7114_sin_excepciones_fuerza_solo(self):
+        self.config["heads_autorizados"] = [HEAD]
+        self.prueba_sen_7114_lote(["AGENTS.md"], solo=True)
+        self.config["sensibles_en_lote"] = []
+        self.prueba_sen_7114_lote(["AGENTS.md"], solo=True)
+
+    def test_sen_7114_config_sensibles_en_lote(self):
+        ruta = self.raiz / "config.json"
+        for valor in ([], ["gobierno"]):
+            self.config["sensibles_en_lote"] = valor
+            ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
+            self.assertEqual(configuracion(ruta, REPO), self.config)
+        for valor in (["desconocida"], "gobierno", [None], None):
+            with self.subTest(valor=valor):
+                self.config["sensibles_en_lote"] = valor
+                ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
+                with self.assertRaisesRegex(ValueError, "sensibles_en_lote"):
+                    configuracion(ruta, REPO)
+
+    def test_sen_7114_entrega_en_sombra_conserva_opcion_de_lote(self):
+        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
+        self.archivos = [[{"filename": "AGENTS.md"}]]
+        observador = GitHubGit(self.config, ejecutar=self.ejecutar, sombra=True)
+        args = cli.parser().parse_args(["entregar", "--repo", REPO, "--pr", "1",
+            "--head", HEAD, "--apto", str(self.apto), "--dirigida", str(self.dirigida)])
+        with patch.object(cli, "modo", return_value="sombra"):
+            codigo, resultado = cli.ejecutar(args, observador, 100)
+        self.assertEqual(codigo, 0)
+        self.assertEqual(resultado["admision"]["estado"], "admitido")
+        self.ledger().entregar(entrega(2), 101, Entrada(entrega(2), 101, Admitido(), 101))
+        original = self.ledger().estado(REPO, sombra=True, doble_camino=True)
+        nuevo, _ = paso_sombra(original, Observacion(3700, BASE, (vista(2),)))
+        self.assertEqual(tuple(t.recibos for t in nuevo.trenes),
+                         ((self.entrega.recibo, entrega(2).recibo),))
 
     def test_pagina_dos_ci_pendiente_retiene(self):
         self.checks.append({"check_runs": [{"id": 2, "name": "tests", "status": "in_progress", "conclusion": None}]})
