@@ -127,10 +127,15 @@ fleet/tren/pao-tren medir --repo owner/project \
 `medir` abre SQLite en modo de sólo lectura, sin crear directorios ni ledger.
 Imprime una línea JSON determinista: entregas en `[desde, hasta)`, admisión
 al entregar y motivo, primera admisión observada, lotes, distribución de 1 a 5,
-pendientes y `suites_ahorradas_estimadas = muestras en lotes o pendientes - lotes`.
+pendientes y `suites_ahorradas_estimadas`.
 `admitidas` conserva la cuenta histórica. `modo` indica el último tramo
 observado antes de `hasta` (`activo` o `sombra`). Cada lote contiene
 `instante`, `motivo`, `recibos`, `prs`, `tamano` y `fuente` (`real` o `sombra`).
+El historial conserva los lotes de ambas fuentes. Para la distribución y el
+ahorro, cada recibo cuenta una vez y tiene prioridad su lote real. Cada lote
+de sombra aporta los recibos que quedan, en orden de despacho. Los lotes sin
+recibos únicos se omiten del cálculo. El ahorro es el número de recibos únicos
+en lotes o pendientes menos el número de lotes que aportan recibos.
 Los eventos U1 se leen igual. Sin muestra al entregar se informa custodia y fuente
 `sin-observacion-al-entregar`, sin inventar evidencia retroactiva.
 La entrega y el tick en sombra aplican `sensibles_en_lote` y
@@ -141,6 +146,8 @@ primer snapshot `operativo`. Los PR que aún esperaban pasan al tramo activo.
 Cada lote real toma sus miembros y su instante del primer snapshot
 `operativo` en que aparece. Al corte, el último snapshot activo aporta
 los pendientes que siguen admitidos y sin tren.
+Al volver a sombra, el despacho empieza en el cambio de modo y los
+pendientes conservan su orden de admisión original.
 La historia anterior a `desde` también cuenta para formar los lotes. El
 informe muestra los miembros de la cohorte `[desde, hasta)` y sólo usa
 observaciones anteriores a `hasta`.

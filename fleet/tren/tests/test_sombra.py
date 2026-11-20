@@ -271,6 +271,51 @@ class MedicionTests(Aislado):
                          ["sombra", "real"])
         self.assertFalse(self.informe(341)["pendientes"])
 
+    def test_activar_conserva_historial_y_cuenta_solo_el_lote_real(self):
+        ledger = self.ledger()
+        for entrada in self.entradas([100, 220, 340]):
+            ledger.entregar(entrada.entrega, entrada.recibida, entrada)
+        obs = observacion(3, 4300)
+        simulado, efectos = paso_sombra(ledger.estado(REPO, sombra=True, doble_camino=True), obs)
+        ledger.sombra(simulado, efectos, obs.ahora, doble_camino=True)
+        self.operativo(ledger, replace(obs, ahora=4420))
+
+        informe = self.informe(4421)
+        self.assertEqual([(lote["fuente"], lote["instante"], lote["prs"])
+                          for lote in informe["lotes"]],
+                         [("sombra", 100, [1]), ("sombra", 4180, [2, 3]),
+                          ("real", 4420, [1, 2, 3])])
+        self.assertFalse(informe["pendientes"])
+        self.assertEqual(informe["suites_ahorradas_estimadas"], 2)
+        self.assertEqual(informe["distribucion"], {"1": 0, "2": 0, "3": 1, "4": 0, "5": 0})
+
+    def test_volver_a_sombra_conserva_el_fifo_de_admision(self):
+        ledger = self.ledger()
+        ledger.entregar(entrega(), 90)
+        self.operativo(ledger, observacion(ahora=100))
+        recibo2 = ledger.entregar(entrega(2), 110)
+        recibo3 = ledger.entregar(entrega(3), 120)
+        solo = {"sensible": True, "autorizado": True}
+        obs = replace(observacion(3, 220),
+                      prs=(vista(1), vista(2, ci="pendiente", **solo), vista(3)))
+        self.operativo(ledger, obs)
+        obs = replace(obs, ahora=340, prs=(vista(1), vista(2, **solo), vista(3)))
+        self.operativo(ledger, obs)
+        self.assertEqual(self.informe(341)["pendientes"], [recibo3, recibo2])
+
+        legado, efectos = paso(ledger.estado(REPO, sombra=True), obs)
+        ledger.sombra(legado, efectos, 400)
+        self.assertEqual(self.informe(401), {**self.informe(341), "hasta": 401})
+        obs = replace(obs, ahora=460)
+        simulado, efectos = paso_sombra(ledger.estado(REPO, sombra=True, doble_camino=True), obs)
+        ledger.sombra(simulado, efectos, obs.ahora, doble_camino=True)
+
+        informe = self.informe(461)
+        self.assertEqual([(lote["fuente"], lote["instante"], lote["prs"])
+                          for lote in informe["lotes"]],
+                         [("real", 100, [1]), ("sombra", 460, [3])])
+        self.assertEqual(informe["pendientes"], [recibo2])
+
     def confirmar_aterrizaje(self, activo, obs):
         cert = Certificado("c" * 40, "d" * 40, "suite-1", "verde", obs.base)
         tren = replace(activo.trenes[-1], fase=Promoviendo(cert))

@@ -22,8 +22,8 @@ def decision_json(decision):
 
 
 def proyectar_sombra(admitidas, inicio, fin):
-    entradas = (replace(e, admitida=max(e.admitida, inicio)) for e in admitidas.values())
-    lotes, pendientes = lotes_fifo(entradas, math.nextafter(fin, -math.inf))
+    lotes, pendientes = lotes_fifo(admitidas.values(), math.nextafter(fin, -math.inf),
+                                  inicio=inicio)
     return [(t, motivo, miembros, "sombra") for t, motivo, miembros in lotes], pendientes
 
 
@@ -116,13 +116,17 @@ def medir(requests, events, repo, desde, hasta):
                         "fuente": ("entrega" if recibo in iniciales
                                    else "sin-observacion-al-entregar"),
                         "admitida": admitidas.get(recibo)})
-    # Las admisiones históricas siguen en detalle; sólo muestras que llegaron
-    # a un lote o permanecen en fila pueden producir ahorro de suites.
-    muestras = sum(lote["tamano"] for lote in lotes_cohorte) + len(pendientes)
+    contados = set()
+    tamanos = []
+    for lote in sorted(lotes_cohorte, key=lambda lote: lote["fuente"] != "real"):
+        nuevos = set(lote["recibos"]) - contados
+        if nuevos:
+            tamanos.append(len(nuevos))
+            contados.update(nuevos)
+    ahorro = sum(n - 1 for n in tamanos) + len(set(pendientes) - contados)
     return {"repo": repo, "modo": modo or "sombra", "desde": desde, "hasta": hasta,
             "entregas": detalle, "admitidas": len(admitidas),
             "lotes": lotes_cohorte,
-            "distribucion": {str(n): sum(lote["tamano"] == n for lote in lotes_cohorte)
-                             for n in range(1, LIMITE_LOTE + 1)},
+            "distribucion": {str(n): tamanos.count(n) for n in range(1, LIMITE_LOTE + 1)},
             "pendientes": pendientes,
-            "suites_ahorradas_estimadas": muestras - len(lotes_cohorte)}
+            "suites_ahorradas_estimadas": ahorro}

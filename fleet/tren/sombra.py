@@ -9,11 +9,11 @@ from dominio import (Admitido, Estado, Rechazado, Terminal, Tren, admision_entra
 DURACION_SUITE_ESTIMADA = 68 * 60
 
 
-def lotes_fifo(entradas, hasta):
+def lotes_fifo(entradas, hasta, *, inicio=float("-inf")):
     """Proyecta un lote por turno libre y devuelve los admitidos aún en fila."""
     llegadas = deque(sorted((e for e in entradas if e.admitida is not None
                              and e.admitida <= hasta), key=orden_fifo))
-    libre_desde = float("-inf")
+    libre_desde = inicio
     fila = []
     lotes = []
     while fila or llegadas:
