@@ -12,6 +12,7 @@ import subprocess
 
 from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, RechazoLanzador, clave)
+from adaptadores.evidencia_hasito import casos_ejecutados
 from adaptadores.ejecucion_jale import guardar
 from git_ops import FalloGit, sha
 from ledger import directorio_estado
@@ -93,7 +94,7 @@ def leer_suite(r, commit, base):
                           for f in r["restantes"]))
 
 
-def leer_repeticion(r, commit, origen, origen_sha, base, fallo):
+def leer_repeticion(r, commit, origen, origen_sha, base, fallo, ruta=None):
     sobre(r, "suite-repeticion@1", commit)
     exigir(isinstance(r.get("origen"), dict))
     o = r["origen"]
@@ -130,6 +131,13 @@ def leer_repeticion(r, commit, origen, origen_sha, base, fallo):
     exigir(len(unidades) == 1 and (unidades[0].parte, unidades[0].check, unidades[0].unidad) ==
            (fallo.parte, fallo.check, fallo.unidad), "seleccion-no-corresponde")
     exigir(any(i.veredicto == "falla" for u in unidades for i in u.intentos) == (r["veredicto"] == 1))
+    u = unidades[0]
+    if commit == origen_sha and all(i.veredicto == "pasa" for i in u.intentos):
+        # El JUnit de pytest atestigua el nodo exacto, incluso para pytest-resumen.
+        testigo = r["unidades"][0]["cobertura"]["testigo"]
+        if (testigo == "junit" and "::" in fallo.unidad or
+                ruta is not None and casos_ejecutados(Path(origen), ruta, r, fallo)):
+            unidades[0] = replace(u, intentos=tuple(replace(i, caso_ejecutado=True) for i in u.intentos))
     return Repeticion(commit, origen_sha, base, o["sha256"], tuple(unidades))
 
 
@@ -297,7 +305,7 @@ class Hasito:
                 return RechazoLanzador(str(ruta))
             r = leer_json(ruta)
             exigir(isinstance(r, dict) and r.get("veredicto") == codigo, "salida-no-corresponde")
-            resultado = leer_repeticion(r, commit, suite, candidato.C, candidato.B, solicitud.fallo)
+            resultado = leer_repeticion(r, commit, suite, candidato.C, candidato.B, solicitud.fallo, ruta)
             if isinstance(resultado, Repeticion):
                 resultado = replace(resultado, comando=tuple(a for a in argv if a != "--reanudar"))
             return resultado

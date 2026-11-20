@@ -97,13 +97,13 @@ class GitTren:
         self.ejecutar = ejecutar or subprocess.run
         self.identidad = identidad
 
-    def git(self, *args, aislado=False, input=None, env_extra=None, timeout=120):
+    def git(self, *args, aislado=False, input=None, env_extra=None, timeout=120, text=True):
         env = entorno(aislado)
         env.update(env_extra or {})
         comando = ["git", "--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
                    "--git-dir=" + str(self.ruta), *args]
         try:
-            return self.ejecutar(comando, capture_output=True, text=True,
+            return self.ejecutar(comando, capture_output=True, text=text,
                                  timeout=timeout, check=False, input=input, env=env)
         except (OSError, subprocess.SubprocessError):
             raise FalloGit("git-no-disponible") from None
@@ -113,6 +113,15 @@ class GitTren:
         if resultado.returncode:
             raise FalloGit("operacion-git-fallida")
         return resultado.stdout.strip()
+
+    def archivos_entre(self, B, C):
+        if not sha(B) or not sha(C):
+            raise FalloGit("sha-invalido")
+        resultado = self.git("diff", "--no-renames", "--no-ext-diff", "--name-only",
+                             "-z", B, C, "--", aislado=True, text=False)
+        if resultado.returncode:
+            raise FalloGit("operacion-git-fallida")
+        return tuple(os.fsdecode(ruta) for ruta in resultado.stdout.split(b"\0")[:-1])
 
     def preparar(self):
         version = self.texto("version")

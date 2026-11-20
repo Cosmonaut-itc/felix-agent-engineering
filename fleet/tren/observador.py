@@ -9,7 +9,7 @@ import time
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
+from dominio import (Diagnosticando, EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
                      VistaPR, rama_ci, recibo_ci)
 from git_ops import FalloGit, identidad_commits
 from preaterrizaje import autorizaciones
@@ -296,13 +296,6 @@ class GitHubGit:
                 verificado=apto.get("verificado") == "Verificado" and apto.get("head") == head,
                 autorizado=head in autorizados,
                 ventana=autorizados.get(head) if self.activo else None)
-            if self.activo and not self.sombra:
-                # Cambiar de nombre también toca la ruta anterior.
-                anteriores = [a["previous_filename"] for pagina in archivos for a in pagina
-                              if a.get("status") == "renamed"]
-                if not all(isinstance(ruta, str) and ruta for ruta in nombres + anteriores):
-                    raise ValueError("rutas de PR inválidas")
-                vista = replace(vista, archivos=tuple(nombres + anteriores), archivos_base=base)
             # Re-read after all reads; a concurrent push cannot use stale evidence.
             final = self.api("repos/{}/pulls/{}".format(repo, pr))
             if final["head"]["sha"] != head:
@@ -354,6 +347,16 @@ class GitHubGit:
                 observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci.estado,
                                       ci_rojos=ci.rojos,
                                       ci_recibo=recibo_ci(tren))
+            if self.almacen is not None and not estado.pausa:
+                diagnostico = next((t.fase for t in estado.trenes
+                                    if isinstance(t.fase, Diagnosticando)), None)
+                if diagnostico is not None:
+                    candidato = diagnostico.candidato
+                    try:
+                        archivos = self.almacen.archivos_entre(candidato.B, candidato.C)
+                    except FalloGit:
+                        archivos = None
+                    observacion = replace(observacion, archivos_lote=archivos)
         return observacion
 
 

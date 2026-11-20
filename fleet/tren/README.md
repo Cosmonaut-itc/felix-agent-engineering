@@ -620,13 +620,17 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 
 El tick activo puede absolver una unidad que pasa dos veces en C (caso 1) o
 que falla dos veces con una firma estable en C y al menos una vez con esa
-firma en B (caso 2). En ambos casos exige dos intentos ejecutados en cada commit
-y la misma definición. La absolución requiere una suite sin etapas pendientes,
+firma en B (caso 2). En ambos casos exige dos intentos observados en cada commit
+y la misma definición. El caso 1 exige además evidencia de que los casos que
+fallaron en la suite pasaron en los dos reportes de C. Hasito distingue los
+nodos de pytest y comprueba los casos de Vitest y Bun en la evidencia recogida.
+El recibo agregado de Jale carece de evidencia por caso para esta absolución.
+La absolución requiere una suite sin etapas pendientes,
 un máximo de dos unidades fallidas y que todas sean intermitentes que cumplen
-estas reglas o fallos preexistentes confirmados. Los archivos de todos los PR
-del lote deben estar acreditados para sus heads y la base del candidato.
-Cualquier cambio en el archivo de una unidad fallida conserva la pausa de
-diagnóstico, incluidos los renombres.
+estas reglas o fallos preexistentes confirmados. El tick compara los árboles
+de la base y del candidato del lote en el repositorio Git del tren. Una ruta
+modificada que coincide con el archivo de una unidad fallida conserva la pausa
+de diagnóstico, incluidos los renombres y las rutas relativas a un paquete.
 
 Al certificar C con la suite ya corrida, el ledger escribe un evento
 `intermitente-absuelto` por unidad absuelta. Guarda repo, tren, B, C, unidad,

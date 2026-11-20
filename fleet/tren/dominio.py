@@ -204,6 +204,7 @@ class Intento:
     duracion_s: float
     ensayo: str = ""
     huella_entorno: str = ""
+    caso_ejecutado: bool = False
 
 
 @dataclass(frozen=True)
@@ -375,8 +376,6 @@ class VistaPR:
     # Sólo la sombra interpreta un merge externo; default compatible con U1.
     mergeado: bool = False
     ventana: Optional[VentanaAutorizada] = None
-    archivos: Optional[Tuple[str, ...]] = None
-    archivos_base: str = ""
 
 
 @dataclass(frozen=True)
@@ -403,6 +402,7 @@ class Observacion:
     pausa_id: str = ""
     ci_rojos: Tuple[str, ...] = ()
     absoluciones_recientes: Tuple[Tuple[str, int], ...] = ()
+    archivos_lote: Optional[Tuple[str, ...]] = None
 
 
 @dataclass(frozen=True)
@@ -663,18 +663,17 @@ def separar_devueltos(estado, tren, base, culpables, efectos):
 
 
 def archivos_acreditados(fase, observacion):
-    candidato = fase.candidato
-    vistas = {(v.pr, v.head): v for v in observacion.prs if
-              v.completa and v.abierto and v.base == "main" and
-              v.archivos_base == candidato.B and v.archivos is not None}
-    archivos = set()
-    for pr, head, _ in candidato.eslabones:
-        vista = vistas.get((pr, head))
-        if vista is None:
-            return False
-        archivos.update(vista.archivos)
-    # Los nodos de prueba pueden añadir el nombre del caso a la ruta.
-    return all(f.unidad.split("::", 1)[0] not in archivos for f in fase.fallos)
+    archivos = observacion.archivos_lote
+    if archivos is None:
+        return False
+    vigentes = {(v.pr, v.head) for v in observacion.prs
+                if v.completa and v.abierto and v.base == "main"}
+    if any((pr, head) not in vigentes for pr, head, _ in fase.candidato.eslabones):
+        return False
+    # Una unidad puede incluir el nodo del caso y usar una ruta relativa al paquete.
+    rutas = (f.unidad.split("::", 1)[0] for f in fase.fallos)
+    return not any(archivo == ruta or archivo.endswith("/" + ruta)
+                   for ruta in rutas for archivo in archivos)
 
 
 def registrar_absoluciones(repo, tren, candidato, absoluciones):
@@ -1007,9 +1006,7 @@ def datos(valor):
                        if not (isinstance(valor, Entrada) and f.name == "partida"
                                and not valor.partida)
                        and not (isinstance(valor, VistaPR) and f.name == "ventana"
-                                and valor.ventana is None)
-                       and not (isinstance(valor, VistaPR) and f.name in ("archivos", "archivos_base")
-                                and valor.archivos is None)})
+                                and valor.ventana is None)})
     if isinstance(valor, tuple):
         return [datos(v) for v in valor]
     return valor.value if isinstance(valor, Enum) else valor

@@ -99,7 +99,9 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
         ub = unidad(por_objetivo[("B", ())].resultado, fallo)
         candidato = estable(uc, fallo.firma or None)
         if candidato != "falla":
-            if (absolver and candidato == "pasa" and intentos_observados(ub)
+            if (absolver and candidato == "pasa"
+                    and all(i.caso_ejecutado is True for i in uc.intentos)
+                    and intentos_observados(ub)
                     and ub.definicion == uc.definicion):
                 absoluciones.append(absolucion(fallo, 1, uc, ub))
                 continue

@@ -196,8 +196,10 @@ class ActivoTests(unittest.TestCase):
     push = fixtures.AterrizajeTests.push
     remoto = fixtures.AterrizajeTests.remoto
 
-    def setUp(self):
+    def setUp(self, preparar_git=None):
         fixtures.AterrizajeTests.setUp(self)
+        if preparar_git is not None:
+            preparar_git()
         self.env_extra = patch.dict(os.environ, {
             "XDG_CONFIG_HOME": str(self.raiz / "config"),
             "XDG_CACHE_HOME": str(self.raiz / "cache"),

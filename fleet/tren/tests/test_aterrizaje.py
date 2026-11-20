@@ -59,11 +59,20 @@ class AterrizajeTests(unittest.TestCase):
             capture_output=True, text=True, check=True, timeout=30).stdout.strip()
 
     def commit(self, archivos, padres=(), mensaje="fixture"):
-        blobs = []
-        for nombre, texto in sorted(archivos.items()):
-            blob = self.comando(self.fuente, "hash-object", "-w", "--stdin", input=texto)
-            blobs.append("100644 blob {}\t{}\n".format(blob, nombre))
-        arbol = self.comando(self.fuente, "mktree", input="".join(blobs))
+        def armar_arbol(archivos):
+            entradas, carpetas = [], {}
+            for ruta, texto in archivos.items():
+                nombre, barra, resto = ruta.partition("/")
+                if barra:
+                    carpetas.setdefault(nombre, {})[resto] = texto
+                else:
+                    blob = self.comando(self.fuente, "hash-object", "-w", "--stdin", input=texto)
+                    entradas.append(f"100644 blob {blob}\t{nombre}\0")
+            for nombre, hijos in carpetas.items():
+                entradas.append(f"040000 tree {armar_arbol(hijos)}\t{nombre}\0")
+            return self.comando(self.fuente, "mktree", "-z", input="".join(entradas))
+
+        arbol = armar_arbol(archivos)
         args = ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
                 "-c", "commit.gpgsign=false", "commit-tree", arbol]
         for padre in padres:
