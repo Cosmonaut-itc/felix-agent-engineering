@@ -123,19 +123,17 @@ class GitTren:
             raise FalloGit("operacion-git-fallida")
         return tuple(os.fsdecode(ruta) for ruta in resultado.stdout.split(b"\0")[:-1])
 
-    def archivos_cadena(self, candidato):
-        """Unión de rutas tocadas en cada merge, incluso si se restauran en C."""
-        cadena = (candidato.B,) + tuple(commit for _, _, commit in candidato.eslabones)
-        if len(cadena) < 2 or cadena[-1] != candidato.C or not all(map(sha, cadena)):
-            raise FalloGit("cadena-invalida")
-        historia = self.texto("rev-list", "--first-parent", f"--max-count={len(cadena)}",
-                             candidato.C, "--")
-        if historia.splitlines() != list(reversed(cadena)):
-            raise FalloGit("cadena-invalida")
-
+    def archivos_lote(self, candidato):
+        """Unión de los diffs propios de los PR desde su ancestro común con B."""
+        heads = tuple(head for _, head, _ in candidato.eslabones)
+        if not heads or not sha(candidato.B) or not all(map(sha, heads)):
+            raise FalloGit("entradas-invalidas")
         archivos = set()
-        for padre, commit in zip(cadena, cadena[1:]):
-            archivos.update(self.archivos_entre(padre, commit))
+        for head in heads:
+            bases = self.texto("merge-base", "--all", candidato.B, head).splitlines()
+            if len(bases) != 1:
+                raise FalloGit("base-de-pr-no-unica")
+            archivos.update(self.archivos_entre(bases[0], head))
         return tuple(sorted(archivos))
 
     def preparar(self):

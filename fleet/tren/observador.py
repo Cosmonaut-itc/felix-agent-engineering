@@ -366,7 +366,7 @@ class GitHubGit:
                                     if isinstance(t.fase, Diagnosticando)), None)
                 if diagnostico is not None:
                     try:
-                        archivos = self.almacen.archivos_cadena(diagnostico.candidato)
+                        archivos = self.almacen.archivos_lote(diagnostico.candidato)
                     except FalloGit:
                         archivos = None
                     observacion = replace(observacion, archivos_lote=archivos)

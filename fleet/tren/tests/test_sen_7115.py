@@ -149,6 +149,25 @@ class TrenIntermitentes:
         self.assertEqual(self.remoto(), self.B)
         self.assertEqual(self.eventos(), [])
 
+    def pausa_con_diff_neto_sin_archivo(self):
+        trabajos = self.preparar({UNIDAD: (FALLA, MIXTO)})
+        self.contexto.tick(AHORA - 3600)
+        diagnostico = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
+        self.assertIsNone(diagnostico.pausa)
+        candidato = diagnostico.trenes[-1].fase.candidato
+        self.assertEqual(candidato.B, self.B)
+        self.assertEqual([(pr, head) for pr, head, _ in candidato.eslabones], self.miembros)
+        self.assertNotIn(ARCHIVO, self.contexto.git.archivos_entre(candidato.B, candidato.C))
+
+        observacion = self.contexto.observador.observar(diagnostico, AHORA)
+        final = self.avanzar(lambda fase: isinstance(fase, Terminal), AHORA + 2400)
+        self.assertIsInstance(final.trenes[-1].fase, Diagnosticando)
+        self.assertEqual(final.pausa, Pausa("necesita-juicio", detalle="confirmacion-base:" + UNIDAD))
+        self.assertEqual(self.eventos(), [])
+        self.assertEqual(self.remoto(), candidato.B)
+        self.assertEqual(trabajos, {"suite": 1, "repeticion": 2})
+        return observacion.archivos_lote
+
 
 class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
     def test_caso_1_pausa_con_ambos_commits_en_verde(self):
@@ -221,19 +240,6 @@ class IntermitentesTests(TrenIntermitentes, unittest.TestCase):
 
         self.contexto.git.ejecutar = git
         self.pausa_original({UNIDAD: (FALLA, MIXTO)}, "confirmacion-base")
-
-    def test_no_hay_inventario_si_falta_un_eslabon_de_la_cadena(self):
-        self.preparar({UNIDAD: (FALLA, MIXTO)})
-        estado = self.avanzar(lambda fase: isinstance(fase, Diagnosticando))
-        tren = estado.trenes[-1]
-        fase = tren.fase
-        primero, _, ultimo = fase.candidato.eslabones
-        incompleto = replace(fase.candidato, eslabones=(primero, ultimo))
-        tren_incompleto = replace(tren, fase=replace(fase, candidato=incompleto))
-        estado_incompleto = replace(estado, trenes=estado.trenes[:-1] + (tren_incompleto,))
-
-        observacion = self.contexto.observador.observar(estado_incompleto, AHORA)
-        self.assertIsNone(observacion.archivos_lote)
 
     def test_snapshot_anterior_se_sigue_leyendo(self):
         self.preparar({UNIDAD: (PASA, PASA)})
@@ -342,6 +348,63 @@ class ArchivoRestauradoEnLoteTests(TrenIntermitentes, unittest.TestCase):
         self.assertEqual(self.eventos(), [])
         self.assertEqual(self.remoto(), candidato.B)
         self.assertEqual(trabajos, {"suite": 1, "repeticion": 2})
+
+
+class DescendientePrimeroTests(TrenIntermitentes, unittest.TestCase):
+    def preparar_git(self):
+        super().preparar_git()
+        cambios = {"comun": "base\n", "src/nomina.py": "cálculo cambiado\n"}
+        padre = self.commit({**cambios, ARCHIVO: "prueba editada\n"}, padres=(self.B,))
+        hijo = self.commit({**cambios, ARCHIVO: "prueba original\n", "pr-2": "ticket\n"},
+                           padres=(padre,))
+        for pr, head in ((1, hijo), (2, padre)):
+            self.comando(self.fuente, "push", str(self.origen), f"+{head}:refs/pull/{pr}/head")
+            self.miembros[pr - 1] = pr, head
+
+    def test_pausa_si_el_descendiente_que_restaura_el_archivo_entra_primero(self):
+        _, padre = self.miembros[1]
+        diff_padre = self.comando(self.fuente, "diff", "--name-only", f"{self.B}...{padre}")
+        self.assertIn(ARCHIVO, diff_padre.splitlines())
+        self.assertIn(ARCHIVO, self.pausa_con_diff_neto_sin_archivo())
+
+
+class ArchivoEditadoEnBaseTests(TrenIntermitentes, unittest.TestCase):
+    def preparar_git(self):
+        super().preparar_git()
+        anterior = self.B
+        cambios = {"comun": "base\n", ARCHIVO: "prueba editada\n"}
+        head = self.commit({**cambios, "src/nomina.py": "cálculo cambiado\n"}, padres=(anterior,))
+        self.B = self.commit({**cambios, "en-main": "cambio independiente\n"}, padres=(anterior,))
+        self.push(self.B, "refs/heads/main")
+        self.comando(self.fuente, "push", str(self.origen), f"+{head}:refs/pull/1/head")
+        self.miembros = [(1, head)]
+
+    def test_pausa_si_el_pr_unico_toca_un_archivo_con_el_mismo_cambio_que_main(self):
+        _, head = self.miembros[0]
+        diff_pr = self.comando(self.fuente, "diff", "--name-only", f"{self.B}...{head}")
+        self.assertIn(ARCHIVO, diff_pr.splitlines())
+        self.assertIn(ARCHIVO, self.pausa_con_diff_neto_sin_archivo())
+
+
+class BasesCruzadasTests(TrenIntermitentes, unittest.TestCase):
+    def preparar_git(self):
+        super().preparar_git()
+        comun = {"comun": "base\n", ARCHIVO: "prueba original\n"}
+        izquierda = self.commit({**comun, "izquierda": "cambio\n"}, padres=(self.B,))
+        derecha = self.commit({**comun, "derecha": "cambio\n"}, padres=(self.B,))
+        self.bases = {izquierda, derecha}
+        ambos = {**comun, "izquierda": "cambio\n", "derecha": "cambio\n"}
+        self.B = self.commit(ambos, padres=(izquierda, derecha))
+        head = self.commit({**ambos, "pr-1": "ticket\n"}, padres=(derecha, izquierda))
+        self.push(self.B, "refs/heads/main")
+        self.comando(self.fuente, "push", str(self.origen), f"+{head}:refs/pull/1/head")
+        self.miembros = [(1, head)]
+
+    def test_pausa_si_un_head_tiene_dos_bases_con_main(self):
+        _, head = self.miembros[0]
+        bases = self.comando(self.fuente, "merge-base", "--all", self.B, head)
+        self.assertEqual(set(bases.splitlines()), self.bases)
+        self.assertIsNone(self.pausa_con_diff_neto_sin_archivo())
 
 
 class PlanificarTests(unittest.TestCase):
