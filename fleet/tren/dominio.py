@@ -772,6 +772,24 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
     return estado, (efecto_diagnostico(tren, fase),)
 
 
+LIMITE_LOTE = 5
+
+
+def orden_fifo(entrada):
+    return entrada.admitida, entrada.recibida, entrada.entrega.recibo
+
+
+def siguiente_lote(fila):
+    lote = []
+    for entrada in fila[:LIMITE_LOTE]:
+        if entrada.solo:
+            if not lote:
+                lote.append(entrada)
+            break
+        lote.append(entrada)
+    return tuple(lote)
+
+
 def paso(estado, observacion):
     """Un paso determinista. Congela a lo sumo un lote y emite sólo datos."""
     if observacion.decision is not None:
@@ -919,20 +937,9 @@ def paso(estado, observacion):
                                              else t for t in estado.trenes))
         return estado, tuple(efectos)
     fila = sorted((e for e in entradas if isinstance(e.admision, Admitido)
-                   and e.tren is None), key=lambda e: (e.admitida, e.recibida))
-    lote = []
-    for entrada in fila:
-        if entrada.solo:
-            if not lote:
-                lote.append(entrada)
-            break
-        lote.append(entrada)
-        if len(lote) == 3:
-            break
+                   and e.tren is None), key=orden_fifo)
+    lote = siguiente_lote(fila)
     if not lote or not observacion.base:
-        return estado, tuple(efectos)
-    if not (lote[0].solo or len(lote) == 3 or
-            observacion.ahora - lote[0].admitida >= 3600):
         return estado, tuple(efectos)
     recibos = tuple(e.entrega.recibo for e in lote)
     tren_id = clave("tren", estado.repo, observacion.base, recibos)

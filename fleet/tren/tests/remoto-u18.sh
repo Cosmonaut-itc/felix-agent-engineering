@@ -38,5 +38,6 @@ if not resultado.wasSuccessful() or resultado.testsRun != 1:
     raise SystemExit('SOMBRA U18: eventos o aislamiento incorrectos')
 PY
 done
-cmp "$tren_pruebas/sombra-anterior.json" "$tren_pruebas/sombra-actual.json"
-echo "U18 sombra, entregar y tick --seco: eventos idénticos a a1d24ec1 ($tren_pruebas)"
+python3 -I -B fleet/tren/tests/comparar_eventos_sombra.py \
+  "$tren_pruebas/sombra-anterior.json" "$tren_pruebas/sombra-actual.json"
+echo "U18 sombra, entregar y tick --seco: eventos fuera de la formación de lotes iguales a a1d24ec1 ($tren_pruebas)"

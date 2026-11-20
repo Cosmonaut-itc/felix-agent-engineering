@@ -4,7 +4,7 @@ from datetime import datetime
 import json
 import math
 
-from dominio import Admitido, Entrada, Motivo, Rechazado, Retenido, desde_datos
+from dominio import LIMITE_LOTE, Admitido, Entrada, Rechazado, desde_datos, orden_fifo
 from sombra import lotes_fifo
 
 
@@ -21,6 +21,12 @@ def decision_json(decision):
             else decision.motivo.value}
 
 
+def proyectar_sombra(admitidas, inicio, fin):
+    lotes, pendientes = lotes_fifo(admitidas.values(), math.nextafter(fin, -math.inf),
+                                  inicio=inicio)
+    return [(t, motivo, miembros, "sombra") for t, motivo, miembros in lotes], pendientes
+
+
 def medir(requests, events, repo, desde, hasta):
     if not all(math.isfinite(t) for t in (desde, hasta)) or desde >= hasta:
         raise ValueError("ventana inválida")
@@ -29,55 +35,98 @@ def medir(requests, events, repo, desde, hasta):
         if row["repo"] == repo and desde <= row["recibida"] < hasta:
             entrega = desde_datos(json.loads(row["payload"]))
             entregas[entrega.recibo] = Entrada(entrega, row["recibida"])
-    iniciales, fuentes, admitidas = {}, {}, {}
+    iniciales, admitidas = {}, {}
+    modo = None
+    inicio_sombra = -math.inf
+    cola_sombra = {}
+    pendientes = ()
+    trenes_vistos, despachados = set(), set()
+    lotes = []
     for row in sorted(events, key=lambda r: r["seq"]):
-        if row["repo"] != repo or row["instante"] >= hasta:
+        instante, tipo = row["instante"], row["tipo"]
+        if row["repo"] != repo or instante >= hasta:
             continue
-        payload = json.loads(row["payload"])
-        if row["tipo"] == "admision-entrega":
-            entradas = (desde_datos(payload),)
-        elif row["tipo"] in ("sombra", "sombra-doble-camino"):
-            entradas = desde_datos(payload["estado"]).entradas
+        if tipo == "operativo":
+            tramo = "activo"
+        # Un tick --seco del reductor activo deja un evento sombra legado.
+        elif tipo in ("admision-entrega", "sombra-doble-camino") or (
+                tipo == "sombra" and modo != "activo"):
+            tramo = "sombra"
         else:
             continue
+        if modo == "sombra" and tramo == "activo":
+            cerrados, _ = proyectar_sombra(cola_sombra, inicio_sombra, instante)
+            lotes.extend(cerrados)
+            despachados.update(e.entrega.recibo for _, _, miembros, _ in cerrados for e in miembros)
+            cola_sombra.clear()
+        elif modo == "activo" and tramo == "sombra":
+            inicio_sombra = instante
+            cola_sombra.update((e.entrega.recibo, e) for e in pendientes)
+        modo = tramo
+        payload = json.loads(row["payload"])
+        if tipo == "admision-entrega":
+            entradas = (desde_datos(payload),)
+        else:
+            estado = desde_datos(payload["estado"])
+            entradas = estado.entradas
+            if modo == "activo":
+                por_recibo = {e.entrega.recibo: e for e in entradas}
+                for tren in estado.trenes:
+                    if tren.id in trenes_vistos:
+                        continue
+                    trenes_vistos.add(tren.id)
+                    despachados.update(tren.recibos)
+                    miembros = tuple(por_recibo[r] for r in tren.recibos)
+                    motivo = "solo" if miembros[0].solo else "disponible"
+                    lotes.append((instante, motivo, miembros, "real"))
+                pendientes = sorted((e for e in entradas if isinstance(e.admision, Admitido)
+                                     and e.tren is None and e.terminal is None), key=orden_fifo)
         for entrada in entradas:
             recibo = entrada.entrega.recibo
-            if recibo not in entregas:
-                continue
-            if row["tipo"] == "admision-entrega":
+            if tipo == "admision-entrega":
                 iniciales[recibo] = entrada.admision
-                fuentes[recibo] = "entrega"
-            elif recibo not in iniciales:
-                # U1 no observaba al entregar: no inventar esa admisión.
-                iniciales[recibo] = Retenido(Motivo.CUSTODIA)
-                fuentes[recibo] = "sin-observacion-al-entregar"
-            if isinstance(entrada.admision, Admitido) and recibo not in admitidas:
-                admitidas[recibo] = replace(entrada, admitida=(
-                    entrada.admitida if entrada.admitida is not None else row["instante"]))
-            if recibo in admitidas and isinstance(entrada.admision, Rechazado):
-                anterior = admitidas[recibo]
+            if isinstance(entrada.admision, Admitido):
+                admitida = entrada.admitida if entrada.admitida is not None else instante
+                if recibo in entregas:
+                    admitidas.setdefault(recibo, admitida)
+                if modo == "sombra" and recibo not in despachados:
+                    cola_sombra.setdefault(recibo, replace(entrada, admitida=admitida))
+            if modo == "sombra" and recibo in cola_sombra and isinstance(entrada.admision, Rechazado):
+                anterior = cola_sombra[recibo]
                 if anterior.caducada is None:
-                    admitidas[recibo] = replace(anterior, caducada=(
-                        entrada.caducada if entrada.caducada is not None else row["instante"]))
-    lotes, pendientes = lotes_fifo(admitidas.values(), hasta)
+                    cola_sombra[recibo] = replace(anterior, caducada=(
+                        entrada.caducada if entrada.caducada is not None else instante))
+    if modo == "sombra":
+        cerrados, pendientes = proyectar_sombra(cola_sombra, inicio_sombra, hasta)
+        lotes.extend(cerrados)
+    lotes_cohorte = []
+    for instante, motivo, miembros, fuente in lotes:
+        recibos = [e.entrega.recibo for e in miembros if e.entrega.recibo in entregas]
+        if recibos:
+            lotes_cohorte.append({"instante": instante, "motivo": motivo, "fuente": fuente,
+                                 "recibos": recibos, "prs": [entregas[r].entrega.pr for r in recibos],
+                                 "tamano": len(recibos)})
+    pendientes = [e.entrega.recibo for e in pendientes if e.entrega.recibo in entregas]
     detalle = []
     for recibo, entrada in sorted(entregas.items(), key=lambda item: (
             item[1].recibida, item[0])):
         detalle.append({"recibo": recibo, "pr": entrada.entrega.pr,
                         "head": entrada.entrega.head, "recibida": entrada.recibida,
                         "admision": decision_json(iniciales.get(recibo, entrada.admision)),
-                        "fuente": fuentes.get(recibo, "sin-observacion-al-entregar"),
-                        "admitida": admitidas[recibo].admitida if recibo in admitidas else None})
-    # Las admisiones históricas siguen en detalle; sólo muestras que llegaron
-    # a un lote o permanecen en fila pueden producir ahorro de suites.
-    muestras = sum(len(es) for _, _, es in lotes) + len(pendientes)
-    return {"repo": repo, "modo": "sombra", "desde": desde, "hasta": hasta,
+                        "fuente": ("entrega" if recibo in iniciales
+                                   else "sin-observacion-al-entregar"),
+                        "admitida": admitidas.get(recibo)})
+    contados = set()
+    tamanos = []
+    for lote in sorted(lotes_cohorte, key=lambda lote: lote["fuente"] != "real"):
+        nuevos = set(lote["recibos"]) - contados
+        if nuevos:
+            tamanos.append(len(nuevos))
+            contados.update(nuevos)
+    ahorro = sum(n - 1 for n in tamanos) + len(set(pendientes) - contados)
+    return {"repo": repo, "modo": modo or "sombra", "desde": desde, "hasta": hasta,
             "entregas": detalle, "admitidas": len(admitidas),
-            "lotes": [{"instante": t, "motivo": motivo,
-                       "recibos": [e.entrega.recibo for e in miembros],
-                       "prs": [e.entrega.pr for e in miembros], "tamano": len(miembros)}
-                      for t, motivo, miembros in lotes],
-            "distribucion": {str(n): sum(len(es) == n for _, _, es in lotes)
-                             for n in (1, 2, 3)},
-            "pendientes": [e.entrega.recibo for e in pendientes],
-            "suites_ahorradas_estimadas": muestras - len(lotes)}
+            "lotes": lotes_cohorte,
+            "distribucion": {str(n): tamanos.count(n) for n in range(1, LIMITE_LOTE + 1)},
+            "pendientes": pendientes,
+            "suites_ahorradas_estimadas": ahorro}

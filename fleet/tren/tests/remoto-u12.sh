@@ -7,12 +7,13 @@ export XDG_CONFIG_HOME="$tren_pruebas/config"
 export XDG_STATE_HOME="$tren_pruebas/state"
 export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null
 mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME"
-# Las mismas tres regresiones deben fallar sobre el head revisado. Extraer el
-# código anterior conserva tanto el checkout probado como todas las fixtures.
+# Las tres regresiones de U12 deben fallar sobre el head revisado. Usar la
+# fixture de U12 conserva el reloj original en el control histórico.
 tren_anterior="$tren_pruebas/anterior"
 mkdir -p "$tren_anterior"
 git archive d810c04717eb7f66ae4396b25c500b1d455efe57 | tar -x -C "$tren_anterior"
-cp fleet/tren/tests/test_u12_fix_r1.py "$tren_anterior/fleet/tren/tests/"
+git show 34033d6d509eb363a566c6a18163bae7f4ef9b94:fleet/tren/tests/test_u12_fix_r1.py \
+  > "$tren_anterior/fleet/tren/tests/test_u12_fix_r1.py"
 git version
 python3 --version
 python3 -I -B - "$tren_anterior" <<'PY'
