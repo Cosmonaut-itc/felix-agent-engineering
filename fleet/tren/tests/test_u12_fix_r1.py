@@ -59,11 +59,9 @@ class U12FixR1Tests(Aislado):
             self.assertEqual(modo(REPO), "activo")
 
     def test_u12_2_caducidad_sale_de_fila_sin_reescribir_lotes_cerrados(self):
-        casos = ((100, 200, 4000, {"head": "c" * 40}),
-                 (0, 1200, 10000, {"head": "c" * 40}),
-                 (100, 200, 4000, {"abierto": False}),
-                 (100, 3700, 8000, {"head": "c" * 40}),
-                 (100, 3701, 8000, {"head": "c" * 40}))
+        casos = ((100, 100, 200, {"head": "c" * 40}),
+                 (0, 1, 200, {"head": "c" * 40}),
+                 (100, 101, 200, {"abierto": False}))
         for indice, (inicio, caduca, fin, cambios) in enumerate(casos):
             with self.subTest(inicio=inicio, caduca=caduca, cambios=cambios), patch.dict(
                     os.environ, {"XDG_STATE_HOME": str(self.raiz / ("state-%d" % indice))}):
@@ -73,18 +71,18 @@ class U12FixR1Tests(Aislado):
                 _, resultado = self.tick(fin, head="c" * 40)
                 estado = desde_datos(resultado["plan"]["estado"])
                 viejo, nuevo = estado.entradas
-                esperado = ([viejo.entrega.recibo] if caduca > inicio + 3600 else [])
+                esperado = [viejo.entrega.recibo] if caduca > inicio else []
                 esperado += [nuevo.entrega.recibo]
                 self.assertEqual([r for t in estado.trenes for r in t.recibos], esperado)
                 informe = medir(*filas_medicion(REPO), REPO, -1, fin + 1)
                 self.assertEqual([r for t in informe["lotes"] for r in t["recibos"]], esperado)
                 self.assertTrue(all(t["tamano"] == 1 and t["prs"] == [1] for t in informe["lotes"]))
-                self.assertEqual(informe["lotes"][-1]["instante"], caduca + 3600)
+                self.assertEqual(informe["lotes"][-1]["instante"], caduca)
                 self.assertEqual(informe["suites_ahorradas_estimadas"], 0)
                 self.assertEqual(informe["admitidas"], 2)  # Historial inicial conservado.
                 self.assertTrue(all(e["admision"]["estado"] == "admitido" for e in informe["entregas"]))
                 antes = medir(*filas_medicion(REPO), REPO, -1, caduca)
-                self.assertEqual(antes["admitidas"], 1)
+                self.assertEqual(antes["admitidas"], int(inicio < caduca))
                 # Los eventos anteriores al campo temporal se reconstruyen con
                 # el instante de la primera observación que muestra el rechazo.
                 requests, events = filas_medicion(REPO)

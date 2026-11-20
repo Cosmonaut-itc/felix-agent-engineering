@@ -77,7 +77,7 @@ class DominioTests(Aislado):
 
     def test_admision_y_pureza(self):
         original = estado()
-        nuevo, efectos = paso(original, observacion())
+        nuevo, efectos = paso(original, replace(observacion(), base=""))
         self.assertIsInstance(nuevo.entradas[0].admision, Admitido)
         self.assertEqual(original, estado())
         self.assertEqual(efectos, ())
@@ -115,31 +115,25 @@ class DominioTests(Aislado):
         nuevo, _ = paso(estado(), replace(observacion(), prs=()))
         self.assertEqual(nuevo.entradas[0].admision, Retenido(Motivo.INCIERTO))
 
-    def test_tres_salen_fifo_hasta_tres(self):
-        nuevo, efectos = paso(estado(5), observacion(5))
-        self.assertEqual(nuevo.trenes[0].recibos, tuple(entrega(i).recibo for i in (1, 2, 3)))
-        self.assertIsNone(nuevo.entradas[3].tren)
+    def test_un_admitido_sale_en_el_mismo_tick(self):
+        nuevo, efectos = paso(estado(), observacion())
+        self.assertIsInstance(nuevo.entradas[0].admision, Admitido)
+        self.assertEqual(nuevo.trenes[0].recibos, (entrega().recibo,))
         self.assertIsInstance(nuevo.trenes[0].fase, Congelado)
         self.assertEqual(efectos[0].tipo, "armar-candidato")
-        self.assertEqual(paso(estado(5), observacion(5)), (nuevo, efectos))
+        self.assertEqual(paso(estado(), observacion()), (nuevo, efectos))
 
-    def test_ventana_exacta_de_sesenta_minutos(self):
-        nuevo, _ = paso(estado(2), observacion(2, ahora=100))
-        antes, _ = paso(nuevo, observacion(2, ahora=3699))
-        self.assertFalse(antes.trenes)
-        justo, _ = paso(antes, observacion(2, ahora=3700))
-        self.assertEqual(len(justo.trenes[0].recibos), 2)
-
-    def test_retencion_reinicia_ventana_al_readmitir(self):
-        nuevo, _ = paso(estado(), observacion())
-        retenido, _ = paso(nuevo, replace(observacion(ahora=200), prs=(vista(ci="pendiente"),)))
+    def test_readmision_reinicia_fifo(self):
+        obs = replace(observacion(), base="")
+        nuevo, _ = paso(estado(), obs)
+        retenido, _ = paso(nuevo, replace(obs, ahora=200, prs=(vista(ci="pendiente"),)))
         self.assertIsNone(retenido.entradas[0].admitida)
         nuevo, _ = paso(retenido, observacion(ahora=4000))
-        self.assertFalse(nuevo.trenes)
+        self.assertEqual(nuevo.trenes[0].recibos, (entrega().recibo,))
         self.assertEqual(nuevo.entradas[0].admitida, 4000)
 
     def test_fifo_por_admision(self):
-        nuevo, _ = paso(estado(3), replace(observacion(3),
+        nuevo, _ = paso(estado(3), replace(observacion(3), base="",
                            prs=(vista(1, ci="pendiente"), vista(2), vista(3))))
         nuevo, _ = paso(nuevo, observacion(3, ahora=101))
         self.assertEqual(nuevo.trenes[0].recibos, tuple(entrega(i).recibo for i in (2, 3, 1)))
@@ -174,21 +168,27 @@ class DominioTests(Aislado):
     def test_solo_no_adelanta_fifo(self):
         obs = replace(observacion(3), prs=(vista(1), vista(2, sensible=True, autorizado=True), vista(3)))
         nuevo, _ = paso(estado(3), obs)
-        self.assertFalse(nuevo.trenes)
-        nuevo, _ = paso(nuevo, replace(obs, ahora=3700))
         self.assertEqual(nuevo.trenes[0].recibos, (entrega().recibo,))
+        terminal = replace(nuevo.trenes[0], fase=Terminal("ATERRIZADO"))
+        nuevo, _ = paso(replace(nuevo, trenes=(terminal,)), replace(obs, ahora=101))
+        self.assertEqual(nuevo.trenes[1].recibos, (entrega(2).recibo,))
+        self.assertIsNone(nuevo.entradas[2].tren)
 
-    def test_ningun_segundo_lote_activo(self):
-        nuevo, _ = paso(estado(6), observacion(6))
-        nuevo, efectos = paso(nuevo, observacion(6, ahora=9999))
-        self.assertEqual(len(nuevo.trenes), 1)
-        self.assertEqual(efectos, ())
-
-    def test_terminal_permite_otro_lote(self):
-        nuevo, _ = paso(estado(6), observacion(6))
-        nuevo = replace(nuevo, trenes=(replace(nuevo.trenes[0], fase=Terminal("ATERRIZADO")),))
-        nuevo, _ = paso(nuevo, observacion(6))
-        self.assertEqual(len(nuevo.trenes), 2)
+    def test_seis_admitidos_con_tren_activo_salen_en_lotes_de_cinco_y_uno(self):
+        nuevo, _ = paso(estado(), observacion())
+        nuevo = replace(nuevo, entradas=nuevo.entradas + estado(7).entradas[1:])
+        for ahora, n in ((101, 4), (102, 7)):
+            nuevo, efectos = paso(nuevo, observacion(n, ahora=ahora))
+            self.assertEqual(len(nuevo.trenes), 1)
+            self.assertFalse(efectos)
+        self.assertTrue(all(isinstance(e.admision, Admitido) and e.tren is None
+                            for e in nuevo.entradas[1:]))
+        for ahora, prs in ((103, range(2, 7)), (104, (7,))):
+            terminal = replace(nuevo.trenes[-1], fase=Terminal("ATERRIZADO"))
+            nuevo, efectos = paso(replace(nuevo, trenes=nuevo.trenes[:-1] + (terminal,)),
+                                  observacion(7, ahora=ahora))
+            self.assertEqual(nuevo.trenes[-1].recibos, tuple(entrega(i).recibo for i in prs))
+            self.assertEqual(efectos[0].tipo, "armar-candidato")
 
     def test_pausa_y_jale(self):
         self.assertEqual(inicial("example/Jale").pausa, Pausa("etapa-1"))
@@ -358,7 +358,7 @@ class CLITests(Aislado):
                       "--apto", "a", "--dirigida", "d")):
             self.assertEqual(self.cli(*args).returncode, 2)
 
-    def test_sombra_con_falso_continua_ventana(self):
+    def test_sombra_con_falso_forma_lote_en_el_primer_tick(self):
         ledger = Ledger()
         ledger.entregar(entrega(), 10)
         ledger.close()
@@ -366,8 +366,6 @@ class CLITests(Aislado):
         falso = Falso(observacion())
         codigo, payload = cli.ejecutar(args, falso, 100)
         self.assertEqual(codigo, 0)
-        self.assertFalse(payload["plan"]["estado"]["trenes"])
-        _, payload = cli.ejecutar(args, falso, 3700)
         self.assertEqual(len(payload["plan"]["estado"]["trenes"]), 1)
 
     def test_error_global_no_evento_sombra(self):
@@ -467,10 +465,7 @@ class ObservadorTests(Aislado):
         obs = Observacion(100, BASE, (observador.vista(self.entrega), vista(2)),
                           self.config["excluir_alto_riesgo"])
         reductor = paso if activo else paso_sombra
-        admitido, _ = reductor(original, obs)
-        if not admitido.trenes:
-            admitido, _ = reductor(admitido, replace(obs, ahora=3700))
-        return admitido
+        return reductor(original, obs)[0]
 
     def prueba_sen_7114_lote(self, archivos, *, solo):
         for activo in (True, False):
@@ -478,7 +473,7 @@ class ObservadorTests(Aislado):
                 nuevo = self.lote_con_normal(archivos, activo=activo)
                 self.assertEqual(nuevo.entradas[0].admision, Admitido())
                 recibos = (self.entrega.recibo,) if solo else (self.entrega.recibo, entrega(2).recibo)
-                self.assertEqual(tuple(t.recibos for t in nuevo.trenes), (recibos,))
+                self.assertEqual(nuevo.trenes[0].recibos, recibos)
 
     def test_sen_7114_gobierno_autorizado_viaja_en_lote(self):
         self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
@@ -651,11 +646,11 @@ class ObservadorTests(Aislado):
             codigo, resultado = cli.ejecutar(args, observador, 100)
         self.assertEqual(codigo, 0)
         self.assertEqual(resultado["admision"]["estado"], "admitido")
-        self.ledger().entregar(entrega(2), 101, Entrada(entrega(2), 101, Admitido(), 101))
+        self.ledger().entregar(entrega(2), 100, Entrada(entrega(2), 100, Admitido(), 100))
         original = self.ledger().estado(REPO, sombra=True, doble_camino=True)
-        nuevo, _ = paso_sombra(original, Observacion(3700, BASE, (vista(2),)))
+        nuevo, _ = paso_sombra(original, Observacion(100, BASE, (vista(2),)))
         self.assertEqual(tuple(t.recibos for t in nuevo.trenes),
-                         ((self.entrega.recibo, entrega(2).recibo),))
+                         (tuple(sorted((self.entrega.recibo, entrega(2).recibo))),))
 
     def test_pagina_dos_ci_pendiente_retiene(self):
         self.checks.append({"check_runs": [{"id": 2, "name": "tests", "status": "in_progress", "conclusion": None}]})

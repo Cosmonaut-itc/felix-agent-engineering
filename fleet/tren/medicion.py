@@ -4,7 +4,7 @@ from datetime import datetime
 import json
 import math
 
-from dominio import Admitido, Entrada, Motivo, Rechazado, Retenido, desde_datos
+from dominio import LIMITE_LOTE, Admitido, Entrada, Motivo, Rechazado, Retenido, desde_datos
 from sombra import lotes_fifo
 
 
@@ -78,6 +78,6 @@ def medir(requests, events, repo, desde, hasta):
                        "prs": [e.entrega.pr for e in miembros], "tamano": len(miembros)}
                       for t, motivo, miembros in lotes],
             "distribucion": {str(n): sum(len(es) == n for _, _, es in lotes)
-                             for n in (1, 2, 3)},
+                             for n in range(1, LIMITE_LOTE + 1)},
             "pendientes": [e.entrega.recibo for e in pendientes],
             "suites_ahorradas_estimadas": muestras - len(lotes)}

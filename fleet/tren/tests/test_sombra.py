@@ -92,13 +92,14 @@ class SombraTests(Aislado):
             _, plan = self.tick(t + 3600, [], format(dia + 2, "040x"))
             self.assertEqual(plan["plan"]["efectos"], [])
             self.assertIsNone(plan["plan"]["estado"]["pausa"])
-            self.assertEqual(len(plan["plan"]["estado"]["trenes"]), dia + 1)
+            self.assertEqual(len(plan["plan"]["estado"]["trenes"]), sum(
+                3 if anterior % 2 else 1 for anterior in range(dia + 1)))
         ledger = self.ledger()
         for tabla in ("trains", "effects", "outbox"):
             self.assertEqual(ledger.db.execute("SELECT count(*) FROM " + tabla).fetchone()[0], 0)
         informe = medir(*filas_medicion(REPO), REPO, 0, 7 * 86400)
-        self.assertEqual(informe["distribucion"], {"1": 4, "2": 0, "3": 3})
-        self.assertEqual(informe["suites_ahorradas_estimadas"], 6)
+        self.assertEqual(informe["distribucion"], {"1": 13, "2": 0, "3": 0, "4": 0, "5": 0})
+        self.assertEqual(informe["suites_ahorradas_estimadas"], 0)
 
     def test_cerrado_sin_merge_y_head_distinto_conservan_rechazo(self):
         for cambios, motivo in (({"abierto": False}, Motivo.CERRADO),
@@ -174,7 +175,7 @@ class SombraTests(Aislado):
         informe = medir(*filas_medicion(REPO), REPO, 0, 4200)
         self.assertEqual(informe["entregas"][0]["admision"]["estado"], "retenido")
         self.assertEqual(informe["entregas"][0]["admitida"], 500)
-        self.assertEqual(informe["lotes"][0]["instante"], 4100)
+        self.assertEqual(informe["lotes"][0]["instante"], 500)
         antes = medir(*filas_medicion(REPO), REPO, 0, 500)
         self.assertEqual(antes["admitidas"], 0)
 
@@ -184,27 +185,44 @@ class MedicionTests(Aislado):
         return tuple(Entrada(entrega(i), t, Admitido(), t, i in solos)
                      for i, t in enumerate(tiempos, 1))
 
-    def test_lotes_uno_dos_tres_y_corte_60_min(self):
-        entradas = self.entradas([0, 3600, 3700, 8000, 8100, 8200])
-        lotes, pendientes = lotes_fifo(entradas, 9000)
+    def test_lotes_inmediatos_por_instante_de_admision(self):
+        entradas = self.entradas([0, 10, 10, 20, 20, 20, 30])
+        lotes, pendientes = lotes_fifo(entradas, 20)
         self.assertEqual([(t, len(es)) for t, _, es in lotes],
-                         [(3600, 1), (7200, 2), (8200, 3)])
+                         [(0, 1), (10, 2), (20, 3)])
         self.assertFalse(pendientes)
-        self.assertEqual(lotes_fifo(entradas, 9000), lotes_fifo(entradas, 9000))
-        self.assertEqual([e.admitida for e in entradas], [0, 3600, 3700, 8000, 8100, 8200])
 
     def test_sensible_solo_sin_adelantar_fifo(self):
-        lotes, pendientes = lotes_fifo(self.entradas([0, 10, 20, 30], (2,)), 4000)
+        entradas = tuple(replace(e, recibida=i, admitida=10)
+                         for i, e in enumerate(self.entradas([0] * 4, (2,))))
+        lotes, pendientes = lotes_fifo(entradas, 10)
         self.assertEqual([[e.entrega.pr for e in es] for _, _, es in lotes], [[1], [2], [3, 4]])
-        self.assertEqual([t for t, _, _ in lotes], [3600, 3600, 3620])
+        self.assertEqual([t for t, _, _ in lotes], [10, 10, 10])
         self.assertFalse(pendientes)
 
-    def test_ventana_parcial_y_empates_deterministas(self):
+    def test_empates_deterministas_y_lote_parcial_inmediato(self):
         entradas = self.entradas([0, 0, 0, 100])
         lotes, pendientes = lotes_fifo(entradas, 200)
-        self.assertEqual(len(lotes), 1)
-        self.assertEqual(len(pendientes), 1)
+        self.assertEqual([len(es) for _, _, es in lotes], [3, 1])
+        self.assertFalse(pendientes)
         self.assertEqual(lotes_fifo(entradas, 200), lotes_fifo(reversed(entradas), 200))
+
+    def test_sombra_y_dominio_forman_los_mismos_lotes(self):
+        original = estado(9)
+        obs = observacion(9)
+        obs = replace(obs, prs=obs.prs[:6] + (vista(7, sensible=True, autorizado=True),)
+                      + obs.prs[7:])
+        simulado, efectos = paso_sombra(original, obs)
+        self.assertFalse(efectos)
+        activo = original
+        for ahora, prs in enumerate((range(1, 6), (6,), (7,), (8, 9)), obs.ahora):
+            activo, _ = paso(activo, replace(obs, ahora=ahora))
+            tren = activo.trenes[-1]
+            self.assertEqual(tren.recibos, tuple(entrega(pr).recibo for pr in prs))
+            activo = replace(activo, trenes=activo.trenes[:-1] +
+                             (replace(tren, fase=Terminal("ATERRIZADO")),))
+        self.assertEqual([t.recibos for t in simulado.trenes],
+                         [t.recibos for t in activo.trenes])
 
     def test_iso_con_zona_y_ventana_invalida(self):
         self.assertEqual(instante_iso("1970-01-01T01:00:00+01:00"), 0)
@@ -217,14 +235,14 @@ class MedicionTests(Aislado):
 
     def test_medir_desde_filas_lotes_y_sensible(self):
         ledger = self.ledger()
-        entradas = self.entradas([0, 3600, 3700, 8000, 8100, 8200, 9000], (7,))
+        entradas = self.entradas([0, 3600, 3600, 3600, 3600, 3600, 9000], (7,))
         for entrada in entradas:
             ledger.entregar(entrada.entrega, entrada.recibida, entrada)
         requests, events = filas_medicion(REPO)
         informe = medir(requests, events, REPO, 0, 10000)
-        self.assertEqual(informe["distribucion"], {"1": 2, "2": 1, "3": 1})
+        self.assertEqual(informe["distribucion"], {"1": 2, "2": 0, "3": 0, "4": 0, "5": 1})
         self.assertEqual(informe["lotes"][-1]["prs"], [7])
-        self.assertEqual(informe["suites_ahorradas_estimadas"], 3)
+        self.assertEqual(informe["suites_ahorradas_estimadas"], 4)
         self.assertEqual(informe, medir(list(reversed(requests)), list(reversed(events)),
                                        REPO, 0, 10000))
         self.assertEqual(len(medir(requests, events, REPO, 3600, 9000)["entregas"]), 5)
