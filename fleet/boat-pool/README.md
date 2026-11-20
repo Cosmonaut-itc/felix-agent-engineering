@@ -49,16 +49,26 @@ El LaunchAgent usa los valores del entorno de launchd.
   usan su host habitual. La primera línea de stderr de una salida 75 es
   `boat-pool: <causa>: <detalle>`. Las causas son `sin_vm`, `sin_lugar`,
   `puerta`, `api` y `apagado`.
-- `reporte [--dia AAAA-MM-DD]` escribe una fila TSV por día UTC. Las
-  columnas son fecha, horas `default`, `large` y `xlarge`, USD estimados,
-  arranques del pool, corridas distintas concedidas, horas facturables
-  (ponderadas por tamaño) y USD de la organización. Las últimas dos
-  columnas repiten el acumulado del mes UTC en curso hasta el momento de
-  generar el reporte. Incluyen las VMs reservadas y borradas. Para fechas
-  de otro mes o si Boat no confirma el total, muestran `NA` y el motivo
-  sale en stderr. Las horas del pool se estiman desde el primer estado
-  facturable observado o, si la VM ya estaba encendida, desde su fecha
-  de preparación.
+- `reporte [--dia AAAA-MM-DD]` escribe una fila TSV por día UTC, con estas
+  columnas en orden.
+
+  1. Fecha UTC.
+  2. Horas `default`, `large` y `xlarge` (tres columnas), y USD estimados del
+     pool. El diario identifica los IDs registrados durante el día. Para
+     cada ID, Boat mide el uso en `/sandboxes/{id}/usage` desde medianoche UTC
+     hasta la siguiente medianoche o hasta ahora. Las horas suman
+     `seconds / billingMultiplier / 3600` por tipo devuelto y los USD
+     suman `dollars` a precio de lista. Si el diario histórico carece de un
+     ID, el ID está reservado o la consulta falla, las cuatro columnas
+     muestran `NA` y el motivo sale en stderr.
+  3. Arranques del pool y corridas distintas concedidas, según los eventos
+     `arranque` y `concedido` del diario. Las corridas se deduplican por
+     repositorio e identificador dentro del día.
+  4. Horas facturables ponderadas y USD de la organización, según el
+     inventario paginado de Boat con `include=cost,deletedCost`. Incluyen
+     las VMs reservadas y borradas y repiten el acumulado del mes UTC en
+     curso hasta ahora. Para fechas de otro mes o si Boat no confirma el
+     total, muestran `NA` y el motivo sale en stderr.
 
 Cada lanzador escribe de forma atómica `vms/<nombre>/registro.json` en el
 directorio de estado al acabar de preparar. El registro v1 contiene

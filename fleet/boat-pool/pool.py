@@ -4,7 +4,7 @@ import argparse
 from collections import Counter
 from contextlib import ExitStack, contextmanager
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 import errno
 import fcntl
@@ -24,10 +24,9 @@ from uuid import uuid4
 from boat_api import Boat, BoatError
 
 
-RATES = {'default': 0.036, 'large': 0.072, 'xlarge': 0.20}
+POOL_TYPES = ('default', 'large', 'xlarge')
 PRIORITY = {'preparar': 0, 'tren': 1, 'suite': 2, 'otra': 3}
 READY = {'ready', 'idle', 'running'}
-BILLABLE = READY | {'provisioned', 'cloning'}
 STOPPED = {'archived', 'stopped'}
 STARTING = {'init', 'provisioning', 'provisioned', 'cloning', 'resuming'}
 STOPPING = {'archiving', 'stopping'}
@@ -218,23 +217,28 @@ class VM:
     id: str = ''
     prepared: float = 0
     apt: bool = False
+    recorded_ids: set = field(default_factory=set)
 
     @property
     def journal(self):
         return self.path / 'eventos.jsonl'
 
-    def registration(self, now):
+    def read_registration(self):
         record = read_json(self.path / 'registro.json')
         identifier = record['id']
         check_id(identifier)
-        if now < self.prohibited.get(identifier, -math.inf):
-            raise Unavailable('sin_vm', 'ID de VM reservado')
         if (record['nombre'], record['repo'], record['tipo']) != (self.name, self.repo, self.tipo):
             raise ValueError('registro no coincide con el pool')
         if type(record['apta']) is not bool:
             raise ValueError('aptitud inválida')
         number(record['cpu_robada_pct'], 0)
         return identifier, epoch(record['preparada_en']), record['apta']
+
+    def registration(self, now):
+        current = self.read_registration()
+        if now < self.prohibited.get(current[0], -math.inf):
+            raise Unavailable('sin_vm', 'ID de VM reservado')
+        return current
 
     def validate(self, now):
         try:
@@ -243,6 +247,15 @@ class VM:
             raise Unavailable('sin_vm', 'VM sin registro válido') from None
         if current != (self.id, self.prepared, self.apt):
             raise Unavailable('sin_vm', 'registro de VM cambió')
+        if self.id not in self.recorded_ids:
+            self.record_registration(self.id, self.prepared, events(self.journal))
+
+    def record_registration(self, identifier, prepared, history):
+        if not any(item['evento'] == 'registro' and item.get('id') == identifier for item in history):
+            event = self.event('registro', prepared, id=identifier)
+            append_event(self.journal, event)
+            history.append(event)
+        self.recorded_ids.add(identifier)
 
     def event(self, kind, when, **fields):
         return {'evento': kind, 'en': stamp(when), 'vm': self.name, 'tipo': self.tipo, **fields}
@@ -346,7 +359,7 @@ class Pool:
         for data in config['vms']:
             name = label(data['nombre'])
             safe_name(name)
-            if name in self.vms or data['tipo'] not in RATES:
+            if name in self.vms or data['tipo'] not in POOL_TYPES:
                 raise ValueError('VM duplicada o tipo inválido')
             places = integer(data['lugares'], 1)
             classes = {label(kind): integer(limit, 0) for kind, limit in data.get('limite_clase', {}).items()}
@@ -436,9 +449,11 @@ class Pool:
         else:
             remove(vm.path / 'aviso-error.json')
         pending = self.power_operation(vm)
-        self.record_power(vm, state, info.get('stoppedAt'), pending)
+        if pending and pending['accion'] == 'resume' and state in READY | STARTING:
+            self.record_power_event(vm, pending, 'arranque', epoch(pending['desde']))
         if pending and pending['accion'] == 'stop':
             if state in STOPPED:
+                self.record_power_event(vm, pending, 'apagada', self.now())
                 remove(vm.path / 'operacion.json')
             elif state in READY and (pending.get('credenciales')
                                      or self.now() - epoch(pending['desde']) < POWER_TIMEOUT):
@@ -454,26 +469,10 @@ class Pool:
         except FileNotFoundError:
             return None
 
-    def record_power(self, vm, state, stopped_at, pending):
-        history = events(vm.journal)
-        last = next((item for item in reversed(history)
-                     if item['evento'] in ('encendida', 'apagada')), None)
-        now = self.now()
-        if pending and pending['accion'] == 'resume' and state in READY | STARTING:
-            self.record_start(vm, pending, history)
-        if state in BILLABLE and (last is None or last['evento'] == 'apagada'):
-            since = min(now, vm.prepared) if state in READY and last is None and pending is None else now
-            append_event(vm.journal, vm.event('encendida', since))
-        if last and last['evento'] == 'encendida' and state in STOPPED | STOPPING | {'error', 'cancelled'}:
-            try:
-                stopped = max(epoch(last['en']), min(now, epoch(stopped_at)))
-            except (TypeError, ValueError, OverflowError):
-                stopped = now
-            append_event(vm.journal, vm.event('apagada', stopped))
-
-    def record_start(self, vm, operation, history):
-        if not any(item.get('operacion') == operation['id'] for item in history):
-            append_event(vm.journal, vm.event('arranque', epoch(operation['desde']), operacion=operation['id']))
+    def record_power_event(self, vm, operation, kind, when):
+        if not any(item['evento'] == kind and item.get('operacion') == operation['id']
+                   for item in events(vm.journal)):
+            append_event(vm.journal, vm.event(kind, when, operacion=operation['id']))
 
     def send_power(self, vm, action):
         previous = self.power_operation(vm)
@@ -487,7 +486,7 @@ class Pool:
         atomic_json(vm.path / 'operacion.json', operation)
         self.boat.power(vm, action)
         if action == 'resume':
-            self.record_start(vm, operation, events(vm.journal))
+            self.record_power_event(vm, operation, 'arranque', epoch(operation['desde']))
 
     def wait_power(self, vm, target, pending):
         deadline = time.monotonic() + POWER_TIMEOUT
@@ -613,6 +612,8 @@ class Pool:
         started = time.monotonic()
         deadline = started + args.esperar
         last_error = None
+        attempted = set()
+        rechecked = False
         try:
             while candidates:
                 with ExitStack() as locks:
@@ -637,18 +638,26 @@ class Pool:
                             return {'arriendo': lease['arriendo'], 'vm': vm.name,
                                     'id': vm.id, 'vence': lease['vence']}
                 if vm is not None:
+                    attempted.add(vm.name)
+                    rechecked = False
                     candidates.remove(vm)
                     if candidates:
                         with lock(self.state / 'espera.lock'):
                             atomic_json(path, turn)
                     continue
-                if not (contended or eligible):
-                    raise Unavailable('sin_vm', 'sin VM apta o registrada')
+                if not (contended or eligible or rechecked):
+                    candidates = [vm for vm in self.candidates(repo=args.repo, name=args.vm)
+                                  if vm.name not in attempted and vm.accepts(turn)]
+                    if not candidates:
+                        raise Unavailable('sin_vm', 'sin VM apta o registrada')
+                    rechecked = True
+                    continue
                 attempt_until = started + LOCK_WAIT if contended and args.esperar == 0 else deadline
                 remaining = attempt_until - time.monotonic()
                 if remaining <= 0:
                     break
                 self.sleep(min(0.25, remaining))
+                rechecked = False
             if last_error is not None:
                 raise last_error
             raise Unavailable('sin_lugar', 'sin lugar al vencer la espera')
@@ -697,12 +706,16 @@ class Pool:
                     if args.command == 'apagar' and leases:
                         raise Unavailable('sin_lugar', 'VM con arriendos vivos')
                     self.check_identity(vm)
-                    state = self.observe(vm)
+                    info = self.sandbox_info(vm)
+                    state = self.observe(vm, info)
                     if args.command == 'encender':
                         if leases and state not in READY:
                             raise BoatError('VM con arriendos vivos fuera de servicio')
                         self.start(vm, state)
                     else:
+                        pending = self.power_operation(vm)
+                        if pending and pending.get('credenciales'):
+                            state = info['state']
                         self.stop(vm, state, wait=True)
                 except (Unavailable, BoatError) as error:
                     self.reject(str(error), vm)
@@ -772,8 +785,9 @@ class Pool:
                     notices['ttl:' + vm.name] = 'No se pudo renovar el plazo de Boat de ' + vm.name
             if busy or state not in READY or vm.idle is None:
                 return
-            last = max((epoch(item['en']) for item in events(vm.journal)
-                        if item['evento'] in ('soltado', 'vencido', 'encendida')), default=vm.prepared)
+            activity = (epoch(item['en']) for item in events(vm.journal)
+                        if item['evento'] in ('soltado', 'vencido', 'arranque', 'encendida'))
+            last = max(chain((vm.prepared,), activity))
             if self.now() - last >= vm.idle:
                 self.stop(vm, state, wait=False)
 
@@ -843,8 +857,55 @@ class Pool:
             raise BoatError('Boat no confirmó el consumo del mes UTC en curso') from None
         return f'{seconds / 3600:.6f}', f'{dollars:.6f}'
 
+    def daily_pool_cost(self, registrations, start, until):
+        if start >= until:
+            return ('0.000000',) * 4
+        since_stamp, until_stamp = stamp(start), stamp(until)
+        hours = Counter()
+        dollars = 0
+        queried = set()
+        errors = []
+        for name, first_event, changes in registrations:
+            first_registration = changes[0][0] if changes else math.inf
+            if first_event < min(first_registration, until) and start < first_registration:
+                errors.append(f'{name}: diario histórico sin ID de Boat')
+            for index, (prepared, identifier) in enumerate(changes):
+                replaced = changes[index + 1][0] if index + 1 < len(changes) else math.inf
+                if prepared >= until or replaced <= start:
+                    continue
+                try:
+                    check_id(identifier)
+                    if identifier in queried:
+                        continue
+                    queried.add(identifier)
+                    if self.now() < self.prohibited.get(identifier, -math.inf):
+                        raise BoatError('ID de VM reservado')
+                    usage = self.boat.usage(identifier, since_stamp, until_stamp)
+                    tipo = usage['sandboxType']
+                    if (usage.get('ok') is not True or usage.get('type') != 'sandbox.usage'
+                            or usage['sandboxId'] != identifier or tipo not in POOL_TYPES
+                            or epoch(usage['since']) != start or epoch(usage['until']) != until
+                            or type(usage['running']) is not bool):
+                        raise ValueError('respuesta inválida')
+                    integer(usage['secondsPerDollar'], 1)
+                    multiplier = number(usage['billingMultiplier'])
+                    if multiplier <= 0:
+                        raise ValueError('multiplicador inválido')
+                    hours[tipo] += integer(usage['seconds'], 0) / multiplier / 3600
+                    dollars += number(usage['dollars'], 0)
+                    number(hours[tipo])
+                    number(dollars)
+                except BoatError as error:
+                    errors.append(f'{name}: {error}')
+                except (KeyError, TypeError, ValueError, OverflowError):
+                    errors.append(f'{name}: respuesta de uso inválida o ID inválido')
+        if errors:
+            raise BoatError(', '.join(errors))
+        return (*(f'{hours[tipo]:.6f}' for tipo in POOL_TYPES), f'{dollars:.6f}')
+
     def report(self, day):
         history = []
+        registrations = []
         for directory in (self.state / 'vms').glob('*'):
             if not directory.is_dir():
                 continue
@@ -852,25 +913,26 @@ class Pool:
             with lock(directory / 'lock'):
                 if vm is not None:
                     vm.finish_lease_change()
-                history.extend(events(directory / 'eventos.jsonl'))
+                journal = events(directory / 'eventos.jsonl')
+                if vm is not None:
+                    try:
+                        identifier, prepared, _ = vm.read_registration()
+                    except (FileNotFoundError, KeyError, TypeError, ValueError, OverflowError):
+                        pass
+                    else:
+                        vm.record_registration(identifier, prepared, journal)
+                    changes = [(epoch(item['en']), item.get('id')) for item in journal
+                               if item['evento'] == 'registro']
+                    changes.sort(key=lambda item: item[0])
+                    first_event = min((epoch(item['en']) for item in journal), default=math.inf)
+                    registrations.append((vm.name, first_event, changes))
+                history.extend(journal)
         now = self.now()
+        now_ms = math.floor(now * 1000) / 1000
         history.sort(key=lambda item: epoch(item['en']))
         today = datetime.fromtimestamp(now, timezone.utc).date()
         first = today if not history else min(today, datetime.fromtimestamp(epoch(history[0]['en']), timezone.utc).date())
         days = [day] if day else [first + timedelta(days=i) for i in range((today - first).days + 1)]
-        intervals = []
-        powered = {}
-        for item in history:
-            kind = item['evento']
-            vm = item['vm']
-            when = epoch(item['en'])
-            if kind == 'encendida':
-                powered.setdefault(vm, (item['tipo'], when))
-            elif kind == 'apagada' and vm in powered:
-                tipo, start = powered.pop(vm)
-                intervals.append((tipo, start, when))
-        intervals.extend((tipo, start, now) for tipo, start in powered.values())
-
         month = today.replace(day=1)
         monthly_cost = ('NA', 'NA')
         monthly_error = None
@@ -883,10 +945,11 @@ class Pool:
         for day in days:
             start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).timestamp()
             end = start + 86400
-            hours = Counter()
-            for tipo, on, off in intervals:
-                hours[tipo] += max(0, min(end, off) - max(start, on)) / 3600
-            cost = sum(hours[tipo] * rate for tipo, rate in RATES.items())
+            try:
+                pool_cost = self.daily_pool_cost(registrations, start, min(end, now_ms))
+            except BoatError as error:
+                pool_cost = ('NA',) * 4
+                print(f'boat-pool: reporte {day}: {error}', file=sys.stderr)
             daily = [item for item in history if start <= epoch(item['en']) < end]
             starts = sum(item['evento'] == 'arranque' for item in daily)
             runs = {(item['repo'], item['corrida']) for item in daily if item['evento'] == 'concedido'}
@@ -895,8 +958,7 @@ class Pool:
                 org_cost, error = ('NA', 'NA'), 'Boat sólo informa el mes UTC en curso'
             if error is not None:
                 print(f'boat-pool: reporte {day}: {error}', file=sys.stderr)
-            writer.writerow([day.isoformat(), *(f'{hours[tipo]:.6f}' for tipo in RATES),
-                             f'{cost:.6f}', starts, len(runs), *org_cost])
+            writer.writerow([day.isoformat(), *pool_cost, starts, len(runs), *org_cost])
 
 
 class Usage(argparse.ArgumentParser):

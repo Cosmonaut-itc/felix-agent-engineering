@@ -1,6 +1,7 @@
 import json
 import os
 import subprocess
+from urllib.error import HTTPError
 from urllib.parse import urlencode
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
@@ -58,6 +59,8 @@ class Boat:
         }
         try:
             value = self._transport(method, path, headers, body, 10)
+        except HTTPError as error:
+            raise BoatError(f'Boat devolvió HTTP {error.code}') from None
         except Exception:
             raise BoatError('petición a Boat no confirmada') from None
         if not isinstance(value, dict) or value.get('ok') is False:
@@ -77,6 +80,10 @@ class Boat:
 
     def sandbox(self, vm):
         return self._request('GET', '/sandboxes/' + vm.id).get('sandbox')
+
+    def usage(self, identifier, since, until):
+        query = urlencode({'since': since, 'until': until})
+        return self._request('GET', '/sandboxes/' + identifier + '/usage?' + query)
 
     def power(self, vm, action):
         if action == 'resume':

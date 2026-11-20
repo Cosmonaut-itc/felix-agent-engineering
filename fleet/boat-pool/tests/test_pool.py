@@ -12,6 +12,7 @@ import tempfile
 import time
 import unittest
 from unittest.mock import patch
+from urllib.error import HTTPError
 from urllib.parse import parse_qs, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -56,6 +57,7 @@ class Double:
         self.resume_fields = {'holdsCreatorLogins': False}
         self.page_size = 200
         self.deleted = monthly_cost(0, 0)
+        self.usage = {}
 
     def factory(self, org, service):
         return Boat(org, service, transport=self.transport, key_reader=lambda _: MOCK_KEY)
@@ -90,6 +92,18 @@ class Double:
         _, group, identifier, *operation = url.path.split('/')
         if group != 'sandboxes':
             raise AssertionError('ruta inesperada')
+        if method == 'GET' and operation == ['usage']:
+            if identifier not in vms:
+                raise HTTPError(path, 404, 'sandbox no encontrado', None, None)
+            since, = query['since']
+            until, = query['until']
+            return {
+                'ok': True, 'type': 'sandbox.usage', 'sandboxId': identifier,
+                'sandboxType': 'large', 'billingMultiplier': 2,
+                'since': since, 'until': until, 'seconds': 0, 'dollars': 0,
+                'secondsPerDollar': 100000, 'running': True,
+                **self.usage.get((identifier, since), {}),
+            }
         vm = vms[identifier]
         if method == 'GET' and not operation:
             return {'sandbox': vm}
@@ -230,6 +244,9 @@ class Harness(unittest.TestCase):
     def writes(self):
         return [call for call in self.api.calls if call[0] in ('POST', 'PATCH')]
 
+    def usage_calls(self):
+        return [route for method, route, _ in self.api.calls if method == 'GET' and '/usage?' in route]
+
     def test_solo_un_lugar_con_dos_procesos(self):
         requests = [self.start_worker(*self.args(run, 'contract', '--esperar', '1'))
                     for run in ('primera', 'segunda')]
@@ -293,7 +310,7 @@ class Harness(unittest.TestCase):
             ('POST', '/sandboxes/' + FAKE_ID + '/resume', {'noEnv': True, 'type': 'large'}),
         ])
         self.assertEqual(self.api.sleeps, 1)
-        self.assertEqual([item['evento'] for item in self.journal()], ['arranque', 'encendida', 'concedido'])
+        self.assertEqual([item['evento'] for item in self.journal()], ['registro', 'arranque', 'concedido'])
 
     def test_cada_puerta_cerrada_se_registra_y_no_reanuda(self):
         self.api.sandbox(FAKE_ID, state='archived')
@@ -405,42 +422,43 @@ class Harness(unittest.TestCase):
             self.assertEqual(vm['state'], 'ready' if fails else 'archived')
         self.assertEqual(self.notices, ['Boat no acreditó la ausencia de credenciales en ' + NAME])
 
-    def test_reporte_cierra_intervalo_solo_con_estado_de_boat(self):
-        self.assertEqual(self.run_cli('estado')[0], 0)
-        self.api.stop_fails = True
-        self.assert_unavailable('api', 'apagar', NAME)
-        self.api.now += 5
-        self.assertEqual(self.run_cli('estado')[0], 0)
-        self.api.sandbox(FAKE_ID, stop={'status': 'failing'})
-        self.api.now = NOW + 120
-        self.assertEqual(self.run_cli('vigilar')[0], 0)
-        self.assertNotIn('apagada', [event['evento'] for event in self.journal()])
-        self.api.now = NOW + 180
-        self.api.sandbox(FAKE_ID, state='archiving')
-        self.assertEqual(self.run_cli('estado')[0], 0)
-        self.api.now = NOW + 240
-        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(output.split('\t')[2:5], ['0.050000', '0.000000', '0.003600'])
-
-    def test_reporte_cuenta_provisioned_antes_de_conceder(self):
+    def test_apagar_reintenta_post_con_pendiente_por_credenciales(self):
         self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields = {'holdsCreatorLogins': True}
+        self.api.stop_fails = True
+        self.assert_unavailable('api', *self.args())
+        pending = self.state / 'vms' / NAME / 'operacion.json'
+        self.assertTrue(pool.read_json(pending)['credenciales'])
 
-        def advance(_):
-            state = pool.read_json(self.api.path)[FAKE_ID]['state']
-            if state == 'provisioning':
-                self.api.sandbox(FAKE_ID, state='provisioned')
-            else:
-                self.assertEqual(state, 'provisioned')
-                self.assertNotIn('concedido', {event['evento'] for event in self.journal()})
-                self.api.now += 60
-                self.api.sandbox(FAKE_ID, state='ready')
+        self.api.stop_fails = False
+        self.api.now += pool.POWER_TIMEOUT + 5
+        self.api.calls.clear()
+        with patch.object(pool.time, 'monotonic', side_effect=[0, 2 * pool.POWER_TIMEOUT]):
+            code, _, stderr = self.run_cli('apagar', NAME)
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(self.writes(), [('POST', '/sandboxes/' + FAKE_ID + '/stop', None)])
+        self.assertEqual(pool.read_json(self.api.path)[FAKE_ID]['state'], 'archived')
+        self.assertFalse(pending.exists())
 
-        with patch.object(self.api, 'sleep', advance):
-            self.get_lease()
+    def test_reporte_respeta_medidor_pausado_tras_stop_rechazado(self):
+        self.assertEqual(self.run_cli('estado')[0], 0)
+        self.api.now += 60
+        self.api.sandbox(FAKE_ID, state='archiving', stop={'status': 'pending'})
+        self.assertEqual(self.run_cli('estado')[0], 0)
+        self.api.sandbox(FAKE_ID, state='ready', stop={'status': 'failing'})
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.api.now += 600
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.api.sandbox(FAKE_ID, state='archived', stoppedAt=pool.stamp(self.api.now))
+        self.assertEqual(self.run_cli('estado')[0], 0)
+
+        self.api.usage[(FAKE_ID, '2026-11-23T00:00:00Z')] = {
+            'seconds': 120, 'dollars': 0.0012, 'running': False,
+        }
         code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(output.split('\t')[2:7], ['0.016667', '0.000000', '0.001200', '1', '1'])
+        self.assertEqual(output.split('\t')[2:5], ['0.016667', '0.000000', '0.001200'])
+        self.assertEqual(len(self.usage_calls()), 1)
 
     def test_registro_ajeno_o_invalido_no_recibe_mutaciones(self):
         self.api.sandbox(FAKE_ID, name='ci-ajena')
@@ -513,6 +531,21 @@ class Harness(unittest.TestCase):
         self.assertEqual(worker.returncode, 75, stderr)
         self.assertFalse(stdout)
         self.assertTrue(stderr.startswith('boat-pool: sin_vm: '), stderr)
+
+    def test_turno_en_fila_encuentra_otra_vm_que_prepare_deja_apta(self):
+        other = 'vm-recién-preparada'
+        self.add_vm(other, fake_id('kmnp2345'), apt=False)
+        first = self.get_lease('prep-primera', 'preparar', '--vm', NAME)
+        second = self.get_lease('prep-segunda', 'preparar', '--vm', other)
+        suite = self.start_worker(*self.args('suite-en-fila', 'contract', '--esperar', '5'))
+        self.queue('suite-en-fila')
+        for name, apt, token in ((other, True, second), (NAME, False, first)):
+            path = self.state / 'vms' / name / 'registro.json'
+            record = pool.read_json(path)
+            record.update(apta=apt, cpu_robada_pct=1 if apt else 9)
+            pool.atomic_json(path, record)
+            self.assertEqual(self.run_cli('soltar', token)[0], 0)
+        self.assertEqual(json.loads(self.result(suite, 0))['vm'], other)
 
     def test_pedir_sin_espera_tolera_lock_breve(self):
         with contextlib.ExitStack() as locks:
@@ -631,23 +664,117 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.run_cli('vigilar')[0], 0)
         self.assertIn('No se pudo comprobar el vencimiento', (self.state / 'avisos.log').read_text())
 
-    def test_reporte_recorta_en_medianoche_y_deduplica_corridas(self):
-        start = NOW - 12 * 3600
-        path = self.state / 'vms' / NAME / 'eventos.jsonl'
-        for event, when, data in (
-            ('encendida', start - 3600, {}),
-            ('arranque', start, {}),
-            ('concedido', start + 1800, {'repo': REPO, 'corrida': 'a'}),
-            ('concedido', start + 3600, {'repo': REPO, 'corrida': 'a'}),
-            ('apagada', start + 7200, {}),
-        ):
-            pool.append_event(path, {'evento': event, 'en': pool.stamp(when), 'vm': NAME, 'tipo': 'large', **data})
-        day = '2026-11-23'
-        code, output, stderr = self.run_cli('reporte', '--dia', day)
+    def test_reporte_consulta_ventanas_utc_y_todos_los_ids_del_dia(self):
+        day_before = '2026-11-22T00:00:00Z'
+        today = '2026-11-23T00:00:00Z'
+        start = pool.epoch(today)
+        next_id = fake_id('efgh2345')
+        xlarge = fake_id('nprt2345')
+        self.add_vm('vm-grande', xlarge, overrides={'tipo': 'xlarge'}, created=start + 10)
+        record_path = self.state / 'vms' / NAME / 'registro.json'
+        record = pool.read_json(record_path)
+        record['preparada_en'] = pool.stamp(start - 3600)
+        pool.atomic_json(record_path, record)
+        self.api.now = start
+        self.api.sandbox(FAKE_ID, state='archived')
+        lease = self.get_lease('misma')
+        self.assertEqual(self.run_cli('soltar', lease)[0], 0)
+        self.get_lease('misma')
+
+        self.api.now = NOW
+        record.update(id=next_id, preparada_en=pool.stamp(start + 3600))
+        pool.atomic_json(record_path, record)
+        self.api.sandbox(next_id)
+        self.api.usage = {
+            (FAKE_ID, day_before): {'seconds': 7200, 'dollars': 0.072},
+            (FAKE_ID, today): {'seconds': 7200, 'dollars': 0.072},
+            (next_id, today): {'seconds': 14400, 'dollars': 0.144},
+            (xlarge, today): {'sandboxType': 'xlarge', 'billingMultiplier': 50 / 9,
+                              'seconds': 20000, 'dollars': 0.20},
+        }
+        self.api.calls.clear()
+        code, output, stderr = self.run_cli('reporte')
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(output, day + '\t0.000000\t2.000000\t0.000000\t0.144000\t1\t1\t0.000000\t0.000000\n')
-        self.assertEqual(self.run_cli('reporte')[1].splitlines()[0],
-                         '2026-11-22\t0.000000\t1.000000\t0.000000\t0.072000\t0\t0\t0.000000\t0.000000')
+        self.assertFalse(stderr)
+        self.assertEqual([row.split('\t') for row in output.splitlines()], [
+            ['2026-11-22', '0.000000', '1.000000', '0.000000', '0.072000', '0', '0', '0.000000', '0.000000'],
+            ['2026-11-23', '0.000000', '3.000000', '1.000000', '0.416000', '1', '1', '0.000000', '0.000000'],
+        ])
+        calls = [(urlsplit(route).path.split('/')[2], parse_qs(urlsplit(route).query))
+                 for route in self.usage_calls()]
+        self.assertCountEqual(calls, [
+            (FAKE_ID, {'since': [day_before], 'until': [today]}),
+            *((identifier, {'since': [today], 'until': [pool.stamp(NOW)]})
+              for identifier in (FAKE_ID, next_id, xlarge)),
+        ])
+        self.assertEqual([event['id'] for event in self.journal() if event['evento'] == 'registro'],
+                         [FAKE_ID, next_id])
+
+    def test_reporte_marca_pool_na_si_un_id_historico_ya_no_existe(self):
+        self.get_lease()
+        self.api.now += 300
+        next_id = fake_id('efgh2345')
+        path = self.state / 'vms' / NAME / 'registro.json'
+        record = pool.read_json(path)
+        record.update(id=next_id, preparada_en=pool.stamp(self.api.now))
+        pool.atomic_json(path, record)
+        self.api.sandbox(next_id)
+        sandboxes = pool.read_json(self.api.path)
+        del sandboxes[FAKE_ID]
+        pool.atomic_json(self.api.path, sandboxes)
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+        self.assertEqual(code, 0)
+        self.assertEqual(output.split()[1:], ['NA', 'NA', 'NA', 'NA', '0', '1', '0.000000', '0.000000'])
+        self.assertIn(f'{NAME}: Boat devolvió HTTP 404', stderr)
+        self.assertCountEqual([urlsplit(route).path for route in self.usage_calls()],
+                              [f'/sandboxes/{identifier}/usage' for identifier in (FAKE_ID, next_id)])
+        self.api.now += 86400
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-24')
+        self.assertEqual(code, 0, stderr)
+        self.assertFalse(stderr)
+        self.assertEqual(output.split()[1:5], ['0.000000'] * 4)
+
+    def test_reporte_marca_pool_na_si_uso_invalido(self):
+        self.api.now += 300
+        for fields in ({'billingMultiplier': 0}, {'seconds': -1}, {'sandboxId': None},
+                       {'dollars': '0'}, {'until': '2026-11-23T00:00:00Z'}):
+            with self.subTest(fields=fields):
+                self.api.usage[(FAKE_ID, '2026-11-23T00:00:00Z')] = fields
+                code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+                self.assertEqual(code, 0)
+                self.assertEqual(output.split()[1:5], ['NA'] * 4)
+                self.assertIn('respuesta de uso inválida', stderr)
+
+    def test_reporte_no_consulta_id_reservado_ni_id_de_diario_invalido(self):
+        self.get_lease()
+        self.api.now += 300
+        self.config['prohibidos'] = [FAKE_ID]
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+        self.assertEqual(code, 0)
+        self.assertEqual(output.split()[1:5], ['NA'] * 4)
+        self.assertIn('ID de VM reservado', stderr)
+        self.assertFalse(self.usage_calls())
+
+        self.config['prohibidos'] = []
+        journal = self.state / 'vms' / NAME / 'eventos.jsonl'
+        pool.append_event(journal, {'evento': 'registro', 'en': pool.stamp(NOW - 60), 'id': '../invalido'})
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+        self.assertEqual(code, 0)
+        self.assertEqual(output.split()[1:5], ['NA'] * 4)
+        self.assertIn('ID inválido', stderr)
+        self.assertEqual([urlsplit(route).path for route in self.usage_calls()],
+                         [f'/sandboxes/{FAKE_ID}/usage'])
+
+    def test_reporte_conserva_corridas_del_diario_anterior_sin_inventar_costo(self):
+        year_month_day = '2026-11-22'
+        journal = self.state / 'vms' / NAME / 'eventos.jsonl'
+        pool.append_event(journal, {'evento': 'concedido', 'en': year_month_day + 'T12:00:00Z',
+                                    'repo': REPO, 'corrida': 'antigua'})
+        code, output, stderr = self.run_cli('reporte', '--dia', year_month_day)
+        self.assertEqual(code, 0)
+        self.assertEqual(output.split()[1:7], ['NA', 'NA', 'NA', 'NA', '0', '1'])
+        self.assertIn('diario histórico sin ID de Boat', stderr)
+        self.assertFalse(self.usage_calls())
 
     def test_reporte_suma_la_org_paginada_con_reservadas_y_borradas(self):
         other = fake_id('kmnp2345')
@@ -663,7 +790,7 @@ class Harness(unittest.TestCase):
         self.assertFalse(stderr)
         self.assertEqual([row.split('\t')[7:] for row in output.splitlines()],
                          [['4.000000', '0.144000']] * 2)
-        self.assertEqual(self.api.calls, [
+        self.assertEqual([call for call in self.api.calls if '/usage?' not in call[1]], [
             ('GET', '/sandboxes?limit=200&include=cost%2CdeletedCost', None),
             ('GET', '/sandboxes?limit=200&include=cost%2CdeletedCost&cursor=1', None),
         ])
