@@ -30,12 +30,17 @@ def fake_id(suffix):
 
 FAKE_ID = fake_id('abcd2345')
 NOW = datetime(2026, 11, 23, 12, tzinfo=timezone.utc).timestamp()
+MONTH = '2026-11-01T00:00:00Z'
 MOCK_KEY = 'boat_demo_local'
 LIMITS = {
     'starts': {'day': {'remaining': 100}},
     'planIncluded': {'vmHoursRemaining': 48},
     'wallet': {'balanceDollars': 10},
 }
+
+
+def monthly_cost(seconds, dollars):
+    return {'since': MONTH, 'seconds': seconds, 'dollars': dollars}
 
 
 class Double:
@@ -50,15 +55,15 @@ class Double:
         self.sleeps = 0
         self.resume_fields = {'holdsCreatorLogins': False}
         self.page_size = 200
-        self.usage = {}
-        self.deleted = {'since': '2026-11-01T00:00:00Z', 'seconds': 0}
+        self.deleted = monthly_cost(0, 0)
 
     def factory(self, org, service):
         return Boat(org, service, transport=self.transport, key_reader=lambda _: MOCK_KEY)
 
     def sandbox(self, identifier, **fields):
         vms = pool.read_json(self.path) if self.path.exists() else {}
-        vms.setdefault(identifier, {'id': identifier, 'name': NAME, 'state': 'ready'})
+        vms.setdefault(identifier, {'id': identifier, 'name': NAME, 'state': 'ready',
+                                    'cost': monthly_cost(0, 0)})
         vms[identifier].update(fields)
         pool.atomic_json(self.path, vms)
 
@@ -88,9 +93,6 @@ class Double:
         vm = vms[identifier]
         if method == 'GET' and not operation:
             return {'sandbox': vm}
-        if method == 'GET' and operation == ['usage']:
-            seconds, dollars = self.usage.get((identifier, query['since'][0]), (0, 0))
-            return {'sandboxId': identifier, 'seconds': seconds, 'dollars': dollars}
         if method == 'PATCH' and not operation:
             if self.extend_fails:
                 raise BoatError(MOCK_KEY)
@@ -385,6 +387,42 @@ class Harness(unittest.TestCase):
         self.assertEqual(pool.read_json(self.api.path)[FAKE_ID]['state'], 'archived')
         self.assertNotIn('concedido', {event['evento'] for event in self.journal()})
 
+    def test_vigilar_reintenta_apagado_inseguro_sin_renovar(self):
+        self.config['vms'][0]['inactividad_min'] = None
+        deadline = pool.stamp(NOW + 3600)
+        self.api.sandbox(FAKE_ID, state='archived', archiveAfter=deadline)
+        self.api.resume_fields = {}
+        self.api.stop_fails = True
+        self.assert_unavailable('api', *self.args())
+        for fails in (True, False):
+            self.api.stop_fails = fails
+            self.api.calls.clear()
+            self.api.now += 300
+            self.assertEqual(self.run_cli('vigilar')[0], 0)
+            self.assertEqual(self.writes(), [('POST', '/sandboxes/' + FAKE_ID + '/stop', None)])
+            vm = pool.read_json(self.api.path)[FAKE_ID]
+            self.assertEqual(vm['archiveAfter'], deadline)
+            self.assertEqual(vm['state'], 'ready' if fails else 'archived')
+        self.assertEqual(self.notices, ['Boat no acreditó la ausencia de credenciales en ' + NAME])
+
+    def test_reporte_cierra_intervalo_solo_con_estado_de_boat(self):
+        self.assertEqual(self.run_cli('estado')[0], 0)
+        self.api.stop_fails = True
+        self.assert_unavailable('api', 'apagar', NAME)
+        self.api.now += 5
+        self.assertEqual(self.run_cli('estado')[0], 0)
+        self.api.sandbox(FAKE_ID, stop={'status': 'failing'})
+        self.api.now = NOW + 120
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertNotIn('apagada', [event['evento'] for event in self.journal()])
+        self.api.now = NOW + 180
+        self.api.sandbox(FAKE_ID, state='archiving')
+        self.assertEqual(self.run_cli('estado')[0], 0)
+        self.api.now = NOW + 240
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(output.split('\t')[2:5], ['0.050000', '0.000000', '0.003600'])
+
     def test_reporte_cuenta_provisioned_antes_de_conceder(self):
         self.api.sandbox(FAKE_ID, state='archived')
 
@@ -461,6 +499,20 @@ class Harness(unittest.TestCase):
         pool.atomic_json(path, record)
         self.assertEqual(self.run_cli('soltar', token)[0], 0)
         self.assertEqual(json.loads(self.result(worker, 0))['vm'], NAME)
+
+    def test_turno_en_fila_sale_sin_vm_si_prepare_la_deja_no_apta(self):
+        token = self.get_lease('prep', 'preparar', '--vm', NAME)
+        worker = self.start_worker(*self.args('en-fila', 'contract', '--esperar', '3'))
+        self.queue('en-fila')
+        path = self.state / 'vms' / NAME / 'registro.json'
+        record = pool.read_json(path)
+        record.update(apta=False, cpu_robada_pct=9)
+        pool.atomic_json(path, record)
+        self.assertEqual(self.run_cli('soltar', token)[0], 0)
+        stdout, stderr = worker.communicate(timeout=8)
+        self.assertEqual(worker.returncode, 75, stderr)
+        self.assertFalse(stdout)
+        self.assertTrue(stderr.startswith('boat-pool: sin_vm: '), stderr)
 
     def test_pedir_sin_espera_tolera_lock_breve(self):
         with contextlib.ExitStack() as locks:
@@ -597,42 +649,40 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.run_cli('reporte')[1].splitlines()[0],
                          '2026-11-22\t0.000000\t1.000000\t0.000000\t0.072000\t0\t0\t0.000000\t0.000000')
 
-    def test_reporte_suma_la_org_paginada_sin_eventos_locales(self):
+    def test_reporte_suma_la_org_paginada_con_reservadas_y_borradas(self):
         other = fake_id('kmnp2345')
-        self.api.sandbox(other, name='vm-fuera-del-pool')
+        self.api.sandbox(FAKE_ID, cost=monthly_cost(3600, 0.036))
+        self.api.sandbox(other, name='ci-ejemplo', cost=monthly_cost(7200, 0.072))
+        self.api.deleted = monthly_cost(3600, 0.036)
         self.api.page_size = 1
-        self.api.usage = {
-            (FAKE_ID, '2026-11-23T00:00:00Z'): (3600, 0.036),
-            (other, '2026-11-23T00:00:00Z'): (7200, 0.072),
-        }
-        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
-        self.assertEqual(code, 0, stderr)
-        self.assertEqual(output.strip().split('\t')[7:], ['3.000000', '0.108000'])
-        self.assertEqual(self.api.calls[1][1], '/sandboxes?limit=200&include=deletedCost&cursor=1')
-        for _, path, _ in self.api.calls[2:]:
-            self.assertEqual(parse_qs(urlsplit(path).query), {
-                'since': ['2026-11-23T00:00:00Z'], 'until': ['2026-11-24T00:00:00Z'],
-            })
-
-    def test_reporte_marca_na_solo_en_el_dia_incompleto(self):
         self.get_lease()
         self.api.now += 86400
-        self.api.usage[(FAKE_ID, '2026-11-23T00:00:00Z')] = (None, 0.036)
+        self.api.calls.clear()
         code, output, stderr = self.run_cli('reporte')
         self.assertEqual(code, 0, stderr)
+        self.assertFalse(stderr)
         self.assertEqual([row.split('\t')[7:] for row in output.splitlines()],
-                         [['NA', 'NA'], ['0.000000', '0.000000']])
-        self.assertIn('reporte 2026-11-23: Boat devolvió consumo diario incompleto', stderr)
-        self.assertNotIn('2026-11-24', stderr)
+                         [['4.000000', '0.144000']] * 2)
+        self.assertEqual(self.api.calls, [
+            ('GET', '/sandboxes?limit=200&include=cost%2CdeletedCost', None),
+            ('GET', '/sandboxes?limit=200&include=cost%2CdeletedCost&cursor=1', None),
+        ])
 
-    def test_reporte_no_consulta_consumo_de_reservadas(self):
-        identifier = fake_id('kmnp2345')
-        self.api.sandbox(identifier, name='ci-ejemplo')
-        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+    def test_reporte_otro_mes_da_na_sin_consultar_a_boat(self):
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-10-31')
         self.assertEqual(code, 0, stderr)
         self.assertTrue(output.endswith('\tNA\tNA\n'))
-        self.assertIn('reservadas', stderr)
-        self.assertFalse(any(identifier in path for _, path, _ in self.api.calls))
+        self.assertIn('reporte 2026-10-31: Boat sólo informa el mes UTC en curso', stderr)
+        self.assertFalse(self.api.calls)
+
+    def test_reporte_da_na_si_boat_no_acredita_el_total_del_mes(self):
+        for cost in (monthly_cost(None, 0.036), {**monthly_cost(3600, 0.036), 'since': '2026-10-01T00:00:00Z'}):
+            with self.subTest(cost=cost):
+                self.api.sandbox(FAKE_ID, cost=cost)
+                code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+                self.assertEqual(code, 0, stderr)
+                self.assertTrue(output.endswith('\tNA\tNA\n'))
+                self.assertIn('reporte 2026-11-23: Boat no confirmó el consumo del mes UTC en curso', stderr)
 
     def test_reporte_ignora_archivos_en_vms(self):
         (self.state / 'vms' / '.DS_Store').touch()

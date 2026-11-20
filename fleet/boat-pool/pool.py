@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import errno
 import fcntl
+from itertools import chain
 import json
 import math
 import os
@@ -434,10 +435,18 @@ class Pool:
             self.warn_vm(vm, 'error', 'Boat informa un error en ' + vm.name)
         else:
             remove(vm.path / 'aviso-error.json')
+        pending = self.power_operation(vm)
+        self.record_power(vm, state, info.get('stoppedAt'), pending)
+        if pending and pending['accion'] == 'stop':
+            if state in STOPPED:
+                remove(vm.path / 'operacion.json')
+            elif state in READY and (pending.get('credenciales')
+                                     or self.now() - epoch(pending['desde']) < POWER_TIMEOUT):
+                return 'archiving'
         stop = info.get('stop')
         if state in READY and isinstance(stop, dict) and stop.get('status') in ('pending', 'failing'):
-            state = 'archiving'
-        return self.record_power(vm, state, info.get('stoppedAt'))
+            return 'archiving'
+        return state
 
     def power_operation(self, vm):
         try:
@@ -445,15 +454,11 @@ class Pool:
         except FileNotFoundError:
             return None
 
-    def record_power(self, vm, state, stopped_at):
-        pending = self.power_operation(vm)
+    def record_power(self, vm, state, stopped_at, pending):
         history = events(vm.journal)
         last = next((item for item in reversed(history)
                      if item['evento'] in ('encendida', 'apagada')), None)
         now = self.now()
-        if (pending and pending['accion'] == 'stop' and state in READY
-                and now - epoch(pending['desde']) < POWER_TIMEOUT):
-            state = 'archiving'
         if pending and pending['accion'] == 'resume' and state in READY | STARTING:
             self.record_start(vm, pending, history)
         if state in BILLABLE and (last is None or last['evento'] == 'apagada'):
@@ -465,9 +470,6 @@ class Pool:
             except (TypeError, ValueError, OverflowError):
                 stopped = now
             append_event(vm.journal, vm.event('apagada', stopped))
-        if pending and pending['accion'] == 'stop' and state in STOPPED:
-            remove(vm.path / 'operacion.json')
-        return state
 
     def record_start(self, vm, operation, history):
         if not any(item.get('operacion') == operation['id'] for item in history):
@@ -480,6 +482,8 @@ class Pool:
             raise BoatError('reanudación anterior sin confirmar')
         vm.validate(self.now())
         operation = {'id': uuid4().hex, 'accion': action, 'desde': stamp(self.now())}
+        if action == 'stop' and previous and (previous['accion'] == 'resume' or previous.get('credenciales')):
+            operation['credenciales'] = True
         atomic_json(vm.path / 'operacion.json', operation)
         self.boat.power(vm, action)
         if action == 'resume':
@@ -497,10 +501,13 @@ class Pool:
             self.sleep(1)
 
     def start(self, vm, state):
+        pending = self.power_operation(vm)
+        if pending and pending.get('credenciales'):
+            self.stop_unverified(vm, self.sandbox_info(vm)['state'], wait=True)
+            raise BoatError('Boat no acreditó la ausencia de credenciales al reanudar')
         if state in READY:
-            pending = self.power_operation(vm)
             if pending and pending['accion'] == 'resume':
-                self.check_resumed(vm, self.sandbox_info(vm))
+                self.check_resumed(vm, self.sandbox_info(vm), pending, wait=True)
             return
         if state in STOPPING:
             self.wait_power(vm, STOPPED, STOPPING)
@@ -514,39 +521,32 @@ class Pool:
         info = self.wait_power(vm, READY, STARTING | STOPPED)
         pending = self.power_operation(vm)
         if pending and pending['accion'] == 'resume':
-            self.check_resumed(vm, info)
+            self.check_resumed(vm, info, pending, wait=True)
 
-    def check_resumed(self, vm, info):
+    def check_resumed(self, vm, info, pending, *, wait):
         if info.get('state') in READY and info.get('holdsCreatorLogins') is False:
             remove(vm.path / 'operacion.json')
             remove(vm.path / 'aviso-credenciales.json')
             return
-        try:
-            self.stop(vm, info['state'], wait=True)
-        finally:
-            self.warn_vm(vm, 'credenciales', 'Boat no acreditó la ausencia de credenciales en ' + vm.name)
+        atomic_json(vm.path / 'operacion.json', {**pending, 'accion': 'stop', 'credenciales': True})
+        self.stop_unverified(vm, info['state'], wait=wait)
         raise BoatError('Boat no acreditó la ausencia de credenciales al reanudar')
+
+    def stop_unverified(self, vm, state, *, wait):
+        self.warn_vm(vm, 'credenciales', 'Boat no acreditó la ausencia de credenciales en ' + vm.name)
+        self.stop(vm, state, wait=wait)
 
     def stop(self, vm, state, *, wait):
         if state in STOPPED:
             return
-        pending = self.power_operation(vm)
-        unverified = pending and pending['accion'] == 'resume'
         if state in READY:
-            if unverified:
-                vm.validate(self.now())
-                self.boat.power(vm, 'stop')
-            else:
-                self.send_power(vm, 'stop')
+            self.send_power(vm, 'stop')
         elif state not in STOPPING:
             raise BoatError('VM aún no se puede detener')
         if wait:
             self.wait_power(vm, STOPPED, READY | STOPPING)
-            state = 'archived'
         else:
-            state = self.observe(vm)
-        if unverified and state in STOPPED:
-            remove(vm.path / 'operacion.json')
+            self.observe(vm)
 
     def turns(self):
         waiting = []
@@ -560,6 +560,7 @@ class Pool:
 
     def claim(self, candidates, turn, path, locks):
         contended = False
+        eligible = False
         with lock(self.state / 'espera.lock'):
             queue = self.turns()
             for vm in candidates:
@@ -586,15 +587,16 @@ class Pool:
                 if not vm.accepts(turn):
                     locks.close()
                     continue
+                eligible = True
                 leases = vm.leases(self.now())
                 first = next((item for item in queue if vm.accepts(item) and (
                     item['clase'] == 'preparar' or vm.fits(leases, item['clase'])
                 )), None)
                 if first is not None and first['turno'] == turn['turno'] and vm.fits(leases, turn['clase']):
                     remove(path)
-                    return vm, leases, contended
+                    return vm, leases, contended, eligible
                 locks.close()
-        return None, [], contended
+        return None, [], contended, eligible
 
     def ask(self, args):
         if args.vm in self.vms and self.vms[args.vm].repo != args.repo:
@@ -614,7 +616,7 @@ class Pool:
         try:
             while candidates:
                 with ExitStack() as locks:
-                    vm, leases, contended = self.claim(candidates, turn, path, locks)
+                    vm, leases, contended, eligible = self.claim(candidates, turn, path, locks)
                     if vm is not None:
                         try:
                             self.check_identity(vm)
@@ -640,6 +642,8 @@ class Pool:
                         with lock(self.state / 'espera.lock'):
                             atomic_json(path, turn)
                     continue
+                if not (contended or eligible):
+                    raise Unavailable('sin_vm', 'sin VM apta o registrada')
                 attempt_until = started + LOCK_WAIT if contended and args.esperar == 0 else deadline
                 remaining = attempt_until - time.monotonic()
                 if remaining <= 0:
@@ -752,6 +756,12 @@ class Pool:
             self.check_identity(vm)
             info = self.sandbox_info(vm)
             state = self.observe(vm, info)
+            pending = self.power_operation(vm)
+            if pending and pending.get('credenciales'):
+                self.stop_unverified(vm, info['state'], wait=False)
+                return
+            if pending and pending['accion'] == 'resume' and info['state'] in READY:
+                self.check_resumed(vm, info, pending, wait=False)
             if state in STOPPED and info.get('stoppedAt') is not None:
                 if self.now() - epoch(info['stoppedAt']) >= STOPPED_NOTICE:
                     notices['disco:' + vm.name] = 'Retención de disco cerca del límite para ' + vm.name
@@ -819,35 +829,18 @@ class Pool:
         if notices != previous:
             atomic_json(path, notices)
 
-    def daily_org_cost(self, inventory, deleted, start, end):
-        try:
-            deleted_since = epoch(deleted['since'])
-            deleted_seconds = number(deleted['seconds'], 0)
-        except (KeyError, TypeError, ValueError, OverflowError):
-            raise BoatError('Boat no confirmó el alcance del inventario de la organización') from None
-        if end > deleted_since and deleted_seconds:
-            raise BoatError('Boat sólo desglosa por mes el consumo de las VMs borradas')
+    def monthly_org_cost(self, month):
+        inventory, deleted = self.boat.org_inventory()
+        start = datetime.combine(month, datetime.min.time(), tzinfo=timezone.utc).timestamp()
         seconds = dollars = 0
-        for sandbox in inventory:
-            try:
-                if epoch(sandbox.get('createdAt')) >= end:
-                    continue
-            except (TypeError, ValueError, OverflowError):
-                pass
-            identifier = sandbox['id']
-            name = sandbox.get('name')
-            if (not isinstance(name, str) or reserved_name(name)
-                    or self.now() < self.prohibited.get(identifier, -math.inf)):
-                raise BoatError('el inventario incluye VMs reservadas o sin nombre verificable')
-            try:
-                check_id(identifier)
-                usage = self.boat.sandbox_usage(identifier, stamp(start), stamp(end))
-                if usage.get('sandboxId') != identifier:
-                    raise ValueError('el consumo corresponde a otra VM')
-                seconds += number(usage['seconds'], 0)
-                dollars += number(usage['dollars'], 0)
-            except (KeyError, TypeError, ValueError, OverflowError):
-                raise BoatError('Boat devolvió consumo diario incompleto') from None
+        try:
+            for cost in chain((deleted,), (sandbox.get('cost') for sandbox in inventory)):
+                if epoch(cost['since']) != start:
+                    raise ValueError('mes distinto')
+                seconds += integer(cost['seconds'], 0)
+                dollars += number(cost['dollars'], 0)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise BoatError('Boat no confirmó el consumo del mes UTC en curso') from None
         return f'{seconds / 3600:.6f}', f'{dollars:.6f}'
 
     def report(self, day):
@@ -878,11 +871,14 @@ class Pool:
                 intervals.append((tipo, start, when))
         intervals.extend((tipo, start, now) for tipo, start in powered.values())
 
-        inventory_error = None
-        try:
-            inventory, deleted = self.boat.org_inventory()
-        except BoatError as error:
-            inventory_error = error
+        month = today.replace(day=1)
+        monthly_cost = ('NA', 'NA')
+        monthly_error = None
+        if day is None or day.replace(day=1) == month:
+            try:
+                monthly_cost = self.monthly_org_cost(month)
+            except BoatError as error:
+                monthly_error = str(error)
         writer = csv.writer(sys.stdout, delimiter='\t', lineterminator='\n')
         for day in days:
             start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).timestamp()
@@ -894,15 +890,13 @@ class Pool:
             daily = [item for item in history if start <= epoch(item['en']) < end]
             starts = sum(item['evento'] == 'arranque' for item in daily)
             runs = {(item['repo'], item['corrida']) for item in daily if item['evento'] == 'concedido'}
-            try:
-                if inventory_error is not None:
-                    raise inventory_error
-                org_hours, org_cost = self.daily_org_cost(inventory, deleted, start, end)
-            except BoatError as error:
+            org_cost, error = monthly_cost, monthly_error
+            if day.replace(day=1) != month:
+                org_cost, error = ('NA', 'NA'), 'Boat sólo informa el mes UTC en curso'
+            if error is not None:
                 print(f'boat-pool: reporte {day}: {error}', file=sys.stderr)
-                org_hours, org_cost = 'NA', 'NA'
             writer.writerow([day.isoformat(), *(f'{hours[tipo]:.6f}' for tipo in RATES),
-                             f'{cost:.6f}', starts, len(runs), org_hours, org_cost])
+                             f'{cost:.6f}', starts, len(runs), *org_cost])
 
 
 class Usage(argparse.ArgumentParser):

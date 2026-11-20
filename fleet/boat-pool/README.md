@@ -53,11 +53,12 @@ El LaunchAgent usa los valores del entorno de launchd.
   columnas son fecha, horas `default`, `large` y `xlarge`, USD estimados,
   arranques del pool, corridas distintas concedidas, horas facturables
   (ponderadas por tamaño) y USD de la organización. Las últimas dos
-  columnas suman el consumo diario del inventario de Boat. Si falta
-  consumo para ese día, muestran `NA` y el motivo sale en stderr. Boat
-  informa el consumo de VMs borradas como un total del mes corriente.
-  Las horas del pool se estiman desde el primer estado facturable
-  observado o, si la VM ya estaba encendida, desde su fecha de preparación.
+  columnas repiten el acumulado del mes UTC en curso hasta el momento de
+  generar el reporte. Incluyen las VMs reservadas y borradas. Para fechas
+  de otro mes o si Boat no confirma el total, muestran `NA` y el motivo
+  sale en stderr. Las horas del pool se estiman desde el primer estado
+  facturable observado o, si la VM ya estaba encendida, desde su fecha
+  de preparación.
 
 Cada lanzador escribe de forma atómica `vms/<nombre>/registro.json` en el
 directorio de estado al acabar de preparar. El registro v1 contiene
@@ -67,8 +68,11 @@ ID devueltos por Boat. Cada lanzador decide cómo tratar una revisión del
 runner distinta de la que necesita.
 
 `vigilar` amplía a siete días el TTL de Boat si `archiveAfter` queda a menos
-de 48 horas. Si una VM lleva 12 días detenida según `stoppedAt`, el vigía
-avisa que su disco se acerca al límite de retención de 14 días.
+de 48 horas. Si Boat no acreditó que la reanudación dejó la VM sin las
+credenciales de su creador, `vigilar` reintenta el apagado pendiente y
+omite la renovación del TTL hasta que Boat confirme el apagado. Si una VM
+lleva 12 días detenida según `stoppedAt`, el vigía avisa que su disco se
+acerca al límite de retención de 14 días.
 
 Si la llave tiene un alcance que impide listar llaves, `vigilar` registra
 que no pudo comprobar su vencimiento. Los avisos se escriben en `avisos.log`

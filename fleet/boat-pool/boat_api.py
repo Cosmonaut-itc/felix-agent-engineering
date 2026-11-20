@@ -106,7 +106,7 @@ class Boat:
         return matches[0]['expiresAt']
 
     def org_inventory(self):
-        query = {'limit': 200, 'include': 'deletedCost'}
+        query = {'limit': 200, 'include': 'cost,deletedCost'}
         sandboxes = {}
         cursors = set()
         deleted = None
@@ -129,7 +129,3 @@ class Boat:
                 raise BoatError('paginación del inventario incompleta')
             cursors.add(cursor)
             query['cursor'] = cursor
-
-    def sandbox_usage(self, identifier, start, end):
-        query = urlencode({'since': start, 'until': end})
-        return self._request('GET', f'/sandboxes/{identifier}/usage?{query}')
