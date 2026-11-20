@@ -80,14 +80,13 @@ class Boat:
 
     def power(self, vm, action):
         if action == 'resume':
-            return self._request('POST', '/sandboxes/' + vm.id + '/resume')
+            return self._request('POST', '/sandboxes/' + vm.id + '/resume',
+                                 {'noEnv': True, 'type': vm.tipo})
         if action == 'stop':
             return self._request('POST', '/sandboxes/' + vm.id + '/stop')
         raise ValueError('acción de energía inválida')
 
-    def renew_lifetime(self, vm, seconds, *, stopped_disk):
-        if stopped_disk:
-            raise BoatError('Boat no documenta cómo extender la retención de discos detenidos')
+    def renew_lifetime(self, vm, seconds):
         return self._request('PATCH', '/sandboxes/' + vm.id, {'ttlSeconds': seconds}).get('sandbox')
 
     def key_expiration(self):
@@ -106,6 +105,31 @@ class Boat:
             raise BoatError('vencimiento de llave sin comprobar')
         return matches[0]['expiresAt']
 
-    def daily_org_cost(self, day):
-        # La API pública no publica el total diario de la organización.
-        return None
+    def org_inventory(self):
+        query = {'limit': 200, 'include': 'deletedCost'}
+        sandboxes = {}
+        cursors = set()
+        deleted = None
+        while True:
+            response = self._request('GET', '/sandboxes?' + urlencode(query))
+            batch, page = response.get('sandboxes'), response.get('pageInfo')
+            if not isinstance(batch, list) or not isinstance(page, dict) or type(page.get('hasMore')) is not bool:
+                raise BoatError('inventario de la organización incompleto')
+            if not cursors:
+                deleted = response.get('deletedCost')
+            for sandbox in batch:
+                identifier = sandbox.get('id') if isinstance(sandbox, dict) else None
+                if not isinstance(identifier, str):
+                    raise BoatError('inventario de la organización inválido')
+                sandboxes[identifier] = sandbox
+            if not page['hasMore']:
+                return sandboxes.values(), deleted
+            cursor = page.get('nextCursor')
+            if not isinstance(cursor, str) or not cursor or cursor in cursors:
+                raise BoatError('paginación del inventario incompleta')
+            cursors.add(cursor)
+            query['cursor'] = cursor
+
+    def sandbox_usage(self, identifier, start, end):
+        query = urlencode({'since': start, 'until': end})
+        return self._request('GET', f'/sandboxes/{identifier}/usage?{query}')

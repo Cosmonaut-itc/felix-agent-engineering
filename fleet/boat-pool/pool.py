@@ -8,7 +8,6 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 import errno
 import fcntl
-import hashlib
 import json
 import math
 import os
@@ -27,17 +26,12 @@ from boat_api import Boat, BoatError
 RATES = {'default': 0.036, 'large': 0.072, 'xlarge': 0.20}
 PRIORITY = {'preparar': 0, 'tren': 1, 'suite': 2, 'otra': 3}
 READY = {'ready', 'idle', 'running'}
+BILLABLE = READY | {'provisioned', 'cloning'}
 STOPPED = {'archived', 'stopped'}
 STARTING = {'init', 'provisioning', 'provisioned', 'cloning', 'resuming'}
 STOPPING = {'archiving', 'stopping'}
 VM_ID = re.compile(r'bx_[a-z0-9]{8}')
 TOKEN = re.compile(r'[a-f0-9]{32}')
-FORBIDDEN_IDS = {
-    '6db1388f2c8702233092e9984155c756efa91805fbb2a1161aae02ae72ab2d11',
-    '694be487037963332cd9dfd7b72a0b599982a60bfaacda73a460d18714cc8803',
-}
-TEMPORARY_ID = 'cb3aa675ef28f3f40c7def89e1e6a22a23a894c12bfa583de4842aff1515f3ce'
-TEMPORARY_UNTIL = datetime(2026, 11, 21, 12, tzinfo=timezone.utc).timestamp()
 GATES = {
     'reserva_arranques': ('starts', 'day', 'remaining'),
     'horas_plan': ('planIncluded', 'vmHoursRemaining'),
@@ -46,11 +40,19 @@ GATES = {
 POWER_TIMEOUT = 90
 RENEW_BEFORE = 48 * 3600
 RENEW_FOR = 7 * 86400
-STOPPED_RETENTION = 14 * 86400
+STOPPED_NOTICE = 12 * 86400
+LOCK_WAIT = 10
 
 
 class Unavailable(RuntimeError):
-    pass
+    def __init__(self, cause, detail):
+        super().__init__(detail)
+        self.cause = cause
+
+
+def print_unavailable(error):
+    cause = error.cause if isinstance(error, Unavailable) else 'api'
+    print(f'boat-pool: {cause}: {error}', file=sys.stderr)
 
 
 class InvalidUse(ValueError):
@@ -92,19 +94,31 @@ def label(value):
     return value
 
 
+def reserved_name(name):
+    return name.startswith('ci-') or name == 'hasito-sen' or VM_ID.fullmatch(name)
+
+
 def safe_name(name):
-    if name.startswith('ci-') or name == 'hasito-sen' or VM_ID.fullmatch(name):
-        raise Unavailable('nombre de VM reservado')
+    if reserved_name(name):
+        raise Unavailable('sin_vm', 'nombre de VM reservado')
     if name in ('.', '..') or '/' in name or not name.isprintable() or not name.strip():
         raise ValueError('nombre de VM inválido')
 
 
-def safe_id(identifier, now):
+def check_id(identifier):
     if not isinstance(identifier, str) or not VM_ID.fullmatch(identifier):
         raise ValueError('ID de VM inválido')
-    digest = hashlib.sha256(identifier.encode('ascii')).hexdigest()
-    if digest in FORBIDDEN_IDS or (digest == TEMPORARY_ID and now < TEMPORARY_UNTIL):
-        raise Unavailable('ID de VM reservado')
+
+
+def read_prohibited(entries):
+    if not isinstance(entries, list):
+        raise ValueError('prohibidos debe ser una lista')
+    prohibited = {}
+    for entry in entries:
+        identifier, until = (entry, math.inf) if isinstance(entry, str) else (entry['id'], epoch(entry['hasta']))
+        check_id(identifier)
+        prohibited[identifier] = max(until, prohibited.get(identifier, -math.inf))
+    return prohibited
 
 
 def sync_dir(path):
@@ -199,6 +213,7 @@ class VM:
     classes: dict
     idle: float | None
     path: Path
+    prohibited: dict
     id: str = ''
     prepared: float = 0
     apt: bool = False
@@ -209,21 +224,24 @@ class VM:
 
     def registration(self, now):
         record = read_json(self.path / 'registro.json')
-        safe_id(record['id'], now)
+        identifier = record['id']
+        check_id(identifier)
+        if now < self.prohibited.get(identifier, -math.inf):
+            raise Unavailable('sin_vm', 'ID de VM reservado')
         if (record['nombre'], record['repo'], record['tipo']) != (self.name, self.repo, self.tipo):
             raise ValueError('registro no coincide con el pool')
         if type(record['apta']) is not bool:
             raise ValueError('aptitud inválida')
         number(record['cpu_robada_pct'], 0)
-        return record['id'], epoch(record['preparada_en']), record['apta']
+        return identifier, epoch(record['preparada_en']), record['apta']
 
     def validate(self, now):
         try:
             current = self.registration(now)
         except (FileNotFoundError, KeyError, TypeError, ValueError, OverflowError):
-            raise Unavailable('VM sin registro válido') from None
+            raise Unavailable('sin_vm', 'VM sin registro válido') from None
         if current != (self.id, self.prepared, self.apt):
-            raise Unavailable('registro de VM cambió')
+            raise Unavailable('sin_vm', 'registro de VM cambió')
 
     def event(self, kind, when, **fields):
         return {'evento': kind, 'en': stamp(when), 'vm': self.name, 'tipo': self.tipo, **fields}
@@ -314,6 +332,7 @@ class Pool:
         self.sleep = sleep
         self.notify = notify
         self.host = socket.gethostname()
+        self.prohibited = read_prohibited(config['prohibidos'])
         self.state = private_dir(state)
         self.boat = boat_factory(label(config['org']), label(config['llavero']))
         default_idle = number(config['inactividad_min'], 0)
@@ -333,22 +352,24 @@ class Pool:
             idle = data.get('inactividad_min', default_idle)
             idle = None if idle is None else number(idle, 0) * 60
             self.vms[name] = VM(name, label(data['repo']), data['tipo'], places,
-                                classes, idle, state / 'vms' / name)
+                                classes, idle, state / 'vms' / name, self.prohibited)
 
     def candidates(self, *, name=None, repo=None):
         if name is not None:
             safe_name(name)
             if name not in self.vms:
-                raise Unavailable('VM fuera del pool')
+                raise Unavailable('sin_vm', 'VM fuera del pool')
         selected = []
         ids = Counter()
         for vm in self.vms.values():
             wanted = (name is None or name == vm.name) and (repo is None or repo == vm.repo)
             try:
                 vm.id, vm.prepared, vm.apt = vm.registration(self.now())
-            except Unavailable:
-                if wanted:
+            except Unavailable as error:
+                if name == vm.name:
                     raise
+                if wanted:
+                    self.reject(str(error), nombre=vm.name)
                 continue
             except (FileNotFoundError, KeyError, TypeError, ValueError, OverflowError):
                 continue
@@ -386,20 +407,20 @@ class Pool:
         for gate in closed:
             self.reject('puerta cerrada', vm, puerta=gate)
         if closed:
-            raise Unavailable('puerta cerrada: ' + ', '.join(closed))
+            raise Unavailable('puerta', 'puerta cerrada: ' + ', '.join(closed))
 
     def check_identity(self, vm):
         vm.validate(self.now())
         matching = [item for item in self.boat.find(vm.name)
                     if isinstance(item, dict) and item.get('name') == vm.name]
         if len(matching) != 1 or matching[0].get('id') != vm.id:
-            raise Unavailable('VM de Boat no coincide con el registro')
+            raise Unavailable('api', 'VM de Boat no coincide con el registro')
 
     def sandbox_info(self, vm):
         vm.validate(self.now())
         info = self.boat.sandbox(vm)
         if not isinstance(info, dict) or (info.get('id'), info.get('name')) != (vm.id, vm.name):
-            raise Unavailable('VM de Boat no coincide con el registro')
+            raise Unavailable('api', 'VM de Boat no coincide con el registro')
         return info
 
     def observe(self, vm, info=None):
@@ -409,17 +430,23 @@ class Pool:
         states = READY | STOPPED | STARTING | STOPPING | {'error', 'cancelled'}
         if not isinstance(state, str) or state not in states:
             raise BoatError('estado de VM desconocido')
+        if state == 'error':
+            self.warn_vm(vm, 'error', 'Boat informa un error en ' + vm.name)
+        else:
+            remove(vm.path / 'aviso-error.json')
         stop = info.get('stop')
         if state in READY and isinstance(stop, dict) and stop.get('status') in ('pending', 'failing'):
             state = 'archiving'
         return self.record_power(vm, state, info.get('stoppedAt'))
 
-    def record_power(self, vm, state, stopped_at):
-        path = vm.path / 'operacion.json'
+    def power_operation(self, vm):
         try:
-            pending = read_json(path)
+            return read_json(vm.path / 'operacion.json')
         except FileNotFoundError:
-            pending = None
+            return None
+
+    def record_power(self, vm, state, stopped_at):
+        pending = self.power_operation(vm)
         history = events(vm.journal)
         last = next((item for item in reversed(history)
                      if item['evento'] in ('encendida', 'apagada')), None)
@@ -429,20 +456,17 @@ class Pool:
             state = 'archiving'
         if pending and pending['accion'] == 'resume' and state in READY | STARTING:
             self.record_start(vm, pending, history)
-        if state in READY and (last is None or last['evento'] == 'apagada'):
-            since = min(now, vm.prepared) if last is None and pending is None else now
+        if state in BILLABLE and (last is None or last['evento'] == 'apagada'):
+            since = min(now, vm.prepared) if state in READY and last is None and pending is None else now
             append_event(vm.journal, vm.event('encendida', since))
-        if last and last['evento'] == 'encendida' and state in STOPPED | {'error', 'cancelled'}:
+        if last and last['evento'] == 'encendida' and state in STOPPED | STOPPING | {'error', 'cancelled'}:
             try:
                 stopped = max(epoch(last['en']), min(now, epoch(stopped_at)))
             except (TypeError, ValueError, OverflowError):
                 stopped = now
             append_event(vm.journal, vm.event('apagada', stopped))
-        if pending and (
-            (pending['accion'] == 'resume' and state in READY)
-            or (pending['accion'] == 'stop' and state in STOPPED)
-        ):
-            remove(path)
+        if pending and pending['accion'] == 'stop' and state in STOPPED:
+            remove(vm.path / 'operacion.json')
         return state
 
     def record_start(self, vm, operation, history):
@@ -450,16 +474,13 @@ class Pool:
             append_event(vm.journal, vm.event('arranque', epoch(operation['desde']), operacion=operation['id']))
 
     def send_power(self, vm, action):
-        path = vm.path / 'operacion.json'
-        try:
-            previous = read_json(path)
-        except FileNotFoundError:
-            previous = None
-        if previous and previous['accion'] == 'resume' and self.now() - epoch(previous['desde']) < POWER_TIMEOUT:
-            raise Unavailable('reanudación anterior sin confirmar')
+        previous = self.power_operation(vm)
+        if (action == 'resume' and previous and previous['accion'] == 'resume'
+                and self.now() - epoch(previous['desde']) < POWER_TIMEOUT):
+            raise BoatError('reanudación anterior sin confirmar')
         vm.validate(self.now())
         operation = {'id': uuid4().hex, 'accion': action, 'desde': stamp(self.now())}
-        atomic_json(path, operation)
+        atomic_json(vm.path / 'operacion.json', operation)
         self.boat.power(vm, action)
         if action == 'resume':
             self.record_start(vm, operation, events(vm.journal))
@@ -467,38 +488,65 @@ class Pool:
     def wait_power(self, vm, target, pending):
         deadline = time.monotonic() + POWER_TIMEOUT
         while True:
-            state = self.observe(vm)
+            info = self.sandbox_info(vm)
+            state = self.observe(vm, info)
             if state in target:
-                return
+                return info
             if state not in pending or time.monotonic() >= deadline:
-                raise Unavailable('Boat no confirmó el cambio de estado')
+                raise BoatError('Boat no confirmó el cambio de estado')
             self.sleep(1)
 
     def start(self, vm, state):
         if state in READY:
+            pending = self.power_operation(vm)
+            if pending and pending['accion'] == 'resume':
+                self.check_resumed(vm, self.sandbox_info(vm))
             return
         if state in STOPPING:
             self.wait_power(vm, STOPPED, STOPPING)
             state = 'archived'
-        if state in STOPPED or state == 'error':
+        if state in STOPPED:
             with lock(self.state / 'arranques.lock'):
                 self.check_gates(vm)
                 self.send_power(vm, 'resume')
         elif state not in STARTING:
-            raise Unavailable('estado de VM no reanudable')
-        self.wait_power(vm, READY, STARTING | STOPPED)
+            raise BoatError('estado de VM no reanudable')
+        info = self.wait_power(vm, READY, STARTING | STOPPED)
+        pending = self.power_operation(vm)
+        if pending and pending['accion'] == 'resume':
+            self.check_resumed(vm, info)
+
+    def check_resumed(self, vm, info):
+        if info.get('state') in READY and info.get('holdsCreatorLogins') is False:
+            remove(vm.path / 'operacion.json')
+            remove(vm.path / 'aviso-credenciales.json')
+            return
+        try:
+            self.stop(vm, info['state'], wait=True)
+        finally:
+            self.warn_vm(vm, 'credenciales', 'Boat no acreditó la ausencia de credenciales en ' + vm.name)
+        raise BoatError('Boat no acreditó la ausencia de credenciales al reanudar')
 
     def stop(self, vm, state, *, wait):
         if state in STOPPED:
             return
+        pending = self.power_operation(vm)
+        unverified = pending and pending['accion'] == 'resume'
         if state in READY:
-            self.send_power(vm, 'stop')
+            if unverified:
+                vm.validate(self.now())
+                self.boat.power(vm, 'stop')
+            else:
+                self.send_power(vm, 'stop')
         elif state not in STOPPING:
-            raise Unavailable('VM aún no se puede detener')
+            raise BoatError('VM aún no se puede detener')
         if wait:
             self.wait_power(vm, STOPPED, READY | STOPPING)
+            state = 'archived'
         else:
-            self.observe(vm)
+            state = self.observe(vm)
+        if unverified and state in STOPPED:
+            remove(vm.path / 'operacion.json')
 
     def turns(self):
         waiting = []
@@ -511,47 +559,68 @@ class Pool:
         return sorted(waiting, key=lambda item: (PRIORITY[item['prioridad']], item['orden'], item['turno']))
 
     def claim(self, candidates, turn, path, locks):
+        contended = False
         with lock(self.state / 'espera.lock'):
             queue = self.turns()
             for vm in candidates:
                 if not locks.enter_context(lock(vm.path / 'lock', wait=False)):
                     locks.close()
+                    contended = True
                     continue
-                vm.validate(self.now())
+                try:
+                    identifier, prepared, apt = vm.registration(self.now())
+                except Unavailable as error:
+                    self.reject(str(error), vm)
+                    locks.close()
+                    continue
+                except (FileNotFoundError, KeyError, TypeError, ValueError, OverflowError):
+                    locks.close()
+                    continue
+                if identifier != vm.id:
+                    vm = next((item for item in self.candidates() if item.name == vm.name), None)
+                    if vm is None:
+                        locks.close()
+                        continue
+                else:
+                    vm.prepared, vm.apt = prepared, apt
+                if not vm.accepts(turn):
+                    locks.close()
+                    continue
                 leases = vm.leases(self.now())
                 first = next((item for item in queue if vm.accepts(item) and (
                     item['clase'] == 'preparar' or vm.fits(leases, item['clase'])
                 )), None)
                 if first is not None and first['turno'] == turn['turno'] and vm.fits(leases, turn['clase']):
                     remove(path)
-                    return vm, leases
+                    return vm, leases, contended
                 locks.close()
-        return None, []
+        return None, [], contended
 
     def ask(self, args):
         if args.vm in self.vms and self.vms[args.vm].repo != args.repo:
             raise InvalidUse('la VM pertenece a otro repositorio')
-        deadline = time.monotonic() + args.esperar
         turn = {'turno': uuid4().hex, 'repo': args.repo, 'corrida': args.corrida,
                 'clase': args.clase, 'vm': args.vm, 'prioridad': args.prioridad,
                 'desde': stamp(self.now()), 'orden': time.time_ns(), 'host': self.host, 'pid': os.getpid()}
         candidates = [vm for vm in self.candidates(repo=args.repo, name=args.vm) if vm.accepts(turn)]
         if not candidates:
-            raise Unavailable('sin VM apta o registrada')
+            raise Unavailable('sin_vm', 'sin VM apta o registrada')
         path = private_dir(self.state / 'espera') / (turn['turno'] + '.json')
         with lock(self.state / 'espera.lock'):
             atomic_json(path, turn)
+        started = time.monotonic()
+        deadline = started + args.esperar
         last_error = None
         try:
             while candidates:
                 with ExitStack() as locks:
-                    vm, leases = self.claim(candidates, turn, path, locks)
+                    vm, leases, contended = self.claim(candidates, turn, path, locks)
                     if vm is not None:
                         try:
                             self.check_identity(vm)
                             state = self.observe(vm)
                             if leases and state not in READY:
-                                raise Unavailable('VM con arriendos vivos fuera de servicio')
+                                raise BoatError('VM con arriendos vivos fuera de servicio')
                             self.start(vm, state)
                         except (Unavailable, BoatError) as error:
                             self.reject(str(error), vm, repo=args.repo, corrida=args.corrida)
@@ -571,11 +640,14 @@ class Pool:
                         with lock(self.state / 'espera.lock'):
                             atomic_json(path, turn)
                     continue
-                remaining = deadline - time.monotonic()
+                attempt_until = started + LOCK_WAIT if contended and args.esperar == 0 else deadline
+                remaining = attempt_until - time.monotonic()
                 if remaining <= 0:
                     break
                 self.sleep(min(0.25, remaining))
-            raise Unavailable(str(last_error) if last_error else 'sin lugar al vencer la espera')
+            if last_error is not None:
+                raise last_error
+            raise Unavailable('sin_lugar', 'sin lugar al vencer la espera')
         finally:
             with lock(self.state / 'espera.lock'):
                 remove(path)
@@ -612,25 +684,25 @@ class Pool:
     def power_command(self, args):
         selected = self.candidates(name=args.nombre)
         if not selected:
-            raise Unavailable('sin VM con registro válido')
+            raise Unavailable('sin_vm', 'sin VM con registro válido')
         failed = False
         for vm in selected:
             with lock(vm.path / 'lock'):
                 try:
                     leases = vm.leases(self.now(), expire=True)
                     if args.command == 'apagar' and leases:
-                        raise Unavailable('VM con arriendos vivos')
+                        raise Unavailable('sin_lugar', 'VM con arriendos vivos')
                     self.check_identity(vm)
                     state = self.observe(vm)
                     if args.command == 'encender':
                         if leases and state not in READY:
-                            raise Unavailable('VM con arriendos vivos fuera de servicio')
+                            raise BoatError('VM con arriendos vivos fuera de servicio')
                         self.start(vm, state)
                     else:
                         self.stop(vm, state, wait=True)
                 except (Unavailable, BoatError) as error:
                     self.reject(str(error), vm)
-                    print(str(error), file=sys.stderr)
+                    print_unavailable(error)
                     failed = True
         return 75 if failed else 0
 
@@ -661,13 +733,10 @@ class Pool:
 
     def renew_vm(self, vm, info):
         deadline = info.get('archiveAfter')
-        stopped_disk = deadline is None and info['state'] in STOPPED
-        if stopped_disk:
-            deadline = epoch(info['stoppedAt']) + STOPPED_RETENTION
         if deadline is None or epoch(deadline) - self.now() >= RENEW_BEFORE:
             return
         vm.validate(self.now())
-        result = self.boat.renew_lifetime(vm, RENEW_FOR, stopped_disk=stopped_disk)
+        result = self.boat.renew_lifetime(vm, RENEW_FOR)
         if (not isinstance(result, dict)
                 or (result.get('id'), result.get('name')) != (vm.id, vm.name)
                 or epoch(result.get('archiveAfter')) - self.now() < RENEW_BEFORE):
@@ -683,6 +752,9 @@ class Pool:
             self.check_identity(vm)
             info = self.sandbox_info(vm)
             state = self.observe(vm, info)
+            if state in STOPPED and info.get('stoppedAt') is not None:
+                if self.now() - epoch(info['stoppedAt']) >= STOPPED_NOTICE:
+                    notices['disco:' + vm.name] = 'Retención de disco cerca del límite para ' + vm.name
             if state in READY | STOPPED:
                 try:
                     self.renew_vm(vm, info)
@@ -704,10 +776,11 @@ class Pool:
             for vm in candidates:
                 try:
                     self.watch_vm(vm, notices)
-                except (Unavailable, BoatError) as error:
+                except (Unavailable, BoatError, ValueError, TypeError, OverflowError) as error:
+                    detail = str(error) if isinstance(error, (Unavailable, BoatError)) else 'datos de Boat inválidos'
                     with lock(self.state / 'eventos.lock'):
                         append_event(self.state / 'eventos.jsonl',
-                                     vm.event('rechazo', self.now(), motivo=str(error)))
+                                     vm.event('rechazo', self.now(), motivo=detail))
             try:
                 gates = self.gates()
                 for gate in ('horas_plan', 'monedero_usd'):
@@ -723,6 +796,17 @@ class Pool:
                 notices['llave'] = 'No se pudo comprobar el vencimiento de la llave de Boat'
             self.warn(notices)
 
+    def warn_vm(self, vm, key, message):
+        marker = vm.path / ('aviso-' + key + '.json')
+        if not marker.exists():
+            self.deliver_notice(message)
+            atomic_json(marker, {'en': stamp(self.now())})
+
+    def deliver_notice(self, message):
+        with lock(self.state / 'avisos.lock'):
+            append_line(self.state / 'avisos.log', stamp(self.now()) + ' ' + message)
+        self.notify(message)
+
     def warn(self, notices):
         path = self.state / 'avisos.json'
         try:
@@ -731,15 +815,46 @@ class Pool:
             previous = {}
         for key, message in notices.items():
             if previous.get(key) != message:
-                append_line(self.state / 'avisos.log', stamp(self.now()) + ' ' + message)
-                self.notify(message)
+                self.deliver_notice(message)
         if notices != previous:
             atomic_json(path, notices)
 
+    def daily_org_cost(self, inventory, deleted, start, end):
+        try:
+            deleted_since = epoch(deleted['since'])
+            deleted_seconds = number(deleted['seconds'], 0)
+        except (KeyError, TypeError, ValueError, OverflowError):
+            raise BoatError('Boat no confirmó el alcance del inventario de la organización') from None
+        if end > deleted_since and deleted_seconds:
+            raise BoatError('Boat sólo desglosa por mes el consumo de las VMs borradas')
+        seconds = dollars = 0
+        for sandbox in inventory:
+            try:
+                if epoch(sandbox.get('createdAt')) >= end:
+                    continue
+            except (TypeError, ValueError, OverflowError):
+                pass
+            identifier = sandbox['id']
+            name = sandbox.get('name')
+            if (not isinstance(name, str) or reserved_name(name)
+                    or self.now() < self.prohibited.get(identifier, -math.inf)):
+                raise BoatError('el inventario incluye VMs reservadas o sin nombre verificable')
+            try:
+                check_id(identifier)
+                usage = self.boat.sandbox_usage(identifier, stamp(start), stamp(end))
+                if usage.get('sandboxId') != identifier:
+                    raise ValueError('el consumo corresponde a otra VM')
+                seconds += number(usage['seconds'], 0)
+                dollars += number(usage['dollars'], 0)
+            except (KeyError, TypeError, ValueError, OverflowError):
+                raise BoatError('Boat devolvió consumo diario incompleto') from None
+        return f'{seconds / 3600:.6f}', f'{dollars:.6f}'
+
     def report(self, day):
-        self.candidates()
         history = []
-        for directory in (self.state / 'vms').glob('*/'):
+        for directory in (self.state / 'vms').glob('*'):
+            if not directory.is_dir():
+                continue
             vm = self.vms.get(directory.name)
             with lock(directory / 'lock'):
                 if vm is not None:
@@ -763,6 +878,11 @@ class Pool:
                 intervals.append((tipo, start, when))
         intervals.extend((tipo, start, now) for tipo, start in powered.values())
 
+        inventory_error = None
+        try:
+            inventory, deleted = self.boat.org_inventory()
+        except BoatError as error:
+            inventory_error = error
         writer = csv.writer(sys.stdout, delimiter='\t', lineterminator='\n')
         for day in days:
             start = datetime.combine(day, datetime.min.time(), tzinfo=timezone.utc).timestamp()
@@ -775,9 +895,11 @@ class Pool:
             starts = sum(item['evento'] == 'arranque' for item in daily)
             runs = {(item['repo'], item['corrida']) for item in daily if item['evento'] == 'concedido'}
             try:
-                org = self.boat.daily_org_cost(day)
-                org_hours, org_cost = ('NA', 'NA') if org is None else org
-            except BoatError:
+                if inventory_error is not None:
+                    raise inventory_error
+                org_hours, org_cost = self.daily_org_cost(inventory, deleted, start, end)
+            except BoatError as error:
+                print(f'boat-pool: reporte {day}: {error}', file=sys.stderr)
                 org_hours, org_cost = 'NA', 'NA'
             writer.writerow([day.isoformat(), *(f'{hours[tipo]:.6f}' for tipo in RATES),
                              f'{cost:.6f}', starts, len(runs), org_hours, org_cost])
@@ -854,12 +976,18 @@ def main(argv=None, **pool_options):
             args.prioridad = 'preparar' if preparing else (args.prioridad or 'otra')
         config = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'boat-pool' / 'pool.json'
         state = Path(os.environ.get('XDG_STATE_HOME') or Path.home() / '.local/state') / 'boat-pool'
-        pool = Pool(read_json(config), state, **pool_options)
+        try:
+            declaration = read_json(config)
+        except FileNotFoundError:
+            if args.command == 'pedir':
+                raise Unavailable('apagado', 'falta pool.json') from None
+            raise
+        pool = Pool(declaration, state, **pool_options)
     except InvalidUse as error:
         print(str(error), file=sys.stderr)
         return 64
     except Unavailable as error:
-        print(str(error), file=sys.stderr)
+        print_unavailable(error)
         return 75
     except (OSError, KeyError, TypeError, ValueError, OverflowError):
         print('configuración o argumentos del pool inválidos', file=sys.stderr)
@@ -880,6 +1008,9 @@ def main(argv=None, **pool_options):
             else:
                 for vm in status['vms']:
                     print(f"{vm['vm']}\t{vm['estado']}\t{vm['lugares_libres']}")
+                    for lease in vm['arriendos']:
+                        fields = ('arriendo', 'corrida', 'clase', 'vence')
+                        print('\t' + '\t'.join(str(lease.get(field, '')) for field in fields))
                 for name, gate in status['puertas'].items():
                     print(f"{name}\t{'abierta' if gate['abierta'] else 'cerrada'}")
         elif args.command == 'vigilar':
@@ -890,10 +1021,10 @@ def main(argv=None, **pool_options):
         print(str(error), file=sys.stderr)
         return 64
     except (Unavailable, BoatError) as error:
+        print_unavailable(error)
         pool.reject(str(error))
-        print(str(error), file=sys.stderr)
         return 75
     except (OSError, KeyError, TypeError, ValueError, OverflowError):
-        print('estado del pool inválido o no disponible', file=sys.stderr)
+        print_unavailable(Unavailable('apagado', 'estado del pool inválido o no disponible'))
         return 75
     return 0

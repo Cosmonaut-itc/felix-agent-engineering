@@ -1,6 +1,5 @@
 import contextlib
 from datetime import datetime, timezone
-import hashlib
 import io
 import json
 import os
@@ -23,7 +22,13 @@ from boat_api import Boat, BoatError
 
 NAME = 'vm-pruebas'
 REPO = 'ejemplo/proyecto'
-FAKE_ID = 'bx_abcd2345'
+
+
+def fake_id(suffix):
+    return 'bx_' + suffix
+
+
+FAKE_ID = fake_id('abcd2345')
 NOW = datetime(2026, 11, 23, 12, tzinfo=timezone.utc).timestamp()
 MOCK_KEY = 'boat_demo_local'
 LIMITS = {
@@ -43,6 +48,10 @@ class Double:
         self.stop_fails = False
         self.extend_fails = False
         self.sleeps = 0
+        self.resume_fields = {'holdsCreatorLogins': False}
+        self.page_size = 200
+        self.usage = {}
+        self.deleted = {'since': '2026-11-01T00:00:00Z', 'seconds': 0}
 
     def factory(self, org, service):
         return Boat(org, service, transport=self.transport, key_reader=lambda _: MOCK_KEY)
@@ -62,21 +71,32 @@ class Double:
         if path == '/api-keys':
             return {'apiKeys': self.keys}
         vms = pool.read_json(self.path) if self.path.exists() else {}
-        if path.startswith('/sandboxes?'):
-            names = parse_qs(urlsplit(path).query)['name']
-            return {'sandboxes': [vm for vm in vms.values() if vm['name'] in names]}
-        _, group, identifier, *operation = path.split('/')
+        url = urlsplit(path)
+        query = parse_qs(url.query)
+        if url.path == '/sandboxes':
+            if 'name' in query:
+                return {'sandboxes': [vm for vm in vms.values() if vm['name'] in query['name']]}
+            start = int(query.get('cursor', ['0'])[0])
+            end = start + self.page_size
+            has_more = end < len(vms)
+            return {'sandboxes': list(vms.values())[start:end],
+                    'pageInfo': {'hasMore': has_more, 'nextCursor': str(end) if has_more else None},
+                    'deletedCost': self.deleted}
+        _, group, identifier, *operation = url.path.split('/')
         if group != 'sandboxes':
             raise AssertionError('ruta inesperada')
         vm = vms[identifier]
         if method == 'GET' and not operation:
             return {'sandbox': vm}
+        if method == 'GET' and operation == ['usage']:
+            seconds, dollars = self.usage.get((identifier, query['since'][0]), (0, 0))
+            return {'sandboxId': identifier, 'seconds': seconds, 'dollars': dollars}
         if method == 'PATCH' and not operation:
             if self.extend_fails:
                 raise BoatError(MOCK_KEY)
             vm.update(archiveAfter=pool.stamp(self.now + body['ttlSeconds']))
         elif method == 'POST' and operation == ['resume']:
-            vm.update(state='provisioning', stoppedAt=None)
+            vm.update(state='provisioning', stoppedAt=None, **self.resume_fields)
         elif method == 'POST' and operation == ['stop']:
             if self.stop_fails:
                 raise BoatError(MOCK_KEY)
@@ -121,6 +141,7 @@ class Harness(unittest.TestCase):
         self.addCleanup(environment.stop)
         self.config = {
             'version': 1, 'org': 'org-prueba', 'llavero': 'servicio-prueba',
+            'prohibidos': [],
             'inactividad_min': 30, 'reserva_arranques': 100,
             'piso': {'horas_plan': 48, 'monedero_usd': 10}, 'vms': [],
         }
@@ -162,6 +183,12 @@ class Harness(unittest.TestCase):
         code, output, stderr = self.run_cli(*self.args(*args))
         self.assertEqual(code, 0, stderr)
         return json.loads(output)['arriendo']
+
+    def assert_unavailable(self, cause, *args, **kwargs):
+        code, output, stderr = self.run_cli(*args, **kwargs)
+        self.assertEqual(code, 75, stderr)
+        self.assertFalse(output)
+        self.assertTrue(stderr.startswith(f'boat-pool: {cause}: '), stderr)
 
     def start_worker(self, *args):
         self.save()
@@ -260,7 +287,9 @@ class Harness(unittest.TestCase):
     def test_enciende_y_espera_ready_con_puertas_iguales_al_piso(self):
         self.api.sandbox(FAKE_ID, state='archived')
         self.get_lease()
-        self.assertEqual(self.writes(), [('POST', '/sandboxes/' + FAKE_ID + '/resume', None)])
+        self.assertEqual(self.writes(), [
+            ('POST', '/sandboxes/' + FAKE_ID + '/resume', {'noEnv': True, 'type': 'large'}),
+        ])
         self.assertEqual(self.api.sleeps, 1)
         self.assertEqual([item['evento'] for item in self.journal()], ['arranque', 'encendida', 'concedido'])
 
@@ -274,26 +303,106 @@ class Harness(unittest.TestCase):
             with self.subTest(gate=gate):
                 self.api.limits = json.loads(json.dumps(LIMITS))
                 self.api.limits[section][field] = value
-                self.assertEqual(self.run_cli(*self.args())[0], 75)
+                self.assert_unavailable('puerta', *self.args())
                 self.assertIn(gate, {item.get('puerta') for item in self.journal()})
                 self.assertEqual(self.writes(), [])
 
     def test_no_llama_http_con_nombre_o_id_prohibido(self):
         for name in ('ci-pruebas', 'hasito-sen', FAKE_ID, 'ajena'):
             with self.subTest(name=name):
-                self.assertEqual(self.run_cli('encender', name)[0], 75)
+                self.assert_unavailable('sin_vm', 'encender', name)
                 self.assertFalse(self.api.calls)
-        hashed = hashlib.sha256(FAKE_ID.encode()).hexdigest()
-        with patch.object(pool, 'FORBIDDEN_IDS', {hashed}):
-            self.assertEqual(self.run_cli(*self.args())[0], 75)
-            self.assertEqual(self.run_cli('vigilar')[0], 75)
-            self.assertFalse(self.api.calls)
-        with patch.object(pool, 'TEMPORARY_ID', hashed):
-            self.api.now = pool.TEMPORARY_UNTIL - 1
-            self.assertEqual(self.run_cli('apagar', NAME)[0], 75)
-            self.assertFalse(self.api.calls)
-            self.api.now += 1
-            self.assertEqual(self.run_cli('apagar', NAME)[0], 0)
+        self.config['prohibidos'] = [FAKE_ID]
+        self.assert_unavailable('sin_vm', *self.args())
+        self.assertFalse(self.api.calls)
+        self.config['prohibidos'] = [{'id': FAKE_ID, 'hasta': pool.stamp(NOW + 1)}]
+        self.assert_unavailable('sin_vm', 'apagar', NAME)
+        self.assertFalse(self.api.calls)
+        self.api.now += 1
+        self.assertEqual(self.run_cli('apagar', NAME)[0], 0)
+
+    def test_un_registro_prohibido_no_bloquea_soltar_ni_vigilar(self):
+        other = fake_id('efgh2345')
+        self.add_vm('vm-reservada', other)
+        token = self.get_lease()
+        self.config['prohibidos'] = [other]
+        self.assertEqual(self.run_cli('soltar', token)[0], 0)
+        self.assertFalse((self.state / 'vms' / NAME / 'arriendos' / (token + '.json')).exists())
+        self.api.now += 30 * 60
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertEqual(self.writes(), [('POST', '/sandboxes/' + FAKE_ID + '/stop', None)])
+        self.assertFalse(any(other in route or 'vm-reservada' in route for _, route, _ in self.api.calls))
+        self.assertIn('vm-reservada', {e['nombre'] for e in pool.events(self.state / 'eventos.jsonl')})
+
+    def test_causas_de_salida_y_lista_obligatoria(self):
+        self.assert_unavailable('sin_vm', 'encender', 'ajena')
+        self.get_lease()
+        self.assert_unavailable('sin_lugar', *self.args('otra'))
+        self.assert_unavailable('sin_lugar', 'apagar', NAME)
+        self.add_vm('vm-caida', fake_id('kmnp2345'), remote_state='error')
+        self.assert_unavailable('api', *self.args('otra'))
+        with patch.object(self, 'save'):
+            self.config_file.unlink()
+            self.assert_unavailable('apagado', *self.args())
+        del self.config['prohibidos']
+        self.api.calls.clear()
+        self.assertEqual(self.run_cli(*self.args())[0], 64)
+        self.assertFalse(self.api.calls)
+
+    def test_error_de_boat_no_reanuda_y_avisa_una_vez(self):
+        self.api.sandbox(FAKE_ID, state='error')
+        for _ in range(2):
+            self.assert_unavailable('api', *self.args())
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertFalse(self.writes())
+        self.assertEqual(self.notices, ['Boat informa un error en ' + NAME])
+
+    def test_reanudacion_sin_acreditar_credenciales_apaga_y_no_concede(self):
+        for fields in ({'holdsCreatorLogins': True}, {}):
+            with self.subTest(fields=fields):
+                self.api.sandbox(FAKE_ID, state='archived', environment=None)
+                vms = pool.read_json(self.api.path)
+                vms[FAKE_ID].pop('holdsCreatorLogins', None)
+                pool.atomic_json(self.api.path, vms)
+                self.api.resume_fields = fields
+                self.api.calls.clear()
+                self.assert_unavailable('api', *self.args())
+                self.assertEqual(self.writes(), [
+                    ('POST', '/sandboxes/' + FAKE_ID + '/resume', {'noEnv': True, 'type': 'large'}),
+                    ('POST', '/sandboxes/' + FAKE_ID + '/stop', None),
+                ])
+        self.assertEqual(len(self.notices), 1)
+        self.assertNotIn('concedido', {event['evento'] for event in self.journal()})
+
+    def test_reintento_tras_apagado_inseguro_fallido_no_concede(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+        self.api.resume_fields = {'holdsCreatorLogins': True}
+        self.api.stop_fails = True
+        self.assert_unavailable('api', *self.args())
+        self.assertEqual(self.run_cli('estado')[0], 0)
+        self.api.stop_fails = False
+        self.assert_unavailable('api', *self.args())
+        self.assertEqual(pool.read_json(self.api.path)[FAKE_ID]['state'], 'archived')
+        self.assertNotIn('concedido', {event['evento'] for event in self.journal()})
+
+    def test_reporte_cuenta_provisioned_antes_de_conceder(self):
+        self.api.sandbox(FAKE_ID, state='archived')
+
+        def advance(_):
+            state = pool.read_json(self.api.path)[FAKE_ID]['state']
+            if state == 'provisioning':
+                self.api.sandbox(FAKE_ID, state='provisioned')
+            else:
+                self.assertEqual(state, 'provisioned')
+                self.assertNotIn('concedido', {event['evento'] for event in self.journal()})
+                self.api.now += 60
+                self.api.sandbox(FAKE_ID, state='ready')
+
+        with patch.object(self.api, 'sleep', advance):
+            self.get_lease()
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(output.split('\t')[2:7], ['0.016667', '0.000000', '0.001200', '1', '1'])
 
     def test_registro_ajeno_o_invalido_no_recibe_mutaciones(self):
         self.api.sandbox(FAKE_ID, name='ci-ajena')
@@ -342,6 +451,29 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.run_cli('soltar', token)[0], 0)
         self.get_lease('siguiente')
 
+    def test_turno_en_fila_sobrevive_a_registro_reescrito(self):
+        token = self.get_lease('prep', 'preparar', '--vm', NAME)
+        worker = self.start_worker(*self.args('en-fila', 'contract', '--esperar', '5'))
+        self.queue('en-fila')
+        path = self.state / 'vms' / NAME / 'registro.json'
+        record = pool.read_json(path)
+        record.update(preparada_en=pool.stamp(NOW + 1), revision_runner='rev-nueva')
+        pool.atomic_json(path, record)
+        self.assertEqual(self.run_cli('soltar', token)[0], 0)
+        self.assertEqual(json.loads(self.result(worker, 0))['vm'], NAME)
+
+    def test_pedir_sin_espera_tolera_lock_breve(self):
+        with contextlib.ExitStack() as locks:
+            locks.enter_context(pool.lock(self.state / 'vms' / NAME / 'lock'))
+            with patch.object(self.api, 'sleep', lambda _: locks.close()):
+                self.get_lease()
+
+    def test_estado_texto_muestra_arriendos_vivos(self):
+        token = self.get_lease('suite-visible')
+        code, output, stderr = self.run_cli('estado')
+        self.assertEqual(code, 0, stderr)
+        self.assertIn(f'{token}\tsuite-visible\tcontract', output)
+
     def test_rangos_de_ttl_y_espera(self):
         for flag, invalid in (('--ttl', '299'), ('--ttl', '3601'), ('--ttl', 'nan'),
                               ('--esperar', '-1'), ('--esperar', '7201'), ('--esperar', 'inf')):
@@ -353,7 +485,8 @@ class Harness(unittest.TestCase):
         self.get_lease('maxima', 'contract', '--esperar', '7200', '--ttl', '3600')
 
     def test_vigilar_apaga_solo_registradas_tras_vencimiento_e_inactividad(self):
-        self.api.sandbox('bx_zyxw2345', name='ajena')
+        other = fake_id('zyxw2345')
+        self.api.sandbox(other, name='ajena')
         self.get_lease('caduca', 'contract', '--ttl', '300')
         self.api.now += 300 + 30 * 60 - 1
         self.assertEqual(self.run_cli('vigilar')[0], 0)
@@ -363,7 +496,7 @@ class Harness(unittest.TestCase):
         self.assertEqual(self.run_cli('vigilar')[0], 0)
         self.assertEqual(self.writes(), [('POST', '/sandboxes/' + FAKE_ID + '/stop', None)])
         self.assertEqual(sum(item['evento'] == 'apagada' for item in self.journal()), 1)
-        self.assertTrue(all('bx_zyxw2345' not in route and 'ajena' not in route for _, route, _ in self.api.calls))
+        self.assertTrue(all(other not in route and 'ajena' not in route for _, route, _ in self.api.calls))
 
     def test_vigilar_doble_apagado_concurrente(self):
         self.config['vms'][0]['inactividad_min'] = 0
@@ -375,7 +508,7 @@ class Harness(unittest.TestCase):
 
     def test_inactividad_nula_y_plazo_propio(self):
         self.config['vms'][0]['inactividad_min'] = None
-        shortened = 'bx_kmnp2345'
+        shortened = fake_id('kmnp2345')
         self.add_vm('vm-plazo-propio', shortened, overrides={'inactividad_min': 10})
         self.api.now += 599
         self.assertEqual(self.run_cli('vigilar')[0], 0)
@@ -388,8 +521,8 @@ class Harness(unittest.TestCase):
         self.assertEqual(pool.read_json(self.api.path)[FAKE_ID]['state'], 'ready')
 
     def test_renueva_ttl_de_vm_activa_y_detenida_si_quedan_menos_de_48_horas(self):
-        archived = 'bx_efgh2345'
-        limit = 'bx_nprt2345'
+        archived = fake_id('efgh2345')
+        limit = fake_id('nprt2345')
         self.add_vm('vm-detenida', archived, remote_state='archived')
         self.add_vm('vm-en-limite', limit)
         for identifier, remaining in ((FAKE_ID, 3600), (archived, 7200), (limit, 48 * 3600)):
@@ -407,14 +540,25 @@ class Harness(unittest.TestCase):
     def test_avisa_si_falla_renovacion_o_no_hay_endpoint_de_retencion(self):
         self.api.sandbox(FAKE_ID, archiveAfter=pool.stamp(NOW + 3600))
         self.api.extend_fails = True
-        archived = 'bx_kmnp2345'
+        archived = fake_id('kmnp2345')
         self.add_vm('vm-detenida', archived, remote_state='archived')
         self.api.sandbox(archived, stoppedAt=pool.stamp(NOW - 13 * 86400))
         self.assertEqual(self.run_cli('vigilar')[0], 0)
         log = (self.state / 'avisos.log').read_text()
-        for name in (NAME, 'vm-detenida'):
-            self.assertIn('No se pudo renovar el plazo de Boat de ' + name, log)
+        self.assertIn('No se pudo renovar el plazo de Boat de ' + NAME, log)
+        self.assertIn('Retención de disco cerca del límite para vm-detenida', log)
         self.assertNotIn(MOCK_KEY, log)
+
+    def test_aviso_retencion_se_mide_desde_stopped_at(self):
+        self.api.sandbox(FAKE_ID, state='archived', archiveAfter=pool.stamp(NOW + 7 * 86400),
+                         stoppedAt=pool.stamp(NOW - 12 * 86400 + 1))
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertFalse(self.notices)
+        self.api.now += 1
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+        self.assertEqual(self.notices, ['Retención de disco cerca del límite para ' + NAME])
+        self.assertFalse(self.writes())
 
     def test_aviso_de_llave_correcta_y_piso_sin_duplicar(self):
         expire = pool.stamp(NOW + 3 * 86400)
@@ -449,9 +593,50 @@ class Harness(unittest.TestCase):
         day = '2026-11-23'
         code, output, stderr = self.run_cli('reporte', '--dia', day)
         self.assertEqual(code, 0, stderr)
-        self.assertEqual(output, day + '\t0.000000\t2.000000\t0.000000\t0.144000\t1\t1\tNA\tNA\n')
+        self.assertEqual(output, day + '\t0.000000\t2.000000\t0.000000\t0.144000\t1\t1\t0.000000\t0.000000\n')
         self.assertEqual(self.run_cli('reporte')[1].splitlines()[0],
-                         '2026-11-22\t0.000000\t1.000000\t0.000000\t0.072000\t0\t0\tNA\tNA')
+                         '2026-11-22\t0.000000\t1.000000\t0.000000\t0.072000\t0\t0\t0.000000\t0.000000')
+
+    def test_reporte_suma_la_org_paginada_sin_eventos_locales(self):
+        other = fake_id('kmnp2345')
+        self.api.sandbox(other, name='vm-fuera-del-pool')
+        self.api.page_size = 1
+        self.api.usage = {
+            (FAKE_ID, '2026-11-23T00:00:00Z'): (3600, 0.036),
+            (other, '2026-11-23T00:00:00Z'): (7200, 0.072),
+        }
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual(output.strip().split('\t')[7:], ['3.000000', '0.108000'])
+        self.assertEqual(self.api.calls[1][1], '/sandboxes?limit=200&include=deletedCost&cursor=1')
+        for _, path, _ in self.api.calls[2:]:
+            self.assertEqual(parse_qs(urlsplit(path).query), {
+                'since': ['2026-11-23T00:00:00Z'], 'until': ['2026-11-24T00:00:00Z'],
+            })
+
+    def test_reporte_marca_na_solo_en_el_dia_incompleto(self):
+        self.get_lease()
+        self.api.now += 86400
+        self.api.usage[(FAKE_ID, '2026-11-23T00:00:00Z')] = (None, 0.036)
+        code, output, stderr = self.run_cli('reporte')
+        self.assertEqual(code, 0, stderr)
+        self.assertEqual([row.split('\t')[7:] for row in output.splitlines()],
+                         [['NA', 'NA'], ['0.000000', '0.000000']])
+        self.assertIn('reporte 2026-11-23: Boat devolvió consumo diario incompleto', stderr)
+        self.assertNotIn('2026-11-24', stderr)
+
+    def test_reporte_no_consulta_consumo_de_reservadas(self):
+        identifier = fake_id('kmnp2345')
+        self.api.sandbox(identifier, name='ci-ejemplo')
+        code, output, stderr = self.run_cli('reporte', '--dia', '2026-11-23')
+        self.assertEqual(code, 0, stderr)
+        self.assertTrue(output.endswith('\tNA\tNA\n'))
+        self.assertIn('reservadas', stderr)
+        self.assertFalse(any(identifier in path for _, path, _ in self.api.calls))
+
+    def test_reporte_ignora_archivos_en_vms(self):
+        (self.state / 'vms' / '.DS_Store').touch()
+        self.assertEqual(self.run_cli('reporte')[0], 0)
 
     def test_recupera_concesion_interrumpida_sin_evento_duplicado(self):
         path = self.state / 'vms' / NAME

@@ -2,6 +2,10 @@
   "version": 1,
   "org": "<org>",
   "llavero": "<servicio-del-llavero>",
+  "prohibidos": [
+    "<id-reservado>",
+    {"id": "<id-reservado-temporal>", "hasta": "<fecha-UTC>"}
+  ],
   "inactividad_min": 30,
   "reserva_arranques": 100,
   "piso": {
