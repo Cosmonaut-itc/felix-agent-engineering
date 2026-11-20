@@ -9,8 +9,9 @@ from dataclasses import replace
 import json
 import subprocess
 
-from dominio import (Admitido, Aterrizado, BloqueoPrevia, EnBase, Incierto, Pausa, Promoviendo,
-                     Terminal, admision_entrada, aterrizaje, datos, desde_datos, paso)
+from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, Incierto,
+                     Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, datos,
+                     desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
 from feedback import FEEDBACK, EscritorGitHub, pr_feedback
 from git_ops import FalloGit
@@ -92,6 +93,9 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
 
     previo.limpiar(estado)
     observacion = observador.observar(estado, ahora)
+    if not estado.pausa and any(isinstance(t.fase, Diagnosticando) for t in estado.trenes):
+        observacion = replace(observacion,
+                              absoluciones_recientes=ledger.absoluciones_recientes(repo, ahora))
     previo.limpiar(estado, observacion)
 
     def drenar(estado, observacion, recuperacion=False):

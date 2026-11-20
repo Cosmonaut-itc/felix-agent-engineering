@@ -3,7 +3,15 @@ from dataclasses import dataclass, replace
 from itertools import combinations
 from typing import Optional, Tuple
 
-from dominio import Causa, Reproduccion, clave
+from dominio import Causa, Fallo, Reproduccion, clave
+
+
+@dataclass(frozen=True)
+class Absolucion:
+    fallo: Fallo
+    caso: int
+    intentos_C: Tuple[str, ...]
+    intentos_B: Tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -12,6 +20,7 @@ class Plan:
     causas: Tuple[Causa, ...] = ()
     terminado: bool = False
     incierto: str = ""
+    absoluciones: Tuple[Absolucion, ...] = ()
 
 
 def identidad(fallo):
@@ -24,9 +33,14 @@ def unidad(resultado, fallo):
     return encontradas[0] if len(encontradas) == 1 else None
 
 
+def intentos_observados(u):
+    return (u is not None and len(u.intentos) == 2 and {i.n for i in u.intentos} == {1, 2}
+            and all(i.veredicto in ("pasa", "falla") for i in u.intentos))
+
+
 def estable(u, firma=None):
     """Sólo dos testigos positivos. Ausente/omitida no demuestran que pase."""
-    if u is None or len(u.intentos) != 2 or {i.n for i in u.intentos} != {1, 2}:
+    if not intentos_observados(u):
         return "incierto"
     if all(i.veredicto == "pasa" for i in u.intentos):
         return "pasa"
@@ -37,12 +51,20 @@ def estable(u, firma=None):
     return "incierto"
 
 
-def planificar(fallos, prs, evidencias, presupuesto_s, archivos=()):
+def absolucion(fallo, caso, uc, ub):
+    return Absolucion(fallo, caso,
+                      tuple(i.veredicto for i in sorted(uc.intentos, key=lambda i: i.n)),
+                      tuple(i.veredicto for i in sorted(ub.intentos, key=lambda i: i.n)))
+
+
+def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=False):
     """Una repetición = dos intentos de una unidad; N <= 3.
 
     Costo: 2 * máximo(segundos del check de origen, duraciones observadas).
     El check entero es una cota conservadora cuando falta tiempo por test.
     Archivos sólo prioriza tickets: (PR, rutas). Nunca es evidencia causal.
+    Con absolver, sólo se investiga si todos los fallos se pueden aceptar
+    sin atribuirlos al lote.
     """
     prs = tuple(prs)
     if not 1 <= len(prs) <= 3 or len(set(prs)) != len(prs):
@@ -54,6 +76,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=()):
         return Plan(incierto="sin-costo-de-suite-sana")
     por_archivo = dict(archivos)
     causas = []
+    absoluciones = []
     for fallo in sorted(fallos, key=identidad):
         historial = [e for e in evidencias if identidad(e.solicitud.fallo) == identidad(fallo)]
         por_objetivo = {(e.solicitud.objetivo, e.solicitud.prs): e for e in historial}
@@ -75,7 +98,12 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=()):
                 return pedir(objetivo)
         uc = unidad(por_objetivo[("C", ())].resultado, fallo)
         ub = unidad(por_objetivo[("B", ())].resultado, fallo)
-        if estable(uc, fallo.firma or None) != "falla":
+        candidato = estable(uc, fallo.firma or None)
+        if candidato != "falla":
+            if (absolver and candidato == "pasa" and intentos_observados(ub)
+                    and ub.definicion == uc.definicion):
+                absoluciones.append(absolucion(fallo, 1, uc, ub))
+                continue
             return Plan(incierto="confirmacion-candidato:" + fallo.unidad)
         # La firma puede estar vacía en el origen anterior a U3: las dos
         # observaciones nuevas deben tener una firma estable y no vacía.
@@ -85,7 +113,13 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=()):
         if estable(ub, firma) == "falla":
             continue
         if estable(ub) != "pasa":
+            if (absolver and intentos_observados(ub)
+                    and any(i.veredicto == "falla" and i.firma == firma for i in ub.intentos)):
+                absoluciones.append(absolucion(replace(fallo, firma=firma), 2, uc, ub))
+                continue
             return Plan(incierto="confirmacion-base:" + fallo.unidad)
+        if absolver:
+            return Plan(incierto="fallo-atribuible:" + fallo.unidad)
         orden = sorted(prs, key=lambda pr: (
             not any(ruta in fallo.unidad for ruta in por_archivo.get(pr, ())), prs.index(pr)))
         minimos = []
@@ -111,4 +145,4 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=()):
         if not minimos:
             minimos = [prs]  # C confirmado es exactamente B + todos los tickets.
         causas.append(Causa(replace(fallo, firma=firma), tuple(minimos)))
-    return Plan(causas=tuple(causas), terminado=True)
+    return Plan(causas=tuple(causas), terminado=True, absoluciones=tuple(absoluciones))

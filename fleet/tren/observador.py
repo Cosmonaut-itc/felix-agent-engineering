@@ -296,6 +296,13 @@ class GitHubGit:
                 verificado=apto.get("verificado") == "Verificado" and apto.get("head") == head,
                 autorizado=head in autorizados,
                 ventana=autorizados.get(head) if self.activo else None)
+            if self.activo and not self.sombra:
+                # Cambiar de nombre también toca la ruta anterior.
+                anteriores = [a["previous_filename"] for pagina in archivos for a in pagina
+                              if a.get("status") == "renamed"]
+                if not all(isinstance(ruta, str) and ruta for ruta in nombres + anteriores):
+                    raise ValueError("rutas de PR inválidas")
+                vista = replace(vista, archivos=tuple(nombres + anteriores), archivos_base=base)
             # Re-read after all reads; a concurrent push cannot use stale evidence.
             final = self.api("repos/{}/pulls/{}".format(repo, pr))
             if final["head"]["sha"] != head:

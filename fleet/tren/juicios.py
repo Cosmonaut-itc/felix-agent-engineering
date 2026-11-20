@@ -42,7 +42,8 @@ for _detalle in (
         "presupuesto-agotado-en-reanudacion", "suite-incompleta",
         "tamano-de-lote-no-soportado", "sin-costo-de-suite-sana",
         "sin-duracion:", "presupuesto-agotado:", "confirmacion-candidato:",
-        "definicion-distinta:", "confirmacion-base:", "reproduccion-incierta:"):
+        "definicion-distinta:", "confirmacion-base:", "reproduccion-incierta:",
+        "intermitente-reincidente:"):
     POLITICA[("necesita-juicio", _detalle)] = ROJO
 
 

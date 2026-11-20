@@ -269,10 +269,11 @@ se aplica a las repeticiones; su costo también consume el presupuesto.
 unidad con dos intentos sobre C y dos sobre B. Exige la misma firma estable
 en C y pases positivos en B para atribuir; la misma firma estable en B es
 preexistente. Una firma vacía del origen requiere firmas nuevas estables y
-no vacías. Ausencia, omisión, mezcla o definición distinta pasan a juicio.
+no vacías. La tabla de pausas detalla cuándo una repetición permite absolver
+un intermitente.
 Luego prueba todos los tickets solos y, si ninguno reproduce, los pares
 (N<=3); C ya confirmado acredita el conjunto completo. Los archivos sólo
-pueden ordenar los ensayos. Se guardan todos los mínimos observados.
+pueden ordenar los ensayos de atribución. Se guardan todos los mínimos observados.
 Sin culpables, certifica sólo si la suite no dejó `restantes`; si el
 fail-fast cortó checks, pausa `necesita-juicio` con `suite-incompleta`.
 
@@ -614,7 +615,24 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `necesita-juicio` | `subconjunto-no-corresponde`, `conflicto-en-subconjunto`, `repeticion-no-corresponde`, `origen-distinto` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
 | `necesita-juicio` | `presupuesto-agotado-en-reanudacion`, `suite-incompleta`, `tamano-de-lote-no-soportado`, `sin-costo-de-suite-sana` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
 | `necesita-juicio` | `sin-duracion:<unidad>`, `presupuesto-agotado:<unidad>`, `confirmacion-candidato:<unidad>`, `definicion-distinta:<unidad>`, `confirmacion-base:<unidad>`, `reproduccion-incierta:<unidad>` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
+| `necesita-juicio` | `intermitente-reincidente:<unidad>` | La unidad ya tiene dos absoluciones automáticas en siete días para este repo. `absolver` exige una suite nueva sobre C. También admite `expulsar` y `abortar`. |
 | `manual` | motivo humano | Sólo `pausa --levantar`: continuar desde la fase guardada. `juicio` no la levanta. |
+
+El tick activo puede absolver una unidad que pasa dos veces en C (caso 1) o
+que falla dos veces con una firma estable en C y al menos una vez con esa
+firma en B (caso 2). En ambos casos exige dos intentos ejecutados en cada commit
+y la misma definición. La absolución requiere una suite sin etapas pendientes,
+un máximo de dos unidades fallidas y que todas sean intermitentes que cumplen
+estas reglas o fallos preexistentes confirmados. Los archivos de todos los PR
+del lote deben estar acreditados para sus heads y la base del candidato.
+Cualquier cambio en el archivo de una unidad fallida conserva la pausa de
+diagnóstico, incluidos los renombres.
+
+Al certificar C con la suite ya corrida, el ledger escribe un evento
+`intermitente-absuelto` por unidad absuelta. Guarda repo, tren, B, C, unidad,
+firma, caso y veredictos de C y B. Estos eventos fijan el límite de dos
+absoluciones de la misma unidad en siete días. El certificado sigue el camino
+habitual de pre-aterrizaje y promoción.
 
 Las decisiones admitidas se filtran también por la fase/evidencia guardada:
 no se reanuda infraestructura sin comando durable o fuera del presupuesto
