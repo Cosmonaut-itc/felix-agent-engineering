@@ -96,7 +96,8 @@ print('p123\\nn' + os.environ['HARNESS'])
 ''')
         self.executable('ps', '''#!/usr/bin/python3 -B
 import os, sys
-if sys.argv[1:] == ['-axww', '-o', 'command=']: sys.exit(0)
+if sys.argv[1:3] == ['-axww', '-o'] and sys.argv[3:] in (['command='], ['uid=,command=']):
+    sys.exit(0)
 os.execv('/bin/ps', ['ps'] + sys.argv[1:])
 ''')
         self.executable('xattr', """#!/usr/bin/python3 -B

@@ -135,11 +135,14 @@ demás.
   Al final vuelve a comprobar el lock, con `-e` y `-L`, y exige mediante
   `stat` directo que el mtime del propio directorio tenga al menos siete
   días. No hay otro recorrido de árbol entre ese bloque y la acción.
-- **Preparación en curso.** Durante la primera hora de una corrida que el
-  inventario marca `preparacion-abortada`, la regla 1 protege la copia indicada
-  en `meta` o en los argumentos de `git-cache instalar` que nombran tanto la
-  corrida como su copia. El log registra la copia y la señal. Las demás copias
-  siguen sujetas a las comprobaciones de inactividad y uso.
+- **Preparación en curso.** Para una corrida que el inventario marca
+  `preparacion-abortada`, la regla 1 protege la copia indicada en `meta` durante
+  la primera hora. A cualquier edad, también protege la copia si un proceso
+  `git-cache instalar` nombra tanto la corrida como su copia y su UID en `ps`
+  coincide con el del dueño de la raíz de `remote-run`. La señal de `ps` se
+  descarta si el UID falta o no se puede verificar. El log registra la copia y
+  la señal. Las demás copias siguen sujetas a las comprobaciones de inactividad
+  y uso.
   Si falta la identidad, la preparación veta toda la regla 1 durante 1 h en
   modo normal o 15 min en EMERGENCIA work. Entre 15 min y 1 h en emergencia,
   también veta si hay `git-input` o `git-preparado`, porque el productor puede

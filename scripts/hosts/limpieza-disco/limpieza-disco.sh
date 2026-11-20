@@ -6,10 +6,11 @@
 # Modo emergencia: si al empezar quedan menos de 15 GB libres, los umbrales de
 # antigüedad se acortan (entre paréntesis, el valor en emergencia).
 # Sólo work tiene otra emergencia: <40 GB, ventana de 6 h y freno en 60 GB.
-# Durante 1 h, meta o los argumentos de git-cache identifican la copia de una
-# preparación y protegen esa copia. Sin identidad, la preparación veta work
-# durante 1 h (15 min en su emergencia). En emergencia, entre 15 min y 1 h,
-# también veta si hay artefactos de git o EN_USO no descarta procesos en runs/<id>.
+# meta identifica la copia de una preparación durante 1 h. Un git-cache instalar
+# vivo del dueño de remote-run protege la copia de su corrida a cualquier edad.
+# Sin identidad, la preparación veta work durante 1 h (15 min en su emergencia).
+# En emergencia, entre 15 min y 1 h, también veta si hay artefactos de git o
+# EN_USO no descarta procesos en runs/<id>.
 #
 # Qué borra:
 #   1. ~/remote-run/work/*   sólo las copias no ocultas que ~/bin/pao-inventario.py
@@ -541,40 +542,47 @@ def clave_copia(copia):
     return normalize('NFD', copia).casefold()
 
 
-preparaciones = [(datos['ts'] - (c['ultimoUso'] or 0), nombre(c['ruta'], runs))
-                 for c in datos['corridas'] if c['clase'] == 'preparacion-abortada'
-                 and datos['ts'] - (c['ultimoUso'] or 0) < preparacion_normal_segundos]
+preparaciones = [(datos['ts'] - (c['ultimoUso'] or 0), c['ruta'])
+                 for c in datos['corridas'] if c['clase'] == 'preparacion-abortada']
 protegidas = set()
 if preparaciones:
-    espejo = runpy.run_path(sys.argv[7])['espejo']
     # remote-run pasa rutas relativas sin espacios al instalador. Sólo sus
     # argumentos finales contienen juntos el id y el espejo de la corrida.
     # El lanzador /usr/bin/python3 de macOS puede aparecer como Python.
     instalador = re.compile(
-        r'\s*(?:\S*/)?(?:[Pp]ython3(?:\.\d+)?|Python) -c .* instalar '
+        r'(?:\S*/)?(?:[Pp]ython3(?:\.\d+)?|Python) -c .* instalar '
         r'remote-run/git-cache/[0-9a-f]{64}\.git '
         r'remote-run/runs/([0-9]{8}-[0-9]{6}-[0-9a-f]{6}) '
         r'remote-run/work/([A-Za-z0-9._-]+-[0-9a-f]{8}) (?:[0-9a-f]{40}|[0-9a-f]{64})')
     por_corrida = {}
     try:
+        uid_raiz = str(os.stat(raiz).st_uid)
         with open(sys.argv[8], encoding='utf-8', errors='replace') as captura:
             for linea in captura:
-                coincidencia = instalador.fullmatch(linea.rstrip('\n'))
+                campos = linea.split(maxsplit=1)
+                if len(campos) != 2 or campos[0] != uid_raiz:
+                    continue
+                coincidencia = instalador.fullmatch(campos[1].rstrip('\n'))
                 if coincidencia:
                     corrida, copia = coincidencia.groups()
                     por_corrida.setdefault(corrida, set()).add((copia, 'argumentos de git-cache instalar'))
     except OSError:
         por_corrida.clear()  # Una captura parcial no aporta identidad.
 
-    for edad, corrida in preparaciones:
+    elegibles = [(edad, nombre(ruta, runs)) for edad, ruta in preparaciones
+                 if edad < preparacion_normal_segundos or os.path.basename(ruta) in por_corrida]
+    if elegibles:
+        espejo = runpy.run_path(sys.argv[7])['espejo']
+    for edad, corrida in elegibles:
         ruta = Path(runs) / corrida
         try:
             if not stat.S_ISDIR(ruta.lstat().st_mode):
                 raise ValueError('corrida no regular')
             senales = por_corrida.get(corrida, set())
-            copia = espejo(ruta / 'meta')
-            if copia is not None:
-                senales.add((copia, 'mirror de meta'))
+            if edad < preparacion_normal_segundos:
+                copia = espejo(ruta / 'meta')
+                if copia is not None:
+                    senales.add((copia, 'mirror de meta'))
             for copia, _ in senales:
                 if (any(ord(ch) < 32 or ord(ch) == 127 for ch in copia)
                         or (Path(work) / copia).is_symlink()):
@@ -627,7 +635,7 @@ fi
 if ! acotado "captura cwd" "$HOME" lsof -a -u "$uid" -d cwd -Fn > "$USO_CWD" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló lsof de cwd para EN_USO o emitió diagnósticos"
 fi
-if ! ps -axww -o command= > "$USO_PS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
+if ! ps -axww -o uid=,command= > "$USO_PS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
   sin_uso "falló ps para EN_USO o emitió diagnósticos"
 fi
 if ! acotado "captura abiertos" "$HOME" lsof -u "$uid" -Fn > "$USO_ABIERTOS" 2> "${INV_ERR:-/dev/null}" || [ -s "$INV_ERR" ]; then
