@@ -43,7 +43,7 @@ class Double:
         self.path = state / 'api-falsa.json'
         self.now = NOW
         self.calls = []
-        self.keys = []
+        self.keys = [{'keyPrefix': 'boat_demo', 'keyLastFour': MOCK_KEY[-4:], 'expiresAt': None}]
         self.limits = json.loads(json.dumps(LIMITS))
         self.stop_fails = False
         self.extend_fails = False
