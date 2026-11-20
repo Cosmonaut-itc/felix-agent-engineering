@@ -49,10 +49,16 @@
 #                            tiene su app como cwd, y además pesan más de 1 GB o
 #                            llevan 1 día sin tocarse (en emergencia, siempre).
 #   8. Simuladores de Xcode  xcrun simctl delete unavailable, una vez por semana.
-#   9. Temporales mktemp     directorios propios ~/prefijo.SuFiJo12, sin cambios
-#                            en todo el árbol durante 7 días (2 días), ni
-#                            procesos dentro. Se renombran a STATE/borrando-*
-#                            antes de borrar; se saltan árboles protegidos.
+#   9. Temporales mktemp     directorios propios del home con modo 0700 y sufijo
+#                            alfanumérico de 6 a 8 caracteres, con mayúscula y
+#                            minúscula y sin forma de palabra capitalizada con
+#                            dígitos opcionales. Exige 7 días (2 en emergencia)
+#                            sin cambios de mtime ni ctime en todo el árbol.
+#                            En STATE/borrando-* repite el recorrido y lsof.
+#                            Devuelve el árbol al origen si hay actividad, uso
+#                            o error. Se saltan árboles protegidos.
+#                            La evidencia de mktemp -d en el home también
+#                            caduca a los 7 días sin cambios.
 
 set -u
 export PATH="$HOME/.bun/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -1052,9 +1058,79 @@ if command -v xcrun >/dev/null && { [ ! -e "$STAMP_SIM" ] || [ -n "$(acotado "re
 fi
 
 # 9. Temporales de mktemp en el primer nivel del home.
+recorrer_mktemp() {
+  acotado "regla 9: actividad" "$1" /usr/bin/python3 -B - "$@" <<'PY_MKTEMP'
+import ctypes
+import os
+import stat
+import sys
+import time
+
+raiz, dias, dispositivo_state = sys.argv[1:4]
+ctime_antes, ctime_rename = map(int, sys.argv[4:]) if len(sys.argv) > 4 else (None, None)
+dispositivo = int(dispositivo_state)
+ahora = time.time()
+limite = ahora - int(dias) * 86400
+protegidos = {b'com.apple.macl', b'com.apple.file-provider-domain-id'}
+
+libc = ctypes.CDLL(None, use_errno=True)
+listxattr = libc.listxattr
+listxattr.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+listxattr.restype = ctypes.c_ssize_t
+XATTR_NOFOLLOW = 0x0001
+
+
+def revisar(ruta):
+    datos = os.lstat(ruta)
+    if datos.st_dev != dispositivo:
+        sys.exit(f'dispositivo distinto de STATE en {ruta}')
+    ctime = datos.st_ctime
+    if ruta == raiz:
+        if not stat.S_ISDIR(datos.st_mode):
+            sys.exit('la entrada dejó de ser un directorio')
+        if stat.S_IMODE(datos.st_mode) != 0o700:
+            sys.exit('modo distinto de 0700')
+        # Nuestro rename puede actualizar el ctime de la raíz. Usa el ctime
+        # previo sólo si sigue coincidiendo con el observado tras el rename.
+        if datos.st_ctime_ns // 10**9 == ctime_rename:
+            ctime = ctime_antes
+    if max(datos.st_mtime, ctime) > limite:
+        sys.exit(f'algo cambió en los últimos {dias} días: {ruta}')
+    if not stat.S_ISDIR(datos.st_mode):
+        return False
+    ruta_bytes = os.fsencode(ruta)
+    tamano = listxattr(ruta_bytes, None, 0, XATTR_NOFOLLOW)
+    if tamano < 0:
+        sys.exit(f'falló listxattr en {ruta}: {os.strerror(ctypes.get_errno())}')
+    if tamano:
+        atributos = ctypes.create_string_buffer(tamano)
+        leidos = listxattr(ruta_bytes, atributos, tamano, XATTR_NOFOLLOW)
+        if leidos < 0:
+            sys.exit(f'falló listxattr en {ruta}: {os.strerror(ctypes.get_errno())}')
+        for atributo in atributos.raw[:leidos].split(b'\0'):
+            nombre = atributo.split(b'#', 1)[0]
+            if nombre in protegidos:
+                sys.exit(f'{nombre.decode()} en {ruta}')
+    return True
+
+
+try:
+    revisar(raiz)
+    directorios = [raiz]
+    while directorios:
+        with os.scandir(directorios.pop()) as entradas:
+            for entrada in entradas:
+                if revisar(entrada.path):
+                    directorios.append(entrada.path)
+except OSError as error:
+    sys.exit(f'falló el recorrido: {error}')
+PY_MKTEMP
+}
+
 limpiar_mktemp_home() (
-  local LC_ALL=C patron='^[A-Za-z0-9_-]+\.[A-Za-z0-9]{8}$'
-  local dias=7 d nombre sufijo dev_state identidad motivo aleatorio destino
+  local LC_ALL=C patron='^[A-Za-z0-9_-]+\.[A-Za-z0-9]{6,8}$' palabra='^[A-Z][a-z]+[0-9]*$'
+  local formato='%d:%i:%m:%u:%p:%c'
+  local dias=7 d nombre sufijo dev_state identidad identidad_cuarentena motivo aleatorio destino error
   [ "$EMERG" = 0 ] || dias=2
   if ! cd -P -- "$HOME" || [ "$PWD" != "$HOME" ]; then
     log "regla 9: salto regla: no pude fijar el home físico"; return
@@ -1066,65 +1142,23 @@ limpiar_mktemp_home() (
   for d in "$HOME"/*.*; do
     nombre=${d##*/} sufijo=${d##*.}
     [[ "$nombre" =~ $patron && "$sufijo" == *[A-Z]* && "$sufijo" == *[a-z]* ]] || continue
+    [[ "$sufijo" =~ $palabra ]] && continue
     if [ -L "./$nombre" ] || [ ! -d "./$nombre" ] || [ ! -O "./$nombre" ]; then
       log "regla 9: no borro $d: no es un directorio propio sin enlace"; continue
     fi
     if en_uso "$d"; then
       log "regla 9: no borro $d: aparece en EN_USO o no pudo consultarse"; continue
     fi
-    identidad=$(stat -f '%d:%i:%m:%c:%u' "./$nombre" 2>/dev/null) || identidad=
+    identidad=$(stat -f "$formato" "./$nombre" 2>/dev/null) || identidad=
     if [[ "$identidad" != "$dev_state:"* ]]; then
       log "regla 9: no borro $d: mismo filesystem que STATE no verificable"; continue
     fi
-    if ! motivo=$(acotado "regla 9: actividad" "$d" /usr/bin/python3 -B - "./$nombre" "$dias" "$dev_state" 2>&1 <<'PY_MKTEMP'
-import os
-import stat
-import subprocess
-import sys
-import time
-
-raiz, dias, dispositivo_state = sys.argv[1:]
-dispositivo = int(dispositivo_state)
-limite = time.time() - int(dias) * 86400
-protegidos = {b'com.apple.macl', b'com.apple.file-provider-domain-id'}
-
-
-def revisar(ruta):
-    datos = os.lstat(ruta)
-    if datos.st_dev != dispositivo:
-        sys.exit(f'dispositivo distinto de STATE en {ruta}')
-    if datos.st_mtime > limite:
-        sys.exit(f'algo cambió en los últimos {dias} días: {ruta}')
-    if not stat.S_ISDIR(datos.st_mode):
-        return False
-    atributos = subprocess.run(['xattr', '-s', ruta], capture_output=True)
-    if atributos.returncode or atributos.stderr:
-        sys.exit(f'falló xattr en {ruta}')
-    for atributo in atributos.stdout.splitlines():
-        nombre = atributo.split(b'#', 1)[0]
-        if nombre in protegidos:
-            sys.exit(f'{nombre.decode()} en {ruta}')
-    return True
-
-
-try:
-    if not revisar(raiz):
-        sys.exit('la entrada dejó de ser un directorio')
-    directorios = [raiz]
-    while directorios:
-        with os.scandir(directorios.pop()) as entradas:
-            for entrada in entradas:
-                if revisar(entrada.path):
-                    directorios.append(entrada.path)
-except OSError as error:
-    sys.exit(f'falló el recorrido: {error}')
-PY_MKTEMP
-    ); then
+    if ! motivo=$(recorrer_mktemp "./$nombre" "$dias" "$dev_state" 2>&1); then
       log "regla 9: no borro $d: ${motivo:-actividad no descartada}"; continue
     fi
     lsof_sin_uso "$d" "regla 9: lsof previo" || continue
     if [ -L "./$nombre" ] || [ ! -d "./$nombre" ] || [ ! -O "./$nombre" ] ||
-        [ "$(stat -f '%d:%i:%m:%c:%u' "./$nombre" 2>/dev/null)" != "$identidad" ]; then
+        [ "$(stat -f "$formato" "./$nombre" 2>/dev/null)" != "$identidad" ]; then
       log "regla 9: no borro $d: el directorio cambió desde el recorrido"; continue
     fi
     if [ "$DRY" = 1 ]; then
@@ -1138,7 +1172,26 @@ PY_MKTEMP
     if ! renombrar_exclusivo "./$nombre" "$destino"; then
       log "regla 9: no borro $d: falló el rename exclusivo a $destino"; continue
     fi
+    identidad_cuarentena=$(stat -f "$formato" "$destino" 2>/dev/null) || identidad_cuarentena=
     log "regla 9: renombrada $d a $destino"
+    motivo=
+    if [ "${identidad_cuarentena%:*}" != "${identidad%:*}" ]; then
+      motivo="el directorio cambió durante el rename o falló stat"
+    elif ! motivo=$(recorrer_mktemp "$destino" "$dias" "$dev_state" \
+        "${identidad##*:}" "${identidad_cuarentena##*:}" 2>&1); then
+      motivo=${motivo:-actividad no descartada}
+    elif ! lsof_sin_uso "$destino" "regla 9: lsof en cuarentena"; then
+      motivo="uso no descartado en cuarentena"
+    fi
+    if [ -n "$motivo" ]; then
+      log "regla 9: no borro $destino: $motivo"
+      if error=$(renombrar_exclusivo "$destino" "./$nombre" 2>&1); then
+        log "regla 9: devuelta $d a su ruta original"
+      else
+        log "regla 9: falló la vuelta de $destino a $d: queda en STATE; requiere autorización explícita ($error)"
+      fi
+      continue
+    fi
     if rm -rf -- "$destino"; then
       log "borrado $d (regla 9: temporal mktemp sin cambios en $dias días)"
     else

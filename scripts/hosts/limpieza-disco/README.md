@@ -60,14 +60,16 @@ ese caso una invocación posterior registra el dueño vivo y sale.
 
 ## Temporales de mktemp en el home
 
-La regla 9 considera directorios propios del primer nivel del home con
-nombre `prefijo.sufijo`. El prefijo usa uno o más caracteres
-`[A-Za-z0-9_-]`. El sufijo usa exactamente ocho caracteres
-`[A-Za-z0-9]`, con al menos una mayúscula y una minúscula. Por ejemplo,
-`x.AbCd1234` puede ser candidato y `x.backup12` queda fuera.
+La regla 9 considera directorios propios del primer nivel del home
+con modo exacto `0700` y nombre `prefijo.sufijo`. El prefijo usa uno o
+más caracteres `[A-Za-z0-9_-]`. El sufijo usa de seis a ocho caracteres
+`[A-Za-z0-9]`, con al menos una mayúscula y una minúscula. Excluye los
+sufijos con forma de palabra capitalizada y dígitos opcionales al final
+(`^[A-Z][a-z]+[0-9]*$`). Por ejemplo, `x.AbC123` puede ser candidato y
+`x.Backup12` queda fuera.
 
-Comprueba el mtime de todo el árbol con el tope común. Exige siete días
-sin cambios, o dos días si al empezar había menos de 15 GB libres.
+Comprueba el mtime y el ctime de cada entrada con el tope común. Exige
+siete días sin cambios, o dos días si al empezar había menos de 15 GB libres.
 Conserva la carpeta si el recorrido falla o vence su plazo, si detecta
 otro dispositivo o si un directorio tiene `com.apple.macl` o
 `com.apple.file-provider-domain-id` (incluidas variantes con sufijo
@@ -76,16 +78,21 @@ sigue enlaces. Un fallo de acceso o de lectura de atributos veta el
 borrado.
 
 Reutiliza `EN_USO` de la regla 2 para detectar cwd y archivos abiertos.
-Repite la comprobación con un `lsof +D` acotado al final y comprueba
+Antes de renombrar, comprueba el uso con un `lsof +D` acotado y verifica
 que el directorio sigue siendo el mismo. Una captura no verificable lo
-conserva. Un proceso que empiece a usarlo después de la última consulta
-aún puede coincidir con el rename.
+conserva.
 
 Sólo renombra en el mismo filesystem, de forma exclusiva, a
-`$STATE/borrando-mktemp-<aleatorio>`. El borrado actúa sobre ese
-nombre. Si falla, el resto queda en `$STATE` para revisión. El log
-registra el origen y el resultado o el motivo de conservar la candidata.
-`--dry-run` registra la candidata tras las mismas comprobaciones.
+`$STATE/borrando-mktemp-<aleatorio>`. En cuarentena repite el recorrido y
+`lsof +D` antes de borrar. Si detecta actividad, uso o un error, devuelve el
+árbol al origen con un rename exclusivo. Si falla la vuelta o el borrado,
+los datos que queden en `$STATE` requieren autorización explícita. El log
+registra el origen, el resultado y el motivo de conservar la candidata.
+`--dry-run` registra la candidata tras las comprobaciones previas al rename.
+
+Un directorio de evidencia que un guion cree con `mktemp -d` en el home
+y que cumpla estos criterios se borra tras siete días sin cambios
+(dos en emergencia).
 
 ## ~/remote-run
 
