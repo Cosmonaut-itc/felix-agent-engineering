@@ -229,16 +229,39 @@ print(values[min(i, len(values) - 1)])
         self.assertEqual(self.ejecutar(), ['copia'])
         self.assertEqual((self.root / 'ps.index').read_text(), '2')
 
+    def test_emergencia_ps_estado_transitorio_desaparece_y_borra(self):
+        copia = self.copia(horas=7)
+        self.config['ps_snapshots'] = ['123 S\n456 ?   \n789 ?E', '123 S']
+        self.ejecutar(dry=False)
+        self.assertFalse(copia.exists(), self.log)
+        self.assertIn('borrado ', self.log)
+        self.assertEqual((self.root / 'ps.index').read_text(), '2')
+
+    def test_emergencia_ps_estado_transitorio_persiste_y_veta(self):
+        copia = self.copia(horas=7)
+        self.config['ps_snapshots'] = ['123 S\n456 ?\n789 ?E'] * 2
+        self.ejecutar(dry=False)
+        self.assertTrue(copia.exists(), self.log)
+        self.assertIn('EMERGENCIA work sin borrar: cobertura de cwd incompleta', self.log)
+        self.assertIn('pids vivos ausentes 456,789', self.log)
+        self.assertEqual((self.root / 'ps.index').read_text(), '2')
+
     def test_ps_no_verificable_cierra(self):
         self.copia()
-        for cambios in ({'ps_rc': 2}, {'ps_snapshots': ['no-pid S']},
-                        {'ps_snapshots': ['']}, {'ps_snapshots': ['123']},
-                        {'ps_snapshots': ['123 S\n456 S', 'salida parcial']}):
+        formato_invalido = 'captura ps no verificable'
+        for cambios, motivo in (
+                ({'ps_rc': 2}, 'falló consulta ps'),
+                ({'ps_snapshots': ['']}, formato_invalido),
+                ({'ps_snapshots': ['123 S\nno-pid ?']}, formato_invalido),
+                ({'ps_snapshots': ['123 S\n456']}, formato_invalido),
+                ({'ps_snapshots': ['123 S\n456 ?!']}, formato_invalido),
+                ({'ps_snapshots': ['123 S\n456 ?E extra']}, formato_invalido),
+                ({'ps_snapshots': ['123 S\n456 S', 'salida parcial']}, formato_invalido)):
             with self.subTest(cambios=cambios):
                 self.config = dict(free=[39], cwd='ok', hook='', **cambios)
                 (self.root / 'ps.index').unlink(missing_ok=True)
                 self.assertEqual(self.ejecutar(), [])
-                self.assertIn('EMERGENCIA work sin borrar', self.log)
+                self.assertIn('EMERGENCIA work sin borrar: ' + motivo, self.log)
 
     def test_permisos_remote_run_y_work_cierran(self):
         self.copia()

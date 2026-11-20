@@ -711,7 +711,7 @@ def pids_propios(uid):
     for linea in salida.splitlines():
         campos = linea.split()
         if (len(campos) != 2 or not re.fullmatch(r'[1-9][0-9]*', campos[0])
-                or not re.fullmatch(r'[A-Z][A-Za-z0-9+<>-]*', campos[1])):
+                or not re.fullmatch(r'[A-Z?][A-Za-z0-9+<>-]*', campos[1])):
             raise ValueError('captura ps no verificable')
         pid = int(campos[0])
         if pid in vistos:
