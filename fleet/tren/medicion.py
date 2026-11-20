@@ -4,7 +4,8 @@ from datetime import datetime
 import json
 import math
 
-from dominio import LIMITE_LOTE, Admitido, Entrada, Motivo, Rechazado, Retenido, desde_datos
+from dominio import (LIMITE_LOTE, Admitido, Entrada, Motivo, Rechazado, Retenido,
+                     Terminal, desde_datos)
 from sombra import lotes_fifo
 
 
@@ -30,14 +31,26 @@ def medir(requests, events, repo, desde, hasta):
             entrega = desde_datos(json.loads(row["payload"]))
             entregas[entrega.recibo] = Entrada(entrega, row["recibida"])
     iniciales, fuentes, admitidas = {}, {}, {}
+    activos = set()
+    ticks_libres = None
     for row in sorted(events, key=lambda r: r["seq"]):
         if row["repo"] != repo or row["instante"] >= hasta:
             continue
         payload = json.loads(row["payload"])
         if row["tipo"] == "admision-entrega":
             entradas = (desde_datos(payload),)
-        elif row["tipo"] in ("sombra", "sombra-doble-camino"):
-            entradas = desde_datos(payload["estado"]).entradas
+        elif row["tipo"] in ("operativo", "sombra", "sombra-doble-camino"):
+            estado = desde_datos(payload["estado"])
+            entradas = estado.entradas
+            if row["tipo"] == "operativo":
+                if ticks_libres is None:
+                    ticks_libres = set()
+                siguientes = {t.id for t in estado.trenes if not isinstance(t.fase, Terminal)}
+                # El tick que arranca un tren vio libre la vía; los snapshots
+                # que conservan un tren activo quedan dentro de su intervalo.
+                if not estado.pausa and activos.isdisjoint(siguientes):
+                    ticks_libres.add(row["instante"])
+                activos = siguientes
         else:
             continue
         for entrada in entradas:
@@ -59,7 +72,8 @@ def medir(requests, events, repo, desde, hasta):
                 if anterior.caducada is None:
                     admitidas[recibo] = replace(anterior, caducada=(
                         entrada.caducada if entrada.caducada is not None else row["instante"]))
-    lotes, pendientes = lotes_fifo(admitidas.values(), hasta)
+    lotes, pendientes = lotes_fifo(admitidas.values(), hasta,
+                                   sorted(ticks_libres) if ticks_libres is not None else None)
     detalle = []
     for recibo, entrada in sorted(entregas.items(), key=lambda item: (
             item[1].recibida, item[0])):

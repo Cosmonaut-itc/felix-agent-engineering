@@ -1,4 +1,5 @@
 """U12: doble camino y medición sin red. Ejecutar sólo en el host de pruebas."""
+from copy import deepcopy
 from dataclasses import replace
 import json
 import os
@@ -7,13 +8,14 @@ from unittest.mock import patch
 
 from test_tren import (Aislado, BASE, HEAD, REPO, cli, entrega, estado,
                        observacion, vista)
-from dominio import (Admitido, Congelado, Entrada, Estado, Motivo,
-                     Rechazado, Retenido, Terminal, desde_datos, paso)
+from comparar_eventos_sombra import comparar
+from dominio import (Admitido, Candidato, Congelado, Corriendo, Entrada, Estado, Motivo,
+                     Rechazado, Retenido, Terminal, datos, desde_datos, paso)
 from inscripcion import modo
 from ledger import Ledger, directorio_estado, filas_medicion
 from medicion import instante_iso, medir
 from observador import Falso, GitHubGit
-from sombra import lotes_fifo, paso_sombra
+from sombra import DURACION_SUITE_ESTIMADA, lotes_fifo, paso_sombra
 
 
 class SombraTests(Aislado):
@@ -93,13 +95,13 @@ class SombraTests(Aislado):
             self.assertEqual(plan["plan"]["efectos"], [])
             self.assertIsNone(plan["plan"]["estado"]["pausa"])
             self.assertEqual(len(plan["plan"]["estado"]["trenes"]), sum(
-                3 if anterior % 2 else 1 for anterior in range(dia + 1)))
+                2 if anterior % 2 else 1 for anterior in range(dia)) + 1)
         ledger = self.ledger()
         for tabla in ("trains", "effects", "outbox"):
             self.assertEqual(ledger.db.execute("SELECT count(*) FROM " + tabla).fetchone()[0], 0)
         informe = medir(*filas_medicion(REPO), REPO, 0, 7 * 86400)
-        self.assertEqual(informe["distribucion"], {"1": 13, "2": 0, "3": 0, "4": 0, "5": 0})
-        self.assertEqual(informe["suites_ahorradas_estimadas"], 0)
+        self.assertEqual(informe["distribucion"], {"1": 7, "2": 3, "3": 0, "4": 0, "5": 0})
+        self.assertEqual(informe["suites_ahorradas_estimadas"], 3)
 
     def test_cerrado_sin_merge_y_head_distinto_conservan_rechazo(self):
         for cambios, motivo in (({"abierto": False}, Motivo.CERRADO),
@@ -185,27 +187,33 @@ class MedicionTests(Aislado):
         return tuple(Entrada(entrega(i), t, Admitido(), t, i in solos)
                      for i, t in enumerate(tiempos, 1))
 
-    def test_lotes_inmediatos_por_instante_de_admision(self):
+    def test_lote_inmediato_y_admisiones_en_espera(self):
         entradas = self.entradas([0, 10, 10, 20, 20, 20, 30])
         lotes, pendientes = lotes_fifo(entradas, 20)
+        self.assertEqual([(t, len(es)) for t, _, es in lotes], [(0, 1)])
+        self.assertEqual(pendientes, entradas[1:6])
+        lotes, pendientes = lotes_fifo(entradas, DURACION_SUITE_ESTIMADA)
         self.assertEqual([(t, len(es)) for t, _, es in lotes],
-                         [(0, 1), (10, 2), (20, 3)])
-        self.assertFalse(pendientes)
+                         [(0, 1), (DURACION_SUITE_ESTIMADA, 5)])
+        self.assertEqual(pendientes, entradas[6:])
 
     def test_sensible_solo_sin_adelantar_fifo(self):
         entradas = tuple(replace(e, recibida=i, admitida=10)
                          for i, e in enumerate(self.entradas([0] * 4, (2,))))
-        lotes, pendientes = lotes_fifo(entradas, 10)
+        lotes, pendientes = lotes_fifo(entradas, 10 + 2 * DURACION_SUITE_ESTIMADA)
         self.assertEqual([[e.entrega.pr for e in es] for _, _, es in lotes], [[1], [2], [3, 4]])
-        self.assertEqual([t for t, _, _ in lotes], [10, 10, 10])
+        self.assertEqual([t for t, _, _ in lotes], [10 + n * DURACION_SUITE_ESTIMADA
+                                                  for n in range(3)])
         self.assertFalse(pendientes)
 
     def test_empates_deterministas_y_lote_parcial_inmediato(self):
-        entradas = self.entradas([0, 0, 0, 100])
-        lotes, pendientes = lotes_fifo(entradas, 200)
+        ultima = DURACION_SUITE_ESTIMADA + 100
+        entradas = self.entradas([0, 0, 0, ultima])
+        lotes, pendientes = lotes_fifo(entradas, ultima)
         self.assertEqual([len(es) for _, _, es in lotes], [3, 1])
+        self.assertEqual(lotes[-1][0], ultima)
         self.assertFalse(pendientes)
-        self.assertEqual(lotes_fifo(entradas, 200), lotes_fifo(reversed(entradas), 200))
+        self.assertEqual((lotes, pendientes), lotes_fifo(reversed(entradas), ultima))
 
     def test_sombra_y_dominio_forman_los_mismos_lotes(self):
         original = estado(9)
@@ -215,14 +223,69 @@ class MedicionTests(Aislado):
         simulado, efectos = paso_sombra(original, obs)
         self.assertFalse(efectos)
         activo = original
-        for ahora, prs in enumerate((range(1, 6), (6,), (7,), (8, 9)), obs.ahora):
-            activo, _ = paso(activo, replace(obs, ahora=ahora))
+        for n, prs in enumerate((range(1, 6), (6,), (7,), (8, 9))):
+            tick = replace(obs, ahora=obs.ahora + n * DURACION_SUITE_ESTIMADA)
+            activo, _ = paso(activo, tick)
+            simulado, _ = paso_sombra(simulado, tick)
             tren = activo.trenes[-1]
             self.assertEqual(tren.recibos, tuple(entrega(pr).recibo for pr in prs))
             activo = replace(activo, trenes=activo.trenes[:-1] +
                              (replace(tren, fase=Terminal("ATERRIZADO")),))
         self.assertEqual([t.recibos for t in simulado.trenes],
                          [t.recibos for t in activo.trenes])
+
+    def test_admisiones_escalonadas_y_caducidad_durante_suite(self):
+        entradas = self.entradas([90, 210, 330, 450])
+        vistas = tuple(vista(pr) for pr in range(1, 5))
+        candidato = Candidato(BASE, ((1, HEAD, "c" * 40),), "c" * 40, "d" * 40)
+        for caduca, esperado in ((False, [[1], [2, 3, 4]]), (True, [[1], [2, 4]])):
+            with self.subTest(caduca=caduca), patch.dict(os.environ, {
+                    "XDG_STATE_HOME": str(self.raiz / ("caduca-%s" % caduca))}):
+                ledger = self.ledger()
+                activo = simulado = Estado(REPO)
+                for n, ahora in enumerate((100, 220, 340, 460)):
+                    entrada = replace(entradas[n], admitida=None)
+                    ledger.entregar(entrada.entrega, entrada.recibida)
+                    observadas = vistas[:n + 1]
+                    if n == 3 and caduca:
+                        observadas = vistas[:2] + (vista(3, head="e" * 40), vistas[3])
+                    obs = replace(observacion(), ahora=ahora, prs=observadas)
+                    activo, _ = paso(replace(activo, entradas=activo.entradas + (entrada,)), obs)
+                    simulado, _ = paso_sombra(
+                        replace(simulado, entradas=simulado.entradas + (entrada,)), obs)
+                    ledger.guardar_paso(activo, (), ahora)
+                    self.assertEqual(len(activo.trenes), 1)
+                    self.assertEqual(len(simulado.trenes), 1)
+                    if n == 0:
+                        activo = replace(activo, trenes=(replace(
+                            activo.trenes[0], fase=Corriendo(candidato, "suite-1")),))
+
+                activo = replace(activo, trenes=(replace(
+                    activo.trenes[0], fase=Terminal("ATERRIZADO")),))
+                activo, _ = paso(activo, replace(obs, ahora=580))
+                ledger.guardar_paso(activo, (), 580)
+                simulado, _ = paso_sombra(simulado, replace(obs, ahora=100 + DURACION_SUITE_ESTIMADA))
+                prs = {e.entrega.recibo: e.entrega.pr for e in entradas}
+                for resultado in (activo, simulado):
+                    self.assertEqual([[prs[r] for r in t.recibos] for t in resultado.trenes],
+                                     esperado)
+                filas = filas_medicion(REPO)
+                informe = medir(*filas, REPO, 0, 600)
+                self.assertEqual([lote["prs"] for lote in informe["lotes"]], esperado)
+                self.assertEqual([lote["instante"] for lote in informe["lotes"]], [100, 580])
+                self.assertEqual(informe["suites_ahorradas_estimadas"], len(esperado[1]) - 1)
+                antes = medir(*filas, REPO, 200, 580)
+                self.assertEqual(antes["lotes"], [])
+                self.assertEqual([prs[r] for r in antes["pendientes"]], esperado[1])
+
+    def test_comparador_detecta_fase_distinta_en_lote_identico(self):
+        congelado, efectos = paso(estado(), observacion())
+        evento = [["sombra", 100, {"estado": datos(congelado), "efectos": datos(efectos)}]]
+        comparar(deepcopy(evento), deepcopy(evento))
+        mutado = deepcopy(evento)
+        mutado[0][2]["estado"]["trenes"][0]["fase"]["B"] = "f" * 40
+        with self.assertRaises(AssertionError):
+            comparar(evento, mutado)
 
     def test_iso_con_zona_y_ventana_invalida(self):
         self.assertEqual(instante_iso("1970-01-01T01:00:00+01:00"), 0)

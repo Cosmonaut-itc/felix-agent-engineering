@@ -101,7 +101,9 @@ con la custodia en un evento `admision-entrega`. Acepta `--config` como tick;
 sin lectura/config válida conserva custodia y registra retención por
 observación incompleta. Reentregar el mismo head no cambia esa muestra.
 Sólo para un repo inscrito en sombra, `tick --seco` usa un reductor separado:
-los lotes pasan directamente a `SIMULADO`, sin efectos ni espera de suite.
+los lotes pasan directamente a `SIMULADO`, sin efectos ni ejecución de suites.
+Cada lote simula 68 minutos de ocupación, la mediana medida de los trenes de
+Jale que recoge el encargo SEN-7119 (ronda 2).
 Su continuación se guarda en eventos `sombra-doble-camino`; los eventos
 `sombra` de U1/U2/U4 siguen perteneciendo al reductor activo. Al cambiar la
 inscripción a activo, los PR abiertos se readmiten desde custodia y sus
@@ -133,10 +135,12 @@ se leen igual; sin muestra al entregar se informa custodia y fuente
 `sin-observacion-al-entregar`, sin inventar evidencia retroactiva.
 La entrega y el tick en sombra aplican `sensibles_en_lote` y
 `alto_riesgo_en_lote` al formar lotes.
-La simulación agrupa las primeras admisiones simultáneas según la misma
-regla FIFO de hasta cinco, con viaje individual para los PRs que lo requieren.
-Supone disponibilidad inmediata entre lotes, así que los despacha en el
-instante de admisión y no estima la acumulación durante una suite activa.
+La simulación conserva la cola mientras la vía está ocupada y vuelve a
+despachar por FIFO, hasta cinco, cuando queda libre. `medir` reconstruye esa
+disponibilidad a partir de los cambios de tren activo en los snapshots
+`operativo` del ledger, incluidos los anteriores a `desde`. Sólo proyecta un
+lote por tick libre observado. Si no hay snapshots operativos anteriores a
+`hasta`, usa la misma estimación de 68 minutos que la sombra.
 El intervalo de medición selecciona la cohorte de entregas y sólo sus
 observaciones anteriores a `hasta`.
 

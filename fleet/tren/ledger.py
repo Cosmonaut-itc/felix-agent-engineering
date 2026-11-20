@@ -278,7 +278,7 @@ class Ledger:
 
     def sombra(self, estado, efectos, ahora, doble_camino=False):
         # Only the event is committed. No operational trains/effects/outbox rows.
-        # Its tagged snapshot feeds the next shadow tick, preserving the 60m clock.
+        # Its tagged snapshot feeds the next shadow tick and preserves admissions.
         plan = {"estado": datos(estado), "efectos": datos(efectos)}
         with self.transaccion():
             self.evento(estado.repo, "sombra-doble-camino" if doble_camino else "sombra",

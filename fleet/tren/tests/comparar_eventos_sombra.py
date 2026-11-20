@@ -5,17 +5,32 @@ import sys
 from unittest import TestCase
 
 
-def eventos_sin_lotes(ruta):
-    eventos = json.loads(Path(ruta).read_text())
-    for tipo, _, payload in eventos:
-        if tipo == "admision-entrega":
-            continue
-        estado = payload["estado"]
-        del estado["trenes"]
-        for entrada in estado["entradas"]:
+def conservar_lotes_comunes(tipo, payload, comunes):
+    estado = payload["estado"]
+    estado["trenes"] = [t for t in estado["trenes"] if tuple(t["recibos"]) in comunes]
+    ids = {t["id"] for t in estado["trenes"]}
+    for entrada in estado["entradas"]:
+        if tipo == "sombra-doble-camino" or entrada["tren"] not in ids:
             del entrada["tren"]
-        payload["efectos"] = [e for e in payload["efectos"] if e["tipo"] != "armar-candidato"]
-    return eventos
+    if tipo == "sombra-doble-camino":
+        # El instante de despacho forma parte del id simulado.
+        for tren in estado["trenes"]:
+            del tren["id"]
+    payload["efectos"] = [e for e in payload["efectos"]
+                         if e["tipo"] != "armar-candidato" or e["datos"][0] in ids]
 
 
-TestCase().assertEqual(eventos_sin_lotes(sys.argv[1]), eventos_sin_lotes(sys.argv[2]))
+def comparar(anterior, actual):
+    prueba = TestCase()
+    prueba.assertEqual([e[:2] for e in anterior], [e[:2] for e in actual])
+    for (tipo, _, a), (_, _, b) in zip(anterior, actual):
+        if tipo != "admision-entrega":
+            comunes = ({tuple(t["recibos"]) for t in a["estado"]["trenes"]}
+                       & {tuple(t["recibos"]) for t in b["estado"]["trenes"]})
+            conservar_lotes_comunes(tipo, a, comunes)
+            conservar_lotes_comunes(tipo, b, comunes)
+        prueba.assertEqual(a, b)
+
+
+if __name__ == "__main__":
+    comparar(*(json.loads(Path(ruta).read_text()) for ruta in sys.argv[1:]))

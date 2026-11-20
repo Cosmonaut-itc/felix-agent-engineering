@@ -12,6 +12,7 @@ from inscripcion import modo
 from ledger import filas_medicion
 from medicion import medir
 from observador import Falso
+from sombra import DURACION_SUITE_ESTIMADA
 
 
 class U12FixR1Tests(Aislado):
@@ -59,15 +60,17 @@ class U12FixR1Tests(Aislado):
             self.assertEqual(modo(REPO), "activo")
 
     def test_u12_2_caducidad_sale_de_fila_sin_reescribir_lotes_cerrados(self):
-        casos = ((100, 100, 200, {"head": "c" * 40}),
-                 (0, 1, 200, {"head": "c" * 40}),
-                 (100, 101, 200, {"abierto": False}))
-        for indice, (inicio, caduca, fin, cambios) in enumerate(casos):
+        casos = ((100, 100, {"head": "c" * 40}),
+                 (0, 1, {"head": "c" * 40}),
+                 (100, 101, {"abierto": False}))
+        for indice, (inicio, caduca, cambios) in enumerate(casos):
             with self.subTest(inicio=inicio, caduca=caduca, cambios=cambios), patch.dict(
                     os.environ, {"XDG_STATE_HOME": str(self.raiz / ("state-%d" % indice))}):
                 self.entregar(cuando=inicio)
                 self.tick(caduca, **cambios)
                 self.entregar("c" * 40, caduca)
+                despacho = inicio + DURACION_SUITE_ESTIMADA if inicio < caduca else caduca
+                fin = despacho + 1
                 _, resultado = self.tick(fin, head="c" * 40)
                 estado = desde_datos(resultado["plan"]["estado"])
                 viejo, nuevo = estado.entradas
@@ -77,7 +80,7 @@ class U12FixR1Tests(Aislado):
                 informe = medir(*filas_medicion(REPO), REPO, -1, fin + 1)
                 self.assertEqual([r for t in informe["lotes"] for r in t["recibos"]], esperado)
                 self.assertTrue(all(t["tamano"] == 1 and t["prs"] == [1] for t in informe["lotes"]))
-                self.assertEqual(informe["lotes"][-1]["instante"], caduca)
+                self.assertEqual(informe["lotes"][-1]["instante"], despacho)
                 self.assertEqual(informe["suites_ahorradas_estimadas"], 0)
                 self.assertEqual(informe["admitidas"], 2)  # Historial inicial conservado.
                 self.assertTrue(all(e["admision"]["estado"] == "admitido" for e in informe["entregas"]))
