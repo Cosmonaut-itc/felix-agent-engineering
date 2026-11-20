@@ -102,9 +102,11 @@ demás.
   `lsof -a -d cwd -Fn`. Valida la captura entera antes de la primera candidata:
   cada registro debe ser `p<pid>`, `fcwd`, `n<ruta absoluta>`, sin PID repetidos,
   campos sueltos ni rutas vacías. Si un PID propio falta, vuelve a consultar
-  `ps`: si sigue vivo y falta, no borra ninguna copia. Excluye zombies, que ya
-  no tienen cwd. Error, diagnóstico, captura vacía o formato no verificable
-  también cierran la regla 1 con motivo en el log.
+  `ps`: si sigue vivo y falta, no borra ninguna copia. Los estados transitorios
+  de macOS que empiezan por `?` (como `?` y `?E`) cuentan como vivos y se
+  comprueban del mismo modo. Excluye zombies, que ya no tienen cwd. Error,
+  diagnóstico, captura vacía o formato no verificable también cierran la regla 1
+  con motivo en el log.
   Compara rutas físicas (`realpath`) con frontera de directorio: un cwd igual
   o dentro de una copia la protege. Los procesos de root y de otros usuarios
   quedan fuera de esta cobertura; lo mitigan los permisos: en emergencia
