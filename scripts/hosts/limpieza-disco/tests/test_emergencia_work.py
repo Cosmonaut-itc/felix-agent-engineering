@@ -83,6 +83,21 @@ else:
 import json, os, sys
 from pathlib import Path
 if sys.argv[1] == '-axww':
+    root = Path(os.environ['HARNESS'])
+    c = json.loads((root / 'config.json').read_text())
+    if 'ps_instalador_ajeno' in c:
+        comando = c['ps_instalador_ajeno']
+        if sys.argv[3] == 'uid=,command=':
+            comando = str(os.stat(Path(os.environ['HOME']) / 'remote-run').st_uid + 1) + ' ' + comando
+        print(comando)
+    elif 'ps_instalador' in c:
+        import subprocess
+        r = subprocess.run(['/bin/ps', '-p', str(c['ps_instalador']), '-ww', '-o', sys.argv[3]],
+                           capture_output=True)
+        (root / 'ps.instalador').write_bytes(r.stdout)
+        sys.stdout.buffer.write(r.stdout)
+        sys.stderr.buffer.write(r.stderr)
+        sys.exit(r.returncode)
     sys.exit(0)
 if sys.argv[1] == '-U':
     root = Path(os.environ['HARNESS'])
@@ -528,6 +543,174 @@ print(values[min(i, len(values) - 1)])
         self.assertTrue((p / 'dato').exists(), self.log)
         self.assertNotIn('borrado ', self.log)
         self.assertIn('regla 1 sin borrar: preparación de menos de 15 min', self.log)
+        self.assertIn('copia desconocida', self.log)
+
+    def instalador(self, run, copia):
+        # Así llega la invocación al intérprete de la Mini: código multilinea
+        # seguido de la acción, la caché, el directorio de corrida, la copia y HEAD.
+        codigo = 'import time\nprint("listo", flush=True)\ntime.sleep(120)\n'
+        proceso = subprocess.Popen(['/usr/bin/python3', '-c', codigo,
+                                    'instalar', 'remote-run/git-cache/' + 'a' * 64 + '.git',
+                                    'remote-run/runs/' + run.name, 'remote-run/work/' + copia.name,
+                                    'b' * 40], cwd=self.root, stdout=subprocess.PIPE)
+        self.addCleanup(proceso.stdout.close)
+        self.addCleanup(proceso.wait)
+        self.addCleanup(proceso.terminate)
+        self.assertTrue(select.select([proceso.stdout], [], [], 10)[0], 'instalador no arrancó')
+        self.assertEqual(proceso.stdout.readline(), b'listo\n')
+        self.config['ps_instalador'] = proceso.pid
+
+    def test_emergencia_preparacion_5_min_con_copia_identificada_por_instalador(self):
+        self.config['free'] = [14]
+        activa = self.copia('activa-a1b2c3d4')
+        libre = self.copia('libre')
+        run = self.rr / 'runs' / '20000101-000000-a1b2c3'
+        (run / 'git-input').mkdir(parents=True)
+        self.edad(run, 5 / 60)
+        self.instalador(run, activa)
+
+        self.ejecutar(dry=False)
+        self.assertTrue(activa.exists(), self.log)
+        captura = (self.root / 'ps.instalador').read_bytes()
+        self.assertFalse(libre.exists(), self.log + repr(captura))
+        self.assertIn('conservo work/activa-a1b2c3d4: argumentos de git-cache instalar', self.log)
+
+    def test_emergencia_instalador_de_otro_uid_conserva_veto(self):
+        self.config['free'] = [14]
+        activa = self.copia('activa')
+        otra = self.copia('otra-a1b2c3d4')
+        run = self.rr / 'runs' / '20000101-000000-a1b2c3'
+        (run / 'git-input').mkdir(parents=True)
+        self.edad(run, 5 / 60)
+        self.config['ps_instalador_ajeno'] = (
+            '/usr/bin/python3 -c codigo instalar remote-run/git-cache/' + 'a' * 64 + '.git '
+            f'remote-run/runs/{run.name} remote-run/work/{otra.name} ' + 'b' * 40)
+
+        self.ejecutar(dry=False)
+        self.assertTrue(activa.exists() and otra.exists(), self.log)
+        self.assertIn(f'en runs/{run.name} (copia desconocida)', self.log)
+
+    def test_emergencia_instalador_vivo_protege_despues_de_una_hora(self):
+        self.config['free'] = [14]
+        activa = self.copia('activa-a1b2c3d4')
+        libre = self.copia('libre')
+        run = self.rr / 'runs' / '20000101-000000-a1b2c3'
+        (run / 'git-preparado').mkdir(parents=True)
+        # El meta de la misma corrida apunta a otra copia y su ventana expiró.
+        (run / 'meta').write_text(f'mirror=remote-run/work/{libre.name}\ncmd=true\n')
+        self.edad(run, 8)
+        self.instalador(run, activa)
+
+        self.ejecutar(dry=False)
+        self.assertTrue(activa.exists(), self.log)
+        self.assertFalse(libre.exists(), self.log)
+        self.assertIn(f'conservo work/{activa.name}: argumentos de git-cache instalar', self.log)
+
+    def test_emergencia_instalador_de_otra_corrida_conserva_veto(self):
+        self.config['free'] = [14]
+        activa = self.copia('activa-a1b2c3d4')
+        libre = self.copia('libre')
+        run = self.rr / 'runs' / '20000101-000000-a1b2c3'
+        (run / 'git-preparado').mkdir(parents=True)
+        self.edad(run, 2)
+        otra = self.rr / 'runs' / '20000101-000000-ffffff'
+        (otra / 'git-input').mkdir(parents=True)
+        self.edad(otra, 5 / 60)
+        self.instalador(run, activa)
+
+        self.ejecutar(dry=False)
+        self.assertTrue(activa.exists() and libre.exists(), self.log)
+        self.assertIn(f'en runs/{otra.name} (copia desconocida)', self.log)
+        self.assertIn(f'conservo work/{activa.name}: argumentos de git-cache instalar', self.log)
+
+    def test_emergencia_fallo_al_leer_identidad_conserva_veto(self):
+        self.config['free'] = [14]
+        activa = self.copia('activa-a1b2c3d4')
+        libre = self.copia('libre')
+        run = self.rr / 'runs' / '20000101-000000-a1b2c3'
+        (run / 'git-preparado').mkdir(parents=True)
+        self.edad(run, 2)
+        otra = self.rr / 'runs' / 'lectura-fallida'
+        otra.mkdir()
+        (otra / 'meta').write_text(f'mirror=remote-run/work/{activa.name}\ncmd=true\n')
+        self.edad(otra, 5 / 60)
+        self.instalador(run, activa)
+        # El inventario inicial lee meta. La segunda lectura, desde el guion,
+        # falla sólo para esta preparación, antes de poder atribuirle una copia.
+        with (self.root / 'pao-inventario.py').open('a') as archivo:
+            archivo.write('''
+if __name__ == '<run_path>':
+    espejo_original = espejo
+
+    def espejo(ruta):
+        if ruta.parent.name == 'lectura-fallida':
+            raise OSError('lectura de meta fallida')
+        return espejo_original(ruta)
+''')
+
+        self.ejecutar(dry=False)
+        self.assertTrue(activa.exists() and libre.exists(), self.log)
+        self.assertIn(f'no pude verificar la copia de la preparación en runs/{otra.name}', self.log)
+        self.assertIn(f'conservo work/{activa.name}: argumentos de git-cache instalar', self.log)
+
+    def test_emergencia_preparacion_20_min_con_copia_identificada_sin_procesos(self):
+        self.config['free'] = [14]
+        activa = self.copia('activa')
+        libre = self.copia('libre')
+        run = self.rr / 'runs' / 'preparacion'
+        run.mkdir()
+        (run / 'meta').write_text('mirror=remote-run/work/ACTIVA\ncmd=true\n')
+        self.edad(run, 20 / 60)
+
+        self.ejecutar(dry=False)
+        self.assertTrue(activa.exists(), self.log)
+        self.assertFalse(libre.exists(), self.log)
+        self.assertIn('conservo work/ACTIVA: mirror de meta', self.log)
+
+    def test_emergencia_preparacion_20_min_con_git_y_copia_desconocida_bloquea(self):
+        self.config['free'] = [14]
+        a = self.copia('a')
+        b = self.copia('b')
+        run = self.rr / 'runs' / 'preparacion'
+        (run / 'git-input').mkdir(parents=True)
+        self.edad(run, 20 / 60)
+
+        self.ejecutar(dry=False)
+        self.assertTrue(a.exists() and b.exists(), self.log)
+        self.assertIn('preparación con artefactos de git en runs/preparacion (copia desconocida)', self.log)
+
+    def test_preparacion_con_copia_identificada_y_otra_desconocida_bloquean(self):
+        self.config['free'] = [14]
+        activa = self.copia('activa')
+        libre = self.copia('libre')
+        run = self.rr / 'runs' / 'identificada'
+        run.mkdir()
+        (run / 'meta').write_text('mirror=remote-run/work/activa\ncmd=true\n')
+        self.edad(run, 5 / 60)
+        otra = self.rr / 'runs' / 'desconocida'
+        otra.mkdir()
+        self.edad(otra, 5 / 60)
+
+        self.ejecutar(dry=False)
+        self.assertTrue(activa.exists() and libre.exists(), self.log)
+        self.assertIn('en runs/desconocida (copia desconocida)', self.log)
+
+    def test_normal_preparacion_con_copia_identificada_solo_protege_su_copia(self):
+        self.config['free'] = [40]
+        activa = self.copia('activa', horas=8 * 24)
+        otra_activa = self.copia('otra-activa', horas=8 * 24)
+        libre = self.copia('libre', horas=8 * 24)
+        for copia, minutos in ((activa, 5), (otra_activa, 20)):
+            run = self.rr / 'runs' / copia.name
+            run.mkdir()
+            (run / 'meta').write_text(f'mirror=remote-run/work/{copia.name}\ncmd=true\n')
+            self.edad(run, minutos / 60)
+
+        self.ejecutar(dry=False)
+        self.assertTrue(activa.exists() and otra_activa.exists(), self.log)
+        self.assertFalse(libre.exists(), self.log)
+        self.assertIn('conservo work/activa: mirror de meta', self.log)
+        self.assertIn('conservo work/otra-activa: mirror de meta', self.log)
 
     def preparador(self, run, archivo_abierto=False):
         codigo = '''import sys
@@ -624,6 +807,7 @@ exec /usr/bin/grep "$@"
         self.assertTrue((p / 'dato').exists(), self.log)
         self.assertNotIn('borrado ', self.log)
         self.assertIn('regla 1 sin borrar: preparación de menos de 1 h', self.log)
+        self.assertIn('copia desconocida', self.log)
 
     def test_corrida_nueva_sigue_vetando(self):
         self.copia()
