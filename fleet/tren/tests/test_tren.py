@@ -20,7 +20,7 @@ from dominio import (Admitido, Armado, Candidato, Congelado, Corriendo,
                      Pausa, Rechazado, Retenido, Terminal, VistaPR,
                      datos, desde_datos, inicial, paso)
 from ledger import Ledger, directorio_estado
-from observador import Falso, GitHubGit, configuracion, es_sensible
+from observador import Falso, GitHubGit, categorias_sensibles, configuracion
 from sombra import paso_sombra
 
 loader = importlib.machinery.SourceFileLoader("cli_tren", str(RAIZ / "pao-tren"))
@@ -448,7 +448,7 @@ class ObservadorTests(Aislado):
         for archivo in (".github/workflows/check.yml", "AGENTS.md", "sub/CLAUDE.md", "package-lock.json", "sub/bun.lock"):
             with self.subTest(archivo=archivo):
                 self.archivos = [[{"filename": archivo}]]
-                self.assertTrue(es_sensible([archivo], self.config))
+                self.assertTrue(categorias_sensibles([archivo], self.config))
                 self.assertEqual(self.decision(), Retenido(Motivo.MERGE_READY))
 
     def test_sensible_solo_autorizacion_del_head(self):

@@ -45,6 +45,10 @@ def configuracion(ruta, repo):
         if not isinstance(patrones, list) or not patrones or not all(
                 isinstance(p, str) and p for p in patrones):
             raise ValueError("patrones sensibles incompletos")
+    sensibles_en_lote = config.get("sensibles_en_lote", [])
+    if not isinstance(sensibles_en_lote, list) or not all(
+            isinstance(c, str) and c in sensibles for c in sensibles_en_lote):
+        raise ValueError("sensibles_en_lote debe listar categorías de sensibles")
     if not isinstance(config.get("git"), str):
         raise ValueError("falta ruta git local")
     if not isinstance(config.get("excluir_alto_riesgo", True), bool):
@@ -55,10 +59,10 @@ def configuracion(ruta, repo):
     return config
 
 
-def es_sensible(archivos, config):
-    return any(fnmatchcase(archivo, patron)
-               for patrones in config["sensibles"].values()
-               for patron in patrones for archivo in archivos)
+def categorias_sensibles(archivos, config):
+    return {categoria for categoria, patrones in config["sensibles"].items()
+            if any(fnmatchcase(archivo, patron)
+                   for patron in patrones for archivo in archivos)}
 
 
 def sha(valor):
@@ -284,13 +288,16 @@ class GitHubGit:
                 conflicto = True if payload.get("mergeable") is False else None
             autorizados = (autorizaciones(self.config) if self.activo else
                            self.config.get("heads_autorizados", []))
+            categorias = categorias_sensibles(nombres, self.config)
             vista = replace(vista,
                 apto=apto.get("veredicto") == "APTO" and apto.get("head") == head,
                 hallazgos=apto.get("hallazgos_abiertos")
                 if type(apto.get("hallazgos_abiertos")) is int else None,
                 dirigida=dirigida.get("head") == head and dirigida.get("resultado") == "limpio",
                 ci=self.ci(repo, head).estado, conflicto=conflicto,
-                sensible=es_sensible(nombres, self.config),
+                sensible=bool(categorias),
+                sensible_en_lote=bool(categorias) and categorias.issubset(
+                    self.config.get("sensibles_en_lote", [])),
                 alto_riesgo=bool(etiquetas.intersection(
                     self.config.get("etiquetas_alto_riesgo", ["alto-riesgo"]))),
                 verificado=apto.get("verificado") == "Verificado" and apto.get("head") == head,

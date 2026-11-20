@@ -145,7 +145,7 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 vista = vistas.get(entrega.recibo, vistas.get(str(entrega.pr)))
                 entrada = Entrada(entrega, ahora, decision,
                                   ahora if isinstance(decision, Admitido) else None,
-                                  bool(vista and (vista.sensible or vista.alto_riesgo)))
+                                  bool(vista and vista.requiere_solo))
                 recibo = ledger.entregar(entrega, ahora, entrada)
                 return 0, {"recibo": recibo, "estado": "custodia",
                            "admision": decision_json(entrada.admision)}

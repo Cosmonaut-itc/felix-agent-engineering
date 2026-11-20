@@ -30,9 +30,15 @@ No hay writes de GitHub, fetch, push, suite, Pueue ni activación automática.
 
 Configurar fuera del repo una copia de [config.example.json](config.example.json)
 (por defecto `pao-tren/config.json` en el directorio de estado). Las tres
-categorías sensibles son obligatorias y usan glob de `fnmatchcase` sobre la
-ruta completa. Revisar los patrones de gobierno propios del repo antes de
-usarlo. En sombra, `entregar` y `tick --seco`, `git` debe apuntar a un
+categorías de `sensibles` son obligatorias y usan glob de `fnmatchcase` sobre
+la ruta completa. La clave opcional `sensibles_en_lote` lista categorías de
+`sensibles` que permiten viajar en lote, por ejemplo `["gobierno"]`. Toda
+categoría de la lista debe existir en `sensibles`. Un PR sensible puede viajar
+en lote si todas las categorías que coinciden con sus archivos figuran en la
+lista. Si la clave se omite o la lista está vacía, toda categoría sensible
+fuerza un tren propio. En todos los casos se exige autorización por head.
+Revisar los patrones de gobierno propios del repo antes de usarlo.
+En sombra, `entregar` y `tick --seco`, `git` debe apuntar a un
 checkout con los objetos de base/head ya disponibles. Sin ellos, retiene; no
 hace fetch. El tick activo no lee ese checkout: usa el bare del tren y trae
 lo que falte (véase U17). La lectura `merge-tree` legacy no escribe objetos;
@@ -63,11 +69,11 @@ inventario de archivos truncado retiene. El head se relee antes de terminar.
 Alto riesgo exige Verificado y la autorización de su head en
 `heads_autorizados`; sin ella queda retenido (`alto-riesgo-excluido-del-piloto`
 mientras `excluir_alto_riesgo` sea verdadero, `merge-ready` si no). Sensibles
-permanecen en merge-ready hasta autorización del head. Autorizados, ambos
-viajan solos.
-La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos;
-un sensible/alto riesgo al frente sale solo inmediatamente. No se adelanta
-un PR solo sobre tickets normales anteriores. Jale nace en pausa `etapa-1`.
+permanecen en merge-ready hasta autorización del head. El alto riesgo fuerza
+un tren propio. En el tick activo, una ventana de migración también lo fuerza.
+La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos.
+Un PR que requiere tren propio sale inmediatamente al llegar al frente.
+Jale nace en pausa `etapa-1`.
 
 El tick activo ejecuta efectos; `--seco` conserva la simulación sin IO de escritura.
 
@@ -120,8 +126,8 @@ lote no producen ahorro. Simulación y medición usan la misma cola temporal.
 Los eventos U1
 se leen igual; sin muestra al entregar se informa custodia y fuente
 `sin-observacion-al-entregar`, sin inventar evidencia retroactiva.
-Los lotes usan los tiempos de primera admisión, FIFO hasta 3 o 60 min;
-sensibles y alto riesgo admitidos viajan solos sin adelantar al primero.
+Los lotes usan los tiempos de primera admisión, FIFO hasta 3 o 60 min.
+La sombra aplica `sensibles_en_lote` y la regla de alto riesgo al formar lotes.
 A los 60 min vence la ventana antes de incorporar una llegada simultánea.
 La ventana selecciona la cohorte de entregas y sólo sus observaciones
 anteriores a `hasta`; un lote aún sin vencer figura en pendientes. El ahorro

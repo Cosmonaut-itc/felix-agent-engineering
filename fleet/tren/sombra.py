@@ -79,8 +79,7 @@ def paso_sombra(estado, observacion):
                               caducada=(entrada.caducada if entrada.caducada is not None
                                         else observacion.ahora if isinstance(decision, Rechazado)
                                         else None),
-                              solo=entrada.solo or bool(vista and (
-                                  vista.sensible or vista.alto_riesgo)))
+                              solo=entrada.solo or bool(vista and vista.requiere_solo))
         entradas.append(entrada)
     lotes, _ = lotes_fifo(entradas, observacion.ahora)
     trenes, asignados = [], {}
