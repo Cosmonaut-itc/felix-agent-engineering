@@ -601,6 +601,38 @@ class ObservadorTests(Aislado):
                 with self.assertRaisesRegex(ValueError, "sensibles_en_lote"):
                     configuracion(ruta, REPO)
 
+    def test_sen_7114_renombre_desde_ci_fuerza_solo(self):
+        self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
+        for activo in (True, False):
+            with self.subTest(activo=activo):
+                self.archivos = [[{"filename": "AGENTS.md", "status": "modified"},
+                                  {"filename": "docs/check.yml", "status": "renamed",
+                                   "previous_filename": ".github/workflows/check.yml"}]]
+                self.pr["changed_files"] = 2
+                observador = GitHubGit(self.config, ejecutar=self.ejecutar, activo=activo,
+                                       sombra=not activo)
+                v = observador.vista(self.entrega)
+                self.assertTrue(v.sensible)
+                self.assertTrue(v.requiere_solo)
+
+    def test_sen_7114_renombre_desde_ci_exige_autorizacion(self):
+        self.archivos = [[{"filename": "docs/check.yml", "status": "renamed",
+                           "previous_filename": ".github/workflows/check.yml"}]]
+        self.config["heads_autorizados"] = ["c" * 40]
+        self.assertEqual(self.decision(), Retenido(Motivo.MERGE_READY))
+
+    def test_sen_7114_categoria_adicional_invalida_falla_al_leer(self):
+        ruta = self.raiz / "config.json"
+        for valor in (None, [], [""], "scripts/*"):
+            with self.subTest(valor=valor):
+                self.config["sensibles"]["despliegue"] = valor
+                ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
+                with self.assertRaisesRegex(ValueError, "patrones sensibles"):
+                    configuracion(ruta, REPO)
+        self.config["sensibles"]["despliegue"] = ["scripts/deploy/*"]
+        ruta.write_text(json.dumps({"repos": {REPO: self.config}}))
+        self.assertEqual(configuracion(ruta, REPO), self.config)
+
     def test_sen_7114_entrega_en_sombra_conserva_opcion_de_lote(self):
         self.config.update(sensibles_en_lote=["gobierno"], heads_autorizados=[HEAD])
         self.archivos = [[{"filename": "AGENTS.md"}]]
