@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 set -eu
 
-python3 -I -B - "$PWD/fleet/tren" <<'PY'
+sombra_base=$(mktemp)
+git show c9cdb8d75040e8d6cadc4c94f8d9b999c1f1139b:fleet/tren/sombra.py > "$sombra_base"
+
+python3 -I -B - "$PWD/fleet/tren" "$sombra_base" <<'PY'
 from copy import deepcopy
 from dataclasses import replace
 from pathlib import Path
@@ -11,8 +14,8 @@ import sys
 sys.path.insert(0, sys.argv[1])
 sys.path.insert(0, str(Path(sys.argv[1]) / 'tests'))
 from comparar_eventos_sombra import comparar
-from dominio import (Admitido, Aterrizado, Certificado, Entrega, Entrada,
-                     Observacion, Promoviendo, Terminal, VistaPR, datos, paso)
+from dominio import (Admitido, Aterrizado, Certificado, Decision, Entrega, Entrada,
+                     Observacion, Pausa, Promoviendo, Terminal, VistaPR, datos, paso)
 from ledger import Ledger, filas_medicion
 from medicion import medir
 from sombra import DURACION_SUITE_ESTIMADA, paso_sombra
@@ -76,6 +79,25 @@ print('B1 tras tick siguiente / medir:', lotes(informe(ledger, 461)))
 print('B1 tras tick siguiente / dominio:', [(100, [1]), (460, [2])])
 ledger.close()
 
+ledger = Ledger(mkdtemp(prefix='sen-7119-pausa-'))
+recibo = entrega(ledger, 1, 90)
+pausa = Pausa('manual', detalle='revisión')
+ledger.guardar_paso(replace(ledger.estado(REPO, operativo=True), pausa=pausa), (), 100)
+obs = Observacion(220, BASE, (vista(1),))
+pausado = operativo(ledger, obs)
+assert pausado.entradas[0].admitida == 220 and pausado.pausa == pausa
+antes = informe(ledger, 221)
+assert not antes['lotes'] and antes['pendientes'] == [recibo]
+pausa_id = ledger.pausa_id(REPO)
+decision = Decision('levantar-1', REPO, None, 'levantar', None, 'fin de revisión', 300, pausa_id, pausa)
+ledger.registrar_decision(decision)
+sin_pausa = operativo(ledger, replace(obs, ahora=340, decision=decision, pausa_id=pausa_id))
+assert not sin_pausa.pausa and not sin_pausa.trenes
+disponible = operativo(ledger, replace(obs, ahora=460))
+assert disponible.trenes[0].recibos == (recibo,)
+print('B1 al levantar pausa / medir:', lotes(informe(ledger, 461)), 'dominio:', [(460, [1])])
+ledger.close()
+
 ledger = Ledger(mkdtemp(prefix='sen-7119-modos-'))
 recibo = entrega(ledger, 1, 100, admitida=True)
 sombra = simular(ledger, Observacion(100, BASE, (vista(1),)))
@@ -109,4 +131,12 @@ estado['entradas'][0]['tren'] = estado['trenes'][1]['id']
 comparar(evento, mutado)
 print('Comparador: aceptó un recibo enlazado al lote común equivocado')
 ledger.close()
+
+fuente = Path(sys.argv[2])
+base = {}
+exec(compile(fuente.read_text(), str(fuente), 'exec'), base)
+estado_base, _ = base['paso_sombra'](replace(sombra, trenes=()), replace(obs, ahora=libre))
+entrada_base = next(e for e in estado_base.entradas if e.entrega.recibo == recibo2)
+print('B3 origin/main conserva Retenido:', type(entrada_base.admision).__name__,
+      'y lo despacha:', any(recibo2 in t.recibos for t in estado_base.trenes))
 PY
