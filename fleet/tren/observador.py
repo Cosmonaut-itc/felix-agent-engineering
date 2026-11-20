@@ -40,8 +40,9 @@ def configuracion(ruta, repo):
     config = contenido["repos"][repo]
     # All three categories are mandatory; an omitted category cannot bypass a gate.
     sensibles = config["sensibles"]
-    for categoria in ("ci", "gobierno", "lockfiles"):
-        patrones = sensibles[categoria]
+    if not isinstance(sensibles, dict) or not {"ci", "gobierno", "lockfiles"} <= set(sensibles):
+        raise ValueError("patrones sensibles incompletos")
+    for patrones in sensibles.values():
         if not isinstance(patrones, list) or not patrones or not all(
                 isinstance(p, str) and p for p in patrones):
             raise ValueError("patrones sensibles incompletos")
@@ -290,7 +291,10 @@ class GitHubGit:
                 conflicto = True if payload.get("mergeable") is False else None
             autorizados = (autorizaciones(self.config) if self.activo else
                            self.config.get("heads_autorizados", []))
-            categorias = categorias_sensibles(nombres, self.config)
+            # Un renombre también saca el archivo de su ruta anterior.
+            anteriores = [a["previous_filename"] for pagina in archivos for a in pagina
+                          if a.get("status") == "renamed"]
+            categorias = categorias_sensibles(nombres + anteriores, self.config)
             vista = replace(vista,
                 apto=apto.get("veredicto") == "APTO" and apto.get("head") == head,
                 hallazgos=apto.get("hallazgos_abiertos")
