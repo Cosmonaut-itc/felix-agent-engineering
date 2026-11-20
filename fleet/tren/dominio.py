@@ -376,6 +376,13 @@ class VistaPR:
     # Sólo la sombra interpreta un merge externo; default compatible con U1.
     mergeado: bool = False
     ventana: Optional[VentanaAutorizada] = None
+    sensible_en_lote: bool = False
+    alto_riesgo_en_lote: bool = False
+
+    @property
+    def requiere_solo(self):
+        return ((self.alto_riesgo and not self.alto_riesgo_en_lote)
+                or (self.sensible and not self.sensible_en_lote))
 
 
 @dataclass(frozen=True)
@@ -868,7 +875,7 @@ def paso(estado, observacion):
                 admitida = None
             entrada = replace(entrada, admision=decision, admitida=admitida,
                               solo=entrada.partida or bool(vista and (
-                                  vista.sensible or vista.alto_riesgo or vista.ventana is not None)))
+                                  vista.requiere_solo or vista.ventana is not None)))
         entradas.append(entrada)
     estado = replace(estado, entradas=tuple(entradas))
     if estado.pausa:
