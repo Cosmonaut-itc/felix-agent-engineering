@@ -128,20 +128,21 @@ fleet/tren/pao-tren medir --repo owner/project \
 Imprime una línea JSON determinista: entregas en `[desde, hasta)`, admisión
 al entregar y motivo, primera admisión observada, lotes, distribución de 1 a 5,
 pendientes y `suites_ahorradas_estimadas = muestras en lotes o pendientes - lotes`.
-`admitidas` conserva la cuenta histórica; las entregas caducadas antes de un
-lote no producen ahorro. Simulación y medición usan la misma cola temporal.
-Los eventos U1
-se leen igual; sin muestra al entregar se informa custodia y fuente
+`admitidas` conserva la cuenta histórica. `modo` indica el último tramo
+observado antes de `hasta` (`activo` o `sombra`). Cada lote contiene
+`instante`, `motivo`, `recibos`, `prs`, `tamano` y `fuente` (`real` o `sombra`).
+Los eventos U1 se leen igual. Sin muestra al entregar se informa custodia y fuente
 `sin-observacion-al-entregar`, sin inventar evidencia retroactiva.
 La entrega y el tick en sombra aplican `sensibles_en_lote` y
 `alto_riesgo_en_lote` al formar lotes.
-La simulación conserva la cola mientras la vía está ocupada y vuelve a
-despachar por FIFO, hasta cinco, cuando queda libre. `medir` reconstruye esa
-disponibilidad a partir de los cambios de tren activo en los snapshots
-`operativo` del ledger, incluidos los anteriores a `desde`. Sólo proyecta un
-lote por tick libre observado. Si no hay snapshots operativos anteriores a
-`hasta`, usa la misma estimación de 68 minutos que la sombra.
-El intervalo de medición selecciona la cohorte de entregas y sólo sus
+En sombra, `medir` proyecta con la cola FIFO y la ocupación estimada de 68
+minutos. Al activar el tren, conserva los despachos simulados anteriores al
+primer snapshot `operativo`. Los PR que aún esperaban pasan al tramo activo.
+Cada lote real toma sus miembros y su instante del primer snapshot
+`operativo` en que aparece. Al corte, el último snapshot activo aporta
+los pendientes que siguen admitidos y sin tren.
+La historia anterior a `desde` también cuenta para formar los lotes. El
+informe muestra los miembros de la cohorte `[desde, hasta)` y sólo usa
 observaciones anteriores a `hasta`.
 
 ## Instalación en macOS (U7, sombra)

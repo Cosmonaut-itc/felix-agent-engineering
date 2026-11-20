@@ -9,20 +9,16 @@ from dominio import (Admitido, Estado, Rechazado, Terminal, Tren, admision_entra
 DURACION_SUITE_ESTIMADA = 68 * 60
 
 
-def lotes_fifo(entradas, hasta, ticks_libres=None):
+def lotes_fifo(entradas, hasta):
     """Proyecta un lote por turno libre y devuelve los admitidos aún en fila."""
     llegadas = deque(sorted((e for e in entradas if e.admitida is not None
                              and e.admitida <= hasta), key=orden_fifo))
-    ticks = iter(ticks_libres) if ticks_libres is not None else None
     libre_desde = float("-inf")
     fila = []
     lotes = []
     while fila or llegadas:
-        if ticks is not None:
-            instante = next(ticks, None)
-        else:
-            instante = libre_desde if fila else max(libre_desde, llegadas[0].admitida)
-        if instante is None or instante > hasta:
+        instante = libre_desde if fila else max(libre_desde, llegadas[0].admitida)
+        if instante > hasta:
             break
         while llegadas and llegadas[0].admitida <= instante:
             fila.append(llegadas.popleft())
@@ -32,8 +28,7 @@ def lotes_fifo(entradas, hasta, ticks_libres=None):
             del fila[:len(miembros)]
             motivo = "solo" if miembros[0].solo else "disponible"
             lotes.append((instante, motivo, miembros))
-            if ticks is None:
-                libre_desde = instante + DURACION_SUITE_ESTIMADA
+            libre_desde = instante + DURACION_SUITE_ESTIMADA
     pendientes = tuple(e for e in (*fila, *llegadas) if e.caducada is None or e.caducada > hasta)
     return tuple(lotes), pendientes
 

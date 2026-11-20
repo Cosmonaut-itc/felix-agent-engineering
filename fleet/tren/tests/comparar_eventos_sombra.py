@@ -8,14 +8,16 @@ from unittest import TestCase
 def conservar_lotes_comunes(tipo, payload, comunes):
     estado = payload["estado"]
     estado["trenes"] = [t for t in estado["trenes"] if tuple(t["recibos"]) in comunes]
-    ids = {t["id"] for t in estado["trenes"]}
+    lotes_por_id = {t["id"]: tuple(t["recibos"]) for t in estado["trenes"]}
     for entrada in estado["entradas"]:
-        if tipo == "sombra-doble-camino" or entrada["tren"] not in ids:
+        if entrada["tren"] not in lotes_por_id:
             del entrada["tren"]
+        elif tipo == "sombra-doble-camino":
+            entrada["tren"] = lotes_por_id[entrada["tren"]]
     if tipo == "sombra-doble-camino":
         # El instante de despacho forma parte del id simulado.
         for tren in estado["trenes"]:
-            del tren["id"]
+            tren["id"] = lotes_por_id[tren["id"]]
     # El efecto de armado se emite en el tick de despacho de cada regla.
     payload["efectos"] = [e for e in payload["efectos"] if e["tipo"] != "armar-candidato"]
 
