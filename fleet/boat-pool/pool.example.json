@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "org": "<org>",
+  "llavero": "<servicio-del-llavero>",
+  "prohibidos": [
+    "<id-reservado>",
+    {"id": "<id-reservado-temporal>", "hasta": "<fecha-UTC>"}
+  ],
+  "inactividad_min": 30,
+  "reserva_arranques": 100,
+  "piso": {
+    "horas_plan": 48,
+    "monedero_usd": 10
+  },
+  "vms": [
+    {
+      "nombre": "<vm-jale-1>",
+      "repo": "<organizacion>/<repo-jale>",
+      "tipo": "large",
+      "lugares": 2,
+      "limite_clase": {"e2e": 1}
+    },
+    {
+      "nombre": "<vm-jale-2>",
+      "repo": "<organizacion>/<repo-jale>",
+      "tipo": "large",
+      "lugares": 2,
+      "limite_clase": {"e2e": 1},
+      "inactividad_min": 45
+    },
+    {
+      "nombre": "<vm-hasito>",
+      "repo": "<organizacion>/<repo-hasito>",
+      "tipo": "large",
+      "lugares": 2,
+      "limite_clase": {},
+      "inactividad_min": null
+    }
+  ]
+}
