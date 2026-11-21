@@ -49,6 +49,16 @@
 #                            tiene su app como cwd, y además pesan más de 1 GB o
 #                            llevan 1 día sin tocarse (en emergencia, siempre).
 #   8. Simuladores de Xcode  xcrun simctl delete unavailable, una vez por semana.
+#   9. Temporales mktemp     directorios propios del home con modo 0700 y sufijo
+#                            alfanumérico de 6 a 8 caracteres, con mayúscula y
+#                            minúscula y sin forma de palabra capitalizada con
+#                            dígitos opcionales. Exige 7 días (2 en emergencia)
+#                            sin cambios de mtime ni ctime en todo el árbol.
+#                            En STATE/borrando-* repite el recorrido y lsof.
+#                            Devuelve el árbol al origen si hay actividad, uso
+#                            o error. Se saltan árboles protegidos.
+#                            La evidencia de mktemp -d en el home también
+#                            caduca a los 7 días sin cambios.
 
 set -u
 export PATH="$HOME/.bun/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -116,6 +126,39 @@ borrar() { # $1 = ruta, $2 = motivo
   else
     rm -rf -- "$1" && log "borrado $1 ($2)"
   fi
+}
+
+renombrar_exclusivo() { # $3 opcional: ctime en ns del recorrido previo de la regla 9
+  # RENAME_EXCL no copia entre volúmenes ni pisa un destino.
+  /usr/bin/python3 -B - "$1" "$2" "${3:-}" <<'PY'
+import ctypes
+import os
+import sys
+
+origen, destino, ctime_antes = sys.argv[1:]
+libc = ctypes.CDLL(None, use_errno=True)
+rename = libc.renamex_np
+rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
+rename.restype = ctypes.c_int
+RENAME_EXCL = 0x00000004
+origen_bytes = os.fsencode(origen)
+destino_bytes = os.fsencode(destino)
+if ctime_antes:
+    try:
+        if os.lstat(origen).st_ctime_ns != int(ctime_antes):
+            sys.exit('el ctime del directorio cambió desde el recorrido')
+    except OSError as error:
+        sys.exit(f'falló lstat antes del rename: {error}')
+if rename(origen_bytes, destino_bytes, RENAME_EXCL) != 0:
+    codigo = ctypes.get_errno()
+    sys.exit('rename exclusivo falló: ' + os.strerror(codigo))
+if ctime_antes:
+    try:
+        print(os.lstat(destino).st_ctime_ns)
+    except OSError as error:
+        # El rename ya se hizo. Devuelve el motivo para que el llamante lo revierta.
+        print(f'falló lstat tras el rename: {error}')
+PY
 }
 
 corrida_nueva() {
@@ -240,22 +283,7 @@ borrar_en() {
       if [ "$DRY" = 1 ]; then
         log "[dry-run] borraría $1/$2 ($3; rename previo a $destino)"; exit 0
       fi
-      # renamex_np con RENAME_EXCL no copia entre volúmenes ni pisa un destino.
-      if ! /usr/bin/python3 -B - "./$2" "$destino" <<'PY'
-import ctypes
-import os
-import sys
-
-libc = ctypes.CDLL(None, use_errno=True)
-rename = libc.renamex_np
-rename.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint]
-rename.restype = ctypes.c_int
-RENAME_EXCL = 0x00000004
-if rename(os.fsencode(sys.argv[1]), os.fsencode(sys.argv[2]), RENAME_EXCL) != 0:
-    codigo = ctypes.get_errno()
-    sys.exit('rename exclusivo falló: ' + os.strerror(codigo))
-PY
-      then
+      if ! renombrar_exclusivo "./$2" "$destino"; then
         log "no borro $1/$2: falló el rename exclusivo a $destino"; exit 1
       fi
       log "renombrada $1/$2 a $destino"
@@ -444,7 +472,7 @@ log "inicio (libre: ${antes} GB$([ "$EMERG" = 1 ] && echo ", EMERGENCIA")$([ "$D
 MARCA= INV_JSON= INV_LISTA= INV_ERR= EN_USO= USO_CWD= USO_ABIERTOS= USO_PS= USO_BASETEMP= RUNS_NUEVAS= CWD_WORK=
 INV_OK=1 USO_OK=1 INV_MOTIVO=
 sin_uso() {
-  log "reglas 1, 2, 3, 5, 6 y 7 sin borrar: $1"
+  log "reglas 1, 2, 3, 5, 6, 7 y 9 sin borrar: $1"
   INV_OK=0; USO_OK=0
 }
 limpiar_temporales() {
@@ -675,8 +703,12 @@ libre_ahora() { # sin lock y sin procesos dentro, con un lsof hecho justo antes 
   if [ -e "$1/.remote-run.lock" ] || [ -L "$1/.remote-run.lock" ]; then
     log "no borro $1: tiene lock"; return 1
   fi
+  lsof_sin_uso "$1" "reglas 1 y 3: lsof previo"
+}
+
+lsof_sin_uso() {
   local salida estado
-  salida=$(acotado "reglas 1 y 3: lsof previo" "$1" lsof -nP +D "$1" 2>&1); estado=$?
+  salida=$(acotado "$2" "$1" lsof -nP +D "$1" 2>&1); estado=$?
   [ "$estado" = 1 ] && [ -z "$salida" ] && return 0
   log "no borro $1: lsof salió $estado: $(printf '%s\n' "$salida" | head -1 | cut -c1-200)"
   return 1
@@ -1039,5 +1071,159 @@ if command -v xcrun >/dev/null && { [ ! -e "$STAMP_SIM" ] || [ -n "$(acotado "re
     touch "$STAMP_SIM"
   fi
 fi
+
+# 9. Temporales de mktemp en el primer nivel del home.
+recorrer_mktemp() {
+  acotado "regla 9: actividad" "$1" /usr/bin/python3 -B - "$@" <<'PY_MKTEMP'
+import ctypes
+import os
+import stat
+import sys
+import time
+
+raiz, dias, dispositivo_state = sys.argv[1:4]
+ctime_antes, ctime_rename = map(int, sys.argv[4:]) if len(sys.argv) > 4 else (None, None)
+dispositivo = int(dispositivo_state)
+ahora = time.time_ns()
+limite = ahora - int(dias) * 86400 * 10**9
+protegidos = {b'com.apple.macl', b'com.apple.file-provider-domain-id'}
+
+libc = ctypes.CDLL(None, use_errno=True)
+listxattr = libc.listxattr
+listxattr.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+listxattr.restype = ctypes.c_ssize_t
+XATTR_NOFOLLOW = 0x0001
+
+
+def revisar(ruta, datos):
+    if datos.st_dev != dispositivo:
+        sys.exit(f'dispositivo distinto de STATE en {ruta}')
+    ctime = datos.st_ctime_ns
+    if ruta == raiz:
+        if not stat.S_ISDIR(datos.st_mode):
+            sys.exit('la entrada dejó de ser un directorio')
+        if stat.S_IMODE(datos.st_mode) != 0o700:
+            sys.exit('modo distinto de 0700')
+        # Nuestro rename puede actualizar el ctime de la raíz. Usa el ctime
+        # previo sólo si sigue coincidiendo con el observado tras el rename.
+        if ctime_rename is not None:
+            if ctime != ctime_rename:
+                sys.exit(f'actividad en cuarentena: cambió el ctime de la raíz: {ruta}')
+            ctime = ctime_antes
+    if max(datos.st_mtime_ns, ctime) > limite:
+        sys.exit(f'algo cambió en los últimos {dias} días: {ruta}')
+    if not stat.S_ISDIR(datos.st_mode):
+        return False
+    ruta_bytes = os.fsencode(ruta)
+    tamano = listxattr(ruta_bytes, None, 0, XATTR_NOFOLLOW)
+    if tamano < 0:
+        sys.exit(f'falló listxattr en {ruta}: {os.strerror(ctypes.get_errno())}')
+    if tamano:
+        atributos = ctypes.create_string_buffer(tamano)
+        leidos = listxattr(ruta_bytes, atributos, tamano, XATTR_NOFOLLOW)
+        if leidos < 0:
+            sys.exit(f'falló listxattr en {ruta}: {os.strerror(ctypes.get_errno())}')
+        for atributo in atributos.raw[:leidos].split(b'\0'):
+            nombre = atributo.split(b'#', 1)[0]
+            if nombre in protegidos:
+                sys.exit(f'{nombre.decode()} en {ruta}')
+    return True
+
+
+try:
+    datos_raiz = os.lstat(raiz)
+    revisar(raiz, datos_raiz)
+    directorios = [raiz]
+    while directorios:
+        with os.scandir(directorios.pop()) as entradas:
+            for entrada in entradas:
+                if revisar(entrada.path, os.lstat(entrada.path)):
+                    directorios.append(entrada.path)
+    if ctime_rename is None:
+        print(datos_raiz.st_ctime_ns)
+except OSError as error:
+    sys.exit(f'falló el recorrido: {error}')
+PY_MKTEMP
+}
+
+limpiar_mktemp_home() (
+  local LC_ALL=C patron='^[A-Za-z0-9_-]+\.[A-Za-z0-9]{6,8}$' palabra='^[A-Z][a-z]+[0-9]*$'
+  local formato='%d:%i:%m:%u:%p'
+  local dias=7 d nombre sufijo dev_state identidad identidad_cuarentena motivo aleatorio destino error
+  local ctime_antes ctime_rename
+  [ "$EMERG" = 0 ] || dias=2
+  if ! cd -P -- "$HOME" || [ "$PWD" != "$HOME" ]; then
+    log "regla 9: salto regla: no pude fijar el home físico"; return
+  fi
+  dev_state=$(stat -f %d "$STATE" 2>/dev/null) || dev_state=
+  [[ "$dev_state" =~ ^[0-9]+$ ]] || {
+    log "regla 9: salto regla: dispositivo de STATE no verificable"; return;
+  }
+  for d in "$HOME"/*.*; do
+    nombre=${d##*/} sufijo=${d##*.}
+    [[ "$nombre" =~ $patron && "$sufijo" == *[A-Z]* && "$sufijo" == *[a-z]* ]] || continue
+    [[ "$sufijo" =~ $palabra ]] && continue
+    if [ -L "./$nombre" ] || [ ! -d "./$nombre" ] || [ ! -O "./$nombre" ]; then
+      log "regla 9: no borro $d: no es un directorio propio sin enlace"; continue
+    fi
+    if en_uso "$d"; then
+      log "regla 9: no borro $d: aparece en EN_USO o no pudo consultarse"; continue
+    fi
+    identidad=$(stat -f "$formato" "./$nombre" 2>/dev/null) || identidad=
+    if [[ "$identidad" != "$dev_state:"* ]]; then
+      log "regla 9: no borro $d: mismo filesystem que STATE no verificable"; continue
+    fi
+    if ! ctime_antes=$(recorrer_mktemp "./$nombre" "$dias" "$dev_state" 2>&1); then
+      log "regla 9: no borro $d: ${ctime_antes:-actividad no descartada}"; continue
+    fi
+    if ! [[ "$ctime_antes" =~ ^-?[0-9]+$ ]]; then
+      log "regla 9: no borro $d: ctime previo no verificable"; continue
+    fi
+    lsof_sin_uso "$d" "regla 9: lsof previo" || continue
+    if [ -L "./$nombre" ] || [ ! -d "./$nombre" ] || [ ! -O "./$nombre" ] ||
+        [ "$(stat -f "$formato" "./$nombre" 2>/dev/null)" != "$identidad" ]; then
+      log "regla 9: no borro $d: el directorio cambió desde el recorrido"; continue
+    fi
+    if [ "$DRY" = 1 ]; then
+      log "[dry-run] borraría $d (regla 9: temporal mktemp sin cambios en $dias días)"
+      continue
+    fi
+    aleatorio=$(openssl rand -hex 8) && [[ "$aleatorio" =~ ^[0-9a-f]{16}$ ]] || {
+      log "regla 9: no borro $d: no pude generar el aleatorio del rename"; continue;
+    }
+    destino="$STATE/borrando-mktemp-$aleatorio"
+    if ! ctime_rename=$(renombrar_exclusivo "./$nombre" "$destino" "$ctime_antes" 2>&1); then
+      log "regla 9: no borro $d: falló el rename exclusivo a $destino ($ctime_rename)"; continue
+    fi
+    identidad_cuarentena=$(stat -f "$formato" "$destino" 2>/dev/null) || identidad_cuarentena=
+    log "regla 9: renombrada $d a $destino"
+    motivo=
+    if ! [[ "$ctime_rename" =~ ^-?[0-9]+$ ]]; then
+      motivo=${ctime_rename:-ctime en cuarentena no verificable}
+    elif [ "$identidad_cuarentena" != "$identidad" ]; then
+      motivo="el directorio cambió durante el rename o falló stat"
+    elif ! motivo=$(recorrer_mktemp "$destino" "$dias" "$dev_state" \
+        "$ctime_antes" "$ctime_rename" 2>&1); then
+      motivo=${motivo:-actividad no descartada}
+    elif ! lsof_sin_uso "$destino" "regla 9: lsof en cuarentena"; then
+      motivo="uso no descartado en cuarentena"
+    fi
+    if [ -n "$motivo" ]; then
+      log "regla 9: no borro $destino: $motivo"
+      if error=$(renombrar_exclusivo "$destino" "./$nombre" 2>&1); then
+        log "regla 9: devuelta $d a su ruta original"
+      else
+        log "regla 9: falló la vuelta de $destino a $d: queda en STATE; requiere autorización explícita ($error)"
+      fi
+      continue
+    fi
+    if rm -rf -- "$destino"; then
+      log "borrado $d (regla 9: temporal mktemp sin cambios en $dias días)"
+    else
+      log "regla 9: falló rm de $destino: queda en STATE; requiere autorización explícita"
+    fi
+  done
+)
+limpiar_mktemp_home
 
 log "fin (libre: $(libre_gb) GB, antes: ${antes} GB)"

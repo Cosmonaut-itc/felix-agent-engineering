@@ -1,8 +1,9 @@
 """Pasada completa aislada; el tope corto y PATH sólo cambian en el fixture.
 
-LIMPIEZA_TEST_SOURCE permite ejecutar estos mismos tests contra origin/main.
-Nunca consulta /private/tmp ni HOME reales y siempre usa --dry-run.
-Los tests r5 sustituyen sólo borrar() para las cachés aisladas del fixture.
+LIMPIEZA_TEST_SOURCE permite ejecutar estos mismos tests contra otra revisión.
+Nunca consulta /private/tmp ni HOME reales. Sólo los tests de mktemp
+ejecutan la pasada sin --dry-run. Los tests r5 habilitan el borrado de las
+cachés aisladas del fixture sin quitar --dry-run.
 """
 import fcntl
 import json
@@ -19,6 +20,8 @@ import unittest
 REPO = Path(__file__).resolve().parents[4]
 SOURCE = Path(os.environ.get('LIMPIEZA_TEST_SOURCE', REPO))
 HOSTS = SOURCE / 'scripts/hosts'
+ADELANTO_MKTEMP_DIAS = 8
+SEGUNDOS_DIA = 86400
 
 
 class RecorridosAcotadosTest(unittest.TestCase):
@@ -85,14 +88,40 @@ if c['block'] == 'du':
 os.execv('/usr/bin/du', ['du'] + sys.argv[1:])
 ''')
         self.executable('lsof', '''#!/usr/bin/python3 -B
-import json, os, sys, time
+import json, os, subprocess, sys, time
 from pathlib import Path
-c = json.loads((Path(os.environ['HARNESS']) / 'config.json').read_text())
+root = Path(os.environ['HARNESS'])
+c = json.loads((root / 'config.json').read_text())
 if '+D' in sys.argv:
     if c['block'] == 'lsof': time.sleep(30)
     if c['block'] == 'lsof-parcial': print('captura parcial')
+    ruta = Path(sys.argv[-1])
+    if ruta.name == c.get('mktemp_modificar'):
+        dato = ruta / 'uno/dos/tres/cuatro/dato'
+        dato.write_text('escritura durante lsof previo')
+        instante = c['mktemp_fecha_carrera']
+        os.utime(dato, (instante, instante))
+    if ruta.name.startswith('borrando-mktemp-'):
+        if c.get('mktemp_origen_ocupado'):
+            origen = Path(c['mktemp_origen_ocupado'])
+            origen.mkdir()
+            (origen / 'nuevo').write_text('conservar el nuevo origen')
+            print('captura de cuarentena no disponible', file=sys.stderr)
+            sys.exit(1)
+        if c.get('mktemp_pid_abierto'):
+            captura = subprocess.run(
+                ['/usr/sbin/lsof', '-a', '-p', str(c['mktemp_pid_abierto']),
+                 '-nP', '-Ffi', '+D', str(ruta)], capture_output=True, text=True)
+            (root / 'lsof-cuarentena').write_text(captura.stdout)
+            sys.stdout.write(captura.stdout)
+            sys.stderr.write(captura.stderr)
+            sys.exit(captura.returncode)
     sys.exit(1)
-print('p123\\nn' + os.environ['HARNESS'])
+if c.get('lsof_error'):
+    print('captura no disponible', file=sys.stderr)
+    sys.exit(1)
+captura = 'lsof_cwd' if '-d' in sys.argv else 'lsof_abiertos'
+print(c.get(captura, 'p123\\nn' + os.environ['HARNESS']))
 ''')
         self.executable('ps', '''#!/usr/bin/python3 -B
 import os, sys
@@ -130,11 +159,10 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
             'export PATH="$HOME/.bun/bin:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"',
             'export PATH=' + shlex.quote(str(self.bin)) + ':/usr/bin:/bin:/usr/sbin:/sbin')
         script = script.replace("libre_gb() { df -g /System/Volumes/Data | awk 'NR==2{print $4}'; }",
-                                'libre_gb() { echo 41; }')
+                                'libre_gb() { echo "${LIBRE_FIXTURE:-41}"; }')
         script = script.replace('RECORRIDO_SEGUNDOS=600', 'RECORRIDO_SEGUNDOS=0.5')
         script = script.replace('/private/tmp', str(self.root / 'tmp'))
-        # Sólo la regla 7 puede borrar, y sólo dentro de este HOME temporal.
-        # El resto de la pasada mantiene --dry-run, incluido simctl.
+        # El simctl falso también aísla las pasadas de mktemp sin --dry-run.
         self.executable('xcrun', '#!/bin/sh\nexit 0\n')
         script = script.replace('borrar "$c" "caché de Next.js,',
                                 'borrar_cache_fixture "$c" "caché de Next.js,')
@@ -150,7 +178,63 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
   fi
 }
 # 7. Cachés de Next.js''')
+        script = script.replace('listxattr = libc.listxattr\n', r'''import errno
+import json
+from pathlib import Path
+from types import SimpleNamespace
+
+config = json.loads((Path(os.environ['HARNESS']) / 'config.json').read_text())
+listxattr_real = libc.listxattr
+lstat_real = os.lstat
+
+
+def lstat_cuarentena(ruta):
+    antes = lstat_real(ruta)
+    if ruta != raiz or ctime_rename is None:
+        return antes
+    os.chmod(ruta, 0o700)
+    despues = lstat_real(ruta)
+    assert despues.st_mode == antes.st_mode
+    assert despues.st_mtime_ns == antes.st_mtime_ns
+    assert despues.st_ctime_ns != antes.st_ctime_ns
+    # Reproduce el mismo segundo incluso si la Mini se demora entre lecturas.
+    ctime_ns = despues.st_ctime_ns
+    segundo_ns = 10**9
+    segundo = antes.st_ctime_ns // segundo_ns
+    if ctime_ns // segundo_ns != segundo:
+        ctime_ns = segundo * segundo_ns + (antes.st_ctime_ns + 1) % segundo_ns
+    return SimpleNamespace(st_dev=despues.st_dev, st_mode=despues.st_mode,
+                           st_mtime=despues.st_mtime, st_mtime_ns=despues.st_mtime_ns,
+                           st_ctime=ctime_ns / segundo_ns, st_ctime_ns=ctime_ns)
+
+
+if config.get('mktemp_cambiar_ctime_raiz'):
+    os.lstat = lstat_cuarentena
+
+
+def listxattr(ruta, buffer, tamano, opciones):
+    assert opciones == 0x0001  # XATTR_NOFOLLOW de macOS
+    nombre = Path(os.fsdecode(ruta)).name
+    if nombre == config.get('listxattr_error'):
+        ctypes.set_errno(errno.EACCES)
+        return -1
+    if nombre == config.get('listxattr_block'):
+        time.sleep(30)
+    atributo = config.get('listxattrs', {}).get(nombre)
+    if atributo is None:
+        return listxattr_real(ruta, buffer, tamano, opciones)
+    datos = atributo.encode() + b'\0'
+    if buffer is not None:
+        assert tamano == len(datos)
+        ctypes.memmove(buffer, datos, tamano)
+    return len(datos)
+
+
+listxattr_real.argtypes = [ctypes.c_char_p, ctypes.c_void_p, ctypes.c_size_t, ctypes.c_int]
+listxattr_real.restype = ctypes.c_ssize_t
+''')
         self.script = self.root / 'limpieza-disco.sh'
+        self.plantilla_script = script
         self.script.write_text(script)
         shutil.copyfile(HOSTS / 'inventario/inventario.py', self.root / 'pao-inventario.py')
 
@@ -159,28 +243,45 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
         p.write_text(text)
         p.chmod(0o755)
 
-    def envejecer(self, p):
+    def envejecer(self, p, dias=9):
+        instante = time.time() - dias * SEGUNDOS_DIA
         for ruta in sorted(p.rglob('*'), reverse=True) + [p]:
-            os.utime(ruta, (time.time() - 9 * 86400,) * 2)
+            os.utime(ruta, (instante, instante))
 
-    def ejecutar(self, poda_fixture=False):
+    def ejecutar(self, poda_fixture=False, *, dry_run=True, libre=41, tope_pasada=8,
+                 adelanto_mktemp_dias=ADELANTO_MKTEMP_DIAS):
+        # Sólo el reloj del recorrido de mktemp. utime no envejece el ctime.
+        adelanto = adelanto_mktemp_dias * SEGUNDOS_DIA
+        script = self.plantilla_script.replace(
+            'ahora = time.time_ns()\n', f'ahora = time.time_ns() + {adelanto * 10**9}\n')
+        # La misma prueba también corre contra revisiones con reloj en segundos.
+        script = script.replace('ahora = time.time()\n', f'ahora = time.time() + {adelanto}\n')
+        self.script.write_text(script)
         (self.root / 'config.json').write_text(json.dumps(self.config))
         start = time.monotonic()
-        p = subprocess.Popen(['bash', str(self.script), '--dry-run'], start_new_session=True,
+        comando = ['bash', str(self.script)]
+        if dry_run:
+            comando.append('--dry-run')
+        p = subprocess.Popen(comando, start_new_session=True,
                              env=dict(os.environ, HOME=str(self.home), HARNESS=str(self.root),
+                                      LIBRE_FIXTURE=str(libre),
                                       PODA_FIXTURE=str(int(poda_fixture))),
                              stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:
-            out, err = p.communicate(timeout=8)
+            out, err = p.communicate(timeout=tope_pasada)
         except subprocess.TimeoutExpired:
             os.killpg(p.pid, signal.SIGKILL)
             out, err = p.communicate()
-            self.fail('pasada no llegó a fin en 8 s:\n' + out + err)
+            self.fail(f'pasada no llegó a fin en {tope_pasada} s:\n' + out + err)
         self.log = out
         self.assertEqual(p.returncode, 0, out + err)
         self.assertEqual(err, '', out + err)
-        self.assertLess(time.monotonic() - start, 8)
+        self.assertLess(time.monotonic() - start, tope_pasada)
         return out
+
+    def ejecutar_mktemp(self, **opciones):
+        # Dos recorridos y dos lsof por candidata se suman a la pasada.
+        return self.ejecutar(tope_pasada=15, **opciones)
 
     def cache_r5(self, nombre):
         cache = self.home / nombre / 'proyecto/.next/cache'
@@ -188,6 +289,200 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
         (cache / 'dato').write_text('fixture borrable')
         self.envejecer(self.home / nombre)
         return cache
+
+    def temporal_mktemp(self, nombre='x.AbCd1234'):
+        ruta = self.home / nombre
+        ruta.mkdir(mode=0o700)
+        dato = ruta / 'uno/dos/tres/cuatro/dato'
+        dato.parent.mkdir(parents=True)
+        dato.write_text('fixture mktemp')
+        self.envejecer(ruta, 8)
+        return ruta, dato
+
+    def test_mktemp_viejo_renombra_y_borra(self):
+        ruta, _ = self.temporal_mktemp()
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertFalse(ruta.exists(), 'el temporal mktemp viejo sigue en el home\n' + out)
+        self.assertIn(f'renombrada {ruta} a {self.state}/borrando-', out)
+        self.assertIn(f'borrado {ruta} (regla 9:', out)
+        self.assertFalse(list(self.state.glob('borrando-*')), out)
+
+    def test_mktemp_archivo_profundo_reciente_conserva_el_arbol(self):
+        ruta, dato = self.temporal_mktemp()
+        ayer_del_recorrido = time.time() + (ADELANTO_MKTEMP_DIAS - 1) * SEGUNDOS_DIA
+        os.utime(dato, (ayer_del_recorrido, ayer_del_recorrido))
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertTrue(dato.exists(), out)
+        self.assertIn(f'no borro {ruta}: algo cambió en los últimos 7 días', out)
+
+    def test_mktemp_emergencia_general_usa_dos_dias(self):
+        vieja, _ = self.temporal_mktemp()
+        reciente, _ = self.temporal_mktemp('y.DeFg5678')
+        self.envejecer(vieja, 3 - ADELANTO_MKTEMP_DIAS)
+        self.envejecer(reciente, 1 - ADELANTO_MKTEMP_DIAS)
+        out = self.ejecutar_mktemp(dry_run=False, libre=15)
+        self.assertTrue(vieja.exists(), out)
+        out = self.ejecutar_mktemp(dry_run=False, libre=14)
+        self.assertFalse(vieja.exists(), out)
+        self.assertTrue(reciente.exists(), out)
+        self.assertIn(f'no borro {reciente}: algo cambió en los últimos 2 días', out)
+
+    def test_mktemp_cwd_y_archivo_abierto_conservan_sus_arboles(self):
+        cwd, dato_cwd = self.temporal_mktemp()
+        abiertos, dato_abierto = self.temporal_mktemp('y.DeFg5678')
+        proceso = subprocess.Popen(['/bin/sleep', '120'], cwd=dato_cwd.parent)
+        self.addCleanup(proceso.wait)
+        self.addCleanup(proceso.terminate)
+        self.config['lsof_cwd'] = subprocess.run(
+            ['/usr/sbin/lsof', '-a', '-p', str(proceso.pid), '-d', 'cwd', '-Fn'],
+            capture_output=True, text=True, check=True).stdout
+        self.assertIn(str(dato_cwd.parent), self.config['lsof_cwd'])
+        with dato_abierto.open():
+            self.config['lsof_abiertos'] = subprocess.run(
+                ['/usr/sbin/lsof', '-p', str(os.getpid()), '-Fn'],
+                capture_output=True, text=True, check=True).stdout
+            self.assertIn(str(dato_abierto), self.config['lsof_abiertos'])
+            out = self.ejecutar_mktemp(dry_run=False)
+        for ruta in (cwd, abiertos):
+            self.assertTrue(ruta.exists(), out)
+            self.assertIn(f'no borro {ruta}: aparece en EN_USO', out)
+
+    def test_mktemp_nombres_invalidos_enlace_y_archivo_se_conservan(self):
+        nombres = ('x.backup12', 'x.ABCDEF12',
+                   '.AbCd1234', '.x.AbCd1234', 'x.y.AbCd1234', 'x+y.AbCd1234')
+        carpetas = [self.temporal_mktemp(nombre)[0] for nombre in nombres]
+        # Un árbol que cumpliría bajo el enlace, fuera del primer nivel del home.
+        destino = self.root / 'destino'
+        destino.mkdir()
+        self.envejecer(destino)
+        enlace = self.home / 'enlace.AbCd1234'
+        enlace.symlink_to(destino, target_is_directory=True)
+        archivo = self.home / 'archivo.AbCd1234'
+        archivo.touch()
+        self.envejecer(archivo)
+        out = self.ejecutar_mktemp(dry_run=False)
+        for ruta in carpetas + [destino, enlace, archivo]:
+            self.assertTrue(ruta.exists(), str(ruta) + '\n' + out)
+        for ruta in (enlace, archivo):
+            self.assertIn(f'no borro {ruta}: no es un directorio propio sin enlace', out)
+
+    def test_mktemp_ctime_reciente_con_mtime_viejo_conserva_el_arbol(self):
+        ruta, dato = self.temporal_mktemp()
+        out = self.ejecutar_mktemp(dry_run=False, adelanto_mktemp_dias=0)
+        self.assertTrue(dato.exists(), 'se borró un árbol con ctime reciente\n' + out)
+        self.assertIn(f'no borro {ruta}: algo cambió en los últimos 7 días', out)
+
+    def test_mktemp_cuarentena_devuelve_arbol_con_archivo_modificado(self):
+        ruta, dato = self.temporal_mktemp()
+        self.config.update(mktemp_modificar=ruta.name,
+                           mktemp_fecha_carrera=time.time() + ADELANTO_MKTEMP_DIAS * SEGUNDOS_DIA)
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertTrue(dato.exists(), 'se borró un árbol modificado antes del rename\n' + out)
+        self.assertEqual(dato.read_text(), 'escritura durante lsof previo')
+        self.assertIn(f'renombrada {ruta} a {self.state}/borrando-mktemp-', out)
+        self.assertIn('algo cambió en los últimos 7 días:', out)
+        self.assertIn(f'devuelta {ruta} a su ruta original', out)
+        self.assertFalse(list(self.state.glob('borrando-mktemp-*')), out)
+
+    def test_mktemp_cuarentena_devuelve_arbol_con_descriptor_abierto(self):
+        ruta, dato = self.temporal_mktemp()
+        self.config['mktemp_pid_abierto'] = os.getpid()
+        # El doble sólo consulta este descriptor con lsof real en cuarentena.
+        with dato.open() as abierto:
+            out = self.ejecutar_mktemp(dry_run=False)
+            self.assertTrue(dato.exists(), 'se borró un árbol con descriptor abierto\n' + out)
+            self.assertEqual(abierto.read(), 'fixture mktemp')
+            captura = (self.root / 'lsof-cuarentena').read_text()
+            self.assertIn(f'f{abierto.fileno()}\ni{dato.stat().st_ino}\n', captura)
+        self.assertIn(f'renombrada {ruta} a {self.state}/borrando-mktemp-', out)
+        self.assertIn('uso no descartado en cuarentena', out)
+        self.assertIn(f'devuelta {ruta} a su ruta original', out)
+        self.assertFalse(list(self.state.glob('borrando-mktemp-*')), out)
+
+    def test_mktemp_cuarentena_devuelve_arbol_con_ctime_raiz_en_el_mismo_segundo(self):
+        ruta, dato = self.temporal_mktemp()
+        self.config['mktemp_cambiar_ctime_raiz'] = True
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertTrue(dato.exists(), 'se borró un árbol con ctime de raíz modificado en cuarentena\n' + out)
+        self.assertEqual(dato.read_text(), 'fixture mktemp')
+        self.assertIn(f'renombrada {ruta} a {self.state}/borrando-mktemp-', out)
+        self.assertIn('actividad en cuarentena: cambió el ctime de la raíz:', out)
+        self.assertIn(f'devuelta {ruta} a su ruta original', out)
+        self.assertFalse(list(self.state.glob('borrando-mktemp-*')), out)
+
+    def test_mktemp_cuarentena_conserva_arbol_si_el_origen_esta_ocupado(self):
+        ruta, dato = self.temporal_mktemp()
+        self.config['mktemp_origen_ocupado'] = str(ruta)
+        out = self.ejecutar_mktemp(dry_run=False)
+        cuarentenas = list(self.state.glob('borrando-mktemp-*'))
+        self.assertEqual(len(cuarentenas), 1, out)
+        self.assertEqual((cuarentenas[0] / dato.relative_to(ruta)).read_text(), 'fixture mktemp')
+        self.assertEqual((ruta / 'nuevo').read_text(), 'conservar el nuevo origen')
+        self.assertIn('captura de cuarentena no disponible', out)
+        self.assertIn('queda en STATE; requiere autorización explícita', out)
+
+    def test_mktemp_modo_0755_conserva_el_arbol(self):
+        ruta, dato = self.temporal_mktemp()
+        ruta.chmod(0o755)
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertTrue(dato.exists(), 'se borró un árbol con modo 0755\n' + out)
+        self.assertIn(f'no borro {ruta}: modo distinto de 0700', out)
+
+    def test_mktemp_sufijos_de_seis_a_ocho_sin_forma_de_palabra(self):
+        conservadas = [self.temporal_mktemp(nombre)[0] for nombre in
+                       ('x.Backup12', 'x.Frontend', 'x.AbCdE', 'x.AbCdEfGh1')]
+        borradas = [self.temporal_mktemp(nombre)[0] for nombre in ('x.AbC123', 'x.AbCd123')]
+        out = self.ejecutar_mktemp(dry_run=False)
+        for ruta in conservadas:
+            self.assertTrue(ruta.is_dir(), str(ruta) + '\n' + out)
+        for ruta in borradas:
+            self.assertFalse(ruta.exists(), str(ruta) + '\n' + out)
+            self.assertIn(f'borrado {ruta} (regla 9:', out)
+
+    def test_mktemp_dry_run_solo_registra(self):
+        ruta, dato = self.temporal_mktemp()
+        out = self.ejecutar_mktemp()
+        self.assertTrue(dato.exists(), out)
+        self.assertIn(f'[dry-run] borraría {ruta} (regla 9:', out)
+        self.assertNotIn('renombrada ', out)
+        self.assertFalse(list(self.state.glob('borrando-*')), out)
+
+    def test_mktemp_atributos_y_tope_conservan_el_arbol(self):
+        for nombre, hijo in (('macl', 'interior'), ('proveedor', 'dominio'), ('tope', 'atascada')):
+            ruta = self.home / f'{nombre}.AbCd1234'
+            ruta.mkdir(mode=0o700)
+            (ruta / hijo).mkdir()
+            self.envejecer(ruta, 8)
+        self.config.update(
+            listxattrs={'macl.AbCd1234': 'com.apple.macl#S',
+                        'dominio': 'com.apple.file-provider-domain-id#B'},
+            listxattr_block='atascada')
+        out = self.ejecutar_mktemp(dry_run=False)
+        for nombre, motivo in (('macl', 'com.apple.macl'),
+                               ('proveedor', 'com.apple.file-provider-domain-id'),
+                               ('tope', 'actividad no descartada')):
+            ruta = self.home / f'{nombre}.AbCd1234'
+            self.assertTrue(ruta.exists(), out)
+            self.assertIn(f'no borro {ruta}: {motivo}', out)
+        self.assertIn('tope 0.5 s: regla 9: actividad ruta ./tope.AbCd1234', out)
+
+    def test_mktemp_error_listxattr_conserva_el_arbol(self):
+        ruta, dato = self.temporal_mktemp()
+        self.config['listxattr_error'] = dato.parent.name
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertTrue(dato.exists(), out)
+        self.assertIn(f'no borro {ruta}: falló listxattr', out)
+
+    def test_mktemp_lsof_fallido_o_parcial_conserva_el_arbol(self):
+        ruta, _ = self.temporal_mktemp()
+        self.config['lsof_error'] = True
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertTrue(ruta.exists(), out)
+        self.assertIn(f'no borro {ruta}: aparece en EN_USO o no pudo consultarse', out)
+        self.config.update(lsof_error=False, block='lsof-parcial')
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertTrue(ruta.exists(), out)
+        self.assertIn(f'no borro {ruta}: lsof salió 1: captura parcial', out)
 
     def test_r6_podas_tcc_antes_de_stat_xattr_y_find(self):
         podas = ('Downloads', 'Movies', 'Music', 'Pictures')
