@@ -181,9 +181,35 @@ os.execv('/usr/bin/stat', ['stat'] + sys.argv[1:])
         script = script.replace('listxattr = libc.listxattr\n', r'''import errno
 import json
 from pathlib import Path
+from types import SimpleNamespace
 
 config = json.loads((Path(os.environ['HARNESS']) / 'config.json').read_text())
 listxattr_real = libc.listxattr
+lstat_real = os.lstat
+
+
+def lstat_cuarentena(ruta):
+    antes = lstat_real(ruta)
+    if ruta != raiz or ctime_rename is None:
+        return antes
+    os.chmod(ruta, 0o700)
+    despues = lstat_real(ruta)
+    assert despues.st_mode == antes.st_mode
+    assert despues.st_mtime_ns == antes.st_mtime_ns
+    assert despues.st_ctime_ns != antes.st_ctime_ns
+    # Reproduce el mismo segundo incluso si la Mini se demora entre lecturas.
+    ctime_ns = despues.st_ctime_ns
+    segundo_ns = 10**9
+    segundo = antes.st_ctime_ns // segundo_ns
+    if ctime_ns // segundo_ns != segundo:
+        ctime_ns = segundo * segundo_ns + (antes.st_ctime_ns + 1) % segundo_ns
+    return SimpleNamespace(st_dev=despues.st_dev, st_mode=despues.st_mode,
+                           st_mtime=despues.st_mtime, st_mtime_ns=despues.st_mtime_ns,
+                           st_ctime=ctime_ns / segundo_ns, st_ctime_ns=ctime_ns)
+
+
+if config.get('mktemp_cambiar_ctime_raiz'):
+    os.lstat = lstat_cuarentena
 
 
 def listxattr(ruta, buffer, tamano, opciones):
@@ -226,8 +252,11 @@ listxattr_real.restype = ctypes.c_ssize_t
                  adelanto_mktemp_dias=ADELANTO_MKTEMP_DIAS):
         # Sólo el reloj del recorrido de mktemp. utime no envejece el ctime.
         adelanto = adelanto_mktemp_dias * SEGUNDOS_DIA
-        self.script.write_text(self.plantilla_script.replace(
-            'ahora = time.time()\n', f'ahora = time.time() + {adelanto}\n'))
+        script = self.plantilla_script.replace(
+            'ahora = time.time_ns()\n', f'ahora = time.time_ns() + {adelanto * 10**9}\n')
+        # La misma prueba también corre contra revisiones con reloj en segundos.
+        script = script.replace('ahora = time.time()\n', f'ahora = time.time() + {adelanto}\n')
+        self.script.write_text(script)
         (self.root / 'config.json').write_text(json.dumps(self.config))
         start = time.monotonic()
         comando = ['bash', str(self.script)]
@@ -367,6 +396,17 @@ listxattr_real.restype = ctypes.c_ssize_t
             self.assertIn(f'f{abierto.fileno()}\ni{dato.stat().st_ino}\n', captura)
         self.assertIn(f'renombrada {ruta} a {self.state}/borrando-mktemp-', out)
         self.assertIn('uso no descartado en cuarentena', out)
+        self.assertIn(f'devuelta {ruta} a su ruta original', out)
+        self.assertFalse(list(self.state.glob('borrando-mktemp-*')), out)
+
+    def test_mktemp_cuarentena_devuelve_arbol_con_ctime_raiz_en_el_mismo_segundo(self):
+        ruta, dato = self.temporal_mktemp()
+        self.config['mktemp_cambiar_ctime_raiz'] = True
+        out = self.ejecutar_mktemp(dry_run=False)
+        self.assertTrue(dato.exists(), 'se borró un árbol con ctime de raíz modificado en cuarentena\n' + out)
+        self.assertEqual(dato.read_text(), 'fixture mktemp')
+        self.assertIn(f'renombrada {ruta} a {self.state}/borrando-mktemp-', out)
+        self.assertIn('actividad en cuarentena: cambió el ctime de la raíz:', out)
         self.assertIn(f'devuelta {ruta} a su ruta original', out)
         self.assertFalse(list(self.state.glob('borrando-mktemp-*')), out)
 

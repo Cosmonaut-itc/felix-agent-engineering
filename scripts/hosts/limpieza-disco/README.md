@@ -68,6 +68,10 @@ sufijos con forma de palabra capitalizada y dígitos opcionales al final
 (`^[A-Z][a-z]+[0-9]*$`). Por ejemplo, `x.AbC123` puede ser candidato y
 `x.Backup12` queda fuera.
 
+El filtro no prueba que un directorio se haya creado con `mktemp`. Un
+directorio propio con ese tipo de nombre y modo `0700` puede borrarse si
+cumple las demás condiciones de antigüedad y uso.
+
 Comprueba el mtime y el ctime de cada entrada con el tope común. Exige
 siete días sin cambios, o dos días si al empezar había menos de 15 GB libres.
 Conserva la carpeta si el recorrido falla o vence su plazo, si detecta
@@ -84,7 +88,9 @@ conserva.
 
 Sólo renombra en el mismo filesystem, de forma exclusiva, a
 `$STATE/borrando-mktemp-<aleatorio>`. En cuarentena repite el recorrido y
-`lsof +D` antes de borrar. Si detecta actividad, uso o un error, devuelve el
+`lsof +D` antes de borrar. El recorrido usa el ctime anterior al rename
+para la raíz sólo si su ctime coincide en nanosegundos con el leído justo
+después del rename. Si detecta actividad, uso o un error, devuelve el
 árbol al origen con un rename exclusivo. Si falla la vuelta o el borrado,
 los datos que queden en `$STATE` requieren autorización explícita. El log
 registra el origen, el resultado y el motivo de conservar la candidata.
