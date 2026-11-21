@@ -29,7 +29,7 @@ for nombre in sorted(esperados):
     print(prefijo, nombre, flush=True)
 print('Evidencia U17:', sys.argv[1], flush=True)
 PY
-  # Sombra, entregar y --seco: mismos bytes que main anterior a U17, sin fetch.
+  # Sombra, entregar y --seco: comparar con el control anterior a U17, sin fetch.
   PAO_TREN_U17_SOMBRA="$tren_pruebas/sombra-$arbol.json" python3 -I -B - "$pruebas" <<'PY'
 import sys
 import unittest
@@ -41,5 +41,6 @@ if not resultado.wasSuccessful() or resultado.testsRun != 1:
     raise SystemExit('SOMBRA: la prueba de eventos no pasó en ' + sys.argv[1])
 PY
 done
-cmp "$tren_pruebas/sombra-anterior.json" "$tren_pruebas/sombra-actual.json"
-echo "U17 sombra, entregar y tick --seco: eventos idénticos a 0f7fff27 ($tren_pruebas)"
+python3 -I -B fleet/tren/tests/comparar_eventos_sombra.py \
+  "$tren_pruebas/sombra-anterior.json" "$tren_pruebas/sombra-actual.json"
+echo "U17 sombra, entregar y tick --seco: eventos fuera de la formación de lotes iguales a 0f7fff27 ($tren_pruebas)"

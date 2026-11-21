@@ -74,8 +74,10 @@ un tren propio si la clave booleana opcional `alto_riesgo_en_lote` se omite o
 vale `false`. Con `true`, un PR de alto riesgo admitido puede viajar en lote
 si todas sus categorías sensibles figuran en `sensibles_en_lote`. En el tick
 activo, una ventana de migración también fuerza un tren propio.
-La cola es FIFO por admisión (empates por entrega), hasta tres o 60 minutos.
-Un PR que requiere tren propio sale inmediatamente al llegar al frente.
+El primer tick con el tren libre forma un lote de hasta cinco PRs de la cola
+FIFO por admisión, con desempate por hora de entrega y recibo. Mientras un
+tren está activo, los admitidos esperan el siguiente lote. Si un PR requiere
+tren propio, el lote se corta antes de él. Cuando llega al frente, sale solo.
 Jale nace en pausa `etapa-1`.
 
 El tick activo ejecuta efectos; `--seco` conserva la simulación sin IO de escritura.
@@ -99,7 +101,9 @@ con la custodia en un evento `admision-entrega`. Acepta `--config` como tick;
 sin lectura/config válida conserva custodia y registra retención por
 observación incompleta. Reentregar el mismo head no cambia esa muestra.
 Sólo para un repo inscrito en sombra, `tick --seco` usa un reductor separado:
-los lotes pasan directamente a `SIMULADO`, sin efectos ni espera de suite.
+los lotes pasan directamente a `SIMULADO`, sin efectos ni ejecución de suites.
+Cada lote simula 68 minutos de ocupación, la mediana medida de los trenes de
+Jale que recoge el encargo SEN-7119 (ronda 2).
 Su continuación se guarda en eventos `sombra-doble-camino`; los eventos
 `sombra` de U1/U2/U4 siguen perteneciendo al reductor activo. Al cambiar la
 inscripción a activo, los PR abiertos se readmiten desde custodia y sus
@@ -122,22 +126,31 @@ fleet/tren/pao-tren medir --repo owner/project \
 
 `medir` abre SQLite en modo de sólo lectura, sin crear directorios ni ledger.
 Imprime una línea JSON determinista: entregas en `[desde, hasta)`, admisión
-al entregar y motivo, primera admisión observada, lotes, distribución 1/2/3,
-pendientes y `suites_ahorradas_estimadas = muestras en lotes o pendientes - lotes`.
-`admitidas` conserva la cuenta histórica; las entregas caducadas antes de un
-lote no producen ahorro. Simulación y medición usan la misma cola temporal.
-Los eventos U1
-se leen igual; sin muestra al entregar se informa custodia y fuente
+al entregar y motivo, primera admisión observada, lotes, distribución de 1 a 5,
+pendientes y `suites_ahorradas_estimadas`.
+`admitidas` conserva la cuenta histórica. `modo` indica el último tramo
+observado antes de `hasta` (`activo` o `sombra`). Cada lote contiene
+`instante`, `motivo`, `recibos`, `prs`, `tamano` y `fuente` (`real` o `sombra`).
+El historial conserva los lotes de ambas fuentes. Para la distribución y el
+ahorro, cada recibo cuenta una vez y tiene prioridad su lote real. Cada lote
+de sombra aporta los recibos que quedan, en orden de despacho. Los lotes sin
+recibos únicos se omiten del cálculo. El ahorro es el número de recibos únicos
+en lotes o pendientes menos el número de lotes que aportan recibos.
+Los eventos U1 se leen igual. Sin muestra al entregar se informa custodia y fuente
 `sin-observacion-al-entregar`, sin inventar evidencia retroactiva.
-Los lotes usan los tiempos de primera admisión, FIFO hasta 3 o 60 min.
 La entrega y el tick en sombra aplican `sensibles_en_lote` y
 `alto_riesgo_en_lote` al formar lotes.
-A los 60 min vence la ventana antes de incorporar una llegada simultánea.
-La ventana selecciona la cohorte de entregas y sólo sus observaciones
-anteriores a `hasta`; un lote aún sin vencer figura en pendientes. El ahorro
-es provisional mientras haya pendientes. No estima duración ni resultado
-de suites: supone disponibilidad inmediata entre lotes, incluso si el merge
-externo ocurrió antes de que se cerrara la ventana virtual.
+En sombra, `medir` proyecta con la cola FIFO y la ocupación estimada de 68
+minutos. Al activar el tren, conserva los despachos simulados anteriores al
+primer snapshot `operativo`. Los PR que aún esperaban pasan al tramo activo.
+Cada lote real toma sus miembros y su instante del primer snapshot
+`operativo` en que aparece. Al corte, el último snapshot activo aporta
+los pendientes que siguen admitidos y sin tren.
+Al volver a sombra, el despacho empieza en el cambio de modo y los
+pendientes conservan su orden de admisión original.
+La historia anterior a `desde` también cuenta para formar los lotes. El
+informe muestra los miembros de la cohorte `[desde, hasta)` y sólo usa
+observaciones anteriores a `hasta`.
 
 ## Instalación en macOS (U7, sombra)
 
@@ -762,7 +775,7 @@ La sombra y `tick --seco` mantienen su lectura histórica: únicamente
 La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
 
 - **Verde:** mantiene el camino existente de suite y promoción de C.
-- **Rojo con dos o tres miembros:** cierra el tren `PARTIDO`, sin comentario,
+- **Rojo con más de un miembro:** cierra el tren `PARTIDO`, sin comentario,
   status rojo, suite ni escritura en main. En el mismo snapshot libera todas
   las entregas con `partida=True` y `solo=True`. Los ticks posteriores forman
   trenes individuales en su orden FIFO, cada uno sobre el main entonces
@@ -855,7 +868,8 @@ HOME/XDG temporales canónicos, git local y transportes falsos sin red.
 `50cb5cda` (cancelación/infraestructura, skips esperados, rojo con faltantes,
 partición tras aborto y rearme, rojo sin nombres en reductor y feedback), y
 las ejecuta después sobre el código actual. La comparación contra `85138706`
-exige igualdad byte a byte de eventos de sombra de doble camino y `--seco`.
+exige igualdad de los eventos de sombra de doble camino y `--seco` fuera
+de los campos de formación de lotes.
 El lanzador remoto solapa los injertos históricos con la suite actual,
 en procesos y temporales separados, para respetar el carril rápido de diez
 minutos. Espera ambos resultados y conserva el log completo de los injertos;
@@ -906,8 +920,8 @@ transporte de gh. Cubre dos lotes sucesivos, el main ajeno tras reanudar y
 la falla al traer objetos. En los tres casos el checkout conserva `HEAD`,
 ramas, árbol de trabajo y `FETCH_HEAD`, y nunca recibe C. `tests/remoto-u17.sh`,
 llamado por `tests/remoto.sh`, exige que las tres regresiones fallen por
-aserción sobre `0f7fff27` y pasen después. También compara byte a byte los
-eventos de sombra, `entregar` y `--seco` de ambos árboles.
+aserción sobre `0f7fff27` y pasen después. También compara los eventos de
+sombra, `entregar` y `--seco` de ambos árboles fuera de la formación de lotes.
 
 El checkout de esas pruebas tiene una rama propia, un índice distinto del
 árbol y un archivo no versionado; todos sus bytes, `.git` incluido, quedan
@@ -1109,8 +1123,9 @@ y prueba el protocolo genérico.
 `tests/remoto-u18.sh`, llamado desde `tests/remoto.sh`, exige seis regresiones
 por aserción sobre `a1d24ec1` y su éxito después. Usa ticks, un origen git real,
 un guion falso y una muerte de proceso entre verificación y push. También
-compara byte a byte los eventos de sombra, entrega y `--seco` de ambos árboles,
-con un gancho declarado que no debe ejecutarse. La suite cubre cancelación,
+compara los eventos de sombra, entrega y `--seco` de ambos árboles fuera
+de la formación de lotes, con un gancho declarado que no debe ejecutarse.
+La suite cubre cancelación,
 recuperación del push con ACK perdido, timeout y expiración durante el gancho.
 `tests/remoto-u18-injerto.sh` añade seis regresiones por aserción contra
 `c06a9c70`: aborto y feedback con limpieza persistentemente fallida,

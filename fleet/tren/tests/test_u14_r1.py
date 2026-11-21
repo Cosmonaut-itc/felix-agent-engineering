@@ -22,6 +22,13 @@ def contexto():
         caso.doCleanups()
 
 
+def tick_sin_base(c, ahora):
+    observar = c.contexto.observador.observar
+    with patch.object(c.contexto.observador, "observar",
+                      side_effect=lambda *args: replace(observar(*args), base="")):
+        c.contexto.tick(ahora)
+
+
 class U14R1Tests(unittest.TestCase):
     def reentregar(self, c, pr):
         anterior = dict(c.miembros)[pr]
@@ -29,7 +36,7 @@ class U14R1Tests(unittest.TestCase):
                           "nuevo": "head\n"}, (anterior,))
         c.push(nuevo, "refs/pull/{}/head".format(pr))
         c.contexto.config["miembros"][pr - 1][1] = nuevo
-        c.contexto.tick(100)
+        tick_sin_base(c, 100)
         self.assertEqual([p["payload"]["state"] for p in self.statuses(c, nuevo)], ["failure"])
         apto = c.raiz / ("apto-{}.json".format(pr))
         dirigida = c.raiz / ("dirigida-{}.json".format(pr))
@@ -38,7 +45,7 @@ class U14R1Tests(unittest.TestCase):
         with c.ledger() as ledger:
             ledger.entregar(Entrega(activo.REPO, pr, nuevo, str(apto), str(dirigida)), 101)
         c.contexto.tick(102)
-        c.contexto.tick(4000)  # Vence la ventana de los dos PR que ya esperaban.
+        c.contexto.tick(4000)
         self.assertEqual([p["payload"]["state"] for p in self.statuses(c, nuevo)],
                          ["failure", "pending"])
         self.assertIn(c.estado().trenes[-1].id, self.statuses(c, nuevo)[-1]["payload"]["description"])

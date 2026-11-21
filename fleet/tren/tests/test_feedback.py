@@ -149,7 +149,9 @@ c.tick(frontera=frontera)
         self.assertIn("head-cambiado", self.posts("/comments")[0]["payload"]["body"])
         self.assertTrue(self.posts("/statuses/")[0]["endpoint"].endswith(nuevo))
         self.contexto.tick(200)
-        self.assertEqual(len(self.posts()), 2)
+        self.assertEqual(len(self.posts("/comments")), 1)
+        self.assertEqual([p["payload"]["state"] for p in self.posts("/statuses/")],
+                         ["failure", "pending", "pending"])
         # El aviso failure despierta al dueño, pero no invalida CI de su head.
         self.assertEqual(self.contexto.observador.ci(activo.REPO, nuevo).estado, "verde")
 
@@ -252,7 +254,9 @@ c.tick(frontera=frontera)
         (self.raiz / "apto-1.json").write_text("{}")
         self.contexto.tick()
         self.assertEqual(self.estado().entradas[0].admision, Retenido(Motivo.APTO))
-        self.assertEqual(self.posts(), [])
+        self.assertFalse(self.posts("/comments"))
+        self.assertEqual([p["payload"]["state"] for p in self.posts("/statuses/")],
+                         ["pending", "pending"])
 
     def test_cli_real_inyecta_escritor_por_defecto(self):
         self.sembrar_devoluciones(pausa=True)

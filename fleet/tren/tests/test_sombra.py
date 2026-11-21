@@ -1,4 +1,5 @@
 """U12: doble camino y medición sin red. Ejecutar sólo en el host de pruebas."""
+from copy import deepcopy
 from dataclasses import replace
 import json
 import os
@@ -7,13 +8,15 @@ from unittest.mock import patch
 
 from test_tren import (Aislado, BASE, HEAD, REPO, cli, entrega, estado,
                        observacion, vista)
-from dominio import (Admitido, Congelado, Entrada, Estado, Motivo,
-                     Rechazado, Retenido, Terminal, desde_datos, paso)
+from comparar_eventos_sombra import comparar
+from dominio import (Admitido, Aterrizado, Candidato, Certificado, Congelado, Corriendo,
+                     Decision, Entrada, Estado, Motivo, Pausa, Promoviendo, Rechazado,
+                     Retenido, Terminal, datos, desde_datos, paso)
 from inscripcion import modo
 from ledger import Ledger, directorio_estado, filas_medicion
 from medicion import instante_iso, medir
 from observador import Falso, GitHubGit
-from sombra import lotes_fifo, paso_sombra
+from sombra import DURACION_SUITE_ESTIMADA, lotes_fifo, paso_sombra
 
 
 class SombraTests(Aislado):
@@ -92,13 +95,14 @@ class SombraTests(Aislado):
             _, plan = self.tick(t + 3600, [], format(dia + 2, "040x"))
             self.assertEqual(plan["plan"]["efectos"], [])
             self.assertIsNone(plan["plan"]["estado"]["pausa"])
-            self.assertEqual(len(plan["plan"]["estado"]["trenes"]), dia + 1)
+            self.assertEqual(len(plan["plan"]["estado"]["trenes"]), sum(
+                2 if anterior % 2 else 1 for anterior in range(dia)) + 1)
         ledger = self.ledger()
         for tabla in ("trains", "effects", "outbox"):
             self.assertEqual(ledger.db.execute("SELECT count(*) FROM " + tabla).fetchone()[0], 0)
         informe = medir(*filas_medicion(REPO), REPO, 0, 7 * 86400)
-        self.assertEqual(informe["distribucion"], {"1": 4, "2": 0, "3": 3})
-        self.assertEqual(informe["suites_ahorradas_estimadas"], 6)
+        self.assertEqual(informe["distribucion"], {"1": 7, "2": 3, "3": 0, "4": 0, "5": 0})
+        self.assertEqual(informe["suites_ahorradas_estimadas"], 3)
 
     def test_cerrado_sin_merge_y_head_distinto_conservan_rechazo(self):
         for cambios, motivo in (({"abierto": False}, Motivo.CERRADO),
@@ -174,7 +178,7 @@ class SombraTests(Aislado):
         informe = medir(*filas_medicion(REPO), REPO, 0, 4200)
         self.assertEqual(informe["entregas"][0]["admision"]["estado"], "retenido")
         self.assertEqual(informe["entregas"][0]["admitida"], 500)
-        self.assertEqual(informe["lotes"][0]["instante"], 4100)
+        self.assertEqual(informe["lotes"][0]["instante"], 500)
         antes = medir(*filas_medicion(REPO), REPO, 0, 500)
         self.assertEqual(antes["admitidas"], 0)
 
@@ -184,27 +188,257 @@ class MedicionTests(Aislado):
         return tuple(Entrada(entrega(i), t, Admitido(), t, i in solos)
                      for i, t in enumerate(tiempos, 1))
 
-    def test_lotes_uno_dos_tres_y_corte_60_min(self):
-        entradas = self.entradas([0, 3600, 3700, 8000, 8100, 8200])
-        lotes, pendientes = lotes_fifo(entradas, 9000)
+    def operativo(self, ledger, obs):
+        nuevo, efectos = paso(ledger.estado(REPO, operativo=True), obs)
+        ledger.guardar_paso(nuevo, efectos, obs.ahora)
+        return nuevo
+
+    def informe(self, hasta):
+        return medir(*filas_medicion(REPO), REPO, 0, hasta)
+
+    def despachos(self, hasta):
+        return [(lote["instante"], lote["prs"]) for lote in self.informe(hasta)["lotes"]]
+
+    def test_ack_consume_el_tick_y_el_siguiente_despacha(self):
+        ledger = self.ledger()
+        ledger.entregar(entrega(), 90)
+        inicial = self.operativo(ledger, observacion(ahora=100))
+        cert = Certificado("c" * 40, "d" * 40, "suite-1", "verde", BASE)
+        tren = replace(inicial.trenes[0], fase=cert)
+        ledger.guardar_paso(replace(inicial, trenes=(tren,)), (), 220)
+        recibo2 = ledger.entregar(entrega(2), 230)
+        promocion = self.operativo(ledger, observacion(2, 280))
+        self.assertIsInstance(promocion.trenes[0].fase, Promoviendo)
+        self.assertEqual(promocion.entradas[1].admitida, 280)
+        obs = replace(observacion(2, 340), base=cert.C, tren_id=tren.id, intento_promocion=1,
+                      main=Aterrizado(BASE, cert.C, cert.arbol),
+                      prs=(vista(abierto=False, mergeado=True), vista(2)))
+        cierre = self.operativo(ledger, obs)
+        self.assertEqual([t.fase for t in cierre.trenes], [Terminal("ATERRIZADO")])
+        self.operativo(ledger, replace(obs, ahora=460, main=None, tren_id=""))
+        self.assertEqual(self.despachos(341), [(100, [1])])
+        self.assertEqual(self.informe(341)["pendientes"], [recibo2])
+        self.assertEqual(self.despachos(461), [(100, [1]), (460, [2])])
+        self.assertEqual([lote["fuente"] for lote in self.informe(461)["lotes"]], ["real", "real"])
+
+    def test_levantar_pausa_consume_el_tick_y_el_siguiente_despacha(self):
+        ledger = self.ledger()
+        recibo = ledger.entregar(entrega(), 90)
+        pausa = Pausa("manual", detalle="revisión")
+        ledger.guardar_paso(replace(ledger.estado(REPO, operativo=True), pausa=pausa), (), 100)
+        self.operativo(ledger, observacion(ahora=220))
+        pausa_id = ledger.pausa_id(REPO)
+        decision = Decision("levantar-1", REPO, None, "levantar", None, "fin de revisión",
+                            300, pausa_id, pausa)
+        ledger.registrar_decision(decision)
+        sin_pausa = self.operativo(ledger, observacion(ahora=340, decision=decision,
+                                                      pausa_id=pausa_id))
+        self.assertIsNone(sin_pausa.pausa)
+        self.assertFalse(sin_pausa.trenes)
+        self.operativo(ledger, observacion(ahora=460))
+        self.assertEqual(self.despachos(341), [])
+        self.assertEqual(self.informe(341)["pendientes"], [recibo])
+        self.assertEqual(self.despachos(461), [(460, [1])])
+
+    def test_activar_conserva_lote_de_sombra_tras_cierre_del_pr(self):
+        ledger = self.ledger()
+        entrada, = self.entradas([100])
+        ledger.entregar(entrada.entrega, 100, entrada)
+        simulado, efectos = paso_sombra(ledger.estado(REPO, sombra=True, doble_camino=True),
+                                       observacion(ahora=100))
+        ledger.sombra(simulado, efectos, 100, doble_camino=True)
+        self.assertEqual(self.despachos(5000), [(100, [1])])
+        activo = self.operativo(ledger, replace(observacion(ahora=5000),
+                                                prs=(vista(abierto=False),)))
+        self.assertFalse(activo.trenes)
+        self.assertEqual(self.despachos(5001), [(100, [1])])
+        self.assertEqual(self.informe(5001)["lotes"][0]["fuente"], "sombra")
+        self.assertFalse(self.informe(5001)["pendientes"])
+
+    def test_activar_despacha_la_cola_de_sombra_en_el_lote_real(self):
+        ledger = self.ledger()
+        for entrada in self.entradas([100, 220]):
+            ledger.entregar(entrada.entrega, entrada.recibida, entrada)
+            obs = observacion(entrada.entrega.pr, entrada.recibida)
+            simulado, efectos = paso_sombra(ledger.estado(REPO, sombra=True, doble_camino=True),
+                                           obs)
+            ledger.sombra(simulado, efectos, obs.ahora, doble_camino=True)
+        self.assertEqual(self.informe(340)["pendientes"], [entrega(2).recibo])
+        obs = replace(observacion(2, 340), prs=(vista(abierto=False), vista(2)))
+        self.operativo(ledger, obs)
+        self.assertEqual(self.despachos(341), [(100, [1]), (340, [2])])
+        self.assertEqual([lote["fuente"] for lote in self.informe(341)["lotes"]],
+                         ["sombra", "real"])
+        self.assertFalse(self.informe(341)["pendientes"])
+
+    def test_activar_conserva_historial_y_cuenta_solo_el_lote_real(self):
+        ledger = self.ledger()
+        for entrada in self.entradas([100, 220, 340]):
+            ledger.entregar(entrada.entrega, entrada.recibida, entrada)
+        obs = observacion(3, 4300)
+        simulado, efectos = paso_sombra(ledger.estado(REPO, sombra=True, doble_camino=True), obs)
+        ledger.sombra(simulado, efectos, obs.ahora, doble_camino=True)
+        self.operativo(ledger, replace(obs, ahora=4420))
+
+        informe = self.informe(4421)
+        self.assertEqual([(lote["fuente"], lote["instante"], lote["prs"])
+                          for lote in informe["lotes"]],
+                         [("sombra", 100, [1]), ("sombra", 4180, [2, 3]),
+                          ("real", 4420, [1, 2, 3])])
+        self.assertFalse(informe["pendientes"])
+        self.assertEqual(informe["suites_ahorradas_estimadas"], 2)
+        self.assertEqual(informe["distribucion"], {"1": 0, "2": 0, "3": 1, "4": 0, "5": 0})
+
+    def test_volver_a_sombra_conserva_el_fifo_de_admision(self):
+        ledger = self.ledger()
+        ledger.entregar(entrega(), 90)
+        self.operativo(ledger, observacion(ahora=100))
+        recibo2 = ledger.entregar(entrega(2), 110)
+        recibo3 = ledger.entregar(entrega(3), 120)
+        solo = {"sensible": True, "autorizado": True}
+        obs = replace(observacion(3, 220),
+                      prs=(vista(1), vista(2, ci="pendiente", **solo), vista(3)))
+        self.operativo(ledger, obs)
+        obs = replace(obs, ahora=340, prs=(vista(1), vista(2, **solo), vista(3)))
+        self.operativo(ledger, obs)
+        self.assertEqual(self.informe(341)["pendientes"], [recibo3, recibo2])
+
+        legado, efectos = paso(ledger.estado(REPO, sombra=True), obs)
+        ledger.sombra(legado, efectos, 400)
+        self.assertEqual(self.informe(401), {**self.informe(341), "hasta": 401})
+        obs = replace(obs, ahora=460)
+        simulado, efectos = paso_sombra(ledger.estado(REPO, sombra=True, doble_camino=True), obs)
+        ledger.sombra(simulado, efectos, obs.ahora, doble_camino=True)
+
+        informe = self.informe(461)
+        self.assertEqual([(lote["fuente"], lote["instante"], lote["prs"])
+                          for lote in informe["lotes"]],
+                         [("real", 100, [1]), ("sombra", 460, [3])])
+        self.assertEqual(informe["pendientes"], [recibo2])
+
+    def confirmar_aterrizaje(self, activo, obs):
+        cert = Certificado("c" * 40, "d" * 40, "suite-1", "verde", obs.base)
+        tren = replace(activo.trenes[-1], fase=Promoviendo(cert))
+        activo = replace(activo, trenes=activo.trenes[:-1] + (tren,))
+        return paso(activo, replace(obs, base=cert.C, tren_id=tren.id, intento_promocion=1,
+                                    main=Aterrizado(cert.B, cert.C, cert.arbol)))[0]
+
+    def test_lote_inmediato_y_admisiones_en_espera(self):
+        entradas = tuple(replace(e, recibida=i) for i, e in enumerate(
+            self.entradas([0, 10, 10, 20, 20, 20, 30])))
+        lotes, pendientes = lotes_fifo(entradas, 20)
+        self.assertEqual([(t, len(es)) for t, _, es in lotes], [(0, 1)])
+        self.assertEqual(pendientes, entradas[1:6])
+        lotes, pendientes = lotes_fifo(entradas, DURACION_SUITE_ESTIMADA)
         self.assertEqual([(t, len(es)) for t, _, es in lotes],
-                         [(3600, 1), (7200, 2), (8200, 3)])
-        self.assertFalse(pendientes)
-        self.assertEqual(lotes_fifo(entradas, 9000), lotes_fifo(entradas, 9000))
-        self.assertEqual([e.admitida for e in entradas], [0, 3600, 3700, 8000, 8100, 8200])
+                         [(0, 1), (DURACION_SUITE_ESTIMADA, 5)])
+        self.assertEqual(pendientes, entradas[6:])
 
     def test_sensible_solo_sin_adelantar_fifo(self):
-        lotes, pendientes = lotes_fifo(self.entradas([0, 10, 20, 30], (2,)), 4000)
+        entradas = tuple(replace(e, recibida=i, admitida=10)
+                         for i, e in enumerate(self.entradas([0] * 4, (2,))))
+        lotes, pendientes = lotes_fifo(entradas, 10 + 2 * DURACION_SUITE_ESTIMADA)
         self.assertEqual([[e.entrega.pr for e in es] for _, _, es in lotes], [[1], [2], [3, 4]])
-        self.assertEqual([t for t, _, _ in lotes], [3600, 3600, 3620])
+        self.assertEqual([t for t, _, _ in lotes], [10 + n * DURACION_SUITE_ESTIMADA
+                                                  for n in range(3)])
         self.assertFalse(pendientes)
 
-    def test_ventana_parcial_y_empates_deterministas(self):
-        entradas = self.entradas([0, 0, 0, 100])
-        lotes, pendientes = lotes_fifo(entradas, 200)
-        self.assertEqual(len(lotes), 1)
-        self.assertEqual(len(pendientes), 1)
-        self.assertEqual(lotes_fifo(entradas, 200), lotes_fifo(reversed(entradas), 200))
+    def test_empates_deterministas_y_lote_parcial_inmediato(self):
+        ultima = DURACION_SUITE_ESTIMADA + 100
+        entradas = self.entradas([0, 0, 0, ultima])
+        lotes, pendientes = lotes_fifo(entradas, ultima)
+        self.assertEqual([len(es) for _, _, es in lotes], [3, 1])
+        self.assertEqual(lotes[-1][0], ultima)
+        self.assertFalse(pendientes)
+        self.assertEqual((lotes, pendientes), lotes_fifo(reversed(entradas), ultima))
+
+    def test_sombra_y_dominio_forman_los_mismos_lotes(self):
+        original = estado(9)
+        obs = observacion(9)
+        obs = replace(obs, prs=obs.prs[:6] + (vista(7, sensible=True, autorizado=True),)
+                      + obs.prs[7:])
+        simulado, efectos = paso_sombra(original, obs)
+        self.assertFalse(efectos)
+        activo = original
+        for n, prs in enumerate((range(1, 6), (6,), (7,), (8, 9))):
+            tick = replace(obs, ahora=obs.ahora + n * DURACION_SUITE_ESTIMADA)
+            activo, _ = paso(activo, tick)
+            simulado, _ = paso_sombra(simulado, tick)
+            tren = activo.trenes[-1]
+            self.assertEqual(tren.recibos, tuple(entrega(pr).recibo for pr in prs))
+            activo = self.confirmar_aterrizaje(activo, replace(tick, ahora=tick.ahora + 1))
+            self.assertEqual(activo.trenes[-1].fase, Terminal("ATERRIZADO"))
+        self.assertEqual([t.recibos for t in simulado.trenes],
+                         [t.recibos for t in activo.trenes])
+
+    def test_admisiones_escalonadas_y_caducidad_durante_suite(self):
+        entradas = self.entradas([90, 210, 330, 450])
+        vistas = tuple(vista(pr) for pr in range(1, 5))
+        candidato = Candidato(BASE, ((1, HEAD, "c" * 40),), "c" * 40, "d" * 40)
+        for caduca, esperado in ((False, [[1], [2, 3, 4]]), (True, [[1], [2, 4]])):
+            with self.subTest(caduca=caduca), patch.dict(os.environ, {
+                    "XDG_STATE_HOME": str(self.raiz / ("caduca-%s" % caduca))}):
+                ledger = self.ledger()
+                activo = simulado = Estado(REPO)
+                for n, ahora in enumerate((100, 220, 340, 460)):
+                    entrada = replace(entradas[n], admitida=None)
+                    ledger.entregar(entrada.entrega, entrada.recibida)
+                    observadas = vistas[:n + 1]
+                    if n == 3 and caduca:
+                        observadas = vistas[:2] + (vista(3, head="e" * 40), vistas[3])
+                    obs = replace(observacion(), ahora=ahora, prs=observadas)
+                    activo, _ = paso(replace(activo, entradas=activo.entradas + (entrada,)), obs)
+                    simulado, _ = paso_sombra(
+                        replace(simulado, entradas=simulado.entradas + (entrada,)), obs)
+                    ledger.guardar_paso(activo, (), ahora)
+                    self.assertEqual(len(activo.trenes), 1)
+                    self.assertEqual(len(simulado.trenes), 1)
+                    if n == 0:
+                        activo = replace(activo, trenes=(replace(
+                            activo.trenes[0], fase=Corriendo(candidato, "suite-1")),))
+
+                activo = self.confirmar_aterrizaje(activo, replace(obs, ahora=580))
+                ledger.guardar_paso(activo, (), 580)
+                self.assertEqual([t.fase for t in activo.trenes], [Terminal("ATERRIZADO")])
+                activo, _ = paso(activo, replace(obs, ahora=700))
+                ledger.guardar_paso(activo, (), 700)
+                simulado, _ = paso_sombra(simulado, replace(obs, ahora=100 + DURACION_SUITE_ESTIMADA))
+                prs = {e.entrega.recibo: e.entrega.pr for e in entradas}
+                for resultado in (activo, simulado):
+                    self.assertEqual([[prs[r] for r in t.recibos] for t in resultado.trenes],
+                                     esperado)
+                filas = filas_medicion(REPO)
+                informe = medir(*filas, REPO, 0, 701)
+                self.assertEqual([lote["prs"] for lote in informe["lotes"]], esperado)
+                self.assertEqual([lote["instante"] for lote in informe["lotes"]], [100, 700])
+                self.assertEqual(informe["suites_ahorradas_estimadas"], len(esperado[1]) - 1)
+                antes = medir(*filas, REPO, 200, 700)
+                self.assertEqual(antes["lotes"], [])
+                self.assertEqual([prs[r] for r in antes["pendientes"]], esperado[1])
+
+    def test_comparador_detecta_fase_distinta_en_lote_identico(self):
+        congelado, efectos = paso(estado(), observacion())
+        evento = [["sombra", 100, {"estado": datos(congelado), "efectos": datos(efectos)}]]
+        comparar(deepcopy(evento), deepcopy(evento))
+        mutado = deepcopy(evento)
+        mutado[0][2]["estado"]["trenes"][0]["fase"]["B"] = "f" * 40
+        with self.assertRaises(AssertionError):
+            comparar(evento, mutado)
+
+    def test_comparador_detecta_recibo_en_otro_lote_comun(self):
+        simulado, efectos = paso_sombra(Estado(REPO, self.entradas([100, 220])),
+                                        observacion(2, 100 + DURACION_SUITE_ESTIMADA))
+        evento = [["sombra-doble-camino", 5000,
+                   {"estado": datos(simulado), "efectos": datos(efectos)}]]
+        mutado = deepcopy(evento)
+        estado_mutado = mutado[0][2]["estado"]
+        for tren, entrada in zip(estado_mutado["trenes"], estado_mutado["entradas"]):
+            tren["id"] += "-otro-instante"
+            entrada["tren"] = tren["id"]
+        comparar(deepcopy(evento), deepcopy(mutado))
+        estado_mutado["entradas"][0]["tren"] = estado_mutado["trenes"][1]["id"]
+        with self.assertRaises(AssertionError):
+            comparar(evento, mutado)
 
     def test_iso_con_zona_y_ventana_invalida(self):
         self.assertEqual(instante_iso("1970-01-01T01:00:00+01:00"), 0)
@@ -217,14 +451,14 @@ class MedicionTests(Aislado):
 
     def test_medir_desde_filas_lotes_y_sensible(self):
         ledger = self.ledger()
-        entradas = self.entradas([0, 3600, 3700, 8000, 8100, 8200, 9000], (7,))
+        entradas = self.entradas([0, 3600, 3600, 3600, 3600, 3600, 9000], (7,))
         for entrada in entradas:
             ledger.entregar(entrada.entrega, entrada.recibida, entrada)
         requests, events = filas_medicion(REPO)
         informe = medir(requests, events, REPO, 0, 10000)
-        self.assertEqual(informe["distribucion"], {"1": 2, "2": 1, "3": 1})
+        self.assertEqual(informe["distribucion"], {"1": 2, "2": 0, "3": 0, "4": 0, "5": 1})
         self.assertEqual(informe["lotes"][-1]["prs"], [7])
-        self.assertEqual(informe["suites_ahorradas_estimadas"], 3)
+        self.assertEqual(informe["suites_ahorradas_estimadas"], 4)
         self.assertEqual(informe, medir(list(reversed(requests)), list(reversed(events)),
                                        REPO, 0, 10000))
         self.assertEqual(len(medir(requests, events, REPO, 3600, 9000)["entregas"]), 5)
