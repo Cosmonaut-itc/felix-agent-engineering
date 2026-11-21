@@ -9,7 +9,7 @@ import time
 from typing import Protocol
 from urllib.parse import urlparse
 
-from dominio import (EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
+from dominio import (Diagnosticando, EsperandoCI, Observacion, Rechazado, ResultadoCI, Terminal,
                      VistaPR, rama_ci, recibo_ci)
 from git_ops import FalloGit, identidad_commits
 from preaterrizaje import autorizaciones
@@ -361,6 +361,15 @@ class GitHubGit:
                 observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci.estado,
                                       ci_rojos=ci.rojos,
                                       ci_recibo=recibo_ci(tren))
+            if self.almacen is not None and not estado.pausa:
+                diagnostico = next((t.fase for t in estado.trenes
+                                    if isinstance(t.fase, Diagnosticando)), None)
+                if diagnostico is not None:
+                    try:
+                        archivos = self.almacen.archivos_lote(diagnostico.candidato)
+                    except FalloGit:
+                        archivos = None
+                    observacion = replace(observacion, archivos_lote=archivos)
         return observacion
 
 

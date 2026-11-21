@@ -134,6 +134,8 @@ def leer_repeticion(r, commit, origen, origen_sha, base, fallo):
 
 
 class Hasito:
+    firma_distingue_fallo = False
+
     def __init__(self, lanzador, git, runner=None, estado=None, *, resolver_lanzador=True):
         self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)

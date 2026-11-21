@@ -1,4 +1,5 @@
 """Ledger local, transacciones atómicas y simulación de sombra separada."""
+from collections import Counter
 from contextlib import closing, contextmanager
 from dataclasses import replace
 import fcntl
@@ -8,6 +9,10 @@ from pathlib import Path
 import sqlite3
 
 from dominio import Entrada, clave, datos, desde_datos, inicial
+
+
+EVENTO_ABSOLUCION = "intermitente-absuelto"
+VENTANA_ABSOLUCION_S = 7 * 86400
 
 
 def directorio_estado():
@@ -116,6 +121,13 @@ class Ledger:
         self.db.execute("INSERT INTO events(repo, tipo, instante, payload) VALUES (?, ?, ?, ?)",
                         (repo, tipo, ahora, json.dumps(payload, sort_keys=True)))
 
+    def absoluciones_recientes(self, repo, ahora):
+        filas = self.db.execute(
+            "SELECT payload FROM events WHERE repo=? AND tipo=? AND instante BETWEEN ? AND ?",
+            (repo, EVENTO_ABSOLUCION, ahora - VENTANA_ABSOLUCION_S, ahora))
+        conteo = Counter(json.loads(fila[0])["unidad"] for fila in filas)
+        return tuple(sorted(conteo.items()))
+
     def estado(self, repo, sombra=False, doble_camino=False, operativo=False):
         estado = inicial(repo)
         if not sombra:
@@ -153,6 +165,9 @@ class Ledger:
                                 "DO UPDATE SET payload=excluded.payload",
                                 (tren.id, estado.repo, codificar(tren)))
             for efecto in efectos:
+                if efecto.tipo == "registrar-absolucion":
+                    self.evento(estado.repo, EVENTO_ABSOLUCION, ahora, json.loads(efecto.datos[1]))
+                    continue
                 if efecto.tipo == "resolver-juicio":
                     identificador, resultado, motivo = efecto.datos
                     actualizado = self.db.execute(

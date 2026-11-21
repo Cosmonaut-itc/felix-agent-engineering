@@ -204,6 +204,7 @@ class Intento:
     duracion_s: float
     ensayo: str = ""
     huella_entorno: str = ""
+    caso_ejecutado: bool = False
 
 
 @dataclass(frozen=True)
@@ -407,6 +408,9 @@ class Observacion:
     decision: Optional[Decision] = None
     pausa_id: str = ""
     ci_rojos: Tuple[str, ...] = ()
+    absoluciones_recientes: Tuple[Tuple[str, int], ...] = ()
+    archivos_lote: Optional[Tuple[str, ...]] = None
+    firma_distingue_fallo: bool = False
 
 
 @dataclass(frozen=True)
@@ -666,6 +670,32 @@ def separar_devueltos(estado, tren, base, culpables, efectos):
     return estado, tuple(efectos)
 
 
+def archivos_acreditados(fase, observacion):
+    archivos = observacion.archivos_lote
+    if archivos is None:
+        return False
+    vigentes = {(v.pr, v.head) for v in observacion.prs
+                if v.completa and v.abierto and v.base == "main"}
+    if any((pr, head) not in vigentes for pr, head, _ in fase.candidato.eslabones):
+        return False
+    # Una unidad puede incluir el nodo del caso y usar una ruta relativa al paquete.
+    rutas = (f.unidad.split("::", 1)[0] for f in fase.fallos)
+    return not any(archivo == ruta or archivo.endswith("/" + ruta)
+                   for ruta in rutas for archivo in archivos)
+
+
+def registrar_absoluciones(repo, tren, candidato, absoluciones):
+    for absolucion in absoluciones:
+        fallo = absolucion.fallo
+        payload = json.dumps({
+            "repo": repo, "tren": tren.id, "B": candidato.B, "C": candidato.C,
+            "unidad": fallo.unidad, "firma": fallo.firma, "caso": absolucion.caso,
+            "intentos_C": absolucion.intentos_C, "intentos_B": absolucion.intentos_B,
+        }, sort_keys=True)
+        yield Efecto(clave("registrar-absolucion", tren.id, fallo.parte, fallo.check, fallo.unidad),
+                     "registrar-absolucion", (tren.id, payload))
+
+
 def avanzar_suite(estado, tren, observacion, despachar=True):
     """Incorpora resultados ligados al intento antes de requerir readmisión."""
     from atribucion import planificar
@@ -749,8 +779,22 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                            costo_infra_s=fase.costo_infra_s + s.costo_s)
     if fase.pendiente is None:
         prs = tuple(pr for pr, _, _ in fase.candidato.eslabones)
-        plan = planificar(fase.fallos, prs, fase.evidencias,
-                          fase.presupuesto_s - fase.costo_infra_s)
+        presupuesto = fase.presupuesto_s - fase.costo_infra_s
+        plan = planificar(fase.fallos, prs, fase.evidencias, presupuesto)
+        if (plan.incierto.startswith(("confirmacion-candidato:", "confirmacion-base:")) and
+                not fase.restantes and len(fase.fallos) <= 2 and
+                archivos_acreditados(fase, observacion)):
+            automatico = planificar(fase.fallos, prs, fase.evidencias, presupuesto, absolver=True,
+                                    firma_distingue_fallo=observacion.firma_distingue_fallo)
+            if automatico is not None and not automatico.incierto:
+                recientes = dict(observacion.absoluciones_recientes)
+                for absolucion in automatico.absoluciones:
+                    unidad = absolucion.fallo.unidad
+                    if recientes.get(unidad, 0) >= 2:
+                        return replace(cambiar_fase(estado, tren, fase), pausa=Pausa(
+                            "necesita-juicio", detalle="intermitente-reincidente:" + unidad)), ()
+                    recientes[unidad] = recientes.get(unidad, 0) + 1
+                plan = automatico
         if plan.incierto:
             return replace(cambiar_fase(estado, tren, fase),
                            pausa=Pausa("necesita-juicio", detalle=plan.incierto)), ()
@@ -761,7 +805,10 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                     return replace(cambiar_fase(estado, tren, fase),
                                    pausa=Pausa("necesita-juicio", detalle="suite-incompleta")), ()
                 c = fase.candidato
-                return cambiar_fase(estado, tren, Certificado(c.C, c.arbol, fase.suite, fase.ci, c.B)), ()
+                return (
+                    cambiar_fase(estado, tren, Certificado(c.C, c.arbol, fase.suite, fase.ci, c.B)),
+                    tuple(registrar_absoluciones(estado.repo, tren, c, plan.absoluciones)),
+                )
             if not despachar:
                 return cambiar_fase(estado, tren, fase), ()
             return devolver_atribuidos(estado, tren, fase, plan.causas)

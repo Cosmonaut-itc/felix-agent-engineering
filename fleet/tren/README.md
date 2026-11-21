@@ -292,10 +292,11 @@ se aplica a las repeticiones; su costo también consume el presupuesto.
 unidad con dos intentos sobre C y dos sobre B. Exige la misma firma estable
 en C y pases positivos en B para atribuir; la misma firma estable en B es
 preexistente. Una firma vacía del origen requiere firmas nuevas estables y
-no vacías. Ausencia, omisión, mezcla o definición distinta pasan a juicio.
+no vacías. La tabla de pausas detalla cuándo una repetición permite absolver
+un intermitente.
 Luego prueba todos los tickets solos y, si ninguno reproduce, los pares
 (N<=3); C ya confirmado acredita el conjunto completo. Los archivos sólo
-pueden ordenar los ensayos. Se guardan todos los mínimos observados.
+pueden ordenar los ensayos de atribución. Se guardan todos los mínimos observados.
 Sin culpables, certifica sólo si la suite no dejó `restantes`; si el
 fail-fast cortó checks, pausa `necesita-juicio` con `suite-incompleta`.
 
@@ -637,7 +638,45 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `necesita-juicio` | `subconjunto-no-corresponde`, `conflicto-en-subconjunto`, `repeticion-no-corresponde`, `origen-distinto` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
 | `necesita-juicio` | `presupuesto-agotado-en-reanudacion`, `suite-incompleta`, `tamano-de-lote-no-soportado`, `sin-costo-de-suite-sana` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
 | `necesita-juicio` | `sin-duracion:<unidad>`, `presupuesto-agotado:<unidad>`, `confirmacion-candidato:<unidad>`, `definicion-distinta:<unidad>`, `confirmacion-base:<unidad>`, `reproduccion-incierta:<unidad>` | `absolver`, `expulsar`, `abortar`, con los mismos efectos. |
+| `necesita-juicio` | `intermitente-reincidente:<unidad>` | La unidad ya tiene dos absoluciones automáticas en siete días para este repo. `absolver` exige una suite nueva sobre C. También admite `expulsar` y `abortar`. |
 | `manual` | motivo humano | Sólo `pausa --levantar`: continuar desde la fase guardada. `juicio` no la levanta. |
+
+El tick activo puede absolver una unidad que pasa dos veces en C y dos veces en
+B (caso 1), o que falla dos veces con una firma estable en C y al menos una vez
+con esa firma en B (caso 2). En ambos casos exige dos intentos observados en
+cada commit y la misma definición. Para el caso 1, el recibo debe traer la
+identidad de cada caso que falló en la suite y su resultado en cada repetición
+de C, con un pase para cada caso en los dos intentos. Para el caso 2, el
+adaptador debe declarar que la firma del recibo distingue fallos distintos del
+mismo caso. Hoy ningún adaptador habilita estos casos. Los recibos de Hasito y
+Jale carecen de la evidencia de pases por caso, por lo que se conserva
+`confirmacion-candidato`. Sus firmas también pueden coincidir para errores
+distintos del mismo caso, por lo que se conserva `confirmacion-base` con B mixto.
+
+La absolución requiere una suite sin etapas pendientes,
+un máximo de dos unidades fallidas y que todas sean intermitentes que cumplen
+estas reglas o fallos preexistentes confirmados. Una unidad que sólo identifica
+el check, o cuya firma está vacía o sólo contiene un código de salida, conserva
+su pausa de diagnóstico.
+
+El tick une los diffs propios de los heads congelados de cada PR, desde su
+ancestro común único con B, con las rutas del diff de B a C sin detección de
+renombres. Los primeros conservan los cambios que la mezcla absorbió. El
+segundo incluye las rutas donde la mezcla aplicó los cambios. Para cada PR,
+el tick también compara las rutas de su diff propio con los borrados entre
+su ancestro común y B, sin detección de renombres. Si B borró o movió una
+ruta que el PR toca, el tick deja el inventario sin acreditar y conserva la
+pausa de diagnóstico. Los archivos que el PR añade desde su ancestro común
+quedan fuera de esta comprobación. El diagnóstico también conserva la pausa
+si algún diff falla, si algún ancestro común falta o es múltiple, o si una
+ruta del inventario coincide con el archivo de una unidad fallida. La
+comparación admite rutas relativas a un paquete.
+
+Al certificar C con la suite ya corrida, el ledger escribe un evento
+`intermitente-absuelto` por unidad absuelta. Guarda repo, tren, B, C, unidad,
+firma, caso y veredictos de C y B. Estos eventos fijan el límite de dos
+absoluciones de la misma unidad en siete días. El certificado sigue el camino
+habitual de pre-aterrizaje y promoción.
 
 Las decisiones admitidas se filtran también por la fase/evidencia guardada:
 no se reanuda infraestructura sin comando durable o fuera del presupuesto

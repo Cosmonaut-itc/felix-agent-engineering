@@ -97,13 +97,13 @@ class GitTren:
         self.ejecutar = ejecutar or subprocess.run
         self.identidad = identidad
 
-    def git(self, *args, aislado=False, input=None, env_extra=None, timeout=120):
+    def git(self, *args, aislado=False, input=None, env_extra=None, timeout=120, text=True):
         env = entorno(aislado)
         env.update(env_extra or {})
         comando = ["git", "--no-replace-objects", "-c", "core.hooksPath=" + os.devnull,
                    "--git-dir=" + str(self.ruta), *args]
         try:
-            return self.ejecutar(comando, capture_output=True, text=True,
+            return self.ejecutar(comando, capture_output=True, text=text,
                                  timeout=timeout, check=False, input=input, env=env)
         except (OSError, subprocess.SubprocessError):
             raise FalloGit("git-no-disponible") from None
@@ -113,6 +113,35 @@ class GitTren:
         if resultado.returncode:
             raise FalloGit("operacion-git-fallida")
         return resultado.stdout.strip()
+
+    def archivos_entre(self, B, C, *, solo_borrados=False):
+        if not sha(B) or not sha(C):
+            raise FalloGit("sha-invalido")
+        filtro = ("--diff-filter=D",) if solo_borrados else ()
+        resultado = self.git("diff", "--no-renames", "--no-ext-diff", "--name-only",
+                             *filtro, "-z", B, C, "--", aislado=True, text=False)
+        if resultado.returncode:
+            raise FalloGit("operacion-git-fallida")
+        return tuple(os.fsdecode(ruta) for ruta in resultado.stdout.split(b"\0")[:-1])
+
+    def archivos_lote(self, candidato):
+        """Diffs propios de los PR y rutas modificadas entre B y C."""
+        heads = tuple(head for _, head, _ in candidato.eslabones)
+        if not heads or not sha(candidato.B) or not all(map(sha, heads)):
+            raise FalloGit("entradas-invalidas")
+        archivos = set()
+        for head in heads:
+            bases = self.texto("merge-base", "--all", candidato.B, head).splitlines()
+            if len(bases) != 1:
+                raise FalloGit("base-de-pr-no-unica")
+            base = bases[0]
+            propios = set(self.archivos_entre(base, head))
+            borrados = self.archivos_entre(base, candidato.B, solo_borrados=True)
+            if not propios.isdisjoint(borrados):
+                raise FalloGit("ruta-del-pr-borrada-en-base")
+            archivos.update(propios)
+        archivos.update(self.archivos_entre(candidato.B, candidato.C))
+        return tuple(sorted(archivos))
 
     def preparar(self):
         version = self.texto("version")
