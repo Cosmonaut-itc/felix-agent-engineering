@@ -111,17 +111,29 @@ if sys.argv[1] == '-U':
 os.execv('/bin/ps', ['ps'] + sys.argv[1:])
 ''')
         self.executable('find', '''#!/usr/bin/python3 -B
-import json, os, subprocess, sys, time
+import json, os, subprocess, sys
 from pathlib import Path
 root = Path(os.environ['HARNESS'])
 c = json.loads((root / 'config.json').read_text())
 r = subprocess.run(['/usr/bin/find'] + sys.argv[1:])
-if sys.argv[1].startswith('./') and c['hook'].startswith('run'):
-    run = Path(os.environ['HOME']) / 'remote-run/runs/nueva'
-    run.mkdir(exist_ok=True)
-    if c['hook'] == 'run-mirror':
-        (run / 'meta').write_text('mirror=remote-run/work/copia\\ncmd=true\\n')
-    os.utime(run, (time.time() + 2,) * 2)
+hook = c['hook']
+if sys.argv[1].startswith('./') and hook.startswith('run-'):
+    home = Path(os.environ['HOME'])
+    state = home / 'Library/Application Support/limpieza-disco'
+    marca = next(state.glob('MARCA.*')).stat().st_mtime_ns
+    run = home / 'remote-run/runs/nueva'
+    if hook == 'run-inventariada-mtime':
+        os.utime(run, ns=(marca + 2_000_000_000,) * 2)
+    elif not run.exists():
+        provisional = root / 'publicando'
+        provisional.mkdir()
+        if hook in ('run-mirror', 'run-mirror-viejo'):
+            (provisional / 'meta').write_text('mirror=remote-run/work/copia\\ncmd=true\\n')
+        elif hook == 'run-meta-invalido-viejo':
+            (provisional / 'meta').write_text('cmd=true\\n')
+        fecha = marca + (-2 if hook.endswith('-viejo') else 2) * 1_000_000_000
+        os.utime(provisional, ns=(fecha,) * 2)
+        provisional.rename(run)
 sys.exit(r.returncode)
 ''')
         self.executable('stat', '''#!/usr/bin/python3 -B
@@ -843,6 +855,58 @@ exec /usr/bin/grep "$@"
         self.config['hook'] = 'run-sin-meta'
         self.assertEqual(self.ejecutar(), [])
         self.assertIn('corrida nueva sin meta', self.log)
+
+    def comprobar_corrida_publicada_con_mtime_viejo(self, libre, horas):
+        propia = self.copia(horas=horas)
+        ajena = self.copia('otra', horas=horas)
+        self.config.update(free=[libre], hook='run-mirror-viejo')
+        self.ejecutar(dry=False)
+        self.assertTrue(propia.exists(), self.log)
+        self.assertFalse(ajena.exists(), self.log)
+        self.assertIn(f'no borro {propia}', self.log)
+        self.assertIn('runs/nueva (fuera del inventario)', self.log)
+
+    def test_corrida_publicada_con_mtime_viejo_emergencia(self):
+        self.comprobar_corrida_publicada_con_mtime_viejo(libre=39, horas=8)
+
+    def test_corrida_publicada_con_mtime_viejo_normal(self):
+        self.comprobar_corrida_publicada_con_mtime_viejo(libre=40, horas=8 * 24)
+
+    def test_corrida_fuera_del_inventario_con_meta_invalido_veta_todas(self):
+        copias = (self.copia(), self.copia('otra'))
+        self.config['hook'] = 'run-meta-invalido-viejo'
+        self.ejecutar(dry=False)
+        for copia in copias:
+            self.assertTrue(copia.exists(), self.log)
+            self.assertIn(f'no borro {copia}', self.log)
+        self.assertIn('lectura o formato de meta no válido', self.log)
+        self.assertIn('runs/nueva (fuera del inventario)', self.log)
+
+    def corrida_terminal_vieja(self):
+        run = self.rr / 'runs' / 'nueva'
+        run.mkdir()
+        (run / 'meta').write_text('mirror=remote-run/work/copia\ncmd=true\n')
+        (run / 'exit').write_text('0\n')
+        self.edad(run, 48)
+
+    def test_corrida_inventariada_y_vieja_no_veta(self):
+        copias = (self.copia(), self.copia('otra'))
+        self.corrida_terminal_vieja()
+        self.ejecutar(dry=False)
+        for copia in copias:
+            self.assertFalse(copia.exists(), self.log)
+        self.assertNotIn('corrida nueva', self.log)
+
+    def test_corrida_inventariada_mas_nueva_que_marca_veta_solo_su_copia(self):
+        propia = self.copia()
+        ajena = self.copia('otra')
+        self.corrida_terminal_vieja()
+        self.config['hook'] = 'run-inventariada-mtime'
+        self.ejecutar(dry=False)
+        self.assertTrue(propia.exists(), self.log)
+        self.assertFalse(ajena.exists(), self.log)
+        self.assertIn(f'no borro {propia}', self.log)
+        self.assertIn('runs/nueva (mtime)', self.log)
 
     def test_find_hijo_reciente_veta(self):
         p = self.copia()
