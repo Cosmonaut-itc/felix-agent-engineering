@@ -29,9 +29,9 @@ def objeto(pares):
 
 
 def leer_recibo(log, codigo, commit, modo, filtros):
-    if type(codigo) is int and codigo == 64:
+    exigir(type(codigo) is int, 'salida-no-utilizable')
+    if codigo == 64:
         return RechazoLanzador(str(Path(log).with_name('coordinador.log')))
-    exigir(type(codigo) is int and 0 <= codigo <= 255, 'salida-no-utilizable')
     try:
         lineas = Path(log).read_text(encoding='utf-8').splitlines()
     except OSError:
@@ -39,9 +39,12 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     except UnicodeError:
         raise ResultadoInvalido('recibo-malformado') from None
     recibos = [linea for linea in lineas if linea.startswith('RECIBO')]
-    if not recibos and codigo == 75:
-        return None
+    if not recibos:
+        if codigo == 75:
+            return None
+        return RechazoLanzador(str(Path(log).with_name('coordinador.log')), 'salida-sin-recibo')
     exigir(len(recibos) == 1, 'salida-sin-recibo')
+    exigir(0 <= codigo <= 255, 'salida-no-utilizable')
     match = re.fullmatch(r'RECIBO jale-recibo@1 ([A-Za-z0-9+/]+={0,2})', recibos[0])
     exigir(match is not None, 'recibo-malformado')
     try:

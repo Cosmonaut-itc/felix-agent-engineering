@@ -99,7 +99,7 @@ class RunnerFalso:
             "{} veredicto={} {}={}\n".format(etiqueta, r["veredicto"], campo, archivo), "")
 
 
-def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="reanudar"):
+def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="reanudar", codigo=64):
     """Contrato operativo compartido: cada adaptador conserva su productor falso."""
     from dominio import Decision
     from ledger import Ledger
@@ -125,20 +125,21 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
         efecto = efectos[0]
         caso.assertEqual(efecto.tipo, tipo)
     anterior = actual.trenes[0].fase
-    configurar("64")
+    detalle = "lanzador-rechazo" if codigo == 64 else "salida-sin-recibo"
+    configurar(str(codigo))
     ledger = Ledger(caso.raiz / ("ledger-" + tipo))
     caso.addCleanup(ledger.close)
     for entrada in entradas:
         ledger.entregar(entrada.entrega, entrada.recibida)
     ledger.guardar_paso(actual, (efecto,), obs.ahora)
     if recuperacion:
-        # Simula el estado instalado anterior: outbox fallido y 64 durable.
+        # Simula el estado instalado anterior: outbox fallido y salida durable.
         try:
             ejecutar(efecto, actual, obs, caso.git, caso.adaptador)
         except EfectoFallido:
             pass
         ledger.registrar_efecto(actual.repo, efecto, obs.ahora,
-            {"error": {"codigo": "jale-paro-64"}}, False)
+            {"error": {"codigo": "jale-paro-64" if codigo == 64 else detalle}}, False)
     else:
         llegada = ejecutar(efecto, actual, obs, caso.git, caso.adaptador)
         caso.assertTrue(llegada.completo)
@@ -150,22 +151,25 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
                 caso.runner.llamadas)
     rechazados = {ruta: ruta.read_bytes() for patron in ("codigo.json", "recibo.json")
                   for ruta in caso.adaptador.estado.rglob(patron)
-                  if (json.loads(ruta.read_text()) == 64 if ruta.name == "codigo.json" else
-                      json.loads(ruta.read_text()).get("codigo") == 64)}
+                  if (json.loads(ruta.read_text()) == codigo if ruta.name == "codigo.json" else
+                      json.loads(ruta.read_text()).get("codigo") == codigo)}
     caso.assertTrue(rechazados)
     invocaciones_antes = list(invocaciones())
     observador = Falso(obs)
     tick(ledger, actual.repo, observador, obs.ahora + 1, caso.git, caso.adaptador)
     pausado = ledger.estado(actual.repo, operativo=True)
+    caso.assertIsNotNone(pausado.pausa)
     caso.assertEqual((pausado.pausa.motivo, pausado.pausa.detalle),
-                     ("infraestructura", "lanzador-rechazo"))
+                     ("infraestructura", detalle))
     caso.assertEqual(invocaciones(), invocaciones_antes)
     caso.assertTrue(pausado.pausa.archivos)
     caso.assertTrue(all(Path(r).is_file() for r in pausado.pausa.archivos))
     caso.assertEqual(pausado.trenes[0].fase.reanudaciones,
                      getattr(anterior, "reanudaciones", 0))
     if tipo == "repetir":
+        caso.assertIsInstance(anterior, Diagnosticando)
         fase = pausado.trenes[0].fase
+        caso.assertIsInstance(fase, Diagnosticando)
         caso.assertEqual((fase.costo_infra_s, fase.evidencias, fase.pendiente),
                          (anterior.costo_infra_s, anterior.evidencias, anterior.pendiente))
     caso.assertFalse(ledger.outbox(actual.repo))
@@ -177,13 +181,13 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
          patch.object(cli, "Ledger", return_value=ledger):
         args = cli.parser().parse_args(["estado", "--repo", actual.repo, "--juicio"])
         _, visible = cli.ejecutar(args)
-    caso.assertEqual(visible["estado"]["pausa"]["detalle"], "lanzador-rechazo")
+    caso.assertEqual(visible["estado"]["pausa"]["detalle"], detalle)
     caso.assertEqual({d["decision"] for d in visible["juicio"]["admitidas"]},
                      {"reanudar", "abortar"})
     # El CLI cierra el ledger: reabrir para continuar la decisión real.
     ledger = Ledger(caso.raiz / ("ledger-" + tipo))
     caso.addCleanup(ledger.close)
-    d = Decision("resolver-64", actual.repo, "lote", decision, None,
+    d = Decision("resolver-" + str(codigo), actual.repo, "lote", decision, None,
                  "infraestructura corregida", obs.ahora + 2,
                  ledger.pausa_id(actual.repo), pausado.pausa)
     ledger.registrar_decision(d)
