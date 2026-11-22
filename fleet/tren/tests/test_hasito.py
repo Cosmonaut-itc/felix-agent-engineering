@@ -13,10 +13,11 @@ from test_tren import Aislado
 from adaptadores.hasito import (ErrorResultado, Hasito, ResultadoInvalido,
                                 leer_repeticion, leer_suite)
 from atribucion import planificar
-from dominio import (Admitido, Candidato, Certificado, Completo, Congelado, Corriendo,
+from dominio import (LIMITE_LOTE, Admitido, Candidato, Certificado, Completo, Congelado, Corriendo,
                      Diagnosticando, Efecto, Entrada, Entrega, EsperandoCI, Estado,
                      Evidencia, Fallo, Incompleto, Intento, Observacion, Repeticion,
-                     Terminal, Tren, UnidadRepetida, VistaPR, clave, datos, desde_datos, paso)
+                     Terminal, Tren, UnidadRepetida, VistaPR, clave, datos, desde_datos, paso,
+                     siguiente_lote)
 from efectos import EfectoFallido, ejecutar
 from git_ops import Publicado
 
@@ -360,6 +361,62 @@ class HasitoTests(Aislado):
         self.assertIn("--unidad", shlex.split(payload["fallos"][0]["comando"]))
         self.assertEqual([e.tipo for e in efectos if e.tipo != "devolver"],
                          ["armar-candidato", "avisar-en-tren", "avisar-en-tren"])
+
+    def usar_lote(self, n):
+        candidato = Candidato(B, tuple((i, str(i) * 40, str(i + 4) * 40) for i in range(1, n + 1)), C, T)
+        entradas = tuple(Entrada(Entrega("example/project", pr, head, "apto", "dirigida"), pr,
+                                 Admitido(), pr, tren="lote")
+                         for pr, head, _ in candidato.eslabones)
+        self.estado = Estado("example/project", entradas,
+            (Tren("lote", tuple(e.entrega.recibo for e in entradas), EsperandoCI(candidato)),))
+        self.obs = replace(self.obs, prs=tuple(VistaPR(e.entrega.pr, e.entrega.head,
+            apto=True, hallazgos=0, dirigida=True, ci="verde", conflicto=False) for e in entradas))
+
+    def lote_rojo_hasta_el_limite_repite_y_atribuye(self, n):
+        self.usar_lote(n)
+        estado, efectos, solicitudes = self.diagnosticar(lambda objetivo:
+            ("falla", "falla") if objetivo in ("C", (n,)) else ("pasa", "pasa"))
+        self.assertEqual(solicitudes, ["C", "B"] + [(pr,) for pr in range(1, n + 1)])
+        self.assertIsNone(estado.pausa)
+        self.assertEqual(estado.trenes[0].fase, Terminal("DEVUELTO"))
+        self.assertEqual(estado.entradas[n - 1].terminal, Terminal("DEVUELTO"))
+        self.assertEqual(estado.trenes[1].recibos,
+                         tuple(estado.entradas[i].entrega.recibo for i in range(n - 1)))
+
+    def test_lote_rojo_de_4_repite_en_c_y_b_sin_pausar_por_tamano(self):
+        self.lote_rojo_hasta_el_limite_repite_y_atribuye(4)
+
+    def test_lote_rojo_de_5_repite_en_c_y_b_sin_pausar_por_tamano(self):
+        self.assertEqual(LIMITE_LOTE, 5)
+        self.lote_rojo_hasta_el_limite_repite_y_atribuye(5)
+
+    def test_puro_atribucion_acepta_el_lote_mas_grande_que_forma_el_tren(self):
+        fila = tuple(Entrada(Entrega("example/project", pr, str(pr) * 40, "apto", "dirigida"),
+                             pr, Admitido(), pr) for pr in range(1, LIMITE_LOTE + 2))
+        prs = tuple(e.entrega.pr for e in siguiente_lote(fila))
+        self.assertEqual(len(prs), LIMITE_LOTE)
+        self.assertEqual(planificar((F,), prs, (), 3600).siguiente.objetivo, "C")
+        self.assertEqual(planificar((F,), prs + (LIMITE_LOTE + 1,), (), 3600).incierto,
+                         "tamano-de-lote-no-soportado")
+
+    def test_puro_lote_de_5_busca_pares_cuando_ningun_ticket_solo_reproduce(self):
+        evidencias = []
+        orden = []
+        for _ in range(30):
+            plan = planificar((F,), (1, 2, 3, 4, 5), tuple(evidencias), 3600)
+            if plan.terminado:
+                self.assertEqual(plan.causas[0].minimos, ((2, 4),))
+                break
+            self.assertFalse(plan.incierto)
+            s = plan.siguiente
+            orden.append(s.prs)
+            valores = ("falla", "falla") if s.objetivo == "C" or set(s.prs) >= {2, 4} else ("pasa", "pasa")
+            evidencias.append(self.evidencia_pura(s, valores))
+        else:
+            self.fail("no encontró el mínimo")
+        self.assertEqual(orden[:7], [(), (), (1,), (2,), (3,), (4,), (5,)])
+        self.assertIn((2, 4), orden)
+        self.assertNotIn((1, 2, 4), orden)
 
     def test_intermitente_pausa_sin_devolver(self):
         estado, efectos, solicitudes = self.diagnosticar(lambda objetivo:
