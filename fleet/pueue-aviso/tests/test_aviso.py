@@ -16,6 +16,12 @@ SPEC.loader.exec_module(aviso)
 INICIO = 100_000
 UMBRAL = 30 * 60
 URL = 'http://rack.example:8788/api/rack.json'
+GIB = 1024**3
+MINIMO_DISCO = 25 * GIB
+DISCO_BAJO = {'total': 500 * GIB, 'free': 24 * GIB}
+DISCO_UMBRAL = {'total': 500 * GIB, 'free': MINIMO_DISCO}
+DISCO_SANO = {'total': 500 * GIB, 'free': MINIMO_DISCO + 1}
+SIN_DISCO = object()
 
 
 def control(razones):
@@ -136,7 +142,7 @@ class AvisoTests(unittest.TestCase):
         desk = foto('desk', INICIO, capturas['desk'], [tarea('default')])
         mini = foto('mini', INICIO, capturas['mini'], [tarea('rapidas')] * 13)
         lecturas = aviso.observar(rack(desk, mini), INICIO)
-        self.assertEqual(lecturas, {'desk': {'default': (('ambiguous', 'startup'), 1)}, 'mini': {}})
+        self.assertEqual(lecturas, ({'desk': {'default': (('ambiguous', 'startup'), 1)}, 'mini': {}}, None))
         estado, avisos = aviso.decidir({}, lecturas, INICIO, UMBRAL)
         self.assertEqual(avisos, [])
         _, avisos = aviso.decidir(estado, lecturas, INICIO + UMBRAL + 1, UMBRAL)
@@ -156,7 +162,7 @@ class AvisoTests(unittest.TestCase):
         for desk in casos:
             with self.subTest(desk=desk):
                 lectura = aviso.observar(rack(desk, mini), INICIO)
-                self.assertEqual(lectura, {'desk': None, 'mini': {'suites': (('manual',), 1)}})
+                self.assertEqual(lectura, ({'desk': None, 'mini': {'suites': (('manual',), 1)}}, None))
 
     def test_entrega_fallida_reintenta_y_entrega_exitosa_persiste(self):
         with TemporaryDirectory() as tmp, patch.object(aviso, 'leer_rack') as leer, \
@@ -185,7 +191,112 @@ class AvisoTests(unittest.TestCase):
                 patch.object(aviso, 'pasada', return_value=0) as pasada:
             config = Path(tmp) / '.config/pao/aviso-fila-cerrada.json'
             config.parent.mkdir(parents=True)
-            for datos, umbral in (({'rack_url': URL}, 1800), ({'rack_url': URL, 'minutos': 8}, 480)):
+            casos = (
+                ({'rack_url': URL}, 1800, MINIMO_DISCO),
+                ({'rack_url': URL, 'minutos': 8, 'disco_minimo_bytes': 30 * GIB}, 480, 30 * GIB),
+            )
+            for datos, umbral, minimo in casos:
                 config.write_text(json.dumps(datos), encoding='utf-8')
                 self.assertEqual(aviso.main(), 0)
-                pasada.assert_called_with(Path(tmp) / '.local/state/pao/aviso-fila-cerrada', URL, umbral)
+                pasada.assert_called_with(Path(tmp) / '.local/state/pao/aviso-fila-cerrada', URL, umbral, minimo)
+
+
+class DiscoTests(unittest.TestCase):
+    def setUp(self):
+        temporal = TemporaryDirectory()
+        self.addCleanup(temporal.cleanup)
+        self.directorio = Path(temporal.name)
+        self.ruta = self.directorio / 'estado.json'
+
+    def pasar(self, segundos, disco=DISCO_BAJO, *, host='mini', fresh=True, errores=(),
+              fallo_entrega=False):
+        ahora = INICIO + segundos
+        fotos = {nombre: foto(nombre, ahora, control({}), []) for nombre in ('desk', 'mini')}
+        fotos[host]['fresh'] = fresh
+        fotos[host]['snapshot']['errors'] = list(errores)
+        if disco is not SIN_DISCO:
+            fotos[host]['snapshot']['disk'] = disco
+        with patch.object(aviso, 'leer_rack', return_value=rack(*fotos.values())), \
+                patch.object(aviso.time, 'time', return_value=ahora), \
+                patch.object(aviso, 'notificar') as enviar, patch('sys.stderr'):
+            if fallo_entrega:
+                enviar.side_effect = subprocess.TimeoutExpired('osascript', 10)
+            self.assertEqual(aviso.pasada(self.directorio, URL, UMBRAL), int(fallo_entrega))
+        return [llamada.args[0].mensaje for llamada in enviar.call_args_list]
+
+    def test_disco_bajo_avisa_en_la_primera_pasada(self):
+        self.assertEqual(self.pasar(0, DISCO_UMBRAL), [])
+        self.assertEqual(self.pasar(1, DISCO_SANO), [])
+        self.assertEqual(self.pasar(2), ['mini · disco bajo · 24.00 GiB libres · umbral 25.00 GiB'])
+
+    def test_disco_bajo_repite_al_cumplir_el_intervalo(self):
+        self.assertEqual(len(self.pasar(0)), 1)
+        self.assertEqual(self.pasar(1), [])
+        self.assertEqual(self.pasar(UMBRAL - 1), [])
+        self.assertEqual(len(self.pasar(UMBRAL)), 1)
+        self.assertEqual(self.pasar(UMBRAL + 1), [])
+        self.assertEqual(len(self.pasar(2 * UMBRAL)), 1)
+
+    def test_recuperacion_cierra_el_episodio_y_permite_otro_aviso_inmediato(self):
+        self.assertEqual(len(self.pasar(0)), 1)
+        self.assertEqual(self.pasar(1, DISCO_SANO), [])
+        self.assertEqual(len(self.pasar(2)), 1)
+        self.assertEqual(self.pasar(3, DISCO_UMBRAL), [])
+        self.assertEqual(len(self.pasar(4)), 1)
+
+    def test_lectura_de_disco_invalida_no_abre_ni_cierra_el_episodio(self):
+        invalidas = (SIN_DISCO, None, [], {'total': 500 * GIB},
+                     *({'total': 500 * GIB, 'free': libre} for libre in (True, '0', 0.0, -1)))
+        for disco in invalidas:
+            with self.subTest(disco=disco):
+                self.assertEqual(self.pasar(0, disco), [])
+                self.assertNotIn('disco_bajo', aviso.cargar_estado(self.ruta)['mini'])
+        self.assertEqual(len(self.pasar(1)), 1)
+        for disco in invalidas:
+            with self.subTest(disco=disco):
+                self.assertEqual(self.pasar(2, disco), [])
+                self.assertEqual(self.pasar(3), [])
+        self.assertEqual(self.pasar(UMBRAL + 1, None), [])
+        self.assertEqual(len(self.pasar(UMBRAL + 2)), 1)
+
+    def test_disco_del_desk_y_foto_no_fresca_de_la_mini_no_avisan(self):
+        self.assertEqual(self.pasar(0, host='desk'), [])
+        self.assertEqual(self.pasar(1, fresh=False), [])
+        self.assertEqual(len(self.pasar(2)), 1)
+        self.assertEqual(self.pasar(3, DISCO_SANO, fresh=False), [])
+        self.assertEqual(self.pasar(4), [])
+
+    def test_estado_anterior_se_conserva_sin_inventar_un_aviso(self):
+        anterior = {
+            'schema': 'pao-aviso-fila@1',
+            'hosts': {
+                'mini': {'sin_lectura': None, 'grupos': {}},
+                'desk': {'sin_lectura': None, 'grupos': {}},
+            },
+        }
+        self.ruta.write_text(json.dumps(anterior), encoding='utf-8')
+        self.assertEqual(aviso.cargar_estado(self.ruta), anterior['hosts'])
+        self.assertEqual(self.pasar(0, SIN_DISCO), [])
+        self.assertEqual(aviso.cargar_estado(self.ruta), anterior['hosts'])
+
+    def test_aviso_de_disco_fallido_se_reintenta_y_la_entrega_se_persiste(self):
+        self.assertEqual(len(self.pasar(0, fallo_entrega=True)), 1)
+        self.assertEqual(len(self.pasar(1)), 1)
+        self.assertEqual(self.pasar(UMBRAL), [])
+        self.assertEqual(len(self.pasar(UMBRAL + 1)), 1)
+
+    def test_una_falla_en_la_cola_no_invalida_el_disco_de_una_foto_fresca(self):
+        self.assertEqual(len(self.pasar(0, errores=[{'stage': 'pueue'}])), 1)
+
+    def test_umbral_invalido_se_rechaza_como_minutos(self):
+        with patch.object(aviso.Path, 'home', return_value=self.directorio), \
+                patch.object(aviso, 'pasada') as pasada, patch('sys.stderr') as stderr:
+            config = self.directorio / '.config/pao/aviso-fila-cerrada.json'
+            config.parent.mkdir(parents=True)
+            for clave in ('minutos', 'disco_minimo_bytes'):
+                for valor in (0, -1, True, '1', 1.0, None):
+                    with self.subTest(clave=clave, valor=valor):
+                        config.write_text(json.dumps({'rack_url': URL, clave: valor}), encoding='utf-8')
+                        self.assertEqual(aviso.main(), 2)
+            pasada.assert_not_called()
+            stderr.write.assert_any_call('Revisa ~/.config/pao/aviso-fila-cerrada.json.')
