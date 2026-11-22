@@ -452,7 +452,10 @@ class JaleTests(Aislado):
                 self.adaptador = self.Jale(self.lanzador, estado=estado)
                 antes = len(self.lanzamientos())
                 self.plan([{}] * antes + [{'codigo': 255, 'sin_linea': True}, {}])
-                resultado = self.repetir(origen, 'B')
+                try:
+                    resultado = self.repetir(origen, 'B')
+                except ResultadoInvalido as error:
+                    self.fail('se esperaba RechazoLanzador, recibido ' + error.resultado.codigo)
                 self.assertEqual(len(self.lanzamientos()), antes + 1)
                 registro = Path(self.lanzamientos()[-1][1]).parent
                 # Sin importar el tipo: U9 carga este archivo sobre una base sin él.
