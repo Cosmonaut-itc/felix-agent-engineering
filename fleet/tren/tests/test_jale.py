@@ -452,16 +452,15 @@ class JaleTests(Aislado):
                 self.adaptador = self.Jale(self.lanzador, estado=estado)
                 antes = len(self.lanzamientos())
                 self.plan([{}] * antes + [{'codigo': 255, 'sin_linea': True}, {}])
+                # U9 carga este archivo sobre una base sin RechazoLanzador y exige que
+                # su fallo histórico sea el del segundo tren: el primero se afirma al final.
                 try:
                     resultado = self.repetir(origen, 'B')
+                    primero = (type(resultado).__name__, resultado.evidencia, resultado.detalle)
                 except ResultadoInvalido as error:
-                    self.fail('se esperaba RechazoLanzador, recibido ' + error.resultado.codigo)
+                    primero = ('ResultadoInvalido', error.resultado.codigo)
                 self.assertEqual(len(self.lanzamientos()), antes + 1)
                 registro = Path(self.lanzamientos()[-1][1]).parent
-                # Sin importar el tipo: U9 carga este archivo sobre una base sin él.
-                self.assertEqual((type(resultado).__name__, resultado.evidencia, resultado.detalle),
-                                 ('RechazoLanzador', str(registro / 'coordinador.log'),
-                                  'salida-sin-recibo'))
                 if codigo is None:
                     (registro / 'codigo.json').write_text('null')
                     with self.assertRaises(ResultadoInvalido) as contexto:
@@ -476,6 +475,8 @@ class JaleTests(Aislado):
                     Reproduccion('tercera', FALLO, 'B'), B, 'tercero', permitir_lanzar=False).unidades,
                     r.unidades)
                 self.assertEqual(len(self.lanzamientos()), antes)
+                self.assertEqual(primero, ('RechazoLanzador', str(registro / 'coordinador.log'),
+                                           'salida-sin-recibo'))
 
     def test_r1_base_75_no_consume_reanudacion_otro_tren(self):
         origen = self.origen()
