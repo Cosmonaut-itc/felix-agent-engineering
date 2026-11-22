@@ -4,7 +4,7 @@ from itertools import combinations
 import re
 from typing import Optional, Tuple
 
-from dominio import Causa, Fallo, Reproduccion, clave
+from dominio import LIMITE_LOTE, Causa, Fallo, Reproduccion, clave
 
 
 @dataclass(frozen=True)
@@ -60,7 +60,7 @@ def absolucion(fallo, caso, uc, ub):
 
 def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=False,
                firma_distingue_fallo=False):
-    """Una repetición = dos intentos de una unidad; N <= 3.
+    """Una repetición = dos intentos de una unidad; N <= LIMITE_LOTE.
 
     Costo: 2 * máximo(segundos del check de origen, duraciones observadas).
     El check entero es una cota conservadora cuando falta tiempo por test.
@@ -69,7 +69,7 @@ def planificar(fallos, prs, evidencias, presupuesto_s, archivos=(), *, absolver=
     La absolución con B mixto requiere una firma que identifique el fallo.
     """
     prs = tuple(prs)
-    if not 1 <= len(prs) <= 3 or len(set(prs)) != len(prs):
+    if not 1 <= len(prs) <= LIMITE_LOTE or len(set(prs)) != len(prs):
         return Plan(incierto="tamano-de-lote-no-soportado")
     gastado = sum(max(e.solicitud.costo_s,
         sum(i.duracion_s for u in e.resultado.unidades for i in u.intentos))

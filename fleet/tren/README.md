@@ -294,8 +294,9 @@ en C y pases positivos en B para atribuir; la misma firma estable en B es
 preexistente. Una firma vacía del origen requiere firmas nuevas estables y
 no vacías. La tabla de pausas detalla cuándo una repetición permite absolver
 un intermitente.
-Luego prueba todos los tickets solos y, si ninguno reproduce, los pares
-(N<=3); C ya confirmado acredita el conjunto completo. Los archivos sólo
+Luego prueba todos los tickets solos y, si ninguno reproduce, las combinaciones
+de 2 hasta N-1, con N hasta `LIMITE_LOTE`, el mismo tope que forma los lotes;
+C ya confirmado acredita el conjunto completo. El presupuesto acota los ensayos. Los archivos sólo
 pueden ordenar los ensayos de atribución. Se guardan todos los mínimos observados.
 Sin culpables, certifica sólo si la suite no dejó `restantes`; si el
 fail-fast cortó checks, pausa `necesita-juicio` con `suite-incompleta`.
