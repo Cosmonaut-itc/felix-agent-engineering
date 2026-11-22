@@ -15,8 +15,7 @@ from test_tren import Aislado, cli, estado, observacion, REPO
 from test_hasito import B, C, CANDIDATO
 from adaptadores.hasito import Hasito, ResultadoInvalido
 from dominio import (Completo, Efecto, EsperandoCI, Evidencia, Fallo, Incompleto,
-                     Intento, RechazoLanzador, Repeticion, Reproduccion, Tren, clave,
-                     datos, desde_datos)
+                     Intento, Repeticion, Reproduccion, Tren, clave, datos, desde_datos)
 from efectos import EfectoFallido, ejecutar
 from atribucion import planificar
 from git_ops import ErrorGit, Publicado, RamaOcupada
@@ -226,6 +225,7 @@ class JaleTests(Aislado):
         self.assertIsInstance(self.suite()[1], Incompleto)
 
     def test_paro_64_no_reintenta_ni_cambia_host(self):
+        from dominio import RechazoLanzador
         self.plan([{'codigo': 64, 'sin_linea': True}])
         recibo = self.suite()
         evidencia = str(Path(self.lanzamientos()[0][1]).with_name('coordinador.log'))
@@ -278,6 +278,7 @@ class JaleTests(Aislado):
                       'unidades-desordenadas-o-duplicadas')
 
     def test_sin_linea_con_salida_cero(self):
+        from dominio import RechazoLanzador
         self.plan([{'sin_linea': True}])
         _, resultado = self.suite()
         self.assertEqual(len(self.lanzamientos()), 1)
@@ -454,8 +455,10 @@ class JaleTests(Aislado):
                 resultado = self.repetir(origen, 'B')
                 self.assertEqual(len(self.lanzamientos()), antes + 1)
                 registro = Path(self.lanzamientos()[-1][1]).parent
-                self.assertEqual(resultado, RechazoLanzador(str(registro / 'coordinador.log'),
-                                                           'salida-sin-recibo'))
+                # Sin importar el tipo: U9 carga este archivo sobre una base sin él.
+                self.assertEqual((type(resultado).__name__, resultado.evidencia, resultado.detalle),
+                                 ('RechazoLanzador', str(registro / 'coordinador.log'),
+                                  'salida-sin-recibo'))
                 if codigo is None:
                     (registro / 'codigo.json').write_text('null')
                     with self.assertRaises(ResultadoInvalido) as contexto:
@@ -643,6 +646,7 @@ class JaleTests(Aislado):
         self.assertEqual(json.loads(log.with_name('codigo.json').read_text()), 0)
 
     def test_u23_transporte_255_agota_limite_y_conserva_salida(self):
+        from dominio import RechazoLanzador
         self.plan([{'codigo': 255, 'sin_linea': True}])
         recibo = self.suite()
         self.assertEqual(self.suite(), recibo)
@@ -656,6 +660,7 @@ class JaleTests(Aislado):
         self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 255)
 
     def test_u23_125_se_guarda_sin_reintento_con_la_misma_clave(self):
+        from dominio import RechazoLanzador
         self.plan([{'codigo': 125, 'sin_linea': True}, {}, {}])
         recibo = self.suite()
         self.assertEqual(self.suite(), recibo)
