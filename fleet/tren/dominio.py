@@ -591,8 +591,11 @@ def efecto_reanudar_suite(tren, fase):
 
 
 def pausar_lanzador(estado, resultado):
-    return replace(estado, pausa=Pausa("infraestructura", detalle=resultado.detalle,
-                                      archivos=(resultado.evidencia,))), ()
+    archivos = (resultado.evidencia,)
+    pausa = (Pausa("infraestructura", detalle="salida-sin-recibo", archivos=archivos)
+             if resultado.detalle == "salida-sin-recibo" else
+             Pausa("infraestructura", detalle="lanzador-rechazo", archivos=archivos))
+    return replace(estado, pausa=pausa), ()
 
 
 def efecto_diagnostico(tren, fase):
