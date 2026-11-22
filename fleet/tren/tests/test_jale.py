@@ -15,7 +15,8 @@ from test_tren import Aislado, cli, estado, observacion, REPO
 from test_hasito import B, C, CANDIDATO
 from adaptadores.hasito import Hasito, ResultadoInvalido
 from dominio import (Completo, Efecto, EsperandoCI, Evidencia, Fallo, Incompleto,
-                     Intento, Repeticion, Reproduccion, Tren, clave, datos, desde_datos)
+                     Intento, RechazoLanzador, Repeticion, Reproduccion, Tren, clave,
+                     datos, desde_datos)
 from efectos import EfectoFallido, ejecutar
 from atribucion import planificar
 from git_ops import ErrorGit, Publicado, RamaOcupada
@@ -63,8 +64,13 @@ with (raiz / 'candado-productor').open('a') as candado:
     registro.write_text(json.dumps(trabajo))
 f = trabajo['plan']
 if trabajo['conexiones'] <= f.get('transportes', 0):
+    codigo = f.get('codigo_transporte', 255)
+    if codigo == 127:
+        if not conocido:
+            print('PUEUE_ID=' + str(trabajo['id']), flush=True)
+        print('Wsl/Service/WSAETIMEDOUT', file=sys.stderr, flush=True)
     Path(log).write_text('')
-    sys.exit(255)
+    sys.exit(codigo)
 if f.get('esperar'):
     (raiz / 'listo').write_text('listo')
     limite = time.monotonic() + 20
@@ -147,10 +153,13 @@ class JaleTests(Aislado):
         self.assertEqual(len(self.lanzamientos()), 1)
 
     def configurar_rechazo(self, respuesta):
-        fila = {"codigo": 64, "sin_linea": True} if respuesta == "64" else (
-            {"codigo": 75, "sin_linea": True} if respuesta == "75" else
-            {"estados": ["falla"]} if respuesta == "rojo" else {})
-        self.plan([{}] * len(self.lanzamientos()) + [fila])
+        filas = {
+            '64': {'codigo': 64, 'sin_linea': True},
+            '75': {'codigo': 75, 'sin_linea': True},
+            '127': {'transportes': 3, 'codigo_transporte': 127},
+            'rojo': {'estados': ['falla']},
+        }
+        self.plan([{}] * len(self.lanzamientos()) + [filas.get(respuesta, {})])
 
     def verificar_rechazo(self, tipo, **kwargs):
         from test_hasito import GitFalso, verificar_rechazo
@@ -177,6 +186,18 @@ class JaleTests(Aislado):
 
     def test_sen7030_recuperar_repetir(self):
         self.verificar_rechazo("repetir", recuperacion=True)
+
+    def test_sen7124_recuperar_repeticion_fallida_y_reanudar(self):
+        self.verificar_rechazo('repetir', codigo=127, recuperacion=True)
+        rechazados = [log for _, log, *_ in self.lanzamientos()
+                      if json.loads(Path(log).with_name('codigo.json').read_text()) == 127]
+        self.assertEqual(len(rechazados), 1)
+        invocaciones = [i for i in self.invocaciones() if i['log'] == rechazados[0]]
+        self.assertEqual(len(invocaciones), 3)
+        self.assertEqual(len({i['clave'] for i in invocaciones}), 1)
+
+    def test_sen7124_pausar_suite_sin_recibo_y_abortar(self):
+        self.verificar_rechazo('iniciar-suite', codigo=127, decision='abortar')
 
     def test_suite_verde_dos_modos_y_argv_sin_filtros(self):
         ruta, r = self.suite()
@@ -205,10 +226,12 @@ class JaleTests(Aislado):
         self.assertIsInstance(self.suite()[1], Incompleto)
 
     def test_paro_64_no_reintenta_ni_cambia_host(self):
-        from dominio import RechazoLanzador
         self.plan([{'codigo': 64, 'sin_linea': True}])
         recibo = self.suite()
-        self.assertIsInstance(recibo[1], RechazoLanzador)
+        evidencia = str(Path(self.lanzamientos()[0][1]).with_name('coordinador.log'))
+        self.assertEqual(recibo[1], RechazoLanzador(evidencia, 'lanzador-rechazo'))
+        self.assertEqual(desde_datos({'_tipo': 'RechazoLanzador', 'evidencia': evidencia}),
+                         recibo[1])
         self.assertEqual(self.suite(), recibo)
         self.assertEqual(len(self.lanzamientos()), 1)
 
@@ -255,7 +278,11 @@ class JaleTests(Aislado):
                       'unidades-desordenadas-o-duplicadas')
 
     def test_sin_linea_con_salida_cero(self):
-        self.invalido({'sin_linea': True}, 'salida-sin-recibo')
+        self.plan([{'sin_linea': True}])
+        _, resultado = self.suite()
+        self.assertEqual(len(self.lanzamientos()), 1)
+        evidencia = str(Path(self.lanzamientos()[0][1]).with_name('coordinador.log'))
+        self.assertEqual(resultado, RechazoLanzador(evidencia, 'salida-sin-recibo'))
 
     def test_base64_malformado(self):
         self.invalido({'malformado': True}, 'recibo-malformado')
@@ -424,12 +451,12 @@ class JaleTests(Aislado):
                 self.adaptador = self.Jale(self.lanzador, estado=estado)
                 antes = len(self.lanzamientos())
                 self.plan([{}] * antes + [{'codigo': 255, 'sin_linea': True}, {}])
-                with self.assertRaises(ResultadoInvalido) as contexto:
-                    self.repetir(origen, 'B')
-                self.assertEqual(contexto.exception.resultado.codigo, 'salida-sin-recibo')
+                resultado = self.repetir(origen, 'B')
                 self.assertEqual(len(self.lanzamientos()), antes + 1)
+                registro = Path(self.lanzamientos()[-1][1]).parent
+                self.assertEqual(resultado, RechazoLanzador(str(registro / 'coordinador.log'),
+                                                           'salida-sin-recibo'))
                 if codigo is None:
-                    registro = Path(self.lanzamientos()[-1][1]).parent
                     (registro / 'codigo.json').write_text('null')
                     with self.assertRaises(ResultadoInvalido) as contexto:
                         self.repetir(origen, 'B')
@@ -601,27 +628,41 @@ class JaleTests(Aislado):
         self.assertEqual(self.suite(), (ruta, r))
         self.assertEqual(len(self.invocaciones()), 3)
 
+    def test_sen7124_transporte_127_reengancha_con_la_misma_clave(self):
+        self.adaptador = self.Jale(self.lanzador, modos=('contract',))
+        self.plan([{'transportes': 1, 'codigo_transporte': 127}])
+        _, resultado = self.suite()
+        self.assertEqual(resultado, Completo('verde', costo_s=4))
+        primera, segunda = self.invocaciones()
+        self.assertRegex(primera['clave'], r'^[A-Za-z0-9._-]{8,128}$')
+        self.assertEqual((primera['clave'], primera['log']), (segunda['clave'], segunda['log']))
+        self.assertEqual(len(self.lanzamientos()), 1)
+        log = Path(primera['log'])
+        self.assertEqual(log.with_name('coordinador.log').read_text().splitlines(),
+                         ['PUEUE_ID=0', 'Wsl/Service/WSAETIMEDOUT', 'PUEUE_REENGANCHE=0'])
+        self.assertEqual(json.loads(log.with_name('codigo.json').read_text()), 0)
+
     def test_u23_transporte_255_agota_limite_y_conserva_salida(self):
         self.plan([{'codigo': 255, 'sin_linea': True}])
-        for _ in range(2):
-            with self.assertRaises(ResultadoInvalido) as contexto:
-                self.suite()
-            self.assertEqual(contexto.exception.resultado.codigo, 'salida-sin-recibo')
+        recibo = self.suite()
+        self.assertEqual(self.suite(), recibo)
         invocaciones = self.invocaciones()
         self.assertEqual(len(invocaciones), 3)
         self.assertEqual(len({i['clave'] for i in invocaciones}), 1)
         self.assertEqual(len(self.lanzamientos()), 1)
         registro = Path(invocaciones[0]['log']).parent
+        self.assertEqual(recibo[1], RechazoLanzador(str(registro / 'coordinador.log'),
+                                                  'salida-sin-recibo'))
         self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 255)
 
     def test_u23_125_se_guarda_sin_reintento_con_la_misma_clave(self):
         self.plan([{'codigo': 125, 'sin_linea': True}, {}, {}])
-        for _ in range(2):
-            with self.assertRaises(ResultadoInvalido) as contexto:
-                self.suite()
-            self.assertEqual(contexto.exception.resultado.codigo, 'salida-sin-recibo')
+        recibo = self.suite()
+        self.assertEqual(self.suite(), recibo)
         self.assertEqual(len(self.invocaciones()), 1)
         registro = Path(self.invocaciones()[0]['log']).parent
+        self.assertEqual(recibo[1], RechazoLanzador(str(registro / 'coordinador.log'),
+                                                  'salida-sin-recibo'))
         self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 125)
         self.assertEqual(self.suite(intento=1)[1].veredicto, 'verde')
         self.assertEqual(len(self.invocaciones()), 3)

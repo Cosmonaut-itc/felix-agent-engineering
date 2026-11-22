@@ -194,6 +194,7 @@ class Incompleto:
 @dataclass(frozen=True)
 class RechazoLanzador:
     evidencia: str
+    detalle: str = "lanzador-rechazo"
 
 
 @dataclass(frozen=True)
@@ -590,7 +591,7 @@ def efecto_reanudar_suite(tren, fase):
 
 
 def pausar_lanzador(estado, resultado):
-    return replace(estado, pausa=Pausa("infraestructura", detalle="lanzador-rechazo",
+    return replace(estado, pausa=Pausa("infraestructura", detalle=resultado.detalle,
                                       archivos=(resultado.evidencia,))), ()
 
 

@@ -10,6 +10,7 @@ import sys
 
 
 INTENTOS_TRANSPORTE = 3
+SALIDAS_TRANSPORTE = {255, 127}
 
 
 def guardar(ruta, valor):
@@ -48,7 +49,7 @@ def coordinar(registro):
                 for _ in range(INTENTOS_TRANSPORTE):
                     codigo = subprocess.run(argv, env=entorno, stdout=salida,
                                             stderr=salida, check=False).returncode
-                    if codigo != 255:
+                    if codigo not in SALIDAS_TRANSPORTE:
                         break
         except (OSError, subprocess.SubprocessError):
             codigo = None

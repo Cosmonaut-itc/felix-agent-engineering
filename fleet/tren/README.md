@@ -626,7 +626,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `etapa-1` | vacío | `reanudar`: levantar la pausa del repo; siguen vigentes los permisos operativos externos para cada suite. |
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
 | `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
-| `infraestructura` | `lanzador-rechazo` | El lanzador salió 64; la pausa conserva la ruta del log y cierra el efecto. `reanudar`: lanzar otro intento con registro y clave nuevos, conservando el registro rechazado, sin gastar reanudaciones de 75 ni presupuesto de diagnóstico. `abortar`: terminar el tren y devolver las entregas a la fila sin feedback de producto. |
+| `infraestructura` | `lanzador-rechazo` / `salida-sin-recibo` | El lanzador salió 64 o Jale guardó otra salida entera distinta de 75 sin recibo. La pausa conserva la ruta del log y cierra el efecto. `reanudar` lanza otro intento con registro y clave nuevos. Conserva el registro anterior sin gastar reanudaciones por 75 ni presupuesto de diagnóstico. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `checkout-operador:<estado>` | El tick no pudo obtener el SHA o verificar su snapshot. `reanudar` permite reintentar y `abortar` termina el tren. El tick conserva cualquier pausa vigente. |
 | `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `absolver`: abandonar el diagnóstico o reenganche anterior y exigir CI y suite completa nuevos sobre el mismo C, incluso si el diagnóstico agotó D5. `abortar`: liberar entregas sin rojo. |
 | `infraestructura` | `ci-sin-resultado` | `reanudar`: solicitar CI sobre el mismo C con ref/clave nuevas y reiniciar los 60 minutos; `abortar`: liberar entregas sin rojo. No admite `absolver`. |
@@ -1229,18 +1229,19 @@ siguiente tick relanza el mismo argv con la clave guardada y recupera el
 trabajo aceptado por el lanzador, sin otro envío. Cada intento, modo y tren
 tiene su propio registro y clave. Los registros antiguos con `iniciado.json`
 sin clave conservan el lanzamiento incierto y detienen su recuperación.
-El coordinador permite como máximo tres invocaciones ante salida 255,
-siempre con la misma clave; guarda la última salida. Un 125 se guarda sin
-reintentar con esa clave. Un 75 espera la política de reanudación del tren;
-el paro 64 cierra el efecto y pausa `infraestructura` / `lanzador-rechazo`,
-con la ruta del log del lanzador como evidencia. También se recupera en el
-siguiente tick un efecto ya fallido con 64 guardado. `reanudar` crea otro
-registro y clave sin borrar el rechazo anterior; `abortar` libera las
-entregas sin rojo. Hasito aplica la misma pausa y conserva su log y recibo.
-Los rechazos no consumen reanudaciones de 75 ni presupuesto de diagnóstico,
-ni publican feedback a los PRs. Los recibos ausentes con otra salida,
-malformados o incoherentes quedan como errores de infraestructura con el
-efecto pendiente. Ninguno se convierte en un fallo de producto.
+El coordinador permite como máximo tres invocaciones ante una salida 255
+o 127. Usa la misma clave y guarda la última salida. Guarda el 125 sin
+reintentar. Un 75 sigue la política de reanudación del tren. Un 64 cierra
+el efecto y pausa `infraestructura` con detalle `lanzador-rechazo`. Si Jale
+guarda otra salida entera y no hay ninguna línea de recibo, cierra el
+efecto y pausa `infraestructura` con detalle `salida-sin-recibo`. Ambas
+pausas conservan la ruta de `coordinador.log` y también se aplican al
+recuperar un efecto ya fallido. `reanudar` crea otro registro y otra clave
+y conserva el registro anterior. `abortar` libera las entregas sin rojo.
+Hasito aplica la pausa del 64 y conserva su log y recibo. Estas pausas
+no consumen reanudaciones de 75 ni presupuesto de diagnóstico. Tampoco
+generan feedback de producto. Los recibos duplicados, malformados o
+incoherentes dejan el efecto pendiente como error de infraestructura.
 No hay cambio automático de host.
 
 La regresión U9 y toda la suite del tren, dividida exhaustivamente entre dos
