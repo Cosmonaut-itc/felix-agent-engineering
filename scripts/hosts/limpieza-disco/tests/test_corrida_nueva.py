@@ -12,19 +12,24 @@ INVENTARIO = DIRECTORIO.parent / 'inventario' / 'inventario.py'
 
 
 class CorridaNuevaTest(unittest.TestCase):
-    def ejecutar(self, cmd, copia='copia'):
+    def ejecutar(self, cmd, copia='copia', inventario_json=None, mtime_nuevo=True):
         funcion = (DIRECTORIO / 'limpieza-disco.sh').read_text().split(
             'corrida_nueva() {', 1)[1].split('\nborrar_en() {', 1)[0]
         bloque = funcion.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
         with tempfile.TemporaryDirectory() as tmp:
-            ruta = Path(tmp) / 'nueva'
-            ruta.mkdir()
+            runs = Path(tmp) / 'runs'
+            ruta = runs / 'nueva'
+            ruta.mkdir(parents=True)
             (ruta / 'meta').write_bytes(
                 b'src=/src\nhost=mini\nmirror=remote-run/work/copia\nsub=.\ncmd=' + cmd)
             listado = Path(tmp) / 'listado'
-            listado.write_bytes(os.fsencode(ruta) + b'\0')
+            listado.write_bytes(os.fsencode(ruta) + b'\0' if mtime_nuevo else b'')
+            captura = Path(tmp) / 'inventario.json'
+            if inventario_json is not None:
+                captura.write_text(inventario_json)
             return subprocess.run(
-                [sys.executable, '-B', '-', str(INVENTARIO), str(listado), copia],
+                [sys.executable, '-B', '-', str(INVENTARIO), str(listado), copia,
+                 str(captura), str(runs)],
                 input=bloque, text=True, capture_output=True)
 
     def comprobar_veto(self, cmd):
@@ -43,3 +48,12 @@ class CorridaNuevaTest(unittest.TestCase):
         resultado = self.ejecutar(b'true\n', copia='otra')
         self.assertEqual(resultado.returncode, 0, resultado.stderr)
         self.assertEqual(resultado.stderr, '')
+
+    def test_inventario_ausente_o_ilegible_conserva_el_filtro_mtime(self):
+        for captura in (None, 'no es JSON', '{"corridas": {}}'):
+            with self.subTest(captura=captura):
+                vieja = self.ejecutar(b'true\n', inventario_json=captura, mtime_nuevo=False)
+                nueva = self.ejecutar(b'true\n', inventario_json=captura)
+                self.assertEqual(vieja.returncode, 0, vieja.stderr)
+                self.assertEqual(nueva.returncode, 1, nueva.stderr)
+                self.assertIn('runs/nueva (mtime)', nueva.stderr)

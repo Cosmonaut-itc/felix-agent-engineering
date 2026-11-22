@@ -11,6 +11,8 @@
 # Sin identidad, la preparación veta work durante 1 h (15 min en su emergencia).
 # En emergencia, entre 15 min y 1 h, también veta si hay artefactos de git o
 # EN_USO no descarta procesos en runs/<id>.
+# Antes de borrar cada copia, comprueba el mirror de las corridas con mtime
+# posterior a MARCA o ausentes del inventario. Un mirror ilegible veta la copia.
 #
 # Qué borra:
 #   1. ~/remote-run/work/*   sólo las copias no ocultas que ~/bin/pao-inventario.py
@@ -179,8 +181,10 @@ corrida_nueva() {
     log "reglas 1 y 3 sin borrar: runs/ cambió durante find"; return 2
   fi
   # Reutiliza lector y formato del inventario, incluido cmd multilínea.
-  motivo=$(/usr/bin/python3 -B - "$INVENTARIO" "$RUNS_NUEVAS" "$1" 2>&1 <<'PY'
+  motivo=$(acotado "reglas 1 y 3: corridas fuera del inventario y meta" "$RR/runs" \
+    /usr/bin/python3 -B - "$INVENTARIO" "$RUNS_NUEVAS" "$1" "${INV_JSON:-}" "$RR/runs" 2>&1 <<'PY'
 from pathlib import Path
+import json
 import os
 import runpy
 import sys
@@ -194,20 +198,43 @@ try:
 except Exception as exc:
     print('no pude comprobar el listado de runs/ o cargar el inventario: ' + str(exc), file=sys.stderr)
     sys.exit(2)
-for entrada in listado.split(b'\0')[:-1]:
-    ruta = Path(os.fsdecode(entrada))
+
+nuevas = {Path(os.fsdecode(entrada)): 'mtime' for entrada in listado.split(b'\0')[:-1]}
+try:
+    with open(sys.argv[4], encoding='utf-8') as archivo:
+        corridas = json.load(archivo)['corridas']
+    if not isinstance(corridas, list):
+        raise ValueError('lista de corridas no válida')
+    inventariadas = {Path(corrida['ruta']).name for corrida in corridas}
+except (OSError, ValueError, KeyError, TypeError):
+    # Si la captura ya no se puede leer, conserva la comprobación por mtime.
+    inventariadas = None
+
+if inventariadas is not None:
+    try:
+        for ruta in inventario['listar'](Path(sys.argv[5])):
+            if ruta.name not in inventariadas:
+                # Si pasa ambos filtros, conserva el motivo mtime.
+                nuevas.setdefault(ruta, 'fuera del inventario')
+    except (OSError, ValueError) as exc:
+        print('no pude listar runs/ para comparar con el inventario: ' + str(exc), file=sys.stderr)
+        sys.exit(2)
+
+for ruta, origen in nuevas.items():
+    motivo = f'{ruta} ({origen})'
     try:
         mirror = inventario['espejo'](ruta / 'meta')
     except (OSError, ValueError, UnicodeError) as exc:
-        sys.exit('lectura o formato de meta no válido en {}: {}'.format(ruta, exc))
+        sys.exit(f'lectura o formato de meta no válido en {motivo}: {exc}')
     if mirror is None:
-        sys.exit('corrida nueva sin meta en ' + str(ruta))
+        sys.exit('corrida nueva sin meta en ' + motivo)
     if mirror.casefold() == sys.argv[3].casefold():
-        sys.exit('corrida nueva asociada a la copia en ' + str(ruta))
+        sys.exit('corrida nueva asociada a la copia en ' + motivo)
 PY
   )
   estado=$?
-  if [ "$estado" = 2 ]; then
+  if [ "$estado" = 2 ] || [ "$estado" = 124 ] || [ "$estado" = 125 ]; then
+    motivo=${motivo:-falló la recomprobación de runs/}
     log "reglas 1 y 3 sin borrar: ${motivo%%$'\n'*}"; return 2
   fi
   if [ "$estado" != 0 ]; then

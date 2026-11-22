@@ -9,9 +9,10 @@ cabecera del script lista las nueve reglas y sus umbrales.
 
 Cada `find`, `du` y `lsof` del shell tiene un tope de 600 segundos, sin
 coreutils. También lo tienen el inventario, su medición recursiva de una
-copia y la captura adicional de cwd. Diez minutos dan margen sobre la
-pasada normal de 1–3 minutos y cortan la espera indefinida de File Provider
-o NFS. El supervisor Python inicia un grupo de procesos separado y, al
+copia, la recomprobación de corridas fuera del inventario y la captura
+adicional de cwd. Diez minutos dan margen sobre la pasada normal de
+1–3 minutos y cortan la espera indefinida de File Provider o NFS.
+El supervisor Python inicia un grupo de procesos separado y, al
 vencer el plazo, envía SIGKILL al grupo, registra regla y ruta y devuelve
 124. Espera como máximo un segundo adicional: un proceso retenido por el
 kernel puede tardar en morir. Sus salidas van a archivos temporales, de
@@ -170,10 +171,15 @@ demás.
   con clase `terminal`, más de 30 días, y que tengan archivo `exit`.
 - **Orden de comprobación de una copia.** Desde el padre fijado con `cd -P`
   y verificado con `pwd -P`, primero recorre los dos primeros niveles con
-  `find -maxdepth 2 -mtime -7` y comprueba las corridas de `runs/` posteriores
-  a `MARCA`, creada antes del inventario. Una corrida nueva sin `meta`, con
-  lectura fallida, formato no admitido por `espejo()` del inventario o
-  `mirror` de la misma copia (sin distinguir mayúsculas) veta la copia.
+  `find -maxdepth 2 -mtime -7` y vuelve a comprobar `runs/`. Considera
+  nuevas las entradas con mtime posterior a `MARCA`, creada antes del
+  inventario, y las que faltaban en el inventario aunque su mtime sea
+  anterior a `MARCA`. En ambos casos consulta `espejo()` del inventario.
+  Si el `mirror` corresponde a la copia (sin distinguir mayúsculas), la
+  veta. La ausencia de `meta` o un fallo de lectura o formato vetan cada
+  candidata. El log identifica la corrida, la copia y si el veto se
+  detectó por `mtime` o por estar `fuera del inventario`. Si la captura ya
+  validada deja de poder leerse, la recomprobación sigue usando el mtime.
   Después consulta `EN_USO` y ejecuta `lsof +D`. Exige salida vacía, además
   de código 1; cualquier diagnóstico o estado distinto conserva la copia.
   Al final vuelve a comprobar el lock, con `-e` y `-L`, y exige mediante
