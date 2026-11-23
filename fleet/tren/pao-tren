@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Entrega durable, planificación en sombra y tick de repos inscritos activos."""
 import argparse
+import importlib
 import json
 from pathlib import Path
 import re
@@ -205,16 +206,91 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
         ledger.close()
 
 
-def main():
-    args = parser().parse_args()
+ENCADENADOS = 8
+CUOTA_MINIMA = 1000
+PEREZOSOS = ("adaptadores.hasito", "adaptadores.jale", "atribucion", "feedback", "git_ops",
+             "juicios", "operador", "operativo", "preaterrizaje")
+
+
+def huella(repo):
+    """Lo que un tick puede hacer avanzar: la pausa, la fase de cada tren y cada efecto pendiente."""
     try:
-        codigo, resultado = ejecutar(args)
+        ledger = Ledger()
+        try:
+            with ledger.transaccion(escritura=False):
+                estado = ledger.estado(repo, operativo=True)
+                return (estado.pausa is None,
+                        tuple((t.id, type(t.fase).__name__) for t in estado.trenes),
+                        tuple((f["clave"], f["estado"]) for f in ledger.outbox(repo)))
+        finally:
+            ledger.close()
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+        return None
+
+
+def programa():
+    """Identidad del programa instalado; None si no puede leerse completo."""
+    raiz = Path(__file__).resolve().parent
+    try:
+        return tuple(sorted((str(p), p.stat().st_mtime_ns, p.stat().st_size)
+                            for p in (Path(__file__).resolve(), *raiz.rglob("*.py"))
+                            if "tests" not in p.relative_to(raiz).parts))
+    except OSError:
+        return None
+
+
+def cuota(ejecutar=subprocess.run):
+    """La cadena no gasta la cuota de GitHub que comparten las demás sesiones."""
+    try:
+        salida = ejecutar(["gh", "api", "rate_limit", "--jq", ".resources.core.remaining"],
+                          check=True, capture_output=True, text=True, timeout=10).stdout
+        return int(salida) >= CUOTA_MINIMA
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def encadenar(un_tick, huella, seguir, tope=ENCADENADOS):
+    """Repite el tick mientras el anterior haya hecho avanzar el carril.
+
+    Un efecto que falla, una espera o un resultado que la pausa retiene dejan
+    la huella igual y cortan: el siguiente tick lo lanza launchd.
+    """
+    antes = huella()
+    for restantes in range(tope - 1, -1, -1):
+        codigo, resultado = un_tick()
+        yield codigo, resultado
+        if codigo != 0 or not restantes:
+            return
+        despues = huella()
+        if despues is None or despues == antes or not seguir():
+            return
+        antes = despues
+
+
+def intento(args):
+    try:
+        return ejecutar(args)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         # Do not echo subprocess argv/output or private config/evidence paths.
-        codigo, resultado = 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
+        return 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
     except sqlite3.Error:
-        codigo, resultado = 2, {"error": "ledger no disponible"}
-    print(json.dumps(resultado, sort_keys=True, ensure_ascii=False))
+        return 2, {"error": "ledger no disponible"}
+
+
+def main():
+    args = parser().parse_args()
+    if args.comando == "tick" and not args.seco:
+        inicial = programa()
+        # Instalar durante un tick no debe mezclar versiones a medio paso.
+        for modulo in PEREZOSOS:
+            importlib.import_module(modulo)
+        pasos = encadenar(lambda: intento(args), lambda: huella(args.repo),
+                          lambda: inicial is not None and programa() == inicial and cuota())
+    else:
+        pasos = [intento(args)]
+    codigo = 2
+    for codigo, resultado in pasos:
+        print(json.dumps(resultado, sort_keys=True, ensure_ascii=False), flush=True)
     return codigo
 
 
