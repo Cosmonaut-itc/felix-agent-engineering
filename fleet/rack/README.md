@@ -172,6 +172,39 @@ y último asunto con Git; si fallan quedan en null. Las tareas incluyen su
 prioridad de Pueue. Un ticket ausente se deduce también de `sen-<n>` en la
 rama, sin distinguir mayúsculas.
 
+### Admisión de recursos de la Mini
+
+El recolector lee opcionalmente
+`~/.local/state/comprador/mini/admission-v1/resource-state.json` de Hasito.
+Acepta `resource-state@1` con estado `ok` y antigüedad entre 0 y 30 s. El
+archivo debe ser regular, del UID del recolector y de hasta 1 MiB. Los límites
+incluyen 4096 filas, 64 recursos por fila y 4096 bloqueantes por recurso. Una
+proyección ausente, ilegible, inválida u obsoleta deja la vista nativa. Se puede
+desplegar este recolector antes del árbitro. El desk sigue tomando los candados
+dentro del grupo y conserva su vista.
+
+El recolector compara el ID, `created_at` y un único `run=` saneado contra
+la tarea bruta, con la misma generación del daemon antes y después de la
+consulta. Si coinciden varios intentos de esa tarea, muestra el de mayor
+`seq`. El nombre gestionado viene del `run=` acreditado. Para esas corridas
+se omite `meta`. El campo opcional `admission` publica identidad, fase,
+tiempos, recursos, posiciones y bloqueantes saneados (`holder`,
+`predecessor`, `legacy`, `unknown`). Se excluyen el diagnóstico de corte, el
+inventario de migración, los entornos y los comandos.
+
+Las corridas gestionadas en `Stashed` aparecen en la fila de su grupo con
+«Esperando recurso · …» o «Esperando lugar en …». Se muestran hasta dos
+bloqueantes y se indica cuántos más hay. Las corridas del legado que ocupan un
+lugar y figuran como bloqueantes acreditados muestran «Corrida del legado ·
+ocupa un lugar». El estado de admisión tiene prioridad sobre «Sin actividad»
+y la barra empieza con `payload_started_at`. Los lugares ocupados, las
+pausas de grupo y el orden de Pueue siguen usando sus estados nativos.
+
+`tests/test_admission.py` comprueba la lectura y el render con los fixtures del
+rack. `tests/admission_browser_fixture.py OUTPUT.html` genera una página
+sintética sin servidor, con los escenarios `con-admision`, `sin-admision` y
+`texto-largo`.
+
 El historial `~/.local/state/pao/rack/history.jsonl` conserva 30 días, sin
 duplicar `(host,id,start)`. El estimado usa la mediana de las últimas 20
 corridas exitosas con igual host, grupo y nombre sin sufijos `-sol`, `-opus`

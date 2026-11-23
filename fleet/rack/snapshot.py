@@ -39,6 +39,7 @@ def ticket(text):
 
 # Etiqueta de Pueue del remote-run de Bodega (repo apotheca): su ruta de corrida es la misma que la de Hasito.
 BODEGA = 'apotheca-remote-run'
+REMOTE_RUN_REF = re.compile(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}')
 
 
 # resource-state@1, publicado por scripts/mini/resource_admission.py de Hasito.
@@ -49,6 +50,7 @@ ADMISSION_ROWS = 4096
 ADMISSION_RESOURCES = 64
 ADMISSION_TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}')
 ADMISSION_RESOURCE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,63}')
+ADMISSION_STAMP = re.compile(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)')
 ADMISSION_PHASES = ('waiting', 'reserved', 'claimed', 'running', 'draining', 'done',
                     'cancelled', 'expired', 'unknown')
 ADMISSION_FIELDS = frozenset(('task_id', 'task_created_at', 'ref', 'daemon_generation', 'attempt',
@@ -227,6 +229,18 @@ def admission_label(task):
     return names[0] if len(names) == 1 and admission_token(names[0]) else None
 
 
+def legacy_created_at(value):
+    stamp = ADMISSION_STAMP.fullmatch(value) if isinstance(value, str) else None
+    if stamp is None:
+        return None
+    fraction = (stamp[2] or '').ljust(6, '0')[:6]
+    try:
+        # Pueue puede publicar nanosegundos. fromisoformat de Python 3.9 admite seis.
+        return epoch(f'{stamp[1]}.{fraction}{stamp[3]}')
+    except (ValueError, OverflowError, OSError):
+        return None
+
+
 def match_admission(tasks, rows, generation):
     managed = {}
     for row in rows:
@@ -246,13 +260,10 @@ def match_admission(tasks, rows, generation):
             if blocker['kind'] != 'legacy' or task_id is None or task_id in managed:
                 continue
             task = tasks.get(str(task_id))
-            if not task or task['id'] != task_id:
+            if not task or type(task['id']) is not int or task['id'] != task_id:
                 continue
             label = admission_label(task) or f'unlabelled-{task_id}'
-            try:
-                created = epoch(task.get('created_at'))
-            except (TypeError, ValueError, OverflowError, OSError):
-                continue
+            created = legacy_created_at(task.get('created_at'))
             if blocker['ref'] == label and created is not None and created <= row['updated_at']:
                 legacy.add(task_id)
     return managed, legacy
@@ -331,7 +342,7 @@ def task_activity(task, mode, home, metadata, active=True, managed=False):
         activity['ref'] = job.name
         activity['kind'] = activity['kind'] or 'chain'
         logs.append(job / 'log')
-    elif run.parent == home / 'remote-run/runs':
+    elif run.parent == home / 'remote-run/runs' and (not managed or REMOTE_RUN_REF.fullmatch(run.name)):
         activity['ref'] = run.name
         logs.append(run / 'log')
     if active:
@@ -351,7 +362,7 @@ def task_control(task, home, state):
     run = Path(task.get('path', '')).expanduser()
     if task.get('label') == BODEGA:
         reason = 'Las corridas de Bodega todavía no se cancelan desde el panel.'
-    elif run.parent == home / 'remote-run/runs' and re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}', run.name):
+    elif run.parent == home / 'remote-run/runs' and REMOTE_RUN_REF.fullmatch(run.name):
         launcher, ref = 'remote-run', run.name
     else:
         match = re.fullmatch(r'exec bash (/.*/job-[A-Za-z0-9]{8}/task\.sh)', task.get('command', ''))

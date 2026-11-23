@@ -1,5 +1,7 @@
 """Contraste de resource-state@1 con la cola y el render del rack, sin hosts reales."""
 from contextlib import ExitStack
+import ctypes
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -31,6 +33,7 @@ class AdmissionTests(unittest.TestCase):
         self.pueue['groups'] = {'suites': dict(status='Running', parallel_tasks=3)}
         self.legacy = self.pueue['tasks']['242']
         self.legacy['label'] = None
+        self.legacy['created_at'] = '2026-11-12T12:00:04.922402123-06:00'
         self.legacy['status'] = {'Running': dict(start=NOW - 1800)}
         self.managed = self.pueue['tasks']['244']
         self.managed.update(label='run=dirigida-espera repo=se-omite sha=abcd123', status='Stashed')
@@ -206,6 +209,59 @@ class AdmissionTests(unittest.TestCase):
         self.write_projection()
         self.assertEqual(self.collect('desk'), baseline)
         self.assertEqual(self.generation.call_count, 0)
+
+    def test_symlink_fifo_and_denied_projection_preserve_native_snapshot(self):
+        baseline = self.collect()
+        source = self.path.with_name('elsewhere')
+        source.write_text(json.dumps(self.projection), encoding='utf-8')
+        self.path.symlink_to(source)
+        self.assertEqual(self.collect(), baseline)
+        self.path.unlink()
+        os.mkfifo(self.path)
+        self.assertEqual(self.collect(), baseline)
+        with patch.object(snapshot, 'read_owned_file', side_effect=PermissionError):
+            self.assertEqual(self.collect(), baseline)
+        self.generation.assert_not_called()
+
+    def test_server_discards_undeclared_projection_fields(self):
+        self.write_projection()
+        snap = self.collect()
+        self.row(snap, 244)['admission']['blockers'][0]['cmd'] = UNPERMITTED
+        clean = serve.validate_snapshot(snap, 'mini')
+        self.assertNotIn('admission', self.row(clean, 244))
+        self.assertIn('admission', self.row(clean, 245))
+        self.assertNotIn(UNPERMITTED, json.dumps(clean))
+
+    def test_newest_attempt_for_same_pueue_identity(self):
+        next_attempt = dict(self.waiting, seq=3, attempt='12345678-1234-1234-1234-123456789ab3',
+                            phase='reserved', blockers=[])
+        self.projection['requests'].insert(0, next_attempt)
+        self.write_projection()
+        self.assertEqual(self.row(self.collect(), 244)['admission']['seq'], 3)
+
+
+class AdmissionGenerationTests(unittest.TestCase):
+    def test_darwin_generation_matches_hasito_boot_pid_and_birth(self):
+        # The observed process and pid file are synthetic. No installed daemon is queried.
+        boot = '12345678-1234-1234-1234-123456789abc'
+        observed = [boot, 4321, [1794506401, 654321]]
+        expected = 'pueued-' + hashlib.sha256(json.dumps(observed).encode()).hexdigest()
+
+        def pidinfo(pid, flavor, argument, output, size):
+            self.assertEqual((pid, flavor, argument, size), (4321, 3, 0, 136))
+            info = ctypes.cast(output, ctypes.POINTER(snapshot.AdmissionBSDInfo)).contents
+            info.pid, info.status, info.comm = pid, 2, b'pueued'
+            info.sec, info.usec = observed[2]
+            return size
+
+        with tempfile.TemporaryDirectory() as folder:
+            home = Path(folder)
+            pidfile = home / 'Library/Application Support/pueue/pueue.pid'
+            pidfile.parent.mkdir(parents=True)
+            pidfile.write_text('4321\n')
+            with patch.object(snapshot.ctypes, 'CDLL') as library, patch.object(snapshot, 'command', return_value=boot):
+                library.return_value.proc_pidinfo.side_effect = pidinfo
+                self.assertEqual(snapshot.admission_generation(home), expected)
 
 
 if __name__ == '__main__':

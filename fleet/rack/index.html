@@ -435,11 +435,13 @@ function fila(h, n, w, waiting){
     const inPueue = t.state === 'Queued', reorder = inPueue && order.enabled, hasHandle = inPueue && order.info;
     const mark = ORDER_HIGHLIGHT.get(JSON.stringify([h.id,n,t.id]));
     const status = admissionText(t);
+    let position = '';
+    if (inPueue) position = Number.isInteger(mark?.from)&&Number.isInteger(mark?.to)?`${mark.from}→${mark.to}`:i+1;
     return `<li class="${hasHandle?'reorder-row':''} ${pendingClass(h,t)} ${mark?'order-done':''}" data-id="${esc(t.id)}" tabindex="0" data-reorder="${reorder}"${inPueue ? ` aria-disabled="${!reorder}" title="${esc(order.reason || 'Arrastra o usa Alt+↑/↓ para reordenar')}"` : ''} aria-busy="${PENDING.has(actionKey(h,t)) || !!PENDING.get(slotKey(h))?.order}">
-    ${hasHandle?'<span class="h" aria-hidden="true">⠿</span>':''}<span class="pos">${!inPueue ? '' : Number.isInteger(mark?.from)&&Number.isInteger(mark?.to)?`${mark.from}→${mark.to}`:i+1}</span>
+    ${hasHandle?'<span class="h" aria-hidden="true">⠿</span>':''}<span class="pos">${position}</span>
     <div class="l1"><span class="tk">${esc(t.ticket||'Sin ticket')}</span><span class="t" title="${esc(what(t))}">${esc(what(t))}</span></div>
     <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}${dots()}</span>
-    <div class="l2">${pendingText(h,t)}<span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}${status ? `<div class="act">${esc(status)}</div>` : `<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span>`}</div>
+    <div class="l2">${pendingText(h,t)}${!t.admission ? `<span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>` : ''}${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}${status ? `<div class="act">${esc(status)}</div>` : `<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span>`}</div>
   </li>`;}).join('')}</ol>${rows.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${rows.length-shown.length} más</button>`:''}</div></div>`;
 }
 
