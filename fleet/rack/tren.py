@@ -19,7 +19,7 @@ MOTIVOS = (
 )
 CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f\ud800-\udfff]')
 ABSOLUTE_PATH = re.compile(r'(?<![\w./-])(?:[/\\]|[a-zA-Z]:[/\\])')
-LONG_HEX = re.compile(r'(?i)(?<![0-9a-f])([0-9a-f]{7})[0-9a-f]+(?![0-9a-f])')
+LONG_HEX = re.compile(r'(?i)(?<![0-9a-f])(?=[0-9a-f]*[a-f])([0-9a-f]{7})[0-9a-f]+(?![0-9a-f])')
 
 
 def _require(condition, field):
@@ -223,4 +223,4 @@ def read_received(path, repos, now):
     data = decode(raw)
     _require(type(data) is dict and 'received_at' in data, 'received_at')
     received_at = _date(data.pop('received_at'), 0, now + 300)
-    return received_at, valid_tren(data, repos, now)
+    return received_at, valid_tren(data, repos, received_at)

@@ -467,7 +467,8 @@ class Rack:
             matches = (task.get('activity') or {}).get('ref') == ref
         else:
             start, begun = task.get('start'), run['inicio']
-            matches = host == 'mini' and start is not None and begun is not None and start >= begun
+            matches = (host == 'mini' and run.get('fin') is None and start is not None
+                       and begun is not None and start >= begun)
         if matches:
             rack = dict(host=host, id=task_id)
             run['rack'] = place['rack'] = rack
@@ -549,7 +550,7 @@ class Rack:
         self.resolve_commits([t for data in self.good.values() for t in data['tasks'] if t['state'] != 'Done'], now, deadline)
         self.refresh_tickets({t['ticket'] for data in self.good.values() for t in data['tasks'] if re.fullmatch(r'SEN-\d+', t.get('ticket') or '')}, now, deadline)
         if self.tren_present:
-            self.resolve_pulls(self.tren_prs(), now, time.monotonic() + LOOKUP_BUDGET)
+            self.resolve_pulls(self.tren_prs(), now, deadline)
         self.publish(now)
 
     def read(self):

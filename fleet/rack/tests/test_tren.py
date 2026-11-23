@@ -31,6 +31,7 @@ ROW = ('repos', 0)
 PAUSE = ROW + ('pausa',)
 BATCH = ROW + ('lote',)
 SUITE = BATCH + ('suite', 0)
+MINI_SUITE = BATCH + ('suite', 1)
 TRIAL = BATCH + ('ensayo',)
 WAITING = ROW + ('espera', 0)
 RECENT = ROW + ('recientes', 0)
@@ -160,6 +161,24 @@ class TrenStateTests(unittest.TestCase):
         self.assertEqual(self.receive(limit + b' '), 65)
         self.assertEqual(self.path.read_bytes(), saved)
 
+    def test_receiver_times_out_without_eof_and_preserves_last_good(self):
+        self.store()
+        saved = self.path.read_bytes()
+        payload = dict(schema='tren-host@1', taken=time.time(), repos=[self.data['repos'][1]], errors=[])
+        args = ['/usr/bin/python3', '-I', '-B', str(BASE / 'recibir_tren.py'),
+                '--config', str(self.config), '--state-dir', str(self.state)]
+        started = time.monotonic()
+        with subprocess.Popen(args, stdin=subprocess.PIPE) as process:
+            try:
+                process.stdin.write(json.dumps(payload).encode())
+                process.stdin.flush()
+                self.assertEqual(process.wait(timeout=40), 65)
+            finally:
+                if process.poll() is None:
+                    process.kill()
+        self.assertGreaterEqual(time.monotonic() - started, 29)
+        self.assertEqual(self.path.read_bytes(), saved)
+
     def test_receiver_rejection_and_failed_replace_preserve_last_good(self):
         self.store()
         saved = self.path.read_bytes()
@@ -195,6 +214,18 @@ class TrenStateTests(unittest.TestCase):
         self.assertFalse(older['fresh'])
         self.assertEqual(older['age'], 661)
         self.assertIsNone(older['error'])
+
+    def test_accepted_document_stays_readable_after_24_hours_and_restart(self):
+        self.store()
+        for offset, restart in ((86400, False), (86401, False), (86401, True)):
+            with self.subTest(offset=offset, restart=restart):
+                if restart:
+                    self.rack = serve.Rack(self.hosts, self.state, self.root / 'no-linear', tren_repos=REPOS)
+                view = self.cycle(now=NOW + offset)
+                self.assertFalse(view['fresh'])
+                self.assertEqual(view['age'], offset)
+                self.assertIsNone(view['error'])
+                self.assertEqual(view['repos'], self.data['repos'])
 
     def test_server_revalidates_every_cycle_and_marks_last_good_old_on_error(self):
         self.store()
@@ -235,23 +266,39 @@ class TrenStateTests(unittest.TestCase):
 
     def test_joins_mini_without_ref_only_if_start_confirms_id(self):
         self.store()
-        mini_path = BATCH + ('suite', 1)
-        started = at(self.data, mini_path)['inicio']
+        started = at(self.data, MINI_SUITE)['inicio']
         for start in (None, started - 1):
             with self.subTest(start=start):
-                self.assertNotIn('rack', at(self.cycle(mini=[task(id=431, start=start)]), mini_path))
-        self.assertEqual(at(self.cycle(mini=[task(id=431, start=started)]), mini_path)['rack'],
+                self.assertNotIn('rack', at(self.cycle(mini=[task(id=431, start=start)]), MINI_SUITE))
+        self.assertEqual(at(self.cycle(mini=[task(id=431, start=started)]), MINI_SUITE)['rack'],
                          dict(host='mini', id=431))
 
+    def test_mini_reused_id_without_ref_only_joins_unfinished_runs(self):
+        suite = at(self.data, MINI_SUITE)
+        at(self.data, TRIAL)['lugar'] = dict(suite['lugar'])
+        self.store()
+        reused = task(id=431, start=NOW - 35, name='otra corrida')
+        view = self.cycle(mini=[reused])
+        for path in (MINI_SUITE, TRIAL):
+            self.assertEqual(at(view, path)['rack'], dict(host='mini', id=431))
+
+        suite.update(estado='terminada', fin=suite['inicio'] + 600, resultado='verde', fallas=0)
+        self.store()
+        for start in (reused['start'], suite['inicio'] + 3600):
+            with self.subTest(start=start):
+                finished = at(self.cycle(mini=[dict(reused, start=start)]), MINI_SUITE)
+                self.assertEqual(finished['lugar'], suite['lugar'])
+                self.assertNotIn('rack', finished)
+                self.assertNotIn('est', finished)
+
     def test_mini_with_ref_demands_match_even_with_compatible_start(self):
-        mini_path = BATCH + ('suite', 1)
         ref = '20261123-120000-fab123'
-        at(self.data, mini_path + ('lugar',))['ref'] = ref
+        at(self.data, MINI_SUITE + ('lugar',))['ref'] = ref
         self.store()
         running = task(id=431, start=NOW - 100)
-        self.assertNotIn('rack', at(self.cycle(mini=[running]), mini_path))
+        self.assertNotIn('rack', at(self.cycle(mini=[running]), MINI_SUITE))
         running['activity'] = dict(last=None, kind='verify', ref=ref)
-        self.assertEqual(at(self.cycle(mini=[running]), mini_path)['rack'], dict(host='mini', id=431))
+        self.assertEqual(at(self.cycle(mini=[running]), MINI_SUITE)['rack'], dict(host='mini', id=431))
 
     def test_trial_joins_desk_and_boat_never_joins(self):
         self.store()
@@ -298,6 +345,42 @@ class TrenStateTests(unittest.TestCase):
         self.assertEqual(prs['Example/Train#920'], dict(ticket=None, title=None))
         reloaded = serve.Rack(self.hosts, self.state, self.root / 'no-linear', tren_repos=REPOS)
         self.assertEqual(reloaded.pulls, self.rack.pulls)
+
+    def test_pull_lookups_share_the_commit_deadline(self):
+        self.store()
+        elapsed = 0
+        requests = []
+
+        def fetch(host):
+            return dict(sample(), host=host['id'], tasks=[pending] if host['id'] == 'desk' else [])
+
+        def gh(argv, *, timeout, **kwargs):
+            nonlocal elapsed
+            endpoint = argv[2]
+            requests.append(endpoint)
+            if '/commits/' in endpoint:
+                elapsed += 4
+                return subprocess.CompletedProcess(argv, 0, stdout=(
+                    'release' if endpoint.endswith('/branches-where-head') else 'feat/sen-14'))
+            elapsed += timeout
+            raise subprocess.TimeoutExpired(argv, timeout)
+
+        pending = task(repo='Example/Train', sha='a' * 40, ticket=None, branch=None, subject=None)
+        with patch.object(serve.time, 'monotonic', side_effect=lambda: elapsed), \
+             patch.object(serve.subprocess, 'run', side_effect=gh):
+            self.rack.cycle(fetch=fetch, now=NOW)
+        commit = 'repos/Example/Train/commits/' + 'a' * 40
+        self.assertEqual(requests, [commit + '/branches-where-head', commit + '/pulls'])
+        self.assertLessEqual(elapsed, serve.LOOKUP_BUDGET)
+        self.assertIn('tren', self.rack.read())
+
+    def test_public_text_preserves_digit_runs_and_shortens_hex_with_letters(self):
+        texts = ('Migración 20261123 del rack', 'apps/web/e2e/20261123-alta.spec.ts')
+        for value in texts:
+            with self.subTest(value=value):
+                self.assertEqual(tren.public_text(value), value)
+                self.assertEqual(tren.public_title(value), value)
+        self.assertEqual(tren.public_title('Validar 12345678ABCDEF'), 'Validar 1234567')
 
     def test_publication_keeps_paths_private_keys_and_full_shas_out(self):
         full_sha = 'c0ffee1234' * 4

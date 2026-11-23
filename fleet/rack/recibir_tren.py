@@ -4,6 +4,7 @@ import argparse
 import importlib.util
 import json
 from pathlib import Path
+import signal
 import sys
 import tempfile
 import time
@@ -14,9 +15,19 @@ tren = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tren)
 
 
+def read_timeout(signum, frame):
+    raise TimeoutError('Se agotó el plazo de lectura del tren')
+
+
 def receive(stream, config, state_dir):
     try:
-        raw = stream.read(tren.MAX_DOCUMENT + 1)
+        previous_handler = signal.signal(signal.SIGALRM, read_timeout)
+        try:
+            signal.alarm(30)
+            raw = stream.read(tren.MAX_DOCUMENT + 1)
+        finally:
+            signal.alarm(0)
+            signal.signal(signal.SIGALRM, previous_handler)
         if len(raw) > tren.MAX_DOCUMENT:
             return 65
         now = time.time()
