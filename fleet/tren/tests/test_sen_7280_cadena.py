@@ -10,7 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import test_activo as activo
-from dominio import Congelado, Armado, EsperandoCI, Terminal
+from dominio import EsperandoCI, ResultadoCI, Terminal
 
 cli = activo.cli
 REPO = activo.REPO
@@ -159,8 +159,15 @@ class CadenaActivaTests(unittest.TestCase):
         return list(cli.encadenar(lambda: self.contexto.tick(next(reloj)),
                                   lambda: cli.huella(REPO), lambda: True))
 
+    def retener_ci_del_candidato(self):
+        """Deja pendiente el CI de todo commit que no sea el head de un PR."""
+        original, heads = self.contexto.observador.ci, {head for _, head in self.miembros}
+        self.contexto.observador.ci = lambda repo, commit, rama=None: (
+            original(repo, commit, rama) if commit in heads else ResultadoCI("pendiente"))
+        return lambda: setattr(self.contexto.observador, "ci", original)
+
     def test_un_lote_pide_ci_en_una_cadena_y_espera_sin_girar(self):
-        (self.raiz / "ci-pendiente").write_text("pendiente")
+        soltar = self.retener_ci_del_candidato()
         reloj = itertools.count(100)
         primera = self.cadena(reloj)
         self.assertTrue(all(codigo == 0 for codigo, _ in primera))
@@ -170,7 +177,7 @@ class CadenaActivaTests(unittest.TestCase):
         self.assertEqual(sum(":refs/heads/tren/" in p for p in self.lineas("pushes.log")), 1)
         # Con el CI pendiente no hay nada que avanzar: un tick por disparo.
         self.assertEqual(len(self.cadena(reloj)), 1)
-        (self.raiz / "ci-pendiente").rename(self.raiz / "ci-pendiente-retirado")
+        soltar()
         for _ in range(3):
             self.cadena(reloj)
             if isinstance(self.estado().trenes[0].fase, Terminal):
@@ -178,13 +185,13 @@ class CadenaActivaTests(unittest.TestCase):
         self.assert_aterrizado_una_vez()
 
     def test_la_huella_no_cambia_mientras_el_tren_espera(self):
-        (self.raiz / "ci-pendiente").write_text("pendiente")
+        self.retener_ci_del_candidato()
         reloj = itertools.count(100)
         self.cadena(reloj)
         antes = cli.huella(REPO)
+        self.assertIsInstance(self.estado().trenes[0].fase, EsperandoCI)
         self.contexto.tick(next(reloj) + 600)
         self.assertEqual(cli.huella(REPO), antes)
-        self.assertNotIn(type(self.estado().trenes[0].fase), (Congelado, Armado))
 
     def test_ledger_ausente_no_tiene_huella(self):
         with patch.object(cli, "Ledger", side_effect=OSError("sin ledger")):
