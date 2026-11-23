@@ -229,9 +229,6 @@ def validate_snapshot(data, host):
             row['activity'] = valid_activity(row['activity'])
         if 'admission' in row and (host != 'mini' or not _guard_snapshot.valid_admission(row['admission'], row['id'])):
             del row['admission']
-        if 'legacy_blocker' in row and (host != 'mini' or row['legacy_blocker'] is not True
-                                        or row['state'] not in ('Running', 'Paused') or 'admission' in row):
-            del row['legacy_blocker']
         if 'usage' in row:
             row['usage'] = valid_usage(row['usage']) if row['state'] == 'Running' else None
     if 'usage' in data:
@@ -240,13 +237,17 @@ def validate_snapshot(data, host):
     for group in data['groups']:
         if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
             raise ValueError('Grupo inválido')
-    # valid_admission already fixed its exact keys; a resource may be named like a private key.
     def safe(value):
         if isinstance(value, dict):
-            return {k: v if k == 'admission' else safe(v) for k, v in value.items()
-                    if k not in ('envs', 'command', 'original_command', 'path')}
+            return {k: safe(v) for k, v in value.items() if k not in ('envs', 'command', 'original_command', 'path')}
         return [safe(v) for v in value] if isinstance(value, list) else value
-    return safe(data)
+    # valid_admission already fixed each row's exact keys; a resource may be named like a private key.
+    admissions = [row.pop('admission', None) for row in data['tasks']]
+    clean = safe(data)
+    for row, admission in zip(clean['tasks'], admissions):
+        if admission is not None:
+            row['admission'] = admission
+    return clean
 
 
 def fetch_host(host):

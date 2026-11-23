@@ -194,10 +194,11 @@ inventario de migración, los entornos y los comandos.
 
 Las corridas gestionadas en `Stashed` aparecen en la fila de su grupo con
 «Esperando recurso · …» o «Esperando lugar en …». Se muestran hasta dos
-bloqueantes y se indica cuántos más hay. Las corridas del legado que ocupan un
-lugar y figuran como bloqueantes acreditados muestran «Corrida del legado ·
-ocupa un lugar». El estado de admisión tiene prioridad sobre «Sin actividad»
-y la barra empieza con `payload_started_at`. Los lugares ocupados, las
+bloqueantes y se indica cuántos más hay. Una corrida del legado que ocupa un
+lugar conserva su vista nativa: Pueue puede reutilizar el ID de un bloqueante
+retirado para una tarea sin `run=`, y el rack no tiene con qué distinguirlas.
+El estado de admisión tiene prioridad sobre «Sin actividad» y la barra
+empieza con `payload_started_at`. Los lugares ocupados, las
 pausas de grupo y el orden de Pueue siguen usando sus estados nativos.
 
 `tests/test_admission.py` comprueba la lectura y el render con los fixtures del

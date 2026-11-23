@@ -50,7 +50,6 @@ ADMISSION_ROWS = 4096
 ADMISSION_RESOURCES = 64
 ADMISSION_TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}')
 ADMISSION_RESOURCE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,63}')
-ADMISSION_STAMP = re.compile(r'(\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d)(?:\.(\d{1,9}))?(Z|[+-]\d\d:\d\d)')
 ADMISSION_PHASES = ('waiting', 'reserved', 'claimed', 'running', 'draining', 'done',
                     'cancelled', 'expired', 'unknown')
 ADMISSION_FIELDS = frozenset(('task_id', 'task_created_at', 'ref', 'daemon_generation', 'attempt',
@@ -229,18 +228,6 @@ def admission_label(task):
     return names[0] if len(names) == 1 and admission_token(names[0]) else None
 
 
-def legacy_created_at(value):
-    stamp = ADMISSION_STAMP.fullmatch(value) if isinstance(value, str) else None
-    if stamp is None:
-        return None
-    fraction = (stamp[2] or '').ljust(6, '0')[:6]
-    try:
-        # Pueue puede publicar nanosegundos. fromisoformat de Python 3.9 admite seis.
-        return epoch(f'{stamp[1]}.{fraction}{stamp[3]}')
-    except (ValueError, OverflowError, OSError):
-        return None
-
-
 def match_admission(tasks, rows, generation):
     managed = {}
     for row in rows:
@@ -251,22 +238,7 @@ def match_admission(tasks, rows, generation):
                 and admission_label(task) == row['ref']
                 and (task_id not in managed or managed[task_id]['seq'] < row['seq'])):
             managed[task_id] = row
-    legacy = set()
-    for row in managed.values():
-        if row['phase'] != 'waiting':
-            continue
-        for blocker in row['blockers']:
-            task_id = blocker['task_id']
-            if blocker['kind'] != 'legacy' or task_id is None or task_id in managed:
-                continue
-            task = tasks.get(str(task_id))
-            if not task or type(task['id']) is not int or task['id'] != task_id:
-                continue
-            label = admission_label(task) or f'unlabelled-{task_id}'
-            created = legacy_created_at(task.get('created_at'))
-            if blocker['ref'] == label and created is not None and created <= row['updated_at']:
-                legacy.add(task_id)
-    return managed, legacy
+    return managed
 
 
 def mini_metadata(task, home=None):
@@ -1020,7 +992,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
     if data:
         def tasks():
             output['groups'] = [dict(name=name, status=g['status'], slots=g['parallel_tasks']) for name, g in data['groups'].items()]
-            managed, legacy = match_admission(data['tasks'], admission, generation) if same_generation else ({}, set())
+            managed = match_admission(data['tasks'], admission, generation) if same_generation else {}
             for task in data['tasks'].values():
                 state = task['status']
                 state, details = (state, {}) if isinstance(state, str) else next(iter(state.items()))
@@ -1044,8 +1016,6 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
                     row['admission'] = admitted
                 else:
                     metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
-                    if state in ('Running', 'Paused') and task['id'] in legacy:
-                        row['legacy_blocker'] = True
                 row.update(metadata or {})
                 if attributed:
                     row['interruption_reason'] = interruption['message']

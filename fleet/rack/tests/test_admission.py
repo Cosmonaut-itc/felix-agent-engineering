@@ -115,7 +115,7 @@ class AdmissionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
-    def test_resource_wait_stashed_in_group_and_legacy_over_idle(self):
+    def test_resource_wait_stashed_in_group_and_legacy_slot_stays_native(self):
         self.write_projection()
         snap = self.collect()
         html = self.render(self.payload(snap, reorder=True))
@@ -126,12 +126,23 @@ class AdmissionTests(unittest.TestCase):
         self.assertIn(RESOURCE_WAIT, li)
         self.assertIn('data-reorder="false"', li)
         self.assertNotIn('class="bar', li)
-        self.assertIn(LEGACY, slot)
-        self.assertNotIn('Sin actividad', slot)
+        self.assertNotIn(LEGACY, slot)
+        self.assertIn('Sin actividad', slot)
         self.assertIn('class="bar', slot)
         self.assertRegex(html, r'>1 <span[^>]*>ocupados')
         self.assertRegex(html, r'<li[^>]*data-id="245"[^>]*data-reorder="true"')
         self.assertEqual(self.row(snap, 244)['admission']['positions'], {RESOURCE: 2})
+
+    def test_blocker_task_id_reused_without_run_label_keeps_native_view(self):
+        # Pueue reuses a retired ID, and an old remote-run client creates the replacement without run=.
+        self.legacy.update(label='repo=otro', created_at='2026-11-12T12:19:00-06:00')
+        self.write_projection()
+        snap = self.collect()
+        self.assertEqual(set(self.row(snap, 242)) & {'admission', 'legacy_blocker'}, set())
+        html = self.render(self.payload(snap))
+        slot = re.search(r'<div class="slot busy[^>]*data-id="242".*?(?=<div class="slot empty)', html, re.S)[0]
+        self.assertNotIn(LEGACY, slot)
+        self.assertIn(RESOURCE_WAIT, html, 'la espera conserva el bloqueante que publicó Hasito')
 
     def test_wait_for_slot_and_no_progress_before_payload(self):
         self.reserved['status'] = {'Running': dict(start=NOW - 1800)}
@@ -252,6 +263,17 @@ class AdmissionTests(unittest.TestCase):
                 twice = serve.validate_snapshot(once, 'mini')
                 self.assertEqual(self.row(twice, 244).get('admission', {}).get('positions'), {name: 2})
                 self.assertNotIn(UNPERMITTED, json.dumps(twice))
+
+    def test_private_keys_under_unvalidated_admission_keys_are_still_removed(self):
+        self.write_projection()
+        snap = self.collect()
+        private = dict(envs={'private': UNPERMITTED}, command=UNPERMITTED, path='/' + UNPERMITTED)
+        snap['admission'] = dict(private)
+        snap['groups'][0]['admission'] = dict(private)
+        self.row(snap, 242)['extension'] = dict(admission=dict(private))
+        clean = serve.validate_snapshot(snap, 'mini')
+        self.assertNotIn(UNPERMITTED, json.dumps(clean))
+        self.assertEqual(self.row(clean, 244)['admission']['positions'], {RESOURCE: 2})
 
     def test_queued_task_with_projection_read_before_grant_waits_for_slot(self):
         # The arbiter publishes reserved and enqueues between the rack's file read and its Pueue read.

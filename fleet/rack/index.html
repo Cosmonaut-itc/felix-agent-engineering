@@ -398,7 +398,6 @@ const OPEN = {};
 const IDLE = 15*60;
 const BLOCKER_LABEL = {holder:'titular',predecessor:'anterior en fila',legacy:'legado',unknown:'bloqueante desconocido'};
 function admissionText(t){
-  if (t.legacy_blocker) return 'Corrida del legado · ocupa un lugar';
   const a = t.admission;
   if (!a || a.payload_started_at != null) return '';
   // A Queued task already holds its resources; a waiting phase there is a projection read before the grant.
