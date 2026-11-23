@@ -6,10 +6,95 @@ import shlex
 import subprocess
 import sys
 import unittest
+from unittest.mock import Mock
 
 import test_activo as activo
-from dominio import (Efecto, Motivo, Pausa, Rechazado, Retenido, Terminal,
-                     Tren, clave)
+from dominio import (Candidato, Causa, Decision, Diagnosticando, Efecto,
+                     Evidencia, Fallo, Motivo, Pausa, Rechazado, Repeticion,
+                     Reproduccion, Retenido, Terminal, Tren, clave,
+                     devolver_atribuidos, paso)
+from feedback import EscritorGitHub
+from test_tren import estado, observacion
+
+
+class ComandoFeedbackTests(unittest.TestCase):
+    causal = "d" * 40
+    candidato = Candidato("b" * 40, (), "c" * 40, "e" * 40)
+    jale = Fallo("apps/api/src/a.contract.test.ts", "abc", "solo-candidato",
+                 "contract", "contract", "jale")
+    hasito = Fallo("tests/auth.vitest.ts", "abc", "solo-candidato", "vitest")
+
+    def fase_atribuida(self, fallo, argv):
+        solicitud = Reproduccion(clave("reproduccion", (fallo.parte, fallo.check, fallo.unidad),
+                                       "subconjunto", (1,)), fallo, "subconjunto", (1,))
+        repeticion = Repeticion(self.causal, self.candidato.C, self.candidato.B, "", (), argv)
+        return Diagnosticando(self.candidato, (fallo,), "/privado/suite.json",
+                              evidencias=(Evidencia(solicitud, repeticion),))
+
+    def atribuir(self, fallo, argv):
+        fase = self.fase_atribuida(fallo, argv)
+        inicial = estado(2)
+        tren = Tren("lote", tuple(e.entrega.recibo for e in inicial.entradas), fase)
+        _, efectos = devolver_atribuidos(replace(inicial, trenes=(tren,)), tren, fase,
+                                         (Causa(fallo, ((1,),)),))
+        return inicial, next(e for e in efectos if e.tipo == "devolver")
+
+    def publicar(self, inicial, efecto):
+        escritor = EscritorGitHub()
+        escritor.api = Mock(side_effect=[[], {"html_url": "https://github.com/example/comment"}, {}])
+        escritor.ejecutar_feedback(efecto, inicial, lambda *_: None)
+        return escritor.api.call_args_list[1].args[1]["body"]
+
+    def comprobar_atribuido(self, fallo, cuerpo, esperado):
+        marcador, titulo, _, detalle = cuerpo.split("\n", 3)
+        self.assertRegex(marcador, r"^<!-- pao-tren/efecto:[a-f0-9]{64} -->$")
+        self.assertEqual(titulo, "Entrega devuelta por fallos atribuidos al PR.")
+        self.assertEqual(json.loads(detalle), {
+            "B": self.candidato.B, "C": self.candidato.C, "head": "a" * 40,
+            "lote": "lote", "pr": 1,
+            "fallos": [{"check": fallo.check, "comando": esperado, "conjunto_causal": [1],
+                        "firma": "sha256:ba7816bf8f01cfea", "unidad": fallo.unidad}],
+        })
+
+    def test_jale_publica_sha_causal_del_argv_observado(self):
+        argv = ("bash", "/privado/envoltorio", "desktop", "/privado/corrida.log",
+                self.jale.check, self.causal, self.jale.unidad)
+        cuerpo = self.publicar(*self.atribuir(self.jale, argv))
+        self.comprobar_atribuido(self.jale, cuerpo,
+            "bash scripts/test-hosts/run-remote.sh desktop '<log>' contract "
+            + self.causal + " apps/api/src/a.contract.test.ts")
+
+    def test_hasito_conserva_texto_del_comando_publicado(self):
+        argv = ("bash", "/privado/envoltorio", "--repetir", "/privado/resultado.json",
+                "--sha", self.causal, "--worktree", "/privado/arbol", "--veces", "2",
+                "--unidad", "vitest=tests/auth.vitest.ts")
+        cuerpo = self.publicar(*self.atribuir(self.hasito, argv))
+        self.comprobar_atribuido(self.hasito, cuerpo,
+            "bash scripts/mini/run.sh --repetir '<resultado.json>' --sha " + self.causal
+            + " --worktree '<worktree-en-" + self.causal + ">' --veces 2 "
+            "--unidad vitest=tests/auth.vitest.ts")
+
+    def test_jale_sin_argv_usa_sha_causal_de_la_evidencia(self):
+        cuerpo = self.publicar(*self.atribuir(self.jale, ()))
+        self.comprobar_atribuido(self.jale, cuerpo,
+            "bash scripts/test-hosts/run-remote.sh auto '<log>' contract "
+            + self.causal + " apps/api/src/a.contract.test.ts")
+
+    def test_expulsar_por_juicio_publica_comando_de_jale_sobre_c(self):
+        inicial = estado()
+        fase = Diagnosticando(self.candidato, (self.jale,))
+        tren = Tren("lote", (inicial.entradas[0].entrega.recibo,), fase)
+        pausa = Pausa("necesita-juicio", detalle="sin-costo-de-suite-sana")
+        pausado = replace(inicial, trenes=(tren,), pausa=pausa)
+        decision = Decision("decision", pausado.repo, tren.id, "expulsar", 1,
+                            "motivo", 100, "pausa", pausa)
+        nuevo, efectos = paso(pausado, observacion(decision=decision, pausa_id="pausa"))
+        cuerpo = self.publicar(nuevo, next(e for e in efectos if e.tipo == "devolver"))
+        self.assertIn("Entrega devuelta por juicio.", cuerpo)
+        detalle = json.loads(cuerpo.split("\n", 3)[3])
+        self.assertEqual(detalle["fallos"][0]["comando"],
+            "bash scripts/test-hosts/run-remote.sh auto '<log>' contract "
+            + self.candidato.C + " apps/api/src/a.contract.test.ts")
 
 
 class FeedbackTests(unittest.TestCase):
@@ -35,7 +120,7 @@ class FeedbackTests(unittest.TestCase):
                 "SELECT e.clave, e.payload, o.estado, r.payload AS resultado FROM effects e "
                 "JOIN outbox o ON o.clave=e.clave LEFT JOIN effect_results r ON r.clave=e.clave")]
 
-    def sembrar_devoluciones(self, prs=(1,), pausa=False):
+    def sembrar_devoluciones(self, prs=(1,), pausa=False, comando=None):
         with self.ledger() as ledger:
             estado = ledger.estado(activo.REPO)
             tren = Tren("lote-rojo", tuple(e.entrega.recibo for e in estado.entradas),
@@ -52,7 +137,8 @@ class FeedbackTests(unittest.TestCase):
                 payload = {"lote": tren.id, "B": self.B, "C": self.B, "pr": entrega.pr,
                     "head": entrega.head, "fallos": [{"unidad": "caso", "check": "check",
                     "firma": "firma-estable", "conjunto_causal": list(prs),
-                    "comando": shlex.join(["bash", "/private/launcher", "--sha", self.B,
+                    "comando": comando if comando is not None else shlex.join([
+                        "bash", "/private/launcher", "--sha", self.B,
                         "--worktree", "/private/tree", "--evidencia", "/private/evidence",
                         "--token", "secreto-no-publicable"])}]}
                 efectos.append(Efecto(clave("devolver", tren.id, entrega.recibo), "devolver",
@@ -199,6 +285,14 @@ c.tick(frontera=frontera)
         self.assertTrue(all(f["estado"] == "completo" for f in self.filas()))
         comentarios = json.loads((self.raiz / "comentarios.json").read_text())
         self.assertEqual([len(v) for v in comentarios.values()], [1, 1])
+
+    def test_comando_desconocido_deja_efecto_fallido_sin_post(self):
+        self.sembrar_devoluciones(pausa=True, comando="bash /private/launcher --desconocido")
+        self.contexto.tick()
+        fila = self.filas()[0]
+        self.assertEqual(fila["estado"], "fallido")
+        self.assertEqual(json.loads(fila["resultado"]), {"error": {"clase": "ValueError"}})
+        self.assertEqual(self.posts(), [])
 
     def test_status_fallido_conserva_comentario_y_cambia_a_head_vigente_al_reintentar(self):
         # Caducidad pendiente sin tren, incluso después de otro push del dueño.
