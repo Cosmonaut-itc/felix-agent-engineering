@@ -485,12 +485,14 @@ Unidad y check siguen siendo los identificadores públicos del test (el producto
 debe mantener secretos fuera de esos identificadores). El resto de la proyección
 contiene IDs de lote/entrega, SHAs y números de PR, motivos de un enum y texto
 fijo; no se transportan otros campos del diagnóstico ni del config privado.
-Las rutas privadas del lanzador, resultado y worktree se reemplazan por la
-plantilla pública `bash scripts/mini/run.sh --repetir <resultado.json>
+En Hasito se publica la plantilla `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
-El dueño sustituye esas rutas por las de su entorno. Se conserva el SHA
-observado de la reproducción; argumentos extra de entorno, nombre o evidencia
-no se publican. El payload durable original permanece intacto en el ledger.
+En Jale se publica `bash scripts/test-hosts/run-remote.sh <host> <log>
+<modo> <SHA-causal> <unidad>`. El dueño sustituye las rutas de resultado,
+worktree o log por las de su entorno. En ambos casos se usa el SHA de la
+reproducción observada o el SHA de la evidencia si ésta carece de comando.
+Una devolución por juicio usa el SHA del candidato. El payload durable
+original permanece en el ledger.
 Después publica un status `failure`, contexto **`pao-tren/resultado`**, sobre
 el **head entregado culpable**, con `target_url` al comentario y descripción
 corta que remite a él. Los sobrevivientes no reciben una devolución.

@@ -9,7 +9,8 @@ import re
 import shlex
 import subprocess
 
-from dominio import Rechazado
+from adaptadores.jale import MODOS
+from dominio import LANZADOR_JALE, Rechazado
 from observador import sha
 
 
@@ -25,11 +26,28 @@ def pr_feedback(efecto, estado):
     return next(e.entrega.pr for e in estado.entradas if e.entrega.recibo == recibo)
 
 
-def comando_publico(fallo, candidato):
-    # El argv observado contiene lanzador, worktree y evidencia privados.
-    # Sólo se transporta su SHA; las rutas se sustituyen por parámetros locales.
+def comando_publico(fallo):
     argv = shlex.split(fallo["comando"])
-    commit = argv[argv.index("--sha") + 1] if "--sha" in argv else candidato
+    if len(argv) < 3 or argv[0] != "bash":
+        raise ValueError("Comando de reproducción desconocido")
+    args = argv[2:]
+    carril = args[:2] if args[:2] == ["--carril", "rapido"] else []
+    posicionales = args[len(carril):]
+    if posicionales[0:1] in (["auto"], ["mini"], ["desktop"]):
+        if len(posicionales) != 5:
+            raise ValueError("Comando de reproducción de Jale inválido")
+        host, _, modo, commit, unidad = posicionales
+        if modo not in MODOS or modo != fallo["check"] or unidad != fallo["unidad"]:
+            raise ValueError("Comando de reproducción de Jale inválido")
+        if not sha(commit):
+            raise ValueError("SHA de reproducción inválido")
+        return shlex.join(["bash", LANZADOR_JALE, *carril, host, "<log>", modo, commit, unidad])
+    if args[0] == "--repetir":
+        args = args[2:]
+    elif args[0] != "--sha":
+        raise ValueError("Comando de reproducción desconocido")
+    indice = args.index("--sha") + 1
+    commit = args[indice] if indice < len(args) else None
     if not sha(commit):
         raise ValueError("SHA de reproducción inválido")
     return shlex.join(["bash", "scripts/mini/run.sh", "--repetir", "<resultado.json>",
@@ -94,7 +112,7 @@ class EscritorGitHub:
             publico["fallos"] = [{**{k: f[k] for k in (
                 "unidad", "check", "conjunto_causal")},
                 "firma": "sha256:" + hashlib.sha256(f["firma"].encode("utf-8")).hexdigest()[:16],
-                "comando": comando_publico(f, payload["C"])} for f in payload["fallos"]]
+                "comando": comando_publico(f)} for f in payload["fallos"]]
             if "juicio" in payload:
                 publico["juicio"] = payload["juicio"]
             if "ci_rojos" in payload:
