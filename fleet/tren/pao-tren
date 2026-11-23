@@ -16,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
-from ledger import Ledger, filas_medicion
+from ledger import Ledger, directorio_estado, filas_medicion
 from medicion import decision_json, instante_iso, medir
 from observador import GitHubGit, configuracion, sha
 from sombra import paso_sombra
@@ -215,6 +215,9 @@ PEREZOSOS = ("adaptadores.hasito", "adaptadores.jale", "atribucion", "feedback",
 def huella(repo):
     """Lo que un tick puede hacer avanzar: la pausa, la fase de cada tren y cada efecto pendiente."""
     try:
+        # Leer la huella no crea el ledger: un repo sin inscripción activa no lo abre.
+        if not (directorio_estado() / "ledger.sqlite3").exists():
+            return None
         ledger = Ledger()
         try:
             with ledger.transaccion(escritura=False):

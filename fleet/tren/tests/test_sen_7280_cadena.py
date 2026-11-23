@@ -3,6 +3,7 @@ import contextlib
 import io
 import itertools
 import json
+import os
 from pathlib import Path
 import subprocess
 import tempfile
@@ -213,7 +214,12 @@ class CadenaActivaTests(unittest.TestCase):
         intentos = [p for p in self.lineas("posts.log") if "/issues/1/comments" in p]
         self.assertEqual(len(intentos), 1)
 
-    def test_ledger_ausente_no_tiene_huella(self):
+    def test_leer_la_huella_no_crea_el_ledger(self):
+        with patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz / "sin-estado")}):
+            self.assertIsNone(cli.huella(REPO))
+        self.assertFalse((self.raiz / "sin-estado").exists())
+
+    def test_ledger_ilegible_no_tiene_huella(self):
         with patch.object(cli, "Ledger", side_effect=OSError("sin ledger")):
             self.assertIsNone(cli.huella(REPO))
 
