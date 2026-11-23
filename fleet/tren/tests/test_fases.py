@@ -25,9 +25,9 @@ class FasesTests(Aislado):
                             "tipo": tipo, "instante": instante,
                             "payload": json.dumps(payload)})
 
-    def operativo(self, instante, tren, fase, terminal=None, pausa=False):
+    def operativo(self, instante, tren, fase, terminal=None, pausa=False, consumido=None):
         fase = {"_tipo": fase, **({"resultado": terminal} if terminal else {})}
-        self.evento(instante, "operativo", {"consumido": None, "efectos": [],
+        self.evento(instante, "operativo", {"consumido": consumido and consumido["clave"], "efectos": [],
             "estado": {"trenes": [{"id": tren, "recibos": ["a", "b", "c"], "fase": fase}],
                        "pausa": {"_tipo": "Pausa", "motivo": "manual"} if pausa else None}})
 
@@ -47,8 +47,9 @@ class FasesTests(Aislado):
         suite = self.efecto(tren, "iniciar-suite")
         self.evento(inicio + 30, "efecto-iniciado", suite)
         self.evento(inicio + 32, "efecto-iniciado", suite)
-        self.evento(inicio + 60, "efecto-resultado", suite)
-        self.evento(inicio + 61, "efecto-fallido", suite)
+        # El resultado del efecto es el recibo del lanzamiento, no el fin de la suite.
+        self.evento(inicio + 33, "efecto-resultado", suite)
+        self.operativo(inicio + 60, tren, "EsperandoCI", consumido=suite)
         self.operativo(inicio + 70, tren, "Certificado")
         self.operativo(inicio + 71, tren, "Promoviendo")
 
@@ -88,10 +89,12 @@ class FasesTests(Aislado):
         self.operativo(0, "reanudado", "Congelado")
         suite = self.efecto("reanudado", "iniciar-suite")
         self.evento(10, "efecto-iniciado", suite)
-        self.evento(30, "efecto-resultado", suite)
+        self.evento(11, "efecto-resultado", suite)
+        self.operativo(30, "reanudado", "Corriendo", consumido=suite)
         reanudacion = self.efecto("reanudado", "reanudar-suite")
         self.evento(40, "efecto-iniciado", reanudacion)
-        self.evento(70, "efecto-resultado", reanudacion)
+        self.evento(41, "efecto-resultado", reanudacion)
+        self.operativo(70, "reanudado", "Corriendo", consumido=reanudacion)
         self.operativo(80, "reanudado", "Promoviendo")
         self.operativo(100, "reanudado", "Terminal", "ATERRIZADO")
         tren, = self.informe()["trenes"]

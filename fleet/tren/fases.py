@@ -18,9 +18,8 @@ HITOS = ("cierre", "ci_solicitado", "suite_iniciada", "suite_terminada",
 HITOS_EFECTOS = {
     ("efecto-resultado", "solicitar-ci"): "ci_solicitado",
     ("efecto-iniciado", "iniciar-suite"): "suite_iniciada",
-    ("efecto-resultado", "iniciar-suite"): "suite_terminada",
-    ("efecto-resultado", "reanudar-suite"): "suite_terminada",
 }
+SUITES = ("iniciar-suite", "reanudar-suite")
 
 
 def duracion(inicio, fin):
@@ -60,7 +59,12 @@ def medir_fases(events, effects, repo, desde, hasta):
         if fila["repo"] != repo:
             continue
         if tipo == "operativo":
-            estado = json.loads(fila["payload"])["estado"]
+            paso = json.loads(fila["payload"])
+            estado = paso["estado"]
+            # El resultado de una suite es el recibo de su lanzamiento: la suite termina cuando un paso lo consume.
+            efecto, ident = efectos.get(paso.get("consumido"), (None, None))
+            if efecto in SUITES and ident in trenes and trenes[ident]["terminal"] is None:
+                trenes[ident]["hitos"]["suite_terminada"] = instante
             for tren in estado["trenes"]:
                 ident = tren["id"]
                 if ident not in vistos:
@@ -91,7 +95,7 @@ def medir_fases(events, effects, repo, desde, hasta):
             hito = HITOS_EFECTOS.get((tipo, efecto))
             if hito is not None and ident in trenes:
                 hitos = trenes[ident]["hitos"]
-                if hito == "suite_terminada" or hitos[hito] is None:
+                if hitos[hito] is None:
                     hitos[hito] = instante
 
     verdes = []

@@ -168,13 +168,16 @@ el evento. Los tramos tienen resolución de un tick.
 - `cierre`: primer estado operativo que contiene el tren.
 - `ci_solicitado`: primer resultado de `solicitar-ci`.
 - `suite_iniciada`: primer inicio de `iniciar-suite`, cuando se observó CI verde.
-- `suite_terminada`: último resultado de `iniciar-suite` o `reanudar-suite`.
+- `suite_terminada`: último paso operativo que consume el resultado de
+  `iniciar-suite` o `reanudar-suite`. El resultado del efecto es el recibo del
+  lanzamiento y se registra al lanzar; la suite termina cuando un paso lo
+  consume.
 - `certificado`: primer estado operativo en `Certificado` o `Promoviendo`.
 - `fin`: primer estado operativo en `Terminal`, con su resultado.
 
 Los tramos son diferencias en segundos: `armado_s` del cierre a la solicitud
 de CI, `ci_s` de la solicitud al inicio de suite, `suite_s` del inicio al
-resultado de suite, `promocion_s` del resultado al fin y `total_s` del cierre
+fin de suite, `promocion_s` del fin de suite al fin y `total_s` del cierre
 al fin. Un hito ausente o un tramo sin alguno de sus extremos vale `null`.
 
 Un verde directo aterrizó sin diagnóstico, reanudación de suite ni pausa
