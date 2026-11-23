@@ -98,6 +98,15 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     return r
 
 
+def leer_salida(registro, log, codigo, commit, modo, filtros):
+    resultado = leer_recibo(log, leer_json(codigo), commit, modo, filtros)
+    # Tras un reenganche la tarea original puede seguir viva: un 64 no autoriza otra clave.
+    if (isinstance(resultado, RechazoLanzador) and resultado.detalle == 'lanzador-rechazo' and
+            any(registro.glob('codigo-reenganche-*.json'))):
+        return RechazoLanzador(resultado.evidencia, 'salida-sin-recibo')
+    return resultado
+
+
 class Jale:
     firma_distingue_fallo = False
 
@@ -144,20 +153,21 @@ class Jale:
                 fcntl.flock(candado, fcntl.LOCK_EX)
                 # El archivo conservado también marca el reenganche ya iniciado.
                 if codigo.exists() and not anterior.exists():
-                    resultado = leer_recibo(log, leer_json(codigo), commit, modo, filtros)
+                    resultado = leer_salida(registro, log, codigo, commit, modo, filtros)
                     if (isinstance(resultado, RechazoLanzador) and
                             resultado.detalle == 'salida-sin-recibo'):
                         if not permitir_lanzar:
                             return False
-                        if self.operador is not None and self.operador.checkout is not None:
-                            guardado[1] = self.operador.lanzador(
-                                self.lanzador_configurado, tren_id, codigo)
-                            guardar(solicitud, guardado)
                         codigo.rename(anterior)
-                elif anterior.exists():
-                    guardado = leer_json(solicitud)
-                if not permitir_lanzar and not codigo.exists():
-                    return False
+                if not codigo.exists():
+                    if not permitir_lanzar:
+                        return False
+                    # Cada reenganche, también el que recupera un tick muerto, lanza con
+                    # el snapshot vigente: uno viejo saldría 64 sin consultar la clave.
+                    if self.operador is not None and self.operador.checkout is not None:
+                        guardado[1] = self.operador.lanzador(
+                            self.lanzador_configurado, tren_id, codigo)
+                        guardar(solicitud, guardado)
         if not codigo.exists():
             if not permitir_lanzar and not (registro / 'iniciado.json').exists():
                 return False
@@ -176,7 +186,7 @@ class Jale:
             except (OSError, subprocess.SubprocessError):
                 raise ResultadoInvalido('lanzador-no-disponible') from None
         exigir(codigo.exists(), 'corrida-interrumpida')
-        return leer_recibo(log, leer_json(codigo), commit, modo, filtros)
+        return leer_salida(registro, log, codigo, commit, modo, filtros)
 
     def corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id, reenganche=None):
         cache = raiz / 'completo.json'
