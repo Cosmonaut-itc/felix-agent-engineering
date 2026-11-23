@@ -227,6 +227,11 @@ def validate_snapshot(data, host):
             row['control'] = accion.control_data(row['control'], row)
         if 'activity' in row:
             row['activity'] = valid_activity(row['activity'])
+        if 'admission' in row and (host != 'mini' or not _guard_snapshot.valid_admission(row['admission'], row['id'])):
+            del row['admission']
+        if 'legacy_blocker' in row and (host != 'mini' or row['legacy_blocker'] is not True
+                                        or row['state'] not in ('Running', 'Paused') or 'admission' in row):
+            del row['legacy_blocker']
         if 'usage' in row:
             row['usage'] = valid_usage(row['usage']) if row['state'] == 'Running' else None
     if 'usage' in data:
