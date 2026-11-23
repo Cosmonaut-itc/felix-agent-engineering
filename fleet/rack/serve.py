@@ -284,7 +284,6 @@ class Rack:
         self.tren_good = None
         self.tren_error = None
         self.tren_present = False
-        self.lookup_cycles = 0
         self.pull_path = state_dir / 'pulls.json'
         self.pulls = read_cache(self.pull_path, dict(ticket=str, title=str, checked=(int, float))) if self.tren else {}
         self.key = None
@@ -548,14 +547,10 @@ class Rack:
             self.read_hosts = number
             self.published.notify_all()
         deadline = time.monotonic() + LOOKUP_BUDGET
-        # PRs go first every other cycle, so slow commit lookups cannot starve them.
-        pulls_first = self.tren_present and self.lookup_cycles % 2 == 1
-        self.lookup_cycles += 1
-        if pulls_first:
-            self.resolve_pulls(self.tren_prs(), now, deadline)
         self.resolve_commits([t for data in self.good.values() for t in data['tasks'] if t['state'] != 'Done'], now, deadline)
         self.refresh_tickets({t['ticket'] for data in self.good.values() for t in data['tasks'] if re.fullmatch(r'SEN-\d+', t.get('ticket') or '')}, now, deadline)
-        if self.tren_present and not pulls_first:
+        if self.tren_present:
+            # PR titles only take what commits and tickets leave of the shared budget.
             self.resolve_pulls(self.tren_prs(), now, deadline)
         self.publish(now)
 

@@ -374,16 +374,6 @@ class TrenStateTests(unittest.TestCase):
         self.assertLessEqual(elapsed, serve.LOOKUP_BUDGET)
         self.assertIn('tren', self.rack.read())
 
-        # The next cycle gives the train's PRs the first turn.
-        requests.clear()
-        started = elapsed
-        with patch.object(serve.time, 'monotonic', side_effect=lambda: elapsed), \
-             patch.object(serve.subprocess, 'run', side_effect=gh):
-            self.rack.cycle(fetch=fetch, now=NOW)
-        self.assertTrue(requests)
-        self.assertFalse([r for r in requests if '/commits/' in r])
-        self.assertLessEqual(elapsed - started, serve.LOOKUP_BUDGET)
-
     def test_public_text_preserves_digit_runs_and_shortens_hex_with_letters(self):
         texts = ('Migración 20261123 del rack', 'apps/web/e2e/20261123-alta.spec.ts',
                  'Corte 20261123235959')
