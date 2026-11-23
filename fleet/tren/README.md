@@ -169,10 +169,12 @@ el evento. Los tramos tienen resolución de un tick.
 - `ci_solicitado`: primer resultado de `solicitar-ci`.
 - `suite_iniciada`: primer inicio de `iniciar-suite`, cuando se observó CI verde.
 - `suite_terminada`: último paso operativo que consume el resultado de
-  `iniciar-suite` o `reanudar-suite`. El resultado del efecto se guarda cuando
-  el lanzador devuelve el control, pero con el instante de arranque del tick
-  que lanzó la suite; por eso el fin lo marca el paso que lo consume, y el
-  hito queda vacío hasta ese paso.
+  `iniciar-suite` o `reanudar-suite`. El resultado del efecto lleva el
+  instante de arranque del tick que lo registra: el que lanzó la suite o,
+  tras una interrupción, el que recupera su recibo. Ese instante no es el
+  fin de la suite; por eso el fin lo marca el paso que consume el resultado.
+  El hito vale `null` hasta el primer consumo y cada consumo posterior lo
+  actualiza.
 - `certificado`: primer estado operativo en `Certificado` o `Promoviendo`.
 - `fin`: primer estado operativo en `Terminal`, con su resultado.
 
