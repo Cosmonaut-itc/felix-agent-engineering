@@ -239,6 +239,29 @@ class AdmissionTests(unittest.TestCase):
         self.write_projection()
         self.assertEqual(self.row(self.collect(), 244)['admission']['seq'], 3)
 
+    def test_resource_named_like_private_key_survives_both_server_passes(self):
+        # fetch_host and Rack.cycle both validate; a valid Hasito resource name must reach the view.
+        for name in ('path', 'envs', 'command'):
+            with self.subTest(resource=name):
+                blocker = dict(self.waiting['blockers'][0], resource=name)
+                self.projection['requests'][0] = dict(self.waiting, resources=[name], positions={name: 2},
+                                                      blockers=[blocker])
+                self.projection['migration']['barriers'] = [dict(resource=name, task_ids=[242])]
+                self.write_projection()
+                once = serve.validate_snapshot(self.collect(), 'mini')
+                twice = serve.validate_snapshot(once, 'mini')
+                self.assertEqual(self.row(twice, 244).get('admission', {}).get('positions'), {name: 2})
+                self.assertNotIn(UNPERMITTED, json.dumps(twice))
+
+    def test_queued_task_with_projection_read_before_grant_waits_for_slot(self):
+        # The arbiter publishes reserved and enqueues between the rack's file read and its Pueue read.
+        self.managed['status'] = {'Queued': dict(enqueued_at=NOW - 1)}
+        self.write_projection()
+        html = self.render(self.payload(self.collect()))
+        li = re.search(r'<li[^>]*data-id="244".*?</li>', html, re.S)[0]
+        self.assertNotIn('Esperando recurso', li)
+        self.assertIn(SLOT_WAIT, li)
+
 
 class AdmissionGenerationTests(unittest.TestCase):
     def test_darwin_generation_matches_hasito_boot_pid_and_birth(self):

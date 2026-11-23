@@ -401,7 +401,8 @@ function admissionText(t){
   if (t.legacy_blocker) return 'Corrida del legado · ocupa un lugar';
   const a = t.admission;
   if (!a || a.payload_started_at != null) return '';
-  if (a.phase === 'waiting' && a.blockers.length){
+  // A Queued task already holds its resources; a waiting phase there is a projection read before the grant.
+  if (a.phase === 'waiting' && a.blockers.length && t.state === 'Stashed'){
     const shown = a.blockers.slice(0,2).map(b=>`${b.resource} (${BLOCKER_LABEL[b.kind]}${b.task_id == null ? '' : ' #'+b.task_id})`);
     if (a.blockers.length > shown.length) shown.push(`${a.blockers.length - shown.length} más`);
     return 'Esperando recurso · ' + shown.join(' · ');

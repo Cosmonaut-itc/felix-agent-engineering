@@ -240,9 +240,11 @@ def validate_snapshot(data, host):
     for group in data['groups']:
         if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
             raise ValueError('Grupo inválido')
+    # valid_admission already fixed its exact keys; a resource may be named like a private key.
     def safe(value):
         if isinstance(value, dict):
-            return {k: safe(v) for k, v in value.items() if k not in ('envs', 'command', 'original_command', 'path')}
+            return {k: v if k == 'admission' else safe(v) for k, v in value.items()
+                    if k not in ('envs', 'command', 'original_command', 'path')}
         return [safe(v) for v in value] if isinstance(value, list) else value
     return safe(data)
 
