@@ -137,6 +137,12 @@ class FasesTests(Aislado):
         self.assertEqual(resumen["tramos_s"]["total_s"], {"p50": 105, "p90": 109, "max": 110})
         self.assertEqual(resumen["tramos_s"]["ci_s"], {"p50": 20, "p90": 20, "max": 20})
 
+    def test_cli_rechaza_fecha_sin_zona_antes_de_abrir_el_ledger(self):
+        resultado = self.cli("fases", "--repo", REPO, "--desde", "1970-01-01T00:00:00", "--hasta", HASTA)
+        self.assertEqual(resultado.returncode, 2)
+        self.assertIn("--desde", resultado.stderr)
+        self.assertEqual(resultado.stdout, "")
+
     def test_cli_lee_ledger_sin_inscripcion_ni_escrituras(self):
         ledger = self.ledger()
         tren = Tren("cli", ("a",), Congelado("base-sintetica"))

@@ -46,6 +46,11 @@ def motivo(valor):
     return valor
 
 
+def texto_iso(valor):
+    instante_iso(valor)
+    return valor
+
+
 def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     comandos = cli.add_subparsers(dest="comando", required=True)
@@ -80,8 +85,8 @@ def parser():
     medicion.add_argument("--hasta", required=True, type=instante_iso)
     fases = comandos.add_parser("fases")
     fases.add_argument("--repo", required=True, type=repositorio)
-    fases.add_argument("--desde", required=True)
-    fases.add_argument("--hasta", required=True)
+    fases.add_argument("--desde", required=True, type=texto_iso)
+    fases.add_argument("--hasta", required=True, type=texto_iso)
     return cli
 
 

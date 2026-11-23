@@ -61,7 +61,7 @@ def medir_fases(events, effects, repo, desde, hasta):
         if tipo == "operativo":
             paso = json.loads(fila["payload"])
             estado = paso["estado"]
-            # El resultado de una suite es el recibo de su lanzamiento: la suite termina cuando un paso lo consume.
+            # El resultado de una suite lleva el instante del tick que la lanzó: el fin lo marca el paso que lo consume.
             efecto, ident = efectos.get(paso.get("consumido"), (None, None))
             if efecto in SUITES and ident in trenes and trenes[ident]["terminal"] is None:
                 trenes[ident]["hitos"]["suite_terminada"] = instante
