@@ -21,7 +21,7 @@ POLITICA = {
     ("infraestructura", "lanzador-rechazo"):
         {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
     ("infraestructura", "salida-sin-recibo"):
-        {"reanudar": "lanzador-nuevo", "abortar": "abortar"},
+        {"reanudar": "reenganchar", "abortar": "abortar"},
     ("infraestructura", "checkout-operador:"):
         {"reanudar": "continuar", "abortar": "abortar"},
     ("infraestructura", "ci-sin-resultado"):
@@ -120,8 +120,10 @@ def error_decision(estado, decision, pausa_id):
         if any(isinstance(e.admision, Rechazado) for e in estado.entradas
                if e.entrega.recibo in tren.recibos):
             return "miembro-rechazado"
-    if operacion == "lanzador-nuevo" and not isinstance(fase, (Corriendo, Diagnosticando)):
+    if operacion in ("lanzador-nuevo", "reenganchar") and not isinstance(fase, (Corriendo, Diagnosticando)):
         return "fase-no-corresponde"
+    if operacion == "reenganchar" and not estado.pausa.archivos:
+        return "sin-registro-para-reenganchar"
     if operacion == "infraestructura" and (
             not isinstance(fase, (Corriendo, Diagnosticando)) or not fase.reanudar):
         return "sin-reanudacion"
@@ -197,14 +199,19 @@ def resolver(estado, observacion):
     elif operacion in ("armar", "publicar"):
         tipo = "armar-candidato" if operacion == "armar" else "solicitar-ci"
         efectos = (Efecto(clave(tipo, tren.id, decision.id), tipo, (tren.id,)),)
-    elif operacion == "lanzador-nuevo":
-        fase = replace(tren.fase, reintentos_lanzador=tren.fase.reintentos_lanzador + 1)
+    elif operacion in ("lanzador-nuevo", "reenganchar"):
+        if operacion == "reenganchar":
+            fase = replace(tren.fase, reenganches=tren.fase.reenganches + 1,
+                           registro_reenganche=decision.pausa.archivos[0])
+        else:
+            fase = replace(tren.fase, reintentos_lanzador=tren.fase.reintentos_lanzador + 1,
+                           reenganches=0, registro_reenganche="")
         estado = cambiar_fase(estado, tren, fase)
         efectos = ((efecto_reanudar_suite(tren, fase),) if isinstance(fase, Corriendo)
                    else (efecto_diagnostico(tren, fase),))
     elif operacion == "infraestructura":
         fase = replace(tren.fase, reanudaciones=tren.fase.reanudaciones + 1,
-                       esperar_hasta=None)
+                       esperar_hasta=None, reenganches=0, registro_reenganche="")
         if isinstance(fase, Diagnosticando):
             fase = replace(fase, costo_infra_s=fase.costo_infra_s + fase.pendiente.costo_s)
         estado = cambiar_fase(estado, tren, fase)

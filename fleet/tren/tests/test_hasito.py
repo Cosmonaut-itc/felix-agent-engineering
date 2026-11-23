@@ -101,7 +101,7 @@ class RunnerFalso:
 
 def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="reanudar", codigo=64):
     """Contrato operativo compartido: cada adaptador conserva su productor falso."""
-    from dominio import Decision
+    from dominio import Decision, intento_suite
     from ledger import Ledger
     from observador import Falso
     from operativo import tick
@@ -195,7 +195,11 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     tick(ledger, actual.repo, observador, obs.ahora + 2, caso.git, caso.adaptador)
     resuelto = ledger.estado(actual.repo, operativo=True)
     caso.assertIsNone(resuelto.pausa)
-    caso.assertEqual({ruta: ruta.read_bytes() for ruta in rechazados}, rechazados)
+    conservados = {
+        (ruta.with_name("codigo-reenganche-1.json") if codigo == 127 and decision == "reanudar"
+         else ruta): contenido for ruta, contenido in rechazados.items()
+    }
+    caso.assertEqual({ruta: ruta.read_bytes() for ruta in conservados}, conservados)
     if decision == "abortar":
         caso.assertEqual(resuelto.trenes[0].fase, Terminal("ABORTADO"))
         caso.assertTrue(all(e.tren is None and e.terminal is None for e in resuelto.entradas))
@@ -204,6 +208,14 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
         return
     fase = resuelto.trenes[0].fase
     caso.assertEqual(fase.reanudaciones, getattr(anterior, "reanudaciones", 0))
+    fase_pausada = pausado.trenes[0].fase
+    if codigo == 127:
+        caso.assertEqual(fase.reenganches, 1)
+        caso.assertEqual(fase.reintentos_lanzador, fase_pausada.reintentos_lanzador)
+        caso.assertEqual(intento_suite(fase), intento_suite(fase_pausada))
+    else:
+        caso.assertEqual(fase.reintentos_lanzador, fase_pausada.reintentos_lanzador + 1)
+        caso.assertEqual(intento_suite(fase), intento_suite(fase_pausada) + 1)
     filas = ledger.outbox(actual.repo)
     caso.assertEqual(len(filas), 1)
     nuevo = desde_datos(json.loads(filas[0]["payload"]))
@@ -213,9 +225,11 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
     if hasattr(caso, "invocaciones"):
         viejas = {i["clave"] for i in invocaciones_antes}
         nuevas = invocaciones()[len(invocaciones_antes):]
-        caso.assertTrue(all(i["clave"] not in viejas for i in nuevas))
-        caso.assertTrue(all(Path(i["log"]).parent not in
-            {ruta.parent for ruta in rechazados} for i in nuevas))
+        mismos = {i["log"]: i["clave"] for i in invocaciones_antes
+                  if Path(i["log"]).with_name("codigo.json") in rechazados}
+        reenganchadas = [(i["log"], i["clave"]) for i in nuevas if i["log"] in mismos]
+        caso.assertEqual(reenganchadas, list(mismos.items()) if codigo == 127 else [])
+        caso.assertTrue(all(i["clave"] not in viejas for i in nuevas if i["log"] not in mismos))
     tick(ledger, actual.repo, observador, obs.ahora + 3, caso.git, caso.adaptador)
     final = ledger.estado(actual.repo, operativo=True)
     caso.assertIsNone(final.pausa)

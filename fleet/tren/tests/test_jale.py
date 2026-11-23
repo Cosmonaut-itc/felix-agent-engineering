@@ -189,14 +189,20 @@ class JaleTests(Aislado):
     def test_sen7124_recuperar_repeticion_fallida_y_reanudar(self):
         self.verificar_rechazo('repetir', codigo=127, recuperacion=True)
         rechazados = [log for _, log, *_ in self.lanzamientos()
-                      if json.loads(Path(log).with_name('codigo.json').read_text()) == 127]
+                      if Path(log).with_name('codigo-reenganche-1.json').is_file()]
         self.assertEqual(len(rechazados), 1)
         invocaciones = [i for i in self.invocaciones() if i['log'] == rechazados[0]]
-        self.assertEqual(len(invocaciones), 3)
+        self.assertEqual(len(invocaciones), 4)
         self.assertEqual(len({i['clave'] for i in invocaciones}), 1)
 
     def test_sen7124_pausar_suite_sin_recibo_y_abortar(self):
         self.verificar_rechazo('iniciar-suite', codigo=127, decision='abortar')
+
+    def test_sen7279_reanudar_suite_sin_recibo_en_intento_cero(self):
+        self.verificar_rechazo('iniciar-suite', codigo=127)
+
+    def test_sen7279_reanudar_suite_sin_recibo_despues_de_75(self):
+        self.verificar_rechazo('reanudar-suite', codigo=127)
 
     def test_suite_verde_dos_modos_y_argv_sin_filtros(self):
         ruta, r = self.suite()
@@ -648,6 +654,87 @@ class JaleTests(Aislado):
         self.assertEqual(log.with_name('coordinador.log').read_text().splitlines(),
                          ['PUEUE_ID=0', 'Wsl/Service/WSAETIMEDOUT', 'PUEUE_REENGANCHE=0'])
         self.assertEqual(json.loads(log.with_name('codigo.json').read_text()), 0)
+
+    def test_sen7279_repite_el_tick_tras_archivar_sin_reabrir_otra_salida(self):
+        from dominio import RechazoLanzador
+        transporte = {'transportes': 3, 'codigo_transporte': 127}
+        self.plan([transporte, transporte])
+        _, rechazo = self.suite()
+        self.assertIsInstance(rechazo, RechazoLanzador)
+        self.assertEqual(rechazo.detalle, 'salida-sin-recibo')
+        registro = Path(rechazo.evidencia).parent
+        codigo = registro / 'codigo.json'
+        anterior = registro / 'codigo-reenganche-1.json'
+        reenganche = (1, rechazo.evidencia)
+        self.assertIsNone(self.suite(reenganche=reenganche, permitir_lanzar=False))
+        self.assertEqual(json.loads(codigo.read_text()), 127)
+        with patch('adaptadores.jale.subprocess.Popen', side_effect=RuntimeError('tick interrumpido')):
+            with self.assertRaisesRegex(RuntimeError, 'tick interrumpido'):
+                self.suite(reenganche=reenganche)
+        self.assertFalse(codigo.exists())
+        self.assertEqual(json.loads(anterior.read_text()), 127)
+        self.assertEqual(len(self.invocaciones()), 3)
+
+        _, segundo_rechazo = self.suite(reenganche=reenganche)
+        self.assertEqual(segundo_rechazo.detalle, 'salida-sin-recibo')
+        self.assertNotEqual(segundo_rechazo.evidencia, rechazo.evidencia)
+        invocaciones = self.invocaciones()
+        self.assertEqual(len(invocaciones), 7)
+        self.assertEqual({(i['log'], i['clave']) for i in invocaciones[:4]},
+                         {(str(registro / 'corrida.log'), invocaciones[0]['clave'])})
+        self.assertEqual(json.loads(codigo.read_text()), 0)
+        self.assertEqual(self.suite(reenganche=reenganche)[1], segundo_rechazo)
+        self.assertEqual(self.invocaciones(), invocaciones)
+
+        _, resultado = self.suite(reenganche=(2, segundo_rechazo.evidencia))
+        self.assertEqual(resultado, Completo('verde', costo_s=8))
+        self.assertEqual(len(self.lanzamientos()), 2)
+        self.assertEqual(self.invocaciones()[-1]['clave'], invocaciones[-1]['clave'])
+        self.assertEqual(json.loads(anterior.read_text()), 127)
+
+    def test_sen7279_reengancha_repeticion_de_base_y_comparte_recibo(self):
+        from dominio import RechazoLanzador
+        origen = self.origen()
+        self.plan([{}, {}, {}, {'transportes': 3, 'codigo_transporte': 127}])
+        rechazo = self.repetir(origen, 'B')
+        self.assertIsInstance(rechazo, RechazoLanzador)
+        self.assertEqual(rechazo.detalle, 'salida-sin-recibo')
+        registro = Path(rechazo.evidencia).parent
+        self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 127)
+
+        resultado = self.repetir(origen, 'B', reenganche=(1, rechazo.evidencia))
+        self.assertIsInstance(resultado, Repeticion)
+        self.assertEqual(json.loads((registro / 'codigo-reenganche-1.json').read_text()), 127)
+        self.assertEqual(json.loads((registro / 'codigo.json').read_text()), 0)
+        invocaciones = self.invocaciones()
+        self.assertEqual(len(invocaciones), 7)
+        self.assertEqual({(i['log'], i['clave']) for i in invocaciones[-4:]},
+                         {(str(registro / 'corrida.log'), invocaciones[-4]['clave'])})
+        self.assertEqual(len(self.lanzamientos()), 4)
+        otro = self.adaptador.repetir(CANDIDATO, origen, Reproduccion('otra', FALLO, 'B'),
+                                      B, 'otro', permitir_lanzar=False)
+        self.assertEqual(otro.unidades, resultado.unidades)
+        self.assertEqual(self.invocaciones(), invocaciones)
+
+    def test_sen7279_reengancha_repeticion_aunque_otro_tren_complete_el_cache(self):
+        origen = self.origen()
+        self.plan([{}, {}, {}, {'transportes': 3, 'codigo_transporte': 127}, {}])
+        rechazo = self.repetir(origen, 'B')
+        clave_original = self.invocaciones()[-1]['clave']
+        solicitud = Reproduccion('otra', FALLO, 'B')
+        otro = self.repeticion_valida(CANDIDATO, origen, solicitud, B, 'otro')
+        invocaciones = self.invocaciones()
+
+        resultado = self.repetir(origen, 'B', reenganche=(1, rechazo.evidencia))
+        registro = Path(rechazo.evidencia).parent
+        self.assertIsInstance(resultado, Repeticion)
+        self.assertEqual(json.loads((registro / 'codigo-reenganche-1.json').read_text()), 127)
+        reenganchada, = self.invocaciones()[len(invocaciones):]
+        self.assertEqual((reenganchada['log'], reenganchada['clave']),
+                         (str(registro / 'corrida.log'), clave_original))
+        self.assertEqual(len(self.lanzamientos()), 5)
+        self.assertEqual(self.repeticion_valida(CANDIDATO, origen, solicitud,
+            B, 'tercero', permitir_lanzar=False).unidades, otro.unidades)
 
     def test_u23_transporte_255_agota_limite_y_conserva_salida(self):
         from dominio import RechazoLanzador

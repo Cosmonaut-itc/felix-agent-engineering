@@ -299,6 +299,8 @@ class Corriendo:
     esperar_hasta: Optional[float] = None
     reanudar: str = ""
     reintentos_lanzador: int = 0
+    reenganches: int = 0
+    registro_reenganche: str = ""
 
 
 @dataclass(frozen=True)
@@ -327,6 +329,8 @@ class Diagnosticando:
     costo_infra_s: float = 0
     restantes: Tuple[str, ...] = ()
     reintentos_lanzador: int = 0
+    reenganches: int = 0
+    registro_reenganche: str = ""
 
 
 @dataclass(frozen=True)
@@ -597,8 +601,16 @@ def intento_suite(fase):
 
 def efecto_reanudar_suite(tren, fase):
     intento = intento_suite(fase)
-    return Efecto(clave("reanudar-suite", tren.id, intento),
-                  "reanudar-suite", (tren.id, str(intento)))
+    return efecto_corrida("reanudar-suite", (tren.id,), intento, fase)
+
+
+def efecto_corrida(tipo, datos, intento, fase):
+    partes = (tipo, *datos, intento)
+    datos = (*datos, str(intento))
+    if fase.reenganches:
+        partes += (fase.reenganches,)
+        datos += (str(fase.reenganches), fase.registro_reenganche)
+    return Efecto(clave(*partes), tipo, datos)
 
 
 def pausar_lanzador(estado, resultado):
@@ -613,8 +625,7 @@ def efecto_diagnostico(tren, fase):
     solicitud = fase.pendiente
     tipo = ("armar-subconjunto" if solicitud.objetivo == "subconjunto" and
             fase.subconjunto is None else "repetir")
-    return Efecto(clave(tipo, tren.id, solicitud.id, intento_suite(fase)), tipo,
-                  (tren.id, solicitud.id, str(intento_suite(fase))))
+    return efecto_corrida(tipo, (tren.id, solicitud.id), intento_suite(fase), fase)
 
 
 def esperar_infraestructura(estado, tren, fase, resultado, ahora):
@@ -719,7 +730,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
         resultado = observacion.resultado_suite if (ligada and
             observacion.suite_intento == intento_suite(fase) and
             (observacion.suite == fase.suite or
-             intento_suite(fase) > 0 and observacion.suite)) else None
+             (intento_suite(fase) or fase.reenganches) and observacion.suite)) else None
         if resultado is not None and fase.esperar_hasta is None:
             fase = replace(fase, suite=observacion.suite)
             if isinstance(resultado, RechazoLanzador):
@@ -746,10 +757,11 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
         elif fase.esperar_hasta is not None:
             if observacion.ahora < fase.esperar_hasta or not despachar:
                 return estado, ()
-            fase = replace(fase, esperar_hasta=None, reanudaciones=fase.reanudaciones + 1)
+            fase = replace(fase, esperar_hasta=None, reanudaciones=fase.reanudaciones + 1,
+                           reenganches=0, registro_reenganche="")
             estado = cambiar_fase(estado, tren, fase)
         if isinstance(fase, Corriendo):
-            if intento_suite(fase) and fase.esperar_hasta is None and despachar:
+            if (intento_suite(fase) or fase.reenganches) and fase.esperar_hasta is None and despachar:
                 efecto = efecto_reanudar_suite(tren, fase)
                 return estado, (efecto,)
             return estado, ()
@@ -779,7 +791,7 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                 return replace(estado, pausa=Pausa("necesita-juicio", detalle="origen-distinto")), ()
             fase = replace(fase, evidencias=fase.evidencias + (Evidencia(s, resultado),),
                 pendiente=None, subconjunto=None, reanudaciones=0, esperar_hasta=None, reanudar="",
-                reintentos_lanzador=0)
+                reintentos_lanzador=0, reenganches=0, registro_reenganche="")
         elif fase.esperar_hasta is not None:
             if observacion.ahora < fase.esperar_hasta or not despachar:
                 return cambiar_fase(estado, tren, fase), ()
@@ -790,7 +802,8 @@ def avanzar_suite(estado, tren, observacion, despachar=True):
                 return replace(cambiar_fase(estado, tren, fase), pausa=Pausa(
                     "necesita-juicio", detalle="presupuesto-agotado-en-reanudacion")), ()
             fase = replace(fase, esperar_hasta=None, reanudaciones=fase.reanudaciones + 1,
-                           costo_infra_s=fase.costo_infra_s + s.costo_s)
+                           costo_infra_s=fase.costo_infra_s + s.costo_s,
+                           reenganches=0, registro_reenganche="")
     if fase.pendiente is None:
         prs = tuple(pr for pr, _, _ in fase.candidato.eslabones)
         presupuesto = fase.presupuesto_s - fase.costo_infra_s
