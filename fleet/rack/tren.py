@@ -19,7 +19,8 @@ MOTIVOS = (
 )
 CONTROL = re.compile(r'[\x00-\x1f\x7f-\x9f\ud800-\udfff]')
 ABSOLUTE_PATH = re.compile(r'(?<![\w./-])(?:[/\\]|[a-zA-Z]:[/\\])')
-LONG_HEX = re.compile(r'(?i)(?<![0-9a-f])(?=[0-9a-f]*[a-f])([0-9a-f]{7})[0-9a-f]+(?![0-9a-f])')
+# Digit-only runs up to 15 long are dates or counters; longer ones are hashes too.
+LONG_HEX = re.compile(r'(?i)(?<![0-9a-f])(?=[0-9a-f]*[a-f]|[0-9]{16})([0-9a-f]{7})[0-9a-f]+(?![0-9a-f])')
 
 
 def _require(condition, field):
