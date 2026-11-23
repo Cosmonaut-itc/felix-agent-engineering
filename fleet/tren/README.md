@@ -152,6 +152,38 @@ La historia anterior a `desde` también cuenta para formar los lotes. El
 informe muestra los miembros de la cohorte `[desde, hasta)` y sólo usa
 observaciones anteriores a `hasta`.
 
+### Duración por fase
+
+```sh
+fleet/tren/pao-tren fases --repo owner/project \
+  --desde 2026-11-01T00:00:00Z --hasta 2026-11-08T00:00:00Z
+```
+
+`fases` lee SQLite sin candado ni inscripción activa e imprime una línea JSON.
+Incluye cada tren cuyo cierre cae en `[desde, hasta)` y sigue su historial
+hasta el último evento disponible, incluso después de `hasta`. Los hitos son
+segundos desde el epoch y usan el instante de arranque del tick que registró
+el evento. Los tramos tienen resolución de un tick.
+
+- `cierre`: primer estado operativo que contiene el tren.
+- `ci_solicitado`: primer resultado de `solicitar-ci`.
+- `suite_iniciada`: primer inicio de `iniciar-suite`, cuando se observó CI verde.
+- `suite_terminada`: último resultado de `iniciar-suite` o `reanudar-suite`.
+- `certificado`: primer estado operativo en `Certificado` o `Promoviendo`.
+- `fin`: primer estado operativo en `Terminal`, con su resultado.
+
+Los tramos son diferencias en segundos: `armado_s` del cierre a la solicitud
+de CI, `ci_s` de la solicitud al inicio de suite, `suite_s` del inicio al
+resultado de suite, `promocion_s` del resultado al fin y `total_s` del cierre
+al fin. Un hito ausente o un tramo sin alguno de sus extremos vale `null`.
+
+Un verde directo aterrizó sin diagnóstico, reanudación de suite ni pausa
+mientras estaba vivo. El resumen de verdes directos usa el rango más cercano
+(`ceil(p × n)`, contando desde uno) para p50 y p90, y el máximo por tramo.
+Cada estadística usa los valores disponibles y vale `null` si no hay muestra.
+Los demás trenes terminados se cuentan por resultado. Los vivos aparecen en
+el detalle y quedan fuera del resumen.
+
 ## Instalación en macOS (U7, sombra)
 
 Desde un checkout estable de PAO, `bin/pao sync --no-plugins --no-schedule`
