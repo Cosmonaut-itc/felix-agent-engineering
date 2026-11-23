@@ -99,7 +99,8 @@ class RunnerFalso:
             "{} veredicto={} {}={}\n".format(etiqueta, r["veredicto"], campo, archivo), "")
 
 
-def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="reanudar", codigo=64):
+def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="reanudar", codigo=64,
+                      detalle=None):
     """Contrato operativo compartido: cada adaptador conserva su productor falso."""
     from dominio import Decision, intento_suite
     from ledger import Ledger
@@ -125,7 +126,8 @@ def verificar_rechazo(caso, tipo, configurar, recuperacion=False, decision="rean
         efecto = efectos[0]
         caso.assertEqual(efecto.tipo, tipo)
     anterior = actual.trenes[0].fase
-    detalle = "lanzador-rechazo" if codigo == 64 else "salida-sin-recibo"
+    if detalle is None:
+        detalle = "lanzador-rechazo" if codigo == 64 else "salida-sin-recibo"
     configurar(str(codigo))
     ledger = Ledger(caso.raiz / ("ledger-" + tipo))
     caso.addCleanup(ledger.close)

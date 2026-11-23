@@ -43,7 +43,9 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     if not recibos:
         if codigo == 75:
             return None
-        return RechazoLanzador(str(Path(log).with_name('coordinador.log')), 'salida-sin-recibo')
+        detalle = ('corrida-interrumpida' if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas
+                   else 'salida-sin-recibo')
+        return RechazoLanzador(str(Path(log).with_name('coordinador.log')), detalle)
     exigir(len(recibos) == 1, 'salida-sin-recibo')
     exigir(0 <= codigo <= 255, 'salida-no-utilizable')
     match = re.fullmatch(r'RECIBO jale-recibo@1 ([A-Za-z0-9+/]+={0,2})', recibos[0])
@@ -147,7 +149,13 @@ class Jale:
                             resultado.detalle == 'salida-sin-recibo'):
                         if not permitir_lanzar:
                             return False
+                        if self.operador is not None and self.operador.checkout is not None:
+                            guardado[1] = self.operador.lanzador(
+                                self.lanzador_configurado, tren_id, codigo)
+                            guardar(solicitud, guardado)
                         codigo.rename(anterior)
+                elif anterior.exists():
+                    guardado = leer_json(solicitud)
                 if not permitir_lanzar and not codigo.exists():
                     return False
         if not codigo.exists():

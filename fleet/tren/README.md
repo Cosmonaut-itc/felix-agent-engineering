@@ -690,7 +690,7 @@ rojo, y las readmite por las reglas normales desde el tick siguiente.
 | `etapa-1` | vacío | `reanudar`: levantar la pausa del repo; siguen vigentes los permisos operativos externos para cada suite. |
 | `certificado-sin-base` | vacío | `abortar`: no se puede promover sin B conocido. |
 | `escritor-externo` | vacío | `reanudar`: levantar la pausa del tren `REARMAR`; sus entregas ya liberadas se readmiten sobre el main observado de nuevo, en otro tren. Nunca sobrescribe main ni marca el C anterior aterrizado. |
-| `infraestructura` | `lanzador-rechazo` / `salida-sin-recibo` | El lanzador salió 64 o Jale guardó otra salida entera distinta de 75 sin recibo. La pausa conserva la ruta del log y cierra el efecto. Con `lanzador-rechazo`, `reanudar` lanza otro intento con registro y clave nuevos. Con `salida-sin-recibo`, `reanudar` reengancha el mismo registro con la misma clave y conserva la salida anterior. Ninguna pausa gasta reanudaciones por 75 ni presupuesto de diagnóstico. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
+| `infraestructura` | `lanzador-rechazo` / `corrida-interrumpida` / `salida-sin-recibo` | El lanzador salió 64, Jale confirmó la interrupción con 125 y `PUEUE_INTERRUPTED=1` sin recibo, o Jale guardó otra salida entera distinta de 75 sin recibo. La pausa conserva la ruta del log y cierra el efecto. Con `lanzador-rechazo` o `corrida-interrumpida`, `reanudar` lanza otro intento con registro y clave nuevos. Con `salida-sin-recibo`, `reanudar` reengancha el mismo registro con la misma clave y conserva la salida anterior. Estas pausas no gastan reanudaciones por 75 ni presupuesto de diagnóstico. `abortar` termina el tren y devuelve las entregas a la fila sin feedback de producto. |
 | `infraestructura` | `checkout-operador:<estado>` | El tick no pudo obtener el SHA o verificar su snapshot. `reanudar` permite reintentar y `abortar` termina el tren. El tick conserva cualquier pausa vigente. |
 | `infraestructura` | `tres-reanudaciones-agotadas` | `reanudar`: un intento adicional del comando guardado, con contador/clave nuevos y sin certificado; otro 75 vuelve a pausar. `absolver`: abandonar el diagnóstico o reenganche anterior y exigir CI y suite completa nuevos sobre el mismo C, incluso si el diagnóstico agotó D5. `abortar`: liberar entregas sin rojo. |
 | `infraestructura` | `ci-sin-resultado` | `reanudar`: solicitar CI sobre el mismo C con ref/clave nuevas y reiniciar los 60 minutos; `abortar`: liberar entregas sin rojo. No admite `absolver`. |
@@ -1303,13 +1303,15 @@ El coordinador permite como máximo tres invocaciones ante una salida 255
 o 127. Usa la misma clave y guarda la última salida. Guarda el 125 sin
 reintentar. Un 75 sigue la política de reanudación del tren. Un 64 cierra
 el efecto y pausa `infraestructura` con detalle `lanzador-rechazo`. Si Jale
-guarda otra salida entera y no hay ninguna línea de recibo, cierra el
-efecto y pausa `infraestructura` con detalle `salida-sin-recibo`. Ambas
-pausas conservan la ruta de `coordinador.log` y también se aplican al
-recuperar un efecto ya fallido. Con `lanzador-rechazo`, `reanudar` lanza
-otro intento con registro y clave nuevos. Con `salida-sin-recibo`,
-`reanudar` reengancha el mismo registro con la misma clave y conserva
-la salida anterior. `abortar` libera las entregas sin rojo.
+guarda un 125 con `PUEUE_INTERRUPTED=1` en `corrida.log` y sin recibo, la
+pausa indica `corrida-interrumpida`. Las demás salidas enteras sin recibo
+pausan con detalle `salida-sin-recibo`. Estas pausas conservan la ruta de
+`coordinador.log` y también se aplican al recuperar un efecto ya fallido.
+Con `lanzador-rechazo` o `corrida-interrumpida`, `reanudar` lanza otro
+intento con registro y clave nuevos. Con `salida-sin-recibo`, `reanudar`
+reengancha el mismo registro con la misma clave y conserva la salida
+anterior. Si hay un checkout del operador, usa su lanzador vigente.
+`abortar` libera las entregas sin rojo.
 Hasito aplica la pausa del 64 y conserva su log y recibo. Estas pausas
 no consumen reanudaciones de 75 ni presupuesto de diagnóstico. Tampoco
 generan feedback de producto. Los recibos duplicados, malformados o
