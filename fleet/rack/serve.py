@@ -227,6 +227,8 @@ def validate_snapshot(data, host):
             row['control'] = accion.control_data(row['control'], row)
         if 'activity' in row:
             row['activity'] = valid_activity(row['activity'])
+        if 'admission' in row and (host != 'mini' or not _guard_snapshot.valid_admission(row['admission'], row['id'])):
+            del row['admission']
         if 'usage' in row:
             row['usage'] = valid_usage(row['usage']) if row['state'] == 'Running' else None
     if 'usage' in data:
@@ -239,7 +241,13 @@ def validate_snapshot(data, host):
         if isinstance(value, dict):
             return {k: safe(v) for k, v in value.items() if k not in ('envs', 'command', 'original_command', 'path')}
         return [safe(v) for v in value] if isinstance(value, list) else value
-    return safe(data)
+    # valid_admission already fixed each row's exact keys; a resource may be named like a private key.
+    admissions = [row.pop('admission', None) for row in data['tasks']]
+    clean = safe(data)
+    for row, admission in zip(clean['tasks'], admissions):
+        if admission is not None:
+            row['admission'] = admission
+    return clean
 
 
 def fetch_host(host):

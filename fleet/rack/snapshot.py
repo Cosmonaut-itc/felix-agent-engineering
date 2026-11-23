@@ -3,6 +3,7 @@
 import argparse
 import ast
 from concurrent.futures import ThreadPoolExecutor
+import ctypes
 import datetime
 import json
 import hashlib
@@ -12,9 +13,11 @@ from pathlib import Path
 import re
 import subprocess
 import sqlite3
+import stat
 import sys
 import threading
 import time
+import uuid
 
 
 def command(argv, timeout=5):
@@ -36,6 +39,206 @@ def ticket(text):
 
 # Etiqueta de Pueue del remote-run de Bodega (repo apotheca): su ruta de corrida es la misma que la de Hasito.
 BODEGA = 'apotheca-remote-run'
+REMOTE_RUN_REF = re.compile(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}')
+
+
+# resource-state@1, publicado por scripts/mini/resource_admission.py de Hasito.
+ADMISSION_PATH = '.local/state/comprador/mini/admission-v1/resource-state.json'
+ADMISSION_BYTES = 1024 * 1024
+ADMISSION_STALE = 30
+ADMISSION_ROWS = 4096
+ADMISSION_RESOURCES = 64
+ADMISSION_TOKEN = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:+-]{0,127}')
+ADMISSION_RESOURCE = re.compile(r'[A-Za-z0-9][A-Za-z0-9._:-]{0,63}')
+ADMISSION_PHASES = ('waiting', 'reserved', 'claimed', 'running', 'draining', 'done',
+                    'cancelled', 'expired', 'unknown')
+ADMISSION_FIELDS = frozenset(('task_id', 'task_created_at', 'ref', 'daemon_generation', 'attempt',
+                             'seq', 'phase', 'arrived_at', 'deadline_at', 'updated_at',
+                             'payload_started_at', 'resources', 'positions', 'blockers'))
+
+
+def admission_token(value):
+    return isinstance(value, str) and ADMISSION_TOKEN.fullmatch(value) is not None
+
+
+def admission_resource(value):
+    return isinstance(value, str) and ADMISSION_RESOURCE.fullmatch(value) is not None
+
+
+def admission_int(value, minimum=0):
+    return type(value) is int and value >= minimum
+
+
+def admission_time(value):
+    return type(value) in (int, float) and math.isfinite(value)
+
+
+def admission_blockers(items, resources):
+    if not isinstance(items, list) or len(items) > ADMISSION_ROWS * ADMISSION_RESOURCES:
+        return False
+    counts = dict.fromkeys(resources, 0)
+    for item in items:
+        if (not isinstance(item, dict) or item.keys() != {'resource', 'kind', 'task_id', 'ref', 'seq'}
+                or not admission_resource(item['resource']) or item['resource'] not in counts
+                or item['kind'] not in ('holder', 'predecessor', 'legacy', 'unknown')
+                or (item['task_id'] is not None and not admission_int(item['task_id']))
+                or (item['ref'] is not None and not admission_token(item['ref']))
+                or (item['seq'] is not None and not admission_int(item['seq'], 1))
+                or (item['kind'] == 'unknown' and any(item[k] is not None for k in ('task_id', 'ref', 'seq')))):
+            return False
+        counts[item['resource']] += 1
+    return all(count <= ADMISSION_ROWS for count in counts.values())
+
+
+def valid_admission(row, task_id):
+    """Forma que puede publicar el snapshot del rack, sin diagnóstico de corte."""
+    try:
+        if not isinstance(row, dict) or row.keys() != ADMISSION_FIELDS:
+            return False
+        resources = row['resources']
+        positions = row['positions']
+        return (admission_int(row['task_id']) and row['task_id'] == task_id and task_id < 2**63
+                and all(admission_token(row[k]) for k in ('task_created_at', 'ref', 'daemon_generation'))
+                and isinstance(row['attempt'], str) and str(uuid.UUID(row['attempt'])) == row['attempt']
+                and admission_int(row['seq'], 1) and row['phase'] in ADMISSION_PHASES
+                and all(admission_time(row[k]) for k in ('arrived_at', 'deadline_at', 'updated_at'))
+                and (row['payload_started_at'] is None or admission_time(row['payload_started_at']))
+                and isinstance(resources, list) and 1 <= len(resources) <= ADMISSION_RESOURCES
+                and all(admission_resource(n) and n != 'ninguno' for n in resources)
+                and len(set(resources)) == len(resources)
+                and isinstance(positions, dict) and positions.keys() == set(resources)
+                and all(p is None or admission_int(p, 1) for p in positions.values())
+                and admission_blockers(row['blockers'], resources))
+    except (ValueError, OverflowError):
+        return False
+
+
+def valid_admission_cut(cut, resources):
+    if cut is None:
+        return True
+    times = {'limite_s', 'transcurrido_s', 'sin_salida_s', 'blockers_updated_at', 'espera_s'}
+    return (isinstance(cut, dict) and cut.keys() == times | {
+                'motivo', 'grupo', 'fase', 'recursos', 'bloqueantes', 'payload_started', 'no_payload'}
+            and cut['motivo'] == 'espera-candados'
+            and cut['grupo'] in ('suites', 'hasito', 'otros', 'rapidas', 'pesadas', 'jale')
+            and cut['fase'] in ('espera-recurso', 'espera-lugar') and cut['recursos'] == resources
+            and cut['payload_started'] is False and cut['no_payload'] is True
+            and all(admission_time(cut[k]) and cut[k] >= 0 for k in times)
+            and admission_blockers(cut['bloqueantes'], resources))
+
+
+def read_owned_file(path, limit):
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as stream:
+        info = os.fstat(stream.fileno())
+        if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+            raise ValueError('Archivo de admisión inválido')
+        raw = stream.read(limit + 1)
+        if len(raw) > limit:
+            raise ValueError('Archivo de admisión demasiado grande')
+        return raw
+
+
+def admission_json_object(pairs):
+    value = dict(pairs)
+    if len(value) != len(pairs):
+        raise ValueError('Clave de admisión repetida')
+    return value
+
+
+def admission_json_constant(_):
+    raise ValueError('Constante de admisión inválida')
+
+
+def read_admission(home, now):
+    """La proyección es opcional. Un fallo devuelve la vista nativa."""
+    try:
+        raw = read_owned_file(home / ADMISSION_PATH, ADMISSION_BYTES).decode('utf-8')
+        state = json.loads(raw, object_pairs_hook=admission_json_object, parse_constant=admission_json_constant)
+        if (not isinstance(state, dict) or state.keys() != {
+                'schema', 'revision', 'updated_at', 'status', 'migration', 'requests'}
+                or state['schema'] != 'resource-state@1' or state['status'] != 'ok'
+                or not admission_int(state['revision']) or not admission_time(state['updated_at'])
+                or not 0 <= now - state['updated_at'] <= ADMISSION_STALE):
+            return []
+        migration = state['migration']
+        if (not isinstance(migration, dict) or migration.keys() != {'phase', 'barriers'}
+                or migration['phase'] not in ('legacy-drain', 'grants')
+                or not isinstance(migration['barriers'], list) or len(migration['barriers']) > ADMISSION_ROWS):
+            return []
+        for barrier in migration['barriers']:
+            if (not isinstance(barrier, dict) or barrier.keys() != {'resource', 'task_ids'}
+                    or not admission_resource(barrier['resource']) or not isinstance(barrier['task_ids'], list)
+                    or len(barrier['task_ids']) > ADMISSION_ROWS or not all(map(admission_int, barrier['task_ids']))):
+                return []
+        if not isinstance(state['requests'], list) or len(state['requests']) > ADMISSION_ROWS:
+            return []
+        rows, seen = [], set()
+        for row in state['requests']:
+            if not isinstance(row, dict) or row.keys() != ADMISSION_FIELDS | {'cut'}:
+                return []
+            public = {k: v for k, v in row.items() if k in ADMISSION_FIELDS}
+            if (not valid_admission(public, row['task_id']) or row['seq'] in seen
+                    or not valid_admission_cut(row['cut'], row['resources'])):
+                return []
+            rows.append(public)
+            seen.add(row['seq'])
+        return rows
+    except (OSError, ValueError, OverflowError, RecursionError):
+        return []
+
+
+class AdmissionBSDInfo(ctypes.Structure):
+    # Darwin proc_bsdinfo, igual a resource_admission_host.py en Hasito.
+    _fields_ = [(name, ctypes.c_uint32) for name in (
+        'flags', 'status', 'xstatus', 'pid', 'ppid', 'uid', 'gid', 'ruid',
+        'rgid', 'svuid', 'svgid', 'rfu')]
+    _fields_ += [('comm', ctypes.c_char * 16), ('name', ctypes.c_char * 32)]
+    _fields_ += [(name, ctypes.c_uint32) for name in ('nfiles', 'pgid', 'pjobc', 'e_tdev', 'e_tpgid', 'nice')]
+    _fields_ += [('sec', ctypes.c_uint64), ('usec', ctypes.c_uint64)]
+
+
+def admission_generation(home):
+    """Identidad del daemon que Hasito usa en resource-state@1."""
+    try:
+        raw = read_owned_file(home / 'Library/Application Support/pueue/pueue.pid', 32)
+        if not re.fullmatch(rb'[1-9][0-9]*\s*', raw) or int(raw) >= 2**31:
+            return None
+        pid = int(raw)
+        info = AdmissionBSDInfo()
+        library = ctypes.CDLL('/usr/lib/libproc.dylib', use_errno=True)
+        proc_pidinfo = library.proc_pidinfo
+        proc_pidinfo.argtypes = (ctypes.c_int, ctypes.c_int, ctypes.c_uint64, ctypes.c_void_p, ctypes.c_int)
+        proc_pidinfo.restype = ctypes.c_int
+        size = ctypes.sizeof(info)
+        if (proc_pidinfo(pid, 3, 0, ctypes.byref(info), size) != size or info.pid != pid
+                or info.status == 5 or info.comm != b'pueued'):
+            return None
+        boot = str(uuid.UUID(command(['/usr/sbin/sysctl', '-n', 'kern.bootsessionuuid'], timeout=.5).strip()))
+        return 'pueued-' + hashlib.sha256(json.dumps([boot, pid, [info.sec, info.usec]]).encode()).hexdigest()
+    except (OSError, ValueError, AttributeError, subprocess.SubprocessError):
+        return None
+
+
+def admission_label(task):
+    label = task.get('label')
+    if not isinstance(label, str):
+        return None
+    names = [part[4:] for part in label.split() if part.startswith('run=')]
+    return names[0] if len(names) == 1 and admission_token(names[0]) else None
+
+
+def match_admission(tasks, rows, generation):
+    managed = {}
+    for row in rows:
+        task_id = row['task_id']
+        task = tasks.get(str(task_id))
+        if (row['daemon_generation'] == generation and task and type(task['id']) is int
+                and task['id'] == task_id and task.get('created_at') == row['task_created_at']
+                and admission_label(task) == row['ref']
+                and (task_id not in managed or managed[task_id]['seq'] < row['seq'])):
+            managed[task_id] = row
+    return managed
 
 
 def mini_metadata(task, home=None):
@@ -99,10 +302,10 @@ def desk_metadata(task, home, cache):
                 activity=dict(last=None, kind=kind, ref=Path(match[1]).parent.name))
 
 
-def task_activity(task, mode, home, metadata, active=True):
+def task_activity(task, mode, home, metadata, active=True, managed=False):
     """Sólo stat de salidas conocidas; nunca se abre un log."""
     activity = dict(metadata.get('activity') or dict(last=None, kind=None, ref=None))
-    jale = re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
+    jale = None if managed else re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
     run = Path(task.get('path', '')).expanduser()
     logs = [home / ('Library/Application Support/pueue' if mode == 'macos' else '.local/share/pueue')
             / 'task_logs' / (str(task['id']) + '.log')]
@@ -111,7 +314,7 @@ def task_activity(task, mode, home, metadata, active=True):
         activity['ref'] = job.name
         activity['kind'] = activity['kind'] or 'chain'
         logs.append(job / 'log')
-    elif run.parent == home / 'remote-run/runs':
+    elif run.parent == home / 'remote-run/runs' and (not managed or REMOTE_RUN_REF.fullmatch(run.name)):
         activity['ref'] = run.name
         logs.append(run / 'log')
     if active:
@@ -131,7 +334,7 @@ def task_control(task, home, state):
     run = Path(task.get('path', '')).expanduser()
     if task.get('label') == BODEGA:
         reason = 'Las corridas de Bodega todavía no se cancelan desde el panel.'
-    elif run.parent == home / 'remote-run/runs' and re.fullmatch(r'[0-9]{8}-[0-9]{6}-[0-9a-f]{6}', run.name):
+    elif run.parent == home / 'remote-run/runs' and REMOTE_RUN_REF.fullmatch(run.name):
         launcher, ref = 'remote-run', run.name
     else:
         match = re.fullmatch(r'exec bash (/.*/job-[A-Za-z0-9]{8}/task\.sh)', task.get('command', ''))
@@ -756,8 +959,8 @@ def within_budget(fn, seconds):
 
 def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
             cgroup=Path('/sys/fs/cgroup'), pueue_unit='pueued.service'):
-    home, now = home or Path.home(), time.time() if now is None else now
-    output = dict(schema='rack-host@1', host=host, os=mode, taken=now, cpu=None, mem=None, disk=None, guard=None, groups=[], tasks=[], errors=[])
+    home, taken = home or Path.home(), time.time() if now is None else now
+    output = dict(schema='rack-host@1', host=host, os=mode, taken=taken, cpu=None, mem=None, disk=None, guard=None, groups=[], tasks=[], errors=[])
 
     def attempt(stage, fn):
         try:
@@ -776,8 +979,11 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
     if mode == 'linux' and output['cpu']:
         output['cpu']['psi_avg60'] = attempt('psi', lambda: float(re.search(r'^some .*avg60=([\d.]+)', (proc / 'pressure/cpu').read_text())[1]))
     output['disk'] = attempt('disk', lambda: disk('/System/Volumes/Data' if mode == 'macos' and Path('/System/Volumes/Data').exists() else '/'))
-    output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home, proc, now, output['errors']))
+    output['guard'] = attempt('guard', lambda: mini_guard() if mode == 'macos' else desk_guard(home, proc, taken, output['errors']))
+    admission = read_admission(home, time.time() if now is None else now) if (host, mode) == ('mini', 'macos') else []
+    generation = admission_generation(home) if admission else None
     data = attempt('pueue', lambda: json.loads(command([pueue or ('/opt/homebrew/bin/pueue' if mode == 'macos' else str(home / '.local/bin/pueue')), 'status', '--json'])))
+    same_generation = generation is not None and generation == admission_generation(home)
     if host == 'desk' and mode == 'linux':
         output['orphans'], output['orphans_total'] = attempt('orphans', lambda: within_budget(lambda: desk_orphans(data, proc, cgroup, pueue_unit), ORPHANS_BUDGET)) or ([], 0)
     interruptions = attempt('startup', lambda: desk_interruptions(home, host)) or {}
@@ -786,6 +992,7 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
     if data:
         def tasks():
             output['groups'] = [dict(name=name, status=g['status'], slots=g['parallel_tasks']) for name, g in data['groups'].items()]
+            managed = match_admission(data['tasks'], admission, generation) if same_generation else {}
             for task in data['tasks'].values():
                 state = task['status']
                 state, details = (state, {}) if isinstance(state, str) else next(iter(state.items()))
@@ -800,15 +1007,21 @@ def collect(mode, host, pueue=None, home=None, proc=Path('/proc'), now=None,
                 interruption = interruptions.get(str(task['id']), {})
                 attributed = (state == 'Done' and result == 'Killed' and interruption.get('created_at') == task.get('created_at')
                               and interruption.get('message') == 'Interrumpida al reiniciar Pueue; relanzar manualmente')
-                if state == 'Done' and (end is None or end < now - 86400) and not attributed:
+                if state == 'Done' and (end is None or end < taken - 86400) and not attributed:
                     continue
+                admitted = managed.get(task['id'])
                 jale = mode != 'macos' and re.fullmatch(r'exec bash (/.*/job-[^/\s]+/task\.sh)', task.get('command', ''))
-                metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
+                if admitted is not None:
+                    metadata = dict(name=admitted['ref'])
+                    row['admission'] = admitted
+                else:
+                    metadata = attempt('metadata', lambda: desk_metadata(task, home, cache) if jale else mini_metadata(task, home))
                 row.update(metadata or {})
                 if attributed:
                     row['interruption_reason'] = interruption['message']
                 row['control'] = task_control(task, home, state)
-                row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'))
+                row['activity'] = task_activity(task, mode, home, metadata or {}, state in ('Running', 'Paused'),
+                                                managed=admitted is not None)
                 if state == 'Running':
                     ref = row['activity']['ref']
                     references[row['id']] = ref if jale else 'remote-run/runs/' + Path(task.get('path', '')).name

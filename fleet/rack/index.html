@@ -84,6 +84,7 @@ h3{font-size:12px;font-weight:600;color:var(--ink2);margin:18px 0 6px}
 .fila .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:0}
 .fila .l2{grid-column:2/4;display:flex;gap:6px 14px;flex-wrap:wrap;font-size:12px;color:var(--ink2);min-width:0}
 .fila .l2 span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.fila .act{overflow-wrap:anywhere}
 .fila .d{font-size:12px;color:var(--ink2);white-space:nowrap;font-variant-numeric:tabular-nums}
 .fila .more,.restos .more{display:block;width:100%;font:inherit;font-size:12px;color:var(--ink2);background:var(--bg);border:0;border-top:1px solid var(--line);padding:6px;cursor:pointer}
 .slot.busy{position:relative}
@@ -244,14 +245,15 @@ function acceptOrder(key,action,data){
   }
   repaintActions();focusOrder(action.request.host,action.group,action.id);refresh();
 }
+const reorderRows = ol => [...ol.children].filter(li=>li.dataset.reorder!=='false');
 function finishDrag(cancel=false){
   const d=DRAG;if(!d) return;
   DRAG=null;
   document.removeEventListener('pointermove',d.move);document.removeEventListener('pointerup',d.up);
   document.removeEventListener('pointercancel',d.cancel);
-  const order=[...d.ol.children].map(li=>Number(li.dataset.id)),visualTop=d.row.getBoundingClientRect().top;
-  if(cancel) for(const li of d.initial) d.ol.appendChild(li);
-  for(const li of d.ol.children){li.classList.remove('drag');li.style.transform='';li.style.transition='';}
+  const order=reorderRows(d.ol).map(li=>Number(li.dataset.id)),visualTop=d.row.getBoundingClientRect().top;
+  if(cancel) for(const li of d.initial) d.ol.insertBefore(li,d.after);
+  for(const li of d.initial){li.classList.remove('drag');li.style.transform='';li.style.transition='';}
   if(d.row.hasPointerCapture?.(d.pointer)) d.row.releasePointerCapture(d.pointer);
   if(!cancel && d.moved && order.some((id,i)=>id!==d.initial[i].dataset.id*1)){
     // Keep the complete queue, including collapsed rows, in the same operation.
@@ -271,24 +273,25 @@ document.addEventListener('pointerdown',ev=>{
   if(ev.pointerType==='touch' && !ev.target.closest('.h')) return;
   const ol=row.parentElement,h=S.hosts.find(h=>h.id===ol.dataset.host),group=ol.dataset.group;
   const {info,enabled}=orderInfo(h,group);if(!enabled) return;
-  const initial=[...ol.children],from=initial.indexOf(row),startY=ev.clientY,startTop=row.getBoundingClientRect().top;
-  const d={row,ol,h,group,info,initial,from,moved:false,pointer:ev.pointerId};
+  const initial=reorderRows(ol),from=initial.indexOf(row),startY=ev.clientY,startTop=row.getBoundingClientRect().top;
+  const d={row,ol,h,group,info,initial,from,moved:false,pointer:ev.pointerId,after:initial.at(-1)?.nextElementSibling ?? null};
   d.move=e=>{
     if(e.pointerId!==d.pointer) return;
     if(!d.moved && Math.abs(e.clientY-startY)<4) return;
     d.moved=true;row.classList.add('drag');
-    const positions=new Map([...ol.children].filter(li=>li!==row).map(li=>[li,li.offsetTop]));
+    const rows=reorderRows(ol).filter(li=>li!==row);
+    const positions=new Map(rows.map(li=>[li,li.offsetTop]));
     // Remove the lifted transform while measuring its new natural position.
     row.style.transform='';
-    const next=[...ol.children].filter(li=>li!==row).find(li=>e.clientY<li.getBoundingClientRect().top+li.offsetHeight/2);
-    if(next!==row.nextElementSibling) ol.insertBefore(row,next||null);
+    const next=rows.find(li=>e.clientY<li.getBoundingClientRect().top+li.offsetHeight/2) ?? d.after;
+    if(next!==row.nextElementSibling) ol.insertBefore(row,next);
     const reduced=window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
     for(const [li,top] of positions){
       const dy=top-li.offsetTop;if(!dy || reduced) continue;
       li.animate?.([{transform:`translateY(${dy}px)`},{transform:'translateY(0)'}],{duration:160,easing:'ease-out'});
     }
     row.style.transform=`translateY(${startTop+e.clientY-startY-row.getBoundingClientRect().top}px)`;
-    [...ol.children].forEach((li,i)=>li.querySelector('.pos').textContent=li===row?`${from+1}→${i+1}`:i+1);
+    reorderRows(ol).forEach((li,i)=>li.querySelector('.pos').textContent=li===row?`${from+1}→${i+1}`:i+1);
   };
   d.up=e=>{if(e.pointerId===d.pointer) finishDrag();};
   d.cancel=e=>{if(e.pointerId===d.pointer) finishDrag(true);};
@@ -353,11 +356,14 @@ const active = (h,n) => h.tasks.some(t => t.group === n && t.state !== 'Done');
 const groups = h => Object.entries(h.groups).filter(([n]) => n !== 'default' || active(h,n) || h.tasks.some(t=>t.group===n && t.interruption_reason));
 const running = h => h.tasks.filter(t => t.state === 'Running' || t.state === 'Paused').sort((a,b)=>a.start-b.start);
 const queued = h => h.tasks.filter(t => t.state === 'Queued').sort((a,b)=>b.priority-a.priority || a.id-b.id);
+const stashed = h => h.tasks.filter(t => t.state === 'Stashed' && t.admission).sort((a,b)=>a.admission.seq-b.admission.seq);
 const slotsTotal = h => Object.entries(h.groups).filter(([n]) => h.id==='mini' || n !== 'default' || active(h,n)).reduce((a,[,g])=>a+g.slots,0);
 
 function capacity(h){
   const z = zone(h), used = h.mem_total - h.mem_avail, memPct = used/h.mem_total;
   const run = running(h).length, tot = slotsTotal(h);
+  const inQueue = queued(h).length, inAdmission = stashed(h).length;
+  const waits = [inQueue && `${inQueue} en fila`, inAdmission && `${inAdmission} esperando admisión`].filter(Boolean).join(' · ');
   const loadPct = Math.min(z.per/3,1);
   return `<div class="cap">
     <div><div class="m-label"><span>CPU</span><span class="muted">${esc(h.cores ?? '—')} núcleos</span></div>
@@ -371,7 +377,7 @@ function capacity(h){
     <div><div class="m-label"><span>Lugares</span><span class="muted">${tot} en total${h.control?.cap ? ' · tope '+h.control.cap : ''}</span></div>
       <div class="m-val">${run} <span class="muted" style="font-size:12px;font-weight:400">ocupados</span></div>
       <div class="meter"><i style="width:${tot?run/tot*100:0}%;background:var(--accent)"></i></div>
-      <div class="m-note ink2">${queued(h).length ? queued(h).length + ' en fila' : 'Fila vacía'}</div></div>
+      <div class="m-note ink2">${waits || 'Fila vacía'}</div></div>
   </div>`;
 }
 const fmtDur = s => s < 5400 ? `${Math.max(1,Math.round(s/60))} min` : `${(s/3600).toFixed(1)} h`;
@@ -381,7 +387,8 @@ const span = e => { const lo = fmtDur(e.low), hi = fmtDur(e.high), [n, u] = lo.s
 // La barra sólo sale con base: 5 corridas o más y un rango que no pase del triple de la mediana.
 const known = t => t.est && t.est.n >= 5 && t.est.high <= 3 * t.est.typical;
 function progress(t){
-  const el = Math.max(0, NOW - (t.start ?? t.enqueued ?? NOW)), e = t.est;
+  if (t.admission && t.admission.payload_started_at == null) return {html:'', time:''};
+  const el = Math.max(0, NOW - (t.admission?.payload_started_at ?? t.start ?? t.enqueued ?? NOW)), e = t.est;
   if (!known(t)) return {html:'', time: e ? `${fmtMin(el)} · suele tardar ${span(e)}` : fmtMin(el)};
   const over = el > e.high;
   return {html:`<div class="bar ${over?'over':''}"><i style="width:${Math.min(el/Math.max(1,e.high),1)*100}%"></i></div>`,
@@ -389,7 +396,23 @@ function progress(t){
 }
 const OPEN = {};
 const IDLE = 15*60;
+const BLOCKER_LABEL = {holder:'titular',predecessor:'anterior en fila',legacy:'legado',unknown:'bloqueante desconocido'};
+function admissionText(t){
+  const a = t.admission;
+  if (!a || a.payload_started_at != null) return '';
+  // A Queued task already holds its resources; a waiting phase there is a projection read before the grant.
+  if (a.phase === 'waiting' && a.blockers.length && t.state === 'Stashed'){
+    const shown = a.blockers.slice(0,2).map(b=>`${b.resource} (${BLOCKER_LABEL[b.kind]}${b.task_id == null ? '' : ' #'+b.task_id})`);
+    if (a.blockers.length > shown.length) shown.push(`${a.blockers.length - shown.length} más`);
+    return 'Esperando recurso · ' + shown.join(' · ');
+  }
+  if (a.phase === 'waiting' || a.phase === 'reserved') return 'Esperando lugar en ' + t.group;
+  if (a.phase === 'unknown') return 'Admisión sin confirmar';
+  if (a.phase === 'claimed' || a.phase === 'running') return 'Preparando la carga';
+  return 'Terminando sin iniciar la carga';
+}
 function activity(t){
+  const text = admissionText(t); if (text) return `<div class="act">${esc(text)}</div>`;
   const a = t.activity; if (!a) return '';
   const quiet = a.last == null ? null : Math.max(0, NOW - a.last);
   if (a.kind === 'verify') return `<div class="act warn">${esc('Servidores de verificación arriba, esperando que los suelten' + (quiet == null ? '' : ' · sin salida hace ' + fmtMin(quiet)))}</div>`;
@@ -397,23 +420,29 @@ function activity(t){
   return '';
 }
 const dots = () => `<button type="button" class="dots" aria-label="${esc('Acciones')}" aria-expanded="false">${esc('⋯')}</button>`;
-function fila(h, n, w){
-  if (!w.length) return '';
+function fila(h, n, w, waiting){
+  if (!w.length && !waiting.length) return '';
   const pending=PENDING.get(slotKey(h)),current=h.control?.reorder_groups?.[n]?.expected;
   if(pending?.order && pending.group===n && pending.request.op==='reorder' && current?.generation===pending.request.expected.generation &&
       pending.request.expected.queue.every(row=>current.queue.some(r=>r.id===row.id && r.identity===row.identity))){
     const positions=new Map(pending.request.change.order.map((id,i)=>[id,i])),old=new Map(w.map((t,i)=>[t.id,i]));
     w=[...w].sort((a,b)=>(positions.get(a.id) ?? positions.size+old.get(a.id))-(positions.get(b.id) ?? positions.size+old.get(b.id)));
   }
-  const key = h.id+'/'+n, shown = OPEN[key] ? w : w.slice(0, 8);
+  const rows = [...w,...waiting], key = h.id+'/'+n, shown = OPEN[key] ? rows : rows.slice(0, 8);
   const order=orderInfo(h,n);
   const message=PENDING.get(slotKey(h))?.order || order.info?.owner || h.groups[n]?.status==='Paused' || h.control?.capabilities?.reason_reorder ? order.reason : '';
-  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${w.length}${message?` <span class="order-state" role="status" data-order-host="${esc(h.id)}" data-order-group="${esc(n)}"></span>`:''}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>`<li class="${order.info?'reorder-row':''} ${pendingClass(h,t)} ${ORDER_HIGHLIGHT.has(JSON.stringify([h.id,n,t.id]))?'order-done':''}" data-id="${esc(t.id)}" tabindex="0" data-reorder="${order.enabled}" aria-disabled="${!order.enabled}" title="${esc(order.reason || 'Arrastra o usa Alt+↑/↓ para reordenar')}" aria-busy="${PENDING.has(actionKey(h,t)) || !!PENDING.get(slotKey(h))?.order}">
-    ${order.info?'<span class="h" aria-hidden="true">⠿</span>':''}<span class="pos">${(()=>{const mark=ORDER_HIGHLIGHT.get(JSON.stringify([h.id,n,t.id]));return Number.isInteger(mark?.from)&&Number.isInteger(mark?.to)?`${mark.from}→${mark.to}`:i+1;})()}</span>
+  return `<div class="lane"><div></div><div class="fila"><h4>Fila · ${rows.length}${message?` <span class="order-state" role="status" data-order-host="${esc(h.id)}" data-order-group="${esc(n)}"></span>`:''}</h4><ol data-host="${esc(h.id)}" data-group="${esc(n)}">${shown.map((t,i)=>{
+    const inPueue = t.state === 'Queued', reorder = inPueue && order.enabled, hasHandle = inPueue && order.info;
+    const mark = ORDER_HIGHLIGHT.get(JSON.stringify([h.id,n,t.id]));
+    const status = admissionText(t);
+    let position = '';
+    if (inPueue) position = Number.isInteger(mark?.from)&&Number.isInteger(mark?.to)?`${mark.from}→${mark.to}`:i+1;
+    return `<li class="${hasHandle?'reorder-row':''} ${pendingClass(h,t)} ${mark?'order-done':''}" data-id="${esc(t.id)}" tabindex="0" data-reorder="${reorder}"${inPueue ? ` aria-disabled="${!reorder}" title="${esc(order.reason || 'Arrastra o usa Alt+↑/↓ para reordenar')}"` : ''} aria-busy="${PENDING.has(actionKey(h,t)) || !!PENDING.get(slotKey(h))?.order}">
+    ${hasHandle?'<span class="h" aria-hidden="true">⠿</span>':''}<span class="pos">${position}</span>
     <div class="l1"><span class="tk">${esc(t.ticket||'Sin ticket')}</span><span class="t" title="${esc(what(t))}">${esc(what(t))}</span></div>
     <span class="d">${known(t) ? '~'+esc(fmtDur(t.est.typical)) : ''}${dots()}</span>
-    <div class="l2">${pendingText(h,t)}<span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span></div>
-  </li>`).join('')}</ol>${w.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${w.length-shown.length} más</button>`:''}</div></div>`;
+    <div class="l2">${pendingText(h,t)}${!t.admission ? `<span>${esc(proj(t))}</span><span>${esc(objective(t))}</span>` : ''}${t.branch?`<span class="mono">${esc(t.branch)}</span>`:''}${status ? `<div class="act">${esc(status)}</div>` : `<span>en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}</span>`}</div>
+  </li>`;}).join('')}</ol>${rows.length>shown.length?`<button class="more" data-open="${esc(key)}">Ver ${rows.length-shown.length} más</button>`:''}</div></div>`;
 }
 
 function interrupted(h,n){
@@ -692,13 +721,15 @@ function heldCell(h,n,g,free){
 
 function view(){
     return `<div class="stack">${S.hosts.map(h=>{
+      const queue = queued(h), waiting = stashed(h);
       const lanes = groups(h).map(([n,g])=>{
-        const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queued(h).filter(t=>t.group===n);
+        const r = h.tasks.filter(t=>t.group===n && ['Running','Paused'].includes(t.state)), w = queue.filter(t=>t.group===n);
         const held=g.status==='Paused' && r.length<g.slots;
         const cells = Array.from({length:Math.max(g.slots,r.length)},(_,i)=>{ const t=r[i]; if(!t) return held ? (i===r.length ? heldCell(h,n,g,g.slots-r.length) : '') : `<div class="slot empty">Libre</div>`;
-          const p=progress(t); return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}<div class="r-time">${t.state==='Paused' ? 'Pausada · ' : ''}${p.time}</div>${activity(t)}${pendingText(h,t)}</div>`;}).join('');
+          const p=progress(t), timing=[t.state==='Paused' ? 'Pausada' : '',p.time].filter(Boolean).join(' · ');
+          return `<div class="slot busy ${pendingClass(h,t)}" aria-busy="${PENDING.has(actionKey(h,t))}" data-host="${esc(h.id)}" data-id="${esc(t.id)}"><div class="r-top">${dots()}<span class="r-ticket">${esc(t.ticket||'—')}</span><span class="r-title" title="${esc(what(t))}">${esc(what(t))}</span></div><div class="r-sub" style="margin:0"><span>${esc(proj(t))}</span><span>${esc(objective(t))}</span></div>${p.html}${timing ? `<div class="r-time">${timing}</div>` : ''}${activity(t)}${pendingText(h,t)}</div>`;}).join('');
         return `<div class="lane"><div class="g">${esc(n)}${slotControls(h,n,g,r.length)}</div><div class="slots" style="grid-template-columns:repeat(${Math.min(g.slots,5)},minmax(0,1fr))">${cells}</div></div>
-          ${fila(h,n,w)}${interrupted(h,n)}`;
+          ${fila(h,n,w,waiting.filter(t=>t.group===n))}${interrupted(h,n)}`;
       }).join('');
       return `<section class="host"><div class="host-heading"><div><h2>${esc(h.name)}</h2>${hostState(h)}</div>${modeControls(h)}</div>${capacity(h)}${h.id==='desk' ? '' : hostControlState(h)}${orphanSlot(h)}<div class="lanes">${lanes}</div>${resourceTable(h)}</section>`;}).join('')}</div>`;
 }
@@ -779,7 +810,8 @@ function reference({h,t}){
   const a = t.activity, parts = [`rack ${h.id}:${t.id}`, t.group, t.ticket || 'sin ticket', proj(t), objective(t)];
   if (t.branch) parts.push(t.branch);
   if (a?.ref) parts.push(a.ref);
-  parts.push(t.state === 'Queued' ? `en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}` : `corriendo ${fmtMin(Math.max(0,NOW-(t.start ?? NOW)))}` + (a?.last != null ? `, última salida hace ${fmtMin(Math.max(0,NOW-a.last))}` : ''));
+  const wait = t.admission && admissionText(t);
+  parts.push(wait || (t.state === 'Queued' ? `en fila hace ${fmtMin(Math.max(0,NOW-(t.enqueued ?? NOW)))}` : `corriendo ${fmtMin(Math.max(0,NOW-(t.admission?.payload_started_at ?? t.start ?? NOW)))}` + (a?.last != null ? `, última salida hace ${fmtMin(Math.max(0,NOW-a.last))}` : '')));
   return parts.join(' · ');
 }
 function closeMenu(focus=false){
