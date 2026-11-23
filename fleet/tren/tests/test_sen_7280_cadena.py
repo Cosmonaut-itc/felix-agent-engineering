@@ -51,6 +51,10 @@ class EncadenarTests(unittest.TestCase):
         ticks, _ = cadena(["a", None, "b"])
         self.assertEqual(len(ticks), 1)
 
+    def test_el_primer_tick_que_crea_el_ledger_no_encadena(self):
+        ticks, _ = cadena([None, "a", "a"])
+        self.assertEqual(len(ticks), 1)
+
     def test_no_sigue_si_el_programa_cambio_o_falta_cuota(self):
         ticks, _ = cadena(itertools.count(), seguir=lambda: False)
         self.assertEqual(len(ticks), 1)

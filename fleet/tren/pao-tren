@@ -258,7 +258,8 @@ def encadenar(un_tick, huella, seguir, tope=ENCADENADOS):
     """Repite el tick mientras el anterior haya hecho avanzar el carril.
 
     Un efecto que falla, una espera o un resultado que la pausa retiene dejan
-    la huella igual y cortan: el siguiente tick lo lanza launchd.
+    la huella igual y cortan: el siguiente tick lo lanza launchd. Sin huella
+    antes del tick (ledger recién creado o ilegible) no hay con qué comparar.
     """
     antes = huella()
     for restantes in range(tope - 1, -1, -1):
@@ -267,7 +268,7 @@ def encadenar(un_tick, huella, seguir, tope=ENCADENADOS):
         if codigo != 0 or not restantes:
             return
         despues = huella()
-        if despues is None or despues == antes or not seguir():
+        if antes is None or despues is None or despues == antes or not seguir():
             return
         antes = despues
 
