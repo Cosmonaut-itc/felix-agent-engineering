@@ -193,8 +193,9 @@ Windows queda fuera por flock POSIX.
 El tick activo repite el tick en el mismo proceso mientras el anterior haya
 hecho avanzar el carril, hasta ocho veces. Avanzar es que cambie la pausa, la
 fase de algún tren o el estado de algún efecto del outbox. Un efecto que
-falla, una espera o un resultado que la pausa retiene no cuentan, y el
-siguiente tick lo lanza launchd. Cada tick de la cadena toma y suelta el
+falla cuenta como pendiente, así que la cadena no lo reintenta por sí solo.
+Tampoco cuentan una espera ni un resultado que la pausa retiene. En esos
+casos el siguiente tick lo lanza launchd. Cada tick de la cadena toma y suelta el
 candado y observa de nuevo. `stdout.log` recibe una línea JSON por tick, y el
 proceso sale con el código del último. `tick --seco` corre un solo tick.
 

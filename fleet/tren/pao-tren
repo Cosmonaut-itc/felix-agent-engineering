@@ -221,7 +221,9 @@ def huella(repo):
                 estado = ledger.estado(repo, operativo=True)
                 return (estado.pausa is None,
                         tuple((t.id, type(t.fase).__name__) for t in estado.trenes),
-                        tuple((f["clave"], f["estado"]) for f in ledger.outbox(repo)))
+                        # Un efecto fallido sigue pendiente: su reintento no es avance.
+                        tuple((f["clave"], "pendiente" if f["estado"] == "fallido" else f["estado"])
+                              for f in ledger.outbox(repo)))
         finally:
             ledger.close()
     except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
@@ -285,7 +287,8 @@ def main():
         for modulo in PEREZOSOS:
             importlib.import_module(modulo)
         pasos = encadenar(lambda: intento(args), lambda: huella(args.repo),
-                          lambda: inicial is not None and programa() == inicial and cuota())
+                          # La cuota tarda; el programa se compara justo antes del siguiente tick.
+                          lambda: inicial is not None and cuota() and programa() == inicial)
     else:
         pasos = [intento(args)]
     codigo = 2

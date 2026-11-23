@@ -10,6 +10,7 @@ import unittest
 from unittest.mock import patch
 
 import test_activo as activo
+import test_feedback as feedback
 from dominio import EsperandoCI, ResultadoCI, Terminal
 
 cli = activo.cli
@@ -110,14 +111,14 @@ class ProgramaTests(unittest.TestCase):
 
 
 class MainTests(unittest.TestCase):
-    def correr(self, argv, huellas, intentos, seguir=True):
+    def correr(self, argv, huellas, intentos, seguir=True, programa=lambda: "igual", cuota=None):
         huellas, intentos = iter(huellas), iter(intentos)
         salida = io.StringIO()
         with patch("sys.argv", ["pao-tren", *argv]), \
                 patch.object(cli, "intento", lambda args: next(intentos)), \
                 patch.object(cli, "huella", lambda repo: next(huellas)), \
-                patch.object(cli, "programa", lambda: "igual"), \
-                patch.object(cli, "cuota", lambda: seguir), \
+                patch.object(cli, "programa", programa), \
+                patch.object(cli, "cuota", cuota or (lambda: seguir)), \
                 contextlib.redirect_stdout(salida):
             codigo = cli.main()
         return codigo, [json.loads(l) for l in salida.getvalue().splitlines()]
@@ -134,6 +135,18 @@ class MainTests(unittest.TestCase):
     def test_sin_cuota_no_encadena(self):
         _, lineas = self.correr(["tick", "--repo", REPO], itertools.count(),
                                 [(0, {"n": 1}), (0, {"n": 2})], seguir=False)
+        self.assertEqual(lineas, [{"n": 1}])
+
+    def test_una_instalacion_durante_la_consulta_de_cuota_corta(self):
+        instalado = ["igual"]
+
+        def cuota():
+            instalado[0] = "nuevo"
+            return True
+
+        _, lineas = self.correr(["tick", "--repo", REPO], itertools.count(),
+                                [(0, {"n": 1}), (0, {"n": 2})],
+                                programa=lambda: instalado[0], cuota=cuota)
         self.assertEqual(lineas, [{"n": 1}])
 
     def test_tick_seco_y_los_demas_comandos_no_encadenan(self):
@@ -192,6 +205,13 @@ class CadenaActivaTests(unittest.TestCase):
         self.assertIsInstance(self.estado().trenes[0].fase, EsperandoCI)
         self.contexto.tick(next(reloj) + 600)
         self.assertEqual(cli.huella(REPO), antes)
+
+    def test_un_efecto_que_falla_no_encadena_su_reintento(self):
+        feedback.FeedbackTests.sembrar_devoluciones(self, pausa=True)
+        (self.raiz / "fallo-post").write_text("/issues/1/comments")
+        self.assertEqual(len(self.cadena(itertools.count(100))), 1)
+        intentos = [p for p in self.lineas("posts.log") if "/issues/1/comments" in p]
+        self.assertEqual(len(intentos), 1)
 
     def test_ledger_ausente_no_tiene_huella(self):
         with patch.object(cli, "Ledger", side_effect=OSError("sin ledger")):
