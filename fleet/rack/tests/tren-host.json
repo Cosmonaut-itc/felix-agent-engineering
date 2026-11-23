@@ -1,0 +1,54 @@
+{
+  "schema": "tren-host@1",
+  "taken": 1795480000.0,
+  "repos": [
+    {
+      "repo": "Example/Train",
+      "modo": "activo",
+      "pausa": {"motivo": "infraestructura", "pr": null, "desde": 1795474300.0},
+      "lote": {
+        "id": "7c1ea9d0e2b4",
+        "fase": "atribucion",
+        "fase_desde": 1795479160.0,
+        "cierre": 1795476880.0,
+        "miembros": [{"pr": 912, "head": "1a2b3c4"}],
+        "suite": [
+          {
+            "modo": "contract", "intento": 0, "estado": "corriendo",
+            "inicio": 1795477720.0, "fin": null, "resultado": null, "fallas": null,
+            "lugar": {"tipo": "desk", "vm": null, "pueue_id": 7812, "ref": "job-abcDEF12"}
+          },
+          {
+            "modo": "e2e", "intento": 1, "estado": "corriendo",
+            "inicio": 1795478440.0, "fin": null, "resultado": null, "fallas": null,
+            "lugar": {"tipo": "mini", "vm": null, "pueue_id": 431, "ref": null}
+          }
+        ],
+        "ensayo": {
+          "modo": "contract", "unidad": "apps/api/prueba.contract.test.ts", "prs": [912],
+          "hechos": 2, "inicio": 1795479820.0,
+          "lugar": {"tipo": "boat", "vm": "vm-prueba", "pueue_id": null, "ref": null}
+        }
+      },
+      "espera": [
+        {"pr": 919, "head": "9f8e7d6", "etapa": "retenido", "motivo": "ci-no-verde", "desde": 1795479640.0}
+      ],
+      "recientes": [
+        {
+          "id": "3f0b12aa90c1", "resultado": "PARTIDO", "cierre": 1795471540.0, "fin": 1795475800.0,
+          "miembros": [
+            {
+              "pr": 905, "resultado": "DEVUELTO",
+              "devolucion": {
+                "check": "contract", "unidad": "apps/api/prueba.contract.test.ts",
+                "comentario_url": "https://github.com/Example/Train/pull/905#issuecomment-123"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {"repo": "Example/Shadow", "modo": "sombra", "pausa": null, "lote": null, "espera": [], "recientes": []}
+  ],
+  "errors": [{"stage": "boat", "message": "Lectura fallida: OSError"}]
+}

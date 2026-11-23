@@ -16,6 +16,22 @@ por lanzamiento ambiguo conservan «Retenido al reiniciar · <motivo>» y esa
 instrucción; la espera automática de cuotas/Docker conserva su reanudación
 automática.
 
+## Canal del tren
+
+El receptor `recibir_tren.py` acepta por stdin un documento `tren-host@1` de
+hasta 256 KiB. El servidor y el receptor leen el mismo `rack.json`, junto a
+los scripts por omisión, o el archivo que se indique con `--config`.
+Para habilitar el canal, configura la lista de repositorios, por ejemplo
+`{"tren":{"repos":["OWNER/NAME"]}}`. Ambos usan el mismo directorio de estado
+y aceptan `--state-dir`.
+
+Una recepción válida marca la hora de llegada y sustituye `tren.json` de
+forma atómica. El receptor devuelve 0 al aceptar, 65 al rechazar el documento
+y 75 si falla la escritura. El rack relee y valida el archivo en cada ciclo.
+Publica `rack@1.tren` cuando hay repositorios configurados y existe el archivo.
+El dato es fresco durante 660 s desde la recepción. Los títulos y tickets del
+tren se consultan en GitHub y se guardan en `pulls.json`.
+
 ## Preparación e instalación
 
 Estos pasos son manuales, después de revisar y fusionar el cambio. No publicar
