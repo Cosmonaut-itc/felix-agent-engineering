@@ -121,6 +121,19 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
             codigo = subprocess.run(args.orden).returncode
             time.sleep(GRACIA_INSTALACION_S)
         return codigo, {"candado": "tomado", "codigo": codigo}
+    if args.comando != "tick":
+        return con_ledger(args, observador, ahora, git, adaptador, frontera, escritor)
+    # Instalar excluye a los ticks de todos los carriles, también en sombra.
+    with candado_programa(exclusivo=False) as libre:
+        if not libre:
+            return 0, {"omitido": "instalacion-en-curso"}
+        # Entre dos ticks de una cadena, la espera del CI corre sin este candado.
+        if vigente is not None and not vigente():
+            return 0, {"omitido": "programa-cambiado"}
+        return con_ledger(args, observador, ahora, git, adaptador, frontera, escritor)
+
+
+def con_ledger(args, observador, ahora, git, adaptador, frontera, escritor):
     ledger = Ledger()
     ahora = time.time() if ahora is None else ahora
     try:
@@ -193,51 +206,44 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                     resultado["juicio"] = expediente(ledger, args.repo)
                 return 0, resultado
         with ledger.candado(args.repo):
-            # Releer tras esperar el flock: pudieron retirar la inscripción.
-            if not args.seco and activacion(args.repo) != "activo":
-                return 2, {"error": "tick activo requiere inscripción activa"}
-            # Instalar excluye a los ticks de todos los carriles, también en sombra.
-            with candado_programa(exclusivo=False, directorio=ledger.directorio) as libre:
-                if not libre:
-                    return 0, {"omitido": "instalacion-en-curso"}
-                # Tras esperar el candado del carril, el programa pudo cambiar.
-                if vigente is not None and not vigente():
-                    return 0, {"omitido": "programa-cambiado"}
-                if not args.seco:
-                    from adaptadores import seleccionar
-                    from git_ops import GitTren, identidad_commits
-                    from operativo import tick
-                    if observador is None or git is None:
-                        ruta = args.config or ledger.directorio / "config.json"
-                        config = configuracion(ruta, args.repo)
-                        remoto = config.get("remoto")
-                        if not isinstance(remoto, str) or not remoto:
-                            raise ValueError("tick activo requiere remoto explícito")
-                        git = git if git is not None else GitTren(
-                            remoto, identidad=identidad_commits(config))
-                        # Admisión y armado comparten el bare del tren: el tick
-                        # siguiente ve el C aterrizado sin sincronizar config["git"].
-                        PARALELAS_TICK_ACTIVO = 4
-                        observador = observador or GitHubGit(config, activo=True, almacen=git,
-                                                            paralelas=PARALELAS_TICK_ACTIVO)
-                        if adaptador is None:
-                            adaptador = seleccionar(config, git)
-                    return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
-                                   escritor)
-                doble_camino = modo(args.repo) == "sombra"
-                estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
-                if observador is None:
+            if not args.seco:
+                # Releer tras esperar el flock: pudieron retirar la inscripción.
+                if activacion(args.repo) != "activo":
+                    return 2, {"error": "tick activo requiere inscripción activa"}
+                from adaptadores import seleccionar
+                from git_ops import GitTren, identidad_commits
+                from operativo import tick
+                if observador is None or git is None:
                     ruta = args.config or ledger.directorio / "config.json"
-                    observador = GitHubGit(configuracion(ruta, args.repo), sombra=doble_camino)
-                observacion = observador.observar(estado, ahora)
-                reductor = paso_sombra if doble_camino else paso
-                nuevo, efectos = reductor(estado, observacion)
-                # La simulación conserva sus eventos históricos: las señales de
-                # incorporación/aterrizaje sólo pertenecen al outbox operativo.
-                from feedback import STATUS_SOLO
-                efectos = tuple(e for e in efectos if e.tipo not in STATUS_SOLO)
-                plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
-                return 0, {"modo": "sombra", "plan": plan}
+                    config = configuracion(ruta, args.repo)
+                    remoto = config.get("remoto")
+                    if not isinstance(remoto, str) or not remoto:
+                        raise ValueError("tick activo requiere remoto explícito")
+                    git = git if git is not None else GitTren(
+                        remoto, identidad=identidad_commits(config))
+                    # Admisión y armado comparten el bare del tren: el tick
+                    # siguiente ve el C aterrizado sin sincronizar config["git"].
+                    PARALELAS_TICK_ACTIVO = 4
+                    observador = observador or GitHubGit(config, activo=True, almacen=git,
+                                                        paralelas=PARALELAS_TICK_ACTIVO)
+                    if adaptador is None:
+                        adaptador = seleccionar(config, git)
+                return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
+                               escritor)
+            doble_camino = modo(args.repo) == "sombra"
+            estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
+            if observador is None:
+                ruta = args.config or ledger.directorio / "config.json"
+                observador = GitHubGit(configuracion(ruta, args.repo), sombra=doble_camino)
+            observacion = observador.observar(estado, ahora)
+            reductor = paso_sombra if doble_camino else paso
+            nuevo, efectos = reductor(estado, observacion)
+            # La simulación conserva sus eventos históricos: las señales de
+            # incorporación/aterrizaje sólo pertenecen al outbox operativo.
+            from feedback import STATUS_SOLO
+            efectos = tuple(e for e in efectos if e.tipo not in STATUS_SOLO)
+            plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
+            return 0, {"modo": "sombra", "plan": plan}
     finally:
         ledger.close()
 
@@ -282,14 +288,6 @@ def programa():
                             if "tests" not in p.relative_to(raiz).parts))
     except OSError:
         return None
-
-
-def instalando():
-    """Verdadero si alguien instala ahora. No crea el directorio de estado."""
-    if not directorio_estado().is_dir():
-        return False
-    with candado_programa(exclusivo=False) as libre:
-        return not libre
 
 
 def cuota(ejecutar=subprocess.run):
@@ -376,14 +374,6 @@ def main():
     args = parser().parse_args()
     if args.comando == "tick":
         inicial = programa()
-        # Instalar durante un tick no debe mezclar versiones a medio paso.
-        for modulo in PEREZOSOS:
-            importlib.import_module(modulo)
-        # Un proceso que arranca a media instalación pudo cargar dos versiones.
-        # Sin inscripción activa, el tick activo responde su error de siempre.
-        if (args.seco or activacion(args.repo) == "activo") and instalando():
-            print(json.dumps({"omitido": "instalacion-en-curso"}), flush=True)
-            return 0
 
         def vigente():
             return inicial is not None and programa() == inicial
@@ -393,6 +383,9 @@ def main():
             return intento(args, vigente=vigente if inicial is not None else None)
 
     if args.comando == "tick" and not args.seco:
+        # Instalar durante un tick no debe mezclar versiones a medio paso.
+        for modulo in PEREZOSOS:
+            importlib.import_module(modulo)
         limite = ARRANQUE + PLAZO_ESPERA_CI_S
 
         def seguir():

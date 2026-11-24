@@ -24,12 +24,13 @@ def codificar(valor):
 
 
 @contextmanager
-def candado_programa(exclusivo, directorio=None):
-    """Candado entre instalar (exclusivo) y los ticks activos (compartido).
+def candado_programa(exclusivo):
+    """Candado entre instalar (exclusivo) y los ticks (compartido).
 
     Nunca espera: rinde falso, sin tomar nada, si el candado está ocupado.
     """
-    raiz = Path(directorio) if directorio is not None else directorio_estado()
+    raiz = directorio_estado()
+    raiz.mkdir(parents=True, exist_ok=True, mode=0o700)
     # Append/open preserves the inode; never retire lock files.
     with (raiz / "programa.lock").open("a") as handle:
         try:

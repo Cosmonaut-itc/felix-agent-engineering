@@ -121,7 +121,6 @@ class MainTests(unittest.TestCase):
         salida = io.StringIO()
         with patch("sys.argv", ["pao-tren", *argv]), \
                 patch.object(cli, "intento", lambda args, vigente=None: next(intentos)), \
-                patch.object(cli, "instalando", lambda: False), \
                 patch.object(cli, "huella", lambda repo: next(huellas)), \
                 patch.object(cli, "programa", programa), \
                 patch.object(cli, "cuota", cuota or (lambda: seguir)), \

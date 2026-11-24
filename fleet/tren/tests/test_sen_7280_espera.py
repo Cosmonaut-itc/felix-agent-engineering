@@ -273,7 +273,6 @@ class EsperaSecaTests(unittest.TestCase):
         salida = io.StringIO()
         with patch("sys.argv", ["pao-tren", "tick", "--repo", REPO, "--seco"]), \
                 patch.object(cli, "intento", return_value=(0, {})), \
-                patch.object(cli, "instalando", lambda: False), \
                 patch.object(cli, "esperar_ci", side_effect=AssertionError("espera en seco")), \
                 redirect_stdout(salida):
             self.assertEqual(cli.main(), 0)

@@ -245,7 +245,7 @@ del ledger o de la configuración, o si ya no cabe otro intervalo.
 Un CI verde o rojo da paso a otro tick si la cuota y el programa todavía
 lo permiten. Si ese tick deja la huella igual, la cadena termina.
 
-Cada tick de la cadena toma y suelta el candado y observa de nuevo.
+Cada tick de la cadena toma y suelta sus candados y observa de nuevo.
 `stdout.log` recibe una línea JSON por tick y el proceso sale con el código
 del último. `tick --seco` corre un solo tick.
 
@@ -282,22 +282,22 @@ retenida, la suite no termina sola y la instalación pide antes resolver esa
 cola.
 
 Un proceso `pao-tren tick` puede seguir vivo, sin ningún candado, mientras
-espera el CI. Por eso la ausencia de procesos no indica cuándo instalar. Tres
+espera el CI. Por eso la ausencia de procesos no indica cuándo instalar. Dos
 comprobaciones impiden que un tick, activo o `--seco`, corra con un programa
-distinto del que cargó. En las tres el tick sale con 0 sin observar ni
-escribir, y el siguiente disparo de launchd corre con el programa nuevo:
+distinto del que cargó. En las dos el tick sale con 0 sin abrir el ledger ni
+observar, y el siguiente disparo de launchd corre con el programa nuevo:
 
-- Al arrancar, con sus módulos ya cargados, el proceso prueba el candado del
-  programa. Si alguien instala, escribe `{"omitido": "instalacion-en-curso"}`
-  y termina. Un proceso que arranca a media instalación pudo cargar módulos de
-  dos versiones; los 5 s de más cubren su arranque. Un tick activo sin
-  inscripción activa no hace esta prueba: responde su error y sale con 2.
-- Cada tick toma el candado compartido después del candado del carril. Si
-  alguien instala en ese momento, devuelve la misma línea.
-- Ya con los dos candados, el tick compara el programa instalado con el del
+- Cada tick toma el candado compartido antes de abrir el ledger y de esperar
+  el candado del carril. Si alguien instala, devuelve
+  `{"omitido": "instalacion-en-curso"}`. Un proceso que arranca a media
+  instalación pudo cargar módulos de dos versiones; los 5 s de más cubren su
+  arranque, y su primer tick encuentra el candado tomado.
+- Ya con el candado, el tick compara el programa instalado con el del
   arranque. Si cambió, devuelve `{"omitido": "programa-cambiado"}`. Es el caso
-  de un proceso que esperaba el CI, o el candado del carril, durante la
-  instalación.
+  de un proceso que esperaba el CI durante la instalación.
+
+Un tick activo sin inscripción activa responde su error y sale con 2 antes de
+probar el candado.
 
 Una línea `omitido` en `stdout.log` no es un tick.
 
@@ -310,6 +310,9 @@ Límites conocidos:
   cubierto.
 - Si `pao-tren candado` muere por una señal, su comando hijo sigue sin el
   candado.
+- Un proceso que arranca a media instalación puede fallar al importar un
+  módulo y salir con 1 antes de llegar al candado. No abre el ledger, y el
+  siguiente disparo de launchd corre normal.
 
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
