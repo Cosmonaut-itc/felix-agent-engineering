@@ -582,7 +582,9 @@ function trenPlace(place){
 }
 function trenRun(run, trial=false){
   const cell=trenNode('div','run'), top=trenNode('div','r-top');
-  const elapsed=run.inicio==null ? null : Math.max(0,(run.fin ?? NOW)-run.inicio);
+  // Unida a una tarea del rack, cuenta desde el mismo inicio que su tarjeta de host.
+  const joined=!!run.rack && run.estado!=='terminada', begun=joined ? run.rack_inicio : run.inicio;
+  const elapsed=begun==null ? null : Math.max(0,(run.fin ?? NOW)-begun);
   const estimate=run.est, based=!!estimate && known({est:estimate}), running=trial || run.estado==='corriendo';
   const time=trenNode('span','r-time');
   if(run.estado==='terminada'){
@@ -592,7 +594,7 @@ function trenRun(run, trial=false){
     if(elapsed!=null) time.append(trenNode('span','',' · '+trenDur(elapsed)));
   }else{
     const status=run.estado==='pendiente-75' ? 'Sin terminar · salida 75' :
-      run.estado==='en-fila' ? 'En fila' : '';
+      run.estado==='en-fila' || joined && begun==null ? 'En fila' : '';
     let duration=elapsed==null ? '' : trenDur(elapsed);
     if(running && estimate){
       const over=elapsed!=null && elapsed>estimate.high;
@@ -669,7 +671,8 @@ function trenFinishedRow(batch, prFields){
 }
 function trenList(rows, draw, cls='', limit=rows.length, key){
   const frame=trenNode('div','fila '+cls), list=trenNode('ol');
-  const keyed=row=>{const node=draw(row); node.dataset.trenFocus=key+' '+(row.pr ?? row.id); return node;};
+  // Una reentrega deja el mismo PR dos veces en espera, con heads distintos.
+  const keyed=row=>{const node=draw(row); node.dataset.trenFocus=key+' '+(row.pr ?? row.id)+(row.head ? '@'+row.head : ''); return node;};
   const shown=OPEN[key] ? rows : rows.slice(0,limit);
   list.append(...shown.map(keyed));
   frame.append(list);

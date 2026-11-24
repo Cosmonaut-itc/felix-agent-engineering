@@ -83,8 +83,19 @@ def documents():
              miembros=[finished_member(912, 'ABSUELTO')])
     ]
 
+    # La suite esperó turno en Pueue después de que el lanzador escribiera iniciado.json.
+    queued = copy.deepcopy(running)
+    queued['repos'][0]['lote']['suite'][0]['inicio'] = NOW-1800
+
+    # Una reentrega con otro head deja la entrega anterior caducada en la misma lista.
+    resent = copy.deepcopy(red)
+    resent['repos'][0]['espera'] = [
+        dict(pr=1000+i, head='123abcd', etapa='admitido', desde=NOW-600, motivo=None) for i in range(7)
+    ] + [dict(pr=1100, head='aaaa111', etapa='caducado', desde=NOW-900, motivo='head-cambiado'),
+         dict(pr=1100, head='abcd123', etapa='admitido', desde=NOW-300, motivo=None)]
+
     return dict(rojo=red, verde=green, suite=running, pausa=paused, vacio=empty, etapas=errors,
-                extremo=worst, texto=hostile, absuelto=absolved)
+                extremo=worst, texto=hostile, absuelto=absolved, cola=queued, reentrega=resent)
 
 
 def finished_member(pr, result):
@@ -123,17 +134,20 @@ def scenarios():
         projection = {}
         for name in ('rojo', 'verde', 'suite', 'pausa', 'vacio', 'etapas', 'extremo', 'texto',
                      'error', 'datos-antiguos', 'historial-antiguo', 'sin-repos',
-                     'absuelto', 'disperso'):
-            source = {'historial-antiguo': 'extremo', 'disperso': 'suite'}.get(name, name)
+                     'absuelto', 'disperso', 'cola', 'turno', 'reentrega'):
+            source = {'historial-antiguo': 'extremo', 'disperso': 'suite', 'turno': 'suite'}.get(name, name)
             data = raw.get(source, raw['pausa'])
             validated = contract.tren.valid_tren(data, rack.tren_repos, NOW)
             rack.tren_good = None if name=='sin-repos' else (NOW, validated)
             rack.tren_error = 'No se pudo leer el tren' if name in ('error', 'sin-repos') else None
             now = NOW+19*60 if name in ('datos-antiguos', 'historial-antiguo') else NOW
             rack.pulls[REPO+'#912']['title'] = HOSTILE if name=='texto' else 'Recibos de nómina: redondeo de ISR'
-            host_view = hosts if name in ('suite', 'extremo') else [dict(hosts[0], estimates={}, snapshot=snap)]
+            host_view = hosts if name in ('suite', 'extremo', 'cola') else [dict(hosts[0], estimates={}, snapshot=snap)]
             if name == 'disperso':
                 host_view = [dict(hosts[0], estimates={'7812': scattered})]
+            if name == 'turno':
+                waiting = dict(running, state='Queued', start=None)
+                host_view = [dict(hosts[0], snapshot=dict(snap, tasks=[waiting]))]
             projection[name] = dict(now=now, tickets={}, hosts=host_view, tren=rack.tren_view(host_view, now))
 
     projection['sin-tren'] = dict(now=NOW, tickets={}, hosts=projection['sin-repos']['hosts'])
@@ -218,9 +232,25 @@ class TrenUITests(unittest.TestCase):
     def test_repaint_keeps_keyboard_focus_in_tren(self):
         waiting = json.dumps(['tren', REPO, 'espera'], separators=(',', ':'))
         revealed = self.view('extremo', focus='mas')['focus']
-        self.assertEqual(revealed, dict(before=waiting+' 1008', after=waiting+' 1008', connected=True, tag='LI'))
+        self.assertEqual(revealed, dict(before=waiting+' 1008@123abcd', after=waiting+' 1008@123abcd', connected=True, tag='LI', text=revealed['text']))
         link = self.view('rojo', focus='enlace')['focus']
-        self.assertEqual(link, dict(before='enlace '+COMMENT, after='enlace '+COMMENT, connected=True, tag='A'))
+        self.assertEqual(link, dict(text=link['text'], before='enlace '+COMMENT, after='enlace '+COMMENT, connected=True, tag='A'))
+
+    def test_repaint_keeps_focus_on_the_resent_head(self):
+        waiting = json.dumps(['tren', REPO, 'espera'], separators=(',', ':'))
+        revealed = self.view('reentrega', focus='mas')['focus']
+        self.assertEqual(revealed['after'], waiting+' 1100@abcd123')
+        self.assertTrue(revealed['connected'])
+        self.assertIn('Admitido', revealed['text'])
+        self.assertNotIn('Caducado', revealed['text'])
+
+    def test_joined_run_counts_from_the_host_start(self):
+        desk = nodes(self.section('cola'), cls='run')[0]
+        self.assertIn('7 min de ~13 min', desk['text'])
+        self.assertEqual([bar['cls'] for bar in nodes(desk, cls='bar')], ['bar'])
+        waiting = nodes(self.section('turno'), cls='run')[0]
+        self.assertIn('En fila · Suele tardar 11–15 min', waiting['text'])
+        self.assertEqual(nodes(waiting, cls='bar'), [])
 
     def test_running_progress_uses_joined_estimate_only(self):
         section = self.section('suite')

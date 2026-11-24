@@ -472,6 +472,9 @@ class Rack:
         if matches:
             rack = dict(host=host, id=task_id)
             run['rack'] = place['rack'] = rack
+            # El mismo inicio que la tarjeta de host: la carga admitida o el arranque en Pueue, no la entrega al lanzador.
+            admission = task.get('admission')
+            run['rack_inicio'] = admission.get('payload_started_at') if admission else task.get('start')
             if estimate is not None:
                 run['est'] = place['est'] = estimate
 

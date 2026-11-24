@@ -27,7 +27,8 @@ class Element {
     const parent = this.parentElement;
     parent.children.splice(parent.children.indexOf(this), 1);
   }
-  focus() { active = this; }
+  // Como en el navegador, un LI sólo recibe el foco con tabIndex.
+  focus() { if (this.tagName !== 'LI' || this.tabIndex !== undefined) active = this; }
   closest(selector) {
     if (selector !== '[data-tren-focus]') return null;
     for (let node = this; node instanceof Element; node = node.parentElement) {
@@ -105,7 +106,8 @@ if (input.focus) {
   else descendants(elements.app).find(node => node.tagName === 'A').focus();
   const before = active.dataset.trenFocus;
   vm.runInContext('paint()', context);
-  focus = {before, after: active?.dataset.trenFocus, connected: connected(active), tag: active?.tagName};
+  focus = {before, after: active?.dataset.trenFocus, connected: connected(active), tag: active?.tagName,
+           text: active?.textContent};
 }
 const children = elementChildren(elements.app);
 process.stdout.write(JSON.stringify({

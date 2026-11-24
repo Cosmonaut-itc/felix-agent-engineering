@@ -278,6 +278,19 @@ class TrenStateTests(unittest.TestCase):
         self.assertEqual(joined['lugar']['rack'], joined['rack'])
         self.assertEqual(joined['est'], self.rack.read()['hosts'][1]['estimates']['7812'])
         self.assertEqual(joined['est']['typical'], 50)
+        self.assertEqual(joined['rack_inicio'], NOW - 100)
+
+    def test_join_publishes_the_start_the_host_card_uses(self):
+        place = dict(tipo='mini', vm=None, pueue_id=431, ref='ref-cola')
+        queued = dict(start=None, activity=dict(ref='ref-cola'))
+        started = dict(queued, start=NOW - 90)
+        for row, expected in ((queued, None), (started, NOW - 90),
+                              (dict(started, admission=dict(payload_started_at=None)), None),
+                              (dict(started, admission=dict(payload_started_at=NOW - 30)), NOW - 30)):
+            with self.subTest(row=row):
+                run = dict(lugar=dict(place), inicio=NOW - 900, fin=None)
+                serve.Rack.join_tren_run(run, {('mini', 431): (row, None)})
+                self.assertEqual(run['rack_inicio'], expected)
 
     def test_joins_mini_without_ref_only_if_start_confirms_id(self):
         self.store()
