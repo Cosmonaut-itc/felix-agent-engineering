@@ -188,6 +188,30 @@ queda en `.bak-*`.
 CI prueba la suite en Ubuntu y macOS, también con `/usr/bin/python3` en macOS;
 Windows queda fuera por flock POSIX.
 
+### Ticks encadenados
+
+El tick activo repite el tick en el mismo proceso mientras el anterior haya
+hecho avanzar el carril, hasta ocho veces. Avanzar es que cambie la pausa, la
+fase de algún tren o el estado de algún efecto del outbox. Un efecto que
+falla cuenta como pendiente, así que la cadena no lo reintenta por sí solo.
+Tampoco cuentan una espera ni un resultado que la pausa retiene, ni el primer
+tick de un repositorio, que crea el ledger. En esos casos el siguiente tick lo
+lanza launchd. Cada tick de la cadena toma y suelta el
+candado y observa de nuevo. `stdout.log` recibe una línea JSON por tick, y el
+proceso sale con el código del último. `tick --seco` corre un solo tick.
+
+La cadena termina también en dos casos:
+
+- Cambió algún módulo instalado de `fleet/tren` desde que el proceso arrancó.
+  El tick en curso acaba con el código anterior y launchd lanza el siguiente
+  con el nuevo.
+- A la cuota de la API de GitHub le quedan menos de 1,000 llamadas, o no se
+  pudo leer.
+
+Instala sólo cuando no corra ningún `pao-tren tick` del repositorio. El
+proceso carga sus módulos al arrancar; un módulo perezoso que no esté en
+`PEREZOSOS` (en `pao-tren`) todavía puede cargarse a medio tick.
+
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
 `git_ops.GitTren(remoto, ruta=None)` usa un bare propio bajo `pao-tren/git/`
