@@ -135,7 +135,8 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
             raise EfectoFallido(resultado)
         aviso = None
         prelanzar = getattr(adaptador, "prelanzar", None)
-        if prelanzar is not None:
+        # Un reintento que ya lee rojo no adelanta trabajo que nadie consumirá.
+        if prelanzar is not None and observacion.ci_candidato != "rojo":
             try:
                 prelanzar(fase.candidato, tren.id)
             except (ResultadoInvalido, FalloSnapshot, OSError, subprocess.SubprocessError) as exc:

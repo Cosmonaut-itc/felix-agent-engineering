@@ -268,6 +268,17 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertTrue(any(f['efecto']['tipo'] == 'solicitar-ci' and f['estado'] == 'resultado'
                             for f in resultado['outbox']))
 
+    def test_reintento_de_solicitar_ci_con_ci_ya_rojo_no_prelanza(self):
+        self.hasta(Armado)
+        with patch.object(Jale, 'prelanzar', side_effect=KeyboardInterrupt), \
+             self.assertRaises(KeyboardInterrupt):
+            self.tick()
+        self.ci = 'rojo'
+        self.hasta(Terminal)
+        self.assertEqual(sum(':refs/heads/tren/' in p for p in self.lineas('pushes.log')), 1)
+        self.assertEqual(self.invocaciones(), [])
+        self.assertEqual(self.eventos('suite-prelanzada-sin-leer'), [])
+
     def assert_sin_leer_una_vez(self, tren):
         registro = Jale(self.lanzador).estado / clave('suite', tren.id) / 'contract' / '0'
         self.esperar_archivo(registro / 'codigo.json')

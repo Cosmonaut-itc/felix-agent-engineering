@@ -1376,6 +1376,9 @@ es durable y permite recuperar el resultado tras una caída del tick.
 Una salida 75 que se produzca antes del verde ocupa la primera reanudación
 cuando `iniciar-suite` la consume.
 
+Si `solicitar-ci` se reintenta tras la muerte de un tick, vuelve a prelanzar
+sobre el mismo registro, salvo que ese tick ya lea el CI en rojo.
+
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
 el error, y la solicitud de CI se completa. Si el CI sale rojo o un juicio
 aborta el tren antes de confirmar la corrida, `suite-prelanzada-sin-leer`
