@@ -1,6 +1,7 @@
 """Recibos jale-recibo@1; sin juicio contra base ni normalización de firmas."""
 import base64
 import binascii
+import fcntl
 import hashlib
 import json
 from pathlib import Path, PurePosixPath
@@ -42,7 +43,9 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     if not recibos:
         if codigo == 75:
             return None
-        return RechazoLanzador(str(Path(log).with_name('coordinador.log')), 'salida-sin-recibo')
+        detalle = ('corrida-interrumpida' if codigo == 125 and 'PUEUE_INTERRUPTED=1' in lineas
+                   else 'salida-sin-recibo')
+        return RechazoLanzador(str(Path(log).with_name('coordinador.log')), detalle)
     exigir(len(recibos) == 1, 'salida-sin-recibo')
     exigir(0 <= codigo <= 255, 'salida-no-utilizable')
     match = re.fullmatch(r'RECIBO jale-recibo@1 ([A-Za-z0-9+/]+={0,2})', recibos[0])
@@ -95,6 +98,15 @@ def leer_recibo(log, codigo, commit, modo, filtros):
     return r
 
 
+def leer_salida(registro, log, codigo, commit, modo, filtros):
+    resultado = leer_recibo(log, leer_json(codigo), commit, modo, filtros)
+    # Tras un reenganche la tarea original puede seguir viva: un 64 no autoriza otra clave.
+    if (isinstance(resultado, RechazoLanzador) and resultado.detalle == 'lanzador-rechazo' and
+            any(registro.glob('codigo-reenganche-*.json'))):
+        return RechazoLanzador(resultado.evidencia, 'salida-sin-recibo')
+    return resultado
+
+
 class Jale:
     firma_distingue_fallo = False
 
@@ -116,9 +128,10 @@ class Jale:
     def esperar(self, proceso):
         proceso.wait()
 
-    def correr(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None):
+    def correr(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None, reenganche=None):
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
         log = registro / 'corrida.log'
+        codigo = registro / 'codigo.json'
         argv = ['bash', self.lanzador, self.host, str(log), modo, commit, *filtros]
         solicitud = registro / 'solicitud.json'
         if solicitud.exists():
@@ -131,13 +144,33 @@ class Jale:
             return False
         else:
             if self.operador is not None and self.operador.checkout is not None:
-                argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id, registro / 'codigo.json')
+                argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id, codigo)
             guardado = argv
             guardar(solicitud, argv)
-        if (not permitir_lanzar and not (registro / 'iniciado.json').exists() and
-                not (registro / 'codigo.json').exists()):
-            return False
-        if not (registro / 'codigo.json').exists():
+        if reenganche and reenganche[1] == str(registro / 'coordinador.log'):
+            anterior = registro / ('codigo-reenganche-' + str(reenganche[0]) + '.json')
+            with (registro / 'candado').open('a') as candado:
+                fcntl.flock(candado, fcntl.LOCK_EX)
+                # El archivo conservado también marca el reenganche ya iniciado.
+                if codigo.exists() and not anterior.exists():
+                    resultado = leer_salida(registro, log, codigo, commit, modo, filtros)
+                    if (isinstance(resultado, RechazoLanzador) and
+                            resultado.detalle == 'salida-sin-recibo'):
+                        if not permitir_lanzar:
+                            return False
+                        codigo.rename(anterior)
+                if not codigo.exists():
+                    if not permitir_lanzar:
+                        return False
+                    # Cada reenganche, también el que recupera un tick muerto, lanza con
+                    # el snapshot vigente: uno viejo saldría 64 sin consultar la clave.
+                    if self.operador is not None and self.operador.checkout is not None:
+                        guardado[1] = self.operador.lanzador(
+                            self.lanzador_configurado, tren_id, codigo)
+                        guardar(solicitud, guardado)
+        if not codigo.exists():
+            if not permitir_lanzar and not (registro / 'iniciado.json').exists():
+                return False
             env = None
             if self.operador is not None:
                 self.operador.validar_guardado(guardado[1])
@@ -152,26 +185,27 @@ class Jale:
                 self.esperar(proceso)
             except (OSError, subprocess.SubprocessError):
                 raise ResultadoInvalido('lanzador-no-disponible') from None
-        exigir((registro / 'codigo.json').exists(), 'corrida-interrumpida')
-        return leer_recibo(log, leer_json(registro / 'codigo.json'), commit, modo, filtros)
+        exigir(codigo.exists(), 'corrida-interrumpida')
+        return leer_salida(registro, log, codigo, commit, modo, filtros)
 
-    def corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id):
+    def corrida(self, raiz, commit, modo, filtros, intento, permitir_lanzar, tren_id, reenganche=None):
         cache = raiz / 'completo.json'
         if cache.exists():
             guardado = leer_json(cache)
             exigir(type(guardado) is int and guardado >= 0, 'cache-invalida')
             return self.correr(raiz / str(guardado), commit, modo, filtros, False)
-        r = self.correr(raiz / str(intento), commit, modo, filtros, permitir_lanzar, tren_id)
+        r = self.correr(raiz / str(intento), commit, modo, filtros, permitir_lanzar, tren_id, reenganche)
         if isinstance(r, dict) and r['codigo'] != 75:
             guardar(cache, intento)
         return r
 
-    def suite(self, candidato, tren_id, intento=0, reanudar='', permitir_lanzar=True):
+    def suite(self, candidato, tren_id, intento=0, reanudar='', permitir_lanzar=True, *, reenganche=None):
         raiz = self.estado / clave('suite', tren_id)
         exigir(not reanudar or reanudar == str(raiz), 'reanudar-no-corresponde')
         recibos = []
         for modo in self.modos:
-            r = self.corrida(raiz / modo, candidato.C, modo, (), intento, permitir_lanzar, tren_id)
+            r = self.corrida(raiz / modo, candidato.C, modo, (), intento, permitir_lanzar,
+                             tren_id, reenganche)
             if r is False:
                 return None
             if isinstance(r, RechazoLanzador):
@@ -190,7 +224,7 @@ class Jale:
             sum(u['duracion_s'] for r in recibos for u in r['unidades']), restantes)
 
     def repetir(self, candidato, suite, solicitud, commit, tren_id, intento=0, reanudar='',
-                permitir_lanzar=True):
+                permitir_lanzar=True, *, reenganche=None):
         fallo = solicitud.fallo
         exigir(fallo.parte == 'jale' and fallo.check in self.modos, 'seleccion-no-corresponde')
         raiz = self.estado / clave('repetir', tren_id, solicitud.id)
@@ -210,7 +244,11 @@ class Jale:
         intentos = []
         for n in (1, 2):
             cache = base / str(n) / 'registro.json' if base is not None else None
-            if cache is not None and cache.exists():
+            cache_disponible = cache is not None and cache.exists()
+            raiz_corrida = raiz / str(n)
+            log = raiz_corrida / str(intento) / 'coordinador.log'
+            # Otro tren pudo completar el caché mientras éste estaba pausado.
+            if cache_disponible and not (reenganche and reenganche[1] == str(log)):
                 puntero = leer_json(cache)
                 exigir(isinstance(puntero, str) and re.fullmatch(
                     r'[0-9a-f]{64}/' + str(n) + r'/[0-9]+', puntero), 'cache-invalida')
@@ -218,11 +256,11 @@ class Jale:
                 r = self.correr(ultimo, commit, fallo.check, (fallo.unidad,), False)
                 exigir(isinstance(r, dict) and r['codigo'] != 75, 'cache-invalida')
             else:
-                r = self.corrida(raiz / str(n), commit, fallo.check, (fallo.unidad,), intento,
-                                 permitir_lanzar, tren_id)
+                r = self.corrida(raiz_corrida, commit, fallo.check, (fallo.unidad,), intento,
+                                 permitir_lanzar, tren_id, reenganche)
                 if isinstance(r, dict) and r['codigo'] != 75:
-                    ultimo = raiz / str(n) / str(leer_json(raiz / str(n) / 'completo.json'))
-                    if cache is not None:
+                    ultimo = raiz_corrida / str(leer_json(raiz_corrida / 'completo.json'))
+                    if cache is not None and not cache_disponible:
                         cache.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
                         guardar(cache, str(ultimo.relative_to(self.estado)))
             if r is False:

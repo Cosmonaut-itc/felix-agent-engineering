@@ -169,6 +169,41 @@ div.interrupted-summary{cursor:default}
 .fila li:focus-visible{outline:2px solid var(--accent);outline-offset:-2px}
 .fila .order-state{font-weight:400;overflow-wrap:anywhere}
 @media(prefers-reduced-motion:reduce){.fila li{transition:none!important;animation:none!important}}
+.tren{margin-bottom:16px}
+.tren .cols{grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr))}
+.tren .host{min-width:0;overflow-wrap:anywhere}
+.tren .state{color:var(--ink2)}
+.tren .dot{flex:none}
+.tren .state+.state{display:flex;margin-top:2px}
+.tren .stages,.tren .stage-names{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:4px}
+.tren .stages{margin:14px 0 4px}
+.tren .stages i{height:6px;border-radius:3px;background:var(--track)}
+.tren .stages .done,.tren .stages .now{background:var(--accent)}
+.tren .stages .now{opacity:.45}
+.tren .stages .now.bad{background:var(--crit);opacity:.8}
+.tren .stage-names{font-size:11px;color:var(--ink2)}
+.tren .stage-names .now{color:var(--ink);font-weight:600}
+.tren .suite{display:grid;gap:6px;margin-top:10px}
+.tren .run,.tren .run:first-of-type{border:1px solid var(--line);border-radius:8px;padding:8px 10px;background:var(--bg);display:grid;gap:4px}
+.tren .r-top{flex-wrap:wrap;font-size:13px}
+.tren .where{flex:1 1 90px;color:var(--ink2)}
+.tren .r-time{white-space:normal;margin-left:auto}
+.tren .unit{font-family:var(--mono);font-size:12px;color:var(--ink2);overflow-wrap:anywhere}
+.tren .ok{color:var(--good)}
+.tren .bad{color:var(--crit)}
+.tren .empty{font-size:13px;color:var(--ink2);margin:12px 0 0}
+.tren .notice{font-size:12px;color:var(--ink2);margin:0 0 6px}
+.tren .fila li{grid-template-columns:minmax(0,1fr) auto}
+.tren .fila .l2{grid-column:1/-1;gap:4px 14px}
+.tren .fila .t,.tren .fila .l2 span{white-space:normal}
+.tren .tk.none{font-weight:400;color:var(--ink2)}
+.tren .fila a{color:inherit}
+.tren .fila .crit::before{content:'';display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--crit);margin-right:6px;vertical-align:1px}
+@media(max-width:560px){
+  .tren .stage-names{font-size:10px}
+  .tren .finished li{grid-template-columns:minmax(0,1fr)}
+  .tren .finished .d{justify-content:flex-start}
+}
 </style></head><body><header><h1>Rack de pruebas</h1><span class="when" id="when"></span><button type="button" class="refresh" id="refresh">Actualizar</button></header><div id="connection" role="status"></div><main id="app"></main><div id="order-live" class="sr-only" aria-live="polite" aria-atomic="true"></div><div id="toast" role="status"></div><dialog id="confirm" aria-labelledby="confirm-text"><p id="confirm-text"></p><div class="row"><button type="button" value="no">No</button><button type="button" value="si" class="danger">Cancelar corrida</button></div></dialog><script>
 let S, NOW;
 let DRAG=null;
@@ -486,18 +521,259 @@ function fillOrphans(box,h){
     })));
   if(shown.length<origins.length){const more=node('button','more',`Ver ${origins.length-shown.length} más`);more.type='button';more.dataset.open=key;box.append(more);}
 }
+const TREN_STAGES = [
+  ['lote','Lote','Armando el candidato'], ['ci','CI','Esperando CI'],
+  ['suite','Suite','Suite corriendo'], ['atribucion','Culpable','Buscando al culpable'],
+  ['aterrizando','main','Aterrizando en main']
+];
+const TREN_WAIT = {entregado:'Entregado',admitido:'Admitido',retenido:'Retenido',caducado:'Caducado'};
+const TREN_RESULT = {ATERRIZADO:'Aterrizó',DEVUELTO:'Devuelto',ABSUELTO:'Absuelto · se repite en otro lote',
+  ABORTADO:'Abortado',PARTIDO:'Partido',REARMAR:'Rearmado sobre otra base',SIMULADO:'Lote simulado'};
+const trenDur = seconds => seconds < 60 ? 'menos de 1 min' : fmtDur(seconds);
+const trenAgo = at => 'hace '+trenDur(NOW-at);
+const trenCount = count => count===1 ? '1 PR' : count+' PRs';
+function trenNode(tag, cls, text){
+  const node=document.createElement(tag);
+  if(cls) node.className=cls;
+  if(text!=null) node.textContent=text;
+  return node;
+}
+function trenState(repo, stage){
+  let text, color;
+  if(repo.pausa){
+    text='En pausa · '+repo.pausa.motivo;
+    color='warn';
+  }else if(repo.modo==='sombra'){
+    text='Sombra · simula lotes, no corre suites';
+  }else if(repo.lote){
+    text=stage+' · '+trenDur(NOW-repo.lote.fase_desde);
+    color=repo.lote.fase==='atribucion' ? 'crit' : 'accent';
+  }else{
+    text='Libre';
+    color='good';
+  }
+  const state=trenNode('span','state');
+  if(color){
+    const dot=trenNode('span','dot');
+    dot.style.background='var(--'+color+')';
+    state.append(dot);
+  }
+  state.append(trenNode('span','',text));
+  return state;
+}
+function trenStages(batch, index){
+  const bars=trenNode('div','stages'), names=trenNode('div','stage-names');
+  bars.setAttribute('aria-hidden','true');
+  TREN_STAGES.forEach(([,name],i)=>{
+    const current=i===index;
+    const label=trenNode('span',current ? 'now' : '',name);
+    if(current) label.setAttribute('aria-current','step');
+    bars.append(trenNode('i',i<index ? 'done' : current ? 'now'+(batch.fase==='atribucion' ? ' bad' : '') : ''));
+    names.append(label);
+  });
+  return [bars,names];
+}
+function trenPlace(place){
+  if(place.tipo==='boat' && place.vm) return 'Boat '+place.vm;
+  if(place.pueue_id!=null && (place.tipo==='desk' || place.tipo==='mini')){
+    return (place.tipo==='desk' ? 'desk' : 'Mini')+' · Pueue '+place.pueue_id;
+  }
+  return 'Sin lugar confirmado';
+}
+function trenRun(run, trial=false){
+  const cell=trenNode('div','run'), top=trenNode('div','r-top');
+  const estimate=run.est, based=!!estimate && known({est:estimate}), running=trial || run.estado==='corriendo';
+  // Con lugar en Pueue, el tiempo de una corrida abierta sale sólo de la tarea unida, con el inicio de su tarjeta de host.
+  const open=trial || run.estado!=='terminada', joined=!!run.rack && open;
+  const hostless=open && !joined && run.lugar.pueue_id!=null && (run.lugar.tipo==='desk' || run.lugar.tipo==='mini');
+  const begun=hostless ? null : joined ? run.rack_inicio : run.inicio;
+  const elapsed=begun==null ? null : Math.max(0,(run.fin ?? NOW)-begun);
+  const time=trenNode('span','r-time');
+  if(run.estado==='terminada'){
+    const result=run.resultado==='verde' ? 'Verde' : run.resultado==='rojo' ?
+      (run.fallas==null ? 'Rojo' : run.fallas===1 ? '1 falla' : run.fallas+' fallas') : 'Terminada';
+    time.append(trenNode('span',run.resultado==='verde' ? 'ok' : run.resultado==='rojo' ? 'bad' : '',result));
+    if(elapsed!=null) time.append(trenNode('span','',' · '+trenDur(elapsed)));
+  }else{
+    const status=run.estado==='pendiente-75' ? 'Sin terminar · salida 75' :
+      run.estado==='en-fila' || joined && begun==null ? 'En fila' : hostless ? 'Sin dato del host' : '';
+    let duration=elapsed==null ? '' : trenDur(elapsed);
+    if(running && estimate){
+      const over=elapsed!=null && elapsed>estimate.high;
+      if(elapsed==null) duration='Suele tardar '+span(estimate);
+      else duration+=over || !based ? ' · suele tardar '+span(estimate) : ' de ~'+fmtDur(estimate.typical);
+    }
+    time.textContent=[status,duration].filter(Boolean).join(' · ') || 'Sin hora de inicio';
+  }
+  if(trial){
+    const title=trenNode('div');
+    title.append(trenNode('b','','Ensayo '+(run.hechos+1)+' · '),trenNode('span','unit',run.unidad));
+    cell.append(title);
+  }
+  top.append(trenNode('b','',run.modo),
+             trenNode('span','where',trenPlace(run.lugar)),time);
+  cell.append(top);
+  if(trial) cell.append(trenNode('div','ink2 mono','Repite con #'+run.prs.join(', #')));
+  if(running && based && elapsed!=null){
+    const bar=trenNode('div',elapsed>estimate.high ? 'bar over' : 'bar');
+    bar.setAttribute('aria-hidden','true');
+    const fill=trenNode('i');
+    fill.style.width=Math.min(elapsed/Math.max(1,estimate.high),1)*100+'%';
+    bar.append(fill);
+    cell.append(bar);
+  }
+  return cell;
+}
+function trenPrRow(pr, fields){
+  const row=trenNode('li'), line=trenNode('div','l1');
+  const title=trenNode('span','t');
+  title.textContent=fields.title || '';
+  line.append(trenNode('span',fields.ticket ? 'tk' : 'tk none',fields.ticket || 'Sin ticket'),title);
+  row.append(line,trenNode('span','d','#'+pr));
+  return row;
+}
+function trenWaitRow(entry, fields, mode){
+  const row=trenPrRow(entry.pr,fields), detail=trenNode('div','l2');
+  const stage=TREN_WAIT[entry.etapa];
+  const reason=entry.motivo || (entry.etapa==='admitido' && mode==='activo' ? 'entra en el próximo lote' : '');
+  detail.append(trenNode('span',entry.etapa==='retenido' ? 'act warn' : '',[stage,reason].filter(Boolean).join(' · ')),
+                trenNode('span','','entregado '+trenAgo(entry.desde)));
+  row.append(detail);
+  return row;
+}
+function trenFinishedRow(batch, prFields){
+  const row=trenNode('li'), line=trenNode('div','l1');
+  const returned=batch.miembros.filter(m=>m.resultado==='DEVUELTO').length;
+  const heading=batch.resultado==='ATERRIZADO' && returned ?
+    'Aterrizaron '+(batch.miembros.length-returned)+' de '+batch.miembros.length :
+    TREN_RESULT[batch.resultado]+' · '+trenCount(batch.miembros.length);
+  line.append(trenNode('span','t',heading));
+  row.append(line,trenNode('span','d',trenAgo(batch.fin)+' · '+trenDur(batch.fin-batch.cierre)));
+  for(const member of batch.miembros){
+    const label={DEVUELTO:'devuelto','MERGEADO-FUERA':'mergeado fuera del tren',CADUCADO:'caducado'}[member.resultado];
+    if(!label) continue;
+    const fields=prFields(member.pr), detail=trenNode('div','l2');
+    const prefix=['#'+member.pr,fields.ticket,label].filter(Boolean).join(' ');
+    const back=member.devolucion;
+    const text=trenNode('span',member.resultado==='DEVUELTO' ? 'act crit' : '',prefix);
+    if(back){
+      const url=back.comentario_url;
+      const linked=typeof url==='string' && url.startsWith('https://github.com/');
+      const evidence=trenNode(linked ? 'a' : 'span','',back.check+' · '+back.unidad);
+      if(linked){
+        evidence.href=url;
+        evidence.dataset.trenFocus='enlace '+url;
+      }
+      text.append(trenNode('span','',' · '),evidence);
+    }
+    detail.append(text);
+    row.append(detail);
+  }
+  return row;
+}
+function trenList(rows, draw, cls='', limit=rows.length, key){
+  const frame=trenNode('div','fila '+cls), list=trenNode('ol');
+  // Una reentrega deja el mismo PR dos veces en espera, con heads distintos.
+  const keyed=row=>{const node=draw(row); node.dataset.trenFocus=key+' '+(row.pr ?? row.id)+(row.head ? '@'+row.head : ''); return node;};
+  const shown=OPEN[key] ? rows : rows.slice(0,limit);
+  list.append(...shown.map(keyed));
+  frame.append(list);
+  if(shown.length<rows.length){
+    const more=trenNode('button','more','Ver '+(rows.length-shown.length)+' más');
+    more.type='button';
+    more.dataset.trenMore=key;
+    more.dataset.trenFocus='más '+key;
+    more.addEventListener('click',()=>{
+      const remaining=rows.slice(limit).map(keyed);
+      list.append(...remaining);
+      OPEN[key]=true;
+      remaining[0].tabIndex=-1;
+      remaining[0].focus();
+      more.remove();
+    });
+    frame.append(more);
+  }
+  return frame;
+}
+function trenRepo(repo, tren){
+  const card=trenNode('section','host'), batch=repo.lote;
+  const name=trenNode('h2','','Tren de '+repo.repo.split('/')[1]);
+  name.title=repo.repo;
+  const phase=TREN_STAGES.findIndex(([key])=>key===batch?.fase);
+  const stage=TREN_STAGES[phase]?.[2] ?? 'Fase otra';
+  const fields=pr=>tren.prs[repo.repo+'#'+pr] || {};
+  card.append(name);
+  if(tren.fresh===false){
+    const stale=tren.age==null ? 'Sin datos recientes del tren' : 'Sin datos del tren desde hace '+trenDur(tren.age);
+    card.append(trenNode('span','state',stale));
+  }
+  card.append(trenState(repo,stage));
+  if(batch){
+    card.append(...trenStages(batch,phase));
+    const phaseNote=repo.pausa || repo.modo==='sombra' ? stage+' · ' : '';
+    card.append(trenNode('h3','',phaseNote+'Lote '+batch.id+' · cerrado '+trenAgo(batch.cierre)),
+                trenList(batch.miembros,member=>trenPrRow(member.pr,fields(member.pr)),'',undefined,
+                         JSON.stringify(['tren',repo.repo,'miembros'])));
+    if(batch.suite.length || batch.ensayo){
+      const suite=trenNode('div','suite');
+      suite.append(...batch.suite.map(run=>trenRun(run)));
+      if(batch.ensayo) suite.append(trenRun(batch.ensayo,true));
+      card.append(suite);
+    }
+  }
+  if(repo.espera.length){
+    card.append(trenNode('h3','','En espera · '+trenCount(repo.espera.length)),
+                trenList(repo.espera,entry=>trenWaitRow(entry,fields(entry.pr),repo.modo),'',8,
+                         JSON.stringify(['tren',repo.repo,'espera'])));
+  }
+  const recent=repo.recientes.filter(item=>item.fin>=NOW-12*3600).sort((a,b)=>b.fin-a.fin);
+  if(recent.length){
+    card.append(trenNode('h3','','Terminados'),
+                trenList(recent,item=>trenFinishedRow(item,fields),'finished',3,
+                         JSON.stringify(['tren',repo.repo,'terminados'])));
+  }
+  if(!batch && !repo.espera.length && !recent.length){
+    card.append(trenNode('p','empty',repo.modo==='sombra' ? 'Sin PRs en custodia.' : 'Sin PRs entregados.'));
+  }
+  return card;
+}
+function prependTren(app, tren){
+  const repos=tren?.repos ?? [];
+  if(!repos.length) return;
+  const section=trenNode('section','tren'), cols=trenNode('div','cols');
+  section.setAttribute('aria-label','Tren');
+  if(tren?.error) section.append(trenNode('p','notice',tren.error));
+  for(const {stage} of tren?.errors ?? []){
+    section.append(trenNode('p','notice','No se pudo leer: '+stage));
+  }
+  cols.append(...repos.map(repo=>trenRepo(repo,tren)));
+  section.append(cols);
+  app.prepend(section);
+}
+// El refresco rehace la sección; el foco vuelve a la fila, el enlace o el botón con la misma clave.
+function focusTren(key){
+  const target=[...document.querySelectorAll('[data-tren-focus]')].find(node=>node.dataset.trenFocus===key);
+  if(!target) return;
+  if(target.tagName==='LI') target.tabIndex=-1;
+  target.focus();
+}
 function paint(){
   if(DRAG) return;
   const focused=document.activeElement?.closest?.('.fila li');
   const identity=focused && [focused.parentElement.dataset.host,focused.parentElement.dataset.group,Number(focused.dataset.id)];
-  document.getElementById('app').innerHTML=view();
+  const trenFocus=document.activeElement?.closest?.('[data-tren-focus]')?.dataset.trenFocus;
+  const app=document.getElementById('app');
+  app.innerHTML=view();
+  prependTren(app,S.tren);
   for(const label of document.querySelectorAll('[data-order-host]')){
     const host=S.hosts.find(h=>h.id===label.dataset.orderHost);
     label.textContent=host ? orderInfo(host,label.dataset.orderGroup).reason : '';
   }
   for(const box of document.querySelectorAll('[data-orphans]')) fillOrphans(box,S.hosts.find(h=>h.id===box.dataset.orphans));
   syncMenu();
-  if(identity) focusOrder(...identity);
+  // Las listas de Tren también son .fila; su clave manda sobre la identidad de host.
+  if(trenFocus) focusTren(trenFocus);
+  else if(identity) focusOrder(...identity);
 }
 
 function resourceTable(h){
@@ -739,7 +1015,7 @@ function snapshotBeforeOrder(source,receipt){
 }
 function render(data){
   NOW = data.now;
-  S = {hosts:data.hosts.map(h=>{
+  S = {tren:data.tren,hosts:data.hosts.map(h=>{
     const s=h.snapshot || {};
     const confirmed=HOST_CONFIRMED.get(h.id);
     let control=confirmed && (!s.control || s.control.revision<confirmed.revision) ? confirmed : s.control;

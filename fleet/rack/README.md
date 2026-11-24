@@ -18,6 +18,14 @@ automática.
 
 ## Canal del tren
 
+La sección Tren muestra una tarjeta por repositorio arriba de los hosts, con
+la etapa del lote, sus PRs, el lugar y tiempo de cada corrida y los avisos de
+lectura. Muestra ocho PRs en espera y tres lotes terminados de las últimas
+12 horas, con «Ver N más». Sin repositorios publicados, la sección se omite.
+`tests/test_tren_ui.py` ejecuta el JS de producción con
+`tests/tren-ui-check.js`. `tests/tren_browser_fixture.py OUTPUT.html` genera
+la página sintética en claro y oscuro para capturas a 390 y 1280 px.
+
 El receptor `recibir_tren.py` acepta por stdin un documento `tren-host@1` de
 hasta 256 KiB, con un plazo de lectura de 30 s. El servidor y el receptor leen
 el mismo `rack.json`, junto a los scripts por omisión, o el archivo que se

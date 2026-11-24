@@ -66,6 +66,9 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 return Ejecucion(limpia, False)
             raise ValueError("falta adaptador de suite")
         try:
+            opciones = {"permitir_lanzar": admitidos}
+            if isinstance(fase, (Corriendo, Diagnosticando)) and fase.reenganches:
+                opciones["reenganche"] = (fase.reenganches, fase.registro_reenganche)
             if efecto.tipo == "iniciar-suite" and isinstance(fase, EsperandoCI):
                 if efecto != Efecto(clave("suite", tren.id), "iniciar-suite", (tren.id,)):
                     raise ValueError("suite obsoleta")
@@ -87,7 +90,7 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 if efecto != esperado or fase.esperar_hasta is not None:
                     raise ValueError("reanudación obsoleta")
                 recibo = adaptador.suite(fase.candidato, tren.id,
-                    intento_suite(fase), fase.reanudar, permitir_lanzar=admitidos)
+                    intento_suite(fase), fase.reanudar, **opciones)
                 if recibo is None:
                     return Ejecucion(limpia, False)
                 ruta, resultado = recibo
@@ -102,7 +105,7 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                           if s.objetivo == "B" else fase.subconjunto.C)
                 resultado = adaptador.repetir(fase.candidato, fase.suite, s, commit,
                                           tren.id, intento_suite(fase), fase.reanudar,
-                                          permitir_lanzar=admitidos)
+                                          **opciones)
                 if resultado is None:
                     return Ejecucion(limpia, False)
                 return Ejecucion(replace(limpia, repeticion=resultado, reproduccion_id=s.id,
