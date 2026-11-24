@@ -11,14 +11,16 @@ import sys
 import time
 import uuid
 
+ARRANQUE = time.monotonic()
+
 # Script location is trusted, independent of cwd, including python -I invocations.
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
-from ledger import Ledger, directorio_estado, filas_medicion
+from ledger import Ledger, directorio_estado, filas_medicion, lectura_medicion
 from medicion import decision_json, instante_iso, medir
-from observador import GitHubGit, configuracion, sha
+from observador import ERRORES_LECTURA, GitHubGit, configuracion, sha
 from sombra import paso_sombra
 
 
@@ -223,6 +225,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
 
 ENCADENADOS = 8
 CUOTA_MINIMA = 1000
+PLAZO_ESPERA_CI_S = 100
+INTERVALO_SONDEO_CI_S = 20
 PEREZOSOS = ("adaptadores.hasito", "adaptadores.jale", "atribucion", "feedback", "git_ops",
              "juicios", "operador", "operativo", "preaterrizaje")
 
@@ -269,21 +273,63 @@ def cuota(ejecutar=subprocess.run):
         return False
 
 
-def encadenar(un_tick, huella, seguir, tope=ENCADENADOS):
-    """Repite el tick mientras el anterior haya hecho avanzar el carril.
+def estado_para_espera(repo):
+    with lectura_medicion() as db:
+        # El constructor abre una transacción de escritura para preparar el esquema.
+        ledger = Ledger.__new__(Ledger)
+        ledger.db = db
+        estado = ledger.estado(repo, operativo=True)
+        if estado.pausa is None and ledger.siguiente_decision(repo) is None:
+            return estado
 
-    Un efecto que falla, una espera o un resultado que la pausa retiene dejan
-    la huella igual y cortan: el siguiente tick lo lanza launchd. Sin huella
-    antes del tick (ledger recién creado o ilegible) no hay con qué comparar.
-    """
+
+def esperar_ci(repo, limite, leer, sondear, vigente, dormir, reloj):
+    def lectura():
+        if reloj() >= limite or not vigente():
+            return None, None
+        try:
+            estado = leer(repo)
+        except (*ERRORES_LECTURA, sqlite3.Error):
+            return None, None
+        tren = GitHubGit.tren_en_ci(estado) if estado is not None and estado.pausa is None else None
+        return estado, (tren.id, tren.fase.candidato.C, tren.fase.solicitud) if tren else None
+
+    while reloj() + INTERVALO_SONDEO_CI_S <= limite:
+        _, candidato = lectura()
+        if candidato is None or reloj() + INTERVALO_SONDEO_CI_S > limite:
+            return False
+        dormir(INTERVALO_SONDEO_CI_S)
+        estado, despues = lectura()
+        if candidato != despues or reloj() >= limite:
+            return False
+        try:
+            resultado = sondear(estado)
+        except ERRORES_LECTURA:
+            continue
+        if resultado is not None and resultado[1].estado != "pendiente":
+            return reloj() < limite
+    return False
+
+
+def encadenar(un_tick, huella, seguir, tope=ENCADENADOS, esperar=lambda: False):
+    """Repite el tick si avanzó el carril o si el CI del candidato ya respondió."""
     antes = huella()
+    tras_espera = False
     for restantes in range(tope - 1, -1, -1):
         codigo, resultado = un_tick()
         yield codigo, resultado
         if codigo != 0 or not restantes:
             return
         despues = huella()
-        if antes is None or despues is None or despues == antes or not seguir():
+        if antes is None or despues is None:
+            return
+        if despues == antes:
+            if tras_espera or not esperar():
+                return
+            tras_espera = True
+        else:
+            tras_espera = False
+        if not seguir():
             return
         antes = despues
 
@@ -305,9 +351,33 @@ def main():
         # Instalar durante un tick no debe mezclar versiones a medio paso.
         for modulo in PEREZOSOS:
             importlib.import_module(modulo)
-        pasos = encadenar(lambda: intento(args), lambda: huella(args.repo),
-                          # La cuota tarda; el programa se compara justo antes del siguiente tick.
-                          lambda: inicial is not None and cuota() and programa() == inicial)
+        limite = ARRANQUE + PLAZO_ESPERA_CI_S
+
+        def vigente():
+            return inicial is not None and programa() == inicial
+
+        def seguir():
+            # La cuota tarda; el programa se compara justo antes del siguiente tick.
+            return inicial is not None and cuota() and vigente()
+
+        def gh(argv, *, timeout, **opciones):
+            restante = limite - time.monotonic()
+            if restante <= 0:
+                raise subprocess.TimeoutExpired(argv, timeout)
+            return subprocess.run(argv, timeout=min(timeout, restante), **opciones)
+
+        def esperar():
+            if time.monotonic() + INTERVALO_SONDEO_CI_S > limite or not seguir():
+                return False
+            try:
+                ruta = args.config or directorio_estado() / "config.json"
+                observador = GitHubGit(configuracion(ruta, args.repo), ejecutar=gh, activo=True)
+            except ERRORES_LECTURA:
+                return False
+            return esperar_ci(args.repo, limite, estado_para_espera, observador.ci_candidato,
+                              vigente, time.sleep, time.monotonic)
+
+        pasos = encadenar(lambda: intento(args), lambda: huella(args.repo), seguir, esperar=esperar)
     else:
         pasos = [intento(args)]
     codigo = 2

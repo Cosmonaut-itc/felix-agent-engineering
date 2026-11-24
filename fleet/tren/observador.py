@@ -369,6 +369,22 @@ class GitHubGit:
     def _vista_incompleta(entrega):
         return VistaPR(entrega.pr, entrega.head, completa=False, recibo=entrega.recibo)
 
+    @staticmethod
+    def tren_en_ci(estado):
+        return next((t for t in estado.trenes if isinstance(t.fase, EsperandoCI)), None)
+
+    def ci_candidato(self, estado):
+        tren = self.tren_en_ci(estado)
+        if tren is None:
+            return None
+        # GitHub no conoce un C aún no publicado: CI pendiente.
+        try:
+            ci = self.ci(estado.repo, tren.fase.candidato.C,
+                         "tren/" + rama_ci(tren) if tren.fase.solicitud else None)
+        except ERRORES_LECTURA:
+            ci = ResultadoCI("pendiente")
+        return tren, ci
+
     def observar(self, estado, ahora):
         # El bare se valida y el presupuesto de fetch corre una vez por
         # observación, no por PR: el tick siguiente reintenta desde cero.
@@ -413,16 +429,9 @@ class GitHubGit:
                                  costo_suite_sana_s=self.config.get("costo_suite_sana_s", 0)
                                  if self.activo else 0)
         if self.activo:
-            tren = next((t for t in estado.trenes if isinstance(t.fase, EsperandoCI)), None)
-            if tren:
-                # La publicación sólo solicita CI; leer checks sobre el C exacto.
-                # GitHub no conoce un C aún no publicado: CI pendiente, y el
-                # tick sigue hasta reintentar la publicación.
-                try:
-                    ci = self.ci(repo, tren.fase.candidato.C,
-                                 "tren/" + rama_ci(tren) if tren.fase.solicitud else None)
-                except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                    ci = ResultadoCI("pendiente")
+            candidato = self.ci_candidato(estado)
+            if candidato is not None:
+                tren, ci = candidato
                 observacion = replace(observacion, tren_id=tren.id, ci_candidato=ci.estado,
                                       ci_rojos=ci.rojos,
                                       ci_recibo=recibo_ci(tren))

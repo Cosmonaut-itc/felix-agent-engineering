@@ -232,11 +232,22 @@ El tick activo repite el tick en el mismo proceso mientras el anterior haya
 hecho avanzar el carril, hasta ocho veces. Avanzar es que cambie la pausa, la
 fase de algún tren o el estado de algún efecto del outbox. Un efecto que
 falla cuenta como pendiente, así que la cadena no lo reintenta por sí solo.
-Tampoco cuentan una espera ni un resultado que la pausa retiene, ni el primer
-tick de un repositorio, que crea el ledger. En esos casos el siguiente tick lo
-lanza launchd. Cada tick de la cadena toma y suelta el
-candado y observa de nuevo. `stdout.log` recibe una línea JSON por tick, y el
-proceso sale con el código del último. `tick --seco` corre un solo tick.
+La cadena necesita una huella antes y después del tick para comparar. El
+primer tick de un repositorio crea el ledger y cede el siguiente a launchd.
+
+Si la huella queda igual y un tren está en `EsperandoCI`, el proceso sondea
+el CI de ese candidato cada 20 s, hasta 100 s desde el arranque del proceso.
+El plazo deja margen antes del siguiente disparo de launchd, a los 120 s.
+La espera lee el ledger en sólo lectura, sin tomar el candado, y cierra la
+conexión antes de dormir. Corta si hay una pausa o una decisión pendiente,
+si cambia el tren, su fase, su C o su solicitud de CI, si falla la lectura
+del ledger o de la configuración, o si ya no cabe otro intervalo.
+Un CI verde o rojo da paso a otro tick si la cuota y el programa todavía
+lo permiten. Si ese tick deja la huella igual, la cadena termina.
+
+Cada tick de la cadena toma y suelta el candado y observa de nuevo.
+`stdout.log` recibe una línea JSON por tick y el proceso sale con el código
+del último. `tick --seco` corre un solo tick.
 
 La cadena termina también en dos casos:
 
