@@ -14,7 +14,7 @@ from test_sen_7280_cadena import CadenaActivaTests as ContextoCadena, REPO, cli
 PROBAR_CANDADO = ("import fcntl, sys\n"
                   "with open(sys.argv[1], 'a') as candado:\n"
                   "    try:\n"
-                  "        fcntl.flock(candado, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+                  "        fcntl.flock(candado, fcntl.LOCK_SH | fcntl.LOCK_NB)\n"
                   "    except BlockingIOError:\n"
                   "        sys.exit(7)\n")
 
@@ -28,26 +28,24 @@ class CandadoTests(unittest.TestCase):
             self.addCleanup(parche.stop)
 
     def crear_ledger(self):
-        with closing(cli.Ledger()) as ledger, ledger.candado(REPO):
-            pass
-        return next(cli.directorio_estado().glob("*.lock"))
+        cli.Ledger().close()
+        return cli.directorio_estado() / "programa.lock"
 
     def candado(self, *orden):
-        return cli.ejecutar(cli.parser().parse_args(["candado", "--repo", REPO, "--", *orden]))
+        return cli.ejecutar(cli.parser().parse_args(["candado", "--", *orden]))
 
     def test_sin_ledger_sale_con_2_y_no_lo_crea(self):
         marca = self.raiz / "corrio"
         self.assertEqual(self.candado("touch", str(marca)), (2, {"error": "ledger no disponible"}))
         self.assertFalse(marca.exists())
-        self.assertFalse(cli.directorio_estado().exists())
-        self.assertTrue(cli.candado_libre(REPO))
+        self.assertFalse(cli.instalando())
         self.assertFalse(cli.directorio_estado().exists())
 
     def test_el_comando_corre_con_el_candado_tomado_y_da_su_codigo(self):
         ruta = self.crear_ledger()
         self.assertEqual(self.candado(sys.executable, "-I", "-c", PROBAR_CANDADO, str(ruta)),
                          (7, {"candado": "tomado", "codigo": 7}))
-        self.assertTrue(cli.candado_libre(REPO))
+        self.assertFalse(cli.instalando())
         self.assertEqual(self.candado("true"), (0, {"candado": "tomado", "codigo": 0}))
 
     def test_conserva_el_candado_durante_la_gracia(self):
@@ -55,18 +53,20 @@ class CandadoTests(unittest.TestCase):
         gracias = []
 
         def dormir(segundos):
-            gracias.append((segundos, cli.candado_libre(REPO)))
+            gracias.append((segundos, cli.instalando()))
 
         with patch.object(cli, "GRACIA_INSTALACION_S", 5), patch.object(cli.time, "sleep", dormir):
             self.assertEqual(self.candado("true")[0], 0)
-        self.assertEqual(gracias, [(5, False)])
-        self.assertTrue(cli.candado_libre(REPO))
+        self.assertEqual(gracias, [(5, True)])
+        self.assertFalse(cli.instalando())
 
-    def test_ocupado_sale_con_75_sin_correr_el_comando(self):
+    def test_con_un_tick_activo_sale_con_75_sin_correr_el_comando(self):
         self.crear_ledger()
         marca = self.raiz / "corrio"
-        with cli.candado_repo(cli.directorio_estado(), REPO):
-            self.assertFalse(cli.candado_libre(REPO))
+        with cli.candado_programa(exclusivo=False) as tick, \
+                cli.candado_programa(exclusivo=False) as otro_carril:
+            self.assertTrue(tick and otro_carril)
+            self.assertFalse(cli.instalando())
             self.assertEqual(self.candado("touch", str(marca)), (75, {"candado": "ocupado"}))
         self.assertFalse(marca.exists())
 
@@ -91,32 +91,51 @@ class TickBajoCandadoTests(unittest.TestCase):
         with self.ledger() as ledger:
             return ledger.ultimos_eventos(REPO)
 
-    def test_programa_cambiado_no_observa_ni_escribe(self):
+    def test_programa_cambiado_o_instalacion_en_curso_no_observa_ni_escribe(self):
         antes, eventos = self.estado(), self.eventos()
         observador = self.contexto.observador
         with patch.object(observador, "observar", wraps=observador.observar) as observar:
             self.assertEqual(self.tick(lambda: False), (0, {"omitido": "programa-cambiado"}))
+            with cli.candado_programa(exclusivo=True) as instalador:
+                self.assertTrue(instalador)
+                self.assertEqual(self.tick(lambda: True), (0, {"omitido": "instalacion-en-curso"}))
             observar.assert_not_called()
             self.assertEqual((self.estado(), self.eventos()), (antes, eventos))
             codigo, resultado = self.tick(lambda: True)
             self.assertEqual((codigo, resultado["modo"]), (0, "activo"))
             observar.assert_called_once()
 
+    def test_el_tick_tiene_el_candado_compartido_mientras_corre(self):
+        observador, vistos = self.contexto.observador, []
+        observar = observador.observar
+
+        def espiar(estado, ahora):
+            with cli.candado_programa(exclusivo=True) as instalador:
+                vistos.append(instalador)
+            return observar(estado, ahora)
+
+        with patch.object(observador, "observar", espiar):
+            self.assertEqual(self.tick(lambda: True)[0], 0)
+        self.assertEqual(vistos, [False])
+        with cli.candado_programa(exclusivo=True) as instalador:
+            self.assertTrue(instalador)
+
 
 class MainTests(unittest.TestCase):
-    def correr(self, intento, libre=True, programa=lambda: "igual"):
+    def correr(self, intento, instalando=False, programa=lambda: "igual"):
         salida = io.StringIO()
         with patch("sys.argv", ["pao-tren", "tick", "--repo", REPO]), \
                 patch.object(cli, "intento", intento), \
-                patch.object(cli, "candado_libre", lambda repo: libre), \
+                patch.object(cli, "instalando", lambda: instalando), \
                 patch.object(cli, "huella", lambda repo: None), \
                 patch.object(cli, "programa", programa), redirect_stdout(salida):
             codigo = cli.main()
         return codigo, [json.loads(linea) for linea in salida.getvalue().splitlines()]
 
-    def test_candado_ocupado_al_arrancar_omite_el_tick(self):
+    def test_una_instalacion_en_curso_al_arrancar_omite_el_tick(self):
         intento = Mock(side_effect=AssertionError("corrió un tick"))
-        self.assertEqual(self.correr(intento, libre=False), (0, [{"omitido": "candado-ocupado"}]))
+        self.assertEqual(self.correr(intento, instalando=True),
+                         (0, [{"omitido": "instalacion-en-curso"}]))
 
     def test_cada_tick_recibe_la_comparacion_con_el_programa_del_arranque(self):
         instalado, vistos = ["igual"], []

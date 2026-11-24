@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
-from ledger import Ledger, candado_repo, directorio_estado, filas_medicion, lectura_medicion
+from ledger import Ledger, candado_programa, directorio_estado, filas_medicion, lectura_medicion
 from medicion import decision_json, instante_iso, medir
 from observador import ERRORES_LECTURA, GitHubGit, configuracion, sha
 from sombra import paso_sombra
@@ -91,8 +91,7 @@ def parser():
     fases.add_argument("--desde", required=True, type=texto_iso)
     fases.add_argument("--hasta", required=True, type=texto_iso)
     candado = comandos.add_parser("candado")
-    candado.add_argument("--repo", required=True, type=repositorio)
-    candado.add_argument("orden", nargs="+", help="comando que corre con el candado del carril")
+    candado.add_argument("orden", nargs="+", help="comando que corre sin ningún tick activo")
     return cli
 
 
@@ -116,12 +115,11 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
         # Sin ledger no hay tick que excluir, y este comando no lo crea.
         if not (directorio_estado() / "ledger.sqlite3").exists():
             return 2, {"error": "ledger no disponible"}
-        try:
-            with candado_repo(directorio_estado(), args.repo, esperar=False):
-                codigo = subprocess.run(args.orden).returncode
-                time.sleep(GRACIA_INSTALACION_S)
-        except BlockingIOError:
-            return 75, {"candado": "ocupado"}
+        with candado_programa(exclusivo=True) as libre:
+            if not libre:
+                return 75, {"candado": "ocupado"}
+            codigo = subprocess.run(args.orden).returncode
+            time.sleep(GRACIA_INSTALACION_S)
         return codigo, {"candado": "tomado", "codigo": codigo}
     ledger = Ledger()
     ahora = time.time() if ahora is None else ahora
@@ -199,29 +197,33 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 # Releer tras esperar el flock: pudieron retirar la inscripción.
                 if activacion(args.repo) != "activo":
                     return 2, {"error": "tick activo requiere inscripción activa"}
-                # Quien instala toma este candado: tras esperarlo, el programa pudo cambiar.
-                if vigente is not None and not vigente():
-                    return 0, {"omitido": "programa-cambiado"}
-                from adaptadores import seleccionar
-                from git_ops import GitTren, identidad_commits
-                from operativo import tick
-                if observador is None or git is None:
-                    ruta = args.config or ledger.directorio / "config.json"
-                    config = configuracion(ruta, args.repo)
-                    remoto = config.get("remoto")
-                    if not isinstance(remoto, str) or not remoto:
-                        raise ValueError("tick activo requiere remoto explícito")
-                    git = git if git is not None else GitTren(
-                        remoto, identidad=identidad_commits(config))
-                    # Admisión y armado comparten el bare del tren: el tick
-                    # siguiente ve el C aterrizado sin sincronizar config["git"].
-                    PARALELAS_TICK_ACTIVO = 4
-                    observador = observador or GitHubGit(config, activo=True, almacen=git,
-                                                        paralelas=PARALELAS_TICK_ACTIVO)
-                    if adaptador is None:
-                        adaptador = seleccionar(config, git)
-                return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
-                               escritor)
+                # Instalar excluye a los ticks activos de todos los carriles.
+                with candado_programa(exclusivo=False, directorio=ledger.directorio) as libre:
+                    if not libre:
+                        return 0, {"omitido": "instalacion-en-curso"}
+                    # Tras esperar el candado del carril, el programa pudo cambiar.
+                    if vigente is not None and not vigente():
+                        return 0, {"omitido": "programa-cambiado"}
+                    from adaptadores import seleccionar
+                    from git_ops import GitTren, identidad_commits
+                    from operativo import tick
+                    if observador is None or git is None:
+                        ruta = args.config or ledger.directorio / "config.json"
+                        config = configuracion(ruta, args.repo)
+                        remoto = config.get("remoto")
+                        if not isinstance(remoto, str) or not remoto:
+                            raise ValueError("tick activo requiere remoto explícito")
+                        git = git if git is not None else GitTren(
+                            remoto, identidad=identidad_commits(config))
+                        # Admisión y armado comparten el bare del tren: el tick
+                        # siguiente ve el C aterrizado sin sincronizar config["git"].
+                        PARALELAS_TICK_ACTIVO = 4
+                        observador = observador or GitHubGit(config, activo=True, almacen=git,
+                                                            paralelas=PARALELAS_TICK_ACTIVO)
+                        if adaptador is None:
+                            adaptador = seleccionar(config, git)
+                    return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
+                                   escritor)
             doble_camino = modo(args.repo) == "sombra"
             estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
             if observador is None:
@@ -282,15 +284,12 @@ def programa():
         return None
 
 
-def candado_libre(repo):
-    """Falso si otro proceso tiene el candado del carril. No crea el ledger."""
+def instalando():
+    """Verdadero si alguien instala ahora. No crea el directorio de estado."""
     if not directorio_estado().is_dir():
-        return True
-    try:
-        with candado_repo(directorio_estado(), repo, esperar=False):
-            return True
-    except BlockingIOError:
         return False
+    with candado_programa(exclusivo=False) as libre:
+        return not libre
 
 
 def cuota(ejecutar=subprocess.run):
@@ -335,7 +334,8 @@ def esperar_ci(repo, limite, leer, sondear, vigente, dormir, reloj):
         except ERRORES_LECTURA:
             continue
         if resultado is not None and resultado[1].estado != "pendiente":
-            return reloj() < limite
+            # El sondeo tarda: una pausa o una decisión pudo llegar mientras tanto.
+            return lectura()[1] == candidato
     return False
 
 
@@ -380,8 +380,8 @@ def main():
         for modulo in PEREZOSOS:
             importlib.import_module(modulo)
         # Un proceso que arranca a media instalación pudo cargar dos versiones.
-        if not candado_libre(args.repo):
-            print(json.dumps({"omitido": "candado-ocupado"}), flush=True)
+        if instalando():
+            print(json.dumps({"omitido": "instalacion-en-curso"}), flush=True)
             return 0
         limite = ARRANQUE + PLAZO_ESPERA_CI_S
 

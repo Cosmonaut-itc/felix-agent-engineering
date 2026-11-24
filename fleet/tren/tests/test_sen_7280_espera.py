@@ -121,6 +121,18 @@ class EsperarCITests(unittest.TestCase):
         self.assertFalse(self.esperar(sondear, dormir))
         sondear.assert_not_called()
 
+    def test_corta_si_llega_una_decision_mientras_sondea(self):
+        self.guardar(self.estado)
+
+        def sondear(estado):
+            with closing(cli.Ledger()) as ledger, ledger.candado(REPO):
+                ledger.registrar_decision(Decision("juicio", REPO, None, "pausar", None,
+                                                   "prueba", self.reloj(), "", None))
+            return self.tren, ResultadoCI("verde")
+
+        self.assertFalse(self.esperar(sondear))
+        self.assertEqual(self.reloj.suenos, [20])
+
     def test_corta_si_cambia_el_programa(self):
         self.guardar(self.estado)
         sondear = Mock()

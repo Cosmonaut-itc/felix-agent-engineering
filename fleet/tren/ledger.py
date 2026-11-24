@@ -24,13 +24,21 @@ def codificar(valor):
 
 
 @contextmanager
-def candado_repo(directorio, repo, esperar=True):
-    """Candado del carril; sin esperar, un candado ocupado lanza BlockingIOError."""
+def candado_programa(exclusivo, directorio=None):
+    """Candado entre instalar (exclusivo) y los ticks activos (compartido).
+
+    Nunca espera: rinde falso, sin tomar nada, si el candado está ocupado.
+    """
+    raiz = Path(directorio) if directorio is not None else directorio_estado()
     # Append/open preserves the inode; never retire lock files.
-    with (Path(directorio) / (clave("repo", repo) + ".lock")).open("a") as handle:
-        fcntl.flock(handle, fcntl.LOCK_EX | (0 if esperar else fcntl.LOCK_NB))
+    with (raiz / "programa.lock").open("a") as handle:
         try:
-            yield handle
+            fcntl.flock(handle, (fcntl.LOCK_EX if exclusivo else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
         finally:
             fcntl.flock(handle, fcntl.LOCK_UN)
 
@@ -101,12 +109,15 @@ class Ledger:
 
     @contextmanager
     def candado(self, repo):
-        with candado_repo(self.directorio, repo) as handle:
+        # Append/open preserves the inode; never retire lock files.
+        with (self.directorio / (clave("repo", repo) + ".lock")).open("a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
             self.fd_candado = handle.fileno()
             try:
                 yield
             finally:
                 self.fd_candado = None
+                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def entregar(self, entrega, ahora, sombra_entrega=None):
         with self.transaccion():

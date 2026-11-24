@@ -259,38 +259,49 @@ La cadena termina también en dos casos:
 
 ### Instalar una versión nueva
 
-Instala con el candado del carril tomado:
+Todos los carriles corren el mismo programa instalado. Instala con el candado
+del programa tomado:
 
 ```sh
-pao-tren candado --repo owner/project -- git -C <checkout instalado> merge --ff-only <sha>
+pao-tren candado -- git -C <checkout instalado> merge --ff-only <sha>
 ```
 
-`candado` toma el candado sin esperar y corre el comando. Después conserva el
+`candado` toma en exclusiva el candado del programa (`programa.lock`, en el
+directorio de estado) sin esperar, y corre el comando. Después conserva el
 candado 5 s más, lo suelta y sale con el código del comando. Su última línea
-es `{"candado": "tomado", "codigo": N}`. Si otro proceso tiene el candado,
-sale con 75 y `{"candado": "ocupado"}` sin correr el comando. No crea el
-ledger: sin él sale con 2.
+es `{"candado": "tomado", "codigo": N}`. Cada tick activo, de cualquier
+carril, tiene ese candado compartido mientras corre. Si hay alguno, `candado`
+sale con 75 y `{"candado": "ocupado"}` sin correr el comando: reintenta
+después. No crea el ledger: sin él sale con 2.
 
-Un proceso `pao-tren tick` puede seguir vivo sin el candado mientras espera el
-CI, así que la ausencia de procesos no indica cuándo instalar. Dos
-comprobaciones impiden que un tick corra con un programa distinto del que
-cargó. En ambas el proceso sale con 0 sin observar ni escribir:
+Un proceso `pao-tren tick` puede seguir vivo, sin ningún candado, mientras
+espera el CI. Por eso la ausencia de procesos no indica cuándo instalar. Tres
+comprobaciones impiden que un tick activo corra con un programa distinto del
+que cargó. En las tres el tick sale con 0 sin observar ni escribir, y el
+siguiente disparo de launchd corre con el programa nuevo:
 
-- Al arrancar, con sus módulos ya cargados, el proceso prueba el candado. Si
-  está ocupado escribe `{"omitido": "candado-ocupado"}` y termina. Un proceso
-  que arranca a media instalación pudo cargar módulos de dos versiones; los
-  5 s de más cubren su arranque. También omite su tick el proceso que arranca
-  mientras otro comando tiene el candado.
-- Con el candado ya tomado, cada tick compara el programa instalado con el del
-  arranque. Si cambió, escribe `{"omitido": "programa-cambiado"}`. Es el caso
-  de un proceso que esperaba el CI, o el candado, durante la instalación.
+- Al arrancar, con sus módulos ya cargados, el proceso prueba el candado del
+  programa. Si alguien instala, escribe `{"omitido": "instalacion-en-curso"}`
+  y termina. Un proceso que arranca a media instalación pudo cargar módulos de
+  dos versiones; los 5 s de más cubren su arranque.
+- Cada tick toma el candado compartido después del candado del carril. Si
+  alguien instala en ese momento, devuelve la misma línea.
+- Ya con los dos candados, el tick compara el programa instalado con el del
+  arranque. Si cambió, devuelve `{"omitido": "programa-cambiado"}`. Es el caso
+  de un proceso que esperaba el CI, o el candado del carril, durante la
+  instalación.
 
-En los dos casos el siguiente disparo de launchd corre con el programa nuevo.
 Una línea `omitido` en `stdout.log` no es un tick.
 
-Las comprobaciones sólo cubren una instalación hecha con `candado`. Un módulo
-perezoso que no esté en `PEREZOSOS` (en `pao-tren`) se carga a medio tick,
-con el candado tomado.
+Límites conocidos:
+
+- Sólo queda cubierta una instalación hecha con `candado`.
+- `tick --seco` (la sombra), `estado`, `entregar`, `juicio` y `pausa` no toman
+  el candado del programa.
+- Un proceso que tarda más de 5 s en arrancar a media instalación no queda
+  cubierto.
+- Si `pao-tren candado` muere por una señal, su comando hijo sigue sin el
+  candado.
 
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
