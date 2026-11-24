@@ -248,10 +248,12 @@ class EsperaActivaTests(unittest.TestCase):
         def dormir(segundos):
             self.assertIsInstance(self.estado().trenes[0].fase, EsperandoCI)
             self.assertEqual(self.lineas("trabajos.log"), [])
+            with cli.candado_programa(exclusivo=True) as instalador:
+                self.assertFalse(instalador)
             soltar_ci()
             reloj.dormir(segundos)
 
-        def intento(args, vigente=None):
+        def intento(args, instalando=False):
             codigo, resultado = self.contexto.tick(100 + len(stdout_por_tick))
             stdout_por_tick.append(resultado)
             return codigo, resultado
@@ -271,7 +273,9 @@ class EsperaActivaTests(unittest.TestCase):
 class EsperaSecaTests(unittest.TestCase):
     def test_seco_no_espera(self):
         salida = io.StringIO()
+        raiz = tempfile.mkdtemp(prefix="pao-tren-espera-seca-")
         with patch("sys.argv", ["pao-tren", "tick", "--repo", REPO, "--seco"]), \
+                patch.dict(os.environ, {"XDG_STATE_HOME": raiz}), \
                 patch.object(cli, "intento", return_value=(0, {})), \
                 patch.object(cli, "esperar_ci", side_effect=AssertionError("espera en seco")), \
                 redirect_stdout(salida):

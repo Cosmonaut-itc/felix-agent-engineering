@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Entrega durable, planificación en sombra y tick de repos inscritos activos."""
 import argparse
+from contextlib import ExitStack
 import importlib
 import json
 from pathlib import Path
@@ -96,7 +97,7 @@ def parser():
 
 
 def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, frontera=None,
-             escritor=None, vigente=None):
+             escritor=None, instalando=False):
     if args.comando in ("juicio", "pausa") or args.comando == "tick" and not args.seco:
         inscripcion = activacion(args.repo)
         if inscripcion != "activo":
@@ -104,6 +105,8 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                        "comando activo requiere inscripción activa")
             return 2, {"error": mensaje,
                        "inscripcion": inscripcion or "no-inscrito"}
+    if instalando:
+        return 0, {"omitido": "instalacion-en-curso"}
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)
         return 0, medir(requests, events, args.repo, args.desde, args.hasta)
@@ -121,19 +124,6 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
             codigo = subprocess.run(args.orden).returncode
             time.sleep(GRACIA_INSTALACION_S)
         return codigo, {"candado": "tomado", "codigo": codigo}
-    if args.comando != "tick":
-        return con_ledger(args, observador, ahora, git, adaptador, frontera, escritor)
-    # Instalar excluye a los ticks de todos los carriles, también en sombra.
-    with candado_programa(exclusivo=False) as libre:
-        if not libre:
-            return 0, {"omitido": "instalacion-en-curso"}
-        # Entre dos ticks de una cadena, la espera del CI corre sin este candado.
-        if vigente is not None and not vigente():
-            return 0, {"omitido": "programa-cambiado"}
-        return con_ledger(args, observador, ahora, git, adaptador, frontera, escritor)
-
-
-def con_ledger(args, observador, ahora, git, adaptador, frontera, escritor):
     ledger = Ledger()
     ahora = time.time() if ahora is None else ahora
     try:
@@ -360,64 +350,75 @@ def encadenar(un_tick, huella, seguir, tope=ENCADENADOS, esperar=lambda: False):
         antes = despues
 
 
-def intento(args, vigente=None):
+def error_entrada(exc):
+    # Do not echo subprocess argv/output or private config/evidence paths.
+    return 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
+
+
+def intento(args, instalando=False):
     try:
-        return ejecutar(args, vigente=vigente)
+        return ejecutar(args, instalando=instalando)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
-        # Do not echo subprocess argv/output or private config/evidence paths.
-        return 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
+        return error_entrada(exc)
     except sqlite3.Error:
         return 2, {"error": "ledger no disponible"}
 
 
-def main():
-    args = parser().parse_args()
-    if args.comando == "tick":
-        inicial = programa()
+def ticks(args):
+    if args.seco:
+        return [intento(args)]
+    inicial = programa()
+    # Instalar durante un tick no debe mezclar versiones a medio paso.
+    for modulo in PEREZOSOS:
+        importlib.import_module(modulo)
+    limite = ARRANQUE + PLAZO_ESPERA_CI_S
 
-        def vigente():
-            return inicial is not None and programa() == inicial
+    def vigente():
+        return inicial is not None and programa() == inicial
 
-        def un_tick():
-            # Sin huella del arranque no hay con qué comparar: corre un tick, como antes.
-            return intento(args, vigente=vigente if inicial is not None else None)
+    def seguir():
+        # La cuota tarda; el programa se compara justo antes del siguiente tick.
+        return inicial is not None and cuota() and vigente()
 
-    if args.comando == "tick" and not args.seco:
-        # Instalar durante un tick no debe mezclar versiones a medio paso.
-        for modulo in PEREZOSOS:
-            importlib.import_module(modulo)
-        limite = ARRANQUE + PLAZO_ESPERA_CI_S
+    def gh(argv, *, timeout, **opciones):
+        restante = limite - time.monotonic()
+        if restante <= 0:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return subprocess.run(argv, timeout=min(timeout, restante), **opciones)
 
-        def seguir():
-            # La cuota tarda; el programa se compara justo antes del siguiente tick.
-            return inicial is not None and cuota() and vigente()
+    def esperar():
+        if time.monotonic() + INTERVALO_SONDEO_CI_S > limite or not seguir():
+            return False
+        try:
+            ruta = args.config or directorio_estado() / "config.json"
+            observador = GitHubGit(configuracion(ruta, args.repo), ejecutar=gh, activo=True)
+        except ERRORES_LECTURA:
+            return False
+        return esperar_ci(args.repo, limite, estado_para_espera, observador.ci_candidato,
+                          vigente, time.sleep, time.monotonic)
 
-        def gh(argv, *, timeout, **opciones):
-            restante = limite - time.monotonic()
-            if restante <= 0:
-                raise subprocess.TimeoutExpired(argv, timeout)
-            return subprocess.run(argv, timeout=min(timeout, restante), **opciones)
+    return encadenar(lambda: intento(args), lambda: huella(args.repo), seguir, esperar=esperar)
 
-        def esperar():
-            if time.monotonic() + INTERVALO_SONDEO_CI_S > limite or not seguir():
-                return False
-            try:
-                ruta = args.config or directorio_estado() / "config.json"
-                observador = GitHubGit(configuracion(ruta, args.repo), ejecutar=gh, activo=True)
-            except ERRORES_LECTURA:
-                return False
-            return esperar_ci(args.repo, limite, estado_para_espera, observador.ci_candidato,
-                              vigente, time.sleep, time.monotonic)
 
-        pasos = encadenar(un_tick, lambda: huella(args.repo), seguir, esperar=esperar)
-    elif args.comando == "tick":
-        pasos = [un_tick()]
-    else:
-        pasos = [intento(args)]
+def emitir(pasos):
     codigo = 2
     for codigo, resultado in pasos:
         print(json.dumps(resultado, sort_keys=True, ensure_ascii=False), flush=True)
     return codigo
+
+
+def main():
+    args = parser().parse_args()
+    if args.comando != "tick":
+        return emitir([intento(args)])
+    with ExitStack() as pila:
+        try:
+            # El proceso de un tick conserva este candado hasta salir: instalar lo excluye entero.
+            libre = pila.enter_context(candado_programa(exclusivo=False))
+        except OSError as exc:
+            # Sin el candado no corre ningún tick.
+            return emitir([error_entrada(exc)])
+        return emitir(ticks(args) if libre else [intento(args, instalando=True)])
 
 
 if __name__ == "__main__":

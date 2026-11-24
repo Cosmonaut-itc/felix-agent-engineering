@@ -9,7 +9,7 @@ import tempfile
 import unittest
 from unittest.mock import Mock, patch
 
-from test_sen_7280_cadena import CadenaActivaTests as ContextoCadena, REPO, cli
+from test_sen_7280_cadena import REPO, cli
 
 PROBAR_CANDADO = ("import fcntl, sys\n"
                   "with open(sys.argv[1], 'a') as candado:\n"
@@ -74,70 +74,23 @@ class CandadoTests(unittest.TestCase):
         self.assertFalse(marca.exists())
 
 
-class TickBajoCandadoTests(unittest.TestCase):
-    comando = ContextoCadena.comando
-    commit = ContextoCadena.commit
-    push = ContextoCadena.push
-    remoto = ContextoCadena.remoto
-    setUp = ContextoCadena.setUp
-    ledger = ContextoCadena.ledger
-    estado = ContextoCadena.estado
-    lineas = ContextoCadena.lineas
-
-    def tick(self, vigente, *opciones):
-        c = self.contexto
-        args = cli.parser().parse_args(["tick", "--repo", REPO, *opciones])
-        return cli.ejecutar(args, c.observador, 100, c.git, c.hasito, None, c.escritor,
-                            vigente=vigente)
-
-    def test_programa_cambiado_o_instalacion_en_curso_no_abre_el_ledger_ni_observa(self):
-        observador = self.contexto.observador
-        for opciones, modo in (((), "activo"), (("--seco",), "sombra")):
-            with self.subTest(opciones=opciones), \
-                    patch.object(observador, "observar", wraps=observador.observar) as observar:
-                with patch.object(cli, "Ledger", side_effect=AssertionError("abrió el ledger")):
-                    self.assertEqual(self.tick(lambda: False, *opciones),
-                                     (0, {"omitido": "programa-cambiado"}))
-                    with cli.candado_programa(exclusivo=True) as instalador:
-                        self.assertTrue(instalador)
-                        self.assertEqual(self.tick(lambda: True, *opciones),
-                                         (0, {"omitido": "instalacion-en-curso"}))
-                observar.assert_not_called()
-                codigo, resultado = self.tick(lambda: True, *opciones)
-                self.assertEqual((codigo, resultado["modo"]), (0, modo))
-                observar.assert_called_once()
-
-    def test_sin_inscripcion_activa_el_tick_activo_responde_su_error(self):
-        error = {"error": "tick activo requiere inscripción activa", "inscripcion": "sombra"}
-        with cli.candado_programa(exclusivo=True) as instalador, \
-                patch.object(cli, "activacion", lambda repo: "sombra"):
-            self.assertTrue(instalador)
-            self.assertEqual(self.tick(lambda: False), (2, error))
-
-    def test_el_tick_tiene_el_candado_compartido_mientras_corre(self):
-        observador = self.contexto.observador
-        observar = observador.observar
-        for opciones in ((), ("--seco",)):
-            with self.subTest(opciones=opciones):
-                vistos = []
-
-                def espiar(estado, ahora):
-                    with cli.candado_programa(exclusivo=True) as instalador:
-                        vistos.append(instalador)
-                    return observar(estado, ahora)
-
-                with patch.object(observador, "observar", espiar):
-                    self.assertEqual(self.tick(lambda: True, *opciones)[0], 0)
-                self.assertEqual(vistos, [False])
-                with cli.candado_programa(exclusivo=True) as instalador:
-                    self.assertTrue(instalador)
+def instalable():
+    with cli.candado_programa(exclusivo=True) as libre:
+        return libre
 
 
-class MainTests(unittest.TestCase):
-    def correr(self, *opciones, programa=lambda: "igual", **parches):
+class ProcesoTests(unittest.TestCase):
+    """`main` con el candado real: lo que hace el proceso de un tick."""
+    def setUp(self):
+        self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-proceso-"))
+        entorno = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz)})
+        entorno.start()
+        self.addCleanup(entorno.stop)
+
+    def correr(self, *opciones, **parches):
         salida = io.StringIO()
-        parches = {"huella": lambda repo: None, "cuota": lambda: False, "programa": programa,
-                   **parches}
+        parches = {"activacion": lambda repo: "activo", "huella": lambda repo: None,
+                   "cuota": lambda: False, **parches}
         with ExitStack() as pila:
             pila.enter_context(patch("sys.argv", ["pao-tren", "tick", "--repo", REPO, *opciones]))
             for nombre, valor in parches.items():
@@ -146,35 +99,64 @@ class MainTests(unittest.TestCase):
             codigo = cli.main()
         return codigo, [json.loads(linea) for linea in salida.getvalue().splitlines()]
 
-    def test_cada_tick_recibe_la_comparacion_con_el_programa_del_arranque(self):
+    def test_con_una_instalacion_en_curso_responde_una_linea_y_no_toca_nada(self):
+        prohibido = Mock(side_effect=AssertionError("el proceso omitido siguió"))
         for opciones in ((), ("--seco",)):
-            with self.subTest(opciones=opciones):
-                instalado, vistos = ["igual"], []
+            with self.subTest(opciones=opciones), \
+                    cli.candado_programa(exclusivo=True) as instalador:
+                self.assertTrue(instalador)
+                self.assertEqual(
+                    self.correr(*opciones, Ledger=prohibido, huella=prohibido, cuota=prohibido,
+                                programa=prohibido, esperar_ci=prohibido),
+                    (0, [{"omitido": "instalacion-en-curso"}]))
+        self.assertFalse((self.raiz / "pao-tren/ledger.sqlite3").exists())
 
-                def intento(args, vigente=None):
-                    vistos.append(vigente())
-                    instalado[0] = "nuevo"
-                    vistos.append(vigente())
-                    return 0, {}
-
-                self.assertEqual(self.correr(*opciones, programa=lambda: instalado[0],
-                                             intento=intento), (0, [{}]))
-                self.assertEqual(vistos, [True, False])
-
-    def test_sin_huella_del_arranque_corre_un_tick_sin_comparar(self):
-        for opciones in ((), ("--seco",)):
-            with self.subTest(opciones=opciones):
-                intento = Mock(return_value=(0, {}))
-                self.assertEqual(self.correr(*opciones, programa=lambda: None, intento=intento),
-                                 (0, [{}]))
-                self.assertIsNone(intento.call_args.kwargs["vigente"])
+    def test_sin_inscripcion_activa_el_tick_activo_responde_su_error(self):
+        error = {"error": "tick activo requiere inscripción activa", "inscripcion": "sombra"}
+        for instalar in (False, True):
+            with self.subTest(instalar=instalar), \
+                    cli.candado_programa(exclusivo=instalar) as tomado:
+                self.assertTrue(tomado)
+                self.assertEqual(self.correr(activacion=lambda repo: "sombra"), (2, [error]))
 
     def test_un_registro_de_inscritos_ilegible_responde_el_error_de_siempre(self):
-        raiz = tempfile.mkdtemp(prefix="pao-tren-ilegible-")
-        with patch.dict(os.environ, {"XDG_STATE_HOME": raiz}):
-            self.assertEqual(
-                self.correr(activacion=Mock(side_effect=OSError("registro ilegible"))),
-                (2, [{"clase": "OSError", "error": "entrada u observación inválida"}]))
+        error = {"clase": "OSError", "error": "entrada u observación inválida"}
+        for instalar in (False, True):
+            with self.subTest(instalar=instalar), \
+                    cli.candado_programa(exclusivo=instalar) as tomado:
+                self.assertTrue(tomado)
+                self.assertEqual(
+                    self.correr(activacion=Mock(side_effect=OSError("registro ilegible"))),
+                    (2, [error]))
+
+    def test_sin_poder_tomar_el_candado_no_corre_ningun_tick(self):
+        (self.raiz / "pao-tren").write_text("no es un directorio")
+        intento = Mock(side_effect=AssertionError("corrió un tick"))
+        for opciones in ((), ("--seco",)):
+            with self.subTest(opciones=opciones):
+                codigo, lineas = self.correr(*opciones, intento=intento)
+                self.assertEqual((codigo, [linea["error"] for linea in lineas]),
+                                 (2, ["entrada u observación inválida"]))
+
+    def test_el_proceso_conserva_el_candado_entre_ticks_y_lo_suelta_al_salir(self):
+        for opciones in ((), ("--seco",)):
+            with self.subTest(opciones=opciones):
+                vistos, huellas = [], iter("abb")
+
+                def espiar(valor):
+                    def llamada(*args, **kwargs):
+                        vistos.append(instalable())
+                        return valor() if callable(valor) else valor
+                    return llamada
+
+                self.assertEqual(
+                    self.correr(*opciones, intento=espiar((0, {})), cuota=espiar(True),
+                                huella=espiar(lambda: next(huellas)), programa=lambda: "igual"),
+                    (0, [{}] * (1 if opciones else 2)))
+                # Activo: huella, tick, huella, cuota, tick, huella. Seco: un tick.
+                self.assertEqual(vistos, [False] * (1 if opciones else 6))
+                with cli.candado_programa(exclusivo=True) as instalador:
+                    self.assertTrue(instalador)
 
 
 if __name__ == "__main__":

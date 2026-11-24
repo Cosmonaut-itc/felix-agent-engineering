@@ -245,7 +245,7 @@ del ledger o de la configuración, o si ya no cabe otro intervalo.
 Un CI verde o rojo da paso a otro tick si la cuota y el programa todavía
 lo permiten. Si ese tick deja la huella igual, la cadena termina.
 
-Cada tick de la cadena toma y suelta sus candados y observa de nuevo.
+Cada tick de la cadena toma y suelta el candado del carril y observa de nuevo.
 `stdout.log` recibe una línea JSON por tick y el proceso sale con el código
 del último. `tick --seco` corre un solo tick.
 
@@ -266,53 +266,48 @@ del programa tomado:
 pao-tren candado -- git -C <checkout instalado> merge --ff-only <sha>
 ```
 
-`candado` toma en exclusiva el candado del programa (`programa.lock`, en el
-directorio de estado) sin esperar, y corre el comando. Después conserva el
-candado 5 s más, lo suelta y sale con el código del comando. Su última línea
-es `{"candado": "tomado", "codigo": N}`. Cada tick, activo o `--seco` y de
-cualquier carril, tiene ese candado compartido mientras corre. Si hay alguno,
-`candado` sale con 75 y `{"candado": "ocupado"}` sin correr el comando:
-reintenta después. No crea el ledger: sin él sale con 2.
+El candado del programa es `programa.lock`, en el directorio de estado. Cada
+proceso `pao-tren tick`, activo o `--seco` y de cualquier carril, lo toma
+compartido al arrancar y lo conserva hasta salir: mientras corre sus ticks,
+mientras espera el CI y mientras espera una suite.
 
-Un tick de cualquier carril impide instalar hasta que termina. El tick que
-espera una suite retiene el candado todo ese tiempo, que en Jale ronda los 90
-minutos. `candado` no espera ni interrumpe ese tick: mientras la suite corre,
-cada reintento sale con 75. Si la cola del host de pruebas está en pausa o
-retenida, la suite no termina sola y la instalación pide antes resolver esa
-cola.
+`candado` lo toma en exclusiva sin esperar y corre el comando. Después
+conserva el candado 5 s más, lo suelta y sale con el código del comando. Su
+última línea es `{"candado": "tomado", "codigo": N}`. Si hay algún proceso de
+tick vivo, sale con 75 y `{"candado": "ocupado"}` sin correr el comando. No
+crea el ledger: sin él sale con 2.
 
-Un proceso `pao-tren tick` puede seguir vivo, sin ningún candado, mientras
-espera el CI. Por eso la ausencia de procesos no indica cuándo instalar. Dos
-comprobaciones impiden que un tick, activo o `--seco`, corra con un programa
-distinto del que cargó. En las dos el tick sale con 0 sin abrir el ledger ni
-observar, y el siguiente disparo de launchd corre con el programa nuevo:
+Un proceso de tick que arranca mientras alguien instala escribe
+`{"omitido": "instalacion-en-curso"}` y sale con 0. No abre el ledger, no
+observa, no encadena y no espera el CI. Esa línea en `stdout.log` no es un
+tick; el siguiente disparo de launchd corre con el programa nuevo. Un tick
+activo sin inscripción activa, o con el registro de inscritos ilegible,
+responde su error de siempre y sale con 2. Un proceso que arranca a media
+instalación pudo cargar módulos de dos versiones; los 5 s de más cubren su
+arranque, porque prueba el candado en cuanto termina de cargar.
 
-- Cada tick toma el candado compartido antes de abrir el ledger y de esperar
-  el candado del carril. Si alguien instala, devuelve
-  `{"omitido": "instalacion-en-curso"}`. Un proceso que arranca a media
-  instalación pudo cargar módulos de dos versiones; los 5 s de más cubren su
-  arranque, y su primer tick encuentra el candado tomado.
-- Ya con el candado, el tick compara el programa instalado con el del
-  arranque. Si cambió, devuelve `{"omitido": "programa-cambiado"}`. Es el caso
-  de un proceso que esperaba el CI durante la instalación.
+Cuándo sale 75:
 
-Un tick activo sin inscripción activa responde su error y sale con 2 antes de
-probar el candado.
-
-Una línea `omitido` en `stdout.log` no es un tick.
+- Con un tren en `EsperandoCI`, el proceso del tick activo vive hasta 100 s
+  de cada 120. Reintenta cada pocos segundos hasta caer en el hueco:
+  `until pao-tren candado -- <comando>; [ $? -ne 75 ]; do sleep 2; done`.
+- El tick que espera una suite retiene el candado todo ese tiempo, que en
+  Jale ronda los 90 minutos. `candado` no espera ni interrumpe ese tick. Si
+  la cola del host de pruebas está en pausa o retenida, la suite no termina
+  sola y la instalación pide antes resolver esa cola.
 
 Límites conocidos:
 
 - Sólo queda cubierta una instalación hecha con `candado`.
 - `estado`, `entregar`, `juicio`, `pausa` y los comandos de medición no toman
   el candado del programa.
-- Un proceso que tarda más de 5 s en arrancar a media instalación no queda
+- Un proceso que tarda más de 5 s en cargar a media instalación no queda
   cubierto.
 - Si `pao-tren candado` muere por una señal, su comando hijo sigue sin el
   candado.
 - Un proceso que arranca a media instalación puede fallar al importar un
-  módulo y salir con 1 antes de llegar al candado. No abre el ledger, y el
-  siguiente disparo de launchd corre normal.
+  módulo de cabecera y salir con 1 antes de llegar al candado. No abre el
+  ledger, y el siguiente disparo de launchd corre normal.
 
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
