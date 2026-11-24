@@ -582,10 +582,12 @@ function trenPlace(place){
 }
 function trenRun(run, trial=false){
   const cell=trenNode('div','run'), top=trenNode('div','r-top');
-  // Unida a una tarea del rack, cuenta desde el mismo inicio que su tarjeta de host.
-  const joined=!!run.rack && run.estado!=='terminada', begun=joined ? run.rack_inicio : run.inicio;
-  const elapsed=begun==null ? null : Math.max(0,(run.fin ?? NOW)-begun);
   const estimate=run.est, based=!!estimate && known({est:estimate}), running=trial || run.estado==='corriendo';
+  // Con lugar en Pueue, el tiempo de ejecución sale sólo de la tarea unida, con el inicio de su tarjeta de host.
+  const joined=!!run.rack && run.estado!=='terminada';
+  const hostless=running && !joined && run.lugar.pueue_id!=null && (run.lugar.tipo==='desk' || run.lugar.tipo==='mini');
+  const begun=hostless ? null : joined ? run.rack_inicio : run.inicio;
+  const elapsed=begun==null ? null : Math.max(0,(run.fin ?? NOW)-begun);
   const time=trenNode('span','r-time');
   if(run.estado==='terminada'){
     const result=run.resultado==='verde' ? 'Verde' : run.resultado==='rojo' ?
@@ -594,7 +596,7 @@ function trenRun(run, trial=false){
     if(elapsed!=null) time.append(trenNode('span','',' · '+trenDur(elapsed)));
   }else{
     const status=run.estado==='pendiente-75' ? 'Sin terminar · salida 75' :
-      run.estado==='en-fila' || joined && begun==null ? 'En fila' : '';
+      run.estado==='en-fila' || joined && begun==null ? 'En fila' : hostless ? 'Sin dato del host' : '';
     let duration=elapsed==null ? '' : trenDur(elapsed);
     if(running && estimate){
       const over=elapsed!=null && elapsed>estimate.high;

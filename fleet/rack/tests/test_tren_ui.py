@@ -134,8 +134,8 @@ def scenarios():
         projection = {}
         for name in ('rojo', 'verde', 'suite', 'pausa', 'vacio', 'etapas', 'extremo', 'texto',
                      'error', 'datos-antiguos', 'historial-antiguo', 'sin-repos',
-                     'absuelto', 'disperso', 'cola', 'turno', 'reentrega'):
-            source = {'historial-antiguo': 'extremo', 'disperso': 'suite', 'turno': 'suite'}.get(name, name)
+                     'absuelto', 'disperso', 'cola', 'turno', 'reentrega', 'sin-lectura'):
+            source = {'historial-antiguo': 'extremo', 'disperso': 'suite', 'turno': 'suite', 'sin-lectura': 'cola'}.get(name, name)
             data = raw.get(source, raw['pausa'])
             validated = contract.tren.valid_tren(data, rack.tren_repos, NOW)
             rack.tren_good = None if name=='sin-repos' else (NOW, validated)
@@ -148,6 +148,9 @@ def scenarios():
             if name == 'extremo':
                 # El ensayo unido es la tarea del desk: arrancó cuando él y ya pasó su rango.
                 host_view = [dict(hosts[0], snapshot=dict(snap, tasks=[dict(running, start=NOW-6000)]))]
+            if name == 'sin-lectura':
+                # El recolector falló: el rack conserva la lectura vieja, la marca y no la une.
+                host_view = [dict(hosts[0], fresh=False, error='No se pudo leer el host: TimeoutExpired')]
             if name == 'turno':
                 waiting = dict(running, state='Queued', start=None)
                 host_view = [dict(hosts[0], snapshot=dict(snap, tasks=[waiting]))]
@@ -255,13 +258,22 @@ class TrenUITests(unittest.TestCase):
         self.assertIn('En fila · Suele tardar 11–15 min', waiting['text'])
         self.assertEqual(nodes(waiting, cls='bar'), [])
 
+    def test_run_without_host_reading_keeps_no_launcher_clock(self):
+        desk = nodes(self.section('sin-lectura'), cls='run')[0]
+        self.assertIn('desk · Pueue 7812', desk['text'])
+        self.assertIn('Sin dato del host', desk['text'])
+        self.assertNotIn('30 min', desk['text'])
+        self.assertEqual(nodes(desk, cls='bar'), [])
+
     def test_running_progress_uses_joined_estimate_only(self):
         section = self.section('suite')
         desk, mini = nodes(section, cls='run')
         self.assertIn('7 min de ~13 min', desk['text'])
         self.assertEqual(len(nodes(desk, cls='bar')), 1)
         self.assertIn('Mini · Pueue 431', mini['text'])
-        self.assertIn('7 min', mini['text'])
+        # Sin tarea unida no hay reloj de ejecución: el lanzador cuenta también la espera de turno.
+        self.assertIn('Sin dato del host', mini['text'])
+        self.assertNotRegex(mini['text'], r'\d+ min')
         self.assertEqual(nodes(mini, cls='bar'), [])
 
     def test_pause_stale_server_error_and_partial_read(self):
