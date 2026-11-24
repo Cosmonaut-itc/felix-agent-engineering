@@ -973,6 +973,12 @@ tick bajo el candado del carril, no un timeout por PR. Un fetch que trae otro
 SHA es propio de ese PR y no corta a los demás. El tick siguiente empieza con
 el presupuesto entero.
 
+Sólo el tick activo lee en paralelo, con hasta cuatro hilos, los datos de
+los PR, sus archivos, evidencias y CI. Los cierres siguen el orden de las
+entradas: `merge-base` y `merge-tree` usan el almacén con su presupuesto de
+transporte compartido, y la última lectura del PR comprueba su vigencia
+después de las demás lecturas de esa entrada.
+
 La sombra, `entregar` y `tick --seco` no reciben almacén: un `GitHubGit` con
 almacén fuera del tick activo es un error. Siguen leyendo `config["git"]`
 sin fetch, y sus eventos `sombra`, `sombra-doble-camino` y `admision-entrega`

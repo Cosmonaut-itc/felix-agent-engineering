@@ -1,6 +1,8 @@
 """Lectura de GitHub/git. Evidencia estructurada y decisiones fail-closed."""
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from fnmatch import fnmatchcase
+from functools import partial
 import json
 from pathlib import Path
 import re
@@ -27,6 +29,8 @@ STATUS_CI = {"success": "verde", "failure": "rojo", "error": "pendiente",
 # Tiempo total de fetch de una observación activa, sumado sobre toda la cola:
 # una caída del remoto no suma un timeout por PR bajo el candado del carril.
 PRESUPUESTO_TRANSPORTE_S = 120
+ERRORES_LECTURA = (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError)
+SIN_LEER = object()
 
 
 class Observador(Protocol):
@@ -73,7 +77,8 @@ def sha(valor):
 
 
 class GitHubGit:
-    def __init__(self, config, ejecutar=None, sombra=False, activo=False, almacen=None):
+    def __init__(self, config, ejecutar=None, sombra=False, activo=False, almacen=None,
+                 paralelas=1):
         # La sombra y --seco nunca traen objetos: sólo el tick activo recibe almacén.
         if almacen is not None and (sombra or not activo):
             raise ValueError("almacén sólo para el tick activo")
@@ -82,6 +87,8 @@ class GitHubGit:
         self.sombra = sombra
         self.activo = activo
         self.almacen = almacen
+        self.paralelas = paralelas
+        self._autorizados_observacion = SIN_LEER
         self.reloj = time.monotonic
         self.reiniciar_transporte()
 
@@ -255,6 +262,10 @@ class GitHubGit:
                            and all(v == "verde" for v in estados.values()) else "pendiente")
 
     def vista(self, entrega):
+        vista, cerrar = self._leer_vista(entrega)
+        return cerrar(self._autorizados_observacion) if cerrar else vista
+
+    def _leer_vista(self, entrega, paralela=False):
         repo, pr = entrega.repo, entrega.pr
         payload = self.api("repos/{}/pulls/{}".format(repo, pr))
         head = payload["head"]["sha"]
@@ -264,7 +275,7 @@ class GitHubGit:
                         abierto=payload["state"] == "open", recibo=entrega.recibo,
                         mergeado=payload.get("merged") is True)
         if head != entrega.head or vista.base != "main" or not vista.abierto:
-            return vista
+            return vista, None
         try:
             archivos = self.api("repos/{}/pulls/{}/files?per_page=100".format(repo, pr), True)
             nombres = [a["filename"] for pagina in archivos for a in pagina]
@@ -279,6 +290,23 @@ class GitHubGit:
             base = payload["base"]["sha"]
             if not sha(base):
                 raise ValueError("base inválida")
+        except (FalloGit, *ERRORES_LECTURA):
+            return replace(vista, completa=False), None
+
+        ci = SIN_LEER
+        if paralela:
+            try:
+                ci = self.ci(repo, head).estado
+            except (FalloGit, *ERRORES_LECTURA):
+                # El cierre aún debe pasar por Git, como cuando el fallo se lee en serie.
+                ci = None
+        return vista, partial(self._cerrar_vista, vista, repo, payload, base, archivos,
+                              nombres, etiquetas, apto, dirigida, ci)
+
+    def _cerrar_vista(self, vista, repo, payload, base, archivos, nombres, etiquetas,
+                      apto, dirigida, ci, autorizados):
+        pr, head = vista.pr, vista.head
+        try:
             leer = self.lector(pr, base, head)
             ancestro = leer("merge-base", base, head)
             if not sha(ancestro):
@@ -289,18 +317,24 @@ class GitHubGit:
             # Both sources must be certain. A stale/unavailable local object retains.
             if payload.get("mergeable") is not True:
                 conflicto = True if payload.get("mergeable") is False else None
-            autorizados = (autorizaciones(self.config) if self.activo else
-                           self.config.get("heads_autorizados", []))
+            if autorizados is SIN_LEER:
+                autorizados = self._autorizados()
+            if self.activo and autorizados is None:
+                raise ValueError("autorizaciones inválidas")
             # Un renombre también saca el archivo de su ruta anterior.
             anteriores = [a["previous_filename"] for pagina in archivos for a in pagina
                           if a.get("status") == "renamed"]
             categorias = categorias_sensibles(nombres + anteriores, self.config)
+            if ci is SIN_LEER:
+                ci = self.ci(repo, head).estado
+            if ci is None:
+                return replace(vista, completa=False)
             vista = replace(vista,
                 apto=apto.get("veredicto") == "APTO" and apto.get("head") == head,
                 hallazgos=apto.get("hallazgos_abiertos")
                 if type(apto.get("hallazgos_abiertos")) is int else None,
                 dirigida=dirigida.get("head") == head and dirigida.get("resultado") == "limpio",
-                ci=self.ci(repo, head).estado, conflicto=conflicto,
+                ci=ci, conflicto=conflicto,
                 sensible=bool(categorias),
                 sensible_en_lote=bool(categorias) and categorias.issubset(
                     self.config.get("sensibles_en_lote", [])),
@@ -318,8 +352,22 @@ class GitHubGit:
                     or final["state"] != payload["state"]):
                 return replace(vista, completa=False)
             return vista
-        except (FalloGit, OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
+        except (FalloGit, *ERRORES_LECTURA):
             return replace(vista, completa=False)
+
+    def _autorizados(self):
+        return (autorizaciones(self.config) if self.activo else
+                self.config.get("heads_autorizados", []))
+
+    def _leer_entrega(self, entrega):
+        try:
+            return self._leer_vista(entrega, paralela=True)
+        except ERRORES_LECTURA:
+            return self._vista_incompleta(entrega), None
+
+    @staticmethod
+    def _vista_incompleta(entrega):
+        return VistaPR(entrega.pr, entrega.head, completa=False, recibo=entrega.recibo)
 
     def observar(self, estado, ahora):
         # El bare se valida y el presupuesto de fetch corre una vez por
@@ -330,7 +378,7 @@ class GitHubGit:
         base = rama["object"]["sha"]
         if not sha(base):
             raise ValueError("main inválido")
-        vistas = []
+        entregas = []
         terminales = {t.id for t in estado.trenes if isinstance(t.fase, Terminal)}
         for entrada in estado.entradas:
             # En sombra se sigue un rechazo hasta observar su posible merge externo.
@@ -338,11 +386,28 @@ class GitHubGit:
                     (isinstance(entrada.admision, Rechazado) and not self.sombra) or
                     (self.activo and entrada.tren in terminales)):
                 continue
+            entregas.append(entrada.entrega)
+        try:
+            autorizados = self._autorizados()
+        except ERRORES_LECTURA:
+            # Sólo quedan incompletas las vistas que necesitan autorización.
+            autorizados = None
+        if self.paralelas > 1:
+            with ThreadPoolExecutor(max_workers=self.paralelas) as pool:
+                lecturas = list(pool.map(self._leer_entrega, entregas))
+            vistas = [cerrar(autorizados) if cerrar else vista for vista, cerrar in lecturas]
+        else:
+            vistas = []
+            # El camino serial sigue pasando por el método público vista.
+            self._autorizados_observacion = autorizados
             try:
-                vistas.append(self.vista(entrada.entrega))
-            except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError):
-                vistas.append(VistaPR(entrada.entrega.pr, entrada.entrega.head,
-                                      completa=False, recibo=entrada.entrega.recibo))
+                for entrega in entregas:
+                    try:
+                        vistas.append(self.vista(entrega))
+                    except ERRORES_LECTURA:
+                        vistas.append(self._vista_incompleta(entrega))
+            finally:
+                self._autorizados_observacion = SIN_LEER
         observacion = Observacion(ahora, base, tuple(vistas),
                                  self.config.get("excluir_alto_riesgo", True),
                                  costo_suite_sana_s=self.config.get("costo_suite_sana_s", 0)
