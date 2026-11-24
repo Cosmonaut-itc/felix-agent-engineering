@@ -4,6 +4,8 @@ La observación devuelta conserva las vistas de admisión del llamador. Publicar
 la rama solicita CI, pero nunca declara CI verde: eso requiere otra lectura.
 """
 from dataclasses import dataclass, replace
+import subprocess
+from typing import Optional
 
 from dominio import (Admitido, Armado, Candidato, ConflictoCadena, Congelado,
                      Corriendo, Diagnosticando, Efecto, EnBase, EsperandoCI, Incierto,
@@ -26,6 +28,7 @@ class EfectoFallido(Exception):
 class Ejecucion:
     observacion: Observacion
     completo: bool
+    aviso: Optional[dict] = None
 
 
 def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
@@ -79,8 +82,8 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                 if recibo is None:
                     return Ejecucion(limpia, False)
                 ruta, resultado = recibo
-                # La clave sólo pudo lanzarse con CI verde sobre este C. Al
-                # recuperar no sustituir esa evidencia por el CI de hoy.
+                # Consumir la suite requiere haber acreditado CI verde sobre C.
+                # Al recuperar se conserva esa evidencia.
                 return Ejecucion(replace(limpia, suite=ruta, resultado_suite=resultado,
                     ci_candidato="verde", ci_recibo=recibo_ci(tren) if fase.solicitud else
                     observacion.ci_recibo if observacion.ci_candidato == "verde"
@@ -130,7 +133,17 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
                                     ci_candidato="pendiente", suite=None), True)
         if not isinstance(resultado, Publicado):
             raise EfectoFallido(resultado)
-        return Ejecucion(replace(limpia, ci_candidato="pendiente", suite=None), True)
+        aviso = None
+        prelanzar = getattr(adaptador, "prelanzar", None)
+        if prelanzar is not None:
+            try:
+                prelanzar(fase.candidato, tren.id)
+            except (ResultadoInvalido, FalloSnapshot, OSError, subprocess.SubprocessError) as exc:
+                clase = type(exc).__name__
+                motivo = (exc.resultado.codigo if isinstance(exc, ResultadoInvalido) else
+                          str(exc) if isinstance(exc, FalloSnapshot) else clase)
+                aviso = {"tren": tren.id, "motivo": motivo, "clase": clase}
+        return Ejecucion(replace(limpia, ci_candidato="pendiente", suite=None), True, aviso)
     if efecto.tipo == "promover" and isinstance(fase, Promoviendo):
         if efecto != efecto_promover(tren.id, fase.intentos):
             raise ValueError("intento de promoción obsoleto")
