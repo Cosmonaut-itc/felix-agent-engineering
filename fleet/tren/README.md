@@ -303,6 +303,8 @@ Límites conocidos:
   el candado del programa.
 - Un proceso que tarda más de 5 s en cargar a media instalación no queda
   cubierto.
+- Sin directorio de estado no hay candado: el primer tick de una máquina, que
+  lo crea, corre sin él.
 - Si `pao-tren candado` muere por una señal, su comando hijo sigue sin el
   candado.
 - Un proceso que arranca a media instalación puede fallar al importar un

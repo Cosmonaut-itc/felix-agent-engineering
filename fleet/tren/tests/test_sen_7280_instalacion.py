@@ -83,6 +83,7 @@ class ProcesoTests(unittest.TestCase):
     """`main` con el candado real: lo que hace el proceso de un tick."""
     def setUp(self):
         self.raiz = Path(tempfile.mkdtemp(prefix="pao-tren-proceso-"))
+        (self.raiz / "pao-tren").mkdir()
         entorno = patch.dict(os.environ, {"XDG_STATE_HOME": str(self.raiz)})
         entorno.start()
         self.addCleanup(entorno.stop)
@@ -129,8 +130,16 @@ class ProcesoTests(unittest.TestCase):
                     self.correr(activacion=Mock(side_effect=OSError("registro ilegible"))),
                     (2, [error]))
 
+    def test_sin_directorio_de_estado_el_tick_corre_y_no_lo_crea(self):
+        (self.raiz / "pao-tren").rmdir()
+        for opciones in ((), ("--seco",)):
+            with self.subTest(opciones=opciones):
+                self.assertEqual(self.correr(*opciones, intento=Mock(return_value=(0, {}))),
+                                 (0, [{}]))
+                self.assertFalse((self.raiz / "pao-tren").exists())
+
     def test_sin_poder_tomar_el_candado_no_corre_ningun_tick(self):
-        (self.raiz / "pao-tren").write_text("no es un directorio")
+        (self.raiz / "pao-tren/programa.lock").mkdir()
         intento = Mock(side_effect=AssertionError("corrió un tick"))
         for opciones in ((), ("--seco",)):
             with self.subTest(opciones=opciones):
@@ -151,7 +160,8 @@ class ProcesoTests(unittest.TestCase):
 
                 self.assertEqual(
                     self.correr(*opciones, intento=espiar((0, {})), cuota=espiar(True),
-                                huella=espiar(lambda: next(huellas)), programa=lambda: "igual"),
+                                huella=espiar(lambda: next(huellas)), programa=lambda: "igual",
+                                ARRANQUE=float("-inf")),
                     (0, [{}] * (1 if opciones else 2)))
                 # Activo: huella, tick, huella, cuota, tick, huella. Seco: un tick.
                 self.assertEqual(vistos, [False] * (1 if opciones else 6))

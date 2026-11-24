@@ -30,7 +30,10 @@ def candado_programa(exclusivo):
     Nunca espera: rinde falso, sin tomar nada, si el candado está ocupado.
     """
     raiz = directorio_estado()
-    raiz.mkdir(parents=True, exist_ok=True, mode=0o700)
+    if not exclusivo and not raiz.is_dir():
+        # Sin directorio de estado no hay ledger, y nadie instala sin ledger.
+        yield True
+        return
     # Append/open preserves the inode; never retire lock files.
     with (raiz / "programa.lock").open("a") as handle:
         try:
