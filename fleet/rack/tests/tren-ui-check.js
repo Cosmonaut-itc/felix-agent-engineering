@@ -2,6 +2,7 @@
 const vm = require('node:vm'), fs = require('node:fs');
 const input = JSON.parse(fs.readFileSync(0, 'utf8'));
 const elements = {}, writes = [];
+let active = null;
 
 class Element {
   constructor(tag) {
@@ -26,7 +27,14 @@ class Element {
     const parent = this.parentElement;
     parent.children.splice(parent.children.indexOf(this), 1);
   }
-  focus() {}
+  focus() { active = this; }
+  closest(selector) {
+    if (selector !== '[data-tren-focus]') return null;
+    for (let node = this; node instanceof Element; node = node.parentElement) {
+      if (node.dataset.trenFocus != null) return node;
+    }
+    return null;
+  }
   setAttribute(name, value) { this[name] = String(value); }
   addEventListener(event, handler) { this.events[event] = handler; }
   get textContent() {
@@ -55,6 +63,11 @@ const tree = node => ({
   tag: node.tagName, cls: node.className, text: node.textContent, href: node.href,
   children: elementChildren(node).map(tree)
 });
+const descendants = node => [node, ...elementChildren(node).flatMap(descendants)];
+const connected = node => {
+  for (let at = node; at instanceof Element; at = at.parentElement) if (at === elements.app) return true;
+  return false;
+};
 function moreButtons(node) {
   if (node.dataset.trenMore) return [node];
   return elementChildren(node).flatMap(moreButtons);
@@ -65,7 +78,10 @@ const context = {
   document: {
     getElementById: id => elements[id] ||= new Element(id === 'app' ? 'app' : 'div'),
     createElement: tag => new Element(tag),
-    addEventListener() {}, querySelector: () => null, querySelectorAll: () => []
+    get activeElement() { return active; },
+    addEventListener() {}, querySelector: () => null,
+    querySelectorAll: selector => selector === '[data-tren-focus]'
+      ? descendants(elements.app).filter(node => node.dataset.trenFocus != null) : []
   },
   window: {addEventListener() {}}, setInterval() {}, setTimeout() {}, clearTimeout() {},
   sessionStorage: {getItem() { return null; }, setItem() {}}, fetch: async () => ({ok: false}),
@@ -78,9 +94,18 @@ if (input.expand) {
   for (const button of moreButtons(elements.app)) button.events.click();
   vm.runInContext('paint()', context);
 }
+let focus = null;
+if (input.focus) {
+  // Un refresco con la misma instantánea no debe sacar el foco de la sección.
+  if (input.focus === 'mas') moreButtons(elements.app)[0].events.click();
+  else descendants(elements.app).find(node => node.tagName === 'A').focus();
+  const before = active.dataset.trenFocus;
+  vm.runInContext('paint()', context);
+  focus = {before, after: active?.dataset.trenFocus, connected: connected(active), tag: active?.tagName};
+}
 const children = elementChildren(elements.app);
 process.stdout.write(JSON.stringify({
   order: children.map(node => node.className),
   sections: children.filter(node => node.tagName === 'SECTION').map(tree),
-  html: elements.app.innerHTML, writes
+  html: elements.app.innerHTML, writes, focus
 }));

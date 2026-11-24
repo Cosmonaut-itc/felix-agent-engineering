@@ -76,8 +76,15 @@ def documents():
     hostile = copy.deepcopy(red)
     hostile['repos'][0]['lote']['ensayo']['unidad'] = HOSTILE
 
+    # «Suite nueva» cierra el lote como ABSUELTO y vuelve a armar el mismo candidato en otro.
+    absolved = copy.deepcopy(red)
+    absolved['repos'][0]['recientes'] = [
+        dict(id='ab5e17000001', resultado='ABSUELTO', cierre=NOW-3000, fin=NOW-600,
+             miembros=[finished_member(912, 'ABSUELTO')])
+    ]
+
     return dict(rojo=red, verde=green, suite=running, pausa=paused, vacio=empty, etapas=errors,
-                extremo=worst, texto=hostile)
+                extremo=worst, texto=hostile, absuelto=absolved)
 
 
 def finished_member(pr, result):
@@ -108,13 +115,16 @@ def scenarios():
         running = contract.task(id=7812, start=NOW-420,
                                 activity=dict(last=None, kind='chain', ref='job-abcDEF12'))
         estimate = dict(typical=780, low=660, high=900, n=5)
+        # History.estimate publica rangos así; la tarjeta de host no les dibuja barra.
+        scattered = dict(typical=240, low=180, high=2400, n=5)
         hosts = [dict(id='desk', name='desk', fresh=True, age=0, estimates={'7812': estimate},
                       actions=dict(reason=None), snapshot=dict(snap, tasks=[running]))]
 
         projection = {}
         for name in ('rojo', 'verde', 'suite', 'pausa', 'vacio', 'etapas', 'extremo', 'texto',
-                     'error', 'datos-antiguos', 'historial-antiguo', 'sin-repos'):
-            source = 'extremo' if name == 'historial-antiguo' else name
+                     'error', 'datos-antiguos', 'historial-antiguo', 'sin-repos',
+                     'absuelto', 'disperso'):
+            source = {'historial-antiguo': 'extremo', 'disperso': 'suite'}.get(name, name)
             data = raw.get(source, raw['pausa'])
             validated = contract.tren.valid_tren(data, rack.tren_repos, NOW)
             rack.tren_good = None if name=='sin-repos' else (NOW, validated)
@@ -122,6 +132,8 @@ def scenarios():
             now = NOW+19*60 if name in ('datos-antiguos', 'historial-antiguo') else NOW
             rack.pulls[REPO+'#912']['title'] = HOSTILE if name=='texto' else 'Recibos de nómina: redondeo de ISR'
             host_view = hosts if name in ('suite', 'extremo') else [dict(hosts[0], estimates={}, snapshot=snap)]
+            if name == 'disperso':
+                host_view = [dict(hosts[0], estimates={'7812': scattered})]
             projection[name] = dict(now=now, tickets={}, hosts=host_view, tren=rack.tren_view(host_view, now))
 
     projection['sin-tren'] = dict(now=NOW, tickets={}, hosts=projection['sin-repos']['hosts'])
@@ -142,10 +154,10 @@ def nodes(root, *, cls=None, tag=None):
 
 
 class TrenUITests(unittest.TestCase):
-    def view(self, name, expand=False):
+    def view(self, name, expand=False, focus=None):
         source = (BASE/'index.html').read_text().split('<script>', 1)[1].split('</script>', 1)[0]
         run = subprocess.run(['node', str(BASE/'tests/tren-ui-check.js')],
-                             input=json.dumps(dict(js=source, fixture=scenarios()[name], expand=expand)),
+                             input=json.dumps(dict(js=source, fixture=scenarios()[name], expand=expand, focus=focus)),
                              text=True, capture_output=True, timeout=10)
         self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
         return json.loads(run.stdout)
@@ -191,6 +203,24 @@ class TrenUITests(unittest.TestCase):
         self.assertIn('En espera · 1 PR', section['text'])
         self.assertIn('Admitido · entra en el próximo lote', section['text'])
         self.assertIn('Aterrizó · 1 PR', section['text'])
+
+    def test_absolved_batch_is_not_announced_as_landed(self):
+        text = self.section('absuelto')['text']
+        self.assertIn('Absuelto · se repite en otro lote · 1 PR', text)
+        self.assertNotIn('Aterriz', text)
+
+    def test_scattered_history_shows_range_without_bar(self):
+        desk = nodes(self.section('disperso'), cls='run')[0]
+        self.assertIn('desk · Pueue 7812', desk['text'])
+        self.assertIn('7 min · suele tardar 3–40 min', desk['text'])
+        self.assertEqual(nodes(desk, cls='bar'), [])
+
+    def test_repaint_keeps_keyboard_focus_in_tren(self):
+        waiting = json.dumps(['tren', REPO, 'espera'], separators=(',', ':'))
+        revealed = self.view('extremo', focus='mas')['focus']
+        self.assertEqual(revealed, dict(before=waiting+' 1008', after=waiting+' 1008', connected=True, tag='LI'))
+        link = self.view('rojo', focus='enlace')['focus']
+        self.assertEqual(link, dict(before='enlace '+COMMENT, after='enlace '+COMMENT, connected=True, tag='A'))
 
     def test_running_progress_uses_joined_estimate_only(self):
         section = self.section('suite')

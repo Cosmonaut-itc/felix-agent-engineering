@@ -527,7 +527,7 @@ const TREN_STAGES = [
   ['aterrizando','main','Aterrizando en main']
 ];
 const TREN_WAIT = {entregado:'Entregado',admitido:'Admitido',retenido:'Retenido',caducado:'Caducado'};
-const TREN_RESULT = {ATERRIZADO:'Aterrizó',DEVUELTO:'Devuelto',ABSUELTO:'Aterrizó tras absolver un intermitente',
+const TREN_RESULT = {ATERRIZADO:'Aterrizó',DEVUELTO:'Devuelto',ABSUELTO:'Absuelto · se repite en otro lote',
   ABORTADO:'Abortado',PARTIDO:'Partido',REARMAR:'Rearmado sobre otra base',SIMULADO:'Lote simulado'};
 const trenDur = seconds => seconds < 60 ? 'menos de 1 min' : fmtDur(seconds);
 const trenAgo = at => 'hace '+trenDur(NOW-at);
@@ -583,7 +583,7 @@ function trenPlace(place){
 function trenRun(run, trial=false){
   const cell=trenNode('div','run'), top=trenNode('div','r-top');
   const elapsed=run.inicio==null ? null : Math.max(0,(run.fin ?? NOW)-run.inicio);
-  const estimate=run.est, running=trial || run.estado==='corriendo';
+  const estimate=run.est, based=!!estimate && known({est:estimate}), running=trial || run.estado==='corriendo';
   const time=trenNode('span','r-time');
   if(run.estado==='terminada'){
     const result=run.resultado==='verde' ? 'Verde' : run.resultado==='rojo' ?
@@ -597,7 +597,7 @@ function trenRun(run, trial=false){
     if(running && estimate){
       const over=elapsed!=null && elapsed>estimate.high;
       if(elapsed==null) duration='Suele tardar '+span(estimate);
-      else duration+=over ? ' · suele tardar '+span(estimate) : ' de ~'+fmtDur(estimate.typical);
+      else duration+=over || !based ? ' · suele tardar '+span(estimate) : ' de ~'+fmtDur(estimate.typical);
     }
     time.textContent=[status,duration].filter(Boolean).join(' · ') || 'Sin hora de inicio';
   }
@@ -610,7 +610,7 @@ function trenRun(run, trial=false){
              trenNode('span','where',trenPlace(run.lugar)),time);
   cell.append(top);
   if(trial) cell.append(trenNode('div','ink2 mono','Repite con #'+run.prs.join(', #')));
-  if(running && estimate && elapsed!=null){
+  if(running && based && elapsed!=null){
     const bar=trenNode('div',elapsed>estimate.high ? 'bar over' : 'bar');
     bar.setAttribute('aria-hidden','true');
     const fill=trenNode('i');
@@ -656,7 +656,10 @@ function trenFinishedRow(batch, prFields){
       const url=back.comentario_url;
       const linked=typeof url==='string' && url.startsWith('https://github.com/');
       const evidence=trenNode(linked ? 'a' : 'span','',back.check+' · '+back.unidad);
-      if(linked) evidence.href=url;
+      if(linked){
+        evidence.href=url;
+        evidence.dataset.trenFocus='enlace '+url;
+      }
       text.append(trenNode('span','',' · '),evidence);
     }
     detail.append(text);
@@ -666,15 +669,17 @@ function trenFinishedRow(batch, prFields){
 }
 function trenList(rows, draw, cls='', limit=rows.length, key){
   const frame=trenNode('div','fila '+cls), list=trenNode('ol');
+  const keyed=row=>{const node=draw(row); node.dataset.trenFocus=key+' '+(row.pr ?? row.id); return node;};
   const shown=OPEN[key] ? rows : rows.slice(0,limit);
-  list.append(...shown.map(draw));
+  list.append(...shown.map(keyed));
   frame.append(list);
   if(shown.length<rows.length){
     const more=trenNode('button','more','Ver '+(rows.length-shown.length)+' más');
     more.type='button';
     more.dataset.trenMore=key;
+    more.dataset.trenFocus='más '+key;
     more.addEventListener('click',()=>{
-      const remaining=rows.slice(limit).map(draw);
+      const remaining=rows.slice(limit).map(keyed);
       list.append(...remaining);
       OPEN[key]=true;
       remaining[0].tabIndex=-1;
@@ -702,7 +707,8 @@ function trenRepo(repo, tren){
     card.append(...trenStages(batch,phase));
     const phaseNote=repo.pausa || repo.modo==='sombra' ? stage+' · ' : '';
     card.append(trenNode('h3','',phaseNote+'Lote '+batch.id+' · cerrado '+trenAgo(batch.cierre)),
-                trenList(batch.miembros,member=>trenPrRow(member.pr,fields(member.pr))));
+                trenList(batch.miembros,member=>trenPrRow(member.pr,fields(member.pr)),'',undefined,
+                         JSON.stringify(['tren',repo.repo,'miembros'])));
     if(batch.suite.length || batch.ensayo){
       const suite=trenNode('div','suite');
       suite.append(...batch.suite.map(run=>trenRun(run)));
@@ -739,10 +745,18 @@ function prependTren(app, tren){
   section.append(cols);
   app.prepend(section);
 }
+// El refresco rehace la sección; el foco vuelve a la fila, el enlace o el botón con la misma clave.
+function focusTren(key){
+  const target=[...document.querySelectorAll('[data-tren-focus]')].find(node=>node.dataset.trenFocus===key);
+  if(!target) return;
+  if(target.tagName==='LI') target.tabIndex=-1;
+  target.focus();
+}
 function paint(){
   if(DRAG) return;
   const focused=document.activeElement?.closest?.('.fila li');
   const identity=focused && [focused.parentElement.dataset.host,focused.parentElement.dataset.group,Number(focused.dataset.id)];
+  const trenFocus=document.activeElement?.closest?.('[data-tren-focus]')?.dataset.trenFocus;
   const app=document.getElementById('app');
   app.innerHTML=view();
   prependTren(app,S.tren);
@@ -752,7 +766,9 @@ function paint(){
   }
   for(const box of document.querySelectorAll('[data-orphans]')) fillOrphans(box,S.hosts.find(h=>h.id===box.dataset.orphans));
   syncMenu();
-  if(identity) focusOrder(...identity);
+  // Las listas de Tren también son .fila; su clave manda sobre la identidad de host.
+  if(trenFocus) focusTren(trenFocus);
+  else if(identity) focusOrder(...identity);
 }
 
 function resourceTable(h){
