@@ -245,6 +245,13 @@ del ledger o de la configuración, o si ya no cabe otro intervalo.
 Un CI verde o rojo da paso a otro tick si la cuota y el programa todavía
 lo permiten. Si ese tick deja la huella igual, la cadena termina.
 
+El plazo acota la espera, no los ticks. El tick que sigue a la espera puede
+arrancar unos segundos después del plazo, porque la consulta de cuota y la
+lectura del ledger tienen su propio tiempo de espera, y la cadena continúa
+después como cualquier otra. Los cortes de la espera sólo evitan esperar en
+vano. Una pausa o una decisión que llegue después del último corte la aplica
+ese tick, bajo el candado del carril, como en cualquier otro tick.
+
 Cada tick de la cadena toma y suelta el candado del carril y observa de nuevo.
 `stdout.log` recibe una línea JSON por tick y el proceso sale con el código
 del último. `tick --seco` corre un solo tick.
