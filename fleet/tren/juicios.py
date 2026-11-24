@@ -5,7 +5,7 @@ import shlex
 
 from dominio import (Armado, Congelado, Corriendo, Diagnosticando,
                      Efecto, EsperandoCI, Pausa, Promoviendo, Rechazado, Terminal, Tren,
-                     cambiar_fase, clave, datos, efecto_diagnostico,
+                     argv_reproduccion, cambiar_fase, clave, datos, efecto_diagnostico,
                      efecto_promover, efecto_reanudar_suite, efectos_status, separar_devueltos)
 
 
@@ -180,10 +180,8 @@ def resolver(estado, observacion):
         fallos = []
         for f in getattr(tren.fase, "fallos", ()):
             fallos.append({"unidad": f.unidad, "check": f.check, "firma": f.firma,
-                "conjunto_causal": (decision.pr,), "comando": shlex.join([
-                    "bash", "scripts/mini/run.sh", "--repetir", "<resultado.json>",
-                    "--sha", commit, "--worktree", "<worktree>", "--veces", "2",
-                    "--unidad", f.check + "=" + f.unidad])})
+                "conjunto_causal": (decision.pr,),
+                "comando": shlex.join(argv_reproduccion(f, commit))})
         payload = json.dumps({"lote": tren.id, "B": base, "C": commit,
             "pr": decision.pr, "head": entrada.entrega.head, "fallos": fallos,
             "juicio": {"motivo": decision.motivo, "pausa": datos(decision.pausa)}}, sort_keys=True)

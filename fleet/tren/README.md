@@ -226,6 +226,30 @@ queda en `.bak-*`.
 CI prueba la suite en Ubuntu y macOS, también con `/usr/bin/python3` en macOS;
 Windows queda fuera por flock POSIX.
 
+### Ticks encadenados
+
+El tick activo repite el tick en el mismo proceso mientras el anterior haya
+hecho avanzar el carril, hasta ocho veces. Avanzar es que cambie la pausa, la
+fase de algún tren o el estado de algún efecto del outbox. Un efecto que
+falla cuenta como pendiente, así que la cadena no lo reintenta por sí solo.
+Tampoco cuentan una espera ni un resultado que la pausa retiene, ni el primer
+tick de un repositorio, que crea el ledger. En esos casos el siguiente tick lo
+lanza launchd. Cada tick de la cadena toma y suelta el
+candado y observa de nuevo. `stdout.log` recibe una línea JSON por tick, y el
+proceso sale con el código del último. `tick --seco` corre un solo tick.
+
+La cadena termina también en dos casos:
+
+- Cambió algún módulo instalado de `fleet/tren` desde que el proceso arrancó.
+  El tick en curso acaba con el código anterior y launchd lanza el siguiente
+  con el nuevo.
+- A la cuota de la API de GitHub le quedan menos de 1,000 llamadas, o no se
+  pudo leer.
+
+Instala sólo cuando no corra ningún `pao-tren tick` del repositorio. El
+proceso carga sus módulos al arrancar; un módulo perezoso que no esté en
+`PEREZOSOS` (en `pao-tren`) todavía puede cargarse a medio tick.
+
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
 `git_ops.GitTren(remoto, ruta=None)` usa un bare propio bajo `pao-tren/git/`
@@ -499,12 +523,14 @@ Unidad y check siguen siendo los identificadores públicos del test (el producto
 debe mantener secretos fuera de esos identificadores). El resto de la proyección
 contiene IDs de lote/entrega, SHAs y números de PR, motivos de un enum y texto
 fijo; no se transportan otros campos del diagnóstico ni del config privado.
-Las rutas privadas del lanzador, resultado y worktree se reemplazan por la
-plantilla pública `bash scripts/mini/run.sh --repetir <resultado.json>
+En Hasito se publica la plantilla `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
-El dueño sustituye esas rutas por las de su entorno. Se conserva el SHA
-observado de la reproducción; argumentos extra de entorno, nombre o evidencia
-no se publican. El payload durable original permanece intacto en el ledger.
+En Jale se publica `bash scripts/test-hosts/run-remote.sh <host> <log>
+<modo> <SHA-causal> <unidad>`. El dueño sustituye las rutas de resultado,
+worktree o log por las de su entorno. En ambos casos se usa el SHA de la
+reproducción observada o el SHA de la evidencia si ésta carece de comando.
+Una devolución por juicio usa el SHA del candidato. El payload durable
+original permanece en el ledger.
 Después publica un status `failure`, contexto **`pao-tren/resultado`**, sobre
 el **head entregado culpable**, con `target_url` al comentario y descripción
 corta que remite a él. Los sobrevivientes no reciben una devolución.

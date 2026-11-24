@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Entrega durable, planificación en sombra y tick de repos inscritos activos."""
 import argparse
+import importlib
 import json
 from pathlib import Path
 import re
@@ -15,7 +16,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
-from ledger import Ledger, filas_medicion
+from ledger import Ledger, directorio_estado, filas_medicion
 from medicion import decision_json, instante_iso, medir
 from observador import GitHubGit, configuracion, sha
 from sombra import paso_sombra
@@ -218,16 +219,98 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
         ledger.close()
 
 
-def main():
-    args = parser().parse_args()
+ENCADENADOS = 8
+CUOTA_MINIMA = 1000
+PEREZOSOS = ("adaptadores.hasito", "adaptadores.jale", "atribucion", "feedback", "git_ops",
+             "juicios", "operador", "operativo", "preaterrizaje")
+
+
+def huella(repo):
+    """Lo que un tick puede hacer avanzar: la pausa, la fase de cada tren y cada efecto pendiente."""
     try:
-        codigo, resultado = ejecutar(args)
+        # Leer la huella no crea el ledger: un repo sin inscripción activa no lo abre.
+        if not (directorio_estado() / "ledger.sqlite3").exists():
+            return None
+        ledger = Ledger()
+        try:
+            with ledger.transaccion(escritura=False):
+                estado = ledger.estado(repo, operativo=True)
+                return (estado.pausa is None,
+                        tuple((t.id, type(t.fase).__name__) for t in estado.trenes),
+                        # Un efecto fallido sigue pendiente: su reintento no es avance.
+                        tuple((f["clave"], "pendiente" if f["estado"] == "fallido" else f["estado"])
+                              for f in ledger.outbox(repo)))
+        finally:
+            ledger.close()
+    except (OSError, ValueError, KeyError, TypeError, sqlite3.Error):
+        return None
+
+
+def programa():
+    """Identidad del programa instalado; None si no puede leerse completo."""
+    raiz = Path(__file__).resolve().parent
+    try:
+        return tuple(sorted((str(p), p.stat().st_mtime_ns, p.stat().st_size)
+                            for p in (Path(__file__).resolve(), *raiz.rglob("*.py"))
+                            if "tests" not in p.relative_to(raiz).parts))
+    except OSError:
+        return None
+
+
+def cuota(ejecutar=subprocess.run):
+    """La cadena no gasta la cuota de GitHub que comparten las demás sesiones."""
+    try:
+        salida = ejecutar(["gh", "api", "rate_limit", "--jq", ".resources.core.remaining"],
+                          check=True, capture_output=True, text=True, timeout=10).stdout
+        return int(salida) >= CUOTA_MINIMA
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return False
+
+
+def encadenar(un_tick, huella, seguir, tope=ENCADENADOS):
+    """Repite el tick mientras el anterior haya hecho avanzar el carril.
+
+    Un efecto que falla, una espera o un resultado que la pausa retiene dejan
+    la huella igual y cortan: el siguiente tick lo lanza launchd. Sin huella
+    antes del tick (ledger recién creado o ilegible) no hay con qué comparar.
+    """
+    antes = huella()
+    for restantes in range(tope - 1, -1, -1):
+        codigo, resultado = un_tick()
+        yield codigo, resultado
+        if codigo != 0 or not restantes:
+            return
+        despues = huella()
+        if antes is None or despues is None or despues == antes or not seguir():
+            return
+        antes = despues
+
+
+def intento(args):
+    try:
+        return ejecutar(args)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         # Do not echo subprocess argv/output or private config/evidence paths.
-        codigo, resultado = 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
+        return 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
     except sqlite3.Error:
-        codigo, resultado = 2, {"error": "ledger no disponible"}
-    print(json.dumps(resultado, sort_keys=True, ensure_ascii=False))
+        return 2, {"error": "ledger no disponible"}
+
+
+def main():
+    args = parser().parse_args()
+    if args.comando == "tick" and not args.seco:
+        inicial = programa()
+        # Instalar durante un tick no debe mezclar versiones a medio paso.
+        for modulo in PEREZOSOS:
+            importlib.import_module(modulo)
+        pasos = encadenar(lambda: intento(args), lambda: huella(args.repo),
+                          # La cuota tarda; el programa se compara justo antes del siguiente tick.
+                          lambda: inicial is not None and cuota() and programa() == inicial)
+    else:
+        pasos = [intento(args)]
+    codigo = 2
+    for codigo, resultado in pasos:
+        print(json.dumps(resultado, sort_keys=True, ensure_ascii=False), flush=True)
     return codigo
 
 

@@ -177,6 +177,17 @@ class Fallo:
     duracion_s: float = 0
 
 
+LANZADOR_JALE = "scripts/test-hosts/run-remote.sh"
+
+
+def argv_reproduccion(fallo, commit, origen="<resultado.json>", worktree="<worktree>"):
+    if fallo.parte == "jale":
+        return ["bash", LANZADOR_JALE, "auto", "<log>", fallo.check, commit, fallo.unidad]
+    return ["bash", "scripts/mini/run.sh", "--repetir", origen,
+            "--sha", commit, "--worktree", worktree, "--veces", "2",
+            "--unidad", fallo.check + "=" + fallo.unidad]
+
+
 @dataclass(frozen=True)
 class Completo:
     veredicto: str
@@ -642,10 +653,9 @@ def devolver_atribuidos(estado, tren, fase, causas):
                     evidencia = next(e for e in fase.evidencias if
                         e.solicitud.objetivo == "C" and e.solicitud.fallo.unidad == f.unidad
                         and e.solicitud.fallo.check == f.check and e.solicitud.fallo.parte == f.parte)
-                commit = evidencia.resultado.sha if evidencia else fase.candidato.C
-                comando = shlex.join(evidencia.resultado.comando or ["bash", "scripts/mini/run.sh", "--repetir", fase.suite,
-                    "--sha", commit, "--worktree", "<worktree-desacoplado-en-" + commit + ">",
-                    "--veces", "2", "--unidad", f.check + "=" + f.unidad])
+                commit = evidencia.resultado.sha
+                comando = shlex.join(evidencia.resultado.comando or argv_reproduccion(
+                    f, commit, fase.suite, "<worktree-desacoplado-en-" + commit + ">"))
                 detalles.append({"unidad": f.unidad, "check": f.check, "firma": f.firma,
                                  "conjunto_causal": grupo, "comando": comando})
         payload = json.dumps({"lote": tren.id, "B": fase.candidato.B, "C": fase.candidato.C,
