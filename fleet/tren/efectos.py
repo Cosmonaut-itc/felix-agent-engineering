@@ -137,8 +137,8 @@ def ejecutar(efecto, estado, observacion, git, adaptador=None, previo=None):
         prelanzar = getattr(adaptador, "prelanzar", None)
         # Un reintento que ya lee rojo para esta solicitud no adelanta trabajo
         # que nadie consumirá. El rojo de una solicitud anterior no cuenta.
-        rojo = (observacion.ci_candidato == "rojo" and observacion.tren_id == tren.id and
-                observacion.ci_recibo == recibo_ci(tren))
+        rojo = (isinstance(fase, EsperandoCI) and observacion.ci_candidato == "rojo" and
+                observacion.tren_id == tren.id and observacion.ci_recibo == recibo_ci(tren))
         if prelanzar is not None and not rojo:
             try:
                 prelanzar(fase.candidato, tren.id)
