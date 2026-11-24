@@ -12,6 +12,10 @@ import tempfile
 
 BASE=Path(__file__).resolve().parents[1]
 CASES=(
+    ('snapshot-task-extension', 'serve.py', "        clean['tasks'].append(public)",
+     "        public.update({k: v for k, v in row.items() if k not in public and k != 'admission'})\n"
+     "        clean['tasks'].append(public)",
+     'test_snapshot_publication.SnapshotPublicationTests.test_extensions_do_not_reach_the_api'),
     ('tren-extra-key', 'tren.py', 'set(row) == set(fields.split())', 'set(fields.split()) <= set(row)',
      'test_tren.ValidatorTests.test_rejects_extra_keys_at_every_level'),
     ('tren-pause-details', 'tren.py', "_keys(row, 'motivo pr desde')",

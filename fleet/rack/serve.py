@@ -166,9 +166,11 @@ def valid_usage(value, host=False):
                 or not isinstance(outside, dict) or set(outside) != {'cpu', 'mem'}
                 or not number(outside['cpu']) or not number(outside['mem'], True)):
             return None
-    elif not number(value['cpu']) or not number(value['mem'], True) or not number(value['containers'], True):
+        return dict(interval=value['interval'], busy=value['busy'], used=value['used'],
+                    docker=value['docker'], outside=dict(cpu=outside['cpu'], mem=outside['mem']))
+    if not number(value['cpu']) or not number(value['mem'], True) or not number(value['containers'], True):
         return None
-    return copy.deepcopy(value)
+    return dict(cpu=value['cpu'], mem=value['mem'], containers=value['containers'])
 
 
 def valid_orphans(data, host):
@@ -179,7 +181,7 @@ def valid_orphans(data, host):
             or len(rows) != min(total, 64)):
         raise ValueError('Huérfanos inválidos')
     keys = {'pid', 'comm', 'origin_task', 'group', 'origin_state', 'rss_bytes', 'cpu_percent', 'started_at'}
-    seen, previous = set(), math.inf
+    seen, previous, clean = set(), math.inf, []
     for row in rows:
         if type(row) is not dict or set(row) != keys:
             raise ValueError('Campos de huérfano inválidos')
@@ -201,6 +203,15 @@ def valid_orphans(data, host):
             raise ValueError('Fecha de huérfano inválida') from None
         seen.add(row['pid'])
         previous = row['rss_bytes']
+        clean.append({key: row[key] for key in keys})
+    return dict(orphans=clean, orphans_total=total)
+
+
+def capacity_fields(value, fields):
+    if value is None:
+        return None
+    return {key: value[key] for key in fields
+            if key in value and type(value[key]) in (int, float, type(None))}
 
 
 def validate_snapshot(data, host):
@@ -210,8 +221,47 @@ def validate_snapshot(data, host):
         raise ValueError('Fecha inválida')
     if not isinstance(data.get('tasks'), list) or not isinstance(data.get('groups'), list):
         raise ValueError('Tareas o grupos inválidos')
+    clean = dict(schema='rack-host@1', host=host)
+    if 'os' in data and isinstance(data['os'], (str, type(None))):
+        clean['os'] = data['os']
+    clean['taken'] = data['taken']
+    for field, keys in (('cpu', ('cores', 'psi_avg60')),
+                        ('mem', ('total', 'available', 'swap_total', 'swap_used')),
+                        ('disk', ('total', 'free'))):
+        if field in data:
+            if not isinstance(data[field], (dict, type(None))):
+                raise ValueError('Capacidad inválida')
+            clean[field] = capacity_fields(data[field], keys)
+    cpu = data.get('cpu')
+    if cpu is not None and 'load' in cpu:
+        load = cpu['load']
+        if load is None:
+            clean['cpu']['load'] = None
+        elif isinstance(load, list) and all(type(n) in (int, float) for n in load):
+            clean['cpu']['load'] = list(load)
+    if 'guard' in data:
+        clean['guard'] = _guard_snapshot.validate_guard(data['guard'])
     if 'control' in data:
-        data['control'] = accion.host_channel.control(data['control'], data.get('host', 'mini'))
+        control = accion.host_channel.control(data['control'], host)
+        for field in ('pause_reasons', 'startup_holds', 'startup_waiting'):
+            if field in control:
+                # Estos mapas usan nombres de grupo como claves.
+                control[field] = {k: v for k, v in control[field].items()
+                                  if k not in ('envs', 'command', 'original_command', 'path')}
+        clean['control'] = control
+    orphans = valid_orphans(data, host)
+    if orphans is not None:
+        clean.update(orphans)
+    clean['groups'] = []
+    for group in data['groups']:
+        if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
+            raise ValueError('Grupo inválido')
+        public = dict(name=group['name'])
+        if 'status' in group and isinstance(group['status'], (str, type(None))):
+            public['status'] = group['status']
+        public['slots'] = group['slots']
+        clean['groups'].append(public)
+    clean['tasks'] = []
     for row in data['tasks']:
         if (not isinstance(row, dict) or not isinstance(row.get('id'), int) or not isinstance(row.get('group'), str)
                 or not isinstance(row.get('priority'), int) or isinstance(row.get('priority'), bool)
@@ -220,42 +270,39 @@ def validate_snapshot(data, host):
                 or any(not isinstance(row.get(k), (str, type(None))) for k in TASK_TEXT)
                 or any(not isinstance(row.get(k), (int, float, type(None))) for k in TASK_TIMES)):
             raise ValueError('Tarea inválida')
-    if any(not isinstance(data.get(k), (dict, type(None))) for k in ('cpu', 'mem', 'disk', 'guard')):
-        raise ValueError('Capacidad inválida')
-    _guard_snapshot.validate_guard(data.get('guard'))
-    valid_orphans(data, host)
-    if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in data.get('errors') or []):
-        raise ValueError('Pueue no se pudo leer')
-    data = copy.deepcopy(data)
-    for row in data['tasks']:
+        public = {key: row[key] for key in ('id', 'group', 'priority', 'state') + TASK_TEXT + TASK_TIMES}
         if 'interruption_reason' in row:
             if (host not in ('desk', 'mini') or row['state'] != 'Done' or row.get('result') != 'Killed'
                     or row['interruption_reason'] != 'Interrumpida al reiniciar Pueue; relanzar manualmente'):
                 raise ValueError('Motivo de interrupción inválido')
+            public['interruption_reason'] = row['interruption_reason']
         if 'control' in row:
-            row['control'] = accion.control_data(row['control'], row)
+            public['control'] = accion.control_data(row['control'], row)
         if 'activity' in row:
-            row['activity'] = valid_activity(row['activity'])
-        if 'admission' in row and (host != 'mini' or not _guard_snapshot.valid_admission(row['admission'], row['id'])):
-            del row['admission']
+            public['activity'] = valid_activity(row['activity'])
+        if host == 'mini' and _guard_snapshot.valid_admission(row.get('admission'), row['id']):
+            admission = row['admission']
+            public['admission'] = {key: admission[key] for key in _guard_snapshot.ADMISSION_FIELDS}
+            public['admission'].update(
+                resources=list(admission['resources']),
+                positions={name: admission['positions'][name] for name in admission['resources']},
+                blockers=[{key: blocker[key] for key in _guard_snapshot.ADMISSION_BLOCKER_FIELDS}
+                          for blocker in admission['blockers']])
         if 'usage' in row:
-            row['usage'] = valid_usage(row['usage']) if row['state'] == 'Running' else None
+            public['usage'] = valid_usage(row['usage']) if row['state'] == 'Running' else None
+        clean['tasks'].append(public)
+    if 'errors' in data:
+        errors = data['errors']
+        if errors is not None and not isinstance(errors, list):
+            raise ValueError('Errores inválidos')
+        if any(isinstance(e, dict) and e.get('stage') == 'pueue' for e in errors or []):
+            raise ValueError('Pueue no se pudo leer')
+        clean['errors'] = None if errors is None else [
+            {k: e[k] for k in ('stage', 'message') if k in e and isinstance(e[k], str)}
+            for e in errors if isinstance(e, dict)]
     if 'usage' in data:
-        data['usage'] = valid_usage(data['usage'], host=True)
-    json.dumps(data, allow_nan=False)
-    for group in data['groups']:
-        if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
-            raise ValueError('Grupo inválido')
-    def safe(value):
-        if isinstance(value, dict):
-            return {k: safe(v) for k, v in value.items() if k not in ('envs', 'command', 'original_command', 'path')}
-        return [safe(v) for v in value] if isinstance(value, list) else value
-    # valid_admission already fixed each row's exact keys; a resource may be named like a private key.
-    admissions = [row.pop('admission', None) for row in data['tasks']]
-    clean = safe(data)
-    for row, admission in zip(clean['tasks'], admissions):
-        if admission is not None:
-            row['admission'] = admission
+        clean['usage'] = valid_usage(data['usage'], host=True)
+    json.dumps(clean, allow_nan=False)
     return clean
 
 
