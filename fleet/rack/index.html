@@ -623,7 +623,7 @@ function trenRun(run, trial=false){
 function trenPrRow(pr, fields){
   const row=trenNode('li'), line=trenNode('div','l1');
   const title=trenNode('span','t');
-  title.textContent=fields.title || '#'+pr;
+  title.textContent=fields.title || '';
   line.append(trenNode('span',fields.ticket ? 'tk' : 'tk none',fields.ticket || 'Sin ticket'),title);
   row.append(line,trenNode('span','d','#'+pr));
   return row;
