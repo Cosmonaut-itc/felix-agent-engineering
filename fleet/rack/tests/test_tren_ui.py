@@ -142,9 +142,12 @@ def scenarios():
             rack.tren_error = 'No se pudo leer el tren' if name in ('error', 'sin-repos') else None
             now = NOW+19*60 if name in ('datos-antiguos', 'historial-antiguo') else NOW
             rack.pulls[REPO+'#912']['title'] = HOSTILE if name=='texto' else 'Recibos de nómina: redondeo de ISR'
-            host_view = hosts if name in ('suite', 'extremo', 'cola') else [dict(hosts[0], estimates={}, snapshot=snap)]
+            host_view = hosts if name in ('suite', 'cola') else [dict(hosts[0], estimates={}, snapshot=snap)]
             if name == 'disperso':
                 host_view = [dict(hosts[0], estimates={'7812': scattered})]
+            if name == 'extremo':
+                # El ensayo unido es la tarea del desk: arrancó cuando él y ya pasó su rango.
+                host_view = [dict(hosts[0], snapshot=dict(snap, tasks=[dict(running, start=NOW-6000)]))]
             if name == 'turno':
                 waiting = dict(running, state='Queued', start=None)
                 host_view = [dict(hosts[0], snapshot=dict(snap, tasks=[waiting]))]
