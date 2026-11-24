@@ -120,7 +120,8 @@ class MainTests(unittest.TestCase):
         huellas, intentos = iter(huellas), iter(intentos)
         salida = io.StringIO()
         with patch("sys.argv", ["pao-tren", *argv]), \
-                patch.object(cli, "intento", lambda args: next(intentos)), \
+                patch.object(cli, "intento", lambda args, instalando=False: next(intentos)), \
+                patch.object(cli, "candado_programa", lambda exclusivo: contextlib.nullcontext(True)), \
                 patch.object(cli, "huella", lambda repo: next(huellas)), \
                 patch.object(cli, "programa", programa), \
                 patch.object(cli, "cuota", cuota or (lambda: seguir)), \

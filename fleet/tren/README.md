@@ -232,11 +232,29 @@ El tick activo repite el tick en el mismo proceso mientras el anterior haya
 hecho avanzar el carril, hasta ocho veces. Avanzar es que cambie la pausa, la
 fase de algún tren o el estado de algún efecto del outbox. Un efecto que
 falla cuenta como pendiente, así que la cadena no lo reintenta por sí solo.
-Tampoco cuentan una espera ni un resultado que la pausa retiene, ni el primer
-tick de un repositorio, que crea el ledger. En esos casos el siguiente tick lo
-lanza launchd. Cada tick de la cadena toma y suelta el
-candado y observa de nuevo. `stdout.log` recibe una línea JSON por tick, y el
-proceso sale con el código del último. `tick --seco` corre un solo tick.
+La cadena necesita una huella antes y después del tick para comparar. El
+primer tick de un repositorio crea el ledger y cede el siguiente a launchd.
+
+Si la huella queda igual y un tren está en `EsperandoCI`, el proceso sondea
+el CI de ese candidato cada 20 s, hasta 100 s desde el arranque del proceso.
+El plazo deja margen antes del siguiente disparo de launchd, a los 120 s.
+La espera lee el ledger en sólo lectura, sin tomar el candado, y cierra la
+conexión antes de dormir. Corta si hay una pausa o una decisión pendiente,
+si cambia el tren, su fase, su C o su solicitud de CI, si falla la lectura
+del ledger o de la configuración, o si ya no cabe otro intervalo.
+Un CI verde o rojo da paso a otro tick si la cuota y el programa todavía
+lo permiten. Si ese tick deja la huella igual, la cadena termina.
+
+El plazo acota la espera, no los ticks. El tick que sigue a la espera puede
+arrancar unos segundos después del plazo, porque la consulta de cuota y la
+lectura del ledger tienen su propio tiempo de espera, y la cadena continúa
+después como cualquier otra. Los cortes de la espera sólo evitan esperar en
+vano. Una pausa o una decisión que llegue después del último corte la aplica
+ese tick, bajo el candado del carril, como en cualquier otro tick.
+
+Cada tick de la cadena toma y suelta el candado del carril y observa de nuevo.
+`stdout.log` recibe una línea JSON por tick y el proceso sale con el código
+del último. `tick --seco` corre un solo tick.
 
 La cadena termina también en dos casos:
 
@@ -246,9 +264,59 @@ La cadena termina también en dos casos:
 - A la cuota de la API de GitHub le quedan menos de 1,000 llamadas, o no se
   pudo leer.
 
-Instala sólo cuando no corra ningún `pao-tren tick` del repositorio. El
-proceso carga sus módulos al arrancar; un módulo perezoso que no esté en
-`PEREZOSOS` (en `pao-tren`) todavía puede cargarse a medio tick.
+### Instalar una versión nueva
+
+Todos los carriles corren el mismo programa instalado. Instala con el candado
+del programa tomado:
+
+```sh
+pao-tren candado -- git -C <checkout instalado> merge --ff-only <sha>
+```
+
+El candado del programa es `programa.lock`, en el directorio de estado. Cada
+proceso `pao-tren tick`, activo o `--seco` y de cualquier carril, lo toma
+compartido al arrancar y lo conserva hasta salir: mientras corre sus ticks,
+mientras espera el CI y mientras espera una suite.
+
+`candado` lo toma en exclusiva sin esperar y corre el comando. Después
+conserva el candado 5 s más, lo suelta y sale con el código del comando. Su
+última línea es `{"candado": "tomado", "codigo": N}`. Si hay algún proceso de
+tick vivo, sale con 75 y `{"candado": "ocupado"}` sin correr el comando. No
+crea el ledger: sin él sale con 2.
+
+Un proceso de tick que arranca mientras alguien instala escribe
+`{"omitido": "instalacion-en-curso"}` y sale con 0. No abre el ledger, no
+observa, no encadena y no espera el CI. Esa línea en `stdout.log` no es un
+tick; el siguiente disparo de launchd corre con el programa nuevo. Un tick
+activo sin inscripción activa, o con el registro de inscritos ilegible,
+responde su error de siempre y sale con 2. Un proceso que arranca a media
+instalación pudo cargar módulos de dos versiones; los 5 s de más cubren su
+arranque, porque prueba el candado en cuanto termina de cargar.
+
+Cuándo sale 75:
+
+- Con un tren en `EsperandoCI`, el proceso del tick activo vive hasta 100 s
+  de cada 120. Reintenta cada pocos segundos hasta caer en el hueco:
+  `until pao-tren candado -- <comando>; [ $? -ne 75 ]; do sleep 2; done`.
+- El tick que espera una suite retiene el candado todo ese tiempo, que en
+  Jale ronda los 90 minutos. `candado` no espera ni interrumpe ese tick. Si
+  la cola del host de pruebas está en pausa o retenida, la suite no termina
+  sola y la instalación pide antes resolver esa cola.
+
+Límites conocidos:
+
+- Sólo queda cubierta una instalación hecha con `candado`.
+- `estado`, `entregar`, `juicio`, `pausa` y los comandos de medición no toman
+  el candado del programa.
+- Un proceso que tarda más de 5 s en cargar a media instalación no queda
+  cubierto.
+- Sin directorio de estado no hay candado: el primer tick de una máquina, que
+  lo crea, corre sin él.
+- Si `pao-tren candado` muere por una señal, su comando hijo sigue sin el
+  candado.
+- Un proceso que arranca a media instalación puede fallar al importar un
+  módulo de cabecera y salir con 1 antes de llegar al candado. No abre el
+  ledger, y el siguiente disparo de launchd corre normal.
 
 ## Aterrizaje (U2, sólo ejecutor explícito)
 

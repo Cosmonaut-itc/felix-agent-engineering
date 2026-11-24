@@ -23,6 +23,30 @@ def codificar(valor):
     return json.dumps(datos(valor), sort_keys=True, ensure_ascii=True)
 
 
+@contextmanager
+def candado_programa(exclusivo):
+    """Candado entre instalar (exclusivo) y los ticks (compartido).
+
+    Nunca espera: rinde falso, sin tomar nada, si el candado está ocupado.
+    """
+    raiz = directorio_estado()
+    if not exclusivo and not raiz.is_dir():
+        # Sin directorio de estado no hay ledger, y nadie instala sin ledger.
+        yield True
+        return
+    # Append/open preserves the inode; never retire lock files.
+    with (raiz / "programa.lock").open("a") as handle:
+        try:
+            fcntl.flock(handle, (fcntl.LOCK_EX if exclusivo else fcntl.LOCK_SH) | fcntl.LOCK_NB)
+        except BlockingIOError:
+            yield False
+            return
+        try:
+            yield True
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 class Ledger:
     VERSION = 1
 
