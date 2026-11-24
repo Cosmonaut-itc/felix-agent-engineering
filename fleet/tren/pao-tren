@@ -18,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from dominio import (Admitido, Decision, Entrada, Entrega, Estado, Observacion,
                      admision_entrada, datos, paso)
 from inscripcion import activacion, modo
-from ledger import Ledger, directorio_estado, filas_medicion, lectura_medicion
+from ledger import Ledger, candado_repo, directorio_estado, filas_medicion, lectura_medicion
 from medicion import decision_json, instante_iso, medir
 from observador import ERRORES_LECTURA, GitHubGit, configuracion, sha
 from sombra import paso_sombra
@@ -90,11 +90,14 @@ def parser():
     fases.add_argument("--repo", required=True, type=repositorio)
     fases.add_argument("--desde", required=True, type=texto_iso)
     fases.add_argument("--hasta", required=True, type=texto_iso)
+    candado = comandos.add_parser("candado")
+    candado.add_argument("--repo", required=True, type=repositorio)
+    candado.add_argument("orden", nargs="+", help="comando que corre con el candado del carril")
     return cli
 
 
 def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, frontera=None,
-             escritor=None):
+             escritor=None, vigente=None):
     if args.comando in ("juicio", "pausa") or args.comando == "tick" and not args.seco:
         inscripcion = activacion(args.repo)
         if inscripcion != "activo":
@@ -109,6 +112,17 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
         from fases import medir_fases
         from ledger import filas_fases
         return 0, medir_fases(*filas_fases(args.repo), args.repo, args.desde, args.hasta)
+    if args.comando == "candado":
+        # Sin ledger no hay tick que excluir, y este comando no lo crea.
+        if not (directorio_estado() / "ledger.sqlite3").exists():
+            return 2, {"error": "ledger no disponible"}
+        try:
+            with candado_repo(directorio_estado(), args.repo, esperar=False):
+                codigo = subprocess.run(args.orden).returncode
+                time.sleep(GRACIA_INSTALACION_S)
+        except BlockingIOError:
+            return 75, {"candado": "ocupado"}
+        return codigo, {"candado": "tomado", "codigo": codigo}
     ledger = Ledger()
     ahora = time.time() if ahora is None else ahora
     try:
@@ -185,6 +199,9 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                 # Releer tras esperar el flock: pudieron retirar la inscripción.
                 if activacion(args.repo) != "activo":
                     return 2, {"error": "tick activo requiere inscripción activa"}
+                # Quien instala toma este candado: tras esperarlo, el programa pudo cambiar.
+                if vigente is not None and not vigente():
+                    return 0, {"omitido": "programa-cambiado"}
                 from adaptadores import seleccionar
                 from git_ops import GitTren, identidad_commits
                 from operativo import tick
@@ -227,6 +244,8 @@ ENCADENADOS = 8
 CUOTA_MINIMA = 1000
 PLAZO_ESPERA_CI_S = 100
 INTERVALO_SONDEO_CI_S = 20
+# Quien instala conserva el candado este tiempo: cubre el arranque de un proceso.
+GRACIA_INSTALACION_S = 5
 PEREZOSOS = ("adaptadores.hasito", "adaptadores.jale", "atribucion", "feedback", "git_ops",
              "juicios", "operador", "operativo", "preaterrizaje")
 
@@ -263,6 +282,17 @@ def programa():
         return None
 
 
+def candado_libre(repo):
+    """Falso si otro proceso tiene el candado del carril. No crea el ledger."""
+    if not directorio_estado().is_dir():
+        return True
+    try:
+        with candado_repo(directorio_estado(), repo, esperar=False):
+            return True
+    except BlockingIOError:
+        return False
+
+
 def cuota(ejecutar=subprocess.run):
     """La cadena no gasta la cuota de GitHub que comparten las demás sesiones."""
     try:
@@ -294,13 +324,11 @@ def esperar_ci(repo, limite, leer, sondear, vigente, dormir, reloj):
         tren = GitHubGit.tren_en_ci(estado) if estado is not None and estado.pausa is None else None
         return estado, (tren.id, tren.fase.candidato.C, tren.fase.solicitud) if tren else None
 
-    while reloj() + INTERVALO_SONDEO_CI_S <= limite:
-        _, candidato = lectura()
-        if candidato is None or reloj() + INTERVALO_SONDEO_CI_S > limite:
-            return False
+    _, candidato = lectura()
+    while candidato is not None and reloj() + INTERVALO_SONDEO_CI_S <= limite:
         dormir(INTERVALO_SONDEO_CI_S)
         estado, despues = lectura()
-        if candidato != despues or reloj() >= limite:
+        if despues != candidato:
             return False
         try:
             resultado = sondear(estado)
@@ -334,9 +362,9 @@ def encadenar(un_tick, huella, seguir, tope=ENCADENADOS, esperar=lambda: False):
         antes = despues
 
 
-def intento(args):
+def intento(args, vigente=None):
     try:
-        return ejecutar(args)
+        return ejecutar(args, vigente=vigente)
     except (OSError, ValueError, KeyError, TypeError, subprocess.SubprocessError) as exc:
         # Do not echo subprocess argv/output or private config/evidence paths.
         return 2, {"error": "entrada u observación inválida", "clase": type(exc).__name__}
@@ -351,6 +379,10 @@ def main():
         # Instalar durante un tick no debe mezclar versiones a medio paso.
         for modulo in PEREZOSOS:
             importlib.import_module(modulo)
+        # Un proceso que arranca a media instalación pudo cargar dos versiones.
+        if not candado_libre(args.repo):
+            print(json.dumps({"omitido": "candado-ocupado"}), flush=True)
+            return 0
         limite = ARRANQUE + PLAZO_ESPERA_CI_S
 
         def vigente():
@@ -377,7 +409,9 @@ def main():
             return esperar_ci(args.repo, limite, estado_para_espera, observador.ci_candidato,
                               vigente, time.sleep, time.monotonic)
 
-        pasos = encadenar(lambda: intento(args), lambda: huella(args.repo), seguir, esperar=esperar)
+        # Sin huella del arranque no hay con qué comparar: corre un tick, como antes.
+        pasos = encadenar(lambda: intento(args, vigente=vigente if inicial is not None else None),
+                          lambda: huella(args.repo), seguir, esperar=esperar)
     else:
         pasos = [intento(args)]
     codigo = 2

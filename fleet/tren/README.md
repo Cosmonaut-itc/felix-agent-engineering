@@ -257,9 +257,40 @@ La cadena termina también en dos casos:
 - A la cuota de la API de GitHub le quedan menos de 1,000 llamadas, o no se
   pudo leer.
 
-Instala sólo cuando no corra ningún `pao-tren tick` del repositorio. El
-proceso carga sus módulos al arrancar; un módulo perezoso que no esté en
-`PEREZOSOS` (en `pao-tren`) todavía puede cargarse a medio tick.
+### Instalar una versión nueva
+
+Instala con el candado del carril tomado:
+
+```sh
+pao-tren candado --repo owner/project -- git -C <checkout instalado> merge --ff-only <sha>
+```
+
+`candado` toma el candado sin esperar y corre el comando. Después conserva el
+candado 5 s más, lo suelta y sale con el código del comando. Su última línea
+es `{"candado": "tomado", "codigo": N}`. Si otro proceso tiene el candado,
+sale con 75 y `{"candado": "ocupado"}` sin correr el comando. No crea el
+ledger: sin él sale con 2.
+
+Un proceso `pao-tren tick` puede seguir vivo sin el candado mientras espera el
+CI, así que la ausencia de procesos no indica cuándo instalar. Dos
+comprobaciones impiden que un tick corra con un programa distinto del que
+cargó. En ambas el proceso sale con 0 sin observar ni escribir:
+
+- Al arrancar, con sus módulos ya cargados, el proceso prueba el candado. Si
+  está ocupado escribe `{"omitido": "candado-ocupado"}` y termina. Un proceso
+  que arranca a media instalación pudo cargar módulos de dos versiones; los
+  5 s de más cubren su arranque. También omite su tick el proceso que arranca
+  mientras otro comando tiene el candado.
+- Con el candado ya tomado, cada tick compara el programa instalado con el del
+  arranque. Si cambió, escribe `{"omitido": "programa-cambiado"}`. Es el caso
+  de un proceso que esperaba el CI, o el candado, durante la instalación.
+
+En los dos casos el siguiente disparo de launchd corre con el programa nuevo.
+Una línea `omitido` en `stdout.log` no es un tick.
+
+Las comprobaciones sólo cubren una instalación hecha con `candado`. Un módulo
+perezoso que no esté en `PEREZOSOS` (en `pao-tren`) se carga a medio tick,
+con el candado tomado.
 
 ## Aterrizaje (U2, sólo ejecutor explícito)
 

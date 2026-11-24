@@ -23,6 +23,18 @@ def codificar(valor):
     return json.dumps(datos(valor), sort_keys=True, ensure_ascii=True)
 
 
+@contextmanager
+def candado_repo(directorio, repo, esperar=True):
+    """Candado del carril; sin esperar, un candado ocupado lanza BlockingIOError."""
+    # Append/open preserves the inode; never retire lock files.
+    with (Path(directorio) / (clave("repo", repo) + ".lock")).open("a") as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX | (0 if esperar else fcntl.LOCK_NB))
+        try:
+            yield handle
+        finally:
+            fcntl.flock(handle, fcntl.LOCK_UN)
+
+
 class Ledger:
     VERSION = 1
 
@@ -89,15 +101,12 @@ class Ledger:
 
     @contextmanager
     def candado(self, repo):
-        # Append/open preserves the inode; never retire lock files.
-        with (self.directorio / (clave("repo", repo) + ".lock")).open("a") as handle:
-            fcntl.flock(handle, fcntl.LOCK_EX)
+        with candado_repo(self.directorio, repo) as handle:
             self.fd_candado = handle.fileno()
             try:
                 yield
             finally:
                 self.fd_candado = None
-                fcntl.flock(handle, fcntl.LOCK_UN)
 
     def entregar(self, entrega, ahora, sombra_entrega=None):
         with self.transaccion():

@@ -224,7 +224,7 @@ class EsperaActivaTests(unittest.TestCase):
             soltar_ci()
             reloj.dormir(segundos)
 
-        def intento(args):
+        def intento(args, vigente=None):
             codigo, resultado = self.contexto.tick(100 + len(stdout_por_tick))
             stdout_por_tick.append(resultado)
             return codigo, resultado
