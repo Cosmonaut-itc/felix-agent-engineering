@@ -47,6 +47,11 @@ def motivo(valor):
     return valor
 
 
+def texto_iso(valor):
+    instante_iso(valor)
+    return valor
+
+
 def parser():
     cli = argparse.ArgumentParser(description=__doc__)
     comandos = cli.add_subparsers(dest="comando", required=True)
@@ -79,6 +84,10 @@ def parser():
     medicion.add_argument("--repo", required=True, type=repositorio)
     medicion.add_argument("--desde", required=True, type=instante_iso)
     medicion.add_argument("--hasta", required=True, type=instante_iso)
+    fases = comandos.add_parser("fases")
+    fases.add_argument("--repo", required=True, type=repositorio)
+    fases.add_argument("--desde", required=True, type=texto_iso)
+    fases.add_argument("--hasta", required=True, type=texto_iso)
     return cli
 
 
@@ -94,6 +103,10 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
     if args.comando == "medir":
         requests, events = filas_medicion(args.repo)
         return 0, medir(requests, events, args.repo, args.desde, args.hasta)
+    if args.comando == "fases":
+        from fases import medir_fases
+        from ledger import filas_fases
+        return 0, medir_fases(*filas_fases(args.repo), args.repo, args.desde, args.hasta)
     ledger = Ledger()
     ahora = time.time() if ahora is None else ahora
     try:

@@ -305,7 +305,8 @@ class Ledger:
             "SELECT seq, tipo, instante, payload FROM events WHERE repo=? ORDER BY seq DESC LIMIT 10", (repo,))]
 
 
-def filas_medicion(repo, directorio=None):
+@contextmanager
+def lectura_medicion(directorio=None):
     """SQLite mode=ro: sin mkdir, migraciones, candado ni pragmas de escritura."""
     raiz = Path(directorio) if directorio is not None else directorio_estado()
     ruta = (raiz / "ledger.sqlite3").resolve()
@@ -314,8 +315,23 @@ def filas_medicion(repo, directorio=None):
         db.execute("BEGIN")
         if db.execute("PRAGMA user_version").fetchone()[0] != Ledger.VERSION:
             raise ValueError("versión de ledger no soportada")
+        yield db
+
+
+def filas_medicion(repo, directorio=None):
+    with lectura_medicion(directorio) as db:
         requests = [dict(r) for r in db.execute(
             "SELECT * FROM requests WHERE repo=? ORDER BY recibida, recibo", (repo,))]
         events = [dict(r) for r in db.execute(
             "SELECT * FROM events WHERE repo=? ORDER BY seq", (repo,))]
     return requests, events
+
+
+def filas_fases(repo, directorio=None):
+    with lectura_medicion(directorio) as db:
+        events = [dict(r) for r in db.execute(
+            "SELECT * FROM events WHERE repo=? AND tipo IN "
+            "('operativo', 'efecto-iniciado', 'efecto-resultado') ORDER BY seq", (repo,))]
+        effects = [dict(r) for r in db.execute(
+            "SELECT * FROM effects WHERE repo=?", (repo,))]
+    return events, effects
