@@ -1377,7 +1377,9 @@ Una salida 75 que se produzca antes del verde ocupa la primera reanudación
 cuando `iniciar-suite` la consume.
 
 Si `solicitar-ci` se reintenta tras la muerte de un tick, vuelve a prelanzar
-sobre el mismo registro, salvo que ese tick ya lea el CI en rojo.
+sobre el mismo registro, salvo que ese tick ya lea en rojo el CI de esa
+misma solicitud. El rojo de una solicitud anterior no lo impide: al reanudar
+una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza.
 
 Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
 el error, y la solicitud de CI se completa. Si el CI sale rojo o un juicio

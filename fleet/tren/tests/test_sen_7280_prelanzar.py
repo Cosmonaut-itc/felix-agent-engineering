@@ -279,6 +279,26 @@ class TickActivoTests(Productor, unittest.TestCase):
         self.assertEqual(self.invocaciones(), [])
         self.assertEqual(self.eventos('suite-prelanzada-sin-leer'), [])
 
+    def test_reanudar_el_ci_prelanza_aunque_la_solicitud_anterior_lea_rojo(self):
+        self.configurar(False)
+        tren, _ = self.hasta(EsperandoCI)
+        self.reloj = count(4000)
+        self.tick()
+        self.assertEqual(self.estado().pausa.detalle, 'ci-sin-resultado')
+        self.configurar(True)
+        self.ci = 'rojo'
+        anterior = self.contexto.observador.ci
+        self.contexto.observador.ci = lambda repo, commit, rama=None: (
+            ResultadoCI('pendiente', ()) if rama == 'tren/' + tren.id + '-ci-1'
+            else anterior(repo, commit, rama))
+        self.cli('juicio', '--tren', tren.id, '--decision', 'reanudar', '--motivo', 'prueba')
+        self.tick()
+        [vivo] = [t for t in self.estado().trenes if t.id == tren.id]
+        self.assertEqual((type(vivo.fase), vivo.fase.solicitud), (EsperandoCI, 1))
+        self.esperar_archivo(Jale(self.lanzador).estado / clave('suite', tren.id) /
+                             'contract' / '0' / 'codigo.json')
+        self.assertEqual([fila[2] for fila in self.lanzamientos()], ['contract'])
+
     def assert_sin_leer_una_vez(self, tren):
         registro = Jale(self.lanzador).estado / clave('suite', tren.id) / 'contract' / '0'
         self.esperar_archivo(registro / 'codigo.json')
