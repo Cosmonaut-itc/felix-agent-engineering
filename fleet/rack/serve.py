@@ -478,10 +478,12 @@ class Rack:
     def tren_view(self, hosts, now):
         age = None
         repos = []
+        errors = []
         if self.tren_good is not None:
             received, data = self.tren_good
             age = max(0, now - received)
             repos = copy.deepcopy(data['repos'])
+            errors = copy.deepcopy(data['errors'])
         tasks = {(host['id'], task['id']): (task, host['estimates'].get(str(task['id'])))
                  for host in hosts if host['id'] in ('desk', 'mini') and host['fresh']
                  for task in host['snapshot']['tasks'] if task['state'] != 'Done'}
@@ -500,7 +502,7 @@ class Rack:
                     if returned is not None:
                         returned['unidad'] = self.tren.public_text(returned['unidad'])
         return dict(fresh=age is not None and age <= self.tren.FRESH_SECONDS and self.tren_error is None,
-                    age=age, error=self.tren_error, repos=repos,
+                    age=age, error=self.tren_error, repos=repos, errors=errors,
                     prs={key: self.pull_fields(key) for key in self.tren_prs() if key in self.pulls})
 
     def publish(self, now):

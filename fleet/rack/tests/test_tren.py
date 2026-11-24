@@ -245,6 +245,21 @@ class TrenStateTests(unittest.TestCase):
         self.assertIsNone(fixed['repos'][0]['pausa'])
         self.assertIsNone(fixed['error'])
 
+    def test_publication_keeps_only_validated_stage_errors(self):
+        self.data['errors'] = [
+            dict(stage='fases', message='Lectura fallida: OSError'),
+            dict(stage='suite', message='Lectura fallida: ValueError'),
+        ]
+        self.store()
+        expected = tren.valid_tren(self.data, REPOS, NOW)['errors']
+        self.assertEqual(self.cycle()['errors'], expected)
+        bad = json.loads(self.path.read_text())
+        bad['errors'][0]['detail'] = 'campo fuera del contrato'
+        self.path.write_text(json.dumps(bad))
+        stale = self.cycle()
+        self.assertFalse(stale['fresh'])
+        self.assertEqual(stale['errors'], expected)
+
     def test_joins_desk_by_ref_and_id_and_reuses_history_estimate(self):
         self.store()
         running = task(id=7812, start=NOW - 100, activity=dict(last=None, kind='chain', ref='job-abcDEF12'))
