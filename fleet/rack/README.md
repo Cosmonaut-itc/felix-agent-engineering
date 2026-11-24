@@ -66,11 +66,16 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    convierte `/usr/bin/python3` en una ruta de Windows y el comando falla.
    `restrict` quita PTY y reenvíos; el comando forzado ignora lo que pida el
    cliente y sólo devuelve JSON.
-3. Revisar `hosts.json`. La entrada `ssh` ejecuta `/usr/bin/ssh -T` con
+3. En la Mini, guardar el destino `<usuario>@<host-desk>` en una sola línea
+   en `${XDG_CONFIG_HOME:-~/.config}/pao/rack-desk-ssh`, con permisos 600.
+   Usar la cuenta de OpenSSH de Windows y el hostname del desk en el tailnet.
+   Al actualizar, el instalador recupera el destino de la configuración
+   instalada anterior si ambos canales coincidían y el archivo local no existe.
+   La entrada `ssh` de `hosts.json` ejecuta `/usr/bin/ssh -T` con
    `BatchMode=yes`, `ConnectTimeout=10`, `IdentitiesOnly=yes` y
-   `-i ~/.ssh/id_ed25519_pao_rack` contra `Felix@felix-desktop`, el nombre
-   del desk en el tailnet. ssh expande `~` por sí mismo. La host key de
-   `felix-desktop` debe estar ya en `~/.ssh/known_hosts` de la Mini.
+   `-i ~/.ssh/id_ed25519_pao_rack` contra el destino local. SSH expande
+   `~` por sí mismo. La host key de
+   `<host-desk>` debe estar ya en `~/.ssh/known_hosts` de la Mini.
 4. Para títulos y proyectos de Linear, poner una API key de sólo lectura en
    `~/.config/pao-rack/linear-key`, con `chmod 600`. Sin ella el panel funciona
    sin títulos y el servidor registra la razón una vez al arrancar.
@@ -485,7 +490,9 @@ dos acciones independientes del desk. No se cambian los plazos del navegador.
 
 `actions` tiene exactamente `transport`, `controllers` y `reason`; el transporte
 `ssh` requiere además `argv`, que debe coincidir **entero** con `DESK_ARGV` de
-`accion.py`. Sólo se acepta ese canal SSH para `id: desk` con lectura `ssh`.
+`accion.py`, incluido el marcador de destino. Cada ejecución sustituye ese
+marcador con el mismo archivo local que usa el canal de lectura.
+Sólo se acepta ese canal SSH para `id: desk` con lectura `ssh`.
 Se valida al cargar `hosts.json` y antes de ejecutar: sólo se admiten las rutas
 fijas por lanzador. Un transporte habilitado requiere controladores y razón
 null; uno deshabilitado requiere una razón legible de hasta 240 caracteres.
@@ -532,14 +539,14 @@ Python 3.9+ en WSL al instalar el conjunto.
    `MSYS_NO_PATHCONV=1`, igual que la lectura. `restrict` impide TTY y reenvíos;
    el comando forzado no usa `SSH_ORIGINAL_COMMAND`.
 4. Confirmar por un canal de confianza que la host key Windows del nombre
-   `felix-desktop` ya está en `~/.ssh/known_hosts` de la Mini. No usar
+   `<host-desk>` ya está en `~/.ssh/known_hosts` de la Mini. No usar
    `accept-new`, ni desactivar su verificación. Instalar el panel actualizado
    en la Mini con `bash instalar.sh`.
 
 El argv cerrado de escritura, sin comando remoto ni datos de la corrida:
 
 ```text
-/usr/bin/ssh -F /dev/null -T -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o ClearAllForwardings=yes -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none -i ~/.ssh/id_ed25519_pao_rack_accion Felix@felix-desktop
+/usr/bin/ssh -F /dev/null -T -o BatchMode=yes -o IdentitiesOnly=yes -o IdentityAgent=none -o ConnectTimeout=10 -o StrictHostKeyChecking=yes -o UserKnownHostsFile=~/.ssh/known_hosts -o ClearAllForwardings=yes -o PermitLocalCommand=no -o ControlMaster=no -o ControlPath=none -i ~/.ssh/id_ed25519_pao_rack_accion <usuario>@<host-desk>
 ```
 
 `-F /dev/null` evita comandos/proxies configurados por el usuario y la

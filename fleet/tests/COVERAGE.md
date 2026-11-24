@@ -101,7 +101,7 @@ preferences85. Base h3 `893160c43c3ede2f5f98f94fa03cc095194353ac`; producto
 `9c1de08ffe45a2f2b8377d1682be0a4a08f07bac56bafe86cce60b9fda7c2b9e`)
 registra h3: Python3.9.6 97 pass/4 fail/0 error/0 skip; Python3.14.7
 101/0/0/0. Son mediciones anteriores, no resultados de h4. `D` es
-`/Users/felixddhs/.claude/orchestrate/fleet-pruebas`.
+`<home>/.claude/orchestrate/fleet-pruebas`.
 
 Hecho de plataforma atribuido al custodio PAO, lectura **18:25Z**:
 `D/reports/metadatos-sqlite-075b50e8.md` (SHA256
@@ -426,7 +426,7 @@ Cuenta/host proceden siempre de pwd.getpwuid(os.getuid()).pw_name y
 socket.gethostname(), sin simularlos ni modificar la cuenta. Se contrastan los
 componentes relativos de state y los componentes de la raíz externa contra los
 valores declarados, en bytes, para respetar la guarda productiva de credencial
-en el state ABSOLUTO. El prefijo /Users/cosmonaut de la corrida sólo aloja
+en el state ABSOLUTO. El prefijo <home> de la corrida sólo aloja
 evidencia, no el state de este método y no produce skip. Una ruta externa que
 también contenga un valor declarado falla la precondición, sin symlinks ni
 sustitución de secretos. Se preservan las aserciones de submit/status/supervisor/

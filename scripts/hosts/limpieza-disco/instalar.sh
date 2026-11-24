@@ -53,10 +53,20 @@ if [ "$accion" = en-seco ]; then
   bash "$temporal/limpieza-disco.sh" --dry-run
   exit
 fi
-if [ "$HOME" != /Users/cosmonaut ]; then
-  echo "limpieza-disco: el plist fija /Users/cosmonaut y HOME es $HOME" >&2
-  exit 1
-fi
+# Se verifica la plantilla del commit y se genera el plist con el HOME remoto.
+/usr/bin/python3 -I - "$temporal/$label.plist" "$temporal/launch-agent.plist" "$HOME" <<'PY'
+import plistlib
+import sys
+
+template, output, home = sys.argv[1:]
+with open(template, 'rb') as stream:
+    config = plistlib.load(stream)
+config['ProgramArguments'][1] = config['ProgramArguments'][1].replace('@HOME@', home, 1)
+for key in ('StandardOutPath', 'StandardErrorPath'):
+    config[key] = config[key].replace('@HOME@', home, 1)
+with open(output, 'wb') as stream:
+    plistlib.dump(config, stream)
+PY
 mkdir -p "$estado"
 # El mismo lock que la limpieza: un bootout a mitad de pasada cortaría un rm -rf.
 if ! mkdir "$lock" 2>/dev/null; then
@@ -101,7 +111,7 @@ printf 'repo=personal-agent-orchestration\nsha=%s\nenMain=%s\nruta=scripts/hosts
   "$sha" "$en_main" "$blob" "$(shasum -a 256 "$HOME/bin/pao-inventario.py" | cut -d' ' -f1)" "$(date -u +%FT%TZ)" \
   > "$HOME/bin/pao-inventario.origen"
 install -m 755 "$temporal/limpieza-disco.sh" "$HOME/bin/limpieza-disco.sh"
-install -m 644 "$temporal/$label.plist" "$plist"
+install -m 644 "$temporal/launch-agent.plist" "$plist"
 # Se suelta antes del bootstrap: la pasada de RunAtLoad necesita el lock.
 rmdir "$lock"
 tengo_lock=0

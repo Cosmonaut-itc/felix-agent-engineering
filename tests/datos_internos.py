@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Rechaza datos internos de acceso en fleet/ (SEN-7325).
+"""Rechaza datos internos de acceso en fleet/ y scripts/.
 
 El repositorio es público. Un FQDN de tailnet, una IP de 100.64.0.0/10 o un
-home de Linux van con marcadores: <host>.<tailnet>.ts.net, <ip-tailnet-...>,
-/home/<usuario> y `wsl -u <usuario>`. Las pruebas usan example.ts.net,
-100.100.0.0/24, /home/u y `wsl -u u`.
+home de Linux, macOS o Windows van con marcadores: <host>.<tailnet>.ts.net,
+<ip-tailnet-...>, <home>, /home/<usuario>, /c/Users/<usuario> y
+`wsl -u <usuario>`. Las pruebas usan example.ts.net, 100.100.0.0/24,
+la cuenta u y los demás nombres de SYNTHETIC_USERS.
 
 La salida nombra archivo, línea y tipo, nunca el valor: el log de CI también
 es público.
@@ -14,7 +15,7 @@ import re
 import subprocess
 import sys
 
-SCOPE = 'fleet/'
+SCOPE = ('fleet/', 'scripts/')
 TAILNET = ipaddress.ip_network('100.64.0.0/10')
 SYNTHETIC_NET = ipaddress.ip_network('100.100.0.0/24')
 SYNTHETIC_TAILNETS = {'example'}
@@ -23,6 +24,9 @@ SYNTHETIC_USERS = {'u', 'root'}
 FQDN = re.compile(r'([A-Za-z0-9-]+)\.ts\.net(?![A-Za-z0-9-])', re.IGNORECASE)
 IPV4 = re.compile(r'(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?(?![0-9]|\.[0-9])')
 HOME = re.compile(r'(?<![A-Za-z0-9_.~$-])/home/([a-z_][a-z0-9_-]*)(?![a-z0-9_-])')
+MAC_HOME = re.compile(r'(?<![A-Za-z0-9_.:~$-])/Users/([\w][\w.-]*)')
+WINDOWS_HOME = re.compile(r'(?:/[A-Za-z]|[A-Za-z]:)/Users/([\w][\w. -]*)'
+                          r'|[A-Za-z]:\\+Users\\+([\w][\w. -]*)', re.IGNORECASE)
 WSL_USER = re.compile(r'\bwsl\b(?:(?!\s--(?:\s|$)).)*?\s(?:-u|--user)\s+([a-z_][a-z0-9_-]*)(?![a-z0-9_<>-])')
 
 
@@ -47,13 +51,18 @@ def findings(text):
             found.append((number, 'IP de tailnet'))
         if any(m[1] not in SYNTHETIC_USERS for m in HOME.finditer(line)):
             found.append((number, 'home de usuario'))
+        if any(m[1].rstrip('.') not in SYNTHETIC_USERS for m in MAC_HOME.finditer(line)):
+            found.append((number, 'home de macOS'))
+        if any((m[1] or m[2]).rstrip(' .').lower() not in SYNTHETIC_USERS
+               for m in WINDOWS_HOME.finditer(line)):
+            found.append((number, 'home de Windows'))
         if any(m[1] not in SYNTHETIC_USERS for m in WSL_USER.finditer(line)):
             found.append((number, 'cuenta de WSL'))
     return found
 
 
 def main():
-    names = subprocess.run(['git', 'ls-files', '-z', '--', SCOPE], check=True,
+    names = subprocess.run(['git', 'ls-files', '-z', '--', *SCOPE], check=True,
                            capture_output=True).stdout.split(b'\0')
     total = 0
     for name in filter(None, names):
@@ -69,7 +78,7 @@ def main():
             print(path + ':' + str(number) + ': ' + kind)
             total += 1
     if total:
-        print(str(total) + ' dato(s) interno(s) en ' + SCOPE + '; usa los marcadores de tests/datos_internos.py.',
+        print(str(total) + ' dato(s) interno(s) en ' + ' y '.join(SCOPE) + '; usa los marcadores de tests/datos_internos.py.',
               file=sys.stderr)
         return 1
     return 0

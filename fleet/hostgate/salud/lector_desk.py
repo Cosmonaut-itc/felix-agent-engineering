@@ -43,7 +43,7 @@ def _metrica(muestra, nombre, motivos, maximo=math.inf):
     return m['value']
 
 
-def evaluar(muestra, ahora, boot_actual):
+def evaluar(muestra, ahora, boot_actual, host_esperado):
     """Devuelve la lista de motivos de no sano; vacía si el desk está sano."""
     if not isinstance(muestra, dict):
         return ['snapshot no es objeto']
@@ -51,7 +51,7 @@ def evaluar(muestra, ahora, boot_actual):
                if not isinstance(muestra.get(clave), dict)]
     if muestra.get('schema') != 'desktop-vigilante/muestra@1':
         motivos.append('schema')
-    if muestra.get('host') != 'FELIX-DESKTOP':
+    if muestra.get('host') != host_esperado:
         motivos.append('host')
     ts = _ts(muestra.get('ts'))
     if ts is None or not -60 <= ahora - ts <= 180:

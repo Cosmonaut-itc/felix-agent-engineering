@@ -39,6 +39,7 @@ ERRORS = {
 }
 CANCEL_OPEN = ('cancelling', 'unknown', 'cancel_unconfirmed')
 OPEN = (*CANCEL_OPEN, 'applying', 'partial')
+DESK_DESTINATION = '<usuario>@<host-desk>'
 DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
              '-o', 'BatchMode=yes', '-o', 'IdentitiesOnly=yes',
              '-o', 'IdentityAgent=none', '-o', 'ConnectTimeout=10',
@@ -46,7 +47,9 @@ DESK_ARGV = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
              '-o', 'UserKnownHostsFile=~/.ssh/known_hosts',
              '-o', 'ClearAllForwardings=yes', '-o', 'PermitLocalCommand=no',
              '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
-             '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
+             '-i', '~/.ssh/id_ed25519_pao_rack_accion', DESK_DESTINATION]
+_DNS_LABEL = r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?'
+_DESTINATION = re.compile(rf'[A-Za-z0-9_][A-Za-z0-9_.-]*@{_DNS_LABEL}(?:\.{_DNS_LABEL})*')
 DESK_TIMEOUT = 40
 # Local cancel: the previous 10 s plus up to 2 s for the origin probe (desk_action.send).
 LOCAL_CANCEL_TIMEOUT = 12
@@ -57,6 +60,42 @@ JOURNAL_WAIT = .5
 
 CONTROLLERS = {'remote-run': '~/.local/lib/remote-run/run-control.py',
                'jale': '~/.local/lib/jale/pueue-control.py'}
+
+
+def _desk_config_path():
+    return Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'pao/rack-desk-ssh'
+
+
+def desk_destination():
+    """Read the private, fixed user@hostname used by both desk channels."""
+    try:
+        destination = _desk_config_path().read_text(encoding='ascii').rstrip('\r\n')
+        if _DESTINATION.fullmatch(destination):
+            return destination
+    except (OSError, UnicodeError):
+        pass
+    raise ValueError('Configura pao/rack-desk-ssh con la cuenta y el hostname SSH del desk')
+
+
+def adopt_desk_destination(installed):
+    """Preserve the shared destination from the previous installed hosts file."""
+    path = _desk_config_path()
+    if not path.exists() and not path.is_symlink() and installed.is_file():
+        try:
+            desk = next(host for host in json.loads(installed.read_text()) if host['id'] == 'desk')
+            destination = desk['argv'][-1]
+            expected = [*DESK_ARGV[:-1], destination]
+            if (_DESTINATION.fullmatch(destination) and desk['transport'] == 'ssh'
+                    and desk['actions']['argv'] == expected):
+                path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                try:
+                    with os.fdopen(os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), 'w') as stream:
+                        stream.write(destination + '\n')
+                except FileExistsError:
+                    pass
+        except (KeyError, IndexError, TypeError, ValueError, OSError, StopIteration):
+            pass
+    return desk_destination()
 
 
 def request_budget(host):
@@ -176,7 +215,8 @@ class Executor:
             config = action_config(host.get('actions'))
             if host['id'] == 'desk' and host['transport'] == 'ssh' and config['transport'] == 'ssh':
                 envelope = dict(schema='rack-desk-action@1', target='host-control', request=request)
-                argv = [a.replace('~/', str(self.home) + '/') for a in config['argv']]
+                argv = [a.replace('~/', str(self.home) + '/') for a in config['argv'][:-1]]
+                argv.append(desk_destination())
                 code, response = desk_channel.exchange(argv, envelope, self.runner,
                     {'HOME': str(self.home), 'PATH': '/usr/bin:/bin', 'TMPDIR': '/tmp'},
                     min(DESK_TIMEOUT, timeout if timeout is not None else DESK_TIMEOUT))
@@ -205,7 +245,7 @@ class Executor:
         env = {'HOME': str(self.home), 'PATH': '/usr/bin:/bin:/opt/homebrew/bin', 'TMPDIR': '/tmp'}
         if remote:
             # The envelope never carries origin: the desk dispatcher negotiates it locally.
-            argv = list(config['argv'])
+            argv = [*config['argv'][:-1], desk_destination()]
             request = dict(schema='rack-desk-action@1', launcher=launcher, request=request)
             code, response = desk_channel.exchange(argv, request, self.runner, env, timeout)
         else:

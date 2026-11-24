@@ -19,6 +19,7 @@ class DeskChannelTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory(prefix='rack-u32-',dir='/tmp');self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name);self.now=1794664799.0  # 2026-11-14 13:59:59 UTC
+        safety.desk_config(self, self.root)
         self.p=FakePueue();self.p.groups={g:dict(status='Running',parallel_tasks=n) for g,n in control.desk_profile(self.now).items()}
         self.engine=control.MiniControl(self.p,self.root/'host',clock=lambda:self.now,generation=lambda:'linux-proc-v1:1111111111111111111111111111111111111111111111111111111111111111',host='desk')
         with control.locked(self.engine.directory):self.engine.adopt()
@@ -141,7 +142,8 @@ class DeskChannelTests(unittest.TestCase):
             answer=accion.Executor(home=self.root)(self.host,'host-control',wire,timeout=3)
         self.assertEqual(answer['status'],'unknown')
         argv,envelope,env,timeout=calls[0]
-        self.assertEqual(argv,[a.replace('~/',str(self.root)+'/') for a in accion.DESK_ARGV])
+        self.assertEqual(argv,[a.replace('~/',str(self.root)+'/') for a in accion.DESK_ARGV[:-1]]
+                         + [safety.DESK_DESTINATION])
         self.assertEqual(envelope,dict(schema='rack-desk-action@1',target='host-control',request=wire))
         self.assertEqual(timeout,3);self.assertEqual(set(env),{'HOME','PATH','TMPDIR'})
         self.assertNotIn('launcher',envelope)
@@ -256,6 +258,7 @@ class DeskForcedChannelTests(unittest.TestCase):
         self.tmp=tempfile.TemporaryDirectory(prefix='rack-u32-forced-',dir='/tmp')
         self.addCleanup(self.tmp.cleanup)
         self.root=Path(self.tmp.name)
+        safety.desk_config(self, self.root)
         (self.root/'fakepueue.py').write_text(FAKE_PUEUE)
         self.controller=self.root/'control.py'
         self.controller.write_text(WRAPPER.format(control=str(BASE.parent/'pueue-desk/control.py')))
@@ -284,7 +287,7 @@ class DeskForcedChannelTests(unittest.TestCase):
         self.processes=[];self.argv=[]
         def runner(argv,**kw):
             self.argv.append(argv)
-            expected=[a.replace('~/',str(self.root)+'/') for a in accion.DESK_ARGV]
+            expected=[a.replace('~/',str(self.root)+'/') for a in accion.DESK_ARGV[:-1]] + [safety.DESK_DESTINATION]
             self.assertEqual(argv,expected)
             process=subprocess.Popen(['/usr/bin/python3','-I',str(shim)],**kw)
             self.processes.append(process);return process

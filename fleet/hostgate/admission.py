@@ -118,7 +118,7 @@ class Hostgate:
                 reasons.append(reason('boot-unverified', 'SEN-3853 sin acreditar; WSL no es testigo Windows'))
                 independent_boot = None
             try:
-                raw = lector_desk.evaluar(sample, self.world.wall(), independent_boot)
+                raw = lector_desk.evaluar(sample, self.world.wall(), independent_boot, self.config.snapshot_host)
             except OverflowError:
                 # El lector aceptado pertenece a Desktop; el adaptador cierra su desborde.
                 raw = ['metrica fuera de rango numerico']

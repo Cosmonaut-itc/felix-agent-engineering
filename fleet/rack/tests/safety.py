@@ -3,9 +3,25 @@ import os
 from pathlib import Path
 import sys
 import tempfile
+from unittest.mock import patch
 
 os.environ['TMPDIR'] = '/tmp'
 tempfile.tempdir = '/tmp'
+DESK_DESTINATION = 'u@desk.example'
+
+
+def write_desk_config(root):
+    config_home = root / 'config'
+    dest = config_home / 'pao/rack-desk-ssh'
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_text(DESK_DESTINATION + '\n')
+    return {'XDG_CONFIG_HOME': str(config_home)}
+
+
+def desk_config(test, root):
+    env = patch.dict(os.environ, write_desk_config(root))
+    env.start()
+    test.addCleanup(env.stop)
 
 
 def audit(event, args):

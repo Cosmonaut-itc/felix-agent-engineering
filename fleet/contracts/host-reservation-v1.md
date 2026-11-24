@@ -37,7 +37,7 @@ aceptado puede seguir en cola Fleet aunque caduque su intento pendiente de admis
 Cada reserva acredita trabajo, intento, ejecutor, equipo físico y generación.
 Capacidad, cores/vCPU y límites efectivos proceden de configuración del nodo,
 nunca de argumentos/variables del cliente; la demanda del trabajo sí es declarativa.
-Windows y WSL comparten el physicalHostId FELIX-DESKTOP y presupuesto físico.
+Windows y WSL comparten el physicalHostId <host-desk> y presupuesto físico.
 Los identificadores de Mini y demás nodos se leen de configuración comprobada,
 sin ramas por nombre de máquina.
 
@@ -78,7 +78,7 @@ La unidad Desktop `desk-boot-witness` (SEN-3853) está pending y bloquea SEN-383
 y evidencia son prerrequisitos de la integración nativa. No se presume disponible.
 
 Nunca se lanza PowerShell/CIM/WMI para medir. Toda lectura, sonda o ejecución
-hacia FELIX-DESKTOP usa OpenSSH nativo Windows, ProxyCommand=none.
+hacia <host-desk> usa OpenSSH nativo Windows, ProxyCommand=none.
 Prohibidos el alias desk y la lectura /mnt/c vía WSL.
 powershell.exe y wsl.exe de larga vida son observaciones, sin veto automático,
 atribución de orfandad ni autorización para matar. nativos=[] sigue vigente.

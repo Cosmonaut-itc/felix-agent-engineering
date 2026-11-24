@@ -20,7 +20,7 @@
   },
   {
     "id": "desk",
-    "name": "Felix DESKTOP · WSL",
+    "name": "Desk · WSL",
     "transport": "ssh",
     "argv": [
       "/usr/bin/ssh",
@@ -33,7 +33,7 @@
       "IdentitiesOnly=yes",
       "-i",
       "~/.ssh/id_ed25519_pao_rack",
-      "Felix@felix-desktop"
+      "<usuario>@<host-desk>"
     ],
     "actions": {
       "transport": "ssh",
@@ -69,7 +69,7 @@
         "ControlPath=none",
         "-i",
         "~/.ssh/id_ed25519_pao_rack_accion",
-        "Felix@felix-desktop"
+        "<usuario>@<host-desk>"
       ]
     }
   }

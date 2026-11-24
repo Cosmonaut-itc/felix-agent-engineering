@@ -4,11 +4,16 @@ from pathlib import Path
 
 from hostgate.tests.support.cases import parametrize, suite
 
-from hostgate.salud.lector_desk import _ts, evaluar
+from hostgate.salud.lector_desk import _ts, evaluar as evaluar_desk
 
 REAL = json.loads((Path(__file__).parents[1] / 'fixtures/health/desk.json').read_text())
 BOOT = REAL['boot']['bootId']
 AHORA = _ts(REAL['ts']) + 30
+HOST = 'DESK-FIXTURE'
+
+
+def evaluar(muestra, ahora, boot_actual):
+    return evaluar_desk(muestra, ahora, boot_actual, HOST)
 
 
 def observacion(**campos):
@@ -64,7 +69,7 @@ def test_extension_no_tapa_un_desk_no_sano(nombre):
     (lambda m: m['errors'].append({'stage': 'metric', 'code': 'x'}), 'errors'),
     (lambda m: m.update(status='warn'), 'status'),
     (lambda m: m['persist'].update(jsonl='failed'), 'persist'),
-    (lambda m: m['boot'].update(bootId='FELIX-DESKTOP/otro'), 'boot'),
+    (lambda m: m['boot'].update(bootId='DESK-FIXTURE/otro'), 'boot'),
     (lambda m: m['volumes']['C:'].update(freeBytes=5 * 1024 ** 3), 'C: libre'),
     (lambda m: m['metrics']['cpuRootPct'].update(value=None), 'cpuRootPct incompleta'),
     (lambda m: m['metrics']['eLatencyMs'].update(value=80), 'eLatencyMs'),

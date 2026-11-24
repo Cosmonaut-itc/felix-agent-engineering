@@ -24,7 +24,7 @@ SSH = ['/usr/bin/ssh', '-F', '/dev/null', '-T',
        '-o', 'StrictHostKeyChecking=yes', '-o', 'UserKnownHostsFile=~/.ssh/known_hosts',
        '-o', 'ClearAllForwardings=yes', '-o', 'PermitLocalCommand=no',
        '-o', 'ControlMaster=no', '-o', 'ControlPath=none',
-       '-i', '~/.ssh/id_ed25519_pao_rack_accion', 'Felix@felix-desktop']
+       '-i', '~/.ssh/id_ed25519_pao_rack_accion', safety.DESK_DESTINATION]
 
 
 def wire(launcher='remote-run', op='cancel'):
@@ -247,14 +247,55 @@ class FakeProcess:
 
 class SSHTests(unittest.TestCase):
     def setUp(self):
+        temp = tempfile.TemporaryDirectory(dir='/tmp')
+        self.addCleanup(temp.cleanup)
+        safety.desk_config(self, Path(temp.name))
         self.host = serve.load_hosts(BASE/'hosts.json')[1]
         self.calls=[]
     def runner(self,argv,**options):
         self.calls.append((argv,options))
         return FakeProcess(receipt(wire()),0,self.calls)
 
+    def test_snapshot_read_uses_same_configured_destination(self):
+        template = self.host['argv']
+        self.assertEqual(template[-1], '<usuario>@<host-desk>')
+        with patch.object(serve.subprocess, 'run', return_value=SimpleNamespace(stdout='{}')) as run:
+            with patch.object(serve, 'validate_snapshot') as validate:
+                self.assertIs(serve.fetch_host(self.host), validate.return_value)
+            self.assertEqual(run.call_args.args[0], [
+                '/usr/bin/ssh', '-T', '-o', 'BatchMode=yes', '-o', 'ConnectTimeout=10',
+                '-o', 'IdentitiesOnly=yes', '-i', '~/.ssh/id_ed25519_pao_rack', safety.DESK_DESTINATION])
+        self.assertEqual(template[-1], '<usuario>@<host-desk>')
+
+    def test_migration_uses_legacy_endpoint_and_keeps_local_override(self):
+        config = accion._desk_config_path()
+        config.unlink()
+        installed = config.parent / 'hosts.json'
+        desk = copy.deepcopy(self.host)
+        desk['argv'][-1] = 'u@prior.example'
+        desk['actions']['argv'][-1] = desk['argv'][-1]
+        installed.write_text(json.dumps([desk]))
+        self.assertEqual(accion.adopt_desk_destination(installed), 'u@prior.example')
+        self.assertEqual(stat.S_IMODE(config.stat().st_mode), 0o600)
+        config.write_text(safety.DESK_DESTINATION + '\n')
+        self.assertEqual(accion.adopt_desk_destination(installed), safety.DESK_DESTINATION)
+
+    def test_missing_or_invalid_destination_cannot_launch_ssh(self):
+        config = accion._desk_config_path()
+        config.unlink()
+        with patch.object(serve.subprocess, 'run') as run:
+            with self.assertRaises(ValueError):
+                serve.fetch_host(self.host)
+            run.assert_not_called()
+        for value in ('-oProxyCommand=bad', 'u@-invalid', 'u@desk.example\nextra'):
+            with self.subTest(value=value):
+                config.write_text(value)
+                with self.assertRaises(ValueError):
+                    accion.Executor(runner=self.runner)(self.host, 'remote-run', wire())
+        self.assertEqual(self.calls, [])
+
     def test_exact_ssh_argv_stdin_only_environment_and_budget(self):
-        self.assertEqual(self.host['actions']['argv'],SSH)
+        self.assertEqual(self.host['actions']['argv'], [*SSH[:-1], '<usuario>@<host-desk>'])
         with patch.dict(os.environ,{'SSH_AUTH_SOCK':'secret','GH_TOKEN':'secret'}):
             answer=accion.Executor(runner=self.runner,home='/synthetic-home')(self.host,'remote-run',wire())
         argv,options=self.calls[0]
@@ -335,6 +376,7 @@ class IntegrationTests(unittest.TestCase):
 
     def test_panel_dispatcher_both_launchers_and_switch(self):
         from browser_fixture import write_ssh_shim, fixture
+        safety.desk_config(self, self.root)
         shim = write_ssh_shim(self.root, self.controllers)
         calls = []
         def runner(argv, **options):
