@@ -64,8 +64,12 @@ const tree = node => ({
   children: elementChildren(node).map(tree)
 });
 const descendants = node => [node, ...elementChildren(node).flatMap(descendants)];
+// Vaciar #app deja a los nodos viejos con parentElement; sólo cuenta el que sigue entre los hijos.
 const connected = node => {
-  for (let at = node; at instanceof Element; at = at.parentElement) if (at === elements.app) return true;
+  for (let at = node; at instanceof Element; at = at.parentElement) {
+    if (at === elements.app) return true;
+    if (!at.parentElement?.children.includes(at)) return false;
+  }
   return false;
 };
 function moreButtons(node) {
