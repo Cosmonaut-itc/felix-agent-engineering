@@ -40,6 +40,8 @@ CASES=(
      'test_tren_ui.TrenUITests.test_joined_run_counts_from_the_host_start'),
     ('tren-ui-hostless-clock', 'index.html', 'const begun=hostless ? null : ', 'const begun=',
      'test_tren_ui.TrenUITests.test_run_without_host_reading_keeps_no_launcher_clock'),
+    ('tren-ui-open-run-clock', 'index.html', 'const hostless=open && !joined', 'const hostless=running && !joined',
+     'test_tren_ui.TrenUITests.test_exit_75_with_pueue_place_keeps_no_launcher_clock'),
     ('tren-ui-focus-head', 'index.html', "+(row.head ? '@'+row.head : '')", "+''",
      'test_tren_ui.TrenUITests.test_repaint_keeps_focus_on_the_resent_head'),
     ('tren-stage-errors-unpublished', 'serve.py', 'repos=repos, errors=errors,', 'repos=repos, errors=[],',

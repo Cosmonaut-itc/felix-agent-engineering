@@ -94,8 +94,12 @@ def documents():
     ] + [dict(pr=1100, head='aaaa111', etapa='caducado', desde=NOW-900, motivo='head-cambiado'),
          dict(pr=1100, head='abcd123', etapa='admitido', desde=NOW-300, motivo=None)]
 
+    # Salida 75 al preparar la carga: la tarea ya está Done y el rack la retiró.
+    exited = copy.deepcopy(running)
+    exited['repos'][0]['lote']['suite'][0].update(estado='pendiente-75', inicio=NOW-1800)
+
     return dict(rojo=red, verde=green, suite=running, pausa=paused, vacio=empty, etapas=errors,
-                extremo=worst, texto=hostile, absuelto=absolved, cola=queued, reentrega=resent)
+                extremo=worst, texto=hostile, absuelto=absolved, cola=queued, reentrega=resent, salida75=exited)
 
 
 def finished_member(pr, result):
@@ -134,7 +138,7 @@ def scenarios():
         projection = {}
         for name in ('rojo', 'verde', 'suite', 'pausa', 'vacio', 'etapas', 'extremo', 'texto',
                      'error', 'datos-antiguos', 'historial-antiguo', 'sin-repos',
-                     'absuelto', 'disperso', 'cola', 'turno', 'reentrega', 'sin-lectura'):
+                     'absuelto', 'disperso', 'cola', 'turno', 'reentrega', 'sin-lectura', 'salida75'):
             source = {'historial-antiguo': 'extremo', 'disperso': 'suite', 'turno': 'suite', 'sin-lectura': 'cola'}.get(name, name)
             data = raw.get(source, raw['pausa'])
             validated = contract.tren.valid_tren(data, rack.tren_repos, NOW)
@@ -263,6 +267,13 @@ class TrenUITests(unittest.TestCase):
         self.assertIn('desk · Pueue 7812', desk['text'])
         self.assertIn('Sin dato del host', desk['text'])
         self.assertNotIn('30 min', desk['text'])
+        self.assertEqual(nodes(desk, cls='bar'), [])
+
+    def test_exit_75_with_pueue_place_keeps_no_launcher_clock(self):
+        desk = nodes(self.section('salida75'), cls='run')[0]
+        self.assertIn('desk · Pueue 7812', desk['text'])
+        self.assertIn('Sin terminar · salida 75', desk['text'])
+        self.assertNotRegex(desk['text'], r'\d+ min')
         self.assertEqual(nodes(desk, cls='bar'), [])
 
     def test_running_progress_uses_joined_estimate_only(self):

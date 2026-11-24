@@ -583,9 +583,9 @@ function trenPlace(place){
 function trenRun(run, trial=false){
   const cell=trenNode('div','run'), top=trenNode('div','r-top');
   const estimate=run.est, based=!!estimate && known({est:estimate}), running=trial || run.estado==='corriendo';
-  // Con lugar en Pueue, el tiempo de ejecución sale sólo de la tarea unida, con el inicio de su tarjeta de host.
-  const joined=!!run.rack && run.estado!=='terminada';
-  const hostless=running && !joined && run.lugar.pueue_id!=null && (run.lugar.tipo==='desk' || run.lugar.tipo==='mini');
+  // Con lugar en Pueue, el tiempo de una corrida abierta sale sólo de la tarea unida, con el inicio de su tarjeta de host.
+  const open=trial || run.estado!=='terminada', joined=!!run.rack && open;
+  const hostless=open && !joined && run.lugar.pueue_id!=null && (run.lugar.tipo==='desk' || run.lugar.tipo==='mini');
   const begun=hostless ? null : joined ? run.rack_inicio : run.inicio;
   const elapsed=begun==null ? null : Math.max(0,(run.fin ?? NOW)-begun);
   const time=trenNode('span','r-time');
