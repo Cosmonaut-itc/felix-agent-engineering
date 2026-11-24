@@ -12,6 +12,16 @@ import tempfile
 
 BASE=Path(__file__).resolve().parents[1]
 CASES=(
+    ('tren-extra-key', 'tren.py', 'set(row) == set(fields.split())', 'set(fields.split()) <= set(row)',
+     'test_tren.ValidatorTests.test_rejects_extra_keys_at_every_level'),
+    ('tren-pause-details', 'tren.py', "_keys(row, 'motivo pr desde')",
+     "_keys({key: value for key, value in row.items() if key != 'detalle'}, 'motivo pr desde')",
+     'test_tren.ValidatorTests.test_rejects_pause_details'),
+    ('tren-comment-repo', 'tren.py', '{re.escape(repo)}/pull/{pr}',
+     '[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/{pr}',
+     'test_tren.ValidatorTests.test_rejects_comment_url_for_other_repo'),
+    ('tren-taken-relative-to-cycle', 'tren.py', 'valid_tren(data, repos, received_at)', 'valid_tren(data, repos, now)',
+     'test_tren.TrenStateTests.test_accepted_document_stays_readable_after_24_hours_and_restart'),
     ('orphans-descendants', 'snapshot.py', 'if parent == main:', 'if False:',
      'test_orphans.OrphanTests.test_descendants_excluded_and_reparented_attributed_by_fd1'),
     ('orphans-identity', 'snapshot.py', "before['start'] != after['start'] or descendant(pid, after)",

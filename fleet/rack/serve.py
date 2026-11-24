@@ -37,6 +37,15 @@ TASK_TIMES = ('enqueued', 'start', 'end')
 LOOKUP_BUDGET = 8
 REFRESH_TIMEOUT = 40
 CYCLE_SECONDS, CYCLE_MIN_GAP = 15, 3
+PULL_LIMIT, PULL_RETRY = 10, 1800
+
+
+def load_tren():
+    # -I omite el directorio del script. El módulo se usa sólo con Tren habilitado.
+    spec = importlib.util.spec_from_file_location('rack_tren', BASE / 'tren.py')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def atomic(path, text):
@@ -259,7 +268,7 @@ def fetch_host(host):
 
 
 class Rack:
-    def __init__(self, hosts, state_dir, key_path=None, gh='/opt/homebrew/bin/gh'):
+    def __init__(self, hosts, state_dir, key_path=None, gh='/opt/homebrew/bin/gh', tren_repos=()):
         self.hosts = hosts
         self.good = {}
         self.errors = {}
@@ -269,6 +278,14 @@ class Rack:
         self.gh = gh
         self.commit_path = state_dir / 'commits.json'
         self.commits = read_cache(self.commit_path, dict(ticket=str, branch=str, subject=str, checked=(int, float)))
+        self.tren_repos = tuple(tren_repos)
+        self.tren = load_tren() if self.tren_repos else None
+        self.tren_path = state_dir / 'tren.json'
+        self.tren_good = None
+        self.tren_error = None
+        self.tren_present = False
+        self.pull_path = state_dir / 'pulls.json'
+        self.pulls = read_cache(self.pull_path, dict(ticket=str, title=str, checked=(int, float))) if self.tren else {}
         self.key = None
         key_path = key_path or Path.home() / '.config/pao-rack/linear-key'
         try:
@@ -367,6 +384,125 @@ class Rack:
                     if not task.get(field):
                         task[field] = known.get(field)
 
+    def read_tren(self, now):
+        if not self.tren:
+            return
+        try:
+            self.tren_good = self.tren.read_received(self.tren_path, self.tren_repos, now)
+            self.tren_present, self.tren_error = True, None
+        except FileNotFoundError:
+            self.tren_present, self.tren_error, self.tren_good = False, None, None
+        except (OSError, ValueError, RecursionError):
+            self.tren_present, self.tren_error = True, 'No se pudo leer el tren'
+
+    def tren_prs(self):
+        prs = {}
+        if self.tren_good is not None:
+            for row in self.tren_good[1]['repos']:
+                repo = row['repo']
+                batch = row['lote']
+                numbers = []
+                if batch is not None:
+                    numbers.extend(member['pr'] for member in batch['miembros'])
+                    if batch['ensayo'] is not None:
+                        numbers.extend(batch['ensayo']['prs'])
+                pause = row['pausa']
+                if pause is not None and pause['pr'] is not None:
+                    numbers.append(pause['pr'])
+                numbers.extend(member['pr'] for member in row['espera'])
+                numbers.extend(member['pr'] for item in row['recientes'] for member in item['miembros'])
+                for pr in numbers:
+                    prs[f'{repo}#{pr}'] = (repo, pr)
+        return prs
+
+    def pull_fields(self, key):
+        known = self.pulls.get(key, {})
+        ticket = known.get('ticket') or ''
+        return dict(ticket=ticket if re.fullmatch(r'SEN-[0-9]+', ticket) else None,
+                    title=self.tren.public_title(known.get('title')))
+
+    def resolve_pulls(self, prs, now, deadline):
+        count = 0
+        for key, (repo, pr) in prs.items():
+            remaining = deadline - time.monotonic()
+            if count >= PULL_LIMIT or remaining <= 0:
+                break
+            known = self.pull_fields(key)
+            checked = self.pulls.get(key, {}).get('checked')
+            if all(known.values()) or checked is not None and now - checked < PULL_RETRY:
+                continue
+            count += 1
+            try:
+                result = subprocess.run(
+                    [self.gh, 'api', f'repos/{repo}/pulls/{pr}', '--jq', '{ref: .head.ref, title: .title}'],
+                    stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True,
+                    timeout=min(5, remaining), check=True)
+                pull = json.loads(result.stdout)
+                if not isinstance(pull, dict) or not isinstance(pull.get('ref'), str):
+                    raise ValueError('PR inválido')
+                match = re.search(r'sen-([0-9]+)', pull['ref'], re.I)
+                if match:
+                    known['ticket'] = 'SEN-' + match[1]
+                title = self.tren.public_title(pull.get('title'))
+                if title is not None:
+                    known['title'] = title
+            except (OSError, subprocess.SubprocessError, ValueError, RecursionError):
+                logging.warning('No se pudo consultar un PR del tren en GitHub')
+            self.pulls[key] = dict(known, checked=now)
+        if count:
+            try:
+                atomic(self.pull_path, json.dumps(self.pulls))
+            except OSError:
+                logging.warning('No se pudo guardar la caché de PRs del tren')
+
+    @staticmethod
+    def join_tren_run(run, tasks):
+        place = run['lugar']
+        host, task_id, ref = place['tipo'], place['pueue_id'], place['ref']
+        entry = tasks.get((host, task_id))
+        if entry is None:
+            return
+        task, estimate = entry
+        if ref is not None:
+            matches = (task.get('activity') or {}).get('ref') == ref
+        else:
+            start, begun = task.get('start'), run['inicio']
+            matches = (host == 'mini' and run.get('fin') is None and start is not None
+                       and begun is not None and start >= begun)
+        if matches:
+            rack = dict(host=host, id=task_id)
+            run['rack'] = place['rack'] = rack
+            if estimate is not None:
+                run['est'] = place['est'] = estimate
+
+    def tren_view(self, hosts, now):
+        age = None
+        repos = []
+        if self.tren_good is not None:
+            received, data = self.tren_good
+            age = max(0, now - received)
+            repos = copy.deepcopy(data['repos'])
+        tasks = {(host['id'], task['id']): (task, host['estimates'].get(str(task['id'])))
+                 for host in hosts if host['id'] in ('desk', 'mini') and host['fresh']
+                 for task in host['snapshot']['tasks'] if task['state'] != 'Done'}
+        for row in repos:
+            batch = row['lote']
+            if batch is not None:
+                for run in batch['suite']:
+                    self.join_tren_run(run, tasks)
+                trial = batch['ensayo']
+                if trial is not None:
+                    trial['unidad'] = self.tren.public_text(trial['unidad'])
+                    self.join_tren_run(trial, tasks)
+            for recent in row['recientes']:
+                for member in recent['miembros']:
+                    returned = member['devolucion']
+                    if returned is not None:
+                        returned['unidad'] = self.tren.public_text(returned['unidad'])
+        return dict(fresh=age is not None and age <= self.tren.FRESH_SECONDS and self.tren_error is None,
+                    age=age, error=self.tren_error, repos=repos,
+                    prs={key: self.pull_fields(key) for key in self.tren_prs() if key in self.pulls})
+
     def publish(self, now):
         hosts = []
         for host in self.hosts:
@@ -382,9 +518,12 @@ class Rack:
                             estimates[str(task['id'])] = estimate
             hosts.append(dict(id=ident, name=host['name'], actions=dict(reason=accion.transport_reason(host, 'remote-run')), fresh=data is not None and self.errors.get(ident) is None,
                               age=max(0, now - data['taken']) if data else None, error=self.errors.get(ident), snapshot=data, estimates=estimates))
+        payload = dict(schema='rack@1', now=now, hosts=hosts,
+                       tickets={k: {f: v.get(f) for f in ('title', 'project')} for k, v in self.tickets.items()})
+        if getattr(self, 'tren_present', False):
+            payload['tren'] = self.tren_view(hosts, now)
         with self.lock:
-            self.payload = dict(schema='rack@1', now=now, hosts=hosts,
-                                tickets={k: {f: v.get(f) for f in ('title', 'project')} for k, v in self.tickets.items()})
+            self.payload = payload
 
     def cycle(self, fetch=fetch_host, now=None):
         now = time.time() if now is None else now
@@ -402,6 +541,7 @@ class Rack:
                     self.errors[ident] = None
                 except Exception as error:
                     self.errors[ident] = 'No se pudo leer el host: ' + type(error).__name__
+        self.read_tren(now)
         self.publish(now)
         with self.published:
             self.read_hosts = number
@@ -409,6 +549,9 @@ class Rack:
         deadline = time.monotonic() + LOOKUP_BUDGET
         self.resolve_commits([t for data in self.good.values() for t in data['tasks'] if t['state'] != 'Done'], now, deadline)
         self.refresh_tickets({t['ticket'] for data in self.good.values() for t in data['tasks'] if re.fullmatch(r'SEN-\d+', t.get('ticket') or '')}, now, deadline)
+        if self.tren_present:
+            # PR titles only take what commits and tickets leave of the shared budget.
+            self.resolve_pulls(self.tren_prs(), now, deadline)
         self.publish(now)
 
     def read(self):
@@ -594,15 +737,18 @@ def main():
     parser.add_argument('--name', action='append', default=[], help='nombre DNS aceptado en Host, además de la IP de --bind')
     parser.add_argument('--tailscale', default='/Applications/Tailscale.app/Contents/MacOS/Tailscale')
     parser.add_argument('--hosts', type=Path, default=BASE / 'hosts.json')
+    parser.add_argument('--config', type=Path, help='rack.json opcional con tren.repos')
     parser.add_argument('--state-dir', type=Path, default=Path.home() / '.local/state/pao/rack')
     args = parser.parse_args()
     if args.bind != '127.0.0.1' and not args.owner:
         parser.error('--owner es obligatorio fuera de 127.0.0.1')
     try:
         hosts = load_hosts(args.hosts)
-    except ValueError as error:
+        config = args.config or BASE / 'rack.json'
+        tren_repos = load_tren().load_repos(config) if args.config or config.exists() else ()
+    except (OSError, ValueError, RecursionError) as error:
         parser.error(str(error))
-    rack = Rack(hosts, args.state_dir)
+    rack = Rack(hosts, args.state_dir, tren_repos=tren_repos)
     server = ThreadingHTTPServer((args.bind, args.port), Handler)
     server.rack = rack
     server.names = tuple(args.name)
