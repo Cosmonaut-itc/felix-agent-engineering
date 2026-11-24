@@ -133,6 +133,21 @@ class EsperarCITests(unittest.TestCase):
         self.assertFalse(self.esperar(sondear))
         self.assertEqual(self.reloj.suenos, [20])
 
+    def test_corta_si_el_plazo_vence_durante_la_relectura(self):
+        self.guardar(self.estado)
+        lecturas = []
+
+        def leer(repo):
+            lecturas.append(cli.estado_para_espera(repo))
+            if len(lecturas) == 3:
+                self.reloj.ahora = 100
+            return lecturas[-1]
+
+        sondear = Mock(return_value=(self.tren, ResultadoCI("verde")))
+        self.assertFalse(cli.esperar_ci(REPO, 100, leer, sondear, lambda: True,
+                                        self.reloj.dormir, self.reloj))
+        self.assertEqual(len(lecturas), 3)
+
     def test_corta_si_cambia_el_programa(self):
         self.guardar(self.estado)
         sondear = Mock()
@@ -258,6 +273,7 @@ class EsperaSecaTests(unittest.TestCase):
         salida = io.StringIO()
         with patch("sys.argv", ["pao-tren", "tick", "--repo", REPO, "--seco"]), \
                 patch.object(cli, "intento", return_value=(0, {})), \
+                patch.object(cli, "instalando", lambda: False), \
                 patch.object(cli, "esperar_ci", side_effect=AssertionError("espera en seco")), \
                 redirect_stdout(salida):
             self.assertEqual(cli.main(), 0)

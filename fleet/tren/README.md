@@ -269,21 +269,29 @@ pao-tren candado -- git -C <checkout instalado> merge --ff-only <sha>
 `candado` toma en exclusiva el candado del programa (`programa.lock`, en el
 directorio de estado) sin esperar, y corre el comando. Después conserva el
 candado 5 s más, lo suelta y sale con el código del comando. Su última línea
-es `{"candado": "tomado", "codigo": N}`. Cada tick activo, de cualquier
-carril, tiene ese candado compartido mientras corre. Si hay alguno, `candado`
-sale con 75 y `{"candado": "ocupado"}` sin correr el comando: reintenta
-después. No crea el ledger: sin él sale con 2.
+es `{"candado": "tomado", "codigo": N}`. Cada tick, activo o `--seco` y de
+cualquier carril, tiene ese candado compartido mientras corre. Si hay alguno,
+`candado` sale con 75 y `{"candado": "ocupado"}` sin correr el comando:
+reintenta después. No crea el ledger: sin él sale con 2.
+
+Un tick de cualquier carril impide instalar hasta que termina. El tick que
+espera una suite retiene el candado todo ese tiempo, que en Jale ronda los 90
+minutos. `candado` no espera ni interrumpe ese tick: mientras la suite corre,
+cada reintento sale con 75. Si la cola del host de pruebas está en pausa o
+retenida, la suite no termina sola y la instalación pide antes resolver esa
+cola.
 
 Un proceso `pao-tren tick` puede seguir vivo, sin ningún candado, mientras
 espera el CI. Por eso la ausencia de procesos no indica cuándo instalar. Tres
-comprobaciones impiden que un tick activo corra con un programa distinto del
-que cargó. En las tres el tick sale con 0 sin observar ni escribir, y el
-siguiente disparo de launchd corre con el programa nuevo:
+comprobaciones impiden que un tick, activo o `--seco`, corra con un programa
+distinto del que cargó. En las tres el tick sale con 0 sin observar ni
+escribir, y el siguiente disparo de launchd corre con el programa nuevo:
 
 - Al arrancar, con sus módulos ya cargados, el proceso prueba el candado del
   programa. Si alguien instala, escribe `{"omitido": "instalacion-en-curso"}`
   y termina. Un proceso que arranca a media instalación pudo cargar módulos de
-  dos versiones; los 5 s de más cubren su arranque.
+  dos versiones; los 5 s de más cubren su arranque. Un tick activo sin
+  inscripción activa no hace esta prueba: responde su error y sale con 2.
 - Cada tick toma el candado compartido después del candado del carril. Si
   alguien instala en ese momento, devuelve la misma línea.
 - Ya con los dos candados, el tick compara el programa instalado con el del
@@ -296,7 +304,7 @@ Una línea `omitido` en `stdout.log` no es un tick.
 Límites conocidos:
 
 - Sólo queda cubierta una instalación hecha con `candado`.
-- `tick --seco` (la sombra), `estado`, `entregar`, `juicio` y `pausa` no toman
+- `estado`, `entregar`, `juicio`, `pausa` y los comandos de medición no toman
   el candado del programa.
 - Un proceso que tarda más de 5 s en arrancar a media instalación no queda
   cubierto.

@@ -1,4 +1,4 @@
-"""SEN-7280: instalar con el candado del carril sin que un tick mezcle versiones."""
+"""SEN-7280: instalar con el candado del programa sin que un tick mezcle versiones."""
 from contextlib import closing, redirect_stdout
 import io
 import json
@@ -81,9 +81,9 @@ class TickBajoCandadoTests(unittest.TestCase):
     estado = ContextoCadena.estado
     lineas = ContextoCadena.lineas
 
-    def tick(self, vigente):
+    def tick(self, vigente, *opciones):
         c = self.contexto
-        args = cli.parser().parse_args(["tick", "--repo", REPO])
+        args = cli.parser().parse_args(["tick", "--repo", REPO, *opciones])
         return cli.ejecutar(args, c.observador, 100, c.git, c.hasito, None, c.escritor,
                             vigente=vigente)
 
@@ -105,28 +105,49 @@ class TickBajoCandadoTests(unittest.TestCase):
             self.assertEqual((codigo, resultado["modo"]), (0, "activo"))
             observar.assert_called_once()
 
-    def test_el_tick_tiene_el_candado_compartido_mientras_corre(self):
-        observador, vistos = self.contexto.observador, []
-        observar = observador.observar
-
-        def espiar(estado, ahora):
+    def test_el_tick_seco_se_omite_igual(self):
+        antes, eventos = self.estado(), self.eventos()
+        observador = self.contexto.observador
+        with patch.object(observador, "observar", wraps=observador.observar) as observar:
+            self.assertEqual(self.tick(lambda: False, "--seco"),
+                             (0, {"omitido": "programa-cambiado"}))
             with cli.candado_programa(exclusivo=True) as instalador:
-                vistos.append(instalador)
-            return observar(estado, ahora)
+                self.assertTrue(instalador)
+                self.assertEqual(self.tick(lambda: True, "--seco"),
+                                 (0, {"omitido": "instalacion-en-curso"}))
+            observar.assert_not_called()
+            self.assertEqual((self.estado(), self.eventos()), (antes, eventos))
+            codigo, resultado = self.tick(lambda: True, "--seco")
+            self.assertEqual((codigo, resultado["modo"]), (0, "sombra"))
+            observar.assert_called_once()
 
-        with patch.object(observador, "observar", espiar):
-            self.assertEqual(self.tick(lambda: True)[0], 0)
-        self.assertEqual(vistos, [False])
-        with cli.candado_programa(exclusivo=True) as instalador:
-            self.assertTrue(instalador)
+    def test_el_tick_tiene_el_candado_compartido_mientras_corre(self):
+        observador = self.contexto.observador
+        observar = observador.observar
+        for opciones in ((), ("--seco",)):
+            with self.subTest(opciones=opciones):
+                vistos = []
+
+                def espiar(estado, ahora):
+                    with cli.candado_programa(exclusivo=True) as instalador:
+                        vistos.append(instalador)
+                    return observar(estado, ahora)
+
+                with patch.object(observador, "observar", espiar):
+                    self.assertEqual(self.tick(lambda: True, *opciones)[0], 0)
+                self.assertEqual(vistos, [False])
+                with cli.candado_programa(exclusivo=True) as instalador:
+                    self.assertTrue(instalador)
 
 
 class MainTests(unittest.TestCase):
-    def correr(self, intento, instalando=False, programa=lambda: "igual"):
+    def correr(self, intento, instalando=False, programa=lambda: "igual", opciones=(),
+               inscripcion="activo"):
         salida = io.StringIO()
-        with patch("sys.argv", ["pao-tren", "tick", "--repo", REPO]), \
+        with patch("sys.argv", ["pao-tren", "tick", "--repo", REPO, *opciones]), \
                 patch.object(cli, "intento", intento), \
                 patch.object(cli, "instalando", lambda: instalando), \
+                patch.object(cli, "activacion", lambda repo: inscripcion), \
                 patch.object(cli, "huella", lambda repo: None), \
                 patch.object(cli, "programa", programa), redirect_stdout(salida):
             codigo = cli.main()
@@ -134,25 +155,41 @@ class MainTests(unittest.TestCase):
 
     def test_una_instalacion_en_curso_al_arrancar_omite_el_tick(self):
         intento = Mock(side_effect=AssertionError("corrió un tick"))
-        self.assertEqual(self.correr(intento, instalando=True),
-                         (0, [{"omitido": "instalacion-en-curso"}]))
+        for opciones, inscripcion in (((), "activo"), (("--seco",), "activo"),
+                                      (("--seco",), "sombra"), (("--seco",), None)):
+            with self.subTest(opciones=opciones, inscripcion=inscripcion):
+                self.assertEqual(self.correr(intento, True, opciones=opciones,
+                                             inscripcion=inscripcion),
+                                 (0, [{"omitido": "instalacion-en-curso"}]))
+
+    def test_sin_inscripcion_activa_el_tick_activo_responde_su_error(self):
+        error = {"error": "tick activo requiere inscripción activa", "inscripcion": "sombra"}
+        intento = Mock(return_value=(2, error))
+        self.assertEqual(self.correr(intento, instalando=True, inscripcion="sombra"),
+                         (2, [error]))
 
     def test_cada_tick_recibe_la_comparacion_con_el_programa_del_arranque(self):
-        instalado, vistos = ["igual"], []
+        for opciones in ((), ("--seco",)):
+            with self.subTest(opciones=opciones):
+                instalado, vistos = ["igual"], []
 
-        def intento(args, vigente=None):
-            vistos.append(vigente())
-            instalado[0] = "nuevo"
-            vistos.append(vigente())
-            return 0, {}
+                def intento(args, vigente=None):
+                    vistos.append(vigente())
+                    instalado[0] = "nuevo"
+                    vistos.append(vigente())
+                    return 0, {}
 
-        self.assertEqual(self.correr(intento, programa=lambda: instalado[0]), (0, [{}]))
-        self.assertEqual(vistos, [True, False])
+                self.assertEqual(self.correr(intento, programa=lambda: instalado[0],
+                                             opciones=opciones), (0, [{}]))
+                self.assertEqual(vistos, [True, False])
 
     def test_sin_huella_del_arranque_corre_un_tick_sin_comparar(self):
-        intento = Mock(return_value=(0, {}))
-        self.assertEqual(self.correr(intento, programa=lambda: None), (0, [{}]))
-        self.assertIsNone(intento.call_args.kwargs["vigente"])
+        for opciones in ((), ("--seco",)):
+            with self.subTest(opciones=opciones):
+                intento = Mock(return_value=(0, {}))
+                self.assertEqual(self.correr(intento, programa=lambda: None, opciones=opciones),
+                                 (0, [{}]))
+                self.assertIsNone(intento.call_args.kwargs["vigente"])
 
 
 if __name__ == "__main__":

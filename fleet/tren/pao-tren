@@ -193,17 +193,17 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                     resultado["juicio"] = expediente(ledger, args.repo)
                 return 0, resultado
         with ledger.candado(args.repo):
-            if not args.seco:
-                # Releer tras esperar el flock: pudieron retirar la inscripción.
-                if activacion(args.repo) != "activo":
-                    return 2, {"error": "tick activo requiere inscripción activa"}
-                # Instalar excluye a los ticks activos de todos los carriles.
-                with candado_programa(exclusivo=False, directorio=ledger.directorio) as libre:
-                    if not libre:
-                        return 0, {"omitido": "instalacion-en-curso"}
-                    # Tras esperar el candado del carril, el programa pudo cambiar.
-                    if vigente is not None and not vigente():
-                        return 0, {"omitido": "programa-cambiado"}
+            # Releer tras esperar el flock: pudieron retirar la inscripción.
+            if not args.seco and activacion(args.repo) != "activo":
+                return 2, {"error": "tick activo requiere inscripción activa"}
+            # Instalar excluye a los ticks de todos los carriles, también en sombra.
+            with candado_programa(exclusivo=False, directorio=ledger.directorio) as libre:
+                if not libre:
+                    return 0, {"omitido": "instalacion-en-curso"}
+                # Tras esperar el candado del carril, el programa pudo cambiar.
+                if vigente is not None and not vigente():
+                    return 0, {"omitido": "programa-cambiado"}
+                if not args.seco:
                     from adaptadores import seleccionar
                     from git_ops import GitTren, identidad_commits
                     from operativo import tick
@@ -224,20 +224,20 @@ def ejecutar(args, observador=None, ahora=None, git=None, adaptador=None, fronte
                             adaptador = seleccionar(config, git)
                     return 0, tick(ledger, args.repo, observador, ahora, git, adaptador, frontera,
                                    escritor)
-            doble_camino = modo(args.repo) == "sombra"
-            estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
-            if observador is None:
-                ruta = args.config or ledger.directorio / "config.json"
-                observador = GitHubGit(configuracion(ruta, args.repo), sombra=doble_camino)
-            observacion = observador.observar(estado, ahora)
-            reductor = paso_sombra if doble_camino else paso
-            nuevo, efectos = reductor(estado, observacion)
-            # La simulación conserva sus eventos históricos: las señales de
-            # incorporación/aterrizaje sólo pertenecen al outbox operativo.
-            from feedback import STATUS_SOLO
-            efectos = tuple(e for e in efectos if e.tipo not in STATUS_SOLO)
-            plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
-            return 0, {"modo": "sombra", "plan": plan}
+                doble_camino = modo(args.repo) == "sombra"
+                estado = ledger.estado(args.repo, sombra=True, doble_camino=doble_camino)
+                if observador is None:
+                    ruta = args.config or ledger.directorio / "config.json"
+                    observador = GitHubGit(configuracion(ruta, args.repo), sombra=doble_camino)
+                observacion = observador.observar(estado, ahora)
+                reductor = paso_sombra if doble_camino else paso
+                nuevo, efectos = reductor(estado, observacion)
+                # La simulación conserva sus eventos históricos: las señales de
+                # incorporación/aterrizaje sólo pertenecen al outbox operativo.
+                from feedback import STATUS_SOLO
+                efectos = tuple(e for e in efectos if e.tipo not in STATUS_SOLO)
+                plan = ledger.sombra(nuevo, efectos, ahora, doble_camino=doble_camino)
+                return 0, {"modo": "sombra", "plan": plan}
     finally:
         ledger.close()
 
@@ -335,7 +335,7 @@ def esperar_ci(repo, limite, leer, sondear, vigente, dormir, reloj):
             continue
         if resultado is not None and resultado[1].estado != "pendiente":
             # El sondeo tarda: una pausa o una decisión pudo llegar mientras tanto.
-            return lectura()[1] == candidato
+            return lectura()[1] == candidato and reloj() < limite
     return False
 
 
@@ -374,19 +374,26 @@ def intento(args, vigente=None):
 
 def main():
     args = parser().parse_args()
-    if args.comando == "tick" and not args.seco:
+    if args.comando == "tick":
         inicial = programa()
         # Instalar durante un tick no debe mezclar versiones a medio paso.
         for modulo in PEREZOSOS:
             importlib.import_module(modulo)
         # Un proceso que arranca a media instalación pudo cargar dos versiones.
-        if instalando():
+        # Sin inscripción activa, el tick activo responde su error de siempre.
+        if (args.seco or activacion(args.repo) == "activo") and instalando():
             print(json.dumps({"omitido": "instalacion-en-curso"}), flush=True)
             return 0
-        limite = ARRANQUE + PLAZO_ESPERA_CI_S
 
         def vigente():
             return inicial is not None and programa() == inicial
+
+        def un_tick():
+            # Sin huella del arranque no hay con qué comparar: corre un tick, como antes.
+            return intento(args, vigente=vigente if inicial is not None else None)
+
+    if args.comando == "tick" and not args.seco:
+        limite = ARRANQUE + PLAZO_ESPERA_CI_S
 
         def seguir():
             # La cuota tarda; el programa se compara justo antes del siguiente tick.
@@ -409,9 +416,9 @@ def main():
             return esperar_ci(args.repo, limite, estado_para_espera, observador.ci_candidato,
                               vigente, time.sleep, time.monotonic)
 
-        # Sin huella del arranque no hay con qué comparar: corre un tick, como antes.
-        pasos = encadenar(lambda: intento(args, vigente=vigente if inicial is not None else None),
-                          lambda: huella(args.repo), seguir, esperar=esperar)
+        pasos = encadenar(un_tick, lambda: huella(args.repo), seguir, esperar=esperar)
+    elif args.comando == "tick":
+        pasos = [un_tick()]
     else:
         pasos = [intento(args)]
     codigo = 2
