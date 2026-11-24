@@ -245,6 +245,21 @@ class TrenStateTests(unittest.TestCase):
         self.assertIsNone(fixed['repos'][0]['pausa'])
         self.assertIsNone(fixed['error'])
 
+    def test_publication_keeps_only_validated_stage_errors(self):
+        self.data['errors'] = [
+            dict(stage='fases', message='Lectura fallida: OSError'),
+            dict(stage='suite', message='Lectura fallida: ValueError'),
+        ]
+        self.store()
+        expected = tren.valid_tren(self.data, REPOS, NOW)['errors']
+        self.assertEqual(self.cycle()['errors'], expected)
+        bad = json.loads(self.path.read_text())
+        bad['errors'][0]['detail'] = 'campo fuera del contrato'
+        self.path.write_text(json.dumps(bad))
+        stale = self.cycle()
+        self.assertFalse(stale['fresh'])
+        self.assertEqual(stale['errors'], expected)
+
     def test_joins_desk_by_ref_and_id_and_reuses_history_estimate(self):
         self.store()
         running = task(id=7812, start=NOW - 100, activity=dict(last=None, kind='chain', ref='job-abcDEF12'))
@@ -263,6 +278,19 @@ class TrenStateTests(unittest.TestCase):
         self.assertEqual(joined['lugar']['rack'], joined['rack'])
         self.assertEqual(joined['est'], self.rack.read()['hosts'][1]['estimates']['7812'])
         self.assertEqual(joined['est']['typical'], 50)
+        self.assertEqual(joined['rack_inicio'], NOW - 100)
+
+    def test_join_publishes_the_start_the_host_card_uses(self):
+        place = dict(tipo='mini', vm=None, pueue_id=431, ref='ref-cola')
+        queued = dict(start=None, activity=dict(ref='ref-cola'))
+        started = dict(queued, start=NOW - 90)
+        for row, expected in ((queued, None), (started, NOW - 90),
+                              (dict(started, admission=dict(payload_started_at=None)), None),
+                              (dict(started, admission=dict(payload_started_at=NOW - 30)), NOW - 30)):
+            with self.subTest(row=row):
+                run = dict(lugar=dict(place), inicio=NOW - 900, fin=None)
+                serve.Rack.join_tren_run(run, {('mini', 431): (row, None)})
+                self.assertEqual(run['rack_inicio'], expected)
 
     def test_joins_mini_without_ref_only_if_start_confirms_id(self):
         self.store()
