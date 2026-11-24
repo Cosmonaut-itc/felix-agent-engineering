@@ -3,6 +3,7 @@ import safety
 import copy
 import json
 import os
+import pwd
 from pathlib import Path
 import shutil
 import stat
@@ -91,10 +92,11 @@ print(json.dumps(a))
 
     def test_fixed_table_each_launcher_and_all_operations(self):
         production = module('desk_action')
+        home = pwd.getpwuid(os.getuid()).pw_dir
         self.assertEqual(production.CONTROLLERS, {
-            'remote-run':'/home/felix/.local/lib/remote-run/run-control.py',
-            'jale':'/home/felix/.local/lib/jale/pueue-control.py'})
-        self.assertEqual(str(production.SWITCH), '/home/felix/.local/state/pao/rack/actions.disabled')
+            'remote-run':home + '/.local/lib/remote-run/run-control.py',
+            'jale':home + '/.local/lib/jale/pueue-control.py'})
+        self.assertEqual(str(production.SWITCH), home + '/.local/state/pao/rack/actions.disabled')
         with patch.dict(os.environ, {'SSH_ORIGINAL_COMMAND':'ignored', 'GH_TOKEN':'secret',
                                     'PYTHONPATH':'/evil', 'JALE_PUEUE_ROOT':'/evil'}):
             for launcher in self.controllers:

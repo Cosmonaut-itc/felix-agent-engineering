@@ -51,7 +51,7 @@ class Fixture(unittest.TestCase):
 
     def tarea(self, ident=7, minutos=46, **campos):
         return dict(id=ident, created_at=fecha(self.ahora - 60000), group='jale', label=None,
-                    command='bash /home/felix/sen-56xx-dbgen/run.sh', path='/home/felix/sen-56xx-dbgen',
+                    command='bash /home/u/sen-56xx-dbgen/run.sh', path='/home/u/sen-56xx-dbgen',
                     status={'Running': {'start': fecha(self.ahora - minutos * 60)}}, **campos)
 
     def escribir(self, tareas):

@@ -9,7 +9,8 @@ import shlex
 import sys
 import urllib.request
 
-DEFAULT_URL = 'http://felixs-mac-mini.tail9f9a98.ts.net:8788/api/rack.json'
+# La URL real del panel vive fuera del repositorio público.
+CONFIG = os.path.join(os.environ.get('XDG_CONFIG_HOME') or os.path.expanduser('~/.config'), 'pao', 'rack-url')
 PRODUCT = {'comprador': 'Hasito', 'hasito': 'Hasito', 'sen-checkin': 'Jale',
            'jale': 'Jale', 'personal-agent-orchestration': 'PAO',
            'felix-agent-engineering': 'PAO', 'marhbe': 'MARHBE'}
@@ -29,12 +30,22 @@ def fail(code, message):
     return code
 
 
+def configured_url():
+    try:
+        with open(CONFIG, encoding='utf-8') as handle:
+            return handle.readline().strip() or None
+    except OSError:
+        return None
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('reference')
-    parser.add_argument('--url', default=os.environ.get('RACK_URL', DEFAULT_URL))
+    parser.add_argument('--url', default=os.environ.get('RACK_URL') or configured_url())
     parser.add_argument('--json', action='store_true')
     args = parser.parse_args()
+    if not args.url:
+        return fail(2, 'Falta la URL del panel; usa --url, RACK_URL o ' + CONFIG)
     match = re.fullmatch(r'(?:rack )?(mini|desk):(\d+)(?: · [^\r\n]*)?', args.reference.strip())
     if not match:
         return fail(2, 'Referencia mal escrita; usa desk:77 o mini:288')
@@ -69,12 +80,12 @@ def main():
                        ('ref', (task.get('activity') or {}).get('ref'))]:
         line(key, value)
     print('Para seguir:')
-    pueue = '/opt/homebrew/bin/pueue' if host == 'mini' else '/home/felix/.local/bin/pueue'
+    pueue = '/opt/homebrew/bin/pueue' if host == 'mini' else '~/.local/bin/pueue'
     print('ssh ' + host + ' ' + shlex.quote(pueue + ' log ' + str(ident) + ' --lines 50'))
     activity = task.get('activity') or {}
     ref = activity.get('ref') or ''
     if activity.get('kind') in ('chain', 'verify') and re.fullmatch(r'job-[\w-]+', ref):
-        line('directorio Jale', '/home/felix/.local/state/jale/pueue/' + ref)
+        line('directorio Jale', '~/.local/state/jale/pueue/' + ref)
     elif re.fullmatch(r'\d{8}-\d{6}-[a-fA-F0-9]+', ref):
         for action in ('status', 'logs'):
             print('REMOTE_RUN_HOST=' + host + ' remote-run ' + action + ' ' + ref)

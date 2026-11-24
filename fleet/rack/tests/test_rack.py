@@ -562,8 +562,8 @@ class InspectorTests(unittest.TestCase):
             result = self.run_inspector(ref, url=self.url)
             self.assertEqual(result.returncode, 0, result.stderr)
             for value in ['host: desk', 'id: 77', 'título: Título de prueba', 'producto: Jale',
-                          'ssh desk \'/home/felix/.local/bin/pueue log 77 --lines 50\'',
-                          '/home/felix/.local/state/jale/pueue/job-abc', 'Para seguir:']:
+                          'ssh desk \'~/.local/bin/pueue log 77 --lines 50\'',
+                          '~/.local/state/jale/pueue/job-abc', 'Para seguir:']:
                 self.assertIn(value, result.stdout)
         self.assertEqual(self.run_inspector('desk:77', url=self.url, env=dict(os.environ, RACK_URL='http://127.0.0.1:1')).returncode, 0)
 
@@ -590,6 +590,20 @@ class InspectorTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("REMOTE_RUN_HOST=desk remote-run status 20261112-174413-f28e66", result.stdout)
         self.assertIn("REMOTE_RUN_HOST=desk remote-run logs 20261112-174413-f28e66", result.stdout)
+
+    def test_url_comes_from_flag_environment_or_local_config(self):
+        config = Path(tempfile.mkdtemp())
+        self.addCleanup(shutil.rmtree, config)
+        env = {k: v for k, v in os.environ.items() if k != 'RACK_URL'}
+        env['XDG_CONFIG_HOME'] = str(config)
+        result = self.run_inspector('desk:77', env=env)
+        self.assertEqual((result.returncode, result.stdout), (2, ''))
+        self.assertIn('Falta la URL del panel', result.stderr)
+        (config / 'pao').mkdir()
+        (config / 'pao' / 'rack-url').write_text(self.url + '\nhttp://127.0.0.1:1\n')
+        self.assertEqual(self.run_inspector('desk:77', env=env).returncode, 0)
+        self.assertEqual(self.run_inspector('desk:77', env=dict(env, RACK_URL='http://127.0.0.1:1')).returncode, 4)
+        self.assertEqual(self.run_inspector('desk:77', url=self.url, env=dict(env, RACK_URL='http://127.0.0.1:1')).returncode, 0)
 
 
 class ServerTests(unittest.TestCase):
@@ -710,7 +724,7 @@ class ServerTests(unittest.TestCase):
             self.assertIn('hosts.json inválido', result.stderr)
 
     def test_bind_rejects_public_and_requires_owner(self):
-        for bind in ('0.0.0.0', '::', '192.168.1.5', '100.111.159.14'):
+        for bind in ('0.0.0.0', '::', '192.168.1.5', '100.100.0.3'):
             result = subprocess.run(['/usr/bin/python3', '-I', str(BASE / 'serve.py'), '--bind', bind, '--port', '0'], capture_output=True, text=True)
             self.assertEqual(result.returncode, 2)
         self.assertEqual(serve.load_hosts(BASE / 'hosts.json')[0]['id'], 'mini')
@@ -827,16 +841,16 @@ class ServerTests(unittest.TestCase):
         self.assertEqual(self.request_as('192.168.1.5')[0], 403)
 
     def test_tailnet_client_allowed(self):
-        self.assertEqual(self.request_as('100.111.159.14', self.fake_tailscale())[0], 200)
+        self.assertEqual(self.request_as('100.100.0.3', self.fake_tailscale())[0], 200)
         self.assertTrue(serve.allowed_client('fd7a:115c:a1e0::1', '100.100.0.1'))
 
     def test_host_must_name_this_server(self):
         check = self.fake_tailscale()
         for host in ('mini.example.ts.net:8787', 'MINI:8787', '100.100.0.1:8787'):
-            self.assertEqual(self.request_as('100.111.159.14', check, host=host, names=('mini.example.ts.net', 'mini'))[0], 200)
+            self.assertEqual(self.request_as('100.100.0.3', check, host=host, names=('mini.example.ts.net', 'mini'))[0], 200)
         for host in ('evil.example:8787', 'mini.example.ts.net:80', 'mini.example.ts.net', '100.100.0.1', None,
                      ('100.100.0.1:8787', 'evil.example:8787'), ('100.100.0.1:8787', '100.100.0.1:8787')):
-            self.assertEqual(self.request_as('100.111.159.14', check, host=host, names=('mini.example.ts.net', 'mini')), (403, b''))
+            self.assertEqual(self.request_as('100.100.0.3', check, host=host, names=('mini.example.ts.net', 'mini')), (403, b''))
 
     def test_rebound_host_cannot_read_or_refresh(self):
         server = ThreadingHTTPServer(('127.0.0.1', 0), serve.Handler)
@@ -858,24 +872,24 @@ class ServerTests(unittest.TestCase):
         self.assertFalse(self.rack.wake.is_set())
 
     def test_funnel_forbidden(self):
-        self.assertEqual(self.request_as('100.111.159.14', funnel=True), (403, b''))
+        self.assertEqual(self.request_as('100.100.0.3', funnel=True), (403, b''))
 
     def test_owner_matches(self):
         check = self.fake_tailscale()
-        self.assertEqual(self.request_as('100.111.159.14', check)[0], 200)
+        self.assertEqual(self.request_as('100.100.0.3', check)[0], 200)
         with patch.object(serve.subprocess, 'run', side_effect=AssertionError('cache should avoid command')):
-            self.assertTrue(check.allows('100.111.159.14'))
+            self.assertTrue(check.allows('100.100.0.3'))
 
     def test_owner_cache_expires_and_timeout_denies(self):
         check = self.fake_tailscale()
         with patch.object(serve.time, 'monotonic', return_value=100):
-            self.assertTrue(check.allows('100.111.159.14'))
+            self.assertTrue(check.allows('100.100.0.3'))
         pidfile = self.root / 'whois.pid'
         hung = self.root / 'Tailscale'
         hung.write_text('#!/bin/sh\necho $$ > ' + str(pidfile) + '\nexec sleep 30\n')
         started = time.monotonic()
         with patch.object(serve.time, 'monotonic', return_value=401):
-            self.assertFalse(check.allows('100.111.159.14'))
+            self.assertFalse(check.allows('100.100.0.3'))
         self.assertLess(time.monotonic() - started, 6)
         # whois es nieto del sh: muerto, queda zombi hasta que lo recoge quien lo adopta, y un zombi ya no corre.
         pid = int(pidfile.read_text())
@@ -889,14 +903,14 @@ class ServerTests(unittest.TestCase):
             self.fail('whois sigue vivo tras el plazo')
 
     def test_other_owner_forbidden(self):
-        self.assertEqual(self.request_as('100.111.159.14', self.fake_tailscale('guest@example.com')), (403, b''))
+        self.assertEqual(self.request_as('100.100.0.3', self.fake_tailscale('guest@example.com')), (403, b''))
 
     def test_whois_failure_forbidden(self):
-        self.assertEqual(self.request_as('100.111.159.14', self.fake_tailscale(fail=True)), (403, b''))
+        self.assertEqual(self.request_as('100.100.0.3', self.fake_tailscale(fail=True)), (403, b''))
 
     def test_malformed_whois_forbidden(self):
         check = serve.OwnerCheck('owner', executable(self.root / 'Tailscale', 'print("{}")\n'))
-        self.assertEqual(self.request_as('100.111.159.14', check), (403, b''))
+        self.assertEqual(self.request_as('100.100.0.3', check), (403, b''))
 
     def test_commit_ticket_from_github_cached(self):
         sha = 'a' * 40

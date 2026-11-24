@@ -20,7 +20,7 @@ class ParidadTests(unittest.TestCase):
                  str(home / 'remote-run/runs/otro'), '/tmp', str(home / 'sen-56xx-dbgen'))
         comandos = (f'exec bash {home}/.local/state/jale/pueue/job-Ab123456/task.sh',
                     'exec bash /otro/job-Ab123456/task.sh', 'python3 pueue.py exec x',
-                    'bash /home/felix/sen-56xx-dbgen/run.sh')
+                    'bash /home/u/sen-56xx-dbgen/run.sh')
         for etiqueta, ruta, comando in itertools.product(etiquetas, rutas, comandos):
             with self.subTest(etiqueta=etiqueta, ruta=ruta, comando=comando):
                 raw = dict(id=7, label=etiqueta, path=ruta, command=comando)

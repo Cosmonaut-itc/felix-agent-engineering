@@ -12,10 +12,11 @@ import sys
 import time
 
 SCHEMA = 'rack-desk-action@1'
-HOME = Path('/home/felix')
+# Home of the Unix account the fixed SSH command selects, read from passwd, not from the environment.
+HOME = Path(pwd.getpwuid(os.getuid()).pw_dir)
 CONTROLLERS = {
-    'remote-run': '/home/felix/.local/lib/remote-run/run-control.py',
-    'jale': '/home/felix/.local/lib/jale/pueue-control.py',
+    'remote-run': str(HOME / '.local/lib/remote-run/run-control.py'),
+    'jale': str(HOME / '.local/lib/jale/pueue-control.py'),
 }
 SWITCH = HOME / '.local/state/pao/rack/actions.disabled'
 HOST_CONTROLLER = HOME / '.local/lib/pao-pueue-desk/control.py'
