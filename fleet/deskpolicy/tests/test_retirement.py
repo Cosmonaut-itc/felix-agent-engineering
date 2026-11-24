@@ -96,7 +96,7 @@ class RetirementTests(unittest.TestCase):
         units = {
             'user': {
                 'pao-deskpolicy.timer': dict(content='Timer', active='active', enabled='enabled'),
-                'night-writer.service': dict(content='ExecStart=/home/felix/.local/lib/pao-deskpolicy/v1/deskpolicy/cli.py publicar', active='active', enabled='enabled', links='TriggeredBy=night.timer'),
+                'night-writer.service': dict(content='ExecStart=/home/u/.local/lib/pao-deskpolicy/v1/deskpolicy/cli.py publicar', active='active', enabled='enabled', links='TriggeredBy=night.timer'),
                 'night.timer': dict(content='Unit=night-writer.service', active='active', enabled='enabled-runtime'),
                 'transient-writer.service': dict(content='', active='active', enabled='static', properties='ExecStart=/old/deskpolicy/cli.py publicar'),
                 'pueued.service': dict(content='ExecStart=pueued', active='active', enabled='enabled'),

@@ -59,7 +59,7 @@ el puerto por Serve, Funnel, un proxy ni un túnel de red local.
    permisos de SYSTEM y Administrators. La línea completa es:
 
    ```text
-   restrict,command="MSYS_NO_PATHCONV=1 wsl -d Ubuntu -u felix -- /usr/bin/python3 -I /home/felix/.local/bin/pao-rack-snapshot" ssh-ed25519 <PUBLICA> pao-rack@mini
+   restrict,command="MSYS_NO_PATHCONV=1 wsl -d Ubuntu -u <usuario> -- /usr/bin/python3 -I /home/<usuario>/.local/bin/pao-rack-snapshot" ssh-ed25519 <PUBLICA> pao-rack@mini
    ```
 
    El shell de OpenSSH en Felix DESKTOP es Git bash. Sin `MSYS_NO_PATHCONV=1`
@@ -322,8 +322,10 @@ Consulta el panel por Tailscale y muestra metadatos, actividad y comandos de
 lectura para seguir por SSH. Los comandos `remote-run` se ejecutan en la
 MacBook y fijan `REMOTE_RUN_HOST` a la máquina de la referencia.
 `--json` devuelve la tarea original de la API.
-`--url` o `RACK_URL` sustituyen la URL predeterminada
-`http://felixs-mac-mini.tail9f9a98.ts.net:8788/api/rack.json`.
+La URL del panel sale de `--url`, de `RACK_URL` o de la primera línea de
+`${XDG_CONFIG_HOME:-~/.config}/pao/rack-url`, en ese orden, con la forma
+`http://<host>.<tailnet>.ts.net:8788/api/rack.json`. El repositorio es público
+y no guarda la URL real. Sin ninguna de las tres, sale con 2.
 Códigos: referencia inválida 2, tarea ausente 3, panel inaccesible 4.
 
 ## Cancelar una corrida de la Mini o del desk
@@ -520,12 +522,12 @@ Python 3.9+ en WSL al instalar el conjunto.
    `<PUBLICA_ACCION>` es sólo el bloque base64 de la nueva pública:
 
    ```text
-   from="100.89.145.51",restrict,command="MSYS_NO_PATHCONV=1 wsl -d Ubuntu -u felix -- /usr/bin/python3 -I /home/felix/.local/bin/pao-rack-action" ssh-ed25519 <PUBLICA_ACCION> pao-rack-accion@mini
+   from="<ip-tailnet-mini>",restrict,command="MSYS_NO_PATHCONV=1 wsl -d Ubuntu -u <usuario> -- /usr/bin/python3 -I /home/<usuario>/.local/bin/pao-rack-action" ssh-ed25519 <PUBLICA_ACCION> pao-rack-accion@mini
    ```
 
    **Activar `from=` sólo tras verificar en los logs de OpenSSH de Windows
-   que éste ve `100.89.145.51` como origen de la Mini.** Si no está verificado,
-   omitir únicamente `from="100.89.145.51",` hasta completar esa comprobación.
+   que éste ve `<ip-tailnet-mini>` como origen de la Mini.** Si no está verificado,
+   omitir únicamente `from="<ip-tailnet-mini>",` hasta completar esa comprobación.
    No sustituirlo a ciegas por una IP de WSL. Git bash requiere
    `MSYS_NO_PATHCONV=1`, igual que la lectura. `restrict` impide TTY y reenvíos;
    el comando forzado no usa `SSH_ORIGINAL_COMMAND`.
@@ -559,11 +561,11 @@ argumentos de controlador. Su **propia tabla fija**, independiente de
 
 | Lanzador | Ruta en WSL |
 | --- | --- |
-| remote-run | `/home/felix/.local/lib/remote-run/run-control.py` |
-| jale | `/home/felix/.local/lib/jale/pueue-control.py` |
+| remote-run | `/home/<usuario>/.local/lib/remote-run/run-control.py` |
+| jale | `/home/<usuario>/.local/lib/jale/pueue-control.py` |
 
 Invoca `/usr/bin/python3 -I <ruta fija>`, sin argumentos adicionales ni TTY,
-con cwd `/` y un entorno nuevo: `HOME=/home/felix`, `PATH=/usr/bin:/bin`,
+con cwd `/` y un entorno nuevo: `HOME=/home/<usuario>`, `PATH=/usr/bin:/bin`,
 `TMPDIR=/tmp`, y USER/LOGNAME calculados con la cuenta Unix efectiva. Sólo pasa
 `XDG_RUNTIME_DIR=/run/user/<uid>` si existe como directorio propiedad de esa
 cuenta. No transmite el entorno de SSH, tokens ni overrides de pruebas.
@@ -604,10 +606,10 @@ no garantiza matar el proceso remoto: el despachador limita su controlador.
 Para apagar nuevas acciones en **WSL**, sin tocar lectura ni llaves:
 
 ```bash
-mkdir -p /home/felix/.local/state/pao/rack
-touch /home/felix/.local/state/pao/rack/actions.disabled
+mkdir -p /home/<usuario>/.local/state/pao/rack
+touch /home/<usuario>/.local/state/pao/rack/actions.disabled
 # Reactivar:
-rm /home/felix/.local/state/pao/rack/actions.disabled
+rm /home/<usuario>/.local/state/pao/rack/actions.disabled
 ```
 
 Se comprueba con `lstat` antes de cada cancel y capabilities. Cualquier entrada
