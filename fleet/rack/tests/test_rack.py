@@ -604,6 +604,9 @@ class InspectorTests(unittest.TestCase):
         self.assertEqual(self.run_inspector('desk:77', env=env).returncode, 0)
         self.assertEqual(self.run_inspector('desk:77', env=dict(env, RACK_URL='http://127.0.0.1:1')).returncode, 4)
         self.assertEqual(self.run_inspector('desk:77', url=self.url, env=dict(env, RACK_URL='http://127.0.0.1:1')).returncode, 0)
+        (config / 'pao' / 'rack-url').write_bytes(b'\xff\xfe\n')
+        self.assertEqual(self.run_inspector('desk:77', url=self.url, env=env).returncode, 0)
+        self.assertEqual(self.run_inspector('desk:77', env=env).returncode, 2)
 
 
 class ServerTests(unittest.TestCase):

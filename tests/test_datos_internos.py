@@ -19,9 +19,13 @@ class DatosInternosTests(unittest.TestCase):
                 ('from="100.64.1.2",restrict', 'IP de tailnet'),
                 ('ve 100.127.255.254 como origen.', 'IP de tailnet'),
                 ("('100.101.0.3', 8787)", 'IP de tailnet'),
-                ('wsl -u ana -- /usr/bin/python3 -I /home/ana/.local/bin/x', 'home de usuario'),
+                ('/usr/bin/python3 -I /home/ana/.local/bin/x', 'home de usuario'),
                 ('`HOME=/home/ana`', 'home de usuario'),
-                ("'bash /home/ana/run.sh'", 'home de usuario')]:
+                ("'bash /home/ana/run.sh'", 'home de usuario'),
+                ('"AllowedIPs": ["100.64.1.2/32"]', 'IP de tailnet'),
+                ('HTTP://MINI.TAIL0A1B2C.TS.NET:8788', 'FQDN de tailnet'),
+                ('wsl -d Ubuntu -u ana -- ~/.local/bin/x', 'cuenta de WSL'),
+                ('wsl.exe --user ana --exec true', 'cuenta de WSL')]:
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), [kind])
 
@@ -38,7 +42,11 @@ class DatosInternosTests(unittest.TestCase):
                 '/home/<usuario>/.local/bin/x y /home/u/run.sh',
                 'state/project/home/fixtures',
                 "re.compile(r'/Users/|/home/|https?://')",
-                '~/.local/bin/pueue y $HOME/home/x']:
+                '~/.local/bin/pueue y $HOME/home/x',
+                '100.100.0.0/24 y 100.101.0.0/16',
+                'MINI.EXAMPLE.TS.NET',
+                'wsl -d Ubuntu -u <usuario> -- /usr/bin/true',
+                'wsl -u root -- true y wsl -d Ubuntu -- sort -u archivo']:
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), [])
 

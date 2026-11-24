@@ -2,8 +2,9 @@
 """Rechaza datos internos de acceso en fleet/ (SEN-7325).
 
 El repositorio es público. Un FQDN de tailnet, una IP de 100.64.0.0/10 o un
-home de Linux van con marcadores: <host>.<tailnet>.ts.net, <ip-tailnet-...> y
-/home/<usuario>. Las pruebas usan example.ts.net, 100.100.0.0/24 y /home/u.
+home de Linux van con marcadores: <host>.<tailnet>.ts.net, <ip-tailnet-...>,
+/home/<usuario> y `wsl -u <usuario>`. Las pruebas usan example.ts.net,
+100.100.0.0/24, /home/u y `wsl -u u`.
 
 La salida nombra archivo, línea y tipo, nunca el valor: el log de CI también
 es público.
@@ -17,14 +18,18 @@ SCOPE = 'fleet/'
 TAILNET = ipaddress.ip_network('100.64.0.0/10')
 SYNTHETIC_NET = ipaddress.ip_network('100.100.0.0/24')
 SYNTHETIC_TAILNETS = {'example'}
-SYNTHETIC_USERS = {'u'}
+SYNTHETIC_USERS = {'u', 'root'}
 
-FQDN = re.compile(r'([A-Za-z0-9-]+)\.ts\.net(?![A-Za-z0-9-])')
-IPV4 = re.compile(r'(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?![0-9]|\.[0-9]|/[0-9])')
+FQDN = re.compile(r'([A-Za-z0-9-]+)\.ts\.net(?![A-Za-z0-9-])', re.IGNORECASE)
+IPV4 = re.compile(r'(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?(?![0-9]|\.[0-9])')
 HOME = re.compile(r'(?<![A-Za-z0-9_.~$-])/home/([a-z_][a-z0-9_-]*)(?![a-z0-9_-])')
+WSL_USER = re.compile(r'\bwsl\b(?:(?!\s--(?:\s|$)).)*?\s(?:-u|--user)\s+([a-z_][a-z0-9_-]*)(?![a-z0-9_<>-])')
 
 
-def tailnet_ip(text):
+def tailnet_ip(text, prefix):
+    # Un CIDR describe una red; /32 es la ruta de un host concreto.
+    if prefix is not None and prefix != '32':
+        return False
     try:
         ip = ipaddress.ip_address(text)
     except ValueError:
@@ -36,12 +41,14 @@ def findings(text):
     """Devuelve (línea, tipo) por cada dato interno de text."""
     found = []
     for number, line in enumerate(text.splitlines(), 1):
-        if any(m[1] not in SYNTHETIC_TAILNETS for m in FQDN.finditer(line)):
+        if any(m[1].lower() not in SYNTHETIC_TAILNETS for m in FQDN.finditer(line)):
             found.append((number, 'FQDN de tailnet'))
-        if any(tailnet_ip(m[1]) for m in IPV4.finditer(line)):
+        if any(tailnet_ip(m[1], m[2]) for m in IPV4.finditer(line)):
             found.append((number, 'IP de tailnet'))
         if any(m[1] not in SYNTHETIC_USERS for m in HOME.finditer(line)):
             found.append((number, 'home de usuario'))
+        if any(m[1] not in SYNTHETIC_USERS for m in WSL_USER.finditer(line)):
+            found.append((number, 'cuenta de WSL'))
     return found
 
 

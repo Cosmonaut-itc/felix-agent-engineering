@@ -34,7 +34,7 @@ def configured_url():
     try:
         with open(CONFIG, encoding='utf-8') as handle:
             return handle.readline().strip() or None
-    except OSError:
+    except (OSError, ValueError):
         return None
 
 
