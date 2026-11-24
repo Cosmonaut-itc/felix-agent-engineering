@@ -152,6 +152,44 @@ La historia anterior a `desde` también cuenta para formar los lotes. El
 informe muestra los miembros de la cohorte `[desde, hasta)` y sólo usa
 observaciones anteriores a `hasta`.
 
+### Duración por fase
+
+```sh
+fleet/tren/pao-tren fases --repo owner/project \
+  --desde 2026-11-01T00:00:00Z --hasta 2026-11-08T00:00:00Z
+```
+
+`fases` lee SQLite sin candado ni inscripción activa e imprime una línea JSON.
+Incluye cada tren cuyo cierre cae en `[desde, hasta)` y sigue su historial
+hasta el último evento disponible, incluso después de `hasta`. Los hitos son
+segundos desde el epoch y usan el instante de arranque del tick que registró
+el evento. Los tramos tienen resolución de un tick.
+
+- `cierre`: primer estado operativo que contiene el tren.
+- `ci_solicitado`: primer resultado de `solicitar-ci`.
+- `suite_iniciada`: primer inicio de `iniciar-suite`, cuando se observó CI verde.
+- `suite_terminada`: último paso operativo que consume el resultado de
+  `iniciar-suite` o `reanudar-suite`. El resultado del efecto lleva el
+  instante de arranque del tick que lo registra: el que lanzó la suite o,
+  tras una interrupción, el que recupera su recibo. Ese instante no es el
+  fin de la suite; por eso el fin lo marca el paso que consume el resultado.
+  El hito vale `null` hasta el primer consumo y cada consumo posterior lo
+  actualiza.
+- `certificado`: primer estado operativo en `Certificado` o `Promoviendo`.
+- `fin`: primer estado operativo en `Terminal`, con su resultado.
+
+Los tramos son diferencias en segundos: `armado_s` del cierre a la solicitud
+de CI, `ci_s` de la solicitud al inicio de suite, `suite_s` del inicio al
+fin de suite, `promocion_s` del fin de suite al fin y `total_s` del cierre
+al fin. Un hito ausente o un tramo sin alguno de sus extremos vale `null`.
+
+Un verde directo aterrizó sin diagnóstico, reanudación de suite ni pausa
+mientras estaba vivo. El resumen de verdes directos usa el rango más cercano
+(`ceil(p × n)`, contando desde uno) para p50 y p90, y el máximo por tramo.
+Cada estadística usa los valores disponibles y vale `null` si no hay muestra.
+Los demás trenes terminados se cuentan por resultado. Los vivos aparecen en
+el detalle y quedan fuera del resumen.
+
 ## Instalación en macOS (U7, sombra)
 
 Desde un checkout estable de PAO, `bin/pao sync --no-plugins --no-schedule`
@@ -187,6 +225,30 @@ Volver a instalar sin `--activo` restaura el tick en sombra; el plist activo
 queda en `.bak-*`.
 CI prueba la suite en Ubuntu y macOS, también con `/usr/bin/python3` en macOS;
 Windows queda fuera por flock POSIX.
+
+### Ticks encadenados
+
+El tick activo repite el tick en el mismo proceso mientras el anterior haya
+hecho avanzar el carril, hasta ocho veces. Avanzar es que cambie la pausa, la
+fase de algún tren o el estado de algún efecto del outbox. Un efecto que
+falla cuenta como pendiente, así que la cadena no lo reintenta por sí solo.
+Tampoco cuentan una espera ni un resultado que la pausa retiene, ni el primer
+tick de un repositorio, que crea el ledger. En esos casos el siguiente tick lo
+lanza launchd. Cada tick de la cadena toma y suelta el
+candado y observa de nuevo. `stdout.log` recibe una línea JSON por tick, y el
+proceso sale con el código del último. `tick --seco` corre un solo tick.
+
+La cadena termina también en dos casos:
+
+- Cambió algún módulo instalado de `fleet/tren` desde que el proceso arrancó.
+  El tick en curso acaba con el código anterior y launchd lanza el siguiente
+  con el nuevo.
+- A la cuota de la API de GitHub le quedan menos de 1,000 llamadas, o no se
+  pudo leer.
+
+Instala sólo cuando no corra ningún `pao-tren tick` del repositorio. El
+proceso carga sus módulos al arrancar; un módulo perezoso que no esté en
+`PEREZOSOS` (en `pao-tren`) todavía puede cargarse a medio tick.
 
 ## Aterrizaje (U2, sólo ejecutor explícito)
 
@@ -461,12 +523,14 @@ Unidad y check siguen siendo los identificadores públicos del test (el producto
 debe mantener secretos fuera de esos identificadores). El resto de la proyección
 contiene IDs de lote/entrega, SHAs y números de PR, motivos de un enum y texto
 fijo; no se transportan otros campos del diagnóstico ni del config privado.
-Las rutas privadas del lanzador, resultado y worktree se reemplazan por la
-plantilla pública `bash scripts/mini/run.sh --repetir <resultado.json>
+En Hasito se publica la plantilla `bash scripts/mini/run.sh --repetir <resultado.json>
 --sha <SHA-causal> --worktree <worktree-en-SHA> --veces 2 --unidad check=unidad`.
-El dueño sustituye esas rutas por las de su entorno. Se conserva el SHA
-observado de la reproducción; argumentos extra de entorno, nombre o evidencia
-no se publican. El payload durable original permanece intacto en el ledger.
+En Jale se publica `bash scripts/test-hosts/run-remote.sh <host> <log>
+<modo> <SHA-causal> <unidad>`. El dueño sustituye las rutas de resultado,
+worktree o log por las de su entorno. En ambos casos se usa el SHA de la
+reproducción observada o el SHA de la evidencia si ésta carece de comando.
+Una devolución por juicio usa el SHA del candidato. El payload durable
+original permanece en el ledger.
 Después publica un status `failure`, contexto **`pao-tren/resultado`**, sobre
 el **head entregado culpable**, con `target_url` al comentario y descripción
 corta que remite a él. Los sobrevivientes no reciben una devolución.
