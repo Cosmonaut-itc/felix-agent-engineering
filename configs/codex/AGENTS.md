@@ -76,8 +76,9 @@ cuando quien los usaba terminó con ellos y ningún proceso tiene su cwd dentro,
 junto con sus artefactos regenerables (`node_modules`, salidas de build,
 cachés). Antes de quitar uno, copia a la carpeta del encargo sus cambios sin
 commitear y sus archivos sin seguimiento. La rama con commits sólo locales se
-queda, porque `git worktree remove` no la borra. Con eso guardado,
-`git worktree remove --force` vale también sobre un árbol sucio.
+queda, porque `git worktree remove` no la borra. Si el HEAD está suelto y tiene
+commits que ninguna rama contiene, créale antes una con `git branch`. Con eso
+guardado, `git worktree remove --force` vale también sobre un árbol sucio.
 
 Hacia la Mini, `remote-run start` y `scripts/mini/run.sh` encolan la corrida
 en Pueue (grupo `suites`) y `remote-run wait ID` espera su turno y devuelve su
