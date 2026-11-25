@@ -515,6 +515,26 @@ class Harness(unittest.TestCase):
 
         self.assertEqual(self.get_grant('siguiente')['vm'], NAME)
 
+    def test_pedir_prefiere_la_vm_lista_despues_de_un_apagado_confirmado(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        other_id = fake_id('efgh2345')
+        self.add_vm(other, other_id, places=2, created=NOW - 1800)
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+
+        directory = self.state / 'vms' / other
+        self.assertEqual(pool.read_json(self.api.path)[other_id]['state'], 'archived')
+        self.assertFalse((directory / 'operacion.json').exists())
+        self.assertTrue(any(event['evento'] == 'apagada' and event.get('id') == other_id
+                            for event in pool.events(directory / 'eventos.jsonl')))
+
+        self.api.calls.clear()
+        grant = self.get_grant('fragmento', 'e2e', '--esperar', '1800')
+        resumes = sum(method == 'POST' and route.endswith('/resume')
+                      for method, route, _ in self.api.calls)
+        self.assertEqual((grant['vm'], resumes), (NAME, 0))
+
     def test_arriendo_vencido_y_soltar_idempotente(self):
         lease = self.get_lease('caduca', 'contract', '--ttl', '300')
         self.api.now += 301
