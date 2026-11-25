@@ -7,14 +7,14 @@ home de Linux, macOS o Windows van con marcadores: <host>.<tailnet>.ts.net,
 `wsl -u <usuario>`. Las pruebas usan example.ts.net, 100.100.0.0/24,
 la cuenta u y los demás nombres de SYNTHETIC_USERS.
 
-Si una prueba requiere una ruta de perfil, añade el comentario
-«datos-internos: sintético» en esa línea. El marcador sólo exime perfiles.
-
 La salida nombra archivo, línea y tipo, nunca el valor: el log de CI también
 es público.
 """
+from codecs import BOM_UTF16_BE, BOM_UTF16_LE
 import ipaddress
+import os
 import re
+import stat
 import subprocess
 import sys
 from urllib.parse import unquote
@@ -28,7 +28,7 @@ SYNTHETIC_USERS = {'u', 'root'}
 FQDN = re.compile(r'([A-Za-z0-9-]+)\.ts\.net(?![A-Za-z0-9-])', re.IGNORECASE)
 IPV4 = re.compile(r'(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?(?![0-9]|\.[0-9])')
 HOME = re.compile(r'(?<![A-Za-z0-9_.~$-])/home/([a-z_][a-z0-9_-]*)(?![a-z0-9_-])')
-PROFILE_SEGMENT = re.compile(r'(?<![/\\])[/\\]+Users(?=[/\\]+\w)', re.IGNORECASE)
+PROFILE_SEGMENT = re.compile(r'(?<![/\\])[/\\]+Users(?=[/\\]+[^/\\\s<|])', re.IGNORECASE)
 WINDOWS_PREFIX = re.compile(r'''
     (?:
         # Un esquema URI completo no acaba en una unidad.
@@ -42,7 +42,6 @@ WINDOWS_PREFIX = re.compile(r'''
 JSON_ESCAPE = re.compile(
     r'\\(?:u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}'
     r'|u[0-9a-fA-F]{4}|[/\\])')
-SYNTHETIC_PROFILE_MARKER = 'datos-internos: sintético'
 WSL_USER = re.compile(r'\bwsl\b(?:(?!\s--(?:\s|$)).)*?\s(?:-u|--user)\s+([a-z_][a-z0-9_-]*)(?![a-z0-9_<>-])')
 
 
@@ -85,8 +84,6 @@ def profile_forms(line):
 
 
 def profile_kinds(line):
-    if SYNTHETIC_PROFILE_MARKER in line:
-        return []
     kinds = set()
     for form in profile_forms(line):
         profiles = list(PROFILE_SEGMENT.finditer(form))
@@ -114,6 +111,16 @@ def findings(text):
     return found
 
 
+def text_forms(data):
+    """Lee UTF-8 y, si hay NUL, las formas de una lista -print0 o texto UTF-16."""
+    yield data.replace(b'\0', b'\n').decode('utf-8', 'replace')
+    if b'\0' in data:
+        if data.startswith((BOM_UTF16_LE, BOM_UTF16_BE)):
+            data = data[2:]
+        yield data.decode('utf-16-le', 'replace')
+        yield data.decode('utf-16-be', 'replace')
+
+
 def main():
     names = subprocess.run(['git', 'ls-files', '-z', '--', *SCOPE], check=True,
                            capture_output=True).stdout.split(b'\0')
@@ -121,13 +128,18 @@ def main():
     for name in filter(None, names):
         path = name.decode('utf-8', 'surrogateescape')
         try:
-            with open(path, 'rb') as handle:
-                data = handle.read()
+            mode = os.lstat(name).st_mode
+            if stat.S_ISDIR(mode):
+                continue
+            if stat.S_ISLNK(mode):
+                data = os.readlink(name)
+            else:
+                with os.fdopen(os.open(name, os.O_RDONLY | os.O_NOFOLLOW), 'rb') as handle:
+                    data = handle.read()
         except FileNotFoundError:
             continue
-        if b'\0' in data:
-            continue
-        for number, kind in findings(data.decode('utf-8', 'replace')):
+        found = dict.fromkeys(item for form in text_forms(data) for item in findings(form))
+        for number, kind in sorted(found, key=lambda item: item[0]):
             print(path + ':' + str(number) + ': ' + kind)
             total += 1
     if total:

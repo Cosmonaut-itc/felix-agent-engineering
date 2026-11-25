@@ -101,22 +101,29 @@ def _has_no_extended_acl(fd):
     return False
 
 
+@contextmanager
+def _open_trusted_config(path, *, encoding=None):
+    # Check the opened file itself. No symlink traversal or blocking on FIFOs.
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    try:
+        info = os.fstat(fd)
+        if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid()
+                or info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+                or not _has_no_extended_acl(fd)):
+            raise PermissionError(errno.EACCES, 'Archivo de configuración no confiable')
+        with os.fdopen(fd, encoding=encoding, closefd=False) as stream:
+            yield stream
+    finally:
+        os.close(fd)
+
+
 def desk_destination():
     """Read the private, fixed user@hostname used by both desk channels."""
     try:
-        # Check the opened file itself. No symlink traversal or blocking on FIFOs.
-        fd = os.open(_desk_config_path(), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
-        try:
-            info = os.fstat(fd)
-            if (stat.S_ISREG(info.st_mode) and info.st_uid == os.getuid()
-                    and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
-                    and _has_no_extended_acl(fd)):
-                with os.fdopen(fd, encoding='ascii', closefd=False) as stream:
-                    destination = stream.read().rstrip('\r\n')
-                if _DESTINATION.fullmatch(destination):
-                    return destination
-        finally:
-            os.close(fd)
+        with _open_trusted_config(_desk_config_path(), encoding='ascii') as stream:
+            destination = stream.read().rstrip('\r\n')
+        if _DESTINATION.fullmatch(destination):
+            return destination
     except (OSError, UnicodeError):
         pass
     raise DeskDestinationError('Configura pao/rack-desk-ssh con la cuenta y el hostname SSH del desk')
@@ -125,9 +132,11 @@ def desk_destination():
 def adopt_desk_destination(installed):
     """Preserve the shared destination from the previous installed hosts file."""
     path = _desk_config_path()
-    if not path.exists() and not path.is_symlink() and installed.is_file():
+    if not path.exists() and not path.is_symlink():
         try:
-            desk = next(host for host in json.loads(installed.read_text()) if host['id'] == 'desk')
+            with _open_trusted_config(installed) as stream:
+                hosts = json.load(stream)
+            desk = next(host for host in hosts if host['id'] == 'desk')
             destination = desk['argv'][-1]
             expected = [*DESK_ARGV[:-1], destination]
             if (_DESTINATION.fullmatch(destination) and desk['transport'] == 'ssh'
