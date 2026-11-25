@@ -31,8 +31,12 @@ hasta 256 KiB, con un plazo de lectura de 30 s. El servidor y el receptor leen
 el mismo `rack.json`, junto a los scripts por omisión, o el archivo que se
 indique con `--config`.
 Para habilitar el canal, configura la lista de repositorios, por ejemplo
-`{"tren":{"repos":["OWNER/NAME"]}}`. Ambos usan el mismo directorio de estado
-y aceptan `--state-dir`.
+`{"tren":{"repos":["OWNER/NAME"]}}`. La configuración y el documento rechazan
+repositorios repetidos aunque difieran en mayúsculas. El receptor y el servidor
+validan los nombres sin distinguir mayúsculas y publican la grafía de
+`tren.repos`. En las URL de comentarios, la comparación del nombre sigue
+la misma regla y se conserva la URL original. Ambos scripts usan el mismo
+directorio de estado y aceptan `--state-dir`.
 
 Una recepción válida marca la hora de llegada y sustituye `tren.json` de
 forma atómica. El receptor devuelve 0 al aceptar, 65 al rechazar el documento
@@ -169,8 +173,9 @@ fd; nunca `cmdline` ni `environ`. Comparte una única espera de 50 ms entre
 todos los candidatos, limita `systemctl` a 0.5 s y comprueba un presupuesto
 total de 1 s. Un fallo entrega lista vacía/total cero con
 `errors.stage=orphans`; debe distinguirse de una lectura válida sin huérfanos.
-El servidor admite snapshots anteriores sin ambos campos y valida la forma,
-límites, fechas, orden y ausencia de campos extra cuando están presentes.
+El servidor admite snapshots anteriores sin ambos campos. Cuando están
+presentes, valida la forma, los límites, las fechas y el orden de las filas,
+y publica sólo los campos conocidos.
 El panel los muestra en una franja abierta entre la capacidad del desk y los
 carriles, agrupados por `origin_task` y sin acciones. Cada origen ocupa dos
 renglones: tarea, grupo y estado (`Killed` es «Matada», nunca OOM) con memoria y
@@ -1097,6 +1102,12 @@ de cancelación conservan su tope de 16 KiB. Si llegaron más de 64 altas durant
 la acción, el recibo marca el observado incompleto y la UI espera al snapshot;
 no elimina filas a partir de un vector truncado. El host valida cualquier
 intento de deshacer contra la fila completa y devuelve conflicto si cambió.
+
+El rack exige las claves exactas en las entradas de `reorder_groups`, su
+`expected` y las filas de `queue`, así como en los vectores de lugares,
+`tables` y `mode_pending`. El canal de acciones devuelve al controlador
+la vista de lugares o de la cola como `expected`. Proyectar esos campos
+alteraría la identidad que el controlador coteja antes de actuar.
 
 La admisión temporal U3.6 usa `0,95 + 0,08 × MB + escrituras × (0,90 + 0,08 × MB)`
 segundos: MB decimales del snapshot completo, incluido el historial de otros

@@ -57,10 +57,31 @@ class SnapshotTrickleTests(unittest.TestCase):
         self.assertEqual(guard['status'],'incomplete')
         self.assertIsNone(self.read_guard(NOW+121)['last_result'])
 
-    def test_secret_fields_and_bool_pressure_are_rejected(self):
-        for guard in (dict(action='mantener',envs={'x':'SECRET'}),dict(action='mantener',pressure=dict(at=AT,cpu=True,io=0,memory=1))):
-            data=sample();data['guard']=guard
-            with self.assertRaises(ValueError):serve.validate_snapshot(data,'mini')
+    def test_bool_pressure_is_rejected(self):
+        data=sample()
+        data['guard']=dict(action='mantener',pressure=dict(at=AT,cpu=True,io=0,memory=1))
+        with self.assertRaises(ValueError):serve.validate_snapshot(data,'mini')
+
+    def test_extended_blocker_makes_producer_tick_incomplete(self):
+        self.assertEqual(self.guard()['status'], 'fresh')
+        decision, summary = self.log.read_text().splitlines()
+        result = json.loads(summary)
+        result['bloqueos'][0]['new_field'] = 'synthetic'
+        self.log.write_text(decision + '\n' + json.dumps(result) + '\n')
+        guard = self.guard()
+        self.assertEqual(guard['status'], 'incomplete')
+        self.assertIsNone(guard['last_result'])
+
+    def test_extended_threshold_reports_producer_error(self):
+        thresholds = snapshot.installed_thresholds(self.root)
+        thresholds['pause']['new_field'] = 123
+        self.source.write_text('PRESSURE_THRESHOLDS = ' + repr(thresholds) + '\n')
+        (self.proc / 'pressure/cpu').write_text('some avg60=33\n')
+        errors = []
+        guard = self.read_guard(errors=errors)
+        self.assertEqual([error['stage'] for error in errors], ['guard_thresholds'])
+        self.assertIsNone(guard['thresholds'])
+        self.assertEqual(guard['status'], 'fresh')
 
     def test_corrupt_durable_projection_is_error(self):
         path=self.log.parent/'control.sqlite3'

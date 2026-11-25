@@ -213,7 +213,9 @@ def control_data(value, task):
             and (value['expected'] is None or expected(value['expected']))
             and (value['expected'] is None or value['expected'] == dict(task_id=task['id'], state=task['state']))
             and (value['reason'] is None or type(value['reason']) is str and len(value['reason']) <= 240)):
-        return value
+        identity = value['expected']
+        return dict(launcher=value['launcher'], ref=value['ref'], reason=value['reason'],
+                    expected=None if identity is None else dict(task_id=identity['task_id'], state=identity['state']))
     return None
 
 

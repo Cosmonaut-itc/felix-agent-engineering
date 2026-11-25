@@ -112,6 +112,7 @@ class StartupTests(DeskFixture):
             self.assertIn('Done',image['tasks'][ident]['status'])
             self.assertEqual(image['tasks'][ident]['status']['Done']['result'],'Killed')
         state=self.state()
+        self.assertEqual(self.engine.rpc_endpoint(state)[1], self.data/'shared_secret')
         self.assertEqual(set(state['startup']['interruptions']),{'0','1','3'})
         self.assertIn('log previo',state['startup']['holds']['jale'])
         self.assertIn('Locked',state['startup']['holds']['hasito'])

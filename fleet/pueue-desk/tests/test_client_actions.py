@@ -47,8 +47,21 @@ class Evidence:
             raise a.Unavailable('evidence_missing')
 
 
+def native_birth(pid):
+    return control.priority_helper().birth(pid)  # Late lookup: a patched helper still applies.
+
+
+def stock_engine(engine, daemon):
+    """CC7 profile and native births for the in-process emitter seam; D is a live process."""
+    engine.client_exclusion = 'filtered'
+    engine.client_birth = native_birth
+    life = lambda actions, state, generation: c.rpc_life(dict(pid=daemon, birth=native_birth(daemon), generation=generation))
+    return patch.object(a.ClientActions, 'daemon_life', life)
+
+
 def worker(directory, r, pipe, die=False):
     engine = control.MiniControl(test_slots.FakePueue(), Path(directory), generation=lambda: 'daemon-1')
+    stock_engine(engine, os.getppid()).start()
     actions = a.ClientActions(engine, Evidence(r['expected']), rpc=lambda *args: pipe.send(('rpc', args)))
     if die:
         actions.boundary = lambda phase: os._exit(0) if phase == 'reserved' else None
@@ -87,6 +100,9 @@ def setup(self):
     self.evidence = Evidence(self.r['expected'])
     self.rpc_calls = []
     self.after = copy.deepcopy(CASES['remote-run-rack-queued-held']['response']['identity'])
+    self.daemon = os.getpid()  # Life D of the seam: alive for the whole test, also in forked collectors.
+    self.life_patch = stock_engine(self.engine, self.daemon)
+    self.life_patch.start(); self.addCleanup(self.life_patch.stop)
     self.actions = a.ClientActions(self.engine, self.evidence, rpc=lambda *args: self.rpc(*args))
 
 
@@ -197,7 +213,9 @@ def test_races_at_each_read_and_stash_never_escalate(self):
     for read in (1, 2, 3):
         r = copy.deepcopy(self.r); r['action_id'] = 'race-case-' + str(read)
         self.evidence = Evidence(r['expected']); self.evidence.change_at[read] = running
-        self.actions = a.ClientActions(self.engine, self.evidence, rpc=lambda *args: self.rpc(*args))
+        # Stock Pueue answers Failure to a single-id stash of a task that already left Queued (E8c).
+        failure = dict(reply='failure') if read == 3 else None
+        self.actions = a.ClientActions(self.engine, self.evidence, rpc=lambda *args: self.rpc(*args) or failure)
         self.after = running
         self.assertEqual(self.act(r)['reason'], 'stale_state')
         self.assertFalse(any(args[0] == 'kill' for args in self.rpc_calls))
@@ -483,30 +501,42 @@ def test_full_corpus_through_coordinator_and_syntax_exit(self):
 
 
 def test_child_intent_precedes_gate_timeout_unknown(self):
+    child_pid = os.getpid()  # A live identity: the one-second seal wait expires.
     class Pipe:
         closed = False
         def write(pipe, data):
             process = self.actions.record(self.r)['process']
-            self.assertIsNotNone(process, 'child identity must be durable before gate')
-            self.assertEqual(process['state'], 'gated')
-            self.assertTrue(a.reservations(self.engine)[0]['uncertain']); self.assertEqual(data, b'1')
+            self.assertIsNotNone(process, 'emitter identity must be durable before gate')
+            self.assertEqual((process['state'], process['pid']), ('gated', child_pid))
+            plan = json.loads((self.root / 'client-rpc' / process['dispatch'] / 'plan.json').read_text())
+            self.assertEqual((plan['pid'], plan['birth'], plan['verb'], plan['task_id']),
+                             (child_pid, process['birth'], 'stash', 77))
+            self.assertTrue(a.reservations(self.engine)[0]['uncertain'])
+            self.assertEqual(data, process['dispatch'].encode())
         def close(pipe): pipe.closed = True
     class Child:
-        pid = 123
+        pid = child_pid
         stdin = Pipe()
-        killed = False
-        def wait(child, timeout=None):
-            if timeout is not None: raise subprocess.TimeoutExpired('closed', timeout)
-            return -9
-        def poll(child): return None if not child.killed else -9
-        def kill(child): child.killed = True
+        def wait(child, timeout=None): self.fail('the emitter is never reaped')
+        def poll(child): self.fail('the emitter is never reaped')
+        def kill(child): self.fail('the emitter is never killed')
+        def terminate(child): self.fail('the emitter is never killed')
+        def send_signal(child, number): self.fail('the emitter is never signalled')
     child = Child()
-    self.engine.pueue.binary, self.engine.pueue.context = '/synthetic/pueue', {}
-    self.actions.rpc = None; self.actions.birth = lambda pid: '123.456'
+    self.engine.pueue.context = {}
+    self.engine.rpc_endpoint = lambda state: (self.root / 'pueue.socket', self.root / 'shared_secret')
+    self.actions.rpc = None
+    started = __import__('time').monotonic()
     with patch.object(a.subprocess, 'Popen', return_value=child) as popen: result = self.act()
-    self.assertEqual(result['status'], 'unknown'); self.assertTrue(child.killed)
+    self.assertGreaterEqual(__import__('time').monotonic() - started, a.SEAL_SECONDS)
+    self.assertEqual((result['status'], result['reason']), ('unknown', 'rpc_unresolved'))
+    self.assertTrue(child.stdin.closed)
     self.assertTrue(a.reservations(self.engine)[0]['uncertain']); self.assertEqual(popen.call_count, 1)
-    self.assertEqual(self.actions.record(self.r)['process']['birth'], '123.456')
+    self.assertEqual(popen.call_args[0][0][-4:], [str(a.EMITTER), str(self.engine.directory),
+                                                  str(self.root / 'pueue.socket'), str(self.root / 'shared_secret')])
+    self.assertTrue(popen.call_args[1]['start_new_session'])
+    process = self.actions.record(self.r)['process']
+    self.assertEqual((process['state'], process['birth']), ('sent', a.ClientActions(self.engine).birth(child_pid)))
 
 
 def test_surviving_cli_late_effect_cannot_overlap_new_action(self):
@@ -666,6 +696,17 @@ def test_term_kill_preserve_first_acceptance(self):
     self.evidence.acceptance = kill['acceptance']
     self.assertEqual(self.act(kill)['reason'], 'identity')
     self.assertEqual(len(self.rpc_calls), 1)
+
+
+def test_failure_after_intent_retains_unknown(self):
+    def fail(phase):
+        if phase == 'gated':
+            raise OSError('synthetic journal failure')
+    self.actions.boundary = fail
+    result = self.act()
+    self.assertEqual((result['status'], result['reason'], result['reservation']), ('unknown', 'rpc_unresolved', 'held'))
+    self.assertTrue(a.reservations(self.engine)[0]['uncertain'])
+    self.assertEqual(self.rpc_calls, [])
 
 
 for _name, _value in list(globals().items()):

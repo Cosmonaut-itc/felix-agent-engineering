@@ -171,17 +171,17 @@ class Ledger:
         nuevas = tuple(desde_datos(json.loads(r[0])) for r in self.db.execute(
             "SELECT payload FROM entries WHERE repo=? ORDER BY rowid", (repo,)))
         if sombra or operativo:
-            iniciales = {e.entrega.recibo: e for e in (
-                desde_datos(json.loads(r[0])) for r in self.db.execute(
-                    "SELECT payload FROM events WHERE repo=? AND tipo='admision-entrega' ORDER BY seq",
-                    (repo,)))}
+            iniciales = {e.entrega.recibo: e for e in map(desde_datos, admisiones_entrega(self.db, repo))}
             nuevas = tuple(iniciales.get(e.entrega.recibo, e) for e in nuevas)
         return replace(estado, entradas=estado.entradas + tuple(
             e for e in nuevas if e.entrega.recibo not in recibos))
 
-    def guardar_paso(self, estado, efectos, ahora, consumido=None, fallo_operador=None):
+    def guardar_paso(self, estado, efectos, ahora, consumido=None, fallo_operador=None, *,
+                     prelanzadas=()):
         """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
         with self.transaccion():
+            for aviso in prelanzadas:
+                self.evento(estado.repo, "suite-prelanzada-sin-leer", ahora, aviso)
             # entries es custodia inmutable: la sombra también la importa.
             # La continuación operativa completa vive sólo en su evento.
             for tren in estado.trenes:
@@ -329,12 +329,18 @@ class Ledger:
             "SELECT seq, tipo, instante, payload FROM events WHERE repo=? ORDER BY seq DESC LIMIT 10", (repo,))]
 
 
+def admisiones_entrega(db, repo):
+    for raw, in db.execute(
+            "SELECT payload FROM events WHERE repo=? AND tipo='admision-entrega' ORDER BY seq", (repo,)):
+        yield json.loads(raw)
+
+
 @contextmanager
-def lectura_medicion(directorio=None):
+def lectura_medicion(directorio=None, *, timeout=5.0):
     """SQLite mode=ro: sin mkdir, migraciones, candado ni pragmas de escritura."""
     raiz = Path(directorio) if directorio is not None else directorio_estado()
     ruta = (raiz / "ledger.sqlite3").resolve()
-    with closing(sqlite3.connect(ruta.as_uri() + "?mode=ro", uri=True)) as db:
+    with closing(sqlite3.connect(ruta.as_uri() + "?mode=ro", uri=True, timeout=timeout)) as db:
         db.row_factory = sqlite3.Row
         db.execute("BEGIN")
         if db.execute("PRAGMA user_version").fetchone()[0] != Ledger.VERSION:

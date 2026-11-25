@@ -407,10 +407,9 @@ y confirmar el hold exige, en CC1 y en CC2, las cuatro condiciones de
 plan), P (lectura previa = `expected` en la vida D del plan), Q (lectura
 posterior hecha después de ese sello, en la misma vida D, con Stashed sin
 programar) y Ex (perfil de exclusión `filtered`). El código y la arista solos
-no bastan: hoy CC1 confirma `held` con rc 0 más la arista. Ese defecto latente
-queda corregido en este contrato y en `rpc_verdict`; el cambio de
-`client_actions.py` corresponde a P1. Mientras tanto no es alcanzable, porque
-los cuatro adaptadores devuelven `unsupported`.
+no bastan. Antes de P1, CC1 confirmaba `held` con rc 0 más la arista; desde
+CC3-P1 `client_actions.py` sólo confirma con `rpc_verdict` (véase «Entrega
+CC3-P1»).
 
 Con `control.lock` ocupado, una fase sin recibo responde `deferred` y
 `lock_busy` sin RPC; si la acción ya tiene una reserva abierta, la respuesta
@@ -440,7 +439,7 @@ la reserva, el estado del grupo en `start`, la espera del sello, la lectura
 posterior Q y las escrituras FULL del diario. En P1 ninguna espera al daemon
 queda sin plazo: cada lectura de estado del turno lleva el plazo de lectura
 del colector de CC2, la mitad de sus 0,4 s, fijado en `Pueue.timeout` y
-`Pueue.deadline`. Hoy el lector por omisión espera sin plazo. Q tiene ese
+`Pueue.deadline`. Antes de P1 el lector por omisión esperaba sin plazo. Q tiene ese
 plazo propio y no consume el segundo del sello. Las escrituras FULL con
 `fullfsync` y la creación del emisor no tienen cota, igual que hoy y que en
 CC2. Si vence P o la relectura, no se envía nada. Q sólo se exige para
@@ -642,14 +641,13 @@ lectura previa P, la posterior Q y el perfil de exclusión. Se admite como
 testigo la respuesta original **en la conexión del emisor ligada al plan**, y
 sólo atribuye con exclusión acreditada (`filtered`). Se sigue prohibiendo
 derivar el efecto del código o la salida de un CLI, de la muerte de un
-proceso, de dos lecturas iguales o de la petición del cliente. Con P1, el
-adaptador del lanzador dejará de aportar efecto: devolverá sólo observación y
-`finish`, y si trae `settled` o `effect_applied` para una fase de cola el
-núcleo lo ignorará. Hasta P1, CC2 todavía acepta `settled` del adaptador y
-`effect_applied` cotejado con `effect_matches`. Ese camino no es alcanzable
-mientras los cuatro adaptadores devuelvan `unsupported`, y P1 lo sustituye
-por `execution_link` más `rpc_verdict` en collect y en apply. `settled` no
-demuestra quién produjo el estado observado.
+proceso, de dos lecturas iguales o de la petición del cliente. Desde P1, el
+adaptador del lanzador no aporta efecto a una fase del emisor: sólo da la
+observación de Q y `finish`, y el núcleo ignora su `settled` y su
+`effect_applied`. collect y apply usan `execution_link` más `rpc_verdict`.
+Sólo los hijos anteriores sin plan conservan `settled` del adaptador y
+`effect_applied` cotejado con `effect_matches`. `settled` no demuestra quién
+produjo el estado observado.
 Tras un gated incierto, incluso un Stashed con la identidad esperada más
 settled conserva `unknown`, reserva abierta y `hold_identity:null` si
 `rpc_verdict` no atribuye. cancel-no-payload y retire-held rechazan sin RPC
@@ -989,4 +987,72 @@ corresponde a P1. Las pruebas dirigidas no ejecutan daemon, SSH ni
 ```text
 python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_client_contract*.py" -v
 python -I fleet/pueue-desk/tests/mutate_client_contract.py
+```
+
+## Entrega CC3-P1
+
+P1 añade el emisor stock y lo conecta a CC1 y CC2 con el perfil
+`coordinated`. No cambia el cable, `client_contract.py`, los corpus ni Pueue
+4.0.4. Ningún instalador de esta entrega fija `filtered`: `remote-run` sigue
+inerte y los adaptadores, en `unsupported` hasta P2.
+
+- **Emisor.** `client_rpc.py` usa sólo la biblioteca estándar. Lee `dispatch`
+  de stdin y deriva de él cada ruta bajo `A/client-rpc/<dispatch>/`. Publica el
+  claim con `link` exclusivo antes de conectar; el perdedor sale sin conectar
+  ni sellar. Coteja el par del socket con la vida D del plan antes de la
+  trama 1. Exige la trama 2 `0.31.1` exacta y, con cualquier otra, sella
+  `not-sent`/`unsupported` sin escribir la trama 3. Sólo codifica las cuatro
+  formas cerradas de una sola id, con el subconjunto CBOR. No reintenta, no
+  reconecta y no toma candados. Un aborto local tras la trama 3 no sella.
+  Ignora TERM, HUP, INT y PIPE.
+- **CC1.** `deliver` sustituye a `send`. Bajo `control.lock`, lee la vida D de
+  P antes de la reserva y crea el emisor en otra sesión, esperando en stdin.
+  Después lee su nacimiento, publica el plan y registra
+  `process={pid, birth, dispatch, plan_digest, state:'gated'}`. Sólo entonces
+  escribe `dispatch` y pasa a `sent`. Espera el sello como máximo
+  `SEAL_SECONDS` (1 s) y nunca mata ni recoge al emisor. Cada lectura del
+  daemon del turno lleva `READ_SECONDS` (0,2 s) en `Pueue.timeout` y
+  `Pueue.deadline`. Q se lee sólo tras un sello `success` y nombra su
+  `receipt`. `settle` aplica `rpc_verdict`. El efecto atribuido guarda
+  `attribution={dispatch, seal_receipt, exclusion}`. R− y N2 cierran el hold
+  inicial. Para las demás fases, R− rechaza con `stale_state` y N2 difiere.
+  S3, S4 y un `success` sin Q quedan
+  `unknown`, con `uncertain:false` y la reserva abierta. El rc del CLI y la
+  arista ya no confirman nada: queda corregido el defecto latente.
+- **CC2.** Una fase del emisor en `unknown` se recoge con `collect_stock`,
+  fuera del candado y en el proceso del lote. Lee vidas y originales; lee una
+  Q nueva sólo tras un sello `success`. apply recalcula `rpc_verdict` bajo el
+  candado con originales y vidas frescos, sin leer el daemon, y con la Q de la
+  propuesta. Un sello válido se recoge aunque el emisor siga vivo. Un
+  `success` sin Q o con una Q incompatible sigue reintentable en cada ciclo
+  que alcance la reserva (N/N+1). Si vence el plazo del lote, retiene con
+  `evidence_missing`. Los hijos sin plan conservan la regla anterior.
+- **Perfil.** `control.CLIENT_EXCLUSION = 'coordinated'`. Con él, las fases
+  mutadoras de `remote-run` responden `unsupported` antes de crear un plan o
+  un emisor. Sólo `filtered` habilita la atribución, y lo fijará el
+  instalador de CC7.
+
+`tests/fake_pueued.py` es un daemon sintético que sólo habla tramas sobre un
+socket Unix. `tests/test_client_rpc.py` ejecuta el emisor real con
+nacimientos nativos. Recorre cada frontera de §2.6 con D viva y con D
+terminada:
+
+| Caso | Resultado |
+|---|---|
+| Antes del claim | Retiene; liquida por S4 con `evidence_missing` |
+| Entre el claim y la trama 3 | `rpc_unresolved`; liquida por S4 con `startup` |
+| Después de la trama 3 | `rpc_unresolved`; liquida por S4 con `startup` |
+| Respuesta perdida | S3, nunca se atribuye |
+
+También cubre el claim perdido y el perdedor del claim, la Q vencida y el
+relevo de CC2, otra versión en el saludo, otra vida en el par y el perfil
+`coordinated`. Para el defecto latente prueba un `success` con Q en
+`Running`. Las tramas doradas de `corpus/pueue-404-frames.json` fijan el
+codificador. `tests/mutate_client_rpc.py` mata veinte mutantes por aserción.
+`mutate_client_actions.py` reapunta dos casos a la compuerta y a la falla
+tras la intención.
+
+```text
+python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_*.py" -v
+(cd fleet/pueue-desk/tests && python -B mutate_client_rpc.py)
 ```

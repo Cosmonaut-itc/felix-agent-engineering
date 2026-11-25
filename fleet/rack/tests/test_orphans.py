@@ -205,6 +205,8 @@ class OrphanTests(unittest.TestCase):
         rows, total = self.read()
         data = dict(sample(), host='desk', os='linux', orphans=rows, orphans_total=total)
         self.assertEqual(serve.validate_snapshot(data, 'desk'), data)
+        extended = dict(data, orphans=[dict(rows[0], command='secret')])
+        self.assertEqual(serve.validate_snapshot(extended, 'desk'), data)
         self.assertEqual(serve.validate_snapshot(sample(), 'mini'), sample())
         bad_values = dict(pid=[True, 0, '30'], comm=[None, 'x'*33], origin_task=[3, 'x', '1'*21],
                           group=[3, 'x'*129], origin_state=[None, 'Paused', []],
@@ -215,8 +217,7 @@ class OrphanTests(unittest.TestCase):
             for value in values:
                 row = dict(rows[0], **{key: value})
                 variants.append(dict(data, orphans=[row]))
-        variants += [dict(data, orphans=[dict(rows[0], command='secret')]),
-                     dict(data, orphans=[{k:v for k,v in rows[0].items() if k != 'comm'}]),
+        variants += [dict(data, orphans=[{k:v for k,v in rows[0].items() if k != 'comm'}]),
                      dict(data, orphans=None), dict(data, orphans_total=True), dict(data, orphans_total=-1),
                      dict(data, orphans_total=2), dict(data, orphans=[rows[0]]*65, orphans_total=65),
                      dict(data, orphans=[rows[0]]*2, orphans_total=2),
