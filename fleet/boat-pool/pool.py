@@ -236,6 +236,29 @@ def events(path):
         return []
 
 
+def events_from_end(stream, end):
+    fragments = []
+    found_newline = False
+    while end:
+        size = min(end, 8192)
+        end -= size
+        stream.seek(end)
+        first, *lines = stream.read(size).split(b'\n')
+        if not lines:
+            if found_newline:
+                fragments.append(first)
+            continue
+        # Como en events(), el texto después del último salto está incompleto.
+        if found_newline:
+            yield json.loads(b''.join(chain((lines[-1],), reversed(fragments))))
+        found_newline = True
+        for line in reversed(lines[:-1]):
+            yield json.loads(line)
+        fragments = [first]
+    if found_newline:
+        yield json.loads(b''.join(reversed(fragments)))
+
+
 @dataclass
 class VM:
     name: str
@@ -250,6 +273,7 @@ class VM:
     prepared: float = 0
     apt: bool = False
     recorded_ids: set = field(default_factory=set)
+    _power_event: tuple | None = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def journal(self):
@@ -297,6 +321,21 @@ class VM:
                 raise ValueError('acción inválida')
             epoch(operation['desde'])
         return operation
+
+    def last_power_event(self):
+        try:
+            stream = self.journal.open('rb')
+        except FileNotFoundError:
+            return None
+        with stream:
+            stat = os.fstat(stream.fileno())
+            version = (self.id, stat.st_dev, stat.st_ino, stat.st_size, stat.st_mtime_ns, stat.st_ctime_ns)
+            if self._power_event is None or self._power_event[0] != version:
+                kind = next((item['evento'] for item in events_from_end(stream, stat.st_size)
+                             if item['evento'] in ('arranque', 'encendida', 'apagada')
+                             and item.get('id') == self.id), None)
+                self._power_event = (version, kind)
+            return self._power_event[1]
 
     def event(self, kind, when, **fields):
         identity = {'id': self.id} if self.id else {}
@@ -677,7 +716,8 @@ class Pool:
                     operation = vm.read_power_operation()
                     stopping = (operation is not None and operation['sandbox_id'] == vm.id
                                 and self.stop_pending(operation))
-                    order[vm.name] = (not fits, stopping, len(leases) / vm.places)
+                    stopped = vm.last_power_event() == 'apagada'
+                    order[vm.name] = (not fits, stopping or stopped, len(leases) / vm.places)
             except (OSError, KeyError, TypeError, ValueError, OverflowError):
                 continue
         return sorted(candidates, key=lambda vm: order.get(vm.name, (True, True, math.inf)))

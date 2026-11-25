@@ -515,6 +515,65 @@ class Harness(unittest.TestCase):
 
         self.assertEqual(self.get_grant('siguiente')['vm'], NAME)
 
+    def test_pedir_prefiere_la_vm_lista_despues_de_un_apagado_confirmado(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        other_id = fake_id('efgh2345')
+        self.add_vm(other, other_id, places=2, created=NOW - 1800)
+        self.assertEqual(self.run_cli('vigilar')[0], 0)
+
+        directory = self.state / 'vms' / other
+        self.assertEqual(pool.read_json(self.api.path)[other_id]['state'], 'archived')
+        self.assertFalse((directory / 'operacion.json').exists())
+        self.assertTrue(any(event['evento'] == 'apagada' and event.get('id') == other_id
+                            for event in pool.events(directory / 'eventos.jsonl')))
+
+        self.api.calls.clear()
+        grant = self.get_grant('fragmento', 'e2e', '--esperar', '1800')
+        resumes = sum(method == 'POST' and route.endswith('/resume')
+                      for method, route, _ in self.api.calls)
+        self.assertEqual((grant['vm'], resumes), (NAME, 0))
+
+    def test_pedir_vuelve_a_considerar_la_vm_reanudada_con_encender(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        other_id = fake_id('efgh2345')
+        self.add_vm(other, other_id, places=2)
+        self.assertEqual(self.run_cli('apagar', other)[0], 0)
+        self.assertEqual(self.run_cli('encender', other)[0], 0)
+        power = [event['evento'] for event in self.journal(other) if event.get('id') == other_id]
+        self.assertEqual(power, ['registro', 'apagada', 'arranque'])
+
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], other)
+
+    def test_pedir_busca_el_ultimo_evento_completo_del_id_vigente(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        other_id = fake_id('efgh2345')
+        self.add_vm(other, other_id, places=2)
+        self.assertEqual(self.run_cli('apagar', other)[0], 0)
+        journal = self.state / 'vms' / other / 'eventos.jsonl'
+        pool.append_event(journal, {'evento': 'encendida', 'id': fake_id('prev2345'), 'en': pool.stamp(NOW)})
+        pool.append_event(journal, {'evento': 'rechazo', 'id': other_id, 'en': pool.stamp(NOW),
+                                    'motivo': 'á' * 8192})
+        with journal.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps({'evento': 'encendida', 'id': other_id, 'en': pool.stamp(NOW)}))
+
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], NAME)
+
+    def test_pedir_pospone_la_vm_con_un_diario_ilegible(self):
+        self.config['vms'][0]['lugares'] = 2
+        self.get_lease('contrato', 'contract')
+        other = 'vm-otra'
+        self.add_vm(other, fake_id('efgh2345'), places=2)
+        journal = self.state / 'vms' / other / 'eventos.jsonl'
+        journal.write_text('no es JSON\n', encoding='utf-8')
+
+        self.assertEqual(self.get_grant('fragmento', 'e2e')['vm'], NAME)
+
     def test_arriendo_vencido_y_soltar_idempotente(self):
         lease = self.get_lease('caduca', 'contract', '--ttl', '300')
         self.api.now += 301
