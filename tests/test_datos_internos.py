@@ -94,7 +94,6 @@ class DatosInternosTests(unittest.TestCase):
                 (r'local\Users\DemoUser', 'Windows'),
                 (r'prefix//uSeRs/\DemoUser/bin', 'macOS'),
                 (r'clang -IC:\//Users\\DemoUser', 'Windows'),
-                (r'\\host.example/c$\Users/DemoUser', 'Windows'),
                 (r'"file://localhost/Users/Shared Fixture"', 'macOS'),
                 ('$HOME/Users/demo/bin', 'macOS'),
                 ('/tmp/Users/demo/bin', 'macOS')):
@@ -120,6 +119,8 @@ class DatosInternosTests(unittest.TestCase):
         self.assertEqual(kinds('/Users/SharedFixture/x'), ['home de macOS'])
         self.assertEqual(kinds(r'C:\Users\PublicFixture\x'), ['home de Windows'])
         self.assertEqual(kinds(r'/Users/DemoUser/x C:\Users\DemoUser\x'),
+                         ['home de macOS', 'home de Windows'])
+        self.assertEqual(kinds(r'\\host.example/c$\Users/DemoUser'),
                          ['home de macOS', 'home de Windows'])
         self.assertEqual(kinds(r'//host.example/c$/Users/U/bin'), ['home de Windows'])
         for text in ('HOME=~demo/bin', 'Users list', 'Users/DemoUser', '/Users/<usuario>/x',
@@ -190,6 +191,8 @@ class DatosInternosTests(unittest.TestCase):
                 (r'{"path":"\u00252FUsers%2FDemoUser%2FLibrary"}', ['macOS']),
                 (r'"\u0022\u005cu002fUsers\u005cu002fDemoUser/Library\u0022"', ['macOS']),
                 (r'"\\u002fUsers\\u002fDemoUser"', ['macOS']),
+                (r'/Users/\ud801\udc00/bin', ['macOS']),
+                (r'\ud801 /Users/Demo/bin', ['macOS']),
                 ('%ZZ %FF /Users/Demo/bin', ['macOS']),
                 (r'HOME=/Users/DemoUser %2FUsers%2fDemoUser "C:\\Users\\DemoUser"',
                  ['macOS', 'Windows'])):

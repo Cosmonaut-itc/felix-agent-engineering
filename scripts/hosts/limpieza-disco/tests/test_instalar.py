@@ -21,7 +21,7 @@ class InstalarTests(unittest.TestCase):
             for count in (1, -1):
                 with self.subTest(count=count):
                     template.write_bytes(source.replace(b'@HOME@', b'/local', count))
-                    run = subprocess.run([sys.executable, '-I', '-', str(template), str(output), '/Users/u'],
+                    run = subprocess.run([sys.executable, '-I', '-', str(template), str(output), '/local/u'],
                                          input=renderer, text=True, capture_output=True)
                     self.assertNotEqual(run.returncode, 0)
                     self.assertIn('@HOME@', run.stderr)
@@ -33,7 +33,7 @@ class InstalarTests(unittest.TestCase):
         renderer = installer.split("<<'PY'\n", 1)[1].split('\nPY\n', 1)[0]
         with tempfile.TemporaryDirectory() as tmp:
             output = Path(tmp) / 'launch-agent.plist'
-            home = '/Users/u'
+            home = '/local/u'
             for account_home in (home, home + ' & equipo'):
                 with self.subTest(home=account_home):
                     subprocess.run([sys.executable, '-I', '-', str(template), str(output), account_home],

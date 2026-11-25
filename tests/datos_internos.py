@@ -7,14 +7,17 @@ home de Linux, macOS o Windows van con marcadores: <host>.<tailnet>.ts.net,
 `wsl -u <usuario>`. Las pruebas usan example.ts.net, 100.100.0.0/24,
 la cuenta u y los demás nombres de SYNTHETIC_USERS.
 
+Si una prueba requiere una ruta de perfil, añade el comentario
+«datos-internos: sintético» en esa línea. El marcador sólo exime perfiles.
+
 La salida nombra archivo, línea y tipo, nunca el valor: el log de CI también
 es público.
 """
 import ipaddress
-import json
 import re
 import subprocess
 import sys
+from urllib.parse import unquote
 
 SCOPE = ('fleet/', 'scripts/')
 TAILNET = ipaddress.ip_network('100.64.0.0/10')
@@ -25,38 +28,21 @@ SYNTHETIC_USERS = {'u', 'root'}
 FQDN = re.compile(r'([A-Za-z0-9-]+)\.ts\.net(?![A-Za-z0-9-])', re.IGNORECASE)
 IPV4 = re.compile(r'(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?(?![0-9]|\.[0-9])')
 HOME = re.compile(r'(?<![A-Za-z0-9_.~$-])/home/([a-z_][a-z0-9_-]*)(?![a-z0-9_-])')
-PROFILE_HOME = re.compile(r'''
+PROFILE_SEGMENT = re.compile(r'(?<![/\\])[/\\]+Users(?=[/\\]+\w)', re.IGNORECASE)
+WINDOWS_PREFIX = re.compile(r'''
     (?:
-        (?P<windows>
-            (?P<win_prefix>
-                (?:(?<![^\s"'=(,])|(?<=-I)) (?a:[A-Z]):
-                | (?<![^\s"'=(,]) (?:
-                    [/\\]{2,}[\w.-]+[/\\]+[\w.$-]+
-                    | \\?/(?:mnt\\?/)?(?a:[A-Z])(?=\\?/)
-                )
-            )
-            | (?a:[A-Z]):
-        )
-        | (?P<mac_prefix>
-            (?<![^\s"'=:(,])
-            (?: file:\\?/\\?/(?:localhost)?
-                | \\?/Volumes\\?/[^/\\\s"']+
-                | \\?/System\\?/Volumes\\?/Data
-            )?
-            (?=\\?/Users)
-        )
         # Un esquema URI completo no acaba en una unidad.
-        | (?<![^\s"'=(,]) (?a:[A-Z][A-Z0-9+.-]+): (?=//)
-        | (?<![/\\])
+        (?P<scheme>(?<![\w+.-])(?a:[A-Z][A-Z0-9+.-]+):(?=//))
+        | (?a:[A-Z]):
+        | (?<![\w/\\%]) /+(?:mnt/+)?(?a:[A-Z])
+        | (?<![\w/\\:]) [/\\]{2,}[\w.?!-]+[/\\]+[\w.$ -]+
     )
-    [/\\]+Users(?=[/\\]+(?P<user>[\w][\w.-]*))
+    (?=[/\\]+Users)
 ''', re.IGNORECASE | re.VERBOSE)
-JSON_STRING = r'"(?:[^"\\]|\\.)*"'
-JSON_LITERAL = re.compile(JSON_STRING)
-QUOTED_PATH = re.compile(r"'[^']*'|" + JSON_STRING)
-QUOTED_USER = re.compile(r'[\w][\w.-]*(?: +[\w.-]+)*(?=[/\\]|$)')
-PROFILE_ESCAPES = {'%5c': '\\', '%2f': '/', '%20': ' '}
-PROFILE_ESCAPE = re.compile('|'.join(PROFILE_ESCAPES), re.IGNORECASE)
+JSON_ESCAPE = re.compile(
+    r'\\(?:u[dD][89aAbB][0-9a-fA-F]{2}\\u[dD][c-fC-F][0-9a-fA-F]{2}'
+    r'|u[0-9a-fA-F]{4}|[/\\])')
+SYNTHETIC_PROFILE_MARKER = 'datos-internos: sintético'
 WSL_USER = re.compile(r'\bwsl\b(?:(?!\s--(?:\s|$)).)*?\s(?:-u|--user)\s+([a-z_][a-z0-9_-]*)(?![a-z0-9_<>-])')
 
 
@@ -71,53 +57,46 @@ def tailnet_ip(text, prefix):
     return ip in TAILNET and ip not in SYNTHETIC_NET
 
 
-def profile_variants(line):
+def decode_json_escape(match):
+    escape = match[0]
+    if len(escape) == 2:
+        return escape[1]
+    try:
+        # Los pares sustitutos forman un solo carácter Unicode.
+        return bytes.fromhex(escape[2:6] + escape[8:]).decode('utf-16-be')
+    except UnicodeDecodeError:
+        return escape
+
+
+def profile_forms(line):
     yield line
-    decoded = PROFILE_ESCAPE.sub(lambda match: PROFILE_ESCAPES[match[0].lower()], line)
-    if decoded != line:
-        yield decoded
-    for literal in JSON_LITERAL.finditer(line):
+    for _ in range(4):
+        previous = line
         try:
-            yield json.loads(literal[0])
-        except json.JSONDecodeError:
-            continue
-
-
-def clean_profile_end(line, end, closing_quote):
-    if end == len(line) or end == closing_quote:
-        return True
-    following = line[end]
-    if following == '\\':
-        return not line.startswith(('\\ ', '\\u', '\\"'), end)
-    # El primer espacio sin comillas separa la ruta de la prosa.
-    return following == '/' or following.isspace() and closing_quote is None
-
-
-def profiles_in_variant(line):
-    quotes = iter(QUOTED_PATH.finditer(line))
-    quote = next(quotes, None)
-    for profile in PROFILE_HOME.finditer(line):
-        start = profile.start('user')
-        while quote is not None and quote.end() <= start:
-            quote = next(quotes, None)
-        closing_quote = quote.end() - 1 if quote and quote.start() < start else None
-
-        user = profile['user'].lower()
-        if user.rstrip('.') in SYNTHETIC_USERS:
-            name = (QUOTED_USER.match(line, start, closing_quote)
-                    if closing_quote is not None else None)
-            if name is None or name[0].rstrip('.').lower() in SYNTHETIC_USERS:
-                continue
-        if clean_profile_end(line, profile.end('user'), closing_quote):
-            if profile['win_prefix'] and user == 'public':
-                continue
-            if profile['mac_prefix'] is not None and user == 'shared':
-                continue
-        yield 'home de Windows' if profile['windows'] else 'home de macOS'
+            line = unquote(line, errors='strict')
+        except UnicodeDecodeError:
+            pass
+        if line != previous:
+            yield line
+        decoded = JSON_ESCAPE.sub(decode_json_escape, line)
+        if decoded != line:
+            yield decoded
+        line = decoded
+        if line == previous:
+            break
 
 
 def profile_kinds(line):
-    kinds = {kind for variant in profile_variants(line) for kind in profiles_in_variant(variant)}
+    if SYNTHETIC_PROFILE_MARKER in line:
+        return []
+    kinds = set()
+    for form in profile_forms(line):
+        profiles = list(PROFILE_SEGMENT.finditer(form))
+        if profiles:
+            windows = {prefix.end() for prefix in WINDOWS_PREFIX.finditer(form) if not prefix['scheme']}
+            for profile in profiles:
+                is_windows = profile.start() in windows or form[profile.end()] == '\\'
+                kinds.add('home de Windows' if is_windows else 'home de macOS')
     return [kind for kind in ('home de macOS', 'home de Windows') if kind in kinds]
 
 
