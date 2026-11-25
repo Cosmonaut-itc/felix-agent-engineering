@@ -81,6 +81,26 @@ class DatosInternosTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), ['home de Windows'])
 
+    def test_profiles_follow_the_segment_and_its_immediate_prefix(self):
+        for text, platform in (
+                ('clang -IC:/Users/DemoUser/include', 'Windows'),
+                ('-IC:/Users/Shared/include', 'Windows'),
+                ('/Volumes/Disco/Users/DemoUser', 'macOS'),
+                ('/System/Volumes/Data/Users/DemoUser', 'macOS'),
+                ('file://localhost/Users/DemoUser', 'macOS'),
+                (r'\\host.example\c$\Users\DemoUser', 'Windows'),
+                (r'"C:\Users\Nombre Con Espacio"', 'Windows'),
+                (r'"C:\Users\Public Lab"', 'Windows'),
+                (r'local\Users\DemoUser', 'macOS'),
+                (r'prefix//uSeRs/\DemoUser/bin', 'macOS'),
+                (r'clang -IC:\//Users\\DemoUser', 'Windows'),
+                (r'\\host.example/c$\Users/DemoUser', 'Windows'),
+                (r'"file://localhost/Users/Shared Fixture"', 'macOS'),
+                ('$HOME/Users/demo/bin', 'macOS'),
+                ('/tmp/Users/demo/bin', 'macOS')):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), ['home de ' + platform])
+
     def test_allows_public_profiles_and_prose_after_synthetic_profiles(self):
         for text in (
                 '/Users/Shared/work',
@@ -98,8 +118,7 @@ class DatosInternosTests(unittest.TestCase):
         self.assertEqual(kinds(r'C:\Users\PublicFixture\x'), ['home de Windows'])
         self.assertEqual(kinds(r'/Users/DemoUser/x C:\Users\DemoUser\x'),
                          ['home de macOS', 'home de Windows'])
-        for text in ('HOME=~demo/bin', '$HOME/Users/demo/bin', '/tmp/Users/demo/bin',
-                     r'//host.example/c$/Users/U/bin'):
+        for text in ('HOME=~demo/bin', r'//host.example/c$/Users/U/bin'):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), [])
 

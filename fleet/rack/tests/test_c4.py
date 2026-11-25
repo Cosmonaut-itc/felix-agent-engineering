@@ -9,6 +9,7 @@ import shutil
 import stat
 from types import SimpleNamespace
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -355,6 +356,45 @@ class SSHTests(unittest.TestCase):
         with patch.object(os, 'close', wraps=os.close) as close:
             self.assertEqual(outcome(accion.desk_destination), 'rechazado')
         close.assert_called_once()
+
+    def test_extended_acl_rejects_destination(self):
+        path = accion._desk_config_path()
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        self.assertEqual(accion.desk_destination(), safety.DESK_DESTINATION)
+
+        if sys.platform == 'darwin':
+            subprocess.run(['/bin/chmod', '+a', 'everyone allow write', str(path)], check=True)
+        elif sys.platform == 'linux':
+            setfacl = shutil.which('setfacl')
+            if setfacl is None:
+                self.skipTest('setfacl no está disponible')
+            subprocess.run([setfacl, '-m', 'u:nobody:w', str(path)], check=True)
+            # Keep the existing POSIX mode so the ACL check itself is exercised.
+            subprocess.run([setfacl, '-m', 'm::---', str(path)], check=True)
+        else:
+            self.skipTest('plataforma sin fixture de ACL')
+
+        self.assertEqual(stat.S_IMODE(path.stat().st_mode), 0o600)
+        with self.assertRaises(accion.DeskDestinationError):
+            accion.desk_destination()
+
+        if sys.platform == 'darwin':
+            subprocess.run(['/bin/chmod', '-N', str(path)], check=True)
+        else:
+            subprocess.run([setfacl, '-b', str(path)], check=True)
+        self.assertEqual(accion.desk_destination(), safety.DESK_DESTINATION)
+
+    @unittest.skipUnless(sys.platform == 'linux', 'ACL POSIX de Linux')
+    def test_linux_acl_is_checked_on_the_open_descriptor(self):
+        path = accion._desk_config_path()
+
+        def listxattr(fd):
+            self.assertTrue(os.path.samestat(os.fstat(fd), path.stat()))
+            return ['system.posix_acl_access']
+
+        with patch.object(os, 'listxattr', side_effect=listxattr):
+            with self.assertRaises(accion.DeskDestinationError):
+                accion.desk_destination()
 
     def test_missing_destination_rejects_cancel_without_sending(self):
         accion._desk_config_path().unlink()
