@@ -170,7 +170,9 @@ que demuestra:
   con él y no escribas guiones de suite. Su salida 75 marca un fallo del
   arnés o de la infraestructura, y la misma corrida se relanza con su
   opción de reanudar. La salida 75 no cuenta como ronda ni como suite roja,
-  y no pide corrección ni ronda delta.
+  y no pide corrección ni ronda delta. `run-remote.sh boat` de Jale no tiene
+  opción de reanudar. Su 75 sin `RESULT` canónico se relanza con la misma
+  invocación, y su 75 con él es una suite roja.
 
 ## Modelos y transporte
 
