@@ -359,9 +359,10 @@ def test_cc2_relay_retains_on_deadline_and_retries_incompatible_q(self):
 
 
 def test_cc2_stock_relay_under_contention(self):
-    self.start_daemon('success')
+    fake = self.start_daemon('stall-reply')
     self.evidence.moved = self.after
     self.assertEqual(self.act_with(0)['status'], 'unknown')
+    (fake / 'go').write_text('1')
     self.assertTrue(until(lambda: (self.originals() / 'seal.json').exists()))
 
     def turn():
@@ -377,7 +378,7 @@ def test_cc2_stock_relay_under_contention(self):
 
 
 def test_retired_receipt_survives_reused_id_and_finish(self):
-    self.start_daemon('success')
+    fake = self.start_daemon('stall-reply')
     r = self.r = corpus.request_for('retire-interrupted')
     self.evidence.identity = copy.deepcopy(r['expected'])
     self.evidence.moved = copy.deepcopy(corpus.RPC['observations']['reused'])
@@ -386,6 +387,7 @@ def test_retired_receipt_survives_reused_id_and_finish(self):
                   proof=dict(kind='interrupted', attempt=absent['attempt'],
                              receipt='c'*64, acceptance_receipt=None, exit=1))
     self.assertEqual(self.act_with(0)['status'], 'unknown')
+    (fake / 'go').write_text('1')
     self.assertTrue(until(lambda: (self.originals() / 'seal.json').exists()))
     self.evidence.finish, self.evidence.proof = finish, finish['proof']
     self.assertEqual(self.reconcile(), 1)
@@ -567,9 +569,22 @@ class EndpointTests(unittest.TestCase):
                                           stdout=log, stderr=log)
                 try:
                     pid_path = configuration['pid_file']
-                    self.assertTrue(until(lambda: daemon.poll() is not None or pid_path.exists()))
-                    self.assertIsNone(daemon.poll(), (root / 'daemon.log').read_text())
                     cli = control.Pueue(pueue, env=env, cwd=root)
+                    cli.timeout = 1
+
+                    def ready():
+                        if daemon.poll() is not None:
+                            self.fail((root / 'daemon.log').read_text())
+                        if not pid_path.exists():
+                            return False
+                        try:
+                            cli.status()
+                        except subprocess.SubprocessError:
+                            return False
+                        return True
+
+                    self.assertTrue(until(ready), (root / 'daemon.log').read_text())
+                    self.assertEqual(int(pid_path.read_text().strip()), daemon.pid)
                     cli.timeout = 3
                     self.assertEqual(cli.status()['tasks'], {})
                     self.assertEqual(pid_path.parent, runtime)
