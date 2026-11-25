@@ -16,6 +16,9 @@ CASES=(
      "        public.update({k: v for k, v in row.items() if k not in public and k != 'admission'})\n"
      "        clean['tasks'].append(public)",
      'test_snapshot_publication.SnapshotPublicationTests.test_extensions_do_not_reach_the_api'),
+    ('snapshot-control-unfiltered-group-maps', 'serve.py',
+     'control[field].items() if k in group_names', 'control[field].items()',
+     'test_snapshot_publication.SnapshotPublicationTests.test_operational_control_projects_extensions'),
     ('tren-extra-key', 'tren.py', 'set(row) == set(fields.split())', 'set(fields.split()) <= set(row)',
      'test_tren.ValidatorTests.test_rejects_extra_keys_at_every_level'),
     ('tren-pause-details', 'tren.py', "_keys(row, 'motivo pr desde')",
@@ -54,8 +57,8 @@ CASES=(
      'test_orphans.OrphanTests.test_descendants_excluded_and_reparented_attributed_by_fd1'),
     ('orphans-identity', 'snapshot.py', "before['start'] != after['start'] or descendant(pid, after)",
      'descendant(pid, after)', 'test_orphans.OrphanTests.test_identity_change_and_disappearance_discarded'),
-    ('orphans-extra-fields', 'serve.py', 'type(row) is not dict or set(row) != keys', 'type(row) is not dict or not keys <= set(row)',
-     'test_orphans.OrphanTests.test_snapshot_validator_strict'),
+    ('orphans-extra-fields', 'serve.py', 'clean.append({key: row[key] for key in keys})', 'clean.append(row)',
+     'test_snapshot_publication.SnapshotPublicationTests.test_extensions_do_not_reach_the_api'),
     ('orphans-cpu-interval', 'snapshot.py', 'candidates[pid] = (row, sampled)', 'candidates[pid] = (row, time.monotonic())',
      'test_orphans.OrphanTests.test_cpu_interval_starts_at_the_counter_read_not_after_ancestry'),
     ('orphans-budget', 'snapshot.py', 'within_budget(lambda: desk_orphans(data, proc, cgroup, pueue_unit), ORPHANS_BUDGET)',
@@ -313,7 +316,7 @@ def main():
         with tempfile.TemporaryDirectory(prefix='rack-c3-mutation-',dir='/tmp') as folder:
             root=Path(folder)/'rack'
             shutil.copytree(BASE,root,ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
-            if name.startswith(('startup-','order-')):
+            if name.startswith(('startup-', 'order-', 'snapshot-control-')):
                 shutil.copytree(BASE.parent/'pueue-desk',root.parent/'pueue-desk',ignore=shutil.ignore_patterns('__pycache__','*.pyc'))
             path=root/filename
             text=path.read_text()

@@ -183,7 +183,7 @@ def valid_orphans(data, host):
     keys = {'pid', 'comm', 'origin_task', 'group', 'origin_state', 'rss_bytes', 'cpu_percent', 'started_at'}
     seen, previous, clean = set(), math.inf, []
     for row in rows:
-        if type(row) is not dict or set(row) != keys:
+        if type(row) is not dict or not keys <= row.keys():
             raise ValueError('Campos de huérfano inválidos')
         if (type(row['pid']) is not int or row['pid'] <= 0 or row['pid'] in seen
                 or type(row['comm']) is not str or len(row['comm']) > 32
@@ -240,19 +240,8 @@ def validate_snapshot(data, host):
         elif isinstance(load, list) and all(type(n) in (int, float) for n in load):
             clean['cpu']['load'] = list(load)
     if 'guard' in data:
-        clean['guard'] = _guard_snapshot.validate_guard(data['guard'])
-    if 'control' in data:
-        control = accion.host_channel.control(data['control'], host)
-        for field in ('pause_reasons', 'startup_holds', 'startup_waiting'):
-            if field in control:
-                # Estos mapas usan nombres de grupo como claves.
-                control[field] = {k: v for k, v in control[field].items()
-                                  if k not in ('envs', 'command', 'original_command', 'path')}
-        clean['control'] = control
-    orphans = valid_orphans(data, host)
-    if orphans is not None:
-        clean.update(orphans)
-    clean['groups'] = []
+        clean['guard'] = _guard_snapshot.validate_guard(data['guard'], allow_extra=True)
+    groups = []
     for group in data['groups']:
         if not isinstance(group, dict) or not isinstance(group.get('slots'), int) or not 0 <= group['slots'] <= 1000 or not isinstance(group.get('name'), str):
             raise ValueError('Grupo inválido')
@@ -260,7 +249,20 @@ def validate_snapshot(data, host):
         if 'status' in group and isinstance(group['status'], (str, type(None))):
             public['status'] = group['status']
         public['slots'] = group['slots']
-        clean['groups'].append(public)
+        groups.append(public)
+    if 'control' in data:
+        control = data['control']
+        if type(control) is dict:
+            control = dict(control)
+            group_names = {group['name'] for group in groups} - {'envs', 'command', 'original_command', 'path'}
+            for field in ('pause_reasons', 'startup_holds', 'startup_waiting'):
+                if type(control.get(field)) is dict:
+                    control[field] = {k: v for k, v in control[field].items() if k in group_names}
+        clean['control'] = accion.host_channel.control(control, host)
+    orphans = valid_orphans(data, host)
+    if orphans is not None:
+        clean.update(orphans)
+    clean['groups'] = groups
     clean['tasks'] = []
     for row in data['tasks']:
         if (not isinstance(row, dict) or not isinstance(row.get('id'), int) or not isinstance(row.get('group'), str)

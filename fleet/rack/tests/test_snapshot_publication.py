@@ -70,13 +70,47 @@ class SnapshotPublicationTests(unittest.TestCase):
         self.addCleanup(server.shutdown)
         self.url = f'http://127.0.0.1:{server.server_port}/api/rack.json'
 
-    def published(self, data):
+    def read_hosts(self, data):
         self.rack.cycle(lambda host: data[host['id']], now=1000)
         with urllib.request.urlopen(self.url, timeout=5) as response:
+            self.assertEqual(response.status, 200)
             payload = json.load(response)
-        for host in payload['hosts']:
+        return {host['id']: host for host in payload['hosts']}
+
+    def published(self, data):
+        hosts = self.read_hosts(data)
+        for host in hosts.values():
             self.assertTrue(host['fresh'], host)
-        return {host['id']: host['snapshot'] for host in payload['hosts']}
+        return {ident: host['snapshot'] for ident, host in hosts.items()}
+
+    def operational_snapshots(self):
+        from test_mode import ModeChannelTests
+        from test_reorder import ReorderChannelTests
+
+        data = snapshots()
+        for host, case, held, waiting in (
+                ('mini', ReorderChannelTests(), 'default', 'rapidas'),
+                ('desk', ModeChannelTests(), 'jale', 'otros')):
+            self.addCleanup(case.doCleanups)
+            case.setUp()
+            engine = case.engine
+            case.p.groups[held]['status'] = case.p.groups[waiting]['status'] = 'Paused'
+            with engine.connect() as db:
+                state = engine.resolve(engine.state(db))
+            state['reasons'].update({held: ['manual', 'startup'], waiting: ['startup']})
+            with patch.object(engine, 'resolve', return_value=state):
+                data[host]['control'] = engine.view()
+            data[host]['groups'] = [dict(name=name, status=group['status'], slots=group['parallel_tasks'])
+                                    for name, group in case.p.groups.items()]
+
+        expected = copy.deepcopy(data)
+        for snapshot in expected.values():
+            control = snapshot['control']
+            del control['pending_actions']
+            del control['capabilities']['client']
+            if control['capabilities']['reason_reorder'] is None:
+                del control['capabilities']['reason_reorder']
+        return data, expected
 
     def test_preserves_known_fields(self):
         data = snapshots()
@@ -88,17 +122,19 @@ class SnapshotPublicationTests(unittest.TestCase):
         mini = data['mini']
         row = mini['tasks'][0]
         guard = data['desk']['guard']
+        orphan = data['desk']['orphans'][0]
         levels = [
             mini, mini['cpu'], mini['mem'], mini['disk'], mini['groups'][0], mini['errors'][0],
             mini['control'], mini['control']['capabilities'], mini['control']['error'], row,
             guard, guard['pressure'], guard['thresholds'], guard['last_result'],
-            guard['last_result']['bloqueos'][0], guard['last_admission'],
+            guard['last_result']['bloqueos'][0], guard['last_admission'], orphan,
         ]
         for limits in guard['thresholds'].values():
             levels.extend((limits, limits['pause'], limits['resume']))
         for level in levels:
             level['new_field'] = dict(nested='synthetic')
         mini['new_field'] = float('nan')
+        orphan['command'] = 'synthetic'
         for private in ('envs', 'command', 'original_command', 'path'):
             row[private] = 'synthetic'
             guard[private] = 'synthetic'
@@ -130,3 +166,43 @@ class SnapshotPublicationTests(unittest.TestCase):
                 level['new_field'] = 'synthetic'
                 expected['mini']['usage'] = None
                 self.assertEqual(self.published(data), expected)
+
+    def test_operational_control_projects_extensions(self):
+        baseline, expected = self.operational_snapshots()
+        self.assertEqual(self.published(baseline), expected)
+        for host in baseline:
+            for path, extra in (
+                    ((), 'synthetic'), (('capabilities',), True),
+                    (('pause_reasons',), ['startup']),
+                    (('startup_holds',), 'pausa manual'),
+                    (('startup_waiting',), 'cuotas_sensores')):
+                with self.subTest(host=host, path=path):
+                    data = copy.deepcopy(baseline)
+                    level = data[host]['control']
+                    for key in path:
+                        level = level[key]
+                    level['new_field'] = extra
+                    self.assertEqual(self.published(data), expected)
+
+    def test_operational_control_rejects_extensions_in_exact_contracts(self):
+        baseline, expected = self.operational_snapshots()
+        self.assertEqual(self.published(baseline), expected)
+        for host, paths in (
+                ('mini', (('slots',), ('desired',), ('reorder_groups',),
+                          ('reorder_groups', 'suites'), ('reorder_groups', 'suites', 'expected'),
+                          ('reorder_groups', 'suites', 'expected', 'queue', 0))),
+                ('desk', (('slots',), ('desired',), ('reorder_groups',), ('tables',),
+                          ('tables', 'dia'), ('tables', 'noche'), ('mode_pending',)))):
+            for path in paths:
+                with self.subTest(host=host, path=path):
+                    data = copy.deepcopy(baseline)
+                    level = data[host]['control']
+                    for key in path:
+                        level = level[key]
+                    level['new_field'] = 'synthetic'
+                    hosts = self.read_hosts(data)
+                    self.assertIs(hosts[host]['fresh'], False)
+                    self.assertEqual(hosts[host]['error'], 'No se pudo leer el host: ValueError')
+                    self.assertEqual({ident: row['snapshot'] for ident, row in hosts.items()}, expected)
+                    other = 'desk' if host == 'mini' else 'mini'
+                    self.assertIs(hosts[other]['fresh'], True)
