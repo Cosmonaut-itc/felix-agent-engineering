@@ -1,4 +1,4 @@
-"""Ejecuta las regresiones del panel contra seis cambios aislados."""
+"""Ejecuta las regresiones del panel contra cambios aislados."""
 from pathlib import Path
 import shutil
 import subprocess
@@ -14,13 +14,18 @@ CASOS = (
      "return None", "test_expulsion_por_conflicto_conserva_url_exacta"),
     ("R1-sol-3", 'terminal = "CADUCADO"', 'terminal = "REARMAR"',
      "test_lote_devuelto_distingue_caducado_de_rearme"),
-    ("R1-sol-4", "grafias.get(r.lower(), r)", "r",
+    ("R1-sol-4", "grafias.get(r.lower(), [r])", "[r]",
      "test_todos_y_repo_publican_la_grafia_del_ledger"),
     ("R1-sol-5", 'fecha(entrada["recibida"], ahora, ahora)',
      'fecha(entrada.get("admitida") if etapa == "admitido" else entrada["recibida"], ahora, ahora)',
      "test_espera_publica_recibida_en_todas_las_etapas"),
     ("N2", "if intento or not bloqueo or restante <= 0:", "if True:",
      "test_ledger_reintenta_solo_los_bloqueos"),
+    ("R2-sol-1-tick", "grafia_ledger(db, grafias.get(r.lower(), [r]), m)",
+     "grafias.get(r.lower(), [r])[0]",
+     "test_grafia_del_tick_sombra_prevalece_sobre_otra_entrega"),
+    ("R2-sol-1-error", "grafias = leer_grafias_publicadas(ruta)", "grafias = {}",
+     "test_error_de_ledger_conserva_grafia_del_cursor"),
 )
 
 

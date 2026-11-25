@@ -280,6 +280,7 @@ class PanelTests(Aislado):
         codigo, resultado = cli.ejecutar(tick, Falso(observacion()), self.ahora - 30)
         self.assertEqual(codigo, 0, resultado)
         self.entregar_por_cli(REPO.upper(), 2, -10, Falso(replace(observacion(), prs=(vista(2),))))
+        self.db.guardar_paso(Estado(REPO.upper()), (), self.ahora - 5)
         self.comprobar_pr_terminado()
 
     def test_grafia_del_tick_activo_prevalece_sobre_otra_entrega(self):
@@ -287,11 +288,17 @@ class PanelTests(Aislado):
         self.entregar_por_cli(REPO, 1, -60)
         self.paso(-30, Terminal("ATERRIZADO"))
         self.entregar_por_cli(REPO.upper(), 2, -10)
+        self.db.sombra(Estado(REPO.upper()), (), self.ahora - 5, doble_camino=True)
         self.comprobar_pr_terminado()
 
     def test_error_de_ledger_conserva_grafia_del_cursor(self):
         self.registro.write_text(f"{REPO.upper()} activo\n")
-        self.entregar_por_cli(REPO, 1, -60)
+        self.entregar_por_cli(REPO.upper(), 2, -70)
+        self.entregar_por_cli(REPO, 1, -65)
+        inicial = panel.publicar(None, self.ahora - 60)
+        self.assertEqual(inicial, contrato.valid_tren(inicial, (REPO.upper(),), self.ahora))
+        self.assertEqual([fila["repo"] for fila in inicial["repos"]], [REPO.upper()])
+        self.paso(-30)
         self.proyectar("--todos")
         cursor = self.dir / "panel-cursor.json"
         anterior = cursor.read_bytes()
@@ -307,6 +314,31 @@ class PanelTests(Aislado):
         finally:
             self.db.db.execute("ROLLBACK")
         self.assertEqual(cursor.read_bytes(), anterior)
+
+    def test_error_de_ledger_sin_cursor_usa_grafia_del_registro(self):
+        self.registro.write_text(f"{REPO.upper()} activo\n")
+        with patch.object(panel, "lectura_medicion", side_effect=sqlite3.OperationalError("sin tabla")):
+            for args in (("--todos",), ("--repo", REPO), ("--repo", REPO.upper())):
+                with self.subTest(args=args):
+                    codigo, doc = cli.ejecutar(cli.parser().parse_args(["panel", *args]), ahora=self.ahora)
+                    self.assertEqual(codigo, 0)
+                    self.assertEqual([e["stage"] for e in doc["errors"]], ["ledger"])
+                    self.assertEqual([fila["repo"] for fila in doc["repos"]], [REPO.upper()])
+                    self.assertEqual(doc, contrato.valid_tren(doc, (REPO.upper(),), self.ahora))
+
+    def test_error_de_ledger_recupera_grafia_de_cursor_anterior(self):
+        self.registro.write_text(f"{REPO.upper()} activo\n")
+        self.entregar_por_cli(REPO, 1, -60)
+        self.proyectar("--todos")
+        cursor = self.dir / "panel-cursor.json"
+        _, contenido = json.loads(cursor.read_text())
+        contenido.pop("grafias", None)
+        cursor.write_text(json.dumps([clave(contenido), contenido]))
+        ledger = self.dir / "ledger.sqlite3"
+        ledger.rename(ledger.with_suffix(".anterior"))
+        doc = self.proyectar("--repo", REPO.upper())
+        self.assertEqual([e["stage"] for e in doc["errors"]], ["ledger"])
+        self.assertEqual([fila["repo"] for fila in doc["repos"]], [REPO])
 
     def test_espera_publica_recibida_en_todas_las_etapas(self):
         admisiones = (Retenido(Motivo.CUSTODIA), Admitido(), Retenido(Motivo.CI), Rechazado(Motivo.HEAD))
