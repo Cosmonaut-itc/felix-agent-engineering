@@ -85,6 +85,7 @@ class DatosInternosTests(unittest.TestCase):
         for text, platform in (
                 ('clang -IC:/Users/DemoUser/include', 'Windows'),
                 ('-IC:/Users/Shared/include', 'Windows'),
+                ('-IC://Users/Shared/include', 'Windows'),
                 ('/Volumes/Disco/Users/DemoUser', 'macOS'),
                 ('/System/Volumes/Data/Users/DemoUser', 'macOS'),
                 ('file://localhost/Users/DemoUser', 'macOS'),

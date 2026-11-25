@@ -27,7 +27,11 @@ FQDN = re.compile(r'([A-Za-z0-9-]+)\.ts\.net(?![A-Za-z0-9-])', re.IGNORECASE)
 IPV4 = re.compile(r'(?<![0-9.])(\d{1,3}(?:\.\d{1,3}){3})(?:/(\d{1,2}))?(?![0-9]|\.[0-9])')
 HOME = re.compile(r'(?<![A-Za-z0-9_.~$-])/home/([a-z_][a-z0-9_-]*)(?![a-z0-9_-])')
 PROFILE_HOME = re.compile(r'''
-    (?P<windows>(?a:[A-Z]):|[/\\]{2,}[\w.-]+[/\\]+(?a:[A-Z])\$)?
+    # El final de un esquema como file:/// no es una unidad de Windows.
+    (?:
+        (?a:[A-Z][A-Z0-9+.-]{2,}):(?=//)
+        | (?P<windows>(?a:[A-Z]):|[/\\]{2,}[\w.-]+[/\\]+(?a:[A-Z])\$)
+    )?
     [/\\]+Users(?=[/\\]+(?P<user>[\w][\w.-]*))
 ''', re.IGNORECASE | re.VERBOSE)
 QUOTED_PATH = re.compile(r""" '[^']*' | "[^"]*" """, re.VERBOSE)
