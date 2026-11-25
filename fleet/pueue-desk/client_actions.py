@@ -25,6 +25,26 @@ _contract = Path(__file__).with_name('client_contract.py')
 exec(compile(_contract.read_bytes(), str(_contract), 'exec'), c.__dict__)
 
 
+EMITTER = Path(__file__).with_name('client_rpc.py')
+# CC3-P1: each daemon read of the CC1 turn uses half of CC2's .4 s batch.
+READ_SECONDS = .2
+SEAL_SECONDS = 1.0  # Bounds only the seal wait, never the whole turn.
+STATUS = {'hold': 'held', 'cancel-no-payload': 'started', 'signal': 'signalled',
+          'signal-manual': 'signalled', 'retire-held': 'retired', 'retire-interrupted': 'retired'}
+_RPC = None
+
+
+def rpc_module():
+    global _RPC
+    if _RPC is None:
+        module = types.ModuleType('client_rpc')
+        module.__file__ = str(EMITTER)
+        exec(compile(EMITTER.read_bytes(), str(EMITTER), 'exec'), module.__dict__)
+        module.c = c  # One contract: its Invalid is the one this module catches.
+        _RPC = module
+    return _RPC
+
+
 def canonical(value):
     return json.dumps(value, sort_keys=True, separators=(',', ':'), allow_nan=False)
 
@@ -127,11 +147,14 @@ class ClientActions:
     """
     boundary = staticmethod(lambda phase: None)
 
-    def __init__(self, engine, adapter=None, rpc=None, birth=None):
+    def __init__(self, engine, adapter=None, rpc=None, birth=None, exclusion=None):
         self.engine = engine
         self.adapter = adapter if adapter is not None else InstalledAdapters()
-        self.rpc = rpc
-        self.birth = birth
+        self.rpc = rpc  # Test seam: a synthetic conversation inside the real emit().
+        self.birth = birth if birth is not None else getattr(engine, 'client_birth', None)
+        # CC7's installation fixes the profile; the wire never selects it.
+        profile = exclusion if exclusion is not None else getattr(engine, 'client_exclusion', 'coordinated')
+        self.exclusion = profile if profile in c.EXCLUSION_PROFILES else 'coordinated'
 
     def dispatch(self, raw):
         try:
@@ -283,8 +306,24 @@ class ClientActions:
                     db.execute('DELETE FROM client_open WHERE launcher=? AND ref=? AND action_id=?', key)
         self.boundary('saved')
 
+    def bounded(self, read, *args):
+        """P1: a daemon read of the turn never waits without its own deadline."""
+        pueue = getattr(self.engine, 'pueue', None)
+        if pueue is None:
+            return read(*args)
+        saved = getattr(pueue, 'timeout', None), getattr(pueue, 'deadline', None)
+        pueue.timeout, pueue.deadline = READ_SECONDS, time.monotonic() + READ_SECONDS
+        try:
+            return read(*args)
+        finally:
+            pueue.timeout, pueue.deadline = saved
+
     def observe(self, r, state, reservation):
-        observation = self.adapter.observe(r, state, reservation)
+        # Without CC7's `filtered` profile a remote-run effect is never attributable:
+        # its mutating phases, and its per-run capability, answer unsupported.
+        if r['launcher'] == 'remote-run' and r['op'] != 'finish' and self.exclusion != 'filtered':
+            raise Unavailable('unsupported')
+        observation = self.bounded(self.adapter.observe, r, state, reservation)
         c.keys(observation, 'group identity')
         c.identity(observation['identity'])
         if observation['group'] not in self.engine.profile:
@@ -373,13 +412,16 @@ class ClientActions:
                     reasons.add('startup')
                 if reasons:
                     return reject(next((v for v in ('manual', 'pressure', 'startup') if v in reasons), 'host_action'), 'deferred')
-                if self.engine.pueue.status()['groups'][group]['status'] != 'Running':
+                if self.bounded(self.engine.pueue.status)['groups'][group]['status'] != 'Running':
                     return reject('manual', 'deferred')
             if r['op'] == 'finish':
                 previous.update(open=False, uncertain=False, identity=current)
                 record['response'] = self.reply(r, 'finished', identity=current)
                 self.save(record, previous)
                 return record['response']
+            if self.rpc is None and (self.birth is None or not EMITTER.is_file()):
+                return reject('unsupported')  # Stock Pueue has no raw path.
+            life = self.daemon_life(state, current['generation'])  # D of the prior read P.
             reservation = dict(launcher=r['launcher'], ref=r['ref'], action_id=r['action_id'],
                                group=group, mode=r['mode'], identity=current, acceptance=r['acceptance'],
                                hold_identity=previous.get('hold_identity') if previous else None,
@@ -403,24 +445,13 @@ class ClientActions:
                     'retire-held': ('remove', current['task_id']),
                     'retire-interrupted': ('remove', current['task_id'])}[r['op']]
             self.boundary('before_rpc')
-            if self.rpc is not None:
-                record['process'] = dict(state='injected')  # Test seam cannot certify non-delivery.
-                self.save(record)
-                self.rpc(*args)
-            else:
-                self.send(record, *args)
+            self.deliver(record, group, current, life, args, state)
             self.boundary('rpc_returned')
-            after = self.observe(r, self.authority(), reservation)['identity']
-            if r['op'] == 'hold' and self.same_attempt(current, after) and after['state'] in ('Running', 'Paused'):
-                record['response'] = self.reply(r, 'rejected', 'stale_state', held=True)
-            else:
-                c.transition(current, after, r['op'])
-                status = {'hold': 'held', 'cancel-no-payload': 'started', 'signal': 'signalled',
-                          'signal-manual': 'signalled', 'retire-held': 'retired', 'retire-interrupted': 'retired'}[r['op']]
-                record['response'] = self.reply(r, status, identity=after, held=True)
-                if status == 'held':
-                    reservation['hold_identity'] = after
-            reservation.update(identity=after, uncertain=False)
+            # Neither the CLI code nor the edge confirm an effect: only rpc_verdict
+            # over the originals, P, a Q read after the seal, and `filtered`.
+            verdict, after, post = self.stock_verdict(
+                record, lambda receipt: self.posterior(r, group, reservation, receipt))
+            self.settle(record, reservation, verdict, after, post)
             self.save(record, reservation)
             return record['response']
         except Unavailable as error:
@@ -434,41 +465,174 @@ class ClientActions:
         saved = self.record(r)
         return saved['response'] if saved else self.reply(r, 'unknown', 'rpc_unresolved', held=True)
 
-    def send(self, record, *args):
-        """Identified private child, gated until its identity is fsynced.
-
-        A timeout kills/reaps our own child but does NOT prove the daemon has no
-        pending effect. The action stays unknown; CC2 must exclude late messages.
-        stdout/stderr, argv and env never enter the action journal.
-        """
-        pueue = self.engine.pueue
-        if self.birth is None or not Path(pueue.binary).is_absolute():
-            raise Unavailable('unsupported')
-        child = subprocess.Popen([sys.executable, '-I', '-S', str(Path(__file__).resolve()),
-                                  '--rpc-gate', pueue.binary, *map(str, args)],
-                                 stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL, close_fds=True, **pueue.context)
+    def daemon_life(self, state, generation):
+        """Life D: native PID and birth of the daemon named by the authority's pid_file."""
         try:
-            born = self.birth(child.pid)
+            pid = int(Path(state['pid_file']).read_text().strip())
+            born = self.birth(pid) if self.birth is not None else None
+            return c.rpc_life(dict(pid=pid, birth=born, generation=generation))
+        except (OSError, ValueError):
+            raise Unavailable('startup') from None
+
+    def alive(self, pid, born):
+        try:
+            return self.birth is None or self.birth(pid) == born
+        except (OSError, ValueError):
+            return True  # An unreadable identity never proves an end of life.
+
+    @staticmethod
+    def stock(process):
+        """A phase delivered by the CC3 emitter. Older children keep their rule."""
+        return type(process) is dict and 'dispatch' in process
+
+    def deliver(self, record, group, current, life, args, state):
+        """Plan, gated identity, dispatch, then at most SEAL_SECONDS for the seal.
+
+        The emitter waits on stdin until its identity is FULL in the journal. It
+        is never killed nor reaped: a kill cannot exclude a request the daemon
+        already read, and it would destroy the only witness. It does not inherit
+        control.lock. stdout/stderr, argv and env never enter the journal.
+        """
+        r = record['request']
+        rpc = rpc_module()
+        child = None
+        if self.rpc is None:
+            endpoint = self.engine.rpc_endpoint(state)
+            child = subprocess.Popen([sys.executable, '-I', '-S', str(EMITTER), str(self.engine.directory),
+                                      *map(str, endpoint)], stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+                                     stderr=subprocess.DEVNULL, close_fds=True, start_new_session=True,
+                                     **self.engine.pueue.context)
+        pid = child.pid if child is not None else os.getpid()
+        try:
+            born = self.birth(pid)
             if born is None:
                 raise Unavailable('rpc_unresolved')
-            record['process'] = dict(pid=child.pid, birth=born, state='gated')
+            dispatch = os.urandom(32).hex()
+            plan = c.validate_rpc_plan(dict(schema=c.RPC_PLAN, dispatch=dispatch, request=r, group=group,
+                                            verb=c.RPC_VERBS[r['phase']], task_id=current['task_id'],
+                                            daemon=life, pid=pid, birth=born))
+            folder = self.engine.directory / 'client-rpc'
+            folder.mkdir(mode=0o700, exist_ok=True)
+            folder = folder / dispatch
+            folder.mkdir(mode=0o700)
+            rpc.publish(folder, 'plan.json', plan, c.RPC_PLAN_MAX_BYTES)
+            record['process'] = dict(pid=pid, birth=born, dispatch=dispatch,
+                                     plan_digest=c.rpc_digest(plan), state='gated')
+            record['pre'] = dict(life=life, identity=current)
             self.save(record)
-            child.stdin.write(b'1')
-            child.stdin.close()
+            self.boundary('gated')
+            if child is None:
+                self.injected(dispatch, (pid, born), args)
+            else:
+                child.stdin.write(dispatch.encode('ascii'))
+                child.stdin.close()
             record['process']['state'] = 'sent'
             self.save(record)
-            code = child.wait(timeout=1.0)
-            record['process']['state'] = 'reaped'
-            self.save(record)
-            if code != 0:
-                raise Unavailable('rpc_unresolved')
+            if child is not None:
+                deadline = time.monotonic() + SEAL_SECONDS
+                while (time.monotonic() < deadline and not (folder / 'seal.json').exists()
+                       and self.alive(pid, born)):
+                    time.sleep(.005)
         finally:
-            if child.stdin and not child.stdin.closed:
-                child.stdin.close()
-            if child.poll() is None:
-                child.kill()
-            child.wait()
+            if child is not None and not child.stdin.closed:
+                child.stdin.close()  # EOF before the dispatch: the gate never opens.
+
+    def injected(self, dispatch, own, args):
+        """Test seam: the real claim/seal protocol with a synthetic conversation.
+
+        The double may return a seal outcome; an exception is a local abort
+        after frame 3, which leaves no seal, exactly like the emitter.
+        """
+        rpc = rpc_module()
+
+        def talk(plan):
+            try:
+                outcome = self.rpc(*args)
+            except (OSError, subprocess.SubprocessError):
+                raise rpc.Abort() from None
+            result = dict(peer={k: plan['daemon'][k] for k in ('pid', 'birth')},
+                          outcome='replied', reply='success', reason=None)
+            if type(outcome) is dict:
+                result.update(outcome)
+            return result
+        rpc.emit(self.engine.directory, dispatch, own, talk)
+
+    def originals(self, process):
+        folder = self.engine.directory / 'client-rpc' / process['dispatch']
+        found = {}
+        for name, parse, limit in (('seal', c.parse_rpc_seal, c.RPC_MAX_BYTES),
+                                   ('claim', c.parse_rpc_claim, c.RPC_MAX_BYTES),
+                                   ('plan', c.parse_rpc_plan, c.RPC_PLAN_MAX_BYTES)):
+            try:
+                with (folder / (name + '.json')).open('rb') as stream:
+                    found[name] = parse(stream.read(limit + 1))  # Invalid: retained by the caller.
+            except FileNotFoundError:
+                found[name] = None
+        return found
+
+    def stock_verdict(self, record, posterior=None, post=None):
+        """(verdict, E, Q) for a stock phase; shared by CC1, collect and apply.
+
+        Lives are read before the originals: a dead emitter already published
+        whatever it sealed. Q is read only after a success seal and names it.
+        """
+        r, process = record['request'], record['process']
+        try:
+            emitter_alive = self.alive(process['pid'], process['birth'])
+            found = self.originals(process)
+            plan, claim, seal = found['plan'], found['claim'], found['seal']
+            daemon = plan['daemon'] if plan is not None else record['pre']['life']
+            life_alive = self.alive(daemon['pid'], daemon['birth'])
+            if (posterior is not None and seal is not None and seal['outcome'] == 'replied'
+                    and seal['reply'] == 'success'):
+                try:
+                    post = posterior(seal['receipt'])
+                except (Unavailable, OSError, ValueError, KeyError, TypeError, sqlite3.Error,
+                        subprocess.SubprocessError):
+                    post = None  # A success without Q stays unknown and retriable.
+            verdict = c.rpc_verdict(record, plan, claim, seal, emitter_alive, life_alive,
+                                    record['pre'], post, self.exclusion)
+        except (c.Invalid, KeyError, TypeError):
+            return (False, None, 'evidence_missing'), None, None
+        after = None
+        if verdict == (True, True, None):
+            after = c.rpc_effect_identity(r['op'], record['pre']['identity'], post['identity'])
+        return verdict, after, post
+
+    def posterior(self, r, group, reservation, receipt):
+        """Q of CC1: after the seal, in the same life D, with its own read deadline."""
+        state = self.authority()
+        before = self.daemon_life(state, r['expected']['generation'])
+        observed = self.observe(r, state, reservation)
+        if observed['group'] != group:
+            raise Unavailable('identity')
+        life = self.daemon_life(state, observed['identity']['generation'])
+        if {k: life[k] for k in ('pid', 'birth')} != {k: before[k] for k in ('pid', 'birth')}:
+            raise Unavailable('startup')
+        return dict(life=life, identity=observed['identity'], seal=receipt)
+
+    def settle(self, record, reservation, verdict, after, post):
+        """Phase receipt and reservation from rpc_verdict, never from rc or the edge."""
+        r = record['request']
+        settled, effect, reason = verdict
+        if effect is True:
+            c.transition(r['expected'], after, r['op'])
+            record['response'] = self.reply(r, STATUS[r['op']], identity=after, held=True)
+            if r['op'] == 'hold':
+                reservation['hold_identity'] = after
+            reservation.update(identity=after, uncertain=False)
+            record['attribution'] = dict(dispatch=record['process']['dispatch'], seal_receipt=post['seal'],
+                                         exclusion=self.exclusion)
+        elif effect is False:
+            # R− and N2: the initial hold closes; every other phase keeps its reservation.
+            close = r['op'] == 'hold' and reservation.get('hold_identity') is None and reservation['acceptance'] is None
+            status = 'rejected' if close or reason == 'stale_state' else 'deferred'
+            record['response'] = self.reply(r, status, reason, held=not close)
+            reservation.update(open=not close, uncertain=False)
+        else:
+            record['response'] = self.reply(r, 'unknown', reason, held=True)
+            if settled:
+                reservation['uncertain'] = False  # S3/S4/success without Q: no message in flight.
 
 
 class Reconciler:
@@ -482,11 +646,12 @@ class Reconciler:
     """
     limit = 8
     seconds = .4
+    offline = None
     boundary = staticmethod(lambda phase: None)
 
-    def __init__(self, engine, adapter=None, birth=None):
+    def __init__(self, engine, adapter=None, birth=None, exclusion=None):
         self.engine = engine
-        self.actions = ClientActions(engine, adapter=adapter)
+        self.actions = ClientActions(engine, adapter=adapter, birth=birth, exclusion=exclusion)
         self.birth = birth
 
     def lock(self):
@@ -597,6 +762,9 @@ class Reconciler:
         journal = self.journal_proposal(item)
         if journal is not None:
             return journal
+        stock = self.actions.stock(process)
+        if stock and record['response']['status'] == 'unknown':
+            return self.collect_stock(item)
         if item['generation'] != item['state']['generation']:
             raise Unavailable('startup')
         if 'daemon_stamp' in item:
@@ -606,7 +774,8 @@ class Reconciler:
                     or self.current_generation(item['state'], None) != item['generation']
                     or self.daemon_stamp(item['state'], None) != item['daemon_stamp']):
                 raise Unavailable('startup')
-        if process and process.get('pid') is not None:
+        # A settled stock phase already has its seal: a live emitter is irrelevant.
+        if process and process.get('pid') is not None and not stock:
             if self.birth is None or self.birth(process['pid']) == process['birth']:
                 raise Unavailable('rpc_unresolved')
         evidence = self.actions.adapter.recover(r, item['state'], reservation, process, daemon)
@@ -619,6 +788,9 @@ class Reconciler:
         if (observed['group'] != reservation['group'] or
                 not self.actions.same_attempt(reservation['identity'], observed['identity'])):
             raise Unavailable('identity')
+        if stock:
+            # P1: a queue phase settles only by S1-S4; the adapter's flag is ignored.
+            evidence = dict(evidence, settled=True)
         if evidence['settled'] is not True:
             raise Unavailable('rpc_unresolved')
         # Excluding a late message does not attribute an external Stashed to
@@ -635,8 +807,38 @@ class Reconciler:
             self.actions.adapter.verify(finish, observed, reservation)
         return dict(kind='evidence', observation=observed, finish=finish, effect_applied=evidence.get('effect_applied'))
 
+    def collect_stock(self, item):
+        """P1: settled and effect of an uncertain stock phase come from rpc_verdict.
+
+        Outside control.lock: lives, originals, then a fresh Q only after a
+        success seal, so Q names the seal it followed. The adapter supplies only
+        Q's observation. A restart does not block S4: rpc_verdict pins life D.
+        apply recomputes the verdict under the lock with this Q.
+        """
+        record, reservation = item['record'], item['reservation']
+        r = record['request']
+
+        def posterior(receipt):
+            if self.offline or type(self.actions.adapter) is InstalledAdapters:
+                raise Unavailable('unsupported')
+            daemon = self.engine.pueue.status()  # After the seal, inside the batch deadline.
+            evidence = self.actions.adapter.recover(r, item['state'], reservation, record['process'], daemon)
+            observed = evidence['observation']
+            c.keys(observed, 'group identity')
+            c.identity(observed['identity'])
+            if observed['group'] != reservation['group']:  # An absence has no group: the reservation's.
+                raise Unavailable('identity')
+            life = self.actions.daemon_life(item['state'], observed['identity']['generation'])
+            return dict(life=life, identity=observed['identity'], seal=receipt)
+
+        verdict, after, post = self.actions.stock_verdict(record, posterior)
+        if verdict[1] is True and not self.actions.same_attempt(reservation['identity'], after):
+            raise Unavailable('identity')
+        return dict(kind='stock', post=post)
+
     def gather(self, copies, offline):
         proposals = []
+        self.offline = offline
         try:
             self.engine.pueue.timeout = self.seconds / 2
             self.engine.pueue.deadline = time.monotonic() + self.seconds / 2
@@ -742,6 +944,14 @@ class Reconciler:
                 current['response'] = self.actions.reply(r, 'rejected' if close else 'deferred',
                                                          'stale_state' if close else 'evidence_missing', held=not close)
                 reason = 'evidence_missing'
+            elif proposal['kind'] == 'stock':
+                # The verdict is recomputed here over fresh originals and lives,
+                # without any daemon read; only the collector's Q travels.
+                if not self.actions.stock(current.get('process')) or current['response']['status'] != 'unknown':
+                    return False
+                verdict, after, post = self.actions.stock_verdict(current, post=proposal.get('post'))
+                self.actions.settle(current, reservation, verdict, after, post)
+                reason = verdict[2] or reason
             elif proposal['kind'] == 'evidence':
                 observed, finish = proposal['observation'], proposal['finish']
                 after = observed['identity']
@@ -827,7 +1037,7 @@ class Reconciler:
             if value['binding'] != json.loads(canonical(self.binding(item))):
                 return None
             proposal = value['proposal']
-            return proposal if proposal.get('kind') in ('evidence', 'retain') else None
+            return proposal if proposal.get('kind') in ('evidence', 'stock', 'retain') else None
         except (OSError, ValueError, KeyError, TypeError, AttributeError):
             return None
 
@@ -881,15 +1091,8 @@ class Reconciler:
             return 0  # Failure preserves every reservation, including at startup.
 
 
-def main(engine, stdin, stdout, birth=None):
+def main(engine, stdin, stdout, birth=None, exclusion=None):
     raw = stdin.read(c.MAX_BYTES + 1)
-    result, code = ClientActions(engine, birth=birth).dispatch(raw)
+    result, code = ClientActions(engine, birth=birth, exclusion=exclusion).dispatch(raw)
     stdout.write(canonical(result) + '\n')
     return code
-
-
-if __name__ == '__main__':
-    # Internal child only: args come from the closed operation map above.
-    if len(sys.argv) < 4 or sys.argv[1] != '--rpc-gate' or sys.stdin.buffer.read(1) != b'1':
-        sys.exit(2)
-    os.execv(sys.argv[2], sys.argv[2:])

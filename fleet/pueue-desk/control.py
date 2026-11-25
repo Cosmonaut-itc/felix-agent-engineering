@@ -624,6 +624,11 @@ def client_support():
         return False
 
 
+# CC3: exclusion profile of this installation. Only CC7's installer may set
+# 'filtered' on a host; until then remote-run's mutating phases are unsupported.
+CLIENT_EXCLUSION = 'coordinated'
+
+
 CLIENT_RETAINED = {
     'rpc_unresolved': 'Reserva cliente retenida: una RPC del cliente puede seguir en curso.',
     'unsupported': 'Reserva cliente retenida: el lanzador aún no publica evidencia acreditada.',
@@ -1784,6 +1789,18 @@ class MiniControl:
                     if json.loads(r[0]).get('kind') == 'reorder']
 
     client_reservation_reason = 'Hay una reserva cliente o una RPC pendiente de reconciliar.'
+    client_exclusion = CLIENT_EXCLUSION
+
+    def client_birth_reader(self):
+        # Native birth; a private harness may install a synthetic one, never the wire.
+        return getattr(self, 'client_birth', None) or priority_helper().birth
+
+    def rpc_endpoint(self, authority):
+        # Fixed local socket and secret of the daemon named by pid_file, as in
+        # reorder_config. The emitter checks the peer life before frame 1.
+        data = Path(authority['pid_file']).parent
+        user = __import__('pwd').getpwuid(os.getuid()).pw_name
+        return data / ('pueue_' + user + '.socket'), data / 'shared_secret'
 
     def reconcile_clients(self, offline=None):
         # No table means no extra dependency, process, clock read or state change.
@@ -1799,14 +1816,16 @@ class MiniControl:
                 handles[-1].client_pending[self.directory.resolve()] = (self, offline)
                 return 0
             return client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
-                                             birth=priority_helper().birth).run(offline=offline)
+                                             birth=self.client_birth_reader(),
+                                             exclusion=self.client_exclusion).run(offline=offline)
         except ADMISSION_ERRORS:
             return 0  # Collection failure cannot suppress the protective guard.
 
     def client_reconcile_turn(self, offline=None):
         try:
             reconciler = client_module().Reconciler(self, adapter=getattr(self, 'client_adapter', None),
-                                                    birth=priority_helper().birth)
+                                                    birth=self.client_birth_reader(),
+                                                    exclusion=self.client_exclusion)
             return reconciler, offline, reconciler.protected_turn(offline)
         except ADMISSION_ERRORS:
             return None  # The guard has already run; retry on its next turn.
@@ -3234,7 +3253,8 @@ def main():
                       env=dict(HOME=str(Path.home()), PATH='/usr/bin:/bin:/opt/homebrew/bin', LANG='C'), cwd=Path.home())
         pueue.timeout = 1.0  # Client reads cannot hold control.lock indefinitely.
         engine = MiniControl(pueue, directory, host=host)
-        return client_module().main(engine, sys.stdin.buffer, sys.stdout, birth=priority_helper().birth)
+        return client_module().main(engine, sys.stdin.buffer, sys.stdout, birth=priority_helper().birth,
+                                    exclusion=engine.client_exclusion)
     if args.sin_efecto and args.command != 'resolver-admision':
         parser.error('--sin-efecto sólo para resolver-admision')
     if args.command == 'resolver-admision' and (args.host != 'desk' or args.group is not None):
