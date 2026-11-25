@@ -25,7 +25,7 @@ class DatosInternosTests(unittest.TestCase):
                 ('HOME=/Users/demo.user/bin', 'home de macOS'),
                 ('</Users/DemoUser>', 'home de macOS'),
                 ('file:///Users/DemoUser/Library', 'home de macOS'),
-                ("'/c/Users/Demo User/AppData/Local'", 'home de macOS'),
+                ("'/c/Users/Demo User/AppData/Local'", 'home de Windows'),
                 ('C:/Users/DemoUser/AppData/Local', 'home de Windows'),
                 (r'C:\Users\Demo-User\AppData\Local', 'home de Windows'),
                 (r'clang -IC:\Users\DemoUser\include', 'home de Windows'),
@@ -122,6 +122,58 @@ class DatosInternosTests(unittest.TestCase):
         for text in ('HOME=~demo/bin', r'//host.example/c$/Users/U/bin'):
             with self.subTest(text=text):
                 self.assertEqual(kinds(text), [])
+
+    def test_public_profile_requires_its_system_prefix(self):
+        for text, expected in (
+                ('/c/Users/DemoUser/bin', ['Windows']),
+                ('/c/Users/Shared/bin', ['Windows']),
+                ('/c/Users/Public/bin', []),
+                ('/mnt/c/Users/Shared/bin', ['Windows']),
+                ('/mnt/c/Users/pUbLiC/bin', []),
+                ('-IC:/Users/Shared/include', ['Windows']),
+                ('-IC://Users/Shared/include', ['Windows']),
+                ('clang -isystemC://Users/Shared/include', ['Windows']),
+                ('clang -isystemC://Users/Public/include', ['Windows']),
+                ('prefix//Users/Shared/bin', ['macOS']),
+                ('/Volumes/Disco/Users/DemoUser/bin', ['macOS']),
+                ('/Volumes/Disco/Users/Shared/bin', []),
+                ('/System/Volumes/Data/Users/Shared/bin', []),
+                ('file:///Users/Shared/bin', []),
+                ('file://localhost/Users/Shared/bin', []),
+                ('file:///C:/Users/DemoUser/AppData', ['Windows']),
+                (r'\\host.example\c$\Users\Public\bin', [])):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), ['home de ' + platform for platform in expected])
+
+    def test_public_profile_requires_exact_name_and_clean_end(self):
+        for text, expected in (
+                ('/Users/Shared./bin', ['macOS']),
+                ('/Users/Shared%2E/bin', ['macOS']),
+                ('/Users/Shared+Lab/bin', ['macOS']),
+                (r'"C:\Users\Public Lab"', ['Windows']),
+                (r'cp C:/Users/Public\ Lab/AppData .', ['Windows']),
+                (r'"/Users/Shared"', []),
+                ('/Users/sHaReD', []),
+                (r'C:\Users\Public Lab', [])):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), ['home de ' + platform for platform in expected])
+
+    def test_profiles_in_raw_percent_encoded_and_json_forms(self):
+        for text, expected in (
+                ('file:///C:%5CUsers%5CDemoUser%5CAppData', ['Windows']),
+                ('file:///C:/Users/Public%20Lab/AppData', ['Windows']),
+                ('%2fUsers%2FDemoUser/bin', ['macOS']),
+                (r'{"path":"C:\\Users\\Public Lab\\AppData"}', ['Windows']),
+                (r'{"path":"\/Users\/Shared Lab\/Library"}', ['macOS']),
+                (r'{"path":"C:\\Users\\Public\u0020Lab\\AppData"}', ['Windows']),
+                (r'{"command":"echo \"C:\\Users\\Public Lab\""}', ['Windows']),
+                (r'{"command":"echo \"/Users/Shared Lab/Library\""}', ['macOS']),
+                (r'{"path":"\u002fUsers\u002fDemoUser/Library"}', ['macOS']),
+                (r'{"path":"\u002fUsers\u002fDemoUser\q"}', []),
+                (r'HOME=/Users/DemoUser %2FUsers%2fDemoUser "C:\\Users\\DemoUser"',
+                 ['macOS', 'Windows'])):
+            with self.subTest(text=text):
+                self.assertEqual(kinds(text), ['home de ' + platform for platform in expected])
 
 
 if __name__ == '__main__':
