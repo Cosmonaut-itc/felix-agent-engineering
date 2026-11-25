@@ -330,11 +330,11 @@ class Ledger:
 
 
 @contextmanager
-def lectura_medicion(directorio=None):
+def lectura_medicion(directorio=None, *, timeout=5.0):
     """SQLite mode=ro: sin mkdir, migraciones, candado ni pragmas de escritura."""
     raiz = Path(directorio) if directorio is not None else directorio_estado()
     ruta = (raiz / "ledger.sqlite3").resolve()
-    with closing(sqlite3.connect(ruta.as_uri() + "?mode=ro", uri=True)) as db:
+    with closing(sqlite3.connect(ruta.as_uri() + "?mode=ro", uri=True, timeout=timeout)) as db:
         db.row_factory = sqlite3.Row
         db.execute("BEGIN")
         if db.execute("PRAGMA user_version").fetchone()[0] != Ledger.VERSION:

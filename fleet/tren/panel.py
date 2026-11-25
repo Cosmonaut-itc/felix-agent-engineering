@@ -28,6 +28,7 @@ REPO = r"[A-Za-z0-9_.-]{1,64}/[A-Za-z0-9_.-]{1,64}"
 MODO = r"[a-z0-9-]{1,32}"
 REF = r"job-[A-Za-z0-9]{4,32}|[0-9]{8}-[0-9]{6}-[0-9a-f]{6}"
 MAX_DOCUMENTO = 256 * 1024
+TOPE_BLOQUEO = 2.0
 RUTA_O_CONTROL = re.compile(r"[\\\x00-\x1f\x7f-\x9f\ud800-\udfff]|(?<![\w./-])(?:/|[a-zA-Z]:/)")
 HEX_LARGO = re.compile(r"(?i)(?<![0-9a-f])(?=[0-9a-f]*[a-f]|[0-9]{16})([0-9a-f]{7})[0-9a-f]+(?![0-9a-f])")
 
@@ -75,13 +76,10 @@ def espera(entradas, ahora):
         admision = entrada["admision"]
         motivo = admision.get("motivo")
         etapa = {"Admitido": "admitido", "Rechazado": "caducado"}.get(admision["_tipo"], "retenido")
-        desde = entrada.get("caducada" if etapa == "caducado" else "admitida") if etapa != "retenido" else None
         if etapa == "retenido" and motivo == "custodia":
             etapa, motivo = "entregado", None
-        if desde is None:
-            desde = entrada["recibida"]
         filas.append(dict(persona, etapa=etapa, motivo=motivo if motivo in MOTIVOS else None,
-                          desde=fecha(desde, ahora, ahora)))
+                          desde=fecha(entrada["recibida"], ahora, ahora)))
     return filas[:50]
 
 
@@ -97,6 +95,7 @@ def devolucion(repo, pr, registro):
         unidad, check = unidad_publica(fallo.get("unidad")), fallo.get("check")
         if unidad and coincide(check, MODO):
             return dict(check=check, unidad=unidad, comentario_url=url)
+    return dict(check="devolucion", unidad="Devolución", comentario_url=url)
 
 
 def recientes(repo, estado, entradas, historia, devoluciones, tomado, ahora):
@@ -108,7 +107,7 @@ def recientes(repo, estado, entradas, historia, devoluciones, tomado, ahora):
             continue
         fases = historia["trenes"][ident]
         fin = fases[-1][1]
-        if fin < ahora - VENTANA or fin > tomado + 300:
+        if fin < ahora - VENTANA or fin > ahora + 300:
             continue
         miembros = []
         for recibo in tren["recibos"]:
@@ -119,7 +118,12 @@ def recientes(repo, estado, entradas, historia, devoluciones, tomado, ahora):
             registro = devoluciones.get((ident, recibo))
             terminal = (entrada.get("terminal") or {}).get("resultado")
             if resultado == "DEVUELTO":
-                terminal = "DEVUELTO" if registro or entrada.get("tren") == ident and terminal == "DEVUELTO" else "REARMAR"
+                if registro or entrada.get("tren") == ident and terminal == "DEVUELTO":
+                    terminal = "DEVUELTO"
+                elif entrada.get("tren") == ident and entrada["admision"]["_tipo"] == "Rechazado":
+                    terminal = "CADUCADO"
+                else:
+                    terminal = "REARMAR"
             elif resultado != "SIMULADO" or terminal != "MERGEADO-FUERA":
                 terminal = resultado
             detalle = devolucion(repo, persona["pr"], registro) if registro else None
@@ -409,6 +413,33 @@ def problema(etapa, exc):
     return dict(stage=etapa, message="Lectura fallida: " + type(exc).__name__)
 
 
+def leer_ledger(raiz, ruta, seleccion, ahora):
+    stat = (raiz / "ledger.sqlite3").stat()
+    identidad = [1, stat.st_dev, stat.st_ino]
+    limite = time.monotonic() + TOPE_BLOQUEO
+    for intento in range(2):
+        # El lector puede haber actualizado hitos en memoria antes de fallar.
+        cursor = leer_cursor(ruta, identidad)
+        restante = max(0, limite - time.monotonic())
+        try:
+            with lectura_medicion(raiz, timeout=restante if intento else min(restante, 0.1)) as db:
+                grafias = {}
+                for nombre, in db.execute("SELECT DISTINCT repo FROM events ORDER BY repo"):
+                    grafias.setdefault(nombre.lower(), nombre)
+                filas = [leer_repo(db, grafias.get(r.lower(), r), m, cursor["repos"], ahora)
+                         for r, m in seleccion]
+            return filas, cursor
+        except sqlite3.OperationalError as exc:
+            bloqueo = str(exc).partition(":")[0] in (
+                "database is locked", "database table is locked",
+                "database schema is locked", "database is busy",
+            )
+            restante = limite - time.monotonic()
+            if intento or not bloqueo or restante <= 0:
+                raise
+            time.sleep(min(restante, 0.025))
+
+
 def publicar(repo, ahora=None):
     """Toma una instantánea SQLite y actualiza sólo el cursor derivado."""
     ahora = time.time() if ahora is None else ahora
@@ -419,13 +450,8 @@ def publicar(repo, ahora=None):
         raise ValueError("panel requiere entre uno y cuatro repos válidos")
     seleccion = [(r, modo(r) or "activo") for r in solicitados]
     errores = []
-    filas = []
-    cursor = None
     try:
-        stat = (raiz / "ledger.sqlite3").stat()
-        cursor = leer_cursor(ruta, [1, stat.st_dev, stat.st_ino])
-        with lectura_medicion(raiz) as db:
-            filas = [leer_repo(db, r, m, cursor["repos"], ahora) for r, m in seleccion]
+        filas, cursor = leer_ledger(raiz, ruta, seleccion, ahora)
     except (OSError, sqlite3.Error, ValueError, KeyError, TypeError) as exc:
         errores.append(problema("ledger", exc))
         cursor = None
@@ -441,11 +467,13 @@ def publicar(repo, ahora=None):
     if cursor is not None:
         # Mantiene iguales dos lecturas equivalentes. Al vencer una fila de 12 h
         # o el taken del receptor se publica una fecha nueva.
-        seleccion_id = clave(solicitados)
+        seleccion_id = clave([fila[0] for fila in filas])
         previa, tomado = cursor["publicados"].get(seleccion_id, (None, ahora))
         if previa and ahora - 23 * 3600 <= tomado <= ahora:
             candidata = proyectar(registros, tomado, ahora, errores)
-            if clave(candidata["repos"], candidata["errors"]) == previa:
+            fin_en_rango = all(lote["fin"] <= tomado + 300 for fila in candidata["repos"]
+                               for lote in fila["recientes"])
+            if fin_en_rango and clave(candidata["repos"], candidata["errors"]) == previa:
                 salida = candidata
     if salida is None:
         salida = proyectar(registros, ahora, ahora, errores)

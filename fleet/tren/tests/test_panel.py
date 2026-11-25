@@ -1,5 +1,5 @@
 """Contrato y CLI del panel con un ledger temporal."""
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from dataclasses import replace
 import importlib.util
 import json
@@ -301,13 +301,14 @@ class PanelTests(Aislado):
         self.db.entregar(self.entrega, self.ahora - 200)
         ruta = self.dir / "ledger.sqlite3"
         listo, leyendo, siguiente = Event(), Event(), Event()
+        bloqueado, intento = Event(), Event()
         confirmadas, errores = [], []
 
         def escribir():
             try:
-                with sqlite3.connect(str(ruta), isolation_level=None, timeout=2) as db:
+                with closing(sqlite3.connect(str(ruta), isolation_level=None, timeout=2)) as db:
                     for i in range(12):
-                        db.execute("BEGIN IMMEDIATE")
+                        db.execute("BEGIN EXCLUSIVE" if i == 1 else "BEGIN IMMEDIATE")
                         db.execute("INSERT INTO events(repo,tipo,instante,payload) VALUES (?,?,?,?)",
                                    (REPO, "control-panel", self.ahora, "{}"))
                         if i == 0:
@@ -315,6 +316,11 @@ class PanelTests(Aislado):
                             if not leyendo.wait(5):
                                 raise RuntimeError("el panel no abrió una instantánea")
                             siguiente.set()
+                        if i == 1:
+                            bloqueado.set()
+                            if not intento.wait(5):
+                                raise RuntimeError("el panel no intentó leer durante el bloqueo")
+                            time.sleep(0.25)
                         db.execute("COMMIT")
                         confirmadas.append(i)
             except Exception as exc:
@@ -326,6 +332,8 @@ class PanelTests(Aislado):
 
         @contextmanager
         def lectura_solapada(*args, **kwargs):
+            if bloqueado.is_set():
+                intento.set()
             with lectura(*args, **kwargs) as db:
                 leyendo.set()
                 self.assertTrue(siguiente.wait(5))
@@ -336,12 +344,15 @@ class PanelTests(Aislado):
         try:
             self.assertTrue(listo.wait(5))
             with patch.object(panel, "lectura_medicion", lectura_solapada):
-                for _ in range(12):
+                for i in range(12):
+                    if i == 1:
+                        self.assertTrue(bloqueado.wait(5))
                     doc = self.proyectar("--repo", REPO)
                     self.assertEqual(doc["errors"], [])
                     self.assertEqual([fila["pr"] for fila in doc["repos"][0]["espera"]], [1])
         finally:
             leyendo.set()
+            intento.set()
             escritor.join(5)
         self.assertFalse(escritor.is_alive())
         self.assertEqual(errores, [])
