@@ -1053,5 +1053,5 @@ tras la intención.
 
 ```text
 python -I -m unittest discover -s fleet/pueue-desk/tests -p "test_*.py" -v
-python -I fleet/pueue-desk/tests/mutate_client_rpc.py
+(cd fleet/pueue-desk/tests && python -B mutate_client_rpc.py)
 ```
