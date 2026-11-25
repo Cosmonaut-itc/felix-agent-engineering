@@ -82,6 +82,27 @@ Jale nace en pausa `etapa-1`.
 
 El tick activo ejecuta efectos; `--seco` conserva la simulación sin IO de escritura.
 
+## Panel del rack
+
+`pao-tren panel --repo owner/project` imprime un documento `tren-host@1`
+en stdout. `pao-tren panel --todos` proyecta los repos del registro
+`inscritos` (entre uno y cuatro). Incluye el lote, la cola y los terminados
+de las últimas 12 horas. Proyectar un repo individual no requiere inscripción.
+Si el ledger contiene varias grafías del mismo repo, el panel usa la del tick
+más reciente por secuencia en el modo seleccionado. Sin un tick de ese modo,
+usa la primera grafía del ledger en orden de SQLite, o la solicitada si no
+hay eventos del repo. Ante un error del ledger, usa la grafía del registro
+para `--todos` y la del argumento para `--repo`.
+
+El comando abre el ledger en SQLite `mode=ro`, sin tomar el candado del
+tick. Ante un bloqueo de SQLite, reintenta una vez con un presupuesto de
+espera total de dos segundos. El ledger del tren usa el journal de SQLite por
+defecto. La única escritura del comando es el cursor regenerable
+`panel-cursor.json`, junto al ledger. El lugar de cada corrida se extrae de
+`HOST`, `PUEUE_ID` y
+`PUEUE_REF` en el registro local de Jale. Si falta el registro, el lugar
+queda sin confirmar.
+
 ## Sombra con doble camino (U12)
 
 El registro `${XDG_CONFIG_HOME:-~/.config}/pao-tren/inscritos` admite

@@ -47,6 +47,19 @@ class ValidatorTests(unittest.TestCase):
         at(data, SUITE + ('lugar',))['pueue_id'] = -1
         self.assertEqual(clean, fixture())
 
+    def test_repo_spelling_is_canonical_and_comment_url_is_preserved(self):
+        data = fixture()
+        at(data, ROW)['repo'] = REPOS[0].lower()
+        url = 'https://github.com/EXAMPLE/Train/pull/905#issuecomment-123'
+        at(data, RETURN)['comentario_url'] = url
+        try:
+            clean = tren.valid_tren(data, REPOS, NOW)
+        except ValueError as exc:
+            self.fail(f'el rack rechazó una variante del mismo repo: {exc}')
+        self.assertEqual(at(clean, ROW)['repo'], REPOS[0])
+        self.assertEqual(at(clean, RETURN)['comentario_url'], url)
+        self.assertEqual(tren.valid_tren(clean, REPOS, NOW), clean)
+
     def test_rejects_extra_keys_at_every_level(self):
         paths = ((), ROW, PAUSE, BATCH, BATCH + ('miembros', 0), SUITE, SUITE + ('lugar',),
                  TRIAL, TRIAL + ('lugar',), WAITING, RECENT, FINISHED, RETURN, ('errors', 0))
@@ -86,6 +99,20 @@ class ValidatorTests(unittest.TestCase):
         data = fixture()
         data['repos'][1]['repo'] = REPOS[0]
         with self.assertRaises(ValueError):
+            tren.valid_tren(data, REPOS, NOW)
+
+    def test_rejects_duplicate_repo_with_different_spelling(self):
+        data = fixture()
+        data['repos'][1]['repo'] = REPOS[0].lower()
+        # Comprueba que las dos grafías son válidas por separado.
+        for row in data['repos']:
+            with self.subTest(repo=row['repo']):
+                try:
+                    clean = tren.valid_tren(dict(data, repos=[row]), REPOS, NOW)
+                except ValueError as exc:
+                    self.fail(f'el rack rechazó una fila individual: {exc}')
+                self.assertEqual(clean['repos'][0]['repo'], REPOS[0])
+        with self.assertRaisesRegex(ValueError, 'repo no permitido o repetido'):
             tren.valid_tren(data, REPOS, NOW)
 
     def test_rejects_invalid_dates_phases_types_and_ranges(self):
@@ -203,6 +230,11 @@ class TrenStateTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             tren.load_repos(self.config)
         self.assertEqual(self.receive(), 65)
+
+    def test_rejects_configuration_with_two_spellings_of_one_repo(self):
+        self.config.write_text(json.dumps({'tren': {'repos': [REPOS[0], REPOS[0].lower()]}}))
+        with self.assertRaisesRegex(ValueError, 'tren.repos repetidos'):
+            tren.load_repos(self.config)
 
     def test_freshness_uses_receipt_time_and_includes_660_seconds(self):
         self.data['taken'] -= 120
