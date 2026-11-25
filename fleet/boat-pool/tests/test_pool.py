@@ -205,9 +205,12 @@ class Harness(unittest.TestCase):
         return 'pedir', '--repo', REPO, '--corrida', run, '--clase', kind, *extra
 
     def get_lease(self, *args):
+        return self.get_grant(*args)['arriendo']
+
+    def get_grant(self, *args):
         code, output, stderr = self.run_cli(*self.args(*args))
         self.assertEqual(code, 0, stderr)
-        return json.loads(output)['arriendo']
+        return json.loads(output)
 
     def assert_unavailable(self, cause, *args, **kwargs):
         code, output, stderr = self.run_cli(*args, **kwargs)
