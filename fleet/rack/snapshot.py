@@ -55,6 +55,7 @@ ADMISSION_PHASES = ('waiting', 'reserved', 'claimed', 'running', 'draining', 'do
 ADMISSION_FIELDS = frozenset(('task_id', 'task_created_at', 'ref', 'daemon_generation', 'attempt',
                              'seq', 'phase', 'arrived_at', 'deadline_at', 'updated_at',
                              'payload_started_at', 'resources', 'positions', 'blockers'))
+ADMISSION_BLOCKER_FIELDS = frozenset(('resource', 'kind', 'task_id', 'ref', 'seq'))
 
 
 def admission_token(value):
@@ -78,7 +79,7 @@ def admission_blockers(items, resources):
         return False
     counts = dict.fromkeys(resources, 0)
     for item in items:
-        if (not isinstance(item, dict) or item.keys() != {'resource', 'kind', 'task_id', 'ref', 'seq'}
+        if (not isinstance(item, dict) or item.keys() != ADMISSION_BLOCKER_FIELDS
                 or not admission_resource(item['resource']) or item['resource'] not in counts
                 or item['kind'] not in ('holder', 'predecessor', 'legacy', 'unknown')
                 or (item['task_id'] is not None and not admission_int(item['task_id']))
@@ -422,12 +423,16 @@ def guard_identity(row):
     return dict(row)
 
 
-def validate_guard(value):
-    """Strict new contract, with optional fields for rack-host@1 older senders."""
+def validate_guard(value, *, allow_extra=False):
+    """Validate producer data strictly and allow projection at the publication boundary."""
+    def valid_fields(row, fields):
+        return type(row) is dict and (fields <= row.keys() if allow_extra else fields == row.keys())
+
     if value is None:
         return None
-    allowed = {'action','at','cpu_pause','cpu_resume','pressure','thresholds','last_result','last_admission','status'}
-    if type(value) is not dict or set(value)-allowed:
+    allowed = {'action', 'at', 'cpu_pause', 'cpu_resume', 'status', 'pressure',
+               'thresholds', 'last_result', 'last_admission'}
+    if type(value) is not dict or (not allow_extra and value.keys() - allowed):
         raise ValueError('Guardia inválida')
     if value.get('action') not in (None,'pausar','mantener','reanudar'):
         raise ValueError('Decisión inválida')
@@ -436,40 +441,61 @@ def validate_guard(value):
         if value.get(k) is not None and not guard_number(value[k],100):raise ValueError('Umbral CPU inválido')
     if 'status' in value and value['status'] not in ('fresh','stale','incomplete','unknown'):
         raise ValueError('Vigencia inválida')
+    clean = {k: value[k] for k in ('action', 'at', 'cpu_pause', 'cpu_resume', 'status')
+             if k in value}
+    clean.update({k: None for k in ('pressure', 'thresholds', 'last_result', 'last_admission')
+                  if k in value})
     pressure = value.get('pressure')
     if pressure is not None:
-        if type(pressure) is not dict or set(pressure) != {'at','cpu','io','memory'}:
+        fields = {'at', 'cpu', 'io', 'memory'}
+        if not valid_fields(pressure, fields):
             raise ValueError('Presión inválida')
         guard_date(pressure['at'])
         if not all(guard_number(pressure[k],None if k=='memory' else 100) for k in ('cpu','io','memory')):
             raise ValueError('Presión inválida')
+        clean['pressure'] = {k: pressure[k] for k in fields}
     thresholds = value.get('thresholds')
     if thresholds is not None:
-        if type(thresholds) is not dict or set(thresholds) != {'normal','rapidas'}:
+        if not valid_fields(thresholds, {'normal', 'rapidas'}):
             raise ValueError('Umbrales inválidos')
+        clean['thresholds'] = {}
         for group in ('normal','rapidas'):
             item=thresholds[group]
-            if type(item) is not dict or set(item) != {'pause','resume'}:raise ValueError('Umbrales inválidos')
+            if not valid_fields(item, {'pause', 'resume'}):
+                raise ValueError('Umbrales inválidos')
+            limits = {}
             for phase in ('pause','resume'):
                 row=item[phase];keys={'cpu','io','memory'} if group=='normal' else {'memory'}
-                if type(row) is not dict or set(row) != keys or not all(guard_number(row[k],None if k=='memory' else 100) for k in keys):
+                if not valid_fields(row, keys) or not all(guard_number(row[k],None if k=='memory' else 100) for k in keys):
                     raise ValueError('Umbrales inválidos')
-            if item['pause']['memory'] > item['resume']['memory'] or any(item['pause'][k] <= item['resume'][k] for k in ('cpu','io') if k in item['pause']):
+                limits[phase] = {k: row[k] for k in keys}
+            if limits['pause']['memory'] > limits['resume']['memory'] or any(limits['pause'][k] <= limits['resume'][k] for k in ('cpu','io') if k in limits['pause']):
                 raise ValueError('Histéresis inválida')
-    if value.get('last_admission') is not None:guard_identity(value['last_admission'])
+            clean['thresholds'][group] = limits
+    identity = value.get('last_admission')
+    if identity is not None:
+        fields = {'at', 'grupo', 'id'}
+        if not valid_fields(identity, fields):
+            raise ValueError('Identidad de admisión inválida')
+        clean['last_admission'] = guard_identity({k: identity[k] for k in fields})
     result=value.get('last_result')
     if result is not None:
-        if (type(result) is not dict or set(result) != {'evento','tick_id','at','bloqueos'}
+        if (not valid_fields(result, {'evento', 'tick_id', 'at', 'bloqueos'})
                 or result['evento'] not in GUARD_EVENTS or type(result['tick_id']) is not str
                 or not re.fullmatch('[0-9a-f]{24}',result['tick_id']) or type(result['bloqueos']) is not list
                 or len(result['bloqueos'])>16):raise ValueError('Resultado inválido')
         guard_date(result['at'])
+        blockers = []
+        fields = {'grupo', 'operacion', 'causa'}
         for row in result['bloqueos']:
-            if (type(row) is not dict or set(row) != {'grupo','operacion','causa'} or row['causa'] not in GUARD_CAUSES
+            if (not valid_fields(row, fields) or row['causa'] not in GUARD_CAUSES
                     or row['operacion'] not in ('one','resume','unknown')
                     or row['grupo'] not in (None,'hasito','jale','jale-verify','otros','pesadas','rapidas')):
                 raise ValueError('Bloqueo inválido')
-    return value
+            blockers.append({k: row[k] for k in fields})
+        clean['last_result'] = dict(evento=result['evento'], tick_id=result['tick_id'],
+                                    at=result['at'], bloqueos=blockers)
+    return clean
 
 
 def installed_thresholds(home):

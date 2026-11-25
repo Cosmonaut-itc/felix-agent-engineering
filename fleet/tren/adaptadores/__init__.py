@@ -19,4 +19,4 @@ def seleccionar(config, git):
         return Hasito(lanzador, git, resolver_lanzador=resolver)
     from adaptadores.jale import Jale, MODOS
     return Jale(lanzador, git, host=config.get('host', 'auto'), modos=config.get('modos', MODOS),
-                resolver_lanzador=resolver)
+                resolver_lanzador=resolver, prelanzar=config.get('prelanzar', False))

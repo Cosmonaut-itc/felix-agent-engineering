@@ -299,6 +299,13 @@ proceso `pao-tren tick`, activo o `--seco` y de cualquier carril, lo toma
 compartido al arrancar y lo conserva hasta salir: mientras corre sus ticks,
 mientras espera el CI y mientras espera una suite.
 
+El coordinador de Jale prelanzado puede sobrevivir al tick y corre sin el
+candado del programa. Python lo ejecuta en modo aislado con importaciones
+de la biblioteca estándar. El tick espera hasta 5 s a que el coordinador
+tome el candado de la corrida o termine, para que cargue bajo el candado
+del programa. El coordinador ya podía sobrevivir sin ese candado cuando
+moría el tick que esperaba su resultado.
+
 `candado` lo toma en exclusiva sin esperar y corre el comando. Después
 conserva el candado 5 s más, lo suelta y sale con el código del comando. Su
 última línea es `{"candado": "tomado", "codigo": N}`. Si hay algún proceso de
@@ -930,7 +937,7 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
 
 - **Verde:** mantiene el camino existente de suite y promoción de C.
 - **Rojo con más de un miembro:** cierra el tren `PARTIDO`, sin comentario,
-  status rojo, suite ni escritura en main. En el mismo snapshot libera todas
+  status rojo, consumo de suite especulativa ni escritura en main. En el mismo snapshot libera todas
   las entregas con `partida=True` y `solo=True`. Los ticks posteriores forman
   trenes individuales en su orden FIFO, cada uno sobre el main entonces
   vigente, con candidato, CI y suite propios. No se atribuye el fallo del lote.
@@ -948,7 +955,7 @@ La tabla `SALIDAS_CI` y `avanzar_ci` modelan la salida de `EsperandoCI`:
   impide leer `main` hace fallar el tick hasta que vuelva GitHub; el primer
   tick que pueda observar evalúa el plazo vencido. Un snapshot anterior sin
   `desde` comienza a contar en el primer tick de U16.
-  Un verde observado sin suite lanzada **no detiene el plazo**: si el CI
+  Un verde observado sin suite confirmada **no detiene el plazo**: si el CI
   vuelve a pendiente se cuenta desde la entrada original. Una pausa manual
   tampoco descuenta tiempo. Un recibo durable de suite sí permite recuperar
   su lanzamiento con el CI verde guardado y salir de `EsperandoCI`, aunque
@@ -959,7 +966,7 @@ emite `solicitar-ci` con contador/clave nuevos. Publica una ref
 `tren/<id>-ci-<n>` sobre ese mismo C: repetir la publicación de la ref
 original sería un no-op de git y no pediría otra ejecución. Una muerte
 reutiliza exactamente la ref del contador guardado. Se sigue leyendo el CI
-por C y se exige verde antes de la suite. Para esta nueva solicitud se
+por C y se exige verde antes de consumir la suite. Para esta nueva solicitud se
 consultan también todas las páginas de
 [check suites del commit](https://docs.github.com/en/rest/checks/suites#list-check-suites-for-a-git-reference):
 la API garantiza `head_branch`, `head_sha` e `id` en cada suite, mientras el
@@ -1310,6 +1317,10 @@ La configuración privada por repo admite `"adaptador": "jale"`, `"lanzador"`
 actual de Hasito con `lanzador_hasito` sigue siendo válida. Esta selección no
 inscribe ni activa repositorios.
 
+`"prelanzar": true` adelanta sólo el primer modo configurado de Jale al tick
+que publica C y pide su CI. La clave es booleana, vale `false` por omisión y
+se lee en cada tick. Apagarla surte efecto en el tick siguiente sin instalar.
+
 ### Checkout del operador
 
 `checkout_operador` es un campo opcional del objeto de configuración privada
@@ -1321,7 +1332,7 @@ en un snapshot. Esto incluye el primer elemento del comando. El intérprete
 del sistema y las configuraciones privadas externas conservan sus rutas.
 Al omitir el campo se ejecutan las rutas configuradas directamente.
 
-Para iniciar, reanudar o repetir trabajo de suite, el tick lee el SHA de
+Para prelanzar, iniciar, reanudar o repetir trabajo de suite, el tick lee el SHA de
 `refs/heads/main` del remoto explícito del tren. Para el gancho usa el mismo SHA
 que la reconciliación previa acreditó como base del CAS. Si falta el objeto,
 el tren lo trae a su almacén bare y lo transfiere desde ahí al repositorio del
@@ -1354,8 +1365,8 @@ sólo su registro. No corre `git worktree prune`: el repositorio del operador
 puede ser compartido y la poda borraría registros de worktrees ajenos. Los
 worktrees sucios se conservan para inspección. Si el SHA o el snapshot fallan, el
 efecto y la pausa `infraestructura/checkout-operador:<estado>` se registran
-juntos. `reanudar` vuelve a intentar el efecto y `abortar` aplica el cierre
-habitual del tren.
+juntos, salvo al prelanzar, cuando se registra un aviso. `reanudar` vuelve a
+intentar el efecto y `abortar` aplica el cierre habitual del tren.
 
 Un push a `main` de Jale despliega a producción y aplica migraciones, así que
 con `"adaptador": "jale"` el bloque `pre_aterrizaje` (U18) es obligatorio. Sin
@@ -1378,6 +1389,25 @@ contenido del archivo entre commits. En e2e, un recibo con código 0 puede
 traer unidades `falla` cuando el juicio contra la base de main las dio por
 compartidas; el adaptador las trata como fallos que la atribución repite. En
 contract, una `falla` exige un código distinto de 0.
+
+Con `prelanzar` habilitado, el primer modo empieza al pedir el CI. Cuando
+`iniciar-suite` observa CI verde y miembros admitidos, confirma el registro
+especulativo, recoge esa corrida y sigue con los demás modos. La confirmación
+es durable y permite recuperar el resultado tras una caída del tick.
+Una salida 75 que se produzca antes del verde ocupa la primera reanudación
+cuando `iniciar-suite` la consume.
+
+Si `solicitar-ci` se reintenta tras la muerte de un tick, vuelve a prelanzar
+sobre el mismo registro, salvo que ese tick ya lea en rojo el CI de esa
+misma solicitud. El rojo de una solicitud anterior no lo impide: al reanudar
+una pausa `ci-sin-resultado` se publica otra solicitud y se prelanza.
+
+Si falla el prelanzamiento, `prelanzamiento-fallido` registra el tren y
+el error, y la solicitud de CI se completa. Si el CI sale rojo o un juicio
+aborta el tren antes de confirmar la corrida, `suite-prelanzada-sin-leer`
+registra la clave de la corrida (si llegó a escribirse) y si ya terminó.
+La corrida sigue en el host hasta terminar y su resultado queda sin consumir.
+SEN-7331 añadirá la cancelación.
 
 Los logs y recibos durables quedan bajo `pao-tren/jale` en el directorio de
 estado. Un coordinador desacoplado y un candado por corrida permiten recuperar

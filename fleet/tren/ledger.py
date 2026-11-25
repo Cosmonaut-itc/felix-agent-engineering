@@ -176,9 +176,12 @@ class Ledger:
         return replace(estado, entradas=estado.entradas + tuple(
             e for e in nuevas if e.entrega.recibo not in recibos))
 
-    def guardar_paso(self, estado, efectos, ahora, consumido=None, fallo_operador=None):
+    def guardar_paso(self, estado, efectos, ahora, consumido=None, fallo_operador=None, *,
+                     prelanzadas=()):
         """Snapshot, proyecciones, outbox y ACK del resultado: un solo COMMIT."""
         with self.transaccion():
+            for aviso in prelanzadas:
+                self.evento(estado.repo, "suite-prelanzada-sin-leer", ahora, aviso)
             # entries es custodia inmutable: la sombra también la importa.
             # La continuación operativa completa vive sólo en su evento.
             for tren in estado.trenes:

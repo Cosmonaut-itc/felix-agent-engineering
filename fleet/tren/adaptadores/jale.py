@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 import re
 import subprocess
 import sys
+import time
 
 from adaptadores.ejecucion_jale import guardar
 from adaptadores.hasito import ResultadoInvalido, exigir, leer_json
@@ -15,9 +16,16 @@ from dominio import (Completo, Fallo, Incompleto, Intento, Repeticion,
                      UnidadRepetida, RechazoLanzador, clave)
 from git_ops import Publicado, sha
 from ledger import directorio_estado
+from operador import lanzamiento_activo
 
 
 MODOS = ('contract', 'e2e')
+PLAZO_PRELANZAMIENTO_S = 5
+
+
+def especulativa(registro):
+    return ((registro / 'prelanzada.json').exists() and
+            not (registro / 'confirmada.json').exists())
 
 
 def objeto(pares):
@@ -111,12 +119,15 @@ class Jale:
     firma_distingue_fallo = False
 
     def __init__(self, lanzador, git=None, host='auto', modos=MODOS, estado=None, *,
-                 resolver_lanzador=True):
+                 resolver_lanzador=True, prelanzar=False):
         if not isinstance(host, str) or host not in ('auto', 'mini', 'desktop'):
             raise ValueError('host-invalido')
         if not (isinstance(modos, (tuple, list)) and modos and
                 all(m in MODOS for m in modos) and len(set(modos)) == len(modos)):
             raise ValueError('modos-invalidos')
+        if type(prelanzar) is not bool:
+            raise ValueError('prelanzar-invalido')
+        self.prelanzar_habilitado = prelanzar
         self.lanzador = str(Path(lanzador).resolve()) if resolver_lanzador else str(lanzador)
         self.lanzador_configurado = str(lanzador)
         self.operador = None
@@ -128,25 +139,63 @@ class Jale:
     def esperar(self, proceso):
         proceso.wait()
 
-    def correr(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None, reenganche=None):
+    def prelanzar(self, candidato, tren_id):
+        if self.prelanzar_habilitado:
+            modo = self.modos[0]
+            raiz = self.estado / clave('suite', tren_id) / modo
+            if not (raiz / 'completo.json').exists():
+                self.correr(raiz / '0', candidato.C, modo, (), True, tren_id,
+                            prelanzamiento=True)
+
+    def prelanzada_sin_leer(self, tren_id):
+        raiz = self.estado / clave('suite', tren_id)
+        for modo in MODOS:
+            registro = raiz / modo / '0'
+            if especulativa(registro):
+                try:
+                    iniciado = leer_json(registro / 'iniciado.json')
+                except ResultadoInvalido:
+                    iniciado = None
+                id_corrida = iniciado.get('clave') if isinstance(iniciado, dict) else None
+                if not isinstance(id_corrida, str) or not re.fullmatch(
+                        r'[A-Za-z0-9._-]{8,128}', id_corrida):
+                    id_corrida = None
+                return {'tren': tren_id, 'clave': id_corrida,
+                        'terminada': (registro / 'codigo.json').exists()}
+        return None
+
+    def correr(self, registro, commit, modo, filtros, permitir_lanzar, tren_id=None,
+               reenganche=None, *, prelanzamiento=False):
+        sin_confirmar = especulativa(registro)
+        if sin_confirmar and not permitir_lanzar:
+            return False
         registro.mkdir(parents=True, exist_ok=True, mode=0o700)
         log = registro / 'corrida.log'
         codigo = registro / 'codigo.json'
         argv = ['bash', self.lanzador, self.host, str(log), modo, commit, *filtros]
         solicitud = registro / 'solicitud.json'
+        candado_corrida = registro / 'candado'
         if solicitud.exists():
             guardado = leer_json(solicitud)
             exigir(isinstance(guardado, list) and len(guardado) == len(argv) and
                    guardado[0] == 'bash' and isinstance(guardado[1], str) and
                    Path(guardado[1]).is_absolute() and guardado[2] in ('auto', 'mini', 'desktop') and
                    guardado[3:] == argv[3:], 'recibo-no-corresponde')
+            if prelanzamiento and not sin_confirmar:
+                return
         elif not permitir_lanzar:
             return False
         else:
             if self.operador is not None and self.operador.checkout is not None:
                 argv[1] = self.operador.lanzador(self.lanzador_configurado, tren_id, codigo)
+            if prelanzamiento:
+                guardar(registro / 'prelanzada.json', True)
             guardado = argv
             guardar(solicitud, argv)
+        if sin_confirmar and not prelanzamiento:
+            guardar(registro / 'confirmada.json', True)
+        if prelanzamiento and (codigo.exists() or lanzamiento_activo(candado_corrida)):
+            return
         if reenganche and reenganche[1] == str(registro / 'coordinador.log'):
             anterior = registro / ('codigo-reenganche-' + str(reenganche[0]) + '.json')
             with (registro / 'candado').open('a') as candado:
@@ -178,10 +227,16 @@ class Jale:
             # Otro coordinador espera el mismo candado y recupera su resultado.
             # La sesión nueva sigue viva aunque muera el proceso del tick.
             try:
-                proceso = subprocess.Popen([sys.executable, str(Path(__file__).with_name(
+                proceso = subprocess.Popen([sys.executable, '-I', str(Path(__file__).with_name(
                     'ejecucion_jale.py')), str(registro)], start_new_session=True,
                     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                     env=env)
+                if prelanzamiento:
+                    limite = time.monotonic() + PLAZO_PRELANZAMIENTO_S
+                    while (proceso.poll() is None and not lanzamiento_activo(candado_corrida)
+                           and time.monotonic() < limite):
+                        time.sleep(.01)
+                    return
                 self.esperar(proceso)
             except (OSError, subprocess.SubprocessError):
                 raise ResultadoInvalido('lanzador-no-disponible') from None
