@@ -11,7 +11,7 @@ import time
 from typing import get_args
 from unittest.mock import patch
 
-from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, vista
+from test_tren import Aislado, BASE, HEAD, REPO, cli, entrega, observacion, vista
 
 from dominio import (Admitido, Candidato, Certificado, Congelado, Corriendo,
                      Decision, Diagnosticando, Efecto, Entrada, Estado, Fallo, Fase,
@@ -19,6 +19,7 @@ from dominio import (Admitido, Candidato, Certificado, Congelado, Corriendo,
                      Terminal, Tren, clave, datos, paso)
 from feedback import EscritorGitHub
 from ledger import directorio_estado
+from observador import Falso
 import panel
 from sombra import paso_sombra
 
@@ -253,6 +254,59 @@ class PanelTests(Aislado):
         self.validar(doc)
         self.assertEqual(una["repo"], REPO)
         self.assertEqual([fila["pr"] for fila in una["espera"]], [1])
+
+    def entregar_por_cli(self, repo, pr, segundos, observador=None):
+        args = cli.parser().parse_args([
+            "entregar", "--repo", repo, "--pr", str(pr), "--head", HEAD,
+            "--apto", "apto.json", "--dirigida", "dirigida.json"])
+        codigo, resultado = cli.ejecutar(args, observador, self.ahora + segundos)
+        self.assertEqual(codigo, 0, resultado)
+
+    def comprobar_pr_terminado(self):
+        for args in (("--todos",), ("--repo", REPO), ("--repo", REPO.upper())):
+            with self.subTest(args=args):
+                codigo, doc = cli.ejecutar(cli.parser().parse_args(["panel", *args]), ahora=self.ahora)
+                self.assertEqual(codigo, 0)
+                fila, = doc["repos"]
+                self.assertEqual(fila["repo"], REPO)
+                self.assertEqual([m["pr"] for lote in fila["recientes"] for m in lote["miembros"]], [1])
+                self.assertEqual(doc["errors"], [])
+                self.validar(doc)
+
+    def test_grafia_del_tick_sombra_prevalece_sobre_otra_entrega(self):
+        self.registro.write_text(f"{REPO.upper()} sombra\n")
+        self.entregar_por_cli(REPO, 1, -60, Falso(observacion()))
+        tick = cli.parser().parse_args(["tick", "--repo", REPO, "--seco"])
+        codigo, resultado = cli.ejecutar(tick, Falso(observacion()), self.ahora - 30)
+        self.assertEqual(codigo, 0, resultado)
+        self.entregar_por_cli(REPO.upper(), 2, -10, Falso(replace(observacion(), prs=(vista(2),))))
+        self.comprobar_pr_terminado()
+
+    def test_grafia_del_tick_activo_prevalece_sobre_otra_entrega(self):
+        self.registro.write_text(f"{REPO.upper()} activo\n")
+        self.entregar_por_cli(REPO, 1, -60)
+        self.paso(-30, Terminal("ATERRIZADO"))
+        self.entregar_por_cli(REPO.upper(), 2, -10)
+        self.comprobar_pr_terminado()
+
+    def test_error_de_ledger_conserva_grafia_del_cursor(self):
+        self.registro.write_text(f"{REPO.upper()} activo\n")
+        self.entregar_por_cli(REPO, 1, -60)
+        self.proyectar("--todos")
+        cursor = self.dir / "panel-cursor.json"
+        anterior = cursor.read_bytes()
+        self.db.db.execute("BEGIN EXCLUSIVE")
+        try:
+            for args in (("--todos",), ("--repo", REPO), ("--repo", REPO.upper())):
+                with self.subTest(args=args):
+                    codigo, doc = cli.ejecutar(cli.parser().parse_args(["panel", *args]), ahora=self.ahora)
+                    self.assertEqual(codigo, 0)
+                    self.assertEqual([e["stage"] for e in doc["errors"]], ["ledger"])
+                    self.assertEqual([fila["repo"] for fila in doc["repos"]], [REPO])
+                    self.validar(doc)
+        finally:
+            self.db.db.execute("ROLLBACK")
+        self.assertEqual(cursor.read_bytes(), anterior)
 
     def test_espera_publica_recibida_en_todas_las_etapas(self):
         admisiones = (Retenido(Motivo.CUSTODIA), Admitido(), Retenido(Motivo.CI), Rechazado(Motivo.HEAD))
