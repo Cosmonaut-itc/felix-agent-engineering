@@ -9,7 +9,7 @@ from dataclasses import replace
 import json
 import subprocess
 
-from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, Incierto,
+from dominio import (Admitido, Aterrizado, BloqueoPrevia, Diagnosticando, EnBase, EsperandoCI, Incierto,
                      Pausa, Promoviendo, Terminal, admision_entrada, aterrizaje, datos,
                      desde_datos, paso)
 from efectos import EfectoFallido, ejecutar
@@ -99,6 +99,16 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
             firma_distingue_fallo=getattr(adaptador, "firma_distingue_fallo", False) is True)
     previo.limpiar(estado, observacion)
 
+    def prelanzadas(nuevo):
+        consultar = getattr(adaptador, "prelanzada_sin_leer", None)
+        if consultar is not None:
+            esperando = {t.id for t in estado.trenes if isinstance(t.fase, EsperandoCI)}
+            for tren in nuevo.trenes:
+                if tren.id in esperando and isinstance(tren.fase, Terminal):
+                    aviso = consultar(tren.id)
+                    if aviso is not None:
+                        yield aviso
+
     def drenar(estado, observacion, recuperacion=False):
         completados = set()
         fallo_operador = None
@@ -144,6 +154,8 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 else:
                     ejecucion = ejecutar(efecto, estado, observacion, git, adaptador, previo)
                     resultado = {"observacion": resultado_observacion(efecto, ejecucion.observacion)}
+                    if ejecucion.aviso is not None:
+                        ledger.evento(repo, "prelanzamiento-fallido", ahora, ejecucion.aviso)
                     completo = ejecucion.completo
                     if not completo:
                         resultado["error"] = "ejecucion-incompleta"
@@ -212,7 +224,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
         efectos = recuperados + efectos
         frontera("decision-reducida", None)
         nuevo = limpiar(nuevo)
-        ledger.guardar_paso(nuevo, efectos, ahora)
+        ledger.guardar_paso(nuevo, efectos, ahora, prelanzadas=prelanzadas(nuevo))
         frontera("paso-guardado", None)
         return terminar(nuevo, efectos)
     # La limpieza no crea pausas: sólo retiene el push, incluso al reanudar.
@@ -247,9 +259,7 @@ def tick(ledger, repo, observador, ahora, git, adaptador=None, frontera=None,
                 break
     nuevo, efectos = paso(estado, observacion)
     nuevo = limpiar(nuevo)
-    if fallo is None:
-        ledger.guardar_paso(nuevo, efectos, ahora, consumido)
-    else:
-        ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo)
+    ledger.guardar_paso(nuevo, efectos, ahora, consumido, fallo_operador=fallo,
+                        prelanzadas=prelanzadas(nuevo))
     frontera("paso-guardado", None)
     return terminar(nuevo, efectos)
