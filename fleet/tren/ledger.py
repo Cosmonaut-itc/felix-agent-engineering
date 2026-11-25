@@ -171,10 +171,7 @@ class Ledger:
         nuevas = tuple(desde_datos(json.loads(r[0])) for r in self.db.execute(
             "SELECT payload FROM entries WHERE repo=? ORDER BY rowid", (repo,)))
         if sombra or operativo:
-            iniciales = {e.entrega.recibo: e for e in (
-                desde_datos(json.loads(r[0])) for r in self.db.execute(
-                    "SELECT payload FROM events WHERE repo=? AND tipo='admision-entrega' ORDER BY seq",
-                    (repo,)))}
+            iniciales = {e.entrega.recibo: e for e in map(desde_datos, admisiones_entrega(self.db, repo))}
             nuevas = tuple(iniciales.get(e.entrega.recibo, e) for e in nuevas)
         return replace(estado, entradas=estado.entradas + tuple(
             e for e in nuevas if e.entrega.recibo not in recibos))
@@ -327,6 +324,12 @@ class Ledger:
     def ultimos_eventos(self, repo):
         return [dict(r) for r in self.db.execute(
             "SELECT seq, tipo, instante, payload FROM events WHERE repo=? ORDER BY seq DESC LIMIT 10", (repo,))]
+
+
+def admisiones_entrega(db, repo):
+    for raw, in db.execute(
+            "SELECT payload FROM events WHERE repo=? AND tipo='admision-entrega' ORDER BY seq", (repo,)):
+        yield json.loads(raw)
 
 
 @contextmanager

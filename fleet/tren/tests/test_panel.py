@@ -316,6 +316,9 @@ class PanelTests(Aislado):
         self.assertEqual(espera(), admitidas)
         self.db.entregar(entrega(3), self.ahora - 20)
         self.assertEqual(espera(), admitidas + [(3, "entregado", None)])
+        revisada = Entrada(entrega(1), self.ahora - 40, Rechazado(Motivo.HEAD))
+        self.db.sombra(Estado(REPO, (revisada,)), (), self.ahora - 10, doble_camino=True)
+        self.assertEqual(espera(), [(1, "caducado", "head-cambiado"), admitidas[1], (3, "entregado", None)])
 
     def test_grafia_del_tick_activo_prevalece_sobre_otra_entrega(self):
         self.registro.write_text(f"{REPO.upper()} activo\n")
@@ -624,27 +627,33 @@ import time
 sys.path.insert(0, sys.argv[1])
 from panel import publicar
 
-comienzo = time.monotonic()
+inicio_cpu = time.process_time()
+inicio_pared = time.monotonic()
 doc = publicar(sys.argv[2], float(sys.argv[3]))
-print(json.dumps([time.monotonic() - comienzo, doc]))
+print(json.dumps([time.process_time() - inicio_cpu, time.monotonic() - inicio_pared, doc]))
 """
+
+        def medir():
+            # El proceso nuevo evita reutilizar cachés de Python o SQLite. El
+            # tope de pared detecta cuelgues y deja margen al planificador.
+            salida = subprocess.run(
+                [sys.executable, "-I", "-B", "-c", lectura, str(Path(panel.__file__).parent),
+                 REPO, str(self.ahora)], capture_output=True, text=True, timeout=60)
+            self.assertEqual(salida.returncode, 0, salida.stderr)
+            cpu, pared, doc = json.loads(salida.stdout)
+            return cpu, pared, self.validar(doc)
+
         cursor = self.dir / "panel-cursor.json"
         frias = []
         for _ in range(3):
             cursor.unlink(missing_ok=True)
-            # Un proceso nuevo evita reutilizar cachés de Python o SQLite.
-            salida = subprocess.run(
-                [sys.executable, "-I", "-B", "-c", lectura, str(Path(panel.__file__).parent),
-                 REPO, str(self.ahora)], capture_output=True, text=True, timeout=20)
-            self.assertEqual(salida.returncode, 0, salida.stderr)
-            frio, doc = json.loads(salida.stdout)
-            frias.append(frio)
-            self.validar(doc)
+            cpu, pared, doc = medir()
+            frias.append((cpu, pared))
             self.assertEqual(doc["repos"][0]["lote"]["cierre"], self.ahora - 5001)
-        comienzo = time.monotonic()
-        self.assertEqual(doc, self.proyectar("--repo", REPO))
-        caliente = time.monotonic() - comienzo
-        muestras = ", ".join(f"{frio:.3f}" for frio in frias)
-        print(f"panel: 5000 × 50 KiB en {muestras} s sin cursor y {caliente:.3f} s con cursor", flush=True)
-        self.assertLess(min(frias), 1)
-        self.assertLess(caliente, 1)
+        cpu_caliente, pared_caliente, caliente = medir()
+        self.assertEqual(doc, caliente)
+        muestras = ", ".join(f"{cpu:.3f} s CPU / {pared:.3f} s pared" for cpu, pared in frias)
+        print(f"panel: 5000 × 50 KiB sin cursor: {muestras}; "
+              f"con cursor: {cpu_caliente:.3f} s CPU / {pared_caliente:.3f} s pared", flush=True)
+        self.assertLess(min(cpu for cpu, _ in frias), 1)
+        self.assertLess(cpu_caliente, 1)

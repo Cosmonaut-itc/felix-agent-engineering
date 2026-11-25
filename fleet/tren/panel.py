@@ -12,7 +12,7 @@ from dominio import Motivo, clave, datos, inicial
 from fases import SUITES, medir_fases
 from inscripcion import modo
 from instalar import atomico
-from ledger import directorio_estado, lectura_medicion
+from ledger import admisiones_entrega, directorio_estado, lectura_medicion
 
 ETAPAS = {
     "Congelado": "lote", "Armado": "lote", "EsperandoCI": "ci",
@@ -61,9 +61,9 @@ def miembro(entrada):
         return dict(pr=pr, head=head[:7])
 
 
-def por_recibo(estado):
-    return {clave("entrega", e["entrega"]["repo"], e["entrega"]["pr"], e["entrega"]["head"]): e
-            for e in estado["entradas"]}
+def recibo_entrada(entrada):
+    entrega = entrada["entrega"]
+    return clave("entrega", entrega["repo"], entrega["pr"], entrega["head"])
 
 
 def espera(entradas, ahora):
@@ -87,7 +87,8 @@ def espera(entradas, ahora):
 def devolucion(repo, pr, registro):
     efecto, resultado = registro
     url = resultado.get("comentario_url")
-    if not coincide(url, rf"https://github\.com/{re.escape(repo)}/pull/{pr}#issuecomment-[0-9]+") or len(url) > 512:
+    patron = rf"https://github\.com/(?ai:{re.escape(repo)})/pull/{pr}#issuecomment-[0-9]+"
+    if not coincide(url, patron) or len(url) > 512:
         return None
     fallos = efecto.get("fallos", ())
     if efecto.get("ci_rojos") and not fallos:
@@ -205,9 +206,7 @@ def ensayo_publico(fase, miembros, registros, ahora):
 def proyectar(filas, tomado, ahora, errors=()):
     """Proyecta estados, hitos y registros ya leídos. Sin reloj ni IO."""
     repos = []
-    for repo, modo_repo, estado, custodia, historia, efectos, devoluciones, lotes, ensayos in filas:
-        entradas = por_recibo(estado)
-        entradas.update((r, e) for r, e in custodia.items() if r not in entradas)
+    for repo, modo_repo, estado, entradas, historia, efectos, devoluciones, lotes, ensayos in filas:
         pausa = estado.get("pausa")
         if pausa is not None:
             motivo = pausa["motivo"]
@@ -316,6 +315,24 @@ def leer_devoluciones(db, estado, historia, ahora):
     return devoluciones
 
 
+def leer_entradas(db, repo, estado):
+    entradas = {recibo_entrada(e): e for e in estado["entradas"]}
+    custodia = {
+        recibo: dict(entrega=dict(pr=pr, head=head), recibida=recibida,
+                     admision=dict(_tipo="Retenido", motivo="custodia"))
+        for recibo, pr, head, recibida in db.execute(
+            "SELECT recibo, pr, head, recibida FROM requests WHERE repo=? ORDER BY recibida, recibo", (repo,))
+        if recibo not in entradas
+    }
+    if custodia:
+        for entrada in admisiones_entrega(db, repo):
+            recibo = recibo_entrada(entrada)
+            if recibo in custodia:
+                custodia[recibo]["admision"] = entrada["admision"]
+        entradas.update(custodia)
+    return entradas
+
+
 def leer_repo(db, nombres, modo_repo, cache, ahora):
     tipo = TIPO_TICK[modo_repo]
     consulta = "SELECT seq, repo FROM events WHERE repo=? AND tipo=? ORDER BY seq DESC LIMIT 1"
@@ -334,14 +351,9 @@ def leer_repo(db, nombres, modo_repo, cache, ahora):
     llave = repo + ":" + modo_repo
     historia = leer_hitos(db, repo, tipo, secuencia, cache.get(llave), estado, efectos)
     cache[llave] = historia
-    custodia = {
-        recibo: dict(entrega=dict(pr=pr, head=head), recibida=recibida,
-                     admision=dict(_tipo="Retenido", motivo="custodia"))
-        for recibo, pr, head, recibida in db.execute(
-            "SELECT recibo, pr, head, recibida FROM requests WHERE repo=? ORDER BY recibida, recibo", (repo,))
-    }
+    entradas = leer_entradas(db, repo, estado)
     devoluciones = leer_devoluciones(db, estado, historia, ahora)
-    return repo, modo_repo, estado, custodia, historia, tuple(efectos.values()), devoluciones
+    return repo, modo_repo, estado, entradas, historia, tuple(efectos.values()), devoluciones
 
 
 def leer_json_local(ruta):

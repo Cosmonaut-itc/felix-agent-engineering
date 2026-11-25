@@ -11,7 +11,7 @@ CASOS = (
     ("R1-sol-1", "fin > ahora + 300", "fin > tomado + 300",
      "test_fin_nuevo_renueva_taken_con_cursor_y_sin_cursor"),
     ("R1-sol-2", 'return dict(check="devolucion", unidad="Devolución", comentario_url=url)',
-     "return None", "test_expulsion_por_conflicto_conserva_url_exacta"),
+     "return None", "test_expulsion_conserva_url_original_con_otra_grafia"),
     ("R1-sol-3", 'terminal = "CADUCADO"', 'terminal = "REARMAR"',
      "test_lote_devuelto_distingue_caducado_de_rearme"),
     ("R1-sol-4", "grafias.get(r.lower(), [r])", "[r]",
@@ -25,6 +25,12 @@ CASOS = (
      "next(ticks, None)", "test_grafia_del_ultimo_tick_sombra_sigue_la_secuencia"),
     ("R3-sol-1-sin-tope", "lectura_medicion(raiz, timeout=restante if intento else min(restante, 0.1))",
      "lectura_medicion(raiz)", "test_presupuesto_de_bloqueo_descuenta_el_tiempo_del_primer_intento_y_la_pausa"),
+    ("R4-sol-2", 'custodia[recibo]["admision"] = entrada["admision"]', "pass",
+     "test_espera_proyecta_admision_durable_antes_del_tick"),
+    ("R4-sol-1", "(?ai:{re.escape(repo)})", "{re.escape(repo)}",
+     "test_expulsion_conserva_url_original_con_otra_grafia"),
+    ("R4-opus-3", ' and contenido["ledger"] == identidad', "",
+     "test_ledger_sustituido_y_legible_reconstruye_hitos_con_la_misma_secuencia"),
 )
 
 
