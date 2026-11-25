@@ -172,7 +172,8 @@ antes. En el CLI, `-s workspace-write` no trae red;
   atributos que transforman el texto, como el `* text=auto eol=lf` de este; la
   línea `git-twig:` que imprime el comando dice qué ruta tomó. No copia
   `node_modules` ni lo ignorado: instala dependencias en el worktree. Para partir de commits que `origin` no tiene, usa
-  `git worktree add`. Quítalo con `git worktree remove` sin `--force`.
+  `git worktree add`. Quítalo al terminar como dice la sección «Máquinas» del
+  `CLAUDE.md` global.
 - **Commits.** En `workspace-write` el trabajador no puede commitear
   (`index.lock`); el orquestador commitea. El brief fija que el árbol de
   partida es correcto y que el trabajador sólo edita archivos; git lo gestiona
